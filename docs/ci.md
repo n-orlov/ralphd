@@ -92,39 +92,65 @@ dispatch.
 
 ## The self-hosted runner
 
-> **This section describes the VPS, and it is out of date about the fleet as a
-> whole.** Two things have changed under it and only the first is this document's
-> current subject. (1) As of 14 September 2026 the VPS's two slots carry
-> `fast-lane` and *only* `fast-lane`: `ralphd-vps` and `docker-host` were removed
-> from them, so they run `gate.yml` and nothing else — everything below about
-> which lanes land here is superseded by the partition described above. (2) Four
-> further slots, `int21h-ws-1` to `int21h-ws-4`, were registered on the
-> workstation on 11 September 2026 and are where `heavy.yml` and `nightly.yml`
-> actually run; they are undocumented here. Reconciling this section with the
-> real fleet is #189's subject. Everything below about the VPS *host* — its
-> cores, its docker group, #180 — is still accurate about that host.
+**Corrected fresh from `GET /repos/n-orlov/ralphd/actions/runners` (task 056, K.5).**
+This section used to describe the retired VPS as if it were still the fleet; it
+no longer does, and the live shape belongs to that endpoint, not to this file,
+which has been overtaken within a day of being written twice already (see
+`## The three workflows` above). As read today: `int21h-ws-1` .. `int21h-ws-4`
+carry `ralphd-vps`, `docker-host` and `browser-runner`, and are where
+`heavy.yml` and `nightly.yml` run; `int21h-ws-5` and `int21h-ws-6` carry
+`fast-lane` only and are where `gate.yml` runs; `vmi3245594` and
+`vmi3245594-2` are still registered and online but carry no labels at all, so
+they are eligible for nothing. **All six slots are registrations on one
+physical host**, not six separate machines the way the two VPS slots used to
+be — see `## The three workflows` above for the CPU-contention consequence on
+`gate.yml`'s worker count.
 
-TWO runner slots registered against this repository (not an org), both
-labelled `ralphd-vps` and `docker-host`: `vmi3245594` and `vmi3245594-2`
-(operator-provisioned, steer 008). Exactly one of the two, `vmi3245594`, also
-carries the `browser-runner` label the operator placed on it (steer 009), which
-is what keeps browser work globally serial across every workflow -- see
-`heavy.yml`'s browser tier for why a `concurrency:` group cannot substitute.
-With two slots live, the docker tier and the browser tier below CAN run
-concurrently (`heavy.yml` no longer serialises them against each other; they
-are separate jobs with separate check runs so a red one never cancels the
-other's evidence), and `nightly.yml`'s six matrix cells run at `max-parallel:
-2`, label-agnostic, across both slots. The operator measured load 1.92 on the
-host's 4 cores with two jobs in flight and called that comfortable, not three;
-nothing here proposes a third slot.
+**One property this file used to state no longer holds, and it is #189's
+unowned half.** `browser-runner` used to sit on exactly one of two VPS slots
+(`vmi3245594`; steer 009), which is what kept browser-tier work globally
+serial across every workflow — a `concurrency:` group cannot do this itself,
+since it only serialises within one workflow and cannot see what else is
+scheduled on the runner (`heavy.yml`'s own comment on the browser tier says
+so). **Now all four of `int21h-ws-1`..`int21h-ws-4` carry `browser-runner`**,
+so that guarantee is gone: up to four browser-tier jobs (e.g. from four open
+pull requests) could now land concurrently instead of queueing for the one
+slot that used to hold the label. Restoring it needs the operator to move the
+label back onto a bounded subset of slots, which is runner-registration work
+this task leaves untouched, same as the rest of #189's placement half.
 
-Host: 4 x86_64 cores, 7 GB RAM plus a 4 GB swapfile, docker 29.4.0, Ubuntu
-24.04, per slot. Provisioned with Node 22 (from the official tarball, so no third-party
-apt repository is added to a host that also serves live traffic),
+**Named requirement (the workflow half a workflow file can actually express):
+no more than 2 of `int21h-ws-1`..`int21h-ws-4` should carry a running
+`heavy`/`nightly` job at once.** Reason: the VPS-era measurement — "2
+concurrent heavy-tier jobs load the host to 1.92, comfortable, not 3" — was
+taken on a 4-core box; the current host is the 12-core workstation shared with
+fast-lane's own 2 slots (see `## The three workflows`), and #189's own
+defect-2 measurement showed a nightly cell's wall clock roughly double when it
+shared a box with the docker tier (61 min vs 20-22 min uncontended, enough to
+cap a 60-minute budget it had already only 2 minutes of margin against
+uncontended). 2 is this document's ceiling until a fresh measurement on the
+current host says otherwise — not a floor to relax toward 4 because four slots
+now exist. **This requirement is documentation only.** No mechanism in
+`heavy.yml` or `nightly.yml` enforces it: a `concurrency:` group is blind
+across workflows (the same limitation that broke `browser-runner`'s old
+guarantee, two paragraphs up), and the one mechanism this repository already
+trusts for cross-workflow, cross-job placement control is a label placed on a
+bounded number of slots — which is runner-registration work, is the operator's
+to do, and is exactly the split named in the comment this task posts on #189.
+A future task can pick this up; see `## Not done yet` below.
+
+Host (measured on the retired VPS; not yet re-measured on the current
+workstation, so treated as history rather than a current spec): 4 x86_64
+cores, 7 GB RAM plus a 4 GB swapfile, docker 29.4.0, Ubuntu 24.04, per slot.
+Provisioned with Node 22 (from the official tarball, so no third-party apt
+repository is added to a host that also serves live traffic),
 `@playwright/cli@0.1.19` — the exact binary `tests/test_browser_hub.py` shells
 out to — Google Chrome, which is the channel that CLI opens by default, and a
 shared browser cache at `/opt/ms-playwright` exported to the runner through its
-`.env`.
+`.env`. The docker-group/uid-1000 paragraphs below describe the runner-user
+model, which is a property of how each slot's agent process is provisioned,
+not of which physical box it landed on, so they still apply to the current
+workstation slots without amendment.
 
 The runner runs as a user in the `docker` group. That is a deliberate operator
 decision, not an oversight: a socket is root-equivalent on its host, so a CI job
@@ -157,7 +183,9 @@ secrets, and a compromised job has nothing to steal.
   `main` is the one that gets attested; intermediate shas keep the check runs
   they earned on their own pull requests.
 - `nightly.yml` runs its six matrix cells at `max-parallel: 2` and `fail-fast:
-  false` — two runner slots, and one red cell must not cancel another's claim.
+  false` — capped at 2 by the named requirement in `## The self-hosted runner`
+  above, not because only two slots exist (four now do, `int21h-ws-1`..`-4`);
+  one red cell must not cancel another's claim.
 
 ## Reading a `cancelled` conclusion: which of the three causes it was
 
@@ -250,3 +278,8 @@ finds nothing.
   `heavy.yml` is what supplies the real figures for four cores; the `docker`
   lane runs serially until then, and `-n 2 --dist loadfile` is the next thing to
   try.
+- **#189's placement half (task 056, K.5): a per-physical-slot label bounding
+  which of `int21h-ws-1`..`-4` may run `heavy`/`nightly` concurrently.** This
+  is the operator's to place, the same way `browser-runner` used to sit on one
+  VPS slot; see `## The self-hosted runner` above for why the current
+  all-four `browser-runner` labelling already lost that guarantee once.
