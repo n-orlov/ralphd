@@ -442,7 +442,12 @@ def test_a_live_engine_serves_the_record_from_its_own_run_dir(live):
     assert doc["image"] == RECORDED_TAG
     assert doc["imageId"] == RECORDED_ID
     res = run.ralphctl("status", "rec-live")
-    assert f"image:     {RECORDED_TAG}  (id {'a' * 12})" in res.stdout
+    # Task 032 (F.6): a live GET /status also carries `engineVersion` (task
+    # 030), so the running engine's own version now rides beside the id on
+    # this same line -- tag spelling unchanged either way.
+    from ralphd import __version__ as _live_engine_version
+    assert (f"image:     {RECORDED_TAG}  "
+            f"(engine {_live_engine_version}, id {'a' * 12})") in res.stdout
 
 
 # --- documented -----------------------------------------------------------

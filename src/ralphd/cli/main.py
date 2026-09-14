@@ -3689,6 +3689,11 @@ def cmd_status(args):
     # got, so "is this the engine I think it is?" and "what will a resume run?"
     # are answerable without `docker inspect`. Omitted entirely when run state
     # records no image (a pre-v0.6 run dir), never `image: None`.
+    #
+    # Task 032 (F.6): `status` here is the full `GET /status` document, so it
+    # already carries `engineVersion` (task 030) alongside the image-record
+    # keys -- `format_image` renders it right beside the content-hash tag on
+    # this same line, tag spelling unchanged, rather than adding a new line.
     image_line = format_image(status)
     if image_line:
         lines.append(f"image:     {image_line}")

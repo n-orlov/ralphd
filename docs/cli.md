@@ -230,7 +230,11 @@ the same fields, see docs/api.md):
 
 `ralphctl status` prints the first two as one line —
 `image:     ralphd:9f2c1a4b7d80  (id 0f1e2d3c4b5a)` — and omits the line
-entirely for a run dir that records no image.
+entirely for a run dir that records no image. Task 032 (F.6) grows that same
+line with the running engine's own version, whenever `status.json` carries
+one (task 030's `engineVersion`) — `image:     ralphd:9f2c1a4b7d80  (engine
+0.20.2, id 0f1e2d3c4b5a)` — right beside the content-hash tag, never as a
+separate line, and never changing the tag's own spelling.
 
 **Resuming on the same image.** `ralphctl resume` must not swap the engine
 mid-run, so it prefers that record over re-resolving anything, ranked:
@@ -533,6 +537,12 @@ omitted for a run dir that records no image (pre-v0.6), never `image: None`.
 `imageDockerfile`, all explicitly `null` when unrecorded — the same six fields
 `GET /status` serves, read from the same `host.json` record, and the same record
 `resume` reproduces.
+
+Task 032 (F.6): the running engine's own version (task 030's `status.json`
+`engineVersion`) rides beside the content-hash tag on this same line, tag
+spelling unchanged — `image:     ralphd:9f2c1a4b7d80  (engine 0.20.2, id
+0f1e2d3c4b5a)` — never a new line, and omitted the same way the `(id …)`
+suffix is when there is nothing recorded to show.
 
 Human output includes a `duration:` line: while the job is still running this
 is the **elapsed-so-far** time since `startedAt` (labeled `(elapsed)`); once

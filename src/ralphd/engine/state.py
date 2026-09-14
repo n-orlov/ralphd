@@ -949,6 +949,13 @@ def format_image(rec: dict | None) -> str:
     The id is appended only when it adds information: a reference the daemon
     could not resolve when the run started has none, and a reference that *is*
     the id needs no parenthetical repeat of itself.
+
+    Task 032 (F.6): when `rec` also carries an `engineVersion` (as the full
+    `GET /status` document does, since task 030), it is rendered right beside
+    the content-hash tag -- `ralphd:ab12cd34ef56  (engine 0.20.2)`, or
+    `ralphd:ab12cd34ef56  (engine 0.20.2, id 0f1e2d3c4b5a)` alongside the id --
+    with the tag itself unchanged either way. Callers that pass a bare
+    `IMAGE_RECORD_KEYS`-only dict (no `engineVersion` key) see no change.
     """
     rec = rec or {}
     ref = rec.get("image")
@@ -956,9 +963,12 @@ def format_image(rec: dict | None) -> str:
     if not isinstance(ref, str) or not ref.strip():
         return ""
     ref = ref.strip()
-    if not short or short in ref:
-        return ref
-    return f"{ref}  (id {short})"
+    version = rec.get("engineVersion")
+    version_part = (f"engine {version.strip()}"
+                    if isinstance(version, str) and version.strip() else "")
+    id_part = f"id {short}" if short and short not in ref else ""
+    extras = ", ".join(p for p in (version_part, id_part) if p)
+    return f"{ref}  ({extras})" if extras else ref
 
 
 # Task 023 (#8): the tasks.json `status` string -> /status `tasks` counts key

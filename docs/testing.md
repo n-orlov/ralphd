@@ -2023,3 +2023,24 @@ section: `377` (fast), `262` (smoke). `tests/records/` is unaffected
 smoke modules, 5800/4300 tests) still carry headroom -- no ceiling raise
 needed this task.
 
+**5744 (smoke 4123, modules 378 (fast), 263 (smoke)) by v0.21 task 032
+(requirement F.6).** One new module,
+`tests/test_status_image_engine_version_032.py`, four new nodes covering
+`format_image`'s new `engineVersion` parenthetical (alone, alongside an
+id, and absent) plus one black-box `ralphctl status` render over a seeded
+`status.json`/`host.json` pair -- it uses the `ctl` fixture (a real
+`ralphctl` subprocess) but its own source carries none of
+`LiveRun`/`EngineProc`/`engine_factory`/`live(`/`RALPHCTL`/`RALPHD_ENGINE`/
+`host_like_`, so the tier-stamping heuristic still counts it `smoke` as
+well as `fast` (module-source scan, not a transitive one); net +4 fast, +4
+smoke, +1 module in both tiers. From the 5740/4119/377 (fast)/262 (smoke)
+the paragraph above measures: **5744/4123/378 (fast)/263 (smoke)**.
+Re-measured directly at this task's own tip with `.venv/bin/python -m
+pytest -m <fast|smoke> --collect-only -q` (fast: `5744/5853 tests
+collected (109 deselected)`, smoke: `4123/5853 tests collected (1730
+deselected)`), and the module count via the same unique-module-path
+recipe used throughout this section: `378` (fast), `263` (smoke).
+`tests/records/` is unaffected (still 117, untouched by this task). Both
+tier ceilings (390 fast/270 smoke modules, 5800/4300 tests) still carry
+headroom -- no ceiling raise needed this task.
+
