@@ -1497,3 +1497,21 @@ module count via the same unique-module-path recipe used throughout this
 section: `365`. `tests/records/` is unaffected (still 117, untouched by this
 task). Both ceilings (5800 tests/375 modules fast, 4300/260 smoke) still
 carry headroom.
+
+**5682 (smoke 4075, modules 365) by v0.21 task 005's second attempt
+(requirement B.1).** The task's first attempt was rejected because the
+suggested rewrite it emitted was not itself legal (feeding it back into
+`lint_proposal` drew a fresh refusal), so the rewrite builder now checks
+every candidate against every clause-scoped lint before emitting it and
+`tests/test_legal_rewrite_reprompt.py` grew the cover that proves it: a
+parametrised `test_the_emitted_suggestion_is_itself_accepted` (10 cases, one
+per banned shape plus the two clauses the rejection quoted) and
+`test_every_shapes_own_default_rewrite_is_legal`, +11 tests in the same
+module, no new module. From the 5671/4064/365 the paragraph above measures:
+**5682/4075/365**. Re-measured directly at this task's own tip with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5682/5787 tests collected (105 deselected)`, smoke: `4075/5787 tests
+collected (1712 deselected)`), and the module count via the same
+unique-module-path recipe used throughout this section: `365`.
+`tests/records/` is unaffected (still 117, untouched by this task). Both
+ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry headroom.

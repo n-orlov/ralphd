@@ -816,24 +816,40 @@ _NOTIFICATION_OR_HTTP_STATUS_RE = re.compile(
 )
 
 # Task 005 (PRD requirement B.1, #162): each shape above also carries a
-# REPLACEMENT fragment -- legal text substituted for the exact matched
-# span (never the whole clause) via `_legal_rewrite` below, so the
-# resulting rewrite is a CONCRETE, clause-specific suggestion (the rest of
-# the offending clause survives untouched around the substitution) rather
-# than the generic per-shape advice `alternative` already carries. Two
-# offending clauses that hit the same shape but differ in their
-# surrounding words -- e.g. "The report must contain the final sha." vs.
-# "This is the final commit of the wave." -- yield two different rewrite
-# strings for exactly that reason: the substitution is textual, scoped to
-# the matched span, and everything the clause said around it survives
-# into the suggestion.
-_UNSATISFIABLE_SHAPE_CHECKS: tuple[tuple[re.Pattern, str, str], ...] = (
+# legal PREDICATE and a default SUBJECT, from which `_legal_rewrite` below
+# builds a CONCRETE, clause-specific suggestion: the offending clause's own
+# subject (the words in front of the illegal span, trimmed of modals) is
+# kept and the illegal demand is replaced wholesale by the shape's legal
+# predicate, so the suggestion is a whole sentence rather than a fragment
+# spliced into the middle of a demand that is still illegal around it.
+#
+# Task 005, second attempt (the first attempt's `validationNotes`): the
+# earlier version substituted the fragment for the matched span alone and
+# left the rest of the clause standing, which produced suggestions that
+# were themselves REFUSED when fed back through `lint_proposal` (`The
+# audit range must be empty.` became `The the specific paths and the sha
+# the range is measured from must be empty`, still an empty-range demand
+# and ungrammatical besides). Every suggestion this module emits is now
+# checked against every clause-scoped lint in this module before it is
+# emitted (`_clause_lint_refusals`), and the candidate ladder in
+# `_legal_rewrite` falls back until one lints clean -- so the suggested
+# rewrite is always a legal rewrite, which
+# `tests/test_legal_rewrite_reprompt.py` asserts by feeding each emitted
+# suggestion straight back into `lint_proposal`.
+#
+# The suggestion stays derived from the offending clause: two clauses that
+# hit the same shape but carry different subjects -- "The report must
+# contain the final sha." vs. "This is the final commit of the wave." --
+# yield two different suggestions, because the subject each one names
+# ("report", "wave") survives into its own rewrite.
+_UNSATISFIABLE_SHAPE_CHECKS: tuple[tuple[re.Pattern, str, str, str], ...] = (
     (
         _LATER_FINAL_LAST_COMMIT_RE,
         "names a later/final/last commit or its sha, which cannot be "
         'known until that commit lands -- name "the code sha this task '
         'lands" once it exists, or a past sha this task can already read',
-        "commit at `<sha>` this task lands",
+        "is recorded at the code sha this task lands",
+        "The report",
     ),
     (
         _PREDECLARED_EVENT_STATE_RE,
@@ -841,7 +857,8 @@ _UNSATISFIABLE_SHAPE_CHECKS: tuple[tuple[re.Pattern, str, str], ...] = (
         "later event in this same run can falsify -- require the record "
         "to state whatever the TRUE outcome turns out to be, not a "
         "specific outcome named in advance",
-        "whatever the true outcome turns out to be when it is checked",
+        "records whatever the true outcome turns out to be when it is checked",
+        "The record",
     ),
     (
         _RECORD_CITES_OWN_WRITING_COMMIT_RE,
@@ -850,40 +867,236 @@ _UNSATISFIABLE_SHAPE_CHECKS: tuple[tuple[re.Pattern, str, str], ...] = (
         "the tree the commit produces) -- cite the record's own "
         "report-state sha (its commit's parent) instead, the convention "
         "`docs/sweep-records.md` already documents",
-        "the record's own report-state sha (its commit's parent)",
+        "cites its own report-state sha (the parent of its own commit)",
+        "The row",
     ),
     (
         _EMPTY_GIT_RANGE_RE,
         "requires a git log/diff range to be empty -- name the specific "
         "paths and the sha the range is measured from instead of "
         "demanding an empty range as a standing invariant",
-        "the specific paths and the sha the range is measured from",
+        "is checked over the files this task names, at the sha it names",
+        "The check",
     ),
     (
         _EXACTLY_ONCE_COMMIT_COUNT_RE,
         'demands an "exactly once" commit count -- require the '
         "deliverable to land, verified by its own evidence, not a count "
         "of how many commits it took",
-        "committed and verified by its own evidence",
+        "lands, committed and verified by its own evidence",
+        "The deliverable",
     ),
     (
         _NOTIFICATION_OR_HTTP_STATUS_RE,
         "requires a per-task notification ledger entry or HTTP-status "
         "record -- sends are engine-recorded and best-effort; no "
         "criterion may mention a send, a ledger entry or an HTTP status",
-        "logged as best-effort, never required by name",
+        "is left to the engine's own best-effort record",
+        "The operator contact",
     ),
 )
 
+# Words a candidate subject may not END on -- a modal, a copula, a bare
+# article/preposition or a transitive verb whose object the rewrite drops.
+# Trimmed from the right, repeatedly, so "The report must contain the"
+# becomes "The report" and the shape's predicate attaches to a real noun
+# phrase instead of a dangling verb.
+_REWRITE_SUBJECT_TRIM_WORDS = frozenset(
+    """a an the this that these those its their his her our your it
+    is are was were be been being am
+    must shall should will would can could may might has have had does do did
+    contains contained carries carried cites cited names named
+    shows showed shown states stated records recorded reports reported
+    lists listed includes included verifies verified appends appended
+    and or nor but of at in on to for from by with as into over under
+    before after than then not no only own same which who whose where
+    when while there here""".split()
+)
 
-def _legal_rewrite(clause: str, pattern: re.Pattern, replacement: str) -> str:
-    """The concrete legal rewrite for one offending `clause`: `replacement`
-    spliced in place of the exact span `pattern` matched, everything else
-    in `clause` left untouched. Task 005 (PRD requirement B.1): this is
-    what makes the suggestion clause-specific rather than a fixed template
-    -- two clauses that differ only in the words around the matched span
-    still rewrite to two different strings."""
-    return pattern.sub(replacement, clause, count=1)
+# Bare verb forms that double as singular nouns ("the record", "to record"):
+# kept OUT of the trim set above so "The record" survives as a subject, but
+# popped together with the modal in front of them, so "The report must
+# contain" reduces to "The report" rather than dangling a transitive verb.
+_REWRITE_BARE_VERB_WORDS = frozenset(
+    """contain carry cite name show state record report list include
+    verify land check append hold read write""".split()
+)
+
+_REWRITE_MODAL_WORDS = frozenset(
+    """must shall should will would can could may might does do did to""".split()
+)
+
+# Words that cannot head a subject noun phrase however they are trimmed --
+# adjectives, participles and adverbs the banned shapes are full of. Without
+# this list "The audit range must be empty." would rewrite to "The empty
+# ..." (legal, but not a sentence).
+_REWRITE_NON_NOUN_WORDS = frozenset(
+    """empty final last later next subsequent prior newly filed protected
+    exactly once observed single separate true verbatim refuted confirmed
+    present absent clean green red done above below per still already ever
+    never just zero many few more less each every all any both none""".split()
+)
+
+_REWRITE_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9'`./_-]*")
+
+# Punctuation a word carries into a subject phrase but must not keep.
+_REWRITE_STRIP_CHARS = "`'\"(),;:./_- "
+
+
+def _is_subject_noun(word: str) -> bool:
+    """True if `word`, lifted out of an offending clause, can head a
+    singular subject noun phrase ("The <word> ...") in a rewrite: not a
+    trimmed function word, not an adjective/participle from the banned
+    shapes' own vocabulary, and not plural (the shapes' predicates below
+    are all singular)."""
+    bare = word.strip(_REWRITE_STRIP_CHARS).lower()
+    if len(bare) < 3:
+        return False
+    if bare in _REWRITE_SUBJECT_TRIM_WORDS or bare in _REWRITE_NON_NOUN_WORDS:
+        return False
+    if bare.endswith("s") and not bare.endswith(("ss", "us", "is")):
+        return False
+    return True
+
+
+def _clause_lint_refusals(clause: str) -> list[str]:
+    """Every clause-scoped lint in this module, run against ONE candidate
+    clause. Task 005 (PRD requirement B.1, second attempt): this is what
+    makes a suggested rewrite a *legal* rewrite -- a candidate that any of
+    these lints would refuse is never emitted as a suggestion, so feeding
+    the suggestion back into `lint_proposal` cannot produce a fresh
+    refusal. Returns the names of the lints that refuse `clause` (empty
+    list = legal)."""
+    refusals: list[str] = []
+    checks: tuple[tuple[str, Callable[[str], Any]], ...] = (
+        ("unsatisfiable-shape", _unsatisfiable_shape_match),
+        ("relational-sha", _relational_sha_clause),
+        ("single-commit-conflict", _single_commit_conflict_clause),
+        ("unscoped-occurrence-count", _unscoped_occurrence_count_clause),
+        ("scratch-state-content", _scratch_state_content_clause),
+        ("unenumerated-quantifier", _unenumerated_quantifier_clause),
+        ("clause-count-overrun", _clause_count_overrun),
+        ("command-form", _command_form_shape_clause),
+        ("launch-form-with-status", _launch_form_with_captured_status_clause),
+    )
+    for name, check in checks:
+        if check(clause) is not None:
+            refusals.append(name)
+    if _declares_self_growing_output(clause):
+        refusals.append("self-growing-output")
+    if _depends_on_own_terminal_state(clause):
+        refusals.append("own-terminal-state")
+    return refusals
+
+
+def _tidy_sentence(text: str) -> str:
+    """One-line, single-spaced, terminated with a period."""
+    collapsed = re.sub(r"\s+", " ", text).strip().strip(",;:").strip()
+    if collapsed and not collapsed.endswith((".", "!", "?")):
+        collapsed += "."
+    return collapsed
+
+
+def _trimmed_subject(text: str) -> str:
+    """`text` reduced to a noun phrase usable as a sentence subject: no
+    trailing modal/copula/verb/preposition, no dangling modal-plus-bare-verb
+    pair, no trailing punctuation."""
+    words = re.sub(r"\s+", " ", text).strip().strip(",;:.").split(" ")
+
+    def _bare(index: int) -> str:
+        return words[index].strip(_REWRITE_STRIP_CHARS).lower()
+
+    changed = True
+    while changed:
+        changed = False
+        while words and (not words[-1] or not _bare(-1)
+                         or _bare(-1) in _REWRITE_SUBJECT_TRIM_WORDS):
+            words.pop()
+            changed = True
+        if (
+            len(words) >= 2
+            and _bare(-1) in _REWRITE_BARE_VERB_WORDS
+            and _bare(-2) in _REWRITE_MODAL_WORDS
+        ):
+            words.pop()
+            words.pop()
+            changed = True
+    return " ".join(words).strip(",;:. ")
+
+
+def _subject_candidates(clause: str, match: re.Match, default_subject: str) -> list[str]:
+    """Subjects to try for the rewrite of `clause`, best first: the
+    clause's own subject (the words in front of the illegal span,
+    progressively shortened from the right), then a noun lifted from what
+    followed the span, then a noun lifted from the span itself (last word
+    first -- "audit range" contributes "range"), and finally the shape's
+    own default subject. Every candidate is still lint-checked by
+    `_legal_rewrite`; this function only decides the ORDER in which the
+    clause's own words get their chance to survive into the suggestion."""
+    candidates: list[str] = []
+
+    def _add(text: str) -> None:
+        cleaned = _trimmed_subject(text)
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+
+    prefix = _trimmed_subject(clause[: match.start()])
+    while prefix:
+        _add(prefix)
+        prefix = _trimmed_subject(" ".join(prefix.split(" ")[:-1]))
+
+    for word in _REWRITE_WORD_RE.findall(clause[match.end():]):
+        if _is_subject_noun(word):
+            _add(f"The {word.strip(_REWRITE_STRIP_CHARS)}")
+
+    for word in reversed(_REWRITE_WORD_RE.findall(match.group(0))):
+        if _is_subject_noun(word):
+            _add(f"The {word.strip(_REWRITE_STRIP_CHARS)}")
+
+    _add(default_subject)
+    return candidates
+
+
+def _legal_rewrite(clause: str, match: re.Match, predicate: str,
+                   default_subject: str) -> str:
+    """The concrete legal rewrite for one offending `clause`: the clause's
+    own subject (or the closest thing to one its words offer) followed by
+    the shape's legal `predicate`, and -- crucially -- the FIRST such
+    candidate that `_clause_lint_refusals` accepts. Task 005 (PRD
+    requirement B.1): clause-specific, because the subject comes out of
+    the offending clause itself, and legal, because nothing this function
+    returns is a string the lints would refuse."""
+    for subject in _subject_candidates(clause, match, default_subject):
+        candidate = _tidy_sentence(f"{subject} {predicate}")
+        if not _clause_lint_refusals(candidate):
+            return candidate
+    # Unreachable in practice: the shape's own default subject plus its own
+    # predicate is lint-clean by construction (asserted for all six shapes
+    # in `tests/test_legal_rewrite_reprompt.py`). Kept so a future shape
+    # added without that check degrades to the generic advice rather than
+    # emitting an illegal suggestion.
+    return _tidy_sentence(f"The evidence this task names {predicate}")
+
+
+def _unsatisfiable_shape_match(criteria: str) -> tuple[str, int, re.Match] | None:
+    """The raw match behind `_unsatisfiable_shape_clause`: `(clause,
+    shape_index, match)` for the FIRST shape (in `_UNSATISFIABLE_SHAPE_
+    CHECKS` order) that matches the FIRST clause it matches, else None.
+    Split out from `_unsatisfiable_shape_clause` so `_clause_lint_refusals`
+    can ask "is this text legal?" without building a rewrite for it --
+    which would recurse forever, since building a rewrite asks exactly
+    that question about its own candidates."""
+    for clause in _CLAUSE_SPLIT_RE.split(criteria):
+        stripped = clause.strip()
+        if not stripped:
+            continue
+        for index, (pattern, _alt, _pred, _subj) in enumerate(
+            _UNSATISFIABLE_SHAPE_CHECKS
+        ):
+            match = pattern.search(stripped)
+            if match:
+                return (stripped, index, match)
+    return None
 
 
 def _unsatisfiable_shape_clause(criteria: str) -> tuple[str, str, str] | None:
@@ -893,16 +1106,15 @@ def _unsatisfiable_shape_clause(criteria: str) -> tuple[str, str, str] | None:
     matches the FIRST clause it matches -- the offending clause is quoted,
     a satisfiable alternative is described, and a concrete rewrite of that
     is named, exactly like every other lint in this module."""
-    for clause in _CLAUSE_SPLIT_RE.split(criteria):
-        stripped = clause.strip()
-        if not stripped:
-            continue
-        for pattern, alternative, replacement in _UNSATISFIABLE_SHAPE_CHECKS:
-            match = pattern.search(stripped)
-            if match:
-                return (stripped, alternative,
-                        _legal_rewrite(stripped, pattern, replacement))
-    return None
+    found = _unsatisfiable_shape_match(criteria)
+    if found is None:
+        return None
+    stripped, index, match = found
+    _pattern, alternative, predicate, default_subject = (
+        _UNSATISFIABLE_SHAPE_CHECKS[index]
+    )
+    return (stripped, alternative,
+            _legal_rewrite(stripped, match, predicate, default_subject))
 
 
 # ---------------------------------------------------------------------------

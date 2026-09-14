@@ -1,30 +1,46 @@
-"""Task 005 (PRD requirement B.1): an ingestion refusal message now carries
-a CONCRETE legal rewrite of the offending clause beside the rule it broke
--- `plan_ingestion._unsatisfiable_shape_clause`'s new third return value,
-spliced into `lint_proposal`'s error string as "-- suggested rewrite:
-<text>". Two things are proved here, matching the task's two success
-criteria:
+"""Task 005 (PRD requirement B.1): an ingestion refusal message carries a
+CONCRETE LEGAL rewrite of the offending clause beside the rule it broke --
+`plan_ingestion._unsatisfiable_shape_clause`'s third return value, spliced
+into `lint_proposal`'s error string as "-- suggested rewrite: <text>".
+
+Four things are proved here. The first two are the task's own criteria; the
+third is the gap this task's FIRST attempt was rejected on (its
+`validationNotes`: the emitted rewrite was itself refused when fed back into
+`lint_proposal`, because the old implementation substituted a fragment for
+the matched span alone and left the rest of the illegal demand standing);
+the fourth is the loop-level reach of the suggestion.
 
 1. `test_two_different_offending_clauses_yield_two_different_suggestions`
-   -- unit level, `plan_ingestion.lint_proposal` directly: the suggestion
-   is DERIVED from the offending clause's own text (the words around the
-   matched span survive into the rewrite), not a fixed per-shape template
-   -- two different offending clauses produce two different suggestions.
-2. `test_the_suggested_rewrite_reaches_the_planners_next_prompt` -- loop
+   and `test_the_rule_broken_and_the_rewrite_both_appear_in_the_same_message`
+   -- the suggestion is DERIVED from the offending clause's own subject, so
+   two different offending clauses yield two different suggestions, and the
+   rule broken and the rewrite ride in one message.
+2. `test_the_emitted_suggestion_is_itself_accepted` (parametrised over all
+   six banned shapes, including the two clauses the first attempt's
+   rejection quoted verbatim) -- the suggestion, fed straight back through
+   `lint_proposal` and `lint_own_terminal_state` as a task's whole
+   `successCriteria`, draws no refusal at all. This is what makes it a
+   *legal* rewrite rather than merely a different string.
+3. `test_every_shapes_own_default_rewrite_is_legal` -- the fallback end of
+   the candidate ladder (the shape's default subject plus its predicate) is
+   lint-clean for each of the six shapes, so a clause whose own words offer
+   no usable subject still gets a legal suggestion.
+4. `test_the_suggested_rewrite_reaches_the_planners_next_prompt` -- loop
    level, mirrors `tests/test_plan_ingestion_rejection.py`'s
    `_ScriptedRunner` scaffolding (kept as its own copy, exactly as every
-   other `_run_job_core`-driving test module in this tree does): a
-   rejected first plan-proposal.json, followed by a second planning
-   attempt whose OWN prompt.md (the file `_run_iteration_once` writes for
-   every iteration) is read straight off disk and asserted to contain the
-   suggested rewrite text -- proof the rewrite reaches the planner's next
-   prompt, not just the in-process error list.
+   other `_run_job_core`-driving test module in this tree does): a rejected
+   first plan-proposal.json, followed by a second planning attempt whose
+   OWN prompt.md (the file `_run_iteration_once` writes for every
+   iteration) is read straight off disk and asserted to contain the
+   suggested rewrite text.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+
+import pytest
 
 from ralphd.engine import plan_ingestion as pi
 from ralphd.engine.loop import LoopSupervisor
@@ -37,8 +53,19 @@ def _task(task_id: str, criteria: str) -> dict:
     return {"id": task_id, "title": f"do thing {task_id}", "successCriteria": criteria}
 
 
+def _suggestion_for(criteria: str, task_id: str = "001") -> str:
+    """The suggested rewrite `lint_proposal` emits for `criteria`, lifted out
+    of the refusal message exactly as a planner reading its next prompt
+    would read it (the message quotes it with `repr`)."""
+    errors = pi.lint_proposal({"tasks": [_task(task_id, criteria)]})
+    matches = [e for e in errors if "suggested rewrite:" in e]
+    assert matches, (criteria, errors)
+    quoted = matches[0].split("suggested rewrite:", 1)[1].strip()
+    return quoted.strip("'\"")
+
+
 # ---------------------------------------------------------------------------
-# 1. unit level: two different offending clauses, two different suggestions
+# 1. the suggestion is derived from the offending clause, beside the rule
 # ---------------------------------------------------------------------------
 
 def test_two_different_offending_clauses_yield_two_different_suggestions():
@@ -58,11 +85,13 @@ def test_two_different_offending_clauses_yield_two_different_suggestions():
     suggestion_001 = _suggestion("001")
     suggestion_002 = _suggestion("002")
     assert suggestion_001 != suggestion_002
-    # Each rewrite is genuinely derived from ITS OWN clause's surrounding
-    # words, not a shared fixed template: the text around the illegal span
-    # survives into the suggestion for each clause, distinctly.
-    assert "report must contain" in suggestion_001
-    assert "of the wave" in suggestion_002
+    # Each rewrite keeps the subject ITS OWN clause named -- "report" for the
+    # first, "wave" for the second -- so the suggestion is clause-specific,
+    # not one shared per-shape template.
+    assert "The report" in suggestion_001
+    assert "report" not in suggestion_002
+    assert "The wave" in suggestion_002
+    assert "wave" not in suggestion_001
 
 
 def test_the_rule_broken_and_the_rewrite_both_appear_in_the_same_message():
@@ -75,11 +104,65 @@ def test_the_rule_broken_and_the_rewrite_both_appear_in_the_same_message():
     assert 'demands an "exactly once" commit count' in message
     # ... beside a concrete rewrite of the offending clause.
     assert "suggested rewrite:" in message
-    assert "verified by its own evidence" in message
+    assert "The task lands, committed and verified by its own evidence." in message
 
 
 # ---------------------------------------------------------------------------
-# 2. loop level: the suggestion reaches the planner's NEXT prompt
+# 2. the emitted suggestion is itself LEGAL -- fed back, it draws no refusal
+# ---------------------------------------------------------------------------
+
+# One offending clause per banned shape, plus the two clauses task 005's
+# first-attempt rejection quoted verbatim ("The audit range must be empty.",
+# "The row cites the commit that writes it.").
+_OFFENDING_CLAUSES = [
+    ("later-commit", "The report must contain the final sha."),
+    ("later-commit-suffix", "This is the final commit of the wave."),
+    ("predeclared-state",
+     "The petition state is recorded (both prior petitions REFUTED)."),
+    ("record-cites-own-commit", "The row cites the commit that writes it."),
+    ("record-cites-own-commit-verbatim",
+     "A record row must cite the commit that writes the row."),
+    ("empty-range", "The audit range must be empty."),
+    ("empty-range-git", "git log over docs/ shows no commits."),
+    ("exactly-once", "The task is committed exactly once."),
+    ("http-status",
+     "The task appends endpoint, substance, and observed HTTP status."),
+    ("notification-ledger",
+     "The notification ledger entry is appended by the task."),
+]
+
+
+@pytest.mark.parametrize("label,criteria",
+                         _OFFENDING_CLAUSES,
+                         ids=[label for label, _ in _OFFENDING_CLAUSES])
+def test_the_emitted_suggestion_is_itself_accepted(label, criteria):
+    suggestion = _suggestion_for(criteria)
+    # It is a rewrite, not a restatement.
+    assert suggestion != criteria
+    assert suggestion.endswith(".")
+    payload = {"tasks": [_task("001", suggestion)]}
+    # Fed straight back in as a whole successCriteria, the suggestion draws
+    # no refusal from ANY of the module's lints -- including the
+    # structurally-unsatisfiable one that produced it.
+    assert pi.lint_proposal(payload) == []
+    assert pi.lint_own_terminal_state(payload) == []
+    assert pi.validate_proposal_shape({"version": 1, "tasks": [
+        {"id": "001", "title": "t", "successCriteria": suggestion}]}) == []
+
+
+def test_every_shapes_own_default_rewrite_is_legal():
+    """The fallback end of the candidate ladder: a clause whose own words
+    offer no usable subject falls back on the shape's default subject plus
+    its predicate, which must be lint-clean for each of the six shapes."""
+    for pattern, _alternative, predicate, default_subject in (
+        pi._UNSATISFIABLE_SHAPE_CHECKS
+    ):
+        fallback = f"{default_subject} {predicate}."
+        assert pi._clause_lint_refusals(fallback) == [], (pattern.pattern, fallback)
+
+
+# ---------------------------------------------------------------------------
+# 3. loop level: the suggestion reaches the planner's NEXT prompt
 # ---------------------------------------------------------------------------
 
 class _ScriptedRunner:
@@ -174,6 +257,9 @@ def test_the_suggested_rewrite_reaches_the_planners_next_prompt(tmp_path):
     assert "suggested rewrite:" in second_prompt
     # The concrete rewrite text itself, derived from the offending clause
     # ("This is the final commit of the wave.") this run's own bad plan
-    # named -- not a generic per-shape template.
-    assert "commit at `<sha>` this task lands" in second_prompt
-    assert "of the wave" in second_prompt
+    # named -- not a generic per-shape template -- and legal on its own
+    # terms, which `test_the_emitted_suggestion_is_itself_accepted` proves
+    # for this same clause.
+    suggestion = _suggestion_for("This is the final commit of the wave.")
+    assert suggestion == "The wave is recorded at the code sha this task lands."
+    assert suggestion in second_prompt
