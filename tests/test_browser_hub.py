@@ -2449,6 +2449,85 @@ def test_task_table_shows_summed_time_and_cost_across_two_iterations(tmp_path, p
         server.stop()
 
 
+def test_task_dialog_lists_the_iterations_behind_its_total(tmp_path, pw):
+    """Task 037 (G.5): the task dialog opened from the tasks table lists the
+    INDIVIDUAL iterations the row's own timeDisplay/costDisplay total (task
+    036, G.4) was summed from -- each with its tier and its own per-
+    iteration cost -- bounded to exactly the fixture's own two iterations
+    (never a third, never a different task's).
+
+    Same two-iteration fixture shape as
+    `test_task_table_shows_summed_time_and_cost_across_two_iterations`
+    above (task id `030`, one `validation-failed` re-entry) plus a THIRD
+    iteration dispatched against a DIFFERENT task (`999`), so the breakdown
+    proves it is bounded to task `030`'s own two, not every iteration in the
+    run.
+    """
+    from ralphd.cli.ui_server import run_detail
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_cli_iteration_detail import _base_meta
+
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-task-breakdown", state="succeeded",
+                              verdict="verified")
+    (run_dir / "tasks.json").write_text(json.dumps({
+        "version": 1, "goal": "ship it",
+        "tasks": [{"id": "030", "title": "add the totals column",
+                   "status": "completed", "validationAttempts": 1},
+                  {"id": "999", "title": "an unrelated task",
+                   "status": "completed"}],
+    }))
+
+    meta1 = _base_meta(1, assignedTaskId="030", effectiveTier="normal",
+                       startedAt="2026-09-02T10:00:00Z",
+                       endedAt="2026-09-02T10:01:00Z",
+                       usage={"input": 10, "output": 20, "totalTokens": 30,
+                              "costUSD": 0.01, "costPriced": True})
+    meta2 = _base_meta(2, assignedTaskId="030", effectiveTier="hard",
+                       startedAt="2026-09-02T11:00:00Z",
+                       endedAt="2026-09-02T11:02:00Z",
+                       usage={"input": 15, "output": 25, "totalTokens": 40,
+                              "costUSD": 0.02, "costPriced": True})
+    meta3 = _base_meta(3, assignedTaskId="999", effectiveTier="normal",
+                       startedAt="2026-09-02T12:00:00Z",
+                       endedAt="2026-09-02T12:01:00Z",
+                       usage={"input": 1, "output": 1, "totalTokens": 2,
+                              "costUSD": 0.05, "costPriced": True})
+    for number, meta in ((1, meta1), (2, meta2), (3, meta3)):
+        d = run_dir / "iterations" / f"{number:04d}"
+        d.mkdir(parents=True)
+        (d / "meta.json").write_text(json.dumps(meta))
+
+    # -- the server's own payload: what the breakdown must reproduce --------
+    detail = run_detail(registry, "run-task-breakdown")
+    task_row = next(t for t in detail["tasks"]["tasks"] if t["id"] == "030")
+    breakdown = task_row["iterationsBreakdown"]
+    assert [b["number"] for b in breakdown] == [1, 2]
+    cost1, cost2 = breakdown[0]["costDisplay"], breakdown[1]["costDisplay"]
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-task-breakdown")
+        _wait_for_count_ge(pw, "document.querySelectorAll('#task-box tbody tr').length", 1)
+
+        pw.click('tr.task-row[data-task-id="030"]')
+        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
+                         "iterations behind this total")
+        # -- exactly the two iterations task 030's own total was computed
+        # from, each with its own tier and cost, and NOT iteration 3 (a
+        # different task) -----------------------------------------------
+        assert "#1" in body and "tier: normal" in body, body
+        assert "#2" in body and "tier: hard" in body, body
+        assert cost1 in body, body
+        assert cost2 in body, body
+        assert "#3" not in body, body
+        pw.screenshot(SCREENSHOTS_DIR / "27-task-dialog-iteration-breakdown.png")
+    finally:
+        server.stop()
+
+
 _DOCUMENT_ITEMS = "document.querySelectorAll('.document-item').length"
 _DOCUMENT_BUTTONS = "document.querySelectorAll('button.document-item').length"
 _DOCUMENT_ROW_TEXT = (

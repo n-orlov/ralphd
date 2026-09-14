@@ -6391,17 +6391,26 @@ def _accumulate_task_usage(bucket: dict, usage: dict) -> dict:
 def task_totals(iterations: list) -> dict:
     """Per-task aggregated time/cost for the hub tasks table (task 036, G.4):
     `{task_id: {"durationS": float, "durationDisplay": str, "costDisplay":
-    str, "iterationCount": int}}`, summed from every entry in `iterations`
-    (`iteration_detail`'s own shape -- this run's `run_detail` iteration list)
-    whose `assignedTaskId` names that task, INCLUDING a validation-failed
-    re-entry that dispatched a second iteration against the same task id --
-    a task's total reflects every attempt at it, never only its last one.
+    str, "iterationCount": int, "iterations": [...]}}`, summed from every
+    entry in `iterations` (`iteration_detail`'s own shape -- this run's
+    `run_detail` iteration list) whose `assignedTaskId` names that task,
+    INCLUDING a validation-failed re-entry that dispatched a second
+    iteration against the same task id -- a task's total reflects every
+    attempt at it, never only its last one.
 
     Reads `durationS`/`usage` off `iteration_detail`'s already-derived
     fields -- never re-reads meta.json here -- the same "shape once, render
     everywhere" discipline `iteration_detail`'s own `costDisplay` follows. A
     task id no iteration ever carried gets no entry at all, so a caller can
     tell "never attempted" apart from "attempted for $0.00".
+
+    `iterations` (task 037, G.5): the SAME breakdown the total was computed
+    from, one entry per iteration that named this task -- `{"number":
+    it["number"], "tier": it["effectiveTier"], "costDisplay":
+    it["costDisplay"]}` -- in the order they appear in the caller's own
+    `iterations` list (this run's chronological order), so a task detail
+    view can list exactly the iterations the total above was summed from,
+    never a re-derived or re-ordered set.
     """
     raw: dict[str, dict] = {}
     for it in iterations:
@@ -6412,7 +6421,7 @@ def task_totals(iterations: list) -> dict:
             continue
         tid = str(tid)
         bucket = raw.setdefault(tid, {"durationS": 0.0, "usage": {},
-                                      "iterationCount": 0})
+                                      "iterationCount": 0, "iterations": []})
         dur = it.get("durationS")
         if isinstance(dur, (int, float)) and not isinstance(dur, bool):
             bucket["durationS"] += dur
@@ -6420,6 +6429,11 @@ def task_totals(iterations: list) -> dict:
         if isinstance(usage, dict):
             _accumulate_task_usage(bucket["usage"], usage)
         bucket["iterationCount"] += 1
+        bucket["iterations"].append({
+            "number": it.get("number"),
+            "tier": it.get("effectiveTier"),
+            "costDisplay": it.get("costDisplay") or USAGE_NONE,
+        })
     out = {}
     for tid, bucket in raw.items():
         out[tid] = {
@@ -6427,6 +6441,7 @@ def task_totals(iterations: list) -> dict:
             "durationDisplay": format_duration(bucket["durationS"]),
             "costDisplay": format_cost(bucket["usage"], decimals=4) or USAGE_NONE,
             "iterationCount": bucket["iterationCount"],
+            "iterations": bucket["iterations"],
         }
     return out
 

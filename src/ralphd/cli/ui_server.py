@@ -1157,6 +1157,13 @@ def _with_task_totals(tasks: dict, iterations: list) -> dict:
     "nothing yet" dash for exactly the tasks `task_totals` has nothing to
     say about -- the same absent-key discipline `_with_tasks_read_label`
     just above uses for `tasksNotice`/`tasksLabel`.
+
+    Also attaches `iterationsBreakdown` (task 037, G.5): the SAME per-
+    iteration list `task_totals` built the total from -- `{"number",
+    "tier", "costDisplay"}` per entry -- so a task detail view can list
+    exactly the iterations behind its total, bounded to this run's own
+    iteration set, without re-deriving anything client-side. Absent when
+    that list is empty, same discipline as `timeDisplay`/`costDisplay`.
     """
     totals = task_totals(iterations)
     if not totals:
@@ -1169,6 +1176,8 @@ def _with_task_totals(tasks: dict, iterations: list) -> dict:
         if agg:
             t = {**t, "timeDisplay": agg["durationDisplay"],
                  "costDisplay": agg["costDisplay"]}
+            if agg.get("iterations"):
+                t["iterationsBreakdown"] = agg["iterations"]
         new_list.append(t)
     out["tasks"] = new_list
     return out

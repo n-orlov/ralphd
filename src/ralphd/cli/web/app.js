@@ -684,6 +684,22 @@ function taskDialogText(t, doc) {
     lines.push("validationNotes:");
     lines.push(String(t.validationNotes));
   }
+  // Task 037 (G.5): the iterations behind the row's own timeDisplay/
+  // costDisplay total (task 036, G.4) -- `iterationsBreakdown`, the SAME
+  // list `engine.state.task_totals` built the total from, server-side, one
+  // line per iteration this task's own `assignedTaskId` named, in this
+  // run's own chronological order. Never re-derived here: `tier`/
+  // `costDisplay` per entry are read verbatim off the server payload.
+  if (Array.isArray(t.iterationsBreakdown) && t.iterationsBreakdown.length > 0) {
+    lines.push("");
+    lines.push("iterations behind this total:");
+    for (const it of t.iterationsBreakdown) {
+      const num = it && it.number != null ? String(it.number) : "?";
+      const tier = it && it.tier ? String(it.tier) : "\u2014";
+      const cost = it && it.costDisplay ? String(it.costDisplay) : "\u2014";
+      lines.push("  #" + num + " -- tier: " + tier + ", cost: " + cost);
+    }
+  }
   return lines.join("\n");
 }
 
