@@ -59,14 +59,21 @@ jobs:
       # container.
       RALPHD_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      # Task 054 (K.3): stamp this job's start so the classifier step at the
-      # end can tell a `timeout-minutes` kill from a human cancel and from
+      # Task 054 (K.3): stamp this job's start, its declared bound and a fresh
+      # per-job evidence directory, so the classifier step at the end can tell
+      # a `timeout-minutes` kill from a human cancel and from
       # this job's own `cancel-in-progress` supersession -- which, on this
       # workflow, is a routine event (pushes collapse onto one group), so
       # `cancelled` here is even more overloaded than on gate. See
       # scripts/job_timeout_marker.sh's header.
       - name: Record the job start time
-        run: echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+        run: |
+          echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          echo "RALPHD_JOB_BOUND_MINUTES=120" >> "$GITHUB_ENV"
+          evidence="${RUNNER_TEMP:-/tmp}/ralphd-timeout-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          rm -rf "$evidence"
+          mkdir -p "$evidence"
+          echo "RALPHD_TIMEOUT_EVIDENCE_DIR=$evidence" >> "$GITHUB_ENV"
 
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -119,13 +126,14 @@ jobs:
           docker image rm -f "ralphd:test-${RALPHD_RUN_ID}-base" || true
           df -h / | tail -1
 
-      # Task 054 (K.3), the classifier half: runs even on a cancelled job and
-      # prints the RALPHD_TIMEOUT_KILL marker only when this job was still
-      # alive as its declared 120-minute bound came due. Always exits 0, so
+      # Task 054 (K.3), the classifier half: runs even on a cancelled job. It
+      # prints RALPHD_TIMEOUT_KILL only when a bounded step above recorded a
+      # real wall-clock expiry, and RALPHD_CANCEL_NOT_TIMEOUT when this job's
+      # status is `cancelled` with no such record. Always exits 0, so
       # it can never change this tier's outcome.
       - name: Classify a job-level timeout kill
         if: always()
-        run: scripts/job_timeout_marker.sh 120 "heavy docker tier"
+        run: scripts/job_timeout_marker.sh 120 "heavy docker tier" "${{ job.status }}"
 
   browser-tier:
     name: browser tier
@@ -147,7 +155,13 @@ jobs:
     steps:
       # Task 054 (K.3): see the docker tier's copy of this step above.
       - name: Record the job start time
-        run: echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+        run: |
+          echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          echo "RALPHD_JOB_BOUND_MINUTES=60" >> "$GITHUB_ENV"
+          evidence="${RUNNER_TEMP:-/tmp}/ralphd-timeout-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          rm -rf "$evidence"
+          mkdir -p "$evidence"
+          echo "RALPHD_TIMEOUT_EVIDENCE_DIR=$evidence" >> "$GITHUB_ENV"
 
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -211,4 +225,4 @@ jobs:
       # Task 054 (K.3), the classifier half -- see the docker tier's copy.
       - name: Classify a job-level timeout kill
         if: always()
-        run: scripts/job_timeout_marker.sh 60 "heavy browser tier"
+        run: scripts/job_timeout_marker.sh 60 "heavy browser tier" "${{ job.status }}"

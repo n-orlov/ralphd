@@ -1924,6 +1924,12 @@ function renderInfraWait(el, s, runId, live) {
       const reason = String(s.reason == null ? "" : s.reason).trim();
       el.appendChild(h("p", { class: "infra-wait" }, [
         "\u26A0 degraded: " + (reason || "run ended degraded (no reason recorded)"),
+        // Task 026 (#18.4) again: a run the outage KILLED still has an
+        // outage to explain, so this way in keeps its badge -- task 050's
+        // first cut of this branch dropped it and turned the browser tier
+        // red on tests/test_browser_hub.py::
+        // test_run_detail_opens_the_fault_dialog_from_the_badge.
+        faultBadge(runId, "infra-wait", " explain"),
       ]));
       return;
     }

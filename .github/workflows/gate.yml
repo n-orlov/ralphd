@@ -151,15 +151,25 @@ jobs:
     # minutes off a green lane would trade away the thing that bought.
     timeout-minutes: 45
     steps:
-      # Task 054 (K.3): stamp the job's own start so the LAST step below can
-      # tell a `timeout-minutes` kill apart from a human cancel and from a
+      # Task 054 (K.3): stamp the job's own start, its declared bound, and a
+      # FRESH per-job evidence directory, so the LAST step below can tell a
+      # `timeout-minutes` kill apart from a human cancel and from a
       # `cancel-in-progress` supersession -- all three report `cancelled`
-      # and the API exposes no field that separates them. See
-      # scripts/job_timeout_marker.sh's header for the mechanism, and
-      # scripts/run_bounded.sh's for the per-step half that keeps this job
-      # from reaching its job-level bound in the first place.
+      # and the API exposes no field that separates them. The bound and the
+      # evidence directory are what scripts/run_bounded.sh needs to clamp
+      # each wrapped step to this job's remaining budget and to record an
+      # expiry when one happens; the classifier reads that recorded fact
+      # rather than guessing from elapsed time. `rm -rf` first because a
+      # self-hosted runner reuses its temp directory across jobs and stale
+      # evidence would be read as this job's own.
       - name: Record the job start time
-        run: echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+        run: |
+          echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          echo "RALPHD_JOB_BOUND_MINUTES=45" >> "$GITHUB_ENV"
+          evidence="${RUNNER_TEMP:-/tmp}/ralphd-timeout-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          rm -rf "$evidence"
+          mkdir -p "$evidence"
+          echo "RALPHD_TIMEOUT_EVIDENCE_DIR=$evidence" >> "$GITHUB_ENV"
 
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -271,12 +281,12 @@ jobs:
           scripts/run_bounded.sh 1800 "fast tier" -- python -m pytest -q -m fast -n 2 --dist loadfile --durations=15
 
       # Task 054 (K.3), the classifier half: runs even when this job is
-      # cancelled, and prints the RALPHD_TIMEOUT_KILL marker only when the
-      # job was still alive as its declared 45-minute bound came due. A
-      # human cancel or a `cancel-in-progress` supersession arrives at an
-      # arbitrary earlier moment and leaves no marker, so `cancelled` keeps
-      # its old meaning in exactly the cases where it was never ambiguous.
-      # It cannot change this job's outcome: it always exits 0.
+      # cancelled. It prints RALPHD_TIMEOUT_KILL only when a bounded step
+      # above actually recorded a wall-clock expiry, and
+      # RALPHD_CANCEL_NOT_TIMEOUT when `${{ job.status }}` is `cancelled`
+      # with no such record -- so a human cancel or a `cancel-in-progress`
+      # supersession is named as one however close to the 45-minute bound it
+      # arrives. It cannot change this job's outcome: it always exits 0.
       - name: Classify a job-level timeout kill
         if: always()
-        run: scripts/job_timeout_marker.sh 45 "gate fast tier"
+        run: scripts/job_timeout_marker.sh 45 "gate fast tier" "${{ job.status }}"

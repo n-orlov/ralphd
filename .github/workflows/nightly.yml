@@ -111,14 +111,21 @@ jobs:
           - image: python:3.14-slim
             mode: unset
     steps:
-      # Task 054 (K.3): stamp this cell's start so the classifier step at the
+      # Task 054 (K.3): stamp this cell's start, its declared bound and a
+      # fresh per-cell evidence directory, so the classifier step at the
       # end can tell a `timeout-minutes` kill from a human cancel. This
       # lane's own bound was raised once already because a cell came close
       # to it (see the header comment on `timeout-minutes` above), so it is
       # precisely where a `cancelled` conclusion most needed disambiguating.
       # See scripts/job_timeout_marker.sh's header.
       - name: Record the job start time
-        run: echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+        run: |
+          echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          echo "RALPHD_JOB_BOUND_MINUTES=120" >> "$GITHUB_ENV"
+          evidence="${RUNNER_TEMP:-/tmp}/ralphd-timeout-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          rm -rf "$evidence"
+          mkdir -p "$evidence"
+          echo "RALPHD_TIMEOUT_EVIDENCE_DIR=$evidence" >> "$GITHUB_ENV"
 
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -202,9 +209,11 @@ jobs:
             '
 
       # Task 054 (K.3), the classifier half: runs even when this cell is
-      # cancelled, and prints the RALPHD_TIMEOUT_KILL marker only when the
-      # cell was still alive as its declared 120-minute bound came due.
-      # Always exits 0, so it can never change a cell's outcome.
+      # cancelled. It prints RALPHD_TIMEOUT_KILL only when a bounded step
+      # above recorded a real wall-clock expiry, and
+      # RALPHD_CANCEL_NOT_TIMEOUT when this cell's status is `cancelled`
+      # with no such record. Always exits 0, so it can never change a
+      # cell's outcome.
       - name: Classify a job-level timeout kill
         if: always()
-        run: scripts/job_timeout_marker.sh 120 "nightly dev-layout cell"
+        run: scripts/job_timeout_marker.sh 120 "nightly dev-layout cell" "${{ job.status }}"

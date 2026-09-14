@@ -1,11 +1,18 @@
-"""Task 054 (K.3, #188/#189/#193/#179): prove `scripts/run_bounded.sh`
-actually distinguishes a `timeout-minutes`-shaped kill from a human cancel /
+"""Task 054 (K.3, #188/#189/#193/#179): prove the two scripts actually
+distinguish a `timeout-minutes`-shaped kill from a human cancel /
 `cancel-in-progress` cancellation, on the two surfaces a judging hat reads
-(the step's own log text and `$GITHUB_STEP_SUMMARY`) -- see that script's
-own header comment for the full mechanism and why the two cases produce
-different exit statuses from GNU `timeout(1)`.
+(the step's own log text and `$GITHUB_STEP_SUMMARY`) -- see each script's
+own header comment for the full mechanism.
 
-Both tests run the real script as a subprocess against a real `sleep`; no
+The discriminator is a FACT one cause produces and the other cannot forge: a
+wrapped step whose own inner bound expires writes an evidence file, and the
+job-level classifier reports a timeout only when such a file exists. It is
+deliberately NOT a comparison of elapsed time against the declared bound --
+that earlier shape called a human cancel 44 minutes into a 45-minute bound a
+timeout, and `test_a_cancel_one_minute_before_the_bound_is_not_called_a_timeout`
+below pins that exact probe.
+
+Every test runs the real scripts as subprocesses against a real `sleep`; no
 live GitHub Actions dispatch is involved or needed -- proving the negative
 half (a genuine job-level `timeout-minutes` kill never fires early) would
 need a real wait past a real timeout-minutes bound, which is exactly what
@@ -29,6 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "run_bounded.sh"
 
 MARKER = "RALPHD_TIMEOUT_KILL:"
+CANCEL_MARKER = "RALPHD_CANCEL_NOT_TIMEOUT:"
 
 
 def _run(args: list[str], **env_overrides: str) -> subprocess.CompletedProcess:
@@ -53,9 +61,12 @@ def test_timeout_kill_marker_is_present_when_the_inner_bound_fires(tmp_path):
     summary_path = tmp_path / "step-summary.txt"
     summary_path.write_text("", encoding="utf-8")
 
+    evidence_dir = tmp_path / "evidence"
+
     result = _run(
         ["1", "demo label", "--", "sleep", "5"],
         GITHUB_STEP_SUMMARY=str(summary_path),
+        RALPHD_TIMEOUT_EVIDENCE_DIR=str(evidence_dir),
     )
 
     assert result.returncode == 1, result.stdout
@@ -64,6 +75,12 @@ def test_timeout_kill_marker_is_present_when_the_inner_bound_fires(tmp_path):
         f"{MARKER} demo label exceeded its internal bound of 1s"
         in summary_path.read_text(encoding="utf-8")
     )
+    # ...and the durable fact the job-level classifier reads.
+    written = sorted(evidence_dir.glob("*.expired"))
+    assert len(written) == 1, [p.name for p in written]
+    body = written[0].read_text(encoding="utf-8")
+    assert "label=demo label" in body
+    assert "effective_bound_s=1" in body
 
 
 @pytest.mark.timeout(30)
@@ -78,6 +95,10 @@ def test_timeout_kill_marker_is_absent_when_the_job_is_cancelled_by_signal(tmp_p
 
     env = dict(os.environ)
     env["GITHUB_STEP_SUMMARY"] = str(summary_path)
+
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    env["RALPHD_TIMEOUT_EVIDENCE_DIR"] = str(evidence_dir)
 
     proc = subprocess.Popen(
         [str(SCRIPT), "10", "demo label", "--", "sleep", "5"],
@@ -96,22 +117,55 @@ def test_timeout_kill_marker_is_absent_when_the_job_is_cancelled_by_signal(tmp_p
 
     assert MARKER not in out
     assert summary_path.read_text(encoding="utf-8") == ""
+    # No evidence file either, which is what keeps the job-level classifier
+    # from calling this ending a timeout however late it arrives.
+    assert list(evidence_dir.glob("*.expired")) == []
     # Killed by SIGTERM, well before the 10s inner bound and nowhere near
     # GNU timeout's own self-inflicted 124.
     assert proc.returncode != 124
     assert proc.returncode < 0 or proc.returncode >= 128
 
 
+@pytest.mark.timeout(60)
+def test_the_inner_bound_is_clamped_to_the_jobs_remaining_wall_clock(tmp_path):
+    """A declared inner bound is an upper bound, not a promise: if earlier
+    steps were slow, a step's own bound can outlive the job's
+    `timeout-minutes` and the runner's ambiguous job-level kill lands first.
+    With the job's start and bound exported, the wrapper clamps itself down
+    to the budget that is actually left, so the expiry (and its evidence)
+    happens from the inside, in time to be reported."""
+    evidence_dir = tmp_path / "evidence"
+
+    started = time.time()
+    result = _run(
+        ["600", "late step", "--", "sleep", "120"],
+        RALPHD_TIMEOUT_EVIDENCE_DIR=str(evidence_dir),
+        RALPHD_JOB_STARTED_AT=str(int(started)),
+        RALPHD_JOB_BOUND_MINUTES="1",
+        # 60s of job bound minus this tail leaves a 3s budget.
+        RALPHD_JOB_BOUND_TAIL_S="57",
+    )
+    took = time.time() - started
+
+    assert result.returncode == 1, result.stdout
+    assert f"{MARKER} late step exceeded its internal bound of 3s" in result.stdout
+    assert "clamping late step's inner bound from 600s to 3s" in result.stdout
+    assert took < 20, took
+    body = (evidence_dir / "late-step.expired").read_text(encoding="utf-8")
+    assert "effective_bound_s=3" in body
+    assert "declared_bound_s=600" in body
+
+
 # --- the job-level half: scripts/job_timeout_marker.sh ----------------------
 #
 # The step wrapper above prevents the ambiguous ending for the wall clock a
-# wrapped step owns. It cannot cover the wall clock a job spends in steps no
-# wrapper owns (`actions/checkout`, an environment report, a cleanup step),
-# so every job also ends with an `if: always()` classifier step -- Actions
-# runs those on a cancelled job too -- which reports whether the job was
-# still alive as its declared `timeout-minutes` came due. See that script's
-# header for why elapsed-versus-declared-bound is the discriminator and why
-# it always exits 0.
+# wrapped step owns, and (with the clamp) for the wall clock the job has left
+# whichever wrapped step is running when it runs out. Every job also ends with
+# an `if: always()` classifier step -- Actions runs those on a cancelled job
+# too -- which turns the wrapper's recorded expiry, or its absence, into one of
+# two disjoint greppable lines. It classifies from that recorded fact and from
+# `${{ job.status }}`, never from elapsed time; see the script's header for why
+# the elapsed-versus-declared-bound comparison it replaced was wrong.
 
 MARKER_SCRIPT = REPO_ROOT / "scripts" / "job_timeout_marker.sh"
 
@@ -131,61 +185,137 @@ def _run_classifier(
     )
 
 
-@pytest.mark.timeout(30)
-def test_job_timeout_marker_is_present_when_the_job_level_bound_came_due(tmp_path):
-    """The job has been alive for its whole declared bound: the only cause
-    that can kill it at that moment is `timeout-minutes` itself, so the
-    marker goes onto both surfaces a judging hat reads."""
+def _expire_a_wrapped_step(evidence_dir: Path, label: str) -> None:
+    """Produce a real expiry the way a real job does: run the real wrapper
+    against a command that overruns a 1s inner bound, into `evidence_dir`."""
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env["RALPHD_TIMEOUT_EVIDENCE_DIR"] = str(evidence_dir)
+    done = subprocess.run(
+        [str(SCRIPT), "1", label, "--", "sleep", "5"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert done.returncode == 1, done.stdout
+
+
+@pytest.mark.timeout(60)
+def test_job_timeout_marker_is_present_when_a_bounded_step_ran_out_of_clock(tmp_path):
+    """A wrapped step's own bound expired, so this job's wall clock genuinely
+    ran out: the marker goes onto both surfaces a judging hat reads and names
+    the step whose clock ran out. Note the job here is only seconds old -- the
+    claim rests on the recorded expiry, not on being near the bound."""
     summary_path = tmp_path / "step-summary.txt"
     summary_path.write_text("", encoding="utf-8")
-    # A 45-minute bound (gate's own), with the job's start stamped 45
-    # minutes ago -- the shape of the ending, at 1/2700th of the wait.
-    started = int(time.time()) - 45 * 60
+    evidence_dir = tmp_path / "evidence"
+    _expire_a_wrapped_step(evidence_dir, "fast tier")
 
     result = _run_classifier(
-        ["45", "gate fast tier"],
-        RALPHD_JOB_STARTED_AT=str(started),
+        ["45", "gate fast tier", "cancelled"],
+        RALPHD_JOB_STARTED_AT=str(int(time.time()) - 30),
+        RALPHD_TIMEOUT_EVIDENCE_DIR=str(evidence_dir),
         GITHUB_STEP_SUMMARY=str(summary_path),
     )
 
     assert result.returncode == 0, result.stdout
-    expected = f"{MARKER} gate fast tier reached its job-level bound of 45 minutes"
+    expected = f"{MARKER} gate fast tier ran out of wall clock in fast tier (bound 1s)"
     assert expected in result.stdout
     assert expected in summary_path.read_text(encoding="utf-8")
+    assert CANCEL_MARKER not in result.stdout
 
 
-@pytest.mark.timeout(30)
-def test_job_timeout_marker_is_absent_when_the_job_is_cancelled_early(tmp_path):
-    """A human cancel or a `cancel-in-progress` supersession lands whenever
-    the human or the newer push arrives, which is nowhere near the declared
-    bound: no marker, so `cancelled` keeps exactly the meaning it had."""
+@pytest.mark.timeout(60)
+def test_a_cancel_one_minute_before_the_bound_is_not_called_a_timeout(tmp_path):
+    """The probe that refuted the elapsed-versus-bound shape: a human cancel
+    44 minutes into a 45-minute bound. No bounded step recorded an expiry, so
+    this is a cancel and the classifier says so -- the timeout marker is
+    absent no matter how close to the declared bound the cancel arrives."""
     summary_path = tmp_path / "step-summary.txt"
     summary_path.write_text("", encoding="utf-8")
-    started = int(time.time()) - 4 * 60
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
 
     result = _run_classifier(
-        ["45", "gate fast tier"],
-        RALPHD_JOB_STARTED_AT=str(started),
+        ["45", "gate fast tier", "cancelled"],
+        RALPHD_JOB_STARTED_AT=str(int(time.time()) - 44 * 60),
+        RALPHD_TIMEOUT_EVIDENCE_DIR=str(evidence_dir),
         GITHUB_STEP_SUMMARY=str(summary_path),
     )
 
     assert result.returncode == 0, result.stdout
     assert MARKER not in result.stdout
-    assert summary_path.read_text(encoding="utf-8") == ""
+    said = (
+        f"{CANCEL_MARKER} gate fast tier was cancelled with no wall-clock "
+        "bound expiry recorded"
+    )
+    assert said in result.stdout
+    assert said in summary_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.timeout(30)
+def test_job_timeout_marker_is_absent_when_the_job_is_cancelled_early(tmp_path):
+    """A `cancel-in-progress` supersession four minutes in: the same absence
+    of a recorded expiry, reported the same way, so `cancelled` never has to
+    be read as a verdict in either direction."""
+    summary_path = tmp_path / "step-summary.txt"
+    summary_path.write_text("", encoding="utf-8")
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+
+    result = _run_classifier(
+        ["45", "gate fast tier", "cancelled"],
+        RALPHD_JOB_STARTED_AT=str(int(time.time()) - 4 * 60),
+        RALPHD_TIMEOUT_EVIDENCE_DIR=str(evidence_dir),
+        GITHUB_STEP_SUMMARY=str(summary_path),
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert MARKER not in result.stdout
+    assert CANCEL_MARKER in result.stdout
+
+
+@pytest.mark.timeout(30)
+def test_a_job_that_ended_on_its_own_gets_neither_line(tmp_path):
+    """Neither line is noise a passing or failing job has to carry: with no
+    recorded expiry and a status that is not `cancelled`, there is nothing to
+    disambiguate and the classifier stays silent."""
+    summary_path = tmp_path / "step-summary.txt"
+    summary_path.write_text("", encoding="utf-8")
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+
+    for status in ("success", "failure"):
+        result = _run_classifier(
+            ["45", "gate fast tier", status],
+            RALPHD_JOB_STARTED_AT=str(int(time.time()) - 90),
+            RALPHD_TIMEOUT_EVIDENCE_DIR=str(evidence_dir),
+            GITHUB_STEP_SUMMARY=str(summary_path),
+        )
+        assert result.returncode == 0, result.stdout
+        assert MARKER not in result.stdout
+        assert CANCEL_MARKER not in result.stdout
+        assert summary_path.read_text(encoding="utf-8") == ""
 
 
 @pytest.mark.timeout(30)
 def test_the_classifier_never_fails_a_job_over_a_missing_start_stamp(tmp_path):
     """A classifier that could turn a green job red would be a worse trade
-    than the ambiguity it removes: with no usable stamp it says so on stderr
-    and exits 0, printing no marker."""
+    than the ambiguity it removes: with no usable stamp it still classifies
+    from the recorded expiry, reports the elapsed figure as unknown, and
+    exits 0."""
     summary_path = tmp_path / "step-summary.txt"
     summary_path.write_text("", encoding="utf-8")
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
 
     env = {k: v for k, v in os.environ.items() if k != "RALPHD_JOB_STARTED_AT"}
     env["GITHUB_STEP_SUMMARY"] = str(summary_path)
+    env["RALPHD_TIMEOUT_EVIDENCE_DIR"] = str(evidence_dir)
     result = subprocess.run(
-        [str(MARKER_SCRIPT), "45", "gate fast tier"],
+        [str(MARKER_SCRIPT), "45", "gate fast tier", "cancelled"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -196,6 +326,33 @@ def test_the_classifier_never_fails_a_job_over_a_missing_start_stamp(tmp_path):
     assert result.returncode == 0, result.stdout
     assert MARKER not in result.stdout
     assert "RALPHD_JOB_STARTED_AT is unset" in result.stdout
+    assert "elapsed unknown" in result.stdout
+
+
+@pytest.mark.timeout(30)
+def test_the_classifier_claims_nothing_when_it_has_no_evidence_directory(tmp_path):
+    """With no evidence directory exported it cannot tell the two causes
+    apart, so it prints neither line and says why on stderr rather than
+    defaulting to an answer."""
+    summary_path = tmp_path / "step-summary.txt"
+    summary_path.write_text("", encoding="utf-8")
+
+    env = {k: v for k, v in os.environ.items() if k != "RALPHD_TIMEOUT_EVIDENCE_DIR"}
+    env["GITHUB_STEP_SUMMARY"] = str(summary_path)
+    env["RALPHD_JOB_STARTED_AT"] = str(int(time.time()) - 44 * 60)
+    result = subprocess.run(
+        [str(MARKER_SCRIPT), "45", "gate fast tier", "cancelled"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert MARKER not in result.stdout
+    assert CANCEL_MARKER not in result.stdout
+    assert "RALPHD_TIMEOUT_EVIDENCE_DIR is unset" in result.stdout
     assert summary_path.read_text(encoding="utf-8") == ""
 
 
@@ -206,9 +363,11 @@ def test_the_classifier_never_fails_a_job_over_a_missing_start_stamp(tmp_path):
 # lane to the same three properties, so a new job -- or a new long step in an
 # existing one -- cannot reintroduce the ambiguous ending by omission:
 #
-#   1. the job's FIRST step stamps `RALPHD_JOB_STARTED_AT`, and its LAST step
-#      is the `if: always()` classifier, declaring the same bound the job's
-#      own `timeout-minutes` declares;
+#   1. the job's FIRST step stamps `RALPHD_JOB_STARTED_AT`, the job's own
+#      `timeout-minutes` as `RALPHD_JOB_BOUND_MINUTES`, and a FRESH
+#      `RALPHD_TIMEOUT_EVIDENCE_DIR`; its LAST step is the `if: always()`
+#      classifier, declaring the same bound and passing the job's status so a
+#      cancellation can be named as one;
 #   2. every `run:` step that can consume real wall clock is wrapped in
 #      `scripts/run_bounded.sh` with a numeric inner bound -- the exempt
 #      steps are named one by one below, with the reason each is instant;
@@ -226,6 +385,9 @@ WORKFLOW_NAMES = ("gate.yml", "heavy.yml", "nightly.yml")
 START_STAMP_STEP = "Record the job start time"
 CLASSIFIER_STEP = "Classify a job-level timeout kill"
 STAMP_VAR = "RALPHD_JOB_STARTED_AT"
+BOUND_VAR = "RALPHD_JOB_BOUND_MINUTES"
+EVIDENCE_VAR = "RALPHD_TIMEOUT_EVIDENCE_DIR"
+JOB_STATUS_EXPR = "job.status"
 
 # Steps whose `run` is exempt from the inner bound, with the reason. Each is a
 # handful of `echo`/`df`/`docker image rm`/`command -v` calls against local
@@ -256,6 +418,7 @@ JOB_RESERVE_S = 300
 
 BOUNDED_CALL_RE = re.compile(r"scripts/run_bounded\.sh\s+(\d+)\b")
 CLASSIFIER_CALL_RE = re.compile(r"scripts/job_timeout_marker\.sh\s+(\d+)\b")
+STAMPED_BOUND_RE = re.compile(BOUND_VAR + r"=(\d+)")
 
 
 def _load_workflow(path: Path) -> dict:
@@ -283,13 +446,35 @@ def check_timeout_marker_coverage(workflow_name: str, workflow: dict) -> list[st
             continue
 
         first, last = steps[0], steps[-1]
-        if first.get("name") != START_STAMP_STEP or STAMP_VAR not in (
-            first.get("run") or ""
-        ):
+        first_run = first.get("run") or ""
+        if first.get("name") != START_STAMP_STEP or STAMP_VAR not in first_run:
             problems.append(
                 f"{where}'s first step does not stamp {STAMP_VAR}: "
                 f"{first.get('name')!r}"
             )
+        else:
+            stamped = STAMPED_BOUND_RE.search(first_run)
+            if stamped is None:
+                problems.append(
+                    f"{where}'s first step does not stamp {BOUND_VAR}, so a "
+                    f"bounded step cannot clamp itself to the job's budget"
+                )
+            elif int(stamped.group(1)) != bound_minutes:
+                problems.append(
+                    f"{where} stamps {BOUND_VAR}={stamped.group(1)} but declares "
+                    f"timeout-minutes: {bound_minutes}"
+                )
+            if f"{EVIDENCE_VAR}=" not in first_run:
+                problems.append(
+                    f"{where}'s first step does not export {EVIDENCE_VAR}, so an "
+                    f"expiry would leave no evidence for the classifier"
+                )
+            elif "rm -rf" not in first_run:
+                problems.append(
+                    f"{where}'s first step does not clear {EVIDENCE_VAR} before "
+                    f"using it: a reused runner's stale evidence would be read "
+                    f"as this job's own"
+                )
         if last.get("name") != CLASSIFIER_STEP:
             problems.append(
                 f"{where}'s last step is {last.get('name')!r}, not "
@@ -301,7 +486,8 @@ def check_timeout_marker_coverage(workflow_name: str, workflow: dict) -> list[st
                     f"{where}'s classifier step is not guarded by if: always() "
                     f"-- it would be skipped on the cancelled job it exists for"
                 )
-            declared = CLASSIFIER_CALL_RE.search(last.get("run") or "")
+            classifier_run = last.get("run") or ""
+            declared = CLASSIFIER_CALL_RE.search(classifier_run)
             if declared is None:
                 problems.append(
                     f"{where}'s classifier step does not invoke "
@@ -311,6 +497,11 @@ def check_timeout_marker_coverage(workflow_name: str, workflow: dict) -> list[st
                 problems.append(
                     f"{where}'s classifier declares {declared.group(1)} minutes "
                     f"but the job declares timeout-minutes: {bound_minutes}"
+                )
+            if JOB_STATUS_EXPR not in classifier_run:
+                problems.append(
+                    f"{where}'s classifier step does not pass {JOB_STATUS_EXPR}, "
+                    f"so a cancellation cannot be reported as a cancel"
                 )
 
         inner_total = 0
@@ -414,3 +605,42 @@ def test_the_coverage_guard_fires_when_the_start_stamp_step_is_dropped(tmp_path)
 
     problems = check_timeout_marker_coverage("heavy.yml", _load_workflow(fixture))
     assert any("does not stamp" in p for p in problems), problems
+
+
+def test_the_coverage_guard_fires_when_the_evidence_directory_is_not_exported(tmp_path):
+    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "gate.yml"))
+    step = broken["jobs"]["fast"]["steps"][0]
+    assert step["name"] == START_STAMP_STEP
+    step["run"] = 'echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"\n'
+
+    fixture = tmp_path / "broken-gate-no-evidence-dir.yml"
+    fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
+
+    problems = check_timeout_marker_coverage("gate.yml", _load_workflow(fixture))
+    assert any(f"does not export {EVIDENCE_VAR}" in p for p in problems), problems
+    assert any(f"does not stamp {BOUND_VAR}" in p for p in problems), problems
+
+
+def test_the_coverage_guard_fires_when_the_classifier_gets_no_job_status(tmp_path):
+    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "nightly.yml"))
+    last = broken["jobs"]["dev-layout"]["steps"][-1]
+    assert last["name"] == CLASSIFIER_STEP
+    last["run"] = 'scripts/job_timeout_marker.sh 120 "nightly dev-layout cell"'
+
+    fixture = tmp_path / "broken-nightly-no-status.yml"
+    fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
+
+    problems = check_timeout_marker_coverage("nightly.yml", _load_workflow(fixture))
+    assert any(f"does not pass {JOB_STATUS_EXPR}" in p for p in problems), problems
+
+
+def test_the_coverage_guard_fires_when_the_stamped_bound_drifts_from_the_job(tmp_path):
+    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "heavy.yml"))
+    step = broken["jobs"]["docker-tier"]["steps"][0]
+    step["run"] = STAMPED_BOUND_RE.sub(f"{BOUND_VAR}=999", step["run"])
+
+    fixture = tmp_path / "broken-heavy-bound-drift.yml"
+    fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
+
+    problems = check_timeout_marker_coverage("heavy.yml", _load_workflow(fixture))
+    assert any(f"stamps {BOUND_VAR}=999" in p for p in problems), problems
