@@ -278,7 +278,12 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # body changes and the `AMENDMENT_WAVE_TARGET` import, all above
         # every entry from this one on -- a net +62, shifting each of them
         # by +62: 6729->6791, 6733->6795.
-        "line": "6791",
+        # Task 020 (v0.21, PRD requirement D.11, #196) added the STATE
+        # column's `_amend_orphaned_task_ids`/`_amend_entry_is_orphaned`
+        # helpers and `cmd_amend_list`'s own body changes, all above every
+        # entry from this one on -- a net +44, shifting each of them by
+        # +44: 6791->6835, 6795->6839.
+        "line": "6835",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -292,7 +297,9 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # just above it: 6724->6733.
         # Task 017 (v0.21, PRD requirement D.7, #196): same +62 as the entry
         # just above it: 6733->6795.
-        "line": "6795",
+        # Task 020 (v0.21, PRD requirement D.11, #196): same +44 as the
+        # entry just above it: 6795->6839.
+        "line": "6839",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "

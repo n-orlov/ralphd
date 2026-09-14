@@ -5059,6 +5059,35 @@ def _amend_resolve_approach(args) -> int | None:
     return value if isinstance(value, int) else None
 
 
+def _amend_orphaned_task_ids(args) -> set[str] | None:
+    """Task 020 (D.11, #196): the taskIds currently IN this run's plan,
+    read the exact same way `_amend_echo_target_or_die` reads it
+    (`read_tasks_doc(persist=False)` against `run_root(args.run_id)/
+    tasks.json`, host-side, never the API or docker), so `--list` and
+    `_operator_amendment_review_context`'s own plan-membership check can
+    never disagree about which ids are absent.
+
+    Returns `None` when there is no `tasks.json` at all yet -- exactly
+    `_operator_amendment_review_context`'s own carve-out (no plan for an
+    id to be absent FROM, so nothing is orphaned); callers treat that as
+    "nothing orphaned" too.
+    """
+    res = read_tasks_doc(run_root(args.run_id), persist=False)
+    if not res.present:
+        return None
+    return {str(t.get("id")) for t in res.tasks}
+
+
+def _amend_entry_is_orphaned(e: dict, plan_ids: set[str] | None) -> bool:
+    """A task-scoped ruling whose taskId is not in `plan_ids` -- a
+    wave-scoped entry (`scope == "wave"`) is never orphaned (D.7/D.8, it
+    names no task id a replan could remove), and `plan_ids is None` (no
+    tasks.json yet) means nothing is orphaned either."""
+    if plan_ids is None or e.get("scope") == "wave":
+        return False
+    return str(e.get("taskId")) not in plan_ids
+
+
 def cmd_amend_list(args) -> None:
     """`ralphctl amend <run> --list` (task 028, #26): what operator rulings
     have been recorded for this run.
@@ -5071,11 +5100,24 @@ def cmd_amend_list(args) -> None:
     `_operator_amendment_review_context()` uses from inside the container --
     so "what `ralphctl amend --list` shows" and "what review was actually
     handed" can never disagree about which rulings exist.
+
+    Task 020 (D.11, #196): a STATE column shows "ORPHANED" for a
+    task-scoped ruling whose target is no longer in the CURRENT plan --
+    the same fact `amendment_target_not_in_plan` escalates to the operator
+    at review time -- so seeing it here needs no reader of `events.jsonl`
+    at all, live container or not (this command never touches the API,
+    see `test_amend_never_calls_docker_or_the_http_api`).
     """
     _require_run(args.run_id)
     entries = amendment_entries(config_root(args.run_id))
+    plan_ids = _amend_orphaned_task_ids(args)
     if args.json:
-        print(json.dumps({"entries": entries}, indent=2))
+        out_entries = []
+        for e in entries:
+            e = dict(e)
+            e["orphaned"] = _amend_entry_is_orphaned(e, plan_ids)
+            out_entries.append(e)
+        print(json.dumps({"entries": out_entries}, indent=2))
         return
     print(_AMEND_SNAPSHOT_NOTICE, file=sys.stderr)
     if not entries:
@@ -5088,7 +5130,7 @@ def cmd_amend_list(args) -> None:
     # (`_operator_amendment_review_context`) can never disagree about which
     # rulings are wave-scoped.
     print(f"{'SEQ':>3}  {'MODE':<7}  {'SCOPE':<5}  {'RECORDED':<25}  "
-          f"{'TASK':<8}  RULING")
+          f"{'TASK':<8}  {'STATE':<9}  RULING")
     for e in entries:
         if e.get("mode") == AMENDMENT_MODE_STATUS:
             mode = "status"
@@ -5105,9 +5147,11 @@ def cmd_amend_list(args) -> None:
         scope = e.get("scope") or "task"
         task_col = "-" if e.get("taskId") == AMENDMENT_WAVE_TARGET \
             else str(e.get("taskId") or "-")
+        state_col = "ORPHANED" if _amend_entry_is_orphaned(e, plan_ids) \
+            else "-"
         print(f"{(str(seq) if isinstance(seq, int) else '-'):>3}  {mode:<7}  "
               f"{scope:<5}  {str(e.get('ts') or '-'):<25}  {task_col:<8}  "
-              f"{preview}")
+              f"{state_col:<9}  {preview}")
 
 
 def cmd_amend(args):

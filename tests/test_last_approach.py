@@ -269,8 +269,18 @@ def test_the_review_escalation_is_emitted_to_events_jsonl_with_no_notifier(
 # ===========================================================================
 
 
-def test_last_approach_first_rejection_still_takes_the_cure_pass(tmp_path):
+def test_last_approach_first_rejection_still_takes_the_cure_pass(tmp_path, monkeypatch):
+    # Task 020 (D.11, #196): `_step_review()` reads real operator rulings
+    # under `CONFIG_DIR` -- this container's own `/config/amendments/`
+    # (see tests/conftest's own gotcha) -- and, with an empty tasks.json
+    # below, every task-scoped ruling there reads as ORPHANED and would
+    # notify `sup.notifier` unrelated to this test's own escalation
+    # assertion; isolate it with an empty amendments dir, same pattern as
+    # every other node here that cares about ruling context.
     root = tmp_path / "run"
+    cdir = tmp_path / "config"
+    cdir.mkdir(parents=True)
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
     sup = _supervisor_review(root, max_approaches=1)
     sup._approach = 1
     sup.notifier = _StubNotifier()

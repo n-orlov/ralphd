@@ -11527,7 +11527,15 @@ class LoopSupervisor:
             method still emits `amendment_target_not_in_plan` (once per
             call to this method, even when several entries are orphaned)
             so the drift is visible without the ruling's own text losing
-            authority.
+            authority. Task 020 (D.11, #196): the SAME emission also
+            escalates through `self.notifier` when one is configured --
+            one notification naming every affected ruling, its old
+            (now-vanished) target task id, and the current approach
+            number -- because v0.20.1 fired this exact event eight minutes
+            before the rejection it caused and nothing carried it
+            anywhere; `ralphctl amend --list` shows the identical fact via
+            a `STATE` column, read straight off `tasks.json`, with no
+            reader ever needing to parse `events.jsonl`.
 
         A run with no `tasks.json` at all yet (`TasksRead.present` False)
         has no plan for an id to be absent FROM -- exactly
@@ -11633,6 +11641,28 @@ class LoopSupervisor:
                 superseded.append((e, "replanned"))
         if orphan_ids:
             self.run.emit("amendment_target_not_in_plan", taskIds=orphan_ids)
+            # Task 020 (D.11, #196): escalate to the operator through the
+            # SAME configured-notifier path E.3/E.5/D.1 already use --
+            # never a second HTTP channel -- naming each affected ruling,
+            # its OLD target (the vanished task id) and the current
+            # approach number, so the drift is visible without anyone
+            # having to read `events.jsonl` after the fact (v0.20.1's own
+            # incident: the event fired eight minutes before the rejection
+            # it caused, and nothing carried it anywhere). A run with no
+            # notifier configured still gets the event above; this call is
+            # simply a no-op when `self.notifier` is None, exactly like
+            # `_check_workspace_version_drift`.
+            if self.notifier is not None:
+                subjects = "; ".join(
+                    f"ruling for task {e.get('taskId')} (recorded "
+                    f"{e.get('ts')})"
+                    for e in orphaned)
+                self.notifier(
+                    "operator ruling orphaned by a replan: " + subjects +
+                    " -- the old target task id is no longer in this "
+                    f"run's current plan at approach {current_approach}. "
+                    "The ruling still binds this run's judgement (D.9); "
+                    "see `ralphctl amend --list` for the orphaned state.")
 
         def render(e: dict) -> str:
             kind = "WAIVE" if e.get("waive") else "REPLACE"

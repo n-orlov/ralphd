@@ -1643,6 +1643,23 @@ command only records the ruling and shows its scope; see
 `LoopSupervisor._operator_amendment_review_context` for the binding logic
 itself once that task lands.
 
+**An orphaned ruling escalates, and shows without reading `events.jsonl`
+(task 020, D.11, #196).** When a replan removes a task-scoped ruling's own
+target from the current plan, `_operator_amendment_review_context` still
+renders it BINDING (D.9/D.10) but also emits `amendment_target_not_in_plan`
+and, whenever a notifier is configured, sends one notification naming the
+affected ruling(s), their old target task id(s) and the current approach
+number — the same `self.notifier` path E.3/E.5 already use, never a second
+channel. `ralphctl amend <run-id> --list` shows the same fact directly, with
+no event log to parse: a `STATE` column (`_amend_entry_is_orphaned`) reads
+`ORPHANED` for a task-scoped ruling whose `taskId` is absent from this run's
+current `tasks.json` (`_amend_orphaned_task_ids`, the same read-only,
+host-side `read_tasks_doc(persist=False)` `_amend_echo_target_or_die` already
+uses) and `-` otherwise — a wave-scoped ruling is never orphaned (D.7/D.8),
+and a run with no `tasks.json` at all yet shows `-` for everything, exactly
+the review-time carve-out. `--json` carries the same fact as a boolean
+`"orphaned"` key on each entry.
+
 #### `ralphctl amend <run-id> <task-id> --status <status> [reason]`
 
 A THIRD ruling kind (task 006/029, #26 requirement E), alongside the

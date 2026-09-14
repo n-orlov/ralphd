@@ -24,6 +24,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from ralphd.engine import hat_tools
 from ralphd.engine import loop as loop_mod
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
@@ -253,6 +254,43 @@ def test_entry_naming_an_id_absent_from_the_plan_is_orphaned_not_historical(tmp_
     orphan_events = [e for e in events if e["type"] == "amendment_target_not_in_plan"]
     assert len(orphan_events) == 1
     assert set(orphan_events[0]["taskIds"]) == {"998", "999"}
+
+
+# -- Task 020 (D.11, #196): the orphaning escalates to the operator --------
+
+
+def test_orphaning_notifies_the_operator_naming_ruling_target_and_approach(
+        tmp_path, monkeypatch):
+    """D.11 (#196): when `amendment_target_not_in_plan` fires, a
+    configured notifier is sent exactly one notification naming the
+    affected ruling's old target task id and the run's current approach
+    number -- through the SAME `self.notifier` path E.3/D.1 already use
+    (`hat_tools._http_post_text`), never a second channel. v0.20.1 emitted
+    the underlying event and nothing ever carried it anywhere; this proves
+    something now does."""
+    calls = []
+
+    def stub_poster(url, text, timeout_s):
+        calls.append((url, text, timeout_s))
+        return 200, None
+
+    monkeypatch.setattr(hat_tools, "_http_post_text", stub_poster)
+    cdir = tmp_path / "config"
+    write_amendment(cdir, "998", "Ruling for a retired task.")
+    sup = _supervisor(tmp_path, approach=3, tasks=[
+        {"id": "001", "title": "t", "status": "pending", "successCriteria": "x"},
+    ], notifier_url="http://notifier.example/notify")
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
+
+    sup._operator_amendment_review_context()
+
+    assert len(calls) == 1
+    posted_url, posted_text, _ = calls[0]
+    assert posted_url == "http://notifier.example/notify"
+    assert "998" in posted_text
+    assert "3" in posted_text
+    sent = _events(sup.run.root)
+    assert len([e for e in sent if e["type"] == hat_tools.NOTIFICATION_SENT_EVENT]) == 1
 
 
 # -- Task 019 (D.9/D.10, #196): three dispositions, named individually ------
@@ -800,3 +838,38 @@ def test_amend_list_shows_the_scope_column_for_a_wave_scoped_ruling(tmp_path):
     assert "wave" in wave_line
     task_line = next(l for l in lines if "007" in l)
     assert "task" in task_line
+
+
+def test_amend_list_shows_the_orphaned_state_column_without_events_jsonl(tmp_path):
+    """Task 020 (D.11, #196): `ralphctl amend --list` shows a ruling
+    whose taskId has fallen out of the current plan as `ORPHANED` in a
+    `STATE` column (and `"orphaned": true` in `--json`) -- read straight
+    off `tasks.json`, never `events.jsonl` (this run dir never even gets
+    one written: `amend` never touches the engine or the API). A ruling
+    whose target is still in the plan shows `-`/`"orphaned": false`."""
+    registry = tmp_path / "registry"
+    rdir, cdir = _seed(registry, "o1")
+    ralphctl(registry, "amend", "o1", "998", "Ruling for a retired task.")
+    ralphctl(registry, "amend", "o1", "001", "Ruling for a live task.")
+    assert not (rdir / "events.jsonl").exists()
+    _write_tasks_json(rdir, [
+        {"id": "001", "title": "Still here", "status": "pending"},
+    ])
+
+    res_text = ralphctl(registry, "amend", "o1", "--list")
+    assert res_text.returncode == 0, res_text.stderr
+    assert "STATE" in res_text.stdout
+    lines = [l for l in res_text.stdout.splitlines() if l.strip()]
+    orphaned_line = next(l for l in lines if "998" in l)
+    assert "ORPHANED" in orphaned_line
+    live_line = next(l for l in lines if l.split() and l.split()[0] != "SEQ"
+                     and "998" not in l and "001" in l)
+    assert "ORPHANED" not in live_line
+    assert not (rdir / "events.jsonl").exists()
+
+    res_json = ralphctl(registry, "--json", "amend", "o1", "--list")
+    assert res_json.returncode == 0, res_json.stderr
+    payload = json.loads(res_json.stdout)
+    by_task = {e["taskId"]: e for e in payload["entries"]}
+    assert by_task["998"]["orphaned"] is True
+    assert by_task["001"]["orphaned"] is False

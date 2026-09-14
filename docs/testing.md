@@ -1807,3 +1807,25 @@ unique-module-path recipe used throughout this section: `371` (fast),
 this task). Both ceilings (5800 tests/375 modules fast, 4300/260 smoke)
 still carry headroom -- fast is now within 79 of its stated ceiling.
 
+**5723 (smoke 4106, modules 371 (fast), 256 (smoke)) by v0.21 task 020
+(requirement D.11, #196).** No new module -- two new nodes in an
+existing one, `fast` only (`tests/test_operator_ruling.py` spawns a real
+`ralphctl` subprocess elsewhere in the module, so the whole module is
+process-boundary, not in-process, per `tests/conftest.py`'s own
+derivation):
+`test_orphaning_notifies_the_operator_naming_ruling_target_and_approach`
+(the notification payload, driven through the same `hat_tools.
+_http_post_text` stub `test_workspace_version_drift.py` uses) and
+`test_amend_list_shows_the_orphaned_state_column_without_events_jsonl`
+(the `ralphctl amend --list` `STATE` column and its `--json` `orphaned`
+key, a subprocess node). From the 5721/4106/371 the paragraph above
+measures: **5723/4106/371** (smoke unchanged -- neither new node is
+in-process). Re-measured directly at this task's own tip with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5723/5828 tests collected (105 deselected)`, smoke: `4106/5828 tests
+collected (1722 deselected)`), and the module count via the same
+unique-module-path recipe used throughout this section: `371` (fast),
+`256` (smoke). `tests/records/` is unaffected (still 117, untouched by
+this task). Both ceilings (5800 tests/375 modules fast, 4300/260 smoke)
+still carry headroom -- fast is now within 77 of its stated ceiling.
+
