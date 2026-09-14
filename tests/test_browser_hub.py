@@ -87,6 +87,20 @@ class Pw:
         assert r.returncode == 0, r.stdout + r.stderr
         return r
 
+    def reload(self):
+        r = self.run("reload", timeout=30)
+        assert r.returncode == 0, r.stdout + r.stderr
+        return r
+
+    def goto(self, url: str):
+        """Navigate the CURRENT page/context to `url`, unlike `open` (which
+        launches a fresh, non-persistent browser context on every call and
+        so starts with empty storage every time -- see task 041's own
+        navigation assertion for why that distinction matters)."""
+        r = self.run("goto", url, timeout=60)
+        assert r.returncode == 0, r.stdout + r.stderr
+        return r
+
     def eval_js(self, expr: str) -> str:
         """Evaluate a JS expression in the page, return the raw (unwrapped)
         result via --raw so string quoting doesn't leak into assertions."""
@@ -3765,5 +3779,89 @@ def test_iteration_history_and_provisioning_collapse_by_default_task040(tmp_path
         assert "15" in summary2, summary2
         assert pw.eval_js("document.querySelector('.provisioning').open") == "false"
         pw.screenshot(SCREENSHOTS_DIR / "31-iteration-history-collapsed-task040.png")
+    finally:
+        server.stop()
+
+
+def test_iteration_history_collapse_state_persists_in_localstorage_task041(tmp_path, pw):
+    """Task 041 (PRD I.3): the iteration-history collapse state persists in
+    `localStorage` under a key scoped per SECTION TYPE (`ralphd.collapse.
+    timeline`), not per job -- toggling it on one run renders that same
+    choice on a different run, and it survives a hard reload.
+
+    Key shape: `readCollapsePref`/`writeCollapsePref` (`app.js`) read/write
+    `localStorage['ralphd.collapse.timeline']`, value the literal string
+    "open" or "closed", written on the native `<details>` element's own
+    `toggle` event (`wireCollapsePersistence`).
+
+    Both runs below have 14 iterations -- below `TIMELINE_COLLAPSE_
+    THRESHOLD` (15), so task 040's own default is "expanded" -- which is
+    exactly what makes the collapsed state observed here provably the
+    stored preference winning over that default, not a coincidence of the
+    fixture's own iteration count.
+    """
+    from ralphd.engine.state import JOB_CONFIG_FILE
+
+    registry = tmp_path / "registry"
+
+    def _make_run(run_id: str, n_iterations: int):
+        run_dir = _write_dead_run(registry, run_id, state="succeeded",
+                                   verdict="verified")
+        for n in range(1, n_iterations + 1):
+            d = run_dir / "iterations" / f"{n:04d}"
+            d.mkdir(parents=True)
+            (d / "meta.json").write_text(json.dumps(
+                {"number": n, "phase": "worker", "model": "stub-model",
+                 "approach": 1, "startedAt": f"2026-01-01T00:{n:02d}:00Z",
+                 "exitCode": 0, "error": None,
+                 "endedAt": f"2026-01-01T00:{n:02d}:30Z",
+                 "usage": {"totalTokens": 10}}))
+        cdir = registry / "configs" / run_id
+        cdir.mkdir(parents=True)
+        (cdir / JOB_CONFIG_FILE).write_text(f'run_id: "{run_id}"\niterations: 25\n')
+
+    _make_run("run-a-041", 14)
+    _make_run("run-b-041", 14)
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        # -- no preference stored yet: task 040's own default (expanded, 14
+        # is below the threshold) still governs -----------------------------
+        pw.open(f"{server.base}/#/run/run-a-041")
+        _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 14)
+        assert pw.eval_js("document.querySelector('.timeline-details').open") == "true"
+        assert pw.eval_js("window.localStorage.getItem('ralphd.collapse.timeline')") == "null"
+
+        # -- operator collapses it: the native `<details>` toggle fires, the
+        # key shape is exactly `ralphd.collapse.timeline` -> "closed" -------
+        pw.click(".timeline-details summary")
+        _wait_for(pw, "document.querySelector('.timeline-details').open", "false")
+        assert pw.eval_js("window.localStorage.getItem('ralphd.collapse.timeline')").strip('"') == "closed"
+
+        # -- restores on reload: same run, same key, still collapsed -------
+        pw.reload()
+        _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 14)
+        assert pw.eval_js("document.querySelector('.timeline-details').open") == "false"
+        pw.screenshot(SCREENSHOTS_DIR / "32-timeline-collapse-persists-reload-task041.png")
+
+        # -- restores on navigation: a DIFFERENT run, below the threshold,
+        # still renders collapsed -- the key is scoped by section type, not
+        # by job. `goto`, not `open`: `open` launches a fresh non-persistent
+        # browser context per call (empty storage every time), which is not
+        # what "navigate to another run" means here -----------------------
+        pw.goto(f"{server.base}/#/run/run-b-041")
+        _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 14)
+        assert pw.eval_js("document.querySelector('.timeline-details').open") == "false"
+        pw.screenshot(SCREENSHOTS_DIR / "33-timeline-collapse-persists-navigation-task041.png")
+
+        # -- operator re-expands it here: the preference flips back to
+        # "open" and survives a reload on this same run too ----------------
+        pw.click(".timeline-details summary")
+        _wait_for(pw, "document.querySelector('.timeline-details').open", "true")
+        assert pw.eval_js("window.localStorage.getItem('ralphd.collapse.timeline')").strip('"') == "open"
+        pw.reload()
+        _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 14)
+        assert pw.eval_js("document.querySelector('.timeline-details').open") == "true"
     finally:
         server.stop()

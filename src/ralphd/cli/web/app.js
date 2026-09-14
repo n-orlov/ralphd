@@ -1774,14 +1774,21 @@ function renderSummary(el, detail) {
   const provLines = s.provisioningLines || [];
   if (provLines.length > 0) {
     // Task 040 (I.2): collapsed by default, like the iteration history
-    // above -- an operator's own expand choice surviving across runs and
-    // reloads is I.3/task 041's job (a `localStorage` scope this task does
-    // not touch), not a reason to default this open.
-    el.appendChild(h("details", { class: "provisioning" }, [
+    // above. Task 041 (I.3): a stored "provisioning" preference (scoped
+    // per section type, not per job, same mechanism as the timeline
+    // above) overrides that default once the operator has toggled this
+    // section on any run.
+    const provPref = readCollapsePref("provisioning");
+    const provOpen = provPref === "open";
+    const provAttrs = { class: "provisioning" };
+    if (provOpen) provAttrs.open = "";
+    const provDetails = h("details", provAttrs, [
       h("summary", {}, ["provisioning (resolved hat \u2192 model)"]),
       h("div", { class: "provisioning-rows" },
         provLines.map((line) => h("div", {}, [String(line)]))),
-    ]));
+    ]);
+    wireCollapsePersistence(provDetails, "provisioning");
+    el.appendChild(provDetails);
   }
   // Task 001a criterion 4: while an infra-fault retry is backing off,
   // currentIteration.note carries a human-readable "retrying after infra
@@ -2312,12 +2319,73 @@ function renderTasks(el, tasks, progressBudget) {
 // the same chrome the artifacts and router-call panels already use (task
 // 021/022), so a long-running job's page does not open with dozens of rows
 // pre-rendered. Below 15 it renders expanded (`open`), same as it always
-// has. Persisting an operator's own expand/collapse choice across polls,
-// reloads and runs is I.3/task 041's job, not this one's -- this function
-// still rebuilds its `<details>` fresh on every `load()` poll (~4s), so an
-// in-session expand does not yet survive a poll either; that is the exact
-// gap I.3 closes.
+// has.
+//
+// Task 041 (I.3): an operator's own expand/collapse choice is persisted in
+// `localStorage`, scoped per SECTION TYPE, not per job (PRD I.3 -- "expanding
+// the iteration history on one run means it renders expanded on the next").
+// `readCollapsePref`/`writeCollapsePref`/`wireCollapsePersistence` below are
+// the one shared mechanism; this function and the provisioning block
+// (`renderSummary`) each call it with their own section-type string
+// ("timeline"/"provisioning") so the two never share a key. This also
+// closes the last gap task 040 left open: `renderTimeline` still rebuilds
+// its `<details>` fresh on every `load()` poll (~4s), but the stored
+// preference -- not the 15-record threshold -- now wins on every rebuild
+// once the operator has toggled it once, so an in-session expand survives
+// a poll too.
 const TIMELINE_COLLAPSE_THRESHOLD = 15;
+
+// `localStorage` key shape: `ralphd.collapse.<sectionType>`, value the
+// literal string "open" or "closed". Anything else (key unset, corrupted,
+// `localStorage` unavailable e.g. private browsing) falls back to that
+// section's own I.2 default -- callers treat `readCollapsePref`'s return
+// value as advisory, never as the only source of the open/closed decision.
+const COLLAPSE_STORAGE_PREFIX = "ralphd.collapse.";
+
+function readCollapsePref(sectionType) {
+  try {
+    return window.localStorage.getItem(COLLAPSE_STORAGE_PREFIX + sectionType);
+  } catch (e) {
+    return null;
+  }
+}
+
+function writeCollapsePref(sectionType, isOpen) {
+  try {
+    window.localStorage.setItem(
+      COLLAPSE_STORAGE_PREFIX + sectionType, isOpen ? "open" : "closed");
+  } catch (e) {
+    // best-effort persistence only -- a write failure (quota, private mode)
+    // never blocks the toggle itself, it just does not survive a reload.
+  }
+}
+
+// Wires a `<details>` element's native `toggle` event so every operator
+// expand/collapse click updates the section-type-scoped preference above,
+// without a hand-rolled click handler duplicating what the browser already
+// fires for a `<summary>` click or a keyboard toggle.
+//
+// Setting the `open` attribute at element construction (above, in `h()`)
+// is ITSELF a native open-state change and queues its own `toggle` event,
+// exactly like an operator's click would -- verified against this
+// project's own browser tier: the construction-time event fires as a
+// queued task, strictly before any task scheduled after construction runs.
+// Listening from the moment this function runs, unguarded, would misfile
+// that construction-time event as a real operator choice and write a
+// preference to `localStorage` before anyone has touched anything --
+// which would make a DIFFERENT run's own I.2 default (15+ records
+// collapsed, provisioning always collapsed) leak into this section's
+// stored preference the first time either page loads. `ready` flips true
+// only once a task scheduled right here gets its turn, which the
+// construction-time toggle always beats.
+function wireCollapsePersistence(detailsEl, sectionType) {
+  let ready = false;
+  setTimeout(() => { ready = true; }, 0);
+  detailsEl.addEventListener("toggle", () => {
+    if (!ready) return;
+    writeCollapsePref(sectionType, detailsEl.open);
+  });
+}
 
 function renderTimeline(el, iterations, runId) {
   el.innerHTML = "";
@@ -2326,7 +2394,13 @@ function renderTimeline(el, iterations, runId) {
     return;
   }
   const sorted = [...iterations].sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
-  const collapsed = sorted.length >= TIMELINE_COLLAPSE_THRESHOLD;
+  // I.3: a stored preference overrides the I.2 threshold default once the
+  // operator has toggled this section at least once, on ANY run -- the
+  // key is scoped by section type ("timeline"), not by `runId`.
+  const timelinePref = readCollapsePref("timeline");
+  const collapsed = timelinePref === "open" ? false
+    : timelinePref === "closed" ? true
+    : sorted.length >= TIMELINE_COLLAPSE_THRESHOLD;
   const rowsBox = h("div", { class: "timeline-rows" }, []);
   const detailsAttrs = { class: "timeline-details" };
   if (!collapsed) detailsAttrs.open = "";
@@ -2334,6 +2408,7 @@ function renderTimeline(el, iterations, runId) {
     h("summary", {}, ["iteration history (" + String(sorted.length) + ")"]),
     rowsBox,
   ]);
+  wireCollapsePersistence(details, "timeline");
   for (const it of sorted) {
     const dur = it.endedAt
       ? fmtDuration(durationBetween(it.startedAt, it.endedAt))
