@@ -653,6 +653,60 @@ def test_a_crash_between_the_counter_persist_and_the_unconsume_never_exceeds_the
     assert sup2.run.pending_steering() == []
 
 
+def test_a_deferred_but_not_yet_flushed_redelivery_still_blocks_the_terminal_gate(
+        tmp_path):
+    """PRD requirement D.6 (#184): D.4 changes WHEN a withheld message is
+    redelivered, never whether an outstanding message blocks the run's own
+    ending. Right after `_handle_unsettled_steering` counts an honest
+    `settled: false` but before `_flush_deferred_steering_redelivery` ever
+    runs (the exact window `STEER_DEFERRED_REDELIVERY_STATUS_KEY`'s queue
+    exists for, task 014/D.4), `steering/.consumed.json` still lists the
+    file consumed, so a bare `pending_steering()` read is blind to it.
+    Without this task, `_terminal_success_blockers()` -- the ONE predicate
+    both exit-gate sites consult (task 013/I) -- would read empty in that
+    exact window, letting a VERIFIED verdict make the run terminal-
+    succeeded with the message only deferred, never actually settled.
+    """
+    root = tmp_path / "run"
+    sup = _supervisor(root, {"steer": [_steer_unsettled("still working on it")]})
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": []})
+
+    # Sanity: nothing outstanding before any steering message ever lands.
+    assert sup._terminal_success_blockers() == []
+
+    name = sup.run.add_steering("hold on, one more thing", "op-hold")
+    asyncio.run(sup._step_generic_hat("steer", STEER_EDGES))
+
+    # In this exact window -- counted, queued, not yet flushed -- a bare
+    # `pending_steering()` read is empty (task 014's own withholding), yet
+    # the message is genuinely still outstanding: it must still block.
+    assert sup.run.pending_steering() == []
+    assert sup.run.read_status()[
+        LoopSupervisor.STEER_DEFERRED_REDELIVERY_STATUS_KEY] == [name]
+    blockers = sup._terminal_success_blockers()
+    assert len(blockers) == 1, blockers
+    assert name in blockers[0]
+    assert "not settled" in blockers[0]
+
+    # Once the non-steer iteration this window is waiting on completes and
+    # drains the queue, the message is genuinely pending again -- and the
+    # SAME predicate must still name it, for the ordinary reason
+    # (`pending_steering()` now sees it directly).
+    sup._flush_deferred_steering_redelivery()
+    assert [p.name for p in sup.run.pending_steering()] == [name]
+    blockers = sup._terminal_success_blockers()
+    assert len(blockers) == 1, blockers
+    assert name in blockers[0]
+
+    # And once the steer hat actually settles it, the gate clears -- a
+    # fresh `LoopSupervisor` over the same root, the same resume double
+    # every other test in this module already uses.
+    sup2 = _supervisor(root, {"steer": [_steer_settles]})
+    asyncio.run(sup2._step_generic_hat("steer", STEER_EDGES))
+    assert sup2.run.pending_steering() == []
+    assert sup2._terminal_success_blockers() == []
+
+
 # ===========================================================================
 # 3. `tests/test_steer_uncharged_task014.py` -- the steer hat's own
 #    iteration is refunded, rides the one existing contract ladder, leaves

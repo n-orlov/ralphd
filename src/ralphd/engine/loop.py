@@ -10318,12 +10318,33 @@ class LoopSupervisor:
           `done` is the ordinary lifecycle's verdict on the tasks it
           created, and conflating the two is the whole defect requirement
           I names.
+
+        Task 016 (PRD requirement D.6, #184) widens the first blocker: task
+        014's `_handle_unsettled_steering` counts an honest `settled: false`
+        right away but deliberately withholds the actual unconsume
+        (`STEER_DEFERRED_REDELIVERY_STATUS_KEY`'s queue, drained only by
+        `_flush_deferred_steering_redelivery` after a non-steer iteration).
+        While a name sits in that queue, `steering/.consumed.json` still
+        lists the file consumed, so a bare `pending_steering()` read is
+        blind to it -- a VERIFIED verdict landing in that exact window
+        would otherwise let the run go terminal-succeeded with a message
+        still genuinely outstanding, only deferred, never settled. This
+        method therefore also names anything on that queue, whether or not
+        `pending_steering()` itself already reports it, so D.4's deferral
+        (a scheduling change) can never widen D.6's own guarantee (whether
+        an outstanding message blocks the ending at all).
         """
         blockers: list[str] = []
         pending = self.run.pending_steering()
-        if pending:
-            names = ", ".join(p.name for p in pending)
-            blockers.append(f"operator steering ({names}) is not settled yet")
+        deferred = list(self.run.read_status().get(
+            self.STEER_DEFERRED_REDELIVERY_STATUS_KEY) or [])
+        names = [p.name for p in pending]
+        for name in deferred:
+            if name not in names:
+                names.append(name)
+        if names:
+            blockers.append(
+                f"operator steering ({', '.join(names)}) is not settled yet")
         outstanding = self._steering_origin_outstanding()
         if outstanding:
             ids = ", ".join(str(t.get("id", "?")) for t in outstanding)
