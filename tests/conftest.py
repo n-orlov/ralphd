@@ -379,6 +379,33 @@ _PROCESS_BOUNDARY_RE = re.compile(
 
 _NIGHTLY_MODULES = ("test_host_like_dev_layout_script.py",)
 
+# The nightly-lane per-node bound, in seconds (#203 follow-up).
+#
+# `pyproject.toml` sets a GLOBAL `timeout = 120`, sized for the fast tier whose
+# slowest real node measured 11.19 s. That bound is wrong for this lane by an
+# order of magnitude and it broke it: `heavy`'s docker tier builds real images
+# and its browser tier drives a real Chrome, so a 120 s node bound fired inside
+# `_build_image`'s `for raw in proc.stdout` and failed every `heavy` run from
+# operator commit `e3e5723` (18:59) onward -- the lane's last green was
+# `828c8d5`, immediately before it.
+#
+# 20 minutes (the operator's number) is deliberately still a BOUND rather than
+# no bound: #203 exists because a parked test used to eat a whole iteration, and
+# that must stay impossible in every lane. The lane's own `timeout-minutes`
+# (120 docker / 60 browser) remains the outer limit.
+_NIGHTLY_LANE_TIMEOUT_S = 1200
+
+
+def _apply_nightly_lane_timeout(item) -> None:
+    """Give a nightly-lane node the lane's bound instead of the fast tier's.
+
+    An explicit `@pytest.mark.timeout(N)` on the node or its module always
+    wins: a test that has already stated its own bound has said something more
+    specific than this default, in either direction.
+    """
+    if item.get_closest_marker("timeout") is None:
+        item.add_marker(pytest.mark.timeout(_NIGHTLY_LANE_TIMEOUT_S))
+
 
 @functools.lru_cache(maxsize=None)
 def _module_is_in_process(path: str) -> bool:
@@ -406,10 +433,13 @@ def pytest_collection_modifyitems(config, items):
     """
     for item in items:
         keywords = item.keywords
-        if "docker" in keywords or "browser" in keywords or "nightly" in keywords:
-            continue
         path = str(getattr(item, "fspath", "") or "")
-        if any(path.endswith(name) for name in _NIGHTLY_MODULES):
+        in_nightly_lane = (
+            "docker" in keywords or "browser" in keywords or "nightly" in keywords
+            or any(path.endswith(name) for name in _NIGHTLY_MODULES)
+        )
+        if in_nightly_lane:
+            _apply_nightly_lane_timeout(item)
             continue
         item.add_marker(pytest.mark.fast)
         if _module_is_in_process(path):
