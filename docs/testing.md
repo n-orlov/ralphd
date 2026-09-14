@@ -1962,3 +1962,25 @@ ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry
 headroom -- fast is now within 64 of its stated ceiling and 1 of its
 module ceiling.
 
+**5738 (smoke 4117, modules 375 (fast), 260 (smoke)) by v0.21 task 029
+(requirement F.3, #158/#194).** One new module,
+`tests/test_end_write_preserves_dispatch_task029.py`, with two new nodes --
+`test_complete_verdicts_end_write_agrees_with_its_own_dispatch_values` and
+`test_pre_f1_reader_of_applied_task_id_and_verified_task_survives_new_keys`
+-- the first driven in-process through `make_supervisor`/`ScriptedRunner`'s
+scripted `_step_worker()` call, the second a pure on-disk `iteration_detail`
+read over a hand-written `meta.json` (no `LiveRun`/`RALPHCTL`/
+`RALPHD_ENGINE`/`live(` in its source), so it is `smoke` as well as `fast`;
+net +2 fast, +2 smoke, +1 module in both tiers. From the 5736/4115/374
+(fast)/259 (smoke) the paragraph above measures: **5738/4117/375
+(fast)/260 (smoke)**. Re-measured directly at this task's own tip with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5738/5847 tests collected (109 deselected)`, smoke: `4117/5847 tests
+collected (1730 deselected)`), and the module count via the same
+unique-module-path recipe used throughout this section: `375` (fast),
+`260` (smoke). `tests/records/` is unaffected (still 117, untouched by
+this task). Fast has now reached its stated module ceiling (375) exactly
+-- a future task adding a new fast-tier module needs the ceiling raised in
+the same commit; the test-count ceiling (5800 fast, 4300 smoke) still
+carries headroom.
+
