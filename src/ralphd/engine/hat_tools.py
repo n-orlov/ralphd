@@ -438,6 +438,18 @@ class SteerToolBroker:
                         ok = False
                         error = (f"status change refused: "
                                  f"{status_result.get('reason')}")
+                # Task 012 (PRD requirement D.1/D.2, #184): a `dependsOn`
+                # write refused because the picker has already claimed the
+                # target task is a refusal of THIS call too -- surfaced the
+                # same way the status refusal above already is, with the
+                # applier's own diagnostic (naming the task, its status and
+                # the remedy) never swallowed just because other fields in
+                # the same call happened to land.
+                depends_on_result = result.get("dependsOnResult")
+                if depends_on_result is not None and not depends_on_result.get(
+                        "applied"):
+                    ok = False
+                    error = depends_on_result.get("reason")
                 return {"ok": ok, "detail": result, "error": error}
             if tool == "task-delete":
                 task_id = args.get("taskId") or args.get("task_id")

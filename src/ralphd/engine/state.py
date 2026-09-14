@@ -1252,10 +1252,10 @@ def steering_entries(run_root: Path, *, bodies: bool = True) -> list[dict]:
         seq = int(m.group(1)) if m else None
         name = (m.group(2) if m else stem) or stem
         applied = p.name in consumed
+        record = ledger_records.get(p.name) or {}
         if applied:
             entry_state = STEERING_APPLIED
         else:
-            record = ledger_records.get(p.name) or {}
             if record.get("settled") is False and not record.get("settledByExhaustion"):
                 entry_state = STEERING_OUTSTANDING
             else:
@@ -1269,6 +1269,13 @@ def steering_entries(run_root: Path, *, bodies: bool = True) -> list[dict]:
             "consumed": applied,
             "bytes": st.st_size,
             "hasBody": bool(text.strip()),
+            # Task 012 (PRD requirement D.2, #184): the steer hat's own
+            # settlement notes for THIS entry, when the ledger has any --
+            # the one field that carries a `dependsOn`-claimed-task
+            # refusal onto the steering surface (`ralphctl steer --list`),
+            # additive and `None` for a file no steer pass has settled
+            # yet, never invented.
+            "notes": record.get("notes"),
         }
         if bodies:
             entry["body"] = text
@@ -1870,6 +1877,36 @@ def steer_task_delete(run: "RunDir", task_id: str) -> dict:
 _JUSTIFICATION_SEPARATOR = "\n\n"
 
 
+# Task 012 (PRD requirement D.1, #184): the two statuses the picker has
+# already CLAIMED a task under -- `in-progress` (a worker is mid-attempt)
+# and `validation-failed` (a worker attempt just failed and the task is
+# eligible to be picked up again next). Both are alive, not terminal --
+# unlike `pending`, which `TASK_ACTIONABLE_STATUSES` (state.py:2949) also
+# counts as actionable -- so a `dependsOn` edit landing here can be
+# invalidated by whatever the CURRENT attempt is doing with the graph
+# right under it, with nobody re-reading the edit before it matters. A
+# `dependsOn` write to a `pending` task stays legal without limit: nothing
+# has claimed it yet.
+TASK_CLAIMED_STATUSES: tuple[str, ...] = ("in-progress", "validation-failed")
+
+
+def _depends_on_claimed_refusal(task_id: str, status: str) -> str:
+    """The one error text a refused `dependsOn` write reads verbatim, named
+    the task, its status, and the remedy (PRD requirement D.1) -- insert a
+    replacement task, re-point dependents onto it, then let this task reach
+    a terminal status on its own. Built in one place so the tool-broker
+    refusal (`hat_tools._execute`), the steering-ledger notes
+    (`LoopSupervisor._step_generic_hat`) and every test asserting on the
+    wording read the identical string.
+    """
+    return (
+        f"dependsOn refused: task {task_id!r} is {status!r} -- the picker "
+        "has already claimed it, so its dependsOn cannot be rewritten out "
+        "from under the attempt in progress. Insert a replacement task, "
+        "re-point dependents onto the replacement, then let this task "
+        "reach a terminal status (or be skipped) on its own.")
+
+
 def steer_task_update(run: "RunDir", task_id: str, changes: dict,
                       vigilant: bool, *, justification: str | None = None
                       ) -> dict:
@@ -1943,6 +1980,7 @@ def steer_task_update(run: "RunDir", task_id: str, changes: dict,
         if not already_the_tail:
             changes["notes"] = _JUSTIFICATION_SEPARATOR.join(
                 part for part in (requested, justification_to_keep) if part)
+    depends_on_result = None
     if changes:
         data = run.read_tasks()
         tasks = data.get("tasks", [])
@@ -1951,6 +1989,31 @@ def steer_task_update(run: "RunDir", task_id: str, changes: dict,
         if task is None:
             return {"updated": False, "reason": "no matching task",
                     "taskId": task_id, "statusResult": status_result}
+        # Task 012 (PRD requirement D.1, #184): a `dependsOn` write to a
+        # task the picker has already CLAIMED (`TASK_CLAIMED_STATUSES`) is
+        # refused -- popped out of `changes` before the plain dict-merge
+        # below, never written -- because the graph a claimed task's own
+        # attempt is executing against must not be rewritten out from under
+        # it mid-attempt. Every OTHER requested field in the same call still
+        # lands; this refuses exactly the one hazardous key, the same
+        # shape the status-move refusal above already uses (one bad field
+        # does not sink the rest of the call). A `pending` task (not yet
+        # claimed) is unaffected -- `current_status` there is never in
+        # `TASK_CLAIMED_STATUSES` and `depends_on_result` stays None.
+        if "dependsOn" in changes:
+            current_status = task.get("status")
+            if current_status in TASK_CLAIMED_STATUSES:
+                depends_on_result = {
+                    "applied": False,
+                    "taskId": task_id,
+                    "status": current_status,
+                    "reason": _depends_on_claimed_refusal(
+                        task_id, current_status),
+                }
+                changes = {k: v for k, v in changes.items()
+                          if k != "dependsOn"}
+            else:
+                depends_on_result = {"applied": True}
         # Fix #132: a steer-tool edit to successCriteria is operator-origin
         # and just as legal as a judge-authored criteria amendment
         # (`LoopSupervisor._apply_criteria_amendments`, loop.py:6891-6898).
@@ -1971,9 +2034,11 @@ def steer_task_update(run: "RunDir", task_id: str, changes: dict,
             changes["criteriaFingerprint"] = hashlib.sha256(
                 (new_criteria or "").encode("utf-8")).hexdigest()
             changes["criteriaOfRecord"] = new_criteria
-        task.update(changes)
-        run.write_tasks(data)
-    return {"updated": True, "taskId": task_id, "statusResult": status_result}
+        if changes:
+            task.update(changes)
+            run.write_tasks(data)
+    return {"updated": True, "taskId": task_id, "statusResult": status_result,
+            "dependsOnResult": depends_on_result}
 
 
 def steer_standing_rules(run: "RunDir", text: str) -> dict:

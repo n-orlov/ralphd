@@ -251,7 +251,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Task 004 (v0.21, PRD requirement A.4, #192): same +49 (import
         # block +3, `_format_gate_rejection_ending_lines` +39, status-render
         # wiring +7) as the two entries above: 6671->6720.
-        "line": "6720",
+        # Task 012 (v0.21, PRD requirement D.2, #184) added a `note:` line
+        # print block to `cmd_steer_list` above every entry from this one
+        # on -- a net +9, shifting each of them by +9: 6720->6729,
+        # 6724->6733.
+        "line": "6729",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -261,7 +265,9 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         "path": "cli/main.py",
         # Task 004 (v0.21, PRD requirement A.4, #192): same +49 as the
         # entry just above it: 6675->6724.
-        "line": "6724",
+        # Task 012 (v0.21, PRD requirement D.2, #184): same +9 as the entry
+        # just above it: 6724->6733.
+        "line": "6733",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "
@@ -406,7 +412,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # ceiling` replacing the literal at both rejection sites), shifting
         # this read once more -- now at 1309, same method, same read,
         # same reason.
-        "line": "1309",
+        # Task 012 (v0.21, PRD requirement D.2, #184) added a `_last_steer_
+        # broker` attribute (5 new lines, comment + assignment) above
+        # `_creds_note` in this same module, shifting this read once more
+        # -- now at 1314, same method, same read, same reason.
+        "line": "1314",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "

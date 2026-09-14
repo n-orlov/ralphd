@@ -49,6 +49,7 @@ from ralphd.engine.state import (
     STEERING_CONSUMED_FILE,
     STEERING_OUTSTANDING,
     STEERING_PENDING,
+    _depends_on_claimed_refusal,
     record_steering_settlement,
 )
 from tests.conftest import call_ralphctl_in_process
@@ -100,8 +101,12 @@ def _seed_steering(run_dir: Path, files: dict[str, str],
 
 
 def _rows(stdout: str) -> list[list[str]]:
-    """The table's data rows, split into columns (header dropped)."""
-    lines = [ln for ln in stdout.splitlines() if ln.strip()]
+    """The table's data rows, split into columns (header dropped) -- an
+    entry's own indented `note: ...` line (task 012, requirement D.2) is
+    not a row of the table and is skipped here rather than mis-split into
+    one."""
+    lines = [ln for ln in stdout.splitlines()
+             if ln.strip() and not ln.lstrip().startswith("note:")]
     assert lines and lines[0].split()[:2] == ["SEQ", "STATE"], stdout
     return [ln.split() for ln in lines[1:]]
 
@@ -243,6 +248,35 @@ def test_a_not_settled_message_lists_as_outstanding_not_applied(ctl: Ctl):
     by_file = {e["file"]: e for e in entries}
     assert by_file["002-retried.md"]["state"] == STEERING_OUTSTANDING
     assert by_file["002-retried.md"]["consumed"] is False
+
+
+def test_a_dependson_refusal_is_readable_in_ralphctl_steer_list(ctl: Ctl):
+    """Task 012 (PRD requirement D.2, #184): a `dependsOn` write refused
+    because the picker had already claimed the target task
+    (`state.steer_task_update`, requirement D.1) settles onto the
+    steering ledger's own `notes` field -- deterministically, the way
+    `LoopSupervisor._depends_on_refusal_notes` writes it, never depending
+    on the steer hat's own payload having mentioned it -- and is readable
+    in both the plain-text table and `--json`, exactly like any other
+    settlement note (the sibling test above, for an ordinary
+    `settled: false` note)."""
+    rdir, _ = _seed_run(ctl, "st-dependson-refused")
+    _seed_steering(rdir, {"001-repoint.md": ONE}, consumed=["001-repoint.md"])
+    refusal = _depends_on_claimed_refusal("030", "in-progress")
+    record_steering_settlement(rdir, ["001-repoint.md"], settled=True,
+                               notes=refusal)
+
+    res = ralphctl(ctl.registry, "steer", "st-dependson-refused", "--list")
+    assert res.returncode == 0, (res.stdout, res.stderr)
+    assert "dependsOn refused" in res.stdout
+    assert "'030'" in res.stdout
+    assert "replacement" in res.stdout
+
+    json_res = ralphctl(ctl.registry, "--json", "steer",
+                        "st-dependson-refused", "--list")
+    _, entries = _cli_entries(json_res)
+    by_file = {e["file"]: e for e in entries}
+    assert by_file["001-repoint.md"]["notes"] == refusal
 
 
 # --------------------------------------------------------------------------

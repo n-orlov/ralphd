@@ -1187,6 +1187,75 @@ def test_a_transition_other_than_failed_to_skipped_needs_no_justification(
 
 
 # ===========================================================================
+# 4b. Task 012 (PRD requirement D.1/D.2, #184): `steer_task_update` refuses
+#     a `dependsOn` write to a task the picker has already CLAIMED
+#     (`in-progress`/`validation-failed`) -- naming the task, its status,
+#     and the remedy -- while a `dependsOn` write to a still-`pending` task
+#     stays legal without limit. `test_cli_steer_list.py::
+#     test_a_dependson_refusal_is_readable_in_ralphctl_steer_list` is the
+#     third test (D.2): the same refusal text landing on the steering
+#     ledger and printed by `ralphctl steer --list`.
+# ===========================================================================
+
+
+@pytest.mark.parametrize("claimed_status", ["in-progress", "validation-failed"])
+def test_dependson_write_is_refused_on_a_task_the_picker_has_claimed(
+        tmp_path, claimed_status):
+    broker = _broker(tmp_path, [
+        {"id": "030", "title": "t", "status": claimed_status,
+         "dependsOn": ["029"]},
+    ])
+    response = broker.execute("task-update", {
+        "taskId": "030",
+        "changes": {"dependsOn": ["099"]},
+    })
+    assert response["ok"] is False, response
+    error = response["error"] or ""
+    # names the task, its status, and the remedy (insert a replacement,
+    # re-point dependents).
+    assert "'030'" in error
+    assert repr(claimed_status) in error
+    assert "replacement" in error
+    assert "re-point" in error
+    # the write never landed.
+    assert _task(broker, "030")["dependsOn"] == ["029"]
+    depends_on_result = response["detail"]["dependsOnResult"]
+    assert depends_on_result["applied"] is False
+    assert depends_on_result["status"] == claimed_status
+
+
+def test_dependson_refusal_leaves_other_requested_fields_applied(tmp_path):
+    """One hazardous key does not sink the rest of the same call -- the
+    same shape the missing-justification refusal above already uses."""
+    broker = _broker(tmp_path, [
+        {"id": "031", "title": "t", "status": "in-progress",
+         "dependsOn": ["029"], "priority": 2},
+    ])
+    response = broker.execute("task-update", {
+        "taskId": "031",
+        "changes": {"dependsOn": ["099"], "priority": 9},
+    })
+    assert response["ok"] is False, response
+    task = _task(broker, "031")
+    assert task["dependsOn"] == ["029"]
+    assert task["priority"] == 9
+
+
+def test_dependson_write_to_a_pending_task_stays_legal(tmp_path):
+    broker = _broker(tmp_path, [
+        {"id": "032", "title": "t", "status": "pending",
+         "dependsOn": ["029"]},
+    ])
+    response = broker.execute("task-update", {
+        "taskId": "032",
+        "changes": {"dependsOn": ["099"]},
+    })
+    assert response["ok"] is True, response
+    assert _task(broker, "032")["dependsOn"] == ["099"]
+    assert response["detail"]["dependsOnResult"] == {"applied": True}
+
+
+# ===========================================================================
 # 5. `tests/test_steer_criteria_survives_worker_pass_task002.py` -- a steer
 #    `successCriteria` edit that moves the fingerprint forward survives the
 #    next `LoopSupervisor` worker pass's `_check_criteria_edits`.

@@ -4965,6 +4965,15 @@ def cmd_steer_list(args) -> None:
                  _steer_preview(e.get("body")))
         print(f"{cells[0]:>3}  {cells[1]:<7}  {cells[2]:<25}  "
               f"{cells[3]:<18}  {cells[4]}".rstrip())
+        # Task 012 (PRD requirement D.2, #184): the steer hat's own
+        # settlement notes for this entry -- most visibly, a `dependsOn`
+        # refusal (`state._depends_on_claimed_refusal`) recorded onto the
+        # steering ledger regardless of what the hat's own payload said --
+        # on an indented line right under the entry's row, so the refusal
+        # is readable in the plain-text table and not only in `--json`.
+        notes = str(e.get("notes") or "").strip()
+        if notes:
+            print(f"       note: {_steer_preview(notes, width=500)}")
 
 
 def cmd_steer(args):

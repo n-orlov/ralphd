@@ -1659,3 +1659,23 @@ recipe used throughout this section: `371` (fast), `256` (smoke).
 `tests/records/` is unaffected (still 117, untouched by this task). Both
 ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry
 headroom -- fast is now within 96 of its stated ceiling.
+
+**5709 (smoke 4101, modules 371 (fast), 256 (smoke)) by v0.21 task 012
+(requirement D.1/D.2, #184).** No new module -- five new nodes in two
+existing ones. `tests/test_steer.py` gains four (also `smoke` -- no live
+engine/container: all drive `hat_tools.SteerToolBroker.execute()` against
+a real `RunDir`, in-process): `test_dependson_write_is_refused_on_a_task_the_picker_has_claimed[in-progress]`
+and `[validation-failed]`, `test_dependson_refusal_leaves_other_requested_fields_applied`,
+`test_dependson_write_to_a_pending_task_stays_legal`. `tests/test_cli_steer_list.py`
+gains one, `fast`-only (the module also drives a real `ralphctl`
+subprocess elsewhere, so `_module_is_in_process` classifies the whole
+file out of `smoke`): `test_a_dependson_refusal_is_readable_in_ralphctl_steer_list`.
+From the 5704/4097/371 the paragraph above measures: **5709/4101/371**.
+Re-measured directly at this task's own tip with `.venv/bin/python -m
+pytest -m <fast|smoke> --collect-only -q` (fast: `5709/5814 tests
+collected (105 deselected)`, smoke: `4101/5814 tests collected (1713
+deselected)`), and the module count via the same unique-module-path
+recipe used throughout this section: `371` (fast), `256` (smoke).
+`tests/records/` is unaffected (still 117, untouched by this task). Both
+ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry
+headroom.

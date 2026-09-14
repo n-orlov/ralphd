@@ -363,6 +363,11 @@ class LoopSupervisor:
         # is what makes `_hat_extensions("steer")` non-empty, so no other
         # phase can ever be launched with the steer tool surface.
         self._steer_tool_broker: hat_tools.SteerToolBroker | None = None
+        # Task 012 (PRD requirement D.2, #184): the last steer pass's own
+        # broker, read-only, kept around strictly for `_depends_on_refusal_
+        # notes` after `_steer_tool_broker` itself has already been
+        # cleared (see `_run_hat_iteration`'s `finally`).
+        self._last_steer_broker: hat_tools.SteerToolBroker | None = None
         # Task 022 (PRD requirement B.3, #140): the worker hat's own,
         # much narrower broker -- non-None only while a worker iteration is
         # in flight (`_run_worker_iteration`), serving `notify` alone (see
@@ -4023,6 +4028,15 @@ class LoopSupervisor:
             except asyncio.CancelledError:
                 pass
             broker.serve_once()
+            # Task 012 (PRD requirement D.2, #184): keep a READ-ONLY
+            # reference to this pass's broker (distinct from
+            # `_steer_tool_broker`, which `_hat_extensions` treats as "a
+            # broker is currently serving") so `_step_generic_hat`'s
+            # settlement code, which runs strictly after this method
+            # returns, can still read `broker.served` for a `dependsOn`
+            # refusal even though the live-serving reference below is
+            # cleared the instant the pass ends.
+            self._last_steer_broker = broker
             self._steer_tool_broker = None
 
     def _hat_extensions(self, phase: str) -> list[str]:
@@ -4316,10 +4330,25 @@ class LoopSupervisor:
             # `steerSettled` status field above is only ever the most
             # recent claim, with no way to tell what it was about.
             if delivered_steering:
+                # Task 012 (PRD requirement D.2, #184): a `dependsOn`
+                # refusal (`state._depends_on_claimed_refusal`) reaches the
+                # STEERING surface deterministically -- appended to the
+                # notes this pass records for `delivered_steering`
+                # regardless of what the hat's own payload said, so an
+                # operator reading `ralphctl steer --list` sees it even
+                # when the hat's own `notes` never mentioned the refusal
+                # at all. Never overwrites the hat's own notes -- appended
+                # after them, the same tail discipline `steer_task_update`
+                # already uses for a justification.
+                notes = payload.get("notes")
+                refusal_notes = self._depends_on_refusal_notes()
+                if refusal_notes:
+                    notes = "\n\n".join(
+                        part for part in (notes, refusal_notes) if part)
                 record_steering_settlement(
                     self.run.root, delivered_steering,
                     settled=settled_claim,
-                    notes=payload.get("notes"),
+                    notes=notes,
                     application=payload.get("application"))
                 # Task 006 (requirement B.1, #122): `_run_iteration_once`
                 # already banked `delivered_steering` as consumed the
@@ -4363,6 +4392,33 @@ class LoopSupervisor:
         target, guard, _outcome = await self._route_with_router(state, edges)
         self._advance(state, target, guard)
         return ("advance", target, guard)
+
+    def _depends_on_refusal_notes(self) -> str:
+        """Task 012 (PRD requirement D.2, #184): every `dependsOn`-on-a-
+        claimed-task refusal this steer pass's tool broker served, joined
+        into one notes tail -- read from `self._last_steer_broker.served`
+        (the broker's own record of every call it executed this pass,
+        applied or refused, kept read-only after the pass itself ended by
+        `_run_hat_iteration`) rather than from the hat's payload, so the
+        refusal reaches the steering ledger even when the hat's own
+        `notes` never mentions it. No broker recorded yet (no steer pass
+        has ever run, or nothing was refused) reads as the empty string,
+        never raises.
+        """
+        broker = getattr(self, "_last_steer_broker", None)
+        if broker is None:
+            return ""
+        reasons = []
+        for call in broker.served:
+            if call.get("tool") != "task-update":
+                continue
+            detail = (call.get("response") or {}).get("detail") or {}
+            depends_on_result = detail.get("dependsOnResult")
+            if depends_on_result and not depends_on_result.get("applied"):
+                reason = depends_on_result.get("reason")
+                if reason and reason not in reasons:
+                    reasons.append(reason)
+        return "\n\n".join(reasons)
 
     def _handle_unsettled_steering(self, names: list[str]) -> None:
         """Task 006 (requirement B.1, #122): a clean steer iteration whose
