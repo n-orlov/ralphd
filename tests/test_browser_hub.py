@@ -3865,3 +3865,76 @@ def test_iteration_history_collapse_state_persists_in_localstorage_task041(tmp_p
         assert pw.eval_js("document.querySelector('.timeline-details').open") == "true"
     finally:
         server.stop()
+
+
+def test_iteration_history_collapse_and_persistence_together_task042(tmp_path, pw):
+    """Task 042 (PRD I.4): one browser-tier test covers I.2 and I.3
+    TOGETHER, in the exact sequence the PRD names: "collapse, reload,
+    still collapsed; expand, navigate to another run, still expanded".
+
+    Both runs used here sit AT the I.2 threshold (15 iterations, task 040's
+    own default is collapsed) -- so "still expanded" on the second run at
+    the end can only be the persisted I.3 preference winning over I.2's own
+    default, never a coincidence of that run's own iteration count. That is
+    what makes this test cover I.2 and I.3 "together" rather than each in
+    isolation the way test_iteration_history_collapse_state_persists_in_
+    localstorage_task041 (I.3 alone, both its runs below the threshold) and
+    test_iteration_history_collapsed_by_default_above_threshold_task040
+    (I.2 alone, no localStorage involved) already do.
+    """
+    from ralphd.engine.state import JOB_CONFIG_FILE
+
+    registry = tmp_path / "registry"
+
+    def _make_run(run_id: str, n_iterations: int):
+        run_dir = _write_dead_run(registry, run_id, state="succeeded",
+                                   verdict="verified")
+        for n in range(1, n_iterations + 1):
+            d = run_dir / "iterations" / f"{n:04d}"
+            d.mkdir(parents=True)
+            (d / "meta.json").write_text(json.dumps(
+                {"number": n, "phase": "worker", "model": "stub-model",
+                 "approach": 1, "startedAt": f"2026-01-01T00:{n:02d}:00Z",
+                 "exitCode": 0, "error": None,
+                 "endedAt": f"2026-01-01T00:{n:02d}:30Z",
+                 "usage": {"totalTokens": 10}}))
+        cdir = registry / "configs" / run_id
+        cdir.mkdir(parents=True)
+        (cdir / JOB_CONFIG_FILE).write_text(f'run_id: "{run_id}"\niterations: 25\n')
+
+    _make_run("run-a-042", 15)
+    _make_run("run-b-042", 15)
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        # -- I.2's own default governs first: at the threshold, with no
+        # stored preference yet, the section renders collapsed -------------
+        pw.open(f"{server.base}/#/run/run-a-042")
+        _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 15)
+        assert pw.eval_js("document.querySelector('.timeline-details').open") == "false"
+        assert pw.eval_js("window.localStorage.getItem('ralphd.collapse.timeline')") == "null"
+
+        # -- collapse (a no-op on the rendered state, but it is the click
+        # that writes the first preference): reload, still collapsed ------
+        pw.click(".timeline-details summary")
+        _wait_for(pw, "document.querySelector('.timeline-details').open", "true")
+        pw.click(".timeline-details summary")
+        _wait_for(pw, "document.querySelector('.timeline-details').open", "false")
+        assert pw.eval_js("window.localStorage.getItem('ralphd.collapse.timeline')").strip('"') == "closed"
+        pw.reload()
+        _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 15)
+        assert pw.eval_js("document.querySelector('.timeline-details').open") == "false"
+        pw.screenshot(SCREENSHOTS_DIR / "34-timeline-collapse-reload-still-collapsed-task042.png")
+
+        # -- expand, navigate to another run AT the same threshold (whose
+        # own I.2 default would be collapsed): still expanded there --------
+        pw.click(".timeline-details summary")
+        _wait_for(pw, "document.querySelector('.timeline-details').open", "true")
+        assert pw.eval_js("window.localStorage.getItem('ralphd.collapse.timeline')").strip('"') == "open"
+        pw.goto(f"{server.base}/#/run/run-b-042")
+        _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 15)
+        assert pw.eval_js("document.querySelector('.timeline-details').open") == "true"
+        pw.screenshot(SCREENSHOTS_DIR / "35-timeline-expand-navigate-still-expanded-task042.png")
+    finally:
+        server.stop()
