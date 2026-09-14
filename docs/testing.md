@@ -1943,3 +1943,22 @@ this section: `373` (fast), `258` (smoke). `tests/records/` is unaffected
 fast, 4300/260 smoke) still carry headroom -- fast is now within 65 of its
 stated ceiling.
 
+**5736 (smoke 4115, modules 374 (fast), 259 (smoke)) by v0.21 task 028
+(requirement F.2, #158/#194).** One new module,
+`tests/test_dispatch_meta_no_verdict_task028.py`, with one new node --
+`test_no_verdict_worker_iteration_still_carries_assigned_task_id` -- driven
+in-process through `make_supervisor`/`ScriptedRunner`'s scripted
+`_step_worker()` call (no `LiveRun`/`RALPHCTL`/`RALPHD_ENGINE`/`live(` in
+its source), so it is `smoke` as well as `fast`; net +1 fast, +1 smoke, +1
+module in both tiers. From the 5735/4114/373 (fast)/258 (smoke) the
+paragraph above measures: **5736/4115/374 (fast)/259 (smoke)**.
+Re-measured directly at this task's own tip with `.venv/bin/python -m
+pytest -m <fast|smoke> --collect-only -q` (fast: `5736/5845 tests
+collected (109 deselected)`, smoke: `4115/5845 tests collected (1730
+deselected)`), and the module count via the same unique-module-path
+recipe used throughout this section: `374` (fast), `259` (smoke).
+`tests/records/` is unaffected (still 117, untouched by this task). Both
+ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry
+headroom -- fast is now within 64 of its stated ceiling and 1 of its
+module ceiling.
+
