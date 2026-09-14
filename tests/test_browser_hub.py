@@ -73,22 +73,48 @@ pytestmark = [pytest.mark.browser, pytest.mark.skipif(_skip_reason() is not None
 
 
 class Pw:
-    """Thin wrapper shelling out to `playwright-cli -s=<session> ...`."""
+    """Thin wrapper shelling out to `playwright-cli -s=<session> ...`.
+
+    Issue #193: an intermittent Chrome session drop ("The browser '<session>'
+    is not open, please run open first", `output.js::errorBrowserNotOpenForTool`
+    -- exit 1, message on stdout) plausibly caused by contended runner
+    hardware. `_run` gives every non-`open` call a bounded, one-shot session
+    reopen: on that exact drop, it re-issues `open` against the last URL this
+    session actually reached (`goto`/`open` both record it) and retries the
+    ORIGINAL command exactly once more -- never a second time (`_retry`
+    guards it), so a session that is genuinely, persistently gone still fails
+    fast instead of looping. A command issued before any `open`/`goto` (no
+    `_last_url` yet) cannot be helped by a reopen and is left to fail as
+    before.
+    """
+
+    _SESSION_DROPPED = "is not open, please run open first"
 
     def __init__(self, session: str):
         self.session = session
+        self._last_url: str | None = None
 
     def run(self, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:
         cmd = ["playwright-cli", f"-s={self.session}", *args]
         return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
+    def _run(self, *args: str, timeout: int = 30, _retry: bool = True) -> subprocess.CompletedProcess:
+        """`run()` plus the bounded, one-shot session-health reopen above."""
+        r = self.run(*args, timeout=timeout)
+        dropped = r.returncode != 0 and self._SESSION_DROPPED in (r.stdout + r.stderr)
+        if dropped and _retry and self._last_url:
+            self.open(self._last_url)
+            return self._run(*args, timeout=timeout, _retry=False)
+        return r
+
     def open(self, url: str):
         r = self.run("open", url, timeout=60)
         assert r.returncode == 0, r.stdout + r.stderr
+        self._last_url = url
         return r
 
     def reload(self):
-        r = self.run("reload", timeout=30)
+        r = self._run("reload", timeout=30)
         assert r.returncode == 0, r.stdout + r.stderr
         return r
 
@@ -97,32 +123,33 @@ class Pw:
         launches a fresh, non-persistent browser context on every call and
         so starts with empty storage every time -- see task 041's own
         navigation assertion for why that distinction matters)."""
-        r = self.run("goto", url, timeout=60)
+        r = self._run("goto", url, timeout=60)
         assert r.returncode == 0, r.stdout + r.stderr
+        self._last_url = url
         return r
 
     def eval_js(self, expr: str) -> str:
         """Evaluate a JS expression in the page, return the raw (unwrapped)
         result via --raw so string quoting doesn't leak into assertions."""
-        r = self.run("--raw", "eval", expr)
+        r = self._run("--raw", "eval", expr)
         assert r.returncode == 0, r.stdout + r.stderr
         return r.stdout.strip()
 
     def fill(self, target: str, text: str):
-        r = self.run("fill", target, text)
+        r = self._run("fill", target, text)
         assert r.returncode == 0, r.stdout + r.stderr
 
     def click(self, target: str):
-        r = self.run("click", target)
+        r = self._run("click", target)
         assert r.returncode == 0, r.stdout + r.stderr
 
     def check(self, target: str):
-        r = self.run("check", target)
+        r = self._run("check", target)
         assert r.returncode == 0, r.stdout + r.stderr
 
     def screenshot(self, filename: Path):
         filename.parent.mkdir(parents=True, exist_ok=True)
-        r = self.run("screenshot", f"--filename={filename}")
+        r = self._run("screenshot", f"--filename={filename}")
         assert r.returncode == 0, r.stdout + r.stderr
         assert filename.is_file() and filename.stat().st_size > 0
 
