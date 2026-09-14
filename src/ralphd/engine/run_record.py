@@ -343,6 +343,7 @@ RECORD_SECTIONS: dict[str, str] = {
     "startedAt": "header",
     "endedAt": "header",
     "iterationsUsed": "header",
+    "engineVersion": "header",
     "usage": "Usage",
     "approaches": "Approach history",
     "petitions": "Petitions",
@@ -367,6 +368,12 @@ def build_run_record(run: "state.RunDir", *, run_id: str,
         "maxApproaches": max_approaches,
         "startedAt": status.get("startedAt"),
         "endedAt": status.get("endedAt"),
+        # Task 031 (requirement F.5, #159/#194): the engine version F.4
+        # records unconditionally on `status.json` (`_record_engine_
+        # version`) is carried into the record too, so a removed container
+        # does not take the answer with it -- `run-record.md`/`.json` on
+        # the host still name which engine build produced this run.
+        "engineVersion": status.get("engineVersion"),
         "approaches": build_approach_history(run),
         "petitions": build_petitions_section(run),
         "steersConsumed": build_steers_section(run),
@@ -475,6 +482,7 @@ def render_run_record_markdown(record: dict) -> str:
         f"- ended: {record.get('endedAt')}",
         f"- generated: {record.get('generatedAt')}",
         f"- iterationsUsed: {record.get('iterationsUsed')}",
+        f"- engineVersion: {record.get('engineVersion')}",
     ]
     lines += _usage_lines(record.get("usage") or {})
 

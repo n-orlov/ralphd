@@ -4796,7 +4796,7 @@ going unrendered. Its top-level sections:
 
 | section | content |
 | --- | --- |
-| header (`runId`/`generatedAt`/`state`/`verdict`/`reason`/`approach`/`maxApproaches`/`startedAt`/`endedAt`) | the run's own identity and terminal facts, lifted straight off `status.json` |
+| header (`runId`/`generatedAt`/`state`/`verdict`/`reason`/`approach`/`maxApproaches`/`startedAt`/`endedAt`/`engineVersion`) | the run's own identity and terminal facts, lifted straight off `status.json` -- `engineVersion` (v0.21 requirement F.5, task 031) carries F.4's `status.json` field into both `run-record.json` and `run-record.md`, so a removed container does not take the answer with it |
 | `usage` | `iterationsUsed` plus the full usage block: per-direction token fields and the `byPhase`/`byApproach`/`byTier` breakdowns (task 035, requirement B.1), never recomputed here -- `LoopSupervisor._accumulate_usage` is the one place that adds anything up |
 | `approaches` | one entry per approach the run ever planned, oldest first: task tally, and each judge channel's (`review`/`verdictGate`) verdict with explicit `blocking`/`residual` arrays. Every entry reads the engine-owned per-approach metadata in `approach-metadata.json` FIRST (task 035) -- written the moment that judge's verdict was decided, so it survives approach archiving -- and falls back to the judge's optional findings sidecar (`review-findings.json`/`verdict-gate-findings.json`) ONLY for an approach judged before that metadata existed; each entry's `source` field (`"engine-metadata"` vs `"findings-sidecar"`) says which |
 | `petitions` | every CONFIRMED impossibility-petition adjudication this run recorded (`petition-adjudications.json`), plus a `tampered` flag |

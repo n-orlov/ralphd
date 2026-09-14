@@ -2005,3 +2005,21 @@ ratchet test (`test_the_collected_tier_is_inside_its_declared_budget`)
 red; the test-count ceiling (5800 fast, 4300 smoke) still carries
 headroom.
 
+**5740 (smoke 4119, modules 377 (fast), 262 (smoke)) by v0.21 task 031
+(requirement F.5, #159/#194).** One new module,
+`tests/test_run_record_engine_version_031.py`, one new node --
+`test_terminal_run_dir_carries_the_engine_version_in_both_record_files`
+-- driven in-process through `make_supervisor`/`_finish()` (no
+`LiveRun`/`RALPHCTL`/`RALPHD_ENGINE`/`live(` in its source), so it is
+`smoke` as well as `fast`; net +1 fast, +1 smoke, +1 module in both
+tiers. From the 5739/4118/376 (fast)/261 (smoke) the paragraph above
+measures: **5740/4119/377 (fast)/262 (smoke)**. Re-measured directly at
+this task's own tip with `.venv/bin/python -m pytest -m <fast|smoke>
+--collect-only -q` (fast: `5740/5849 tests collected (109 deselected)`,
+smoke: `4119/5849 tests collected (1730 deselected)`), and the module
+count via the same unique-module-path recipe used throughout this
+section: `377` (fast), `262` (smoke). `tests/records/` is unaffected
+(still 117, untouched by this task). Both tier ceilings (390 fast/270
+smoke modules, 5800/4300 tests) still carry headroom -- no ceiling raise
+needed this task.
+
