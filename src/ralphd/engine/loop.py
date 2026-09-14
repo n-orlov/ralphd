@@ -6337,16 +6337,26 @@ class LoopSupervisor:
         semantics.md`).
 
         Genuinely BLIND (requirement L's own teeth): `run_iteration(
-        "verdict_gate")` is called with NO `extra` argument at all, unlike
+        "verdict_gate")` is called with none of review's own reasoning,
+        verdict or flagged-criteria context -- unlike
         `_run_review_iteration`'s `extra=self._review_extra_context()` --
-        review's own reasoning/verdict/flagged-criteria context is never
-        assembled for this call, and `build_prompt` itself carries nothing
-        review-specific for any OTHER phase (job context, steering, the
-        recent-steering echo -- none of it names review's verdict).
+        and `build_prompt` itself carries nothing review-specific for any
+        OTHER phase (job context, steering, the recent-steering echo --
+        none of it names review's verdict).
         `prompts/verdict_gate.md` states this explicitly, and
         `tests/test_peer_verdict_gate.py`'s blind-prompt test asserts a
         planted review verdict/reason string is absent from this exact
         call's rendered prompt.
+
+        Task 018 (D.8, #196): the ONE thing this call does pass as `extra`
+        is the operator-ruling context
+        (`_operator_amendment_review_context(audience="verdict_gate")`,
+        `''` whenever no ruling has been recorded, which is the common
+        case). A ruling is written host-side into the `:ro` /config mount
+        by `ralphctl amend` and says nothing whatsoever about what review
+        concluded, so it is not a blindness leak -- and a wave-scoped
+        ruling (D.7) has to bind BOTH judging hats or the gate can reject
+        a run for exactly the obligation the operator already ruled on.
 
         Parses the hat's `verdict_gate` contract payload
         (`transitions.HAT_SCHEMAS["verdict_gate"]`) exactly the way
@@ -6386,7 +6396,10 @@ class LoopSupervisor:
             return ("tail",)
         self.run.emit("phase", phase="verdict_gate", approach=approach)
         result = await self.run_iteration(
-            "verdict_gate", tier=state.run_level_verify_tier())
+            "verdict_gate",
+            extra=self._operator_amendment_review_context(
+                audience="verdict_gate"),
+            tier=state.run_level_verify_tier())
         approved, payload = await self._verdict_gate_verdict(result)
         self._record_gate_approach_verdict(approach, approved, payload)
         self._record_verdict_gate_peek(approach)
@@ -11054,10 +11067,13 @@ class LoopSupervisor:
         negative for a gate the operator asked for.
 
         Genuinely BLIND on the same terms as `_step_verdict_gate`:
-        `run_iteration("verdict_gate", ...)` with NO `extra` argument --
+        `run_iteration("verdict_gate", ...)` carries no review context --
         review's verdict and `reason` (including THIS grace review's,
         which `_maybe_grace_review` has in hand and deliberately does not
-        pass) never reach the peer's prompt.
+        pass) never reach the peer's prompt. The operator-ruling context
+        rides along on the same terms as the ordinary gate call (task 018,
+        D.8, #196): host-written, `''` when no ruling exists, and silent
+        about every judge's conclusion.
 
         Returns True iff the peer independently verified; False for a
         rejection or any unusable reply (`_verdict_gate_verdict`'s safe
@@ -11073,7 +11089,10 @@ class LoopSupervisor:
             "iteration before the run may go terminal-succeeded (task 020)"))
         self.run.emit("phase", phase="verdict_gate", approach=approach)
         result = await self.run_iteration(
-            "verdict_gate", tier=state.run_level_verify_tier())
+            "verdict_gate",
+            extra=self._operator_amendment_review_context(
+                audience="verdict_gate"),
+            tier=state.run_level_verify_tier())
         self._refund_iteration("grace")
         approved, payload = await self._verdict_gate_verdict(result)
         self._record_gate_approach_verdict(approach, approved, payload)
@@ -11441,7 +11460,7 @@ class LoopSupervisor:
                 f"{r.get('taskId')}: {r.get('reason')} "
                 f"({r.get('previous')} -> {r.get('status')})"))
 
-    def _operator_amendment_review_context(self) -> str:
+    def _operator_amendment_review_context(self, audience: str = "review") -> str:
         """Task 028 (#26): render every operator ruling recorded under
         `CONFIG_DIR/amendments/` (written HOST-SIDE by `ralphctl amend`,
         never through the API and never through the runtime overlay -- see
@@ -11498,7 +11517,21 @@ class LoopSupervisor:
         `orphan_ids` (there is no task for it to be orphaned FROM) and
         never demoted to the historical bucket by an approach mismatch,
         whatever `self._approach` or the current `tasks.json` say.
+
+        Task 018 (D.8, #196), second half: the JUDGING hats are review AND
+        the peer verdict gate, so this same builder is what both of them
+        are handed -- `_step_verdict_gate` and `_grace_verdict_gate` call
+        it with `audience="verdict_gate"`, which only changes the prose
+        naming the decision a ruling binds ("this verdict-gate decision"
+        instead of "this review"). A ruling is operator-authored context,
+        never a statement of what review CONCLUDED, so handing it to the
+        peer gate takes nothing away from requirement L's blindness:
+        review's own verdict, `reason` and flagged-criteria context
+        (`_review_extra_context`) are still never assembled for the gate's
+        call.
         """
+        decision = ("review" if audience == "review"
+                    else "verdict-gate decision")
         # Task 005 (requirement E, #99): a `mode: status` ruling is NOT a
         # criteria ruling and must never be rendered as one -- it carries
         # the operator's reason for a status move, not replacement criteria
@@ -11561,7 +11594,7 @@ class LoopSupervisor:
              "that task's successCriteria is satisfied as a matter of "
              "operator decision, full stop; a `REPLACE` ruling means the "
              "text below REPLACES that task's successCriteria for the "
-             "purpose of this review. Do not demand independent "
+             f"purpose of this {decision}. Do not demand independent "
              "justification for why the operator is entitled to grant "
              "either kind, and do not let a worker's own claim about a task "
              "substitute for one of these -- only a ruling actually found "
@@ -11571,11 +11604,11 @@ class LoopSupervisor:
             lines.append(render(e))
         if historical:
             lines.append(
-                "\n### Historical rulings (not binding this review, "
+                f"\n### Historical rulings (not binding this {decision}, "
                 "task 037, #168)\n"
                 "Recorded against an earlier approach, or naming a task id "
                 "no longer in this run's current plan -- NOT authoritative "
-                "for this review; shown for context only.\n")
+                f"for this {decision}; shown for context only.\n")
             for e in historical:
                 lines.append(render(e))
         return "".join(lines)

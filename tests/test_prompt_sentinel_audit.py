@@ -153,6 +153,17 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "test_last_approach.py", (794,), ("Operator rulings (task 028, #26)",),
         "the rendered review prompt (AMENDMENT_MARKER)", ALL),
     AbsenceAssertion(
+        "test_operator_ruling.py", (333, 336),
+        ("Historical rulings", "purpose of this review"),
+        "the operator-ruling context string `_operator_amendment_review_"
+        "context(audience='verdict_gate')` hands the peer verdict gate "
+        "(task 018, D.8, #196)", None,
+        "the artifact is built entirely in loop.py -- the ruling files "
+        "under CONFIG_DIR plus that method's own prose -- so no shipped "
+        "template contributes a byte to it and none can make either "
+        "absence vacuous; the assertions on the RENDERED prompt in the "
+        "same test are presence checks, not absence ones"),
+    AbsenceAssertion(
         "test_operator_ruling_review_verdict.py", (158,),
         ("Operator rulings (task 028, #26)",),
         "the rendered review prompt (AMENDMENT_MARKER)", ALL),

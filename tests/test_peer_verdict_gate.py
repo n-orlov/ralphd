@@ -49,6 +49,7 @@ from pathlib import Path
 import pytest
 
 from ralphd.engine import contracts, findings
+from ralphd.engine import loop as loop_mod
 from ralphd.engine import tiers as T
 from ralphd.engine import transitions as tr
 from ralphd.engine.config import (DEFAULT_HAT_MODEL_REF, MODEL_HATS,
@@ -592,16 +593,27 @@ def test_verdict_gate_prompt_never_carries_reviews_own_reasoning_or_verdict(tmp_
 
 
 def test_verdict_gate_run_iteration_call_site_passes_no_extra_context(monkeypatch, tmp_path):
-    """A narrower, unit-level pin of the same fact: `_step_verdict_gate`
-    calls `run_iteration('verdict_gate', ...)` with NO `extra` keyword
-    (or an empty one) -- unlike `_run_review_iteration`, which always
-    passes `extra=self._review_extra_context()`. Spies on the real
+    """A narrower, unit-level pin of the same fact: with no operator ruling
+    recorded (the common case), `_step_verdict_gate` calls
+    `run_iteration('verdict_gate', ...)` with an EMPTY `extra` -- unlike
+    `_run_review_iteration`, which always passes
+    `extra=self._review_extra_context()`. Spies on the real
     `LoopSupervisor.run_iteration` call rather than reading source, so a
     future refactor that reintroduces review-shaped context would fail
     this test even if it renamed the parameter.
+
+    Task 018 (D.8, #196): the one thing the call site does pass is the
+    operator-ruling context, which is `''` unless a ruling exists under the
+    `:ro` /config mount -- so `loop_mod.CONFIG_DIR` is pointed at an empty
+    scratch directory here to keep this pin independent of whatever the
+    host running the suite has mounted. The non-empty case (a wave-scoped
+    ruling reaching this exact call site after a replan) is covered by
+    tests/test_operator_ruling.py::
+    test_wave_scoped_ruling_reaches_the_peer_verdict_gate_after_a_replan.
     """
     root = tmp_path / "run"
     root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", tmp_path / "empty-config")
     run = RunDir(root=root)
     RunDir(root=root).update_status(state="starting")
     sup = LoopSupervisor(

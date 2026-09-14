@@ -1760,21 +1760,24 @@ section: `371` (fast), `256` (smoke). `tests/records/` is unaffected
 modules fast, 4300/260 smoke) still carry headroom -- fast is now within
 84 of its stated ceiling.
 
-**5717 (smoke 4106, modules 371 (fast), 256 (smoke)) by v0.21 task 018
-(requirement D.8, #196).** No new module -- one new node in an existing
+**5718 (smoke 4106, modules 371 (fast), 256 (smoke)) by v0.21 task 018
+(requirement D.8, #196).** No new module -- two new nodes in an existing
 one, `fast` only (`tests/test_operator_ruling.py` spawns a real
 `ralphctl` subprocess elsewhere in the module, so the whole module is
 process-boundary, not in-process, per `tests/conftest.py`'s own
 derivation):
-`test_wave_scoped_ruling_survives_a_replan_and_stays_binding`. From the
-5716/4106/371 the paragraph above measures: **5717/4106/371** (smoke
-unchanged -- the new node is not in-process). Re-measured directly at
+`test_wave_scoped_ruling_survives_a_replan_and_stays_binding` (review's
+half) and
+`test_wave_scoped_ruling_reaches_the_peer_verdict_gate_after_a_replan`
+(the peer verdict gate's half, added by this task's rework). From the
+5716/4106/371 the paragraph above measures: **5718/4106/371** (smoke
+unchanged -- neither new node is in-process). Re-measured directly at
 this task's own tip with `.venv/bin/python -m pytest -m <fast|smoke>
---collect-only -q` (fast: `5717/5822 tests collected (105 deselected)`,
-smoke: `4106/5822 tests collected (1716 deselected)`), and the module
+--collect-only -q` (fast: `5718/5823 tests collected (105 deselected)`,
+smoke: `4106/5823 tests collected (1717 deselected)`), and the module
 count via the same unique-module-path recipe used throughout this
 section: `371` (fast), `256` (smoke). `tests/records/` is unaffected
 (still 117, untouched by this task). Both ceilings (5800 tests/375
 modules fast, 4300/260 smoke) still carry headroom -- fast is now within
-83 of its stated ceiling.
+82 of its stated ceiling.
 

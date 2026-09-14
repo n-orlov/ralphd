@@ -18,6 +18,7 @@ duplicated here.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -26,6 +27,7 @@ from pathlib import Path
 from ralphd.engine import loop as loop_mod
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
+from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import (AMENDMENT_WAVE_TARGET, RunDir,
                                  amendment_entries, write_amendment)
 from tests.conftest import supervisor_factory
@@ -284,6 +286,58 @@ def test_wave_scoped_ruling_survives_a_replan_and_stays_binding(tmp_path, monkey
     events = _events(sup.run.root)
     orphan_events = [e for e in events if e["type"] == "amendment_target_not_in_plan"]
     assert not orphan_events
+
+
+def test_wave_scoped_ruling_reaches_the_peer_verdict_gate_after_a_replan(tmp_path, monkeypatch):
+    """D.8's OTHER judging hat (task 018, #196): the peer verdict gate can
+    reject a finished approach on its own, so a wave-scoped ruling has to
+    render binding in the gate's prompt too -- otherwise the gate rejects a
+    run over exactly the obligation the operator already ruled on, which is
+    the shape #196 reports.
+
+    Drives the REAL `_step_verdict_gate` with the REAL `run_iteration`
+    spied on (so a renamed keyword cannot hide a regression the way a
+    source-inspection check would), after the same replan
+    `test_wave_scoped_ruling_survives_a_replan_and_stays_binding` simulates:
+    approach bumped to 2 and a plan whose ids name a different task. Then
+    renders what the hat is actually handed, `build_prompt('verdict_gate',
+    extra=...)`.
+    """
+    cdir = tmp_path / "config"
+    write_amendment(cdir, AMENDMENT_WAVE_TARGET,
+                    "Wave ruling: the docker tier is waived wave-wide.",
+                    approach=1)
+    sup = _supervisor(tmp_path, approach=2, iterations=5,
+                      peer_verdict_gate=True, tasks=[
+        {"id": "001", "title": "different task after replan",
+         "status": "completed", "successCriteria": "y"},
+    ])
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
+
+    calls: list[tuple[str, str]] = []
+
+    async def spying_run_iteration(self, phase, extra="", *a, **kw):
+        calls.append((phase, extra))
+        r = IterationResult(exit_code=0)
+        r.final_text = json.dumps({"verdict": "verified"})
+        return r
+
+    monkeypatch.setattr(LoopSupervisor, "run_iteration", spying_run_iteration)
+    outcome = asyncio.run(asyncio.wait_for(sup._step_verdict_gate(), 10))
+
+    assert outcome == ("done", "succeeded")
+    assert [phase for phase, _ in calls] == ["verdict_gate"]
+    extra = calls[0][1]
+    assert "wave-scoped ruling" in extra
+    assert "Wave ruling: the docker tier is waived wave-wide." in extra
+    assert "Historical rulings" not in extra
+    # the prose names the decision this hat is about to take, not review's.
+    assert "purpose of this verdict-gate decision" in extra
+    assert "purpose of this review" not in extra
+    # ... and it survives the render the hat actually receives.
+    prompt = sup.build_prompt("verdict_gate", extra=extra)
+    assert "wave-scoped ruling" in prompt
+    assert "Wave ruling: the docker tier is waived wave-wide." in prompt
 
 
 def test_real_ruling_under_config_dir_is_the_only_thing_that_counts(tmp_path, monkeypatch):
