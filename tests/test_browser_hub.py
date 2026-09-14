@@ -2528,6 +2528,78 @@ def test_task_dialog_lists_the_iterations_behind_its_total(tmp_path, pw):
         server.stop()
 
 
+def test_pre_dispatch_record_run_dir_still_renders(tmp_path, pw):
+    """Task 038 (G.6): a run dir written BEFORE the dispatch-record change
+    (task 027, F.1's `assignedTaskId`/`effectiveTier` on each iteration's own
+    `meta.json`, and task 030, F.4's `engineVersion` on `status.json`) must
+    still render -- as blank or an em dash where those fields would have
+    gone -- rather than raising anywhere along the chain (`engine.state.
+    iteration_detail`/`task_totals`, `ui_server.run_detail`, `app.js`'s
+    `renderTimeline`/`renderTasks`/`renderSummary`).
+
+    The fixture is exactly that pre-change shape: `_base_meta()` with none
+    of its `over` kwargs used, so the written `meta.json` carries no
+    `assignedTaskId`/`effectiveTier` key at all (not merely a null value --
+    absent, the way a real pre-027 iteration dir would be), and
+    `_write_dead_run`'s default `status.json` (no `engineVersion` kwarg),
+    the same default `test_run_page_shows_the_engine_version_it_is_executing`
+    (task 035) opts OUT of by passing `engineVersion="0.21.0"` explicitly --
+    here it is left out on purpose.
+    """
+    from ralphd.cli.ui_server import run_detail
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_cli_iteration_detail import _base_meta
+
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-pre-dispatch-record",
+                              state="succeeded", verdict="verified")
+    (run_dir / "tasks.json").write_text(json.dumps({
+        "version": 1, "goal": "ship it",
+        "tasks": [{"id": "030", "title": "a task from before the change",
+                   "status": "completed"}],
+    }))
+    meta = _base_meta(1)
+    assert "assignedTaskId" not in meta and "effectiveTier" not in meta
+    d = run_dir / "iterations" / "0001"
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps(meta))
+
+    # -- the server's own payload never raises building this ----------------
+    detail = run_detail(registry, "run-pre-dispatch-record")
+    assert detail["iterations"][0].get("assignedTaskId") is None
+    assert detail["iterations"][0].get("effectiveTier") is None
+    task_row = next(t for t in detail["tasks"]["tasks"] if t["id"] == "030")
+    assert "timeDisplay" not in task_row and "costDisplay" not in task_row
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-pre-dispatch-record")
+        _wait_for_count_ge(pw, _TIMELINE_ITEMS, 1)
+
+        # -- the iteration row: em dash for task and tier ---------------------
+        row_text = pw.eval_js(
+            "document.querySelector('.timeline-item[data-iteration=\"1\"]')"
+            ".textContent")
+        assert "task: \u2014" in row_text, row_text
+        assert "tier: \u2014" in row_text, row_text
+
+        # -- the tasks table: em dash for time and cost -----------------------
+        _wait_for_count_ge(pw, "document.querySelectorAll('#task-box tbody tr').length", 1)
+        task_text = pw.eval_js(
+            "document.querySelector('tr.task-row[data-task-id=\"030\"]')"
+            ".textContent")
+        assert "\u2014" in task_text, task_text
+
+        # -- the run page itself: no exception, no "engine: " row at all -----
+        body_text = pw.eval_js("document.body.innerText")
+        assert "engine: " not in body_text, body_text
+        pw.screenshot(SCREENSHOTS_DIR / "28-pre-dispatch-record-run-dir.png")
+    finally:
+        server.stop()
+
+
 _DOCUMENT_ITEMS = "document.querySelectorAll('.document-item').length"
 _DOCUMENT_BUTTONS = "document.querySelectorAll('button.document-item').length"
 _DOCUMENT_ROW_TEXT = (
