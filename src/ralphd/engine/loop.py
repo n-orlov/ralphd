@@ -607,6 +607,12 @@ class LoopSupervisor:
         there is nothing named to compare, so nothing is alerted on. An
         exact version match is silent too -- this is a DRIFT alert, not a
         version-announcement event.
+
+        Task 035 (PRD requirement G.3) also persists the workspace version
+        onto `status.json` itself (never on a drift-free/unreadable run --
+        same silence rule as the event above), so a hub run page can read
+        it straight off `status.json` beside F.4's `engineVersion` rather
+        than having to scan `events.jsonl` on its own.
         """
         workspace_version = _read_workspace_version(self.workspace)
         if workspace_version is None or workspace_version == __version__:
@@ -614,6 +620,13 @@ class LoopSupervisor:
         self.run.emit("workspace_version_mismatch",
                       workspaceVersion=workspace_version,
                       engineVersion=__version__)
+        # Task 035 (PRD requirement G.3): also persist it on status.json
+        # itself, beside F.4's `engineVersion`, so a hub run page (which
+        # reads status.json, never scans events.jsonl on its own) can show
+        # both versions rather than only being able to page the operator
+        # about the drift -- the events.jsonl line above stays for anyone
+        # scanning the raw log.
+        self.run.update_status(workspaceVersion=workspace_version)
         if self.notifier is not None:
             self.notifier(
                 f"workspace version ({workspace_version}) differs from the "

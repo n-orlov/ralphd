@@ -1689,6 +1689,19 @@ function renderSummary(el, detail) {
   for (const [hname, hvalue] of Object.entries(llmHeaders)) {
     rows.push([`header: ${hname}`, String(hvalue)]);
   }
+  // Task 035 (G.3): the engine version this run is executing (F.4's
+  // `status.json` field, always present) -- and, only when the workspace's
+  // own version is knowable (a `workspace_version_mismatch` was found and
+  // persisted `workspaceVersion` alongside it, E.3/task 017), both
+  // versions on the same line, so the drift alert an operator would
+  // otherwise only be paged about is readable here at a glance.
+  if (s.engineVersion) {
+    let engineLine = String(s.engineVersion);
+    if (s.workspaceVersion) {
+      engineLine += `  (workspace: ${s.workspaceVersion})`;
+    }
+    rows.push(["engine", engineLine]);
+  }
   const started = s.startedAt;
   const ended = iterationInProgress ? null : s.endedAt;
   let durText = "";

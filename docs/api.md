@@ -87,6 +87,7 @@ The one-call summary. Response:
 {
   "runId": "brisk-otter-1408",
   "engineVersion": "0.21.0",       // the running engine's own ralphd.__version__, written every process start (v0.21 requirement F.4, task 030), drift or not
+  "workspaceVersion": "0.20.9",    // present only on a drift mismatch (v0.21 requirement G.3, task 035) -- the workspace's own __version__ literal, persisted alongside the workspace_version_mismatch event (E.3, task 017)
   "schemaVersion": 1,              // run-dir schema this state was written under
   "state": "running",              // starting|running|paused|finishing|succeeded|failed|aborted
   "phase": "worker",               // planning|worker|verify|review|null; never "paused"
