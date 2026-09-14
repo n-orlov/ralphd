@@ -1,7 +1,7 @@
-"""Task 005 (A.3): browser-tier proof of the two client-side behaviours the
-in-process test in `tests/test_hub_client_backoff.py` cannot reach -- neither
-is observable from a plain HTTP client, only from `app.js`'s own polling
-loop running inside a real page:
+"""Task 005 (A.3) and task 049 (H.7): browser-tier proof of the client-side
+behaviours the in-process test in `tests/test_hub_client_backoff.py` cannot
+reach -- neither is observable from a plain HTTP client, only from
+`app.js`'s own polling loop running inside a real page:
 
 1. **Back-off.** `renderRunDetail`'s poll widens from the normal 4s cadence
    to `BACKOFF_POLL_MS` (20000ms, inside the PRD's 15-30s band) once either
@@ -15,6 +15,12 @@ loop running inside a real page:
    actually observe it (`Object.defineProperty` on `document.hidden`'s
    getter, then dispatching the real event), the only way to drive this
    deterministically without a second real OS-level window/tab.
+3. **The transcript poll shares both of the above (task 049, H.7).**
+   `loadLogs` -- the `GET /api/runs/<id>/logs?tail=200` fetch -- is called
+   from inside the very same `load()` this back-off and pause already
+   govern, so it never needed its own wiring; proven at the network layer
+   by wrapping `window.fetch` and counting `/logs` calls across a hidden
+   period.
 
 Marked `@pytest.mark.browser` for the same reason as `test_browser_hub.py`
 (shells out to `playwright-cli`, skips cleanly if it is absent).
@@ -29,7 +35,15 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from test_browser_hub import ARTIFACTS_DIR, PLAYWRIGHT_CLI, Pw, _skip_reason, _wait_for, pw  # noqa: F401
+from test_browser_hub import (  # noqa: F401
+    ARTIFACTS_DIR,
+    PLAYWRIGHT_CLI,
+    Pw,
+    _skip_reason,
+    _wait_for,
+    _wait_for_count_ge,
+    pw,
+)
 from test_cli_ui import UiServer, _write_dead_run
 
 SCREENSHOTS_DIR = ARTIFACTS_DIR / "screenshots" / "hub"
@@ -97,6 +111,75 @@ def test_run_detail_backs_off_after_two_identical_polls_of_a_running_run(tmp_pat
         # loop widens -- comfortably inside a generous margin past 2*4s.
         _wait_for_poll_ms(pw, 20000, timeout=15)
         pw.screenshot(SCREENSHOTS_DIR / "task005-backoff-identical-payloads.png")
+    finally:
+        server.stop()
+
+
+def test_a_hidden_tab_issues_no_log_tail_request(tmp_path, pw):
+    """Task 049 (H.7): `loadLogs` (the transcript/log-tail fetch,
+    `GET /api/runs/<id>/logs?tail=200`) is called from inside the SAME
+    `load()` that `renderRunDetail` schedules through `scheduleRefresh`
+    (see the comment above `let lastEtag = null;` in `app.js`) -- there is
+    no separate timer for it, so it already inherits both the run-detail
+    poll's back-off and its `document.hidden` pause rather than needing
+    its own wiring. This proves the pause half directly at the network
+    layer (wrapping `window.fetch` to count `/logs` calls) rather than
+    only through the timer-count instrumentation the sibling test above
+    uses, so a future change that gives the log poll its own timer without
+    routing it through the same pause point would be caught here even if
+    it left `__hubRefreshLoopCount` alone."""
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "run-hide-log-tail", state="running", verdict=None)
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-hide-log-tail")
+        _wait_for(pw, "document.body.innerText", "running")
+
+        pw.eval_js(
+            "(function(){"
+            "  window.__logTailFetchCount = 0;"
+            "  const orig = window.fetch;"
+            "  window.fetch = function(url, opts) {"
+            "    if (String(url).includes('/logs')) { window.__logTailFetchCount += 1; }"
+            "    return orig.apply(this, arguments);"
+            "  };"
+            "  return 'wrapped';"
+            "})()"
+        )
+
+        # Let at least one more visible-tab tick land so the wrapper is
+        # proven live (a wrapper installed after the last fetch and before
+        # the next one is still zero for an uninteresting reason).
+        _wait_for_count_ge(pw, "window.__logTailFetchCount", 1, timeout=10)
+
+        pw.eval_js(
+            "(function(){"
+            "  Object.defineProperty(document, 'hidden', {"
+            "    configurable: true, get: () => true });"
+            "  document.dispatchEvent(new Event('visibilitychange'));"
+            "  window.__logTailFetchCount = 0;"
+            "  return 'hidden';"
+            "})()"
+        )
+        # Comfortably past two normal 4s ticks -- if the log-tail poll were
+        # not paused by the same hidden-tab mechanism, this would have
+        # fired at least once by now.
+        time.sleep(9)
+        assert int(pw.eval_js("window.__logTailFetchCount")) == 0, (
+            "a log-tail request fired while the tab was hidden")
+
+        pw.eval_js(
+            "(function(){"
+            "  Object.defineProperty(document, 'hidden', {"
+            "    configurable: true, get: () => false });"
+            "  document.dispatchEvent(new Event('visibilitychange'));"
+            "  return 'shown';"
+            "})()"
+        )
+        _wait_for_count_ge(pw, "window.__logTailFetchCount", 1, timeout=10)
+        pw.screenshot(SCREENSHOTS_DIR / "task049-hidden-log-tail.png")
     finally:
         server.stop()
 

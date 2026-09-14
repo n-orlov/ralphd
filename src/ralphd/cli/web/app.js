@@ -1618,6 +1618,18 @@ async function renderRunDetail(runId, myGen) {
                   body.status && body.status.progressBudget);
       renderTimeline(document.getElementById("timeline-box"), body.iterations || [], runId);
     }
+    // Task 049 (H.7): `loadLogs` (the transcript/log-tail poll,
+    // `GET /api/runs/<id>/logs?tail=200`) already shares this SAME
+    // `load()` call, which is itself scheduled through `scheduleRefresh`
+    // below at `pollIntervalMs` -- so it already inherits both the
+    // back-off widening this function computes at its own tail and the
+    // `document.hidden` pause `scheduleRefresh`/the `visibilitychange`
+    // listener enforce for every caller. No separate timer was ever wired
+    // for it, so there was nothing to add here -- proven at the network
+    // layer by `tests/test_browser_hub_backoff.py::
+    // test_a_hidden_tab_issues_no_log_tail_request`, beside
+    // `test_run_detail_backs_off_after_two_identical_polls_of_a_running_run`
+    // for the back-off half.
     await loadLogs(runId);
     await loadSteering(runId);
     await loadDocuments(runId);
