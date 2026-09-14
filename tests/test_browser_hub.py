@@ -3699,3 +3699,71 @@ def test_task_dialog_shows_more_than_the_current_status_task039(tmp_path, pw):
         pw.screenshot(SCREENSHOTS_DIR / "29-task-dialog-state-history.png")
     finally:
         server.stop()
+
+
+def test_iteration_history_and_provisioning_collapse_by_default_task040(tmp_path, pw):
+    """Task 040 (PRD I.2): the iteration history renders collapsed by
+    default once it holds 15 or more records, and stays expanded below
+    that count; the run-detail "provisioning (resolved hat -> model)"
+    block (this PRD's "model config header") renders collapsed by default
+    regardless of iteration count.
+
+    `renderTimeline` (`app.js`) wraps the timeline rows in a native
+    `<details class="timeline-details">`, `open` set only when the
+    iteration count is under `TIMELINE_COLLAPSE_THRESHOLD` (15); the
+    provisioning block (`renderSummary`) no longer carries `open` at all.
+    Two fixtures -- 14 iterations and 15 -- so the threshold's own boundary
+    is exercised, not just "some" vs "many".
+    """
+    from ralphd.engine.state import JOB_CONFIG_FILE
+
+    registry = tmp_path / "registry"
+
+    def _make_run(run_id: str, n_iterations: int):
+        run_dir = _write_dead_run(registry, run_id, state="succeeded",
+                                   verdict="verified")
+        for n in range(1, n_iterations + 1):
+            d = run_dir / "iterations" / f"{n:04d}"
+            d.mkdir(parents=True)
+            (d / "meta.json").write_text(json.dumps(
+                {"number": n, "phase": "worker", "model": "stub-model",
+                 "approach": 1, "startedAt": f"2026-01-01T00:{n:02d}:00Z",
+                 "exitCode": 0, "error": None,
+                 "endedAt": f"2026-01-01T00:{n:02d}:30Z",
+                 "usage": {"totalTokens": 10}}))
+        cdir = registry / "configs" / run_id
+        cdir.mkdir(parents=True)
+        # A minimal job.yaml is enough: `provisioning_table()` resolves
+        # every `MODEL_HATS` entry to a default even with no `models:`
+        # knob configured, so `provisioningLines` is never empty here.
+        (cdir / JOB_CONFIG_FILE).write_text(f'run_id: "{run_id}"\niterations: 25\n')
+
+    _make_run("run-few-iters-040", 14)
+    _make_run("run-many-iters-040", 15)
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        # -- below the threshold: expanded by default -----------------------
+        pw.open(f"{server.base}/#/run/run-few-iters-040")
+        _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 14)
+        assert int(pw.eval_js("document.querySelectorAll('.timeline-item').length")) == 14
+        assert pw.eval_js("document.querySelector('.timeline-details').open") == "true"
+        summary = pw.eval_js("document.querySelector('.timeline-details summary').textContent")
+        assert "14" in summary, summary
+        # the model config header (provisioning block) is collapsed
+        # regardless of the iteration count on this same page
+        assert pw.eval_js("document.querySelector('.provisioning').open") == "false"
+        pw.screenshot(SCREENSHOTS_DIR / "30-iteration-history-expanded-task040.png")
+
+        # -- at the threshold: collapsed by default --------------------------
+        pw.open(f"{server.base}/#/run/run-many-iters-040")
+        _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 15)
+        assert int(pw.eval_js("document.querySelectorAll('.timeline-item').length")) == 15
+        assert pw.eval_js("document.querySelector('.timeline-details').open") == "false"
+        summary2 = pw.eval_js("document.querySelector('.timeline-details summary').textContent")
+        assert "15" in summary2, summary2
+        assert pw.eval_js("document.querySelector('.provisioning').open") == "false"
+        pw.screenshot(SCREENSHOTS_DIR / "31-iteration-history-collapsed-task040.png")
+    finally:
+        server.stop()

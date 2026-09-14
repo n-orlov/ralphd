@@ -1773,7 +1773,11 @@ function renderSummary(el, detail) {
   // elsewhere on this page is.
   const provLines = s.provisioningLines || [];
   if (provLines.length > 0) {
-    el.appendChild(h("details", { class: "provisioning", open: "" }, [
+    // Task 040 (I.2): collapsed by default, like the iteration history
+    // above -- an operator's own expand choice surviving across runs and
+    // reloads is I.3/task 041's job (a `localStorage` scope this task does
+    // not touch), not a reason to default this open.
+    el.appendChild(h("details", { class: "provisioning" }, [
       h("summary", {}, ["provisioning (resolved hat \u2192 model)"]),
       h("div", { class: "provisioning-rows" },
         provLines.map((line) => h("div", {}, [String(line)]))),
@@ -2303,6 +2307,18 @@ function renderTasks(el, tasks, progressBudget) {
   el.appendChild(table);
 }
 
+// Task 040 (I.2): the iteration history renders collapsed by default once
+// it holds 15 or more records -- a native `<details>`/`<summary>` disclosure,
+// the same chrome the artifacts and router-call panels already use (task
+// 021/022), so a long-running job's page does not open with dozens of rows
+// pre-rendered. Below 15 it renders expanded (`open`), same as it always
+// has. Persisting an operator's own expand/collapse choice across polls,
+// reloads and runs is I.3/task 041's job, not this one's -- this function
+// still rebuilds its `<details>` fresh on every `load()` poll (~4s), so an
+// in-session expand does not yet survive a poll either; that is the exact
+// gap I.3 closes.
+const TIMELINE_COLLAPSE_THRESHOLD = 15;
+
 function renderTimeline(el, iterations, runId) {
   el.innerHTML = "";
   if (iterations.length === 0) {
@@ -2310,6 +2326,14 @@ function renderTimeline(el, iterations, runId) {
     return;
   }
   const sorted = [...iterations].sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
+  const collapsed = sorted.length >= TIMELINE_COLLAPSE_THRESHOLD;
+  const rowsBox = h("div", { class: "timeline-rows" }, []);
+  const detailsAttrs = { class: "timeline-details" };
+  if (!collapsed) detailsAttrs.open = "";
+  const details = h("details", detailsAttrs, [
+    h("summary", {}, ["iteration history (" + String(sorted.length) + ")"]),
+    rowsBox,
+  ]);
   for (const it of sorted) {
     const dur = it.endedAt
       ? fmtDuration(durationBetween(it.startedAt, it.endedAt))
@@ -2368,8 +2392,9 @@ function renderTimeline(el, iterations, runId) {
       // never recorded a fault.
       it.causeText ? h("span", { class: "cause" }, ["cause: " + String(it.causeText)]) : null,
     ]);
-    el.appendChild(row);
+    rowsBox.appendChild(row);
   }
+  el.appendChild(details);
 }
 
 async function loadLogs(runId) {

@@ -395,8 +395,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Task 033 (v0.21, requirement G.1, #159/#194) added the
         # `GET /api/version` route's own module-level version helper above
         # this class (+1 line above the read): 1509->1510, read off the
-        # numbered line (task 035/077).
-        "line": "1510",
+        # numbered line (task 035/077). Task 039 (I.1)'s task-transition-
+        # history read/render code landed above this class too, unanchored
+        # at the time (the fast-lane cure for it is this same task, 040):
+        # +79: 1510->1589, read off the numbered line (`sed -n '1589p'`).
+        "line": "1589",
         "reason": ("`Handler.registry`'s class-level default. Every real server "
                    "binds a concrete registry via `make_handler_class(reg)` "
                    "(see its own docstring, \"Bound to a registry path via "
