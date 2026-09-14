@@ -221,10 +221,10 @@ carries headroom.
 
 | lane | marker | recipe | tests | modules | wall clock | budget tests | budget modules | budget wall clock | PRD target | target met? |
 |---|---|---|---|---|---|---|---|---|---|---|
-| smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4038 | 248 | 24.41 s | 4300 | 260 | 60 s | n/a | met -- 24.41 s inside the lane's own 60 s budget ceiling; no PRD target of this kind for this lane |
-| smoke, serial | `smoke` | `-m smoke` | 4038 | 248 | 147.68 s | 4300 | 260 | 200 s | < 120 s | MISSED -- 147.68 s measured against the 120 s target |
-| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5645 | 363 | 80.12 s | 5800 | 375 | 150 s | < 120 s | met -- 80.12 s inside the 120 s target |
-| fast, serial | `fast` | `-m fast` | 5645 | 363 | 540.44 s (stale wall clock, not retaken this task -- see note below) | 5800 | 375 | 1100 s | < 300 s | MISSED -- 540.44 s measured against the 300 s target |
+| smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4038 | 248 | 24.41 s | 4300 | 270 | 60 s | n/a | met -- 24.41 s inside the lane's own 60 s budget ceiling; no PRD target of this kind for this lane |
+| smoke, serial | `smoke` | `-m smoke` | 4038 | 248 | 147.68 s | 4300 | 270 | 200 s | < 120 s | MISSED -- 147.68 s measured against the 120 s target |
+| fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 5645 | 363 | 80.12 s | 5800 | 390 | 150 s | < 120 s | met -- 80.12 s inside the 120 s target |
+| fast, serial | `fast` | `-m fast` | 5645 | 363 | 540.44 s (stale wall clock, not retaken this task -- see note below) | 5800 | 390 | 1100 s | < 300 s | MISSED -- 540.44 s measured against the 300 s target |
 | records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 116 | 5 | 11.35 s | 150 | 10 | 30 s | < 15 s | met -- 11.35 s inside the 15 s target |
 | dev-layout, `PYTHONUSERBASE` unset (retired unfiltered measurement, superseded by task 076) | n/a (no marker; the whole suite, unfiltered -- this recipe no longer runs; see below) | `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset scripts/host_like_dev_layout.sh` | 5409 | 334 | 2047.32 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2047.32 s measured against the 900 s target |
 | dev-layout, `PYTHONUSERBASE` exported (retired unfiltered measurement, superseded by task 076) | n/a (no marker; the whole suite, unfiltered -- this recipe no longer runs; see below) | `scripts/host_like_dev_layout.sh` (default mode, no `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE` override) | 5409 | 334 | 2146.54 s | 6500 | 400 | 3600 s | < 900 s (15 min) | MISSED -- 2146.54 s measured against the 900 s target |
@@ -1983,4 +1983,25 @@ this task). Fast has now reached its stated module ceiling (375) exactly
 -- a future task adding a new fast-tier module needs the ceiling raised in
 the same commit; the test-count ceiling (5800 fast, 4300 smoke) still
 carries headroom.
+
+**5739 (smoke 4118, modules 376 (fast), 261 (smoke)) by v0.21 task 030
+(requirement F.4, #159/#194).** One new module,
+`tests/test_engine_version_startup_030.py`, one new node --
+`test_status_json_and_one_startup_event_carry_the_engine_version_on_a_drift_free_run`
+-- driven in-process through `make_supervisor` (no `LiveRun`/`RALPHCTL`/
+`RALPHD_ENGINE`/`live(` in its source), so it is `smoke` as well as `fast`;
+net +1 fast, +1 smoke, +1 module in both tiers. From the 5738/4117/375
+(fast)/260 (smoke) the paragraph above measures: **5739/4118/376
+(fast)/261 (smoke)**. Re-measured directly at this task's own tip with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5739/5848 tests collected (109 deselected)`, smoke: `4118/5848 tests
+collected (1730 deselected)`), and the module count via the same
+unique-module-path recipe used throughout this section: `376` (fast),
+`261` (smoke). `tests/records/` is unaffected (still 117, untouched by
+this task). Fast's own module ceiling (375) is exceeded by this module
+(376), so this task raises both module ceilings in the lane table above
+in the SAME commit -- fast to 390, smoke to 270 -- rather than leaving the
+ratchet test (`test_the_collected_tier_is_inside_its_declared_budget`)
+red; the test-count ceiling (5800 fast, 4300 smoke) still carries
+headroom.
 

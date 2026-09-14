@@ -278,6 +278,16 @@ NOTIFICATION_FAILED_EVENT = "notification.failed"
 # `RALPHD_NOTIFIER_URL` supplies a URL.
 NOTIFIER_UNCONFIGURED_EVENT = "notifier.unconfigured"
 
+# Task 030 (PRD requirement F.4, #159/#194): emitted exactly once, at engine
+# startup (`LoopSupervisor.__init__`, the same "once per process start"
+# placement `workspace_version_mismatch`/`NOTIFIER_UNCONFIGURED_EVENT` above
+# already use), for EVERY run -- never conditional on drift the way E.3's
+# `workspace_version_mismatch` is. Names the running engine's own
+# `ralphd.__version__`, the same figure `status.json`'s `engineVersion` field
+# (set in the same constructor pass) records for a reader that only polls
+# status.json and never scans events.jsonl.
+ENGINE_STARTED_EVENT = "engine.started"
+
 
 def build_notifications_section(run: "state.RunDir") -> list[dict]:
     return state.read_events(run.root, types=[NOTIFICATION_SENT_EVENT])

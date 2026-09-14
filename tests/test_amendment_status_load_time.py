@@ -208,11 +208,17 @@ def test_no_amendments_at_all_is_a_silent_no_op(tmp_path, monkeypatch):
     sup = _supervisor(tmp_path / "run")
     _config_dir(monkeypatch, tmp_path)
     _tasks(sup, [_task()])
+    # Task 030 (v0.21, PRD requirement F.4, #159/#194): construction itself
+    # now unconditionally emits one `engine.started` event (`_record_engine_
+    # version`, never conditional the way `notifier.unconfigured` above is) --
+    # baseline it here so this assertion stays about `_apply_operator_status_
+    # rulings()`'s own silence, not construction's.
+    baseline = len(_events(sup.run.root))
 
     sup._apply_operator_status_rulings()
 
     assert sup.run.read_tasks()["tasks"][0]["status"] == "validation-failed"
-    assert _events(sup.run.root) == []
+    assert _events(sup.run.root)[baseline:] == []
 
 
 def test_an_unreadable_plan_costs_nothing_more_than_itself(

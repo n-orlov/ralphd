@@ -1447,6 +1447,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | field | type | meaning |
 |---|---|---|
 | `runId` | string | the run id |
+| `engineVersion` | string | v0.21 requirement F.4 (#159/#194, task 030) -- the running engine's own `ralphd.__version__`, written unconditionally by `LoopSupervisor._record_engine_version` at every process start (the same "once per process start" placement as the drift check and the notifier-configured check below it), alongside the matching `run_record.ENGINE_STARTED_EVENT` startup event. Distinct from the drift check just below: this one names the ENGINE's own version and fires on every run, drift or not; `_check_workspace_version_drift`'s `workspace_version_mismatch` event names the WORKSPACE's own version and fires only on a mismatch |
 | `state` | string | `starting` \| `running` \| `paused` \| `finishing` \| `succeeded` \| `failed` \| `aborted` (task 012, #56 adds `finishing`: the outcome is settled, the post-terminal `reflect` iteration has not run yet -- see §12.2; v0.18 task 036, #142, adds `paused`: an ENGINE-initiated hold on the `rejected_last_approach` escalation edge, never an operator `POST /pause` -- see `pauseReason` below) |
 | `schemaVersion` | int | run-dir schema this state was written under (§5.7) |
 | `health` | string | `ok` \| `degraded` — degraded while sitting out an infra outage |

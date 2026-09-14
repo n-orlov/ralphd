@@ -86,6 +86,7 @@ The one-call summary. Response:
 ```json
 {
   "runId": "brisk-otter-1408",
+  "engineVersion": "0.21.0",       // the running engine's own ralphd.__version__, written every process start (v0.21 requirement F.4, task 030), drift or not
   "schemaVersion": 1,              // run-dir schema this state was written under
   "state": "running",              // starting|running|paused|finishing|succeeded|failed|aborted
   "phase": "worker",               // planning|worker|verify|review|null; never "paused"

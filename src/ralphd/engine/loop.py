@@ -556,6 +556,10 @@ class LoopSupervisor:
         # `--notifier-url` > template > job.yaml key, `JobConfig.load`)
         # by the time this constructor runs.
         self._check_notifier_configured()
+        # Task 030 (PRD requirement F.4, #159/#194): same "once per process
+        # start" placement as the two checks above -- always on, unlike
+        # E.3's drift-conditional event just above it.
+        self._record_engine_version()
 
     def _check_notifier_configured(self) -> None:
         """PRD requirement B.3 (task 011, #197): the `notify` hat tool is
@@ -614,6 +618,25 @@ class LoopSupervisor:
             self.notifier(
                 f"workspace version ({workspace_version}) differs from the "
                 f"running engine version ({__version__})")
+
+    def _record_engine_version(self) -> None:
+        """PRD requirement F.4 (task 030, #159/#194): record the running
+        engine's own `ralphd.__version__` on `status.json`'s `engineVersion`
+        field, and emit exactly one startup event
+        (`run_record.ENGINE_STARTED_EVENT`, naming it) -- both unconditional,
+        for EVERY run.
+
+        Deliberately distinct from `_check_workspace_version_drift` just
+        above: that one names the WORKSPACE's own version and fires only on
+        a mismatch (an ordinary, drift-free run records nothing there); this
+        one names the ENGINE's own version and fires every time, so a reader
+        who only ever sees drift-free runs is never left with a `status.json`
+        that has nothing to say about which engine build produced it, and an
+        events.jsonl scan finds the answer without depending on a mismatch
+        ever having happened.
+        """
+        self.run.update_status(engineVersion=__version__)
+        self.run.emit(run_record.ENGINE_STARTED_EVENT, engineVersion=__version__)
 
     def _notify_via_configured_notifier(self, text: str) -> None:
         """Task 007 (PRD requirement D.1, finding 5): the production

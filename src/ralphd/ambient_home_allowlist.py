@@ -517,7 +517,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # privsep` import line above `_creds_note` in this same module,
         # shifting this read once more -- now at 1323, same method, same
         # read, same reason.
-        "line": "1323",
+        # Task 030 (v0.21, PRD requirement F.4, #159/#194) added
+        # `_record_engine_version()` and its call site above `_creds_note`
+        # in this same module, a net +23, shifting this read once more --
+        # now at 1346, same method, same read, same reason.
+        "line": "1346",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "
