@@ -2014,6 +2014,21 @@ def steer_task_update(run: "RunDir", task_id: str, changes: dict,
                           if k != "dependsOn"}
             else:
                 depends_on_result = {"applied": True}
+        # Task 013 (PRD requirement D.3, #184): the audit of every OTHER
+        # non-`status` field this merge can land on a CLAIMED task.
+        # `title`/`notes`/`priority` are plain display/bookkeeping fields
+        # nothing in the picker or the worker loop reads back off a
+        # CLAIMED task's own record mid-attempt -- `priority` only
+        # re-enters the picture as a tie-break among MULTIPLE claimed or
+        # pending tasks competing for the NEXT iteration
+        # (`scheduler.select_next_task`), never as something this task's
+        # own already-dispatched attempt executes against -- so none of
+        # the three carry `dependsOn`'s hazard and none is guarded.
+        # `successCriteria` is the one field that DOES carry the exact
+        # same hazard `dependsOn` does (it is literally the text a claimed
+        # attempt is executing against, mid-attempt) -- see fix #132 just
+        # below, which is what keeps it safe rather than a new guard.
+        #
         # Fix #132: a steer-tool edit to successCriteria is operator-origin
         # and just as legal as a judge-authored criteria amendment
         # (`LoopSupervisor._apply_criteria_amendments`, loop.py:6891-6898).

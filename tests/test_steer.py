@@ -1256,6 +1256,54 @@ def test_dependson_write_to_a_pending_task_stays_legal(tmp_path):
 
 
 # ===========================================================================
+# 4c. Task 013 (PRD requirement D.3, #184): the audit of `steer_task_update`'s
+#     OTHER non-`status` merged fields. `successCriteria` carries the exact
+#     same hazard `dependsOn` does -- rewriting what a claimed task's own
+#     in-flight attempt is executing against, mid-attempt -- but is already
+#     SAFE on a claimed task, unlike `dependsOn`: fix #132 (`e20175a`) moves
+#     `criteriaFingerprint`/`criteriaOfRecord` forward atomically with the
+#     text in the SAME `write_tasks` call, so `LoopSupervisor.
+#     _check_criteria_edits`'s very next pass sees a fingerprint that
+#     already matches the new text and never flags/restores it -- exactly
+#     the same legal-edit path a judge-authored criteria amendment already
+#     uses (`_apply_criteria_amendments`). This asserts that holds
+#     unconditionally on BOTH claimed statuses `dependsOn` refuses --
+#     `steer_task_update` never gates `successCriteria` on task status at
+#     all, so there is nothing to unconditionally refuse.
+# ===========================================================================
+
+
+@pytest.mark.parametrize("claimed_status", ["in-progress", "validation-failed"])
+def test_successcriteria_write_stays_legal_on_a_task_the_picker_has_claimed(
+        tmp_path, claimed_status):
+    original = "ship the widget exactly as originally scoped"
+    fp = LoopSupervisor._criteria_fingerprint(original)
+    broker = _broker(tmp_path, [
+        {"id": "036", "title": "t", "status": claimed_status,
+         "successCriteria": original,
+         "criteriaFingerprint": fp, "criteriaOfRecord": original},
+    ])
+    new_criteria = "ship the widget, relaxed per operator steer"
+    response = broker.execute("task-update", {
+        "taskId": "036",
+        "changes": {"successCriteria": new_criteria},
+    })
+    # unlike dependsOn, this is never refused for a claimed task.
+    assert response["ok"] is True, response
+    task = _task(broker, "036")
+    assert task["successCriteria"] == new_criteria
+    # criteriaFingerprint/criteriaOfRecord moved forward atomically, so a
+    # later `_check_criteria_edits` pass sees no mismatch and never
+    # restores the old text or flags the task.
+    assert task["criteriaFingerprint"] == LoopSupervisor._criteria_fingerprint(
+        new_criteria)
+    assert task["criteriaOfRecord"] == new_criteria
+    assert not task.get("criteriaEditedAfterValidationFailure")
+    # the task's claimed status itself is untouched by this call.
+    assert task["status"] == claimed_status
+
+
+# ===========================================================================
 # 5. `tests/test_steer_criteria_survives_worker_pass_task002.py` -- a steer
 #    `successCriteria` edit that moves the fingerprint forward survives the
 #    next `LoopSupervisor` worker pass's `_check_criteria_edits`.
