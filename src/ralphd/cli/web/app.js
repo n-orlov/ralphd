@@ -2198,6 +2198,7 @@ function renderTasks(el, tasks, progressBudget) {
   }
   const table = h("table", {}, [h("thead", {}, [h("tr", {}, [
     h("th", {}, ["id"]), h("th", {}, ["status"]), h("th", {}, ["title"]),
+    h("th", {}, ["time"]), h("th", {}, ["cost"]),
   ])])]);
   const tbody = h("tbody", {});
   for (const t of list) {
@@ -2251,6 +2252,16 @@ function renderTasks(el, tasks, progressBudget) {
         ...(budget ? [" ", pill("budget " + budget.used + "/" + budget.budget)] : []),
       ]),
       h("td", {}, [String(t.title || "")]),
+      // Task 036 (G.4): each task's own aggregated time and cost --
+      // `timeDisplay`/`costDisplay`, summed server-side (`engine.state.
+      // task_totals`) from every iteration this task's own `assignedTaskId`
+      // named, INCLUDING a validation-failed re-entry's second attempt --
+      // never recomputed here. Absent entirely for a task no iteration was
+      // ever dispatched against (`_with_task_totals` adds neither key), so
+      // it renders the same em dash the timeline row's task-id cell already
+      // uses for "nothing to say".
+      h("td", { class: "task-time" }, [String(t.timeDisplay || "\u2014")]),
+      h("td", { class: "task-cost" }, [String(t.costDisplay || "\u2014")]),
     ]));
   }
   table.appendChild(tbody);

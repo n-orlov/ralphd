@@ -101,6 +101,7 @@ from ..engine.state import (
     steering_entries,
     task_blocked_by,
     task_failure_kinds,
+    task_totals,
     tasks_read_notice,
 )
 from ..log_merge import (
@@ -1142,6 +1143,37 @@ def _with_tasks_read_label(tasks: dict) -> dict:
     return out
 
 
+def _with_task_totals(tasks: dict, iterations: list) -> dict:
+    """Task 036 (G.4): attach each task's own aggregated `timeDisplay`/
+    `costDisplay` -- summed from every entry in `iterations` (THIS run's own
+    `run_detail` iteration list, `engine.state.iteration_detail` shaped) that
+    named it via `assignedTaskId`, via `engine.state.task_totals` -- so the
+    hub tasks table's new time/cost columns render server-formatted strings,
+    exactly the `usage.costDisplay`/`startedAtLocal` discipline every other
+    hub number already follows, never a client-side re-sum.
+
+    A task no iteration was ever dispatched against gets NEITHER key added
+    at all (never a counted `$0.00`/`0s`), so app.js can render its own
+    "nothing yet" dash for exactly the tasks `task_totals` has nothing to
+    say about -- the same absent-key discipline `_with_tasks_read_label`
+    just above uses for `tasksNotice`/`tasksLabel`.
+    """
+    totals = task_totals(iterations)
+    if not totals:
+        return tasks
+    out = dict(tasks)
+    new_list = []
+    for t in tasks.get("tasks") or []:
+        tid = t.get("id")
+        agg = totals.get(str(tid)) if tid is not None else None
+        if agg:
+            t = {**t, "timeDisplay": agg["durationDisplay"],
+                 "costDisplay": agg["costDisplay"]}
+        new_list.append(t)
+    out["tasks"] = new_list
+    return out
+
+
 # Task 004 (A.2): the hub's derivation caches, so a poller that re-fetches
 # `GET /api/runs/<id>` on a fixed interval does not pay to re-derive iteration
 # rows or re-shape the tasks/status blocks when nothing that feeds them has
@@ -1371,6 +1403,11 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         detail = _cached_iteration_row(run_dir, run_id, number)
         if detail is not None and detail.get("hasMeta"):
             iterations.append(detail)
+
+    # Task 036 (G.4): the hub tasks table's time/cost columns -- per-task
+    # sums over exactly the iterations just built above, so a task's total
+    # can never disagree with what its own timeline rows already show.
+    tasks = _with_task_totals(tasks, iterations)
 
     return {
         "runId": run_id,

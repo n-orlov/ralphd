@@ -1647,7 +1647,11 @@ def test_a_hyphenated_status_pill_never_breaks_across_two_lines(tmp_path, pw):
         # unsqueezed, it is one line -- the baseline the operator should see.
         assert abs(float(pw.eval_js(_PILL_HEIGHT)) - one_line) < 0.5
 
-        assert int(pw.eval_js(_SQUEEZE)) == 3
+        # Task 036 (G.4) added the time/cost columns after title -- 5
+        # headers now, not 3 -- but the squeeze rules above only target the
+        # first three (id/status/title), which is all this test's pill-wrap
+        # property needs.
+        assert int(pw.eval_js(_SQUEEZE)) == 5
         width = float(pw.eval_js(_PILL_WIDTH))
         height = float(pw.eval_js(_PILL_HEIGHT))
         cell = float(pw.eval_js(_PILL_CELL_WIDTH))
@@ -2367,6 +2371,80 @@ def test_timeline_row_shows_task_id_tier_and_cost(tmp_path, pw):
         assert "tier: hard" in row_text, row_text
         assert cost_display in row_text, row_text
         pw.screenshot(SCREENSHOTS_DIR / "25-timeline-task-tier-cost.png")
+    finally:
+        server.stop()
+
+
+def test_task_table_shows_summed_time_and_cost_across_two_iterations(tmp_path, pw):
+    """Task 036 (G.4): the hub tasks table's new time/cost columns are
+    AGGREGATED per task, not the last iteration's own figures -- a task that
+    took two attempts (a validation-failed re-entry dispatching a second
+    iteration against the SAME task id) must show the SUM across both, never
+    just the second attempt's numbers.
+
+    Two iterations both carry `assignedTaskId: "030"` -- iteration 1 (the
+    first attempt, ended in `validation-failed`) and iteration 2 (the
+    re-claim that finished it) -- each with its own duration and its own
+    fully-priced `usage`, built off the same `_base_meta` fixture helper task
+    034's test above uses. `engine.state.task_totals` sums `durationS` and
+    rolls the two `usage` dicts together (`_accumulate_task_usage`, the same
+    algorithm `LoopSupervisor._merge_usage` uses for status.json's own
+    buckets), so the expected total is computed here from the SAME two
+    numbers the fixture writes, never a hand-typed literal that could drift
+    from the fixture.
+    """
+    from ralphd.cli.ui_server import run_detail
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_cli_iteration_detail import _base_meta
+
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-task-totals", state="succeeded",
+                              verdict="verified")
+    (run_dir / "tasks.json").write_text(json.dumps({
+        "version": 1, "goal": "ship it",
+        "tasks": [{"id": "030", "title": "add the totals column",
+                   "status": "completed", "validationAttempts": 1}],
+    }))
+
+    meta1 = _base_meta(1, assignedTaskId="030",
+                       startedAt="2026-09-02T10:00:00Z",
+                       endedAt="2026-09-02T10:01:00Z",
+                       usage={"input": 10, "output": 20, "totalTokens": 30,
+                              "costUSD": 0.01, "costPriced": True})
+    meta2 = _base_meta(2, assignedTaskId="030",
+                       startedAt="2026-09-02T11:00:00Z",
+                       endedAt="2026-09-02T11:02:00Z",
+                       usage={"input": 15, "output": 25, "totalTokens": 40,
+                              "costUSD": 0.02, "costPriced": True})
+    for number, meta in ((1, meta1), (2, meta2)):
+        d = run_dir / "iterations" / f"{number:04d}"
+        d.mkdir(parents=True)
+        (d / "meta.json").write_text(json.dumps(meta))
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-task-totals")
+        _wait_for_count_ge(pw, "document.querySelectorAll('#task-box tbody tr').length", 1)
+
+        # -- the server's own payload -- the expected sum, derived from the
+        # SAME two iterations, never a hand-typed literal --------------------
+        detail = run_detail(registry, "run-task-totals")
+        task_row = detail["tasks"]["tasks"][0]
+        assert task_row["id"] == "030"
+        expected_time = task_row["timeDisplay"]
+        expected_cost = task_row["costDisplay"]
+        assert expected_time == "3m"  # 60s + 120s
+        assert expected_cost == "$0.0300"  # 0.01 + 0.02
+
+        # -- the TASK TABLE ROW itself shows the summed figure, unopened -----
+        row_text = pw.eval_js(
+            "document.querySelector('tr.task-row[data-task-id=\"030\"]')"
+            ".textContent")
+        assert expected_time in row_text, row_text
+        assert expected_cost in row_text, row_text
+        pw.screenshot(SCREENSHOTS_DIR / "26-task-table-summed-time-cost.png")
     finally:
         server.stop()
 

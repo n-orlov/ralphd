@@ -6350,6 +6350,87 @@ def _cost_buckets(raw, numeric_keys: bool = False, tier_keys: bool = False) -> l
     return [cost_bucket(raw.get(k), str(k)) for k in keys]
 
 
+def _accumulate_task_usage(bucket: dict, usage: dict) -> dict:
+    """Add one iteration's `usage` dict into `bucket` (a per-task rollup) in
+    place, returning it -- the SAME algorithm `LoopSupervisor._merge_usage`/
+    `_merge_cost_status` (`engine/loop.py`) use to roll a per-iteration usage
+    dict into status.json's byPhase/byApproach/byTier buckets (tasks 017/049/
+    050/052), duplicated here rather than imported: `engine.loop` imports
+    `engine.state`, so the dependency cannot run the other way. Kept
+    algorithmically identical -- same cost-status monotonicity, same
+    `costFree` carry, same non-numeric-marker skip -- so a task's aggregated
+    cost (task 036, G.4) can never disagree with what the SAME iterations
+    would produce inside status.json's own rollup.
+    """
+    prev = bucket.get("costStatus")
+    unpriced_gap = ((usage.get("costPriced") is False or is_zero_quote(usage))
+                    and usage.get("costDerived") is not True)
+    has_unknown = prev in ("partial", "unknown") or unpriced_gap
+    has_derived = (prev == "derived"
+                   or isinstance(bucket.get("costDerivedUSD"), float)
+                   or isinstance(usage.get("costDerivedUSD"), float))
+    if not has_unknown:
+        status = "derived" if has_derived else None
+    else:
+        has_price = (prev == "partial" or has_derived
+                     or isinstance(bucket.get("costUSD"), float)
+                     or isinstance(usage.get("costUSD"), float))
+        status = "partial" if has_price else "unknown"
+    for k, v in usage.items():
+        if isinstance(v, bool):
+            continue
+        bucket[k] = (round(bucket.get(k, 0) + v, 6) if isinstance(v, float)
+                     else bucket.get(k, 0) + v)
+    if usage.get("costFree") is True:
+        bucket["costFree"] = True
+    if status:
+        bucket["costStatus"] = status
+    return bucket
+
+
+def task_totals(iterations: list) -> dict:
+    """Per-task aggregated time/cost for the hub tasks table (task 036, G.4):
+    `{task_id: {"durationS": float, "durationDisplay": str, "costDisplay":
+    str, "iterationCount": int}}`, summed from every entry in `iterations`
+    (`iteration_detail`'s own shape -- this run's `run_detail` iteration list)
+    whose `assignedTaskId` names that task, INCLUDING a validation-failed
+    re-entry that dispatched a second iteration against the same task id --
+    a task's total reflects every attempt at it, never only its last one.
+
+    Reads `durationS`/`usage` off `iteration_detail`'s already-derived
+    fields -- never re-reads meta.json here -- the same "shape once, render
+    everywhere" discipline `iteration_detail`'s own `costDisplay` follows. A
+    task id no iteration ever carried gets no entry at all, so a caller can
+    tell "never attempted" apart from "attempted for $0.00".
+    """
+    raw: dict[str, dict] = {}
+    for it in iterations:
+        if not isinstance(it, dict):
+            continue
+        tid = it.get("assignedTaskId")
+        if tid is None:
+            continue
+        tid = str(tid)
+        bucket = raw.setdefault(tid, {"durationS": 0.0, "usage": {},
+                                      "iterationCount": 0})
+        dur = it.get("durationS")
+        if isinstance(dur, (int, float)) and not isinstance(dur, bool):
+            bucket["durationS"] += dur
+        usage = it.get("usage")
+        if isinstance(usage, dict):
+            _accumulate_task_usage(bucket["usage"], usage)
+        bucket["iterationCount"] += 1
+    out = {}
+    for tid, bucket in raw.items():
+        out[tid] = {
+            "durationS": round(bucket["durationS"], 3),
+            "durationDisplay": format_duration(bucket["durationS"]),
+            "costDisplay": format_cost(bucket["usage"], decimals=4) or USAGE_NONE,
+            "iterationCount": bucket["iterationCount"],
+        }
+    return out
+
+
 def cost_breakdown(run_root: Path) -> dict:
     """Everything status.json knows about what this run spent, per phase and
     per approach (task 027, #18.5).
