@@ -216,10 +216,11 @@ def _detect_cycles(tasks: list[dict]) -> list[str]:
 # `## Task 004 (approach 3, requirement F)` section). The v0.15 run's own
 # `tasks.json` is indeed gone with its run directory (the loss
 # `TASK_042_SUCCESS_CRITERIA` above documents for v0.8's task 042), but the
-# clause itself survives in a tracked file, so nothing here has to be
-# reconstructed -- `tests/test_stranding_lints.py` asserts the recovered
-# string is a verbatim (whitespace-flattened) substring of that tracked
-# record, and only the minimal criterion frame around it is this module's.
+# clause itself survives here as a literal string, so nothing here has to be
+# reconstructed -- `tests/test_stranding_lints.py` verified (task 013) that
+# the recovered string was a verbatim (whitespace-flattened) substring of
+# that tracked record before N.1 (task 061) deleted `artifacts/reports/`
+# wholesale; only the minimal criterion frame around it is this module's.
 V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE = (
     "`git diff --stat HEAD~1 HEAD` showing only additions to that file"
 )

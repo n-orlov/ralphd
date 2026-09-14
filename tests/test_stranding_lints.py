@@ -69,12 +69,15 @@ def _flattened(rel_path: str) -> str:
 # tracked v0.15 records. The two tests below pin the recovery itself before
 # any lint behaviour is asserted.
 def test_the_v015_task_004_relational_sha_clause_is_recovered_verbatim():
-    """Not a reconstruction: the fixture's operative clause is a verbatim
-    substring of the tracked v0.15 notification record's approach-3 task 004
-    entry, and the criterion fixture embeds it unchanged."""
-    tracked = _flattened(pi.V015_TASK_004_RECOVERED_CLAUSE_SOURCE)
-    assert pi.V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE in tracked
-    assert "## Task 004 (approach 3, requirement F)" in tracked
+    """Not a reconstruction: the fixture's operative clause was verified at
+    recovery time (task 013, commit `9230101a`) to be a verbatim substring
+    of the tracked v0.15 notification record's approach-3 task 004 entry
+    (`## Task 004 (approach 3, requirement F)`), under the source path
+    `V015_TASK_004_RECOVERED_CLAUSE_SOURCE` names. That tracked file is
+    deleted under N.1 (task 061) along with the rest of
+    `artifacts/reports/`, so this test now checks only the code-level fact
+    that still exists after the deletion: the criterion fixture embeds the
+    recovered clause unchanged."""
     assert (
         pi.V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE
         in pi.TASK_004_HEAD_ANCHOR_CRITERIA
@@ -1044,21 +1047,22 @@ def test_issue_116_fixture_6_has_json_syntax_is_documented_and_accepted():
 # preamble above. That gap is CLOSED, not merely documented:
 # `V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE` /
 # `TASK_004_HEAD_ANCHOR_CRITERIA` above are RECOVERED verbatim from the
-# tracked `artifacts/reports/v0.15-operator-notifications.md` record, and
-# the fixture is squarely IN the lint's lexical reach: it is the exact
-# clause `test_v015_approach3_task004s_recovered_head_anchor_is_rejected`
+# tracked `artifacts/reports/v0.15-operator-notifications.md` record (that
+# tracked file is deleted under N.1/task 061 along with the rest of
+# `artifacts/reports/`; the verbatim-substring recovery itself was verified
+# at task 013, commit `9230101a`, before the deletion), and the fixture is
+# squarely IN the lint's lexical reach: it is the exact clause
+# `test_v015_approach3_task004s_recovered_head_anchor_is_rejected`
 # (earlier in this module) already asserts the relational-sha lint catches
 # via a `HEAD~1` anchor. Fixture 7 is therefore MUST-CATCH, not
 # DOCUMENTED-AND-ACCEPTED -- unlike fixtures 3-6, there is no lexical gap
 # to document here, only a recovery to pin and a catch to assert directly,
-# both below, with the pre-existing recovery/containment assertions kept.
+# both below, with the pre-existing containment assertion kept.
 def test_issue_116_fixture_7_reconstruction_gap_is_already_closed():
     assert (
         pi.V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE
         in pi.TASK_004_HEAD_ANCHOR_CRITERIA
     )
-    tracked = _flattened(pi.V015_TASK_004_RECOVERED_CLAUSE_SOURCE)
-    assert pi.V015_TASK_004_RECOVERED_RELATIONAL_SHA_CLAUSE in tracked
     payload = {
         "tasks": [
             _basic_task("045", successCriteria=pi.TASK_004_HEAD_ANCHOR_CRITERIA)
