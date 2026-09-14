@@ -162,6 +162,16 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "the rendered review and peer verdict-gate prompts "
         "(REVIEW_SECRET_REASON)", ALL),
     AbsenceAssertion(
+        "test_petition_hold_bound.py", (127,), ("skipped",),
+        "the mid-run adjudication episode's own extra block "
+        "(`LoopSupervisor._midrun_adjudication_extra`, task 011, "
+        "requirement C.5, #187) -- Python-built text, never read from any "
+        "shipped template", None,
+        "the literal legitimately appears throughout review.md and "
+        "worker.md describing the `skipped` task status generally; this "
+        "check is scoped to `_midrun_adjudication_extra`'s own returned "
+        "string, which is never itself a shipped template", lowercased=True),
+    AbsenceAssertion(
         "test_price_strategy_derive.py", (174,), ("$0.00",),
         "`format_cost`'s CLI render", None,
         "not a template-fed artifact; no shipped template contains it either"),

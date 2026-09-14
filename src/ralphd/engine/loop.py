@@ -6777,6 +6777,29 @@ class LoopSupervisor:
     # the counter every pass forever and defeat the guard's purpose.
     STAGNATION_TOOL_ACTIVITY_MIN_CALLS = 3
 
+    # Task 011 (PRD v0.21 requirement C.4, #187): the no-task worker
+    # iterations one continuous petition-hold may cost, this process's
+    # own `_step_worker` while loop only -- a run whose entire actionable
+    # remainder is blocked on a petitioned ancestor is deliberately
+    # EXEMPT from the ordinary `stagnant >= 3` guard (see
+    # `petition_held_this_pass`'s own `continue` a few hundred lines
+    # below), which is exactly the hole this bound closes: without it,
+    # nothing but the run's overall `iterations` budget would ever stop
+    # the held branch from dispatching one no-task worker call every
+    # single pass for as long as budget remains (v0.20 lost ~85
+    # iterations and 3.6 hours to precisely this, twice, per the PRD's
+    # own framing of requirement C). The mid-run adjudication episode
+    # already gets exactly ONE bounded, off-budget shot at each open
+    # obligation set (`_petition_adjudication_seen`'s own dedup) before
+    # the held branch is ever reached a second time for the SAME set --
+    # so once this many no-task iterations have been spent holding on an
+    # obligation set with no new adjudication outcome, a further pass
+    # would learn nothing a `(bound + 1)`-th no-task iteration could not
+    # already tell from the first: nothing has changed. `_step_worker`
+    # reads this constant (never a literal at the check site) so a test
+    # can name the SAME bound it asserts against.
+    PETITION_HELD_MAX_NO_TASK_ITERATIONS = 3
+
     def _approach_start_head(self, approach: int) -> str | None:
         """The workspace HEAD `approach` started at (requirement A.1, task
         001, #-- the peer-gate finding that `_step_worker` took this
@@ -6846,6 +6869,13 @@ class LoopSupervisor:
         """
         approach = self._approach
         stagnant = 0
+        # Task 011 (PRD requirement C.4, #187): consecutive no-task passes
+        # held on a petitioned ancestor, THIS process's own count -- see
+        # `PETITION_HELD_MAX_NO_TASK_ITERATIONS`'s own docstring. Reset to
+        # 0 the instant a pass is not held (a task became selectable, or
+        # the hold resolved), so an intervening productive pass never
+        # carries a stale streak into a LATER, unrelated hold.
+        petition_held_streak = 0
         verdict_ready = False
         guard_ready: str | None = None
         # Task 018 (PRD requirement B.3, #156): the head this approach
@@ -7077,6 +7107,38 @@ class LoopSupervisor:
                     woken = await self._sleep_until_earliest_deferred(tasks_before)
                     if woken:
                         continue
+            # Task 011 (PRD requirement C.4, #187): the bound itself --
+            # counted AFTER the escalation/adjudication-episode logic just
+            # above (so the operator report and the one bounded
+            # adjudication shot still happen exactly as before), but
+            # BEFORE this pass's own worker dispatch, so a pass that would
+            # exceed the bound never spends one. A pass that is NOT held
+            # resets the streak instead -- a hold that resolves and later
+            # recurs (a fresh petition on a different obligation set)
+            # starts its own bound from zero, never inheriting an earlier
+            # hold's count.
+            if petition_held_this_pass:
+                petition_held_streak += 1
+            else:
+                petition_held_streak = 0
+            if (petition_held_this_pass and petition_held_streak
+                    > self.PETITION_HELD_MAX_NO_TASK_ITERATIONS):
+                self.run.emit(
+                    "log", level="error",
+                    message=(
+                        "already spent "
+                        f"{self.PETITION_HELD_MAX_NO_TASK_ITERATIONS} "
+                        "no-task worker iterations held on the same "
+                        "petitioned dependency with no new adjudication "
+                        "outcome -- routing to review for a verdict "
+                        "instead of burning another one (task 011, "
+                        "requirement C.4, #187)"),
+                    heldTaskIds=sorted(blocked_incl_petitioned.keys()),
+                    dependentTaskIds=sorted(actionable_ids))
+                self._advance("worker", "review", "petition_held_no_task_bound")
+                verdict_ready = True
+                guard_ready = "petition_held_no_task_bound"
+                break
             claimed_from = None
             claimed_from_tier: str | None = None
             if isinstance(selected, dict) and selected.get("status") in (

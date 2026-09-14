@@ -1641,3 +1641,21 @@ count via the same unique-module-path recipe used throughout this
 section: `370` (fast), `255` (smoke). `tests/records/` is unaffected
 (still 117, untouched by this task). Both ceilings (5800 tests/375
 modules fast, 4300/260 smoke) still carry headroom.
+
+**5704 (smoke 4097, modules 371 (fast), 256 (smoke)) by v0.21 task 011
+(requirement C.4/C.5, #187).** One new module,
+`tests/test_petition_hold_bound.py`, two new nodes (also `smoke` -- no
+live engine/container: one drives `LoopSupervisor._step_worker()` over a
+scripted `ScriptedRunner` against a real `RunDir` to prove the new
+`PETITION_HELD_MAX_NO_TASK_ITERATIONS` bound actually cuts a held run
+off; one is a pure-data check of `transitions.TASK_STATUS_TABLE`/
+`_midrun_adjudication_extra`'s own prompt text, no engine call at all).
+From the 5702/4095/370 the paragraph above measures: **5704/4097/371**.
+Re-measured directly at this task's own tip with `.venv/bin/python -m
+pytest -m <fast|smoke> --collect-only -q` (fast: `5704/5809 tests
+collected (105 deselected)`, smoke: `4097/5809 tests collected (1712
+deselected)`), and the module count via the same unique-module-path
+recipe used throughout this section: `371` (fast), `256` (smoke).
+`tests/records/` is unaffected (still 117, untouched by this task). Both
+ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry
+headroom -- fast is now within 96 of its stated ceiling.

@@ -462,14 +462,21 @@ def test_a_held_pass_runs_the_episode_and_still_dispatches_the_worker(tmp_path):
 def test_repeated_held_passes_never_trip_the_stagnation_counter(tmp_path):
     """Node id:
     test_repeated_held_passes_never_trip_the_stagnation_counter -- the
-    stagnation-exemption half of requirement C.2. Five held passes in a
-    row, each with `tasks.json` unchanged, no commit, no contract
-    progress and no tool activity -- exactly the shape that trips
-    `stagnant >= 3` (guard 10, `stagnation_exhausted`) for an ordinary
-    worker loop -- must NOT fail or replan this approach; the run simply
-    runs its ordinary iteration budget out and tails off."""
+    stagnation-exemption half of requirement C.2. Three held passes in a
+    row (the run's own iteration budget here, chosen to land exactly on
+    task 011's own `LoopSupervisor.PETITION_HELD_MAX_NO_TASK_ITERATIONS`
+    bound, requirement C.4, #187 -- so this scenario ends on the run's
+    ordinary budget exhaustion, never on that SEPARATE bound), each with
+    `tasks.json` unchanged, no commit, no contract progress and no tool
+    activity -- exactly the shape that trips `stagnant >= 3` (guard 10,
+    `stagnation_exhausted`) for an ordinary worker loop -- must NOT fail
+    or replan this approach; the run simply runs its ordinary iteration
+    budget out and tails off. A run with MORE budget than the bound is
+    task 011's own `tests/test_petition_hold_bound.py`'s scope, not this
+    one's -- that module is what pins the bound itself actually cutting a
+    longer hold off."""
     sup, run, workspace = _episode_worker_supervisor(
-        tmp_path, iterations=5, max_approaches=2)
+        tmp_path, iterations=3, max_approaches=2)
     _episode_petitions_file(workspace, HELD_OBLIGATION)
     atomic_write_json(sup.run.tasks_file,
                       {"version": 1, "tasks": _held_plan()})
@@ -483,12 +490,15 @@ def test_repeated_held_passes_never_trip_the_stagnation_counter(tmp_path):
 
     outcome = asyncio.run(sup._step_worker())
 
-    # Every one of the 5 charged iterations dispatched the ordinary
+    # Every one of the 3 charged iterations dispatched the ordinary
     # worker -- none of them was skipped -- and NONE of them tripped
     # guard 10: the outcome is the ordinary budget-exhaustion tail, never
     # an approach failure/replan over a hold that was always going to
-    # resolve on its own.
-    assert agent.calls.get("worker") == 5
+    # resolve on its own. Landing exactly on task 011's own bound means
+    # the run's OWN `iterations` budget is what ends this pass, one beat
+    # before that bound's own "already spent N held passes" check would
+    # otherwise have fired on a hypothetical 4th pass.
+    assert agent.calls.get("worker") == 3
     assert outcome == ("tail",)
 
     # The bounded episode ran exactly ONCE for this obligation -- calling

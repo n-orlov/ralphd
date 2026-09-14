@@ -166,6 +166,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `worker` | worker | both | `review` | `blocked_with_failures` |
 | `worker` | worker | both | `replan` | `stagnation_exhausted` |
 | `worker` | worker | both | `review` | `doomed_plan_unverifiable` |
+| `worker` | worker | both | `review` | `petition_held_no_task_bound` |
 | `worker` | worker | both | `worker` | `unsatisfiable_targeted_replan` |
 | `worker` | worker | both | `review` | `unsatisfiable_and_nothing_left` |
 | `worker` | worker | both | `worker` | `worker_deferred_reordered` |
@@ -243,6 +244,7 @@ stateDiagram-v2
     worker --> review : blocked_with_failures
     worker --> replan : stagnation_exhausted
     worker --> review : doomed_plan_unverifiable
+    worker --> review : petition_held_no_task_bound
     worker --> worker : unsatisfiable_targeted_replan
     worker --> review : unsatisfiable_and_nothing_left
     worker --> worker : worker_deferred_reordered

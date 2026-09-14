@@ -224,6 +224,16 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # a dependency-graph replan or a terminal degraded state) was
         # chosen.
         T("review", "doomed_plan_unverifiable"),
+        # Task 011 (PRD v0.21 requirement C.4, #187): the entire actionable
+        # remainder has been held on the SAME petitioned ancestor for
+        # `LoopSupervisor.PETITION_HELD_MAX_NO_TASK_ITERATIONS` no-task
+        # passes with no new adjudication outcome -- routed to `review`
+        # for a verdict, reusing the exact same edge `doomed_plan_
+        # unverifiable`/`blocked_with_failures` already take, rather than
+        # letting the held branch's own stagnation exemption (see
+        # `petition_held_this_pass` in loop.py) turn into an unbounded
+        # spend of the run's own iteration budget.
+        T("review", "petition_held_no_task_bound"),
         # Task 025 (requirement H, #63): a worker's `verdict: "unsatisfiable"`
         # report is a state change (the named task moves to `skipped`,
         # `unsatisfiableReason` recorded on its record) the moment the
