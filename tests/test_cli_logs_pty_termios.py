@@ -32,7 +32,7 @@ import subprocess
 import termios
 import time
 
-from tests.conftest import RALPHCTL
+from tests.conftest import RALPHCTL, sigint_default_for_children
 
 # Timeouts here are deliberately generous (task 045 suite hygiene): these
 # tests spawn a real engine plus a real `ralphctl` subprocess under a pty,
@@ -70,11 +70,17 @@ def _spawn_under_pty(run, extra_args: list[str]):
     master_fd, slave_fd = pty.openpty()
     pre_attrs = termios.tcgetattr(slave_fd)
     env = {**os.environ, "RALPHD_REGISTRY": str(run.registry)}
-    proc = subprocess.Popen(
-        [str(RALPHCTL), "logs", run.run_id, "--follow", *extra_args],
-        env=env, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
-        start_new_session=True,
-    )
+    # `sigint_default_for_children`: one of this module's three tests SIGINTs
+    # this child, and every self-hosted runner ignores SIGINT (SigIgn=0x1007),
+    # which a child inherits across exec -- see the helper's own docstring.
+    # Applied in the shared spawn helper so the 'q' and SIGTERM tests get the
+    # same, single disposition rather than three subtly different ones.
+    with sigint_default_for_children():
+        proc = subprocess.Popen(
+            [str(RALPHCTL), "logs", run.run_id, "--follow", *extra_args],
+            env=env, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+            start_new_session=True,
+        )
     os.close(slave_fd)  # child holds its own dup'd copies; the pty stays
                         # alive via master_fd for the parent to inspect.
     return proc, master_fd, pre_attrs

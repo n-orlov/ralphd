@@ -6,12 +6,14 @@ directly-launched `ralphd-engine` (no Docker) behind `ralphctl` — the
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import functools
 import json
 import os
 import re
 import shutil
+import signal
 import site
 import socket
 import subprocess
@@ -206,6 +208,52 @@ _INTERPRETER_DIR = Path(sys.executable).parent
 # only ever reached when pytest_configure() is about to abort the session
 # anyway, where it serves purely as the "beside the interpreter" label.
 RALPHCTL = _resolve_ralphctl(_INTERPRETER_DIR, os.environ) or _INTERPRETER_DIR / "ralphctl"
+
+
+@contextlib.contextmanager
+def sigint_default_for_children():
+    """Spawn children with SIGINT at SIG_DFL, whatever this process inherited.
+
+    Wrap the `Popen` of any child a test intends to interrupt with SIGINT.
+
+    An **ignored** SIGINT is inherited across `fork`+`exec` -- unlike a caught
+    one, which resets to the default -- and `subprocess`'s `restore_signals`
+    only restores SIGPIPE/SIGXFZ/SIGXFSZ, never SIGINT. So a `ralphctl` spawned
+    from a process whose SIGINT is `SIG_IGN` cannot react to `send_signal` at
+    all: the kernel discards the signal, no handler runs, and the CLI sits in
+    whatever blocking read it was in until something else kills it.
+
+    That is not hypothetical. Measured on `int21h-ws`, 14 Sep 2026, on every one
+    of the six self-hosted runner processes:
+
+        SigIgn=0000000000001007   <- SIGHUP | SIGINT | SIGQUIT | SIGPIPE
+
+    so every job step, and every process below it, inherits an ignored SIGINT.
+    Without this guard such a test asserts something about the RUNNER's signal
+    disposition rather than about `ralphctl`, and fails with the CLI parked in
+    `socket.readinto` under `_stream_logs` -- the exact stack a faulthandler
+    dump caught at `f95b31d` on `int21h-ws-5`. Reproduced 100% by running the
+    test from a parent with `signal.signal(SIGINT, SIG_IGN)`, and fixed by this.
+
+    Set in this process rather than via `preexec_fn`: the disposition that
+    matters is the one held at `fork`, and `preexec_fn` is documented as unsafe
+    in a process with threads (pytest-xdist and pytest-timeout's thread method
+    both bring them). Restored immediately afterwards.
+
+    Respecting an inherited `SIG_IGN` is correct POSIX behaviour for the CLI and
+    is deliberately NOT changed in the product: a user whose shell ignores
+    SIGINT should see Ctrl+C do nothing. This only lets a test state the
+    precondition it always meant.
+    """
+    try:
+        previous = signal.signal(signal.SIGINT, signal.SIG_DFL)
+    except ValueError:  # not the main thread -- nothing to set, nothing to fix
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
 RALPHD_ENGINE = _resolve_engine(_INTERPRETER_DIR, os.environ) or _INTERPRETER_DIR / "ralphd-engine"
 
 

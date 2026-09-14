@@ -25,15 +25,9 @@ import time
 
 import pytest
 
-from tests.conftest import RALPHCTL
+from tests.conftest import RALPHCTL, sigint_default_for_children
 
 _SIGINT_EXIT_CODE = 130
-
-# Timeouts here are deliberately generous (task 045 suite hygiene): these
-# tests spawn a real engine plus a real `ralphctl` subprocess, so on a
-# loaded machine a 15s wait for the post-SIGINT exit is a coin flip that
-# fails the whole sweep for no behavioural reason. They still fail (they
-# do not pass by timing out) if the CLI never exits or exits wrongly.
 
 
 def _read_first_nonblank_line(proc: subprocess.Popen, timeout: float) -> str:
@@ -96,10 +90,11 @@ def test_sigint_during_follow_exits_clean_no_traceback(live, tmp_path):
 
     env = {**os.environ, "RALPHD_REGISTRY": str(run.registry),
            "PYTHONFAULTHANDLER": "1"}
-    proc = subprocess.Popen(
-        [str(RALPHCTL), "logs", run.run_id, "--follow"],
-        env=env, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+    with sigint_default_for_children():
+        proc = subprocess.Popen(
+            [str(RALPHCTL), "logs", run.run_id, "--follow"],
+            env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     try:
         _read_first_nonblank_line(proc, timeout=60)
         proc.send_signal(signal.SIGINT)
