@@ -1851,7 +1851,7 @@ section: `371` (fast), `256` (smoke). `tests/records/` is unaffected
 modules fast, 4300/260 smoke) still carry headroom -- fast is now within
 75 of its stated ceiling.
 
-**5728 (smoke 4108, modules unchanged at 371 (fast), 256 (smoke)) by v0.21
+**5729 (smoke 4109, modules unchanged at 371 (fast), 256 (smoke)) by v0.21
 task 023 (requirement E.1, #180) -- folding in task 022's own undocumented
 +1.** Task 022 (D.13) landed one new node
 (`test_task_scoped_approach_mismatch_stays_historical_for_the_peer_verdict_gate_too`
@@ -1860,19 +1860,22 @@ in `tests/test_operator_ruling.py`, fast-only -- that module spawns a real
 in-process) without a paragraph here, on the judgment that only the
 ceiling check matters for a single node; this paragraph folds that +1
 back into the visible count rather than leaving it a silent gap. Task
-023 itself adds two new nodes in the EXISTING `tests/test_job_config_defaults.py`
-module -- `test_job_config_load_reads_job_yaml_the_agent_uid_cannot_open`
-and `test_job_config_load_with_no_boundary_reads_normally` -- neither
-spawns a real engine or CLI process, so both are `smoke` as well as
-`fast`; net +2 fast, +2 smoke, module count unchanged (no new module).
+023 itself adds three new nodes in the EXISTING
+`tests/test_job_config_defaults.py` module --
+`test_job_config_load_reads_job_yaml_the_agent_uid_cannot_open`,
+`test_job_config_load_when_the_engine_uid_is_not_the_config_dir_owner`
+(the uid-mismatch cover added on this task's second attempt) and
+`test_job_config_load_with_no_boundary_reads_normally` -- none of the three
+spawns a real engine or CLI process, so all three are `smoke` as well as
+`fast`; net +3 fast, +3 smoke, module count unchanged (no new module).
 From the 5725/4106/371 the paragraph above measures, plus task 022's
-undocumented +1 (fast only): **5728/4108/371**. Re-measured directly at
+undocumented +1 (fast only): **5729/4109/371**. Re-measured directly at
 this task's own tip with `.venv/bin/python -m pytest -m <fast|smoke>
---collect-only -q` (fast: `5728/5833 tests collected (105 deselected)`,
-smoke: `4108/5833 tests collected (1725 deselected)`), and the module
+--collect-only -q` (fast: `5729/5834 tests collected (105 deselected)`,
+smoke: `4109/5834 tests collected (1725 deselected)`), and the module
 count via the same unique-module-path recipe used throughout this
 section: `371` (fast), `256` (smoke). `tests/records/` is unaffected
 (still 117, untouched by this task). Both ceilings (5800 tests/375
 modules fast, 4300/260 smoke) still carry headroom -- fast is now within
-72 of its stated ceiling.
+71 of its stated ceiling.
 

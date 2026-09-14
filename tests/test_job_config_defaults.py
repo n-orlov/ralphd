@@ -12,7 +12,9 @@ attempt cap (`None` = honoured only when set explicitly).
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
+from pathlib import Path
 
 import pytest
 
@@ -152,6 +154,115 @@ def test_job_config_load_reads_job_yaml_the_agent_uid_cannot_open(
     assert job_yaml.stat().st_mode & 0o777 == 0o000, (
         "the elevation window must close again -- job.yaml is left exactly "
         "as unreadable at the agent uid as it was before the read")
+
+
+@_privsep_root_skip
+def test_job_config_load_when_the_engine_uid_is_not_the_config_dir_owner(
+        tmp_path, monkeypatch):
+    """Task 023 (#180, requirement E.1), the uid mismatch itself.
+
+    The situation the requirement names cannot be built literally in the fast
+    tier -- an unprivileged test process cannot `chown` a directory to another
+    uid, and cannot change its own effective uid either (a real host-uid
+    mount is covered docker-tier by task 024/E.2). So the *difference* is
+    established here as the two numbers the kernel would compare, with the
+    comparison itself modelled: the config directory is owned by whoever runs
+    this test and chmod'ed 0700 exactly as `ralphctl start` leaves `/config`,
+    the engine's effective uid is declared to be a different number, and
+    `Path.exists`/`Path.read_text` under that directory answer the way the
+    kernel's DAC check answers for that pair -- denied for any effective uid
+    that is not the owner (a 0700 directory grants nothing to group or other),
+    exempt for uid 0. Two loads run against that: with no elevation the
+    mismatch alone hides `job.yaml` entirely (`Path.exists()` swallows EACCES,
+    so the job silently gets defaults -- the bug E.1 is about), and inside
+    `privsep.root_for_write()` the very same mismatch reads the file. `/config`
+    itself is asserted unchanged by the read: same owning uid, still 0700.
+    """
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    os.chmod(config_dir, 0o700)
+    job_yaml = config_dir / "job.yaml"
+    job_yaml.write_text("iterations: 7\n")
+    os.chmod(job_yaml, 0o600)
+
+    owner_uid = config_dir.stat().st_uid
+    # The whole point of E.1: the host uid that ran `ralphctl start` is only
+    # ever the agent's 1000 by accident. Any other number reproduces it.
+    engine_euid = owner_uid + 4321
+    assert engine_euid != owner_uid, (
+        "the premise of this test is an engine effective uid that is NOT the "
+        "uid owning the config directory")
+    assert config_dir.stat().st_mode & 0o777 == 0o700
+
+    effective_uid = [engine_euid]
+    real_exists, real_read_text = Path.exists, Path.read_text
+
+    def _denied_at(p: Path) -> bool:
+        """The kernel's own owner/other check, for this uid pair."""
+        if effective_uid[0] == 0:  # root is exempt from the mode check
+            return False
+        try:
+            targets = [p, *p.parents]
+        except Exception:  # pragma: no cover - defensive
+            return False
+        for target in targets:
+            if config_dir != target and config_dir not in target.parents:
+                continue
+            st = os.stat(target)
+            if st.st_uid == effective_uid[0]:
+                if not st.st_mode & 0o400:
+                    return True
+            elif not st.st_mode & 0o004:
+                return True
+        return False
+
+    def _fake_exists(self, *a, **kw):
+        if _denied_at(self):
+            return False  # exactly what pathlib does with an EACCES stat
+        return real_exists(self, *a, **kw)
+
+    def _fake_read_text(self, *a, **kw):
+        if _denied_at(self):
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "exists", _fake_exists)
+    monkeypatch.setattr(Path, "read_text", _fake_read_text)
+    monkeypatch.setattr(privsep, "separated", lambda: True)
+
+    # 1. No elevation: the uid mismatch alone loses the job's own config.
+    monkeypatch.setattr(privsep, "root_for_write",
+                        lambda: contextlib.nullcontext(False))
+    unelevated = JobConfig.load(job_yaml)
+    assert unelevated.iterations == 25, (
+        "without the elevation the mismatched uid never sees job.yaml, so the "
+        "run silently gets the dataclass default of 25 iterations")
+
+    # 2. The production path: read inside the momentary raise to uid 0.
+    entered: list[str] = []
+
+    @contextlib.contextmanager
+    def _stand_in_root_window():
+        entered.append("raised")
+        was, effective_uid[0] = effective_uid[0], 0
+        try:
+            yield True
+        finally:
+            effective_uid[0] = was
+
+    monkeypatch.setattr(privsep, "root_for_write", _stand_in_root_window)
+    cfg = JobConfig.load(job_yaml)
+
+    assert cfg.iterations == 7
+    assert entered, "the config read never entered the elevation window"
+    assert effective_uid[0] == engine_euid, (
+        "the engine's effective uid must be back to the agent's before "
+        "JobConfig.load() returns")
+    assert config_dir.stat().st_uid == owner_uid
+    assert config_dir.stat().st_mode & 0o777 == 0o700, (
+        "/config stays closed to the host at large -- the read widened no "
+        "mode bit on the mount")
+    assert job_yaml.stat().st_mode & 0o777 == 0o600
 
 
 def test_job_config_load_with_no_boundary_reads_normally(tmp_path, monkeypatch):

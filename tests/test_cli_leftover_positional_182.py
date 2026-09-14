@@ -38,9 +38,12 @@ from ralphd.cli.main import (
 
 
 def _amend_ns(**over):
+    # `repoint`/`to` (v0.21 task 021, D.12) are part of `amend`'s namespace
+    # now: `cmd_amend` reads them unconditionally, so a hand-built namespace
+    # without them raises AttributeError before reaching the code under test.
     base = dict(json=False, command="amend", run_id="s1", task_id=None,
                 text=None, file=None, waive=False, status=None, list=False,
-                approach=None, force=False, wave=False)
+                approach=None, force=False, wave=False, repoint=None, to=None)
     base.update(over)
     return argparse.Namespace(**base)
 
