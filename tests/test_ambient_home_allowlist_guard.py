@@ -27,6 +27,7 @@ file), never by editing anything under the real `src/ralphd/` tree.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 from ralphd.ambient_home_allowlist import AMBIENT_HOME_ALLOWLIST
@@ -45,15 +46,29 @@ AMBIENT_HOME_RE = re.compile(
 )
 
 
+# The allowlist module is DATA about ambient-home reads, not a reader of one.
+# Every entry now carries a `code` field quoting the source line it describes,
+# so the module necessarily contains text matching the regexes below -- inside
+# string literals, where it means the opposite of a read. Before the `code`
+# field existed the same collision was dodged by writing "bare `Path.home`"
+# without parentheses in that module's prose, which is a trick that only works
+# for prose. The module contains one list literal and no executable statement,
+# which is what makes excluding it safe; a read added there would be dead code.
+SELF_DESCRIBING = {"ambient_home_allowlist.py"}
+
+
 def find_ambient_home_reads(root: Path) -> list[tuple[str, int, str]]:
-    """Every line under `root` (walked as `*.py`, recursively) that matches
-    one of the three ambient-$HOME read shapes. Returns
+    """Every line under `root` (walked as `*.py`, recursively, except the
+    self-describing allowlist module itself) that matches one of the three
+    ambient-$HOME read shapes. Returns
     `(relpath, 1-based line number, raw line text)` tuples, `relpath`
     using forward slashes so it lines up with the allowlist's own `path`
     values regardless of host OS.
     """
     out: list[tuple[str, int, str]] = []
     for path in sorted(root.rglob("*.py")):
+        if path.name in SELF_DESCRIBING:
+            continue
         rel = path.relative_to(root).as_posix()
         for lineno, text in enumerate(path.read_text().splitlines(), start=1):
             if AMBIENT_HOME_RE.search(text):
@@ -61,40 +76,73 @@ def find_ambient_home_reads(root: Path) -> list[tuple[str, int, str]]:
     return out
 
 
+def _norm(code: str) -> str:
+    """Whitespace-insensitive form of one source line, so re-indenting a read
+    (moving it into or out of a block) is not mistaken for a different read."""
+    return " ".join(code.split())
+
+
 def allowlist_violations(
     readings: list[tuple[str, int, str]],
     allowlist: list[dict[str, str]],
 ) -> list[str]:
     """Diff an ACTUAL scan (`readings`, as `find_ambient_home_reads()`
-    returns) against an allowlist's claims about it. Two kinds of mismatch,
-    each reported with its offending file:line so a failure message can be
-    acted on directly:
+    returns) against an allowlist's claims about it.
 
-    * a reading with no matching `(path, line)` allowlist entry -- a NEW,
-      unlisted ambient-home read;
-    * an allowlist entry whose `(path, line)` matches no actual reading --
-      a STALE entry: the file no longer contains that read there (edited
-      away, or the entry was simply wrong).
+    Keyed on `(path, normalised code)` and NOT on `(path, line)`. That is
+    deliberate and is what `ambient_home_allowlist.py`'s own docstring asked
+    for from the start: "line numbers drift with unrelated edits -- a future
+    guard test should key off the file, not the line, precisely because of
+    this". Keying on the line made this guard fail whenever an unrelated
+    commit inserted a line ABOVE a listed read, reporting one unmoved read as
+    both a NEW unlisted read and a STALE entry. Between 2839fa2 and 828c8d5
+    on 14 Sep 2026 that cost two separate re-anchoring cure commits and left
+    `gate` red for nine of eleven commits, none of which had touched an
+    ambient-home read at all.
+
+    Counted as a multiset rather than a set, so this is not weaker than the
+    line-keyed version in the case that matters: `cli/main.py` legitimately
+    contains `aws = Path.home() / ".aws"` twice, and a THIRD copy still has
+    to be listed or the counts disagree. What is given up is only the claim
+    that a listed read sits at one exact line, which was never a property
+    worth asserting -- it is the property that kept breaking.
+
+    Two kinds of mismatch, each reported with the file and the offending
+    source text so a failure message can be acted on directly:
+
+    * more occurrences of a read than the allowlist accounts for -- a NEW,
+      unlisted ambient-home read (or one more copy of a listed one);
+    * an allowlist entry whose code appears fewer times than claimed -- a
+      STALE entry: the read was edited away, or the entry was always wrong.
+
+    Every entry's `line` is still carried, and is still worth keeping
+    current as documentation, but it is no longer load-bearing: a drifted
+    line number cannot fail this test.
     """
-    reading_keys = {(p, l) for p, l, _ in readings}
-    allow_keys = {(e["path"], int(e["line"])) for e in allowlist}
+    found = Counter((p, _norm(text)) for p, _, text in readings)
+    listed = Counter((e["path"], _norm(e["code"])) for e in allowlist)
 
     violations: list[str] = []
-    for p, l, text in readings:
-        if (p, l) not in allow_keys:
-            violations.append(
-                f"NEW unlisted ambient-$HOME read at {p}:{l}: {text.strip()!r} "
-                f"-- add a reasoned entry to AMBIENT_HOME_ALLOWLIST or remove "
-                f"the read."
-            )
-    for e in allowlist:
-        key = (e["path"], int(e["line"]))
-        if key not in reading_keys:
-            violations.append(
-                f"STALE allowlist entry at {e['path']}:{e['line']}: no "
-                f"ambient-$HOME read found there anymore -- remove or "
-                f"correct the entry."
-            )
+    for key in sorted(found - listed):
+        path, code = key
+        n = (found - listed)[key]
+        where = ", ".join(
+            str(ln) for p, ln, txt in readings
+            if p == path and _norm(txt) == code
+        )
+        violations.append(
+            f"NEW unlisted ambient-$HOME read in {path} (x{n} unaccounted "
+            f"for; occurrences at line(s) {where}): {code!r} -- add a "
+            f"reasoned entry to AMBIENT_HOME_ALLOWLIST or remove the read."
+        )
+    for key in sorted(listed - found):
+        path, code = key
+        n = (listed - found)[key]
+        violations.append(
+            f"STALE allowlist entry in {path} (x{n} claimed but not found): "
+            f"{code!r} -- no such ambient-$HOME read remains in that file; "
+            f"remove or correct the entry."
+        )
     return violations
 
 
@@ -128,7 +176,8 @@ def test_mutation_a_planted_unlisted_read_is_caught(tmp_path):
     violations = allowlist_violations(readings, allowlist=[])
     assert len(violations) == 1
     assert "NEW" in violations[0]
-    assert "engine/fake_module.py:3" in violations[0]
+    assert "engine/fake_module.py" in violations[0]
+    assert "Path.home()" in violations[0]
 
 
 def test_mutation_b_stale_allowlist_entry_is_caught(tmp_path):
@@ -149,9 +198,59 @@ def test_mutation_b_stale_allowlist_entry_is_caught(tmp_path):
     stale_allowlist = [{
         "path": "engine/clean_module.py",
         "line": "2",
+        "code": "home = Path.home()",
         "reason": "this entry is deliberately wrong for the mutation test",
     }]
     violations = allowlist_violations(readings, stale_allowlist)
     assert len(violations) == 1
     assert "STALE" in violations[0]
-    assert "engine/clean_module.py:2" in violations[0]
+    assert "engine/clean_module.py" in violations[0]
+    assert "Path.home()" in violations[0]
+
+
+def test_mutation_c_a_read_that_only_moved_line_is_not_a_violation(tmp_path):
+    """The regression this keying exists for. Same file, same single read,
+    shifted down by an unrelated insertion above it. The old `(path, line)`
+    keying reported that as TWO violations (a NEW read at the new line and a
+    STALE entry at the old one); keying on the code text reports none."""
+    module = tmp_path / "engine" / "shifting_module.py"
+    module.parent.mkdir(parents=True)
+    entry = {
+        "path": "engine/shifting_module.py",
+        "line": "2",
+        "code": 'home = Path.home() / ".ralphd"',
+        "reason": "listed when the read sat on line 2",
+    }
+
+    module.write_text('def f():\n    home = Path.home() / ".ralphd"\n')
+    before = find_ambient_home_reads(tmp_path)
+    assert [(p, ln) for p, ln, _ in before] == [("engine/shifting_module.py", 2)]
+    assert allowlist_violations(before, [entry]) == []
+
+    # An unrelated import lands above it: same read, now on line 4.
+    module.write_text(
+        "import os\nimport sys\n"
+        'def f():\n    home = Path.home() / ".ralphd"\n'
+    )
+    after = find_ambient_home_reads(tmp_path)
+    assert [(p, ln) for p, ln, _ in after] == [("engine/shifting_module.py", 4)]
+    assert allowlist_violations(after, [entry]) == []
+
+
+def test_a_third_copy_of_a_twice_listed_read_is_still_caught(tmp_path):
+    """Occurrence counting, not set membership: `cli/main.py` really does
+    contain `aws = Path.home() / ".aws"` twice, so the multiset has to allow
+    exactly two and refuse a third."""
+    module = tmp_path / "cli" / "dup_module.py"
+    module.parent.mkdir(parents=True)
+    code = 'aws = Path.home() / ".aws"'
+    twice = [{"path": "cli/dup_module.py", "line": str(n), "code": code,
+              "reason": "one of two legitimate copies"} for n in (2, 3)]
+
+    module.write_text(f"def f():\n    {code}\n    {code}\n")
+    assert allowlist_violations(find_ambient_home_reads(tmp_path), twice) == []
+
+    module.write_text(f"def f():\n    {code}\n    {code}\n    {code}\n")
+    violations = allowlist_violations(find_ambient_home_reads(tmp_path), twice)
+    assert len(violations) == 1
+    assert "NEW" in violations[0] and "x1 unaccounted" in violations[0]

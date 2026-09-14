@@ -62,6 +62,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # amendment` to the same import block above this read, shifting it
         # by +1: 166->167. Same read, same reason.
         "line": "167",
+        "code": "return Path(os.environ.get(\"RALPHD_REGISTRY\", str(Path.home() / \".ralphd\")))",
         "reason": ("registry()'s ralphctl-managed-state root: overridable via "
                    "RALPHD_REGISTRY; the ambient fallback is the operator's own "
                    "machine home, which is exactly right for a bare `ralphctl` "
@@ -191,6 +192,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # amendment` to the top import block above this read, shifting it
         # by +1: 2061->2062. Same read, same reason.
         "line": "2062",
+        "code": "pi_dir = Path.home() / \".pi\" / \"agent\"",
         "reason": ("`--llm host` staging (`ralphctl start`): the whole point of "
                    "choosing the `host` LLM profile is to copy the invoking "
                    "operator's OWN `~/.pi/agent` into the new container -- there "
@@ -201,6 +203,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Task 021 (v0.21, PRD requirement D.12, #196): same +1 import-block
         # shift as the entry above it: 2081->2082.
         "line": "2082",
+        "code": "aws = Path.home() / \".aws\"",
         "reason": ("same `--llm host` staging, `~/.aws` half: mounted read-only "
                    "into the container from the operator's own machine, same "
                    "trust boundary as the `.pi/agent` copy just above it."),
@@ -254,6 +257,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # every entry from this one on: 4742->4747, read off the numbered
         # line (task 035/077).
         "line": "4747",
+        "code": "home = Path(os.environ.get(\"HOME\") or os.path.expanduser(\"~\"))",
         "reason": ("`ralphctl skills install`'s `home` used to auto-detect a "
                    "default target dir (`_auto_detect_skills_install_target`) "
                    "when the operator passes no `--target` -- the CLI IS the "
@@ -280,6 +284,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Task 032 (v0.21, requirement F.6, #159/#194): same +5 as the entry
         # above it: 4944->4949, read off the numbered line (task 035/077).
         "line": "4949",
+        "code": "aws = Path.home() / \".aws\"",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -302,6 +307,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Task 032 (v0.21, requirement F.6, #159/#194): same +5 as the entry
         # above it: 4948->4953, read off the numbered line (task 035/077).
         "line": "4953",
+        "code": "models_json = Path.home() / \".pi\" / \"agent\" / \"models.json\"",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
                    "-- same reasoning as the `.aws` mount just above it."),
     },
@@ -353,6 +359,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # both: 7005->7010, 7009->7014, each read off the numbered line
         # (task 035/077).
         "line": "7010",
+        "code": "checks[\"pi_host_config\"] = (Path.home() / \".pi\" / \"agent\" / \"settings.json\").exists()",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -378,6 +385,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Task 032 (v0.21, requirement F.6, #159/#194): same +5 as the entry
         # above it: 7009->7014, read off the numbered line (task 035/077).
         "line": "7014",
+        "code": "operator_skill = _operator_skill_status(Path.home())",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "
@@ -400,6 +408,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # at the time (the fast-lane cure for it is this same task, 040):
         # +79: 1510->1589, read off the numbered line (`sed -n '1589p'`).
         "line": "1589",
+        "code": "registry: Path = Path.home() / \".ralphd\"",
         "reason": ("`Handler.registry`'s class-level default. Every real server "
                    "binds a concrete registry via `make_handler_class(reg)` "
                    "(see its own docstring, \"Bound to a registry path via "
@@ -431,6 +440,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # line above this read, shifting it once more -- now at 131, same
         # helper, same read, same reason.
         "line": "131",
+        "code": "return Path(os.environ.get(\"HOME\") or os.path.expanduser(\"~\"))",
         "reason": ("backs `ambient_home()` (task 002) via its `_home()` "
                    "helper (task 003 refactor): the ONE designated "
                    "entry point every real caller (engine/api.py, engine/"
@@ -443,6 +453,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
     {
         "path": "engine/redact.py",
         "line": "77",
+        "code": "return Path(os.environ.get(\"HOME\") or os.path.expanduser(\"~\"))",
         "reason": ("backs build_redaction_map()'s optional `home` fallback. "
                    "Every engine-side production caller (main.py, api.py's "
                    "creds/llm PUT/DELETE handlers) now passes `home=` "
@@ -463,6 +474,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # `from . import privsep` import line above OVERLAY_DIR, shifting
         # this read down by one -- same read, same reason.
         "line": "34",
+        "code": "str(Path(os.environ.get(\"HOME\") or os.path.expanduser(\"~\")) /",
         "reason": ("OVERLAY_DIR's default, a module-level constant computed "
                    "once at import time exactly like this file's own "
                    "CONFIG_DIR/RUN_DIR/WORKSPACE_DIR (all read straight from "
@@ -555,6 +567,7 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # 1386, same method, same read, same reason (read off the numbered
         # line with `sed -n 1386p`, never by arithmetic).
         "line": "1386",
+        "code": "home = Path(os.environ.get(\"HOME\") or os.path.expanduser(\"~\"))",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "
