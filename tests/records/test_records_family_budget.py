@@ -18,42 +18,22 @@ task 008 (requirement A.6) reconciles this ceiling downward once more, to
 **150**, matching the family's current 116-node count with the same
 modest headroom the pre-restoration value already used.
 
-**The subprocess rule.** A real run of the whole family spawns exactly TWO
-real subprocesses -- one `git ls-files` and one `git rev-list HEAD` -- and
-`test_the_records_family_spawns_only_one_git_ls_files` below pins
-that live. Getting to one (from ~220) took three fixes in task 035; task 009
-(#176) then added the second, deliberately, so a report-cited sha that only
-exists as a dangling object (present in `.git` but not an ancestor of
-`HEAD`) is a claim problem instead of a silent pass:
-
-1. `tests/report_claims.py`'s `commit_problems()` used to answer "is this
-   sha a commit object" with a `git cat-file --batch-check` subprocess, once
-   PER REPORT that carried a sha claim -- about 218 of the ~220 subprocess
-   calls a full `tests/records/` run made (measured on this task's own tree,
-   before the fix). It now reads the object type straight out of `.git`
-   in-process (`_ObjectDatabase`: loose objects' zlib header, packed
-   objects' pack-entry type bits, following a delta chain to its base), so
-   the sha check spends no subprocess at all. `commit_problems()` also
-   requires that resolved commit to be reachable from `HEAD` (task 009,
-   #176), checked against one `git rev-list HEAD` snapshot
-   (`_reachable_commits()`), memoised the same way `_tracked_paths()`
-   memoises its own `git ls-files` snapshot.
-2. `test_conformance_ledger.py`'s `_collect_node_ids()` set
-   `RALPHD_SKIP_DOCKER_PROBE=1` around its nested in-process collection
-   (new gate in `tests/test_docker_sibling_e2e.py::_docker_available()`),
-   which removed a real `docker version` probe that collection pass spent
-   without ever looking at the answer. That module is itself retired now
-   (v0.20.1 task 045, ruling `001-039.md` point 3), so this particular fix
-   is history -- the gate it added stays live for any other in-process
-   collection.
-3. `tests/records/test_report_claims.py`'s whitebox memoisation test fakes
-   `subprocess.run`'s return instead of calling real git, so proving the
-   caching logic no longer spends a second real `git ls-files`.
-
-The reader that replaced the `git cat-file` call is checked against real
-git's own answers by `tests/test_report_claims_git_objects.py`, which lives
-OUTSIDE this family precisely because that comparison has to spawn the very
-subprocess this family is pinned not to spawn.
+**The subprocess rule -- retired by task 059 (requirement N.2).** A real run
+of the whole family used to spawn exactly two real subprocesses -- one
+`git ls-files` and one `git rev-list HEAD` -- both spent by
+`tests/records/test_report_claims.py`'s corpus-wide claim checks
+(`path_problems()`'s tracked-path snapshot, `commit_problems()`'s
+reachable-commit snapshot, task 009/#176). Task 059 retires that whole
+module along with the corpus-wide read it drove (N.2: the check machinery
+is retired ahead of N.1's deletion of the corpus itself), so nothing left
+in this directory calls `report_claims.commit_problems()`/`path_problems()`
+at all, and `test_the_records_family_spawns_no_subprocess` below now pins
+the family at **zero** real subprocesses instead. `tests/report_claims.py`
+itself is not deleted -- `tests/test_issue_traceability.py` still calls its
+single-report checks directly against one still-live report, out of this
+task's scope (N.2's second half, task 060) -- so the parser and the checks
+still exist; this directory's own family simply no longer has a caller of
+them, since its one caller (`test_report_claims.py`) is gone.
 
 **The single exemption.** Task 010 (#176) added
 `test_records_family_fresh_clone.py`, whose one node deliberately spawns a
@@ -62,9 +42,9 @@ passes against a genuine fresh clone, not merely this checkout's own
 working tree. That node is marked `@pytest.mark.nightly` directly (so it
 stays out of `smoke`/`fast`) but still lives inside this directory and
 still runs whenever `tests/records/` is selected by directory, so the
-nested run below excludes it by name alongside this file itself -- the one
-deliberate exemption from the two-subprocess count, never a second real
-`git ls-files` or `git rev-list HEAD` slipping in uncounted.
+nested run below excludes it by name alongside this file itself -- now the
+one exemption from the **zero**-subprocess count, never a stray
+`git ls-files`/`git rev-list HEAD`/anything else slipping in uncounted.
 """
 
 from __future__ import annotations
@@ -115,37 +95,27 @@ def test_the_records_family_collects_at_most_the_budgeted_count() -> None:
         f"{COLLECTED_BUDGET} budget docs/testing.md declares")
 
 
-def test_the_records_family_spawns_only_one_git_ls_files(monkeypatch) -> None:
-    """A real run of the WHOLE family (not just collecting it) spawns exactly
-    two real subprocesses -- one `git ls-files` (`path_problems()`'s tracked-
-    path snapshot) and one `git rev-list HEAD` (`commit_problems()`'s
-    reachable-commit snapshot, task 009/#176) -- and nothing else: no second
-    call of either however many reports or claims exist, and no other
-    command of any kind.
+def test_the_records_family_spawns_no_subprocess(monkeypatch) -> None:
+    """A real run of the WHOLE family (not just collecting it) now spawns NO
+    real subprocess at all. Before task 059 (requirement N.2) this pinned
+    exactly two -- one `git ls-files` (`path_problems()`'s tracked-path
+    snapshot) and one `git rev-list HEAD` (`commit_problems()`'s
+    reachable-commit snapshot, task 009/#176) -- both spent by
+    `tests/records/test_report_claims.py`'s corpus-wide claim checks. That
+    module (this directory's one caller of `report_claims.commit_problems()`/
+    `path_problems()`) is retired by task 059 along with the corpus-wide read
+    it drove, so nothing left under `tests/records/` spends either
+    subprocess any more, or any other one.
 
     This file excludes itself from the nested run it launches (it would
     otherwise recurse into calling `pytest.main()` on itself, forever), and
     also excludes `test_records_family_fresh_clone.py` -- task 010's (#176)
     one deliberate exemption: that module's own node spawns a real `git
     clone` plus a nested `pytest` subprocess on purpose, which would
-    otherwise show up here as an uncounted extra call. The other 110+ nodes
+    otherwise show up here as an uncounted extra call. The other 100+ nodes
     in the directory are exactly "the rest of the family" this test
     measures.
     """
-    import report_claims as report_claims_module
-
-    # Force a cold cache so this genuinely exercises the fetch path rather
-    # than a no-op reuse of whatever an earlier test already warmed --
-    # deliberately NOT reverted afterward (no monkeypatch here): a real
-    # fresh process warms these once and stays warm for its own remaining
-    # life, and this test's nested run should behave the same way for
-    # whatever runs after it in this same process.
-    report_claims_module._TRACKED_PATHS = None
-    report_claims_module._COMMIT_KINDS = None
-    report_claims_module._COMMIT_FULL_SHAS = None
-    report_claims_module._REACHABLE_COMMITS = None
-    report_claims_module._OBJECTS = None
-
     calls: list[list[str]] = []
     real_run = subprocess.run
 
@@ -169,18 +139,7 @@ def test_the_records_family_spawns_only_one_git_ls_files(monkeypatch) -> None:
         f"a real run of tests/records/ (minus this file) failed (exit "
         f"code {ret}) -- rerun without the subprocess patch to see why")
 
-    expected = {("git", "ls-files"), ("git", "rev-list", "HEAD")}
-    others = [c for c in calls if tuple(c) not in expected]
-    assert not others, (
-        f"tests/records/ spawned a subprocess other than `git ls-files` or "
-        f"`git rev-list HEAD`: {others}")
-    ls_files_calls = [c for c in calls if tuple(c) == ("git", "ls-files")]
-    rev_list_calls = [c for c in calls if tuple(c) == ("git", "rev-list", "HEAD")]
-    assert len(ls_files_calls) == 1, (
-        f"expected exactly one `git ls-files`, got {len(ls_files_calls)}: {calls}")
-    assert len(rev_list_calls) == 1, (
-        f"expected exactly one `git rev-list HEAD`, got {len(rev_list_calls)}: "
-        f"{calls}")
-    assert len(calls) == 2, (
-        f"tests/records/ spawned {len(calls)} subprocess calls from a cold "
-        f"cache, expected exactly two: {calls}")
+    assert not calls, (
+        f"tests/records/ spawned {len(calls)} subprocess call(s), expected "
+        f"none now that its one caller of report_claims's corpus-wide checks "
+        f"is retired (task 059, requirement N.2): {calls}")

@@ -1235,25 +1235,34 @@ Derivation for task 032 (requirement E.1): `test_report_claims.py` collapsed int
 under `artifacts/reports/` (`params=REPORTS`, 231 reports at this task's own HEAD) -- 1,155 of the
 old module's 1,165 collected nodes were one of these five families times 231 reports. The collapse
 runs all five checks inside ONE test's own loop over the same glob-discovered report list
-(`test_every_report_passes_its_claim_checks`), so every family retires as a whole rather than
-node by node; a sixth deleted node pair (the two `!retired`-direction mutation tests) merged into
-one test the same way, since both exercise `retired_problems` in the same direction. The other four
-tests (`test_the_reports_directory_is_discovered_not_enumerated`,
+(`test_every_report_passes_its_claim_checks`), `test_the_reports_directory_is_discovered_not_enumerated`,
 `test_the_claim_checks_have_exactly_one_implementation`, `test_a_node_family_wildcard_needs_a_real_match`,
 `test_path_problems_takes_at_most_one_git_ls_files_snapshot`,
 `test_untracked_generated_path_fails_with_the_untracked_message`,
 `test_the_same_absolute_run_dir_path_still_passes`, `test_tracked_but_missing_path_fails_with_the_other_message`,
 `test_the_v05_report_still_names_its_own_module`) moved unchanged, same names, no row needed.
 
+Task 059 (requirement N.2) later retired `tests/records/test_report_claims.py` and
+`tests/report_claims.py`'s corpus-wide discovery (`report_files()`) entire -- unlike task 028's
+repoint above, the two surviving nodes this table's rows cited
+(`test_every_report_passes_its_claim_checks`, `test_the_retired_marker_direction_is_enforced`) are
+GONE, not moved, since the whole-corpus check they ran is retired ahead of N.1's deletion of the
+corpus itself. The seven rows below are repointed to the one place `report_claims.py`'s
+sha/path/`!retired`-path/density checks are still exercised live -- `tests/test_issue_traceability.py`,
+against its own one still-tracked report -- rather than left citing a node that no longer collects;
+the node-resolution row has no live successor at all (requirement A.3, v0.20.2, already retired that
+check before task 059 touched anything), so it is repointed to the node whose own docstring records
+that retirement instead of to a check that still performs it.
+
 | deleted node | surviving cover | landed in |
 |---|---|---|
-| `test_report_claims.py::test_every_listed_commit_sha_exists[*]` | `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks` (the sha-resolution check, now run once per report inside this test's own loop instead of once per report as a separate pytest node) | task 032, requirement E.1 |
-| `test_report_claims.py::test_every_listed_path_exists[*]` | `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks` (the path-resolution check, same loop) | task 032, requirement E.1 |
-| `test_report_claims.py::test_every_listed_test_node_exists[*]` | `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks` (the node-resolution check, same loop) | task 032, requirement E.1 |
-| `test_report_claims.py::test_every_retired_claim_stays_retired[*]` | `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks` (the `!retired`-direction check, same loop) | task 032, requirement E.1 |
-| `test_report_claims.py::test_the_reports_are_not_all_claimless[*]` | `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks` (the checkable-claim density floor, same loop) | task 032, requirement E.1 |
-| `test_report_claims.py::test_a_live_path_wrongly_marked_retired_is_caught` | `tests/records/test_report_claims.py::test_the_retired_marker_direction_is_enforced` (merged with the node-mutation case below: both exercise `retired_problems`'s STRONG direction) | task 032, requirement E.1 |
-| `test_report_claims.py::test_a_live_node_wrongly_marked_retired_is_caught` | `tests/records/test_report_claims.py::test_the_retired_marker_direction_is_enforced` (merged with the path-mutation case above) | task 032, requirement E.1 |
+| `test_report_claims.py::test_every_listed_commit_sha_exists[*]` | `tests/test_issue_traceability.py::test_every_commit_this_report_names_is_a_real_commit` (the sha-resolution check, still run live against `issue-traceability.md`; task 059 retired the whole-corpus loop this row used to cite) | task 032, requirement E.1; repointed task 059, requirement N.2 |
+| `test_report_claims.py::test_every_listed_path_exists[*]` | `tests/test_issue_traceability.py::test_every_path_this_report_names_exists` (the path-resolution check, same report; task 059 retired the whole-corpus loop this row used to cite) | task 032, requirement E.1; repointed task 059, requirement N.2 |
+| `test_report_claims.py::test_every_listed_test_node_exists[*]` | `tests/test_issue_traceability.py::test_every_path_this_report_names_exists` (node-resolution itself was already retired, requirement A.3 v0.20.2; this node's own docstring records that retirement, and no check still performs it) | task 032, requirement E.1; repointed task 059, requirement N.2 |
+| `test_report_claims.py::test_every_retired_claim_stays_retired[*]` | `tests/test_issue_traceability.py::test_every_path_this_report_names_exists` (the `!retired`-direction check, same report; task 059 retired the whole-corpus loop this row used to cite) | task 032, requirement E.1; repointed task 059, requirement N.2 |
+| `test_report_claims.py::test_the_reports_are_not_all_claimless[*]` | `tests/test_issue_traceability.py::test_the_report_still_carries_the_evidence_it_promised` (the checkable-claim density floor, same report; task 059 retired the whole-corpus loop this row used to cite) | task 032, requirement E.1; repointed task 059, requirement N.2 |
+| `test_report_claims.py::test_a_live_path_wrongly_marked_retired_is_caught` | `tests/test_issue_traceability.py::test_every_path_this_report_names_exists` (still exercises `retired_problems`'s STRONG direction, same report; task 059 retired the merged mutation test this row used to cite) | task 032, requirement E.1; repointed task 059, requirement N.2 |
+| `test_report_claims.py::test_a_live_node_wrongly_marked_retired_is_caught` | `tests/test_issue_traceability.py::test_every_path_this_report_names_exists` (still exercises `retired_problems`'s STRONG direction, same report; task 059 retired the merged mutation test this row used to cite) | task 032, requirement E.1; repointed task 059, requirement N.2 |
 
 Derivation for task 033 (requirement E.2): `test_conformance_ledger.py` moved to
 `tests/records/test_conformance_ledger.py` and its node-id-collection check converted from 68

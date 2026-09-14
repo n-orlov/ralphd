@@ -31,12 +31,14 @@ own recipe, `.venv/bin/python -m pytest -q tests/records/`), which selects
 by directory rather than by marker and does not exclude `nightly` nodes.
 
 **The single exemption in `test_records_family_budget.py`'s subprocess
-budget.** `test_the_records_family_spawns_only_one_git_ls_files` there runs
-the rest of the family from a cold cache and fails on any subprocess beyond
-one `git ls-files` and one `git rev-list HEAD`. This module's own `git
-clone` and nested `pytest` subprocess are real subprocesses of exactly that
-kind, so that budget test's nested run excludes THIS file too (alongside
-itself) -- named there as the one deliberate exemption, not a loosening of
+budget.** `test_the_records_family_spawns_no_subprocess` there (task 059,
+requirement N.2, renamed from `test_the_records_family_spawns_only_one_git_ls_files`
+now that its own corpus-wide caller, `tests/records/test_report_claims.py`,
+is retired) runs the rest of the family from a cold cache and fails on any
+subprocess at all. This module's own `git clone` and nested `pytest`
+subprocess are real subprocesses, so that budget test's nested run excludes
+THIS file too (alongside itself) -- named there as the one deliberate
+exemption, not a loosening of
 what it still requires of everything else.
 """
 

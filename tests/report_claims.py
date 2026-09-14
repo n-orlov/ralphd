@@ -1,14 +1,21 @@
-"""Shared re-reading of the evidence reports under `artifacts/reports/`.
+"""Shared claim parser/checker for the one evidence report still read live.
 
-Task 041 (#22): the sha/path/test-node checks that task 058 wrote for
-`artifacts/reports/issue-traceability.md` are the ones every report in that
-directory needs -- a report that names a commit that never landed, a file that
-has been renamed away, or a test that no longer exists is worse than no report.
-So the extraction and the checks live here once and
-`tests/records/test_report_claims.py` applies them to every report the directory
-holds (discovered by glob, so a new report is covered the day it lands);
-`tests/test_issue_traceability.py` keeps only what is specific to its report
-and re-uses this parser for its density assertions.
+Task 059 (requirement N.2) retires the corpus-wide half of this module: task
+041's original design had `tests/records/test_report_claims.py` glob-discover
+and check *every* report under `artifacts/reports/` (`report_files()`), with
+`tests/test_issue_traceability.py` re-using the same parser for the one report
+it is specific to. N.1 (task 061) deletes that whole corpus except
+`v0.21-petitions.md`, and a check whose subject is being deleted is retired
+ahead of the deletion (N.2 lands before N.1 precisely so the fast tier is
+never left checking an absent directory) -- so `report_files()`, the
+glob-discovery machinery and the two test modules that exercised it
+(`tests/records/test_report_claims.py`,
+`tests/test_report_claims_git_objects.py`) are gone. What remains is the
+single-report parser and the three claim checks, called directly on one
+named `Path` by whichever caller supplies it -- currently only
+`tests/test_issue_traceability.py`, against `issue-traceability.md`, which
+is itself out of scope for this task (requirement N.2's second half, task
+060) and not yet deleted (N.1, task 061).
 
 The claim vocabulary the reports use, and how it is read:
 
@@ -69,36 +76,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPORTS_DIR = REPO_ROOT / "artifacts" / "reports"
 
-# Reports frozen as history: discovered, then skipped, so no check in this
-# module's family reads them at all. Requirement A.2 (v0.20.2) retires
-# `artifacts/reports/conformance-ledger.md`'s dedicated checker "along with
-# all mechanical checking of" that file, and has its header say nothing
-# checks it -- which is only true if the glob-discovered claim checks below
-# stop seeing it too. This is an authorised removal, not a filter of
-# convenience: a report added tomorrow is still covered without editing this
-# file, and a live report may never be listed here to dodge a claim problem.
-FROZEN_REPORTS = frozenset({"conformance-ledger.md"})
-
-# A handful of settled reports from an earlier wave cite a path this wave is
-# authorised to remove (requirement A.4, v0.20.2: `artifacts/reports/
-# v0.20.1-lanes.md` is deleted), but the citing report itself may not be
-# edited to add a `!retired` marker in place: A.4 requires
-# `artifacts/reports/v0.20-lanes.md` stay byte-identical to its state at
-# this wave's launch sha, and `artifacts/reports/v0.20.1-closing-report.md`
-# may only be edited by its own later F.5 correction task. Each entry pins
-# the exact report/line/path of one PRE-EXISTING citation, so this cannot
-# silently grow to cover a fresh citation of the same path in a new report,
-# or a citation on a different line even in one of these two reports --
-# either of those still fails `path_problems` the ordinary way. This is
-# narrower than `FROZEN_REPORTS`: it exempts one citation, not a whole
-# report, so every other claim these two reports make is still checked.
-FROZEN_PATH_CITATIONS = frozenset({
-    ("v0.20-lanes.md", 256, "artifacts/reports/v0.20.1-lanes.md"),
-    ("v0.20-lanes.md", 272, "artifacts/reports/v0.20.1-lanes.md"),
-    ("v0.20-lanes.md", 275, "artifacts/reports/v0.20.1-lanes.md"),
-    ("v0.20.1-closing-report.md", 136, "artifacts/reports/v0.20.1-lanes.md"),
-})
-
 # Top-level directories this repo owns. A path claim outside them is prose
 # about somebody else's tree (see the module docstring).
 REPO_DIRS = ("tests", "src", "docs", "examples", "artifacts", "tools", "container")
@@ -152,16 +129,6 @@ class ReportClaims:
     def where(self, line: int) -> str:
         rel = self.report.relative_to(REPO_ROOT)
         return f"{rel}:{line}"
-
-
-def report_files() -> list[Path]:
-    """Every LIVE evidence report, discovered -- never enumerated by hand.
-    A report named in `FROZEN_REPORTS` is frozen as history and carries no
-    checkable claim any more (requirement A.2, v0.20.2)."""
-    return sorted(
-        path for path in REPORTS_DIR.glob("*.md")
-        if path.name not in FROZEN_REPORTS
-    )
 
 
 def parse_claims(report: Path) -> ReportClaims:
@@ -385,8 +352,6 @@ class _ObjectDatabase:
 
 
 _OBJECTS: _ObjectDatabase | None = None
-_COMMIT_KINDS: dict[str, str] | None = None
-_COMMIT_FULL_SHAS: dict[str, str | None] | None = None
 _REACHABLE_COMMITS: set[str] | None = None
 
 
@@ -398,59 +363,17 @@ def _objects() -> _ObjectDatabase:
     return _OBJECTS
 
 
-def _cited_shas() -> list[str]:
-    """Every sha cited anywhere under `artifacts/reports/`, the population
-    both `_commit_kinds()` and `_commit_full_shas()` resolve once each."""
-    return sorted({
-        claim.value
-        for report in report_files()
-        for claim in parse_claims(report).shas
-    })
-
-
-def _commit_kinds() -> dict[str, str]:
-    """Every cited sha's object type, resolved once for the life of the
-    process and memoised -- with NO subprocess at all (see the block
-    comment above). Before task 035 (requirement E.4) this ran a
-    `git cat-file --batch-check` once PER REPORT it was called on, about 218
-    of the ~220 subprocess calls a full `tests/records/` run made; the
-    object-type answer is read out of `.git` in-process instead.
-    """
-    global _COMMIT_KINDS
-    if _COMMIT_KINDS is None:
-        wanted = _cited_shas()
-        objects = _objects() if wanted else None
-        _COMMIT_KINDS = {sha: objects.kind(sha) for sha in wanted} if wanted else {}
-    return _COMMIT_KINDS
-
-
-def _commit_full_shas() -> dict[str, str | None]:
-    """Every cited (possibly abbreviated) sha's resolved full 40-char sha,
-    memoised alongside `_commit_kinds()` -- needed to check a resolved
-    commit against `_reachable_commits()`, which only ever holds full
-    shas."""
-    global _COMMIT_FULL_SHAS
-    if _COMMIT_FULL_SHAS is None:
-        wanted = _cited_shas()
-        objects = _objects() if wanted else None
-        _COMMIT_FULL_SHAS = (
-            {sha: objects.resolve(sha) for sha in wanted} if wanted else {}
-        )
-    return _COMMIT_FULL_SHAS
-
-
 def _reachable_commits() -> set[str]:
     """Every commit sha reachable from `HEAD`, one `git rev-list HEAD`
     snapshot per process, memoised the same way `_tracked_paths()` memoises
     its own `git ls-files` snapshot (task 009, #176).
 
-    A sha can resolve to a real `commit` object in `_commit_kinds()` and
-    still not be evidence of anything: `git` keeps a commit's pre-image on
-    disk, as an ordinary loose or packed object, for as long as it takes
-    `git gc` to reclaim it, even after an amend, a reset or a rebase drops
-    every ref that used to point at it. Existing as an object is not the
-    same claim as being part of this repo's history; only the second one is
-    what a report's citation means.
+    A sha can resolve to a real `commit` object and still not be evidence of
+    anything: `git` keeps a commit's pre-image on disk, as an ordinary loose
+    or packed object, for as long as it takes `git gc` to reclaim it, even
+    after an amend, a reset or a rebase drops every ref that used to point at
+    it. Existing as an object is not the same claim as being part of this
+    repo's history; only the second one is what a report's citation means.
     """
     global _REACHABLE_COMMITS
     if _REACHABLE_COMMITS is None:
@@ -468,15 +391,23 @@ def _reachable_commits() -> set[str]:
 def commit_problems(claims: ReportClaims) -> list[str]:
     """Every listed sha must be a commit object in this repo AND reachable
     from `HEAD` -- a sha that only exists as a dangling object (task 009,
-    #176) is not evidence a report can point at either."""
+    #176) is not evidence a report can point at either.
+
+    Resolved directly off `claims.shas` (task 059, requirement N.2): this
+    used to look each sha up in `_commit_kinds()`/`_commit_full_shas()`,
+    two dicts memoised from a `_cited_shas()` scan of *every* report under
+    `artifacts/reports/` -- the corpus-wide read N.2 retires. The in-process
+    object reader (`_objects()`) answers a single sha in the same amount of
+    work either way, so nothing here spends a subprocess it did not already
+    spend; only the whole-corpus pre-scan is gone.
+    """
     if not claims.shas:
         return []
-    kinds = _commit_kinds()
-    fulls = _commit_full_shas()
+    objects = _objects()
     reachable = _reachable_commits()
     problems = []
     for claim in claims.shas:
-        kind = kinds.get(claim.value, "unknown")
+        kind = objects.kind(claim.value)
         if kind != "commit":
             if kind == "missing":
                 problems.append(
@@ -491,7 +422,7 @@ def commit_problems(claims: ReportClaims) -> list[str]:
                     f"this repo ({kind})"
                 )
             continue
-        full = fulls.get(claim.value)
+        full = objects.resolve(claim.value)
         if full not in reachable:
             problems.append(
                 f"{claims.where(claim.line)}: {claim.value} is a commit but "
@@ -545,8 +476,6 @@ def path_problems(claims: ReportClaims) -> list[str]:
     problems = []
     for claim in claims.paths:
         if _is_tracked(claim.value, tracked):
-            continue
-        if (claims.name, claim.line, claim.value) in FROZEN_PATH_CITATIONS:
             continue
         if (REPO_ROOT / claim.value).exists():
             problems.append(
