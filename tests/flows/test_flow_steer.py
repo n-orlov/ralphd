@@ -228,6 +228,12 @@ def test_ralphctl_status_warns_about_unconsumed_steering(live, tmp_path):
                stub_env={"STUB_TASKS": "10", "STUB_HOLD_FILE": str(hold_file),
                         "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
     run.wait_api()
+    # Task 058 (K.7): wait for the worker iteration to actually be dispatched
+    # before steering -- wait_api() only proves the HTTP server is up. This
+    # node asserts no step order, but posting this early races the same
+    # engine-startup window the primary flow node's fix (task 063, #179)
+    # names; synchronising here too keeps the whole module off that race.
+    wait_step_recorded(run, "iteration:worker", timeout=30)
 
     steer = run.ralphctl("steer", run.run_id, "never gets acted on",
                          "--name", "stranded")
@@ -295,6 +301,8 @@ def test_a_real_steer_iteration_applies_a_task_insert_through_the_spool(
                                 "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
                                 "STUB_STEER_TOOL_CALLS": json.dumps(calls)})
     e.wait_api()
+    # Task 058 (K.7): same barrier as the primary flow node, applied here too.
+    wait_step_recorded(e, "iteration:worker", timeout=30)
     code, res = e.api("POST", "/steering",
                       {"message": "insert a task", "name": "spool"})
     assert code == 202 and res["file"] == "001-spool.md"
@@ -347,6 +355,8 @@ def test_a_malformed_spool_request_is_refused_without_ending_the_run(
                                 "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
                                 "STUB_STEER_MALFORMED_REQUEST": "1"})
     e.wait_api()
+    # Task 058 (K.7): same barrier as the primary flow node, applied here too.
+    wait_step_recorded(e, "iteration:worker", timeout=30)
     code, res = e.api("POST", "/steering",
                       {"message": "drop a bad request", "name": "bad"})
     assert code == 202 and res["file"] == "001-bad.md"
@@ -395,6 +405,8 @@ def test_a_task_update_status_move_still_goes_through_the_transition_validator(
                                 "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30",
                                 "STUB_STEER_TOOL_CALLS": json.dumps(calls)})
     e.wait_api()
+    # Task 058 (K.7): same barrier as the primary flow node, applied here too.
+    wait_step_recorded(e, "iteration:worker", timeout=30)
     code, res = e.api("POST", "/steering",
                       {"message": "insert then illegally jump", "name": "jump"})
     assert code == 202 and res["file"] == "001-jump.md"
