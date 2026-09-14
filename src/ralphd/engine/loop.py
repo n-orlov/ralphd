@@ -11488,6 +11488,16 @@ class LoopSupervisor:
         has no plan for an id to be absent FROM -- exactly
         `_amend_echo_target_or_die`'s own carve-out -- so every entry is
         treated as belonging to the plan in that case, never orphaned.
+
+        Task 018 (D.8, #196): an entry whose `taskId` is the reserved
+        `state.AMENDMENT_WAVE_TARGET` sentinel (`scope == "wave"` in
+        `amendment_entries`'s own terms) is UNCONDITIONALLY binding --
+        none of the approach/plan-membership machinery above applies to it
+        at all, because it was never scoped to a task id a replan could
+        make disappear (D.7's whole point). It is never added to
+        `orphan_ids` (there is no task for it to be orphaned FROM) and
+        never demoted to the historical bucket by an approach mismatch,
+        whatever `self._approach` or the current `tasks.json` say.
         """
         # Task 005 (requirement E, #99): a `mode: status` ruling is NOT a
         # criteria ruling and must never be rendered as one -- it carries
@@ -11509,6 +11519,13 @@ class LoopSupervisor:
         binding: list[dict] = []
         historical: list[dict] = []
         for e in entries:
+            # Task 018 (D.8, #196): a wave-scoped entry has no task id a
+            # replan could orphan and no approach it was ever pinned to --
+            # it binds unconditionally, skipping the plan-membership and
+            # approach checks below entirely.
+            if e.get("scope") == "wave":
+                binding.append(e)
+                continue
             task_id = str(e.get("taskId"))
             in_plan = (not plan_exists) or (task_id in plan_ids)
             if plan_exists and task_id not in plan_ids:
@@ -11526,7 +11543,11 @@ class LoopSupervisor:
 
         def render(e: dict) -> str:
             kind = "WAIVE" if e.get("waive") else "REPLACE"
-            return (f"\n- **task {e.get('taskId')}** ({kind}, recorded "
+            if e.get("scope") == "wave":
+                subject = "wave-scoped ruling"
+            else:
+                subject = f"task {e.get('taskId')}"
+            return (f"\n- **{subject}** ({kind}, recorded "
                     f"{e.get('ts')}): {e.get('text')}\n")
 
         lines = [

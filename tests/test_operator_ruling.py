@@ -26,7 +26,8 @@ from pathlib import Path
 from ralphd.engine import loop as loop_mod
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
-from ralphd.engine.state import RunDir, amendment_entries, write_amendment
+from ralphd.engine.state import (AMENDMENT_WAVE_TARGET, RunDir,
+                                 amendment_entries, write_amendment)
 from tests.conftest import supervisor_factory
 from tests.conftest import RALPHCTL
 
@@ -240,6 +241,49 @@ def test_entry_naming_an_id_absent_from_the_plan_never_binds_and_emits_once(tmp_
     orphan_events = [e for e in events if e["type"] == "amendment_target_not_in_plan"]
     assert len(orphan_events) == 1
     assert set(orphan_events[0]["taskIds"]) == {"998", "999"}
+
+
+def test_wave_scoped_ruling_survives_a_replan_and_stays_binding(tmp_path, monkeypatch):
+    """D.8 (task 018, #196): a wave-scoped ruling (`ralphctl amend --wave`,
+    D.7) binds review and the peer verdict gate regardless of the current
+    approach or plan contents -- unlike a task-scoped ruling, a replan
+    (which restarts task ids at "001" and can bump `self._approach`, the
+    exact shape #196's own incident broke on) must never demote it to the
+    'Historical rulings' bucket and must never treat it as orphaned.
+
+    Driven through the real `_operator_amendment_review_context()` --
+    loop.py's own binding/historical split -- both BEFORE and AFTER the
+    simulated replan, per D.8's own successCriteria ("source inspection
+    does not discharge D.8").
+    """
+    cdir = tmp_path / "config"
+    write_amendment(cdir, AMENDMENT_WAVE_TARGET,
+                    "Retire the guard removals wave-wide.", approach=1)
+    sup = _supervisor(tmp_path, approach=1, tasks=[
+        {"id": "001", "title": "t", "status": "pending", "successCriteria": "x"},
+    ])
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
+    ctx_before = sup._operator_amendment_review_context()
+    assert "Historical rulings" not in ctx_before
+    assert "wave-scoped ruling" in ctx_before
+    assert "Retire the guard removals wave-wide." in ctx_before
+
+    # Simulate a replan underneath the recorded ruling: the approach
+    # number bumps and task ids restart at "001" naming an entirely
+    # different task -- a task-scoped ruling on the old "001" would be
+    # orphaned by this; the wave-scoped one names no task id at all.
+    sup._approach = 2
+    sup.run.tasks_file.write_text(json.dumps({"version": 1, "tasks": [
+        {"id": "001", "title": "different task after replan",
+         "status": "pending", "successCriteria": "y"},
+    ]}))
+    ctx_after = sup._operator_amendment_review_context()
+    assert "Historical rulings" not in ctx_after
+    assert "wave-scoped ruling" in ctx_after
+    assert "Retire the guard removals wave-wide." in ctx_after
+    events = _events(sup.run.root)
+    orphan_events = [e for e in events if e["type"] == "amendment_target_not_in_plan"]
+    assert not orphan_events
 
 
 def test_real_ruling_under_config_dir_is_the_only_thing_that_counts(tmp_path, monkeypatch):
