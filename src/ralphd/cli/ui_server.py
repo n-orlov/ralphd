@@ -56,6 +56,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from .. import __version__
 from ..engine.config import MUTATING_METHODS, JobConfig
 from . import llm_profiles
 from ..engine.state import (
@@ -1563,6 +1564,15 @@ class Handler(BaseHTTPRequestHandler):
         qs = parse_qs(parts.query)
         reg = self.registry
         try:
+            if segs == ["api", "version"]:
+                # Task 033 (G.1): the hub's OWN package version, served
+                # from `ralphd.__version__` rather than hard-coded into
+                # the static bundle -- `app.js` fetches this once on load
+                # and renders it in the page header, beside (never
+                # replacing) `server_version`'s wire-protocol tag below,
+                # which this route does not touch.
+                self._send_json({"version": __version__})
+                return
             if segs == ["api", "runs"]:
                 self._send_json({"runs": run_list(reg)})
                 return

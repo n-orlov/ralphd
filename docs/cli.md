@@ -3155,6 +3155,15 @@ origin.
 
 JSON endpoints served under `/api/`:
 
+- `GET /api/version` — the hub's OWN package version (task 033, requirement
+  G.1): `{"version": "<ralphd.__version__>"}`. Read straight from the
+  `ralphd` package the hub process is running, never a literal duplicated
+  into the route or the static bundle — `app.js` fetches this once on page
+  load and renders it in the page header (`#hub-version`, beside the clock).
+  This is a DIFFERENT number from `Handler.server_version` (`"ralphctl-ui/1"`,
+  the wire-protocol tag sent on every response's `Server` header, unchanged
+  by this task): one says which package is running the hub, the other says
+  which wire shape it speaks.
 - `GET /api/runs` — run list (PRD req 21): `{"runs": [{runId, state,
   verdict, phase, approach, maxApproaches, approachDisplay, iterationsUsed,
   iterationsBudget, startedAt, containerGone, tasksTotal, tasksCompleted,

@@ -605,9 +605,11 @@ def _route_problems(text: str) -> list[str]:
         if (method, path) in engine:
             continue
         segs = [s for s in path.split("/") if s]
-        if segs[:2] == ["api", "runs"]:
+        if segs and segs[0] == "api":
             # hub route: every non-wildcard segment must be one the hub's
-            # dispatcher compares against
+            # dispatcher compares against -- not just the `/api/runs/...`
+            # shape (task 033, G.1, added `GET /api/version`, a bare
+            # `/api/<leaf>` route with no `runs` segment at all).
             unknown = [s for s in segs if s != "*" and s not in hub]
             if not unknown:
                 continue
@@ -683,6 +685,10 @@ def test_a_fake_api_route_or_field_in_the_docs_is_reported():
     assert not _route_problems("See `GET /status` and `GET /iterations/{n}`.")
     assert _route_problems("The hub serves `GET /api/runs/<id>/nonsense`.")
     assert not _route_problems("The hub serves `GET /api/runs/<id>/cost`.")
+    # task 033 (G.1): a bare `/api/<leaf>` hub route with no `runs` segment
+    # at all -- the same recognition, generalized beyond `/api/runs/...`.
+    assert _route_problems("The hub serves `GET /api/nonsense`.")
+    assert not _route_problems("The hub serves `GET /api/version`.")
     fake = '```json\n{"state": "running", "noSuchField": 3}\n```\n'
     assert _field_problems(fake) == ["noSuchField"]
     assert _field_problems(fake.replace("noSuchField", "tasksSource")) == []

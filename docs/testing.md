@@ -2044,3 +2044,24 @@ recipe used throughout this section: `378` (fast), `263` (smoke).
 tier ceilings (390 fast/270 smoke modules, 5800/4300 tests) still carry
 headroom -- no ceiling raise needed this task.
 
+**5750 (smoke 4129, modules 379 (fast), 264 (smoke)) by v0.21 task 033
+(requirement G.1).** One new module, `tests/test_hub_version_033.py`, six
+new nodes covering the hub's own `GET /api/version` route (served from
+`ralphd.__version__`, never a literal), that `Handler.server_version`
+(the unrelated wire-protocol tag) is untouched, and that `index.html`/
+`app.js` actually carry the header slot and the fetch/render wiring for
+it -- its own source names neither `RALPHCTL`/`RALPHD_ENGINE`/`LiveRun`/
+`EngineProc`/`engine_factory`/`live(`/`host_like_` (the `UiServer`
+subprocess helper it imports from `test_cli_ui` is a different name), so
+the tier-stamping heuristic counts it `smoke` as well as `fast`; net +6
+fast, +6 smoke, +1 module in both tiers. From the 5744/4123/378
+(fast)/263 (smoke) the paragraph above measures: **5750/4129/379
+(fast)/264 (smoke)**. Re-measured directly at this task's own tip with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5750/5859 tests collected (109 deselected)`, smoke: `4129/5859 tests
+collected (1730 deselected)`), and the module count via the same
+unique-module-path recipe used throughout this section: `379` (fast),
+`264` (smoke). `tests/records/` is unaffected (still 117, untouched by
+this task). Both tier ceilings (390 fast/270 smoke modules, 5800/4300
+tests) still carry headroom -- no ceiling raise needed this task.
+

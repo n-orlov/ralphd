@@ -1304,8 +1304,21 @@ window.addEventListener("DOMContentLoaded", () => {
   setInterval(() => {
     document.getElementById("clock").textContent = new Date().toLocaleTimeString();
   }, 1000);
+  loadHubVersion();
   router();
 });
+
+// Task 033 (G.1): the hub's own package version, fetched once from `GET
+// /api/version` (ui_server.py -- `ralphd.__version__`, never a literal
+// baked into this file) and shown in the page header, independent of
+// which view the router renders -- the header sits outside `#app`, so
+// this runs exactly once per page load, same as the clock above.
+async function loadHubVersion() {
+  const { ok, body } = await getJSON("/api/version");
+  if (ok && body && body.version) {
+    document.getElementById("hub-version").textContent = `v${body.version}`;
+  }
+}
 
 // ---------------------------------------------------------- run list view
 
