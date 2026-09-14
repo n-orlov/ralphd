@@ -62,6 +62,33 @@ excluding the spawning modules is what makes a per-task tier affordable at all.
 Nested `pytest --collect-only` children are deliberately *not* in that list: the
 records lint is built that way and the tier table puts records lint in smoke.
 
+## Loop-driving tests must be bounded
+
+A test that drives the engine loop through `run_job`, `_run_job_core` or
+`_step_review` must never do so with a bare `asyncio.run(...)`: two states in
+the loop can wait forever -- the operator-gated `paused` ending (`_step_
+paused`'s `await self._gate()`, cleared only by `POST /pause`'s
+`loop.pause()`) and a `_ScriptedRunner` script whose repeating last step never
+reaches a terminal phase -- and a bare `asyncio.run(...)` over either one hangs
+the test process, and with it whichever lane collected that test. Bound the
+await instead: `asyncio.run(asyncio.wait_for(coro, timeout))`, or a per-module
+`_bounded(coro, timeout=30.0)` helper when several call sites in one module
+need the same wrapping (`tests/test_peer_verdict_gate.py` and `tests/test_
+peer_plan_review_gate.py` both added one for task 072). A bound written in the
+module that only *imports* a loop-driving helper from elsewhere does not reach
+an `asyncio.run(...)` inside that helper's own module -- the helper's own
+module needs its own bound, which is exactly what task 072's second commit
+had to add after its first missed it.
+
+`tests/test_loop_driving_await_guard.py` (task 073, steer 001 §2) enforces
+this for the three named calls: it fails on a NEW bare `asyncio.run(...)` over
+any of them, in any module under `tests/`, against a per-file allowlist of the
+pre-existing occurrences it grandfathers (`LOOP_DRIVING_AWAIT_ALLOWLIST`,
+each entry naming the file, its permitted count and a reason). A call the
+guard does not already permit needs either the bound above or a new,
+reasoned allowlist entry -- never a widened timeout on an existing bound, and
+never a deleted assertion, to make the guard pass.
+
 ## Budgets
 
 Measured in this container (28 cores) with the recipes above: an earlier wave's
@@ -1582,3 +1609,19 @@ unique-module-path recipe used throughout this section: `368` (fast),
 `253` (smoke). `tests/records/` is unaffected (still 117, untouched by
 this task). Both ceilings (5800 tests/375 modules fast, 4300/260 smoke)
 still carry headroom.
+
+**5700 (smoke 4093, modules 369 (fast), 254 (smoke)) by v0.21 task 073
+(steer 001 §2).** One new module, `tests/test_loop_driving_await_guard.py`,
+six new nodes (also `smoke` -- no live engine/container at all: the guard
+reads test-module source text with a regex and diffs it against its own
+in-code allowlist, entirely in-process; its four mutation nodes read/write
+only `tmp_path` scratch files, never the real `tests/` tree). From the
+5694/4087/368 the paragraph above measures: **5700/4093/369**.
+Re-measured directly at this task's own tip with `.venv/bin/python -m
+pytest -m <fast|smoke> --collect-only -q` (fast: `5700/5805 tests
+collected (105 deselected)`, smoke: `4093/5805 tests collected (1712
+deselected)`), and the module count via the same unique-module-path
+recipe used throughout this section: `369` (fast), `254` (smoke).
+`tests/records/` is unaffected (still 117, untouched by this task). Both
+ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry
+headroom.
