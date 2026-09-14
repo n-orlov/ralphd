@@ -66,10 +66,46 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# A superseded push or PR head is not worth a runner: cancel the older run.
-# Keyed per ref so main and a PR never cancel each other.
+# EVERY COMMIT ON `main` GETS ITS OWN VERDICT (operator decision, 14 Sep 2026).
+#
+# This keyed the group on the ref alone, so every push to `main` shared one group
+# and each new push cancelled the one before it. That is the right behaviour when
+# commits arrive slower than the lane takes, and the wrong one here: a job pushing
+# a commit every 9-12 minutes into a lane that takes ~13 outruns it permanently.
+# Measured over 13-14 Sep, `gate` concluded 32 `cancelled` against 45 `success`
+# and 10 `failure`, i.e. more than a third of this lane's output was a non-verdict
+# -- `cancelled` says nothing in either direction. Neither the operator nor a job
+# reading its own newest CONCLUDED run could tell whether the suite was green at
+# the commit in hand, and on 14 Sep that ambiguity hid a real regression for 14
+# commits and 3 h 15 m.
+#
+# Keying on the sha for pushes fixes it without making anything wait: runs for
+# different commits are now in different groups, so they run concurrently instead
+# of killing each other. `cancel-in-progress` stays true because within one group
+# it now means only "a re-dispatch of the SAME sha supersedes the older attempt",
+# which is all it should ever have meant here.
+#
+# Pull requests keep the per-ref behaviour on purpose. A superseded PR head really
+# is not worth a runner, and nothing reads a per-sha verdict for a PR's
+# intermediate commits.
+#
+# CAPACITY, stated plainly because this trades one failure mode for another. With
+# no cancellation, ~13 min of work arriving every ~9-12 min needs about 1.5 slots
+# on average and about 2.1 in the observed bursts, against the two `fast-lane`
+# slots the VPS carries. So this lane now runs near saturation and a burst will
+# QUEUE. That is an acceptable trade and not a regression of the same kind: a
+# queued run still concludes and still produces a verdict, just later, whereas a
+# cancelled one never produces anything. Raising the ceiling means moving this
+# lane off a 4-core box, which needs #205 first -- the same tier has 8 host-caused
+# failures on the workstation today, so a bigger host cannot be adopted until the
+# lane stops inheriting one.
+#
+# Note the deliberate asymmetry with heavy.yml, which still collapses pushes onto
+# one group. Not an oversight: `heavy` is 14-21 minutes across two jobs, only the
+# final code sha has to be green for the release contract, and nothing reads an
+# intermediate `heavy` result the way a running job reads `gate` at task start.
 concurrency:
-  group: gate-${{ github.workflow }}-${{ github.ref }}
+  group: gate-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 permissions:
