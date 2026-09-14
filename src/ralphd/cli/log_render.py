@@ -479,3 +479,80 @@ def render_to_lines(raw_text: str, tty: bool, state: dict) -> list[str]:
     if not text:
         return []
     return text.removesuffix("\n").split("\n")
+
+
+def _iteration_boundary_indices(lines: list[str]) -> list[int]:
+    """Line indices in `lines` that are safe RESTART points for a partial
+    (backwards, chunked) render -- every `ralphd.iteration` boundary line
+    (`log_merge.boundary_line`, both `event: "start"` and `event: "end"`),
+    plus `0` unconditionally as the outermost fallback.
+
+    Why a boundary line, and ONLY a boundary line, is safe: `log_render`'s
+    per-iteration guard state (`text_open`/`text_seen`/`thinking_seen`/
+    `toolcall_seen`/`tool_args`/`tool_pending`) is ORDER-DEPENDENT --
+    `_render_message_end`'s `if not state["text_seen"]` and the matching
+    thinking/toolcall guards only print the right thing because they know
+    everything since the last reset. `render_log_line`'s `ralphd.iteration`
+    branch resets ALL of that state UNCONDITIONALLY the moment it sees
+    either boundary event, regardless of what the state held walking in.
+    That means a `new_render_state()` started fresh at a boundary line's
+    index renders that boundary line and everything after it identically
+    to a full render from line 0 -- nothing before the boundary can leak
+    forward. Any OTHER line is unsafe: starting mid-iteration risks e.g.
+    re-printing a `[thinking\u2026]` line the real state had already seen,
+    or missing a `text_seen`-gated line it hadn't. Index 0 is always
+    included too, both because it is trivially safe (there is nothing
+    before it to leak) and as the guaranteed largest window when a blob
+    has no boundary line at all, or fewer than the requested tail even
+    once every boundary is included."""
+    idxs = [0]
+    for i, raw in enumerate(lines):
+        if not raw.strip():
+            continue
+        try:
+            ev = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "ralphd.iteration":
+            idxs.append(i)
+    return idxs
+
+
+def render_tail_lines(raw_text: str, tty: bool, n: int) -> list[str]:
+    """The bounded-cost sibling of `render_to_lines` (PRD H.1): render only
+    the last `n` RENDERED lines of `raw_text`, at a cost bounded by the
+    tail rather than by the whole blob, by reading backwards from the
+    newest events in growing chunks instead of rendering everything and
+    trimming (what `rendered_log_lines` in `ui_server.py` does today).
+
+    RESTART POINT chosen: every `ralphd.iteration` boundary line -- see
+    `_iteration_boundary_indices`'s docstring for exactly why that, and
+    only that, is a safe place to start a fresh `new_render_state()` and
+    still get output byte-identical to a full render from line 0 (pinned
+    by task 044/H.2's byte-identical test). A naive fixed-line or
+    fixed-byte reversed scan would instead land mid-iteration and render
+    from an arbitrary, wrong guard state -- exactly the "changes what the
+    operator sees" naive-reversed-scan defect H.1 calls out.
+
+    CHUNK GROWTH: starting from the single most recent boundary, each
+    retry that still renders fewer than `n` lines DOUBLES how many
+    boundaries back the window restarts from (1, 2, 4, 8, ...) and
+    re-renders from there, until either the render yields at least `n`
+    lines or the window has grown all the way back to line 0 (nothing
+    further back to include). Growing by boundary COUNT rather than a
+    fixed byte/line size means a run with a few huge iterations doesn't
+    thrash on an undersized window, and a small tail on a run with many
+    small iterations stops after a couple of small chunks rather than
+    always falling back to line 0.
+    """
+    lines = raw_text.splitlines()
+    if n <= 0 or not lines:
+        return []
+    boundaries = _iteration_boundary_indices(lines)
+    chunk = 1
+    while True:
+        start = boundaries[max(0, len(boundaries) - chunk)]
+        rendered = render_to_lines("\n".join(lines[start:]), tty, new_render_state())
+        if len(rendered) >= n or start == 0:
+            return rendered[-n:] if rendered else []
+        chunk *= 2
