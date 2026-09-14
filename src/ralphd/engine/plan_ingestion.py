@@ -1142,7 +1142,15 @@ def _unsatisfiable_shape_clause(criteria: str) -> tuple[str, str, str] | None:
 #       tests/test_x.py passes" -- is bounded because it names the single
 #       file that DEFINES the set being quantified over; naming the members
 #       explicitly ("each of tasks 001, 002 and 003") bounds it the other
-#       way.
+#       way. Task 006 (PRD requirement B.2, #135) adds a third, narrower
+#       escape: a clause whose quantifier points BACKWARD with an explicit
+#       anaphor ("each of THEM", "all of THOSE", "every one of THESE",
+#       "the above", "the aforementioned", "such") is bounded if some
+#       OTHER clause of the SAME criteria is itself bounded on its own
+#       merits -- see `_is_anaphorically_bound_elsewhere` below. A bare new
+#       noun phrase with no anaphor ("each shipped piece") is unaffected by
+#       this escape and stays refused even when some unrelated clause
+#       elsewhere happens to be bounded.
 #   (g) a clause-count overrun -- more than `_MAX_CHECKABLE_CLAUSES` (~5)
 #       checkable clauses in one task's criteria, the other half of the
 #       same `plan_review.md` rubric line.
@@ -1195,25 +1203,66 @@ def _is_bounded_quantifier_clause(clause: str) -> bool:
     return bool(_DEFINING_COMMAND_RE.search(clause) or _ENUMERATED_SET_RE.search(clause))
 
 
+# Task 006 (PRD requirement B.2, #135): the "elsewhere-bounded-quantifier"
+# rule -- v0.20's real casualty was a clause whose own text carries no
+# bound at all because the bound sits in an EARLIER clause of the SAME
+# criteria ("This commit touches `src/a.py` and `src/b.py`. Each of them
+# gets a new docstring."): `_is_bounded_quantifier_clause` above only ever
+# looks inside the one clause it is given, so that second clause was a
+# hard refusal even though the set it quantifies over is plainly bounded
+# one sentence earlier. The rule stays narrow on purpose, so it cannot be
+# read as disabling the lint (B.2's own text): it fires ONLY when the
+# flagged clause's quantifier points BACKWARD with an explicit anaphor --
+# "them"/"those"/"these"/"the above"/"the aforementioned"/"such" -- never
+# for a bare new noun phrase ("each shipped piece" has no anaphor and stays
+# refused no matter what else the criteria bounds elsewhere). The limit:
+# at most this one other-clause lookup, scoped to the SAME task's criteria
+# string only (never another task's, never the PRD) -- reusing the exact
+# same `_is_bounded_quantifier_clause` test every self-bounded clause
+# already passes, so "bounded" means the identical thing in both places.
+_ANAPHORIC_QUANTIFIER_RE = re.compile(
+    r"\b(?:every|each|all)\b(?:[^.!?;]{0,40}\bof\b)?[^.!?;]{0,40}\b"
+    r"(?:them|those|these|the\s+above|the\s+aforementioned|such)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_anaphorically_bound_elsewhere(clause: str, other_clauses: list[str]) -> bool:
+    """True only if `clause` quantifies with a backward-pointing anaphor
+    (them/those/these/the above/the aforementioned/such) AND some OTHER
+    clause of the same criteria is itself bounded on its own merits
+    (`_is_bounded_quantifier_clause`) -- the anaphor is what proves the
+    referent is the SAME already-bounded set rather than a coincidental
+    bound somewhere unrelated in the string."""
+    if not _ANAPHORIC_QUANTIFIER_RE.search(clause):
+        return False
+    return any(_is_bounded_quantifier_clause(other) for other in other_clauses)
+
+
 def _unenumerated_quantifier_clause(criteria: str) -> str | None:
     """None unless some clause carries a universal quantifier
     (every/each/all/"no ... anywhere") over a set that is neither
-    enumerated nor bounded by a single named defining command -- must-catch
+    enumerated nor bounded by a single named defining command, nor
+    anaphorically bound by an earlier/later clause of the SAME criteria
+    (`_is_anaphorically_bound_elsewhere`, PRD requirement B.2) -- must-catch
     fixtures: v0.16 task 023's "each shipped piece", tasks 012/013's "every
     rephrasing of X" (both recovered verbatim in
-    `tests/test_criteria_bound_lint.py`); must-pass sibling: "every test in
-    tests/test_x.py passes"."""
-    for clause in _CLAUSE_SPLIT_RE.split(criteria):
-        stripped = clause.strip()
-        if not stripped:
-            continue
+    `tests/test_criteria_bound_lint.py`); must-pass siblings: "every test in
+    tests/test_x.py passes", and "Each of them" following an earlier clause
+    that names the members."""
+    clauses = [c.strip() for c in _CLAUSE_SPLIT_RE.split(criteria) if c.strip()]
+    for index, stripped in enumerate(clauses):
         if not (
             _UNIVERSAL_QUANTIFIER_WORD_RE.search(stripped)
             or _NO_QUANTIFIER_ANYWHERE_RE.search(stripped)
         ):
             continue
-        if not _is_bounded_quantifier_clause(stripped):
-            return stripped
+        if _is_bounded_quantifier_clause(stripped):
+            continue
+        other_clauses = clauses[:index] + clauses[index + 1 :]
+        if _is_anaphorically_bound_elsewhere(stripped, other_clauses):
+            continue
+        return stripped
     return None
 
 

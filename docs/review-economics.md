@@ -209,6 +209,40 @@ without retyping it:
   fifth petition type above covers the case where a criterion is already
   written this way).
 
+## Ingestion lints are lexical by design
+
+The quantifier lint and the clause-count lint the v0.18 addendum above
+names (`_unenumerated_quantifier_clause`, `_clause_count_overrun` in
+`src/ralphd/engine/plan_ingestion.py`) are **lexical** — pattern and
+clause-split matches over the criteria text, never a semantic read of what
+the task actually means. That is deliberate, not a shortcut: a lint that
+ran at plan-ingestion time has no source tree, no test run and no worker
+report to check meaning against yet — the proposal is the only thing that
+exists — so a semantic judgment is not available to it at all, only a
+text-shaped one. Staying lexical also keeps the lint auditable and stable
+across runs: the same criteria text always yields the same verdict, with no
+model call and no drift between two runs of the identical proposal.
+
+A lexical lint over-refuses at the margins on purpose — v0.20's real
+casualties (`docs/prds/v0.21-the-budget-belongs-to-the-work.md` requirement
+B.2, #135) are proof it does — and the fix for that is a **named escape
+with a stated limit**, never a semantic read. Task 006 (requirement B.2)
+adds exactly one such escape to the quantifier lint: a clause whose
+universal quantifier points BACKWARD with an explicit anaphor ("each of
+THEM", "all of THOSE", "every one of THESE", "the above", "the
+aforementioned", "such") is accepted when some OTHER clause of the SAME
+task's criteria is itself bounded on its own merits (a named defining
+command/file, or an explicit enumeration) — `_is_anaphorically_bound_
+elsewhere` in `plan_ingestion.py`. The limit is narrow and stays lexical: a
+bare unenumerated noun phrase with no anaphor ("each shipped piece") is
+unaffected by this escape and stays refused even when some unrelated
+clause elsewhere in the same criteria happens to be bounded — the anaphor,
+matched the same way every other cue in this module is matched, is what
+proves the referent is the SAME already-bounded set rather than a
+coincidental match somewhere else in the string. `tests/test_criteria_
+bound_lint.py` covers one clause the escape now accepts beside one clause
+in the same criteria that is still refused.
+
 ## Why inspection is not evidence
 
 [`prds/v0.20.1-inspection-is-not-evidence.md`](prds/v0.20.1-inspection-is-not-evidence.md) is the

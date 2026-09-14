@@ -150,6 +150,51 @@ def test_no_without_anywhere_is_not_a_quantifier_clause_and_is_accepted():
 
 
 # ---------------------------------------------------------------------------
+# (f) elsewhere-bounded quantifier -- Task 006 (PRD requirement B.2, #135):
+# an anaphoric quantifier ("each of them") is accepted when some OTHER
+# clause of the SAME criteria is itself bounded on its own merits, while a
+# bare unenumerated noun phrase ("each shipped piece") elsewhere in the
+# same criteria stays refused -- the escape is narrow, so B.2 cannot be
+# read as disabling the lint.
+# ---------------------------------------------------------------------------
+
+
+def test_an_anaphoric_quantifier_bound_by_an_earlier_clause_is_accepted():
+    """'Each of them' points back at the two files the previous clause
+    names with backticks -- bounded elsewhere in the same criteria, so it
+    is no longer a hard refusal."""
+    payload = {"tasks": [_basic_task(
+        "062",
+        successCriteria=(
+            "This commit touches `src/a.py` and `src/b.py`. "
+            "Each of them gets a new docstring."
+        ),
+    )]}
+    assert pi.lint_proposal(payload) == []
+
+
+def test_an_anaphoric_bound_elsewhere_does_not_rescue_an_unrelated_bare_quantifier():
+    """The anaphoric escape only rescues the anaphoric clause itself --
+    'each shipped piece' names no anaphor and no defining command/file of
+    its own, so it is STILL refused even though an earlier clause in the
+    very same criteria is bounded and even rescues its OWN anaphoric
+    quantifier by the same rule."""
+    payload = {"tasks": [_basic_task(
+        "063",
+        successCriteria=(
+            "This commit touches `src/a.py` and `src/b.py`. "
+            "Each of them gets a new docstring. "
+            "The closing report names the commit sha for each shipped piece."
+        ),
+    )]}
+    errors = pi.lint_proposal(payload)
+    matches = [e for e in errors if "063" in e and "unenumerated set" in e]
+    assert matches, errors
+    assert all("each shipped piece" in e for e in matches), matches
+    assert all("Each of them" not in e for e in matches), matches
+
+
+# ---------------------------------------------------------------------------
 # (g) clause-count overrun -- must-catch / must-pass
 # ---------------------------------------------------------------------------
 

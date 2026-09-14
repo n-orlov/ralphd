@@ -1515,3 +1515,19 @@ collected (1712 deselected)`), and the module count via the same
 unique-module-path recipe used throughout this section: `365`.
 `tests/records/` is unaffected (still 117, untouched by this task). Both
 ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry headroom.
+
+**5684 (smoke 4077, modules unchanged at 365) by v0.21 task 006 (requirement
+B.2).** Two new nodes in the EXISTING `tests/test_criteria_bound_lint.py`
+module (no new module):
+`test_an_anaphoric_quantifier_bound_by_an_earlier_clause_is_accepted` and
+`test_an_anaphoric_bound_elsewhere_does_not_rescue_an_unrelated_bare_
+quantifier`, both also `smoke` (no live engine/container: both drive
+`plan_ingestion.lint_proposal` directly, the same shape every other test in
+that module already uses). From the 5682/4075/365 the paragraph above
+measures: **5684/4077/365**. Re-measured directly at this task's own tip
+with `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5684/5789 tests collected (105 deselected)`, smoke: `4077/5789 tests
+collected (1712 deselected)`), and the module count via the same
+unique-module-path recipe used throughout this section: `365`.
+`tests/records/` is unaffected (still 117, untouched by this task). Both
+ceilings (5800 tests/375 modules fast, 4300/260 smoke) still carry headroom.
