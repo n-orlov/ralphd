@@ -71,7 +71,12 @@ The interpreter is pinned: `python3.12` explicitly, not `heavy.yml`'s
 this host). Measured at `d37733c` on the VPS, throwaway full-history clone:
 records lint 117 passed in 67 s, `-m fast -n 2` 5681 passed / 4 skipped in
 710 s. On the workstation the same recipe is **592 s at `-n 2` and 378 s at
-`-n 4`**, which is why the worker count was raised with the move.
+`-n 4`**. The worker count was raised to 4 with the move (`9899016`) and put
+back to 2 immediately after (`9d4…`, below), because `-n 4` failed both of its
+runs on two SIGINT-driving nodes while `-n 2` was green on three consecutive
+runs across both hosts. The lane is fast enough without it: a whole job,
+including the venv build, measured **7:45** and **8:51** on slots 5 and 6
+against the VPS's **12:29** on the same commit.
 
 **What the pin does not do is fix the patch level, and the move cost the fleet
 real coverage.** The VPS ran Ubuntu 24.04, whose `python3.12` is **3.12.3**;

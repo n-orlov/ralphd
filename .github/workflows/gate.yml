@@ -138,7 +138,7 @@ jobs:
     # 45, unchanged, and now carrying far more headroom than when it was set.
     # It was sized for the VPS: 67 s records lint + 710 s (11:50) `-n 2` fast
     # tier + venv build, ~16 min, at d37733c. On this host the same `-n 2`
-    # recipe is 592 s and `-n 4` is 378 s, so the expected job is ~7 min.
+    # recipe is 592 s, and a whole job measured 7:45 and 8:51 on slots 5 and 6.
     #
     # The headroom is deliberately NOT trimmed to match, and the reasons got
     # stronger rather than weaker with this move. All six slots share 12 cores,
@@ -194,29 +194,40 @@ jobs:
         run: |
           python -m pytest -q tests/records/
 
-      # `-n 4 --dist loadfile`: loadfile keeps a module's tests on one worker,
+      # `-n 2 --dist loadfile`: loadfile keeps a module's tests on one worker,
       # which is what this suite's module-scoped fixtures assume
       # (docs/testing.md, "Recipes"). The count is a fixed integer and
-      # deliberately not `-n auto`, which re-derives it from `nproc` at
-      # collection time and so makes the worker count -- and with it the
-      # suite's own oversubscription-sensitive flake rate -- a property of
-      # whatever else the host is doing (`tests/test_gate_pinned_worker_count_
-      # guard.py` fails the suite if this becomes `auto`).
+      # deliberately not `-n auto`, which would re-derive it from `nproc` at
+      # collection time and make the worker count -- and with it this suite's
+      # oversubscription-sensitive flake rate -- a property of whatever else the
+      # host is doing (`tests/test_gate_pinned_worker_count_guard.py` fails the
+      # suite if this becomes `auto`).
       #
-      # 4, raised from the 2 that was sized to fill a 4-core VPS. Measured on
-      # this host, same tier, same recipe: `-n 2` = 592 s, `-n 4` = 378 s.
-      # 4 rather than 8 because the arithmetic that matters is the whole host,
-      # not this job: two of these can be in flight at once under the per-sha
-      # concurrency group, which is 8 workers, and the other four slots can be
+      # BACK TO 2, HAVING MEASURED 4 AND FOUND IT RED. 9899016 raised this to 4
+      # on the evidence that the tier is 592 s at `-n 2` and 378 s at `-n 4` on
+      # this host. The speed-up was real -- the job went from ~8 min to 6:18 and
+      # then 4:23 -- and so was the cost: `-n 4` failed BOTH of its runs
+      # (9899016, b0361e1) on the same two nodes,
+      # `test_cli_logs_pty_termios.py::test_sigint_restores_termios_mode` and
+      # `test_cli_logs_signal.py::test_sigint_during_follow_exits_clean_no_traceback`,
+      # while `-n 2` was green on three consecutive runs across both hosts
+      # (e3e5723 on the VPS, 1a2b64f on int21h-ws-5, 919a5ca on int21h-ws-6),
+      # all three of them already carrying pytest-timeout. So the variable is
+      # the worker count and nothing else.
+      #
+      # The mechanism is not this job in isolation -- 4 workers on 12 cores is
+      # not oversubscribed. It is the host: two of these run at once under the
+      # per-sha concurrency group, which is 8 workers, while slots 1-4 can be
       # running heavy.yml's docker and browser tiers or nightly.yml's matrix on
-      # the same 12 cores at the same time. `-n 8` per job would ask for 16
-      # workers from 12 cores before the long lanes are counted at all, and
-      # oversubscription here does not merely slow the tier: it turns
-      # timing-sensitive nodes red. Four distinct such failures were observed
-      # in ten runs on 14 Sep (test_cli_logs_signal, test_hub_delete,
-      # test_stub_pi_harness, test_config_effective), each appearing exactly
-      # once and none reproducing, while two gate jobs shared a 4-core box.
-      # Raising this further needs the contention measured, not assumed.
+      # the same 12 cores. Both failing nodes drive a real subprocess and send
+      # it SIGINT, so they are exactly the shape that turns red under scheduling
+      # delay rather than under logic error (same family as #179).
+      #
+      # A faster lane is still available and is NOT bought by turning this
+      # number up blind: it needs those two nodes made insensitive to scheduling
+      # delay, or the contention removed, measured rather than assumed (#205,
+      # #179). Raising this again without that is re-running an experiment whose
+      # answer is recorded here.
       - name: Fast tier
         run: |
-          python -m pytest -q -m fast -n 4 --dist loadfile --durations=15
+          python -m pytest -q -m fast -n 2 --dist loadfile --durations=15
