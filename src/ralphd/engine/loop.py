@@ -1508,7 +1508,8 @@ class LoopSupervisor:
 
     async def run_iteration(self, phase: str, extra: str = "",
                              prompt_name: str | None = None,
-                             tier: str | None = None):
+                             tier: str | None = None,
+                             task_id: str | None = None):
         """Task 016 (#68 half 2, requirement I/J): `tier` is the effective
         tier THIS dispatch provisions at -- the in-hand task's effective
         tier for a task-scoped call (worker, per-task verify), one of the
@@ -1520,10 +1521,19 @@ class LoopSupervisor:
         this method is pure pass-through, so the infra-retry wrapper
         re-tries the SAME tier on every attempt of the same phase/
         iteration.
+
+        Task 027 (PRD requirement F.1, #158/#194): `task_id` is the OTHER
+        half of the same dispatch-time pair -- the in-hand task's own id,
+        already known to every caller that ALSO knows `tier` (the worker
+        dispatch in `_step_worker`; every other caller passes neither and
+        `_run_iteration_once` records `None` for both, exactly like an
+        omitted `tier` degrades to the default). Pure pass-through here too.
         """
         if phase not in self.INFRA_RETRY_PHASES:
-            return await self._run_iteration_once(phase, extra, prompt_name, tier)
-        return await self._run_iteration_with_infra_retry(phase, extra, prompt_name, tier)
+            return await self._run_iteration_once(phase, extra, prompt_name, tier,
+                                                  task_id=task_id)
+        return await self._run_iteration_with_infra_retry(phase, extra, prompt_name, tier,
+                                                           task_id=task_id)
 
     # Task 001a: escalating backoff defaults live on JobConfig
     # (cfg.infra_retry_backoff_s / cfg.infra_retry_backoff_max_s /
@@ -1536,7 +1546,8 @@ class LoopSupervisor:
     # is a back-compat cap honoured only when explicitly configured.
     async def _run_iteration_with_infra_retry(self, phase: str, extra: str,
                                               prompt_name: str | None,
-                                              tier: str | None = None):
+                                              tier: str | None = None,
+                                              task_id: str | None = None):
         """Runs `phase` via _run_iteration_once(), retrying THE SAME
         phase/iteration with escalating backoff whenever the result
         classifies as an infra fault (broken LLM endpoint/provider/network
@@ -1591,7 +1602,8 @@ class LoopSupervisor:
         retry_max = self.cfg.infra_retry_max  # None == no explicit attempt cap
         budget = self._outage_budget_for(phase)
         while True:
-            result = await self._run_iteration_once(phase, extra, prompt_name, tier)
+            result = await self._run_iteration_once(phase, extra, prompt_name, tier,
+                                                    task_id=task_id)
             fault = self._classify_result(result)
             if fault != "infra":
                 # The agent reached the model -- a success, or a genuine work
@@ -1983,7 +1995,8 @@ class LoopSupervisor:
 
     async def _run_iteration_once(self, phase: str, extra: str = "",
                                   prompt_name: str | None = None,
-                                  tier: str | None = None):
+                                  tier: str | None = None,
+                                  task_id: str | None = None):
         n = self.iterations_used + 1
         # Task 003 (#11): a POST /interrupt shields only the iteration it
         # actually interrupted -- re-arm for this attempt (an abort, which
@@ -2035,6 +2048,24 @@ class LoopSupervisor:
         meta = {"number": n, "phase": phase, "model": model,
                 "approach": self.run.read_status().get("approach"),
                 "startedAt": utcnow(),
+                # Task 027 (PRD requirement F.1, #158/#194): the two values
+                # this dispatch already computed/received -- the in-hand
+                # task's id (`None` for every non-task-scoped call, e.g.
+                # planning/reflect/run-level review, exactly like a task
+                # with nothing assigned) and the effective tier resolved a
+                # few lines up -- recorded HERE, in the dispatch write,
+                # before the subprocess is even spawned, so an iteration
+                # that later faults/times out/interrupts/ends with no
+                # verdict still carries both (task 028 covers that case;
+                # task 029 covers the end write not losing them). Distinct
+                # names from the existing `appliedTaskId`/`verifiedTask`
+                # (task 116/task 004) on purpose -- those are APPLIED-verdict
+                # facts written only once a verdict actually landed; these
+                # are DISPATCH facts, always present the moment this write
+                # happens, and F.3 requires the old readers to keep working
+                # unmodified.
+                "assignedTaskId": task_id,
+                "effectiveTier": effective_tier,
                 # Task 018 (#34): what this attempt was HANDED (the prompt
                 # above carries these note bodies) vs. what it managed to
                 # consume -- filled in at the end, and deliberately still `[]`
@@ -4079,7 +4110,8 @@ class LoopSupervisor:
             return [str(worker_broker.extension_file)]
         return []
 
-    async def _run_worker_iteration(self, extra: str, tier: str | None):
+    async def _run_worker_iteration(self, extra: str, tier: str | None,
+                                     task_id: str | None = None):
         """Task 022 (PRD requirement B.3, #140): wire the `notify` tool
         live for exactly the duration of one worker iteration, the same
         seam `_run_hat_iteration` already uses for the steer hat -- a
@@ -4099,7 +4131,8 @@ class LoopSupervisor:
         self._worker_tool_broker = broker
         serving = asyncio.create_task(broker.serve())
         try:
-            return await self.run_iteration("worker", extra=extra, tier=tier)
+            return await self.run_iteration("worker", extra=extra, tier=tier,
+                                             task_id=task_id)
         finally:
             serving.cancel()
             try:
@@ -7416,7 +7449,8 @@ class LoopSupervisor:
             # below reads, and what still works in a workspace with no
             # `.git` (`_workspace_fingerprint`'s own fallback).
             fp_before = self._workspace_fingerprint()
-            result = await self._run_worker_iteration(extra, worker_tier)
+            result = await self._run_worker_iteration(extra, worker_tier,
+                                                       task_id=assigned_id)
             head_after = self._workspace_head_sha()
             fp_after = self._workspace_fingerprint()
             worker_iter_n = self.iterations_used  # captured after run_iteration increments it

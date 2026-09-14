@@ -1838,7 +1838,7 @@ def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]) -> list[
     charge the counter on every call, same as the real method does."""
     calls: list[str] = []
 
-    async def fake_once(phase, extra="", prompt_name=None, tier=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None, task_id=None):
         calls.append(phase)
         sup.iterations_used += 1
         return copy.copy(results[min(len(calls) - 1, len(results) - 1)])

@@ -95,7 +95,7 @@ def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]) -> list[
     method does, so `budget_left()` genuinely runs out."""
     calls: list[str] = []
 
-    async def fake_once(phase, extra="", prompt_name=None, tier=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None, task_id=None):
         calls.append(phase)
         sup.iterations_used += 1
         return results[min(len(calls) - 1, len(results) - 1)]

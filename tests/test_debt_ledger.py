@@ -144,7 +144,7 @@ def _verify_supervisor(tmp_path, task: dict) -> LoopSupervisor:
 
 
 def _stub_once(sup: LoopSupervisor, result: IterationResult):
-    async def fake_once(phase, extra="", prompt_name=None, tier=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None, task_id=None):
         return result
 
     async def fake_backoff(seconds):

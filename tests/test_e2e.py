@@ -1309,5 +1309,53 @@ def test_task_in_progress_visible_while_worker_iteration_running(engine_factory,
     assert saw_iteration_2_end_idx is not None
     assert all(idx > saw_iteration_2_end_idx for idx, _obj in completed_events)
 
+
+def test_worker_dispatch_write_records_assigned_task_and_tier(engine_factory, tmp_path):
+    """Task 027 (PRD requirement F.1, #158/#194): `iterations/NNNN/meta.json`
+    carries the assigned task id and the effective tier from its DISPATCH
+    write -- the one made before the subprocess is even spawned -- not only
+    once the iteration ends. Uses the same `STUB_HOLD_FILE`/`STUB_HOLD_PHASE`
+    seam as `test_task_in_progress_visible_while_worker_iteration_running`
+    just above to observe the held (still-running, no `endedAt` yet) worker
+    iteration's own `meta.json` mid-flight, and `wait_hold_entered` to avoid
+    racing the held child's own startup the way task 019's follow-on fix
+    already documents.
+    """
+    hold_file = tmp_path / "hold-dispatch-meta"
+    e = engine_factory(job={"on_complete": "idle"},
+                       stub_env={"STUB_TASKS": "1", "STUB_HOLD_FILE": str(hold_file),
+                                "STUB_HOLD_PHASE": "worker", "STUB_HOLD_TIMEOUT_S": "30"})
+    e.wait_api()
+    e.wait_state(("running",))
+    assert wait_hold_entered(hold_file) == "worker"
+
+    # iteration 2 is the first worker iteration (1 is planning) -- its
+    # meta.json must already carry both new keys while the held subprocess
+    # is still running (no `endedAt` yet: this IS the dispatch write, not
+    # the end-of-iteration one).
+    meta_path = e.run_dir / "iterations" / "0002" / "meta.json"
+    deadline = time.time() + 20
+    meta = {}
+    while time.time() < deadline:
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+            if meta.get("phase") == "worker":
+                break
+        time.sleep(0.05)
+    assert meta.get("phase") == "worker", meta
+    assert "endedAt" not in meta, (
+        "observed meta.json after it ended -- no longer proves this is the "
+        "dispatch write")
+    assert meta.get("assignedTaskId") == "001", meta
+    assert meta.get("effectiveTier") == "normal", meta
+
+    # the existing keys this write already made are untouched additions,
+    # not replacements
+    for key in ("number", "phase", "model", "approach", "startedAt",
+               "steeringDelivered", "steeringConsumed"):
+        assert key in meta, (key, meta)
+
+    hold_file.touch()  # release: let the held worker iteration finish
+    e.wait_state(("succeeded",))
     e.api("POST", "/shutdown")
     assert e.proc.wait(timeout=10) == 0

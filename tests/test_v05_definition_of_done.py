@@ -97,9 +97,9 @@ async def test_thirty_minute_outage_costs_no_iterations_approaches_or_tasks(
     # number, and only the working one is charged against the budget).
     inner = sup._run_iteration_once
 
-    async def counting_once(phase, extra="", prompt_name=None, tier=None):
+    async def counting_once(phase, extra="", prompt_name=None, tier=None, task_id=None):
         sup.iterations_used += 1
-        return await inner(phase, extra, prompt_name)
+        return await inner(phase, extra, prompt_name, tier, task_id=task_id)
 
     sup._run_iteration_once = counting_once  # type: ignore[method-assign]
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)

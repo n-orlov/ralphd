@@ -45,7 +45,7 @@ def _feed(sup: LoopSupervisor, results: list[IterationResult]) -> list[str]:
     """Feeds `results` to the wrapper one attempt at a time (last repeats)."""
     calls: list[str] = []
 
-    async def fake_once(phase, extra="", prompt_name=None, tier=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None, task_id=None):
         calls.append(phase)
         return results[min(len(calls) - 1, len(results) - 1)]
 

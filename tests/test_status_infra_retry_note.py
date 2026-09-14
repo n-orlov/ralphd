@@ -78,7 +78,7 @@ async def test_ralphctl_status_shows_infra_retry_note_during_backoff(
     human: list[str] = []
     machine: list[str] = []
 
-    async def fake_once(phase, extra="", prompt_name=None, tier=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None, task_id=None):
         calls.append(phase)
         return results[min(len(calls) - 1, len(results) - 1)]
 

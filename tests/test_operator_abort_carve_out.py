@@ -122,7 +122,7 @@ def _stub_attempts(sup: LoopSupervisor, hook=None) -> list[str]:
     returning the list attempts are recorded into."""
     calls: list[str] = []
 
-    async def fake_once(phase, extra="", prompt_name=None, tier=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None, task_id=None):
         calls.append(phase)
         if hook is not None:
             hook(sup)

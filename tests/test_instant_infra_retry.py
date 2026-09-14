@@ -74,7 +74,7 @@ def _stub_attempts(sup: LoopSupervisor, results: list[IterationResult]):
     calls: list[str] = []
     waits: list[float] = []
 
-    async def fake_once(phase, extra="", prompt_name=None, tier=None):
+    async def fake_once(phase, extra="", prompt_name=None, tier=None, task_id=None):
         calls.append(phase)
         # A fresh object per attempt, like the real runner: identity is what
         # _check_instant_failure() memoises its per-attempt verdict on.
