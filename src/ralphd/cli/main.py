@@ -3294,6 +3294,27 @@ def _format_degraded_lines(status: dict) -> list[str]:
         return []
     wait = status.get("infraWait")
     if not isinstance(wait, dict):
+        # Task 050 (requirement J.1, #136/#134): a run that reached this
+        # state because it TERMINATED on the repeated-ingestion-signature
+        # path (task 007, requirement B.3) also carries `health: degraded`
+        # -- set once, at replan time, and never cleared, because the run
+        # never ran another iteration to clear it -- but it is not "between
+        # retry attempts" at all; it is over. `state` in `TERMINAL_STATES`
+        # is the distinguishing signal (a genuine infra-outage episode
+        # between waits is always `running`/`starting`/`finishing`, never
+        # terminal), and `reason` is the terminal note `_finish` already
+        # wrote (the ingestion-repeat branch's own `_terminal_reason_note`,
+        # quoted verbatim) -- so a terminal degraded run quotes ITS OWN
+        # terminal reason instead of the generic outage sentence that would
+        # otherwise misreport a finished run as still stuck in an episode.
+        if status.get("state") in TERMINAL_STATES:
+            reason = str(status.get("reason") or "").strip()
+            if reason:
+                wrapped = textwrap.wrap(reason, width=64) or [reason]
+                lines = [f"degraded:  {wrapped[0]}"]
+                lines.extend(f"           {extra}" for extra in wrapped[1:])
+                return lines
+            return ["degraded:  run ended degraded (no reason recorded)"]
         return [("degraded:  infra outage episode in progress "
                  "(a retry attempt is running, no backoff wait pending)")]
     lines = [(f"degraded:  infra outage: attempt {wait.get('attempt')} "

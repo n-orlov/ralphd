@@ -95,6 +95,47 @@ def test_degraded_between_waits_reports_the_episode_without_a_countdown():
     assert lines[0].startswith("degraded:  infra outage episode in progress")
 
 
+def test_ingestion_terminated_run_quotes_its_terminal_reason_not_the_outage_sentence():
+    """Task 050 (requirement J.1, #136/#134): a run that ended on the
+    repeated-ingestion-signature path (engine/loop.py's two-strike
+    ingestion-termination branch) writes `health: degraded` once at replan
+    time and never clears it, since the run never runs another iteration to
+    clear it -- but `state` is terminal (`failed`) and `reason` already
+    carries the terminal note. The renderer must quote THAT instead of the
+    generic "infra outage episode in progress" sentence, which would
+    misreport a finished run as still stuck in a live episode."""
+    reason = ("approach 3 failed the SAME plan-ingestion lexical lint as "
+               "approach 2 on two consecutive approaches (#61, #135)")
+    lines = _format_degraded_lines({
+        "state": "failed",
+        "health": "degraded",
+        "infraWait": None,
+        "reason": reason,
+    })
+    joined = " ".join(
+        ln.removeprefix("degraded:  ").removeprefix("           ")
+        for ln in lines
+    )
+    assert joined == reason
+    assert not any("infra outage episode in progress" in ln for ln in lines)
+
+
+def test_run_genuinely_between_infra_retry_attempts_still_reports_the_episode():
+    """The mirror case: a run that is genuinely mid-outage -- `state` still
+    `running` (there is no `degraded` state value, docs/api.md), `health`
+    degraded, `infraWait` back to null between two waits -- must keep
+    rendering the outage-episode sentence unchanged, so the J.1 fix does not
+    swap one wrong sentence for another."""
+    lines = _format_degraded_lines({
+        "state": "running",
+        "health": "degraded",
+        "infraWait": None,
+        "reason": None,
+    })
+    assert len(lines) == 1
+    assert lines[0].startswith("degraded:  infra outage episode in progress")
+
+
 def test_malformed_next_attempt_timestamp_does_not_crash():
     lines = _format_degraded_lines({"health": "degraded",
                                     "infraWait": _wait(nextAttemptAt="whenever")})

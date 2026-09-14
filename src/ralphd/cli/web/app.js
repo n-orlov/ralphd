@@ -1906,6 +1906,27 @@ function renderInfraWait(el, s, runId, live) {
   if (!degraded) return;
   el.classList.add("degraded");
   if (wait == null) {
+    // Task 050 (requirement J.1, #136/#134): a run that TERMINATED on the
+    // repeated-ingestion-signature path (engine/loop.py's two-strike
+    // ingestion-termination branch) also carries `health: degraded`, set
+    // once at replan time and never cleared -- but it is not "between
+    // retry attempts"; it is over. `state` in TERMINAL_STATES (mirrored
+    // here from engine/state.py: "succeeded"/"failed"/"aborted" -- a
+    // genuine infra-outage episode between waits is always
+    // running/starting/finishing, never terminal) is the distinguishing
+    // signal, and `s.reason` is the terminal note `_finish` already wrote
+    // (the same field the terminal-reason `reason:` line below quotes for
+    // a terminal failed/aborted run) -- quoted here instead of the
+    // generic outage sentence that would otherwise misreport a finished
+    // run as still stuck in an episode.
+    const TERMINAL_STATES = ["succeeded", "failed", "aborted"];
+    if (TERMINAL_STATES.indexOf(s.state) !== -1) {
+      const reason = String(s.reason == null ? "" : s.reason).trim();
+      el.appendChild(h("p", { class: "infra-wait" }, [
+        "\u26A0 degraded: " + (reason || "run ended degraded (no reason recorded)"),
+      ]));
+      return;
+    }
     el.appendChild(h("p", { class: "infra-wait" }, [
       "\u26A0 degraded: infra outage episode in progress " +
       "(a retry attempt is running, no backoff wait pending)",
