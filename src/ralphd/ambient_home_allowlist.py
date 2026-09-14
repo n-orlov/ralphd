@@ -244,8 +244,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # container_before_bind()` just above `_container_running()` (+33)
         # and two call sites in `cmd_start`'s own status fallback, above
         # every entry from this one on (+2 more), net +35: 4621->4656. Same
-        # read, same reason.
-        "line": "4656",
+        # read, same reason. Its own rejection cure (reading `docker logs`'s
+        # stderr too, plus the `_DEAD_CONTAINER_LOG_LINES` constant beside
+        # the helper) added 24 more lines in the same region, above every
+        # entry from this one on: 4656->4680.
+        "line": "4680",
         "reason": ("`ralphctl skills install`'s `home` used to auto-detect a "
                    "default target dir (`_auto_detect_skills_install_target`) "
                    "when the operator passes no `--target` -- the CLI IS the "
@@ -266,8 +269,9 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # shift as the entry above it: 4822->4823.
         #
         # Task 025 (v0.21, PRD requirement E.3, #183): same +35 as the entry
-        # above it: 4823->4858.
-        "line": "4858",
+        # above it: 4823->4858, and the same +24 from that task's own
+        # stderr-reading cure: 4858->4882.
+        "line": "4882",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -285,8 +289,8 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # shift as the entry above it: 4826->4827.
         #
         # Task 025 (v0.21, PRD requirement E.3, #183): same +35 as the entry
-        # above it: 4827->4862.
-        "line": "4862",
+        # above it: 4827->4862, then the same +24 cure shift: 4862->4886.
+        "line": "4886",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
                    "-- same reasoning as the `.aws` mount just above it."),
     },
@@ -329,8 +333,10 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Task 025 (v0.21, PRD requirement E.3, #183) added `_report_dead_
         # container_before_bind()` and its two `cmd_start` call sites, both
         # well above every entry here -- net +35, shifting each of these
-        # two by +35: 6884->6919, 6888->6923.
-        "line": "6919",
+        # two by +35: 6884->6919, 6888->6923. That task's own cure (the
+        # `docker logs` stderr read plus `_DEAD_CONTAINER_LOG_LINES`) added
+        # 24 more in the same region, above both: 6919->6943, 6923->6947.
+        "line": "6943",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -351,8 +357,8 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # entry just above it: 6839->6888.
         #
         # Task 025 (v0.21, PRD requirement E.3, #183): same +35 as the entry
-        # above it: 6888->6923.
-        "line": "6923",
+        # above it: 6888->6923, then the same +24 cure shift: 6923->6947.
+        "line": "6947",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "

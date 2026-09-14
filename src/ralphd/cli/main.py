@@ -2544,6 +2544,12 @@ def _container_liveness(name: str) -> str:
             else CONTAINER_EXITED)
 
 
+# How many trailing log lines `start` shows for a container that died before
+# binding: asked of `docker logs --tail` and applied again to the merged
+# stdout+stderr text below, so both readings agree on one number.
+_DEAD_CONTAINER_LOG_LINES = 20
+
+
 def _report_dead_container_before_bind(container: str, rdir: Path) -> None:
     """E.3 (#183): the unreachable-API line above (`die(4, "API unreachable:
     ...")`, inside `api()`, caught by `cmd_start`'s own try/except right
@@ -2567,13 +2573,31 @@ def _report_dead_container_before_bind(container: str, rdir: Path) -> None:
         return
     res = sh([DOCKER, "inspect", "--format", "{{.State.ExitCode}}", container])
     exit_code = res.stdout.strip() if res.returncode == 0 else "unknown"
-    logs = sh([DOCKER, "logs", "--tail", "20", container])
-    tail = (logs.stdout or "").strip()
+    logs = sh([DOCKER, "logs", "--tail", str(_DEAD_CONTAINER_LOG_LINES),
+               container])
+    # `docker logs` replays the container's OWN two streams onto the matching
+    # two streams of its own process: a fatal message the engine wrote to
+    # STDERR -- which is where a dying process writes, and the commonest
+    # shape of a die-before-bind -- arrives on `logs.stderr`, never on
+    # `logs.stdout`. Task 025's first attempt read `logs.stdout` alone and
+    # therefore printed the exit code with NO tail at all for exactly that
+    # case (proved against a real sibling that wrote `engine-fatal-on-stderr`
+    # and exited 17: docker-logs stdout was `''`). Read both streams,
+    # stdout-then-stderr, and cap the merged text at the same line count
+    # asked of docker so a chatty stdout cannot push the stderr line out.
+    # Only when the call itself succeeded: a failed `docker logs` (no such
+    # container) and `sh()`'s own 127 fallback both put THEIR error text on
+    # stderr, which is not container output and must not be shown as such.
+    tail_lines: list[str] = []
+    if logs.returncode == 0:
+        for stream in (logs.stdout, logs.stderr):
+            tail_lines += (stream or "").strip().splitlines()
+    tail_lines = tail_lines[-_DEAD_CONTAINER_LOG_LINES:]
     print(f"ralphctl: container exited with code {exit_code} before "
           "binding the control API", file=sys.stderr)
-    if tail:
+    if tail_lines:
         print("ralphctl: container log tail:", file=sys.stderr)
-        for line in tail.splitlines():
+        for line in tail_lines:
             print(f"  {line}", file=sys.stderr)
 
 

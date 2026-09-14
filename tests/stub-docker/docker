@@ -55,7 +55,14 @@ just enough behavior for ralphctl to proceed. Knobs:
                               for an id not in that set, same as
                               {{.State.Running}} above.
   STUB_DOCKER_LOGS            raw text answered verbatim by `docker logs
-                              [--tail N] <cid>` (default empty).
+                              [--tail N] <cid>` on ITS OWN STDOUT, i.e. the
+                              container's stdout (default empty).
+  STUB_DOCKER_LOGS_STDERR     raw text answered verbatim by the same `docker
+                              logs` call on ITS OWN STDERR -- real `docker
+                              logs` replays the container's two streams onto
+                              its own two streams, so a process that died
+                              with a fatal message on stderr shows up here
+                              and nowhere else (default empty).
 """
 import hashlib
 import json
@@ -192,6 +199,7 @@ elif cmd == "inspect":
         sys.exit(1)
 elif cmd == "logs":
     sys.stdout.write(os.environ.get("STUB_DOCKER_LOGS", ""))
+    sys.stderr.write(os.environ.get("STUB_DOCKER_LOGS_STDERR", ""))
 elif cmd == "version":
     print("29.5.3")
 elif cmd == "build":

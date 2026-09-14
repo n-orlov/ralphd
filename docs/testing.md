@@ -1887,10 +1887,16 @@ modules fast, 4300/260 smoke) still carry headroom -- fast is now within
 docker (no `RALPHCTL`/`RALPHD_ENGINE`/`LiveRun`/`live(` in its source), so
 it is `smoke` as well as `fast`; net +1 fast, +1 smoke, +1 module in both
 tiers. From the 5729/4109/371 the paragraph above measures (task 024 added
-no fast/smoke nodes -- docker-tier only): **5730/4110/372**. Re-measured
+no fast/smoke nodes -- docker-tier only): **5730/4110/372**. That task's
+own rejection cure (reading `docker logs`' stderr as well as its stdout)
+added a second module, `tests/test_cli_dead_container_report_docker.py`,
+whose three nodes are all `@pytest.mark.docker` and so land in neither
+tier -- they raise the collected total from 5836 to 5839 and the
+deselected counts by the same 3, leaving the fast/smoke node and module
+counts exactly where the sentence above puts them. Re-measured
 directly at this task's own tip with `.venv/bin/python -m pytest -m
-<fast|smoke> --collect-only -q` (fast: `5730/5836 tests collected (106
-deselected)`, smoke: `4110/5836 tests collected (1726 deselected)`), and
+<fast|smoke> --collect-only -q` (fast: `5730/5839 tests collected (109
+deselected)`, smoke: `4110/5839 tests collected (1729 deselected)`), and
 the module count via the same unique-module-path recipe used throughout
 this section: `372` (fast), `257` (smoke). `tests/records/` is unaffected
 (still 117, untouched by this task). Both ceilings (5800 tests/375 modules
