@@ -69,17 +69,26 @@ from test_peer_verdict_gate import (  # noqa: F401 (re-exported fixtures)
 
 
 # Task 072 (steer 001 §2): every bare `asyncio.run(sup.<loop-driving call>)`
-# in this module is wrapped through here instead. The two known forever-
-# awaits are `_step_paused`'s `await self._gate()` (parked on the
-# `asyncio.Event` only `POST /pause`'s `loop.pause()` clears -- this
-# module's `verdict_gate` edges (`transitions.py`: `finishing`/`cure`/
-# `replan`/`finishing`) never target `paused` at all, so none of the
-# `_run_job_core`/`_maybe_grace_review` calls below can reach that Event)
-# and a `_ScriptedRunner` script whose repeating last step never reaches a
-# terminal phase (this module's own scripted handlers all reach a
-# deterministic terminal verdict, so that shape does not reproduce here
-# either) -- bounding anyway is defense against a FUTURE change re-
-# introducing either shape, not evidence one is live today.
+# in this module is wrapped through here instead. The forever-await this
+# guards is `_step_paused`'s `await self._gate()`, parked on the
+# `asyncio.Event` only `POST /pause`'s `loop.pause()` clears.
+#
+# Correcting this comment's first version (task 072, first attempt), which
+# claimed the `verdict_gate` edges never target `paused` and inferred from
+# that this module could not reach the Event at all: the inference was
+# wrong, because `_run_job`/`_pr_run_job` -- imported from
+# `test_peer_verdict_gate`/`test_peer_plan_review_gate` and used at five
+# call sites here -- drive the WHOLE loop, `review`'s own edges included. A
+# throwaway probe over `_run_job` with a review scripted to reject with an
+# all-curable findings set on the FINAL approach reached `state: "paused"`,
+# `pauseReason: "rejected_last_approach"` and then hung: `timeout 25` exited
+# 124 with no summary line. Those two imported helpers carry the bound in
+# their own modules now (a bound written here cannot reach an `asyncio.run`
+# inside an imported helper), which is what actually closes this module's
+# five loop-driving call sites. The second known forever-await -- a
+# `_ScriptedRunner` script whose repeating last step never reaches a
+# terminal phase -- does not reproduce here: this module's scripted
+# handlers all reach a deterministic terminal verdict.
 def _bounded(coro, timeout: float = 30.0):
     return asyncio.run(asyncio.wait_for(coro, timeout))
 

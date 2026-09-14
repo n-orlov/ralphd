@@ -408,10 +408,28 @@ _supervisor = scripted_supervisor(run_id="task020-verdict-gate", iterations=20,
 
 
 
+# Task 072 (steer 001 §2, second attempt): this helper is a LOOP DRIVER,
+# and it is imported wholesale by `tests/test_verdict_gate.py` (as
+# `_run_job`), so bounding only that module's own `asyncio.run` call sites
+# left five loop-driving calls there still able to wait forever. Measured
+# proof, taken with a throwaway probe before this change landed: a review
+# scripted to reject with an all-curable findings set on the FINAL approach
+# drives `_step_review` -> `cure` -> `_step_review` -> `("advance",
+# "paused", "rejected_last_approach")`, and `_step_paused`'s
+# `await self._gate()` then parks on the `asyncio.Event` that ONLY
+# `POST /pause`'s `loop.pause()` clears -- unreachable from a test -- so an
+# external `timeout 25` exited 124 with no summary line and no traceback.
+# With the bound below the same probe raises `TimeoutError` instead. This
+# is the future the earlier deadlock parked on; bounding here fixes it for
+# every importer of the helper at once.
+def _bounded(coro, timeout: float = 30.0):
+    return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
 def _run_job(root: Path, handlers: dict, **cfg_kw) -> tuple[LoopSupervisor, str]:
     RunDir(root=root).update_status(state="starting")
     sup = _supervisor(root, handlers, **cfg_kw)
-    return sup, asyncio.run(sup._run_job_core())
+    return sup, _bounded(sup._run_job_core())
 
 
 def test_gate_off_never_runs_the_verdict_gate_phase_at_all(tmp_path):
@@ -603,7 +621,7 @@ def test_verdict_gate_run_iteration_call_site_passes_no_extra_context(monkeypatc
         return r
 
     monkeypatch.setattr(LoopSupervisor, "run_iteration", spying_run_iteration)
-    outcome = asyncio.run(sup._step_verdict_gate())
+    outcome = _bounded(sup._step_verdict_gate())
     monkeypatch.setattr(LoopSupervisor, "run_iteration", orig)
 
     assert outcome == ("done", "succeeded")
@@ -744,7 +762,7 @@ def test_grace_review_alone_can_no_longer_reach_terminal_success_with_the_gate_o
         peer_verdict_gate=True)
     sup._approach = 1
 
-    assert asyncio.run(sup._maybe_grace_review(1)) is True
+    assert _bounded(sup._maybe_grace_review(1)) is True
     agent = sup.runner
     assert agent.phases_seen == ["review", "verdict_gate"]
     assert agent.calls == {"review": 1, "verdict_gate": 1}
@@ -771,7 +789,7 @@ def test_a_grace_review_peer_rejection_never_reaches_terminal_success(tmp_path):
         peer_verdict_gate=True)
     sup._approach = 1
 
-    assert asyncio.run(sup._maybe_grace_review(1)) is False
+    assert _bounded(sup._maybe_grace_review(1)) is False
     assert sup.run.read_status().get("state") != "succeeded"
     note = sup._terminal_reason_note or ""
     assert "grace" in note and "peer verdict gate" in note, note
@@ -789,7 +807,7 @@ def test_a_malformed_grace_peer_reply_takes_the_same_safe_default(tmp_path):
         peer_verdict_gate=True)
     sup._approach = 1
 
-    assert asyncio.run(sup._maybe_grace_review(1)) is False
+    assert _bounded(sup._maybe_grace_review(1)) is False
     assert sup.run.read_status().get("state") != "succeeded"
 
 
@@ -803,7 +821,7 @@ def test_the_grace_path_is_untouched_when_the_gate_is_off(tmp_path):
                      peer_verdict_gate=False)
     sup._approach = 1
 
-    assert asyncio.run(sup._maybe_grace_review(1)) is True
+    assert _bounded(sup._maybe_grace_review(1)) is True
     assert sup.runner.phases_seen == ["review"]
     status = sup.run.read_status()
     assert status.get("state") == "succeeded"
@@ -823,7 +841,7 @@ def test_the_grace_verdict_gate_iteration_is_off_budget(tmp_path):
         peer_verdict_gate=True)
     sup._approach = 1
 
-    assert asyncio.run(sup._maybe_grace_review(1)) is True
+    assert _bounded(sup._maybe_grace_review(1)) is True
     # two off-budget attempts ran, and BOTH are credited back through the
     # same `grace` channel the grace review has always used (the channel
     # `budget_left()` subtracts). `iterationsUsed` stays the raw attempt
@@ -838,7 +856,7 @@ def test_the_grace_verdict_gate_iteration_is_off_budget(tmp_path):
     sup2 = _supervisor(root2, {"review": [_review_verifies()]},
                       peer_verdict_gate=False)
     sup2._approach = 1
-    assert asyncio.run(sup2._maybe_grace_review(1)) is True
+    assert _bounded(sup2._maybe_grace_review(1)) is True
     assert (sup2.run.read_status().get("iterationsRefunded")
             or {}).get("grace") == 1
 
@@ -855,8 +873,8 @@ def test_only_one_off_budget_peer_gate_per_approach(tmp_path):
         peer_verdict_gate=True)
     sup._approach = 1
 
-    assert asyncio.run(sup._maybe_grace_review(1)) is False
-    assert asyncio.run(sup._maybe_grace_review(1)) is False
+    assert _bounded(sup._maybe_grace_review(1)) is False
+    assert _bounded(sup._maybe_grace_review(1)) is False
     assert sup.runner.calls == {"review": 1, "verdict_gate": 1}
 
 
@@ -920,7 +938,7 @@ def test_gate_rejection_all_curable_takes_a_cure_pass_not_a_replan(tmp_path):
     orig = LoopSupervisor.run_iteration
     LoopSupervisor.run_iteration = _gate_rejects
     try:
-        outcome = asyncio.run(sup._step_verdict_gate())
+        outcome = _bounded(sup._step_verdict_gate())
     finally:
         LoopSupervisor.run_iteration = orig
 
@@ -953,7 +971,7 @@ def test_gate_rejection_all_curable_takes_a_cure_pass_not_a_replan(tmp_path):
 
     # the `cure` state's own successor takes the run straight back to
     # `worker` in the same dispatch pass, over the SAME appended tasks.
-    cure_outcome = asyncio.run(sup._step_cure())
+    cure_outcome = _bounded(sup._step_cure())
     assert cure_outcome == ("advance", "worker", "cure_pass_appended")
 
 

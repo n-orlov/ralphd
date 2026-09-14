@@ -396,11 +396,22 @@ def _router_decisions(root: Path) -> list[dict]:
     return [json.loads(line) for line in p.read_text().splitlines() if line]
 
 
+# Task 072 (steer 001 §2, second attempt): this helper is a LOOP DRIVER and
+# is imported wholesale by `tests/test_verdict_gate.py` (as `_pr_run_job`,
+# three call sites there), so it has to carry the bound itself -- a bound
+# written only at the importing module's own `asyncio.run` sites cannot
+# reach the `asyncio.run` inside an imported helper. The forever-await it
+# guards is `_step_paused`'s `await self._gate()`, parked on the
+# `asyncio.Event` that only `POST /pause`'s `loop.pause()` clears.
+def _bounded(coro, timeout: float = 30.0):
+    return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
 def _run_job(root: Path, handlers: dict, router_answer=None,
              **cfg_kw) -> tuple[LoopSupervisor, str]:
     RunDir(root=root).update_status(state="starting")
     sup = _supervisor(root, handlers, router_answer=router_answer, **cfg_kw)
-    return sup, asyncio.run(sup._run_job_core())
+    return sup, _bounded(sup._run_job_core())
 
 
 def test_gate_off_never_runs_the_plan_review_phase_at_all(tmp_path):
@@ -517,7 +528,7 @@ def test_gate_on_an_undecidable_reply_with_the_bound_spent_asks_no_router(tmp_pa
         {"planning": [_plan()], "plan_review": [_garbage],
          "worker": [_worker_completes(TASK_1)], "review": [_review_verifies]},
         peer_plan_review=True, peer_plan_review_max_revisions=1)
-    final_state = asyncio.run(sup._run_job_core())
+    final_state = _bounded(sup._run_job_core())
 
     assert sup.runner.phases_seen == ["planning", "plan_review", "worker",
                                       "review"]
