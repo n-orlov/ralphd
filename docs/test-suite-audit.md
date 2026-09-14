@@ -154,7 +154,7 @@ Move to `tests/records/` (so `final_sha_guards.sh` selects a directory, not a gr
 `test_sweep_sha_guard.py`, `test_conformance_ledger.py` (replace 68 `pytest` spawns with one in-process
 `pytest --collect-only` over all node ids: 16 s -> <1 s -- DONE at task 033, `tests/records/test_conformance_ledger.py`), `tests/test_docs_consistency.py`,
 `tests/test_docs_semantics.py`, `tests/test_spec_cli_surface.py`, `tests/test_spec_state_surface.py`, `tests/test_docs_prd_index.py`,
-`tests/test_roadmap_terminal_claims.py`, `tests/test_issue_traceability.py`, `tests/test_commit_closing_keyword_scope.py`,
+`tests/test_roadmap_terminal_claims.py`, `test_issue_traceability.py`, `tests/test_commit_closing_keyword_scope.py`,
 `tests/test_final_sha_guards_discovery.py`, the transition table/diagram docs checks. Fold the 8
 `test_roadmap_v0N.py` into one parametrised `test_roadmap_blocks.py` (106 -> ~15 tests) -- DONE at
 task 034, `tests/records/test_roadmap.py`: the 96 collected nodes across the 8 sources (not 106; that
@@ -1044,11 +1044,11 @@ Derivation for task 028 (requirement D.7, the sweep): the per-task pin modules w
 | `test_seventh_lint_task013.py::test_a_final_sha_reference_without_the_word_commit_is_rejected` | `tests/test_ingestion_lints.py::test_a_final_sha_reference_without_the_word_commit_is_rejected` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_the_code_sha_this_task_lands_is_accepted` | `tests/test_ingestion_lints.py::test_the_code_sha_this_task_lands_is_accepted` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_a_past_sha_reference_is_accepted` | `tests/test_ingestion_lints.py::test_a_past_sha_reference_is_accepted` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
-| `test_seventh_lint_task013.py::test_the_v017_predeclared_event_state_clause_is_recovered_verbatim` | `tests/test_ingestion_lints.py::test_the_v017_predeclared_event_state_clause_is_recovered_verbatim` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
+| `test_seventh_lint_task013.py::test_the_v017_predeclared_event_state_clause_is_recovered_verbatim` | `tests/test_ingestion_lints.py::test_v017_recovered_predeclared_event_state_clause_is_rejected` (task 028's fold target, test_the_v017_predeclared_event_state_clause_is_recovered_verbatim, was itself retired by task 060/N.2 -- it read `artifacts/reports/v0.17-a3-closing-report.md` and `...a4-closing-report.md`, both deleted by task 061/N.1; this is that retirement's own surviving cover, proving `lint_proposal()` still refuses the same clause text) | task 028, requirement D.7; re-pointed task 060, requirement N.2 |
 | `test_seventh_lint_task013.py::test_v017_recovered_predeclared_event_state_clause_is_rejected` | `tests/test_ingestion_lints.py::test_v017_recovered_predeclared_event_state_clause_is_rejected` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_the_task_wordings_own_example_no_approach_rejected_is_rejected` | `tests/test_ingestion_lints.py::test_the_task_wordings_own_example_no_approach_rejected_is_rejected` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_a_criterion_naming_whatever_the_true_outcome_turns_out_to_be_is_accepted` | `tests/test_ingestion_lints.py::test_a_criterion_naming_whatever_the_true_outcome_turns_out_to_be_is_accepted` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
-| `test_seventh_lint_task013.py::test_the_v017_cites_own_commit_clause_is_recovered_verbatim` | `tests/test_ingestion_lints.py::test_the_v017_cites_own_commit_clause_is_recovered_verbatim` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
+| `test_seventh_lint_task013.py::test_the_v017_cites_own_commit_clause_is_recovered_verbatim` | `tests/test_ingestion_lints.py::test_a_record_required_to_cite_the_commit_that_writes_it_is_rejected` (task 028's fold target, test_the_v017_cites_own_commit_clause_is_recovered_verbatim, was itself retired by task 060/N.2 -- it read `artifacts/reports/v0.17-a3-closing-report.md`, deleted by task 061/N.1; this is that retirement's own surviving cover, proving `lint_proposal()` still refuses the same clause text) | task 028, requirement D.7; re-pointed task 060, requirement N.2 |
 | `test_seventh_lint_task013.py::test_a_record_required_to_cite_the_commit_that_writes_it_is_rejected` | `tests/test_ingestion_lints.py::test_a_record_required_to_cite_the_commit_that_writes_it_is_rejected` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_the_deck_3i_2_clause_is_recovered_verbatim_from_issue_143` | `tests/test_ingestion_lints.py::test_the_deck_3i_2_clause_is_recovered_verbatim_from_issue_143` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_deck_3i_2_row_naming_its_own_writing_commit_is_rejected` | `tests/test_ingestion_lints.py::test_deck_3i_2_row_naming_its_own_writing_commit_is_rejected` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
@@ -1063,7 +1063,7 @@ Derivation for task 028 (requirement D.7, the sweep): the per-task pin modules w
 | `test_seventh_lint_task013.py::test_an_exactly_once_commit_count_is_rejected` | `tests/test_ingestion_lints.py::test_an_exactly_once_commit_count_is_rejected` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_exactly_once_commit_count_is_distinct_from_the_single_commit_lint` | `tests/test_ingestion_lints.py::test_exactly_once_commit_count_is_distinct_from_the_single_commit_lint` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_at_least_one_commit_wording_is_accepted` | `tests/test_ingestion_lints.py::test_at_least_one_commit_wording_is_accepted` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
-| `test_seventh_lint_task013.py::test_the_v017_a4_notification_http_status_clause_is_recovered_verbatim` | `tests/test_ingestion_lints.py::test_the_v017_a4_notification_http_status_clause_is_recovered_verbatim` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
+| `test_seventh_lint_task013.py::test_the_v017_a4_notification_http_status_clause_is_recovered_verbatim` | `tests/test_ingestion_lints.py::test_a_notification_ledger_entry_clause_is_rejected` (task 028's fold target, test_the_v017_a4_notification_http_status_clause_is_recovered_verbatim, was itself retired by task 060/N.2 -- it read `artifacts/reports/v0.17-a4-closing-report.md`, deleted by task 061/N.1; this is that retirement's own surviving cover, proving `lint_proposal()` still refuses the same clause text) | task 028, requirement D.7; re-pointed task 060, requirement N.2 |
 | `test_seventh_lint_task013.py::test_a_notification_ledger_entry_clause_is_rejected` | `tests/test_ingestion_lints.py::test_a_notification_ledger_entry_clause_is_rejected` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_the_verbatim_v017_a4_clause_is_rejected_unmodified` | `tests/test_ingestion_lints.py::test_the_verbatim_v017_a4_clause_is_rejected_unmodified` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_the_same_clause_scoped_to_one_task_is_rejected` | `tests/test_ingestion_lints.py::test_the_same_clause_scoped_to_one_task_is_rejected` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
@@ -1073,8 +1073,8 @@ Derivation for task 028 (requirement D.7, the sweep): the per-task pin modules w
 | `test_seventh_lint_task013.py::test_an_existing_tracked_artifact_and_a_past_sha_are_accepted` | `tests/test_ingestion_lints.py::test_an_existing_tracked_artifact_and_a_past_sha_are_accepted` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_the_generic_must_pass_trio_together_is_accepted` | `tests/test_ingestion_lints.py::test_the_generic_must_pass_trio_together_is_accepted` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_ingestion_level_proposal_carrying_a_banned_shape_is_rejected` | `tests/test_ingestion_lints.py::test_ingestion_level_proposal_carrying_a_banned_shape_is_rejected` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
-| `test_seventh_lint_task013.py::test_the_v014_a3_and_v015_a2_clauses_are_verbatim_substrings_of_their_sources` | `tests/test_ingestion_lints.py::test_the_v014_a3_and_v015_a2_clauses_are_verbatim_substrings_of_their_sources` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
-| `test_seventh_lint_task013.py::test_the_verbatim_artifact_fixtures_use_no_normalisation_helper` | `tests/test_ingestion_lints.py::test_the_verbatim_artifact_fixtures_use_no_normalisation_helper` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
+| `test_seventh_lint_task013.py::test_the_v014_a3_and_v015_a2_clauses_are_verbatim_substrings_of_their_sources` | `tests/test_ingestion_lints.py::test_the_v014_a3_clause_ends_with_the_pinned_words` and `test_the_verbatim_artifact_clauses_are_refused_quoted_with_an_alternative` (task 028's fold target was itself retired by task 060/N.2 -- it read `artifacts/reports/v0.14-a3-final-guard-tail.md` and `v0.15-a2-final-guard-subset.md`, both deleted by task 061/N.1; these two are that retirement's own surviving cover, together proving the pinned-words half and the lint-refusal behaviour independent of the file) | task 028, requirement D.7; re-pointed task 060, requirement N.2 |
+| `test_seventh_lint_task013.py::test_the_verbatim_artifact_fixtures_use_no_normalisation_helper` | `tests/test_ingestion_lints.py::test_the_v015_a2_clause_begins_with_the_pinned_words` and `test_the_verbatim_artifact_clauses_are_refused_inside_a_longer_criteria` (task 028's fold target was itself retired by task 060/N.2 -- it read `artifacts/reports/v0.14-a3-final-guard-tail.md` and `v0.15-a2-final-guard-subset.md`, both deleted by task 061/N.1; these two are that retirement's own surviving cover) | task 028, requirement D.7; re-pointed task 060, requirement N.2 |
 | `test_seventh_lint_task013.py::test_the_v014_a3_clause_ends_with_the_pinned_words` | `tests/test_ingestion_lints.py::test_the_v014_a3_clause_ends_with_the_pinned_words` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_the_v015_a2_clause_begins_with_the_pinned_words` | `tests/test_ingestion_lints.py::test_the_v015_a2_clause_begins_with_the_pinned_words` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_seventh_lint_task013.py::test_the_verbatim_artifact_clauses_are_refused_quoted_with_an_alternative` | `tests/test_ingestion_lints.py::test_the_verbatim_artifact_clauses_are_refused_quoted_with_an_alternative` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
@@ -1235,34 +1235,70 @@ Derivation for task 032 (requirement E.1): `test_report_claims.py` collapsed int
 under `artifacts/reports/` (`params=REPORTS`, 231 reports at this task's own HEAD) -- 1,155 of the
 old module's 1,165 collected nodes were one of these five families times 231 reports. The collapse
 runs all five checks inside ONE test's own loop over the same glob-discovered report list
-(`test_every_report_passes_its_claim_checks`), `test_the_reports_directory_is_discovered_not_enumerated`,
-`test_the_claim_checks_have_exactly_one_implementation`, `test_a_node_family_wildcard_needs_a_real_match`,
-`test_path_problems_takes_at_most_one_git_ls_files_snapshot`,
-`test_untracked_generated_path_fails_with_the_untracked_message`,
-`test_the_same_absolute_run_dir_path_still_passes`, `test_tracked_but_missing_path_fails_with_the_other_message`,
-`test_the_v05_report_still_names_its_own_module`) moved unchanged, same names, no row needed.
+(test_every_report_passes_its_claim_checks), test_the_reports_directory_is_discovered_not_enumerated,
+test_the_claim_checks_have_exactly_one_implementation, test_a_node_family_wildcard_needs_a_real_match,
+test_path_problems_takes_at_most_one_git_ls_files_snapshot,
+test_untracked_generated_path_fails_with_the_untracked_message,
+test_the_same_absolute_run_dir_path_still_passes, test_tracked_but_missing_path_fails_with_the_other_message,
+test_the_v05_report_still_names_its_own_module) moved unchanged, same names, no row needed.
 
 Task 059 (requirement N.2) later retired `tests/records/test_report_claims.py` and
 `tests/report_claims.py`'s corpus-wide discovery (`report_files()`) entire -- unlike task 028's
 repoint above, the two surviving nodes this table's rows cited
-(`test_every_report_passes_its_claim_checks`, `test_the_retired_marker_direction_is_enforced`) are
+(test_every_report_passes_its_claim_checks, test_the_retired_marker_direction_is_enforced) are
 GONE, not moved, since the whole-corpus check they ran is retired ahead of N.1's deletion of the
-corpus itself. The seven rows below are repointed to the one place `report_claims.py`'s
-sha/path/`!retired`-path/density checks are still exercised live -- `tests/test_issue_traceability.py`,
-against its own one still-tracked report -- rather than left citing a node that no longer collects;
-the node-resolution row has no live successor at all (requirement A.3, v0.20.2, already retired that
-check before task 059 touched anything), so it is repointed to the node whose own docstring records
-that retirement instead of to a check that still performs it.
+corpus itself. Task 059 repointed the seven rows below to `test_issue_traceability.py`, the
+one place `report_claims.py`'s sha/path/`!retired`-path/density checks were still exercised live,
+against its own one still-tracked report.
+
+Task 060 (requirement N.2's second half) then retired `test_issue_traceability.py` and
+`tests/report_claims.py` entire too -- both files, not merely the corpus-wide loop task 059 already
+cut. Their subject, `issue-traceability.md`/`issue-closure.md`, is exactly what requirement N.1
+(task 061) deletes next, so the checks that read it have no live successor of any kind now, not
+merely a different place that performs them: there is nothing left to check a report's commit
+shas, paths or `!retired` markers against, because the report itself is gone. That is the same
+fact the node-resolution row below already recorded one layer earlier (requirement A.3, v0.20.2,
+retired that one check before task 059 touched anything) -- all seven rows are now that same
+shape, repointed to `tests/test_report_claims_retired.py`, the node that records the retirement
+(proving both files are actually gone and nothing still imports the module) rather than to a check
+that still performs it.
 
 | deleted node | surviving cover | landed in |
 |---|---|---|
-| `test_report_claims.py::test_every_listed_commit_sha_exists[*]` | `tests/test_issue_traceability.py::test_every_commit_this_report_names_is_a_real_commit` (the sha-resolution check, still run live against `issue-traceability.md`; task 059 retired the whole-corpus loop this row used to cite) | task 032, requirement E.1; repointed task 059, requirement N.2 |
-| `test_report_claims.py::test_every_listed_path_exists[*]` | `tests/test_issue_traceability.py::test_every_path_this_report_names_exists` (the path-resolution check, same report; task 059 retired the whole-corpus loop this row used to cite) | task 032, requirement E.1; repointed task 059, requirement N.2 |
-| `test_report_claims.py::test_every_listed_test_node_exists[*]` | `tests/test_issue_traceability.py::test_every_path_this_report_names_exists` (node-resolution itself was already retired, requirement A.3 v0.20.2; this node's own docstring records that retirement, and no check still performs it) | task 032, requirement E.1; repointed task 059, requirement N.2 |
-| `test_report_claims.py::test_every_retired_claim_stays_retired[*]` | `tests/test_issue_traceability.py::test_every_path_this_report_names_exists` (the `!retired`-direction check, same report; task 059 retired the whole-corpus loop this row used to cite) | task 032, requirement E.1; repointed task 059, requirement N.2 |
-| `test_report_claims.py::test_the_reports_are_not_all_claimless[*]` | `tests/test_issue_traceability.py::test_the_report_still_carries_the_evidence_it_promised` (the checkable-claim density floor, same report; task 059 retired the whole-corpus loop this row used to cite) | task 032, requirement E.1; repointed task 059, requirement N.2 |
-| `test_report_claims.py::test_a_live_path_wrongly_marked_retired_is_caught` | `tests/test_issue_traceability.py::test_every_path_this_report_names_exists` (still exercises `retired_problems`'s STRONG direction, same report; task 059 retired the merged mutation test this row used to cite) | task 032, requirement E.1; repointed task 059, requirement N.2 |
-| `test_report_claims.py::test_a_live_node_wrongly_marked_retired_is_caught` | `tests/test_issue_traceability.py::test_every_path_this_report_names_exists` (still exercises `retired_problems`'s STRONG direction, same report; task 059 retired the merged mutation test this row used to cite) | task 032, requirement E.1; repointed task 059, requirement N.2 |
+| `test_report_claims.py::test_every_listed_commit_sha_exists[*]` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (the sha-resolution check has no live successor: task 060 deleted its only remaining subject, `issue-traceability.md`, ahead of N.1) | task 032, requirement E.1; repointed task 059, requirement N.2; repointed again task 060, requirement N.2 |
+| `test_report_claims.py::test_every_listed_path_exists[*]` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (the path-resolution check has no live successor either, same reason) | task 032, requirement E.1; repointed task 059, requirement N.2; repointed again task 060, requirement N.2 |
+| `test_report_claims.py::test_every_listed_test_node_exists[*]` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (node-resolution itself was already retired, requirement A.3 v0.20.2, before either report_claims retirement touched anything) | task 032, requirement E.1; repointed task 059, requirement N.2; repointed again task 060, requirement N.2 |
+| `test_report_claims.py::test_every_retired_claim_stays_retired[*]` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (the `!retired`-direction check has no live successor either, same reason) | task 032, requirement E.1; repointed task 059, requirement N.2; repointed again task 060, requirement N.2 |
+| `test_report_claims.py::test_the_reports_are_not_all_claimless[*]` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (the checkable-claim density floor has no live successor either, same reason) | task 032, requirement E.1; repointed task 059, requirement N.2; repointed again task 060, requirement N.2 |
+| `test_report_claims.py::test_a_live_path_wrongly_marked_retired_is_caught` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (`retired_problems`'s STRONG direction has no live successor either, same reason) | task 032, requirement E.1; repointed task 059, requirement N.2; repointed again task 060, requirement N.2 |
+| `test_report_claims.py::test_a_live_node_wrongly_marked_retired_is_caught` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (`retired_problems`'s STRONG direction has no live successor either, same reason) | task 032, requirement E.1; repointed task 059, requirement N.2; repointed again task 060, requirement N.2 |
+
+Task 060 (requirement N.2) also deletes the other eight `test_issue_traceability.py`
+nodes that were never part of `report_claims.py`'s own fold above -- the report-specific
+checks that named `issue-traceability.md` (and, for the closure check, `issue-closure.md`
+too) directly rather than through `report_claims.py`'s shared helpers. Both files are the
+same N.1 (task 061) deletion target, so none of these eight has a live successor either.
+
+| deleted node | surviving cover | landed in |
+|---|---|---|
+| `test_issue_traceability.py::test_report_covers_every_issue_in_scope` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (the every-issue-has-a-section check has no live successor: its subject, `issue-traceability.md`, is deleted by N.1) | task 060, requirement N.2 |
+| `test_issue_traceability.py::test_the_v06_wave_maps_every_issue_to_a_requirement_and_a_task` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (same reason, v0.6 slice) | task 060, requirement N.2 |
+| `test_issue_traceability.py::test_the_v07_wave_maps_every_issue_to_a_requirement_and_a_task` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (same reason, v0.7 slice) | task 060, requirement N.2 |
+| `test_issue_traceability.py::test_the_v08_wave_maps_every_issue_to_a_requirement_and_a_task` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (same reason, v0.8 slice) | task 060, requirement N.2 |
+| `test_issue_traceability.py::test_the_v07_requirements_with_no_issue_are_traced_to_spec` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (same reason, the SPEC-anchored requirements N/O/P slice) | task 060, requirement N.2 |
+| `test_issue_traceability.py::test_the_report_still_carries_the_evidence_it_promised` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (the claim-density floor for this one report has no live successor either, same reason) | task 060, requirement N.2 |
+| `test_issue_traceability.py::test_every_issue_section_states_its_closure` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (the closure-state-is-one-of-three-words check has no live successor either, same reason) | task 060, requirement N.2 |
+| `test_issue_traceability.py::test_a_claimed_closure_is_recorded_in_the_closure_report` | `tests/test_report_claims_retired.py::test_report_claims_and_issue_traceability_files_are_gone` (cross-checked against `issue-closure.md`, also deleted by N.1, so neither side of the cross-check survives) | task 060, requirement N.2 |
+
+Task 060 (requirement N.2) also retires two `tests/test_cost_zero_quote.py` nodes that read
+`artifacts/reports/pricing-anomaly.md` from disk (one via `.exists()`/`.read_text()`, the
+other by listing the reports directory with `.iterdir()`) rather than checking the
+production notice string alone -- N.1 (task 061) deletes that report too.
+
+| deleted node | surviving cover | landed in |
+|---|---|---|
+| `tests/test_cost_zero_quote.py::test_the_notice_points_at_the_existing_pricing_anomaly_report` | `tests/test_cost_zero_quote.py::test_the_notice_names_the_pricing_anomaly_report_by_path` (same claim -- the notice string names the report path -- checked against the production constant alone, no filesystem read) | task 060, requirement N.2 |
+| `tests/test_cost_zero_quote.py::test_no_parallel_anomaly_report_was_added` | `tests/test_cost_zero_quote.py::test_the_notice_names_the_pricing_anomaly_report_by_path` (the "names the one report" half of the same claim; the "and no second report competes with it" half had no way to survive without listing the corpus directory, so it has no live successor -- N.1 deletes the whole directory's contents next anyway, which is the same fact stated the other way) | task 060, requirement N.2 |
 
 Derivation for task 033 (requirement E.2): `test_conformance_ledger.py` moved to
 `tests/records/test_conformance_ledger.py` and its node-id-collection check converted from 68
@@ -1325,7 +1361,7 @@ its own row below, none merged, none dropped.
 | `test_roadmap_v07.py::test_the_deferred_list_no_longer_promises_the_kill_protection_i_shipped` | `tests/records/test_roadmap.py::test_v07_the_deferred_list_no_longer_promises_the_kill_protection_i_shipped` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v07.py::test_the_deferred_pid_namespace_check_catches_the_pre_v07_wording` | `tests/records/test_roadmap.py::test_the_deferred_pid_namespace_check_catches_the_pre_v07_wording` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v07.py::test_the_auto_resume_flip_is_shipped_not_deferred` | `tests/records/test_roadmap.py::test_v07_the_auto_resume_flip_is_shipped_not_deferred` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
-| `test_roadmap_v07.py::test_the_closure_record_parses_at_all` | `tests/records/test_roadmap.py::test_v07_the_closure_record_parses_at_all` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
+| `test_roadmap_v07.py::test_the_closure_record_parses_at_all` | `tests/records/test_roadmap.py::test_v07_requirement_q_is_shipped_and_says_what_the_receipts_say` (task 034's fold target, test_v07_the_closure_record_parses_at_all, was itself retired by task 060/N.2 -- it re-derived and re-parsed `artifacts/reports/issue-closure.md`/`issue-traceability.md` at collection time, deleted by task 061/N.1; this is that retirement's own surviving cover, proving the same v0.7 requirement claim against the now-frozen literal closure/traceability sets) | task 034, requirement E.3; re-pointed task 060, requirement N.2 |
 | `test_roadmap_v07.py::test_requirement_q_is_shipped_and_says_what_the_receipts_say` | `tests/records/test_roadmap.py::test_v07_requirement_q_is_shipped_and_says_what_the_receipts_say` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v07.py::test_the_requirement_q_check_catches_a_stale_or_wrong_claim` | `tests/records/test_roadmap.py::test_v07_the_requirement_q_check_catches_a_stale_or_wrong_claim` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v07.py::test_the_block_names_the_fault_class_requirement_d_added` | `tests/records/test_roadmap.py::test_v07_the_block_names_the_fault_class_requirement_d_added` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
@@ -1337,7 +1373,7 @@ its own row below, none merged, none dropped.
 | `test_roadmap_v08.py::test_the_coverage_check_catches_a_dropped_requirement_or_issue` | `tests/records/test_roadmap.py::test_v08_the_coverage_check_catches_a_dropped_requirement_or_issue` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v08.py::test_the_block_cites_every_issue_this_wave_names` | `tests/records/test_roadmap.py::test_v08_the_block_cites_every_issue_this_wave_names` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v08.py::test_the_v08_block_names_the_verb_the_wave_added` | `tests/records/test_roadmap.py::test_the_v08_block_names_the_verb_the_wave_added` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
-| `test_roadmap_v08.py::test_the_v08_closure_record_parses_at_all` | `tests/records/test_roadmap.py::test_the_v08_closure_record_parses_at_all` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
+| `test_roadmap_v08.py::test_the_v08_closure_record_parses_at_all` | `tests/records/test_roadmap.py::test_v08_requirement_n_is_shipped_and_says_what_the_receipts_say` (task 034's fold target, test_the_v08_closure_record_parses_at_all, was itself retired by task 060/N.2 -- it re-derived and re-parsed `artifacts/reports/issue-closure.md`/`issue-traceability.md` at collection time, deleted by task 061/N.1; this is that retirement's own surviving cover, proving the same v0.8 requirement claim against the now-frozen literal closure/traceability sets) | task 034, requirement E.3; re-pointed task 060, requirement N.2 |
 | `test_roadmap_v08.py::test_requirement_n_is_shipped_and_says_what_the_receipts_say` | `tests/records/test_roadmap.py::test_v08_requirement_n_is_shipped_and_says_what_the_receipts_say` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v08.py::test_the_requirement_n_check_catches_a_stale_or_wrong_claim` | `tests/records/test_roadmap.py::test_v08_the_requirement_n_check_catches_a_stale_or_wrong_claim` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v08.py::test_the_deferred_list_is_unchanged_in_kind_by_this_wave` | `tests/records/test_roadmap.py::test_v08_the_deferred_list_is_unchanged_in_kind_by_this_wave` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
@@ -1353,7 +1389,7 @@ its own row below, none merged, none dropped.
 | `test_roadmap_v09.py::test_the_block_names_the_vocabulary_the_wave_added` | `tests/records/test_roadmap.py::test_v09_the_block_names_the_vocabulary_the_wave_added` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v09.py::test_the_vocabulary_check_catches_a_block_that_stops_naming_a_mechanism` | `tests/records/test_roadmap.py::test_v09_the_vocabulary_check_catches_a_block_that_stops_naming_a_mechanism` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v09.py::test_the_wave_really_added_no_cli_verb_so_there_is_no_verb_to_demand` | `tests/records/test_roadmap.py::test_v09_the_wave_really_added_no_cli_verb_so_there_is_no_verb_to_demand` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
-| `test_roadmap_v09.py::test_the_v09_closure_record_parses_at_all` | `tests/records/test_roadmap.py::test_the_v09_closure_record_parses_at_all` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
+| `test_roadmap_v09.py::test_the_v09_closure_record_parses_at_all` | `tests/records/test_roadmap.py::test_v09_requirement_l_is_shipped_and_says_what_the_receipts_say` (task 034's fold target, `test_the_v09_closure_record_parses_at_all`, was itself retired by task 060/N.2 -- it re-derived and re-parsed `artifacts/reports/issue-closure.md`/`issue-traceability.md` at collection time, deleted by task 061/N.1; this is that retirement's own surviving cover, proving the same v0.9 requirement claim against the now-frozen literal closure/traceability sets) | task 034, requirement E.3; re-pointed task 060, requirement N.2 |
 | `test_roadmap_v09.py::test_requirement_l_is_shipped_and_says_what_the_receipts_say` | `tests/records/test_roadmap.py::test_v09_requirement_l_is_shipped_and_says_what_the_receipts_say` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v09.py::test_the_requirement_l_check_catches_a_stale_or_wrong_claim` | `tests/records/test_roadmap.py::test_v09_the_requirement_l_check_catches_a_stale_or_wrong_claim` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v09.py::test_the_deferred_list_is_unchanged_in_kind_by_this_wave` | `tests/records/test_roadmap.py::test_v09_the_deferred_list_is_unchanged_in_kind_by_this_wave` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
@@ -1553,7 +1589,7 @@ text: "a header stating the sha it was taken at, that it is frozen, and that
 nothing checks it"), and the generic claim checker is taught to skip it so
 that header is true rather than aspirational: `tests/report_claims.py`'s
 `report_files()` -- the glob discovery every claim family in
-`tests/records/test_report_claims.py` and `tests/test_report_claims_git_objects.py`
+`tests/records/test_report_claims.py` and `test_report_claims_git_objects.py`
 iterates -- now subtracts the names in `FROZEN_REPORTS`, which holds exactly
 the frozen ledger. That is the last mechanical reader of the file: no
 commit-sha, path, node-id, `!retired`-direction or claim-density check is
@@ -1562,7 +1598,7 @@ step (the checks are a fixed number of nodes over a discovered list, so the
 ledger's removal from that list changes no count) and none is weakened for
 any live report: a report added tomorrow is still discovered and checked
 without editing either file, and the discovery guard
-(`test_the_reports_directory_is_discovered_not_enumerated`) pins the
+(test_the_reports_directory_is_discovered_not_enumerated) pins the
 subtraction from the live side only -- every name on disk except the frozen
 ones is covered, and no frozen name is -- so no test asserts anything about
 the ledger's presence, its lines or its claims. Every backtick citation
@@ -1596,8 +1632,8 @@ is a record of a wave already closed out, i.e. history the moment it is written 
 still resolve to a real test in the file it named. It is deleted outright, along with
 its one call site inside `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks`
 (the collapsed, fixed-node-count loop task 032/E.1 built) and its second call site
-inside `tests/test_issue_traceability.py::test_every_path_and_test_node_this_report_names_exists`
-(renamed `test_every_path_this_report_names_exists`, since it no longer checks a node
+inside `test_issue_traceability.py::test_every_path_and_test_node_this_report_names_exists`
+(renamed test_every_path_this_report_names_exists, since it no longer checks a node
 at all). No pytest node is deleted by this step: both call sites were function calls
 inside an existing test's own body, not a parametrized node of their own, so the fast
 and smoke tier counts, and `tests/records/`'s own collected count, are unchanged
@@ -1606,7 +1642,7 @@ modules, `tests/records/` 116 -- identical to task 004's own count, confirming t
 retirement changes no count).
 
 Kept, unweakened, exactly as A.3 requires: `commit_problems()` (the sha-reachability
-anti-fabrication guard, `test_a_dangling_commit_sha_fails_and_a_reachable_one_passes`),
+anti-fabrication guard, test_a_dangling_commit_sha_fails_and_a_reachable_one_passes),
 `path_problems()` (a cited repo path must be tracked), and the PATH form of
 `retired_problems()`'s STRONG `!retired` direction -- a citation marking a whole path
 retired must NOT resolve, which is the opposite obligation from the one A.3 retires
@@ -1615,9 +1651,9 @@ form of that same STRONG direction is retired too, by a cure below.) The
 `missing`-kind failure text `commit_problems()` emits for a decimal check-run/job/run
 id keeps A.3's required guidance ("do not backtick it") but drops the now-dangling
 `see docs/sweep-records.md` pointer, since A.1 deleted that file in this same wave;
-`test_a_missing_decimal_id_names_the_check_run_convention` is updated to match and
+test_a_missing_decimal_id_names_the_check_run_convention is updated to match and
 still passes. `path::node` claims are still parsed and still count toward the
-"not claimless" density floor in `test_every_report_passes_its_claim_checks` -- they
+"not claimless" density floor in test_every_report_passes_its_claim_checks -- they
 remain evidence of what a report is about, they are simply no longer re-verified to
 still resolve.
 
@@ -1638,8 +1674,8 @@ only the PATH form (a whole file marked `!retired` must not still be tracked)
 checked; `defines_test()` stays, unused by this function now, because
 `tests/records/test_report_claims.py::test_a_node_family_wildcard_needs_a_real_match`
 still needs it for the unrelated wildcard-prefix question. The shipped retired-marker
-test (`test_the_retired_marker_direction_is_enforced`) narrows to the path form only;
-a new `test_a_retired_node_citation_is_never_rechecked_against_live_source` asserts
+test (test_the_retired_marker_direction_is_enforced) narrows to the path form only;
+a new test_a_retired_node_citation_is_never_rechecked_against_live_source asserts
 the node form is no longer flagged even when the node still collects. The dangling-
 commit reachability check, the decimal-id guidance and the path-only checks (both
 `path_problems()` and `retired_problems()`'s path form) are unaffected and still pass;

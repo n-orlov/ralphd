@@ -244,9 +244,6 @@ def test_the_deferred_image_check_catches_the_pre_v06_wording():
 # ==========================================================================
 
 
-CLOSURE_WAVE_HEADING_V07 = "# Issue closure record — ralphd v0.7"
-
-
 PRD_V07 = REPO_ROOT / "docs" / "prds" / "v0.7-trustworthy-unattended.md"
 
 
@@ -454,42 +451,26 @@ def test_v07_the_auto_resume_flip_is_shipped_not_deferred():
     assert "AUTO_RESUME_DEFAULT" in block and "--no-auto-resume" in block
 
 
-def closure_wave_section_v07() -> str:
-    """`artifacts/reports/issue-closure.md`'s v0.7 half (it now holds three
-    waves, so this stops at the next `# Issue closure record` heading rather
-    than running to end of file -- otherwise a later wave's own section, e.g.
-    v0.8's, would silently be scanned as if it were v0.7's)."""
-    text = CLOSURE_REPORT.read_text()
-    assert CLOSURE_WAVE_HEADING_V07 in text, (
-        f"{CLOSURE_REPORT.name} has no {CLOSURE_WAVE_HEADING_V07!r} section")
-    rest = text.split(CLOSURE_WAVE_HEADING_V07, 1)[1]
-    nxt = re.search(r"^# Issue closure record", rest, re.MULTILINE)
-    return rest[: nxt.start()] if nxt else rest
-
-
+# Task 060 (requirement N.2) freezes these two sets. They used to be
+# re-derived from `artifacts/reports/issue-closure.md`'s v0.7 section on
+# every test run (`closure_wave_section_v07()`, deleted here along with
+# `CLOSURE_WAVE_HEADING_V07`); task 061 (N.1) deletes that corpus file
+# entirely, and the wave it records (v0.7, task 038) is long since shipped
+# and will never change again, so re-deriving it bought nothing but a read
+# of a file about to go away. The values are exactly what the deleted
+# derivation last returned -- pinned by the two `test_v07_the_closure_record_
+# parses_at_all` assertions this same commit retires -- so freezing them
+# changes no fact any check below relies on.
 def closed_issues_v07() -> set[int]:
-    """The issues the closure record says it actually closed, per-section.
-
-    Derived from the report rather than retyped here: the roadmap bullet's
-    claim is only worth anything if it is the same set the receipt records.
-    A section counts as a closure only where it states the state GitHub
-    answered on the re-read (`**closed**`), which is what task 038 wrote.
-    """
-    out = set()
-    for m in re.finditer(r"^## #(\d+)\b([\s\S]*?)(?=^## |\Z)",
-                         closure_wave_section_v07(), re.MULTILINE):
-        if "**closed**" in m.group(2):
-            out.add(int(m.group(1)))
-    return out
+    """The issues `issue-closure.md`'s v0.7 section recorded as closed
+    (frozen historical fact, task 038; see the module comment above)."""
+    return {28, *range(30, 50), 52, 53, 55}
 
 
 def left_open_issues_v07() -> set[int]:
-    """The issues the closure record names as deliberately left open."""
-    section = closure_wave_section_v07()
-    assert "Deliberately **not** closed" in section, (
-        f"{CLOSURE_REPORT.name}'s v0.7 section no longer names what it left open")
-    para = section.split("Deliberately **not** closed", 1)[1].split("\n\n", 1)[0]
-    return {int(n) for n in re.findall(r"#(\d+)", para)}
+    """The issues that section named as deliberately left open (frozen
+    historical fact, task 038; see the module comment above)."""
+    return {24, 25, 26, 27, 50, 51, 54}
 
 
 def _issue_numbers_v07(text: str) -> set[int]:
@@ -539,16 +520,6 @@ def _requirement_q_problems_v07(block: str) -> list[str]:
             f"the Q bullet names {sorted(_issue_numbers_v07(open_part))} as left "
             f"open, the record names {sorted(left_open_issues_v07())}")
     return problems
-
-
-def test_v07_the_closure_record_parses_at_all():
-    """Guards the checks below from passing on an empty parse -- and pins what
-    task 038 actually did: 24 closures, seven issues left open on purpose."""
-    closed, left_open = closed_issues_v07(), left_open_issues_v07()
-    assert closed == {28, *range(30, 50), 52, 53, 55}, sorted(closed)
-    assert len(closed) == 24
-    assert left_open == {24, 25, 26, 27, 50, 51, 54}, sorted(left_open)
-    assert not closed & left_open
 
 
 def test_v07_requirement_q_is_shipped_and_says_what_the_receipts_say():
@@ -790,26 +761,16 @@ def n_bullet_v08(block: str) -> str | None:
     return bullets[0] if len(bullets) == 1 else None
 
 
-def closure_wave_v08_section() -> str:
-    text = CLOSURE_REPORT.read_text()
-    heads = list(re.finditer(r"^# Issue closure record", text, re.MULTILINE))
-    for i, m in enumerate(heads):
-        if "v0.8" not in text[m.start(): m.start() + 80]:
-            continue
-        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
-        return text[m.start(): end]
-    raise AssertionError("issue-closure.md has no v0.8 section")
-
-
+# Task 060 (requirement N.2) freezes this set; see the identical comment
+# above `closed_issues_v07` for why. It used to be re-derived from
+# `artifacts/reports/issue-closure.md`'s v0.8 section on every run
+# (`closure_wave_v08_section()`, deleted here); the value is exactly what
+# that derivation last returned -- pinned by `test_the_v08_closure_record_
+# parses_at_all`, retired in this same commit.
 def closed_issues_v08() -> set[int]:
-    """The issues the v0.8 closure section's own `## #N` subsections mark
-    `**closed**` in a `Resulting state` line."""
-    out: set[int] = set()
-    for m in re.finditer(r"^## #(\d+)\b([\s\S]*?)(?=^## |\Z)",
-                         closure_wave_v08_section(), re.MULTILINE):
-        if "**closed**" in m.group(2):
-            out.add(int(m.group(1)))
-    return out
+    """The issues `issue-closure.md`'s v0.8 section recorded as closed
+    (frozen historical fact, task 035; see the module comment above)."""
+    return {24, 26, 27, 50, 51, 54, 56, 57, 58}
 
 
 def _issue_numbers_v08(text: str) -> set[int]:
@@ -842,15 +803,6 @@ def _requirement_n_problems_v08(block: str) -> list[str]:
         problems.append(f"the N bullet says {total.group(1)} closures, the "
                         f"record has {len(closed)}")
     return problems
-
-
-def test_the_v08_closure_record_parses_at_all():
-    """Guards the checks below from passing on an empty parse -- and pins what
-    task 035 actually did: all nine of this wave's issues closed, none left
-    open."""
-    closed = closed_issues_v08()
-    assert closed == {24, 26, 27, 50, 51, 54, 56, 57, 58}, sorted(closed)
-    assert len(closed) == 9
 
 
 def test_v08_requirement_n_is_shipped_and_says_what_the_receipts_say():
@@ -899,9 +851,6 @@ def test_v08_the_deferred_list_is_unchanged_in_kind_by_this_wave():
 
 
 PRD_V09 = REPO_ROOT / "docs" / "prds" / "v0.9-declarative-loop.md"
-
-
-CLOSURE_WAVE_HEADING_V09 = "# Issue closure record — ralphd v0.9"
 
 
 # The milestone this module is about. Pinned, not derived: v0.9 is history now
@@ -1177,41 +1126,23 @@ def test_v09_the_wave_really_added_no_cli_verb_so_there_is_no_verb_to_demand():
         "against build_parser() the way test_roadmap_v08.py does")
 
 
-def closure_wave_section_v09() -> str:
-    """`artifacts/reports/issue-closure.md`'s v0.9 half (the file holds four
-    waves, so this stops at the next `# Issue closure record` heading rather
-    than running to end of file)."""
-    text = CLOSURE_REPORT.read_text()
-    assert CLOSURE_WAVE_HEADING_V09 in text, (
-        f"{CLOSURE_REPORT.name} has no {CLOSURE_WAVE_HEADING_V09!r} section")
-    rest = text.split(CLOSURE_WAVE_HEADING_V09, 1)[1]
-    nxt = re.search(r"^# Issue closure record", rest, re.MULTILINE)
-    return rest[: nxt.start()] if nxt else rest
-
-
-CLOSURE_ROW_V09 = re.compile(
-    r"^\|\s*\[#(\d+)\]\([^)]*\)\s*\|(?P<rest>.*)\|\s*$", re.MULTILINE)
-
-
-def closure_rows_v09() -> dict[int, str]:
-    """`{61: "... | **closed** ", ...}` from the v0.9 section's summary table.
-
-    v0.9's record is a table where v0.7's and v0.8's were `## #N` subsections,
-    so this parses the shape task 113 actually wrote rather than the shape an
-    earlier wave's parser expected.
-    """
-    return {int(m.group(1)): m.group("rest")
-            for m in CLOSURE_ROW_V09.finditer(closure_wave_section_v09())}
-
-
+# Task 060 (requirement N.2) freezes these two sets; see the identical
+# comment above `closed_issues_v07` for why. They used to be re-derived
+# from `artifacts/reports/issue-closure.md`'s v0.9 table on every run
+# (`closure_wave_section_v09()`/`CLOSURE_ROW_V09`/`closure_rows_v09()`,
+# deleted here along with `CLOSURE_WAVE_HEADING_V09`); the values are
+# exactly what that derivation last returned -- pinned by
+# `test_the_v09_closure_record_parses_at_all`, retired in this same commit.
 def closed_issues_v09() -> set[int]:
-    """The issues whose row records the state a fresh `GET` answered: closed."""
-    return {n for n, row in closure_rows_v09().items() if "**closed**" in row}
+    """The issues `issue-closure.md`'s v0.9 table recorded as closed
+    (frozen historical fact, task 113; see the module comment above)."""
+    return {61, 62, 63, 66}
 
 
 def left_open_issues_v09() -> set[int]:
-    """The issues whose row records them still open, deliberately."""
-    return {n for n, row in closure_rows_v09().items() if "**open**" in row}
+    """The issues that table recorded as still open, deliberately (frozen
+    historical fact, task 113; see the module comment above)."""
+    return {60}
 
 
 def _issue_numbers_v09(text: str) -> set[int]:
@@ -1256,16 +1187,6 @@ def _requirement_l_problems_v09(block: str) -> list[str]:
             f"the L bullet names {sorted(_issue_numbers_v09(open_part))} as left "
             f"open, the record names {sorted(left_open_issues_v09())}")
     return problems
-
-
-def test_the_v09_closure_record_parses_at_all():
-    """Guards the checks below from passing on an empty parse -- and pins what
-    task 113 actually did: four closures, #60 left open on purpose."""
-    closed, left_open = closed_issues_v09(), left_open_issues_v09()
-    assert closed == {61, 62, 63, 66}, sorted(closed)
-    assert len(closed) == 4
-    assert left_open == {60}, sorted(left_open)
-    assert not closed & left_open
 
 
 def test_v09_requirement_l_is_shipped_and_says_what_the_receipts_say():

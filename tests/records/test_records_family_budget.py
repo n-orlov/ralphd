@@ -28,12 +28,12 @@ module along with the corpus-wide read it drove (N.2: the check machinery
 is retired ahead of N.1's deletion of the corpus itself), so nothing left
 in this directory calls `report_claims.commit_problems()`/`path_problems()`
 at all, and `test_the_records_family_spawns_no_subprocess` below now pins
-the family at **zero** real subprocesses instead. `tests/report_claims.py`
-itself is not deleted -- `tests/test_issue_traceability.py` still calls its
-single-report checks directly against one still-live report, out of this
-task's scope (N.2's second half, task 060) -- so the parser and the checks
-still exist; this directory's own family simply no longer has a caller of
-them, since its one caller (`test_report_claims.py`) is gone.
+the family at **zero** real subprocesses instead. Task 060 (N.2's second
+half) then deletes `tests/report_claims.py` and `tests/test_issue_traceability.py`
+entire: that single-report caller was the module's last remaining user, so
+the parser and the checks no longer exist anywhere in the tree, not only
+under `tests/records/`. See `tests/test_report_claims_retired.py` for the
+live guard against either file coming back.
 
 **The single exemption.** Task 010 (#176) added
 `test_records_family_fresh_clone.py`, whose one node deliberately spawns a

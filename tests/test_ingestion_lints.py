@@ -280,12 +280,14 @@ def test_the_v014_last_commit_clause_is_recovered_verbatim():
 def test_the_v017_last_commit_clause_is_recovered_verbatim():
     text = _flattened("docs/prds/v0.17-a-slip-is-not-a-verdict.md")
     assert V015_V017_RECOVERED_LAST_COMMIT_CLAUSE in text
-    # The v0.17 approach-3 closing report discusses this same requirement's
-    # last-commit demand at length (its own "Guard subset" section, e.g.
-    # "the run's now-declared last commit") without re-quoting the PRD
-    # bullet verbatim -- checked as a related but distinct substring.
-    report_text = _flattened("artifacts/reports/v0.17-a3-closing-report.md")
-    assert "the run's now-declared last commit" in report_text
+    # This test used to also re-read `artifacts/reports/v0.17-a3-closing-report.md`
+    # to check the related (but distinct) phrase "the run's now-declared last
+    # commit" in its own "Guard subset" section -- retired here (requirement
+    # N.2, task 060): that report is one of the ones requirement N.1 (task
+    # 061) deletes next, and the PRD-bullet check above already covers the
+    # load-bearing fact (this shape is a real, recovered clause, not an
+    # invented one); `test_v015_v017_recovered_last_commit_clause_is_rejected`
+    # below is the surviving cover that the lint still refuses it.
 
 
 def test_v014_recovered_last_commit_clause_is_rejected():
@@ -388,14 +390,14 @@ V017_RECOVERED_PREDECLARED_EVENT_STATE_CLAUSE = (
 )
 
 
-def test_the_v017_predeclared_event_state_clause_is_recovered_verbatim():
-    text = _flattened("artifacts/reports/v0.17-a3-closing-report.md")
-    assert V017_RECOVERED_PREDECLARED_EVENT_STATE_CLAUSE in text
-    # The a4 report restates the same underlying fact more tersely (without
-    # the "its petition state (" framing words) -- checked as its own,
-    # slightly shorter, substring rather than claimed identical.
-    text_a4 = _flattened("artifacts/reports/v0.17-a4-closing-report.md")
-    assert "both prior petitions REFUTED, none newly filed" in text_a4
+# Task 060 (requirement N.2) retires `test_the_v017_predeclared_event_state_
+# clause_is_recovered_verbatim`, which used to read
+# `artifacts/reports/v0.17-a3-closing-report.md` and `...a4-closing-report.md`
+# to prove this clause was really lifted from those reports, not invented.
+# Requirement N.1 (task 061) deletes both files next, so the check's subject
+# goes away with them; surviving cover is
+# `test_v017_recovered_predeclared_event_state_clause_is_rejected` below,
+# which proves `lint_proposal()` still refuses the same clause text.
 
 
 def test_v017_recovered_predeclared_event_state_clause_is_rejected():
@@ -455,9 +457,13 @@ V017_RECOVERED_CITES_OWN_COMMIT_CLAUSE = (
 )
 
 
-def test_the_v017_cites_own_commit_clause_is_recovered_verbatim():
-    text = _flattened("artifacts/reports/v0.17-a3-closing-report.md")
-    assert V017_RECOVERED_CITES_OWN_COMMIT_CLAUSE in text
+# Task 060 (requirement N.2) retires `test_the_v017_cites_own_commit_clause_
+# is_recovered_verbatim`, which used to read
+# `artifacts/reports/v0.17-a3-closing-report.md` to prove this clause was
+# really lifted from that report, not invented. Requirement N.1 (task 061)
+# deletes it next, so the check's subject goes away with it; surviving
+# cover is `test_a_record_required_to_cite_the_commit_that_writes_it_is_rejected`
+# below, which proves `lint_proposal()` still refuses the same clause text.
 
 
 def test_a_record_required_to_cite_the_commit_that_writes_it_is_rejected():
@@ -687,9 +693,13 @@ V017_A4_RECOVERED_NOTIFICATION_HTTP_STATUS_CLAUSE = (
 )
 
 
-def test_the_v017_a4_notification_http_status_clause_is_recovered_verbatim():
-    text = _flattened("artifacts/reports/v0.17-a4-closing-report.md")
-    assert V017_A4_RECOVERED_NOTIFICATION_HTTP_STATUS_CLAUSE in text
+# Task 060 (requirement N.2) retires `test_the_v017_a4_notification_http_
+# status_clause_is_recovered_verbatim`, which used to read
+# `artifacts/reports/v0.17-a4-closing-report.md` to prove this clause was
+# really lifted from that report, not invented. Requirement N.1 (task 061)
+# deletes it next, so the check's subject goes away with it; surviving
+# cover is `test_a_notification_ledger_entry_clause_is_rejected` below,
+# which proves `lint_proposal()` still refuses the same clause text.
 
 
 def test_a_notification_ledger_entry_clause_is_rejected():
@@ -948,31 +958,21 @@ TASK_037_VERBATIM_ARTIFACT_FIXTURES = (
 )
 
 
-def test_the_v014_a3_and_v015_a2_clauses_are_verbatim_substrings_of_their_sources():
-    """Each fixture constant is a LITERAL substring of the tracked artifact it
-    names -- checked against `Path(source).read_text()` itself, the raw source
-    text with its own line breaks intact, with no flattening, re-wrapping or
-    emphasis-stripping applied to either side. That is the pin that makes it a
-    *recovered* clause rather than an invented one."""
-    for _tid, clause, source, pinned_words in TASK_037_VERBATIM_ARTIFACT_FIXTURES:
-        assert pinned_words in clause, (source, pinned_words)
-        raw = (sl013_REPO_ROOT / source).read_text()
-        assert clause in raw, (source, clause)
-
-
-def test_the_verbatim_artifact_fixtures_use_no_normalisation_helper():
-    """Regression guard for the exact weakening task 037's first attempt was
-    faulted for: the two artifact fixtures must survive the strict
-    `constant in read_text()` form, so neither may be routed through
-    `_flattened()` (or any other normaliser) to pass."""
-    for _tid, clause, source, _pinned in TASK_037_VERBATIM_ARTIFACT_FIXTURES:
-        raw = (sl013_REPO_ROOT / source).read_text()
-        assert clause in raw
-        # the clause really does span source line breaks -- i.e. the strict
-        # check above is the substantive one, not trivially equal to a
-        # flattened comparison
-        assert "\n" in clause, clause
-        assert clause not in _flattened(source), (source, clause)
+# Task 060 (requirement N.2) retires the two tests that used to verify
+# these two fixture constants (`V014_A3_FINAL_GUARD_TAIL_CLAUSE`,
+# `V015_A2_FINAL_GUARD_SUBSET_CLAUSE`) were LITERAL substrings of their two
+# named tracked sources, `artifacts/reports/v0.14-a3-final-guard-tail.md`
+# and `artifacts/reports/v0.15-a2-final-guard-subset.md` -- both files
+# requirement N.1 (task 061) deletes next, so the check's subject goes away
+# with them. Surviving cover: `test_the_v014_a3_clause_ends_with_the_pinned_
+# words`/`test_the_v015_a2_clause_begins_with_the_pinned_words` below still
+# check the `pinned_words in clause` half
+# (`test_the_v014_a3_and_v015_a2_clauses_are_verbatim_substrings_of_their_sources`'s
+# other assertion), and
+# `test_the_verbatim_artifact_clauses_are_refused_quoted_with_an_alternative`/
+# `test_the_verbatim_artifact_clauses_are_refused_inside_a_longer_criteria`
+# still prove `lint_proposal()` refuses the same clause text -- neither
+# needs the file on disk.
 
 
 def test_the_v014_a3_clause_ends_with_the_pinned_words():

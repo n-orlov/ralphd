@@ -1385,8 +1385,8 @@ the anti-fabrication check kept.** `node_problems()` in `tests/report_claims.py`
 `artifacts/reports/` must still resolve to a real test -- is deleted
 outright, along with its two call sites (inside
 `tests/records/test_report_claims.py::test_every_report_passes_its_claim_checks`
-and `tests/test_issue_traceability.py`, the latter renamed
-`test_every_path_this_report_names_exists` since it no longer checks a node).
+and `test_issue_traceability.py`, the latter renamed
+test_every_path_this_report_names_exists since it no longer checks a node).
 Both call sites were plain function calls inside an existing test's own
 body, never a parametrized node of their own, so this retirement deletes no
 pytest node: re-measured directly at this task's own tip with
@@ -1398,7 +1398,7 @@ to task 004's own count. The result-line half of A.3 is a no-op here: that
 check lived in `tests/sweep_sha_guard.py`, already deleted whole by A.1;
 `tests/report_claims.py` never had one of its own. Kept, unweakened:
 `commit_problems()` (the sha-reachability anti-fabrication guard A.3 names
-by its own test, `test_a_dangling_commit_sha_fails_and_a_reachable_one_passes`),
+by its own test, test_a_dangling_commit_sha_fails_and_a_reachable_one_passes),
 `path_problems()`, and `retired_problems()` (both its path and node forms --
 the opposite, "must NOT resolve", obligation, which A.3 does not touch). The
 `missing`-kind failure text drops its now-dangling `docs/sweep-records.md`
@@ -1447,9 +1447,9 @@ value it replaces, never raised.
 **5655 (smoke 4048, modules unchanged at 363) by v0.20.2 review-cure pass 1
 (cure-01-01, requirement A.3, and cure-01-02, requirement B.3 DoD 9).**
 cure-01-01 (`22fc372`) narrowed
-`test_the_retired_marker_direction_is_enforced` to the path form of
+test_the_retired_marker_direction_is_enforced to the path form of
 `!retired` and added
-`test_a_retired_node_citation_is_never_rechecked_against_live_source`, a wash of
+test_a_retired_node_citation_is_never_rechecked_against_live_source, a wash of
 -1/+1 net +1 fast/smoke node, taking the tier from the 5650/4043/363 task
 015 last measured to 5651/4044/363 -- left undisclosed here at the time
 (the guard's own substring check happened to still pass, since "5651"

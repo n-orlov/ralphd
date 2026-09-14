@@ -3,7 +3,7 @@
 working tree.
 
 Every records module resolves its own `REPO_ROOT` off `Path(__file__)`
-(`tests/report_claims.py`'s `REPO_ROOT = Path(__file__).resolve().parents[1]`,
+(the pattern `tests/report_claims.py` used before task 060 deleted it,
 mirrored by this directory's own modules one level down) -- so the whole
 family is, in principle, portable to any tree that has the same files at the
 same relative layout. Task 009 (#176) pinned a narrower, whitebox version of

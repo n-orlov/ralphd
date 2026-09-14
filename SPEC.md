@@ -5022,47 +5022,53 @@ the engine down) neither writes nor removes one.
 
 ### 12.3 Reports
 
-`artifacts/reports/` is a convention, not a mechanism: the PRD asks for a report,
-the agent writes it, and — this is the part that makes it worth anything — **a
-test in the repo re-reads it and fails when it stops being true.** An
-agent-written report is a claim about the tree, and a claim about the tree is
-checkable.
+`artifacts/reports/` was a convention, not a mechanism: a PRD asked for a report,
+the agent wrote it, and — while the corpus was still live — a test in the repo
+re-read it and failed when it stopped being true. v0.21's requirement N retired
+that whole live-checking apparatus (`tests/report_claims.py`,
+`tests/records/test_report_claims.py`, `test_issue_traceability.py`, and the
+corpus itself, task 060) rather than keep re-grading a v0.5-v0.9 corpus that
+will never change again: a closed wave keeps its receipts in the roadmap block
+(§4.2) and, where a check still needs the old facts, a frozen literal constant
+(`tests/records/test_roadmap.py`'s closure sets) rather than a report re-parsed
+on every test run. The rest of this section is history: it describes the
+mechanism as it stood through v0.20.2, before requirement N (v0.21) deleted it.
 
-The traceability report is the worked example: `issue-traceability.md` maps each
-backlog issue to a requirement, a commit and the tests that cover it, and
-`tests/test_issue_traceability.py` asserts, against the real repo, that every
-issue in `ISSUES_IN_SCOPE` has its own section; that it still quotes a floor of
-shas, paths and node ids so a gutted report fails too; and that neither the tree
-nor the commit history contains a `gh issue close`, which is the process claim
-the report makes about itself.
+The traceability report was the worked example: `issue-traceability.md` mapped
+each backlog issue to a requirement, a commit and the tests that covered it, and
+`test_issue_traceability.py` asserted, against the real repo, that every
+issue in `ISSUES_IN_SCOPE` had its own section; that it still quoted a floor of
+shas, paths and node ids so a gutted report would fail too; and that neither the
+tree nor the commit history contained a `gh issue close`, which was the process
+claim the report made about itself.
 
-The *generic* half of that — every 7-to-40-hex sha resolves to a **commit**
+The *generic* half of that was: every 7-to-40-hex sha resolved to a **commit**
 object in this repo (read straight out of `.git` in-process, not with a
-`git cat-file` subprocess: requirement E.4 pins the records family at one
-subprocess for a whole run), every repo-relative path is **tracked by git**
+`git cat-file` subprocess: requirement E.4 pinned the records family at one
+subprocess for a whole run), every repo-relative path was **tracked by git**
 (membership in one `git
 ls-files` snapshot, not merely present on disk — a directory the browser tier
 generates but never commits used to pass just by existing), every `::node_id`
-after such a path is a real `def`/`async def` in that file — is not one
-report's privilege: it lives in `tests/report_claims.py` and
-`tests/records/test_report_claims.py` applies it to every `*.md` the reports directory
-holds, discovered by glob, so a report added later is re-read from the day it
-lands. An untracked-but-present path and a genuinely missing one fail with two
-different, distinguishable messages — "generated, not committed" versus
-"deleted or renamed" — so the fix is obvious from the failure text alone. Two
-further conventions keep that parser honest about what it cannot check: a path
-that belongs to somebody else's tree (the sibling-toolchain recipe's
-`ci/Dockerfile`) is left outside the repo's own top-level directories, and a
-run-dir artifact is written `<run-dir>/artifacts/…`
-rather than as a checkout-relative path.
+after such a path was a real `def`/`async def` in that file (until requirement
+A.3, v0.20.2, retired that one direction ahead of the rest) — not one
+report's privilege: it lived in `tests/report_claims.py`, and
+`tests/records/test_report_claims.py` applied it to every `*.md` the reports
+directory held, discovered by glob, so a report added later was re-read from
+the day it landed. An untracked-but-present path and a genuinely missing one
+failed with two different, distinguishable messages — "generated, not
+committed" versus "deleted or renamed" — so the fix was obvious from the
+failure text alone. Two further conventions kept that parser honest about what
+it could not check: a path that belongs to somebody else's tree (the
+sibling-toolchain recipe's `ci/Dockerfile`) was left outside the repo's own
+top-level directories, and a run-dir artifact was written
+`<run-dir>/artifacts/…` rather than as a checkout-relative path.
 
-So the failure modes that make a report actively harmful — a commit that never
+So the failure modes that made a report actively harmful — a commit that never
 landed, a test that was renamed away, a module renamed out from under a report, a
-process claim nobody kept — are all build failures. A report that records an
-investigation rather than a claim about the tree simply has fewer claims to
-check, not an exemption. The distinction is worth carrying into a PRD — "write a
-report" is weak, "write a report and a test that keeps it honest" is a
-deliverable.
+process claim nobody kept — were all build failures while the mechanism lived.
+The distinction is still worth carrying into a PRD — "write a report" is weak,
+"write a report and a test that keeps it honest" is a deliverable, for as long
+as the report's subject can still change.
 
 Screenshots follow the same rule from the other direction: the browser tier
 writes its frames into the job's own artifacts dir (`RALPHD_ARTIFACTS_DIR`,
@@ -5490,7 +5496,7 @@ the tiering is a matter of which stub a module reaches for.
 | **CLI + recording stub `docker`** | `RALPHD_DOCKER` points at `tests/stub-docker/docker`, which appends every argv to a log and fakes just enough daemon behaviour | ~20 modules | that `ralphctl` builds the right `docker run` — labels, mounts, `-e` wiring, ports, network mode — and that `resume` reproduces it | seconds |
 | **Real docker siblings** (`-m docker`) | builds `container/Dockerfile` as a real image and drives the real daemon | `test_docker_sibling_e2e.py`, `test_sibling_cleanup_job_safe.py`, `test_cli_docker_integration.py`, `test_image_real_build.py` | the image actually works: creds land at `~/.creds`, skills are symlinked, the API is reachable, `stop` reaps, `resume` continues, `--no-detach` exits on the right verdict, the documented cleanup command spares the job container, and (`test_image_real_build.py`) the *generated* derived recipe really builds on a minimal base and really runs `ralphd-engine` | minutes; needs a socket |
 | **Real browser** (`-m browser`) | shells out to `playwright-cli` (never imports it) driving real Chromium against a real `ralphctl ui` | `test_browser_hub.py`, 18 tests | the hub renders from real fixture and live run dirs, and its interactions have real effects — a submitted steering form creates a file under `steering/` | minutes; needs `playwright-cli` |
-| **Doc and guidance consistency** | greps the tree, walks the real argparse tree (`cli.main.build_parser`) and renders real prompts | `test_docs_consistency.py`, `test_prompt_lint.py`, `tests/records/test_report_claims.py`, `test_issue_traceability.py`, `test_sibling_cleanup_guidance.py`, `test_toolchain_sibling_guidance.py` | the docs, prompts, example skills and reports say what the code does — including that every documented flag, subcommand, route and response field exists | milliseconds |
+| **Doc and guidance consistency** | greps the tree, walks the real argparse tree (`cli.main.build_parser`) and renders real prompts | `test_docs_consistency.py`, `test_prompt_lint.py`, `test_sibling_cleanup_guidance.py`, `test_toolchain_sibling_guidance.py` | the docs, prompts and example skills say what the code does — including that every documented flag, subcommand, route and response field exists | milliseconds |
 
 The two heavyweight tiers **skip cleanly** rather than erroring when their
 dependency is missing — no docker socket, no `playwright-cli` on `PATH` — so a
@@ -5561,7 +5567,7 @@ expensive to rediscover.
 | Every `ralphctl` verb the tutorial uses really exists in `--help`, and the tutorial's steps stay in the order an operator would follow them. | `tests/test_docs_consistency.py::test_every_ralphctl_command_in_tutorial_exists_in_help`, `::test_tutorial_exists_and_covers_required_steps_in_order` |
 | Every flag, subcommand invocation, route and response field the reference docs document really exists in the code — a documented-but-nonexistent `--flag`, `ralphctl <verb> <action>`, route or JSON field fails the suite. | `tests/test_docs_consistency.py::test_every_flag_documented_in_cli_md_exists_in_the_parser`, `::test_every_option_table_row_names_a_flag_of_its_own_command`, `::test_every_documented_subcommand_invocation_exists`, `::test_every_route_documented_in_api_md_is_served`, `::test_every_field_documented_in_api_md_exists_in_the_code`, plus `::test_a_fake_cli_flag_in_the_docs_is_reported` / `::test_a_fake_api_route_or_field_in_the_docs_is_reported` keeping the demonstration |
 | No prompt file narrates its own revision history. | `tests/test_prompt_lint.py::test_no_revision_history_phrases_in_prompts` |
-| Every report under `artifacts/reports/` names only commits that landed, paths that exist and tests that exist. | `tests/records/test_report_claims.py` over `tests/report_claims.py`, plus `tests/test_issue_traceability.py` for that report's own claims (§12.3) |
+| Every report under `artifacts/reports/` named only commits that landed, paths that exist and tests that exist, while the corpus-wide checking apparatus lived (§12.3; retired for v0.21, requirement N, tasks 059/060). | history only — `tests/report_claims.py`, `tests/records/test_report_claims.py` and `test_issue_traceability.py` are all deleted |
 | The hub ships with no build step: the static bundle contains no npm/node build artifacts. | `tests/test_cli_ui.py::test_static_bundle_js_has_no_npm_or_node_build_artifacts` |
 | The shipped default retry schedule really rides out a 30-minute outage. | `tests/test_v05_definition_of_done.py::test_defaults_can_ride_out_a_thirty_minute_outage` |
 

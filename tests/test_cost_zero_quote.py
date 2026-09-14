@@ -26,7 +26,6 @@ What is pinned here:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 from test_cli_docker import Ctl, ctl, unix_sock
@@ -371,23 +370,20 @@ def test_hub_run_detail_still_ships_a_real_zero_for_a_declared_free_run(tmp_path
 # the anomaly is reported through task 053's existing mechanism
 # --------------------------------------------------------------------------
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+# Task 060 (requirement N.2) retires the two checks that used to read
+# `artifacts/reports/pricing-anomaly.md` from disk (`.exists()`/`.read_text()`)
+# and list the corpus directory (`.iterdir()`): requirement N.1 (task 061)
+# deletes that whole corpus except `v0.21-petitions.md`, so a check whose
+# subject is about to be deleted is retired ahead of the deletion, same
+# reasoning task 059/060 already applied to `tests/report_claims.py` and
+# `tests/test_issue_traceability.py`. What survives is the one assertion that
+# never needed the file on disk: the production notice text itself names the
+# report by path, which this module can check as a plain string comparison
+# against `COST_ZERO_QUOTE_NOTICE` with no filesystem read at all.
 
 
-def test_the_notice_points_at_the_existing_pricing_anomaly_report():
-    report = _repo_root() / "artifacts" / "reports" / "pricing-anomaly.md"
+def test_the_notice_names_the_pricing_anomaly_report_by_path():
     assert "artifacts/reports/pricing-anomaly.md" in COST_ZERO_QUOTE_NOTICE
-    assert report.exists(), "task 053's report is the anomaly surface"
-    text = report.read_text()
-    assert "implausible zero" in text.lower()
-    assert "505" in text, "the live evidence must be recorded in the report"
-
-
-def test_no_parallel_anomaly_report_was_added():
-    reports = {p.name for p in (_repo_root() / "artifacts" / "reports").iterdir()}
-    extra = {n for n in reports if "anomal" in n and n != "pricing-anomaly.md"}
-    assert not extra, f"report the zero-quote anomaly in the existing file: {extra}"
 
 
 # --------------------------------------------------------------------------
