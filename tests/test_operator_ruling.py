@@ -18,12 +18,16 @@ duplicated here.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from ralphd.cli.main import cmd_amend
 from ralphd.engine import hat_tools
 from ralphd.engine import loop as loop_mod
 from ralphd.engine.config import JobConfig
@@ -838,13 +842,33 @@ def test_amend_never_calls_docker_or_the_http_api(monkeypatch):
 
 # -- Task 017 (D.7, #196): the wave-scoped ruling target ---------------------
 
-def test_amend_wave_records_a_wave_scoped_ruling_with_no_task_id(tmp_path):
+def test_amend_wave_records_a_wave_scoped_ruling_with_no_task_id(tmp_path, monkeypatch, capsys):
     """`ralphctl amend --wave` writes the reserved `AMENDMENT_WAVE_TARGET`
     (`"WAVE"`) in place of a task id -- no replan can orphan this ruling
     because there is no task id for a replan to make disappear (D.7,
     #196's own incident). Combining `--wave` with a task id, `--force` or
     `--status` is a usage error, since none of those have any meaning
-    without one."""
+    without one.
+
+    Task 075 (steer 002 SS3): the refusal half of this test used to shell
+    out to `ralphctl amend w1 --wave 007 text` and match a stderr
+    *substring* -- interpreter-dependent, because `#182` (task 071/072/
+    074) means whether `task_id`/`text` land in `args` at all depends on
+    the ambient interpreter's own argparse patch level. On the fast
+    lane's Python 3.12.3, argparse drops BOTH `nargs="?"` positionals, so
+    before task 074's leftover-fold fix `args.text` stayed `None` and
+    `cmd_amend`'s `--wave` refusal never even fired; this container's
+    3.12.14 binds them normally, so the assertion above passed here only
+    because this interpreter happens not to reproduce the bug -- a
+    vacuous pass, not evidence the refusal works. The refusal below is
+    asserted the way `tests/test_cli_leftover_positional_182.py` asserts
+    `_place_leftover_positional`'s own behaviour throughout: by calling
+    `cmd_amend` directly with a hand-built `argparse.Namespace` that
+    already holds the POST-parse state (whichever interpreter produced
+    it), so the verdict can never turn on which interpreter runs the
+    test. Exit status 2, the `--wave` wording, the `--force`/`--status`
+    refusals and the "no file written" check all remain asserted, just
+    through `cmd_amend` instead of a subprocess."""
     registry = tmp_path / "registry"
     rdir, cdir = _seed(registry, "w1")
     res = ralphctl(registry, "amend", "w1", "--wave",
@@ -859,15 +883,36 @@ def test_amend_wave_records_a_wave_scoped_ruling_with_no_task_id(tmp_path):
     assert entries[0]["scope"] == "wave"
     assert entries[0]["text"] == "Retire the guard removals wave-wide."
 
+    monkeypatch.setenv("RALPHD_REGISTRY", str(registry))
+
+    def wave_ns(**over):
+        base = dict(json=False, command="amend", run_id="w1", task_id=None,
+                    text=None, file=None, waive=False, status=None,
+                    list=False, approach=None, force=False, wave=True,
+                    repoint=None, to=None)
+        base.update(over)
+        return argparse.Namespace(**base)
+
     # a task id alongside --wave is refused, before any file is written
-    res2 = ralphctl(registry, "amend", "w1", "--wave", "007", "text")
-    assert res2.returncode == 2
-    assert "--wave" in res2.stderr
+    # -- the hand-built namespace holds the state EITHER interpreter's
+    # argparse (buggy or not) must end up producing once `main()`'s own
+    # leftover-fold runs: `task_id`/`text` both bound.
+    with pytest.raises(SystemExit) as exc2:
+        cmd_amend(wave_ns(task_id="007", text="text"))
+    assert exc2.value.code == 2
+    assert "--wave" in capsys.readouterr().err
+
     # --force and --status are equally meaningless without a task id
-    res3 = ralphctl(registry, "amend", "w1", "--wave", "--force", "text")
-    assert res3.returncode == 2
-    res4 = ralphctl(registry, "amend", "w1", "--wave", "--status", "skipped")
-    assert res4.returncode == 2
+    with pytest.raises(SystemExit) as exc3:
+        cmd_amend(wave_ns(force=True))
+    assert exc3.value.code == 2
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as exc4:
+        cmd_amend(wave_ns(status="skipped"))
+    assert exc4.value.code == 2
+    capsys.readouterr()
+
     assert len(amendment_entries(cdir)) == 1  # none of the refusals wrote a file
 
 
