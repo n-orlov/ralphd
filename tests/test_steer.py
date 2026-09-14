@@ -359,6 +359,18 @@ def test_a_settled_false_steer_leaves_the_message_unconsumed_and_outstanding(
     # message the hat was handed is still deliverable afterward.
     assert outcome == ("advance", "worker", "steer_settled")
 
+    # Task 014 (D.4, #184): an honest settled: false is counted right
+    # away, but withheld -- redelivery is deferred until one non-steer
+    # iteration has completed, so it must NOT be handed back out yet.
+    assert sup.run.pending_steering() == [], (
+        "redelivery must be withheld until a non-steer iteration completes")
+    assert _redeliveries(sup) == {name: 1}
+
+    # Once that non-steer iteration completes (simulated directly here --
+    # the real path is `_run_iteration_once`'s own tail, task 014), the
+    # message becomes genuinely deliverable again, and everything below
+    # holds exactly as it did before task 014.
+    sup._flush_deferred_steering_redelivery()
     assert [p.name for p in sup.run.pending_steering()] == [name], (
         "an honest settled: false must leave the note genuinely pending")
     entry = _entry(sup, name)
@@ -400,13 +412,22 @@ def test_the_redelivery_counter_increments_and_is_read_back_on_resume(
 
     asyncio.run(sup1._step_generic_hat("steer", STEER_EDGES))
     assert _redeliveries(sup1) == {name: 1}
+    assert sup1.run.pending_steering() == [], (
+        "withheld immediately after the pass that could not settle it")
 
     # A resumed process is a FRESH LoopSupervisor over the same run root --
-    # nothing in-memory on sup1 may be what makes this work.
+    # nothing in-memory on sup1 may be what makes this work, and the
+    # deferral itself (task 014, D.4) must survive the resume exactly like
+    # the counter it rides beside: still withheld, not yet pending.
     sup2 = _supervisor(root, {"steer": [_steer_unsettled()]},
                        steer_redelivery_max=5)
     assert _redeliveries(sup2) == {name: 1}, (
         "the counter must be read back off status.json, not re-derived")
+    assert sup2.run.pending_steering() == []
+
+    # Only once a non-steer iteration completes IN THE RESUMED PROCESS is
+    # it deliverable again.
+    sup2._flush_deferred_steering_redelivery()
     assert [p.name for p in sup2.run.pending_steering()] == [name]
 
     asyncio.run(sup2._step_generic_hat("steer", STEER_EDGES))
@@ -420,6 +441,9 @@ def test_two_messages_are_redelivered_and_counted_independently(tmp_path):
     two = sup.run.add_steering("second ask", "op-two")
 
     asyncio.run(sup._step_generic_hat("steer", STEER_EDGES))
+    assert sup.run.pending_steering() == [], (
+        "both must stay withheld until a non-steer iteration completes")
+    sup._flush_deferred_steering_redelivery()
 
     assert sorted(p.name for p in sup.run.pending_steering()) == sorted(
         [one, two])
@@ -433,20 +457,27 @@ def test_the_redelivery_cap_marks_settled_by_exhaustion_with_a_reason(
                       steer_redelivery_max=2)
     name = sup.run.add_steering("a message nobody ever settles", "op-stuck")
 
-    # Pass 1: used=0 < cap(2) -> redelivered (redeliveries -> 1).
+    # Pass 1: used=0 < cap(2) -> redelivered (redeliveries -> 1), but
+    # withheld (task 014, D.4) until a non-steer iteration completes.
     asyncio.run(sup._step_generic_hat("steer", STEER_EDGES))
-    assert [p.name for p in sup.run.pending_steering()] == [name]
+    assert sup.run.pending_steering() == []
     assert _redeliveries(sup) == {name: 1}
     assert _entry(sup, name)["settledByExhaustion"] is False
-
-    # Pass 2: used=1 < cap(2) -> redelivered again (redeliveries -> 2).
-    asyncio.run(sup._step_generic_hat("steer", STEER_EDGES))
+    sup._flush_deferred_steering_redelivery()
     assert [p.name for p in sup.run.pending_steering()] == [name]
+
+    # Pass 2: used=1 < cap(2) -> redelivered again (redeliveries -> 2),
+    # withheld the same way.
+    asyncio.run(sup._step_generic_hat("steer", STEER_EDGES))
+    assert sup.run.pending_steering() == []
     assert _redeliveries(sup) == {name: 2}
     assert _entry(sup, name)["settledByExhaustion"] is False
+    sup._flush_deferred_steering_redelivery()
+    assert [p.name for p in sup.run.pending_steering()] == [name]
 
     # Pass 3: used=2, no longer < cap(2) -> settled BY EXHAUSTION, stays
-    # consumed for good, never handed back out again.
+    # consumed for good, never handed back out again -- and never queued
+    # for deferral either, since it is never redelivered at all.
     asyncio.run(sup._step_generic_hat("steer", STEER_EDGES))
     assert sup.run.pending_steering() == [], (
         "an exhausted message must stop being redelivered")
@@ -489,6 +520,67 @@ def test_a_never_touched_message_reports_no_exhaustion(tmp_path):
     entry = _entry(sup, name)
     assert entry["settledByExhaustion"] is False
     assert entry["exhaustionReason"] is None
+
+
+def test_an_unsettled_message_is_withheld_until_a_non_steer_iteration_completes(
+        tmp_path):
+    """Task 014 (PRD requirement D.4, #184): the defect this task fixes,
+    demonstrated end to end. Before this task, `_handle_unsettled_steering`
+    unconsumed the message on the spot, so `worker`'s absolute-top-priority
+    guard (`if self.run.pending_steering(): -> steer`, task 012) forced the
+    very next pass straight back into `steer` -- turning one operator
+    message no hat can settle into `1 + steer_redelivery_max` consecutive
+    `steer` iterations with nothing else ever running in between. This test
+    drives the real drain path (`_run_iteration_once`'s own tail, exercised
+    here via `run_iteration("worker", ...)` directly, exactly the way
+    other modules already call `run_iteration` without going through
+    `_step_worker`'s own scheduling) and shows the message stays withheld
+    across as many CONSECUTIVE steer passes as are attempted -- well past
+    the declared cap -- and is handed back out only once a genuine
+    non-steer iteration has run to completion.
+    """
+    root = tmp_path / "run"
+    sup = _supervisor(
+        root,
+        {"steer": [_steer_unsettled("still working on it")],
+         "worker": [lambda sup, prompt="": _ok("looked around")]},
+        steer_redelivery_max=5)
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": []})
+    name = sup.run.add_steering("a request nobody ever settles", "op-loop")
+
+    # Pass 1: delivered, counted, withheld.
+    asyncio.run(sup._step_generic_hat("steer", STEER_EDGES))
+    assert _redeliveries(sup) == {name: 1}
+    assert sup.run.pending_steering() == []
+
+    # A second, third, fourth... consecutive `steer` pass, with no
+    # non-steer iteration ever running in between, must never see it
+    # pending again -- the counter must not move and no further
+    # redelivery/exhaustion event fires, however many times this is
+    # repeated, well past the declared cap of 5.
+    for _ in range(8):
+        asyncio.run(sup._step_generic_hat("steer", STEER_EDGES))
+        assert sup.run.pending_steering() == []
+        assert _redeliveries(sup) == {name: 1}, (
+            "a steer pass with nothing pending must never touch the "
+            "counter again -- this is the 'no longer burns consecutive "
+            "iterations back-to-back' half of D.4")
+    assert _entry(sup, name)["settledByExhaustion"] is False, (
+        "never redelivered past pass 1, so the cap was never actually "
+        "reached -- exhaustion must not fire from mere repetition")
+
+    # One real non-steer iteration -- run through the actual production
+    # code path this task changed, `_run_iteration_once`'s own tail --
+    # completes...
+    asyncio.run(sup.run_iteration("worker"))
+    # ...and only NOW is the message deliverable again.
+    assert [p.name for p in sup.run.pending_steering()] == [name]
+
+    # It is redelivered on the very next steer pass, exactly as before
+    # this task -- only the TIMING moved, never the eventual redelivery.
+    asyncio.run(sup._step_generic_hat("steer", STEER_EDGES))
+    assert _redeliveries(sup) == {name: 2}
+    assert sup.run.pending_steering() == []
 
 
 # ===========================================================================

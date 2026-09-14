@@ -2281,6 +2281,17 @@ class LoopSupervisor:
         # passes through on its way back to `_run_job_core`.
         self._reinject_standing_rules()
         self._verify_skills_placement()
+        # Task 014 (PRD requirement D.4, #184): this iteration -- whatever
+        # hat it just ran -- is the ONE non-steer iteration that has to
+        # complete before a message `_handle_unsettled_steering` deferred
+        # on an earlier `steer` pass may be redelivered at all. `steer`
+        # itself is excluded: a steer pass never counts as its own
+        # separation, and `_handle_unsettled_steering` (called from
+        # `_step_generic_hat` strictly AFTER this method already returned
+        # for that pass) is what populates the queue this drains, so the
+        # two can never race within the same iteration either way.
+        if phase != "steer":
+            self._flush_deferred_steering_redelivery()
         return result
 
     @staticmethod
@@ -4420,6 +4431,12 @@ class LoopSupervisor:
                     reasons.append(reason)
         return "\n\n".join(reasons)
 
+    # status.json key holding the names of steering files whose redelivery
+    # (task 006/B.1) has been counted but deliberately not yet unconsumed --
+    # task 014 (PRD requirement D.4, #184): drained by
+    # `_flush_deferred_steering_redelivery`, never written anywhere else.
+    STEER_DEFERRED_REDELIVERY_STATUS_KEY = "steerDeferredRedelivery"
+
     def _handle_unsettled_steering(self, names: list[str]) -> None:
         """Task 006 (requirement B.1, #122): a clean steer iteration whose
         payload honestly reports `settled: false` must not leave the
@@ -4436,27 +4453,43 @@ class LoopSupervisor:
         uses for `peer_plan_review_max_revisions`'s own bounded loop):
 
           * below `self.cfg.steer_redelivery_max` redeliveries so far for a
-            given name -- unconsume it (`RunDir.unconsume_steering`), so
-            `pending_steering()` names it again and the next actionable
-            iteration (steer takes ABSOLUTE priority over worker, task 012)
-            is handed it again;
+            given name -- task 014 (PRD requirement D.4, #184): the counter
+            is bumped HERE, but the actual unconsume
+            (`RunDir.unconsume_steering`) is deliberately NOT done on the
+            spot any more. Without task 012's `worker`-state guard
+            (`if self.run.pending_steering(): -> steer`, absolute top
+            priority) would see the file pending again on the very next
+            pass and force straight back into `steer` -- turning an
+            operator message no hat can settle into `1 +
+            steer_redelivery_max` consecutive `steer` iterations with
+            nothing else ever running in between. The name is instead
+            appended to `STEER_DEFERRED_REDELIVERY_STATUS_KEY`'s queue, and
+            `_flush_deferred_steering_redelivery` -- called from the tail of
+            `_run_iteration_once` for every phase OTHER than `steer` --
+            is the one place that actually unconsumes it, once ONE
+            non-steer iteration has completed;
           * at the cap already -- stop redelivering it. It is instead
             recorded settled-by-exhaustion in the steering ledger, with the
             reason, through `RunDir.mark_steering_settled_by_exhaustion`,
             and stays consumed for good: fail-closed on a bounded loop,
-            never redelivered forever.
+            never redelivered forever. Nothing to defer here -- an
+            exhausted message is never unconsumed again, by either code
+            path.
 
         `settled: true` never reaches this method at all -- the ordinary
         consumption inside `_run_iteration_once` is untouched and still
         applies exactly once, as before this task.
         """
-        redeliveries = dict(
-            self.run.read_status().get("steerRedeliveries") or {})
+        status = self.run.read_status()
+        redeliveries = dict(status.get("steerRedeliveries") or {})
+        deferred = list(status.get(self.STEER_DEFERRED_REDELIVERY_STATUS_KEY)
+                        or [])
         for name in names:
             used = int(redeliveries.get(name, 0))
             if used < self.cfg.steer_redelivery_max:
                 redeliveries[name] = used + 1
-                self.run.unconsume_steering([name])
+                if name not in deferred:
+                    deferred.append(name)
             else:
                 reason = (
                     f"{name!r} was redelivered {used} time(s) after a "
@@ -4468,7 +4501,34 @@ class LoopSupervisor:
                 self.run.mark_steering_settled_by_exhaustion(
                     [name], reason=reason)
                 self.run.emit("log", level="warning", message=reason)
-        self.run.update_status(steerRedeliveries=redeliveries)
+        self.run.update_status(
+            steerRedeliveries=redeliveries,
+            **{self.STEER_DEFERRED_REDELIVERY_STATUS_KEY: deferred})
+
+    def _flush_deferred_steering_redelivery(self) -> None:
+        """Task 014 (PRD requirement D.4, #184): the ONE place that drains
+        `STEER_DEFERRED_REDELIVERY_STATUS_KEY`'s queue -- names
+        `_handle_unsettled_steering` counted as redelivered but withheld
+        from `pending_steering()` on purpose, so a message the steer hat
+        could not settle costs at least one non-steer iteration of
+        separation before it is handed back out, instead of forcing
+        `worker`'s absolute-top-priority guard straight back into `steer`
+        on the very next pass.
+
+        Called from `_run_iteration_once`'s own tail for every phase OTHER
+        than `steer` -- i.e. once that iteration (whatever hat it ran) has
+        already fully completed and recorded its own outcome. A no-op when
+        the queue is empty (the ordinary case: most iterations never touch
+        this at all), so every call site can call it unconditionally
+        without checking first.
+        """
+        deferred = list(self.run.read_status().get(
+            self.STEER_DEFERRED_REDELIVERY_STATUS_KEY) or [])
+        if not deferred:
+            return
+        self.run.unconsume_steering(deferred)
+        self.run.update_status(
+            **{self.STEER_DEFERRED_REDELIVERY_STATUS_KEY: []})
 
     async def _route_with_router(
             self, state: str, edges: tuple, *,
