@@ -332,7 +332,8 @@ previous measurement at `a1b201c` recorded 311.12 s / 448.34 s / 325.40 s /
    bounded only by the 60 s router timeout. `tests/conftest.py`'s new
    `stub_contract_reask()` returns the empty reply a failed re-ask returns, so
    the ladder still exhausts and both nodes now take 0.01 s.
-2. `3e65963` -- `tests/test_subsumed_table.py` was spending 302.73 s of the
+2. `3e65963` -- the Subsumed-table check (since retired, v0.21 task 062 --
+   the doc it checked is retired next by requirement N.4) was spending 302.73 s of the
    serial lane (38 % of it) on one `pytest --collect-only` subprocess per
    Subsumed row, 847 of them; under `--dist loadfile` that single module was the
    parallel lane's floor, which is why no *node* in the durations list was ever

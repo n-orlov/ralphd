@@ -363,11 +363,12 @@ Derivation for task 006 (requirement G.9): diff every `-def test_`/`+def test_` 
 `git diff 4c003a5 HEAD -- tests/` and keep the removed names that never reappear as an added
 name anywhere in the same diff (a same-name signature change, e.g. gaining a fixture argument,
 is not a removal). At this table's construction that git-derived list is exactly two names:
-`test_a_distinct_blocker_signature_keeps_the_remaining_approaches` (was in
-`tests/test_stagnation_signature.py`) and `test_three_ordinary_work_noop_iterations_still_fail_the_approach`
-(was in `tests/test_stagnation_excludes_nonwork_faults.py`) -- both rows below. `tests/test_subsumed_table.py`
-resolves each row's surviving node against the collected test set on every run, so a later
-deletion the table forgets to record is caught mechanically, not just at construction time.
+test_a_distinct_blocker_signature_keeps_the_remaining_approaches (was in
+tests/test_stagnation_signature.py) and test_three_ordinary_work_noop_iterations_still_fail_the_approach
+(was in tests/test_stagnation_excludes_nonwork_faults.py) -- both rows below. The Subsumed-table
+checker (retired, v0.21 task 062 -- this doc it checked is retired next by requirement N.4)
+resolved each row's surviving node against the collected test set on every run, so a later
+deletion the table forgot to record was caught mechanically, not just at construction time.
 
 Derivation for task 020 (requirement C.9): the same `-def test_` diff, run over that task's own
 deletion of five real-engine modules (`git show <sha>^:<path> | grep '^def test'` for each), gives
@@ -1226,7 +1227,7 @@ Derivation for task 028 (requirement D.7, the sweep): the per-task pin modules w
 | `test_run_record_approach_metadata_task035.py::test_an_approach_with_no_metadata_still_falls_back_to_its_sidecar` | `tests/test_run_record.py::test_an_approach_with_no_metadata_still_falls_back_to_its_sidecar` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 | `test_run_record_approach_metadata_task035.py::test_markdown_renders_every_top_level_section_of_the_json` | `tests/test_run_record.py::test_markdown_renders_every_top_level_section_of_the_json` (folded verbatim into the merged module: same body, docstring and assertions, only the module changed) | task 028, requirement D.7 |
 
-Task 028 (requirement D.7) also repointed one EARLIER row's surviving-node cell -- task 009's own row for the deleted command-form-lint fixture test (that row's first cell names it). Its surviving node `test_task_205_fixture_is_the_verbatim_deck_3k_criterion` lived in test_command_form_lint_task009.py, which this sweep folded away, so the cell now names `tests/test_ingestion_lints.py::test_task_205_fixture_is_the_verbatim_deck_3k_criterion` -- the same node, the same claim, only the module it resolves against changed. No other pre-existing row cited a surviving node inside any of the 39 folded modules (checked by resolving every row's surviving cell: `tests/test_subsumed_table.py` is green, 746 nodes).
+Task 028 (requirement D.7) also repointed one EARLIER row's surviving-node cell -- task 009's own row for the deleted command-form-lint fixture test (that row's first cell names it). Its surviving node `test_task_205_fixture_is_the_verbatim_deck_3k_criterion` lived in test_command_form_lint_task009.py, which this sweep folded away, so the cell now names `tests/test_ingestion_lints.py::test_task_205_fixture_is_the_verbatim_deck_3k_criterion` -- the same node, the same claim, only the module it resolves against changed. No other pre-existing row cited a surviving node inside any of the 39 folded modules (checked by resolving every row's surviving cell against the collected test set, then green at 746 nodes).
 
 Count correction for task 028's sweep (requirement D.7): the sweep folded away 39 modules holding **343** test functions -- 343 nodes in, 343 nodes out, one Subsumed row above per node (derived here, not carried: `git diff --no-renames --diff-filter=D --name-only cf20afc~1 cf20afc` gives the 39 module paths, and counting `^def test_` in each at `cf20afc~1` gives 343; the same 343 is the sum of the per-destination counts in each derivation paragraph above -- 28 + 113 + 25 + 58 + 58 + 12 + 25 + 13 + 11). Commit `cf20afc`'s own message misstates that total as "331 nodes in, 331 nodes out"; its per-destination counts are the correct ones. This line is the correction -- the commit message itself is left as it landed rather than rewritten after the push.
 
@@ -1437,7 +1438,6 @@ its own row below, none merged, none dropped.
 | `test_roadmap_v014.py::test_the_block_names_the_two_requirement_a_repairs_with_true_status` | `tests/records/test_roadmap.py::test_v014_the_block_names_the_two_requirement_a_repairs_with_true_status` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v014.py::test_the_requirement_a_defect_check_catches_a_dropped_task_reference` | `tests/records/test_roadmap.py::test_v014_the_requirement_a_defect_check_catches_a_dropped_task_reference` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
 | `test_roadmap_v014.py::test_the_deferred_list_is_unchanged_in_kind_by_this_wave` | `tests/records/test_roadmap.py::test_v014_the_deferred_list_is_unchanged_in_kind_by_this_wave` (folded verbatim into the merged module: same body, docstring and assertions, only the module and, where it collided with another source's name, the function name changed) | task 034, requirement E.3 |
-| `tests/test_subsumed_table.py::test_surviving_node_collects` | `tests/test_subsumed_table.py::test_every_surviving_node_collects` (same claim over the same rows, renamed because it is no longer parametrised one-node-per-row: task 050 (requirement G.2) replaced 847 `pytest --collect-only <node>` subprocesses -- 302.73 s of the 797.25 s serial `fast` lane at `778738b`, and the whole critical path of the `-n 8 --dist loadfile` lane, which keeps a module on one worker -- with ONE in-process collection of the `tests/` tree the same rows are then resolved against, exactly the cure task 035 (E.4) already applied to the conformance ledger's per-citation subprocesses; the new `test_the_collection_this_module_checks_against_succeeded` asserts that collection's own exit code so a failed collection cannot read as a clean table) | task 050 |
 | `tests/test_cli_logs_rendered_tail.py::test_follow_pretty_tail_shows_backlog_live_then_keeps_streaming` | `tests/test_cli_logs_follow_liveness.py::test_follow_pretty_tail_shows_backlog_live_then_keeps_streaming` (moved verbatim -- same body, docstring and assertions, only the module changed: it is the sole node of the rendered-tail family that spawns a real `ralphctl` subprocess of its own, and requirement F confines the CLI process boundary to the modules named in the CLI line of § "(a)" above, of which the follow-liveness module is one; the move takes `tests/test_cli_logs_rendered_tail.py` off the `RALPHCTL`-naming list entirely, 7 modules -> 6, and the non-canonical remainder from four modules to three, the PRD's "at most three more") | task cure-01-03, requirement F |
 
 Task 008 (v0.20, #174): replacing the single-hop `_is_self_anchoring_add_commit` check
@@ -1458,8 +1458,8 @@ row here: their deletion is named in `tests/sweep_sha_guard.py`'s and
 ("What this guard no longer does") instead, per this table's own contract that a deleted node
 owes either a row here or a named surviving cover, and no pytest node survives this one to
 cite. The three rows above are removed in the same commit, since a Subsumed row whose
-surviving cell no longer collects is worse than no row: `tests/test_subsumed_table.py`'s
-mechanical check would otherwise fail on exactly this table.
+surviving cell no longer collects is worse than no row: the Subsumed-table checker's (since
+retired) mechanical check would otherwise have failed on exactly this table.
 
 Derivation for task 016 (PRD requirement B.1, #156): the same `-def test_` diff,
 run over this task's own follow-up commit, gives exactly one removed name that

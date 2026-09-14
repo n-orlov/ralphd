@@ -7,9 +7,11 @@ Two halves, because the two facts have very different costs to check:
   (tests/conftest.py stamps `smoke`/`fast` onto every collected item), so this
   module can ask pytest itself, in a `--collect-only` child, how many tests and
   how many modules each tier currently holds -- about a second and a half per
-  tier -- and compare that against the budget `docs/testing.md` declares. Add
-  enough tests to push a tier past its ceiling and this goes red, which is the
-  ratchet requirement G.8 asks for.
+  tier -- and compare that against the ratcheting ceiling `TIER_CEILINGS`
+  declares, in this module, as a code constant (v0.21 task 062, requirement
+  N.4: "the ratcheting ceilings ... are code, they cannot go stale silently").
+  Add enough tests to push a tier past its ceiling and this goes red, which is
+  the ratchet requirement G.8 asks for.
 * **Wall clock (recorded).** Measuring a tier's wall clock means *running* the
   tier, which no per-task records test can afford (the fast tier is minutes).
   So the wall clock is a recorded measurement in `docs/testing.md`'s budget
@@ -18,9 +20,11 @@ Two halves, because the two facts have very different costs to check:
   disclosed as missed *with* that measured number rather than quietly rounded
   into compliance.
 
-The doc is the single place both halves read, so there is no second copy of any
-number to drift: this module hard-codes only the PRD's own targets (the
-contract) and the shape of the table.
+The wall-clock half still reads the doc, since that half checks a *recorded*
+measurement against a *recorded* budget -- both numbers already live nowhere
+else. The live count/module ratchet no longer does: its ceiling is a code
+constant below, not a doc cell, so it cannot drift when `docs/testing.md`'s
+count rows are edited or deleted (v0.21 task 063).
 """
 
 from __future__ import annotations
@@ -47,6 +51,19 @@ VERIFY_PROMPT = REPO_ROOT / "src" / "ralphd" / "prompts" / "task-verify.md"
 # 043 retired -- see that retirement's note below.
 
 TIER_MARKERS = ("smoke", "fast")
+
+# The ratcheting ceilings for the live collected-tier check below (v0.21 task
+# 062, requirement N.4: "the ratcheting ceilings ... stay -- they are code,
+# they cannot go stale silently"). Moved out of docs/testing.md's budget
+# table's "budget tests"/"budget modules" columns, which this module no
+# longer reads for this purpose. Raise a value only with the measurement
+# that earned it named in the commit message that raises it; these are the
+# same values as before the move (390 fast modules / 270 smoke modules,
+# 5800 fast / 4300 smoke tests), unchanged.
+TIER_CEILINGS: dict[str, dict[str, int]] = {
+    "fast": {"tests": 5800, "modules": 390},
+    "smoke": {"tests": 4300, "modules": 270},
+}
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
 BUDGET_COLUMNS = ("lane", "marker", "recipe", "tests", "modules", "wall clock",
@@ -146,13 +163,6 @@ def collected(marker: str) -> list[str]:
 
 def _modules(node_ids: list[str]) -> set[str]:
     return {node.split("::", 1)[0] for node in node_ids}
-
-
-def _rows_for(marker: str) -> list[dict[str, str]]:
-    rows = [r for r in parse_budget_table(TESTING_DOC.read_text())
-            if r["marker"].strip("`") == marker]
-    assert rows, f"docs/testing.md's budget table has no row for the {marker} tier"
-    return rows
 
 
 # --------------------------------------------------------------------------
@@ -264,7 +274,9 @@ def test_a_missed_prd_target_is_disclosed_with_its_measured_number() -> None:
 # Surviving cover for what it actually bounded (the collected counts):
 #   - `test_the_collected_tier_is_inside_its_declared_budget[fast]` and
 #     `[smoke]` below still refuse a tier that grows past the ratcheting
-#     ceilings (5800/4300 tests, 390/270 modules).
+#     ceilings, now `TIER_CEILINGS` above (5800/4300 tests, 390/270 modules;
+#     moved out of the doc's "budget tests"/"budget modules" columns by
+#     v0.21 task 062, requirement N.4).
 #   - `test_a_missed_prd_target_is_disclosed_with_its_measured_number` above
 #     still requires a missed PRD target to be stated with its number for
 #     every row of the budget table.
@@ -278,16 +290,16 @@ def test_a_missed_prd_target_is_disclosed_with_its_measured_number() -> None:
 def test_the_collected_tier_is_inside_its_declared_budget(marker: str) -> None:
     node_ids = collected(marker)
     assert node_ids, f"-m {marker} selects nothing at all"
-    rows = _rows_for(marker)
-    test_budget = min(_number(r["budget tests"]) for r in rows)
-    module_budget = min(_number(r["budget modules"]) for r in rows)
+    ceiling = TIER_CEILINGS[marker]
+    test_budget = ceiling["tests"]
+    module_budget = ceiling["modules"]
     assert len(node_ids) <= test_budget, (
         f"the {marker} tier collects {len(node_ids)} tests, over the "
-        f"{test_budget:.0f} declared in docs/testing.md")
+        f"{test_budget} ceiling in TIER_CEILINGS")
     modules = _modules(node_ids)
     assert len(modules) <= module_budget, (
         f"the {marker} tier collects {len(modules)} modules, over the "
-        f"{module_budget:.0f} declared in docs/testing.md")
+        f"{module_budget} ceiling in TIER_CEILINGS")
 
 
 def test_the_smoke_tier_is_a_subset_of_the_fast_tier() -> None:
