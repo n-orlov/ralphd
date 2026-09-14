@@ -1690,11 +1690,12 @@ function renderSummary(el, detail) {
     rows.push([`header: ${hname}`, String(hvalue)]);
   }
   // Task 035 (G.3): the engine version this run is executing (F.4's
-  // `status.json` field, always present) -- and, only when the workspace's
-  // own version is knowable (a `workspace_version_mismatch` was found and
-  // persisted `workspaceVersion` alongside it, E.3/task 017), both
-  // versions on the same line, so the drift alert an operator would
-  // otherwise only be paged about is readable here at a glance.
+  // `status.json` field, always present) -- and, whenever the workspace's
+  // own version is knowable at all (`workspaceVersion`, persisted for every
+  // run whose workspace names a version, drift or no drift, by
+  // `loop._record_workspace_version`), both versions on the same line, so
+  // the drift E.3/task 017 would otherwise only page the operator about is
+  // readable here at a glance -- and so is a matching pair.
   if (s.engineVersion) {
     let engineLine = String(s.engineVersion);
     if (s.workspaceVersion) {

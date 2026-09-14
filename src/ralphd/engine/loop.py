@@ -560,6 +560,11 @@ class LoopSupervisor:
         # start" placement as the two checks above -- always on, unlike
         # E.3's drift-conditional event just above it.
         self._record_engine_version()
+        # Task 035 (PRD requirement G.3): same "once per process start"
+        # placement again -- persists the WORKSPACE's own version whenever it
+        # is knowable at all, drift or no drift, which is deliberately a
+        # wider condition than E.3's mismatch-only event above.
+        self._record_workspace_version()
 
     def _check_notifier_configured(self) -> None:
         """PRD requirement B.3 (task 011, #197): the `notify` hat tool is
@@ -608,11 +613,11 @@ class LoopSupervisor:
         exact version match is silent too -- this is a DRIFT alert, not a
         version-announcement event.
 
-        Task 035 (PRD requirement G.3) also persists the workspace version
-        onto `status.json` itself (never on a drift-free/unreadable run --
-        same silence rule as the event above), so a hub run page can read
-        it straight off `status.json` beside F.4's `engineVersion` rather
-        than having to scan `events.jsonl` on its own.
+        Persisting that version onto `status.json` is G.3's job, not this
+        one's: `_record_workspace_version` below writes it whenever the
+        workspace names a version at all, so a hub run page shows both
+        versions on a matching run too. This method stays purely the DRIFT
+        alert -- one event, one notification, mismatch only.
         """
         workspace_version = _read_workspace_version(self.workspace)
         if workspace_version is None or workspace_version == __version__:
@@ -620,13 +625,6 @@ class LoopSupervisor:
         self.run.emit("workspace_version_mismatch",
                       workspaceVersion=workspace_version,
                       engineVersion=__version__)
-        # Task 035 (PRD requirement G.3): also persist it on status.json
-        # itself, beside F.4's `engineVersion`, so a hub run page (which
-        # reads status.json, never scans events.jsonl on its own) can show
-        # both versions rather than only being able to page the operator
-        # about the drift -- the events.jsonl line above stays for anyone
-        # scanning the raw log.
-        self.run.update_status(workspaceVersion=workspace_version)
         if self.notifier is not None:
             self.notifier(
                 f"workspace version ({workspace_version}) differs from the "
@@ -650,6 +648,35 @@ class LoopSupervisor:
         """
         self.run.update_status(engineVersion=__version__)
         self.run.emit(run_record.ENGINE_STARTED_EVENT, engineVersion=__version__)
+
+    def _record_workspace_version(self) -> None:
+        """PRD requirement G.3 (task 035): persist the WORKSPACE's own
+        recorded `__version__` onto `status.json`'s `workspaceVersion` field
+        whenever the workspace names one at all -- so a hub run page, which
+        reads `status.json` and never scans `events.jsonl` on its own, can
+        show the workspace version beside F.4's `engineVersion` for every
+        run whose workspace version is KNOWABLE, not only for a run that
+        happened to drift.
+
+        The first shape of this (task 035's own first attempt) rode inside
+        `_check_workspace_version_drift` above and therefore inherited that
+        method's mismatch-only early return: a run whose workspace version
+        was perfectly readable and equal to the engine's persisted nothing,
+        and the run page could name only one of the two versions it in fact
+        knew. The knowable/unknowable distinction is the one that governs
+        what a page can display; the drift/no-drift distinction is the one
+        that governs whether anybody is alerted. They are different
+        questions, so they are answered in different methods.
+
+        A workspace with no readable version literal (`_read_workspace_
+        version` returns `None` -- a pre-literal checkout, one mid-edit, a
+        workspace this feature predates) writes nothing: the field's
+        absence means "not knowable here", never "equal to the engine's".
+        """
+        workspace_version = _read_workspace_version(self.workspace)
+        if workspace_version is None:
+            return
+        self.run.update_status(workspaceVersion=workspace_version)
 
     def _notify_via_configured_notifier(self, text: str) -> None:
         """Task 007 (PRD requirement D.1, finding 5): the production

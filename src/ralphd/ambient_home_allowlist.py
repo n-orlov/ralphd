@@ -248,7 +248,12 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # stderr too, plus the `_DEAD_CONTAINER_LOG_LINES` constant beside
         # the helper) added 24 more lines in the same region, above every
         # entry from this one on: 4656->4680.
-        "line": "4742",
+        #
+        # Task 032 (v0.21, requirement F.6, #159/#194) added the engine-
+        # version line to `cmd_status`'s image-record render (+5), above
+        # every entry from this one on: 4742->4747, read off the numbered
+        # line (task 035/077).
+        "line": "4747",
         "reason": ("`ralphctl skills install`'s `home` used to auto-detect a "
                    "default target dir (`_auto_detect_skills_install_target`) "
                    "when the operator passes no `--target` -- the CLI IS the "
@@ -271,7 +276,10 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Task 025 (v0.21, PRD requirement E.3, #183): same +35 as the entry
         # above it: 4823->4858, and the same +24 from that task's own
         # stderr-reading cure: 4858->4882.
-        "line": "4944",
+        #
+        # Task 032 (v0.21, requirement F.6, #159/#194): same +5 as the entry
+        # above it: 4944->4949, read off the numbered line (task 035/077).
+        "line": "4949",
         "reason": ("`ralphctl llm test host`'s own resolution path (`_llm_test_"
                    "resolve`, its docstring: \"this runs entirely on the host, "
                    "same trust level as start\") -- deliberately mirrors the "
@@ -290,7 +298,10 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         #
         # Task 025 (v0.21, PRD requirement E.3, #183): same +35 as the entry
         # above it: 4827->4862, then the same +24 cure shift: 4862->4886.
-        "line": "4948",
+        #
+        # Task 032 (v0.21, requirement F.6, #159/#194): same +5 as the entry
+        # above it: 4948->4953, read off the numbered line (task 035/077).
+        "line": "4953",
         "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
                    "-- same reasoning as the `.aws` mount just above it."),
     },
@@ -336,7 +347,12 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # two by +35: 6884->6919, 6888->6923. That task's own cure (the
         # `docker logs` stderr read plus `_DEAD_CONTAINER_LOG_LINES`) added
         # 24 more in the same region, above both: 6919->6943, 6923->6947.
-        "line": "7005",
+        #
+        # Task 032 (v0.21, requirement F.6, #159/#194) added the engine-
+        # version line to `cmd_status`'s image-record render (+5), above
+        # both: 7005->7010, 7009->7014, each read off the numbered line
+        # (task 035/077).
+        "line": "7010",
         "reason": ("`ralphctl doctor`'s pi_host_config check: sanity-checks that "
                    "the OPERATOR's own `~/.pi/agent/settings.json` exists before "
                    "they run `--llm host`, on the same machine `doctor` itself "
@@ -358,7 +374,10 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         #
         # Task 025 (v0.21, PRD requirement E.3, #183): same +35 as the entry
         # above it: 6888->6923, then the same +24 cure shift: 6923->6947.
-        "line": "7009",
+        #
+        # Task 032 (v0.21, requirement F.6, #159/#194): same +5 as the entry
+        # above it: 7009->7014, read off the numbered line (task 035/077).
+        "line": "7014",
         "reason": ("same `cmd_doctor`, the operator-skill line (task 023, "
                    "requirement R): `_operator_skill_status` reports on "
                    "whichever agent-skills layout is discoverable under the "
@@ -373,7 +392,11 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # the steering form and the retry button) shifted the class-level
         # default -- now at 1477, same read, same reason. Task 047 (#177,
         # the `_with_llm_headers` helper) shifted it again, +32: 1477->1509.
-        "line": "1509",
+        # Task 033 (v0.21, requirement G.1, #159/#194) added the
+        # `GET /api/version` route's own module-level version helper above
+        # this class (+1 line above the read): 1509->1510, read off the
+        # numbered line (task 035/077).
+        "line": "1510",
         "reason": ("`Handler.registry`'s class-level default. Every real server "
                    "binds a concrete registry via `make_handler_class(reg)` "
                    "(see its own docstring, \"Bound to a registry path via "
@@ -521,7 +544,14 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # `_record_engine_version()` and its call site above `_creds_note`
         # in this same module, a net +23, shifting this read once more --
         # now at 1346, same method, same read, same reason.
-        "line": "1346",
+        # Task 035 (v0.21, PRD requirement G.3, #159/#194) added the
+        # `workspaceVersion` persistence -- `_record_workspace_version()`,
+        # its call site and the widened `_check_workspace_version_drift`
+        # docstring -- above `_creds_note` in this same module, a net +40
+        # across its two commits, shifting this read once more -- now at
+        # 1386, same method, same read, same reason (read off the numbered
+        # line with `sed -n 1386p`, never by arithmetic).
+        "line": "1386",
         "reason": ("LoopSupervisor._creds_note() lists the `~/.creds/*.env` "
                    "names place_creds() (this SAME process's ambient home, "
                    "task 006) already placed on this same container, for the "

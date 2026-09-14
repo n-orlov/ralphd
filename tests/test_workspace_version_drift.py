@@ -55,6 +55,9 @@ def test_a_differing_workspace_version_emits_one_startup_event_naming_both_versi
     assert len(events) == 1
     assert events[0]["workspaceVersion"] == differing
     assert events[0]["engineVersion"] == ENGINE_VERSION
+    # G.3 (task 035): the drifting version is on status.json too.
+    assert json.loads(
+        (root / "status.json").read_text())["workspaceVersion"] == differing
 
 
 # ===========================================================================
@@ -134,6 +137,12 @@ def test_a_matching_workspace_version_emits_nothing(tmp_path, monkeypatch):
 
     assert _events(root, "workspace_version_mismatch") == []
     assert calls == []
+    # ... and yet the version is KNOWABLE, so G.3 (task 035) still persists
+    # it on status.json for the hub run page to show beside F.4's
+    # `engineVersion`: silence is about the drift alert, not about the field.
+    status = json.loads((root / "status.json").read_text())
+    assert status["workspaceVersion"] == ENGINE_VERSION
+    assert status["engineVersion"] == ENGINE_VERSION
 
 
 def test_a_workspace_with_no_version_literal_emits_nothing(tmp_path, monkeypatch):
@@ -151,6 +160,10 @@ def test_a_workspace_with_no_version_literal_emits_nothing(tmp_path, monkeypatch
 
     assert _events(root, "workspace_version_mismatch") == []
     assert calls == []
+    # Nothing knowable here, so G.3's field stays ABSENT -- its absence
+    # means "not knowable", never "equal to the engine's version".
+    assert "workspaceVersion" not in json.loads(
+        (root / "status.json").read_text())
 
 
 # ===========================================================================
