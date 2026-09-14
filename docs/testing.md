@@ -1548,3 +1548,21 @@ and the module count via the same unique-module-path recipe used
 throughout this section: `366` (fast), `251` (smoke). `tests/records/` is
 unaffected (still 117, untouched by this task). Both ceilings (5800
 tests/375 modules fast, 4300/260 smoke) still carry headroom.
+
+**5692 (smoke 4085, modules 367 (fast), 252 (smoke)) by v0.21 task 008
+(requirement B.4).** One new module,
+`tests/test_worker_split_refusal_reprompt.py`, seven new nodes (also
+`smoke` -- no live engine/container: three drive `_worker_assignment_extra`
+directly, three drive `_apply_worker_proposed_tasks` against a real
+`RunDir`, and one drives a real `LoopSupervisor._run_job_core()` through a
+scripted `ScriptedRunner`, the same shape
+`tests/test_deferred_tasks_surface.py` already uses for its own
+production-call-site pin). From the 5685/4078/366 the paragraph above
+measures: **5692/4085/367**. Re-measured directly at this task's own tip
+with `.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5692/5797 tests collected (105 deselected)`, smoke: `4085/5797 tests
+collected (1712 deselected)`), and the module count via the same
+unique-module-path recipe used throughout this section: `367` (fast),
+`252` (smoke). `tests/records/` is unaffected (still 117, untouched by
+this task). Both ceilings (5800 tests/375 modules fast, 4300/260 smoke)
+still carry headroom.

@@ -4977,7 +4977,8 @@ class LoopSupervisor:
 
     def _worker_assignment_extra(self, task: dict | None, *,
                                  spent_budget: dict | None = None,
-                                 tasks_doc: dict | None = None) -> str:
+                                 tasks_doc: dict | None = None,
+                                 refused_split: dict | None = None) -> str:
         """Task 116 (#60 pillar 3, fact 9): the one thing a worker
         iteration needs told to it now that the HARNESS -- not the agent --
         runs `engine.scheduler.select_next_task` and owns every task-status
@@ -5013,6 +5014,19 @@ class LoopSupervisor:
         pool rather than reading their absence as evidence they are done.
         Absent entirely when nothing is deferred, same "presence is the
         signal" discipline the budget-exhausted block above already uses.
+
+        Task 008 (PRD requirement B.4, #135): `refused_split`, when given
+        (the caller's own read-and-clear of `status.json`'s
+        `REFUSED_WORKER_SPLIT_STATUS_KEY`, written by
+        `_apply_worker_proposed_tasks` the moment it refuses a VOLUNTARY
+        `proposed_tasks` batch), appends a "## Your last proposed task
+        split was refused" section quoting the lint's own errors verbatim
+        -- the minimum bar the PRD itself states ("or at minimum the
+        refusal reaches its next prompt"), since the voluntary channel is
+        refused-and-logged with no re-ask ladder of its own to carry the
+        text back through. Absent entirely when nothing was refused since
+        the last prompt, same "presence is the signal" discipline as the
+        two blocks above.
         """
         deferred = (self._pending_deferred_tasks(tasks_doc)
                     if isinstance(tasks_doc, dict) else [])
@@ -5029,6 +5043,19 @@ class LoopSupervisor:
                 "not runnable -- do not attempt them, and their absence "
                 "from the pool is not evidence they are done:\n\n"
                 f"{lines}\n")
+        refused_split_block = ""
+        if isinstance(refused_split, dict) and refused_split.get("errors"):
+            refused_lines = "\n".join(
+                f"- {e}" for e in refused_split["errors"])
+            refused_task_id = refused_split.get("taskId")
+            refused_split_block = (
+                "\n## Your last proposed task split was refused\n\n"
+                f"Your `proposed_tasks` split reported on task "
+                f"{refused_task_id!r} was refused by the plan-ingestion "
+                "lint before it changed anything:\n\n"
+                f"{refused_lines}\n\n"
+                "Fix these before proposing another split, or continue "
+                "the assigned task without one.\n")
         if not isinstance(task, dict):
             return (
                 "## Task assigned this iteration\n\n"
@@ -5036,7 +5063,7 @@ class LoopSupervisor:
                 "in-progress or validation-failed with satisfied "
                 "dependencies). Read tasks.json and the notes file to "
                 "understand why and report back -- do not invent a "
-                "task_id.\n") + deferred_block
+                "task_id.\n") + deferred_block + refused_split_block
         block = (
             "## Task assigned this iteration\n\n"
             f"- **id**: {task.get('id', '')}\n"
@@ -5073,7 +5100,7 @@ class LoopSupervisor:
                 "will be asked again until it carries one. On acceptance "
                 f"task {task.get('id', '')} becomes `superseded` and the "
                 "split children are picked up next.\n")
-        return block + deferred_block
+        return block + deferred_block + refused_split_block
 
     def _apply_worker_completion_report(self, payload: dict,
                                          assigned_task_id: str | None) -> list[str]:
@@ -5186,19 +5213,21 @@ class LoopSupervisor:
                 contract_enforcement.EVENT_VIOLATION, hat="worker",
                 message="worker's proposed_tasks split was refused",
                 errors=list(errors))
+            self._record_refused_worker_split(assigned_task_id, list(errors))
             return
         usage = dict(self.run.read_status().get("workerSplitProposals") or {})
         used = int(usage.get(str(approach), 0))
         budget = self.cfg.worker_split_budget_per_approach
         if used + len(proposed_tasks) > budget:
+            budget_message = (
+                f"worker's proposed_tasks split was refused: approach "
+                f"{approach} has already used {used}/{budget} of its "
+                f"split budget and this proposal would add "
+                f"{len(proposed_tasks)} more")
             self.run.emit(
                 contract_enforcement.EVENT_VIOLATION, hat="worker",
-                message=(
-                    f"worker's proposed_tasks split was refused: approach "
-                    f"{approach} has already used {used}/{budget} of its "
-                    f"split budget and this proposal would add "
-                    f"{len(proposed_tasks)} more"),
-                errors=[])
+                message=budget_message, errors=[])
+            self._record_refused_worker_split(assigned_task_id, [budget_message])
             return
         inserted = state.insert_worker_split_tasks(
             self.run, proposed_tasks, assigned_task_id)
@@ -5211,6 +5240,23 @@ class LoopSupervisor:
             message=(f"worker proposed a split of task {assigned_task_id}: "
                       f"{len(inserted)} new task(s) created "
                       f"({', '.join(str(i) for i in inserted)})"))
+
+    def _record_refused_worker_split(self, assigned_task_id: str | None,
+                                     errors: list[str]) -> None:
+        """Task 008 (PRD requirement B.4, #135): persist a refused
+        VOLUNTARY `proposed_tasks` split (`_apply_worker_proposed_tasks`,
+        both its lint-error and over-budget refusal branches) onto
+        `status.json` under `REFUSED_WORKER_SPLIT_STATUS_KEY`, so the
+        NEXT worker prompt this run builds (`_worker_assignment_extra`'s
+        `refused_split` param, consumed once by `_step_worker`'s own
+        dispatch) carries the lint text back to the worker instead of it
+        only ever reaching `events.jsonl`. Overwrites any earlier unread
+        refusal -- the newest one is the one that matters, and an
+        unconsumed stale one would otherwise accumulate across iterations
+        that never dispatch a fresh worker prompt in between.
+        """
+        self.run.update_status(**{self.REFUSED_WORKER_SPLIT_STATUS_KEY: {
+            "taskId": assigned_task_id, "errors": list(errors)}})
 
     @staticmethod
     def _fold_inherited_dependsOn(proposed: list, inherited: list | None) -> list:
@@ -5452,6 +5498,21 @@ class LoopSupervisor:
     # surface") is task 014's job -- exposing this key on `ralphctl
     # status`/`tasks`/the hub -- not this task's; this task only WRITES it.
     PROGRESS_BUDGET_STATUS_KEY = "progressBudget"
+
+    # Task 008 (PRD requirement B.4, #135): the persisted counterpart of
+    # a refused VOLUNTARY `proposed_tasks` split -- previously refused-
+    # and-logged only (`EVENT_VIOLATION`), which is exactly the "vanishes"
+    # the PRD names. `_apply_worker_proposed_tasks` writes the lint's own
+    # errors here the instant it refuses a batch; `_step_worker`'s own
+    # dispatch reads it back (and clears it) the NEXT time it builds a
+    # worker prompt, via `_worker_assignment_extra`'s `refused_split`
+    # param below -- "reaches its next prompt", the PRD's own minimum bar,
+    # since the voluntary channel has no re-ask ladder of its own to carry
+    # it through instead (unlike the MANDATORY forced-split channel,
+    # `_apply_forced_split_report`, which already reaches the worker
+    # through `contract_enforcement.enforce_contract`'s existing re-ask
+    # ladder within the same iteration).
+    REFUSED_WORKER_SPLIT_STATUS_KEY = "lastRefusedWorkerSplit"
 
     def _progress_budget_for(self, task: dict | None) -> int:
         """`estimatedIterations + 2` (PRD requirement A.3) -- the estimate
@@ -7088,11 +7149,23 @@ class LoopSupervisor:
                     exhausted_split_child=exhausted_split_child)
                 self._advance("worker", "paused", "stagnation_last_approach")
                 return ("advance", "paused", "stagnation_last_approach")
+            # Task 008 (PRD requirement B.4, #135): read-and-clear any
+            # VOLUNTARY split refusal an EARLIER iteration recorded
+            # (`_record_refused_worker_split`) so it reaches exactly this
+            # next worker prompt -- never a second time once consumed, and
+            # never silently dropped if this iteration never dispatches
+            # (nothing was cleared yet).
+            refused_split = self.run.read_status().get(
+                self.REFUSED_WORKER_SPLIT_STATUS_KEY)
+            if refused_split is not None:
+                self.run.update_status(
+                    **{self.REFUSED_WORKER_SPLIT_STATUS_KEY: REMOVE_STATUS_KEY})
             extra = self._worker_assignment_extra(
                 selected,
                 spent_budget=(budget_before_dispatch
                               if forced_split_required else None),
-                tasks_doc=tasks_before)
+                tasks_doc=tasks_before,
+                refused_split=refused_split)
             # Task 016 (requirement I/J): the in-hand task's EFFECTIVE tier
             # (post-escalation) drives this dispatch's model; a pass with
             # nothing actionable to assign (`selected` is not a task dict)
