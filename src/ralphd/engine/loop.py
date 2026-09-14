@@ -11491,17 +11491,28 @@ class LoopSupervisor:
 
           * `approach:` set and equal to the current approach, AND its
             `taskId` is in the CURRENT plan (`tasks.json`) -> BINDING.
-          * `approach:` set to an earlier value -> non-binding, rendered
-            under the "Historical rulings" heading below.
+          * `approach:` set to an earlier value, AND its `taskId` is still
+            in the CURRENT plan -> SUPERSEDED (task 019, D.9/D.13, #196):
+            rendered under the "Historical rulings" heading below, with
+            today's unchanged "not authoritative" wording -- this really is
+            a later approach's plan superseding an earlier approach's
+            ruling, and D.13 keeps that behaviour.
           * no `approach:` header at all (every ruling written before task
             036, or one written with no resolvable approach) -> treated as
             current IFF its `taskId` is in the current plan (backward
-            compatible); otherwise historical.
-          * `taskId` absent from the current plan -> NEVER binding, no
-            matter what `approach:` says, and this method emits
-            `amendment_target_not_in_plan` (once per call to this method,
-            even when several entries are orphaned) so the drift is
-            visible without silently downgrading the ruling's own text.
+            compatible); otherwise ORPHANED (see next bullet).
+          * `taskId` absent from the current plan -> ORPHANED (task 019,
+            D.9/D.10, #196), no matter what `approach:` says: the target
+            vanished under a replan, the operator withdrew nothing, so the
+            ruling stays BINDING on its own terms and is rendered under the
+            "Orphaned rulings" heading with a caveat naming the missing
+            task id -- never under "Historical rulings" and never with the
+            "not authoritative" wording (that would be exactly the string
+            D.10 forbids for a ruling the operator has not withdrawn). This
+            method still emits `amendment_target_not_in_plan` (once per
+            call to this method, even when several entries are orphaned)
+            so the drift is visible without the ruling's own text losing
+            authority.
 
         A run with no `tasks.json` at all yet (`TasksRead.present` False)
         has no plan for an id to be absent FROM -- exactly
@@ -11550,7 +11561,8 @@ class LoopSupervisor:
         current_approach = self._approach
         orphan_ids: list[str] = []
         binding: list[dict] = []
-        historical: list[dict] = []
+        superseded: list[dict] = []
+        orphaned: list[dict] = []
         for e in entries:
             # Task 018 (D.8, #196): a wave-scoped entry has no task id a
             # replan could orphan and no approach it was ever pinned to --
@@ -11561,16 +11573,20 @@ class LoopSupervisor:
                 continue
             task_id = str(e.get("taskId"))
             in_plan = (not plan_exists) or (task_id in plan_ids)
-            if plan_exists and task_id not in plan_ids:
-                orphan_ids.append(task_id)
-            approach = e.get("approach")
             if not in_plan:
-                is_binding = False
-            elif approach is None:
+                # Task 019 (D.9/D.10, #196): the target vanished under a
+                # replan -- the operator withdrew nothing, so this stays
+                # binding on its own terms, in its own bucket, never the
+                # "not authoritative" historical one.
+                orphan_ids.append(task_id)
+                orphaned.append(e)
+                continue
+            approach = e.get("approach")
+            if approach is None:
                 is_binding = True
             else:
                 is_binding = approach == current_approach
-            (binding if is_binding else historical).append(e)
+            (binding if is_binding else superseded).append(e)
         if orphan_ids:
             self.run.emit("amendment_target_not_in_plan", taskIds=orphan_ids)
 
@@ -11582,6 +11598,17 @@ class LoopSupervisor:
                 subject = f"task {e.get('taskId')}"
             return (f"\n- **{subject}** ({kind}, recorded "
                     f"{e.get('ts')}): {e.get('text')}\n")
+
+        def render_orphaned(e: dict) -> str:
+            # Same body as `render`, plus a caveat naming the vanished
+            # task -- D.9's "caveat naming the task that no longer
+            # exists", never the "not authoritative" wording D.10 forbids
+            # for a ruling the operator has not withdrawn.
+            return (render(e) +
+                    f"  (Its target, task {e.get('taskId')}, is no longer "
+                    "in this run's current plan -- a replan orphaned it, "
+                    "the operator did not withdraw it, so it remains "
+                    "BINDING exactly as the rulings above.)\n")
 
         lines = [
             "\n## Operator rulings (task 028, #26)\n",
@@ -11602,14 +11629,28 @@ class LoopSupervisor:
         ]
         for e in binding:
             lines.append(render(e))
-        if historical:
+        if orphaned:
+            lines.append(
+                "\n### Orphaned rulings (still binding, task 019, D.9, "
+                "#196)\n"
+                "Recorded against a task id a replan has since removed "
+                "from this run's current plan. The operator never "
+                "withdrew these -- the target simply vanished -- so each "
+                "one stays AUTHORITATIVE exactly as the rulings above: "
+                "apply its WAIVE/REPLACE effect using the text it "
+                "recorded, even though the named task id no longer "
+                "resolves.\n")
+            for e in orphaned:
+                lines.append(render_orphaned(e))
+        if superseded:
             lines.append(
                 f"\n### Historical rulings (not binding this {decision}, "
                 "task 037, #168)\n"
-                "Recorded against an earlier approach, or naming a task id "
-                "no longer in this run's current plan -- NOT authoritative "
-                f"for this {decision}; shown for context only.\n")
-            for e in historical:
+                "Recorded against an earlier approach whose task id is "
+                "still in this run's current plan, superseded by a later "
+                "approach's replan -- NOT authoritative for this "
+                f"{decision}; shown for context only.\n")
+            for e in superseded:
                 lines.append(render(e))
         return "".join(lines)
 

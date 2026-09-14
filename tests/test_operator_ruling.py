@@ -222,11 +222,14 @@ def test_no_approach_header_entry_is_current_iff_its_id_is_in_the_plan(tmp_path,
     assert "task 020" in ctx
 
 
-def test_entry_naming_an_id_absent_from_the_plan_never_binds_and_emits_once(tmp_path, monkeypatch):
-    """An entry whose taskId is not in the current plan is never rendered
-    as binding, no matter what `approach:` it carries -- and this method
-    emits `amendment_target_not_in_plan` exactly ONCE per render call, even
-    with two orphaned entries in the same call."""
+def test_entry_naming_an_id_absent_from_the_plan_is_orphaned_not_historical(tmp_path, monkeypatch):
+    """Task 019 (D.9/D.10, #196): an entry whose taskId is not in the
+    current plan is ORPHANED, not historical -- it stays binding on its
+    own terms (rendered under the 'Orphaned rulings' heading, never
+    'Historical rulings', and never with the 'not authoritative' wording)
+    no matter what `approach:` it carries -- and this method still emits
+    `amendment_target_not_in_plan` exactly ONCE per render call, even with
+    two orphaned entries in the same call."""
     cdir = tmp_path / "config"
     write_amendment(cdir, "998", "Ruling for a retired task.", approach=1)
     write_amendment(cdir, "999", "Another ruling for a retired task.")
@@ -235,14 +238,84 @@ def test_entry_naming_an_id_absent_from_the_plan_never_binds_and_emits_once(tmp_
     ])
     monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
     ctx = sup._operator_amendment_review_context()
-    assert "Historical rulings" in ctx
-    hist_idx = ctx.index("Historical rulings")
-    assert ctx.index("task 998") > hist_idx
-    assert ctx.index("task 999") > hist_idx
+    assert "Historical rulings" not in ctx
+    assert "Orphaned rulings" in ctx
+    orphan_idx = ctx.index("Orphaned rulings")
+    assert ctx.index("task 998") > orphan_idx
+    assert ctx.index("task 999") > orphan_idx
+    assert "NOT authoritative" not in ctx
     events = _events(sup.run.root)
     orphan_events = [e for e in events if e["type"] == "amendment_target_not_in_plan"]
     assert len(orphan_events) == 1
     assert set(orphan_events[0]["taskIds"]) == {"998", "999"}
+
+
+# -- Task 019 (D.9/D.10, #196): three dispositions, named individually ------
+
+
+def test_binding_disposition_carries_no_historical_or_orphaned_heading(tmp_path, monkeypatch):
+    """The binding case: current approach, taskId in the current plan.
+    Neither the 'Historical rulings' heading nor the 'Orphaned rulings'
+    heading appears, and the ruling's own text is rendered plainly under
+    the top-level 'Operator rulings' heading, AUTHORITATIVE like every
+    binding ruling."""
+    cdir = tmp_path / "config"
+    write_amendment(cdir, "010", "Approach 2 waiver.", waive=True, approach=2)
+    sup = _supervisor(tmp_path, approach=2, tasks=[
+        {"id": "010", "title": "t", "status": "pending", "successCriteria": "x"},
+    ])
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
+    ctx = sup._operator_amendment_review_context()
+    assert "Operator rulings" in ctx
+    assert "Historical rulings" not in ctx
+    assert "Orphaned rulings" not in ctx
+    assert "NOT authoritative" not in ctx
+    assert "task 010" in ctx
+    assert "Approach 2 waiver." in ctx
+
+
+def test_superseded_disposition_keeps_todays_historical_heading_and_wording(tmp_path, monkeypatch):
+    """The superseded case (D.9, D.13): an earlier-approach ruling whose
+    taskId is STILL in the current plan is genuinely historical -- it
+    keeps today's 'Historical rulings' heading and its 'not authoritative'
+    wording unchanged, and is never treated as orphaned (its target did
+    not vanish, a later approach's replan just moved past it)."""
+    cdir = tmp_path / "config"
+    write_amendment(cdir, "010", "Approach 1 said skip requirement F.",
+                    approach=1)
+    sup = _supervisor(tmp_path, approach=2, tasks=[
+        {"id": "010", "title": "t", "status": "pending", "successCriteria": "x"},
+    ])
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
+    ctx = sup._operator_amendment_review_context()
+    assert "Historical rulings" in ctx
+    assert "Orphaned rulings" not in ctx
+    assert "NOT authoritative" in ctx
+    hist_idx = ctx.index("Historical rulings")
+    assert ctx.index("task 010") > hist_idx
+    assert "Approach 1 said skip requirement F." in ctx
+
+
+def test_orphaned_disposition_renders_binding_with_a_caveat_naming_the_task(tmp_path, monkeypatch):
+    """The orphaned case (D.9, D.10): a taskId absent from the current
+    plan gets its own 'Orphaned rulings' heading, a caveat naming the
+    vanished task, and NEVER the 'not authoritative'/'Historical rulings'
+    wording -- the operator did not withdraw it, so it stays binding."""
+    cdir = tmp_path / "config"
+    write_amendment(cdir, "998", "Ruling for a retired task.")
+    sup = _supervisor(tmp_path, approach=1, tasks=[
+        {"id": "001", "title": "t", "status": "pending", "successCriteria": "x"},
+    ])
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
+    ctx = sup._operator_amendment_review_context()
+    assert "Orphaned rulings" in ctx
+    assert "Historical rulings" not in ctx
+    assert "NOT authoritative" not in ctx
+    orphan_idx = ctx.index("Orphaned rulings")
+    assert ctx.index("task 998") > orphan_idx
+    assert "Ruling for a retired task." in ctx
+    assert "BINDING" in ctx
+    assert ctx.count("998") >= 2  # named as subject AND in the caveat
 
 
 def test_wave_scoped_ruling_survives_a_replan_and_stays_binding(tmp_path, monkeypatch):

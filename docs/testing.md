@@ -1781,3 +1781,28 @@ section: `371` (fast), `256` (smoke). `tests/records/` is unaffected
 modules fast, 4300/260 smoke) still carry headroom -- fast is now within
 82 of its stated ceiling.
 
+**5721 (smoke 4106, modules 371 (fast), 256 (smoke)) by v0.21 task 019
+(requirement D.9/D.10, #196).** No new module -- three new nodes in an
+existing one, `fast` only (`tests/test_operator_ruling.py` spawns a real
+`ralphctl` subprocess elsewhere in the module, so the whole module is
+process-boundary, not in-process, per `tests/conftest.py`'s own
+derivation):
+`test_binding_disposition_carries_no_historical_or_orphaned_heading`,
+`test_superseded_disposition_keeps_todays_historical_heading_and_wording`
+and
+`test_orphaned_disposition_renders_binding_with_a_caveat_naming_the_task`.
+A fourth node in the same module was renamed, not added --
+`test_entry_naming_an_id_absent_from_the_plan_never_binds_and_emits_once`
+became
+`test_entry_naming_an_id_absent_from_the_plan_is_orphaned_not_historical`,
+same node count. From the 5718/4106/371 the paragraph above measures:
+**5721/4106/371** (smoke unchanged -- none of the three new nodes is
+in-process). Re-measured directly at this task's own tip with
+`.venv/bin/python -m pytest -m <fast|smoke> --collect-only -q` (fast:
+`5721/5826 tests collected (105 deselected)`, smoke: `4106/5826 tests
+collected (1720 deselected)`), and the module count via the same
+unique-module-path recipe used throughout this section: `371` (fast),
+`256` (smoke). `tests/records/` is unaffected (still 117, untouched by
+this task). Both ceilings (5800 tests/375 modules fast, 4300/260 smoke)
+still carry headroom -- fast is now within 79 of its stated ceiling.
+
