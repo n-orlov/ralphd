@@ -66,6 +66,26 @@ the installed engine's copy and not the original workspace. Only once that
 assertion holds is a test result or a count from that venv trustworthy evidence
 for a finding. Discard the clone when you are done with it.
 
+## Reading a `cancelled` CI conclusion
+
+A `cancelled` conclusion on a CI check run is **not a verdict** — treat it the
+same as `in_progress`: neither states anything about the commit, and neither
+may be cited as a green or a red. A `cancelled` run collapses three unrelated
+causes (a human cancel, a `cancel-in-progress` supersession, or the job's own
+`timeout-minutes` kill) into one status, and only the third is a statement
+about the commit at all.
+
+Tell a timeout kill from an ordinary cancel by the `RALPHD_TIMEOUT_KILL:`
+marker line and its `*.expired` evidence file (`docs/ci.md`, K.3): a
+`cancelled` run whose log or step summary carries the `RALPHD_TIMEOUT_KILL:`
+marker, backed by an `*.expired` evidence file, ran out of wall clock inside
+one of its own bounded steps — read that as the closest thing to a `failure`
+this surface can produce, with the reason named in the marker line. A
+`cancelled` run that carries neither the marker nor the evidence file is an
+ordinary human cancel or supersession, printed as `RALPHD_CANCEL_NOT_TIMEOUT:`
+when the mechanism runs at all — read that as no statement about the commit,
+never as a red.
+
 ## A green shipped suite is not evidence for a removal requirement
 
 For any requirement that asks something to be **removed, retired, disabled or
