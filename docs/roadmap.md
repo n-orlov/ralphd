@@ -2256,9 +2256,20 @@ account is a later task's to write once the run actually ends.
 
 Full PRD:
 [`docs/prds/v0.21-the-budget-belongs-to-the-work.md`](prds/v0.21-the-budget-belongs-to-the-work.md).
-✅ Version `0.21.0` landed at task 067, the run's last code-touching task — a placeholder entry
-kept to one paragraph; the wave's own account of what shipped and the issues closed is a later
-task's to write (PRD requirement L.2).
+✅ Version `0.21.0` landed at task 067. Requirements A–K (except K.1–K.4, where K.1/K.2 were
+skipped, K.3 failed and K.4 is blocked on it) and N have since landed: cure passes for curable
+verdict-gate rejections and distinguishable gate endings (A); a costed planning death and a
+concrete legal-rewrite re-prompt (B); petition adjudication, a bounded petition-held wait and a
+single held-graph notification (C); a claimed-task steer-write refusal and wave-scoped rulings
+surviving a replan (D); a non-1000-host-uid config read (E); per-iteration task/tier and durable
+engine-version recording (F); the hub's task/tier/cost/version/history/collapse surfaces (G, I); a
+bounded, cached log tail (H); an ingestion-terminated run no longer read as an infra outage and an
+anchored verdict-gate peek detector (J); and the runner-slot topology, Chrome-session and
+worker-phase fixes under K that this run could carry (K.5–K.7); N cut the tracked report corpus,
+its test coupling and the closing-report obligation. No issue has a fresh-`GET`-verified closure
+yet, and the final lane sweep and terminal summary have not run — that is tasks 069–071's own work
+— so this paragraph is written mid-run, ahead of this wave's own settlement, and the shipped sha,
+the lane run ids and the issues closed are those later tasks' to write.
 
 ## Later / explicitly deferred
 
