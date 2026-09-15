@@ -25,7 +25,8 @@ Everything is read back off the run's own record -- `events.jsonl`,
 from __future__ import annotations
 
 from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
-                                 status, tasks, wait_terminal_recorded)
+                                 status, tasks, wait_status_terminal,
+                                 wait_terminal_recorded)
 
 # The reference path, in the step vocabulary `flowlib.flow_steps` defines.
 # Two tasks (the stub planner's default), one worker iteration each, one
@@ -102,7 +103,16 @@ def test_the_same_path_under_on_complete_idle_keeps_the_engine_serving(engine_fa
     # engine now guarantees lands no later than the status.json write this
     # replaces polling for.
     wait_terminal_recorded(run)
-    st = status(run)
+    # Task 002 (M): under `on_complete: idle` the engine process never
+    # exits, so (unlike the `exit` test above, which only reads status()
+    # after `proc.wait()` has already returned) nothing here guarantees the
+    # SECOND write -- status.json's own terminal write, which SPEC.md's
+    # ordering invariant only promises comes strictly AFTER the event the
+    # barrier above just observed -- has landed yet. A bare `status(run)`
+    # here is exactly the nightly race (run 34921161300: status.json read
+    # `running` immediately after the events barrier returned); the second
+    # barrier below blocks on status.json itself instead.
+    st = wait_status_terminal(run)
     assert st.get("state") == "succeeded", (
         f"flow happy path (idle): the run must reach 'succeeded', got "
         f"{st.get('state')!r} (status.json: {st})")

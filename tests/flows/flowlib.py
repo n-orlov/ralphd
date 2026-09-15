@@ -89,6 +89,41 @@ def wait_terminal_recorded(run, timeout: float = 60, interval: float = 0.05) -> 
         time.sleep(interval)
 
 
+def wait_status_terminal(run, timeout: float = 60, interval: float = 0.05) -> dict:
+    """Bounded barrier (task 002, requirement M): block until `status.json`
+    itself reports a finished run (`state` in `TERMINAL_STATES`), then
+    return it, and raise with the last status observed when the deadline
+    passes first.
+
+    SPEC.md's ordering invariant (§5.4, "A run's terminal `state` event is
+    appended before the status.json write that makes `state` itself read
+    as terminal") only orders the two writes -- it never says they land in
+    the same instant. `wait_terminal_recorded` blocking on `events.jsonl`
+    and then a caller reading `status.json` straight off disk is racing the
+    SECOND of those two writes, the one the invariant only promises comes
+    after the first: the terminal `state` event can be on disk for as long
+    as that second write takes to land, during which `status.json` still
+    reads a pre-terminal state (observed on nightly, run 34921161300:
+    `status.json` read `running` immediately after the events barrier
+    returned). This is the second, narrower barrier for exactly that gap:
+    it polls `status.json` directly (never `events.jsonl`) and is the one a
+    caller should read a finished run's status through once the events
+    barrier has already returned.
+    """
+    deadline = time.monotonic() + timeout
+    last: dict = {}
+    while True:
+        last = status(run)
+        if last.get("state") in TERMINAL_STATES:
+            return last
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"wait_status_terminal: status.json never reported a "
+                f"terminal state within {timeout}s; last status observed: "
+                f"{last!r}")
+        time.sleep(interval)
+
+
 def wait_step_recorded(run, step: str, timeout: float = 30,
                        interval: float = 0.05) -> list[str]:
     """Bounded barrier (task 063, #179): block until `step` (exactly as
