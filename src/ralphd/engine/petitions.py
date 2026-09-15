@@ -266,10 +266,12 @@ NO_PETITION_PROTOCOL_NOTICE = (
     "fallback)"
 )
 
-# Name of the file `ensure_petitions_file` creates when a contract DOES
-# declare the protocol but the workspace carries no `<wave>-petitions.md`
-# yet: the wave token taken from the contract's own text when it names one
-# (`v0.16` -> `v0.16-petitions.md`), else a neutral `run-petitions.md`.
+# The wave token `_current_wave_name` derives from the contract's own text
+# when it names one (`v0.16` -> `v0.16-petitions.md`), else this neutral
+# fallback. No production writer ever creates a workspace file from this
+# token any more (requirement H, task 008 and this cure, #200) -- it only
+# still shapes which EXISTING file a reader treats as "the current wave's"
+# (`_current_wave_petitions_path`, `open_petitions_in_workspace`).
 _WAVE_RE = re.compile(r"\bv(\d+\.\d+)(?:\.\d+)?\b")
 DEFAULT_PETITIONS_WAVE = "run"
 
@@ -338,10 +340,11 @@ def _current_wave_petitions_path(
        carrying only OLDER waves' files must never resurrect an OLD one as
        if it were this run's own (the `files[-1]` bug this task fixes).
        This holds for ONE older file exactly as it holds for several: a
-       v0.19 contract beside a lone `v0.18-petitions.md` gets a NEW
-       `v0.19-petitions.md` from `ensure_petitions_file` and reads nothing
-       out of v0.18, because a contract that names its own wave has
-       already said which file is current.
+       v0.19 contract beside a lone `v0.18-petitions.md` returns `None`
+       for the existing file and reads nothing out of v0.18, because a
+       contract that names its own wave has already said which file is
+       current -- and (requirement H.2, this cure) no caller creates a
+       fresh `v0.19-petitions.md` on this branch any more either.
     """
     wave = _current_wave_name(contract_text)
     default_path = workspace / "artifacts" / "reports" / f"{wave}-petitions.md"
@@ -355,45 +358,44 @@ def _current_wave_petitions_path(
 
 
 def ensure_petitions_file(workspace: Path, contract_text: str = "") -> Path | None:
-    """The CURRENT wave's petitions file (`_current_wave_petitions_path`),
-    creating an empty one when the workspace has none yet -- so that a
-    contract which DOES declare the protocol never falls back to `failed`
-    merely because no wave file had been created yet. Without this, the
-    workspace's file inventory would remain a second, hidden discriminant
-    beside the contract, which is exactly what requirement C.3 forbids
-    ("the two branches are distinguished by the contract and nothing
-    else").
+    """The CURRENT wave's petitions file (`_current_wave_petitions_path`)
+    IF ONE ALREADY EXISTS on disk -- `None` otherwise. This function never
+    creates, writes or modifies anything under `workspace`.
 
-    Called only where the contract has already been found to declare a
-    protocol (`contract_declares_petition_protocol`); returns the existing
-    current-wave file when there is one, or None when the file cannot be
-    created at all (a read-only workspace), in which case the caller keeps
-    the `failed` fallback.
+    This used to create an empty `<wave>-petitions.md` when the workspace
+    had none yet, so that a contract which DOES declare the protocol never
+    fell back to `failed` merely because no wave file had been created
+    yet. Requirement H (task 008) retired every production writer's
+    workspace-tree fallback -- `file_worker_petition`, `file_exhaustion_
+    petition` and `write_back_petition_adjudication` all refuse or no-op
+    without a run handle rather than writing into `artifacts/reports/` --
+    and left this function with no remaining production caller at all
+    (`file_exhaustion_petition`'s own docstring already says so). But the
+    review probe that named requirement H.2 (#200) found this helper still
+    directly callable and still tree-creating: "the contract says no
+    petition writer on any path, not merely the two planned writers." So
+    this function's tree-creation path is retired outright, the same way
+    the two writers' fallbacks were -- turned into the explicit, documented
+    no-op/refusal this docstring states: called against an EMPTY
+    workspace (no `<wave>-petitions.md` anywhere under it), it creates
+    NOTHING and returns `None`, no matter what `contract_text` says or
+    whether `contract_declares_petition_protocol` would return `True` for
+    it. `tests/test_petitions.py::test_ensure_petitions_file_never_creates_
+    in_an_empty_workspace` (this cure) is the regression: an empty
+    `tmp_path` stays byte-for-byte empty (no new file, no new directory)
+    after this call.
 
-    Task 018 (requirement E.1, #150): this used to return `files[-1]`
-    whenever ANY petitions file existed, which resurrected the newest OLDER
-    wave's file as this run's filing target the moment a repo carried more
-    than one wave's history. `_current_wave_petitions_path` is the fix --
-    an exact wave-name match, else (only when the contract names no wave at
-    all) the lone-file fallback that keeps every pre-existing wave-less
-    caller unaffected, else nothing, so this branch creates a genuinely NEW
-    file for the current wave instead -- including when the workspace's ONE
-    existing file belongs to an older wave.
+    Kept, rather than deleted outright, purely as the read-only lookup
+    `_current_wave_petitions_path` already was: when the CURRENT wave's
+    file already exists on disk, this returns that existing `Path`
+    unchanged -- a pure read, not a write -- so any caller that only ever
+    wants "the current wave's file, if the workspace already carries one"
+    keeps working. There is no PRODUCTION caller left; `docs/petition-
+    format.md`/`file_exhaustion_petition`'s own docstring name the run-dir
+    writers as the only filing paths a real run takes.
     """
-    default_path, existing = _current_wave_petitions_path(workspace, contract_text)
-    if existing is not None:
-        return existing
-    wave = _current_wave_name(contract_text)
-    try:
-        default_path.parent.mkdir(parents=True, exist_ok=True)
-        default_path.write_text(
-            f"# {wave} impossibility petitions\n\n"
-            "Created by the engine because this run's contract declares a "
-            "petition protocol (see `docs/petition-format.md`). One section "
-            "per petition; no petition filed yet.\n")
-    except OSError:
-        return None
-    return default_path
+    _default_path, existing = _current_wave_petitions_path(workspace, contract_text)
+    return existing
 
 
 _TASK_OBLIGATION_REF_RE = re.compile(

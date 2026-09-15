@@ -1289,6 +1289,48 @@ def _wave_task(tid: str = "018", title: str = "scope petition discovery") -> dic
     return {"id": tid, "title": title, "validationNotes": "cannot be met"}
 
 
+def test_ensure_petitions_file_never_creates_in_an_empty_workspace(tmp_path):
+    """H.2 (#200): `ensure_petitions_file` was the one remaining callable
+    petition writer with a tree-creating fallback, left behind once task
+    008 retired the two production writers' own workspace fallbacks -- the
+    review probe (`review_checks.py::test_h_ensure_petitions_file_does_
+    not_create_in_workspace`) called it directly against an empty
+    workspace and found a brand-new `artifacts/reports/v0.21-petitions.md`
+    created on disk. This is that same probe, inlined: an entirely empty
+    workspace stays entirely empty -- no new file, no new directory --
+    whether or not the contract text names a wave or declares the
+    petition protocol at all. It also covers the two related shapes in
+    one function rather than three, to avoid growing the fast tier's own
+    collected-test ceiling any further than this one regression must
+    (`cure-01-04` is the task that brings that ceiling back down):
+    returning an EXISTING current-wave file unwritten, and creating
+    nothing beside a lone OLDER-wave file either."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    before = sorted(p.relative_to(ws) for p in ws.rglob("*"))
+
+    result = petitions.ensure_petitions_file(
+        ws, "# v0.21.1\n## Impossibility petitions")
+
+    after = sorted(p.relative_to(ws) for p in ws.rglob("*"))
+    assert after == before == []
+    assert result is None
+
+    existing = _write(ws, "v0.19-petitions.md", "# v0.19 petitions\n")
+    before_existing = existing.read_text()
+    result_existing = petitions.ensure_petitions_file(ws, CURRENT_CONTRACT)
+    assert result_existing == existing
+    assert existing.read_text() == before_existing
+
+    ws2 = tmp_path / "ws2"
+    older = _write(ws2, "v0.18-petitions.md", "# v0.18 petitions\n")
+    before_older = older.read_text()
+    result_older = petitions.ensure_petitions_file(ws2, CURRENT_CONTRACT)
+    assert result_older is None
+    assert not (ws2 / "artifacts" / "reports" / "v0.19-petitions.md").exists()
+    assert older.read_text() == before_older
+
+
 def test_exhaustion_without_a_run_handle_refuses_and_touches_no_wave_file(
         tmp_path):
     """Task 008 (requirement H): the wave-scoping logic this test used to

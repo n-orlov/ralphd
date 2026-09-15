@@ -45,6 +45,19 @@ reports/` is left byte-identical either way. `open_petitions_in_workspace`
 file when one exists, which is how `v0.21-petitions.md` above keeps
 surfacing to review at all.
 
+**This cure (requirement H.2, #200): the same posture for the one helper
+the four functions above never named.** `engine.petitions.ensure_
+petitions_file` predates task 008 and had already lost every production
+caller when task 008 landed — but it remained directly callable, and its
+own tree-creation path still created a brand-new `<wave>-petitions.md`
+under the workspace on demand, precisely the write task 008's own
+requirement forbids on ANY path, not merely the two writers it named.
+Calling `ensure_petitions_file` now never creates or modifies anything:
+it returns the CURRENT wave's file if one already exists on disk, else
+`None`, always — a pure read, the exact shape `open_petitions_in_
+workspace` already took, and `artifacts/reports/` stays byte-identical
+no matter what workspace or contract text is passed in.
+
 ## One petition per obligation
 
 Each petition is its own section in that file, headed by the obligation it
