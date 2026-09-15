@@ -12496,9 +12496,16 @@ class LoopSupervisor:
             # task_verify_tier`, never `run_level_verify_tier` (that is the
             # run-ending pass in `_step_review`/`_maybe_grace_review`, a
             # separate dispatch from this per-task one).
+            # Task 004 (PRD requirement D.1): the in-hand task's own id
+            # rides this call the same way `tier` already does, so the
+            # dispatch write below (`_run_iteration_once`) records a
+            # non-null `assignedTaskId` for a per-task verify iteration --
+            # before the runner even starts, and regardless of whether
+            # this attempt later faults or returns no usable verdict.
             result = await self.run_iteration("verify", extra=extra,
                                                prompt_name="task-verify",
-                                               tier=state.task_verify_tier(task))
+                                               tier=state.task_verify_tier(task),
+                                               task_id=tid)
             verify_iter_n = self.iterations_used  # captured after run_iteration increments it
             # Task 001 (#119, requirement A.1): give a not-yet-valid verify
             # payload the SAME uncharged re-ask ladder every other hat

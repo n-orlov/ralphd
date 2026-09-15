@@ -32,6 +32,8 @@ import asyncio
 import json
 import pathlib
 
+import pytest
+
 from ralphd.engine import loop as loop_module
 from ralphd.engine import state
 from ralphd.engine import tiers as T
@@ -233,6 +235,128 @@ def test_per_task_verify_dispatch_resolves_one_step_down_from_effective_tier(
     verify_calls = [c for c in calls if c[0] == "verify"]
     assert verify_calls == [("verify", "normal")]  # step_down_tier("hard")
     assert verify_calls[0][1] == state.task_verify_tier(task)
+
+
+# ---------------------------------------------------------------------------
+# 2b. Task 004 (PRD requirement D): the per-task verify dispatch write
+# carries the in-hand task's id and effective tier BEFORE the runner even
+# starts -- proved by reading `meta.json` back from INSIDE the fake
+# runner's own `run()` call (i.e. while `run_iteration` still considers
+# this attempt "running"), for three separate outcomes the attempt can go
+# on to produce: a verified verdict, an engine-classified fault (no
+# traffic at all), and a clean exit with no usable verdict payload. All
+# three share the SAME dispatch write (loop.py's `_run_iteration_once`),
+# so the two fields are present identically in every case; only what
+# happens AFTER `run()` returns differs.
+# ---------------------------------------------------------------------------
+
+class _InFlightVerifyAgent:
+    """Reads the CURRENTLY-DISPATCHED iteration's `meta.json` back off disk
+    from inside its own `run()` coroutine -- before returning anything at
+    all -- and records what it found in `self.observed_meta`. Since
+    `_run_iteration_once` writes that file, with `assignedTaskId`/
+    `effectiveTier` already set, before it ever awaits `runner.run(...)`,
+    this proves the two fields are on disk WHILE the runner is still
+    running, not merely by the time it finishes.
+    """
+
+    def __init__(self, sup, result_factory):
+        self.sup = sup
+        self.result_factory = result_factory
+        self.observed_metas: list[dict] = []
+
+    def interrupt(self):
+        return False
+
+    async def run(self, prompt, transcript, **kw):
+        n = self.sup.iterations_used
+        meta_path = self.sup.run.iteration_dir(n) / "meta.json"
+        self.observed_metas.append(json.loads(meta_path.read_text()))
+        return self.result_factory()
+
+
+def _verify_result_verified():
+    r = IterationResult(exit_code=0)
+    r.final_text = json.dumps({"task_id": "001", "verdict": "verified"})
+    r.duration_s = 0.05
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+def _verify_result_fault():
+    """An engine-classified INFRA fault: no traffic at all within the
+    startup window -- `classify_fault` scores this `infra` unconditionally,
+    regardless of exit code or error text."""
+    r = IterationResult(exit_code=None)
+    r.no_traffic_timeout = True
+    r.final_text = ""
+    r.usage = {}
+    r.duration_s = 5.0
+    return r
+
+
+def _verify_result_no_usable_verdict():
+    """A clean exit that never emitted a parseable `verify` contract
+    payload at all -- an explicit verdict miss, never an engine fault."""
+    r = IterationResult(exit_code=0)
+    r.final_text = "not a contract payload, not JSON either"
+    r.duration_s = 0.05
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+@pytest.mark.parametrize("result_factory", [
+    _verify_result_verified,
+    _verify_result_fault,
+    _verify_result_no_usable_verdict,
+])
+def test_per_task_verify_dispatch_meta_carries_task_id_and_tier_while_running(
+        tmp_path, result_factory):
+    task = {"id": "001", "title": "t", "status": "in-progress",
+            "successCriteria": "c", "tier": "normal", "effectiveTier": "hard"}
+    sup, run = _make_sup(tmp_path, [task], infra_outage_budget_s=0.0)
+    agent = _InFlightVerifyAgent(sup, result_factory)
+    sup.runner = agent
+    expected_tier = state.task_verify_tier(task)
+
+    # Drives the REAL per-task verify call site (`_verify_task`, which is
+    # what `_step_verify` calls for a completed task) -- never `run_
+    # iteration` directly, so this exercises the actual production call
+    # site's own `task_id=tid` argument, not a bypass of it.
+    asyncio.run(sup._verify_task(task))
+
+    # In-flight: read from INSIDE the fake runner's own run() call, before
+    # this attempt's outcome (verified / fault / no usable verdict) was
+    # even decided. At least one verify iteration must have dispatched,
+    # and EVERY one of them (the fault/no-traffic-timeout case retries
+    # inside `_verify_task` itself) carried both fields already.
+    assert agent.observed_metas, "runner.run() was never called"
+    for meta in agent.observed_metas:
+        assert meta.get("assignedTaskId") == "001", meta
+        assert meta.get("effectiveTier") == expected_tier, meta
+
+    # End write: every dispatched verify iteration's meta.json, after
+    # run_iteration() returned, must still carry both values -- the end
+    # write only ever updates the dispatch write's own dict, never
+    # rebuilds it.
+    verify_end_metas = []
+    for n in range(1, sup.iterations_used + 1):
+        meta_path = run.iteration_dir(n) / "meta.json"
+        if not meta_path.exists():
+            continue
+        end_meta = json.loads(meta_path.read_text())
+        if end_meta.get("phase") == "verify":
+            verify_end_metas.append(end_meta)
+    assert verify_end_metas, "no verify iteration meta.json found"
+    for end_meta in verify_end_metas:
+        assert "endedAt" in end_meta, end_meta
+        assert end_meta.get("assignedTaskId") == "001", end_meta
+        assert end_meta.get("effectiveTier") == expected_tier, end_meta
+        # The pre-existing `verifiedTask` reader (task 004/#116) keeps
+        # working unmodified: `_verify_task`'s own end-of-attempt
+        # enrichment sets it on the SAME dict the dispatch write already
+        # populated, regardless of outcome.
+        assert end_meta.get("verifiedTask") == "001", end_meta
 
 
 # ---------------------------------------------------------------------------
