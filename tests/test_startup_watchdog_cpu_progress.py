@@ -143,3 +143,69 @@ def test_the_cpu_counter_reads_a_live_pid_and_declines_a_dead_one():
     # `None` means "no evidence of progress", and the watchdog keeps the
     # verdict this engine always gave in that case.
     assert process_cpu_seconds(-1) is None
+
+
+class _FakeProc:
+    """Enough of asyncio.subprocess.Process for PiRunner.interrupt()."""
+
+    def __init__(self, pid):
+        self.pid = pid
+        self.returncode = None
+
+
+def test_interrupt_targets_the_pid_directly_before_the_child_has_its_own_session(
+        tmp_path, monkeypatch):
+    """Task 001: the pre-`setsid` window that caused the gate red at
+    `472d055` (`test_a_child_that_consumes_no_cpu_is_still_killed_inside_its_
+    window` there recorded duration_s=61.06, exit_code=-9, timed_out=True).
+
+    `start_new_session=True` makes the child call `os.setsid()` before it
+    execs `pi`, but nothing orders that call against this method's read of
+    `os.getpgid(child_pid)`. In the window before `setsid()` has run, the
+    child's process group is still the ENGINE's own group (inherited from
+    the fork) -- so the old `os.killpg(os.getpgid(pid), SIGINT)` would
+    signal the engine's own group, not the child, and the SIGINT never
+    reaches it. This drives exactly that window with no real timing race:
+    `os.getpgid` is made to report the engine's own pgid for the child pid,
+    the shape a genuinely pre-`setsid` child has.
+
+    Mutation case (recorded in the commit message): reverting `interrupt()`
+    to the unconditional `os.killpg(os.getpgid(pid), SIGINT)` makes this
+    test fail -- `killpg` gets called with the engine's own pgid instead of
+    `kill` being called on the child's pid, and the assertions below catch
+    that directly rather than through a timing-dependent kill outcome.
+    """
+    r = PiRunner(tmp_path, pi_bin="unused")
+    fake_pid = 999_123
+    r._proc = _FakeProc(fake_pid)
+
+    own_pgid = os.getpgid(0)
+    calls = {"kill": [], "killpg": []}
+
+    def fake_getpgid(pid):
+        if pid == fake_pid:
+            # Pre-setsid: the child's group is still ours.
+            return own_pgid
+        return own_pgid  # os.getpgid(0) also reads as our own pgid
+
+    def fake_kill(pid, sig):
+        calls["kill"].append((pid, sig))
+
+    def fake_killpg(pgid, sig):
+        calls["killpg"].append((pgid, sig))
+
+    monkeypatch.setattr(runner_mod.os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(runner_mod.os, "kill", fake_kill)
+    monkeypatch.setattr(runner_mod.os, "killpg", fake_killpg)
+
+    ok = r.interrupt()
+
+    assert ok is True
+    assert calls["kill"] == [(fake_pid, runner_mod.signal.SIGINT)], (
+        "pre-session: interrupt() must signal the child's own pid directly, "
+        "never the group read back as the engine's own")
+    assert calls["killpg"] == [], (
+        "pre-session: killpg must not be called with the engine's own "
+        "pgid -- that would signal the engine's group, not the child, "
+        "which is the exact loss that produced the 61.06s/-9/timed_out gate "
+        "red at 472d055")

@@ -178,11 +178,36 @@ class PiRunner:
         return self._proc is not None and self._proc.returncode is None
 
     def interrupt(self) -> bool:
-        """SIGINT the running pi process group. Returns False if none running."""
+        """SIGINT the running pi process group. Returns False if none running.
+
+        Task 001 (curing the gate red at `472d055`, duration_s=61.06,
+        exit_code=-9, timed_out=True): `start_new_session=True` makes the
+        child call `os.setsid()` before it execs `pi`, but that call and
+        this method's read of `os.getpgid(self._proc.pid)` are two
+        independent events with no ordering guarantee between them -- in
+        the window before the child's `setsid()` has actually run, its
+        process group is still OUR OWN (inherited from the fork), so
+        `os.killpg(os.getpgid(pid), SIGINT)` would signal the engine's own
+        group, not the child, and the SIGINT is lost: the child (still
+        pre-exec or newly exec'd) never sees it, the pump never observes
+        EOF, and whatever bound is watching (the startup watchdog here,
+        the iteration timeout in production) is what eventually ends the
+        call instead. Closed by checking the read against the engine's own
+        pgid first: pre-session, a specific `os.kill(pid, SIGINT)` targets
+        exactly the child (it cannot yet have grandchildren of its own to
+        miss, since setsid precedes exec); post-session (the ordinary
+        case), `killpg` is unchanged and still reaches the whole group.
+        """
         if not self.running:
             return False
         try:
-            os.killpg(os.getpgid(self._proc.pid), signal.SIGINT)
+            pgid = os.getpgid(self._proc.pid)
+            if pgid == os.getpgid(0):
+                # Pre-setsid window: this "group" is ours, not the
+                # child's -- signal the pid directly instead of the group.
+                os.kill(self._proc.pid, signal.SIGINT)
+            else:
+                os.killpg(pgid, signal.SIGINT)
             return True
         except ProcessLookupError:
             return False
