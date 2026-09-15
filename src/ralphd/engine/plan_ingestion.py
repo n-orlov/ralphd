@@ -1322,68 +1322,183 @@ def clause_count_overrun(criteria: str) -> tuple[int, str] | None:
 # whole task's `successCriteria` draws no fresh refusal
 # (`tests/test_legal_rewrite_reprompt.py`).
 
-# The quantifier fix names the single bounding command/file the advice
-# text already asks for -- `pytest` alone counts as one, per
-# `_DEFINING_COMMAND_RE` -- so the rewrite is bound by construction and
-# never carries a quantifier word of its own.
-_QUANTIFIER_REWRITE_PREDICATE = (
-    "is the one this task's own criteria bounds by a single named command "
-    "or file, for example `pytest`"
+# Task 002, second attempt (the first attempt's `validationNotes`): the
+# first version built the quantifier rewrite the way the six
+# structurally-unsatisfiable shapes are built -- the clause's own subject
+# plus a canned predicate -- which THREW AWAY the clause's own demand
+# ("Every widget works." became "The widget is the one this task's own
+# criteria bounds ...", with `works` gone) and produced ungrammatical
+# output whenever the subject trim cut into a verb ("The review model must
+# reject is the one ..."). Both defects come from replacing the clause
+# rather than BOUNDING it. This version keeps the offending clause
+# verbatim -- subject, verb and demand all survive -- and adds the one
+# thing the lint is actually missing: a named bounding file or command, in
+# an explicit fill-in slot naming the clause's own quantified noun, so the
+# planner is told exactly which set to bound and where to name it. A
+# quantifier word is legal beside such a bound (`_is_bounded_quantifier_
+# clause`, and the must-pass fixture "every test in tests/test_x.py
+# passes"), so nothing has to be deleted to reach legality. Only the "no
+# ... anywhere" shape drops one word, `anywhere` itself, which is the
+# unbounded scope the lint objects to and carries no demand of its own.
+_QUANTIFIER_BOUND_SLOT_LIMIT = 78
+
+
+# Words that end a quantified noun phrase: a preposition, relative,
+# determiner, copula or modal after the quantifier means the head noun is
+# already behind us ("every rephrasing OF X" -> "rephrasing").
+_QUANTIFIER_NOUN_STOP_WORDS = frozenset(
+    """of that which who whose whom in on at to for from by with within
+    and or but nor is are was were be been being am
+    must shall should will would can could may might
+    has have had does do did the a an this these those such them there
+    it its their his her our your when while where after before""".split()
 )
-_QUANTIFIER_REWRITE_DEFAULT_SUBJECT = "The item"
+
+
+def _quantified_noun_phrase(text: str) -> str:
+    """The head noun phrase of a quantified set, lifted out of `text` (what
+    follows the quantifier word in the offending clause): up to three
+    leading words, stopping at the first function word or at the first word
+    that cannot be part of a singular noun phrase (`_is_subject_noun`, so
+    the verb in "every widget WORKS" is not mistaken for part of the noun).
+    Empty string when the clause offers nothing usable ("each of them")."""
+    words: list[str] = []
+    for word in _REWRITE_WORD_RE.findall(text):
+        bare = word.strip(_REWRITE_STRIP_CHARS).lower()
+        if bare in _QUANTIFIER_NOUN_STOP_WORDS or not _is_subject_noun(word):
+            break
+        words.append(word.strip(_REWRITE_STRIP_CHARS))
+        if len(words) == 3:
+            break
+    return " ".join(words)
+
+
+def _quantifier_bound_phrase(noun: str) -> str:
+    """The bounding tail added to an offending clause: a participial phrase
+    naming the ONE file or command that has to bound the set, as a
+    backticked fill-in slot (a backticked span is itself what
+    `_DEFINING_COMMAND_RE` accepts as a bound, so the rewrite lints clean
+    as it stands and stays clean once the planner replaces the slot with a
+    real path or command). `noun` -- the clause's own quantified noun --
+    names the set inside the slot, so the suggestion says WHICH set to
+    bound rather than gesturing at bounding in general."""
+    target = f"the {noun} set" if noun else "this set"
+    slot = f"<the one file or command that lists {target}>"
+    if len(slot) > _QUANTIFIER_BOUND_SLOT_LIMIT:
+        slot = "<the one file or command that lists this set>"
+    return f", bounded by `{slot}`"
+
+
+# Unreachable in practice (asserted lint-clean in
+# `tests/test_legal_rewrite_reprompt.py`, same discipline as
+# `_legal_rewrite`'s own fallback): used only if bounding the clause
+# itself somehow still leaves it refused by another lint in this module.
+_QUANTIFIER_REWRITE_FALLBACK = (
+    "The members this task checks are the ones listed in "
+    "`<the one file or command that lists them>`."
+)
 
 
 def _unenumerated_quantifier_rewrite(criteria: str) -> tuple[str, str] | None:
     """None unless `_unenumerated_quantifier_clause` flags a clause of
-    `criteria`; otherwise `(clause, legal_rewrite)` -- the rewrite drops
-    the unbounded quantifier and names a single bounding command/file
-    instead, built off the clause's own subject exactly like
-    `_unsatisfiable_shape_clause` does for the six banned shapes."""
+    `criteria`; otherwise `(clause, legal_rewrite)` -- the offending clause
+    kept VERBATIM (its subject, verb and demand intact) with a named
+    bounding file/command slot appended, which is exactly what the lint
+    asks for and all it asks for. Every candidate is checked by
+    `_clause_lint_refusals` before it is returned, so the suggestion draws
+    no fresh refusal when fed back through `lint_proposal`."""
     clause = _unenumerated_quantifier_clause(criteria)
     if clause is None:
         return None
-    match = (
-        _UNIVERSAL_QUANTIFIER_WORD_RE.search(clause)
-        or _NO_QUANTIFIER_ANYWHERE_RE.search(clause)
-    )
-    if match is None:
-        return None
-    rewrite = _legal_rewrite(
-        clause, match, _QUANTIFIER_REWRITE_PREDICATE,
-        _QUANTIFIER_REWRITE_DEFAULT_SUBJECT,
-    )
-    return (clause, rewrite)
+    word_match = _UNIVERSAL_QUANTIFIER_WORD_RE.search(clause)
+    if word_match is not None:
+        body = clause
+        noun = _quantified_noun_phrase(clause[word_match.end():])
+    else:
+        anywhere_match = _NO_QUANTIFIER_ANYWHERE_RE.search(clause)
+        if anywhere_match is None:
+            return None
+        # "anywhere" IS the unbounded scope: drop that one adverb (it
+        # carries no demand) and keep the rest of the clause as written.
+        body = re.sub(r"\s*\banywhere\b", "", clause, count=1,
+                      flags=re.IGNORECASE)
+        no_match = re.search(r"\bno\b", clause, re.IGNORECASE)
+        noun = (
+            _quantified_noun_phrase(clause[no_match.end():])
+            if no_match is not None else ""
+        )
+    stem = body.rstrip(" .")
+    for bound_noun in (noun, ""):
+        candidate = _tidy_sentence(stem + _quantifier_bound_phrase(bound_noun))
+        if not _clause_lint_refusals(candidate):
+            return (clause, candidate)
+    return (clause, _QUANTIFIER_REWRITE_FALLBACK)
 
 
-# The clause-count fix keeps the criteria's own first
-# `_MAX_CHECKABLE_CLAUSES` clauses verbatim and drops the rest -- the
-# overflow clause named in the advice text is exactly what falls off the
-# end. `_clause_lint_refusals` (already generic over a multi-clause string,
-# not just one clause -- every check it runs does its own `_CLAUSE_SPLIT_
+# Task 002, second attempt (the first attempt's `validationNotes`): the
+# first version's clause-count rewrite kept the criteria's first
+# `_MAX_CHECKABLE_CLAUSES` clauses and DELETED the rest, so a six-clause
+# "A exists. ... F exists." criteria came back with `F exists` simply
+# gone -- a deletion dressed as a rewrite, and one that quietly drops a
+# deliverable. This version FOLDS instead: the criteria's own leading
+# clauses stay verbatim and every remaining clause is joined into ONE
+# comma-separated final clause, so the count comes under the bound with
+# nothing dropped at all. `_clause_lint_refusals` (already generic over a
+# multi-clause string -- every check it runs does its own `_CLAUSE_SPLIT_
 # RE` split) is the same legality gate the quantifier rewrite above uses,
-# so a kept prefix this module's own lints would refuse is never emitted
-# either; if even the shortest single-clause prefix is refused (never
-# observed for any fixture in `tests/test_legal_rewrite_reprompt.py`), the
-# fallback below is lint-clean by construction, same discipline as
-# `_legal_rewrite`'s own unreachable-in-practice fallback.
+# so a fold this module's own lints would refuse is never emitted; the
+# ladder folds progressively more clauses together before giving up on
+# the fixed fallback below (never observed for any fixture in
+# `tests/test_legal_rewrite_reprompt.py`).
 _OVERRUN_REWRITE_FALLBACK = (
     "The remaining work lands, committed and verified by its own evidence."
 )
 
+# First words that get lowercased when their clause is folded into the
+# middle of a longer sentence -- determiners and pronouns only, so an id,
+# an acronym or a proper noun ("GitHub", "F") keeps its own case.
+_OVERRUN_FOLD_LOWERCASE_WORDS = frozenset(
+    """the a an this that these those it its they he she there""".split()
+)
+
+
+def _folded_clauses(clauses: list[str]) -> str:
+    """`clauses` joined into ONE clause: "A, B, and C" -- no sentence
+    punctuation between them, so the whole fold counts as a single
+    checkable clause under `_CLAUSE_SPLIT_RE`, and no clause's content is
+    lost."""
+    parts: list[str] = []
+    for index, clause in enumerate(clauses):
+        text = clause.strip().strip(",;: ")
+        if index and text:
+            head, _, rest = text.partition(" ")
+            if head.lower() in _OVERRUN_FOLD_LOWERCASE_WORDS:
+                text = (head.lower() + " " + rest).strip()
+        if text:
+            parts.append(text)
+    if len(parts) <= 1:
+        return parts[0] if parts else ""
+    return ", ".join(parts[:-1]) + ", and " + parts[-1]
+
 
 def _clause_count_overrun_rewrite(criteria: str) -> tuple[int, str, str] | None:
     """None unless `_clause_count_overrun` flags `criteria`; otherwise
-    `(clause_count, overflow_clause, legal_rewrite)` -- the rewrite is
-    `criteria`'s own first `_MAX_CHECKABLE_CLAUSES` clauses, shortened
-    further if that prefix itself is not lint-clean."""
+    `(clause_count, overflow_clause, legal_rewrite)` -- the rewrite keeps
+    the criteria's leading clauses verbatim and folds the remaining ones
+    into a single final clause, dropping nothing, so the result is under
+    the `_MAX_CHECKABLE_CLAUSES` bound and lint-clean."""
     overrun = _clause_count_overrun(criteria)
     if overrun is None:
         return None
     clause_count, overflow_clause = overrun
     clauses = _checkable_clauses(criteria)
-    for keep in range(min(_MAX_CHECKABLE_CLAUSES, len(clauses)), 0, -1):
-        candidate = _tidy_sentence(". ".join(clauses[:keep]))
-        if not _clause_lint_refusals(candidate):
+    for kept in range(min(_MAX_CHECKABLE_CLAUSES, len(clauses)) - 1, -1, -1):
+        folded = _folded_clauses(clauses[kept:])
+        if not folded:
+            continue
+        candidate = _tidy_sentence(". ".join([*clauses[:kept], folded]))
+        if (_clause_count_overrun(candidate) is None
+                and not _clause_lint_refusals(candidate)):
             return clause_count, overflow_clause, candidate
     return clause_count, overflow_clause, _OVERRUN_REWRITE_FALLBACK
 

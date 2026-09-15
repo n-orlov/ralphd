@@ -48,6 +48,14 @@ prompt` and `test_the_clause_count_overrun_suggestion_reaches_the_planners_
 next_prompt` cover proof 4 -- the offending clause and the lint's own name
 (`unenumerated-quantifier` / `clause-count-overrun`) ride beside the
 rewrite in the SAME prompt.md message.
+
+Task 002's SECOND attempt (its first attempt's `validationNotes`: the two
+lexical rewrites were lint-clean but not usable -- the quantifier rewrite
+threw away the clause's own demand and spliced mid-verb, the clause-count
+rewrite deleted the overflow clause) adds section 2c: one test per faulted
+defect, proving the quantifier rewrite keeps the offending clause verbatim
+and only ADDS a named bounding slot, and that the clause-count rewrite
+folds every clause into the bound rather than dropping one.
 """
 
 from __future__ import annotations
@@ -232,15 +240,103 @@ def test_the_clause_count_overrun_suggestion_is_itself_accepted():
     assert "suggested rewrite:" in message
     suggestion = _suggestion_for(SEVEN_CLAUSE_CRITERIA, task_id="050")
     assert suggestion != SEVEN_CLAUSE_CRITERIA
-    # The rewrite is exactly the criteria's own first 5 clauses -- the
-    # SAME fixture `test_criteria_bound_lint.py` already proves is legal
-    # on its own.
-    assert suggestion == FIVE_CLAUSE_CRITERIA
+    # The rewrite FOLDS rather than deletes (task 002's second attempt, the
+    # first attempt's `validationNotes`): every clause of the original
+    # criteria still appears, the last ones joined into one clause, and the
+    # result is under the bound. The criteria's own first four clauses stay
+    # verbatim -- `FIVE_CLAUSE_CRITERIA`'s first four sentences.
+    assert pi._clause_count_overrun(suggestion) is None
+    for clause in pi._checkable_clauses(SEVEN_CLAUSE_CRITERIA):
+        head, _, rest = clause.partition(" ")
+        assert f"{head.lower()} {rest}" in suggestion.lower(), (clause, suggestion)
+    assert suggestion.startswith(
+        ". ".join(pi._checkable_clauses(FIVE_CLAUSE_CRITERIA)[:4]) + "."
+    ), suggestion
     payload = {"tasks": [_task("050", suggestion)]}
     assert pi.lint_proposal(payload) == []
     assert pi.lint_own_terminal_state(payload) == []
     assert pi.validate_proposal_shape({"version": 1, "tasks": [
         {"id": "050", "title": "t", "successCriteria": suggestion}]}) == []
+
+
+# ---------------------------------------------------------------------------
+# 2c. task 002, SECOND attempt: the rewrite is a usable rewrite, not merely
+# a lint-clean string. Its first attempt's `validationNotes` faulted three
+# concrete defects, and there is one test per defect below:
+#   - the quantifier rewrite DROPPED the clause's own demand ("Every widget
+#     works." lost `works`) and named no bounding command at all;
+#   - it produced ungrammatical output when the subject trim cut into a
+#     verb ("The review model must reject is the one ...");
+#   - the clause-count rewrite DELETED the overflow clause of a six-clause
+#     "A exists. ... F exists." criteria instead of rewriting it.
+# ---------------------------------------------------------------------------
+
+_A_TO_F_SIX_CLAUSE_CRITERIA = (
+    "A exists. B exists. C exists. D exists. E exists. F exists."
+)
+
+
+@pytest.mark.parametrize("label,criteria",
+                         _QUANTIFIER_OFFENDING_CLAUSES + [
+                             ("every-widget-works", "Every widget works.")],
+                         ids=[label for label, _ in _QUANTIFIER_OFFENDING_CLAUSES]
+                         + ["every-widget-works"])
+def test_the_quantifier_rewrite_keeps_the_clauses_own_demand(label, criteria):
+    """The clause's own words -- subject, verb and the demand it makes --
+    survive into the rewrite verbatim; the rewrite only ADDS the bound the
+    lint is missing, as an explicit backticked slot naming the one file or
+    command that has to bound the set."""
+    clause, rewrite = pi._unenumerated_quantifier_rewrite(criteria)
+    # The demand survives: every word of the offending clause is still
+    # there, in order, except the bare scope adverb "anywhere".
+    kept = [
+        word for word in clause.rstrip(".").split(" ")
+        if word.lower() != "anywhere"
+    ]
+    assert rewrite.startswith(" ".join(kept).rstrip(".") + ","), (clause, rewrite)
+    # ... and the rewrite names the slot for the ONE bounding file/command,
+    # which is what makes the surviving quantifier legal.
+    assert "`<the one file or command that lists " in rewrite, rewrite
+    assert pi._is_bounded_quantifier_clause(rewrite), rewrite
+
+
+def test_the_quantifier_rewrite_is_a_grammatical_sentence():
+    """No mid-verb splice: the rewrite of the tracked every-rephrasing
+    fixture is the clause plus a bounding phrase, never the subject-trim
+    wreckage the first attempt emitted ("The review model must reject is
+    the one ...")."""
+    _clause, rewrite = pi._unenumerated_quantifier_rewrite(
+        TASK_012_013_EVERY_REPHRASING_CRITERIA)
+    assert "reject is" not in rewrite, rewrite
+    assert rewrite.startswith(
+        TASK_012_013_EVERY_REPHRASING_CRITERIA.rstrip(".") + ","), rewrite
+    assert rewrite.endswith(".")
+
+
+def test_the_clause_count_rewrite_folds_rather_than_deleting_a_clause():
+    """The exact shape the first attempt got wrong: a six-clause
+    "A exists. ... F exists." criteria comes back with `F exists` still in
+    it, folded into the final clause rather than deleted."""
+    overrun = pi._clause_count_overrun_rewrite(_A_TO_F_SIX_CLAUSE_CRITERIA)
+    assert overrun is not None
+    clause_count, overflow_clause, rewrite = overrun
+    assert clause_count == 6
+    assert overflow_clause == "F exists"
+    assert "F exists" in rewrite, rewrite
+    for letter in "ABCDE":
+        assert f"{letter} exists" in rewrite, (letter, rewrite)
+    assert pi._clause_count_overrun(rewrite) is None
+    assert pi.lint_proposal({"tasks": [_task("060", rewrite)]}) == []
+
+
+def test_both_lexical_rewrite_fallbacks_are_themselves_legal():
+    """The far end of each ladder (used only if bounding or folding the
+    criteria still leaves it refused) is lint-clean, same discipline as
+    `test_every_shapes_own_default_rewrite_is_legal` above."""
+    for fallback in (pi._QUANTIFIER_REWRITE_FALLBACK,
+                     pi._OVERRUN_REWRITE_FALLBACK):
+        assert pi._clause_lint_refusals(fallback) == [], fallback
+        assert pi.lint_proposal({"tasks": [_task("070", fallback)]}) == []
 
 
 # ---------------------------------------------------------------------------
@@ -416,5 +512,10 @@ def test_the_clause_count_overrun_suggestion_reaches_the_planners_next_prompt(tm
     assert "clause-count-overrun" in second_prompt
     assert "suggested rewrite:" in second_prompt
     suggestion = _suggestion_for(SEVEN_CLAUSE_CRITERIA, task_id="050")
-    assert suggestion == FIVE_CLAUSE_CRITERIA
+    # The folded rewrite (task 002's second attempt) keeps the overflow
+    # clause the refusal names instead of deleting it, and the WHOLE fold
+    # reaches the planner's next prompt.
+    assert "the petition file is untouched" in suggestion
+    assert "the status is checked" in suggestion
+    assert suggestion.startswith(FIVE_CLAUSE_CRITERIA.rstrip(".").rstrip())
     assert suggestion in second_prompt
