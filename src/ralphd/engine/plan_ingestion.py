@@ -1332,15 +1332,25 @@ def clause_count_overrun(criteria: str) -> tuple[int, str] | None:
 # reject is the one ..."). Both defects come from replacing the clause
 # rather than BOUNDING it. This version keeps the offending clause
 # verbatim -- subject, verb and demand all survive -- and adds the one
-# thing the lint is actually missing: a named bounding file or command, in
-# an explicit fill-in slot naming the clause's own quantified noun, so the
-# planner is told exactly which set to bound and where to name it. A
+# thing the lint is actually missing: a named bounding file or command. A
 # quantifier word is legal beside such a bound (`_is_bounded_quantifier_
 # clause`, and the must-pass fixture "every test in tests/test_x.py
 # passes"), so nothing has to be deleted to reach legality. Only the "no
 # ... anywhere" shape drops one word, `anywhere` itself, which is the
 # unbounded scope the lint objects to and carries no demand of its own.
-_QUANTIFIER_BOUND_SLOT_LIMIT = 78
+#
+# Task cure-01-01 (PRD requirement B.1, #135): the FIRST cure of this same
+# gap left the bound as a backticked fill-in slot --
+# `` `<the one file or command that lists the widget set>` `` -- which is
+# advice, not a rewrite: it still asks the planner to go supply the very
+# file/command the refusal needed, and the shipped
+# `test_the_quantifier_rewrite_keeps_the_clauses_own_demand` passed while
+# asserting that placeholder verbatim. This version names a CONCRETE,
+# already-runnable command instead -- bare `pytest`, which
+# `_DEFINING_COMMAND_RE` accepts as a single defining command with no path
+# required (the PRD's own standing rule: "pytest alone also counts") --
+# so the suggestion is directly usable with nothing left for the planner
+# to fill in.
 
 
 # Words that end a quantified noun phrase: a preposition, relative,
@@ -1374,39 +1384,38 @@ def _quantified_noun_phrase(text: str) -> str:
 
 
 def _quantifier_bound_phrase(noun: str) -> str:
-    """The bounding tail added to an offending clause: a participial phrase
-    naming the ONE file or command that has to bound the set, as a
-    backticked fill-in slot (a backticked span is itself what
-    `_DEFINING_COMMAND_RE` accepts as a bound, so the rewrite lints clean
-    as it stands and stays clean once the planner replaces the slot with a
-    real path or command). `noun` -- the clause's own quantified noun --
-    names the set inside the slot, so the suggestion says WHICH set to
-    bound rather than gesturing at bounding in general."""
-    target = f"the {noun} set" if noun else "this set"
-    slot = f"<the one file or command that lists {target}>"
-    if len(slot) > _QUANTIFIER_BOUND_SLOT_LIMIT:
-        slot = "<the one file or command that lists this set>"
-    return f", bounded by `{slot}`"
+    """The bounding tail added to an offending clause: a concrete,
+    already-runnable check -- bare `pytest`, which `_DEFINING_COMMAND_RE`
+    accepts as a single defining command with no path required (the PRD's
+    own standing rule: "pytest alone also counts") -- never a fill-in slot
+    that only tells the planner to go name a bound itself (cure-01-01,
+    PRD requirement B.1: that was the first cure's own gap). `noun` -- the
+    clause's own quantified noun -- is folded into the bound so the
+    suggestion still says WHICH set is being checked, not just that some
+    check exists."""
+    target = f"every {noun}" if noun else "the full set this clause quantifies over"
+    return f", verified by rerunning pytest against {target}"
 
 
 # Unreachable in practice (asserted lint-clean in
 # `tests/test_legal_rewrite_reprompt.py`, same discipline as
 # `_legal_rewrite`'s own fallback): used only if bounding the clause
 # itself somehow still leaves it refused by another lint in this module.
+# Cure-01-01: no fill-in slot here either -- `pytest` is itself the bound.
 _QUANTIFIER_REWRITE_FALLBACK = (
-    "The members this task checks are the ones listed in "
-    "`<the one file or command that lists them>`."
+    "The members this task checks are the ones verified by rerunning pytest."
 )
 
 
 def _unenumerated_quantifier_rewrite(criteria: str) -> tuple[str, str] | None:
     """None unless `_unenumerated_quantifier_clause` flags a clause of
     `criteria`; otherwise `(clause, legal_rewrite)` -- the offending clause
-    kept VERBATIM (its subject, verb and demand intact) with a named
-    bounding file/command slot appended, which is exactly what the lint
-    asks for and all it asks for. Every candidate is checked by
-    `_clause_lint_refusals` before it is returned, so the suggestion draws
-    no fresh refusal when fed back through `lint_proposal`."""
+    kept VERBATIM (its subject, verb and demand intact) with a concrete,
+    already-runnable bound (`pytest`) appended, which is exactly what the
+    lint asks for and all it asks for -- never a backticked fill-in slot
+    the planner would still have to complete. Every candidate is checked
+    by `_clause_lint_refusals` before it is returned, so the suggestion
+    draws no fresh refusal when fed back through `lint_proposal`."""
     clause = _unenumerated_quantifier_clause(criteria)
     if clause is None:
         return None

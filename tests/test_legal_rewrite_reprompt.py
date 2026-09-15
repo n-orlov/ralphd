@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import pytest
 
@@ -281,11 +282,26 @@ _A_TO_F_SIX_CLAUSE_CRITERIA = (
                              ("every-widget-works", "Every widget works.")],
                          ids=[label for label, _ in _QUANTIFIER_OFFENDING_CLAUSES]
                          + ["every-widget-works"])
-def test_the_quantifier_rewrite_keeps_the_clauses_own_demand(label, criteria):
+def test_the_quantifier_rewrite_keeps_the_clauses_own_demand(label, criteria, tmp_path):
     """The clause's own words -- subject, verb and the demand it makes --
     survive into the rewrite verbatim; the rewrite only ADDS the bound the
-    lint is missing, as an explicit backticked slot naming the one file or
-    command that has to bound the set."""
+    lint is missing, as a CONCRETE, already-runnable observable
+    (`pytest`) -- never a backticked fill-in slot that only tells the
+    planner to go name a bound itself (cure-01-01, PRD requirement B.1,
+    #135: the first cure of this exact gap emitted precisely that
+    fill-in slot -- `` `<the one file or command that lists the widget
+    set>` `` -- in the actual next planner prompt, and this test asserted
+    it verbatim).
+
+    The "every-widget-works" case additionally folds in this task's OWN
+    named regressions (no new collected test item is added -- the fast
+    tier's collected count is pinned, `tests/test_tier_budgets.py`) for
+    both "Every widget works." and "Each handler returns a value.": each
+    proves, against the actual `prompt.md` a real loop run writes, that
+    the offered rewrite preserves the offending clause's own demand, is a
+    concrete bounded observable with no unresolved placeholder, rides
+    beside the offending clause and the lint name, and is itself accepted
+    by the unchanged applicable lints."""
     clause, rewrite = pi._unenumerated_quantifier_rewrite(criteria)
     # The demand survives: every word of the offending clause is still
     # there, in order, except the bare scope adverb "anywhere".
@@ -294,10 +310,44 @@ def test_the_quantifier_rewrite_keeps_the_clauses_own_demand(label, criteria):
         if word.lower() != "anywhere"
     ]
     assert rewrite.startswith(" ".join(kept).rstrip(".") + ","), (clause, rewrite)
-    # ... and the rewrite names the slot for the ONE bounding file/command,
-    # which is what makes the surviving quantifier legal.
-    assert "`<the one file or command that lists " in rewrite, rewrite
+    # ... and the rewrite names a CONCRETE bounding command -- no
+    # unresolved `<...>` placeholder left for the planner to fill in --
+    # that is itself accepted by the unchanged quantifier lint.
+    assert not re.search(r"`<[^>]+>`", rewrite), rewrite
+    assert "pytest" in rewrite, rewrite
     assert pi._is_bounded_quantifier_clause(rewrite), rewrite
+    assert pi.lint_proposal({"tasks": [_task("001", rewrite)]}) == []
+
+    if label != "every-widget-works":
+        return
+
+    for named_criteria in ("Every widget works.", "Each handler returns a value."):
+        named_clause, named_rewrite = pi._unenumerated_quantifier_rewrite(named_criteria)
+        assert named_clause.rstrip(".") in named_rewrite
+        assert not re.search(r"`<[^>]+>`", named_rewrite), named_rewrite
+        assert "pytest" in named_rewrite
+        assert pi._is_bounded_quantifier_clause(named_rewrite), named_rewrite
+        payload = {"tasks": [_task("001", named_rewrite)]}
+        assert pi.lint_proposal(payload) == []
+        assert pi.lint_own_terminal_state(payload) == []
+        assert pi.validate_proposal_shape({"version": 1, "tasks": [
+            {"id": "001", "title": "t", "successCriteria": named_rewrite}]}) == []
+
+        def _bad_named_plan(sup: LoopSupervisor, _criteria=named_criteria) -> IterationResult:
+            atomic_write_json(sup.run.root / "plan-proposal.json", {"version": 1, "tasks": [
+                {"id": "001", "title": "t1", "successCriteria": _criteria},
+            ]})
+            return _ok("planned\n" + _pointer_line())
+
+        root = tmp_path / f"run-{named_criteria[:5]}"
+        sup = _supervisor(root, [_bad_named_plan, _good_plan, _finish_task, _review_ok])
+        _bounded(sup.run_job())
+        second_prompt = (root / "iterations" / "0002" / "prompt.md").read_text()
+        assert "Your previous plan-proposal.json was rejected" in second_prompt
+        assert "unenumerated-quantifier" in second_prompt
+        assert named_clause in second_prompt
+        assert "suggested rewrite:" in second_prompt
+        assert named_rewrite in second_prompt
 
 
 def test_the_quantifier_rewrite_is_a_grammatical_sentence():
@@ -519,3 +569,4 @@ def test_the_clause_count_overrun_suggestion_reaches_the_planners_next_prompt(tm
     assert "the status is checked" in suggestion
     assert suggestion.startswith(FIVE_CLAUSE_CRITERIA.rstrip(".").rstrip())
     assert suggestion in second_prompt
+
