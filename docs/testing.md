@@ -161,11 +161,14 @@ answers, in order of preference:
    module in-process) so the tier stays inside its ceiling;
 2. move the expensive coverage to the tier that can afford it -- a module that
    spawns a real engine belongs in `fast`, a docker-dependent one in nightly;
-3. raise the ceiling (`TIER_CEILINGS` in `tests/test_tier_budgets.py` for a
-   collected-count ceiling, the table above for a wall-clock one) **and**
-   record the new measurement beside it -- in the raising commit's own
-   message for a count, in the table above for a wall clock -- which is a
-   visible, reviewable act rather than a silent drift.
+3. raise the ceiling -- `TIER_CEILINGS` in `tests/test_tier_budgets.py` for a
+   collected-count ceiling, the `budget wall clock` column above for a
+   wall-clock one -- and name the measurement that earned the raise in the
+   raising commit's OWN message, never as a fresh row or cell edited into
+   this table: a committed measurement whose subject is this wave's own
+   work is exactly the class of record the PRD prohibits (requirement N.4),
+   whichever budget is being raised. The commit message is the visible,
+   reviewable act; the table is not where a future raise's evidence lives.
 
 Deleting or loosening the assertion is not on that list.
 
