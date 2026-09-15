@@ -199,18 +199,26 @@ _TAIL_READ_CHUNK = 1 << 16
 # thinking/text run, or a tool call's own start), when that event sits
 # further back than the single chunk `needed` alone happened to pull in.
 #
-# THIS IS A CIRCUIT BREAKER, NOT A SAFETY ARGUMENT (cure-01-01-2): growth
-# stops for a REAL reason -- `reached_start` (nothing further back to
-# read) or `_should_extend_seed_lookback` genuinely finding nothing left
-# to resolve (see that function; it is never fooled merely because the
+# THIS BOUNDS THE CHUNK SIZE, NOT THE LOOK-BACK, AND IS NEVER A STOP
+# CONDITION (cure-01-01-2, second attempt): the seed look-back doubles its
+# read chunk at most this many times and then keeps reading in
+# steady-sized chunks for as long as it still has something concrete to
+# resolve, so one `read` syscall can never balloon past
+# `_TAIL_READ_CHUNK << _SEED_LOOKBACK_EXTRA_GROWTHS` bytes.
+#
+# Reaching this many doublings is therefore NOT an argument that the seed
+# is complete and NOT a safe restart (E.3): the look-back stops for one
+# of exactly two real reasons -- `reached_start` (byte 0 of the file; by
+# `_tail_lines_of_file`'s own contract there is provably no unread
+# history left) or `_should_extend_seed_lookback` finding nothing left to
+# resolve (see that function: it is never fooled merely because the
 # single oldest line it happens to have read is an opaque/`"ignored"`
-# filler event). Reaching THIS cap without either of those is never
-# treated as if the seed were complete -- it is the last-resort limit on
-# a truly pathological file, sized with headroom over the widest gap this
-# module's own regressions exercise (cure-01-01-2's 9,000 ignored
-# 1,024-byte events, ~9.2 MB: this many more doublings from
-# `_TAIL_READ_CHUNK` comfortably clears that before this cap would ever
-# bind).
+# filler event). Before cure-01-01-2's second attempt this constant WAS
+# the loop's third exit, and exhausting it silently published an
+# incomplete seed as if it were a genuine iteration start -- a tool call
+# whose `tool_execution_start` sat one doubling further back than the cap
+# allowed rendered as bare `bash ✓ ok` instead of
+# `bash $ printf cap-needle ✓ ok`.
 _SEED_LOOKBACK_EXTRA_GROWTHS = 12
 
 # The three raw NDJSON types `_prior_collapse_state` actually flips a
@@ -302,23 +310,62 @@ def _has_relevant_type(lines: list[str]) -> bool:
     return False
 
 
+def _flags_needed_by_tail(tail_lines: list[str]) -> set:
+    """Which of `"textSeen"`/`"thinkingSeen"`/`"toolcallSeen"` the RETAINED
+    `tail_lines` actually READ when rendered -- i.e. which seed flags could
+    change this tail's bytes at all (cure-01-01-2, second attempt).
+    Mirrors `log_render`'s own two readers exactly: `_render_message_end`
+    consults `text_seen` for a `text` content item, `thinking_seen` for a
+    `thinking` item and `toolcall_seen` for a `toolCall` item, and
+    `_render_message_update` consults `thinking_seen` for
+    `thinking_start`/`thinking_delta`. Nothing else in that module gates
+    output on one of the three.
+
+    Used to keep the look-back's first trigger honest now that no
+    doubling cap terminates it: growth continues only while a flag THIS
+    tail would actually read is still unresolved, never for a flag whose
+    value this tail could not observe -- so an iteration that merely
+    happens to lack (say) a thinking block never walks its whole
+    transcript looking for one."""
+    needed: set = set()
+    for raw in tail_lines:
+        ev = _safe_json(raw)
+        if not ev:
+            continue
+        etype = ev.get("type")
+        if etype == "message_update":
+            sub = (ev.get("assistantMessageEvent") or {}).get("type")
+            if sub in ("thinking_start", "thinking_delta"):
+                needed.add("thinkingSeen")
+        elif etype == "message_end":
+            for item in (ev.get("message") or {}).get("content") or []:
+                kind = item.get("type") if isinstance(item, dict) else None
+                if kind == "text":
+                    needed.add("textSeen")
+                elif kind == "thinking":
+                    needed.add("thinkingSeen")
+                elif kind == "toolCall":
+                    needed.add("toolcallSeen")
+    return needed
+
+
 def _should_extend_seed_lookback(tail_lines: list[str], prefix_lines: list[str]) -> bool:
     """Whether `_tail_lines_of_file` should read one more (bounded) chunk
     further back purely to widen the collapse-state seed, given what has
     been read so far. True on either of two independent, concrete signals
     -- never merely because more history happens to exist, and never
     merely because a lookback cap or a single opaque edge event lets it
-    stop (cure-01-01-2 -- see `_SEED_LOOKBACK_EXTRA_GROWTHS`'s own
-    docstring for why reaching that cap is not this function's problem to
-    paper over):
+    stop (cure-01-01-2: `_SEED_LOOKBACK_EXTRA_GROWTHS` caps only how large
+    one read chunk may grow and no longer ends the look-back at all, so
+    THIS function and `reached_start` are its only two exits):
 
     1. `_prior_collapse_state` over `prefix_lines + tail_lines` -- i.e.
        EVERY line read so far, in chronological order, not `prefix_lines`
-       alone -- has not yet resolved every flag `render_log_line` could
-       still need (`textSeen`/`thinkingSeen`/`toolcallSeen` all `True`
-       means there is nothing further growth could add for THIS trigger,
-       however much more history exists), AND `_has_relevant_type` finds
-       a relevant type SOMEWHERE in that same combined read -- concrete
+       alone -- has not yet resolved a flag the RETAINED tail's own lines
+       actually read (`_flags_needed_by_tail`; a flag no line in this tail
+       consults cannot change one rendered byte, so an unresolved one of
+       those is no reason to read further back), AND `_has_relevant_type`
+       finds a relevant type SOMEWHERE in that same combined read -- concrete
        evidence THIS iteration uses the streaming/tool-call mechanism a
        still-unresolved flag tracks, even when every line the CURRENT
        growing chunk has pulled in beyond the fixed, never-re-read
@@ -350,9 +397,9 @@ def _should_extend_seed_lookback(tail_lines: list[str], prefix_lines: list[str])
     """
     combined = prefix_lines + tail_lines
     seed_flags, _ = _prior_collapse_state(combined)
-    fully_resolved = (seed_flags["textSeen"] and seed_flags["thinkingSeen"]
-                     and seed_flags["toolcallSeen"])
-    if not fully_resolved and _has_relevant_type(combined):
+    unresolved = {flag for flag in _flags_needed_by_tail(tail_lines)
+                  if not seed_flags[flag]}
+    if unresolved and _has_relevant_type(combined):
         return True
     return bool(_dangling_tool_call_ids(tail_lines, prefix_lines))
 
@@ -421,14 +468,24 @@ def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[
         # above; every extra chunk only PREPENDS strictly older bytes, so
         # the last `needed` lines of the growing decoded line list are
         # the same lines every time `_split` recomputes them).
+        #
+        # The loop's exit conditions are exactly two, both of them REAL
+        # (cure-01-01-2, second attempt): `reached_start` -- byte 0, no
+        # unread history left at all -- or `_should_extend_seed_lookback`
+        # finding nothing further back that could still resolve what the
+        # retained tail actually reads. `_SEED_LOOKBACK_EXTRA_GROWTHS` is
+        # NOT a third exit: it only caps how large a single chunk may
+        # grow, after which the read continues in steady-sized chunks (see
+        # that constant's own comment for the `bash ✓ ok` counterexample
+        # its old stop-condition shape produced).
         extra_growths = 0
-        while (not reached_start and extra_growths < _SEED_LOOKBACK_EXTRA_GROWTHS
-               and _should_extend_seed_lookback(tail_lines, prefix_lines)):
-            read_size = min(chunk, pos)
+        while not reached_start and _should_extend_seed_lookback(tail_lines, prefix_lines):
+            read_size = max(1, min(chunk, pos))
             pos -= read_size
             f.seek(pos)
             data = f.read(read_size) + data
-            chunk *= 2
+            if extra_growths < _SEED_LOOKBACK_EXTRA_GROWTHS:
+                chunk *= 2
             extra_growths += 1
             reached_start = pos <= 0
             _, tail_lines, prefix_lines = _split(data)

@@ -476,6 +476,24 @@ def _assert_collapse_state_carries_across_a_cut(
 
     monkeypatch.setattr(ui_server, "_proxy_text", lambda *a, **k: (False, ""))
 
+    # cure-01-01-2 (second attempt), PRD E.3's safe-restart half, asserted
+    # on the bounded read itself and not only on what it renders: the seed
+    # look-back may stop for exactly two REAL reasons -- it walked to byte
+    # 0 (`reached_start`, so there is provably no unread history left) or
+    # `_should_extend_seed_lookback` finds nothing left to resolve. Any
+    # other stop (a doubling/look-back cap running out, the oldest parsed
+    # event happening to be opaque filler) publishes an incomplete prefix
+    # as if it were a genuine iteration start -- exactly how a
+    # cap-exhausted read rendered a bare tool line with its arguments
+    # dropped.
+    from ralphd import log_merge as log_merge_mod
+
+    out3 = run_dir / "iterations" / "0003" / "output.jsonl"
+    for n in tail_ns:
+        kept, reached_start, prefix = log_merge_mod._tail_lines_of_file(out3, n)
+        assert (reached_start
+                or not log_merge_mod._should_extend_seed_lookback(kept, prefix)), n
+
     live_full, full_lines = ui_server.rendered_log_lines(
         tmp_path, f"dead-run-restart-{run_suffix}", None)
     assert live_full is False
@@ -586,6 +604,27 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
     _assert_collapse_state_carries_across_a_cut(
         monkeypatch, tmp_path, "wide-tool-byte-gap",
         _restart_iteration_lines(3, ignored_gap=9000, ignored_line_bytes=1024),
+        tail_ns=(1, 2, 3, 4, 5, 6, 10, 50),
+        text_occurrences=1, thinking_occurrences=1, tool_occurrences=1)
+
+    # Scenario 4 (cure-01-01-2, second attempt): the same shape once more
+    # with `_SEED_LOOKBACK_EXTRA_GROWTHS` deliberately starved to ONE, so
+    # the look-back's chunk-growth budget is spent long before the tool
+    # call's own start (~1 MB further back: 1,000 opaque events of exactly
+    # 1,024 bytes each) comes into reach. Starving that constant is a
+    # scenario parameter, not a weakened assertion -- it constructs cap
+    # exhaustion at test speed instead of by writing the ~537 MB a
+    # default-sized budget would need. Every assertion in the helper still
+    # has to hold: while that constant ENDED the look-back (its shape
+    # before this task), the read published its incomplete prefix as a
+    # restart and the tool line rendered bare, with its `echo hello`
+    # arguments dropped.
+    from ralphd import log_merge as starved_log_merge
+
+    monkeypatch.setattr(starved_log_merge, "_SEED_LOOKBACK_EXTRA_GROWTHS", 1)
+    _assert_collapse_state_carries_across_a_cut(
+        monkeypatch, tmp_path, "starved-growth-budget",
+        _restart_iteration_lines(3, ignored_gap=1000, ignored_line_bytes=1024),
         tail_ns=(1, 2, 3, 4, 5, 6, 10, 50),
         text_occurrences=1, thinking_occurrences=1, tool_occurrences=1)
 
