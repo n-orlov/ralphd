@@ -192,28 +192,46 @@ def merge_entries(run_root: Path,
 # `read_text()` of a multi-megabyte file for a 200-line tail).
 _TAIL_READ_CHUNK = 1 << 16
 
-# Task cure-01-02 (#195): once `needed` is satisfied, `_tail_lines_of_file`
-# may still grow `prefix_lines` a FEW more times -- never unconditionally,
-# never unbounded -- purely to give the collapse-state seed a fighting
-# chance of reaching whichever earlier event actually establishes it (a
-# many-delta thinking/text run, or a tool call's own start), when that
-# event sits further back than the single chunk `needed` alone happened to
-# pull in. Capped at a small constant so growing IGNORED older history
-# that never triggers `_should_extend_seed_lookback` (E.2's own fixture)
-# never grows the read at all, and growing history that DOES trigger it
-# still costs at most this many extra doublings, not the whole file.
-_SEED_LOOKBACK_EXTRA_GROWTHS = 6
+# Task cure-01-02 (#195), widened by cure-01-01-2: once `needed` is
+# satisfied, `_tail_lines_of_file` may still grow `prefix_lines` further
+# purely to give the collapse-state seed a fighting chance of reaching
+# whichever earlier event actually establishes it (a many-delta
+# thinking/text run, or a tool call's own start), when that event sits
+# further back than the single chunk `needed` alone happened to pull in.
+#
+# THIS IS A CIRCUIT BREAKER, NOT A SAFETY ARGUMENT (cure-01-01-2): growth
+# stops for a REAL reason -- `reached_start` (nothing further back to
+# read) or `_should_extend_seed_lookback` genuinely finding nothing left
+# to resolve (see that function; it is never fooled merely because the
+# single oldest line it happens to have read is an opaque/`"ignored"`
+# filler event). Reaching THIS cap without either of those is never
+# treated as if the seed were complete -- it is the last-resort limit on
+# a truly pathological file, sized with headroom over the widest gap this
+# module's own regressions exercise (cure-01-01-2's 9,000 ignored
+# 1,024-byte events, ~9.2 MB: this many more doublings from
+# `_TAIL_READ_CHUNK` comfortably clears that before this cap would ever
+# bind).
+_SEED_LOOKBACK_EXTRA_GROWTHS = 12
 
-# The four raw NDJSON types `log_render.render_log_line` actually dispatches
-# on for collapse-guard state (`message_update`, `tool_execution_start/end`)
-# plus `message_end` (whose OWN content items are what the guards protect).
-# Seeing one of these as the OLDEST line read so far is a concrete signal
-# that more of the SAME turn's content plausibly continues further back --
-# an opaque/unrelated type (e.g. E.2's `{"type": "ignored"}` filler) is not
-# a type `render_log_line` recognizes at all, so seeing IT as the oldest
-# line is not, by itself, a reason to keep growing.
+# The three raw NDJSON types `_prior_collapse_state` actually flips a
+# collapse-guard flag on (`message_update`'s `text_delta`/`thinking_start`/
+# `thinking_delta`, `tool_execution_start`, `tool_execution_end`) --
+# deliberately NOT `message_end` (cure-01-01-2): `message_end` is what a
+# flag's value is READ by, never what SETS one (`_prior_collapse_state`
+# never touches a flag for it), and E.2's own fixture is built entirely of
+# independent `message_end` lines that never set any flag at all -- so
+# treating `message_end` as "relevant" here would make trigger 1 below
+# fire on every one of E.2's own retained tail lines (unresolved flags
+# forever, since nothing in that fixture ever resolves them) and grow all
+# the way to `reached_start` regardless of `ignored_count`, exactly the
+# unbounded-byte regression E.2 exists to prevent. Seeing one of these
+# THREE types anywhere in what has been read is concrete, positive
+# evidence this iteration genuinely streams or calls tools -- an
+# opaque/unrelated type (e.g. E.2's `{"type": "ignored"}` filler) is not
+# one `render_log_line` recognizes at all, so seeing only that (or only
+# `message_end`) is not, by itself, a reason to keep growing.
 _SEED_RELEVANT_TYPES = {"message_update", "tool_execution_start",
-                        "tool_execution_end", "message_end"}
+                        "tool_execution_end"}
 
 
 def _safe_json(raw: str) -> dict | None:
@@ -261,42 +279,81 @@ def _dangling_tool_call_ids(tail_lines: list[str], prefix_lines: list[str]) -> s
     return ends - starts
 
 
-def _should_extend_seed_lookback(lines: list[str], tail_lines: list[str],
-                                 prefix_lines: list[str]) -> bool:
+def _has_relevant_type(lines: list[str]) -> bool:
+    """Whether ANY line in `lines` -- anywhere in it, not merely as the
+    single OLDEST one -- is one of the three `_SEED_RELEVANT_TYPES`
+    (cure-01-01-2, deliberately excluding `message_end` -- see that
+    constant's own comment). Checking only the oldest already-read line (this
+    module's pre-cure-01-01-2 shape) is unsound: an opaque/`"ignored"`
+    filler event sitting at the very EDGE of the current read proves
+    nothing either way about what is further back, so treating it as a
+    reason to stop growing wrongly stopped short whenever a genuinely
+    relevant run (streamed text, say) was separated from the content that
+    still needs it by enough ignored filler to reach past a single read.
+    A relevant type found ANYWHERE already read, by contrast, is concrete,
+    POSITIVE evidence this iteration genuinely uses the mechanism the
+    still-unresolved flag tracks -- evidence that does not evaporate just
+    because the read has since walked into an unrelated gap on its way
+    further back."""
+    for raw in lines:
+        ev = _safe_json(raw)
+        if ev is not None and ev.get("type") in _SEED_RELEVANT_TYPES:
+            return True
+    return False
+
+
+def _should_extend_seed_lookback(tail_lines: list[str], prefix_lines: list[str]) -> bool:
     """Whether `_tail_lines_of_file` should read one more (bounded) chunk
     further back purely to widen the collapse-state seed, given what has
     been read so far. True on either of two independent, concrete signals
-    -- never merely because more history happens to exist:
+    -- never merely because more history happens to exist, and never
+    merely because a lookback cap or a single opaque edge event lets it
+    stop (cure-01-01-2 -- see `_SEED_LOOKBACK_EXTRA_GROWTHS`'s own
+    docstring for why reaching that cap is not this function's problem to
+    paper over):
 
-    1. The OLDEST line read so far (`lines[0]`) is one of the four types
-       `_SEED_RELEVANT_TYPES` names -- the read has landed INSIDE a run of
-       exactly the kind of content the collapse guards track (a many-delta
-       thinking/text flood, or a still-open tool call), so the event that
-       actually STARTED that run -- the one the seed needs -- may be one
-       chunk further back still.
+    1. `_prior_collapse_state` over `prefix_lines + tail_lines` -- i.e.
+       EVERY line read so far, in chronological order, not `prefix_lines`
+       alone -- has not yet resolved every flag `render_log_line` could
+       still need (`textSeen`/`thinkingSeen`/`toolcallSeen` all `True`
+       means there is nothing further growth could add for THIS trigger,
+       however much more history exists), AND `_has_relevant_type` finds
+       a relevant type SOMEWHERE in that same combined read -- concrete
+       evidence THIS iteration uses the streaming/tool-call mechanism a
+       still-unresolved flag tracks, even when every line the CURRENT
+       growing chunk has pulled in beyond the fixed, never-re-read
+       `tail_lines` is opaque filler start to finish (cure-01-01-2's own
+       counterexample: `prefix_lines` alone stayed pure `"ignored"`
+       filler for several growths in a row while the fixed `tail_lines`
+       already held a thinking delta the whole time -- checking
+       `prefix_lines` alone stopped growth dead before ever reaching the
+       text run and tool call still further back that the SAME iteration's
+       own `tail_lines` proved must exist). `tail_lines` never changes
+       across this loop, so this is not a second disk read, only a wider
+       scan of bytes already in memory.
     2. `_dangling_tool_call_ids` is non-empty -- the retained tail keeps a
        `tool_execution_end` this seed cannot yet supply arguments for.
 
     Neither signal fires for E.2's own fixture (`{"type": "ignored"}`
-    filler around plain, independent `message_end` lines): `"ignored"` is
-    not in `_SEED_RELEVANT_TYPES`, and there is no `tool_execution_end` in
-    its tail at all -- so growing THAT fixture's ignored history never
-    triggers this, and the byte bound E.2 pins stays exactly as it was.
+    filler around plain, independent `message_end` lines): `tail_lines`
+    there is exactly the requested `message_end` lines with no ignored
+    filler mixed in (the ignored history sits strictly OLDER, outside the
+    requested tail), and neither `tail_lines` nor `prefix_lines` ever
+    contains a `_SEED_RELEVANT_TYPES` member for that fixture (`message_end`
+    is not itself one -- only the streaming/tool-call events under it are)
+    -- so trigger 1 never fires there regardless of how far growth would
+    otherwise be allowed to run, and there is no `tool_execution_end` in
+    its tail at all for trigger 2 -- the byte bound E.2 pins stays exactly
+    as it was, not because of a cap and not because the oldest event
+    happens to be `"ignored"`, but because there is provably nothing
+    relevant to find anywhere in what has been (or could cheaply be) read.
     """
-    # `lines[0]` can be a truncated FRAGMENT rather than a genuine line --
-    # `data`'s own start (`pos`) has no reason to land right after a `\n`
-    # the way its END always does, so the leading bytes of a freshly grown
-    # read are only guaranteed complete once `pos` reaches 0. Skip past
-    # any such fragment (there is at most one, right at the front) to the
-    # first line that actually parses before judging its type -- a plain
-    # `lines[0]` check would silently see `None` there forever and never
-    # grow further, exactly the regression this loop exists to avoid.
-    for raw in lines:
-        ev = _safe_json(raw)
-        if ev is not None:
-            if ev.get("type") in _SEED_RELEVANT_TYPES:
-                return True
-            break
+    combined = prefix_lines + tail_lines
+    seed_flags, _ = _prior_collapse_state(combined)
+    fully_resolved = (seed_flags["textSeen"] and seed_flags["thinkingSeen"]
+                     and seed_flags["toolcallSeen"])
+    if not fully_resolved and _has_relevant_type(combined):
+        return True
     return bool(_dangling_tool_call_ids(tail_lines, prefix_lines))
 
 
@@ -356,17 +413,17 @@ def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[
             return ls, ls, []
 
         reached_start = pos <= 0
-        lines, tail_lines, prefix_lines = _split(data)
+        _, tail_lines, prefix_lines = _split(data)
 
         # Task cure-01-02 (#195): bounded extra look-back purely to widen
         # `prefix_lines` for the collapse-state seed -- `tail_lines` never
         # changes from here on (it stays exactly what `needed` selected
         # above; every extra chunk only PREPENDS strictly older bytes, so
-        # the last `needed` lines of the growing `lines` list are the
-        # same lines every time `_split` recomputes them).
+        # the last `needed` lines of the growing decoded line list are
+        # the same lines every time `_split` recomputes them).
         extra_growths = 0
         while (not reached_start and extra_growths < _SEED_LOOKBACK_EXTRA_GROWTHS
-               and _should_extend_seed_lookback(lines, tail_lines, prefix_lines)):
+               and _should_extend_seed_lookback(tail_lines, prefix_lines)):
             read_size = min(chunk, pos)
             pos -= read_size
             f.seek(pos)
@@ -374,7 +431,7 @@ def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[
             chunk *= 2
             extra_growths += 1
             reached_start = pos <= 0
-            lines, tail_lines, prefix_lines = _split(data)
+            _, tail_lines, prefix_lines = _split(data)
 
     return tail_lines, reached_start, prefix_lines
 

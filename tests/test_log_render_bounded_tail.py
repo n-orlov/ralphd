@@ -324,8 +324,23 @@ def test_bounded_tail_is_byte_identical_to_full_render_for_a_dead_run_on_disk_me
 # first place.
 
 
+def _ignored_filler_lines(count: int, line_bytes: int) -> list[str]:
+    """`count` opaque `{"type": "ignored"}` events (task cure-01-01-2) --
+    `render_log_line` never recognizes `"ignored"` -- each padded to
+    EXACTLY `line_bytes` bytes (the line plus its trailing newline), so a
+    regression can pin the exact BYTE size of a gap, not merely its event
+    count, matching cure-01-01-2's own named scenario sizes (1,000
+    1,000-byte events / 9,000 1,024-byte events) precisely rather than
+    approximately."""
+    base = json.dumps({"type": "ignored", "pad": ""})
+    pad_len = max(0, line_bytes - len(base) - 1)
+    line = json.dumps({"type": "ignored", "pad": "x" * pad_len})
+    assert len(line) + 1 == line_bytes, (len(line) + 1, line_bytes)
+    return [line + "\n" for _ in range(count)]
+
+
 def _tool_call_lines(tool_call_id: str, name: str, args: dict, result: str = "ok",
-                     ignored_gap: int = 0) -> list[str]:
+                     ignored_gap: int = 0, ignored_line_bytes: int | None = None) -> list[str]:
     """A `tool_execution_start` (with `args`) and its matching
     `tool_execution_end`, optionally separated by `ignored_gap` opaque raw
     events `render_log_line` does not recognize (task cure-01-02, #195):
@@ -333,9 +348,15 @@ def _tool_call_lines(tool_call_id: str, name: str, args: dict, result: str = "ok
     `_TAIL_READ_CHUNK` read, so a bounded tail landing on just the end
     event must still find the start's arguments by TARGETED look-back --
     not merely by reading past a recognizable run, since `{"type":
-    "ignored"}` filler is not one."""
-    ignored = [json.dumps({"type": "ignored", "seq": i}) + "\n"
-              for i in range(ignored_gap)]
+    "ignored"}` filler is not one. `ignored_line_bytes`, when given, sizes
+    each filler event to exactly that many bytes (`_ignored_filler_lines`,
+    cure-01-01-2) instead of the small default shape -- letting a
+    regression pin the gap's total BYTE size, not just its event count."""
+    if ignored_line_bytes is not None:
+        ignored = _ignored_filler_lines(ignored_gap, ignored_line_bytes)
+    else:
+        ignored = [json.dumps({"type": "ignored", "seq": i}) + "\n"
+                  for i in range(ignored_gap)]
     return ([json.dumps({"type": "tool_execution_start", "toolCallId": tool_call_id,
                         "toolName": name, "args": args}) + "\n"]
             + ignored
@@ -371,101 +392,100 @@ def _message_end_repeating_everything() -> str:
     ]}}) + "\n"
 
 
-def _restart_iteration_lines(deltas: int, ignored_gap: int = 0) -> list[str]:
+def _restart_iteration_lines(deltas: int, ignored_gap: int = 0,
+                             ignored_line_bytes: int | None = None,
+                             text_thinking_gap_lines: list[str] | None = None) -> list[str]:
+    """`text_thinking_gap_lines`, when given, is opaque filler (task
+    cure-01-01-2) spliced BETWEEN the streamed text block and the thinking
+    flood -- unlike `ignored_gap` (which only ever separated the tool
+    call's own start/end), this widens the gap a still-open TEXT run's own
+    start sits behind, the other half of PRD F.1/F.2/F.4 this task's own
+    regressions name."""
     return (_tool_call_lines("t1", _RESTART_TOOL_NAME, _RESTART_TOOL_ARGS,
-                             ignored_gap=ignored_gap)
+                             ignored_gap=ignored_gap, ignored_line_bytes=ignored_line_bytes)
             + _text_stream_lines(_RESTART_TEXT)
+            + (text_thinking_gap_lines or [])
             + [line + "\n" for line in _thinking_flood_lines(deltas)]
             + [_message_end_repeating_everything()])
 
 
-def _fixture_blob_with_restart_mid_iteration(num_iterations: int, restart_iteration: int,
-                                             deltas: int) -> str:
-    """Same per-iteration shape as `_fixture_blob`, except
-    `restart_iteration` carries a tool call, a streamed text block, and a
-    many-delta thinking flood, ALL repeated in that iteration's own
-    `message_end` -- see `_message_end_repeating_everything`."""
+def _blob_with_iteration3_lines(iteration3_lines: list[str]) -> str:
+    """Same per-iteration shape as `_fixture_blob`, except iteration 3
+    carries whatever raw lines the caller built (a tool call, a streamed
+    text block, and a many-delta thinking flood, ALL repeated in that
+    iteration's own `message_end` -- see `_message_end_repeating_everything`),
+    so a single fixture built once by a caller drives Part 1 (in-memory
+    `render_tail_lines`) and Parts 2/3 (the on-disk/live paths) against
+    the EXACT SAME bytes (cure-01-01-2)."""
     parts = []
-    for n in range(1, num_iterations + 1):
+    for n in range(1, 3):
         meta = _iteration_meta(n)
         parts.append(boundary_line(meta, "start"))
-        if n == restart_iteration:
-            parts.extend(_restart_iteration_lines(deltas))
-        else:
-            parts.append(_message_end_line(f"iteration {n} did some work"))
+        parts.append(_message_end_line(f"iteration {n} did some work"))
         parts.append(boundary_line(meta, "end"))
+    meta3 = _iteration_meta(3)
+    parts.append(boundary_line(meta3, "start"))
+    parts.extend(iteration3_lines)
+    parts.append(boundary_line(meta3, "end"))
     return "".join(parts)
 
 
-def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_live(
-        monkeypatch, tmp_path):
-    """Task 006 (PRD F), all three code paths in one function (cure-01-04,
-    #204: consolidated from three separate test functions --
-    `test_bounded_tail_carries_collapse_state_across_a_cut_mid_iteration`,
-    `test_dead_run_tail_carries_collapse_state_across_a_cut_mid_iteration`,
-    `test_live_tail_carries_collapse_state_across_a_cut_mid_iteration` --
-    to bring the fast tier's collected-test count back under its 5,800
-    launch ceiling; every assertion below is unchanged from those three,
-    only merged into one body). No `TIER_CEILINGS` change is coupled to
-    this file: the net effect (three functions -> one) is part of
-    cure-01-04's own reduction, not a per-file raise.
 
-    Task cure-01-02 (#195) widened this SAME fixture rather than adding
-    new test functions, for the same collected-count reason: the flood is
-    now 3,000 deltas (not 500) -- large enough that even the flood itself
-    does not fit in one `_TAIL_READ_CHUNK` read, let alone the streamed
-    text before it -- and the tool call's start/end are separated by 3,000
-    unrelated, ignored raw events in Parts 2 and 3 (the on-disk paths;
-    Part 1 never reads from disk at all, so it is unaffected either way).
-    Without this task's bounded extra look-back / dangling-tool-call
-    lookup, `text_seen` would stay wrongly `False` and the tool call would
-    render bare on those two paths.
+def _assert_collapse_state_carries_across_a_cut(
+        monkeypatch, tmp_path, run_suffix: str, iteration3_lines: list[str],
+        tail_ns: tuple, text_occurrences: int, thinking_occurrences: int,
+        tool_occurrences: int) -> None:
+    """Parts 1-3 of the collapse-state-across-a-cut regression (task 006,
+    PRD F): `render_tail_lines` directly, the on-disk dead-run fallback,
+    and the live-container fetch path, all driven off the SAME
+    `iteration3_lines`. Pulled out as a helper (not a fourth top-level
+    `def test_...`) so cure-01-01-2's own named gap shapes can each run
+    all three code paths without growing the fast tier's pinned
+    collected-test count (cure-01-04, #204).
 
-    Part 1 -- `render_tail_lines` directly: every tail size that lands
-    somewhere inside the restart iteration's flood (or right after it, at
-    the `message_end`) must still match the full render's own suffix --
-    no duplicated text/tool-call line, no re-shown `[thinking...]`, no
-    extra blank line."""
-    raw_text = _fixture_blob_with_restart_mid_iteration(3, restart_iteration=3, deltas=3000)
+    Every assertion mirrors the pre-cure-01-01-2 single-scenario body: no
+    duplicated text/tool-call line, no re-shown `[thinking...]`, no extra
+    blank line (PRD F.1/F.2/F.4), and (when `tool_occurrences`) the tool
+    call's own arguments survive into the rendered line, not just its
+    bare name (PRD F.3/F.4's `retained tool arguments` half)."""
+    raw_text = _blob_with_iteration3_lines(iteration3_lines)
     full = render_to_lines(raw_text, tty=False, state=new_render_state())
 
-    for n in (1, 2, 3, 4, 5, 6, 10, 50):
+    for n in tail_ns:
         tail = render_tail_lines(raw_text, tty=False, n=n)
         assert tail == full[-n:], (n, tail, full[-n:])
-        # No spurious blank line anywhere in the tail (PRD F.4).
         assert all(line != "" for line in tail), (n, tail)
-    # The fixture actually exercises all three guards: the flood collapses
-    # to one line, and the tool call/text lines each appear exactly once
-    # across the WHOLE render (never twice, i.e. `message_end` never
-    # re-prints any of them).
-    assert sum(1 for ln in full if "thinking" in ln) == 1
-    assert sum(1 for ln in full if _RESTART_TEXT in ln) == 1
-    assert sum(1 for ln in full if "bash" in ln) == 1
+    assert sum(1 for ln in full if "thinking" in ln) == thinking_occurrences
+    assert sum(1 for ln in full if _RESTART_TEXT in ln) == text_occurrences
+    assert sum(1 for ln in full if "bash" in ln) == tool_occurrences
 
     # Part 2 -- the on-disk-merge half: a dead run's `merged_lines`
-    # fallback must carry the same collapse state across the same kind of
-    # cut.
+    # fallback (the engine's own on-disk read, and the hub's fallback when
+    # a run's container is unreachable) must carry the same collapse
+    # state across the same kind of cut.
     from ralphd.cli import ui_server
 
-    run_dir = tmp_path / "runs" / "dead-run-restart"
+    run_dir = tmp_path / "runs" / f"dead-run-restart-{run_suffix}"
     run_dir.mkdir(parents=True)
     for n in range(1, 3):
         _write_dead_run_iteration(run_dir, n, [
             json.dumps({"type": "message_end", "message": {"content": [
                 {"type": "text", "text": f"iteration {n} did some work"}]}})])
     _write_dead_run_iteration(
-        run_dir, 3,
-        [line.rstrip("\n") for line in _restart_iteration_lines(3000, ignored_gap=3000)])
+        run_dir, 3, [line.rstrip("\n") for line in iteration3_lines])
 
     monkeypatch.setattr(ui_server, "_proxy_text", lambda *a, **k: (False, ""))
 
-    live_full, full_lines = ui_server.rendered_log_lines(tmp_path, "dead-run-restart", None)
+    live_full, full_lines = ui_server.rendered_log_lines(
+        tmp_path, f"dead-run-restart-{run_suffix}", None)
     assert live_full is False
-    assert sum(1 for ln in full_lines if "bash" in ln) == 1
-    assert any(_RESTART_TOOL_ARGS["command"] in ln for ln in full_lines)
+    assert sum(1 for ln in full_lines if "bash" in ln) == tool_occurrences
+    if tool_occurrences:
+        assert any(_RESTART_TOOL_ARGS["command"] in ln for ln in full_lines)
 
-    for n in (1, 2, 3, 4, 5, 6, 10, 50):
-        live_tail, tail_lines = ui_server.rendered_log_lines(tmp_path, "dead-run-restart", n)
+    for n in tail_ns:
+        live_tail, tail_lines = ui_server.rendered_log_lines(
+            tmp_path, f"dead-run-restart-{run_suffix}", n)
         assert live_tail is False
         assert tail_lines == full_lines[-n:], (n, tail_lines, full_lines[-n:])
         assert all(line != "" for line in tail_lines), (n, tail_lines)
@@ -484,22 +504,21 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
     # `collapseSeed` the dead-run fallback's `merged_lines` call produces.
     from ralphd.log_merge import apply_tail, merge_entries_tail
 
-    container_run_root = tmp_path / "container-run"
+    container_run_root = tmp_path / f"container-run-{run_suffix}"
     for n in range(1, 3):
         _write_dead_run_iteration(container_run_root, n, [
             json.dumps({"type": "message_end", "message": {"content": [
                 {"type": "text", "text": f"iteration {n} did some work"}]}})])
     _write_dead_run_iteration(
-        container_run_root, 3,
-        [line.rstrip("\n") for line in _restart_iteration_lines(3000, ignored_gap=3000)])
+        container_run_root, 3, [line.rstrip("\n") for line in iteration3_lines])
 
-    (tmp_path / "runs" / "live-run-restart").mkdir(parents=True)
+    (tmp_path / "runs" / f"live-run-restart-{run_suffix}").mkdir(parents=True)
     monkeypatch.setattr(ui_server, "host_meta",
                         lambda reg, run_id: {"apiUrl": "http://stub"})
 
     full_blob = "".join(line for _, line in
                         apply_tail(merge_entries_tail(container_run_root, 10**9), 10**9))
-    full = render_to_lines(full_blob, tty=False, state=new_render_state())
+    full2 = render_to_lines(full_blob, tty=False, state=new_render_state())
 
     tail_re = re.compile(r"tail=(\d+)")
 
@@ -512,9 +531,61 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
 
     monkeypatch.setattr(ui_server, "_proxy_text", _fake_proxy_text)
 
-    for n in (1, 2, 3, 4, 5, 6, 10, 50):
-        live, tail_lines = ui_server.rendered_log_lines(tmp_path, "live-run-restart", n)
+    for n in tail_ns:
+        live, tail_lines = ui_server.rendered_log_lines(
+            tmp_path, f"live-run-restart-{run_suffix}", n)
         assert live is True
-        assert tail_lines == full[-n:], (n, tail_lines, full[-n:])
+        assert tail_lines == full2[-n:], (n, tail_lines, full2[-n:])
         assert all(line != "" for line in tail_lines), (n, tail_lines)
+
+
+def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_live(
+        monkeypatch, tmp_path):
+    """Task 006 (PRD F), all three code paths, across three named gap
+    shapes, in one function (cure-01-04, #204: consolidated from three
+    separate test functions to bring the fast tier's collected-test count
+    back under its 5,800 launch ceiling; cure-01-01-2 extended it with two
+    MORE gap shapes in the same function for the same reason, rather than
+    adding new top-level `def test_...`s).
+
+    Without a sound `_should_extend_seed_lookback` trigger, growth would
+    stop the moment the SINGLE OLDEST line it had read happened to be
+    `"ignored"` filler -- even with a genuinely relevant event (a
+    `text_delta`, a `tool_execution_start`) still sitting further back
+    behind it -- which is exactly the defect cure-01-01-2 fixes.
+
+    Scenario 1 (cure-01-02, #195): the tool call's start/end are separated
+    by 3,000 small ignored events, and the thinking flood is widened to
+    3,000 deltas -- large enough that even the flood itself does not fit
+    in one `_TAIL_READ_CHUNK` read, let alone the streamed text before it.
+    """
+    _assert_collapse_state_carries_across_a_cut(
+        monkeypatch, tmp_path, "wide-tool-gap",
+        _restart_iteration_lines(3000, ignored_gap=3000),
+        tail_ns=(1, 2, 3, 4, 5, 6, 10, 50),
+        text_occurrences=1, thinking_occurrences=1, tool_occurrences=1)
+
+    # Scenario 2 (cure-01-01-2): streamed text is separated from a
+    # 500-delta thinking block (and the `message_end` that replays both)
+    # by 1,000 opaque events sized to exactly 1,000 bytes each (~1 MB) --
+    # unlike scenario 1's gap (which only ever separates the TOOL call's
+    # own start/end), this filler sits between the text run and the
+    # thinking run, so the text run's own `text_delta` (what actually sets
+    # `textSeen`) is the thing that must still be found across it.
+    _assert_collapse_state_carries_across_a_cut(
+        monkeypatch, tmp_path, "wide-text-thinking-gap",
+        _restart_iteration_lines(
+            500, text_thinking_gap_lines=_ignored_filler_lines(1000, 1000)),
+        tail_ns=(1, 2, 3, 4, 5, 6, 10, 50),
+        text_occurrences=1, thinking_occurrences=1, tool_occurrences=1)
+
+    # Scenario 3 (cure-01-01-2): a tool call's own start -- carrying its
+    # invocation arguments -- is separated from its end by 9,000 opaque
+    # events sized to exactly 1,024 bytes each (~9.2 MB), comfortably past
+    # both scenario 1's gap and the un-widened first read's own reach.
+    _assert_collapse_state_carries_across_a_cut(
+        monkeypatch, tmp_path, "wide-tool-byte-gap",
+        _restart_iteration_lines(3, ignored_gap=9000, ignored_line_bytes=1024),
+        tail_ns=(1, 2, 3, 4, 5, 6, 10, 50),
+        text_occurrences=1, thinking_occurrences=1, tool_occurrences=1)
 
