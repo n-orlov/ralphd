@@ -2256,23 +2256,30 @@ account is a later task's to write once the run actually ends.
 
 Full PRD:
 [`docs/prds/v0.21-the-budget-belongs-to-the-work.md`](prds/v0.21-the-budget-belongs-to-the-work.md).
-✅ Version `0.21.0` landed at task 067. Requirements A–K (except K.1–K.4, where K.1/K.2 were
-skipped, K.3 failed and K.4 is blocked on it) and N have since landed: cure passes for curable
-verdict-gate rejections and distinguishable gate endings (A); a costed planning death and a
-concrete legal-rewrite re-prompt (B); petition adjudication, a bounded petition-held wait and a
-single held-graph notification (C); a claimed-task steer-write refusal and wave-scoped rulings
+✅ Version `0.21.0` landed at task 067. Requirements A–K (except K.1/K.2, skipped as
+`.github/workflows/` containerization this run does not own) and N have since landed: cure passes
+for curable verdict-gate rejections and distinguishable gate endings (A); a costed planning death
+and a concrete legal-rewrite re-prompt (B); petition adjudication, a bounded petition-held wait and
+a single held-graph notification (C); a claimed-task steer-write refusal and wave-scoped rulings
 surviving a replan (D); a non-1000-host-uid config read (E); per-iteration task/tier and durable
 engine-version recording (F); the hub's task/tier/cost/version/history/collapse surfaces (G, I); a
 bounded, cached log tail (H); an ingestion-terminated run no longer read as an infra outage and an
-anchored verdict-gate peek detector (J); and the runner-slot topology, Chrome-session and
-worker-phase fixes under K that this run could carry (K.5–K.7); N cut the tracked report corpus,
-its test coupling and the closing-report obligation. The issues this wave answers, and takes to
-closure at the release's own last step rather than in this paragraph, are #192, #135, #187, #184,
-#133, #196, #180, #181, #183, #158, #159, #160, #194, #195, #137, #138, #136, #134, #188, #179,
-#199 and #200 — with the K.1–K.4 halves of #188 and #179 (containerizing `heavy`'s two tiers, and a
-`timeout-minutes` kill made distinguishable from a cancel) standing undelivered rather than claimed;
-#189's runner-slot topology and #193's intermittent Chrome session drop are commented and left open
-as the halves this wave does not own, and #25 stays untouched.
+anchored verdict-gate peek detector (J); the runner-slot topology, Chrome-session and worker-phase
+fixes under K that this run could carry (K.5–K.7); a bound's expiry recorded with an
+`RALPHD_TIMEOUT_KILL` marker before its TERM→KILL escalation, never a bare exit code, and both
+judging prompts stating a `cancelled` conclusion is not a verdict and how to read K.3's marker to
+tell a timeout from a cancel (K.3, K.4, landed in this wave's own second approach, alongside curing
+the two red nodes review had refused to accept as uncurable —
+`test_startup_watchdog_cpu_progress.py::test_a_child_that_consumes_no_cpu_is_still_killed_inside_its_window`
+and
+`test_flow_happy_path.py::test_the_same_path_under_on_complete_idle_keeps_the_engine_serving`); N
+cut the tracked report corpus, its test coupling and the closing-report obligation. The issues this
+wave answers, and takes to closure at the release's own last step rather than in this paragraph,
+are #192, #135, #187, #184, #133, #196, #180, #181, #183, #158, #159, #160, #194, #195, #137, #138,
+#136, #134, #188, #179, #199 and #200 — with the K.1/K.2 halves of #188 and #179 (containerizing
+`heavy`'s two tiers) standing undelivered rather than claimed; #189's runner-slot topology and
+#193's intermittent Chrome session drop are commented and left open as the halves this wave does
+not own, and #25 stays untouched.
 
 ## Later / explicitly deferred
 
