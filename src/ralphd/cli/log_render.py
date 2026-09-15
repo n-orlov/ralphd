@@ -415,9 +415,44 @@ def render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) -
     if etype != "tool_execution_end":
         _finalize_open_tool_line(state, tty)
     if etype == "ralphd.iteration":
-        _render_boundary(ev, tty)
-        state.update(text_open=False, text_seen=False, thinking_seen=False,
-                    toolcall_seen=False, tool_args={}, tool_pending={})
+        # Task 006 (PRD F): a "start" line carrying a `collapseSeed` is not
+        # a genuine iteration start -- it is `merge_entries_tail`'s stand-
+        # in for a cut that lands INSIDE an iteration (see below) -- so it
+        # must never print the iteration header `_render_boundary` would
+        # otherwise draw: that header is a REAL rendered line, and a
+        # bounded/live tail that happens to include this synthetic
+        # boundary must render EXACTLY the same lines a full render's
+        # matching suffix would, no more (an extra header line here is
+        # itself the "spurious line" PRD F.4 rules out, just as much as a
+        # duplicated text line would be). A genuine start (no
+        # `collapseSeed` key at all) or any "end" boundary always prints,
+        # exactly as before this task.
+        is_cut_start = ev.get("event") == "start" and "collapseSeed" in ev
+        if not is_cut_start:
+            _render_boundary(ev, tty)
+        # Task 006 (PRD F): a "start" boundary line synthesized by
+        # `log_merge.merge_entries_tail` for a raw fetch window that cuts
+        # INTO an iteration (rather than beginning at its true start)
+        # carries a `collapseSeed` -- the `text_seen`/`thinking_seen`/
+        # `toolcall_seen` values that iteration's OMITTED earlier raw
+        # lines would already have set, computed by
+        # `log_merge._prior_collapse_seed` from bytes the bounded reader
+        # already had in hand (never a second disk read). Seeding from it
+        # here, instead of unconditionally resetting every flag to
+        # `False`, is what keeps a bounded tail's collapse state -- and
+        # therefore its rendered bytes -- identical to a full render's,
+        # across the exact restart this boundary line marks. A GENUINE
+        # iteration start (or an "end" boundary, which never carries a
+        # seed) has no `collapseSeed` key at all, so `.get(...)` defaults
+        # every flag to `False` -- byte-identical to this function's
+        # pre-task-006 behavior.
+        seed = ev.get("collapseSeed") if ev.get("event") == "start" else None
+        seed = seed or {}
+        state.update(text_open=False,
+                    text_seen=bool(seed.get("textSeen")),
+                    thinking_seen=bool(seed.get("thinkingSeen")),
+                    toolcall_seen=bool(seed.get("toolcallSeen")),
+                    tool_args={}, tool_pending={})
     elif etype == "message_update":
         _render_message_update(ev.get("assistantMessageEvent") or {}, state, tty)
     elif etype == "tool_execution_start":

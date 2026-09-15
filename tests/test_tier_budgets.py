@@ -57,11 +57,16 @@ TIER_MARKERS = ("smoke", "fast")
 # they cannot go stale silently"). Moved out of docs/testing.md's budget
 # table's "budget tests"/"budget modules" columns, which this module no
 # longer reads for this purpose. Raise a value only with the measurement
-# that earned it named in the commit message that raises it; these are the
-# same values as before the move (390 fast modules / 270 smoke modules,
-# 5800 fast / 4300 smoke tests), unchanged.
+# that earned it named in the commit message that raises it; task 006
+# (PRD F) raised `fast`'s test ceiling 5800 -> 5801: three new regression
+# tests in `tests/test_log_render_bounded_tail.py` (a bounded-tail/
+# live-tail/dead-run cut mid-iteration must carry `text_seen`/
+# `thinking_seen`/`toolcall_seen` collapse state across the restart) push
+# the fast tier's live collected count to 5801 (`pytest -m fast
+# --collect-only`). `modules`/`smoke` are unchanged (390 fast modules /
+# 270 smoke modules, 4300 smoke tests).
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 5800, "modules": 390},
+    "fast": {"tests": 5801, "modules": 390},
     "smoke": {"tests": 4300, "modules": 270},
 }
 

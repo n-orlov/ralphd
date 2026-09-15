@@ -122,12 +122,26 @@ def iteration_numbers(run_root: Path) -> list[int]:
     return out
 
 
-def boundary_line(meta: dict, event: str) -> str:
+def boundary_line(meta: dict, event: str, collapse_seed: dict | None = None) -> str:
     """Synthesize the `ralphd.iteration` start/end line for one iteration.
 
     Not written to disk by anyone: it is derived from `meta.json` so that a
     reader can tell iterations apart in a flat stream of transcript lines.
-    """
+
+    `collapse_seed` (task 006, PRD F) is an optional
+    `{"textSeen": bool, "thinkingSeen": bool, "toolcallSeen": bool}` blob,
+    attached only to a "start" line, that tells `log_render.render_log_line`
+    the `text_seen`/`thinking_seen`/`toolcall_seen` collapse-guard values a
+    REAL iteration start already carries from raw content this boundary's
+    OWN emitter chose not to include (see `merge_entries_tail`'s per-
+    iteration bounded read). A genuine, uncut iteration start passes `None`
+    (the default) -- the resulting JSON is byte-identical to before this
+    task, and `render_log_line` seeds every flag `False` exactly as a fresh
+    `new_render_state()` always has, so nothing about an ordinary boundary
+    line changes. `event == "end"` never carries a seed: an end boundary's
+    own rendering (`_render_boundary`) never reads render-state collapse
+    flags, and whatever comes after it is either the run's own end or a
+    following iteration's OWN "start" line, which seeds itself."""
     line: dict = {"type": BOUNDARY_TYPE, "event": event,
                   "number": meta.get("number"), "phase": meta.get("phase"),
                   "model": meta.get("model"), "approach": meta.get("approach"),
@@ -137,6 +151,8 @@ def boundary_line(meta: dict, event: str) -> str:
         line["error"] = meta.get("error")
         line["usage"] = meta.get("usage")
         line["endedAt"] = meta.get("endedAt")
+    elif collapse_seed:
+        line["collapseSeed"] = collapse_seed
     return json.dumps(line) + "\n"
 
 
@@ -177,7 +193,7 @@ def merge_entries(run_root: Path,
 _TAIL_READ_CHUNK = 1 << 16
 
 
-def _tail_lines_of_file(path: Path, needed: int) -> list[str]:
+def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[str]]:
     """The last `needed` newline-terminated lines of `path`, read from the
     END of the file in growing chunks -- never the whole file -- so bytes
     read are bounded by `needed`, not by how much unrelated OLDER content
@@ -192,9 +208,28 @@ def _tail_lines_of_file(path: Path, needed: int) -> list[str]:
     immediately after a `\\n` byte (or at byte 0), and `\\n` is itself
     always a line boundary in UTF-8, so a multi-byte character can never be
     split by where a chunk starts.
+
+    Returns `(kept, reached_start, prefix)` (task 006, PRD F):
+      `kept`          the last `needed` lines -- what this function has
+                      always returned.
+      `reached_start` whether the backward read actually walked all the
+                      way to byte 0 of the file. When true, `kept` (plus
+                      `prefix`) is EVERY line the file has -- there is no
+                      unread history this read could be missing, so a
+                      caller may safely treat the point just before `kept`
+                      as a genuine restart (matches this function's
+                      pre-task-006 contract exactly).
+      `prefix`        whatever OLDER lines the same growing-chunk read
+                      happened to pull in beyond `needed` (e.g. because
+                      the read floor is `_TAIL_READ_CHUNK` bytes, not
+                      `needed` lines) -- read already, at no extra disk
+                      cost, so a caller can inspect them for the raw event
+                      types that flip a render collapse guard (task 006)
+                      without any further I/O. Empty exactly when the read
+                      needed no more than `needed` lines' worth of bytes.
     """
     if needed <= 0:
-        return []
+        return [], True, []
     with path.open("rb") as f:
         f.seek(0, 2)
         pos = f.tell()
@@ -206,8 +241,57 @@ def _tail_lines_of_file(path: Path, needed: int) -> list[str]:
             f.seek(pos)
             data = f.read(read_size) + data
             chunk *= 2
+    reached_start = pos <= 0
     lines = data.decode("utf-8", errors="replace").splitlines(keepends=True)
-    return lines[-needed:] if len(lines) > needed else lines
+    if len(lines) > needed:
+        return lines[-needed:], reached_start, lines[:-needed]
+    return lines, reached_start, []
+
+
+# The three raw NDJSON shapes (task 006, PRD F) whose FIRST occurrence in an
+# iteration flips one of `log_render`'s collapse guards (`text_seen`,
+# `thinking_seen`, `toolcall_seen`) -- used only to scan the `prefix` lines
+# `_tail_lines_of_file` already read (never a fresh disk read) for whichever
+# of the three flags a bounded tail's cut point needs to carry forward, so a
+# `message_end`/`thinking_delta` line INSIDE the kept tail renders exactly as
+# it would have from a genuine, uncut iteration start (`_prior_collapse_seed`
+# below). Mirrors `log_render.render_log_line`'s own dispatch: a
+# `message_update` event's `text_delta` sets `text_seen`, `thinking_start`/
+# `thinking_delta` sets `thinking_seen`; a `tool_execution_start`/
+# `tool_execution_end` sets `toolcall_seen`.
+def _prior_collapse_seed(prefix_lines: list[str]) -> dict:
+    """`{"textSeen": bool, "thinkingSeen": bool, "toolcallSeen": bool}` for
+    whatever collapse-guard state the (already in-memory) `prefix_lines`
+    establish -- i.e. what a fresh `new_render_state()` would hold after
+    rendering them, without actually rendering (no output, just the state
+    transitions `log_render._render_message_update` and
+    `render_log_line`'s tool-call branches apply). A line that fails to
+    parse, or is unrecognized, changes nothing -- exactly like
+    `render_log_line`'s own unknown-event handling."""
+    text_seen = thinking_seen = toolcall_seen = False
+    for raw in prefix_lines:
+        if text_seen and thinking_seen and toolcall_seen:
+            break
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            ev = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        etype = ev.get("type")
+        if etype == "message_update":
+            sub = (ev.get("assistantMessageEvent") or {}).get("type")
+            if sub == "text_delta":
+                text_seen = True
+            elif sub in ("thinking_start", "thinking_delta"):
+                thinking_seen = True
+        elif etype in ("tool_execution_start", "tool_execution_end"):
+            toolcall_seen = True
+    return {"textSeen": text_seen, "thinkingSeen": thinking_seen,
+            "toolcallSeen": toolcall_seen}
 
 
 def merge_entries_tail(run_root: Path, tail: int,
@@ -254,14 +338,32 @@ def merge_entries_tail(run_root: Path, tail: int,
         if meta.get("endedAt"):
             chunk.append((True, scrub(boundary_line(meta, "end"))))
         out = d / OUTPUT_FILENAME
+        collapse_seed = None
         if out.exists():
             remaining = max(tail - content_count, 1)
-            tail_lines = _tail_lines_of_file(out, remaining)
+            tail_lines, reached_start, prefix_lines = _tail_lines_of_file(out, remaining)
+            # Task 006 (PRD F): whether or not this read reached byte 0 of
+            # the file (`reached_start`), the fabricated "start" boundary
+            # below is NOT a real iteration start whenever `prefix_lines`
+            # is non-empty -- `prefix_lines` is raw content that came
+            # BEFORE the retained `tail_lines`, so whatever `text_seen`/
+            # `thinking_seen`/`toolcall_seen` state a real start would
+            # already carry must ride along on that same boundary line
+            # instead of being silently dropped (the exact defect PRD F
+            # names: "the raw-tail fetch drops the preceding text_seen
+            # state before render_tail_lines selects its restart"). This
+            # costs no extra disk read either way -- `prefix_lines` is
+            # whatever `_tail_lines_of_file`'s OWN growing chunk already
+            # pulled in beyond `remaining` lines (often the whole file, if
+            # it is smaller than one growth chunk, in which case this seed
+            # is EXACT rather than merely best-effort).
+            if prefix_lines:
+                collapse_seed = _prior_collapse_seed(prefix_lines)
             for line in reversed(tail_lines):
                 line = line if line.endswith("\n") else line + "\n"
                 chunk.append((False, scrub(line)))
             content_count += len(tail_lines)
-        chunk.append((True, scrub(boundary_line(meta, "start"))))
+        chunk.append((True, scrub(boundary_line(meta, "start", collapse_seed))))
         chunk.reverse()
         newest_first_chunks.append(chunk)
         if content_count >= tail:
@@ -274,17 +376,35 @@ def merge_entries_tail(run_root: Path, tail: int,
 
 def apply_tail(entries: list[Entry], tail: int) -> list[Entry]:
     """Keep only the last `tail` non-boundary (transcript) lines, plus any
-    boundary lines that fall within that window."""
+    boundary lines that fall within that window.
+
+    Task 006 (PRD F): a boundary line immediately preceding the exact
+    content line that satisfies `tail` is kept too, not dropped -- a
+    `merge_entries_tail` "start" boundary for a cut iteration carries the
+    `collapseSeed` (task 006, PRD F) that lets the renderer pick up
+    `text_seen`/`thinking_seen`/`toolcall_seen` state the omitted earlier
+    raw lines already set; that boundary is invariably the VERY NEXT entry
+    once the content quota is met (it is `merge_entries_tail`'s per-
+    iteration read that sizes the kept raw lines to land exactly on the
+    quota), so silently stopping the instant the quota is met -- this
+    function's behavior before this task -- always discarded it. Only
+    CONTIGUOUS boundary lines right at that edge are kept this way; the
+    next actual content line past the quota still ends the scan exactly
+    as before.
+    """
     if not tail:
         return entries
     selected: list[Entry] = []
     content_count = 0
+    met = False
     for is_boundary, line in reversed(entries):
+        if met and not is_boundary:
+            break
         selected.append((is_boundary, line))
         if not is_boundary:
             content_count += 1
             if content_count >= tail:
-                break
+                met = True
     return list(reversed(selected))
 
 

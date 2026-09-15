@@ -27,6 +27,7 @@ parse count grows one call per historical event.
 from __future__ import annotations
 
 import json
+import re
 
 from ralphd.cli import log_render as log_render_mod
 from ralphd.cli.log_render import new_render_state, render_tail_lines, render_to_lines
@@ -299,3 +300,187 @@ def test_bounded_tail_is_byte_identical_to_full_render_for_a_dead_run_on_disk_me
     tail_bytes = ("\n".join(tail_lines) + "\n").encode()
     full_tail_bytes = ("\n".join(full_lines[-10:]) + "\n").encode()
     assert tail_bytes == full_tail_bytes
+
+
+# ---------------------------------------------------------------------------
+# Task 006 (PRD F): a tail that cuts INTO an iteration -- not at one of its
+# boundaries -- must carry the `text_seen`/`thinking_seen`/`toolcall_seen`
+# collapse state the OMITTED earlier raw lines of that SAME iteration would
+# have set, so a `message_end` line inside the retained window renders
+# exactly as it would from a full render, and a many-delta thinking flood
+# inside the retained window still collapses to one `[thinking...]` line
+# even though its own `thinking_start` fell outside the window.
+#
+# The fixture below packs ALL THREE guards into one iteration -- a tool
+# call, a streamed text block, and a many-delta thinking flood -- then
+# repeats all three in a single `message_end` (the shape a real assistant
+# turn's final message takes: the wire replays everything it already
+# streamed). A bounded tail sized to land inside the flood (or right after
+# it) omits the tool call and the text stream entirely; without task 006's
+# fix, `message_end`'s repeat of them would print AGAIN (a duplicated text
+# line) and/or the flood would print `[thinking...]` a second time -- while
+# `merge_entries_tail`'s pre-task-005 "reads the whole file" behavior never
+# hit this at all, because it never fabricated a lying restart point in the
+# first place.
+
+
+def _tool_call_lines(tool_call_id: str, name: str, args: dict, result: str = "ok") -> list[str]:
+    return [
+        json.dumps({"type": "tool_execution_start", "toolCallId": tool_call_id,
+                    "toolName": name, "args": args}) + "\n",
+        json.dumps({"type": "tool_execution_end", "toolCallId": tool_call_id,
+                    "toolName": name, "result": result, "isError": False}) + "\n",
+    ]
+
+
+def _text_stream_lines(text: str) -> list[str]:
+    return [
+        json.dumps({"type": "message_update",
+                    "assistantMessageEvent": {"type": "text_delta", "delta": text}}) + "\n",
+        json.dumps({"type": "message_update",
+                    "assistantMessageEvent": {"type": "text_end"}}) + "\n",
+    ]
+
+
+_RESTART_TOOL_NAME = "bash"
+_RESTART_TOOL_ARGS = {"command": "echo hello"}
+_RESTART_TEXT = "hello world this is the streamed text"
+
+
+def _message_end_repeating_everything() -> str:
+    """The turn's final `message_end`, replaying the SAME tool call, text,
+    and thinking block already streamed earlier in the same iteration --
+    the exact shape that makes `text_seen`/`thinking_seen`/`toolcall_seen`
+    matter: a full render suppresses all three (already shown), and a
+    bounded tail that starts AFTER the events which set those guards must
+    suppress them too."""
+    return json.dumps({"type": "message_end", "message": {"content": [
+        {"type": "toolCall", "name": _RESTART_TOOL_NAME, "arguments": _RESTART_TOOL_ARGS},
+        {"type": "text", "text": _RESTART_TEXT},
+        {"type": "thinking", "thinking": "..."},
+    ]}}) + "\n"
+
+
+def _restart_iteration_lines(deltas: int) -> list[str]:
+    return (_tool_call_lines("t1", _RESTART_TOOL_NAME, _RESTART_TOOL_ARGS)
+            + _text_stream_lines(_RESTART_TEXT)
+            + [line + "\n" for line in _thinking_flood_lines(deltas)]
+            + [_message_end_repeating_everything()])
+
+
+def _fixture_blob_with_restart_mid_iteration(num_iterations: int, restart_iteration: int,
+                                             deltas: int) -> str:
+    """Same per-iteration shape as `_fixture_blob`, except
+    `restart_iteration` carries a tool call, a streamed text block, and a
+    many-delta thinking flood, ALL repeated in that iteration's own
+    `message_end` -- see `_message_end_repeating_everything`."""
+    parts = []
+    for n in range(1, num_iterations + 1):
+        meta = _iteration_meta(n)
+        parts.append(boundary_line(meta, "start"))
+        if n == restart_iteration:
+            parts.extend(_restart_iteration_lines(deltas))
+        else:
+            parts.append(_message_end_line(f"iteration {n} did some work"))
+        parts.append(boundary_line(meta, "end"))
+    return "".join(parts)
+
+
+def test_bounded_tail_carries_collapse_state_across_a_cut_mid_iteration():
+    """`render_tail_lines` directly: every tail size that lands somewhere
+    inside the restart iteration's flood (or right after it, at the
+    `message_end`) must still match the full render's own suffix -- no
+    duplicated text/tool-call line, no re-shown `[thinking...]`, no extra
+    blank line."""
+    raw_text = _fixture_blob_with_restart_mid_iteration(3, restart_iteration=3, deltas=500)
+    full = render_to_lines(raw_text, tty=False, state=new_render_state())
+
+    for n in (1, 2, 3, 4, 5, 6, 10, 50):
+        tail = render_tail_lines(raw_text, tty=False, n=n)
+        assert tail == full[-n:], (n, tail, full[-n:])
+        # No spurious blank line anywhere in the tail (PRD F.4).
+        assert all(line != "" for line in tail), (n, tail)
+    # The fixture actually exercises all three guards: the flood collapses
+    # to one line, and the tool call/text lines each appear exactly once
+    # across the WHOLE render (never twice, i.e. `message_end` never
+    # re-prints any of them).
+    assert sum(1 for ln in full if "thinking" in ln) == 1
+    assert sum(1 for ln in full if _RESTART_TEXT in ln) == 1
+    assert sum(1 for ln in full if "bash" in ln) == 1
+
+
+def test_dead_run_tail_carries_collapse_state_across_a_cut_mid_iteration(
+        monkeypatch, tmp_path):
+    """The on-disk-merge half: a dead run's `merged_lines` fallback must
+    carry the same collapse state across the same kind of cut."""
+    from ralphd.cli import ui_server
+
+    run_dir = tmp_path / "runs" / "dead-run-restart"
+    run_dir.mkdir(parents=True)
+    for n in range(1, 3):
+        _write_dead_run_iteration(run_dir, n, [
+            json.dumps({"type": "message_end", "message": {"content": [
+                {"type": "text", "text": f"iteration {n} did some work"}]}})])
+    _write_dead_run_iteration(
+        run_dir, 3, [line.rstrip("\n") for line in _restart_iteration_lines(500)])
+
+    monkeypatch.setattr(ui_server, "_proxy_text", lambda *a, **k: (False, ""))
+
+    live_full, full_lines = ui_server.rendered_log_lines(tmp_path, "dead-run-restart", None)
+    assert live_full is False
+
+    for n in (1, 2, 3, 4, 5, 6, 10, 50):
+        live_tail, tail_lines = ui_server.rendered_log_lines(tmp_path, "dead-run-restart", n)
+        assert live_tail is False
+        assert tail_lines == full_lines[-n:], (n, tail_lines, full_lines[-n:])
+        assert all(line != "" for line in tail_lines), (n, tail_lines)
+        tail_bytes = ("\n".join(tail_lines) + "\n").encode()
+        full_tail_bytes = ("\n".join(full_lines[-n:]) + "\n").encode()
+        assert tail_bytes == full_tail_bytes
+
+
+def test_live_tail_carries_collapse_state_across_a_cut_mid_iteration(monkeypatch, tmp_path):
+    """The live-container half: `ui_server.rendered_log_lines`'s live path
+    (`_proxy_text` answering `True`) must carry the same collapse state
+    across the same kind of cut. The stub below answers `GET /logs?tail=N`
+    the same way the REAL container's route does (`engine.api.logs`):
+    `log_merge.merge_entries_tail(run.root, tail)` followed by
+    `log_merge.apply_tail` -- reading from an on-disk run directory that
+    is a stand-in for the container's own, so the container's answer
+    carries the very same per-iteration `collapseSeed` the dead-run
+    fallback's `merged_lines` call produces."""
+    from ralphd.cli import ui_server
+    from ralphd.log_merge import apply_tail, merge_entries_tail
+
+    container_run_root = tmp_path / "container-run"
+    for n in range(1, 3):
+        _write_dead_run_iteration(container_run_root, n, [
+            json.dumps({"type": "message_end", "message": {"content": [
+                {"type": "text", "text": f"iteration {n} did some work"}]}})])
+    _write_dead_run_iteration(
+        container_run_root, 3, [line.rstrip("\n") for line in _restart_iteration_lines(500)])
+
+    (tmp_path / "runs" / "live-run-restart").mkdir(parents=True)
+    monkeypatch.setattr(ui_server, "host_meta",
+                        lambda reg, run_id: {"apiUrl": "http://stub"})
+
+    full_blob = "".join(line for _, line in
+                        apply_tail(merge_entries_tail(container_run_root, 10**9), 10**9))
+    full = render_to_lines(full_blob, tty=False, state=new_render_state())
+
+    tail_re = re.compile(r"tail=(\d+)")
+
+    def _fake_proxy_text(reg, run_id, path, timeout=5.0):
+        m = tail_re.search(path)
+        assert m, f"expected a tail= bound in the fetch path, got {path!r}"
+        bound = int(m.group(1))
+        entries = apply_tail(merge_entries_tail(container_run_root, bound), bound)
+        return True, "".join(line for _, line in entries)
+
+    monkeypatch.setattr(ui_server, "_proxy_text", _fake_proxy_text)
+
+    for n in (1, 2, 3, 4, 5, 6, 10, 50):
+        live, tail_lines = ui_server.rendered_log_lines(tmp_path, "live-run-restart", n)
+        assert live is True
+        assert tail_lines == full[-n:], (n, tail_lines, full[-n:])
+        assert all(line != "" for line in tail_lines), (n, tail_lines)
