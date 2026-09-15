@@ -2252,6 +2252,14 @@ paragraph is written mid-run, ahead of the run it describes settling — the v0.
 v0.20 and v0.20.1 blocks and rows above are unchanged by this commit; this wave's own terminal
 account is a later task's to write once the run actually ends.
 
+## v0.21 — the budget belongs to the work
+
+Full PRD:
+[`docs/prds/v0.21-the-budget-belongs-to-the-work.md`](prds/v0.21-the-budget-belongs-to-the-work.md).
+✅ Version `0.21.0` landed at task 067, the run's last code-touching task — a placeholder entry
+kept to one paragraph; the wave's own account of what shipped and the issues closed is a later
+task's to write (PRD requirement L.2).
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
