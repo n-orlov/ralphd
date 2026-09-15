@@ -45,13 +45,26 @@ REPO = Path(__file__).resolve().parents[1]
 # ------------------------------------------------------------------ helpers
 def _stub_docker(monkeypatch, answer: str | None):
     """`docker inspect --format {{.State.Running}}` answering `true`/`false`,
-    or failing (exit 1) for a container that does not exist."""
+    or failing (exit 1) for a container that does not exist.
+
+    Task 069's nightly re-take: `_container_liveness`'s failure path (task
+    026, E.4) asks the REAL `shutil.which(DOCKER)` to tell "docker looked
+    and found nothing" (`CONTAINER_ABSENT`) apart from "no docker client
+    resolves at all" (`CONTAINER_LIVENESS_UNKNOWN`) -- stubbing only `sh`
+    left that ambient call live, so this module's `answer=None` cases read
+    `CONTAINER_ABSENT` on a host that happens to carry a real docker client
+    and silently flipped to `CONTAINER_LIVENESS_UNKNOWN` on one that does
+    not (every nightly dev-layout cell, by that workflow's own design).
+    This module means to test the FORMER unconditionally, so `shutil.which`
+    is stubbed alongside `sh` rather than left to the ambient PATH."""
     def fake_sh(cmd, **kw):
         assert "{{.State.Running}}" in cmd, cmd
         if answer is None:
             return subprocess.CompletedProcess(cmd, 1, "", "No such object")
         return subprocess.CompletedProcess(cmd, 0, answer + "\n", "")
     monkeypatch.setattr("ralphd.cli.main.sh", fake_sh)
+    monkeypatch.setattr("ralphd.cli.main.shutil.which",
+                        lambda name: "/usr/bin/docker")
 
 
 def _seed_status(ctl: Ctl, run_id: str, state: str = "running") -> Path:

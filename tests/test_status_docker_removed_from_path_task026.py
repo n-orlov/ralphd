@@ -31,6 +31,7 @@ import os
 import shutil
 from pathlib import Path
 
+import pytest
 from test_cli_features import _recovered_run
 from test_tier_cost_breakdown import _two_tier_run
 from tests.conftest import call_ralphctl_in_process
@@ -78,11 +79,23 @@ def test_docker_binary_is_genuinely_absent_from_the_constructed_path(
     constructed PATH in force and `DOCKER` left at the CLI's own bare
     default, the liveness probe answers `unknown` -- it could not decide --
     rather than `absent`, which is docker's own answer about a container it
-    looked for and did not find."""
-    assert shutil.which("docker") is not None, (
-        "this dev container is expected to carry a real docker client -- "
-        "if it does not, the removal below is not exercising anything"
-    )
+    looked for and did not find.
+
+    Task 069's nightly re-take found the precondition below asserting
+    against an environment that never carries docker in the first place:
+    `.github/workflows/nightly.yml`'s dev-layout cells deliberately install
+    no docker client at all (`-m docker` coverage stays in `heavy.yml`), so
+    "this dev container is expected to carry a real docker client" is false
+    there by that workflow's own design, not by accident. Skipping rather
+    than failing keeps the precondition's job -- catching an accidental
+    ambient-docker pass on a host that DOES carry one -- without turning a
+    docker-less environment's absence of anything to remove into a defect."""
+    if shutil.which("docker") is None:
+        pytest.skip(
+            "no ambient docker client in this environment (expected on a "
+            "nightly dev-layout cell, which installs none by design) -- "
+            "nothing here for the removal below to exercise"
+        )
     stripped = _path_with_docker_removed()
     assert shutil.which("docker", path=stripped) is None
     monkeypatch.setattr("ralphd.cli.main.DOCKER", "docker")
