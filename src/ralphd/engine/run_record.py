@@ -8,9 +8,11 @@ state()` in `engine/loop.py`). Nothing here is written by a hat's own
 process -- this module only ever reads engine-owned files
 (`status.json`, `petition-adjudications.json`, the archived `approaches/
 NN/` findings sidecars, the steering ledger, `CONFIG_DIR/amendments/`)
-and renders them; a closing report is never faulted for omitting or
+and renders them; nothing else in the run is faulted for omitting or
 predating any of this (PRD requirement B.2 -- this is the engine's own
-account of the run, not review's).
+account of the run, not any task's). There is no closing report for this
+run to be faulted against in the first place (requirement N.3, task 064) --
+that obligation is gone from the contract, not merely unmet here.
 
 Two public entry points:
 

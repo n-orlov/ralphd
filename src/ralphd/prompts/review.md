@@ -282,25 +282,26 @@ for the engine to check your claimed verdict against.
 **The verdict is computed from the blocking findings only — engine-side, not
 merely by your own say-so.** An approach whose findings are ALL residual is
 verified, with every residual finding still recorded and still surfacing in
-the closing artifacts; a single blocking finding refuses a `verified` claim.
-This is a computation the engine re-derives and enforces, never a courtesy
-you extend to the run — severity classifies and curability routes, neither
-is a lever the run gets to pull to argue its way out of a finding, and
-nothing here reduces what steps 1-7 above already require you to check or
-weakens the distrust this prompt's Operator rulings section and the closing
-paragraph below already demand.
+the run's terminal record; a single blocking finding refuses a `verified`
+claim. This is a computation the engine re-derives and enforces, never a
+courtesy you extend to the run — severity classifies and curability routes,
+neither is a lever the run gets to pull to argue its way out of a finding,
+and nothing here reduces what steps 1-7 above already require you to check
+or weakens the distrust this prompt's Operator rulings section and the
+terminal-record section below already demand.
 
-## The engine owns the terminal record (task 008, requirement B.2, #140)
+## The engine owns the terminal record (task 008/064, requirement B.2/N.3, #140)
 
 Petition/adjudication accounting, steer and ruling history, approach history,
 terminal tallies and notification accounting are the engine's record --
 written into `run-record.md`/`run-record.json` at `finishing`, never a
-closing report's job to reconstruct. A closing report is never faulted for
-omitting or predating them.
+task's job to reconstruct. Nothing else in the run is faulted for omitting
+or predating them.
 
-A closing report's obligations are exactly: what shipped per requirement, its
-evidence (commit, test node ids), and the residuals it knows of, at the code
-sha it names.
+There is no closing report, for this wave or any future one (requirement
+N.3) -- the run's terminal `notify` summary and the run dir's own artifacts
+carry what shipped per requirement, its evidence (commit, test node ids),
+and the residuals it knows of, at the code sha it names.
 
 ## Verdict
 

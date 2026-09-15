@@ -674,3 +674,42 @@ def test_tier_warnings_are_a_channel_distinct_from_shape_errors(tmp_path):
     payload = {"tasks": [_basic_task("001", tier="urgent")]}
     assert pi.validate_proposal_shape(payload) == []
     assert pi.lint_proposal(payload) == []
+
+
+# ---------------------------------------------------------------------------
+# Task 064 (requirement N.3): the closing-report obligation is gone from the
+# contract, not merely unmet -- a plan whose tail ends at guard
+# re-verification, with no task naming a closing report anywhere, ingests
+# clean through the whole pipeline. There never was a structural check
+# refusing a plan on this ground (grep across plan_ingestion.py finds none),
+# so this pins the guarantee going forward rather than lifting a passing
+# assertion off a prior rejection.
+# ---------------------------------------------------------------------------
+
+def test_a_plan_with_no_closing_report_task_ingests_without_a_refusal(tmp_path):
+    payload = {
+        "tasks": [
+            _basic_task("001", title="implement the feature"),
+            _basic_task("002", title="sweep the fast tier",
+                        dependsOn=["001"]),
+            _basic_task("003", title="re-verify the guard at the final sha",
+                        dependsOn=["002"]),
+        ]
+    }
+    assert not any("closing report" in t["title"] for t in payload["tasks"])
+    assert pi.validate_proposal_shape(payload) == []
+    assert pi.lint_proposal(payload) == []
+    assert pi.lint_own_terminal_state(payload) == []
+
+    _write(tmp_path, "plan-proposal.json", payload)
+
+    def respond(attempt, prior_errors):
+        return _pointer("plan-proposal.json")
+
+    result = pi.enforce_plan_ingestion(
+        respond, max_retries=2, read_proposal=pi.file_reader(tmp_path)
+    )
+    assert result.ok
+    assert result.attempts == 1
+    assert [t["id"] for t in result.tasks_doc["tasks"]] == ["001", "002", "003"]
+    assert all(t["status"] == "pending" for t in result.tasks_doc["tasks"])

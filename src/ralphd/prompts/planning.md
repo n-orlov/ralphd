@@ -233,9 +233,10 @@ is lawyered:
    directory, and the guard checking it passed only on the machine that had
    generated that directory, nowhere else.)
 6. **A fixed tail order:** work → closures → record → sweeps → guard
-   re-verification → closing report. The closing report is never written
-   against an unfinished wave — it comes last, after the sweep and the guard
-   re-verification it depends on, never before either.
+   re-verification. There is no closing-report task, for this wave or any
+   future one (requirement N.3) — the run's terminal summary is a `notify`
+   send, not a file any task writes, and it comes only after the sweep and
+   the guard re-verification it reports on, never before either.
 7. **Closure tasks `dependsOn` the work they attest to.** List order alone is
    fragile, because a validation-failed task can be reordered ahead of or
    behind the closure task that names it; an explicit `dependsOn` survives

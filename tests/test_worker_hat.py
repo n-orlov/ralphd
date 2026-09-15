@@ -3125,12 +3125,14 @@ ENGINE_RECORD_SENTENCE = (
     "the engine's record"
 )
 NEVER_FAULTED_SENTENCE = (
-    "a closing report is never faulted for omitting or predating them"
+    "nothing else in the run is faulted for omitting or predating them"
 )
 OBLIGATIONS_SENTENCE = (
-    "a closing report's obligations are exactly: what shipped per "
-    "requirement, its evidence (commit, test node ids), and the residuals "
-    "it knows of, at the code sha it names"
+    "there is no closing report, for this wave or any future one "
+    "(requirement n.3) -- the run's terminal `notify` summary and the run "
+    "dir's own artifacts carry what shipped per requirement, its evidence "
+    "(commit, test node ids), and the residuals it knows of, at the code "
+    "sha it names"
 )
 
 
@@ -3145,11 +3147,11 @@ def test_review_md_names_the_engine_owned_history_categories():
     assert ENGINE_RECORD_SENTENCE in _flatten(REVIEW_MD)
 
 
-def test_review_md_states_a_closing_report_is_never_faulted_for_these():
+def test_review_md_states_nothing_else_is_faulted_for_these():
     assert NEVER_FAULTED_SENTENCE in _flatten(REVIEW_MD)
 
 
-def test_review_md_states_the_closing_reports_exact_obligations():
+def test_review_md_states_there_is_no_closing_report():
     assert OBLIGATIONS_SENTENCE in _flatten(REVIEW_MD)
 
 

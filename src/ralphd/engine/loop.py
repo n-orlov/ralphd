@@ -12088,14 +12088,20 @@ class LoopSupervisor:
         return petitions.duplicate_petitions_review_context(self.workspace)
 
     def _terminal_record_review_context(self) -> str:
-        """Task 008 (requirement B.2, #140): tell review, in every review
-        prompt, which parts of the run's history are the ENGINE's own
-        record -- never review's job to reconstruct, and never a gap in a
-        closing report worth a finding over. Mirrors, in the dynamic
-        review-prompt context, the same sentence `review.md` itself now
-        carries statically (task 008 also edits that file) so the
-        guarantee reaches review whether or not the run's own prompt
-        overlay still has the current `review.md` text.
+        """Task 008 (requirement B.2, #140), retired-obligation text
+        updated by task 064 (requirement N.3): tell review, in every
+        review prompt, which parts of the run's history are the ENGINE's
+        own record -- never review's job to reconstruct, and never a gap
+        worth a finding over. There is no closing-report obligation to
+        anchor this against any more (N.3 removes it from the contract
+        entirely, for this wave and any future one) -- what shipped per
+        requirement, its evidence and its residuals are instead carried by
+        the run's terminal `notify` summary and the run dir's own
+        artifacts. Mirrors, in the dynamic review-prompt context, the same
+        sentence `review.md` itself now carries statically (task 008 also
+        edits that file) so the guarantee reaches review whether or not
+        the run's own prompt overlay still has the current `review.md`
+        text.
 
         This is pure prose hand-off, unconditional (always returned, never
         gated on a run fact) -- unlike `_petitions_review_context` or
@@ -12104,16 +12110,18 @@ class LoopSupervisor:
         text is always present in `_review_extra_context`'s output.
         """
         return (
-            "\n## The engine owns the terminal record (task 008, "
-            "requirement B.2, #140)\n\n"
+            "\n## The engine owns the terminal record (task 008/064, "
+            "requirement B.2/N.3, #140)\n\n"
             "Petition/adjudication accounting, steer and ruling history, "
             "approach history, terminal tallies and notification "
             "accounting are the engine's record -- written into "
             "`run-record.md`/`run-record.json` at `finishing` (task "
-            "006/007, requirement B.1), never a closing report's job to "
-            "reconstruct. A closing report is never faulted for omitting "
-            "or predating them.\n\n"
-            "A closing report's obligations are exactly: what shipped per "
+            "006/007, requirement B.1), never a task's job to reconstruct. "
+            "Nothing else in the run is faulted for omitting or predating "
+            "them.\n\n"
+            "There is no closing report, for this wave or any future one "
+            "(requirement N.3) -- the run's terminal `notify` summary and "
+            "the run dir's own artifacts carry what shipped per "
             "requirement, its evidence (commit, test node ids), and the "
             "residuals it knows of, at the code sha it names.\n"
         )
