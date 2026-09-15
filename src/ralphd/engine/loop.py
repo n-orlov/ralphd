@@ -6547,14 +6547,47 @@ class LoopSupervisor:
         # gate rejection, and read back by `ralphctl status`'s own
         # `_format_gate_rejection_ending_lines`.
         cured = self._gate_cure_pass_available(approach)
-        self.run.update_status(
-            gateRejectionEnding=self._gate_rejection_ending(approach, cured))
+        ending = self._gate_rejection_ending(approach, cured)
+        self.run.update_status(gateRejectionEnding=ending)
         if cured:
             self._take_gate_cure_pass(approach)
             self._advance("verdict_gate", "cure",
                          "verdict_gate_rejected_curable_pass_available")
             return ("advance", "cure",
                     "verdict_gate_rejected_curable_pass_available")
+        # Task 001 (PRD requirement A.1/A.2): a rejection carrying a
+        # genuinely non-curable blocking finding (or a criteria-tamper
+        # finding, which blocks the cure edge exactly the same way --
+        # `_gate_rejection_curable_ignoring_ceiling`'s own checks) ends the
+        # run failed/unverified RIGHT HERE when an approach is still
+        # available -- no archive, no composite PRD, no replan and no
+        # cure task, exactly A.1/A.2's own wording ("even when max_
+        # approaches leaves another approach available"). On the run's
+        # LAST approach this same rejection already reaches `finishing`
+        # via the ordinary `verdict_gate_rejected_no_approach_left` edge
+        # below -- unchanged, archive and all, so a rejection there still
+        # leaves the same artifacts a prior wave's tests already pin
+        # (`tests/test_verdict_gate.py::test_review_verified_with_
+        # residuals_then_gate_rejects_yields_two_distinguishable_
+        # artifacts`). Deliberately narrower than "ending == MERITS":
+        # that label also covers an UNSTRUCTURED rejection (no `_gate_
+        # findings()` channel at all, e.g. a bare `reason` string with no
+        # findings.json) where the run has no basis to call any finding
+        # non-curable -- that case keeps the ordinary archive/replan-or-
+        # finish edges below exactly as before, out of this requirement's
+        # scope (its `Cured when:` clause names "a rejection containing a
+        # non-curable blocking finding", not an unstructured one). A.3:
+        # two supervisor regressions in `tests/test_peer_verdict_gate.py`
+        # drive this mixed set -- one on the last approach (already
+        # shipped: `test_a_mix_of_curable_and_incurable_gate_findings_
+        # still_ends_the_run`), one with an approach left (new this
+        # task).
+        if (approach < self.cfg.max_approaches
+                and ending == state.GATE_REJECTION_ENDING_MERITS
+                and self._gate_findings() is not None):
+            self._advance("verdict_gate", "finishing",
+                         "verdict_gate_rejected_on_merits")
+            return ("tail",)
         self._archive_approach(approach)
         self._write_composite_prd(approach)
         if approach < self.cfg.max_approaches:

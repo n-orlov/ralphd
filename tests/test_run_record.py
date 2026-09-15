@@ -606,7 +606,10 @@ def test_verdict_gate_rejection_is_recorded_as_its_own_channel(tmp_path, monkeyp
     _stub_runner(sup, {"verdict": "rejected", "reason": "gate says no"})
 
     outcome = asyncio.run(sup._step_verdict_gate())
-    assert outcome == ("advance", "replan", "verdict_gate_rejected_approach_left")
+    # v0.21.1 requirement A.1/A.2 (task 001): a non-curable blocking
+    # finding ends the run right here, whatever approaches remain --
+    # never a replan, even though `max_approaches=2` leaves one available.
+    assert outcome == ("tail",)
 
     entry = state_mod.approach_metadata_channel(root, 1, "verdictGate")
     assert entry["verdict"] == "rejected"
@@ -617,6 +620,10 @@ def test_verdict_gate_rejection_is_recorded_as_its_own_channel(tmp_path, monkeyp
 
     sup._finish("failed", "unverified")
     archived = _record(sup.run)["approaches"][0]
+    # A.2: never archived on this path -- the metadata channel above is
+    # still recorded, but there is no `approaches/01` archive dir.
+    assert archived["archived"] is False
+    assert archived["archivedDir"] is None
     assert archived["verdictGate"]["source"] == "engine-metadata"
     assert archived["verdictGate"]["verdict"] == "rejected"
     assert archived["review"] is None

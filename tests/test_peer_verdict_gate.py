@@ -1046,6 +1046,57 @@ def test_a_mix_of_curable_and_incurable_gate_findings_still_ends_the_run(
     assert cure_tasks == []
 
 
+def test_a_mix_of_curable_and_incurable_gate_findings_ends_the_run_with_an_approach_left(
+        tmp_path):
+    """Task 001 (PRD requirement A.1/A.2, #192, this wave's v0.21.1
+    requirement A): the exact scenario the requirement's own `Cured when:`
+    clause names -- "a real cloned supervisor at approach 1 of 2, given a
+    verdict-gate rejection carrying one curable AND one non-curable
+    blocking finding" -- but this time with an approach still available
+    (`max_approaches=2`, approach 1 of 2), the case v0.21's own shipped
+    `test_a_mix_of_curable_and_incurable_gate_findings_still_ends_the_run`
+    above never drove because it fixed `max_approaches=1`. Before task
+    001's fix this returned `('advance', 'replan', 'verdict_gate_
+    rejected_approach_left')` -- it archived approach 1 and started a
+    fresh planning phase over a non-curable finding no fresh approach can
+    change. After the fix it must end `failed`/`unverified` right there,
+    with no approach archive, no `replan` phase and no appended cure
+    task -- exactly A.1 and A.2's own wording."""
+    root = tmp_path / "run"
+    root.mkdir(parents=True, exist_ok=True)
+    run = RunDir(root=root)
+    findings.write_findings_json(run.verdict_gate_findings_json_file,
+                                 _mixed_gate_findings())
+    sup, final_state = _run_job(
+        root,
+        {"planning": [_plan()], "worker": [_worker_completes(TASK_1)],
+         "review": [_review_verifies()],
+         "verdict_gate": [_verdict_gate_rejects(
+             "one blocking finding is curable, the other is not")]},
+        peer_verdict_gate=True, max_approaches=2)
+
+    agent = sup.runner
+    # A.2: no `replan` (hence no second `planning`/`worker`/`review`/
+    # `verdict_gate` cycle) -- the run ends right after the ONE verdict_
+    # gate phase, even though a second approach was available.
+    assert agent.phases_seen == ["planning", "worker", "review", "verdict_gate"]
+    # A.1: ends failed/unverified, not a fresh approach.
+    assert final_state == "failed", sup.run.read_status()
+    assert sup.run.read_status().get("verdict") == "unverified"
+    assert sup.run.read_status().get("approach") == 1
+    assert sup.run.read_status().get("gateCurePasses") is None
+    assert (sup.run.read_status().get("gateRejectionEnding")
+            == "rejected_on_the_merits")
+    # A.2: no approach archive and no composite PRD -- the ordinary
+    # archive/replan machinery this rejection now bypasses never ran.
+    assert not (root / "approaches" / "01").exists()
+    assert not (root / "composite-prd.md").exists()
+    # A.2: no cure task appended for this rejection.
+    tasks = sup.run.read_tasks()["tasks"]
+    cure_tasks = [t for t in tasks if t.get("origin") == "review-cure"]
+    assert cure_tasks == []
+
+
 def test_the_gate_cure_pass_edge_is_declared_only_under_the_peer_delta():
     """The new edge exists ONLY when `peer_verdict_gate=True` -- `verdict_
     gate` has no reachable table entry at all when the gate is off, so

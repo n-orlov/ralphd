@@ -27,12 +27,13 @@ rather than left as a disclosed narrowing:
     and routes back to a genuine second `planning` iteration; the SECOND
     `plan_review` invocation approves and the plan proceeds to `worker`
     untouched (`test_a_plan_review_objection_spends_a_revision_then_approves`).
-  * **reject** -- `verdict_gate` rejects once with an approach still left:
-    the rejection folds into a fresh approach (`_archive_approach`,
-    `_write_composite_prd`, the same machinery `review`'s own rejection
-    uses) and that fresh approach's own `verdict_gate` invocation approves
-    for real, reaching the run's real success edge
-    (`test_a_verdict_gate_rejection_with_an_approach_left_starts_a_fresh_approach`).
+  * **reject** -- `verdict_gate` rejects once, carrying a genuinely
+    non-curable blocking finding, with an approach still left: v0.21.1
+    requirement A means this ends the run failed/unverified RIGHT THERE
+    -- no archive, no composite PRD, no fresh approach, no cure task --
+    rather than folding into a fresh approach the way it used to before
+    that fix
+    (`test_a_verdict_gate_rejection_with_a_non_curable_finding_ends_the_run_even_with_an_approach_left`).
   * **composed: vigilant + verdict_gate** -- task 019/020's per-task `verify`
     mini-FSM and the peer gate in the SAME run: both fire on every task the
     plan carries, each task ends vigilant's own `validated`, and the run's
@@ -147,15 +148,27 @@ def test_a_plan_review_objection_spends_a_revision_then_approves(engine_factory)
     assert ts and all(t["status"] == "completed" for t in ts), ts
 
 
-def test_a_verdict_gate_rejection_with_an_approach_left_starts_a_fresh_approach(
+def test_a_verdict_gate_rejection_with_a_non_curable_finding_ends_the_run_even_with_an_approach_left(
         engine_factory):
+    """v0.21.1 requirement A (task 001, #192): the exact defect the
+    requirement's own `Cured when:` clause names -- a verdict_gate
+    rejection carrying a genuinely non-curable blocking finding (the
+    stub's `STUB_VERDICT_GATE_REJECT_COUNT` knob writes `curable: False`)
+    must end the run failed/unverified right there, whatever `max_
+    approaches` leaves available -- no archive, no composite PRD, no
+    fresh approach, no cure task. Before task 001's fix this same fixture
+    folded the rejection into a fresh approach 2 and reached the run's
+    real success edge once THAT approach's own gate invocation approved;
+    the corrected engine never gets that far -- there is no second
+    `verdict_gate` invocation at all."""
     run = engine_factory(
         job={"run_id": "flow-verdict-gate-reject", "on_complete": "exit",
              "peer_verdict_gate": True, "max_approaches": 2},
         stub_env={"STUB_TASKS": "1", "STUB_VERDICT_GATE_REJECT_COUNT": "1"})
-    assert run.proc.wait(timeout=60) == 0, (
-        "flow peer gates (verdict gate reject): the engine did not exit 0 "
-        "after the second approach's own verdict_gate invocation approved")
+    code = run.proc.wait(timeout=60)
+    assert code != 0, (
+        "flow peer gates (verdict gate reject): a run ended by a "
+        "non-curable verdict_gate rejection must not exit 0")
 
     assert_step_sequence(flow_steps(run), [
         "state:running",
@@ -167,37 +180,25 @@ def test_a_verdict_gate_rejection_with_an_approach_left_starts_a_fresh_approach(
         "iteration:review",
         "verdict:review:verified@1",
         "phase:verdict_gate@1",
-        "iteration:verdict_gate",          # rejects -- an approach is left
+        "iteration:verdict_gate",          # rejects a non-curable finding
         "verdict:verdictGate:rejected@1",
-        "phase:planning@2",
-        "iteration:planning",
-        "iteration:worker",
-        "signal:COMPLETE",
-        "phase:review@2",
-        "iteration:review",
-        "verdict:review:verified@2",
-        "phase:verdict_gate@2",
-        "iteration:verdict_gate",          # approves -- the run's real success edge
-        "verdict:verdictGate:verified@2",
-        "signal:VERIFIED",
-        "state:succeeded",
+        "state:failed",
     ], flow="flow peer gates (verdict gate reject)")
 
     st = status(run)
     assert (st.get("state"), st.get("verdict"), st.get("approach")) == (
-        "succeeded", "verified", 2), (
-        f"flow peer gates (verdict gate reject): expected succeeded/verified "
-        f"on approach 2, got state={st.get('state')!r} verdict="
+        "failed", "unverified", 1), (
+        f"flow peer gates (verdict gate reject): expected failed/unverified "
+        f"on approach 1, got state={st.get('state')!r} verdict="
         f"{st.get('verdict')!r} approach={st.get('approach')!r}")
 
-    # the rejection's own record: approach 1 is archived (with the peer's
-    # own, engine-attributed findings channel), approach 2 -- the run's real
-    # terminal success -- never is.
+    # requirement A.2: no archive, no replan, no second approach -- the
+    # rejection ended the run right where it was found.
     approaches_dir = run.run_dir / "approaches"
-    assert (approaches_dir / "01").is_dir(), sorted(
-        p.name for p in approaches_dir.iterdir())
-    assert not (approaches_dir / "02").exists()
-    assert (approaches_dir / "01" / "verdict-gate-findings.md").exists()
+    assert not approaches_dir.exists() or not list(approaches_dir.iterdir()), (
+        f"flow peer gates (verdict gate reject): no approach archive "
+        f"expected, found "
+        f"{sorted(p.name for p in approaches_dir.iterdir()) if approaches_dir.exists() else []}")
     ts = tasks(run)
     assert ts and all(t["status"] == "completed" for t in ts), ts
 
@@ -297,26 +298,37 @@ def test_both_peer_gates_compose_in_one_run(engine_factory):
     with BOTH gates driven through a real round trip in the same run: the
     first `plan_review` invocation objects (spending approach 1's one
     revision) and the second approves; then, after `review` verifies, the
-    first `verdict_gate` invocation REJECTS -- spending approach 1 -- and the
-    fresh approach's own `plan_review` (the objection knob is spent, not
-    reset) and `verdict_gate` both approve, which is the run's real success
-    edge. This is the composition `tests/test_e2e_composed_gates_task032.py
-    ::test_both_peer_gates_enabled_in_the_same_run` used to own (task 020,
-    C.9): both gates observably exercised, not merely configured."""
+    `verdict_gate` invocation REJECTS carrying a genuinely non-curable
+    blocking finding (the stub's `STUB_VERDICT_GATE_REJECT_COUNT` knob,
+    same shape `test_a_verdict_gate_rejection_with_a_non_curable_finding_
+    ends_the_run_even_with_an_approach_left` drives alone). v0.21.1
+    requirement A (task 001) means that rejection ends the run failed/
+    unverified RIGHT THERE, even with `max_approaches=2` leaving a second
+    approach available -- no archive, no fresh approach, no second
+    `verdict_gate` invocation. This is the composition `tests/test_e2e_
+    composed_gates_task032.py::test_both_peer_gates_enabled_in_the_same_
+    run` used to own (task 020, C.9), updated for requirement A: both
+    gates are still observably exercised for real (plan_review's full
+    objection-then-approval round trip, verdict_gate's real rejection),
+    just never reaching a second approach now that the rejection itself
+    ends the run instead of spending one."""
     run = engine_factory(
         job={"run_id": "flow-both-peer-gates", "on_complete": "exit",
              "peer_plan_review": True, "peer_verdict_gate": True,
              "max_approaches": 2},
         stub_env={"STUB_TASKS": "1", "STUB_PLAN_REVIEW_OBJECTIONS": "1",
                   "STUB_VERDICT_GATE_REJECT_COUNT": "1"})
-    assert run.proc.wait(timeout=60) == 0, (
-        "flow peer gates (both gates): the engine did not exit 0 after "
-        "approach 2's own gate invocations approved")
+    code = run.proc.wait(timeout=60)
+    assert code != 0, (
+        "flow peer gates (both gates): a run ended by a non-curable "
+        "verdict_gate rejection must not exit 0")
 
     assert_step_sequence(flow_steps(run), [
         "state:running",
         # approach 1: plan_review objects once, then approves; after review
-        # verifies, the verdict gate rejects, spending the approach.
+        # verifies, the verdict gate rejects a non-curable finding, which
+        # now ends the run right there (requirement A) instead of spending
+        # the approach on a fresh planning round.
         "phase:planning@1",
         "iteration:planning",
         "phase:plan_review@1",
@@ -331,50 +343,29 @@ def test_both_peer_gates_compose_in_one_run(engine_factory):
         "iteration:review",
         "verdict:review:verified@1",
         "phase:verdict_gate@1",
-        "iteration:verdict_gate",          # rejects -- an approach is left
+        "iteration:verdict_gate",          # rejects -- non-curable, ends it
         "verdict:verdictGate:rejected@1",
-        # approach 2: a fresh planning/plan_review round, approving on its own
-        # first try, then the gate's second invocation approves for real.
-        "phase:planning@2",
-        "iteration:planning",
-        "phase:plan_review@2",
-        "iteration:plan_review",
-        "iteration:worker",
-        "signal:COMPLETE",
-        "phase:review@2",
-        "iteration:review",
-        "verdict:review:verified@2",
-        "phase:verdict_gate@2",
-        "iteration:verdict_gate",
-        "verdict:verdictGate:verified@2",
-        "signal:VERIFIED",
-        "state:succeeded",
+        "state:failed",
     ], flow="flow peer gates (both gates)")
 
     st = status(run)
     assert (st.get("state"), st.get("verdict"), st.get("approach")) == (
-        "succeeded", "verified", 2), (
-        f"flow peer gates (both gates): expected succeeded/verified on "
-        f"approach 2, got state={st.get('state')!r} "
+        "failed", "unverified", 1), (
+        f"flow peer gates (both gates): expected failed/unverified on "
+        f"approach 1, got state={st.get('state')!r} "
         f"verdict={st.get('verdict')!r} approach={st.get('approach')!r}")
     # plan_review's own mechanism fired for real: one revision recorded
-    # against approach 1, none against approach 2 (its first pass approved).
+    # against approach 1.
     assert st.get("planReviewRevisions") == {"1": 1}, (
         f"flow peer gates (both gates): exactly one plan revision, against "
         f"approach 1, got {st.get('planReviewRevisions')!r}")
-    # verdict_gate's own mechanism fired for real too: approach 1 archived
-    # with the gate-attributed findings channel, approach 2 -- the run's real
-    # terminal success -- never archived.
+    # requirement A.2: no archive, no replan, no second approach -- the run
+    # ended right on the gate's own rejection.
     approaches_dir = run.run_dir / "approaches"
-    assert (approaches_dir / "01").is_dir(), sorted(
-        p.name for p in approaches_dir.iterdir())
-    assert not (approaches_dir / "02").exists()
-    assert (approaches_dir / "01" / "verdict-gate-findings.md").exists()
-    findings = json.loads(
-        (approaches_dir / "01" / "verdict-gate-findings.json").read_text())
-    assert findings and all(f.get("author") == "verdict_gate" for f in findings), (
-        f"flow peer gates (both gates): the archived findings must be "
-        f"attributed to the gate itself, got {findings!r}")
+    assert not approaches_dir.exists() or not list(approaches_dir.iterdir()), (
+        f"flow peer gates (both gates): no approach archive expected, "
+        f"found {sorted(p.name for p in approaches_dir.iterdir())}"
+        if approaches_dir.exists() else "")
     ts = tasks(run)
     assert ts and all(t["status"] == "completed" for t in ts), ts
 
