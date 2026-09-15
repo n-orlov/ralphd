@@ -2266,15 +2266,13 @@ engine-version recording (F); the hub's task/tier/cost/version/history/collapse 
 bounded, cached log tail (H); an ingestion-terminated run no longer read as an infra outage and an
 anchored verdict-gate peek detector (J); and the runner-slot topology, Chrome-session and
 worker-phase fixes under K that this run could carry (K.5–K.7); N cut the tracked report corpus,
-its test coupling and the closing-report obligation. The issues closed by this wave, each with an
-evidence comment naming the commit and the test node ids, are #192, #135, #187, #184, #133, #196,
-#180, #181, #183, #158, #159, #160, #194, #195, #137, #138, #136, #134, #188, #179, #199 and #200 —
-with the K.1–K.4 halves of #188 and #179 (containerizing `heavy`'s two tiers, and a `timeout-minutes`
-kill made distinguishable from a cancel) standing undelivered rather than claimed; #189's
-runner-slot topology and #193's intermittent Chrome session drop are commented and left open as the
-halves this wave does not own, and #25 stays untouched. This paragraph is written mid-run, ahead of
-this wave's own settlement — the v0.19, v0.19.1, v0.20, v0.20.1 and v0.20.2 blocks above are
-unchanged by this commit, and this wave's own lane outcomes stay outside the tree, by #199.
+its test coupling and the closing-report obligation. The issues this wave answers, and takes to
+closure at the release's own last step rather than in this paragraph, are #192, #135, #187, #184,
+#133, #196, #180, #181, #183, #158, #159, #160, #194, #195, #137, #138, #136, #134, #188, #179,
+#199 and #200 — with the K.1–K.4 halves of #188 and #179 (containerizing `heavy`'s two tiers, and a
+`timeout-minutes` kill made distinguishable from a cancel) standing undelivered rather than claimed;
+#189's runner-slot topology and #193's intermittent Chrome session drop are commented and left open
+as the halves this wave does not own, and #25 stays untouched.
 
 ## Later / explicitly deferred
 
