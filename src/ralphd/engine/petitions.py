@@ -631,8 +631,7 @@ def duplicate_petition_error(existing: dict) -> str:
 
 
 def file_worker_petition(workspace: Path, obligation: str, ptype: str,
-                          evidence: str, *,
-                          target: Path | None = None, run=None) -> list[str]:
+                          evidence: str, *, run=None) -> list[str]:
     """The ENGINE's own write path for a worker's structured impossibility
     declaration (task 004, requirement A.1, #114) -- never the worker
     itself: a worker's final-line payload only ever carries the three
@@ -646,39 +645,26 @@ def file_worker_petition(workspace: Path, obligation: str, ptype: str,
     this is the point where an ordinary declaration never reaches that
     state at all.
 
-    `run` (optional, default `None`, task 065, requirement N.6, #150):
-    when given, the filing is written into `run.petitions_file` --
-    RUN-scope, never the workspace tree -- and `target`/`discover_
-    petition_files`'s own workspace-file selection is not consulted at
-    all for the WRITE (the duplicate scan below still checks the
-    workspace too, via `filed_petition_for_obligation(..., run=run)`, so
-    a re-filed obligation is refused no matter which of the two sources
-    -- workspace or run dir -- first carries it). This is the engine's
-    own production write path from `LoopSupervisor._apply_worker_
-    petition_declaration`/`petitions.file_exhaustion_petition`, which
-    both now pass their own run handle -- #150 stays CLOSED: this is not
-    its glob-discovery bug fixed again, it is the tree-side file that bug
-    reads removed, for a run built on this code. `run=None` (every
-    pre-existing caller) keeps writing into the workspace exactly as
-    before this task.
+    `run` (task 065, requirement N.6, #150) is where the filing is
+    written -- `run.petitions_file`, RUN-scope, never the workspace tree.
+    The duplicate scan above is always workspace-AND-run-dir-wide (every
+    discovered workspace file, every wave, plus `run`'s own file when
+    given): a re-filed obligation is a violation no matter which of the
+    two storage locations first filed it, and that is a separate concern
+    from which file a NEW filing lands in.
 
-    `target` (optional, default `None`, backward compatible with every
-    pre-existing caller, ignored when `run` is given) is the exact
-    workspace file to write into, when the caller has already resolved
-    one -- `file_exhaustion_petition` (below) passes `ensure_petitions_
-    file`'s own current-wave file when it has no run handle, so
-    exhaustion never falls into this function's own `files[-1]` fallback
-    (task 018, requirement E.1, #150). `target=None` keeps choosing among
-    whatever `discover_petition_files` finds, exactly as before this task
-    -- the worker's own typed declaration (task 004) has no wave to
-    resolve from, so it is unaffected.
-
-    The duplicate-obligation scan below is always workspace-AND-run-dir-
-    wide (every discovered workspace file, every wave, plus `run`'s own
-    file when given) regardless of `target`: a re-filed obligation is a
-    violation no matter which wave -- or which of the two storage
-    locations -- first filed it, and that is a separate concern from
-    which file a NEW filing lands in.
+    Task 008 (requirement H, this wave): `run=None` used to fall back to
+    writing straight into the workspace tree -- either a caller-resolved
+    `target` file, or (with neither `target` nor `run`) a guess among
+    whatever `discover_petition_files` happened to find, the `files[-1]`
+    shape task 018 already had to correct once. That whole fallback is
+    retired outright, not merely narrowed: called without a run handle,
+    this function now REFUSES -- no `artifacts/reports/` file is created
+    or modified, ever, no matter what a caller passes for `workspace`.
+    Every production call site (`LoopSupervisor._apply_worker_petition_
+    declaration`, `petitions.file_exhaustion_petition`) already passes
+    its own run handle (task 065), so this is a no-op for them; it only
+    changes the return value for a caller that has none.
 
     Returns a list of error strings; empty means the petition was written.
     A non-empty return means nothing was written to disk -- the caller (an
@@ -690,25 +676,19 @@ def file_worker_petition(workspace: Path, obligation: str, ptype: str,
     already = filed_petition_for_obligation(workspace, obligation, run=run)
     if already is not None:
         return [duplicate_petition_error(already)]
-    if run is not None:
-        run_target = _run_petitions_file(run)
-        if run_target is None:
-            return [
-                "petition: this run exposes no run-dir petitions file to "
-                "file this declaration into"
-            ]
-        write_target = run_target
-        write_target.parent.mkdir(parents=True, exist_ok=True)
-    elif target is not None:
-        write_target = target
-    else:
-        files = discover_petition_files(workspace)
-        if not files:
-            return [
-                "petition: no <wave>-petitions.md file exists under "
-                "artifacts/reports/ to file this declaration into"
-            ]
-        write_target = files[0] if len(files) == 1 else files[-1]
+    if run is None:
+        return [
+            "petition: no run handle available to file this declaration "
+            "into -- filing writers no longer fall back to a workspace "
+            "tree write (requirement H, docs/petition-format.md)"
+        ]
+    write_target = _run_petitions_file(run)
+    if write_target is None:
+        return [
+            "petition: this run exposes no run-dir petitions file to "
+            "file this declaration into"
+        ]
+    write_target.parent.mkdir(parents=True, exist_ok=True)
     try:
         existing = write_target.read_text()
     except OSError:
@@ -778,32 +758,22 @@ def file_exhaustion_petition(workspace: Path, task: dict,
     the same id+title text -- is treated as the one filing this obligation
     already has, not a fresh one).
 
-    `run` (optional, default `None`, task 065, requirement N.6, #150):
-    when given, forwarded straight to `filed_petition_for_obligation`/
-    `file_worker_petition`, which then write into `run.petitions_file` --
-    RUN-scope -- and `ensure_petitions_file`/`target` (the workspace-file
-    resolution below) are never consulted at all: exhaustion's filing
-    never touches the workspace tree when the caller has a run handle.
-    `LoopSupervisor._verify_task` is the one production caller and always
-    has one. `run=None` (every pre-existing caller, e.g. a fixture
-    exercising this function directly) keeps the workspace-file behaviour
-    below byte-for-byte unchanged.
+    `run` (task 065, requirement N.6, #150) is forwarded straight to
+    `filed_petition_for_obligation`/`file_worker_petition`, which then
+    write into `run.petitions_file` -- RUN-scope. `LoopSupervisor.
+    _verify_task` is the one production caller and always has one.
 
-    Task 018 (requirement E.1, #150): with no `run`, `target` is resolved
-    through `ensure_petitions_file(workspace, contract_text)` -- the
-    CURRENT wave's file, creating it if absent -- and handed to `file_
-    worker_petition` explicitly, so exhaustion never lands in `file_
-    worker_petition`'s own `files[-1]` fallback (an older wave's file,
-    the moment the workspace carries more than one, or the moment the
-    single one it carries is an older wave's). `contract_text` defaults
-    to `""`, matching every pre-existing caller (no wave named ->
-    `_current_wave_petitions_path`'s wave-less lone-file fallback). A
-    workspace where the current-wave file cannot even be created (a
-    read-only mount) refuses the filing instead of silently misfiling it
-    -- the caller folds that into the ordinary `failed` route exactly
-    like any other refusal from this function, and a duplicate obligation
-    is refused BEFORE anything is created, so a refused filing leaves no
-    empty current-wave file behind.
+    Task 008 (requirement H, this wave): `run=None` used to resolve a
+    CURRENT-wave workspace file via `ensure_petitions_file(workspace,
+    contract_text)` (task 018, requirement E.1, #150) and file into it
+    directly. That fallback is retired along with `file_worker_petition`'s
+    own: with no run handle, this function now REFUSES outright, the same
+    documented no-op `file_worker_petition` itself performs -- no
+    workspace `<wave>-petitions.md` file is created or modified, and
+    `contract_text` (kept only for callers' positional-argument
+    compatibility) is no longer consulted at all in that branch. A
+    duplicate obligation is still refused BEFORE this check, so a refused
+    filing never leaves anything behind either way.
     """
     tid = task.get("id", "?")
     obligation = task_petition_obligation(task)
@@ -812,24 +782,16 @@ def file_exhaustion_petition(workspace: Path, task: dict,
         "reason recorded on the last attempt.")
     already = filed_petition_for_obligation(workspace, obligation, run=run)
     if already is not None:
-        # Refused before `ensure_petitions_file` runs, so a duplicate never
-        # leaves a freshly created (and permanently empty) current-wave
-        # file behind (task 018, requirement E.1).
         return [duplicate_petition_error(already)]
-    if run is not None:
-        return file_worker_petition(
-            workspace, obligation, PETITION_TYPE_EXHAUSTION_DEFAULT,
-            evidence, run=run)
-    target = ensure_petitions_file(workspace, contract_text)
-    if target is None:
+    if run is None:
         return [
-            "petition: the contract declares a petition protocol but no "
-            "current-wave petitions file could be created under "
-            "artifacts/reports/"
+            "petition: no run handle available to file this exhaustion "
+            "petition into -- filing writers no longer fall back to a "
+            "workspace tree write (requirement H, docs/petition-format.md)"
         ]
-    return file_worker_petition(workspace, obligation,
-                                PETITION_TYPE_EXHAUSTION_DEFAULT, evidence,
-                                target=target)
+    return file_worker_petition(
+        workspace, obligation, PETITION_TYPE_EXHAUSTION_DEFAULT,
+        evidence, run=run)
 
 
 def _adjudication_line(adjudication: str, remedy: str = "") -> str:
@@ -905,30 +867,38 @@ def write_back_petition_adjudication(workspace: Path, obligation: str,
     petition's own filing sees the outcome without having to
     cross-reference `events.jsonl` or the run-scope adjudications store.
 
-    `run` (optional, default `None`, task 065, requirement N.6, #150):
-    when given, ONLY `run.petitions_file` is searched/edited -- the
-    workspace tree is never touched, matching `file_worker_petition`'s
-    own run-dir write path -- because an obligation this engine build
-    ever files now lands there, never in a tracked `<wave>-petitions.md`
-    file (N.6: "the engine stops writing petitions into the tree"). An
-    obligation whose only filing is a WORKSPACE file (a pre-committed
-    `v0.21-petitions.md`, or one an OLDER engine build wrote during this
-    same run) is a deliberate no-op here when `run` is given: the run-
-    scope JSON store (`record_confirmed_adjudications`/`record_refuted_
-    adjudications`) already carries that adjudication authoritatively,
-    and this function's whole job is a human-readable MIRROR, never the
-    record of truth -- so `None` from a run-scoped call names nothing
-    broken. `run=None` (every pre-existing caller) keeps searching every
+    `run` (task 065, requirement N.6, #150): ONLY `run.petitions_file` is
+    searched/edited -- the workspace tree is never touched, matching
+    `file_worker_petition`'s own run-dir write path -- because an
+    obligation this engine build ever files now lands there, never in a
+    tracked `<wave>-petitions.md` file (N.6: "the engine stops writing
+    petitions into the tree"). An obligation whose only filing is a
+    WORKSPACE file (a pre-committed `v0.21-petitions.md`, or one an OLDER
+    engine build wrote during this same run) is a deliberate no-op here:
+    the run-scope JSON store (`record_confirmed_adjudications`/`record_
+    refuted_adjudications`) already carries that adjudication
+    authoritatively, and this function's whole job is a human-readable
+    MIRROR, never the record of truth -- so `None` names nothing broken.
+
+    Task 008 (requirement H, this wave): `run=None` used to search every
     `<wave>-petitions.md` file `discover_petition_files` finds under
-    `workspace` exactly as before this task.
+    `workspace` and edit whichever one matched -- the exact defect PRD
+    finding B8 observed ("calling the shipped `write_back_petition_
+    adjudication` without `run` appends ... into a workspace `artifacts/
+    reports` petition"). That workspace search-and-edit fallback is
+    retired outright: called without a run handle, this function now
+    performs a documented no-op -- it returns `None` immediately, before
+    touching a single file under `workspace` at all, and
+    `artifacts/reports/` is left byte-identical no matter what obligation
+    or adjudication is named.
 
     Searches for the ONE section whose obligation normalises the same
     way, and appends the adjudication line inside that section
     (`_append_adjudication_to_section`). Returns the `Path` written on
     success, `None` when nothing matched, the section already carried an
     `Adjudication` field (this call is then a deliberate no-op, never a
-    silent overwrite), or the file could not be re-written (a read-only
-    mount).
+    silent overwrite), the file could not be re-written (a read-only
+    mount), or -- since this task -- `run` is `None`.
 
     `adjudication` values other than `"CONFIRMED"`/`"REFUTED"` are also a
     no-op -- this function is a filter over an already-validated payload
@@ -939,38 +909,27 @@ def write_back_petition_adjudication(workspace: Path, obligation: str,
         return None
     if not isinstance(obligation, str) or not obligation.strip():
         return None
+    if run is None:
+        # Requirement H: no workspace-tree fallback at all -- a documented
+        # no-op, `artifacts/reports/` left byte-identical.
+        return None
     key = _normalize_obligation(obligation)
     line = _adjudication_line(adjudication, remedy)
-    if run is not None:
-        run_path = _run_petitions_file(run)
-        if run_path is None:
-            return None
-        try:
-            run_text = run_path.read_text()
-        except OSError:
-            return None
-        updated = _append_adjudication_to_section(run_text, key, line)
-        if updated is None:
-            return None
-        try:
-            run_path.write_text(updated)
-        except OSError:
-            return None
-        return run_path
-    for path in discover_petition_files(workspace):
-        try:
-            text = path.read_text()
-        except OSError:
-            continue
-        updated = _append_adjudication_to_section(text, key, line)
-        if updated is None:
-            continue
-        try:
-            path.write_text(updated)
-        except OSError:
-            return None
-        return path
-    return None
+    run_path = _run_petitions_file(run)
+    if run_path is None:
+        return None
+    try:
+        run_text = run_path.read_text()
+    except OSError:
+        return None
+    updated = _append_adjudication_to_section(run_text, key, line)
+    if updated is None:
+        return None
+    try:
+        run_path.write_text(updated)
+    except OSError:
+        return None
+    return run_path
 
 
 def duplicate_petition_obligations(workspace: Path, run=None) -> list[dict]:

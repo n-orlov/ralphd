@@ -257,12 +257,22 @@ def test_a_malformed_declaration_is_reasked_not_filed_via_real_step_worker(
 
 def test_a_duplicate_declaration_is_refused_not_filed_via_real_step_worker(
         tmp_path, monkeypatch):
+    """Task 008 (requirement H): the ORIGINAL filing is seeded through
+    `run=run` -- the only write path `file_worker_petition` still has --
+    rather than a bare call with no run handle, which now refuses outright
+    (requirement H, no workspace-tree fallback). The workspace's own
+    `petitions_file` stays a pure decoy here, proving the whole flow --
+    seed AND the real worker step's own duplicate refusal -- never touches
+    it (task 065, requirement N.6).
+    """
     sup, run, workspace = _worker_sup(tmp_path, "duplicate")
     petitions_file = _make_petitions_file(workspace)
+    before = petitions_file.read_text()
     obligation = "Requirement Y: exact same obligation text every time"
 
     first_errors = petitions.file_worker_petition(
-        workspace, obligation, "environmental", "the first filing's evidence")
+        workspace, obligation, "environmental", "the first filing's evidence",
+        run=run)
     assert first_errors == []
 
     dup_text = _petition_payload(obligation, "temporal",
@@ -285,8 +295,10 @@ def test_a_duplicate_declaration_is_refused_not_filed_via_real_step_worker(
     assert sup.runner.calls == sup.cfg.contract_retry_max + 1  # type: ignore[attr-defined]
     assert len(calls) == sup.cfg.contract_retry_max + 1
 
-    parsed = petitions.parse_petitions(petitions_file.read_text())
+    parsed = petitions.parse_petitions(run.petitions_file.read_text())
     # Still exactly the one, original filing -- the duplicate never landed.
     assert len(parsed) == 1
     assert parsed[0]["type"] == "environmental"
     assert parsed[0]["evidence"] == "the first filing's evidence"
+    # the workspace's tracked wave file was never touched either.
+    assert petitions_file.read_text() == before

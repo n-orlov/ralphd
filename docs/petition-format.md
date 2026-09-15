@@ -23,14 +23,27 @@ on this code rather than fixing the glob again, and #150 stays CLOSED.
 
 The historical shape — one file per wave, `artifacts/reports/<wave>-
 petitions.md`, tracked alongside the wave's other evidence reports — is
-still what every function above falls back to when called with no `run`
-at all (`run=None`, every pre-existing test fixture that exercises these
-functions directly), and it is why `artifacts/reports/v0.21-petitions.md`
-still exists in this repo: N.1 deletes every other file under
-`artifacts/reports/` but leaves that one behind, since the engine
-*running this wave's own work* is an older build and still appends to it.
-A future wave, built on this code, never creates a workspace file for its
-own petitions at all.
+why `artifacts/reports/v0.21-petitions.md` still exists in this repo: N.1
+deletes every other file under `artifacts/reports/` but leaves that one
+behind, since the engine *running this wave's own work* is an older build
+and still appends to it. A future wave, built on this code, never creates
+a workspace file for its own petitions at all.
+
+**Task 008 (requirement H): no workspace-tree fallback at all.** Calling
+any of the four functions above with a run handle writes only inside that
+run's own directory, exactly as N.6 already described. Calling one
+**without** a run handle used to fall back to reading or writing whichever
+`<wave>-petitions.md` file happened to exist under the workspace tree —
+the shape a call with no run handle at all (every pre-existing test
+fixture that exercised these functions directly, never a production call
+site) took before this task. That fallback is retired outright: without a
+run handle, `file_worker_petition`/`file_exhaustion_petition` refuse (an
+error string, nothing written) and `write_back_petition_adjudication`
+performs a documented no-op (`None`, nothing written) — `artifacts/
+reports/` is left byte-identical either way. `open_petitions_in_workspace`
+(a pure reader) is unaffected: it still reads the historical workspace
+file when one exists, which is how `v0.21-petitions.md` above keeps
+surfacing to review at all.
 
 ## One petition per obligation
 

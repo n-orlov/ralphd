@@ -1289,50 +1289,52 @@ def _wave_task(tid: str = "018", title: str = "scope petition discovery") -> dic
     return {"id": tid, "title": title, "validationNotes": "cannot be met"}
 
 
-def test_exhaustion_creates_the_current_wave_file_never_reusing_an_older_one(
+def test_exhaustion_without_a_run_handle_refuses_and_touches_no_wave_file(
         tmp_path):
+    """Task 008 (requirement H): the wave-scoping logic this test used to
+    exercise (`ensure_petitions_file`/`_current_wave_petitions_path`, task
+    018) only ever ran on the workspace-fallback branch of
+    `file_exhaustion_petition`, taken when the caller has no run handle --
+    exactly the branch requirement H retires outright. Every REAL caller
+    (`LoopSupervisor._verify_task`) always has a run handle
+    (`tests/test_petitioned_status_routing.py` covers that path); a
+    caller with none now gets a refusal and creates NOTHING under
+    `artifacts/reports/` -- no new current-wave file, and every pre-
+    existing older-wave file byte-for-byte unchanged."""
     ws = tmp_path / "ws"
+    olders = {}
     for wave in ("v0.16", "v0.17", "v0.18"):
-        _write(ws, f"{wave}-petitions.md", f"# {wave} petitions\n")
+        path = _write(ws, f"{wave}-petitions.md", f"# {wave} petitions\n")
+        olders[path] = path.read_text()
 
     errors = petitions.file_exhaustion_petition(ws, _wave_task(), CURRENT_CONTRACT)
 
-    assert errors == []
-    older = [petitions.discover_petition_files(ws)[i]
-             for i, p in enumerate(petitions.discover_petition_files(ws))
-             if p.name != "v0.19-petitions.md"]
-    for path in older:
-        assert petitions.parse_petitions(path.read_text()) == []
-    current = ws / "artifacts" / "reports" / "v0.19-petitions.md"
-    assert current.exists()
-    filed = petitions.parse_petitions(current.read_text())
-    assert len(filed) == 1
-    assert filed[0]["evidence"] == "cannot be met"
-    assert "018" in filed[0]["obligation"]
+    assert errors
+    assert not (ws / "artifacts" / "reports" / "v0.19-petitions.md").exists()
+    for path, before in olders.items():
+        assert path.read_text() == before
 
 
-def test_exhaustion_reuses_an_existing_current_wave_file(tmp_path):
-    ws = tmp_path / "ws"
-    _write(ws, "v0.18-petitions.md", "# v0.18 petitions\n")
-    current = _write(ws, "v0.19-petitions.md", "# v0.19 petitions\n")
-
-    errors = petitions.file_exhaustion_petition(ws, _wave_task(), CURRENT_CONTRACT)
-
-    assert errors == []
-    filed = petitions.parse_petitions(current.read_text())
-    assert len(filed) == 1
-    assert "018" in filed[0]["obligation"]
-    # the older wave's file is untouched.
-    older = ws / "artifacts" / "reports" / "v0.18-petitions.md"
-    assert petitions.parse_petitions(older.read_text()) == []
-
-
-def test_exhaustion_creates_the_current_wave_file_beside_a_lone_older_one(
+def test_exhaustion_without_a_run_handle_never_touches_an_existing_wave_file(
         tmp_path):
-    """The direct case for the writer: EXACTLY ONE petitions file exists and
-    it is an OLDER wave's (`v0.18`). The filing lands in a newly created
-    `v0.19-petitions.md`, and v0.18's bytes are unchanged -- the lone-file
-    fallback must not make an older wave the filing target."""
+    ws = tmp_path / "ws"
+    older = _write(ws, "v0.18-petitions.md", "# v0.18 petitions\n")
+    current = _write(ws, "v0.19-petitions.md", "# v0.19 petitions\n")
+    before_older, before_current = older.read_text(), current.read_text()
+
+    errors = petitions.file_exhaustion_petition(ws, _wave_task(), CURRENT_CONTRACT)
+
+    assert errors
+    assert older.read_text() == before_older
+    assert current.read_text() == before_current
+
+
+def test_exhaustion_without_a_run_handle_never_creates_beside_a_lone_older_one(
+        tmp_path):
+    """The direct case for the (now retired) writer fallback: EXACTLY ONE
+    petitions file exists and it is an OLDER wave's (`v0.18`). Without a
+    run handle the filing is refused outright -- no new `v0.19-
+    petitions.md` is created, and v0.18's bytes are unchanged."""
     ws = tmp_path / "ws"
     older = _write(ws, "v0.18-petitions.md",
                    "# v0.18 petitions\n" + _section("v0.18's own obligation"))
@@ -1340,14 +1342,9 @@ def test_exhaustion_creates_the_current_wave_file_beside_a_lone_older_one(
 
     errors = petitions.file_exhaustion_petition(ws, _wave_task(), CURRENT_CONTRACT)
 
-    assert errors == []
+    assert errors
     assert older.read_text() == before
-    current = ws / "artifacts" / "reports" / "v0.19-petitions.md"
-    assert current.exists()
-    filed = petitions.parse_petitions(current.read_text())
-    assert len(filed) == 1
-    assert "018" in filed[0]["obligation"]
-    assert filed[0]["evidence"] == "cannot be met"
+    assert not (ws / "artifacts" / "reports" / "v0.19-petitions.md").exists()
 
 
 def test_exhaustion_still_refuses_a_duplicate_obligation_from_any_wave(
@@ -1433,10 +1430,69 @@ _supervisor_writeback = supervisor_factory(run_id="task019-petition-writeback", 
                                            run_root="run", workspace="workspace", tasks=[])
 
 
+def _run_wave_file(tmp_path: Path) -> tuple[RunDir, Path]:
+    """The run-dir counterpart of `_wave_file`: a real `RunDir` whose OWN
+    `petitions_file` (never a workspace path) carries `WAVE_FILE_TEXT` --
+    the fixture every run-dir-scoped rewrite of this section's tests uses
+    (task 008, requirement H) so the matching-section/remedy/no-overwrite/
+    invalid-value logic `_append_adjudication_to_section` implements stays
+    covered, just against the ONLY place a run handle ever writes now.
+    """
+    run = RunDir(root=tmp_path / "run-writeback")
+    path = run.petitions_file
+    path.write_text(WAVE_FILE_TEXT)
+    return run, path
+
+
 def test_confirmed_is_appended_to_the_matching_section_only(tmp_path):
+    """Task 008 (requirement H, PRD finding B8): calling the shipped
+    `write_back_petition_adjudication` WITHOUT a run handle used to append
+    `**Adjudication**: CONFIRMED` straight into this workspace file -- the
+    exact counterexample finding B8 named, and the reason this test (and
+    its REFUTED counterpart right below) is rewritten to assert TREE
+    IMMUTABILITY instead of a tree write: no run handle means a
+    documented no-op, `artifacts/reports/` left byte-identical, full
+    stop. The matching-section-only/remedy/no-overwrite/invalid-value
+    behaviour this test used to pin for the tree survives instead at RUN
+    scope -- `test_confirmed_is_appended_to_the_run_dir_matching_section_only`
+    and its neighbours below (parser cover: `_append_adjudication_to_
+    section`/`parse_petitions`, exercised identically either way) -- plus
+    the pre-existing supervisor-level
+    `test_review_verdict_writes_the_adjudication_into_the_run_dir_never_the_workspace_tree`.
+    """
     path = _wave_file(tmp_path)
+    before = path.read_text()
     written = petitions.write_back_petition_adjudication(
         tmp_path, "Requirement E.2 cannot be met", "CONFIRMED")
+    assert written is None
+    assert path.read_text() == before
+    assert sorted((tmp_path / "artifacts" / "reports").iterdir()) == [path]
+
+
+def test_refuted_is_appended_with_its_remedy(tmp_path):
+    """The REFUTED counterpart of the test above (task 008, requirement H,
+    H.3): same claim, a REFUTED call with a remedy is exactly as inert
+    against the workspace tree as a CONFIRMED one -- see that test's own
+    docstring for the run-dir/parser cover this retires in favour of.
+    """
+    path = _wave_file(tmp_path)
+    before = path.read_text()
+    written = petitions.write_back_petition_adjudication(
+        tmp_path, "Task 5: a second, unrelated obligation", "REFUTED",
+        "do X instead")
+    assert written is None
+    assert path.read_text() == before
+    assert sorted((tmp_path / "artifacts" / "reports").iterdir()) == [path]
+
+
+def test_confirmed_is_appended_to_the_run_dir_matching_section_only(tmp_path):
+    """The run-dir survivor of `test_confirmed_is_appended_to_the_matching_
+    section_only`'s original claim: WITH a run handle, the write lands
+    (only) in `run.petitions_file`, in the matching section, leaving the
+    other section untouched."""
+    run, path = _run_wave_file(tmp_path)
+    written = petitions.write_back_petition_adjudication(
+        tmp_path, "Requirement E.2 cannot be met", "CONFIRMED", run=run)
     assert written == path
     parsed = {p["obligation"]: p for p in petitions.parse_petitions(
         path.read_text())}
@@ -1445,22 +1501,10 @@ def test_confirmed_is_appended_to_the_matching_section_only(tmp_path):
     assert parsed["Task 5: a second, unrelated obligation"]["adjudication"] is None
 
 
-def test_refuted_is_appended_with_its_remedy(tmp_path):
-    path = _wave_file(tmp_path)
-    petitions.write_back_petition_adjudication(
-        tmp_path, "Task 5: a second, unrelated obligation", "REFUTED",
-        "do X instead")
-    parsed = {p["obligation"]: p for p in petitions.parse_petitions(
-        path.read_text())}
-    entry = parsed["Task 5: a second, unrelated obligation"]
-    assert entry["adjudication"] == "REFUTED"
-    assert entry["remedy"] == "do X instead"
-
-
 def test_refuted_with_no_remedy_still_appends_a_line(tmp_path):
-    path = _wave_file(tmp_path)
+    run, path = _run_wave_file(tmp_path)
     petitions.write_back_petition_adjudication(
-        tmp_path, "Requirement E.2 cannot be met", "REFUTED", "")
+        tmp_path, "Requirement E.2 cannot be met", "REFUTED", "", run=run)
     parsed = {p["obligation"]: p for p in petitions.parse_petitions(
         path.read_text())}
     entry = parsed["Requirement E.2 cannot be met"]
@@ -1469,18 +1513,19 @@ def test_refuted_with_no_remedy_still_appends_a_line(tmp_path):
 
 
 def test_no_matching_obligation_is_a_noop(tmp_path):
-    _wave_file(tmp_path)
+    run, _path = _run_wave_file(tmp_path)
     written = petitions.write_back_petition_adjudication(
-        tmp_path, "an obligation nothing filed", "CONFIRMED")
+        tmp_path, "an obligation nothing filed", "CONFIRMED", run=run)
     assert written is None
 
 
 def test_an_already_adjudicated_section_is_never_overwritten(tmp_path):
-    path = _wave_file(tmp_path)
+    run, path = _run_wave_file(tmp_path)
     petitions.write_back_petition_adjudication(
-        tmp_path, "Requirement E.2 cannot be met", "CONFIRMED")
+        tmp_path, "Requirement E.2 cannot be met", "CONFIRMED", run=run)
     again = petitions.write_back_petition_adjudication(
-        tmp_path, "Requirement E.2 cannot be met", "REFUTED", "a remedy")
+        tmp_path, "Requirement E.2 cannot be met", "REFUTED", "a remedy",
+        run=run)
     assert again is None
     parsed = {p["obligation"]: p for p in petitions.parse_petitions(
         path.read_text())}
@@ -1489,9 +1534,9 @@ def test_an_already_adjudicated_section_is_never_overwritten(tmp_path):
 
 
 def test_an_invalid_adjudication_value_is_a_noop(tmp_path):
-    _wave_file(tmp_path)
+    run, _path = _run_wave_file(tmp_path)
     assert petitions.write_back_petition_adjudication(
-        tmp_path, "Requirement E.2 cannot be met", "MAYBE") is None
+        tmp_path, "Requirement E.2 cannot be met", "MAYBE", run=run) is None
 
 
 def test_review_verdict_writes_the_adjudication_into_the_run_dir_never_the_workspace_tree(
