@@ -4,16 +4,25 @@ N deleted three things -- the tracked report corpus (N.1), the count-
 disclosure rows in `docs/testing.md` (N.4) and the closing-report/lane-
 record/count-disclosure/attestation-artifact obligations from the contract
 (N.3) -- and N.9 asks for a standing test that fails the moment any of the
-three regrows. Three pure detectors, one per regrowth path, so a synthetic
-violation can be exercised without ever committing one to the tracked tree:
+three regrows. Four pure detectors, so a synthetic violation can be
+exercised without ever committing one to the tracked tree:
 
-1. `_non_petitions_files` -- a file directly under `artifacts/reports/`
-   that is not a `v<version>-petitions.md` file (N.1's own carve-out, kept
-   for the engine's late-cure petition machinery, #150).
+1. `_non_petitions_files` -- a file **anywhere under** `artifacts/reports/`
+   (recursive, not only a direct child -- requirement I.2) that is not a
+   `v<version>-petitions.md` file (N.1's own carve-out, kept for the
+   engine's late-cure petition machinery, #150).
 2. `_count_disclosure_rows` -- a bold paragraph in the shape N.4 deleted
    from `docs/testing.md`: `**<n> (smoke <n>, ...) by <wave> task <id>
    (...): ...**`.
-3. `_forbidden_prd_asks` -- a PRD under `docs/prds/` asking for a closing
+3. `_budget_table_count_rows` -- a markdown table row in the exact
+   count/module/collection-budget shape `3fb66dc8` deleted from
+   `docs/testing.md`'s budget table: `| lane | marker | recipe | <tests:
+   int> | <modules: int> | wall clock | <budget tests: int> | <budget
+   modules: int> | ... |` (requirement I.1). The surviving 7-column table
+   (lane/marker/recipe/wall clock/budget wall clock/PRD target/target met)
+   carries no bare-integer tests/modules/budget-tests/budget-modules
+   columns, so it does not match.
+4. `_forbidden_prd_asks` -- a PRD under `docs/prds/` asking for a closing
    report, a lane record, a count disclosure or an attestation artifact.
    Every PRD file already in this tree (v0.5 through v0.21, the two draft
    roadmap families, `README.md`) is frozen below as KNOWN history: N.5
@@ -27,6 +36,7 @@ violation can be exercised without ever committing one to the tracked tree:
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -41,12 +51,19 @@ _PETITIONS_FILE_RE = re.compile(r"^v[\d.]+-petitions\.md$")
 
 
 def _non_petitions_files(reports_dir: Path) -> list[str]:
-    """Every file directly under reports_dir that is not a petitions file."""
+    """Every file anywhere under reports_dir that is not a petitions file.
+
+    Recursive (requirement I.2): a nested non-petitions file (e.g.
+    ``new-wave/closing-report.md``) is the report corpus regrowing just as
+    much as a direct child is, and the carve-out is keyed on the file's own
+    name, not its depth, so a nested ``v<version>-petitions.md`` still
+    survives.
+    """
     if not reports_dir.is_dir():
         return []
     return sorted(
-        p.name
-        for p in reports_dir.iterdir()
+        p.relative_to(reports_dir).as_posix()
+        for p in reports_dir.rglob("*")
         if p.is_file() and not _PETITIONS_FILE_RE.match(p.name)
     )
 
@@ -59,6 +76,24 @@ _COUNT_DISCLOSURE_RE = re.compile(r"^\*\*\d+\s*\(smoke\b", re.MULTILINE)
 
 def _count_disclosure_rows(text: str) -> list[str]:
     return _COUNT_DISCLOSURE_RE.findall(text)
+
+
+# The shape of the count/module/collection-budget table row 3fb66dc8 deleted
+# from docs/testing.md's budget table, e.g. "| smoke, parallel | `smoke` |
+# `-m smoke -n 8 --dist loadfile` | 4038 | 248 | 24.41 s | 4300 | 270 | 60 s |
+# n/a | met -- ... |": lane | marker | recipe | <int tests> | <int modules>
+# | wall clock | <int budget tests> | <int budget modules> | ... The
+# surviving 7-column table (lane/marker/recipe/wall clock/budget wall
+# clock/PRD target/target met, docs/testing.md today) has no bare-integer
+# column in either of those two positions, so it never matches.
+_BUDGET_TABLE_ROW_RE = re.compile(
+    r"^\|[^|\n]*\|[^|\n]*\|[^|\n]*\|\s*\d+\s*\|\s*\d+\s*\|[^|\n]*\|\s*\d+\s*\|\s*\d+\s*\|",
+    re.MULTILINE,
+)
+
+
+def _budget_table_count_rows(text: str) -> list[str]:
+    return _BUDGET_TABLE_ROW_RE.findall(text)
 
 
 # PRD files this snapshot already knows about, frozen at task 066: every
@@ -139,6 +174,29 @@ def test_an_empty_or_missing_reports_directory_is_clean(tmp_path):
     assert _non_petitions_files(empty) == []
 
 
+def test_a_nested_non_petitions_file_is_flagged_not_only_direct_children(tmp_path):
+    """Requirement I.2/I.3: a fixture copy of the REAL reports tree, plus the
+    exact nested path named by the PRD's own observed defect --
+    artifacts/reports/new-wave/closing-report.md -- driven through the same
+    `_non_petitions_files` the real-tree node above calls.
+    """
+    reports = tmp_path / "reports"
+    shutil.copytree(REPORTS_DIR, reports)
+    nested = reports / "new-wave" / "closing-report.md"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("the corpus regrew, nested this time")
+    assert _non_petitions_files(reports) == ["new-wave/closing-report.md"]
+
+
+def test_a_nested_petitions_file_still_survives_the_recursive_walk(tmp_path):
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    nested = reports / "archive" / "v0.9-petitions.md"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("a nested petitions file, still the carve-out (I.4)")
+    assert _non_petitions_files(reports) == []
+
+
 # --- docs/testing.md's count-disclosure rows cannot grow back (N.4/N.9) ----
 
 
@@ -159,6 +217,57 @@ def test_a_reintroduced_count_disclosure_row_is_flagged():
 def test_prose_that_merely_mentions_smoke_is_not_flagged():
     text = "The smoke tier is a subset of the fast tier; see the table above.\n"
     assert _count_disclosure_rows(text) == []
+
+
+# --- docs/testing.md's deleted budget-table count rows cannot grow back ---
+# (N.4/I.1/I.9)
+
+
+def test_the_real_testing_doc_carries_no_budget_table_count_row():
+    assert _budget_table_count_rows(TESTING_DOC.read_text()) == []
+
+
+# The exact "smoke, parallel" row of the eleven-column budget table
+# `3fb66dc8` deleted from docs/testing.md (before that commit).
+_DELETED_BUDGET_TABLE_ROW = (
+    "| smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | 4038 | "
+    "248 | 24.41 s | 4300 | 270 | 60 s | n/a | met -- 24.41 s inside the "
+    "lane's own 60 s budget ceiling; no PRD target of this kind for this "
+    "lane |"
+)
+
+
+def test_the_real_deleted_budget_table_row_restored_into_a_fixture_copy_is_flagged():
+    """Requirement I.1/I.3: a fixture COPY of the real docs/testing.md, with
+    the exact row `3fb66dc8` deleted spliced back in, driven through the
+    same `_budget_table_count_rows` the real-tree node above calls.
+    """
+    fixture = TESTING_DOC.read_text() + "\n" + _DELETED_BUDGET_TABLE_ROW + "\n"
+    assert len(_budget_table_count_rows(fixture)) == 1
+
+
+def test_a_second_deleted_budget_table_row_shape_is_also_flagged():
+    # the "records, serial" row of the same deleted table -- a second,
+    # differently-worded case of the identical count/module/budget shape.
+    text = (
+        "| records, serial | n/a (selected by directory, not marker) | "
+        "`.venv/bin/python -m pytest -q tests/records/` | 116 | 5 | 11.35 s "
+        "| 150 | 10 | 30 s | < 15 s | met -- 11.35 s inside the 15 s "
+        "target |"
+    )
+    assert len(_budget_table_count_rows(text)) == 1
+
+
+def test_the_surviving_seven_column_table_row_is_not_flagged():
+    # the REAL surviving row (no tests/modules/budget-tests/budget-modules
+    # columns) -- proves the detector distinguishes the two table shapes
+    # rather than firing on any pipe-delimited row.
+    survivor_row = (
+        "| smoke, parallel | `smoke` | `-m smoke -n 8 --dist loadfile` | "
+        "24.41 s | 60 s | n/a | met -- 24.41 s inside the lane's own 60 s "
+        "budget ceiling; no PRD target of this kind for this lane |"
+    )
+    assert _budget_table_count_rows(survivor_row) == []
 
 
 # --- the four retired contract obligations cannot grow back in a new PRD ---

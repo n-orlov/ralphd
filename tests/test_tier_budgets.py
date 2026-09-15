@@ -80,7 +80,7 @@ TIER_MARKERS = ("smoke", "fast")
 # task) pushes the fast tier's live collected count to 5804 (`pytest -m
 # fast --collect-only`). `modules`/`smoke` are unchanged.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 5804, "modules": 390},
+    "fast": {"tests": 5810, "modules": 390},
     "smoke": {"tests": 4300, "modules": 270},
 }
 
