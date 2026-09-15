@@ -1540,6 +1540,41 @@ def run_detail_etag(reg: Path, run_id: str) -> str:
     return f'"{run_id}-{mtime:.6f}"'
 
 
+def log_tail_etag(reg: Path, run_id: str) -> str:
+    """Task 007 (G): the `ETag` for `GET /api/runs/<id>/logs`.
+
+    Deliberately NOT the same value as `run_detail_etag`: the logs route
+    renders the newest iteration's TRANSCRIPT, and `run_detail_etag`'s own
+    four inputs (`status.json`, `tasks.json`, `events.jsonl`, the newest
+    iteration's `meta.json`) do not include it. A running iteration writes
+    its own `meta.json` once at start and again at end, so an in-flight
+    iteration's own on-disk transcript can grow -- visible content genuinely
+    appended -- while all four of those inputs sit untouched; a client that
+    replayed `run_detail_etag`'s tag as `If-None-Match` would then wrongly
+    get back a `304` for content that had actually changed. This tag adds
+    the newest iteration's own on-disk transcript SIZE (the same figure
+    `_log_tail_cache_key` already keys the render cache on, so the two never
+    disagree about what counts as "moved") on top of `run_detail_etag`'s own
+    mtime, so an append to that transcript alone still yields a new tag.
+
+    Missing iterations contribute a size of 0 rather than raising, matching
+    `run_detail_etag`'s own missing-file tolerance.
+    """
+    run_dir = reg / "runs" / run_id
+    base = run_detail_etag(reg, run_id)
+    numbers = iteration_numbers(run_dir)
+    size = 0
+    if numbers:
+        try:
+            size = iteration_output_path(run_dir, max(numbers)).stat().st_size
+        except OSError:
+            size = 0
+    # `base` is `'"{run_id}-{mtime:.6f}"'` -- splice the size in before the
+    # closing quote rather than re-deriving the mtime here, so this tag and
+    # `run_detail_etag`'s own never drift apart on the shared half.
+    return f'{base[:-1]}-{size}"'
+
+
 def run_detail(reg: Path, run_id: str) -> dict | None:
     """Run detail view (PRD req 21): task table + iteration timeline data,
     live where possible, falling back to the on-disk snapshot for a dead
@@ -1832,11 +1867,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not (reg / "runs" / run_id).is_dir():
                     self._send_json({"error": f"run {run_id} not found"}, 404)
                     return
-                # Task 045 (H.3): the same on-disk-mtime `ETag` the run-detail
-                # route already derives (`run_detail_etag`) -- computed
-                # BEFORE the cache lookup/render below, so a hit never pays
-                # for either.
-                etag = run_detail_etag(reg, run_id)
+                # Task 045 (H.3) / task 007 (G): the log-tail-specific `ETag`
+                # -- `run_detail_etag`'s own four inputs plus the newest
+                # iteration's transcript size, so an in-flight iteration's
+                # the newest iteration's transcript growing (with `status.json`, `tasks.json`
+                # and `meta.json` all untouched) still revalidates instead of
+                # wrongly serving a stale `304` -- computed BEFORE the cache
+                # lookup/render below, so a hit never pays for either.
+                etag = log_tail_etag(reg, run_id)
                 if self.headers.get("If-None-Match") == etag:
                     self._send_not_modified(etag)
                     return

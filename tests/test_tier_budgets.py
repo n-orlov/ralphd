@@ -65,8 +65,15 @@ TIER_MARKERS = ("smoke", "fast")
 # the fast tier's live collected count to 5801 (`pytest -m fast
 # --collect-only`). `modules`/`smoke` are unchanged (390 fast modules /
 # 270 smoke modules, 4300 smoke tests).
+#
+# Task 007 (PRD G) raised `fast`'s test ceiling 5801 -> 5803: two new
+# regression tests in `tests/test_hub_log_tail_cache.py` (the
+# append-and-revalidation scenario, and the freshly-issued-validator
+# revalidates-without-rerendering scenario) push the fast tier's live
+# collected count to 5803 (`pytest -m fast --collect-only`).
+# `modules`/`smoke` are unchanged.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 5801, "modules": 390},
+    "fast": {"tests": 5803, "modules": 390},
     "smoke": {"tests": 4300, "modules": 270},
 }
 
