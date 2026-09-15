@@ -2281,6 +2281,32 @@ are #192, #135, #187, #184, #133, #196, #180, #181, #183, #158, #159, #160, #194
 #193's intermittent Chrome session drop are commented and left open as the halves this wave does
 not own, and #25 stays untouched.
 
+## v0.21.1 — a green suite is not a met requirement
+
+v0.21 shipped green at final code sha `6e3ec40b`, version `0.21.0`, every lane green (`gate`
+`34952937959`, `heavy` `34952937945`, `nightly` `34954278929`) — but ended `state: failed`,
+`verdict: unreviewed` on a deadline race, and the verdict actually reached was **rejected: 9
+blocking findings**, all `curable: true`, none of them a rejection of what shipped so much as of
+what v0.21's own tests were shaped to defend instead of the requirement's real observable. This
+wave cures the nine: **A** — a mixed verdict-gate rejection now ends the run when `max_approaches`
+is more than 1, not only when it is 1 (`021937c9`); **B** — the two lexical ingestion refusals
+each carry a concrete legal rewrite into the next planner prompt (`df05c26f`, `e0541abf`); **C** —
+a zero-deliverable planning death no longer charges the approach, and the test asserting the old
+per-approach charge is retired (`5013cbad`); **D** — a per-task verify dispatch now carries the
+in-hand task id instead of writing `assignedTaskId: null` (`49af63d2`); **E** — a fixed rendered
+tail bounds the bytes it reads instead of scaling with the whole transcript (`2b5219ff`); **F** —
+collapse state survives a tail window that cuts mid-iteration instead of reprinting the block
+(`09c1792d`); **G** — the logs route revalidates on transcript growth instead of holding a stale
+`304` (`5041dc6f`); **H** — the petition writers are run-dir-only, with the workspace-tree
+fallback N.6 asked to remove now actually gone, and the test defending it retired (`97c71cde`);
+**I** — the regrowth guard now sees a really deleted table and a nested report file, not only the
+two narrow mutations its old detectors covered (`64cdff43`).
+
+The run is `selfdev-v0211-a-green-suite-is-not-a-met-requirement`, launched at `fe85db7d`. This
+paragraph is written mid-run, ahead of the run it describes settling — the v0.19, v0.19.1, v0.20,
+v0.20.1, v0.20.2 and v0.21 blocks and rows above are unchanged by this commit; this wave's own
+terminal account is a later task's to write once the run actually ends.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
