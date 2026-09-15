@@ -66,9 +66,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
-BUDGET_COLUMNS = ("lane", "marker", "recipe", "tests", "modules", "wall clock",
-                  "budget tests", "budget modules", "budget wall clock",
-                  "PRD target", "target met?")
+# No `tests`/`modules`/`budget tests`/`budget modules` columns -- those moved
+# out of this doc entirely (v0.21 task 062/063, requirement N.4); this table
+# now carries only the wall-clock half, which is a recorded measurement
+# against a recorded budget, not a live collected count.
+BUDGET_COLUMNS = ("lane", "marker", "recipe", "wall clock",
+                  "budget wall clock", "PRD target", "target met?")
 
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 # A cell that deliberately states "no target of this kind for this lane".
@@ -125,9 +128,7 @@ def budget_violations(text: str) -> list[str]:
     problems: list[str] = []
     for row in parse_budget_table(text):
         lane = row["lane"]
-        for measured_col, budget_col in (("tests", "budget tests"),
-                                         ("modules", "budget modules"),
-                                         ("wall clock", "budget wall clock")):
+        for measured_col, budget_col in (("wall clock", "budget wall clock"),):
             measured, budget = _number(row[measured_col]), _number(row[budget_col])
             if measured is None or budget is None:
                 problems.append(f"{lane}: {measured_col}/{budget_col} carries no "
@@ -221,8 +222,8 @@ def test_the_budget_guard_discriminates() -> None:
     rows = parse_budget_table(text)
     row = rows[0]
     blown = text.replace(
-        f"| {row['tests']} | {row['modules']} | {row['wall clock']} |",
-        f"| {row['tests']} | {row['modules']} | 99999 s |", 1)
+        f"| {row['recipe']} | {row['wall clock']} |",
+        f"| {row['recipe']} | 99999 s |", 1)
     assert blown != text, "could not mutate the first budget row"
     problems = budget_violations(blown)
     assert any("wall clock" in p for p in problems), (
@@ -313,8 +314,8 @@ def test_the_smoke_tier_is_a_subset_of_the_fast_tier() -> None:
 
 def test_the_smoke_tier_leaves_out_the_process_boundary_modules() -> None:
     """What makes smoke cheaper than fast: no module that spawns a real
-    engine or `ralphctl` process is in it (docs/test-suite-audit.md section 2
-    attributes ~75 % of the serial wall clock to those spawns)."""
+    engine or `ralphctl` process is in it (a real engine, real sleep or
+    subprocess spawn attributes ~75 % of the serial wall clock)."""
     smoke_modules = _modules(collected("smoke"))
     assert smoke_modules, "the smoke tier collects no modules"
     offenders = []
