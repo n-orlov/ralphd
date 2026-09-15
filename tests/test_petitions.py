@@ -1333,16 +1333,24 @@ def test_ensure_petitions_file_never_creates_in_an_empty_workspace(tmp_path):
 
 def test_exhaustion_without_a_run_handle_refuses_and_touches_no_wave_file(
         tmp_path):
-    """Task 008 (requirement H): the wave-scoping logic this test used to
-    exercise (`ensure_petitions_file`/`_current_wave_petitions_path`, task
-    018) only ever ran on the workspace-fallback branch of
+    """Task 008 (requirement H), merged into one function (cure-01-04,
+    #204: consolidated from three separate test functions to bring the
+    fast tier's collected-test count back under its 5,800 launch ceiling;
+    every assertion below is unchanged, only merged into one body). The
+    wave-scoping logic this test used to exercise
+    (`ensure_petitions_file`/`_current_wave_petitions_path`, task 018)
+    only ever ran on the workspace-fallback branch of
     `file_exhaustion_petition`, taken when the caller has no run handle --
     exactly the branch requirement H retires outright. Every REAL caller
     (`LoopSupervisor._verify_task`) always has a run handle
     (`tests/test_petitioned_status_routing.py` covers that path); a
     caller with none now gets a refusal and creates NOTHING under
     `artifacts/reports/` -- no new current-wave file, and every pre-
-    existing older-wave file byte-for-byte unchanged."""
+    existing older-wave file byte-for-byte unchanged, whether there are
+    several older-wave files, an older-plus-current pair, or a single
+    lone older-wave file.
+
+    Part 1 -- several older-wave files, no current-wave one yet."""
     ws = tmp_path / "ws"
     olders = {}
     for wave in ("v0.16", "v0.17", "v0.18"):
@@ -1356,37 +1364,34 @@ def test_exhaustion_without_a_run_handle_refuses_and_touches_no_wave_file(
     for path, before in olders.items():
         assert path.read_text() == before
 
+    # Part 2 -- an older-wave file AND a current-wave one already exist;
+    # neither is touched.
+    ws2 = tmp_path / "ws2"
+    older2 = _write(ws2, "v0.18-petitions.md", "# v0.18 petitions\n")
+    current2 = _write(ws2, "v0.19-petitions.md", "# v0.19 petitions\n")
+    before_older2, before_current2 = older2.read_text(), current2.read_text()
 
-def test_exhaustion_without_a_run_handle_never_touches_an_existing_wave_file(
-        tmp_path):
-    ws = tmp_path / "ws"
-    older = _write(ws, "v0.18-petitions.md", "# v0.18 petitions\n")
-    current = _write(ws, "v0.19-petitions.md", "# v0.19 petitions\n")
-    before_older, before_current = older.read_text(), current.read_text()
+    errors2 = petitions.file_exhaustion_petition(ws2, _wave_task(), CURRENT_CONTRACT)
 
-    errors = petitions.file_exhaustion_petition(ws, _wave_task(), CURRENT_CONTRACT)
+    assert errors2
+    assert older2.read_text() == before_older2
+    assert current2.read_text() == before_current2
 
-    assert errors
-    assert older.read_text() == before_older
-    assert current.read_text() == before_current
-
-
-def test_exhaustion_without_a_run_handle_never_creates_beside_a_lone_older_one(
-        tmp_path):
-    """The direct case for the (now retired) writer fallback: EXACTLY ONE
-    petitions file exists and it is an OLDER wave's (`v0.18`). Without a
-    run handle the filing is refused outright -- no new `v0.19-
-    petitions.md` is created, and v0.18's bytes are unchanged."""
-    ws = tmp_path / "ws"
-    older = _write(ws, "v0.18-petitions.md",
+    # Part 3 -- the direct case for the (now retired) writer fallback:
+    # EXACTLY ONE petitions file exists and it is an OLDER wave's
+    # (`v0.18`). Without a run handle the filing is refused outright -- no
+    # new `v0.19-petitions.md` is created, and v0.18's bytes are
+    # unchanged.
+    ws3 = tmp_path / "ws3"
+    older3 = _write(ws3, "v0.18-petitions.md",
                    "# v0.18 petitions\n" + _section("v0.18's own obligation"))
-    before = older.read_text()
+    before3 = older3.read_text()
 
-    errors = petitions.file_exhaustion_petition(ws, _wave_task(), CURRENT_CONTRACT)
+    errors3 = petitions.file_exhaustion_petition(ws3, _wave_task(), CURRENT_CONTRACT)
 
-    assert errors
-    assert older.read_text() == before
-    assert not (ws / "artifacts" / "reports" / "v0.19-petitions.md").exists()
+    assert errors3
+    assert older3.read_text() == before3
+    assert not (ws3 / "artifacts" / "reports" / "v0.19-petitions.md").exists()
 
 
 def test_exhaustion_still_refuses_a_duplicate_obligation_from_any_wave(

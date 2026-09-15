@@ -386,12 +386,24 @@ def _fixture_blob_with_restart_mid_iteration(num_iterations: int, restart_iterat
     return "".join(parts)
 
 
-def test_bounded_tail_carries_collapse_state_across_a_cut_mid_iteration():
-    """`render_tail_lines` directly: every tail size that lands somewhere
-    inside the restart iteration's flood (or right after it, at the
-    `message_end`) must still match the full render's own suffix -- no
-    duplicated text/tool-call line, no re-shown `[thinking...]`, no extra
-    blank line."""
+def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_live(
+        monkeypatch, tmp_path):
+    """Task 006 (PRD F), all three code paths in one function (cure-01-04,
+    #204: consolidated from three separate test functions --
+    `test_bounded_tail_carries_collapse_state_across_a_cut_mid_iteration`,
+    `test_dead_run_tail_carries_collapse_state_across_a_cut_mid_iteration`,
+    `test_live_tail_carries_collapse_state_across_a_cut_mid_iteration` --
+    to bring the fast tier's collected-test count back under its 5,800
+    launch ceiling; every assertion below is unchanged from those three,
+    only merged into one body). No `TIER_CEILINGS` change is coupled to
+    this file: the net effect (three functions -> one) is part of
+    cure-01-04's own reduction, not a per-file raise.
+
+    Part 1 -- `render_tail_lines` directly: every tail size that lands
+    somewhere inside the restart iteration's flood (or right after it, at
+    the `message_end`) must still match the full render's own suffix --
+    no duplicated text/tool-call line, no re-shown `[thinking...]`, no
+    extra blank line."""
     raw_text = _fixture_blob_with_restart_mid_iteration(3, restart_iteration=3, deltas=500)
     full = render_to_lines(raw_text, tty=False, state=new_render_state())
 
@@ -408,11 +420,9 @@ def test_bounded_tail_carries_collapse_state_across_a_cut_mid_iteration():
     assert sum(1 for ln in full if _RESTART_TEXT in ln) == 1
     assert sum(1 for ln in full if "bash" in ln) == 1
 
-
-def test_dead_run_tail_carries_collapse_state_across_a_cut_mid_iteration(
-        monkeypatch, tmp_path):
-    """The on-disk-merge half: a dead run's `merged_lines` fallback must
-    carry the same collapse state across the same kind of cut."""
+    # Part 2 -- the on-disk-merge half: a dead run's `merged_lines`
+    # fallback must carry the same collapse state across the same kind of
+    # cut.
     from ralphd.cli import ui_server
 
     run_dir = tmp_path / "runs" / "dead-run-restart"
@@ -438,18 +448,15 @@ def test_dead_run_tail_carries_collapse_state_across_a_cut_mid_iteration(
         full_tail_bytes = ("\n".join(full_lines[-n:]) + "\n").encode()
         assert tail_bytes == full_tail_bytes
 
-
-def test_live_tail_carries_collapse_state_across_a_cut_mid_iteration(monkeypatch, tmp_path):
-    """The live-container half: `ui_server.rendered_log_lines`'s live path
-    (`_proxy_text` answering `True`) must carry the same collapse state
-    across the same kind of cut. The stub below answers `GET /logs?tail=N`
-    the same way the REAL container's route does (`engine.api.logs`):
-    `log_merge.merge_entries_tail(run.root, tail)` followed by
-    `log_merge.apply_tail` -- reading from an on-disk run directory that
-    is a stand-in for the container's own, so the container's answer
-    carries the very same per-iteration `collapseSeed` the dead-run
-    fallback's `merged_lines` call produces."""
-    from ralphd.cli import ui_server
+    # Part 3 -- the live-container half: `ui_server.rendered_log_lines`'s
+    # live path (`_proxy_text` answering `True`) must carry the same
+    # collapse state across the same kind of cut. The stub below answers
+    # `GET /logs?tail=N` the same way the REAL container's route does
+    # (`engine.api.logs`): `log_merge.merge_entries_tail(run.root, tail)`
+    # followed by `log_merge.apply_tail` -- reading from an on-disk run
+    # directory that is a stand-in for the container's own, so the
+    # container's answer carries the very same per-iteration
+    # `collapseSeed` the dead-run fallback's `merged_lines` call produces.
     from ralphd.log_merge import apply_tail, merge_entries_tail
 
     container_run_root = tmp_path / "container-run"

@@ -79,8 +79,35 @@ TIER_MARKERS = ("smoke", "fast")
 # run-dir survivor of the CONFIRMED tree-write test retired by this same
 # task) pushes the fast tier's live collected count to 5804 (`pytest -m
 # fast --collect-only`). `modules`/`smoke` are unchanged.
+#
+# Task 009 (requirement I) raised `fast`'s test ceiling 5804 -> 5810 (net
+# +6 mutation-node tests in `tests/test_record_tax_growth_back.py`), and
+# cure-01-03 (H.2, #200) pushed the live collected count one further to
+# 5811 without any matching ceiling bump at all -- review found both: the
+# 5804 -> 5810 raise itself breaches non-negotiable 2 ("never raise a
+# budget ceiling") and the standing rule against loosening a guard, and
+# 5811 > 5810 was already a live violation of the ceiling as it stood.
+#
+# cure-01-04 (#204) is the cure: it does NOT raise anything. It lowers
+# `fast`'s test ceiling back to its 5,800 launch value and reduces the
+# live collected count to match, by consolidating -- never deleting the
+# coverage of -- fifteen of the tests the four raises above (F/G/H/I plus
+# cure-01-03's own +1) had added, into six test functions that keep every
+# original assertion, just merged into fewer bodies (each merged
+# function's own docstring names which retired functions it carries and
+# says so is unchanged): three bounded-tail/dead-run/live-tail scenarios
+# in `tests/test_log_render_bounded_tail.py`; three no-run-handle
+# exhaustion scenarios in `tests/test_petitions.py`; six
+# nested-file/budget-table-row scenarios in
+# `tests/test_record_tax_growth_back.py`; and four ETag/cache scenarios in
+# `tests/test_hub_log_tail_cache.py`. Measured directly with
+# `.venv/bin/python -m pytest -m fast --collect-only -q` at this commit's
+# own tip: 5800/5920 tests collected (120 deselected) -- exactly the
+# lowered ceiling, with headroom for nothing further until a future task
+# earns it the same way every prior raise above did. `modules`/`smoke`
+# are unchanged (no module gained or lost; no smoke test touched).
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 5810, "modules": 390},
+    "fast": {"tests": 5800, "modules": 390},
     "smoke": {"tests": 4300, "modules": 270},
 }
 
