@@ -610,12 +610,15 @@ PRIOR_TASKS_DOC = {
 }
 
 
-def test_two_approaches_with_the_same_ingestion_errors_end_on_repeated_blocker_signature(
+def test_two_consecutive_planning_attempts_with_the_same_ingestion_errors_end_on_the_two_strike_rule_without_charging_an_approach(
         tmp_path):
     root = tmp_path / "run"
-    # max_approaches=3, but the guard must fire the moment approach 2's
-    # own ingestion-error signature matches approach 1's -- a third
-    # approach must never start even though budget would allow one.
+    # max_approaches=3, but the two-strike guard must fire the moment the
+    # SECOND planning attempt's own ingestion-error signature matches the
+    # first's -- and, per task 003 (requirement C), NEITHER zero-
+    # deliverable attempt ever charges the approach budget: this run ends
+    # at approach 1, never having bumped even once, however much of
+    # `max_approaches=3` remained unspent.
     sup = _ibs012_supervisor(root, [_bad_plan_step("999"), _bad_plan_step("999")])
     sup.run.write_tasks(dict(PRIOR_TASKS_DOC))
 
@@ -634,23 +637,31 @@ def test_two_approaches_with_the_same_ingestion_errors_end_on_repeated_blocker_s
     status = sup.run.read_status()
     assert status["state"] == "failed"
     assert status["verdict"] == "unverified"
-    # Ended AT approach 2 -- never entered a third planning attempt.
-    assert status["approach"] == 2
-    # Task 012 (requirement C.2, #124): a repeated INGESTION-origin
-    # signature is a degraded run, not merely an ordinary #61 stagnation
-    # repeat -- both approaches here failed the SAME lint at ingestion,
-    # never a worker-stagnation signature, so `health` moves off "ok".
+    # Requirement C: neither zero-deliverable planning attempt charged the
+    # approach budget -- the run never left approach 1.
+    assert status["approach"] == 1
+    # Task 012 (requirement C.2, #124) / task 003 (requirement C): a
+    # repeated INGESTION-origin signature is a degraded run, not merely an
+    # ordinary #61 stagnation repeat.
     assert status.get("health") == "degraded"
-    signatures = status.get("blockerSignatures") or {}
-    assert signatures.get("1") == signatures.get("2")
-    assert signatures["1"] is not None
+    assert status.get("planningDeathSignature") is not None
     # The reason names the lint (the ingestion error text itself, RAW --
     # task 007, requirement B.3, #135 -- not the folded/lowercased
     # comparison signature), not a boilerplate placeholder.
     reason = status.get("reason") or ""
     assert "dependsOn references unknown task" in reason
     assert "lexical lint" in reason
-    assert ("replan", "finishing", "repeated_blocker_signature") in seen_edges
+    assert "neither zero-deliverable attempt spent" in reason
+    # `_step_planning` decides the two-strike itself now, before `replan`
+    # is ever entered a second time for this pair: the FIRST attempt's
+    # own advance into `replan` (`empty_plan`) still shows up, but the
+    # run's actual termination edge is `planning`->`replan`
+    # (`planning_death_repeated`), never the #61 worker-stagnation-only
+    # `repeated_blocker_signature` guard (task 003 moved ingestion's own
+    # two-strike off that shared, approach-keyed map entirely).
+    assert ("planning", "replan", "empty_plan") in seen_edges
+    assert ("planning", "replan", "planning_death_repeated") in seen_edges
+    assert ("replan", "finishing", "repeated_blocker_signature") not in seen_edges
     # Only two planning iterations ever ran.
     iters = sorted((root / "iterations").iterdir())
     metas = [json.loads((d / "meta.json").read_text()) for d in iters]
@@ -659,13 +670,26 @@ def test_two_approaches_with_the_same_ingestion_errors_end_on_repeated_blocker_s
     assert sup.run.read_tasks() == PRIOR_TASKS_DOC
 
 
-def test_two_approaches_with_distinct_ingestion_errors_still_consume_both(
+def test_consecutive_distinct_ingestion_errors_never_trigger_the_two_strike_rule_and_never_charge_an_approach(
         tmp_path):
+    """Requirement C: as long as every consecutive planning attempt's
+    lexical lint differs from its predecessor's, the two-strike guard
+    never fires -- and, per C.1/C.3, NEITHER of these zero-deliverable
+    attempts ever charges the approach budget either. `max_approaches=1`
+    on purpose: the OLD behaviour this replaces would have failed the run
+    the instant the FIRST attempt exhausted ingestion (`approach ==
+    max_approaches` already); the fix keeps retrying, uncharged, until the
+    run's own ITERATION budget -- never the approach budget -- runs out.
+    """
     root = tmp_path / "run"
+    # digits are stripped by the normaliser (`_normalize_blocker_signature_
+    # text`), so distinct dep ids must differ on non-digit text to compare
+    # as genuinely distinct signatures.
+    distinct_ids = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot",
+                    "golf", "hotel", "india", "juliet", "kilo", "lima"]
     sup = _ibs012_supervisor(
-        root, [_bad_plan_step("alpha-task"), _bad_plan_step("beta-task"),
-               _bad_plan_step("gamma-task")],
-        max_approaches=3)
+        root, [_bad_plan_step(dep) for dep in distinct_ids],
+        max_approaches=1)
     sup.run.write_tasks(dict(PRIOR_TASKS_DOC))
 
     final_state = asyncio.run(sup.run_job())
@@ -674,18 +698,26 @@ def test_two_approaches_with_distinct_ingestion_errors_still_consume_both(
     status = sup.run.read_status()
     assert status["state"] == "failed"
     assert status["verdict"] == "unverified"
-    # All three approaches were spent -- every consecutive pair's own
-    # ingestion-error signature is distinct, so the repeated-blocker-
-    # signature guard never fires and the run ends only on ordinary
-    # budget/approach exhaustion, exactly as before this task.
-    assert status["approach"] == 3
-    signatures = status.get("blockerSignatures") or {}
-    assert signatures.get("1") != signatures.get("2")
-    assert signatures.get("2") != signatures.get("3")
-    assert signatures.get("1") != signatures.get("3")
+    # The repeated-blocker-signature guard never fired -- every
+    # consecutive pair's own ingestion-error signature is genuinely
+    # distinct -- so `health` never moved off "ok" either.
+    assert status.get("health") in (None, "ok")
+    # Requirement C: no zero-deliverable attempt in this never-repeating
+    # streak ever charged the approach budget -- the run stayed at
+    # approach 1 for its whole life, even though `max_approaches=1` was
+    # already "spent" by the very first attempt under the OLD behaviour
+    # this replaces.
+    assert status["approach"] == 1
+    # All 12 iterations of budget were spent retrying planning -- never on
+    # a worker iteration (never reached) and never on a second, charged
+    # approach (never existed).
     iters = sorted((root / "iterations").iterdir())
     metas = [json.loads((d / "meta.json").read_text()) for d in iters]
-    assert sum(1 for m in metas if m["phase"] == "planning") == 3
+    assert len(metas) == 12
+    assert all(m["phase"] == "planning" for m in metas)
+    assert all(m.get("approach") == 1 for m in metas)
+    # tasks.json was never overwritten by any of the bad proposals.
+    assert sup.run.read_tasks() == PRIOR_TASKS_DOC
 
 
 # ----------------------------------------------------------------------

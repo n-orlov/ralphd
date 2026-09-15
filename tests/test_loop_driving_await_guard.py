@@ -129,7 +129,6 @@ LOOP_DRIVING_AWAIT_ALLOWLIST: list[dict[str, object]] = [
     {"path": "test_last_approach.py", "count": 13, "reason": _GRANDFATHER_REASON},
     {"path": "test_operator_ruling_review_verdict.py", "count": 3, "reason": _GRANDFATHER_REASON},
     {"path": "test_plan_ingestion_rejection.py", "count": 2, "reason": _GRANDFATHER_REASON},
-    {"path": "test_planning_death_terminal_reason.py", "count": 1, "reason": _GRANDFATHER_REASON},
     {"path": "test_promise_marker_last_line.py", "count": 3, "reason": _GRANDFATHER_REASON},
     {"path": "test_reflect_deadline_boundary.py", "count": 1, "reason": _GRANDFATHER_REASON},
     {"path": "test_reflect_tail_budget.py", "count": 1, "reason": _GRANDFATHER_REASON},

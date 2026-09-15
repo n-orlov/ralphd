@@ -508,6 +508,15 @@ class LoopSupervisor:
         self._executor = transitions.TransitionExecutor(
             cfg.vigilant, cfg.peer_plan_review, cfg.peer_verdict_gate)
         self._approach: int | None = None
+        # Task 003 (requirement C): WHY the FSM most recently entered
+        # `replan` -- the guard name `_advance` recorded on the edge INTO
+        # `replan` (`(*, "replan", guard)`), read back by `_step_replan`
+        # to decide whether the next planning entry charges a product
+        # approach. `None` until the very first entry (a direct
+        # `_step_replan()` call with nothing advanced into it yet, as
+        # several tests do, falls through to the pre-existing charged
+        # behaviour, exactly as before this task).
+        self._replan_guard: str | None = None
 
         # Task 006 (PRD requirement B.2, #111) / task 007 (requirement
         # D.1, finding 5): the operator-escalation seam for a `rejected_
@@ -4089,8 +4098,18 @@ class LoopSupervisor:
         from `self.cfg.vigilant`) -- this method holds no transition logic
         of its own, so there is exactly one place an illegal edge can be
         refused, and it is not here.
+
+        Task 003 (requirement C): the one call site every step handler
+        already uses to move ONTO `replan` -- records the guard that got
+        us there so `_step_replan` (called next) can tell a zero-
+        deliverable planning death (`empty_plan`) from a real, charged
+        rejection (`rejected_approach_left`, `verdict_gate_rejected_
+        approach_left`, `stagnation_exhausted`) without re-deriving it.
         """
-        return self._executor.advance(state, target, guard)
+        result = self._executor.advance(state, target, guard)
+        if target == "replan":
+            self._replan_guard = guard
+        return result
 
     async def _run_hat_iteration(self, state: str, hat: str):
         """Task 033 (operator-inserted scope, #114): run one generic hat's
@@ -6164,22 +6183,45 @@ class LoopSupervisor:
                     "log", level="error",
                     message=("planning produced no usable plan proposal: "
                               + "; ".join(ingestion.errors)))
-                # Task 012 (requirement C.2, #124): `ingestion.errors` is
-                # already a stable deduplicated list -- a natural blocker
-                # signature -- written to the SAME `blockerSignatures` map
-                # (`_record_stagnation_signature`) worker stagnation writes
-                # its own signature to (task 026, #61), keyed by the SAME
-                # approach number. `_step_replan`'s existing `repeated_
-                # blocker_signature` guard reads that map generically, so
-                # two consecutive approaches failing ingestion on the same
-                # normalized errors end the run there without any change to
-                # that guard -- exactly the reuse the PRD asks for, not a
-                # second lint-specific mechanism.
-                self._record_stagnation_signature(
-                    approach, self._ingestion_blocker_signature(ingestion.errors),
-                    origin="ingestion",
-                    detail="; ".join(ingestion.errors))
+                # Task 003 (requirement C, #-- "a planning death does not
+                # spend a product approach"): a zero-deliverable planning
+                # death -- ingestion never produced a usable proposal, so
+                # no task was ever written this approach -- no longer
+                # charges the product-approach budget: `_step_replan`'s
+                # `empty_plan` branch (below) retries planning on the SAME
+                # approach number instead of bumping it. The retained
+                # two-strike rule (#61/#124/#135) still ends the run
+                # outright when TWO CONSECUTIVE planning attempts hit the
+                # identical lexical lint -- tracked here on a dedicated,
+                # non-approach-keyed pair of status.json fields
+                # (`planningDeathSignature`/`planningDeathDetail`) rather
+                # than the `blockerSignatures` map worker stagnation owns
+                # (task 026, #61): that map is keyed by product-approach
+                # number, and a zero-deliverable retry deliberately never
+                # advances one, so "approach N vs approach N-1" is not a
+                # question that still makes sense here. A planning SUCCESS
+                # anywhere clears this pair (just below, once `ingestion.ok`
+                # is True), so a later, unrelated planning death never
+                # compares against a stale streak.
+                sig = self._ingestion_blocker_signature(ingestion.errors)
+                detail = "; ".join(ingestion.errors)
+                prior_sig = self.run.read_status().get("planningDeathSignature")
+                if sig is not None and prior_sig is not None and sig == prior_sig:
+                    self._terminal_reason_note = (
+                        "two consecutive planning attempts failed the SAME "
+                        "plan-ingestion lexical lint (#61, #124, #135) -- the "
+                        "two-strike ingestion termination is kept as-is; "
+                        "requirement C excludes a zero-deliverable planning "
+                        "death from the product-approach charge, so "
+                        f"neither zero-deliverable attempt spent one: {detail}")
+                    self.run.update_status(health="degraded")
+                    self._advance("planning", "replan", "planning_death_repeated")
+                    return ("tail",)
+                self.run.update_status(planningDeathSignature=sig,
+                                        planningDeathDetail=detail)
                 return ("advance", "replan", "empty_plan")
+            self.run.update_status(planningDeathSignature=None,
+                                    planningDeathDetail=None)
             self.run.write_tasks(ingestion.tasks_doc)
             # Task 107 (#60 pillar 3): pin the planner's `standing_rules`
             # contract field, once, as this run's harness-owned copy --
@@ -6963,65 +7005,49 @@ class LoopSupervisor:
         purpose -- reaching it IS the tail (see module docstring on why
         `finishing`/the terminal outcome are `run_job()`'s business, not
         this dispatch loop's).
+
+        Task 003 (requirement C, #-- "a planning death does not spend a
+        product approach"): a zero-deliverable planning death
+        (`_step_planning`'s `empty_plan` guard, recorded on
+        `self._replan_guard` by `_advance` the moment it fired) retries
+        planning on the SAME approach number -- uncharged -- instead of
+        going through the ordinary budget check below. The retained
+        two-strike ingestion rule already ended the run, from inside
+        `_step_planning` itself, before this state was ever reached, if
+        the SAME lexical lint repeated on two consecutive attempts;
+        reaching `replan` via `empty_plan` at all means it did not, so
+        there is nothing further to decide here. `self._replan_guard` is
+        `None` for a `_step_replan()` call driven directly (no prior
+        `_advance(..., "replan", ...)` this process/instance), which falls
+        through to the ordinary charged path below exactly as before this
+        task.
         """
+        if self._replan_guard == "empty_plan":
+            self._advance("replan", "planning",
+                          "planning_death_excluded_from_charge")
+            return ("advance", "planning", "planning_death_excluded_from_charge")
+
         # Task 026 (#61): a repeated STRUCTURAL blocker -- this approach's
         # own stagnation signature equalling its predecessor's -- ends the
         # run right here instead of consuming (and losing) another approach
         # to the identical wall. Guarded on an actual signature existing for
         # BOTH `self._approach` and `self._approach - 1`: a replan entered
-        # for any other reason (review rejection, empty plan, ...) never
-        # wrote one for `self._approach`, so this guard is silently absent
-        # there by construction, not by a special case for those paths.
+        # for any other reason (review rejection, verdict-gate rejection,
+        # ...) never wrote one for `self._approach`, so this guard is
+        # silently absent there by construction, not by a special case for
+        # those paths. (Task 003: a plan-ingestion failure no longer writes
+        # this map at all -- see `_step_planning`'s own dedicated,
+        # non-approach-keyed two-strike tracking -- so this remains an
+        # ordinary WORKER-stagnation-only guard now.)
         status = self.run.read_status()
         signatures = status.get("blockerSignatures") or {}
         this_sig = signatures.get(str(self._approach))
         prev_sig = signatures.get(str(self._approach - 1))
         if this_sig is not None and this_sig == prev_sig:
-            # Task 012 (requirement C.2, #124): only an ingestion-origin
-            # repeat -- BOTH approaches' signatures written by the
-            # `empty_plan` boundary, never an ordinary worker-stagnation
-            # (#61) repeat -- marks the run degraded. Checked against the
-            # SAME `blockerSignatureOrigins` map `_record_stagnation_
-            # signature` writes, keyed the same way as `blockerSignatures`
-            # itself, so a mixed pair (one ingestion, one stagnation) is
-            # never mistaken for either kind of pure repeat.
-            origins = status.get("blockerSignatureOrigins") or {}
-            is_ingestion_repeat = (
-                origins.get(str(self._approach)) == "ingestion"
-                and origins.get(str(self._approach - 1)) == "ingestion")
-            if is_ingestion_repeat:
-                # Task 007 (requirement B.3, #135): the two-strike
-                # ingestion-termination mechanism (#61's guard above, reused
-                # verbatim -- see the module's Standing Rules on why a
-                # planning death costs an approach the same way ordinary
-                # worker stagnation does) is KEPT AS-IS; this branch only
-                # makes its terminal reason legible. `this_sig`/`prev_sig`
-                # are the NORMALISED comparison keys (case-folded, digits
-                # stripped -- `_normalize_blocker_signature_text`), unfit to
-                # quote back at an operator; `blockerDetails` carries the
-                # RAW `ingestion.errors` text `_record_stagnation_signature`
-                # persisted alongside the signature, which already names the
-                # specific lexical lint that fired (`plan_ingestion.py`'s
-                # checks are lexical by design, per docs/review-economics.md)
-                # and quotes the offending clause verbatim (every
-                # `lint_proposal` error embeds the clause via `!r`).
-                details = status.get("blockerDetails") or {}
-                detail = (details.get(str(self._approach))
-                          or details.get(str(self._approach - 1))
-                          or this_sig)
-                self._terminal_reason_note = (
-                    f"approach {self._approach} failed the SAME "
-                    f"plan-ingestion lexical lint as approach "
-                    f"{self._approach - 1} on two consecutive approaches "
-                    f"(#61, #135) -- the two-strike ingestion termination is "
-                    f"kept as-is, and both approaches count normally "
-                    f"against max_approaches: {detail}")
-                self.run.update_status(health="degraded")
-            else:
-                self._terminal_reason_note = (
-                    f"approach {self._approach} stagnated on the same "
-                    f"structural blocker as approach {self._approach - 1} "
-                    f"(#61): {this_sig}")
+            self._terminal_reason_note = (
+                f"approach {self._approach} stagnated on the same "
+                f"structural blocker as approach {self._approach - 1} "
+                f"(#61): {this_sig}")
             self._advance("replan", "finishing", "repeated_blocker_signature")
             return ("tail",)
         if self._approach < self.cfg.max_approaches:
@@ -8738,26 +8764,16 @@ class LoopSupervisor:
         exactly the fact a missing entry should carry -- no separate null
         marker needed.
 
-        `origin` (task 012, requirement C.2, #124) is recorded in the
-        parallel `blockerSignatureOrigins` map so `_step_replan` can tell
-        an ingestion-exhaustion repeat from an ordinary #61 worker-
-        stagnation repeat -- the two share the same map and guard by
-        design (the reuse the PRD asks for), but only a repeat where BOTH
-        approaches' signatures originated from ingestion failure should
-        ever mark the run `health="degraded"`; an ordinary stagnation
-        repeat keeps `health="ok"` exactly as it did before this task.
-
-        `detail` (task 007, requirement B.3, #135) is the RAW (un-normalised)
-        text behind `signature` -- `_ingestion_blocker_signature` folds case
-        and strips digits so two approaches that hit the SAME lexical lint
-        compare equal, which is exactly what makes it unfit to quote back at
-        an operator: the offending clause's own casing and digits are gone.
-        `detail` is stored verbatim on the parallel `blockerDetails` map so
-        `_step_replan` can name the lexical lint and quote the offending
-        clause in the terminal reason using the ORIGINAL text, not the
-        folded comparison key. Only the ingestion call site passes it today;
-        ordinary worker-stagnation signatures leave it absent, and an absent
-        entry is simply not recorded, same as an absent `signature`.
+        Task 003 (requirement C): a plan-ingestion exhaustion no longer
+        calls this method at all -- `_step_planning` tracks its own
+        (non-approach-keyed) two-strike signature directly on
+        `planningDeathSignature`/`planningDeathDetail`, since a
+        zero-deliverable planning death deliberately never advances
+        `self._approach`, so "approach N vs approach N-1" is not a
+        question the `blockerSignatures` map can answer for it any more.
+        `origin`/`detail` are kept for shape-compatibility with any future
+        caller, but only the worker-stagnation call site
+        (`origin="stagnation"`, the default) uses this method today.
         """
         if signature is None:
             return
