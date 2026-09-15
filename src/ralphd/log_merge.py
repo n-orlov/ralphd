@@ -168,6 +168,48 @@ def merge_entries(run_root: Path,
             yield True, scrub(boundary_line(meta, "end"))
 
 
+# Grown one doubling step at a time from this floor (task 005, PRD E): big
+# enough that a normal iteration's whole transcript is read in one shot (no
+# doubling at all -- the common case costs exactly one `read` syscall), small
+# enough that reading this much off the tail of a truly enormous single
+# iteration is still a rounding error next to the bug this bounds (a full
+# `read_text()` of a multi-megabyte file for a 200-line tail).
+_TAIL_READ_CHUNK = 1 << 16
+
+
+def _tail_lines_of_file(path: Path, needed: int) -> list[str]:
+    """The last `needed` newline-terminated lines of `path`, read from the
+    END of the file in growing chunks -- never the whole file -- so bytes
+    read are bounded by `needed`, not by how much unrelated OLDER content
+    happens to sit earlier in the same file (task 005, PRD E: two on-disk
+    runs with an identical rendered 200-line suffix cost 22,722 vs
+    5,281,670 `output.jsonl` bytes read, because the newest iteration's
+    WHOLE transcript was `read_text()`-ed regardless of how much of it the
+    requested tail actually needed).
+
+    Reads in binary mode and only decodes once a run of whole lines has
+    been isolated: every chunk boundary this function ever stops at lands
+    immediately after a `\\n` byte (or at byte 0), and `\\n` is itself
+    always a line boundary in UTF-8, so a multi-byte character can never be
+    split by where a chunk starts.
+    """
+    if needed <= 0:
+        return []
+    with path.open("rb") as f:
+        f.seek(0, 2)
+        pos = f.tell()
+        chunk = _TAIL_READ_CHUNK
+        data = b""
+        while pos > 0 and data.count(b"\n") < needed:
+            read_size = min(chunk, pos)
+            pos -= read_size
+            f.seek(pos)
+            data = f.read(read_size) + data
+            chunk *= 2
+    lines = data.decode("utf-8", errors="replace").splitlines(keepends=True)
+    return lines[-needed:] if len(lines) > needed else lines
+
+
 def merge_entries_tail(run_root: Path, tail: int,
                        scrub: Callable[[str], str] | None = None) -> list[Entry]:
     """Like `merge_entries`, but reads only as many of the NEWEST iteration
@@ -189,6 +231,13 @@ def merge_entries_tail(run_root: Path, tail: int,
     overshoots (one iteration alone can hold more than `tail` lines) still
     yields exactly the same lines full `merge_entries` + `apply_tail` would
     have, because only STRICTLY OLDER iterations are ever left unread.
+
+    Task 005 (PRD E): the per-iteration read itself is now bounded too --
+    `_tail_lines_of_file` reads only the `tail - content_count` lines this
+    step still needs off the END of that iteration's `output.jsonl`,
+    instead of the whole file, so unrelated OLDER raw entries sharing the
+    NEWEST iteration (growth `apply_tail` would have discarded anyway) are
+    never read off disk at all.
     """
     scrub = scrub or (lambda text: text)
     newest_first_chunks: list[list[Entry]] = []
@@ -206,11 +255,12 @@ def merge_entries_tail(run_root: Path, tail: int,
             chunk.append((True, scrub(boundary_line(meta, "end"))))
         out = d / OUTPUT_FILENAME
         if out.exists():
-            raw_lines = out.read_text().splitlines(keepends=True)
-            for line in reversed(raw_lines):
+            remaining = max(tail - content_count, 1)
+            tail_lines = _tail_lines_of_file(out, remaining)
+            for line in reversed(tail_lines):
                 line = line if line.endswith("\n") else line + "\n"
                 chunk.append((False, scrub(line)))
-            content_count += len(raw_lines)
+            content_count += len(tail_lines)
         chunk.append((True, scrub(boundary_line(meta, "start"))))
         chunk.reverse()
         newest_first_chunks.append(chunk)
