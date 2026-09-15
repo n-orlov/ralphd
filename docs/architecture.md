@@ -2655,17 +2655,27 @@ pins this as work, not just output: a run of 300 iterations and a run of
 serve a 200-line tail -- the SAME number either way, never 300 or 3000 of
 them.
 
-**Measured budget (task 048, PRD H.6), one hub tab open on a run holding
-150 iterations, polling `GET /api/runs/<id>` and `GET
+**Measured budget (task 011 of the 0.21.1 wave, PRD J.3, correcting task
+048's own PRD H.6 figure), one hub tab open on a LIVE cloned-engine job
+holding 102 recorded iterations, polling `GET /api/runs/<id>` and `GET
 /api/runs/<id>/logs?tail=200` every 4 s (`REFRESH_MS`) for 60 s (15 polls
-of each): the hub process used 0.090 s of CPU across that 60 s sample
-(about 0.15% of one core) and its peak resident set size (`/proc/<pid>/
-status`'s `VmHWM`) was 32 608 kB.** Measured against a real `ralphctl ui`
-subprocess (`RALPHD_REGISTRY` pointed at a fixture registry, no live
-container behind the run -- the dead-run on-disk fallback this task
-bounded) rather than against a wall clock, per this PRD's own ban on
-wall-clock assertions as a test's *pass condition* -- the number itself is
-a disclosed measurement, not a test.
+of each): the hub process used 1.53 s of CPU across that 60 s sample and
+its peak resident set size (`/proc/<pid>/status`'s `VmHWM`) was 35 364 kB.**
+Measured against a real `ralphctl ui` subprocess pointed at a real
+directly-spawned `ralphd-engine` from this checkout (`tests.conftest.
+LiveRun`, `registry=True`, `on_complete: idle` so the process keeps
+idling -- and its API answering -- once the job itself reaches a terminal
+state; `job.iterations: 120` and the stub `pi`'s `STUB_TASKS=100`, giving
+1 planning + 100 worker + 1 review = 102 iterations) -- `GET /api/runs/
+<id>` reported `live: true` at both the start and the end of the 60 s
+sample, so every poll in it took the LIVE-container path (`_fetch_live_
+tail`, task 046/H.4), never the dead-run on-disk fallback this task's own
+predecessor (048/H.6) bounded and which used to stand in as this budget's
+sample. Read from `/proc/<pid>/stat` and `/proc/<pid>/status` rather than
+against a wall clock, per this PRD's own ban on wall-clock assertions as a
+test's *pass condition* -- the numbers themselves are a disclosed
+measurement, not a test, and this paragraph adds no pass/fail threshold on
+either one.
 
 **The hub's render rule (task 018, #27).** The hub renders decisions Python
 made and never applies a response it did not ask for. `cli/web/app.js` is a
