@@ -33,6 +33,21 @@ the fourth is the loop-level reach of the suggestion.
    OWN prompt.md (the file `_run_iteration_once` writes for every
    iteration) is read straight off disk and asserted to contain the
    suggested rewrite text.
+
+Task 002 (PRD requirement B): the SAME four proofs, extended to the two
+LEXICAL ingestion refusals -- `_unenumerated_quantifier_rewrite` and
+`_clause_count_overrun_rewrite`, wired into `lint_proposal` the identical
+way (`-- suggested rewrite: <text>`), reusing the exact SAME legality gate
+(`_legal_rewrite`/`_clause_lint_refusals`) the six shapes above already
+proved lint-clean. `test_the_unenumerated_quantifier_suggestion_is_itself_
+accepted` and `test_the_clause_count_overrun_suggestion_is_itself_accepted`
+cover proof 2 for these two lints (fixtures shared, not reconstructed,
+with `tests/test_criteria_bound_lint.py`'s own must-catch pins);
+`test_the_unenumerated_quantifier_suggestion_reaches_the_planners_next_
+prompt` and `test_the_clause_count_overrun_suggestion_reaches_the_planners_
+next_prompt` cover proof 4 -- the offending clause and the lint's own name
+(`unenumerated-quantifier` / `clause-count-overrun`) ride beside the
+rewrite in the SAME prompt.md message.
 """
 
 from __future__ import annotations
@@ -47,6 +62,12 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import atomic_write_json
 from tests.conftest import supervisor_with_runner
+from tests.test_criteria_bound_lint import (
+    FIVE_CLAUSE_CRITERIA,
+    SEVEN_CLAUSE_CRITERIA,
+    TASK_012_013_EVERY_REPHRASING_CRITERIA,
+    TASK_023_EACH_SHIPPED_PIECE_CRITERIA,
+)
 
 
 def _task(task_id: str, criteria: str) -> dict:
@@ -162,6 +183,67 @@ def test_every_shapes_own_default_rewrite_is_legal():
 
 
 # ---------------------------------------------------------------------------
+# 2b. task 002 (requirement B): the SAME legality proof, for the two
+# LEXICAL ingestion refusals (the unenumerated-universal quantifier and
+# the clause-count overrun) rather than the six structurally-unsatisfiable
+# shapes above -- `_unenumerated_quantifier_rewrite` and
+# `_clause_count_overrun_rewrite`, wired into `lint_proposal`'s own error
+# strings the identical way (`-- suggested rewrite: <text>`), and proved
+# legal the identical way: fed straight back through `lint_proposal` as a
+# whole task's `successCriteria`, no fresh refusal. The three fixtures
+# below are the SAME tracked fixtures `tests/test_criteria_bound_lint.py`
+# uses to pin the two lints' must-catch behaviour -- not reconstructions.
+# ---------------------------------------------------------------------------
+
+_QUANTIFIER_OFFENDING_CLAUSES = [
+    ("each-shipped-piece", TASK_023_EACH_SHIPPED_PIECE_CRITERIA),
+    ("every-rephrasing", TASK_012_013_EVERY_REPHRASING_CRITERIA),
+    ("no-anywhere", "No leftover debug prints appear anywhere in the codebase."),
+]
+
+
+@pytest.mark.parametrize("label,criteria",
+                         _QUANTIFIER_OFFENDING_CLAUSES,
+                         ids=[label for label, _ in _QUANTIFIER_OFFENDING_CLAUSES])
+def test_the_unenumerated_quantifier_suggestion_is_itself_accepted(label, criteria):
+    errors = pi.lint_proposal({"tasks": [_task("001", criteria)]})
+    matches = [e for e in errors if "unenumerated-quantifier" in e]
+    assert matches, (criteria, errors)
+    message = matches[0]
+    # The clause and the lint name ride beside the rewrite in one message.
+    offending_clause = pi._unenumerated_quantifier_clause(criteria)
+    assert offending_clause in message
+    assert "suggested rewrite:" in message
+    suggestion = _suggestion_for(criteria)
+    assert suggestion != criteria
+    payload = {"tasks": [_task("001", suggestion)]}
+    assert pi.lint_proposal(payload) == []
+    assert pi.lint_own_terminal_state(payload) == []
+    assert pi.validate_proposal_shape({"version": 1, "tasks": [
+        {"id": "001", "title": "t", "successCriteria": suggestion}]}) == []
+
+
+def test_the_clause_count_overrun_suggestion_is_itself_accepted():
+    errors = pi.lint_proposal({"tasks": [_task("050", SEVEN_CLAUSE_CRITERIA)]})
+    matches = [e for e in errors if "clause-count-overrun" in e]
+    assert matches, errors
+    message = matches[0]
+    assert "The petition file is untouched" in message  # the offending clause
+    assert "suggested rewrite:" in message
+    suggestion = _suggestion_for(SEVEN_CLAUSE_CRITERIA, task_id="050")
+    assert suggestion != SEVEN_CLAUSE_CRITERIA
+    # The rewrite is exactly the criteria's own first 5 clauses -- the
+    # SAME fixture `test_criteria_bound_lint.py` already proves is legal
+    # on its own.
+    assert suggestion == FIVE_CLAUSE_CRITERIA
+    payload = {"tasks": [_task("050", suggestion)]}
+    assert pi.lint_proposal(payload) == []
+    assert pi.lint_own_terminal_state(payload) == []
+    assert pi.validate_proposal_shape({"version": 1, "tasks": [
+        {"id": "050", "title": "t", "successCriteria": suggestion}]}) == []
+
+
+# ---------------------------------------------------------------------------
 # 3. loop level: the suggestion reaches the planner's NEXT prompt
 # ---------------------------------------------------------------------------
 
@@ -214,6 +296,21 @@ def _bad_final_commit_plan(sup: LoopSupervisor) -> IterationResult:
 def _good_plan(sup: LoopSupervisor) -> IterationResult:
     atomic_write_json(sup.run.root / "plan-proposal.json", {"version": 1, "tasks": [
         {"id": "001", "title": "t1", "successCriteria": "thing 001 is verifiably done"},
+    ]})
+    return _ok("planned\n" + _pointer_line())
+
+
+def _bad_quantifier_plan(sup: LoopSupervisor) -> IterationResult:
+    atomic_write_json(sup.run.root / "plan-proposal.json", {"version": 1, "tasks": [
+        {"id": "001", "title": "t1",
+         "successCriteria": TASK_023_EACH_SHIPPED_PIECE_CRITERIA},
+    ]})
+    return _ok("planned\n" + _pointer_line())
+
+
+def _bad_overrun_plan(sup: LoopSupervisor) -> IterationResult:
+    atomic_write_json(sup.run.root / "plan-proposal.json", {"version": 1, "tasks": [
+        {"id": "050", "title": "t1", "successCriteria": SEVEN_CLAUSE_CRITERIA},
     ]})
     return _ok("planned\n" + _pointer_line())
 
@@ -279,4 +376,45 @@ def test_the_suggested_rewrite_reaches_the_planners_next_prompt(tmp_path):
     # for this same clause.
     suggestion = _suggestion_for("This is the final commit of the wave.")
     assert suggestion == "The wave is recorded at the code sha this task lands."
+    assert suggestion in second_prompt
+
+
+# Task 002 (requirement B): the SAME loop-level reach, for the two lexical
+# ingestion refusals -- an unenumerated-universal criterion and a
+# clause-count overrun each put their own concrete rewrite into the next
+# planning iteration's prompt.md too, beside the offending clause and the
+# lint name.
+
+def test_the_unenumerated_quantifier_suggestion_reaches_the_planners_next_prompt(tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(
+        root,
+        [_bad_quantifier_plan, _good_plan, _finish_task, _review_ok])
+
+    _bounded(sup.run_job())
+
+    second_prompt = (root / "iterations" / "0002" / "prompt.md").read_text()
+    assert "Your previous plan-proposal.json was rejected" in second_prompt
+    assert "unenumerated-quantifier" in second_prompt
+    offending_clause = pi._unenumerated_quantifier_clause(TASK_023_EACH_SHIPPED_PIECE_CRITERIA)
+    assert offending_clause in second_prompt
+    assert "suggested rewrite:" in second_prompt
+    suggestion = _suggestion_for(TASK_023_EACH_SHIPPED_PIECE_CRITERIA)
+    assert suggestion in second_prompt
+
+
+def test_the_clause_count_overrun_suggestion_reaches_the_planners_next_prompt(tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(
+        root,
+        [_bad_overrun_plan, _good_plan, _finish_task, _review_ok])
+
+    _bounded(sup.run_job())
+
+    second_prompt = (root / "iterations" / "0002" / "prompt.md").read_text()
+    assert "Your previous plan-proposal.json was rejected" in second_prompt
+    assert "clause-count-overrun" in second_prompt
+    assert "suggested rewrite:" in second_prompt
+    suggestion = _suggestion_for(SEVEN_CLAUSE_CRITERIA, task_id="050")
+    assert suggestion == FIVE_CLAUSE_CRITERIA
     assert suggestion in second_prompt

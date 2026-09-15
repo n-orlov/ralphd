@@ -1311,6 +1311,83 @@ def clause_count_overrun(criteria: str) -> tuple[int, str] | None:
     return _clause_count_overrun(criteria)
 
 
+# Task 002 (requirement B): the two lexical ingestion refusals above --
+# unenumerated-quantifier (f) and clause-count-overrun (g) -- now carry a
+# concrete LEGAL rewrite beside their advice, exactly like the six
+# structurally-unsatisfiable shapes already do (`_unsatisfiable_shape_
+# clause`, `_legal_rewrite`). Both reuse the SAME `_legal_rewrite`/
+# `_clause_lint_refusals` machinery those six shapes proved lint-clean --
+# a candidate this module's own lints would refuse is never emitted, so
+# feeding either suggestion straight back through `lint_proposal` as a
+# whole task's `successCriteria` draws no fresh refusal
+# (`tests/test_legal_rewrite_reprompt.py`).
+
+# The quantifier fix names the single bounding command/file the advice
+# text already asks for -- `pytest` alone counts as one, per
+# `_DEFINING_COMMAND_RE` -- so the rewrite is bound by construction and
+# never carries a quantifier word of its own.
+_QUANTIFIER_REWRITE_PREDICATE = (
+    "is the one this task's own criteria bounds by a single named command "
+    "or file, for example `pytest`"
+)
+_QUANTIFIER_REWRITE_DEFAULT_SUBJECT = "The item"
+
+
+def _unenumerated_quantifier_rewrite(criteria: str) -> tuple[str, str] | None:
+    """None unless `_unenumerated_quantifier_clause` flags a clause of
+    `criteria`; otherwise `(clause, legal_rewrite)` -- the rewrite drops
+    the unbounded quantifier and names a single bounding command/file
+    instead, built off the clause's own subject exactly like
+    `_unsatisfiable_shape_clause` does for the six banned shapes."""
+    clause = _unenumerated_quantifier_clause(criteria)
+    if clause is None:
+        return None
+    match = (
+        _UNIVERSAL_QUANTIFIER_WORD_RE.search(clause)
+        or _NO_QUANTIFIER_ANYWHERE_RE.search(clause)
+    )
+    if match is None:
+        return None
+    rewrite = _legal_rewrite(
+        clause, match, _QUANTIFIER_REWRITE_PREDICATE,
+        _QUANTIFIER_REWRITE_DEFAULT_SUBJECT,
+    )
+    return (clause, rewrite)
+
+
+# The clause-count fix keeps the criteria's own first
+# `_MAX_CHECKABLE_CLAUSES` clauses verbatim and drops the rest -- the
+# overflow clause named in the advice text is exactly what falls off the
+# end. `_clause_lint_refusals` (already generic over a multi-clause string,
+# not just one clause -- every check it runs does its own `_CLAUSE_SPLIT_
+# RE` split) is the same legality gate the quantifier rewrite above uses,
+# so a kept prefix this module's own lints would refuse is never emitted
+# either; if even the shortest single-clause prefix is refused (never
+# observed for any fixture in `tests/test_legal_rewrite_reprompt.py`), the
+# fallback below is lint-clean by construction, same discipline as
+# `_legal_rewrite`'s own unreachable-in-practice fallback.
+_OVERRUN_REWRITE_FALLBACK = (
+    "The remaining work lands, committed and verified by its own evidence."
+)
+
+
+def _clause_count_overrun_rewrite(criteria: str) -> tuple[int, str, str] | None:
+    """None unless `_clause_count_overrun` flags `criteria`; otherwise
+    `(clause_count, overflow_clause, legal_rewrite)` -- the rewrite is
+    `criteria`'s own first `_MAX_CHECKABLE_CLAUSES` clauses, shortened
+    further if that prefix itself is not lint-clean."""
+    overrun = _clause_count_overrun(criteria)
+    if overrun is None:
+        return None
+    clause_count, overflow_clause = overrun
+    clauses = _checkable_clauses(criteria)
+    for keep in range(min(_MAX_CHECKABLE_CLAUSES, len(clauses)), 0, -1):
+        candidate = _tidy_sentence(". ".join(clauses[:keep]))
+        if not _clause_lint_refusals(candidate):
+            return clause_count, overflow_clause, candidate
+    return clause_count, overflow_clause, _OVERRUN_REWRITE_FALLBACK
+
+
 # ---------------------------------------------------------------------------
 # Task 009 (requirement A.5, #154): the plan's EIGHTH lint -- issue #154's
 # own account of `deck-phase3k` (0.18.0) approach 2's task 205 ("Run the
@@ -2135,29 +2212,33 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
 
         quantifier_clause = _unenumerated_quantifier_clause(criteria)
         if quantifier_clause is not None:
+            quant_rewrite = _unenumerated_quantifier_rewrite(criteria)
             errors.append(
                 f"task {tid!r}: successCriteria quantifies over an "
-                f"unenumerated set ({quantifier_clause!r}) -- an "
-                "every/each/all/\"no ... anywhere\" clause must either name "
-                "every member explicitly (e.g. \"each of tasks 001, 002 and "
-                "003\") or name the single defining command/file that "
-                'bounds the set (e.g. "every test in tests/test_x.py '
-                'passes"), never an open-ended quantifier with the members '
-                "left unnamed"
+                f"unenumerated set ({quantifier_clause!r}) [unenumerated-"
+                "quantifier] -- an every/each/all/\"no ... anywhere\" "
+                "clause must either name every member explicitly (e.g. "
+                '"each of tasks 001, 002 and 003") or name the single '
+                'defining command/file that bounds the set (e.g. "every '
+                'test in tests/test_x.py passes"), never an open-ended '
+                "quantifier with the members left unnamed -- suggested "
+                f"rewrite: {quant_rewrite[1]!r}"
             )
 
         overrun = _clause_count_overrun(criteria)
         if overrun is not None:
             clause_count, overflow_clause = overrun
+            overrun_rewrite = _clause_count_overrun_rewrite(criteria)
             errors.append(
                 f"task {tid!r}: successCriteria carries {clause_count} "
                 f"checkable clauses, past the ~{_MAX_CHECKABLE_CLAUSES}-"
-                f"clause bound (first clause past the bound: "
-                f"{overflow_clause!r}) -- split this task into smaller "
-                "ones, or move any wave-wide obligation this criteria "
-                "repeats (a boundary check, a notification-log entry, an "
-                "operator discipline) into the Standing Rules block once "
-                "instead of copying it per task"
+                "clause bound [clause-count-overrun] (first clause past "
+                f"the bound: {overflow_clause!r}) -- split this task into "
+                "smaller ones, or move any wave-wide obligation this "
+                "criteria repeats (a boundary check, a notification-log "
+                "entry, an operator discipline) into the Standing Rules "
+                "block once instead of copying it per task -- suggested "
+                f"rewrite: {overrun_rewrite[2]!r}"
             )
 
         shape_match = _unsatisfiable_shape_clause(criteria)
