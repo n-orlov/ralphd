@@ -5098,7 +5098,7 @@ class LoopSupervisor:
             return []
         return petitions.file_worker_petition(
             self.workspace, petition["obligation"], petition["type"],
-            petition["evidence"])
+            petition["evidence"], run=self.run)
 
     def _apply_worker_progress_report(
             self, payload: dict, assigned_task_id: str | None = None,
@@ -8852,7 +8852,8 @@ class LoopSupervisor:
         # filter, every later read of the channel would report the same
         # engine finding twice.
         seen = {f.get("clause") for f in downgraded}
-        return (downgraded + petitions.duplicate_petition_findings(self.workspace)
+        return (downgraded + petitions.duplicate_petition_findings(
+                    self.workspace, run=self.run)
                 + [f for f in flagged if f.get("clause") not in seen]), []
 
     def _record_flagged_criteria_findings(self, flagged: list[dict]) -> None:
@@ -10831,7 +10832,7 @@ class LoopSupervisor:
             adjudications,
             petitions.open_petitions_in_workspace(
                 self.workspace, contract_text=self._contract_text(),
-                tasks=all_tasks),
+                tasks=all_tasks, run=self.run),
             all_tasks)
         refusals = petitions.criteria_amendment_refusals(adjudications, all_tasks)
         for r in refusals:
@@ -10992,11 +10993,20 @@ class LoopSupervisor:
             remedy = item.get("remedy")
             remedy = remedy.strip() if isinstance(remedy, str) else ""
             path = petitions.write_back_petition_adjudication(
-                self.workspace, obligation, adjudication, remedy)
+                self.workspace, obligation, adjudication, remedy,
+                run=self.run)
             if path is not None and path not in written:
                 written.append(path)
-        if written and was_clean:
-            self._commit_petition_writeback(written)
+        # Task 065 (requirement N.6, #150): with `run=self.run` above, every
+        # path this returns lives under `self.run.root` (`run.petitions_
+        # file`), never under `self.workspace` -- so the git-commit step
+        # below, which only ever makes sense for a WORKSPACE-tracked path,
+        # is scoped to whatever subset (today: none) is actually relative
+        # to the workspace, rather than handed the whole list and left to
+        # fail a `git add` on a path outside the repo.
+        in_workspace = [p for p in written if p.is_relative_to(self.workspace)]
+        if in_workspace and was_clean:
+            self._commit_petition_writeback(in_workspace)
         return written
 
     def _all_tasks_completed(self) -> bool:
@@ -12085,7 +12095,8 @@ class LoopSupervisor:
         duplicate_petitions_review_context`; returns '' in the common case
         (no duplicate/re-filed petition exists).
         """
-        return petitions.duplicate_petitions_review_context(self.workspace)
+        return petitions.duplicate_petitions_review_context(
+            self.workspace, run=self.run)
 
     def _terminal_record_review_context(self) -> str:
         """Task 008 (requirement B.2, #140), retired-obligation text
@@ -12665,19 +12676,18 @@ class LoopSupervisor:
                     # refuses (a duplicate obligation) -- exhaustion must
                     # always land the task SOMEWHERE, never nowhere, and
                     # `failed` is the safe fallback either way.
+                    #
+                    # Task 065 (requirement N.6, #150): passing `run=self.run`
+                    # routes the filing into `self.run.petitions_file` --
+                    # RUN-scope -- rather than the workspace's tracked
+                    # `<wave>-petitions.md` file, so `ensure_petitions_file`
+                    # (a workspace-only concern) is no longer consulted at
+                    # all here; #150 stays CLOSED.
                     contract_text = self._contract_text()
                     if petitions.contract_declares_petition_protocol(
                             contract_text):
-                        if petitions.ensure_petitions_file(
-                                self.workspace, contract_text) is None:
-                            petition_errors = [
-                                "petition: the contract declares a petition "
-                                "protocol but no petitions file could be "
-                                "created under artifacts/reports/"]
-                        else:
-                            petition_errors = (
-                                petitions.file_exhaustion_petition(
-                                    self.workspace, t, contract_text))
+                        petition_errors = petitions.file_exhaustion_petition(
+                            self.workspace, t, contract_text, run=self.run)
                     else:
                         petition_errors = [
                             petitions.NO_PETITION_PROTOCOL_NOTICE]

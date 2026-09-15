@@ -7,17 +7,21 @@ The path, end to end, with the engine doing every write:
 1. a worker iteration DECLARES a structured impossibility petition on the
    contract's `petition` field alongside its ordinary `verdict: "complete"`
    (`STUB_WORKER_PETITION`) -- the worker never writes the filing itself;
-2. the engine turns those three declared strings into a tracked filing in the
-   workspace's own `artifacts/reports/<wave>-petitions.md`, in
-   `docs/petition-format.md`'s field shape;
+2. the engine turns those three declared strings into a tracked filing in
+   the RUN dir's own `petitions.md` (task 065, requirement N.6, #150) --
+   never a workspace file under `artifacts/reports/` -- in `docs/petition-
+   format.md`'s field shape;
 3. review adjudicates the obligation through its own optional
    `petition_adjudications` field (`STUB_REVIEW_ADJUDICATIONS`) -- CONFIRMED,
    or REFUTED with a remedy;
 4. the engine records the ruling at run scope in `petition-adjudications.json`
    under its keyed MAC, emits the `petition_adjudications_recorded` witness to
    `events.jsonl`, and writes the ruling BACK into the petition's own section
-   of the tracked file, so a reader of `<wave>-petitions.md` sees the outcome
-   without cross-referencing anything.
+   of that SAME run-dir `petitions.md`, so a reader of it sees the outcome
+   without cross-referencing anything -- the workspace tree gains nothing at
+   any step (requirement N.6's own claim, proved directly below over a real
+   `ralphd-engine` subprocess -- an installed clone, never this run's own
+   `/run/ralphd`).
 
 Both rulings are separate tests because the two are not symmetrical: a
 CONFIRMED obligation is a run-scope exemption a later approach inherits, while
@@ -52,15 +56,32 @@ def _petition_run(engine_factory, run_id: str, adjudications: list[dict]):
 
 
 def _petition_file_text(run) -> str:
+    """Task 065 (requirement N.6, #150): the filing lands in the RUN dir's
+    own `petitions.md`, never a workspace `<wave>-petitions.md` -- asserted
+    below alongside reading it, so this same helper both fetches the text a
+    caller needs AND proves the negative every caller here relies on.
+
+    The stub `pi` itself pre-creates an EMPTY wave file under the
+    workspace (`tests/stub-pi/pi`'s own `_declare_worker_petition`,
+    mimicking the pre-created file a real wave's planning phase places) --
+    that file existing is not the engine's own doing and is not what N.6
+    forbids; what N.6 forbids is the ENGINE ever filing INTO it. So the
+    proof below is that no workspace `*-petitions.md` file parses back ANY
+    petition section at all, not that no such file exists.
+    """
     reports = run.workspace / "artifacts" / "reports"
-    files = sorted(reports.glob("*-petitions.md"))
-    assert files, (
-        f"flow petition: no <wave>-petitions.md was filed under {reports} -- the "
-        f"engine never turned the worker's declaration into a tracked filing")
-    assert len(files) == 1, (
-        f"flow petition: exactly one petitions file is expected, found "
-        f"{[f.name for f in files]}")
-    return files[0].read_text()
+    from ralphd.engine import petitions as _petitions
+    workspace_filed = [p for path in sorted(reports.glob("*-petitions.md"))
+                       for p in _petitions.parse_petitions(path.read_text())]
+    assert workspace_filed == [], (
+        f"flow petition: requirement N.6 -- the engine must file into the "
+        f"run dir, never a tracked workspace file, but a workspace file "
+        f"under {reports} carries a filed petition: {workspace_filed}")
+    path = run.run_dir / "petitions.md"
+    assert path.exists(), (
+        f"flow petition: no {path} was filed -- the engine never turned the "
+        f"worker's declaration into a tracked run-dir filing")
+    return path.read_text()
 
 
 def _recorded_entries(run) -> list[dict]:

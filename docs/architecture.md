@@ -1400,6 +1400,7 @@ container and lets the CLI read state even when the container is dead.
 ├── verdict-gate-findings.md # the peer verdict gate's own free-markdown findings, when it rejects (task 019, requirement D.4, #125)
 ├── verdict-gate-findings.json # the same findings, structured, the sidecar `verdict_gate_findings_json_file` points at
 ├── petition-adjudications.json # run-scope CONFIRMED impossibility-petition adjudications, survives _archive_approach (task 011, #112)
+├── petitions.md        # RUN-scope impossibility-petition filings/adjudications, never the workspace tree (task 065, requirement N.6, #150)
 ├── approach-metadata.json # engine-owned per-approach judge verdicts (review/verdictGate, explicit blocking+residual arrays), written when the judge runs, survives _archive_approach (task 035, requirement B.1)
 ├── vigilant-verified.json # task ids that have passed a verify iteration
 ├── debt.json           # per-run debt ledger: verify/petition notes recorded in form but not substance (task 006, requirement A.3, #155)

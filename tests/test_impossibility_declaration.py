@@ -155,8 +155,17 @@ def test_petition_format_doc_names_five_types_including_self_referential():
 
 def test_a_valid_declaration_is_filed_exactly_once_via_real_step_worker(
         tmp_path, monkeypatch):
+    """Task 065 (requirement N.6, #150): the production write path now
+    passes `run=self.run`, so the filing lands in `run.petitions_file` --
+    RUN scope -- and the workspace's own `<wave>-petitions.md` (still
+    tracked here purely to prove it is left ALONE) never gains a second
+    section for it. #150 stays CLOSED: this is not its glob-discovery bug
+    fixed again, it is the tree-side file that bug reads, removed for a
+    run built on this code.
+    """
     sup, run, workspace = _worker_sup(tmp_path, "valid")
     petitions_file = _make_petitions_file(workspace)
+    before = petitions_file.read_text()
     obligation = "Requirement Z: an obligation this test invents for coverage"
     payload_text = _petition_payload(
         obligation, "environmental", "no such capability in this sandbox")
@@ -174,10 +183,16 @@ def test_a_valid_declaration_is_filed_exactly_once_via_real_step_worker(
     asyncio.run(sup._step_worker())
 
     # Invoked through the REAL production path -- LoopSupervisor itself,
-    # never a test-local validation shim -- and exactly once.
+    # never a test-local validation shim -- and exactly once, with this
+    # run's own handle.
     assert len(calls) == 1, "file_worker_petition must be invoked exactly once"
+    assert calls[0][1].get("run") is run
 
-    parsed = petitions.parse_petitions(petitions_file.read_text())
+    # The workspace's tracked wave file is UNTOUCHED (requirement N.6) --
+    # the filing landed in the run dir instead.
+    assert petitions_file.read_text() == before
+
+    parsed = petitions.parse_petitions(run.petitions_file.read_text())
     assert len(parsed) == 1
     assert parsed[0]["obligation"] == obligation
     assert parsed[0]["type"] == "environmental"

@@ -1494,94 +1494,74 @@ def test_an_invalid_adjudication_value_is_a_noop(tmp_path):
         tmp_path, "Requirement E.2 cannot be met", "MAYBE") is None
 
 
-def test_review_verdict_writes_the_adjudication_into_the_tracked_file(tmp_path):
+def test_review_verdict_writes_the_adjudication_into_the_run_dir_never_the_workspace_tree(
+        tmp_path):
+    """Task 065 (requirement N.6, #150): `_write_back_petition_adjudications`
+    now threads `run=self.run` into `petitions.write_back_petition_
+    adjudication`, so the CONFIRMED/REFUTED marker for an obligation this
+    RUN itself filed (through the run-dir `file_worker_petition` path)
+    lands in `sup.run.petitions_file` -- never a `*-petitions.md` file
+    under the workspace tree, and never a git commit against the
+    workspace (there is nothing there for `_commit_petition_writeback` to
+    add). #150 (the historical multi-wave-glob duplicate-obligation bug)
+    stays CLOSED -- unrelated to where this writes.
+
+    Retires the four `_review_verdict`-driven tests this replaces
+    (`test_review_verdict_writes_the_adjudication_into_the_tracked_file`,
+    `test_a_clean_workspace_commits_the_writeback_with_the_run_identity`,
+    `test_a_dirty_workspace_defers_the_commit_to_the_next_task_boundary`,
+    `test_a_non_git_workspace_still_gets_the_write`): each pinned the
+    write-back landing IN the workspace tree and being committed there,
+    which requirement N.6 retires outright. Their surviving cover is this
+    test (the run-dir write-back itself) plus `test_petition_adjudications_
+    run_scope.py`'s existing suite (the JSON store this same run-dir
+    write-back sits beside) and `test_a_workspace_filed_petitions_
+    adjudication_write_back_is_a_noop_against_the_tree` below (a petition
+    filed the OLD way, before this obligation's own filing moved).
+    """
     sup = _supervisor_writeback(tmp_path)
-    _wave_file(sup.workspace)
-    _init_repo(sup.workspace)
-
-    result = _result({
-        "verdict": "verified",
-        "petition_adjudications": [
-            {"obligation": "Requirement E.2 cannot be met",
-             "adjudication": "CONFIRMED"},
-        ],
-    })
-    sup._review_verdict(result)
-
-    path = sup.workspace / "artifacts" / "reports" / "v0.19-petitions.md"
-    parsed = {p["obligation"]: p for p in petitions.parse_petitions(
-        path.read_text())}
-    assert parsed["Requirement E.2 cannot be met"]["adjudication"] == "CONFIRMED"
-
-
-def test_a_clean_workspace_commits_the_writeback_with_the_run_identity(tmp_path):
-    sup = _supervisor_writeback(tmp_path)
-    _wave_file(sup.workspace)
+    (sup.workspace / "README.md").write_text("an unrelated tracked file\n")
     _init_repo(sup.workspace)
     assert _git_status(sup.workspace) == ""
+    obligation = "Requirement E.2 cannot be met"
+    errors = petitions.file_worker_petition(
+        sup.workspace, obligation, "self-referential", "circular",
+        run=sup.run)
+    assert errors == []
 
     result = _result({
         "verdict": "verified",
         "petition_adjudications": [
-            {"obligation": "Requirement E.2 cannot be met",
-             "adjudication": "CONFIRMED"},
+            {"obligation": obligation, "adjudication": "CONFIRMED"},
         ],
     })
     sup._review_verdict(result)
 
-    # the tree is clean again -- the engine's own edit was committed.
-    assert _git_status(sup.workspace) == ""
-    log = _git_log(sup.workspace)
-    assert log.count("\n") == 2  # initial + the writeback commit
-    show = subprocess.run(
-        ["git", "show", "--stat", "HEAD"], cwd=sup.workspace, check=True,
-        capture_output=True, text=True).stdout
-    assert "v0.19-petitions.md" in show
-    author = subprocess.run(
-        ["git", "log", "-1", "--format=%an <%ae>"], cwd=sup.workspace,
-        check=True, capture_output=True, text=True).stdout.strip()
-    assert author == "t <t@example.com>"
-
-
-def test_a_dirty_workspace_defers_the_commit_to_the_next_task_boundary(tmp_path):
-    sup = _supervisor_writeback(tmp_path)
-    _wave_file(sup.workspace)
-    _init_repo(sup.workspace)
-    # a worker iteration's own edit, still uncommitted, in flight.
-    (sup.workspace / "in-flight.txt").write_text("uncommitted work\n")
-    assert _git_status(sup.workspace) != ""
-    head_before = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=sup.workspace, check=True,
-        capture_output=True, text=True).stdout.strip()
-
-    result = _result({
-        "verdict": "verified",
-        "petition_adjudications": [
-            {"obligation": "Requirement E.2 cannot be met",
-             "adjudication": "CONFIRMED"},
-        ],
-    })
-    sup._review_verdict(result)
-
-    # the file WAS written --
-    path = sup.workspace / "artifacts" / "reports" / "v0.19-petitions.md"
     parsed = {p["obligation"]: p for p in petitions.parse_petitions(
-        path.read_text())}
-    assert parsed["Requirement E.2 cannot be met"]["adjudication"] == "CONFIRMED"
-    # -- but nothing was committed: HEAD did not move, and both the
-    # in-flight file and the just-edited petitions file are still dirty.
-    head_after = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=sup.workspace, check=True,
-        capture_output=True, text=True).stdout.strip()
-    assert head_after == head_before
-    status = _git_status(sup.workspace)
-    assert "in-flight.txt" in status
-    assert "v0.19-petitions.md" in status
+        sup.run.petitions_file.read_text())}
+    assert parsed[obligation]["adjudication"] == "CONFIRMED"
+
+    # nothing landed under the workspace tree, and nothing was committed.
+    assert not (sup.workspace / "artifacts" / "reports").exists()
+    assert _git_status(sup.workspace) == ""
+    assert _git_log(sup.workspace).count("\n") == 1  # only the initial commit
 
 
-def test_a_non_git_workspace_still_gets_the_write(tmp_path):
-    sup = _supervisor_writeback(tmp_path)  # workspace is a plain, non-git directory
-    _wave_file(sup.workspace)
+def test_a_workspace_filed_petitions_adjudication_write_back_is_a_noop_against_the_tree(
+        tmp_path):
+    """The companion case: an obligation filed the OLD way -- straight into
+    the workspace's tracked wave file, as every pre-065 engine build did --
+    gets no write-back at all through the new, run-scoped path: `run=self.
+    run` means only `run.petitions_file` is ever searched, so the
+    workspace file is left completely untouched (byte-for-byte) and no
+    commit is made. This is requirement N.6's own claim -- "no write to a
+    tracked `*-petitions.md` file in the workspace" -- holding even for a
+    petition this run itself never filed there.
+    """
+    sup = _supervisor_writeback(tmp_path)
+    path = _wave_file(sup.workspace)
+    _init_repo(sup.workspace)
+    before = path.read_text()
 
     result = _result({
         "verdict": "verified",
@@ -1592,10 +1572,8 @@ def test_a_non_git_workspace_still_gets_the_write(tmp_path):
     })
     sup._review_verdict(result)  # must not raise
 
-    path = sup.workspace / "artifacts" / "reports" / "v0.19-petitions.md"
-    parsed = {p["obligation"]: p for p in petitions.parse_petitions(
-        path.read_text())}
-    assert parsed["Requirement E.2 cannot be met"]["adjudication"] == "CONFIRMED"
+    assert path.read_text() == before
+    assert _git_status(sup.workspace) == ""
 
 
 def test_no_petition_adjudications_writes_nothing_and_touches_no_git_state(tmp_path):

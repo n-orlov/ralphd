@@ -6800,6 +6800,29 @@ class RunDir:
         return self.root / "petition-adjudications.json"
 
     @property
+    def petitions_file(self) -> Path:
+        """Task 065 (requirement N.6, #150): the RUN-scope home for OPEN
+        impossibility-petition filings -- a worker's own typed
+        declaration (`engine.petitions.file_worker_petition`) and the
+        engine's own exhaustion filing (`engine.petitions.
+        file_exhaustion_petition`) both write HERE, at `self.root`, once a
+        caller passes this run's own handle -- never into a tracked
+        `artifacts/reports/<wave>-petitions.md` file in the WORKSPACE
+        (`docs/petition-format.md`'s original file, `#150`'s glob-
+        discovery half). #150 stays CLOSED: this is not that bug fixed
+        again, it is the *tree-side file the glob needs* removed for a
+        run built on this code, per N.6's own words. Same markdown
+        section shape `format_petition_section`/`parse_petitions` already
+        read and write, just rooted here instead of under the workspace,
+        so every existing parser/renderer keeps working unchanged. Never
+        one of the files `_archive_approach` copies into `approaches/NN/`
+        on a rejection -- an open petition, like a CONFIRMED adjudication
+        beside it, is a RUN-scope fact every approach shares, not a
+        per-approach artifact.
+        """
+        return self.root / "petitions.md"
+
+    @property
     def steering_dir(self) -> Path:
         return self.root / "steering"
 

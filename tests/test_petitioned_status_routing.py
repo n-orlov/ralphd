@@ -183,15 +183,24 @@ def test_an_exhausted_task_already_petitioned_is_never_reverified(tmp_path):
 
 
 def test_the_last_attempt_handoff_becomes_the_filed_petitions_body(tmp_path):
+    """Task 065 (requirement N.6, #150): the filing now lands in the RUN
+    dir's own `petitions.md` (`sup.run.petitions_file`), never in the
+    workspace's tracked wave file -- `petitions_path` below stays exactly
+    at its seeded, empty-of-filings text.
+    """
     root = tmp_path / "run"
     sup = _supervisor(root)
     petitions_path = _seed_petitions_file(root)
+    before = petitions_path.read_text()
     _write_plan(sup, [_task()])
 
     final = _exhaust(sup)
     assert final["validationNotes"] == HANDOFF_TEXT
 
-    text = petitions_path.read_text()
+    # the workspace's own tracked file never moved.
+    assert petitions_path.read_text() == before
+
+    text = sup.run.petitions_file.read_text()
     filed = petitions.parse_petitions(text)
     assert len(filed) == 1
     assert filed[0]["evidence"] == HANDOFF_TEXT

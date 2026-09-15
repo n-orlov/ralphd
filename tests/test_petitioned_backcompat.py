@@ -237,7 +237,13 @@ def test_a_petition_protocol_contract_lands_petitioned(tmp_path):
     """Identical task, plan, runner script, attempt count and workspace file
     inventory -- the ONLY difference from the tests above is the contract's
     own text. That single difference flips the terminal status and files the
-    last-attempt handoff as the petition's body."""
+    last-attempt handoff as the petition's body.
+
+    Task 065 (requirement N.6, #150): the filing now lands in `sup.run.
+    petitions_file` -- RUN scope -- never a NEW section in the workspace
+    tree, so the historical `v0.15-petitions.md` seeded by `_fixture` stays
+    exactly as it was (still just its own single, unrelated filing).
+    """
     root = tmp_path / "run"
     sup = _fixture(root, PROTOCOL_CONTRACT)
     assert petitions.contract_declares_petition_protocol(PROTOCOL_CONTRACT)
@@ -248,8 +254,13 @@ def test_a_petition_protocol_contract_lands_petitioned(tmp_path):
     assert final["status"] != "failed"
     assert "failureKind" not in final
 
-    filed = [p for path in petitions.discover_petition_files(sup.workspace)
-             for p in petitions.parse_petitions(path.read_text())]
+    # the workspace tree gained nothing: still only the historical file,
+    # still carrying only its own single, unrelated filing.
+    workspace_filed = [p for path in petitions.discover_petition_files(sup.workspace)
+                       for p in petitions.parse_petitions(path.read_text())]
+    assert workspace_filed == []
+
+    filed = petitions.parse_petitions(sup.run.petitions_file.read_text())
     assert len(filed) == 1
     assert filed[0]["evidence"] == HANDOFF_TEXT
     assert TASK_ID in filed[0]["obligation"]
@@ -259,7 +270,9 @@ def test_a_protocol_contract_with_no_petitions_file_still_lands_petitioned(
         tmp_path):
     """The workspace's file inventory is not a second discriminant: with a
     protocol-declaring contract and NO petitions file at all, the engine
-    creates the wave file itself and still routes `petitioned`."""
+    files the petition into the RUN dir (task 065, requirement N.6, #150)
+    and never creates any workspace file at all -- there is no wave file
+    for the engine to create any more."""
     root = tmp_path / "run"
     sup = _fixture(root, PROTOCOL_CONTRACT, historical_file=False)
     assert not petitions.discover_petition_files(sup.workspace)
@@ -268,11 +281,9 @@ def test_a_protocol_contract_with_no_petitions_file_still_lands_petitioned(
 
     assert final["status"] == "petitioned"
     assert "failureKind" not in final
-    created = petitions.discover_petition_files(sup.workspace)
-    assert len(created) == 1
-    # the wave name comes from the contract's own version token.
-    assert created[0].name == "v0.9-petitions.md"
-    filed = petitions.parse_petitions(created[0].read_text())
+    # nothing was ever created under the workspace tree.
+    assert not petitions.discover_petition_files(sup.workspace)
+    filed = petitions.parse_petitions(sup.run.petitions_file.read_text())
     assert len(filed) == 1 and filed[0]["evidence"] == HANDOFF_TEXT
 
 

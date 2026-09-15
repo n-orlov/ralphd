@@ -9,12 +9,28 @@ the same PRD).
 
 ## Where the file lives
 
-One file per wave: `artifacts/reports/<wave>-petitions.md` (for example
-`artifacts/reports/v0.15-petitions.md`). It is tracked alongside the wave's
-other evidence reports, never in `docs/` and never per-task. If a wave needs
-no petition, the file still exists and says so explicitly — silence is not
-evidence that nothing was unachievable, and a missing file cannot be
-distinguished from a forgotten one.
+**Task 065 (requirement N.6, #150): the run dir, not the workspace tree.**
+The engine's own writers (`engine.petitions.file_worker_petition`/
+`file_exhaustion_petition`) and its own reader/write-back path
+(`open_petitions_in_workspace`/`write_back_petition_adjudication`) take an
+optional `run` handle; every production call site in `LoopSupervisor`
+passes its own run, so a filing and its later adjudication both land in
+`run.petitions_file` (`<run dir>/petitions.md`) — never a tracked
+`artifacts/reports/<wave>-petitions.md` file in the workspace. #150's own
+glob-discovery bug read whichever `*-petitions.md` file it found last
+under the workspace tree; N.6 removes that tree-side file for a run built
+on this code rather than fixing the glob again, and #150 stays CLOSED.
+
+The historical shape — one file per wave, `artifacts/reports/<wave>-
+petitions.md`, tracked alongside the wave's other evidence reports — is
+still what every function above falls back to when called with no `run`
+at all (`run=None`, every pre-existing test fixture that exercises these
+functions directly), and it is why `artifacts/reports/v0.21-petitions.md`
+still exists in this repo: N.1 deletes every other file under
+`artifacts/reports/` but leaves that one behind, since the engine
+*running this wave's own work* is an older build and still appends to it.
+A future wave, built on this code, never creates a workspace file for its
+own petitions at all.
 
 ## One petition per obligation
 

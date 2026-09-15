@@ -64,9 +64,10 @@ no longer the fallback for any contract (task 004, requirement A.2, #139).
 
 If a run believes a contract obligation is unachievable, it may file an
 **impossibility petition**: one petition per obligation, with a type
-(`environmental | temporal | contradictory-clauses | external`) and evidence,
-in that wave's own `artifacts/reports/<wave>-petitions.md`. Review adjudicates
-every open petition as part of its verdict:
+(`environmental | temporal | contradictory-clauses | external`) and evidence.
+See [`petition-format.md`](petition-format.md) for where the filing lands
+(task 065, requirement N.6, #150: the run dir, not a workspace file). Review
+adjudicates every open petition as part of its verdict:
 
 - **CONFIRMED** converts that obligation to a disclosed residual for the
   remainder of the run — every approach, not just the current one.
