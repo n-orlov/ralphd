@@ -316,6 +316,80 @@ def test_run_bounded_reaches_a_grandchild_with_pgrep_unreachable_through_path(
     assert 1 <= took < 20, took
 
 
+@pytest.mark.timeout(30)
+def test_run_bounded_reaches_a_grandchild_through_a_term_obeying_parent(tmp_path):
+    """Task 010 (M.3, operator steer 008): the complementary case to task
+    009's `test_run_bounded_reaches_a_grandchild_with_pgrep_unreachable_through_path`,
+    which wraps a command that ITSELF ignores TERM. Here the wrapped command
+    has no TERM trap at all -- it obeys the very first TERM it receives and
+    dies immediately -- but it has already spawned a background grandchild
+    (its own `sleep 30 &`) before that TERM arrives. `kill_tree` walks
+    depth-first and signals every descendant it finds strictly BEFORE the
+    pid it was called on, so the grandchild is (in this walk order) signalled
+    ahead of the TERM-obeying parent -- but only if the walk can still find
+    it. With `pgrep` unreachable and `children_of()` reverted to a
+    pgrep-only walk, `children_of(cmd_pid)` finds nothing, so `kill_tree`
+    sends TERM to the parent alone; the parent (obeying it) exits at once,
+    but that leaves the grandchild orphaned and still running its own 30s
+    sleep, holding this step's stdout pipe open long after the parent -- and
+    this script's own report -- have already finished. A TERM-obeying parent
+    proves only that this tree's ROOT was reaped, never that the rest of the
+    tree was too; this pins the latter with a parent that dies on its own
+    the instant it is signalled, so the only thing that can still be left
+    running is a grandchild the walk failed to reach."""
+    bin_dir = _restricted_bin_dir(
+        tmp_path, ["bash", "sh", "sleep", "cat", "mkdir", "date", "tr", "env"]
+    )
+
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    parent = tmp_path / "spawns_grandchild_obeys_term.sh"
+    parent.write_text(
+        "#!/usr/bin/env bash\n"
+        "sleep 30 &\n"
+        "gc=$!\n"
+        f"echo $gc >'{grandchild_pid_file}'\n"
+        "wait $gc\n",
+        encoding="utf-8",
+    )
+    parent.chmod(0o755)
+
+    summary_path = tmp_path / "step-summary.txt"
+    summary_path.write_text("", encoding="utf-8")
+    evidence_dir = tmp_path / "evidence"
+
+    env = dict(os.environ)
+    env["PATH"] = str(bin_dir)
+    env["GITHUB_STEP_SUMMARY"] = str(summary_path)
+    env["RALPHD_TIMEOUT_EVIDENCE_DIR"] = str(evidence_dir)
+
+    started = time.time()
+    result = subprocess.run(
+        [str(SCRIPT), "1", "obedient parent label", "--", str(parent)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+        timeout=20,
+    )
+    took = time.time() - started
+
+    assert result.returncode == 1, result.stdout
+    expected = f"{MARKER} obedient parent label exceeded its internal bound of 1s"
+    assert expected in result.stdout
+    assert expected in summary_path.read_text(encoding="utf-8")
+    written = sorted(evidence_dir.glob("*.expired"))
+    assert len(written) == 1, [p.name for p in written]
+
+    grandchild_pid = int(grandchild_pid_file.read_text(encoding="utf-8").strip())
+    with pytest.raises(ProcessLookupError):
+        os.kill(grandchild_pid, 0)
+    # The parent obeys TERM on the spot -- no KILL-after-grace escalation
+    # needed -- so a correctly-reaped grandchild must return this well
+    # inside the 30s its own unreaped sleep would otherwise still be
+    # running for, and comfortably inside the 20s harness timeout.
+    assert 1 <= took < 20, took
+
+
 @pytest.mark.timeout(15)
 def test_children_of_reports_a_missing_pgrep_on_stderr_instead_of_no_children(
     tmp_path,
