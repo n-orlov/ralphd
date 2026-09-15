@@ -324,13 +324,23 @@ def test_bounded_tail_is_byte_identical_to_full_render_for_a_dead_run_on_disk_me
 # first place.
 
 
-def _tool_call_lines(tool_call_id: str, name: str, args: dict, result: str = "ok") -> list[str]:
-    return [
-        json.dumps({"type": "tool_execution_start", "toolCallId": tool_call_id,
-                    "toolName": name, "args": args}) + "\n",
-        json.dumps({"type": "tool_execution_end", "toolCallId": tool_call_id,
-                    "toolName": name, "result": result, "isError": False}) + "\n",
-    ]
+def _tool_call_lines(tool_call_id: str, name: str, args: dict, result: str = "ok",
+                     ignored_gap: int = 0) -> list[str]:
+    """A `tool_execution_start` (with `args`) and its matching
+    `tool_execution_end`, optionally separated by `ignored_gap` opaque raw
+    events `render_log_line` does not recognize (task cure-01-02, #195):
+    large enough, the gap pushes the start beyond a single
+    `_TAIL_READ_CHUNK` read, so a bounded tail landing on just the end
+    event must still find the start's arguments by TARGETED look-back --
+    not merely by reading past a recognizable run, since `{"type":
+    "ignored"}` filler is not one."""
+    ignored = [json.dumps({"type": "ignored", "seq": i}) + "\n"
+              for i in range(ignored_gap)]
+    return ([json.dumps({"type": "tool_execution_start", "toolCallId": tool_call_id,
+                        "toolName": name, "args": args}) + "\n"]
+            + ignored
+            + [json.dumps({"type": "tool_execution_end", "toolCallId": tool_call_id,
+                          "toolName": name, "result": result, "isError": False}) + "\n"])
 
 
 def _text_stream_lines(text: str) -> list[str]:
@@ -361,8 +371,9 @@ def _message_end_repeating_everything() -> str:
     ]}}) + "\n"
 
 
-def _restart_iteration_lines(deltas: int) -> list[str]:
-    return (_tool_call_lines("t1", _RESTART_TOOL_NAME, _RESTART_TOOL_ARGS)
+def _restart_iteration_lines(deltas: int, ignored_gap: int = 0) -> list[str]:
+    return (_tool_call_lines("t1", _RESTART_TOOL_NAME, _RESTART_TOOL_ARGS,
+                             ignored_gap=ignored_gap)
             + _text_stream_lines(_RESTART_TEXT)
             + [line + "\n" for line in _thinking_flood_lines(deltas)]
             + [_message_end_repeating_everything()])
@@ -399,12 +410,23 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
     this file: the net effect (three functions -> one) is part of
     cure-01-04's own reduction, not a per-file raise.
 
+    Task cure-01-02 (#195) widened this SAME fixture rather than adding
+    new test functions, for the same collected-count reason: the flood is
+    now 3,000 deltas (not 500) -- large enough that even the flood itself
+    does not fit in one `_TAIL_READ_CHUNK` read, let alone the streamed
+    text before it -- and the tool call's start/end are separated by 3,000
+    unrelated, ignored raw events in Parts 2 and 3 (the on-disk paths;
+    Part 1 never reads from disk at all, so it is unaffected either way).
+    Without this task's bounded extra look-back / dangling-tool-call
+    lookup, `text_seen` would stay wrongly `False` and the tool call would
+    render bare on those two paths.
+
     Part 1 -- `render_tail_lines` directly: every tail size that lands
     somewhere inside the restart iteration's flood (or right after it, at
     the `message_end`) must still match the full render's own suffix --
     no duplicated text/tool-call line, no re-shown `[thinking...]`, no
     extra blank line."""
-    raw_text = _fixture_blob_with_restart_mid_iteration(3, restart_iteration=3, deltas=500)
+    raw_text = _fixture_blob_with_restart_mid_iteration(3, restart_iteration=3, deltas=3000)
     full = render_to_lines(raw_text, tty=False, state=new_render_state())
 
     for n in (1, 2, 3, 4, 5, 6, 10, 50):
@@ -432,12 +454,15 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
             json.dumps({"type": "message_end", "message": {"content": [
                 {"type": "text", "text": f"iteration {n} did some work"}]}})])
     _write_dead_run_iteration(
-        run_dir, 3, [line.rstrip("\n") for line in _restart_iteration_lines(500)])
+        run_dir, 3,
+        [line.rstrip("\n") for line in _restart_iteration_lines(3000, ignored_gap=3000)])
 
     monkeypatch.setattr(ui_server, "_proxy_text", lambda *a, **k: (False, ""))
 
     live_full, full_lines = ui_server.rendered_log_lines(tmp_path, "dead-run-restart", None)
     assert live_full is False
+    assert sum(1 for ln in full_lines if "bash" in ln) == 1
+    assert any(_RESTART_TOOL_ARGS["command"] in ln for ln in full_lines)
 
     for n in (1, 2, 3, 4, 5, 6, 10, 50):
         live_tail, tail_lines = ui_server.rendered_log_lines(tmp_path, "dead-run-restart", n)
@@ -465,7 +490,8 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
             json.dumps({"type": "message_end", "message": {"content": [
                 {"type": "text", "text": f"iteration {n} did some work"}]}})])
     _write_dead_run_iteration(
-        container_run_root, 3, [line.rstrip("\n") for line in _restart_iteration_lines(500)])
+        container_run_root, 3,
+        [line.rstrip("\n") for line in _restart_iteration_lines(3000, ignored_gap=3000)])
 
     (tmp_path / "runs" / "live-run-restart").mkdir(parents=True)
     monkeypatch.setattr(ui_server, "host_meta",
@@ -491,3 +517,4 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
         assert live is True
         assert tail_lines == full[-n:], (n, tail_lines, full[-n:])
         assert all(line != "" for line in tail_lines), (n, tail_lines)
+

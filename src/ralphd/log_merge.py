@@ -192,6 +192,113 @@ def merge_entries(run_root: Path,
 # `read_text()` of a multi-megabyte file for a 200-line tail).
 _TAIL_READ_CHUNK = 1 << 16
 
+# Task cure-01-02 (#195): once `needed` is satisfied, `_tail_lines_of_file`
+# may still grow `prefix_lines` a FEW more times -- never unconditionally,
+# never unbounded -- purely to give the collapse-state seed a fighting
+# chance of reaching whichever earlier event actually establishes it (a
+# many-delta thinking/text run, or a tool call's own start), when that
+# event sits further back than the single chunk `needed` alone happened to
+# pull in. Capped at a small constant so growing IGNORED older history
+# that never triggers `_should_extend_seed_lookback` (E.2's own fixture)
+# never grows the read at all, and growing history that DOES trigger it
+# still costs at most this many extra doublings, not the whole file.
+_SEED_LOOKBACK_EXTRA_GROWTHS = 6
+
+# The four raw NDJSON types `log_render.render_log_line` actually dispatches
+# on for collapse-guard state (`message_update`, `tool_execution_start/end`)
+# plus `message_end` (whose OWN content items are what the guards protect).
+# Seeing one of these as the OLDEST line read so far is a concrete signal
+# that more of the SAME turn's content plausibly continues further back --
+# an opaque/unrelated type (e.g. E.2's `{"type": "ignored"}` filler) is not
+# a type `render_log_line` recognizes at all, so seeing IT as the oldest
+# line is not, by itself, a reason to keep growing.
+_SEED_RELEVANT_TYPES = {"message_update", "tool_execution_start",
+                        "tool_execution_end", "message_end"}
+
+
+def _safe_json(raw: str) -> dict | None:
+    """Parsed JSON object for one raw NDJSON line, or `None` for anything
+    blank, malformed, or not an object -- the same tolerant parsing
+    `render_log_line` and `_prior_collapse_state` already apply, pulled out
+    once so the seed-lookback decision below can share it."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        ev = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return ev if isinstance(ev, dict) else None
+
+
+def _dangling_tool_call_ids(tail_lines: list[str], prefix_lines: list[str]) -> set:
+    """`toolCallId`s with a `tool_execution_end` in the RETAINED `tail_lines`
+    but no matching `tool_execution_start` anywhere already read -- exactly
+    the case PRD F's tool-argument gap names: a tool call whose start (and
+    therefore its arguments) sits far enough back that a single chunk never
+    reached it. Non-empty here is the second, independent trigger for
+    `_should_extend_seed_lookback`: unlike a many-delta run, the intervening
+    history can be arbitrary unrelated events (ignored/other tool calls),
+    so this is checked by TARGETED id lookup rather than by the type of
+    whatever line happens to be oldest."""
+    ends: set = set()
+    starts: set = set()
+    for raw in tail_lines:
+        ev = _safe_json(raw)
+        if not ev:
+            continue
+        tcid = ev.get("toolCallId")
+        if tcid is None:
+            continue
+        if ev.get("type") == "tool_execution_end":
+            ends.add(tcid)
+        elif ev.get("type") == "tool_execution_start":
+            starts.add(tcid)
+    for raw in prefix_lines:
+        ev = _safe_json(raw)
+        if ev and ev.get("type") == "tool_execution_start" and ev.get("toolCallId") is not None:
+            starts.add(ev["toolCallId"])
+    return ends - starts
+
+
+def _should_extend_seed_lookback(lines: list[str], tail_lines: list[str],
+                                 prefix_lines: list[str]) -> bool:
+    """Whether `_tail_lines_of_file` should read one more (bounded) chunk
+    further back purely to widen the collapse-state seed, given what has
+    been read so far. True on either of two independent, concrete signals
+    -- never merely because more history happens to exist:
+
+    1. The OLDEST line read so far (`lines[0]`) is one of the four types
+       `_SEED_RELEVANT_TYPES` names -- the read has landed INSIDE a run of
+       exactly the kind of content the collapse guards track (a many-delta
+       thinking/text flood, or a still-open tool call), so the event that
+       actually STARTED that run -- the one the seed needs -- may be one
+       chunk further back still.
+    2. `_dangling_tool_call_ids` is non-empty -- the retained tail keeps a
+       `tool_execution_end` this seed cannot yet supply arguments for.
+
+    Neither signal fires for E.2's own fixture (`{"type": "ignored"}`
+    filler around plain, independent `message_end` lines): `"ignored"` is
+    not in `_SEED_RELEVANT_TYPES`, and there is no `tool_execution_end` in
+    its tail at all -- so growing THAT fixture's ignored history never
+    triggers this, and the byte bound E.2 pins stays exactly as it was.
+    """
+    # `lines[0]` can be a truncated FRAGMENT rather than a genuine line --
+    # `data`'s own start (`pos`) has no reason to land right after a `\n`
+    # the way its END always does, so the leading bytes of a freshly grown
+    # read are only guaranteed complete once `pos` reaches 0. Skip past
+    # any such fragment (there is at most one, right at the front) to the
+    # first line that actually parses before judging its type -- a plain
+    # `lines[0]` check would silently see `None` there forever and never
+    # grow further, exactly the regression this loop exists to avoid.
+    for raw in lines:
+        ev = _safe_json(raw)
+        if ev is not None:
+            if ev.get("type") in _SEED_RELEVANT_TYPES:
+                return True
+            break
+    return bool(_dangling_tool_call_ids(tail_lines, prefix_lines))
+
 
 def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[str]]:
     """The last `needed` newline-terminated lines of `path`, read from the
@@ -241,11 +348,35 @@ def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[
             f.seek(pos)
             data = f.read(read_size) + data
             chunk *= 2
-    reached_start = pos <= 0
-    lines = data.decode("utf-8", errors="replace").splitlines(keepends=True)
-    if len(lines) > needed:
-        return lines[-needed:], reached_start, lines[:-needed]
-    return lines, reached_start, []
+
+        def _split(raw: bytes) -> tuple[list[str], list[str], list[str]]:
+            ls = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
+            if len(ls) > needed:
+                return ls, ls[-needed:], ls[:-needed]
+            return ls, ls, []
+
+        reached_start = pos <= 0
+        lines, tail_lines, prefix_lines = _split(data)
+
+        # Task cure-01-02 (#195): bounded extra look-back purely to widen
+        # `prefix_lines` for the collapse-state seed -- `tail_lines` never
+        # changes from here on (it stays exactly what `needed` selected
+        # above; every extra chunk only PREPENDS strictly older bytes, so
+        # the last `needed` lines of the growing `lines` list are the
+        # same lines every time `_split` recomputes them).
+        extra_growths = 0
+        while (not reached_start and extra_growths < _SEED_LOOKBACK_EXTRA_GROWTHS
+               and _should_extend_seed_lookback(lines, tail_lines, prefix_lines)):
+            read_size = min(chunk, pos)
+            pos -= read_size
+            f.seek(pos)
+            data = f.read(read_size) + data
+            chunk *= 2
+            extra_growths += 1
+            reached_start = pos <= 0
+            lines, tail_lines, prefix_lines = _split(data)
+
+    return tail_lines, reached_start, prefix_lines
 
 
 # The three raw NDJSON shapes (task 006, PRD F) whose FIRST occurrence in an
@@ -254,32 +385,36 @@ def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[
 # `_tail_lines_of_file` already read (never a fresh disk read) for whichever
 # of the three flags a bounded tail's cut point needs to carry forward, so a
 # `message_end`/`thinking_delta` line INSIDE the kept tail renders exactly as
-# it would have from a genuine, uncut iteration start (`_prior_collapse_seed`
+# it would have from a genuine, uncut iteration start (`_prior_collapse_state`
 # below). Mirrors `log_render.render_log_line`'s own dispatch: a
 # `message_update` event's `text_delta` sets `text_seen`, `thinking_start`/
 # `thinking_delta` sets `thinking_seen`; a `tool_execution_start`/
 # `tool_execution_end` sets `toolcall_seen`.
-def _prior_collapse_seed(prefix_lines: list[str]) -> dict:
-    """`{"textSeen": bool, "thinkingSeen": bool, "toolcallSeen": bool}` for
-    whatever collapse-guard state the (already in-memory) `prefix_lines`
-    establish -- i.e. what a fresh `new_render_state()` would hold after
-    rendering them, without actually rendering (no output, just the state
-    transitions `log_render._render_message_update` and
-    `render_log_line`'s tool-call branches apply). A line that fails to
-    parse, or is unrecognized, changes nothing -- exactly like
-    `render_log_line`'s own unknown-event handling."""
+def _prior_collapse_state(prefix_lines: list[str]) -> tuple[dict, dict]:
+    """`({"textSeen": bool, "thinkingSeen": bool, "toolcallSeen": bool},
+    tool_args)` for whatever collapse-guard state the (already in-memory)
+    `prefix_lines` establish -- i.e. what a fresh `new_render_state()`
+    would hold after rendering them, without actually rendering (no
+    output, just the state transitions `log_render._render_message_update`
+    and `render_log_line`'s tool-call branches apply). A line that fails
+    to parse, or is unrecognized, changes nothing -- exactly like
+    `render_log_line`'s own unknown-event handling.
+
+    `tool_args` (task cure-01-02, #195) is `{toolCallId: args}` for every
+    tool call `prefix_lines` started but did not also close (pop on a
+    matching `tool_execution_end`, mirroring `render_log_line`'s own
+    `state['tool_args']` bookkeeping exactly) -- i.e. calls still open as
+    of the retained tail's cut point, whose `tool_execution_end` the
+    RETAINED tail may still need to render with its invocation's
+    arguments (PRD F's tool-argument gap). Never early-exits once all
+    three flags are known True (unlike this function's pre-cure-01-02
+    shape): a `tool_execution_end` closing an ALREADY-open call still has
+    to be seen to pop that call back out of `tool_args`."""
     text_seen = thinking_seen = toolcall_seen = False
+    tool_args: dict = {}
     for raw in prefix_lines:
-        if text_seen and thinking_seen and toolcall_seen:
-            break
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            ev = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(ev, dict):
+        ev = _safe_json(raw)
+        if not ev:
             continue
         etype = ev.get("type")
         if etype == "message_update":
@@ -288,10 +423,18 @@ def _prior_collapse_seed(prefix_lines: list[str]) -> dict:
                 text_seen = True
             elif sub in ("thinking_start", "thinking_delta"):
                 thinking_seen = True
-        elif etype in ("tool_execution_start", "tool_execution_end"):
+        elif etype == "tool_execution_start":
             toolcall_seen = True
-    return {"textSeen": text_seen, "thinkingSeen": thinking_seen,
-            "toolcallSeen": toolcall_seen}
+            tcid = ev.get("toolCallId")
+            if tcid is not None:
+                tool_args[tcid] = ev.get("args") or ev.get("arguments") or {}
+        elif etype == "tool_execution_end":
+            toolcall_seen = True
+            tcid = ev.get("toolCallId")
+            if tcid is not None:
+                tool_args.pop(tcid, None)
+    return ({"textSeen": text_seen, "thinkingSeen": thinking_seen,
+            "toolcallSeen": toolcall_seen}, tool_args)
 
 
 def merge_entries_tail(run_root: Path, tail: int,
@@ -356,9 +499,18 @@ def merge_entries_tail(run_root: Path, tail: int,
             # whatever `_tail_lines_of_file`'s OWN growing chunk already
             # pulled in beyond `remaining` lines (often the whole file, if
             # it is smaller than one growth chunk, in which case this seed
-            # is EXACT rather than merely best-effort).
+            # is EXACT rather than merely best-effort). Task cure-01-02
+            # (#195): `_tail_lines_of_file` may have grown `prefix_lines`
+            # a few chunks further back than `remaining` alone needed, so
+            # this seed also carries `toolArgs` -- the arguments of any
+            # tool call `prefix_lines` opened but did not also close --
+            # for a `tool_execution_end` kept in `tail_lines` whose own
+            # `tool_execution_start` fell outside even that widened read.
             if prefix_lines:
-                collapse_seed = _prior_collapse_seed(prefix_lines)
+                seed_flags, pending_tool_args = _prior_collapse_state(prefix_lines)
+                collapse_seed = dict(seed_flags)
+                if pending_tool_args:
+                    collapse_seed["toolArgs"] = pending_tool_args
             for line in reversed(tail_lines):
                 line = line if line.endswith("\n") else line + "\n"
                 chunk.append((False, scrub(line)))

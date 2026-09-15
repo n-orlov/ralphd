@@ -436,7 +436,7 @@ def render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) -
         # carries a `collapseSeed` -- the `text_seen`/`thinking_seen`/
         # `toolcall_seen` values that iteration's OMITTED earlier raw
         # lines would already have set, computed by
-        # `log_merge._prior_collapse_seed` from bytes the bounded reader
+        # `log_merge._prior_collapse_state` from bytes the bounded reader
         # already had in hand (never a second disk read). Seeding from it
         # here, instead of unconditionally resetting every flag to
         # `False`, is what keeps a bounded tail's collapse state -- and
@@ -452,7 +452,17 @@ def render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) -
                     text_seen=bool(seed.get("textSeen")),
                     thinking_seen=bool(seed.get("thinkingSeen")),
                     toolcall_seen=bool(seed.get("toolcallSeen")),
-                    tool_args={}, tool_pending={})
+                    # Task cure-01-02 (#195): a tool call this iteration's
+                    # OMITTED earlier raw lines started but never closed
+                    # carries its arguments in `seed["toolArgs"]` -- seeded
+                    # here instead of unconditionally reset to `{}`, so the
+                    # RETAINED tail's own `tool_execution_end` for that same
+                    # call can still render its invocation with arguments
+                    # rather than bare (the exact PRD F gap: "the renderer
+                    # resets tool_args to an empty mapping"). A genuine
+                    # start/end boundary carries no `toolArgs` key, so this
+                    # defaults to `{}` -- byte-identical to before.
+                    tool_args=dict(seed.get("toolArgs") or {}), tool_pending={})
     elif etype == "message_update":
         _render_message_update(ev.get("assistantMessageEvent") or {}, state, tty)
     elif etype == "tool_execution_start":
