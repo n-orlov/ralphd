@@ -14,6 +14,14 @@
 # and answers the one question the Checks/Actions API cannot: of the three
 # causes that all report `cancelled`, which one happened here.
 #
+# It reads no exit status of any kind, from this step or any other -- not
+# `run_bounded.sh`'s own, and not the raw signal-shaped status (a bare 137,
+# say) a command that needed escalating from TERM to KILL can leave behind
+# (task 004, K.3). The evidence file is written before that escalation ever
+# starts, so by the time this script runs the fact it reads is already
+# durable and the exit code that got the command to stop is irrelevant to
+# it -- there is no code path here that inspects one at all.
+#
 # It answers it from two facts, and from NO clock inference at all:
 #
 #   * `$RALPHD_TIMEOUT_EVIDENCE_DIR` holds at least one `*.expired` file

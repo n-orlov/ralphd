@@ -126,6 +126,115 @@ def test_timeout_kill_marker_is_absent_when_the_job_is_cancelled_by_signal(tmp_p
     assert proc.returncode < 0 or proc.returncode >= 128
 
 
+@pytest.mark.timeout(30)
+def test_a_term_ignoring_child_still_yields_the_marker_evidence_and_failure_status(tmp_path):
+    """Task 004 (K.3): the expiry has to be recorded BEFORE the escalation
+    from TERM to KILL, not inferred from whichever raw exit status the
+    escalation happens to leave behind. A child that traps and ignores
+    TERM forces the kill-after grace period, and used to leave the run
+    with a bare 137 and no marker at all -- this pins that it now reports
+    exactly like a TERM-obeying child: `failure`, the marker on both
+    surfaces, and the evidence file."""
+    ignorer = tmp_path / "ignore_term.sh"
+    ignorer.write_text(
+        "#!/usr/bin/env bash\ntrap '' TERM\nsleep 30\n", encoding="utf-8"
+    )
+    ignorer.chmod(0o755)
+
+    summary_path = tmp_path / "step-summary.txt"
+    summary_path.write_text("", encoding="utf-8")
+    evidence_dir = tmp_path / "evidence"
+
+    started = time.time()
+    result = _run(
+        ["1", "stubborn label", "--", str(ignorer)],
+        GITHUB_STEP_SUMMARY=str(summary_path),
+        RALPHD_TIMEOUT_EVIDENCE_DIR=str(evidence_dir),
+    )
+    took = time.time() - started
+
+    # Documented failure status -- never the raw 137-ish status a TERM that
+    # needed escalating to KILL would otherwise leave behind.
+    assert result.returncode == 1, result.stdout
+    expected = f"{MARKER} stubborn label exceeded its internal bound of 1s"
+    assert expected in result.stdout
+    assert expected in summary_path.read_text(encoding="utf-8")
+    written = sorted(evidence_dir.glob("*.expired"))
+    assert len(written) == 1, [p.name for p in written]
+    body = written[0].read_text(encoding="utf-8")
+    assert "label=stubborn label" in body
+    assert "effective_bound_s=1" in body
+    # The child really did need the kill-after escalation (1s bound + up to
+    # 5s of grace before KILL), not a fluke of the TERM landing early.
+    assert 1 <= took < 20, took
+
+
+@pytest.mark.timeout(30)
+def test_a_kill_requiring_cancel_before_the_bound_leaves_neither_marker_nor_evidence(
+    tmp_path,
+):
+    """An outside cancel that itself needs to escalate from TERM to KILL
+    (because the wrapped child ignores TERM too) must still leave neither
+    marker nor evidence, and the job-level classifier must not read
+    whatever raw, KILL-shaped exit status results as a self-inflicted
+    timeout: this script's own bound never got a chance to fire."""
+    ignorer = tmp_path / "ignore_term.sh"
+    ignorer.write_text(
+        "#!/usr/bin/env bash\ntrap '' TERM\nsleep 30\n", encoding="utf-8"
+    )
+    ignorer.chmod(0o755)
+
+    summary_path = tmp_path / "step-summary.txt"
+    summary_path.write_text("", encoding="utf-8")
+
+    env = dict(os.environ)
+    env["GITHUB_STEP_SUMMARY"] = str(summary_path)
+
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    env["RALPHD_TIMEOUT_EVIDENCE_DIR"] = str(evidence_dir)
+
+    proc = subprocess.Popen(
+        [str(SCRIPT), "10", "demo label", "--", str(ignorer)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+        preexec_fn=os.setsid,
+    )
+    time.sleep(0.3)
+    # The outside canceller's own TERM...
+    os.killpg(proc.pid, signal.SIGTERM)
+    time.sleep(0.5)
+    # ...escalated by the outside canceller to its own KILL, well inside
+    # the 10s inner bound, because the wrapped child ignored that outside
+    # TERM too.
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    out, _ = proc.communicate(timeout=10)
+
+    assert MARKER not in out
+    assert summary_path.read_text(encoding="utf-8") == ""
+    assert list(evidence_dir.glob("*.expired")) == []
+    assert proc.returncode != 124
+    assert proc.returncode != 1
+    assert proc.returncode < 0 or proc.returncode >= 128
+
+    # And the job-level classifier, fed this exact ending, must call it a
+    # cancel -- not read the KILL-shaped ending as a self-inflicted timeout.
+    classifier = _run_classifier(
+        ["45", "gate fast tier", "cancelled"],
+        RALPHD_JOB_STARTED_AT=str(int(time.time()) - 30),
+        RALPHD_TIMEOUT_EVIDENCE_DIR=str(evidence_dir),
+        GITHUB_STEP_SUMMARY=str(summary_path),
+    )
+    assert classifier.returncode == 0, classifier.stdout
+    assert MARKER not in classifier.stdout
+    assert CANCEL_MARKER in classifier.stdout
+
+
 @pytest.mark.timeout(60)
 def test_the_inner_bound_is_clamped_to_the_jobs_remaining_wall_clock(tmp_path):
     """A declared inner bound is an upper bound, not a promise: if earlier

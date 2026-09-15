@@ -201,30 +201,38 @@ both keyed on one of two fixed, greppable, mutually exclusive prefixes —
 
 - **`scripts/run_bounded.sh <seconds> <label> -- <command...>`** wraps every
   step that can consume real wall clock (each tier invocation, each venv
-  build, the records lint, each dev-layout cell) in an inner `timeout(1)`
-  bound set below the job's own, and clamps that bound down further to the
-  job's own remaining `timeout-minutes` budget (from `RALPHD_JOB_STARTED_AT`
-  and `RALPHD_JOB_BOUND_MINUTES`, less a 120 s tail). So whichever wrapped
-  step is running when the job's wall clock runs out is killed from inside
-  the step: it prints `RALPHD_TIMEOUT_KILL:`, exits 1 — an ordinary
-  `failure`, with the reason in the log, instead of a bare `cancelled` — and
-  writes one `*.expired` evidence file into the per-job
-  `$RALPHD_TIMEOUT_EVIDENCE_DIR`. A cancel arriving from outside signals
-  `timeout(1)` itself first, so it reports an external-signal status rather
-  than its own self-timeout status of exactly 124, prints nothing and leaves
-  no evidence file.
+  build, the records lint, each dev-layout cell) in its own bound, set below
+  the job's own, and clamps that bound down further to the job's own
+  remaining `timeout-minutes` budget (from `RALPHD_JOB_STARTED_AT` and
+  `RALPHD_JOB_BOUND_MINUTES`, less a 120 s tail). It runs the wrapped command
+  beside a plain background timer for that bound and blocks on whichever
+  finishes first. If the bound wins, it records the expiry -- the
+  `RALPHD_TIMEOUT_KILL:` marker line and the `*.expired` evidence file into
+  `$RALPHD_TIMEOUT_EVIDENCE_DIR` -- **before it sends the command anything at
+  all** (task 004, K.3), then escalates TERM first and only KILLs after a
+  grace period if the command ignores TERM, and always exits 1 either way:
+  an ordinary `failure`, with the reason in the log, instead of a bare
+  `cancelled` — a TERM-ignoring command that needs the KILL is reported
+  identically to one that dies to the first TERM, never as a bare 137 that
+  the mechanism failed to recognise. A cancel arriving from outside this
+  script's own bound -- a human, or `cancel-in-progress` -- lands on this
+  script itself (which installs no trap) or on the command directly, before
+  the bound's timer could ever fire, so it dies by that raw signal, prints
+  nothing and leaves no evidence file, however that outside cancel itself
+  had to escalate to reach the command.
 - **`scripts/job_timeout_marker.sh <minutes> <label> <job-status>`** is each
   job's last step, under `if: always()` so it also runs on a cancelled job.
-  It classifies from those two recorded facts and from **no clock inference at
-  all**: an `*.expired` file present means the job's wall clock genuinely ran
-  out, so it prints `RALPHD_TIMEOUT_KILL:` naming the step that expired; a
-  job status of `cancelled` with no such file means a human cancel or a
-  supersession, so it prints `RALPHD_CANCEL_NOT_TIMEOUT:`. It reports elapsed
-  seconds as context but never decides on them — an earlier version compared
-  elapsed time against the declared bound inside a grace window, which called
-  a cancel 44 minutes into a 45-minute bound a timeout. With no evidence
-  directory exported it prints neither line rather than defaulting to one. It
-  always exits 0 and never changes an outcome.
+  It classifies from those two recorded facts and from **no clock inference
+  and no exit status of any kind**: an `*.expired` file present means the
+  job's wall clock genuinely ran out, so it prints `RALPHD_TIMEOUT_KILL:`
+  naming the step that expired; a job status of `cancelled` with no such
+  file means a human cancel or a supersession, so it prints
+  `RALPHD_CANCEL_NOT_TIMEOUT:`. It reports elapsed seconds as context but
+  never decides on them — an earlier version compared elapsed time against
+  the declared bound inside a grace window, which called a cancel 44
+  minutes into a 45-minute bound a timeout. With no evidence directory
+  exported it prints neither line rather than defaulting to one. It always
+  exits 0 and never changes an outcome.
 
 So: **a `cancelled` conclusion carrying `RALPHD_TIMEOUT_KILL:` is a timeout,
 and one carrying `RALPHD_CANCEL_NOT_TIMEOUT:` is a cancel, however close to
