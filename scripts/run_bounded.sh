@@ -182,17 +182,41 @@ record_expiry() {
 # close to the bound it lands, and whatever escalation the OUTSIDE canceller
 # itself needed to reach TERM to KILL.
 # `kill_tree` reaches every descendant of a pid THIS SCRIPT ITSELF spawned
-# (walked via `pgrep -P`, never a name pattern), not just that one pid: a
-# wrapped command that is a script spawning its own children (`sleep`,
-# a real subprocess, ...) would otherwise leave a grandchild behind when
-# only its direct child is signalled, which then keeps this step's own
-# stdout pipe open past the point this script has already reported an
-# ending. Children are signalled before their parent (post-order) so none
-# of them can become an orphan mid-walk.
+# (walked by PID, never a name pattern), not just that one pid: a wrapped
+# command that is a script spawning its own children (`sleep`, a real
+# subprocess, ...) would otherwise leave a grandchild behind when only its
+# direct child is signalled, which then keeps this step's own stdout pipe
+# open past the point this script has already reported an ending. Children
+# are signalled before their parent (post-order) so none of them can become
+# an orphan mid-walk.
+#
+# Task 007 (M.3): the walk used to shell out to `pgrep -P`, which silently
+# finds nothing on any image that lacks `procps` -- confirmed on the plain
+# `python:3.11-slim` upstream image the nightly dev-layout lane runs against
+# (Debian slim strips `procps`; `pgrep` is simply absent). With no children
+# found, the grandchild (`sleep`) was never signalled, stayed alive holding
+# this step's stdout pipe open, and `test_a_term_ignoring_child_still_yields_the_marker_evidence_and_failure_status`
+# then blocked in `subprocess.communicate()` until its own 20s harness
+# timeout, on both `python:3.11-slim` cells of nightly run 34940379416 (and
+# identically on the operator's own pre-flight run 34938497478, same code).
+# `/proc/<pid>/task/<pid>/children` is a Linux kernel feature (since 3.5),
+# not a userspace tool, so it needs nothing installed on the image; it is
+# used here as the primary source, with the old `pgrep -P` kept only as a
+# fallback for a `/proc` that is unexpectedly unreadable.
+children_of() {
+  pid="$1"
+  children_file="/proc/${pid}/task/${pid}/children"
+  if [ -r "$children_file" ]; then
+    cat "$children_file" 2>/dev/null
+  else
+    pgrep -P "$pid" 2>/dev/null
+  fi
+}
+
 kill_tree() {
   sig="$1"
   pid="$2"
-  for child in $(pgrep -P "$pid" 2>/dev/null); do
+  for child in $(children_of "$pid"); do
     kill_tree "$sig" "$child"
   done
   kill -s "$sig" "$pid" 2>/dev/null
