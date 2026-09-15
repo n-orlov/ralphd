@@ -235,6 +235,120 @@ def test_a_kill_requiring_cancel_before_the_bound_leaves_neither_marker_nor_evid
     assert CANCEL_MARKER in classifier.stdout
 
 
+def _restricted_bin_dir(tmp_path: Path, tools: list[str]) -> Path:
+    """A PATH containing only `tools`, resolved from the real environment,
+    with no `pgrep` -- used to prove the descendant walk needs no external
+    binary, and (task 009) that a genuinely absent `pgrep` is reported
+    rather than silently read as "no children"."""
+    import shutil as _shutil
+
+    bin_dir = tmp_path / "restricted-bin"
+    bin_dir.mkdir()
+    for tool in tools:
+        found = _shutil.which(tool)
+        assert found, f"{tool} not found on this host, cannot build a restricted PATH"
+        os.symlink(found, bin_dir / tool)
+    assert _shutil.which("pgrep", path=str(bin_dir)) is None
+    return bin_dir
+
+
+@pytest.mark.timeout(30)
+def test_run_bounded_reaches_a_grandchild_with_pgrep_unreachable_through_path(
+    tmp_path,
+):
+    """Task 009 (M.3, operator steer 008): the descendant walk must reach a
+    two-level-deep descendant (the wrapped command's own child's child) with
+    `pgrep` nowhere on `PATH` at all -- proving the walk goes through
+    `/proc/<pid>/task/<pid>/children`, which needs no external binary, and
+    not through the old `pgrep -P` that silently found nothing on the
+    `procps`-less nightly images (steer 008). If `children_of()` is ever
+    reverted to `pgrep`-only, `pgrep` is unreachable here too, so the
+    grandchild below is never signalled, stays alive holding the pipe open,
+    and this test times out on `communicate()` instead of passing -- the
+    same shape the nightly failure had before commit 545213e."""
+    bin_dir = _restricted_bin_dir(
+        tmp_path, ["bash", "sh", "sleep", "cat", "mkdir", "date", "tr", "env"]
+    )
+
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    parent = tmp_path / "spawns_grandchild.sh"
+    parent.write_text(
+        "#!/usr/bin/env bash\n"
+        "trap '' TERM\n"
+        "sleep 30 &\n"
+        "gc=$!\n"
+        f"echo $gc >'{grandchild_pid_file}'\n"
+        "wait $gc\n",
+        encoding="utf-8",
+    )
+    parent.chmod(0o755)
+
+    summary_path = tmp_path / "step-summary.txt"
+    summary_path.write_text("", encoding="utf-8")
+    evidence_dir = tmp_path / "evidence"
+
+    env = dict(os.environ)
+    env["PATH"] = str(bin_dir)
+    env["GITHUB_STEP_SUMMARY"] = str(summary_path)
+    env["RALPHD_TIMEOUT_EVIDENCE_DIR"] = str(evidence_dir)
+
+    started = time.time()
+    result = subprocess.run(
+        [str(SCRIPT), "1", "grandchild label", "--", str(parent)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+        timeout=20,
+    )
+    took = time.time() - started
+
+    assert result.returncode == 1, result.stdout
+    expected = f"{MARKER} grandchild label exceeded its internal bound of 1s"
+    assert expected in result.stdout
+    assert expected in summary_path.read_text(encoding="utf-8")
+
+    grandchild_pid = int(grandchild_pid_file.read_text(encoding="utf-8").strip())
+    with pytest.raises(ProcessLookupError):
+        os.kill(grandchild_pid, 0)
+    # 1s bound + up to 5s of TERM-ignoring grace, comfortably inside the 20s
+    # harness timeout, and named in the commit message per task 009.
+    assert 1 <= took < 20, took
+
+
+@pytest.mark.timeout(15)
+def test_children_of_reports_a_missing_pgrep_on_stderr_instead_of_no_children(
+    tmp_path,
+):
+    """Task 009 (M.3): with `/proc/<pid>/task/<pid>/children` unreadable
+    (a nonexistent pid) and `pgrep` absent from `PATH`, `children_of()` must
+    say so on stderr, not silently emit nothing indistinguishable from "this
+    pid really has no children" -- the exact missing-tool-reads-as-absent-
+    result shape steer 008 diagnosed, one level down in the same function's
+    own fallback."""
+    script_text = SCRIPT.read_text(encoding="utf-8")
+    match = re.search(r"^children_of\(\) \{.*?\n\}\n", script_text, re.S | re.M)
+    assert match, "children_of() not found verbatim in run_bounded.sh"
+    func_src = match.group(0)
+
+    bin_dir = _restricted_bin_dir(tmp_path, ["bash", "cat"])
+
+    env = dict(os.environ)
+    env["PATH"] = str(bin_dir)
+    result = subprocess.run(
+        ["bash", "-c", func_src + "\nchildren_of 999999999"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.stdout == ""
+    assert "pgrep is not installed" in result.stderr
+    assert "999999999" in result.stderr
+
+
 @pytest.mark.timeout(60)
 def test_the_inner_bound_is_clamped_to_the_jobs_remaining_wall_clock(tmp_path):
     """A declared inner bound is an upper bound, not a promise: if earlier

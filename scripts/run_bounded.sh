@@ -202,14 +202,26 @@ record_expiry() {
 # `/proc/<pid>/task/<pid>/children` is a Linux kernel feature (since 3.5),
 # not a userspace tool, so it needs nothing installed on the image; it is
 # used here as the primary source, with the old `pgrep -P` kept only as a
-# fallback for a `/proc` that is unexpectedly unreadable.
+# fallback for a `/proc` that is unexpectedly unreadable. Task 009 (M.3):
+# that fallback itself used to swallow a missing `pgrep` behind
+# `2>/dev/null`, which is the exact same missing-tool-reads-as-absent-result
+# shape one level down; it now checks `command -v pgrep` first and reports
+# the absence loudly on stderr instead of silently returning no children.
 children_of() {
   pid="$1"
   children_file="/proc/${pid}/task/${pid}/children"
   if [ -r "$children_file" ]; then
     cat "$children_file" 2>/dev/null
-  else
+  elif command -v pgrep >/dev/null 2>&1; then
     pgrep -P "$pid" 2>/dev/null
+  else
+    # /proc is unreadable (unexpected on Linux) AND the pgrep fallback is
+    # not installed: say so loudly on stderr instead of the old
+    # `pgrep -P ... 2>/dev/null`, which turned "pgrep: command not found"
+    # into a silent empty result indistinguishable from "this pid has no
+    # children" -- exactly the missing-tool-reads-as-absent-result defect
+    # (operator steer 008) this function exists to not repeat.
+    echo "children_of: /proc/${pid}/task/${pid}/children is unreadable and pgrep is not installed; cannot find children of pid ${pid}" >&2
   fi
 }
 
