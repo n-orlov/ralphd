@@ -24,6 +24,20 @@ guard. Task 054 (K.3) then wrapped that same run line in
 bound's ambiguous `cancelled`; the pin below is still an exact-equality pin,
 now on the wrapped text, and `tests/test_run_bounded_timeout_marker.py`
 owns the bound's own coverage.
+
+Task 009 (requirement F, #205 step 1) added a second, independent concern to
+this same module rather than a new file: job `fast` now declares a
+`container:` with a pinned image reference, and the interpreter's patch
+level it names must be 3.12.3 -- the exact interpreter #182 needed and the
+fleet lost when the lane moved off the VPS (see gate.yml's own header). The
+count-neutral way to add that coverage was to fold it into
+`check_pinned_worker_count` (so the existing pass/fail node covers it too)
+and to merge two of the four mutation tests that already existed
+(`test_guard_fires_when_the_n_flag_is_dropped_entirely` and
+`test_guard_fires_when_the_records_lint_step_is_changed`, now one function,
+both original assertions kept) to free a slot for the new
+`test_guard_fires_when_the_container_pin_is_removed` -- net zero nodes
+against the fast-tier ceiling (`tests/test_tier_budgets.py`).
 """
 
 from __future__ import annotations
@@ -46,6 +60,15 @@ RECORDS_STEP_RUN = (
 NUMERIC_N_RE = re.compile(r"-n\s*\d+\b")
 AUTO_N_RE = re.compile(r"-n\s*auto\b")
 
+# F.2: the chosen patch level, and the shape a pinned reference must take --
+# either a `name@sha256:<64 hex>` digest or a `name:tag` whose tag names a
+# patch level outright (a bare `latest`/`slim`/major.minor tag would not).
+CHOSEN_PATCH_LEVEL = "3.12.3"
+PINNED_REFERENCE_RE = re.compile(
+    r"^[^\s@:]+(?::[^\s@]+)?@sha256:[0-9a-f]{64}$|^[^\s@:]+:\d+\.\d+\.\d+[\w.-]*$"
+)
+PATCH_LEVEL_RE = re.compile(r"(\d+\.\d+\.\d+)")
+
 
 def _load(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -67,6 +90,17 @@ def _records_step(workflow: dict) -> dict | None:
     for step in fast.get("steps") or []:
         if step.get("name") == RECORDS_STEP_NAME:
             return step
+    return None
+
+
+def _fast_job_container_image(workflow: dict) -> str | None:
+    jobs = workflow.get("jobs") or {}
+    fast = jobs.get("fast") or {}
+    container = fast.get("container")
+    if isinstance(container, str):
+        return container
+    if isinstance(container, dict):
+        return container.get("image")
     return None
 
 
@@ -98,6 +132,27 @@ def check_pinned_worker_count(workflow: dict) -> list[str]:
                 f"{RECORDS_STEP_RUN!r}"
             )
 
+    # F.1/F.2 (task 009, #205 step 1): job `fast` must declare a `container:`
+    # naming a pinned image, and that pin's patch level must be the chosen
+    # 3.12.3 (or the commit message states why not -- this guard only knows
+    # the value actually in the file).
+    image = _fast_job_container_image(workflow)
+    if image is None:
+        problems.append("job 'fast' declares no container: image")
+    else:
+        if not PINNED_REFERENCE_RE.match(image):
+            problems.append(
+                f"container image is not pinned by digest or exact patch tag: {image!r}"
+            )
+        match = PATCH_LEVEL_RE.search(image)
+        if match is None:
+            problems.append(f"container image names no interpreter patch level: {image!r}")
+        elif match.group(1) != CHOSEN_PATCH_LEVEL:
+            problems.append(
+                f"container image pins {match.group(1)!r}, not the chosen "
+                f"{CHOSEN_PATCH_LEVEL!r}: {image!r}"
+            )
+
     return problems
 
 
@@ -119,27 +174,50 @@ def test_guard_fires_when_mutated_back_to_n_auto(tmp_path):
     assert any("-n auto" in p for p in problems), problems
 
 
-def test_guard_fires_when_the_n_flag_is_dropped_entirely(tmp_path):
-    broken = copy.deepcopy(_load(GATE_PATH))
-    step = _fast_tier_step(broken)
+def test_guard_fires_when_the_n_flag_is_dropped_or_the_records_step_changes(tmp_path):
+    """Merges what were two functions (task 009, #205 step 1) to free a node
+    slot for test_guard_fires_when_the_container_pin_is_removed below without
+    raising the fast-tier's collected-test count; both original assertions
+    survive unchanged, each against its own scratch fixture."""
+    broken_no_n = copy.deepcopy(_load(GATE_PATH))
+    step = _fast_tier_step(broken_no_n)
     assert step is not None
     step["run"] = re.sub(r"-n\s*\d+\b", "", step["run"])
 
-    fixture = tmp_path / "broken-gate-no-n.yml"
-    fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
+    fixture_no_n = tmp_path / "broken-gate-no-n.yml"
+    fixture_no_n.write_text(yaml.safe_dump(broken_no_n, sort_keys=False), encoding="utf-8")
 
-    problems = check_pinned_worker_count(_load(fixture))
+    problems = check_pinned_worker_count(_load(fixture_no_n))
     assert any("lacks a fixed numeric" in p for p in problems), problems
 
-
-def test_guard_fires_when_the_records_lint_step_is_changed(tmp_path):
-    broken = copy.deepcopy(_load(GATE_PATH))
-    records = _records_step(broken)
+    broken_records = copy.deepcopy(_load(GATE_PATH))
+    records = _records_step(broken_records)
     assert records is not None
     records["run"] = records["run"] + "\necho extra\n"
 
-    fixture = tmp_path / "broken-gate-records.yml"
+    fixture_records = tmp_path / "broken-gate-records.yml"
+    fixture_records.write_text(yaml.safe_dump(broken_records, sort_keys=False), encoding="utf-8")
+
+    problems = check_pinned_worker_count(_load(fixture_records))
+    assert any("records-lint step's run changed" in p for p in problems), problems
+
+
+def test_guard_fires_when_the_container_pin_is_removed(tmp_path):
+    broken = copy.deepcopy(_load(GATE_PATH))
+    fast_job = broken["jobs"]["fast"]
+    del fast_job["container"]
+
+    fixture = tmp_path / "broken-gate-no-container.yml"
     fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
 
     problems = check_pinned_worker_count(_load(fixture))
-    assert any("records-lint step's run changed" in p for p in problems), problems
+    assert any("declares no container" in p for p in problems), problems
+
+    mistagged = copy.deepcopy(_load(GATE_PATH))
+    mistagged["jobs"]["fast"]["container"] = {"image": "python:3.14.5-slim"}
+
+    fixture2 = tmp_path / "broken-gate-wrong-patch.yml"
+    fixture2.write_text(yaml.safe_dump(mistagged, sort_keys=False), encoding="utf-8")
+
+    problems = check_pinned_worker_count(_load(fixture2))
+    assert any("pins " in p and "not the chosen" in p for p in problems), problems

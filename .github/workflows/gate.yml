@@ -46,14 +46,17 @@
 #
 # The interpreter is pinned to `python3.12` explicitly rather than following
 # heavy.yml's `python3 -m venv` idiom, which resolves to the host default --
-# 3.14.5 here. What the pin does NOT do is fix the patch level, and the move
-# changed it: the VPS was Ubuntu 24.04 (`python3.12` = 3.12.3) and this host is
-# Fedora 44 (`python3.12` = 3.12.14). 3.12.3 is exactly the interpreter whose
-# argparse leftover-positional behaviour exposed #182 and kept this lane red for
-# 14 commits on 14 Sep, so the fleet has lost that coverage. Accepted knowingly,
-# and the reason #205 is filed: a lane's interpreter should be a property of an
-# image named in this file, not of whichever host answered the dispatch.
-# The venv goes on `$GITHUB_PATH` so that both
+# 3.14.5 on this host. Until task 009 (requirement F, #205 step 1) that pin
+# still followed the host: the VPS was Ubuntu 24.04 (`python3.12` = 3.12.3)
+# and the workstation is Fedora 44 (`python3.12` = 3.12.14), and 3.12.3 is
+# exactly the interpreter whose argparse leftover-positional behaviour
+# exposed #182 and kept this lane red for 14 commits on 14 Sep -- coverage
+# the fleet lost silently when the lane moved host. #205 step 1 is what
+# reverses that: the `container:` key on job `fast` below pins the fast tier
+# to `python:3.12.3` by digest, so `python3.12` in every step of this
+# job is 3.12.3 regardless of which of the six slots answers the dispatch,
+# and `tests/test_gate_pinned_worker_count_guard.py` asserts that patch
+# level from this file. The venv goes on `$GITHUB_PATH` so that both
 # pytest steps below stay literally unchanged:
 # `tests/test_gate_pinned_worker_count_guard.py` pins the records-lint step's
 # `run` string exactly, and a `.venv/bin/python` prefix would break it.
@@ -150,6 +153,29 @@ jobs:
     # other source of spurious `cancelled` runs, spending headroom to shave
     # minutes off a green lane would trade away the thing that bought.
     timeout-minutes: 45
+    # F.1 (#205 step 1, task 009): pinned by digest, not just by tag -- a tag
+    # can be repointed on the registry side and a digest cannot, and the PRD
+    # asks for exactly this immutability. `python:3.12.3` (Debian 12
+    # "bookworm", the full variant rather than `-slim`) is the official
+    # image at that patch level; it ships `python3.12`, `python3` and
+    # `python` all resolving to 3.12.3 AND git already installed, so no
+    # extra network-fetching step has to be wrapped in
+    # scripts/run_bounded.sh (K.3) or squeezed into this job's fixed
+    # 45-minute reserve just to make `actions/checkout` work -- `-slim`
+    # ships neither and was tried first, then dropped for exactly that
+    # reason. Defaults to uid 0 inside the container, which is what lets the
+    # venv build below run unmodified. F.3: this also removes the last host
+    # inheritance this job had -- with `container:` set, GitHub Actions runs
+    # every step in a fresh per-job container filesystem and points `HOME`
+    # at a bind-mounted directory it creates for this job alone, never at
+    # the runner service account's real home, so #188's stale
+    # `~/.codeartifact/pip.conf` (which lives in that real home) is not on
+    # any path this job's steps can read from -- no volume mounts that real
+    # home in either, on purpose, so nothing has to be excluded by hand. The
+    # "Report the environment" step below prints `$HOME` so this is
+    # checkable from the job log rather than asserted blind.
+    container:
+      image: python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6
     steps:
       # Task 054 (K.3): stamp the job's own start, its declared bound, and a
       # FRESH per-job evidence directory, so the LAST step below can tell a
@@ -180,13 +206,17 @@ jobs:
           fetch-depth: 0
 
       # Replaces `actions/setup-python` + `cache: pip`, neither of which this
-      # runner needs: Fedora 44 carries python3.12 as a packaged interpreter
-      # (3.12.14) alongside its own 3.14 default, so there is no per-run
-      # interpreter download, and `~/.cache/pip` persists
-      # between jobs because every job runs as the same user on the same disk.
-      # `rm -rf .venv` is not optional -- a self-hosted workspace is reused
-      # across runs, so a venv left by an earlier commit would otherwise be
-      # installed over rather than rebuilt.
+      # job needs: the pinned `python:3.12.3` container carries `python3.12`
+      # as its own interpreter (task 009, requirement F), so there is no
+      # per-run interpreter download. Unlike the pre-container job,
+      # `~/.cache/pip` does NOT persist between jobs any more -- F.3
+      # deliberately mounts no volume at the container's `$HOME`, so every
+      # job's pip resolve starts cold. Accepted: the tier's own budget was
+      # never sized assuming a warm pip cache, and mounting one back in
+      # would be the same shape of host-path reachability F.3 exists to
+      # close. `rm -rf .venv` is not optional -- a self-hosted workspace is
+      # reused across runs, so a venv left by an earlier commit would
+      # otherwise be installed over rather than rebuilt.
       #
       # Wrapped in scripts/run_bounded.sh (task 054, K.3) like every other
       # step here that can consume real wall clock: a pip resolve against a
@@ -206,10 +236,26 @@ jobs:
           '
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
+      # F.3/F.4 (task 009): HOME confirms the container-local path (never the
+      # runner service account's real home -- see the `container:` comment
+      # above); the cpu-quota line is this job's own reserved share of the
+      # host, recorded beside `cores` rather than replacing it, and read
+      # from whichever cgroup layout the container actually sees rather than
+      # assumed. Neither line changes the fast-tier worker count (still `-n
+      # 2 --dist loadfile` below, untouched) -- see "The evidence you start
+      # from" for why that number is not derived from either figure.
       - name: Report the environment
         run: |
           python -V
           echo "cores: $(nproc)"
+          echo "HOME: $HOME"
+          if [ -f /sys/fs/cgroup/cpu.max ]; then
+            echo "cpu quota (cgroup v2 cpu.max): $(cat /sys/fs/cgroup/cpu.max)"
+          elif [ -f /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]; then
+            echo "cpu quota (cgroup v1): $(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)/$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)"
+          else
+            echo "cpu quota: not exposed by this cgroup layout"
+          fi
           python -m pytest --version
 
       # THE SWEEP-SHA PRACTICE IS RETIRED ENTIRE (requirement A.1, v0.20.2).
