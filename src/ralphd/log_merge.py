@@ -221,7 +221,7 @@ _TAIL_READ_CHUNK = 1 << 16
 # `bash $ printf cap-needle ✓ ok`.
 _SEED_LOOKBACK_EXTRA_GROWTHS = 12
 
-# The three raw NDJSON types `_prior_collapse_state` actually flips a
+# The raw NDJSON types/subtypes `_prior_collapse_state` actually flips a
 # collapse-guard flag on (`message_update`'s `text_delta`/`thinking_start`/
 # `thinking_delta`, `tool_execution_start`, `tool_execution_end`) --
 # deliberately NOT `message_end` (cure-01-01-2): `message_end` is what a
@@ -232,14 +232,70 @@ _SEED_LOOKBACK_EXTRA_GROWTHS = 12
 # fire on every one of E.2's own retained tail lines (unresolved flags
 # forever, since nothing in that fixture ever resolves them) and grow all
 # the way to `reached_start` regardless of `ignored_count`, exactly the
-# unbounded-byte regression E.2 exists to prevent. Seeing one of these
-# THREE types anywhere in what has been read is concrete, positive
-# evidence this iteration genuinely streams or calls tools -- an
-# opaque/unrelated type (e.g. E.2's `{"type": "ignored"}` filler) is not
-# one `render_log_line` recognizes at all, so seeing only that (or only
-# `message_end`) is not, by itself, a reason to keep growing.
-_SEED_RELEVANT_TYPES = {"message_update", "tool_execution_start",
-                        "tool_execution_end"}
+# unbounded-byte regression E.2 exists to prevent.
+#
+# A RAW TYPE is shared by several flags -- a `message_update` line can be
+# a `text_delta` (-> `textSeen`) or a `thinking_start`/`thinking_delta`
+# (-> `thinkingSeen`) -- and seeing ONE subtype of that shared type
+# inside the fixed, never-re-read `tail_lines` is real, general evidence
+# THIS iteration exercises the streaming mechanism `message_update`
+# covers as a WHOLE, wide enough to justify searching further back for
+# the OTHER flag that same raw type can also set (task cure-01-02,
+# requirement F's own tool-argument/thinking-gap regressions:
+# `test_f_text_before_thinking_survives_a_mid_iteration_cut` keeps a run
+# of `thinking_delta` events in `tail_lines` itself, and the `text_delta`
+# that resolves the STILL-unresolved `textSeen` sits further back, past
+# `thinking_start`, with no `text_delta`-specific evidence anywhere
+# already read to justify the search on a strictly per-subtype reading
+# alone). `_TYPE_FLAG_GROUPS` names that grouping once, at the raw-TYPE
+# granularity `render_log_line` itself dispatches on -- an opaque/
+# unrelated type (e.g. E.2's `{"type": "ignored"}` filler) has no entry
+# here at all, so seeing only that (or only `message_end`) is not, by
+# itself, a reason to keep growing.
+_TYPE_FLAG_GROUPS = {
+    "message_update": {"textSeen", "thinkingSeen"},
+    "tool_execution_start": {"toolcallSeen"},
+    "tool_execution_end": {"toolcallSeen"},
+}
+
+
+def _tail_active_flag_groups(tail_lines: list[str]) -> set:
+    """Which flags are worth searching FURTHER BACK for at all, decided
+    from `tail_lines` ALONE -- never from `prefix_lines`, and never from
+    an event's bare presence "anywhere already read" the way this
+    module's pre-cure-01-02-3 `_has_relevant_type` treated it (task
+    cure-01-02-3, #195, the second attempt at this decision).
+
+    `tail_lines` is the one thing this function can trust as GROUND TRUTH
+    for what THIS retained tail's own content actually is (it never
+    changes across the look-back loop, unlike `prefix_lines`): if it
+    contains a `message_update` line of ANY subtype, this iteration
+    genuinely streams text/thinking, and the WHOLE `_TYPE_FLAG_GROUPS`
+    entry for that type -- both `textSeen` and `thinkingSeen` -- is fair
+    game to keep searching for (the counterexample `_TYPE_FLAG_GROUPS`
+    documents: a `thinking_delta` run sitting IN `tail_lines` is real
+    evidence worth chasing the `text_delta` that resolves a still-
+    unresolved `textSeen` further back, even though that specific
+    `text_delta` itself has not been read yet). If `tail_lines` contains
+    NO `message_update`/`tool_execution_*` line at all -- E.2's own
+    fixture, and this task's own `test_e_fixed_200_lines_with_older_
+    thinking_marker_has_constant_byte_bound` fixture (`tail_lines` is 200
+    independent `message_end` lines, nothing else) -- an UNRELATED
+    `thinking_start` sitting arbitrarily far back in `prefix_lines` proves
+    nothing about whether this tail's own still-unresolved `textSeen` will
+    EVER resolve (it does not, in that fixture: no `text_delta` exists in
+    the file at all), so it must not be read as license to keep growing
+    towards `reached_start` regardless of how much unrelated `ignored`
+    filler sits between them -- exactly the unbounded-byte regression this
+    task exists to cure (18,470 of 18,470 bytes at 10 ignored entries grew
+    to 3,407,060 of 3,407,060 -- the WHOLE file -- at 100,000)."""
+    active: set = set()
+    for raw in tail_lines:
+        ev = _safe_json(raw)
+        if ev is None:
+            continue
+        active |= _TYPE_FLAG_GROUPS.get(ev.get("type"), set())
+    return active
 
 
 def _safe_json(raw: str) -> dict | None:
@@ -287,25 +343,28 @@ def _dangling_tool_call_ids(tail_lines: list[str], prefix_lines: list[str]) -> s
     return ends - starts
 
 
-def _has_relevant_type(lines: list[str]) -> bool:
+def _has_relevant_type(lines: list[str], flags: set) -> bool:
     """Whether ANY line in `lines` -- anywhere in it, not merely as the
-    single OLDEST one -- is one of the three `_SEED_RELEVANT_TYPES`
-    (cure-01-01-2, deliberately excluding `message_end` -- see that
-    constant's own comment). Checking only the oldest already-read line (this
+    single OLDEST one -- carries a raw TYPE whose `_TYPE_FLAG_GROUPS`
+    entry intersects `flags` (cure-01-01-2's original growing-scan shape,
+    narrowed by cure-01-02-3 to a caller-supplied `flags` set rather than
+    the fixed `_TYPE_FLAG_GROUPS`-membership-regardless-of-flag test it
+    used to run unconditionally). Checking only the oldest already-read line (this
     module's pre-cure-01-01-2 shape) is unsound: an opaque/`"ignored"`
     filler event sitting at the very EDGE of the current read proves
     nothing either way about what is further back, so treating it as a
     reason to stop growing wrongly stopped short whenever a genuinely
     relevant run (streamed text, say) was separated from the content that
     still needs it by enough ignored filler to reach past a single read.
-    A relevant type found ANYWHERE already read, by contrast, is concrete,
-    POSITIVE evidence this iteration genuinely uses the mechanism the
-    still-unresolved flag tracks -- evidence that does not evaporate just
-    because the read has since walked into an unrelated gap on its way
-    further back."""
+
+    `_should_extend_seed_lookback` calls this with `flags` set to
+    `_tail_active_flag_groups(tail_lines)` -- i.e. restricted to the
+    mechanism(s) `tail_lines` ITSELF already exercises -- never with the
+    raw `unresolved` set on its own; see that function's own docstring
+    for why an unrestricted check regressed E.2's byte bound."""
     for raw in lines:
         ev = _safe_json(raw)
-        if ev is not None and ev.get("type") in _SEED_RELEVANT_TYPES:
+        if ev is not None and _TYPE_FLAG_GROUPS.get(ev.get("type"), set()) & flags:
             return True
     return False
 
@@ -364,20 +423,20 @@ def _should_extend_seed_lookback(tail_lines: list[str], prefix_lines: list[str])
        alone -- has not yet resolved a flag the RETAINED tail's own lines
        actually read (`_flags_needed_by_tail`; a flag no line in this tail
        consults cannot change one rendered byte, so an unresolved one of
-       those is no reason to read further back), AND `_has_relevant_type`
-       finds a relevant type SOMEWHERE in that same combined read -- concrete
-       evidence THIS iteration uses the streaming/tool-call mechanism a
-       still-unresolved flag tracks, even when every line the CURRENT
-       growing chunk has pulled in beyond the fixed, never-re-read
-       `tail_lines` is opaque filler start to finish (cure-01-01-2's own
-       counterexample: `prefix_lines` alone stayed pure `"ignored"`
-       filler for several growths in a row while the fixed `tail_lines`
-       already held a thinking delta the whole time -- checking
-       `prefix_lines` alone stopped growth dead before ever reaching the
-       text run and tool call still further back that the SAME iteration's
-       own `tail_lines` proved must exist). `tail_lines` never changes
-       across this loop, so this is not a second disk read, only a wider
-       scan of bytes already in memory.
+       those is no reason to read further back), AND that unresolved flag
+       is one `_tail_active_flag_groups(tail_lines)` names -- i.e.
+       `tail_lines` ITSELF (never merely something read further back)
+       already carries a raw event of the TYPE that flag belongs to
+       (cure-01-02-3, #195; see that function's own docstring for the
+       narrowing this replaces and why the broader one regressed). This
+       still covers cure-01-01-2's own counterexample (`prefix_lines`
+       alone stayed pure `"ignored"` filler for several growths in a row
+       while the fixed `tail_lines` already held a thinking delta the
+       whole time): `tail_lines` holding that thinking delta is exactly
+       the ground truth `_tail_active_flag_groups` reads, with no need for
+       `prefix_lines` to also show anything before growth is justified.
+       `tail_lines` never changes across this loop, so this check is not a
+       second disk read, only a wider scan of bytes already in memory.
     2. `_dangling_tool_call_ids` is non-empty -- the retained tail keeps a
        `tool_execution_end` this seed cannot yet supply arguments for.
 
@@ -385,21 +444,47 @@ def _should_extend_seed_lookback(tail_lines: list[str], prefix_lines: list[str])
     filler around plain, independent `message_end` lines): `tail_lines`
     there is exactly the requested `message_end` lines with no ignored
     filler mixed in (the ignored history sits strictly OLDER, outside the
-    requested tail), and neither `tail_lines` nor `prefix_lines` ever
-    contains a `_SEED_RELEVANT_TYPES` member for that fixture (`message_end`
-    is not itself one -- only the streaming/tool-call events under it are)
-    -- so trigger 1 never fires there regardless of how far growth would
+    requested tail), and `tail_lines` never itself contains a
+    `_TYPE_FLAG_GROUPS` member for that fixture (`message_end` is not
+    itself one -- only the streaming/tool-call events under it are) -- so
+    trigger 1 never fires there regardless of how far growth would
     otherwise be allowed to run, and there is no `tool_execution_end` in
     its tail at all for trigger 2 -- the byte bound E.2 pins stays exactly
     as it was, not because of a cap and not because the oldest event
     happens to be `"ignored"`, but because there is provably nothing
     relevant to find anywhere in what has been (or could cheaply be) read.
+
+    Trigger 1's evidence check is grounded in `tail_lines` alone
+    (cure-01-02-3, #195, its SECOND attempt at this decision): its first
+    attempt asked only whether SOME relevant type -- of any kind, found
+    ANYWHERE already read, including deep in `prefix_lines` -- was
+    positive evidence for the exact unresolved flag it happened to name by
+    subtype. That is unsound in the OTHER direction from the broadest
+    pre-cure-01-02-3 shape: a `thinking_start` sitting arbitrarily far back
+    in `prefix_lines`, entirely unconnected to a tail that needs only
+    `textSeen` (all `message_end` with `text` content, no thinking
+    anywhere in `tail_lines` at all), is not evidence that tail's own
+    `textSeen` will EVER resolve -- and in `test_e_fixed_200_lines_with_
+    older_thinking_marker_has_constant_byte_bound`'s fixture it never does
+    (no `text_delta` exists in the file at all), so growth walked the
+    ENTIRE transcript chasing it: `output.jsonl` bytes read grew from
+    18,470 (10 unrelated `ignored` entries) to 3,407,060 -- the WHOLE file
+    -- at 100,000, regardless of how much unrelated filler sat between the
+    marker and the tail. Grounding the check in `tail_lines` instead --
+    what THIS retained tail is actually built from, never what merely sits
+    somewhere further back -- rules that out while still finding the
+    genuine `test_f_text_before_thinking_survives_a_mid_iteration_cut`
+    case: there, `tail_lines` itself holds a `thinking_delta`, so BOTH
+    `_TYPE_FLAG_GROUPS["message_update"]` flags (`textSeen` and
+    `thinkingSeen`) stay fair game, and the `text_delta` that resolves the
+    still-unresolved `textSeen` is duly found further back.
     """
     combined = prefix_lines + tail_lines
     seed_flags, _ = _prior_collapse_state(combined)
     unresolved = {flag for flag in _flags_needed_by_tail(tail_lines)
                   if not seed_flags[flag]}
-    if unresolved and _has_relevant_type(combined):
+    active = _tail_active_flag_groups(tail_lines)
+    if unresolved & active and _has_relevant_type(combined, unresolved & active):
         return True
     return bool(_dangling_tool_call_ids(tail_lines, prefix_lines))
 

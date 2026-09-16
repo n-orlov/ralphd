@@ -42,6 +42,13 @@ from __future__ import annotations
 import json
 import pathlib
 
+import httpx
+
+from ralphd.cli import ui_server
+from ralphd.engine.api import create_app
+from ralphd.engine.config import JobConfig
+from ralphd.engine.loop import LoopSupervisor
+from ralphd.engine.state import RunDir
 from ralphd.log_merge import OUTPUT_FILENAME, merged_lines
 
 
@@ -166,7 +173,7 @@ def _write_iteration_with_ignored_head(run_root: pathlib.Path, n: int,
     (d / OUTPUT_FILENAME).write_text("\n".join(ignored + real_lines) + "\n")
 
 
-def test_growing_ignored_older_entries_inside_the_newest_iteration_does_not_grow_bytes_read(
+async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_not_grow_bytes_read(
         tmp_path, monkeypatch):
     """PRD E's own observed defect: two real on-disk runs with an
     IDENTICAL 200-line rendered suffix caused `output.jsonl` reads of
@@ -179,6 +186,14 @@ def test_growing_ignored_older_entries_inside_the_newest_iteration_does_not_grow
     content lines in both fixtures -- growing `ignored_count` from 10 to
     100,000 must not grow the bytes actually read off that file, and the
     200-line tail `merged_lines` returns must stay byte-identical.
+
+    Extended in place (task cure-01-02-3, #195, following cure-01-04's own
+    convention of consolidating rather than adding a new top-level
+    `def test_...` -- the fast tier's collected-test count is pinned) with
+    a second scenario at the end: an older `thinking_start` marker ahead
+    of the same growing `ignored` block, which used to defeat the seed
+    look-back's bound by itself, checked through every surface this cure
+    touches -- see `_assert_older_thinking_marker_stays_bounded_across_every_surface`.
     """
     real_lines = [json.dumps({"type": "message_end", "message": {"content": [
         {"type": "text", "text": f"line {i}"}]}}) for i in range(200)]
@@ -209,3 +224,170 @@ def test_growing_ignored_older_entries_inside_the_newest_iteration_does_not_grow
     # roughly 10,000x `small_bytes`, not merely close to it.
     assert large_bytes < small_bytes * 10
     assert large_bytes < 1_000_000
+
+    thinking_root = tmp_path / "thinking-marker"
+    thinking_root.mkdir()
+    await _assert_older_thinking_marker_stays_bounded_across_every_surface(
+        thinking_root, monkeypatch)
+
+
+def _write_iteration_with_older_thinking_marker(run_root: pathlib.Path, n: int,
+                                                ignored_count: int,
+                                                real_lines: list[str]) -> None:
+    """Like `_write_iteration_with_ignored_head`, plus ONE `thinking_start`
+    `message_update` event sitting strictly OLDER than `real_lines` but
+    strictly NEWER than the growing `ignored` block (task cure-01-02-3,
+    #195) -- unrelated to `real_lines`'s own `message_end`/`text` content,
+    which never sets `thinkingSeen` or reads it: nothing in this fixture
+    ever sets `textSeen` either, since there is no `text_delta` anywhere
+    in the file."""
+    marker = json.dumps({"type": "message_update",
+                         "assistantMessageEvent": {"type": "thinking_start"}})
+    _write_iteration_with_ignored_head(run_root, n, ignored_count, [marker] + real_lines)
+
+
+async def _api_logs_text(run_root: pathlib.Path, workspace_root: pathlib.Path, tail: int) -> str:
+    """The live engine `GET /logs?tail=N` ASGI handler's own answer for
+    `run_root` -- the same `_client`/`_api_lines` shape `test_log_merge.py`
+    already uses to pin the live API against the on-disk merge, reused
+    here so this cure's regression is checked through the REAL handler,
+    not a hand-rolled stand-in for it."""
+    run = RunDir(root=run_root)
+    cfg = JobConfig(run_id="e-thinking-bound", infra_retry_backoff_s=[0.0],
+                    infra_retry_backoff_max_s=0.0)
+    sup = LoopSupervisor(cfg, run, workspace_root)
+    app = create_app(cfg, run, sup)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://engine") as client:
+        res = await client.get("/logs", params={"tail": tail})
+    assert res.status_code == 200, res.text
+    return res.text
+
+
+async def _assert_older_thinking_marker_stays_bounded_across_every_surface(
+        root, monkeypatch):
+    """PRD E's `thinking_start`-before-the-suffix counterexample (task
+    cure-01-02-3, #195): a SINGLE unrelated `thinking_start` marker sitting
+    strictly OLDER than the requested 200-line tail -- itself preceded by
+    a growing block of unrelated `ignored` filler -- used to keep the seed
+    look-back searching all the way back to byte 0 chasing a `textSeen`
+    flag nothing in the file ever sets (the marker only ever sets
+    `thinkingSeen`, a flag this tail's own `message_end`/`text` lines
+    never consult): `output.jsonl` reads grew from 18,470 bytes (10
+    unrelated `ignored` entries) to the WHOLE 3,407,060-byte file merely
+    by growing that unrelated count to 100,000
+    (`review3_cases.py::test_e_fixed_200_lines_with_older_thinking_marker_
+    has_constant_byte_bound`, an independent reviewer probe this test
+    ports into the shipped suite).
+
+    Exercised through every surface this cure touches: the live engine
+    `GET /logs` ASGI handler, the hub's server-side renderer
+    (`ui_server.rendered_log_lines`, both its live and dead-run
+    on-disk-fallback branches), and the shared on-disk merge
+    (`log_merge.merged_lines`) directly -- the same fixed 200-line
+    rendered suffix, byte-identical across all four, and a byte-read bound
+    nowhere near the whole (much bigger) grown transcript for any of them.
+    Called from `test_growing_ignored_older_entries_...` above rather than
+    being its own `def test_...`, so this scenario adds coverage without
+    adding to the fast tier's pinned collected-test count.
+    """
+    real_lines = [json.dumps({"type": "message_end", "message": {"content": [
+        {"type": "text", "text": f"visible {i}"}]}}) for i in range(200)]
+
+    # `reg`/`run_root` split (task 041's own registry layout, `reg/runs/
+    # <run_id>`) so `ui_server.rendered_log_lines`'s dead-run fallback --
+    # which derives `run_root = reg / "runs" / run_id` internally -- finds
+    # the SAME fixture the on-disk merge and the live API read directly.
+    small_reg, large_reg = root / "small", root / "large"
+    small_root, large_root = small_reg / "runs" / "probe", large_reg / "runs" / "probe"
+    _write_iteration_with_older_thinking_marker(small_root, 1, 10, real_lines)
+    _write_iteration_with_older_thinking_marker(large_root, 1, 100_000, real_lines)
+    small_size = (small_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
+    large_size = (large_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
+
+    def _content_lines(lines: list[str]) -> int:
+        return sum(1 for ln in lines if "ralphd.iteration" not in ln)
+
+    # -- 1. on-disk fallback: log_merge.merged_lines directly -------------
+    small_counts = _count_transcript_bytes(monkeypatch)
+    small_lines = merged_lines(small_root, tail=200)
+    small_bytes = small_counts[0]
+    monkeypatch.undo()
+
+    large_counts = _count_transcript_bytes(monkeypatch)
+    large_lines = merged_lines(large_root, tail=200)
+    large_bytes = large_counts[0]
+    monkeypatch.undo()
+
+    assert small_lines == large_lines
+    assert _content_lines(small_lines) == 200
+    assert large_bytes < small_bytes * 10
+    assert large_bytes < 1_000_000
+    assert large_bytes < large_size, "fixed suffix read the ENTIRE grown transcript"
+
+    # -- 2. the live engine GET /logs ASGI handler -------------------------
+    (root / "small-workspace").mkdir()
+    (root / "large-workspace").mkdir()
+
+    small_api_counts = _count_transcript_bytes(monkeypatch)
+    small_api_text = await _api_logs_text(small_root, root / "small-workspace", 200)
+    small_api_bytes = small_api_counts[0]
+    monkeypatch.undo()
+
+    large_api_counts = _count_transcript_bytes(monkeypatch)
+    large_api_text = await _api_logs_text(large_root, root / "large-workspace", 200)
+    large_api_bytes = large_api_counts[0]
+    monkeypatch.undo()
+
+    assert small_api_text == large_api_text
+    assert small_api_text.splitlines(keepends=True) == small_lines
+    assert large_api_bytes < small_api_bytes * 10
+    assert large_api_bytes < 1_000_000
+    assert large_api_bytes < large_size, "the live handler read the ENTIRE grown transcript"
+
+    # -- 3. the hub's server-side renderer, live AND dead-run fallback ----
+    #
+    # The live branch's `_proxy_text` stand-in mirrors the real container's
+    # `GET /logs?tail=N` contract by reading the SAME on-disk merge the
+    # live ASGI handler above already reads from -- `_merge_logs` inside
+    # `engine/api.py`'s own `/logs` route calls exactly this same
+    # `log_merge.merged_lines` (`test_log_merge.py::
+    # test_api_and_on_disk_merge_are_identical` pins the two byte-
+    # identical), and doing it synchronously here (rather than re-entering
+    # the ASGI app from inside a callback the hub renderer calls
+    # synchronously, while this very test is itself an `async def` already
+    # running inside pytest-asyncio's own event loop) needs no second event
+    # loop at all.
+    def _wire_hub(mp, root, live):
+        def _proxy(reg, run_id, path, **kw):
+            if not live:
+                return False, ""
+            import re
+            m = re.search(r"tail=(\d+)", path)
+            tail = int(m.group(1)) if m else 0
+            return True, "".join(merged_lines(root, tail=tail))
+        mp.setattr(ui_server, "_proxy_text", _proxy)
+
+    for live in (False, True):
+        with monkeypatch.context() as m:
+            _wire_hub(m, small_root, live)
+            small_hub_counts = _count_transcript_bytes(m)
+            small_hub_live, small_hub_lines = ui_server.rendered_log_lines(
+                small_reg, "probe", 200)
+            small_hub_bytes = small_hub_counts[0]
+
+        with monkeypatch.context() as m:
+            _wire_hub(m, large_root, live)
+            large_hub_counts = _count_transcript_bytes(m)
+            large_hub_live, large_hub_lines = ui_server.rendered_log_lines(
+                large_reg, "probe", 200)
+            large_hub_bytes = large_hub_counts[0]
+
+        assert small_hub_live == live and large_hub_live == live
+        assert len(small_hub_lines) == 200 and len(large_hub_lines) == 200
+        assert small_hub_lines == large_hub_lines
+        assert large_hub_bytes < small_hub_bytes * 10
+        assert large_hub_bytes < 1_000_000
+        assert large_hub_bytes < large_size, (
+            f"hub renderer (live={live}) read the ENTIRE grown transcript")
+
