@@ -26,16 +26,15 @@ A root-owned FILE in an agent-writable DIRECTORY still let a dropped child
 ``test_control_plane_auth_docker.py``'s pattern proves for the control
 creds and what this task's own docker proof (see
 ``test_tasks_record_docker.py``) now proves here. The run-root ``tasks.json``
-this module reads is the ordinary agent-owned VIEW copy `write_tasks()`
-refreshes alongside the protected write -- CLI `tasks`/`repair` and the
+this module reads is the VIEW copy `write_tasks()` refreshes alongside the
+protected write -- still root-owned 0644, exactly the posture task 105 gave
+it, so this module's premise is untouched: CLI `tasks`/`repair` and the
 hub's row reader read ONLY that view (`read_tasks_doc(persist=False)`
-against the run root), never the protected copy, so this module's own
-assertions about them are unaffected by the move; only the *ownership*
-assertion below moves to the new protected path, plus a new assertion that
-the view copy is genuinely agent-owned (never root) and that the shutdown
-funnel has handed the once-root-owned record directory back to the agent
-uid so `rm --force`/`DELETE` (host-side, no root) can still remove both
-directories.
+against the run root), never the protected copy. What is new below is the
+*authoritative* record's own ownership assertion, now against the mounted
+path, plus the assertion that the shutdown funnel has handed the
+once-root-owned record directory back to the agent uid so `rm
+--force`/`DELETE` (host-side, no root) can still remove both directories.
 """
 
 from __future__ import annotations
@@ -123,20 +122,23 @@ def _run_to_terminal_with_container_exited(ctl_: Ctl, prefix: str) -> tuple[str,
         f"record/tasks.json is owned by uid {protected_path.stat().st_uid} "
         "after shutdown -- same release, one level down")
 
-    # The run-root tasks.json this test otherwise reads is now the ordinary
-    # agent-owned VIEW copy `write_tasks()` refreshes alongside the
-    # protected write -- this test's own premise moved with it: it used to
-    # be "tasks.json itself is root-owned, and CLI/hub still work anyway";
-    # now it is "CLI/hub read the agent-owned VIEW, exactly as if there had
-    # never been a protected copy at all", so the assertion below is the
-    # inverse of what this test asserted before task 004.
+    # The run-root tasks.json this test otherwise reads is the VIEW copy
+    # `write_tasks()` refreshes alongside the protected write -- and it
+    # keeps task 105's own posture unchanged: root-owned 0644, i.e. exactly
+    # the file whose operability this module exists to prove. Task 004 did
+    # not make it agent-owned (`privsep.write_protected_tasks_json`
+    # refreshes it inside the same elevated window as the record), because
+    # read-only is all a view has to be and dropping the bit would let an
+    # iteration hand-edit what `ralphctl tasks`/the hub render. It is
+    # deliberately NOT released at shutdown either -- an unprivileged
+    # host-side `rm` removes a root-owned file inside an agent-owned
+    # directory just fine, which is this test's entire point.
     tasks_path = rdir / "tasks.json"
     assert tasks_path.is_file()
-    assert tasks_path.stat().st_uid == 1000, (
-        f"tasks.json (the agent-readable VIEW) is owned by uid "
-        f"{tasks_path.stat().st_uid}, not the agent -- task 004 regressed: "
-        "this path must never be the authoritative, root-owned record any "
-        "more, `<config>/record/tasks.json` is")
+    assert tasks_path.stat().st_uid == 0, (
+        f"the run-root tasks.json VIEW is owned by uid "
+        f"{tasks_path.stat().st_uid}, not root -- task 105's own property "
+        "regressed; the agent uid must not be able to open it for writing")
     assert (tasks_path.stat().st_mode & 0o777) == 0o644, (
         oct(tasks_path.stat().st_mode))
     assert json.loads(tasks_path.read_text()) == json.loads(protected_path.read_text()), (

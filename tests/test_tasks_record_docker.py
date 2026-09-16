@@ -413,8 +413,10 @@ def plant():
     with open(os.path.join(legacy, "tasks.json"), "w") as fh:
         fh.write(substitute)
 attempt("plant-replacement-record", plant)
-# 3. and substitute the agent-readable VIEW copy too, in place and by
-#    directory-entry replacement, since both are permitted there
+# 3. and substitute the agent-readable VIEW copy too. In place this is
+#    refused (the view keeps task 105's root-owned 0644), but its
+#    directory ENTRY is replaceable -- its parent is the agent-owned run
+#    root, and that is precisely why the record no longer lives here.
 attempt("overwrite-view-in-place",
         lambda: open(os.path.join(run_root, "tasks.json"), "w").write(substitute))
 def replace_view():
@@ -491,8 +493,14 @@ def test_the_ancestor_attack_that_falsified_attempt_1_no_longer_reaches_the_reco
     # under this layout there is no such directory left to rename, which is
     # itself the fix.)
     assert doc["attempts"]["plant-replacement-record"]["ok"] is True, doc
-    assert doc["attempts"]["overwrite-view-in-place"]["ok"] is True, doc
-    assert doc["attempts"]["replace-view-entry"]["ok"] is True, doc
+    assert doc["attempts"]["overwrite-view-in-place"]["ok"] is False, (
+        "an in-place write to the VIEW copy should have been refused -- it "
+        f"is root-owned 0644 (task 105's own posture): {doc}")
+    assert doc["attempts"]["overwrite-view-in-place"]["errno"] == "EACCES", doc
+    assert doc["attempts"]["replace-view-entry"]["ok"] is True, (
+        "replacing the VIEW copy's directory ENTRY must succeed -- its "
+        "parent is the agent-owned run root, no file mode overrides that, "
+        f"and that asymmetry is why the record moved out: {doc}")
     assert doc["viewOnDisk"]["tasks"][0]["title"] == "substituted", (
         "the view copy was not actually substituted -- the attack did not "
         f"happen, so nothing below is evidence: {doc}")

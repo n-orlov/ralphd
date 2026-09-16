@@ -35,15 +35,18 @@ and only all three together mean the boundary is real:
    root-owned directory INSIDE the agent-owned run dir (this task's own
    rejected first attempt) still let the child rename the DIRECTORY away
    and plant its own in its place.
-   The run-root `tasks.json` this module otherwise reads is now the
-   ordinary agent-owned VIEW copy `write_tasks()` refreshes alongside the
-   protected write. A fourth check proves the moved boundary is real: an
-   attempt to write the PROTECTED copy from inside the container, as uid
-   1000 (the exact uid every iteration runs as), is refused with
+   The run-root `tasks.json` this module otherwise reads is the VIEW copy
+   `write_tasks()` refreshes alongside the protected write, and it keeps
+   task 105's own posture: root-owned 0644, so the agent uid still cannot
+   open it for writing either. A fourth check proves the moved boundary is
+   real: an attempt to write the PROTECTED copy from inside the container,
+   as uid 1000 (the exact uid every iteration runs as), is refused with
    `Permission denied` -- both an in-place truncate and an `os.replace` of
-   a valid substituted document -- while the very same attempt against
-   the agent-owned VIEW copy at the run-root path succeeds harmlessly
-   (nothing ever reads it back).
+   a valid substituted document -- whereas against the VIEW copy only the
+   in-place write is refused: an `os.replace` of the view's own directory
+   ENTRY still succeeds, because the run root is agent-owned by
+   construction and no file mode can override a parent's permissions.
+   That asymmetry is the whole reason the record left the run dir.
 
 Environment wrinkles (bind-mount path translation, API reachability from
 inside this job container) and the cleanup discipline are exactly those of
@@ -162,22 +165,28 @@ def test_a_worker_iteration_cannot_kill_the_engine(ctl):
 
     # 3. the documented credential shape, and unchanged file ownership --
     # except the authoritative task record. Task 004 (requirement B, #202)
-    # moved that record off `tasks.json` at the run root -- now an ordinary
-    # agent-owned VIEW copy -- into the bind-mounted
+    # moved that record off `tasks.json` at the run root -- which stays the
+    # root-owned 0644 VIEW copy task 105 made it -- into the bind-mounted
     # `/var/lib/ralphd/record/tasks.json`, root-owned inside a root-owned
     # 0700 directory with only root-owned ancestors above it.
     creds = _engine_creds(container)
     assert creds["uid"] == [0, 1000, 0, 1000], creds  # real, effective, saved, fs
     assert creds["gid"] == [0, 1000, 0, 1000], creds
     assert "uid boundary active" in _container_log(container)
-    for name in ("status.json", "events.jsonl", "tasks.json"):
+    for name in ("status.json", "events.jsonl"):
         path = rdir / name
         assert path.is_file(), name
         assert path.stat().st_uid == 1000, (
             f"{name} is owned by uid {path.stat().st_uid}: the engine's "
             "effective uid must stay the agent's so the host user still owns "
-            "its own run dir -- this now includes tasks.json, task 004's "
-            "agent-readable VIEW copy, never the authoritative record")
+            "its own run dir")
+    view_path = rdir / "tasks.json"
+    assert view_path.is_file()
+    assert view_path.stat().st_uid == 0, (
+        f"the run-root tasks.json VIEW is owned by uid "
+        f"{view_path.stat().st_uid}, not root -- task 105's property must "
+        "survive task 004's split (the view is refreshed inside the same "
+        "elevated window as the record it mirrors)")
     # The record directory is root-owned 0700: even `Path.is_file()`/`.stat()`
     # from THIS (unprivileged, agent-uid) host-side test process raises
     # `PermissionError` rather than returning False -- traversal into the
@@ -244,9 +253,12 @@ def test_a_worker_iteration_cannot_kill_the_engine(ctl):
         f"document onto the authoritative record must fail: {replace_attempt.stdout}")
 
     # and the file on disk is untouched -- neither attempted write produced
-    # any partial content, truncation, redirection or ownership change; the
-    # agent-readable VIEW, in contrast, is harmlessly writable (task 004
-    # never protects it -- nothing reads it back but every non-engine reader).
+    # any partial content, truncation, redirection or ownership change. The
+    # VIEW copy, in contrast, is only half-protected, and deliberately so:
+    # an in-place write is refused (root-owned 0644) but a directory-ENTRY
+    # replacement succeeds, since its parent is the agent-owned run root.
+    # Nothing the engine trusts reads it back -- that asymmetry is exactly
+    # why the authoritative record no longer lives in this directory.
     # Again through `docker exec` -- see the comment above `protected_check`.
     recheck = subprocess.run(
         [REAL_DOCKER, "exec", container, "cat",
@@ -258,9 +270,36 @@ def test_a_worker_iteration_cannot_kill_the_engine(ctl):
         [REAL_DOCKER, "exec", "--user", "1000:1000", container, "sh", "-c",
          "echo '{\"tasks\": []}' > /run/ralphd/tasks.json; echo RC=$?"],
         capture_output=True, text=True, timeout=15)
-    assert "RC=0" in view_write.stdout, (
-        "the agent-readable VIEW copy at the run-root path must stay "
-        f"agent-writable, only ever a courtesy mirror: {view_write.stdout}")
+    assert "RC=0" not in view_write.stdout, (
+        "an in-place write to the run-root VIEW copy must still be refused "
+        f"(root-owned 0644, task 105): {view_write.stdout}")
+    view_replace = subprocess.run(
+        [REAL_DOCKER, "exec", "--user", "1000:1000", container, "python3", "-c",
+         "import os,sys\n"
+         # the source has to live on the run dir's OWN mount: /tmp is a
+         # different filesystem in this container, and a cross-device
+         # rename fails with EXDEV for reasons that have nothing to do
+         # with permissions -- which would make this assertion a lie.
+         "src = '/run/ralphd/.a202-view-src.json'\n"
+         "open(src, 'w').write(sys.argv[1])\n"
+         "try:\n"
+         "    os.replace(src, '/run/ralphd/tasks.json')\n"
+         "except OSError as exc:\n"
+         "    print('DENIED', exc.errno)\n"
+         "else:\n"
+         "    print('REPLACED')\n",
+         valid_substitute],
+        capture_output=True, text=True, timeout=15)
+    assert "REPLACED" in view_replace.stdout, (
+        "replacing the VIEW copy's directory entry must still SUCCEED -- if "
+        "it did not, this test would be claiming a protection the run dir's "
+        f"own ownership cannot give: {view_replace.stdout}")
+    still_authoritative = subprocess.run(
+        [REAL_DOCKER, "exec", container, "cat",
+         "/var/lib/ralphd/record/tasks.json"],
+        capture_output=True, text=True, timeout=15)
+    assert json.loads(still_authoritative.stdout) == tasks_doc, (
+        "substituting the view must not reach the authoritative record")
 
     # `--on-complete idle` kept this container up for every check above;
     # before task 004 that was harmless litter-wise (`tasks.json` was only

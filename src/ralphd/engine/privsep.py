@@ -549,18 +549,17 @@ def write_protected_tasks_json(protected_path: Path, view_path: Path,
                                 obj: Any) -> None:
     """Write `obj` as JSON to `protected_path` -- the authoritative task
     record -- inside `_ensure_protected_tasks_dir`'s self-healing
-    directory, root-owned 0600 under the uid boundary; then refresh an
-    ordinary, agent-readable VIEW copy at `view_path` (task 004,
-    requirement B.3) for every reader that is not the engine itself:
+    directory, root-owned 0600 under the uid boundary; then refresh the
+    agent-readable VIEW copy at `view_path` (task 004, requirement B.3),
+    root-owned 0644 exactly as `write_root_owned_json` left it before this
+    task, for every reader that is not the engine itself:
     `ralphctl tasks`, the hub's task table, the worker/steer prompts, the
     steer hat's `context-read` tool. The engine's own reads
     (`RunDir.read_tasks_result`) never go through `view_path` -- only
     through `protected_path`, elevated the same way this write is.
 
-    Both temp files are created fresh every call (`_reject_planted_entry`
-    on the protected one; the view one lives in an already agent-writable
-    directory so there is nothing to plant that a plain `os.replace`
-    doesn't already handle safely) -- B.2's "a precreated path or a
+    Both temp files are created fresh every call and both are
+    `_reject_planted_entry`-checked -- B.2's "a precreated path or a
     symlink at the temp name cannot redirect the write": once the
     directory itself denies the agent write access at all, no name inside
     it -- predictable or not -- is a surface the agent can act on, and the
@@ -590,19 +589,36 @@ def write_protected_tasks_json(protected_path: Path, view_path: Path,
         tmp.write_text(text)
         os.replace(tmp, protected_path)
         os.chmod(protected_path, 0o600 if elevated else 0o644)
-    # The agent-readable view, written at the engine's own (unelevated,
-    # agent) effective uid -- exactly like any other file it writes into
-    # the run dir. Best-effort: a viewer that misses one refresh sees
-    # `read_tasks_doc()`'s own stale-read fallback on its next poll, never
-    # a hard failure of the authoritative write above.
-    try:
-        view_tmp = view_path.with_suffix(view_path.suffix + ".viewtmp")
-        view_tmp.write_text(text)
-        os.replace(view_tmp, view_path)
-        os.chmod(view_path, 0o644)
-    except OSError:
-        log.warning("could not refresh the agent-readable view copy at %s",
-                    view_path)
+        # The agent-readable view, refreshed INSIDE the same elevated
+        # window so it keeps `write_root_owned_json`'s pre-task-004
+        # ownership exactly: root-owned 0644, world-readable and
+        # agent-UNWRITABLE. Read-only for the agent is all a view has to
+        # be, and keeping that bit costs nothing while preserving two
+        # things: task 013's invariant that the steer hat's own uid cannot
+        # open `/run/ralphd/tasks.json` for writing at all
+        # (`tests/test_steer.py::test_the_hat_uid_cannot_write_tasks_json_
+        # and_the_engine_owns_it`), and the weaker but real property that
+        # what `ralphctl tasks`/the hub render is the engine's own bytes
+        # rather than something an iteration hand-edited. (Only the
+        # authoritative record is protected against a directory-entry
+        # REPLACEMENT -- the view lives in the agent-owned run root, whose
+        # parent permissions no file mode can override; that is precisely
+        # why the engine's own reads never touch it.)
+        # Best-effort: a viewer that misses one refresh sees
+        # `read_tasks_doc()`'s own stale-read fallback on its next poll,
+        # never a hard failure of the authoritative write above.
+        try:
+            view_tmp = view_path.with_suffix(view_path.suffix + ".viewtmp")
+            if view_tmp.is_dir() and not view_tmp.is_symlink():
+                shutil.rmtree(view_tmp)   # not a name the agent may squat
+            else:
+                _reject_planted_entry(view_tmp)
+            view_tmp.write_text(text)
+            os.replace(view_tmp, view_path)
+            os.chmod(view_path, 0o644)
+        except OSError:
+            log.warning("could not refresh the agent-readable view copy "
+                        "at %s", view_path)
 
 
 def release_protected_tasks_dir(run) -> None:

@@ -1707,8 +1707,10 @@ moment of any write. `RunDir.write_tasks()` lands the AUTHORITATIVE copy in
 the record mount (`<config>/<run-id>/record/tasks.json`, bind-mounted at
 `/var/lib/ralphd/record`; root-owned 0600 inside a root-owned 0700 directory
 under the uid boundary, self-healed on every write — §5.1.1) and refreshes
-this file, `tasks.json` at the run-dir root, as an ordinary agent-readable
-VIEW -- what `ralphctl tasks`, the hub's task table, the worker/steer prompts
+this file, `tasks.json` at the run-dir root, as the agent-readable
+VIEW (root-owned 0644, replaceable only by a directory-entry operation in
+the agent-owned run root -- §5.1.1) -- what `ralphctl tasks`, the hub's task
+table, the worker/steer prompts
 and the steer hat's `context-read` tool all read, and a courtesy mirror
 only: `RunDir.read_tasks()`/`read_tasks_result()` (the engine's own trust
 decisions -- `GET /tasks`, `/status`'s task counts, criteria-edit detection,
