@@ -192,6 +192,48 @@ def _verdict_gate_rejects_with_a_blocking_finding(reason: str):
 
 
 def test_review_verified_with_residuals_then_gate_rejects_yields_two_distinguishable_artifacts(tmp_path):
+    """Retired-in-place (task cure-01-01-3, PRD requirement A.3's
+    removal-specific review rule): before this task, a last-approach
+    verdict-gate rejection carrying a non-curable blocking finding still
+    ran the ordinary `_archive_approach`/`_write_composite_prd` machinery,
+    so this test could pin the two findings' distinguishability against
+    the ARCHIVED copies under `approaches/01/` and the composite PRD the
+    (never-taken) next approach would have read. Requirement A.3 removes
+    that fall-through unconditionally -- last approach or not, a MERITS
+    rejection with a readable gate-findings channel now ends the run
+    RIGHT HERE, with no archive and no composite PRD at all (exactly the
+    shape `tests/test_peer_verdict_gate.py::test_a_mix_of_curable_and_
+    incurable_gate_findings_still_ends_the_run` and `..._ends_the_run_
+    with_an_approach_left` already assert for the mixed-findings case),
+    so an archive-shaped assertion here can never pass again.
+
+    This node's own point -- review's and the peer gate's findings stay
+    distinguishable by filename and by severity even when BOTH channels
+    fire in the same approach -- still holds and is reasserted below,
+    just read from the RUN-SCOPE paths (`RunDir.findings_file`/
+    `.findings_json_file`/`.verdict_gate_findings_file`/
+    `.verdict_gate_findings_json_file`) the two fixture handlers write
+    directly and that this rejection leaves untouched, rather than from
+    an archive this rejection no longer creates. The `author` distinction
+    is dropped from this rewrite rather than reasserted at run scope:
+    per `LoopSupervisor._archive_findings_json`'s own docstring, `author`
+    is an ARCHIVING-time enrichment (`findings.attribute_authorship`)
+    stamped only on the copy written into `approaches/NN/` -- with no
+    archive written for this scenario any more, the run-scope sidecars
+    stay exactly as each fixture handler wrote them (no `author` key at
+    all), so asserting one here would test the fixture's own literal,
+    not engine behaviour. `attribute_authorship` itself keeps its own
+    unit cover (`test_attribute_authorship_sets_the_field_when_absent`,
+    `test_attribute_authorship_overwrites_whatever_was_already_there`,
+    both still in this module), and its call site
+    (`_archive_findings_json`) keeps running end to end on every
+    rejection that DOES still archive, e.g. `tests/test_peer_verdict_
+    gate.py::test_gate_on_rejection_with_an_approach_left_starts_a_
+    fresh_approach`. Its surviving cover for the no-archive/no-
+    composite/no-cure-task shape itself is `tests/test_peer_verdict_
+    gate.py::test_a_mix_of_curable_and_incurable_gate_findings_still_
+    ends_the_run` (last approach) and `..._ends_the_run_with_an_
+    approach_left` (approach left)."""
     root = tmp_path / "run"
     root.mkdir(parents=True, exist_ok=True)
     (root / "prd.md").write_text("# test PRD\n\nDo the thing.\n")
@@ -210,40 +252,31 @@ def test_review_verified_with_residuals_then_gate_rejects_yields_two_distinguish
     # already pins for a no-approach-left rejection.
     assert final_state == "failed", sup.run.read_status()
 
-    approach_dir = root / "approaches" / "01"
-    review_md = approach_dir / state.FINDINGS_FILE
-    gate_md = approach_dir / state.VERDICT_GATE_FINDINGS_FILE
-    review_json_path = approach_dir / state.FINDINGS_JSON_FILE
-    gate_json_path = approach_dir / state.VERDICT_GATE_FINDINGS_JSON_FILE
+    # A.3: a non-curable last-approach rejection never archives and never
+    # writes a composite PRD -- the same absences `test_peer_verdict_
+    # gate.py`'s two mixed-findings regressions already assert.
+    assert not (root / "approaches" / "01").exists()
+    assert not (root / "composite-prd.md").exists()
 
-    # distinguishable by NAME: two different filenames, both archived.
+    review_md = sup.run.findings_file
+    gate_md = sup.run.verdict_gate_findings_file
+    review_json_path = sup.run.findings_json_file
+    gate_json_path = sup.run.verdict_gate_findings_json_file
+
+    # distinguishable by NAME: two different filenames, both still on
+    # disk at RUN scope (never archived, but never deleted either).
     assert review_md.exists()
     assert gate_md.exists()
     assert review_md.name != gate_md.name
     assert "requirement Z" in review_md.read_text()
     assert "requirement Q" in gate_md.read_text()
 
-    # distinguishable by AUTHOR: the archived JSON sidecars carry the
-    # engine-attributed `author` field, correctly per channel, regardless
-    # of the fact neither fixture handler above ever set one itself.
+    # distinguishable by SEVERITY: no archiving-time attribution needed
+    # for this -- each hat's own reply already carried its own severity.
     review_items = findings.read_findings_json(review_json_path)
     gate_items = findings.read_findings_json(gate_json_path)
-    assert review_items[0]["author"] == "review"
-    assert gate_items[0]["author"] == "verdict_gate"
     assert review_items[0]["severity"] == "residual"
     assert gate_items[0]["severity"] == "blocking"
-
-    # `_write_composite_prd` folded both, still distinguishable both ways,
-    # in the artifact the NEXT approach actually reads from.
-    composite = (root / "composite-prd.md").read_text()
-    assert state.FINDINGS_FILE in composite
-    assert state.VERDICT_GATE_FINDINGS_FILE in composite
-    assert "author: review" in composite
-    assert "author: verdict_gate" in composite
-    assert '"author": "review"' in composite
-    assert '"author": "verdict_gate"' in composite
-    assert "requirement Z" in composite
-    assert "requirement Q" in composite
 
 
 # ===========================================================================
