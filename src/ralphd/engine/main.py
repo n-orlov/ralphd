@@ -179,6 +179,16 @@ async def amain() -> int:
         return EXIT_SCHEMA_TOO_NEW
 
     _seed_iteration_budget(cfg, run)
+    # Task 004 (requirement B, #202): lift an existing run's authoritative
+    # task record into the ancestor-protected, bind-mounted record
+    # directory (`privsep.task_record_dir()`) before ANY other code reads
+    # or writes tasks.json -- and, being here, before the API is listening
+    # and long before an iteration exists to plant anything. A no-op for a
+    # fresh run (no record yet) and for a container with no record mount
+    # (the documented degrade). This is what lets the read path trust the
+    # protected copy alone, with no fallback onto an agent-writable
+    # location.
+    privsep.migrate_task_record(run)
     # Task 020 (requirement F bullet 4): fold a pre-0.9 run dir's
     # `vigilant-verified.json` sidecar into the task record before anything
     # else touches tasks.json. A no-op for any run dir that never had

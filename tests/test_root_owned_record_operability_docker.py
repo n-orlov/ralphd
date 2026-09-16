@@ -14,10 +14,15 @@ root-owned. This module proves it against a REAL sibling container (never
 cleanup discipline exactly like ``test_engine_uid_docker.py`` does.
 
 Task 004 (requirement B, #202) moved the AUTHORITATIVE root-owned record
-off this run-root path entirely, into ``.tasks-protected/tasks.json``
-(root-owned 0600 inside a root-owned 0700 directory) -- a root-owned FILE
-in an agent-writable DIRECTORY still let a dropped child ``os.replace()`` a
-substituted document onto it, which is exactly what
+off this run-root path entirely -- first into ``.tasks-protected/tasks.json``
+inside the run dir, and then (that attempt's own rejection: a root-owned
+0700 directory whose PARENT is the agent-owned run dir can still be renamed
+away and replaced by a dropped child) out of the run dir altogether, into
+the bind-mounted ``/var/lib/ralphd/record/tasks.json`` whose every
+container ancestor is root-owned -- backed on the host by
+``<registry>/configs/<run-id>/record/`` (``cli.main.task_record_dir``).
+A root-owned FILE in an agent-writable DIRECTORY still let a dropped child
+``os.replace()`` a substituted document onto it, which is exactly what
 ``test_control_plane_auth_docker.py``'s pattern proves for the control
 creds and what this task's own docker proof (see
 ``test_tasks_record_docker.py``) now proves here. The run-root ``tasks.json``
@@ -28,9 +33,9 @@ against the run root), never the protected copy, so this module's own
 assertions about them are unaffected by the move; only the *ownership*
 assertion below moves to the new protected path, plus a new assertion that
 the view copy is genuinely agent-owned (never root) and that the shutdown
-funnel has handed the once-root-owned protected directory back to the
-agent uid so `rm --force`/`DELETE` (host-side, no root) can still remove
-it.
+funnel has handed the once-root-owned record directory back to the agent
+uid so `rm --force`/`DELETE` (host-side, no root) can still remove both
+directories.
 """
 
 from __future__ import annotations
@@ -89,25 +94,33 @@ def _run_to_terminal_with_container_exited(ctl_: Ctl, prefix: str) -> tuple[str,
         "regressed, or the wait above was too short")
 
     # Task 004 (requirement B, #202): the authoritative record now lives at
-    # `.tasks-protected/tasks.json`, root-owned inside a root-owned 0700
-    # directory. The shutdown funnel (`privsep.release_protected_tasks_dir`,
-    # called from `engine.main.amain()`) hands that directory back to the
-    # agent uid once the job is over -- this container already exited above,
-    # so both are readable from THIS (unprivileged) test process by now; a
+    # `<registry>/configs/<run-id>/record/tasks.json` on the host --
+    # bind-mounted at `/var/lib/ralphd/record` inside the container, whose
+    # every container ancestor is root-owned, which is what this task's
+    # first attempt (a root-owned directory inside the agent-owned run dir)
+    # did NOT have. The shutdown funnel
+    # (`privsep.release_protected_tasks_dir`, called from
+    # `engine.main.amain()`) hands that directory back to the agent uid
+    # once the job is over -- this container already exited above, so both
+    # are readable from THIS (unprivileged) test process by now; a
     # regression here would be release never firing, which this asserts
     # directly by simply being able to stat/read them at all.
-    protected_dir = rdir / ".tasks-protected"
+    protected_dir = ctl_.registry / "configs" / run_id / "record"
     protected_path = protected_dir / "tasks.json"
+    assert not (rdir / ".tasks-protected").exists(), (
+        "the record is still inside the run dir -- task 004's rejected first "
+        "layout, whose protected directory a dropped child can rename away "
+        "through the agent-owned run root")
     assert protected_path.is_file(), (
         "no authoritative record was ever written -- task 004 regressed, "
         "or nothing ever called RunDir.write_tasks()")
     assert protected_dir.stat().st_uid == 1000, (
-        f".tasks-protected is owned by uid {protected_dir.stat().st_uid} after "
+        f"the record dir is owned by uid {protected_dir.stat().st_uid} after "
         "shutdown -- release_protected_tasks_dir() must hand it back to the "
         "agent uid so a host-side rm/DELETE (no root there) can still "
-        "remove the whole run dir")
+        "remove the whole run's state")
     assert protected_path.stat().st_uid == 1000, (
-        f".tasks-protected/tasks.json is owned by uid {protected_path.stat().st_uid} "
+        f"record/tasks.json is owned by uid {protected_path.stat().st_uid} "
         "after shutdown -- same release, one level down")
 
     # The run-root tasks.json this test otherwise reads is now the ordinary
@@ -123,7 +136,7 @@ def _run_to_terminal_with_container_exited(ctl_: Ctl, prefix: str) -> tuple[str,
         f"tasks.json (the agent-readable VIEW) is owned by uid "
         f"{tasks_path.stat().st_uid}, not the agent -- task 004 regressed: "
         "this path must never be the authoritative, root-owned record any "
-        "more, `.tasks-protected/tasks.json` is")
+        "more, `<config>/record/tasks.json` is")
     assert (tasks_path.stat().st_mode & 0o777) == 0o644, (
         oct(tasks_path.stat().st_mode))
     assert json.loads(tasks_path.read_text()) == json.loads(protected_path.read_text()), (
@@ -159,6 +172,14 @@ def test_repair_tasks_and_rm_work_against_a_root_owned_record(ctl):
     assert not rdir.exists(), (
         f"{rdir} still exists after `ralphctl rm --force` -- deletion of a "
         "root-owned tasks.json inside an agent-owned run dir must succeed")
+    # ... and the record directory task 004 moved the authoritative copy
+    # into goes with it: it lives under `config_root(run_id)`, which
+    # `remove_run_state` already removes wholesale, and the shutdown funnel
+    # released it back to the agent uid so this unprivileged `rmtree` can.
+    assert not (ctl.registry / "configs" / run_id).exists(), (
+        "the run's config dir (which now carries `record/tasks.json`, the "
+        "authoritative record) survived `rm --force` -- root-owned record "
+        "litter an operator cannot delete without root")
 
 
 def test_hub_reader_and_delete_endpoint_work_against_a_root_owned_record(ctl, ui):

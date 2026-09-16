@@ -7,3 +7,17 @@ build
 .pytest_cache
 .ruff_cache
 docs
+# Task 004 (requirement B, #202): the container-level e2e tier's throwaway
+# registry (`tests/test_docker_sibling_e2e.py`'s `work_root`, already
+# git-ignored) lives inside this repo checkout because the path-translating
+# docker wrapper can only map `/workspace` and `/run/ralphd` to host paths.
+# It holds live run directories, and since the authoritative task record is
+# root-owned 0700 (this task) a run whose container was torn down hard --
+# before `privsep.release_protected_tasks_dir` could hand it back -- leaves a
+# directory the *build context walk* of the very next docker-tier test cannot
+# even stat: `error from sender: open .../record: permission denied`, which
+# reds heavy's whole docker tier for a reason that has nothing to do with the
+# image being built (observed at cffb6955, heavy run 35095089670). Nothing in
+# here has ever belonged in the image; excluding it removes the failure mode
+# rather than relying on every test to shut its container down gracefully.
+.docker-e2e-tmp-*

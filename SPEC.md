@@ -423,13 +423,8 @@ Everything host-side lives under one directory, `~/.ralphd/`, overridable in ful
 │   ├── tasks.json               # agent-readable VIEW of the plan, refreshed on every
 │   │                            #   authoritative write (task 004, requirement B, #202);
 │   │                            #   never itself the engine's own source of truth
-│   ├── .tasks-protected/tasks.json # the AUTHORITATIVE plan, root-owned 0600 inside a
-│   │                            #   root-owned 0700 directory under the uid boundary
-│   │                            #   (task 004, requirement B, #202) -- only
-│   │                            #   `RunDir.read_tasks()`/`write_tasks()` (the engine's
-│   │                            #   own momentarily-elevated reads/writes) ever touch it;
-│   │                            #   released back to the agent uid at shutdown so a
-│   │                            #   host-side `rm`/`DELETE` can still remove the run dir
+│   │                            #   (the AUTHORITATIVE plan is NOT in this directory at
+│   │                            #   all -- see configs/<run-id>/record/ below)
 │   ├── prd.md · composite-prd.md · notes.md · review-findings.md · debt.json · debt.md
 │   ├── events.jsonl             # append-only event log, also fed to GET /events
 │   ├── iterations/NNNN/{meta.json,output.jsonl}
@@ -448,6 +443,13 @@ Everything host-side lives under one directory, `~/.ralphd/`, overridable in ful
     ├── prompts/ · skills/<name>/ · creds/<name>.env · pi/{models.json,…}
     ├── llm-wiring.json (0600)   # resolved --llm env + mounts, for `resume`
     ├── env-wiring.json (0600)   # resolved --forward-env/--llm-env/--env pairs, ordered
+    ├── run-secrets/ (0700)      # bind-mounted RW at /var/lib/ralphd/run-secrets: the
+    │                            #   per-run petition MAC key store (§5.1.1's sibling)
+    ├── record/ (0700)           # bind-mounted RW at /var/lib/ralphd/record: the
+    │                            #   AUTHORITATIVE tasks.json, root-owned 0600 inside a
+    │                            #   root-owned 0700 directory with only root-owned
+    │                            #   ancestors above it in the container (task 004,
+    │                            #   requirement B, #202) -- §5.1.1
     └── auto-resume.json         # host-side opt-in; never passed into the container
 ```
 
@@ -1403,10 +1405,11 @@ strictly append-only.
 ~/.ralphd/runs/<run-id>/
 ├── status.json              # the run's whole live state (§5.2)
 ├── tasks.json               # agent-readable VIEW of the plan and every task's status
-│                           #   (§5.3); the AUTHORITATIVE copy moved to
-│                           #   .tasks-protected/tasks.json (task 004, requirement
-│                           #   B, #202) -- this file is refreshed from it on
-│                           #   every write but is never itself read by the engine
+│                           #   (§5.3); the AUTHORITATIVE copy moved OUT of the run
+│                           #   dir entirely, to <config>/<run-id>/record/tasks.json
+│                           #   (task 004, requirement B, #202) -- this file is
+│                           #   refreshed from it on every write but is never itself
+│                           #   read by the engine
 ├── events.jsonl             # append-only lifecycle log, monotonic ids (§5.4)
 ├── prd.md                   # the PRD exactly as handed to `ralphctl start`
 ├── composite-prd.md         # PRD + previous-approach history (§4.2), when written
@@ -1426,16 +1429,9 @@ strictly append-only.
 ├── auto-resume.json         # host-side crash-loop guard bookkeeping
 ├── host.json                # host-side container/registry metadata
 ├── .tasks-last-good.json    # last `tasks.json` that parsed; written only on a failed read (§5.3)
-├── .tasks-protected/tasks.json # the AUTHORITATIVE task record (task 004, requirement B,
-│                           #   #202): root-owned 0600 inside a root-owned 0700
-│                           #   directory under the uid boundary, self-healed on every
-│                           #   write (`privsep.write_protected_tasks_json`); read
-│                           #   only by `RunDir.read_tasks()`/`read_tasks_result()`,
-│                           #   never by a host-side or agent-facing reader; released
-│                           #   back to the agent uid at the engine's own shutdown
-│                           #   funnel (`privsep.release_protected_tasks_dir`) so a
-│                           #   host-side `rm --force`/the hub's `DELETE
-│                           #   /api/runs/<id>` can still remove the whole run dir
+│                           #   (the AUTHORITATIVE task record is NOT in the run dir:
+│                           #   task 004 moved it to <config>/<run-id>/record/tasks.json,
+│                           #   bind-mounted at /var/lib/ralphd/record — §5.1.1)
 ├── .api-token               # the run's API bearer token, mode 0600
 ├── .lock                    # exclusive flock held by the live engine; holds its pid
 ├── steering/
@@ -1465,6 +1461,42 @@ The engine holds an exclusive non-blocking `flock` on `.lock` for its whole
 lifetime and writes its pid there. A second engine over the same run dir fails to
 start with a distinct exit code rather than corrupting the state; because it is
 an flock, a `SIGKILL`ed engine leaves no stale lock behind.
+
+#### 5.1.1 The record mount — where the authoritative tasks.json lives
+
+**Not in the run directory** (task 004, requirement B, #202). `ralphctl
+start`/`resume` bind-mount a mode-0700 host directory,
+`cli.main.task_record_dir(run_id)` (`<config>/<run-id>/record/`), at the fixed
+container path `privsep.DEFAULT_TASK_RECORD_DIR` (`/var/lib/ralphd/record`,
+overridable with `$RALPHD_TASK_RECORD_DIR`), and `RunDir.write_tasks()` lands
+`tasks.json` there — root-owned 0600 inside a root-owned 0700 directory under
+the uid boundary, re-asserted on every write
+(`privsep.write_protected_tasks_json`). `RunDir.read_tasks()`/
+`read_tasks_result()` read only that copy, through the same momentary root
+re-raise the write uses; the run dir's own `tasks.json` is the agent-readable
+VIEW every other reader uses (§5.3).
+
+Why not a protected subdirectory of the run dir, which is where this record
+first moved: a directory entry is gated by its PARENT, and the run dir is
+agent-owned by construction (the agent writes `notes.md`, `artifacts/` and
+every iteration record into it), so a dropped agent child could rename a
+root-owned `.tasks-protected/` aside and plant its own in its place —
+requirement B.1 asks for **every ancestor entry on the path**, not only the
+file. `/var/lib/ralphd` is root-owned 0755 inside the image, so nothing on the
+record's container path is modifiable at the agent uid; the host directory
+behind the mount lives under `config_root()`, bind-mounted READ-ONLY at
+`/config`, so no agent-writable path aliases it either. It still survives a
+`resume`'s fresh container (it is a host directory), `remove_run_state`
+already deletes `config_root(run_id)` so `ralphctl rm --force` and the hub's
+`DELETE /api/runs/<id>` take it with the rest of the run's state, and
+`privsep.release_protected_tasks_dir` hands it back to the agent uid at the
+engine's own shutdown funnel so those unprivileged deletes can. A run dir
+created before this move is lifted into the mount once, at engine startup,
+by `privsep.migrate_task_record()` — before the API listens and before any
+iteration exists — and the superseded copy is removed rather than left as a
+second, agent-writable source of truth. With no mount at all (a `ralphctl`
+predating this task, or the test suite's own unprivileged engine) the record
+degrades back to `privsep.legacy_protected_tasks_dir()` inside the run dir.
 
 ### 5.2 status.json
 
@@ -1672,8 +1704,9 @@ its own bookkeeping fields to it.
 **Task 004 (requirement B, #202): two copies, one schema.** Every field below
 describes the document's shape, which both copies share byte-for-byte at the
 moment of any write. `RunDir.write_tasks()` lands the AUTHORITATIVE copy in
-`.tasks-protected/tasks.json` (root-owned 0600 inside a root-owned 0700
-directory under the uid boundary, self-healed on every write) and refreshes
+the record mount (`<config>/<run-id>/record/tasks.json`, bind-mounted at
+`/var/lib/ralphd/record`; root-owned 0600 inside a root-owned 0700 directory
+under the uid boundary, self-healed on every write — §5.1.1) and refreshes
 this file, `tasks.json` at the run-dir root, as an ordinary agent-readable
 VIEW -- what `ralphctl tasks`, the hub's task table, the worker/steer prompts
 and the steer hat's `context-read` tool all read, and a courtesy mirror

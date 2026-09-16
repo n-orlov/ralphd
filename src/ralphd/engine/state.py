@@ -6783,13 +6783,19 @@ class RunDir:
 
     @property
     def protected_tasks_dir(self) -> Path:
-        """Task 004 (requirement B, #202): the directory the agent cannot
-        write into (root-owned 0700 under the uid boundary, self-healed on
-        every write -- see `privsep.write_protected_tasks_json`), holding
-        the authoritative task record. Lives INSIDE the bind-mounted run
-        dir -- unlike `privsep.CONTROL_CREDENTIALS_DIR` -- so the same host
-        directory persists it across a `resume`'s fresh container."""
-        return self.root / privsep.PROTECTED_TASKS_DIRNAME
+        """Task 004 (requirement B, #202): the directory holding the
+        authoritative task record -- root-owned 0700 under the uid
+        boundary, re-asserted on every write (see
+        `privsep.write_protected_tasks_json`), and, unlike this task's
+        first attempt, one whose every ANCESTOR entry is root-owned and
+        agent-unwritable too (B.1). Resolved by
+        `privsep.protected_tasks_dir()`: the bind-mounted
+        `/var/lib/ralphd/record` (parented by the root-owned
+        `/var/lib/ralphd`, backed by a host directory under the run's own
+        config dir so it survives a `resume`'s fresh container), or -- with
+        no such mount, the documented degrade -- the pre-mount run-dir
+        location `privsep.legacy_protected_tasks_dir()` names."""
+        return privsep.protected_tasks_dir(self.root)
 
     @property
     def protected_tasks_file(self) -> Path:
@@ -7132,19 +7138,26 @@ class RunDir:
         borrows this exact context manager for the same reason.
 
         Falls back to `self.tasks_file` -- the classic, pre-task-004
-        location -- ONLY when no protected copy exists yet: a run whose
-        plan was written before this task shipped, resumed under the new
-        code (the success criteria's "a resumed container must still read
-        the record"), or a test fixture that seeds a plan by writing
-        `run.tasks_file` directly rather than going through
-        `write_tasks()`. The very first `write_tasks()` call after either
-        migrates the record into the protected copy for good -- once it
-        exists, this fallback never triggers again for this run, closing
-        the window a substituted `tasks_file` could otherwise buy: by the
-        time an agent hat could run and attempt one, planning's own first
-        write has already created the protected copy.
+        location -- ONLY when the record lives in the run dir at all (no
+        `privsep.task_record_dir()` mount: the documented degrade, and
+        every in-process test fixture) AND no protected copy exists yet: a
+        run whose plan was written before this task shipped, or a test
+        fixture that seeds a plan by writing `run.tasks_file` directly
+        rather than going through `write_tasks()`. The very first
+        `write_tasks()` call after either migrates the record into the
+        protected copy for good.
+
+        With the mount in force there is no fallback at all, deliberately:
+        `privsep.migrate_task_record()` has already lifted a pre-existing
+        run's record into the protected directory at engine startup --
+        before the API listens and before any iteration exists -- so a
+        fallback here could only ever be reached by an agent-planted
+        document, never by a genuine older record.
         """
         def _pick_source_dir() -> Path:
+            protected_dir = self.protected_tasks_dir
+            if protected_dir != privsep.legacy_protected_tasks_dir(self.root):
+                return protected_dir      # mounted: the only source, ever
             # Task 004 correction: this existence check has to run INSIDE
             # the same elevated window as the read below, not before it --
             # `Path.exists()` swallows the `PermissionError` a 0700
@@ -7152,9 +7165,9 @@ class RunDir:
             # agent) effective uid and reports `False` regardless of the
             # true answer, which would silently misroute every read back
             # onto the unprotected view the moment the boundary is active.
-            protected_exists = self.protected_tasks_file.exists()
+            protected_exists = (protected_dir / "tasks.json").exists()
             if protected_exists or not self.tasks_file.exists():
-                return self.protected_tasks_dir
+                return protected_dir
             return self.root
 
         if privsep.separated():

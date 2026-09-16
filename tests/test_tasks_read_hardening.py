@@ -15,6 +15,7 @@ import threading
 import time
 from pathlib import Path
 
+from ralphd.engine import privsep
 from ralphd.engine import state as state_mod
 from ralphd.engine.state import (
     TASKS_LAST_GOOD_NAME,
@@ -207,7 +208,7 @@ def test_a_poller_never_observes_an_empty_list_during_agent_rewrites(tmp_path):
 
 # -- RunDir integration -----------------------------------------------------
 
-def test_rundir_read_tasks_uses_the_hardened_path(tmp_path):
+def test_rundir_read_tasks_uses_the_hardened_path(tmp_path, monkeypatch):
     """Task 004 (requirement B): `RunDir.read_tasks()`/`read_tasks_result()`
     read the PROTECTED copy (`protected_tasks_dir`), never `tasks_file` (the
     agent-readable view) -- so this exercises the hardened path against
@@ -223,6 +224,52 @@ def test_rundir_read_tasks_uses_the_hardened_path(tmp_path):
     res = run.read_tasks_result()
     assert (res.source, res.stale) == ("last-good", True)
     assert res.counts == {"total": 3, "completed": 1, "inProgress": 1, "pending": 1}
+
+    # ... and with a record mount in force (task 004's second attempt: the
+    # authoritative copy lives OUTSIDE the agent-owned run dir, under
+    # `privsep.task_record_dir()`, whose every container ancestor is
+    # root-owned) the read follows it there and never falls back into the
+    # run dir at all -- not onto the view copy, and not onto a
+    # `.tasks-protected` directory an agent planted in the run root, which
+    # is exactly how the first attempt was falsified.
+    record = tmp_path / "record-mount"
+    record.mkdir()
+    monkeypatch.setenv(privsep.TASK_RECORD_DIR_ENV, str(record))
+    _forget_process_cache()
+    mounted = RunDir(root=tmp_path / "mounted-run")
+    assert mounted.protected_tasks_dir == record
+    mounted.write_tasks(PLAN)
+    assert json.loads((record / "tasks.json").read_text()) == PLAN
+    assert json.loads(mounted.tasks_file.read_text()) == PLAN     # the view
+    assert not (mounted.root / privsep.PROTECTED_TASKS_DIRNAME).exists()
+    substituted = {"version": 1, "tasks": [
+        {"id": "1", "title": "substituted", "successCriteria": "x",
+         "status": "pending"}]}
+    mounted.tasks_file.write_text(json.dumps(substituted))
+    planted = mounted.root / privsep.PROTECTED_TASKS_DIRNAME
+    planted.mkdir()
+    (planted / "tasks.json").write_text(json.dumps(substituted))
+    assert mounted.read_tasks() == PLAN, (
+        "a planted run-dir record reached the engine's own read -- requirement "
+        "B.1's ancestor clause")
+
+    # a run dir carrying the FIRST attempt's in-run-dir record is lifted
+    # into the mount once, at startup (`privsep.migrate_task_record`,
+    # called from `engine.main.amain()` before the API listens and before
+    # any iteration exists), and the superseded copy is removed rather than
+    # left behind as a second, agent-writable source of truth.
+    record2 = tmp_path / "record-mount-2"
+    record2.mkdir()
+    monkeypatch.setenv(privsep.TASK_RECORD_DIR_ENV, str(record2))
+    _forget_process_cache()
+    legacy_run = RunDir(root=tmp_path / "legacy-run")
+    legacy_dir = privsep.legacy_protected_tasks_dir(legacy_run.root)
+    legacy_dir.mkdir(parents=True)
+    _write(legacy_dir, PLAN)
+    privsep.migrate_task_record(legacy_run)
+    assert json.loads((record2 / "tasks.json").read_text()) == PLAN
+    assert not legacy_dir.exists()
+    assert legacy_run.read_tasks() == PLAN
 
 
 def test_rundir_read_tasks_on_a_run_dir_with_no_plan(tmp_path):

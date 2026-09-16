@@ -45,6 +45,7 @@ from ..engine.config import (
 )
 from ..engine import findings
 from ..engine import petitions
+from ..engine import privsep
 from ..engine.tiers import TIERS
 from ..engine.transitions import OPERATOR_RULEABLE_TASK_STATUSES, TASK_STATUSES
 from ..engine.state import (
@@ -193,8 +194,61 @@ def run_secrets_dir(run_id: str) -> Path:
 def _bind_run_secrets_mount(run_id: str, mounts: list) -> None:
     d = run_secrets_dir(run_id)
     d.mkdir(parents=True, exist_ok=True)
-    os.chmod(d, 0o700)
+    _chmod_if_ours(d, 0o700)
     mounts += ["-v", f"{d}:{petitions.DEFAULT_RUN_SECRETS_DIR}"]
+
+
+def _chmod_if_ours(d: Path, mode: int) -> None:
+    """`os.chmod(d, mode)` unless a job container has already chowned `d`
+    root-owned from the inside (task 004: the engine does exactly that to
+    the record mount, and task 003's release funnel may not have run if the
+    container died abruptly). `chmod` by a non-owner is EPERM, and a
+    `resume` must not die on it: the mode we would set is the mode a
+    root-owned 0700 directory already has, and the protection is stronger,
+    not weaker."""
+    try:
+        os.chmod(d, mode)
+    except PermissionError:
+        pass
+
+
+# Task 004 (requirement B, #202): the host directory `start`/`resume`
+# bind-mount at `privsep.DEFAULT_TASK_RECORD_DIR`
+# (`/var/lib/ralphd/record`) -- where the AUTHORITATIVE tasks.json lives
+# from this task on, instead of inside the run dir.
+#
+# Two properties are wanted at once and only this shape has both. (1) It
+# must survive a `resume`'s fresh container, so it has to be a host
+# directory, mounted. (2) Not one directory entry on its container path may
+# be modifiable at the agent uid -- B.1's "including every ancestor entry
+# on the path, not only the file". The run dir cannot give (2): it is
+# agent-owned by construction (the agent writes notes.md, the artifacts
+# directory and every iteration record into it), so a dropped child can
+# rename any protected subdirectory of it and drop its own in place --
+# exactly how this task's first attempt was falsified. `/var/lib/ralphd` is
+# root-owned 0755 inside the image, so a directory mounted beneath it can
+# be neither renamed, unlinked nor shadowed at the agent uid, and the
+# engine chowns the mount point itself root-owned 0700 from inside (there
+# is no user-namespace remap, so that also chowns this HOST inode --
+# `privsep.release_protected_tasks_dir` hands it back at shutdown so
+# `remove_run_state`'s unprivileged `rmtree` can still delete it).
+#
+# Under `config_root(run_id)` rather than `run_root(run_id)` for the same
+# reason `run_secrets_dir` is: the run dir is bind-mounted read-WRITE at
+# `/run/ralphd`, so anything inside it is an agent-writable alias of this
+# directory, which would hand back the very hole this move closes. The
+# config dir is mounted read-only at `/config`, where no uid can write.
+# `remove_run_state` already removes `config_root(run_id)` wholesale, so
+# `ralphctl rm` and the hub's DELETE take this with them unchanged.
+def task_record_dir(run_id: str) -> Path:
+    return config_root(run_id) / "record"
+
+
+def _bind_task_record_mount(run_id: str, mounts: list) -> None:
+    d = task_record_dir(run_id)
+    d.mkdir(parents=True, exist_ok=True)
+    _chmod_if_ours(d, 0o700)
+    mounts += ["-v", f"{d}:{privsep.DEFAULT_TASK_RECORD_DIR}"]
 
 
 # Task 003 (requirement A, #201): where `.control-token`/`.api-token` are
@@ -2057,6 +2111,11 @@ def cmd_start(args):
     # at the fixed container path `petitions.DEFAULT_RUN_SECRETS_DIR` --
     # see `_bind_run_secrets_mount`'s docstring above.
     _bind_run_secrets_mount(run_id, mounts)
+    # Task 004 (requirement B, #202): the ancestor-protected host directory
+    # the AUTHORITATIVE tasks.json lives in from this task on -- see
+    # `_bind_task_record_mount`'s docstring above for why it cannot be a
+    # subdirectory of the run dir.
+    _bind_task_record_mount(run_id, mounts)
     ws: Path | None = None          # single-unnamed workspace (legacy path)
     ws_named: dict[str, Path] = {}  # name -> host path (multi-workspace)
     ws_specs = _parse_workspace_specs(args.workspace or [])
@@ -2811,6 +2870,13 @@ def cmd_resume(args):
     # fixed unconditionally by `_bind_run_secrets_mount`, never assumed to
     # already exist or be 0700).
     _bind_run_secrets_mount(run_id, mounts)
+    # Task 004 (requirement B, #202): reproduce the record mount on every
+    # `resume` too -- this is the directory that carries the authoritative
+    # task record ACROSS the fresh container, and a run dir predating this
+    # task self-heals on its first resume (the mount is created/mode-fixed
+    # unconditionally, and `privsep.migrate_task_record()` lifts the old
+    # in-run-dir record into it before anything reads tasks.json).
+    _bind_task_record_mount(run_id, mounts)
     if ws:
         mounts += ["-v", f"{ws}:/workspace"]
     for name, path in ws_named.items():

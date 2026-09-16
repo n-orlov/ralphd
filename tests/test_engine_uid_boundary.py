@@ -53,7 +53,7 @@ STUB_OVERLAY = (REPO / "tests" / "docker-hostpath-wrapper"
 def _architecture_text() -> str:
     """`docs/architecture.md`, read lazily rather than at module import.
 
-    The last line of `.dockerignore` is `docs`, so a job container built
+    `.dockerignore` excludes `docs` outright, so a job container built
     from `container/Dockerfile` (`COPY --chown=agent:agent . /opt/ralphd`)
     never has a copy of this file -- reading it at import time would make
     this whole module uncollectable there, before any test runs, which is
@@ -65,8 +65,8 @@ def _architecture_text() -> str:
     collection when the file is absent."""
     path = REPO / "docs" / "architecture.md"
     if not path.exists():
-        pytest.skip("docs/architecture.md is not present -- .dockerignore's "
-                     "last line excludes docs/ from the image this test is "
+        pytest.skip("docs/architecture.md is not present -- .dockerignore "
+                     "excludes docs/ from the image this test is "
                      "running against, so a job container has no copy")
     return path.read_text()
 

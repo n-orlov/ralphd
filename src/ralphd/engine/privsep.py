@@ -357,18 +357,159 @@ def write_root_owned_json(path: Path, obj: Any) -> None:
 # Unlike `CONTROL_CREDENTIALS_DIR` above (deliberately never bind-mounted,
 # because a credential need not survive a container's death), the task
 # record MUST survive a `resume`'s fresh container -- so it cannot live
-# purely in this container's own writable layer either. The resolution:
-# a subdirectory INSIDE the bind-mounted run dir itself
-# (`PROTECTED_TASKS_DIRNAME`), chowned/chmoded root-owned 0700 by the
-# engine (which is genuinely root here -- no user-namespace remap, so a
-# `chown` made from inside the container changes the HOST inode's
-# ownership too, the same fact that makes `tasks.json` itself root-owned
-# today). Because it is reasserted on EVERY write, not only at creation,
-# an agent that deletes the directory between writes and recreates its own
-# in its place is corrected on the very next write rather than the
-# redirection surviving -- B.1's "every ancestor on the path" concern, one
-# level up from the file itself.
+# purely in this container's own writable layer either.
+#
+# ## Why a subdirectory of the run dir is NOT enough (this task's first
+# ## attempt, and its rejection)
+#
+# Attempt 1 put the record in `PROTECTED_TASKS_DIRNAME` INSIDE the
+# bind-mounted run dir, root-owned 0700, re-asserted on every write. That
+# still failed B.1's "including every ancestor entry on the path, not only
+# the file": the run root itself is agent-owned (it has to be -- the agent
+# writes notes.md, artifacts and the whole iteration record into it), so a
+# fully dropped child could `os.rename('.tasks-protected', ...)`, drop its
+# OWN `.tasks-protected/tasks.json` in its place, and the engine's next
+# `read_tasks()` returned that substituted document. Re-asserting
+# protection on every WRITE cannot close that: a read between two writes
+# resolves the name the attacker now owns. And no permission bit can
+# separate the engine from the agent inside the run dir either -- the
+# engine's EFFECTIVE uid *is* the agent's (that is what
+# `separate_engine_identity` establishes), so any directory the agent
+# cannot write to is one the engine cannot write to unelevated.
+#
+# ## Where the record lives instead
+#
+# `TASK_RECORD_DIR` -- a directory `ralphctl start`/`resume` bind-mount
+# from the HOST (`cli.main.task_record_dir()`, under the run's own config
+# dir, so it survives a `resume`'s fresh container and `ralphctl rm`
+# removes it with the rest of the run's state) at a container path whose
+# every ancestor is root-owned and agent-unwritable in the container's own
+# namespace: `/var/lib/ralphd/record`, parented by the same root-owned
+# `/var/lib/ralphd` that already parents `CONTROL_CREDENTIALS_DIR` and the
+# run-secrets mount. The engine chowns/chmods the mount point itself
+# root-owned 0700 (it is genuinely root here -- no user-namespace remap, so
+# a `chown` from inside the container changes the HOST inode's ownership
+# too, the same fact that made `tasks.json` root-owned before this task).
+#
+# So there is no directory entry on the authoritative path that a dropped
+# child may modify: not the file, not its directory, and not one ancestor
+# above it. It is also not aliased by any agent-writable path -- the host
+# directory behind the mount lives under `config_root()`, which is
+# bind-mounted READ-ONLY at `/config`, never under the run dir.
+#
+# The run-dir location stays in the code for exactly two jobs: the
+# documented degrade (no mount at all -- a job started by a `ralphctl` that
+# predates this task, or the test suite's own unprivileged engine), and the
+# one-shot `migrate_task_record()` that lifts a pre-existing run's record
+# out of it on the first start/resume under this build.
 PROTECTED_TASKS_DIRNAME = ".tasks-protected"
+TASK_RECORD_FILENAME = "tasks.json"
+TASK_RECORD_DIR_ENV = "RALPHD_TASK_RECORD_DIR"
+DEFAULT_TASK_RECORD_DIR = Path("/var/lib/ralphd/record")
+
+
+def task_record_dir() -> Path | None:
+    """The mounted, ancestor-protected directory holding the authoritative
+    task record, or None when this container has none.
+
+    Never created here, and that is deliberate: the directory exists only
+    because `ralphctl start`/`resume` bind-mounted a host directory onto
+    it, so "it exists" and "the record survives this container's death"
+    are the same fact. Creating it ourselves would silently produce a
+    record that lives in the container's own writable layer and vanishes
+    at the next `resume` -- worse than the honest degrade below.
+    Correspondingly the agent cannot conjure it either: `/var/lib/ralphd`
+    is root-owned 0755, so no path under it can be created at the agent
+    uid.
+
+    `$RALPHD_TASK_RECORD_DIR` overrides the container path (the docker-tier
+    tests' own seam, and an operator's escape hatch), exactly as
+    `$RALPHD_RUN_SECRETS_DIR` does for the MAC key store.
+    """
+    override = os.environ.get(TASK_RECORD_DIR_ENV)
+    candidate = Path(override) if override else DEFAULT_TASK_RECORD_DIR
+    try:
+        # `is_dir()` needs only `x` on the parent, which is 0755 root-owned
+        # -- it answers truthfully even once this directory is 0700 root.
+        return candidate if candidate.is_dir() else None
+    except OSError:  # pragma: no cover - unreadable ancestor
+        return None
+
+
+def protected_tasks_dir(run_root: Path | str) -> Path:
+    """THE directory the authoritative task record lives in: the mounted,
+    ancestor-protected `task_record_dir()` when there is one, else the
+    pre-mount run-dir location (the documented degrade -- see the module
+    comment above). Every reader and writer of the record resolves it
+    through this one function, so the two can never disagree."""
+    d = task_record_dir()
+    return d if d is not None else legacy_protected_tasks_dir(run_root)
+
+
+def legacy_protected_tasks_dir(run_root: Path | str) -> Path:
+    """Where this task's own first attempt put the record: inside the
+    bind-mounted, agent-owned run dir. Read by `migrate_task_record()`,
+    and still the write target when no mount exists at all."""
+    return Path(run_root) / PROTECTED_TASKS_DIRNAME
+
+
+def migrate_task_record(run) -> None:
+    """Lift an existing run's authoritative record into
+    `task_record_dir()`, once, at engine startup -- BEFORE the API is
+    listening and before any iteration has been spawned, so no agent-uid
+    process is alive while the two locations both exist.
+
+    Three run dirs reach this: one whose record is still in the run-dir
+    `PROTECTED_TASKS_DIRNAME` (started under this task's first attempt),
+    one whose record is still the plain agent-owned `tasks.json` at the run
+    root (started before this task at all -- task 105's layout), and a
+    fresh one with no record yet (the overwhelmingly common case, a no-op).
+    The migrated-from copy is REMOVED rather than left beside the
+    authoritative one, so nothing can later read a stale record from a
+    location the agent controls; the run-root `tasks.json` is not removed
+    but rewritten as the agent-readable view copy every write refreshes.
+
+    Because this runs exactly once per process start and every later read
+    goes straight to `task_record_dir()`, the read path itself needs no
+    fallback onto an agent-writable location -- the window in which a
+    planted `.tasks-protected/tasks.json` could be believed is closed by
+    construction rather than by ordering luck.
+    """
+    record_dir = task_record_dir()
+    if record_dir is None:
+        return                      # degrade: nothing to migrate into
+    target = record_dir / TASK_RECORD_FILENAME
+    legacy_dir = legacy_protected_tasks_dir(run.root)
+    sources = (legacy_dir / TASK_RECORD_FILENAME,
+               Path(run.root) / TASK_RECORD_FILENAME)
+    doc: Any = None
+    with root_for_write():
+        if target.exists():
+            doc = None              # already migrated; only sweep below
+        else:
+            for src in sources:
+                try:
+                    parsed = json.loads(src.read_text())
+                except (OSError, ValueError):
+                    continue
+                if isinstance(parsed, dict) and parsed.get("tasks") is not None:
+                    doc = parsed
+                    break
+    if doc is not None:
+        # Outside the borrow above on purpose: `write_protected_tasks_json`
+        # takes its own (`root_for_write` is not re-entrant -- the inner
+        # exit would restore the effective uid to the agent's and leave the
+        # outer body unelevated).
+        write_protected_tasks_json(target, Path(run.root) / TASK_RECORD_FILENAME,
+                                    doc)
+        log.info("migrated the authoritative task record into %s", target)
+    with root_for_write():
+        if target.exists() and legacy_dir.exists():
+            try:
+                shutil.rmtree(legacy_dir)
+            except OSError as exc:  # pragma: no cover - best effort
+                log.warning("could not remove the superseded record dir %s: %r",
+                            legacy_dir, exc)
 
 
 def _reject_planted_entry(path: Path) -> None:
@@ -427,7 +568,6 @@ def write_protected_tasks_json(protected_path: Path, view_path: Path,
     made into a directory an attacker got to before the engine did) is
     closed by `_ensure_protected_tasks_dir` discarding anything not a
     genuine directory before trusting it.
-
     Degrades to an ordinary, unprotected pair of writes (still two files,
     still atomic) when there is no boundary to raise into
     (`privsep.separated()` is False) -- the test suite's own unprivileged
@@ -466,31 +606,44 @@ def write_protected_tasks_json(protected_path: Path, view_path: Path,
 
 
 def release_protected_tasks_dir(run) -> None:
-    """Hand `PROTECTED_TASKS_DIRNAME` back to the agent's own uid, called
-    once from `engine.main.amain()`'s single shutdown funnel, after the
-    job has already reached a terminal (or idle-then-signalled) outcome.
+    """Hand the authoritative record's directory (`protected_tasks_dir`,
+    i.e. the mounted `task_record_dir()` or -- degraded -- the run-dir
+    location) back to the agent's own uid, called once from
+    `engine.main.amain()`'s single shutdown funnel, after the job has
+    already reached a terminal (or idle-then-signalled) outcome.
 
     Protection matters while the container is alive -- an iteration might
     still run and attack the record. Once the process is exiting there is
     no further write or read this protection could still be defending,
     so releasing it here is what lets `ralphctl rm`/the hub's `DELETE
     /api/runs/<id>` (both host-side, no root available there) delete a
-    finished run's directory exactly as they could before this task --
-    the root-owned directory this function created (task 004) would
-    otherwise be the one thing plain `shutil.rmtree(..., ignore_errors=
-    True)` cannot remove. A `resume`'s fresh container re-protects it
-    before anything reads or writes tasks.json again (every write does,
-    see `write_protected_tasks_json`). A no-op when there is no boundary
-    to release, or nothing was ever protected.
+    finished run's directories exactly as they could before this task --
+    the root-owned directory this module created would otherwise be the one
+    thing plain `shutil.rmtree(..., ignore_errors=True)` cannot remove. A
+    `resume`'s fresh container re-protects it before anything reads or
+    writes tasks.json again (every write does, see
+    `write_protected_tasks_json`). A no-op when there is no boundary to
+    release, or nothing was ever protected.
     """
     if not separated():
         return
     agent = agent_identity()
     if agent is None:
         return
-    protected_dir = Path(run.root) / PROTECTED_TASKS_DIRNAME
+    protected_dir = protected_tasks_dir(run.root)
     if not protected_dir.is_dir():
         return
+    with root_for_write():
+        try:
+            for child in protected_dir.iterdir():
+                os.chown(child, agent.uid, agent.gid)
+                os.chmod(child, 0o644)
+            os.chown(protected_dir, agent.uid, agent.gid)
+            os.chmod(protected_dir, 0o755)
+        except OSError as exc:  # pragma: no cover - best effort at exit
+            log.warning("could not release %s back to the agent uid: %r",
+                        protected_dir, exc)
+
     with root_for_write():
         try:
             for child in protected_dir.iterdir():

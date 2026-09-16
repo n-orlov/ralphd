@@ -126,7 +126,7 @@ names = json.loads(sys.argv[1])
 control_dir = sys.argv[2]
 # Task 004 (#202): an optional fourth arg overrides the scratch dir,
 # needed the moment a caller's control_dir is itself bind-mounted (task
-# 004's `.tasks-protected`, unlike this module's own never-bind-mounted
+# 004's record directory, unlike this module's own never-bind-mounted
 # `.control-token` dir) -- `/tmp` inside the container is a different
 # device from a bind mount, so a rename/link/replace FROM there would fail
 # EXDEV regardless of any permission bit, proving nothing about the
@@ -608,8 +608,8 @@ def test_mutating_ralphctl_commands_still_work_and_the_raw_control_gate_holds(ct
                          ("succeeded", "failed", "aborted"), timeout=60)
     assert final["verdict"] == "verified", final
 
-    # task 004 (#202): planning above wrote `.tasks-protected`, root-owned,
-    # under this run dir -- `--on-complete idle` otherwise leaves the
+    # task 004 (#202): planning above wrote the authoritative task record
+    # into the root-owned, bind-mounted record directory -- `--on-complete idle` otherwise leaves the
     # container (and that directory) up past this test's own assertions,
     # which the `ctl` fixture's hard `docker rm -f` teardown cannot remove
     # afterward. A graceful `ralphctl stop` (the same `/shutdown` path
