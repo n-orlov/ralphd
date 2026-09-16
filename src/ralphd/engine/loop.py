@@ -7304,6 +7304,40 @@ class LoopSupervisor:
                     verdict_ready = True
                     guard_ready = "doomed_plan_unverifiable"
                     break
+                # Task 002 (PRD requirement E, #206): a THIRD safety net,
+                # checked right after `_doomed_plan_fault` -- reached only
+                # when that method's fail/skip/petitioned-ancestor doom
+                # check just above did NOT fire -- for the shape neither
+                # it nor `blocked_by` can see at all: a genuine
+                # `dependsOn` CYCLE (a self-loop is the length-one case)
+                # among tasks that are themselves still `pending`, none of
+                # them dead. #206's own incident. Routed to `paused`, not
+                # `review` -- there is no worker verdict to adjudicate
+                # here, only a `tasks.json` edit an operator has to make
+                # by hand -- so this returns directly rather than setting
+                # `verdict_ready`/`guard_ready` and falling through to the
+                # shared `return ("advance", "review", guard_ready)`
+                # endpoint at the bottom of this method, which hardcodes
+                # `review` as the target and would be the WRONG edge for
+                # this fault.
+                cycle_fault = self._unschedulable_cycle_fault(tasks_before)
+                if cycle_fault is not None:
+                    self.run.emit(
+                        "log", level="error",
+                        message=(
+                            "the dependsOn graph holds a cycle that "
+                            "touches the actionable remainder -- no "
+                            "worker iteration could ever move this plan "
+                            "again; pausing and escalating instead of "
+                            "grinding through no-progress iterations "
+                            "(task 002, requirement E, #206)"),
+                        **cycle_fault)
+                    self.run.update_status(health="degraded")
+                    self._pause_and_escalate_unschedulable_cycle(cycle_fault)
+                    self._advance("worker", "paused",
+                                 "unschedulable_dependency_cycle")
+                    return ("advance", "paused",
+                           "unschedulable_dependency_cycle")
                 if blocked_by:
                     new_ids = sorted(set(blocked_by) - self._blocked_notes_written)
                     if new_ids:
@@ -8561,8 +8595,26 @@ class LoopSupervisor:
             # logic) and orthogonal to all four -- kept exactly as before.
             commits_gained = (head_before is not None or head_after is not None) \
                 and head_before != head_after
+            # Task 002 (PRD requirement E.4, #206): an iteration this pass
+            # never ASSIGNED a task (`assigned_id is None` -- nothing was
+            # selectable, but the worker hat still ran, per the doomed-
+            # plan/cycle checks above and the ordinary "nothing selectable"
+            # dispatch a few hundred lines up) cannot have made progress
+            # on one, so its own tool calls are not a witness of progress
+            # either -- #206's own measurement (21, 16, 4, 5 tool calls
+            # across four such iterations, always >= the threshold, so
+            # `stagnant >= 3` was unreachable while the run burned 544
+            # remaining iterations doing nothing). The other three
+            # witnesses (`tasks.json` changed, commits gained, contract
+            # progress) are UNCHANGED by this -- only `tool_activity`
+            # itself is gated, and only on `assigned_id`, never on
+            # anything about THIS iteration's transcript content. An
+            # assigned iteration's `tool_activity` witness is unchanged:
+            # `STAGNATION_TOOL_ACTIVITY_MIN_CALLS` keeps its value and its
+            # meaning exactly as before this task.
             tool_activity = (
-                state.count_tool_calls(self.run.root, worker_iter_n)
+                assigned_id is not None
+                and state.count_tool_calls(self.run.root, worker_iter_n)
                 >= self.STAGNATION_TOOL_ACTIVITY_MIN_CALLS)
             # Task 013 (PRD requirement A.3, #156): a corroborated
             # progress claim on the assigned task joins the same OR --
@@ -9752,6 +9804,15 @@ class LoopSupervisor:
         if reason == "stagnation":
             self._advance("paused", "worker", "paused_resumed_stagnation")
             return ("advance", "worker", "paused_resumed_stagnation")
+        if reason == "unschedulable_dependency_cycle":
+            # Task 002 (PRD requirement E.3, #206): same reasoning as the
+            # `stagnation` branch just above -- there is no verdict
+            # pending, only unfinished tasks (here, a `dependsOn` cycle an
+            # operator has to edit `tasks.json` to break) -- so this
+            # resumes straight back into `worker`, never `review`.
+            self._advance("paused", "worker",
+                          "paused_resumed_unschedulable_cycle")
+            return ("advance", "worker", "paused_resumed_unschedulable_cycle")
         self._advance("paused", "review", "paused_resumed")
         return ("advance", "review", "paused_resumed")
 
@@ -10651,6 +10712,107 @@ class LoopSupervisor:
             "deadAncestorIds": sorted(dead_ancestors),
             "planUnverifiable": True,
         }
+
+    def _unschedulable_cycle_fault(self, tasks_doc: dict) -> dict | None:
+        """Task 002 (PRD requirement E, #206): the fault payload iff the
+        plan's own `dependsOn` graph holds a CYCLE (a self-loop is the
+        length-one case) that touches at least one task
+        `task_is_actionable()` still calls workable -- else `None`.
+
+        This is a DIFFERENT gap from `_doomed_plan_fault`'s just above
+        (task 007, requirement D): that method's `blocked_by` argument
+        (`state.task_blocked_by`) only follows `failed`/`skipped`/
+        `petitioned` ANCESTORS, so a cycle entirely among `pending` tasks
+        -- none of them dead, none of them petitioned -- is invisible to
+        it; `blocked_by` reads `{}` and `_doomed_plan_fault` returns
+        `None` on its very first line. #206's own incident was exactly
+        this shape: a cure task whose `dependsOn` named its own id,
+        `pending` throughout, never `failed`/`skipped`. Detected here
+        with the SAME DFS `plan_ingestion._detect_cycles`'s ingestion-time
+        lint and `plan_ingestion.validate_dependency_edges`'s write-time
+        guard already use (`plan_ingestion.dependency_cycles`), applied at
+        SELECTION time -- on every pass nothing is selectable -- as a
+        THIRD safety net for an edge that reached `tasks.json` despite
+        both of those.
+
+        The separating condition from a plan that merely has nothing
+        selectable because a dependency is legitimately IN FLIGHT (PRD
+        E.6): a dependency edge pointing at an unfinished-but-eventually-
+        finishable task (`pending`, `in-progress`, `validation-failed`,
+        `awaiting-validation`) never closes a path back to the task that
+        names it -- there is no CYCLE in the graph, structurally, only an
+        edge whose far end has not resolved yet. A cycle is the one shape
+        no future worker iteration could ever resolve, by construction --
+        every node on it would need every OTHER node on it to finish
+        first -- so this checks the graph's own SHAPE, never any task's
+        current status, which is exactly why an in-flight dependency never
+        trips it and a genuine cycle always does, on the very first pass
+        it exists.
+
+        The payload: `cycleTaskIds` (every task id on a live cycle,
+        sorted), `cycleEdges` (one `{"from": ..., "to": ...}` per
+        consecutive pair on each live cycle -- the offending edge(s) an
+        operator's repair needs, named directly rather than left for a
+        `dependsOn` diff), and `planUnverifiable: True`, the same direct
+        statement `_doomed_plan_fault`'s own payload makes.
+        """
+        tasks = tasks_doc.get("tasks") or []
+        cycles = plan_ingestion.dependency_cycles(tasks)
+        if not cycles:
+            return None
+        actionable_ids = {
+            str(t["id"]) for t in tasks
+            if isinstance(t, dict) and t.get("id") not in (None, "")
+            and task_is_actionable(t)}
+        live_cycles = [c for c in cycles if any(n in actionable_ids for n in c)]
+        if not live_cycles:
+            return None
+        edges = [{"from": a, "to": b}
+                 for c in live_cycles for a, b in zip(c, c[1:])]
+        return {
+            "cycleTaskIds": sorted({n for c in live_cycles for n in c}),
+            "cycleEdges": edges,
+            "planUnverifiable": True,
+        }
+
+    def _unschedulable_cycle_escalation_text(self, cycle_fault: dict) -> str:
+        """The operator-facing escalation body for an `unschedulable_
+        dependency_cycle` pause (PRD requirement E.3): names the
+        blocked/cycle task ids and the offending edges directly, plus the
+        exact `ralphctl resume` invocation, so a reader never has to open
+        `tasks.json` by hand to find either.
+        """
+        ids = ", ".join(cycle_fault.get("cycleTaskIds", [])) or "(none)"
+        edges = ", ".join(
+            f"{e.get('from')} -> {e.get('to')}"
+            for e in cycle_fault.get("cycleEdges", [])) or "(none)"
+        return (
+            f"Run {self.cfg.run_id}: the dependsOn graph holds a cycle "
+            f"that touches task(s) {ids} -- no worker iteration could "
+            f"ever move this plan again (offending edge(s): {edges}). "
+            "The run has been paused (existing pause machinery); fix the "
+            "cycle in tasks.json (an operator edit, outside every one of "
+            "the engine's own writers) and resume with `ralphctl resume "
+            f"{self.cfg.run_id}`.\n"
+        )
+
+    def _pause_and_escalate_unschedulable_cycle(self, cycle_fault: dict) -> None:
+        """Task 002 (PRD requirement E.3, #206): pause the run through the
+        EXISTING pause machinery (`self.pause()`, `self.notifier`, an
+        `operator_escalation` event -- the same seam every other engine-
+        initiated escalation in this module already uses), with
+        `reason: "unschedulable_dependency_cycle"` so `_step_paused`
+        resumes straight back into `worker` (there is no verdict pending
+        here, only a `tasks.json` edit an operator has to make by hand)
+        rather than into `review`.
+        """
+        text = self._unschedulable_cycle_escalation_text(cycle_fault)
+        self.run.emit("operator_escalation",
+                      reason="unschedulable_dependency_cycle",
+                      escalation=text, **cycle_fault)
+        self.pause(reason="unschedulable_dependency_cycle")
+        if self.notifier is not None:
+            self.notifier(text)
 
     def _unresolved_failures(self, tasks_doc: dict) -> list[dict]:
         """The `failed` tasks of a plan that has nothing actionable left in it.

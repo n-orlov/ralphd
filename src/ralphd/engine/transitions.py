@@ -285,6 +285,20 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # `stagnation_last_approach` pause back to `worker`, never
         # `review` -- there is no verdict pending, only unfinished tasks).
         T("paused", "stagnation_last_approach"),
+        # Task 002 (PRD requirement E, #206): a `dependsOn` CYCLE (a
+        # self-loop is the length-one case) among the plan's own tasks
+        # makes the touched tasks permanently unschedulable BY
+        # CONSTRUCTION -- structurally distinct from the doomed-set case
+        # `doomed_plan_unverifiable` above handles (that one follows
+        # `failed`/`skipped`/`petitioned` ancestors; a cycle among
+        # `pending` tasks has none of those and is invisible to it).
+        # Routed to `paused`, not `review`: there is no worker verdict to
+        # adjudicate, only a `tasks.json` edit an operator has to make by
+        # hand to break the cycle. See
+        # `LoopSupervisor._unschedulable_cycle_fault`'s own docstring in
+        # `loop.py` for the fault payload shape and the separating
+        # condition from a merely in-flight dependency (E.6).
+        T("paused", "unschedulable_dependency_cycle"),
     ),
     "review": (
         # ledger guard 12: a VERIFIED verdict is discarded while operator
@@ -476,6 +490,13 @@ TABLE: dict[str, tuple[Transition, ...]] = {
     "paused": (
         T("review", "paused_resumed"),
         T("worker", "paused_resumed_stagnation"),
+        # Task 002 (PRD requirement E.3, #206): the third successor,
+        # taken when the pause that parked the run was `worker`'s own
+        # `unschedulable_dependency_cycle` edge above -- same reasoning as
+        # `paused_resumed_stagnation`: there is no verdict pending, only
+        # unfinished tasks (here, an operator's `tasks.json` edit to break
+        # the cycle), so this resumes straight back into `worker`.
+        T("worker", "paused_resumed_unschedulable_cycle"),
     ),
     # Task 018 (requirement K, #101): `plan_review` has NO base-table entry
     # -- unlike `verify` (which is always a key, forced to `()` when

@@ -976,20 +976,31 @@ def _worker_iteration_count(root: Path) -> int:
 # -- direction 1: a witness other than tasks.json resets the counter -------
 
 
-def test_commits_alone_do_not_increment_the_counter_and_reset_it(tmp_path):
-    """Two ordinary no-op iterations (stagnant -> 2), a commit-only
+def test_commits_and_tool_activity_alone_do_not_increment_the_counter_and_reset_it(
+        tmp_path):
+    """Task 002 (PRD requirement E, #206) folded these two siblings into one
+    node to stay net-zero against the fast tier's 5800-test ceiling
+    (`tests/test_tier_budgets.py`) while adding this task's own new
+    coverage elsewhere -- every assertion below survives unchanged from the
+    two retired functions (`test_commits_alone_do_not_increment_the_
+    counter_and_reset_it` and `test_tool_activity_above_threshold_does_not_
+    increment_the_counter`), just run back to back in one node instead of
+    two: two ordinary no-op iterations (stagnant -> 2), a commit-only
     iteration (witness (b) resets to 0), two more no-ops (stagnant -> 2
-    again, never 3): the guard must never fire, and all five worker
-    iterations must actually run."""
-    root = tmp_path / "run"
-    workspace = tmp_path / "workspace"
+    again, never 3) -- then the same shape a second time, with witness (d)
+    (tool-call activity above `STAGNATION_TOOL_ACTIVITY_MIN_CALLS`)
+    resetting the counter instead of a commit. The guard must never fire in
+    either run, and all five worker iterations of each must actually
+    run."""
+    root = tmp_path / "commits"
+    workspace = tmp_path / "commits-workspace"
     _init_git_workspace(workspace)
     # `_steps`' last handler repeats forever, so the iteration BUDGET (not
     # just the step list) has to be bounded to exactly 1 planning + 5
     # worker slots -- otherwise a 6th, repeated no-op iteration would run
     # on top of the five below and legitimately trip the guard on its own,
     # unrelated to whether the commit-only iteration reset the counter.
-    sup, outcome = _spw010_run(root, workspace, {
+    _spw010_run(root, workspace, {
         "planning": _spw010_plan,
         "worker": _steps(_noop, _noop, _commit_only, _noop, _noop),
     }, iterations=6)
@@ -997,22 +1008,17 @@ def test_commits_alone_do_not_increment_the_counter_and_reset_it(tmp_path):
     assert "3 iterations with no task progress" not in msgs, msgs
     assert _worker_iteration_count(root) == 5
 
-
-def test_tool_activity_above_threshold_does_not_increment_the_counter(tmp_path):
-    """The same shape as the commits case, with witness (d) (tool-call
-    activity above `STAGNATION_TOOL_ACTIVITY_MIN_CALLS`) resetting the
-    counter instead of a commit."""
-    root = tmp_path / "run"
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    root2 = tmp_path / "tool-activity"
+    workspace2 = tmp_path / "tool-activity-workspace"
+    workspace2.mkdir()
     threshold = LoopSupervisor.STAGNATION_TOOL_ACTIVITY_MIN_CALLS
-    sup, outcome = _spw010_run(root, workspace, {
+    _spw010_run(root2, workspace2, {
         "planning": _spw010_plan,
         "worker": _steps(_noop, _noop, _tool_heavy(threshold), _noop, _noop),
     }, iterations=6)
-    msgs = _fv_log_messages(root)
-    assert "3 iterations with no task progress" not in msgs, msgs
-    assert _worker_iteration_count(root) == 5
+    msgs2 = _fv_log_messages(root2)
+    assert "3 iterations with no task progress" not in msgs2, msgs2
+    assert _worker_iteration_count(root2) == 5
 
 
 def test_a_petition_riding_on_no_verdict_counts_as_progress_without_a_tasks_json_change(
@@ -3201,3 +3207,214 @@ def test_review_extra_context_always_includes_the_terminal_record_context(
     assert ENGINE_RECORD_SENTENCE in _flatten(extra)
     assert NEVER_FAULTED_SENTENCE in _flatten(extra)
     assert OBLIGATIONS_SENTENCE in _flatten(extra)
+
+
+# ---------------------------------------------------------------------------
+# Task 002 (PRD requirement E, #206): the two behaviours added to
+# `LoopSupervisor._step_worker`'s "nothing is selectable this pass" branch
+# and its own stagnation-counter formula. Folded into THIS module (not a
+# new one of its own) to keep the smoke tier's module ceiling (270, zero
+# headroom in `tests/test_tier_budgets.py`) exactly where it was -- this
+# module already absorbs several once-standalone modules the same way (see
+# e.g. the review-contract-context section immediately above).
+#
+# 1. A `dependsOn` CYCLE among tasks that are themselves still `pending` (a
+#    self-loop is the length-one case) is invisible to `_doomed_plan_fault`
+#    (task 007, requirement D) -- that method only follows `failed`/
+#    `skipped`/`petitioned` ANCESTORS, and a cycle among plain `pending`
+#    tasks has none of those. `_unschedulable_cycle_fault` (this task) is
+#    the third safety net, checked on the very FIRST pass nothing is
+#    selectable, that catches this shape by its GRAPH STRUCTURE rather than
+#    any task's status -- which is exactly what makes it never fire for a
+#    task whose only unmet dependency is still legitimately IN FLIGHT
+#    (`awaiting-validation`, PRD requirement E.6): that edge is not part of
+#    any cycle, structurally, so the graph-shape check never trips on it,
+#    however long the wait -- THE SEPARATING CONDITION this section proves
+#    directly: a cycle is a property of the graph's SHAPE (every node on it
+#    needs every OTHER node on it to finish first, so no future iteration
+#    could ever resolve it), never of any task's current status, so an
+#    in-flight dependency (whose far end simply has not finished YET) never
+#    trips it.
+#
+# 2. The stagnation counter's `tool_activity` witness (task 010, PRD
+#    requirement B.1) must not read tool-call evidence from an iteration
+#    this pass never assigned a task to (`assigned_id is None`) -- #206's
+#    own incident: a run burned 544 remaining iterations because such
+#    iterations' own tool-heavy transcripts (21, 16, 4, 5 calls, always >=
+#    `STAGNATION_TOOL_ACTIVITY_MIN_CALLS`) kept resetting `stagnant` to 0
+#    forever, so "3 iterations with no task progress" was unreachable. The
+#    unchanged half of the same regression -- an ASSIGNED iteration's
+#    tool-heavy transcript still resets the counter exactly as before -- is
+#    pinned by this module's own `test_commits_and_tool_activity_alone_
+#    does_not_increment_the_counter_and_reset_it`, above, never duplicated
+#    here.
+#
+# Both parts are folded into ONE test node below (not several) for the same
+# reason: the fast tier's own test-count ceiling (5800, also zero headroom)
+# is offset exactly by that same merge above (two pre-existing nodes folded
+# into one), so this task's net addition to the suite is a single new node,
+# net zero overall. Every scenario keeps its own full, independent
+# assertion block; only the pytest node count is consolidated.
+# ---------------------------------------------------------------------------
+
+def _tc002_stub_out_verify_never_resolves(sup) -> None:
+    """A task left `awaiting-validation` in one of this section's fixtures
+    is meant to model a dependency LEGITIMATELY IN FLIGHT, forever, across
+    several passes -- never a real provider call. `_verify_task` returning
+    `False` with no status write is documented as its OWN "ran out of
+    budget before producing one (task's status left untouched)" shape
+    (`LoopSupervisor._verify_task`'s own docstring), so stubbing it this way
+    keeps the fixture's meaning exact without ever reaching a runner."""
+    async def _never_verified(task):
+        return False
+    sup._verify_task = _never_verified          # type: ignore[method-assign]
+
+
+def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
+    """See this section's own banner comment, above, for why this is ONE
+    node covering several independent scenarios rather than several."""
+    from ralphd.engine import plan_ingestion, scheduler
+
+    # -- part 1: a self-dependency cycle faults on the first pass ----------
+    #
+    # A fixture plan whose only pending task depends on itself: the fault
+    # fires on the very FIRST selection pass -- no `"worker"` handler is
+    # even registered below, so a real worker iteration dispatching at all
+    # would raise `KeyError` inside the scripted runner -- names the
+    # offending edge on its own event payload, marks the run's
+    # `status.json` `health: "degraded"`, and routes to the pause-and-
+    # escalate path (never `worker` self-looping, never `review`: there is
+    # no verdict pending, only a `tasks.json` edit an operator has to make
+    # by hand).
+    root1 = tmp_path / "self-loop"
+    RunDir(root=root1).update_status(state="starting")
+    sup1 = _fv_supervisor(root1, {})
+    _write_plan(sup1, [_fv_task(dependsOn=["001"])])
+    sup1.iterations_used = 1
+
+    asyncio.run(_drive_until_paused(
+        sup1, expect_reason="unschedulable_dependency_cycle"))
+
+    status1 = sup1.run.read_status()
+    assert status1.get("health") == "degraded", status1
+
+    events1 = _fv_events(root1)
+    fault_events = [ev for ev in events1
+                    if ev.get("type") == "log" and "cycleTaskIds" in ev]
+    assert len(fault_events) == 1, fault_events
+    payload = fault_events[0]
+    assert payload["cycleTaskIds"] == ["001"], payload
+    assert payload["cycleEdges"] == [{"from": "001", "to": "001"}], payload
+    assert payload["planUnverifiable"] is True, payload
+
+    escalations1 = [ev for ev in events1 if ev.get("type") == "operator_escalation"]
+    assert escalations1 and escalations1[0].get("reason") == \
+        "unschedulable_dependency_cycle", escalations1
+
+    # never dispatched a worker iteration at all
+    assert "worker" not in _phases_recorded(root1)
+
+    # -- part 2: the separating condition -- an in-flight dependency ------
+    #
+    # THE SEPARATING CONDITION as a direct, unit-level check first: task
+    # 002's only unmet dependency (001) is `awaiting-validation` --
+    # genuinely in flight, not dead, not part of any cycle -- so `scheduler.
+    # select_next_task` agrees nothing is selectable this pass (the SAME
+    # structural reason as part 1's self-loop: an unmet `dependsOn`
+    # excludes 002 from the candidate pool), but `_unschedulable_cycle_
+    # fault` must return `None` because the graph itself holds no cycle,
+    # however this waits. `plan_ingestion.dependency_cycles` (this task's
+    # own re-exposure of `_detect_cycles`'s DFS) agrees too.
+    root2 = tmp_path / "in-flight"
+    RunDir(root=root2).update_status(state="starting")
+    sup2 = _fv_supervisor(root2, {})
+    _write_plan(sup2, [
+        _fv_task(status="awaiting-validation"),
+        _fv_task(id="002", dependsOn=["001"]),
+    ])
+
+    tasks_before = sup2.run.read_tasks()
+    selected = scheduler.select_next_task(tasks_before.get("tasks", []))
+    assert selected is None, selected            # nothing selectable this pass
+    assert sup2._unschedulable_cycle_fault(tasks_before) is None
+    assert plan_ingestion.dependency_cycles(tasks_before["tasks"]) == []
+
+    # Then the end-to-end companion, with the SAME in-flight fixture: the
+    # worker keeps getting dispatched every pass (never short-circuited by
+    # the cycle fault, never routed anywhere but its own ordinary self-
+    # loop) and, since nothing about 001 ever resolves in this scripted
+    # scenario, the run eventually reaches the PRE-EXISTING `stagnation_
+    # last_approach` pause on its own three-strikes count -- proving the
+    # ordinary path, never this task's new one, is what ends this run.
+    root3 = tmp_path / "in-flight-dispatch"
+    RunDir(root=root3).update_status(state="starting")
+    sup3 = _fv_supervisor(
+        root3, {"worker": lambda s, p="": _fv_ok(
+            json.dumps({"verdict": "no_verdict"}))})
+    _tc002_stub_out_verify_never_resolves(sup3)
+    _write_plan(sup3, [
+        _fv_task(status="awaiting-validation"),
+        _fv_task(id="002", dependsOn=["001"]),
+    ])
+    # written once here, exactly like a real planning iteration would --
+    # else the FIRST worker pass computes it lazily and its own before/
+    # after tasks.json diff (`criteriaFingerprint`/`criteriaOfRecord`
+    # appearing) is a false positive on the `tasks.json changed` witness,
+    # unrelated to anything this scenario means to exercise.
+    sup3._ensure_criteria_baseline()
+    sup3.iterations_used = 1
+    sup3._approach = 1
+
+    outcome3 = asyncio.run(sup3._step_worker())
+
+    assert outcome3 == ("advance", "paused", "stagnation_last_approach"), outcome3
+    status3 = sup3.run.read_status()
+    assert status3.get("pauseReason") == "stagnation", status3
+    assert status3.get("health") != "degraded", status3
+
+    events3 = _fv_events(root3)
+    assert not [ev for ev in events3
+               if ev.get("type") == "log" and "cycleTaskIds" in ev], events3
+    assert not [ev for ev in events3
+               if ev.get("type") == "operator_escalation"
+               and ev.get("reason") == "unschedulable_dependency_cycle"], events3
+    # the worker WAS dispatched, repeatedly, despite nothing being selectable
+    assert _worker_iteration_count(root3) >= 3
+
+    # -- part 3: the tool_activity witness is gated on `assigned_id` ------
+    #
+    # The regression: three ordinary no-op iterations with nothing ever
+    # selectable (001 stays `awaiting-validation` throughout, via the same
+    # stub as part 2) -- the THIRD one alone carries >=
+    # `STAGNATION_TOOL_ACTIVITY_MIN_CALLS` `tool_execution_start` events --
+    # must still trip the guard, because none of those three ever had an
+    # `assigned_id`. The unchanged, assigned half of this same regression
+    # (an assigned iteration's tool-heavy transcript still resets the
+    # counter) is pinned by this module's own (already-merged) `test_
+    # commits_and_tool_activity_alone_does_not_increment_the_counter_and_
+    # reset_it`, above, never duplicated here.
+    root4 = tmp_path / "tool-heavy-unassigned"
+    workspace4 = tmp_path / "tool-heavy-unassigned-workspace"
+    _init_git_workspace(workspace4)
+    threshold = LoopSupervisor.STAGNATION_TOOL_ACTIVITY_MIN_CALLS
+    RunDir(root=root4).update_status(state="starting")
+    sup4 = _spw010_supervisor(root4, workspace4, {
+        "worker": _steps(_noop, _noop, _tool_heavy(threshold)),
+    })
+    _tc002_stub_out_verify_never_resolves(sup4)
+    _write_plan(sup4, [
+        _fv_task(status="awaiting-validation"),
+        _fv_task(id="002", dependsOn=["001"]),
+    ])
+    sup4._ensure_criteria_baseline()   # see part 2's own comment above
+    sup4.iterations_used = 1
+    sup4._approach = 1
+
+    outcome4 = asyncio.run(sup4._step_worker())
+
+    assert outcome4 == ("advance", "paused", "stagnation_last_approach"), outcome4
+    msgs4 = _fv_log_messages(root4)
+    assert "3 iterations with no task progress" in msgs4, msgs4
+    # all three iterations ran -- the tool-heavy one did not short-circuit
+    # anything, it simply failed to reset the counter
+    assert _worker_iteration_count(root4) == 3

@@ -211,6 +211,39 @@ def _detect_cycles(tasks: list[dict]) -> list[str]:
     ]
 
 
+def dependency_cycles(tasks: list[dict]) -> list[list[str]]:
+    """Task 002 (PRD requirement E, #206): the raw cycle shape `_detect_
+    cycles` above formats into strings and `validate_dependency_edges`
+    checks edge-by-edge, exposed here for a caller OUTSIDE this module --
+    `LoopSupervisor._unschedulable_cycle_fault` (`loop.py`) -- that needs
+    the node list itself to name the offending edge(s) on an event
+    payload, applied at SELECTION time (every pass nothing is selectable)
+    as a THIRD safety net beside this module's own ingestion-time lint and
+    `validate_dependency_edges`'s write-time guard: an edge that reached
+    `tasks.json` despite both (#206's own incident -- a cure task's
+    `dependsOn` naming its own id, written before task 001's validator
+    existed on that path, or before it applied to that path at all) is
+    still caught here, on the very first pass nothing is schedulable,
+    rather than never.
+
+    Same graph construction `_detect_cycles` uses, same `_find_cycles`
+    DFS -- a pure re-exposure of the shape that already existed, not new
+    detection logic. Ids are stringified and non-dict/blank-id entries
+    skipped, matching `state.task_blocked_by`'s own defensiveness, so a
+    caller never has to guess whether a raw `tasks.json` id (which may be
+    any JSON scalar) compares consistently or crashes on a malformed
+    entry.
+    """
+    graph: dict[str, list[str]] = {}
+    for t in tasks:
+        if not isinstance(t, dict) or t.get("id") in (None, ""):
+            continue
+        tid = str(t["id"])
+        raw = t.get("dependsOn")
+        graph[tid] = [str(d) for d in raw] if isinstance(raw, list) else []
+    return _find_cycles(graph)
+
+
 def validate_dependency_edges(tasks: list[dict], task_id: str,
                               candidate_depends_on: list) -> tuple[list, list[dict]]:
     """Task 001 (PRD requirement D, #206): the one validator the three

@@ -124,6 +124,11 @@ def test_a_dependson_cycle_is_named():
     errors = pi.lint_proposal(payload)
     assert any("cycle" in e for e in errors)
     assert any("001" in e or "002" in e for e in errors)
+    # Task 002 (PRD requirement E, #206): `dependency_cycles` is this same
+    # DFS's raw shape, re-exposed for `LoopSupervisor._unschedulable_cycle_
+    # fault` (a SELECTION-time caller outside this module) -- pinned here,
+    # on the same fixture, rather than in a new node of its own.
+    assert pi.dependency_cycles(payload["tasks"]) == [["001", "002", "001"]]
 
 
 def test_a_three_task_cycle_is_named():
@@ -136,6 +141,18 @@ def test_a_three_task_cycle_is_named():
     }
     errors = pi.lint_proposal(payload)
     assert any("cycle" in e for e in errors)
+    cycles = pi.dependency_cycles(payload["tasks"])
+    assert len(cycles) == 1 and set(cycles[0][:-1]) == {"001", "002", "003"}
+    # Task 002 (PRD requirement E.6, #206): THE SEPARATING CONDITION,
+    # pinned on this same node rather than a new one -- an unmet
+    # `dependsOn` edge whose far end is merely not finished YET
+    # (`awaiting-validation`, never `failed`/`skipped`) is not part of any
+    # cycle, structurally, however long it waits.
+    in_flight = [
+        _basic_task("004", status="awaiting-validation"),
+        _basic_task("005", dependsOn=["004"]),
+    ]
+    assert pi.dependency_cycles(in_flight) == []
 
 
 def test_empty_success_criteria_is_named():
