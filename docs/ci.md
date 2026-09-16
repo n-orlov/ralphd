@@ -16,7 +16,7 @@ The tiers themselves — what they cover and what they cost — are
 | workflow | lanes | runner | trigger | budget |
 |---|---|---|---|---|
 | `gate.yml` | records lint, `-m fast` (which is a superset of `-m smoke`) | self-hosted `fast-lane` (`int21h-ws-5`/`-6`, exclusively) | every pull request, every push to `main` | 45 min |
-| `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min |
+| `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs, plus a third `browser-image` job that publishes the browser tier's pinned image and runs on nothing but an explicit dispatch with `publish_browser_image: true`, which in turn skips the two tiers (task 011) | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min (40 for the dispatch-only publisher) |
 | `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running the `fast` tier under `scripts/host_like_dev_layout.sh` inside a plain upstream container (task 077, steer 008) | self-hosted, two runner slots (below) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis) |
 
 `gate.yml` was on GitHub's own runners until 14 September 2026, when being the
@@ -147,7 +147,26 @@ repository is added to a host that also serves live traffic),
 `@playwright/cli@0.1.19` — the exact binary `tests/test_browser_hub.py` shells
 out to — Google Chrome, which is the channel that CLI opens by default, and a
 shared browser cache at `/opt/ms-playwright` exported to the runner through its
-`.env`. The docker-group/uid-1000 paragraphs below describe the runner-user
+`.env`.
+
+**That host provisioning is no longer what the browser tier runs against (task
+011, requirement H, #205 step 3).** `heavy.yml`'s `browser-tier` declares a
+`container:` pinned by digest to `ghcr.io/n-orlov/ralphd-browser-ci`, built from
+`ci/browser/Dockerfile` (`mcr.microsoft.com/playwright:v1.62.1-noble` + the same
+`@playwright/cli@0.1.19` + real Google Chrome + `python3.12-venv`), and the
+tier's own toolchain-assertion step prints the versions that image supplies. The
+host's Node/CLI/Chrome are still there and still what an operator uses by hand,
+but a drift in them can no longer change what the lane measures — which is the
+point: this ambient provisioning drifted once already, silently losing
+python3.12.3 in the VPS-to-workstation move (#205's own motivation). Republishing
+the image is a dispatch of `heavy` with `publish_browser_image: true`; that job
+prints the new digest, which is then pinned in `heavy.yml` by hand in a commit of
+its own. The package is private, is linked to this repository because the
+workflow (not a personal access token) published it, and is pulled with
+`credentials:` from `${{ secrets.GITHUB_TOKEN }}` — GHCR has no API that makes a
+package public, only its web UI does.
+
+The docker-group/uid-1000 paragraphs below describe the runner-user
 model, which is a property of how each slot's agent process is provisioned,
 not of which physical box it landed on, so they still apply to the current
 workstation slots without amendment.

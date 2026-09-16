@@ -748,6 +748,14 @@ EXEMPT_RUN_STEPS = {
     ("heavy.yml", "browser-tier", "Prepare the browser tier's non-root account"),
     ("heavy.yml", "browser-tier", "Close stray browser sessions"),
     ("heavy.yml", "browser-tier", CLASSIFIER_STEP),
+    # Task 011 (requirement H): the image-publishing job. Its own payload --
+    # the docker build and the push -- IS wrapped (1800s); these two are the
+    # same start-stamp/classifier/pre-checkout-reaper shapes already exempt
+    # for both tiers above, for the same reasons.
+    ("heavy.yml", "browser-image", "Record the job start time"),
+    ("heavy.yml", "browser-image",
+     "Reap root-owned test litter left in the runner workspace"),
+    ("heavy.yml", "browser-image", CLASSIFIER_STEP),
     ("nightly.yml", "dev-layout", "Record the job start time"),
     ("nightly.yml", "dev-layout", "Report the host environment"),
     ("nightly.yml", "dev-layout", CLASSIFIER_STEP),

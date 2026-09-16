@@ -649,6 +649,15 @@ CONTAINER_ALLOWLIST: dict[tuple[str, str], str] = {
         "task 012 (requirement I) containerizes nightly's dev-layout cell; "
         "not yet moved"
     ),
+    ("heavy.yml", "browser-image"): (
+        "task 011 (requirement H): this job BUILDS the pinned image the "
+        "browser tier runs in, over the runner's own docker socket. It cannot "
+        "run in that image -- it is what produces it -- and a container: of "
+        "its own would have to carry both a docker CLI and the glibc the "
+        "runner's JS actions need, which no image this repository already "
+        "pins supplies. Dispatch-gated (publish_browser_image), so it runs on "
+        "no push and no pull request."
+    ),
 }
 
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"

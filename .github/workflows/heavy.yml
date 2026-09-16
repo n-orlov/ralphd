@@ -36,6 +36,21 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      # Task 011 (requirement H): the browser tier takes `playwright-cli` and
+      # Google Chrome from a pinned image (see `browser-tier`'s `container:`
+      # below), and the `browser-image` job at the bottom of this file is what
+      # builds and publishes that image from `ci/browser/Dockerfile`. It is
+      # OFF unless a dispatch asks for it: republishing is a deliberate act
+      # (it produces a new digest that a human then pins below), never a side
+      # effect of a push or a pull request. Nothing else in this workflow
+      # depends on it -- the tier pulls the digest already published.
+      publish_browser_image:
+        description: >-
+          Rebuild and push the browser tier's pinned image, then print its
+          digest to pin in this file. Leave off for an ordinary lane run.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -43,6 +58,13 @@ permissions:
 jobs:
   docker-tier:
     name: docker tier
+    # Task 011 (requirement H): a dispatch that asks for
+    # `publish_browser_image` is asking for one thing -- a rebuilt, republished
+    # browser image -- and running two 20-to-60-minute tiers alongside it would
+    # only add host contention to a job that is network-bound. On a push, a
+    # pull request, or any dispatch that leaves the flag off, the input is
+    # false/absent and this tier runs exactly as before.
+    if: ${{ !inputs.publish_browser_image }}
     runs-on: [self-hosted, linux, x64, ralphd-vps, docker-host]
     timeout-minutes: 120
     concurrency:
@@ -188,6 +210,9 @@ jobs:
 
   browser-tier:
     name: browser tier
+    # Task 011 (requirement H): see the docker tier's copy of this condition --
+    # a publish-only dispatch runs the publisher alone.
+    if: ${{ !inputs.publish_browser_image }}
     # `browser-runner` (task 077, steer 009): the operator placed this label
     # on exactly ONE of the VPS's two runner slots (vmi3245594; not
     # vmi3245594-2). It is not guessable from this workflow alone, so: the
@@ -410,3 +435,111 @@ jobs:
       - name: Classify a job-level timeout kill
         if: always()
         run: scripts/job_timeout_marker.sh 60 "heavy browser tier" "${{ job.status }}"
+
+  # Task 011 (requirement H, #205 step 3): the publisher of the image the
+  # browser tier above pins.
+  #
+  # Why it exists at all: H.1 wants the tier's `playwright-cli` and Chrome to
+  # come from the image, and no public image supplies that pair --
+  # `mcr.microsoft.com/playwright` brings Chrome's system dependencies and
+  # playwright's own Chromium, not `@playwright/cli` and not real Google
+  # Chrome (verified against the digest `ci/browser/Dockerfile` builds FROM).
+  # So the pair has to come from an image this repository builds. And it has
+  # to be published from HERE, by this job, rather than pushed by hand from a
+  # workstation: a GHCR package pushed with a personal access token is
+  # private, is linked to no repository, and `${{ secrets.GITHUB_TOKEN }}`
+  # cannot read it (measured: `docker login` succeeds and `docker manifest
+  # inspect` then answers `manifest unknown`), while a package published by a
+  # workflow of this repository is linked to it and readable by that same
+  # token. GHCR has no API that makes a package public -- only its web UI
+  # does, which is why `browser-tier` above pulls with `credentials:`.
+  #
+  # It runs only on an explicit `workflow_dispatch` with
+  # `publish_browser_image: true`, so an ordinary push/PR run of this workflow
+  # neither builds nor pushes anything. Publishing prints the new digest; a
+  # human then pins that digest in `browser-tier`'s `container:` above in a
+  # commit of its own. The image is NOT resolved by tag anywhere: a tag can be
+  # repointed on the registry side, a digest cannot.
+  browser-image:
+    name: publish the browser tier's image
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+          && inputs.publish_browser_image }}
+    # Label-agnostic on purpose (either slot will do) and deliberately WITHOUT
+    # `browser-runner`: this job runs no browser, and taking that label would
+    # serialise it against the tier for no reason.
+    runs-on: [self-hosted, linux, x64, ralphd-vps, docker-host]
+    timeout-minutes: 40
+    concurrency:
+      group: heavy-browser-image-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      # The one job in this repository that writes a package. `browser-tier`
+      # above needs only `packages: read`.
+      packages: write
+    steps:
+      # Task 054 (K.3): see the docker tier's copy of this step.
+      - name: Record the job start time
+        run: |
+          echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          echo "RALPHD_JOB_BOUND_MINUTES=40" >> "$GITHUB_ENV"
+          evidence="${RUNNER_TEMP:-/tmp}/ralphd-timeout-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          rm -rf "$evidence"
+          mkdir -p "$evidence"
+          echo "RALPHD_TIMEOUT_EVIDENCE_DIR=$evidence" >> "$GITHUB_ENV"
+
+      # Task 004 (requirement B, #202): same reason and same nested-root shape
+      # as the docker tier's copy -- this job is NOT containerized (see the
+      # allowlist entry in tests/test_ci_dev_layout_matrix_guard.py), it runs
+      # unprivileged on the bare runner, and it shares the runner workspace
+      # the docker tier can poison. Its checkout dies exactly the same way
+      # without this step.
+      - name: Reap root-owned test litter left in the runner workspace
+        run: |
+          ws="${GITHUB_WORKSPACE:?}"
+          mkdir -p "$ws"
+          if ! ls -d "$ws"/.docker-e2e-tmp-* >/dev/null 2>&1; then
+            echo "no .docker-e2e-tmp-* litter in $ws"
+            exit 0
+          fi
+          ls -d "$ws"/.docker-e2e-tmp-*
+          image=python:3.12-slim-bookworm
+          docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image"
+          docker run --rm --user 0:0 -v "$ws":/reap "$image" \
+            sh -c 'cd /reap && rm -rf .docker-e2e-tmp-*'
+          if ls -d "$ws"/.docker-e2e-tmp-* >/dev/null 2>&1; then
+            echo "litter survived the reap -- checkout will fail" >&2
+            exit 1
+          fi
+          echo "reaped"
+
+      - name: Check out the commit under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Bounded at 1800s (task 054, K.3): a build that stalls on npm, on apt or
+      # on Chrome's download, and a push that stalls on the registry, are all
+      # wall-clock hangs, and 1800 + the 300s JOB_RESERVE_S sits inside this
+      # job's 40 `timeout-minutes`. The digest this prints is the whole output
+      # of the job: `RepoDigests` is read back from the daemon AFTER the push,
+      # so it is the registry's own answer, not a locally computed guess.
+      - name: Build and publish the browser tier's pinned image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          scripts/run_bounded.sh 1800 "browser image build and push" -- bash -euo pipefail -c '
+            image=ghcr.io/n-orlov/ralphd-browser-ci
+            tag=pw1.62.1-noble-cli0.1.19
+            trap "docker logout ghcr.io >/dev/null 2>&1 || true" EXIT
+            printf %s "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            docker build -t "$image:$tag" ci/browser
+            docker push "$image:$tag"
+            echo "PUBLISHED IMAGE DIGEST (pin this in browser-tier above):"
+            docker image inspect --format "{{range .RepoDigests}}{{println .}}{{end}}" "$image:$tag"
+            docker run --rm "$image:$tag" sh -c "playwright-cli --version; google-chrome --version"
+          '
+
+      # Task 054 (K.3), the classifier half -- see the docker tier's copy.
+      - name: Classify a job-level timeout kill
+        if: always()
+        run: scripts/job_timeout_marker.sh 40 "heavy browser image publish" "${{ job.status }}"
