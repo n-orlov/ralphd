@@ -73,7 +73,7 @@ def test_criteria_change_before_any_failure_is_now_refused_task024(tmp_path):
 
     tasks_data = sup.run.read_tasks()
     tasks_data["tasks"][0]["successCriteria"] = "do X, revised"
-    sup.run.tasks_file.write_text(json.dumps(tasks_data))
+    sup.run.write_tasks(tasks_data)
 
     sup._check_criteria_edits(sup.run.read_tasks())
     on_disk = sup.run.read_tasks()
@@ -106,14 +106,14 @@ def test_criteria_change_after_failure_flags_and_is_reverted(tmp_path):
     tasks_data["tasks"][0]["status"] = "validation-failed"
     tasks_data["tasks"][0]["validationAttempts"] = 1
     tasks_data["tasks"][0]["validationNotes"] = "did not meet the bar"
-    sup.run.tasks_file.write_text(json.dumps(tasks_data))
+    sup.run.write_tasks(tasks_data)
 
     # Simulate a worker rewriting the criteria and re-marking completed,
     # instead of doing the work
     tasks_data = sup.run.read_tasks()
     tasks_data["tasks"][0]["successCriteria"] = "do X (rewritten by worker)"
     tasks_data["tasks"][0]["status"] = "completed"
-    sup.run.tasks_file.write_text(json.dumps(tasks_data))
+    sup.run.write_tasks(tasks_data)
 
     sup._check_criteria_edits(sup.run.read_tasks())
 

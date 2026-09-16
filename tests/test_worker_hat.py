@@ -181,7 +181,7 @@ def _fv_task(**over) -> dict:
 def _set_status(sup: LoopSupervisor, status: str) -> None:
     doc = sup.run.read_tasks()
     doc["tasks"][0]["status"] = status
-    atomic_write_json(sup.run.tasks_file, doc)
+    sup.run.write_tasks(doc)
 
 
 class _fv_ScriptedAgent:
@@ -701,7 +701,7 @@ def test_a_worker_that_carves_out_a_follow_up_task_is_not_pre_empted(tmp_path):
         doc = sup.run.read_tasks()
         doc["tasks"].append(_fv_task(id="002", status="completed",
                                   title="close the residual gap of 001"))
-        atomic_write_json(sup.run.tasks_file, doc)
+        sup.run.write_tasks(doc)
         return _fv_ok("carved 002 for the residual gap")
 
     def signal_complete(sup: LoopSupervisor, prompt: str = "") -> IterationResult:

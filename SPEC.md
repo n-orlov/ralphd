@@ -420,7 +420,16 @@ Everything host-side lives under one directory, `~/.ralphd/`, overridable in ful
 ├── runs/<run-id>/               # bind-mounted at /run/ralphd — the source of truth
 │   ├── status.json              # engine-maintained: state, phase, approach, verdict,
 │   │                            #   health, infraWait, schemaVersion, usage, reflect
-│   ├── tasks.json               # the plan; agent-written, atomically
+│   ├── tasks.json               # agent-readable VIEW of the plan, refreshed on every
+│   │                            #   authoritative write (task 004, requirement B, #202);
+│   │                            #   never itself the engine's own source of truth
+│   ├── .tasks-protected/tasks.json # the AUTHORITATIVE plan, root-owned 0600 inside a
+│   │                            #   root-owned 0700 directory under the uid boundary
+│   │                            #   (task 004, requirement B, #202) -- only
+│   │                            #   `RunDir.read_tasks()`/`write_tasks()` (the engine's
+│   │                            #   own momentarily-elevated reads/writes) ever touch it;
+│   │                            #   released back to the agent uid at shutdown so a
+│   │                            #   host-side `rm`/`DELETE` can still remove the run dir
 │   ├── prd.md · composite-prd.md · notes.md · review-findings.md · debt.json · debt.md
 │   ├── events.jsonl             # append-only event log, also fed to GET /events
 │   ├── iterations/NNNN/{meta.json,output.jsonl}
@@ -560,7 +569,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/engine/contract_enforcement.py` | The re-prompt loop around `contracts.validate_payload` (task 010): malformed JSON, an absent payload, and valid JSON of the wrong shape are all ordinary cases here, re-prompted with the specific validation error up to `contract_retry_max` times, logged loudly to `events.jsonl`, and scored as one agent-fault iteration if the hat never recovers. |
 | `src/ralphd/engine/plan_ingestion.py` | Ingests the planner's file-borne `plan-proposal.json` as untrusted input (task 011): schema validation, then semantic lint (unresolvable `dependsOn`, cycles, duplicate ids, boilerplate `successCriteria`, a task gated on this run's own terminal state), then apply — initialising every task to `pending` regardless of what the planner wrote for `status`. |
 | `src/ralphd/engine/runner.py` | `PiRunner.run()` + `IterationResult`: spawn one `pi` process, pump and scrub its NDJSON into `output.jsonl`, parse events and usage, scan for the exact sentinels, enforce the iteration timeout and the startup-window watchdog, and kill the process group on every exit path. |
-| `src/ralphd/engine/privsep.py` | The uid boundary (§13.4): resolve the account iterations run as, drop the engine's *effective* identity to it while keeping root real and saved, and hand every spawn site the kwargs that drop a child all the way down. `separated()` reads the live process credentials, so nothing claims a boundary the kernel is not enforcing; every function is a no-op with one warning when the engine did not start as root. `root_for_write()`/`write_root_owned_json()` (task 105, #60 requirement D) reuse the same boundary the other direction: momentarily raise the engine's own effective uid back to root to write `tasks.json` root-owned, restoring it before returning. |
+| `src/ralphd/engine/privsep.py` | The uid boundary (§13.4): resolve the account iterations run as, drop the engine's *effective* identity to it while keeping root real and saved, and hand every spawn site the kwargs that drop a child all the way down. `separated()` reads the live process credentials, so nothing claims a boundary the kernel is not enforcing; every function is a no-op with one warning when the engine did not start as root. `root_for_write()`/`write_root_owned_json()` (task 105, #60 requirement D) reuse the same boundary the other direction: momentarily raise the engine's own effective uid back to root to write a file root-owned, restoring it before returning. `write_protected_tasks_json()`/`release_protected_tasks_dir()` (task 004, requirement B, #202) close the gap `write_root_owned_json()` left open for `tasks.json` specifically -- a root-owned FILE in an agent-writable DIRECTORY still lets a dropped child `os.replace()` a substituted document onto it, a directory-entry operation gated by the parent, never the target -- by landing the authoritative copy inside a root-owned 0700 directory (`PROTECTED_TASKS_DIRNAME`, self-healed against a precreated file or a planted symlink on every write, not only at creation) and refreshing an ordinary agent-readable view copy alongside it; the protected directory is handed back to the agent uid at the engine's own shutdown funnel so a host-side `rm`/`DELETE` can still remove it. |
 | `src/ralphd/engine/api.py` | The FastAPI app: every route in §3.1, bearer-token enforcement, the SSE event stream, `GET /logs` tail and live-follow on top of `log_merge`, `PATCH /config/budget`, and the config CRUD that writes into the overlay and re-places creds/skills immediately. |
 | `src/ralphd/engine/faults.py` | `classify_fault()` — a pure function mapping a finished iteration to `"infra"`, `"work"`, or `None`, with `_INFRA_TEXT_PATTERNS` as the single reviewable signature table (one commented line per family) and the `aborted`/operator carve-out. No engine state. |
 | `src/ralphd/engine/pricing.py` | `PricingMap`: the optional host-side per-million-token rate table with gateway alias globs and declared-free patterns, used *only* when the provider quoted no usable price, producing a cost marked derived and never merged into `costUSD`. `PricingChain` layers the operator map over a built-in table so exactly one of them prices any message, and `resolve_pricing()` builds whichever of the two `price_strategy` asks for (§8.6). |
@@ -1393,7 +1402,11 @@ strictly append-only.
 ```
 ~/.ralphd/runs/<run-id>/
 ├── status.json              # the run's whole live state (§5.2)
-├── tasks.json               # the plan and every task's status (§5.3)
+├── tasks.json               # agent-readable VIEW of the plan and every task's status
+│                           #   (§5.3); the AUTHORITATIVE copy moved to
+│                           #   .tasks-protected/tasks.json (task 004, requirement
+│                           #   B, #202) -- this file is refreshed from it on
+│                           #   every write but is never itself read by the engine
 ├── events.jsonl             # append-only lifecycle log, monotonic ids (§5.4)
 ├── prd.md                   # the PRD exactly as handed to `ralphctl start`
 ├── composite-prd.md         # PRD + previous-approach history (§4.2), when written
@@ -1413,6 +1426,16 @@ strictly append-only.
 ├── auto-resume.json         # host-side crash-loop guard bookkeeping
 ├── host.json                # host-side container/registry metadata
 ├── .tasks-last-good.json    # last `tasks.json` that parsed; written only on a failed read (§5.3)
+├── .tasks-protected/tasks.json # the AUTHORITATIVE task record (task 004, requirement B,
+│                           #   #202): root-owned 0600 inside a root-owned 0700
+│                           #   directory under the uid boundary, self-healed on every
+│                           #   write (`privsep.write_protected_tasks_json`); read
+│                           #   only by `RunDir.read_tasks()`/`read_tasks_result()`,
+│                           #   never by a host-side or agent-facing reader; released
+│                           #   back to the agent uid at the engine's own shutdown
+│                           #   funnel (`privsep.release_protected_tasks_dir`) so a
+│                           #   host-side `rm --force`/the hub's `DELETE
+│                           #   /api/runs/<id>` can still remove the whole run dir
 ├── .api-token               # the run's API bearer token, mode 0600
 ├── .lock                    # exclusive flock held by the live engine; holds its pid
 ├── steering/
@@ -1645,6 +1668,23 @@ episodes ago and then resumed into `succeeded / verified` carries no
 Written by `planning`, mutated by `worker` and `verify`, read by everything: the
 agent-facing source of truth for what is left to do. The engine only ever adds
 its own bookkeeping fields to it.
+
+**Task 004 (requirement B, #202): two copies, one schema.** Every field below
+describes the document's shape, which both copies share byte-for-byte at the
+moment of any write. `RunDir.write_tasks()` lands the AUTHORITATIVE copy in
+`.tasks-protected/tasks.json` (root-owned 0600 inside a root-owned 0700
+directory under the uid boundary, self-healed on every write) and refreshes
+this file, `tasks.json` at the run-dir root, as an ordinary agent-readable
+VIEW -- what `ralphctl tasks`, the hub's task table, the worker/steer prompts
+and the steer hat's `context-read` tool all read, and a courtesy mirror
+only: `RunDir.read_tasks()`/`read_tasks_result()` (the engine's own trust
+decisions -- `GET /tasks`, `/status`'s task counts, criteria-edit detection,
+the worker's own task selection) read only the protected copy, through the
+same momentary root re-raise the write uses, so nothing an agent's own raw
+file write could ever land in the view reaches a decision the engine makes.
+Undoes back to the pre-task-004 single-file shape (agent-owned, no split)
+the moment there is no uid boundary to raise into (`privsep.separated()` is
+`False` -- the documented degrade, same as `write_root_owned_json`'s).
 
 | field | type | meaning |
 |---|---|---|

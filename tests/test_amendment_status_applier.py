@@ -276,7 +276,7 @@ def test_a_real_criteria_rewrite_still_fires_the_flag(tmp_path):
     tasks_data = sup.run.read_tasks()
     tasks_data["tasks"][0]["successCriteria"] = "do X (rewritten by worker)"
     tasks_data["tasks"][0]["status"] = "completed"
-    sup.run.tasks_file.write_text(json.dumps(tasks_data))
+    sup.run.write_tasks(tasks_data)
 
     sup._check_criteria_edits(sup.run.read_tasks())
     on_disk = sup.run.read_tasks()["tasks"][0]

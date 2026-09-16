@@ -24,13 +24,26 @@ and the verifier behave, and this module is the one path each of them walks:
     (`test_three_strikes_exhausts_validation_and_routes_to_review`). The
     contract here (a bare "Do the thing." PRD) declares no petition
     protocol, so this is the plain `failed` route, not `petitioned`.
-  * **criteria-tamper refusal** -- a worker that, after one rejection,
-    rewrites `successCriteria` instead of fixing the work
-    (`STUB_REWRITE_CRITERIA`, task 008/024) never gets away with it: the
-    engine restores the criteria-of-record, flags the task, and forces a
-    RECORDED blocking finding that contradicts review's own `verified`
-    claim over that task -- so the run can never end `verified` while the
-    tamper stands (`test_a_criteria_tamper_is_refused_and_the_run_never_verifies`).
+  * **criteria-tamper is inert (task 004, requirement B)** -- a worker
+    that, after one rejection, opens `tasks.json` directly and rewrites
+    `successCriteria` itself instead of fixing the work
+    (`STUB_REWRITE_CRITERIA`, task 008/024) touches nothing but the
+    agent-readable VIEW copy: the authoritative record it is aimed at
+    lives in the protected copy `RunDir.write_tasks` maintains, which
+    the raw `open(tasks_file, "w")` this stub performs was never able to
+    reach even before task 004 existed as a name for it -- only ever a
+    courtesy mirror. The run proceeds exactly as the plain retry case
+    above does, oblivious, and the archived record shows the ORIGINAL
+    criteria throughout, never the rewrite
+    (`test_a_criteria_tamper_via_the_agent_readable_view_never_reaches_the_record`).
+    task 008/024's own detect-and-refuse machinery
+    (`LoopSupervisor._check_criteria_edits`) is still very much alive --
+    `tests/test_criteria_fingerprint.py`/`test_contract_events.py` pin it
+    against a rewrite landed the one way that still reaches the record,
+    through `write_tasks()` itself (a future authorized-channel bug, not
+    a dropped agent) -- this flow just no longer has a way to DEMONSTRATE
+    that path, because the raw-file-write vector it used to use no longer
+    lands anywhere that matters.
 
 All three are asserted the same two ways: the exact `events.jsonl` step
 sequence (`flowlib.assert_step_sequence`, which names the diverging index and
@@ -158,16 +171,33 @@ def test_three_strikes_exhausts_validation_and_routes_to_review(engine_factory):
         f"deliberate route-to-review decision in its own log, got:\n{logs}")
 
 
-def test_a_criteria_tamper_is_refused_and_the_run_never_verifies(engine_factory):
+def test_a_criteria_tamper_via_the_agent_readable_view_never_reaches_the_record(engine_factory):
+    """Task 004 (requirement B, #202): `STUB_REWRITE_CRITERIA` opens
+    `tasks.json` (the agent-readable VIEW copy, `run.tasks_file`) directly
+    and rewrites `successCriteria` in place -- exactly the shape a fully
+    dropped agent uid can still perform against that copy, since it is a
+    courtesy mirror, never trusted. `RunDir.read_tasks`/`read_tasks_result`
+    read only the protected copy, so this lands nowhere the engine ever
+    looks: the run proceeds exactly like the plain retry case above,
+    oblivious, and the persisted record -- live and archived alike --
+    carries the ORIGINAL criteria throughout. This used to be titled
+    `..._is_refused_and_the_run_never_verifies`, pinning task 008/024's
+    detect-and-refuse marker over a rewrite that reached the authoritative
+    record via this exact vector; task 004 closes that vector outright, so
+    there is nothing left here for that marker to catch -- its own
+    coverage moved to `tests/test_criteria_fingerprint.py`/
+    `test_contract_events.py`, which drive the same rewrite through
+    `write_tasks()` itself, the one channel still capable of reaching the
+    record at all.
+    """
     run = engine_factory(
         job={"run_id": "flow-validation-tamper", "on_complete": "exit",
-             "vigilant": True},
+             "vigilant": True, "max_approaches": 1},
         stub_env={"STUB_TASKS": "2", "STUB_VERIFY_FAILS": "1",
                   "STUB_REWRITE_CRITERIA": "1"})
-    code = run.proc.wait(timeout=60)
-    assert code != 0, (
-        "flow validation ladder (tamper): a run that never sheds the "
-        "tamper-contradicted 'verified' claim must not exit 0")
+    assert run.proc.wait(timeout=60) == 0, (
+        "flow validation ladder (tamper): a rewrite that never reaches the "
+        "protected record must not stop the run from verifying normally")
 
     assert_step_sequence(flow_steps(run), [
         "state:running",
@@ -176,8 +206,9 @@ def test_a_criteria_tamper_is_refused_and_the_run_never_verifies(engine_factory)
         "iteration:worker",
         "iteration:verify",                  # task 1: rejected once
         "iteration:worker",                  # task 1: retried, this is where
-                                              # the worker rewrites the criteria
-        "iteration:verify",                  # task 1: "verified" over the tamper
+                                              # the stub's raw open()/write()
+                                              # against the VIEW copy happens
+        "iteration:verify",                  # task 1: verified for real
         "signal:taskVerified",
         "iteration:worker",                  # task 2
         "iteration:verify",
@@ -185,54 +216,47 @@ def test_a_criteria_tamper_is_refused_and_the_run_never_verifies(engine_factory)
         "signal:COMPLETE",
         "phase:review@1",
         "iteration:review",
-        "verdict:review:rejected@1",         # engine-forced blocking finding
-        "phase:planning@2",
-        "iteration:planning",
-        "iteration:worker",
-        "iteration:verify",
-        "signal:taskVerified",
-        "iteration:worker",
-        "signal:COMPLETE",
-        "state:failed",
+        "verdict:review:verified@1",
+        "signal:VERIFIED",
+        "state:succeeded",
     ], flow="flow validation ladder (tamper)")
 
     st = status(run)
-    assert st.get("verdict") != "verified", (
-        f"flow validation ladder (tamper): no verdict may ever read "
-        f"'verified' while a tamper-contradicted claim stands, got "
-        f"{st.get('verdict')!r}")
+    assert st.get("state") == "succeeded" and st.get("verdict") == "verified", (
+        f"flow validation ladder (tamper): a rewrite that never reaches the "
+        f"protected record leaves nothing for review to object to, got "
+        f"state={st.get('state')!r} verdict={st.get('verdict')!r}")
 
-    # The refusal itself, on the record: the rewrite did not stand, and the
-    # restored text is the ORIGINAL criteria, not the worker's rewrite.
-    refused = events_of(run, "task.criteria_edit_refused")
-    assert len(refused) == 1, (
-        f"flow validation ladder (tamper): expected exactly one refused "
-        f"rewrite, got {len(refused)}: {refused}")
-    assert refused[0]["refusedCriteria"].endswith("(rewritten by worker)"), (
-        f"flow validation ladder (tamper): the refused text must be the "
-        f"worker's own rewrite, got {refused[0]!r}")
-    assert not refused[0]["restoredCriteria"].endswith("(rewritten by worker)"), (
-        f"flow validation ladder (tamper): the restored text must be the "
-        f"criteria-of-record, not the rewrite, got {refused[0]!r}")
+    # No refusal, no forced finding -- there was never anything on the
+    # AUTHORITATIVE record to refuse in the first place.
+    assert events_of(run, "task.criteria_edit_refused") == [], (
+        "flow validation ladder (tamper): a rewrite confined to the view "
+        "copy gives _check_criteria_edits nothing to catch")
+    assert events_of(run, "review.criteria_tamper_finding") == [], (
+        "flow validation ladder (tamper): no engine-forced finding is owed "
+        "when the record itself was never touched")
 
-    # The tampered task's `successCriteria` is restored on approach 1's OWN
-    # record, which is what the run archives once it rejects and replans --
-    # approach 2 plans a fresh `tasks.json` from "001" again (task 020), so
-    # the persisted marker is read off the archive, not the live file.
-    tampered_id = refused[0]["taskId"]
-    archived_tasks = json.loads(
-        (run.run_dir / "approaches" / "01" / "tasks.json").read_text())["tasks"]
-    tampered = next(t for t in archived_tasks if t["id"] == tampered_id)
-    assert tampered["successCriteria"] == refused[0]["restoredCriteria"], (
-        f"flow validation ladder (tamper): the archived record must carry "
-        f"the restored (not the rewritten) criteria, got {tampered!r}")
-    assert tampered.get("criteriaEditedAfterValidationFailure") is True, (
-        f"flow validation ladder (tamper): the tamper marker must persist "
-        f"on the archived task record, got {tampered!r}")
+    # The live record's own criteria are the ORIGINAL text throughout --
+    # never the stub's "(rewritten by worker)" suffix.
+    ts = tasks(run)
+    assert len(ts) == 2, f"flow validation ladder (tamper): expected 2 tasks, got {ts}"
+    for t in ts:
+        assert not t["successCriteria"].endswith("(rewritten by worker)"), (
+            f"flow validation ladder (tamper): the authoritative record's "
+            f"successCriteria must never carry the stub's rewrite, got {t!r}")
+        assert t.get("criteriaEditedAfterValidationFailure") is not True, (
+            f"flow validation ladder (tamper): nothing was ever flagged, "
+            f"the rewrite never reached the record, got {t!r}")
 
-    # The RECORDED blocking finding that contradicts review's own 'verified'
-    # claim over the tampered task.
-    tamper_findings = events_of(run, "review.criteria_tamper_finding")
-    assert tamper_findings and tamper_findings[0].get("severity") == "blocking", (
-        f"flow validation ladder (tamper): the engine-forced finding must "
-        f"be recorded and blocking, got {tamper_findings}")
+    # The stub's raw write DID land on the agent-readable VIEW copy at some
+    # point during the run -- proving the vector was genuinely exercised,
+    # not merely skipped -- but the engine's own next `write_tasks()` call
+    # (task 1's verify pass recording its verdict) refreshes that view
+    # copy from the protected record, so by the time the run has finished
+    # the view carries the same, untampered text the live record does.
+    view_tasks = json.loads(run.run_dir.joinpath("tasks.json").read_text())["tasks"]
+    for t in view_tasks:
+        assert not t["successCriteria"].endswith("(rewritten by worker)"), (
+            f"flow validation ladder (tamper): the view copy must be back "
+            f"in sync with the protected record by the time the run ends, "
+            f"got {t!r}")

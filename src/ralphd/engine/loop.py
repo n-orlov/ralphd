@@ -13045,10 +13045,31 @@ class LoopSupervisor:
         byte -- `_write_composite_prd` below is what later reads these
         archived copies back to fold both judges' findings, with
         authorship, into the next approach's composite PRD.
+
+        Task 004 (requirement B): `tasks_file`'s archived copy is sourced
+        through `RunDir.read_tasks_result()` -- the authoritative,
+        protected record -- never a byte-for-byte copy of the
+        agent-readable view file at that same name; see the inline note
+        below.
         """
         dest = self.run.root / "approaches" / f"{approach:02d}"
         dest.mkdir(parents=True, exist_ok=True)
-        for f in (self.run.tasks_file, self.run.notes_file,
+        # Task 004 (requirement B): the archived tasks.json must be the
+        # AUTHORITATIVE record, never the agent-readable view copy --
+        # `shutil.copy2(self.run.tasks_file, ...)` would archive whatever
+        # an agent's own raw write left in the view between the engine's
+        # last refresh and this call, which is exactly the window
+        # `test_a_criteria_tamper_via_the_agent_readable_view_never_
+        # reaches_the_record` proves is otherwise harmless only because
+        # nothing ever reads it back. `RunDir.read_tasks()` already knows
+        # how to reach the protected copy (with the fallback for a plan
+        # seeded before this task shipped), so archive through it rather
+        # than a byte-for-byte file copy.
+        tasks_dest = dest / self.run.tasks_file.name
+        result = self.run.read_tasks_result()
+        if result.source != "absent":
+            tasks_dest.write_text(json.dumps(result.doc, indent=2) + "\n")
+        for f in (self.run.notes_file,
                  self.run.findings_file, self.run.verdict_gate_findings_file):
             if f.exists():
                 shutil.copy2(f, dest / f.name)

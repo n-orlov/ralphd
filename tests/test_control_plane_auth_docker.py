@@ -124,7 +124,15 @@ import sys
 
 names = json.loads(sys.argv[1])
 control_dir = sys.argv[2]
-scratch = "/tmp/ralphd-a6-probe"
+# Task 004 (#202): an optional fourth arg overrides the scratch dir,
+# needed the moment a caller's control_dir is itself bind-mounted (task
+# 004's `.tasks-protected`, unlike this module's own never-bind-mounted
+# `.control-token` dir) -- `/tmp` inside the container is a different
+# device from a bind mount, so a rename/link/replace FROM there would fail
+# EXDEV regardless of any permission bit, proving nothing about the
+# boundary this probe exists to demonstrate. Every existing caller omits
+# the arg and keeps the original same-device (both container-local) pair.
+scratch = sys.argv[3] if len(sys.argv) > 3 else "/tmp/ralphd-a6-probe"
 os.makedirs(scratch, exist_ok=True)
 
 out = {
@@ -216,7 +224,7 @@ if kwargs != {"user": agent.uid, "group": agent.gid}:
              % (kwargs,))
 
 env = {k: v for k, v in os.environ.items() if k not in CONTROL_PLANE_ENV_VARS}
-res = subprocess.run([sys.executable, "-c", CHILD, sys.argv[1], sys.argv[2]],
+res = subprocess.run([sys.executable, "-c", CHILD, *sys.argv[1:]],
                      capture_output=True, text=True, timeout=60, env=env,
                      **kwargs)
 if res.returncode != 0:
@@ -236,13 +244,19 @@ _DENIED = ("EACCES", "EPERM")
 
 def _run_dropped_child_probe(container: str, names: list[str],
                              control_dir: str = _CONTROL_DIR_IN_CONTAINER,
-                             strict: bool = True) -> dict:
+                             strict: bool = True,
+                             scratch: str | None = None) -> dict:
     """Run `_CHILD_PROBE` inside `container` as a child spawned through
     `privsep.agent_child_kwargs()`, and return its findings.
 
     `strict` (the default) additionally asserts the boundary-shape
     invariants below; the negative control turns them off only for its own
     `sameDevice` check, which is about a different directory.
+
+    `scratch`, when given, overrides the probe's own scratch dir (task 004,
+    #202) -- needed only when `control_dir` is itself bind-mounted, so the
+    directory-entry attempts stay same-device with their target and the
+    refusal proves the permission boundary rather than an unrelated EXDEV.
 
     `docker exec` (no `--user`) enters as the container's default identity,
     real root -- which is what the driver needs to reproduce
@@ -253,9 +267,11 @@ def _run_dropped_child_probe(container: str, names: list[str],
     from the child's own `getresuid()`.
     """
     driver = "CHILD = " + repr(_CHILD_PROBE) + "\n" + _PROBE_DRIVER
+    argv = [json.dumps(names), control_dir]
+    if scratch is not None:
+        argv.append(scratch)
     res = subprocess.run(
-        [REAL_DOCKER, "exec", container, "python3", "-c", driver,
-         json.dumps(names), control_dir],
+        [REAL_DOCKER, "exec", container, "python3", "-c", driver, *argv],
         capture_output=True, text=True, timeout=90)
     assert res.returncode == 0, res.stdout + res.stderr
     doc = json.loads(res.stdout)
@@ -592,6 +608,15 @@ def test_mutating_ralphctl_commands_still_work_and_the_raw_control_gate_holds(ct
                          ("succeeded", "failed", "aborted"), timeout=60)
     assert final["verdict"] == "verified", final
 
+    # task 004 (#202): planning above wrote `.tasks-protected`, root-owned,
+    # under this run dir -- `--on-complete idle` otherwise leaves the
+    # container (and that directory) up past this test's own assertions,
+    # which the `ctl` fixture's hard `docker rm -f` teardown cannot remove
+    # afterward. A graceful `ralphctl stop` (the same `/shutdown` path
+    # SIGTERM drives) releases it first.
+    stop_res = ctl.stop(run_id, force=True)
+    assert stop_res.returncode == 0, stop_res.stderr
+
 
 def test_dropped_agent_child_cannot_read_the_optional_api_token_either(ctl, work_root):
     """Success criteria's own second clause: "With --api-token enabled that
@@ -646,6 +671,10 @@ def test_dropped_agent_child_cannot_read_the_optional_api_token_either(ctl, work
                          ("succeeded", "failed", "aborted"), timeout=60,
                          headers={"Authorization": f"Bearer {api_token}"})
     assert final["verdict"] == "verified", final
+
+    # same litter hygiene as the test above -- see its own comment.
+    stop_res = ctl.stop(run_id, force=True)
+    assert stop_res.returncode == 0, stop_res.stderr
 
 
 def test_dropped_agent_child_cannot_reach_the_control_credential_after_resume(ctl):

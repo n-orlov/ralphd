@@ -208,12 +208,17 @@ def test_a_poller_never_observes_an_empty_list_during_agent_rewrites(tmp_path):
 # -- RunDir integration -----------------------------------------------------
 
 def test_rundir_read_tasks_uses_the_hardened_path(tmp_path):
+    """Task 004 (requirement B): `RunDir.read_tasks()`/`read_tasks_result()`
+    read the PROTECTED copy (`protected_tasks_dir`), never `tasks_file` (the
+    agent-readable view) -- so this exercises the hardened path against
+    the authoritative location the engine actually reads."""
     _forget_process_cache()
     run = RunDir(root=tmp_path)
-    _write(tmp_path, PLAN)
+    run.protected_tasks_dir.mkdir(parents=True, exist_ok=True)
+    _write(run.protected_tasks_dir, PLAN)
     assert run.read_tasks() == PLAN
     assert run.read_tasks_result().source == "file"
-    run.tasks_file.write_text('{"version": 1, "tas')
+    run.protected_tasks_file.write_text('{"version": 1, "tas')
     assert run.read_tasks() == PLAN               # not {}
     res = run.read_tasks_result()
     assert (res.source, res.stale) == ("last-good", True)

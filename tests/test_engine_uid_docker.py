@@ -23,13 +23,22 @@ and only all three together mean the boundary is real:
 3. the engine's own credentials in the container are the documented shape
    (`Uid: 0 1000 0 1000` -- real/saved root, effective agent); every file it
    wrote into the bind-mounted run dir is still owned by uid 1000 EXCEPT
-   `tasks.json`, which task 105 (#60 requirement D) deliberately makes
-   root-owned -- the ownership half of the contract this route exists to
-   preserve, updated for the one file no iteration may write directly any
-   more (`ralphctl steer` is the replacement channel). A fourth check proves
-   that exception is real: an attempt to write `tasks.json` from inside the
-   container, as uid 1000 (the exact uid every iteration runs as), is
-   refused with `Permission denied`.
+   the authoritative task record. Task 105 (#60 requirement D) first made
+   `tasks.json` itself root-owned; task 004 (requirement B, #202) moved
+   that authoritative copy OFF this run-root path entirely, into
+   `.tasks-protected/tasks.json` (root-owned 0600 inside a root-owned
+   0700 directory) -- a root-owned FILE in an agent-writable DIRECTORY
+   still let a dropped child `os.replace()` a substituted document onto
+   it, a directory-entry operation gated by the parent, never the target.
+   The run-root `tasks.json` this module otherwise reads is now the
+   ordinary agent-owned VIEW copy `write_tasks()` refreshes alongside the
+   protected write. A fourth check proves the moved boundary is real: an
+   attempt to write the PROTECTED copy from inside the container, as uid
+   1000 (the exact uid every iteration runs as), is refused with
+   `Permission denied` -- both an in-place truncate and an `os.replace` of
+   a valid substituted document -- while the very same attempt against
+   the agent-owned VIEW copy at the run-root path succeeds harmlessly
+   (nothing ever reads it back).
 
 Environment wrinkles (bind-mount path translation, API reachability from
 inside this job container) and the cleanup discipline are exactly those of
@@ -147,43 +156,116 @@ def test_a_worker_iteration_cannot_kill_the_engine(ctl):
     assert all(a["errno"] == 1 for a in kills), record  # EPERM, every one
 
     # 3. the documented credential shape, and unchanged file ownership --
-    # except tasks.json, which task 105 (#60 requirement D) makes root-owned
-    # on purpose: it is the one file no iteration may write directly any
-    # more, `ralphctl steer` being the replacement channel.
+    # except the authoritative task record. Task 004 (requirement B, #202)
+    # moved that record off `tasks.json` at the run root -- now an ordinary
+    # agent-owned VIEW copy -- into `.tasks-protected/tasks.json`, root-owned
+    # inside a root-owned 0700 directory.
     creds = _engine_creds(container)
     assert creds["uid"] == [0, 1000, 0, 1000], creds  # real, effective, saved, fs
     assert creds["gid"] == [0, 1000, 0, 1000], creds
     assert "uid boundary active" in _container_log(container)
-    for name in ("status.json", "events.jsonl"):
+    for name in ("status.json", "events.jsonl", "tasks.json"):
         path = rdir / name
         assert path.is_file(), name
         assert path.stat().st_uid == 1000, (
             f"{name} is owned by uid {path.stat().st_uid}: the engine's "
             "effective uid must stay the agent's so the host user still owns "
-            "its own run dir")
-    tasks_path = rdir / "tasks.json"
-    assert tasks_path.is_file()
-    assert tasks_path.stat().st_uid == 0, (
-        f"tasks.json is owned by uid {tasks_path.stat().st_uid}, not root -- "
-        "task 105's whole point is that the agent uid can no longer write "
-        "its own task record")
-    assert (tasks_path.stat().st_mode & 0o777) == 0o644, oct(tasks_path.stat().st_mode)
+            "its own run dir -- this now includes tasks.json, task 004's "
+            "agent-readable VIEW copy, never the authoritative record")
+    # `.tasks-protected` is root-owned 0700: even `Path.is_file()`/`.stat()`
+    # from THIS (unprivileged, agent-uid) host-side test process raises
+    # `PermissionError` rather than returning False -- traversal into the
+    # directory itself is denied, not merely opening the file inside it.
+    # Ownership/mode/content all have to be read through `docker exec`
+    # (root inside the container), exactly `test_root_owned_record_
+    # operability_docker.py`'s own pattern for the same directory.
+    protected_check = subprocess.run(
+        [REAL_DOCKER, "exec", container, "sh", "-c",
+         "stat -c '%U %a' /run/ralphd/.tasks-protected && "
+         "stat -c '%U %a' /run/ralphd/.tasks-protected/tasks.json && "
+         "cat /run/ralphd/.tasks-protected/tasks.json"],
+        capture_output=True, text=True, timeout=15)
+    assert protected_check.returncode == 0, (
+        protected_check.stdout + protected_check.stderr)
+    dir_line, file_line, doc_text = protected_check.stdout.split("\n", 2)
+    assert dir_line == "root 700", (
+        f".tasks-protected is {dir_line!r}, not root-owned 0700 -- task "
+        "004's whole point is that the agent uid can no longer write into "
+        "the directory holding the authoritative task record")
+    assert file_line == "root 600", (
+        f".tasks-protected/tasks.json is {file_line!r}, not root-owned 0600")
+    protected_doc = json.loads(doc_text)
+    assert protected_doc == tasks_doc, (
+        "the authoritative copy and the agent-readable view disagree", protected_doc, tasks_doc)
 
-    # 4. the agent uid genuinely cannot write it: attempted from inside the
-    # same container, as the same uid every iteration runs as (`--user
-    # 1000:1000`, not asserted from the host, where ownership alone would
-    # prove nothing about the container's own permission check).
+    # 4. the agent uid genuinely cannot write the AUTHORITATIVE copy:
+    # attempted from inside the same container, as the same uid every
+    # iteration runs as (`--user 1000:1000`, not asserted from the host,
+    # where ownership alone would prove nothing about the container's own
+    # permission check). Both an in-place truncate and an `os.replace` of a
+    # valid substituted document (never merely malformed content, so the
+    # failure cannot be a parse rejection in disguise) must fail -- the
+    # second is the directory-entry operation task 105's root-owned FILE
+    # alone never blocked, which is the regression #202/task 004 closes.
     denied = subprocess.run(
         [REAL_DOCKER, "exec", "--user", "1000:1000", container, "sh", "-c",
-         "echo '{\"tasks\": []}' > /run/ralphd/tasks.json; echo RC=$?"],
+         "echo '{\"tasks\": []}' > /run/ralphd/.tasks-protected/tasks.json; echo RC=$?"],
         capture_output=True, text=True, timeout=15)
     assert denied.returncode == 0, denied.stderr  # docker exec itself worked
     assert "RC=0" not in denied.stdout, denied.stdout  # the shell write failed
     combined = denied.stdout + denied.stderr
     assert "Permission denied" in combined, combined
-    # and the file on disk is untouched -- the attempted write produced no
-    # partial content, truncation, or ownership change
-    assert json.loads(tasks_path.read_text()) == tasks_doc
+
+    valid_substitute = json.dumps({"version": 1, "tasks": [
+        {"id": "1", "title": "substituted", "successCriteria": "x",
+         "status": "pending"}]})
+    replace_attempt = subprocess.run(
+        [REAL_DOCKER, "exec", "--user", "1000:1000", container, "python3", "-c",
+         "import os,sys\n"
+         "scratch = '/tmp/a202-replace-src.json'\n"
+         "open(scratch, 'w').write(sys.argv[1])\n"
+         "try:\n"
+         "    os.replace(scratch, '/run/ralphd/.tasks-protected/tasks.json')\n"
+         "except OSError as exc:\n"
+         "    print('DENIED', exc.errno)\n"
+         "else:\n"
+         "    print('REPLACED')\n",
+         valid_substitute],
+        capture_output=True, text=True, timeout=15)
+    assert replace_attempt.returncode == 0, replace_attempt.stderr
+    assert "DENIED" in replace_attempt.stdout, (
+        "a dropped agent child's os.replace() of a valid substituted "
+        f"document onto the authoritative record must fail: {replace_attempt.stdout}")
+
+    # and the file on disk is untouched -- neither attempted write produced
+    # any partial content, truncation, redirection or ownership change; the
+    # agent-readable VIEW, in contrast, is harmlessly writable (task 004
+    # never protects it -- nothing reads it back but every non-engine reader).
+    # Again through `docker exec` -- see the comment above `protected_check`.
+    recheck = subprocess.run(
+        [REAL_DOCKER, "exec", container, "cat",
+         "/run/ralphd/.tasks-protected/tasks.json"],
+        capture_output=True, text=True, timeout=15)
+    assert recheck.returncode == 0, recheck.stdout + recheck.stderr
+    assert json.loads(recheck.stdout) == tasks_doc
+    view_write = subprocess.run(
+        [REAL_DOCKER, "exec", "--user", "1000:1000", container, "sh", "-c",
+         "echo '{\"tasks\": []}' > /run/ralphd/tasks.json; echo RC=$?"],
+        capture_output=True, text=True, timeout=15)
+    assert "RC=0" in view_write.stdout, (
+        "the agent-readable VIEW copy at the run-root path must stay "
+        f"agent-writable, only ever a courtesy mirror: {view_write.stdout}")
+
+    # `--on-complete idle` kept this container up for every check above;
+    # before task 004 that was harmless litter-wise (`tasks.json` was only
+    # ever a root-owned FILE inside an agent-owned parent, which the `ctl`
+    # fixture's hard `docker rm -f` teardown could always remove afterward
+    # via `shutil.rmtree`). Now `.tasks-protected` is a root-owned
+    # DIRECTORY the same teardown cannot remove without the engine's own
+    # release funnel running first -- a graceful `ralphctl stop` (a
+    # `/shutdown` request, exactly what SIGTERM drives) buys that.
+    stop_res = ctl.stop(run_id, force=True)
+    assert stop_res.returncode == 0, stop_res.stderr
 
 
 def test_the_engine_can_still_stop_its_own_iteration(ctl, work_root):
@@ -219,6 +301,13 @@ def test_the_engine_can_still_stop_its_own_iteration(ctl, work_root):
     else:
         pytest.fail("the engine never recorded reaching its own iteration")
 
+    # same litter hygiene as the two tests above: `--on-complete idle`
+    # left this container up, and task 004's `.tasks-protected` is
+    # root-owned under this run dir regardless of what this test itself
+    # checks.
+    stop_res = ctl.stop(run_id, force=True)
+    assert stop_res.returncode == 0, stop_res.stderr
+
 
 def test_the_shipped_image_starts_as_root_and_the_iteration_does_not(ctl, test_image):
     """The two halves of the arrangement, read off a live container: the image
@@ -253,3 +342,15 @@ def test_the_shipped_image_starts_as_root_and_the_iteration_does_not(ctl, test_i
     assert json.loads(env_marker.read_text())["HOME"] == "/home/agent"
     creds = _engine_creds(f"ralphd-{run_id}")
     assert creds["uid"] == [0, 1000, 0, 1000], creds
+
+    # `--on-complete idle` kept this container up for the credential read
+    # above; task 004's `.tasks-protected` is now root-owned under this
+    # run dir too (planning writes it in every run, not only ones that
+    # test it directly), so the same graceful-stop hygiene applies here as
+    # in `test_a_worker_iteration_cannot_kill_the_engine` above -- without
+    # it, this run dir is left with a root-owned directory `ctl`'s hard
+    # `docker rm -f` teardown cannot remove, which then poisons the next
+    # docker-tier module's own build context (a real failure this task hit
+    # live, not a hypothetical).
+    stop_res = ctl.stop(run_id, force=True)
+    assert stop_res.returncode == 0, stop_res.stderr

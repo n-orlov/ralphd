@@ -703,25 +703,28 @@ def test_vigilant_verify_fail_then_recovery(engine_factory):
     assert len(task_events) >= 1
 
 
-def test_criteria_edited_after_validation_failure_is_refused(engine_factory):
-    """Task 008 + task 024 (requirement E.3, #116 section 2): a task that
-    fails verification once, then gets its successCriteria rewritten by the
-    worker instead of the actual work being fixed, must be flagged with a
-    persistent criteriaEditedAfterValidationFailure marker that survives in
-    tasks.json -- while a sibling task whose criteria never change, and never
-    fails verification, must NOT be flagged (negative case).
-
-    Task 024 changed what happens NEXT, and this test now pins that too.
-    Task 008 only flagged the edit: the rewrite stood, the fingerprint
-    tracked the new text forward, and this same stub run still ended
-    `succeeded`/`verified` because the review hat's own `verified` claim was
-    trusted (the stub writes no findings.json, and an absent findings channel
-    used to mean "nothing exists to check the claim against"). Now the engine
-    REFUSES the rewrite -- successCriteria is restored from the verbatim
-    criteria-of-record, witnessed by a `task.criteria_edit_refused` event --
-    and RECORDS a blocking criteria-tamper finding in the findings channel,
-    which contradicts the review payload's own `verified` claim, so this run
-    no longer ends verified at all.
+def test_criteria_edited_via_the_agent_readable_view_never_reaches_the_record(engine_factory):
+    """Task 008 + task 024 (requirement E.3, #116 section 2) built the
+    detect-and-refuse machinery this test used to pin under the title
+    `..._is_refused` -- a task that fails verification once, then gets its
+    successCriteria rewritten by the worker instead of the actual work being
+    fixed. Task 004 (requirement B, #202) closes the vector this stub used to
+    reach the record at all: `STUB_REWRITE_CRITERIA` opens `tasks.json` (now
+    only the agent-readable VIEW copy, `run.tasks_file`) directly and
+    rewrites `successCriteria` in place -- exactly the shape a fully dropped
+    agent uid can still perform against that copy, since it is a courtesy
+    mirror, never trusted. `RunDir.read_tasks`/`read_tasks_result` read only
+    the protected copy, so this lands nowhere the engine ever looks: the run
+    proceeds exactly like `test_vigilant_verify_fail_then_recovery` above
+    (one retry, then both tasks validated), oblivious, and the persisted
+    record -- live and archived alike -- carries the ORIGINAL criteria
+    throughout. task 008/024's own detect-and-refuse marker
+    (`LoopSupervisor._check_criteria_edits`) is still very much alive --
+    `tests/test_criteria_fingerprint.py`/`test_contract_events.py` pin it
+    against a rewrite landed the one way that still reaches the record,
+    through `write_tasks()` itself -- this test just no longer has a way to
+    DEMONSTRATE that path, because the raw-file-write vector it used to use
+    no longer lands anywhere that matters.
     """
     e = engine_factory(
         job={"on_complete": "idle", "vigilant": True},
@@ -729,61 +732,41 @@ def test_criteria_edited_after_validation_failure_is_refused(engine_factory):
                   "STUB_REWRITE_CRITERIA": "1"},
     )
     e.wait_api()
-    e.wait_state(("failed",), timeout=120)
+    e.wait_state(("succeeded",), timeout=120)
 
     status = json.loads((e.run_dir / "status.json").read_text())
-    # No verified verdict is available over a criteria rewrite: the run burns
-    # its approaches instead of accepting review's contradicted claim.
-    assert status["verdict"] != "verified"
+    assert status["state"] == "succeeded" and status["verdict"] == "verified", (
+        "a rewrite confined to the view copy must never keep the run from "
+        f"verifying normally, got {status}")
 
-    # The refusal itself, on the record.
+    # No refusal, no forced finding -- there was never anything on the
+    # AUTHORITATIVE record to refuse in the first place.
     events = [json.loads(line) for line
               in (e.run_dir / "events.jsonl").read_text().splitlines()
               if line.strip()]
-    refused = [ev for ev in events
-               if ev.get("type") == "task.criteria_edit_refused"]
-    assert len(refused) == 1
-    assert "(rewritten by worker)" in refused[0]["refusedCriteria"]
-    assert "(rewritten by worker)" not in refused[0]["restoredCriteria"]
-    tamper = [ev for ev in events
-              if ev.get("type") == "review.criteria_tamper_finding"]
-    assert len(tamper) == 1
-    assert tamper[0]["severity"] == "blocking"
-    assert refused[0]["taskId"] in tamper[0]["clause"]
+    assert not [ev for ev in events
+                if ev.get("type") == "task.criteria_edit_refused"]
+    assert not [ev for ev in events
+                if ev.get("type") == "review.criteria_tamper_finding"]
+    assert not (e.run_dir / "review-findings.json").exists() or json.loads(
+        (e.run_dir / "review-findings.json").read_text()) == []
 
-    # The blocking finding is RECORDED in the findings channel itself, not
-    # only computed in memory for one verdict decision.
-    channel = json.loads((e.run_dir / "review-findings.json").read_text())
-    assert [f["severity"] for f in channel] == ["blocking"]
-
-    # The tampered approach's own frozen tasks.json (the rejection started a
-    # fresh approach, whose freshly planned tasks carry no marker): the
-    # marker persisted there, and the rewrite did not stand.
-    archived = json.loads(
-        (e.run_dir / "approaches" / "01" / "tasks.json").read_text())["tasks"]
-    assert len(archived) == 2
-    flagged = [t for t in archived
-               if t.get("criteriaEditedAfterValidationFailure")]
-    assert len(flagged) == 1, "exactly one task should have been tampered with"
-    rewritten = flagged[0]
-    assert rewritten["id"] == refused[0]["taskId"]
-    assert rewritten["validationAttempts"] == 1
-    assert "(rewritten by worker)" not in rewritten["successCriteria"]
-    # the stored fingerprint still names the RESTORED, authoritative text --
-    # it never advanced to the worker's rewrite
-    import hashlib
-    assert rewritten["criteriaFingerprint"] == hashlib.sha256(
-        rewritten["successCriteria"].encode("utf-8")).hexdigest()
-    assert rewritten["criteriaOfRecord"] == rewritten["successCriteria"]
-
-    # Negative case: the other task's criteria never changed and it never
-    # failed verification -- no flag, even though a fingerprint is recorded.
-    untouched = [t for t in archived if t["id"] != rewritten["id"]]
-    assert len(untouched) == 1
-    other = untouched[0]
-    assert other.get("validationAttempts", 0) == 0
-    assert "criteriaEditedAfterValidationFailure" not in other
-    assert "criteriaFingerprint" in other
+    # Both tasks validated, the retried one carrying validationAttempts==1 --
+    # exactly `test_vigilant_verify_fail_then_recovery`'s shape -- and neither
+    # carries the stub's rewrite suffix or the tamper marker anywhere. A run
+    # that verifies on its first approach archives nothing under
+    # `approaches/` at all (that only happens at a rejection/replan
+    # boundary, which never occurs here), so the live record is the whole
+    # check.
+    doc_path = e.run_dir / "tasks.json"
+    tasks = json.loads(doc_path.read_text())["tasks"]
+    assert len(tasks) == 2, (doc_path, tasks)
+    assert all(t["status"] == "validated" for t in tasks), (doc_path, tasks)
+    retried = [t for t in tasks if t.get("validationAttempts", 0) >= 1]
+    assert len(retried) == 1, (doc_path, tasks)
+    for t in tasks:
+        assert "(rewritten by worker)" not in t["successCriteria"], (doc_path, t)
+        assert t.get("criteriaEditedAfterValidationFailure") is not True, (doc_path, t)
 
 
 def test_vigilant_verify_transient_error_retries(engine_factory):

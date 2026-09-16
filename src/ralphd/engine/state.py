@@ -6772,7 +6772,31 @@ class RunDir:
 
     @property
     def tasks_file(self) -> Path:
+        """The agent-readable VIEW copy (task 004, requirement B.3) --
+        what every reader that is not the engine itself uses: the worker/
+        steer prompts, `ralphctl tasks`, the hub's task table, the steer
+        hat's `context-read` tool. Kept in sync with the authoritative
+        record on every `write_tasks()` call, but never itself the source
+        `read_tasks`/`read_tasks_result` reads -- see
+        `protected_tasks_file` for that."""
         return self.root / "tasks.json"
+
+    @property
+    def protected_tasks_dir(self) -> Path:
+        """Task 004 (requirement B, #202): the directory the agent cannot
+        write into (root-owned 0700 under the uid boundary, self-healed on
+        every write -- see `privsep.write_protected_tasks_json`), holding
+        the authoritative task record. Lives INSIDE the bind-mounted run
+        dir -- unlike `privsep.CONTROL_CREDENTIALS_DIR` -- so the same host
+        directory persists it across a `resume`'s fresh container."""
+        return self.root / privsep.PROTECTED_TASKS_DIRNAME
+
+    @property
+    def protected_tasks_file(self) -> Path:
+        """The authoritative tasks.json (task 004, requirement B) --
+        engine reads/writes ONLY through this path; every other reader
+        uses `tasks_file`, the agent-readable view."""
+        return self.protected_tasks_dir / "tasks.json"
 
     @property
     def prd_file(self) -> Path:
@@ -7073,8 +7097,19 @@ class RunDir:
         this remains the sole writer and the AST audit above is unaffected,
         since the write it's watching for is inside `privsep`, targeting a
         parameter named `path`, not `tasks_file`.
+
+        Task 004 (requirement B, #202): root-ownership of the FILE was not
+        enough -- its directory (`self.root`, bind-mounted agent-owned)
+        still let a dropped child `os.replace()` a whole substituted
+        document onto it. The write below now lands the authoritative copy
+        in `self.protected_tasks_file` (a directory the agent cannot write
+        into at all, not merely a file it cannot open) and refreshes
+        `self.tasks_file` as an ordinary agent-readable VIEW copy for every
+        reader that is not the engine (`privsep.write_protected_tasks_json`).
+        `read_tasks`/`read_tasks_result` below read only the protected copy.
         """
-        privsep.write_root_owned_json(self.tasks_file, data)
+        privsep.write_protected_tasks_json(
+            self.protected_tasks_file, self.tasks_file, data)
 
     def read_tasks(self) -> dict:
         """The tasks.json payload, via the hardened read path (task 002/#15):
@@ -7084,8 +7119,48 @@ class RunDir:
     def read_tasks_result(self) -> TasksRead:
         """Full three-way `TasksRead` (absent / file / last-good / unreadable)
         for callers that must render the stale flag -- `GET /tasks`, the
-        `/status` task counts, `ralphctl tasks`, the hub table."""
-        return read_tasks_doc(self.root)
+        `/status` task counts, `ralphctl tasks`, the hub table.
+
+        Task 004 (requirement B): reads the protected, authoritative copy
+        (`self.protected_tasks_dir`) once it exists -- never
+        `self.tasks_file`, the agent-readable view -- so the engine's own
+        trust decisions can never be steered by anything an agent wrote.
+        Under the uid boundary that directory is root-owned 0700,
+        unreadable at the engine's own (unelevated, agent) effective uid,
+        so the read is made inside the same momentary raise the write
+        already uses -- symmetric with `petitions._read_stored_key`, which
+        borrows this exact context manager for the same reason.
+
+        Falls back to `self.tasks_file` -- the classic, pre-task-004
+        location -- ONLY when no protected copy exists yet: a run whose
+        plan was written before this task shipped, resumed under the new
+        code (the success criteria's "a resumed container must still read
+        the record"), or a test fixture that seeds a plan by writing
+        `run.tasks_file` directly rather than going through
+        `write_tasks()`. The very first `write_tasks()` call after either
+        migrates the record into the protected copy for good -- once it
+        exists, this fallback never triggers again for this run, closing
+        the window a substituted `tasks_file` could otherwise buy: by the
+        time an agent hat could run and attempt one, planning's own first
+        write has already created the protected copy.
+        """
+        def _pick_source_dir() -> Path:
+            # Task 004 correction: this existence check has to run INSIDE
+            # the same elevated window as the read below, not before it --
+            # `Path.exists()` swallows the `PermissionError` a 0700
+            # root-owned directory raises at the engine's own (unelevated,
+            # agent) effective uid and reports `False` regardless of the
+            # true answer, which would silently misroute every read back
+            # onto the unprotected view the moment the boundary is active.
+            protected_exists = self.protected_tasks_file.exists()
+            if protected_exists or not self.tasks_file.exists():
+                return self.protected_tasks_dir
+            return self.root
+
+        if privsep.separated():
+            with privsep.root_for_write():
+                return read_tasks_doc(_pick_source_dir())
+        return read_tasks_doc(_pick_source_dir())
 
     # -- vigilant-mode verification: task record, not a sidecar (task 020) -
     # Through v0.8 this was a separate file, engine-owned and never touched

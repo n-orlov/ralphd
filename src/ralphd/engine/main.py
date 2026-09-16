@@ -314,6 +314,16 @@ async def amain() -> int:
 
     server.should_exit = True
     await api_task
+    # Task 004 (requirement B, #202): the single shutdown funnel, whether
+    # this run finished outright or idled until a signal/`/shutdown` woke
+    # `stop` above -- release the protected task-record directory back to
+    # the agent's own uid now that the job is over and no further write or
+    # read this protection defends is coming, so a host-side `ralphctl rm`/
+    # the hub's `DELETE /api/runs/<id>` (neither of which has root) can
+    # still remove the whole run dir afterward, exactly as before this
+    # task. A `resume`'s fresh container re-protects it on its own first
+    # write.
+    privsep.release_protected_tasks_dir(run)
     lock_fh.close()
     return 0 if final_state == "succeeded" else 1
 

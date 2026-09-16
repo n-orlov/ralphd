@@ -12,6 +12,25 @@ so none of that should be affected by the one file inside it being
 root-owned. This module proves it against a REAL sibling container (never
 ``tests/stub-docker``), reusing ``test_docker_sibling_e2e``'s fixtures/
 cleanup discipline exactly like ``test_engine_uid_docker.py`` does.
+
+Task 004 (requirement B, #202) moved the AUTHORITATIVE root-owned record
+off this run-root path entirely, into ``.tasks-protected/tasks.json``
+(root-owned 0600 inside a root-owned 0700 directory) -- a root-owned FILE
+in an agent-writable DIRECTORY still let a dropped child ``os.replace()`` a
+substituted document onto it, which is exactly what
+``test_control_plane_auth_docker.py``'s pattern proves for the control
+creds and what this task's own docker proof (see
+``test_tasks_record_docker.py``) now proves here. The run-root ``tasks.json``
+this module reads is the ordinary agent-owned VIEW copy `write_tasks()`
+refreshes alongside the protected write -- CLI `tasks`/`repair` and the
+hub's row reader read ONLY that view (`read_tasks_doc(persist=False)`
+against the run root), never the protected copy, so this module's own
+assertions about them are unaffected by the move; only the *ownership*
+assertion below moves to the new protected path, plus a new assertion that
+the view copy is genuinely agent-owned (never root) and that the shutdown
+funnel has handed the once-root-owned protected directory back to the
+agent uid so `rm --force`/`DELETE` (host-side, no root) can still remove
+it.
 """
 
 from __future__ import annotations
@@ -69,13 +88,46 @@ def _run_to_terminal_with_container_exited(ctl_: Ctl, prefix: str) -> tuple[str,
         "container never reached a non-running state -- on_complete=exit "
         "regressed, or the wait above was too short")
 
+    # Task 004 (requirement B, #202): the authoritative record now lives at
+    # `.tasks-protected/tasks.json`, root-owned inside a root-owned 0700
+    # directory. The shutdown funnel (`privsep.release_protected_tasks_dir`,
+    # called from `engine.main.amain()`) hands that directory back to the
+    # agent uid once the job is over -- this container already exited above,
+    # so both are readable from THIS (unprivileged) test process by now; a
+    # regression here would be release never firing, which this asserts
+    # directly by simply being able to stat/read them at all.
+    protected_dir = rdir / ".tasks-protected"
+    protected_path = protected_dir / "tasks.json"
+    assert protected_path.is_file(), (
+        "no authoritative record was ever written -- task 004 regressed, "
+        "or nothing ever called RunDir.write_tasks()")
+    assert protected_dir.stat().st_uid == 1000, (
+        f".tasks-protected is owned by uid {protected_dir.stat().st_uid} after "
+        "shutdown -- release_protected_tasks_dir() must hand it back to the "
+        "agent uid so a host-side rm/DELETE (no root there) can still "
+        "remove the whole run dir")
+    assert protected_path.stat().st_uid == 1000, (
+        f".tasks-protected/tasks.json is owned by uid {protected_path.stat().st_uid} "
+        "after shutdown -- same release, one level down")
+
+    # The run-root tasks.json this test otherwise reads is now the ordinary
+    # agent-owned VIEW copy `write_tasks()` refreshes alongside the
+    # protected write -- this test's own premise moved with it: it used to
+    # be "tasks.json itself is root-owned, and CLI/hub still work anyway";
+    # now it is "CLI/hub read the agent-owned VIEW, exactly as if there had
+    # never been a protected copy at all", so the assertion below is the
+    # inverse of what this test asserted before task 004.
     tasks_path = rdir / "tasks.json"
     assert tasks_path.is_file()
-    assert tasks_path.stat().st_uid == 0, (
-        f"tasks.json is owned by uid {tasks_path.stat().st_uid}, not root -- "
-        "task 105 regressed; this test's whole premise depends on it")
+    assert tasks_path.stat().st_uid == 1000, (
+        f"tasks.json (the agent-readable VIEW) is owned by uid "
+        f"{tasks_path.stat().st_uid}, not the agent -- task 004 regressed: "
+        "this path must never be the authoritative, root-owned record any "
+        "more, `.tasks-protected/tasks.json` is")
     assert (tasks_path.stat().st_mode & 0o777) == 0o644, (
         oct(tasks_path.stat().st_mode))
+    assert json.loads(tasks_path.read_text()) == json.loads(protected_path.read_text()), (
+        "the view copy and the authoritative record disagree")
     return run_id, rdir
 
 

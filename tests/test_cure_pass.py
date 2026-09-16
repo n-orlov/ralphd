@@ -476,7 +476,7 @@ def test_resume_mid_cure_never_appends_the_cure_tasks_twice(tmp_path):
     for t in tasks_doc["tasks"]:
         if t.get("origin") == "review-cure":
             t["status"] = "completed"
-    atomic_write_json(sup1.run.tasks_file, tasks_doc)
+    sup1.run.write_tasks(tasks_doc)
 
     # Episode 2: a FRESH `LoopSupervisor`, constructed over the SAME
     # on-disk run dir -- what a killed-and-restarted process leaves
@@ -524,7 +524,7 @@ def test_resume_mid_cure_also_keeps_the_incurable_precedence(tmp_path):
     for t in tasks_doc["tasks"]:
         if t.get("origin") == "review-cure":
             t["status"] = "completed"
-    atomic_write_json(sup1.run.tasks_file, tasks_doc)
+    sup1.run.write_tasks(tasks_doc)
 
     sup2 = _supervisor_bounded(root, max_approaches=3)
     sup2._approach = 1

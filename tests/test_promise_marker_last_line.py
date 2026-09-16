@@ -266,7 +266,7 @@ def _finish_one(sup: LoopSupervisor) -> IterationResult:
     for task in doc["tasks"]:
         if task["status"] != "completed":
             task["status"] = "completed"
-            atomic_write_json(sup.run.tasks_file, doc)
+            sup.run.write_tasks(doc)
             return _ok(f"finished {task['id']}")
     return _ok("nothing left")
 
@@ -449,7 +449,7 @@ def test_a_skipped_task_is_completion_but_a_failed_one_is_not(tmp_path):
         doc["tasks"][0]["status"] = "completed"
         doc["tasks"][1]["status"] = "skipped"
         doc["tasks"][1]["notes"] = "out of scope; not a claim the criteria hold"
-        atomic_write_json(sup.run.tasks_file, doc)
+        sup.run.write_tasks(doc)
         return _ok("one done, one honestly skipped")
 
     root = tmp_path / "run"

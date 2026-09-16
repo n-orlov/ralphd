@@ -63,6 +63,8 @@ import json
 import logging
 import os
 import pwd
+import shutil
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -339,3 +341,163 @@ def write_root_owned_json(path: Path, obj: Any) -> None:
         tmp.write_text(text)
         os.replace(tmp, path)
         os.chmod(path, 0o644)
+
+
+# --------------------------------------------------------------------------
+# Task 004 (requirement B, #202): the authoritative task record, unreplaceable
+# at the agent uid -- not merely root-owned (`write_root_owned_json` above
+# already made the FILE that), but living in a directory the agent cannot
+# write into either. `write_root_owned_json`'s own reproduction is exactly
+# this gap: the file is root-owned 0644, but its directory
+# (`run.root`, bind-mounted agent-owned) is not, so a dropped child cannot
+# open the file for writing but CAN `os.replace()` a whole substituted
+# document onto its path -- a directory-entry operation, gated by the
+# PARENT's permissions, never the target's own.
+#
+# Unlike `CONTROL_CREDENTIALS_DIR` above (deliberately never bind-mounted,
+# because a credential need not survive a container's death), the task
+# record MUST survive a `resume`'s fresh container -- so it cannot live
+# purely in this container's own writable layer either. The resolution:
+# a subdirectory INSIDE the bind-mounted run dir itself
+# (`PROTECTED_TASKS_DIRNAME`), chowned/chmoded root-owned 0700 by the
+# engine (which is genuinely root here -- no user-namespace remap, so a
+# `chown` made from inside the container changes the HOST inode's
+# ownership too, the same fact that makes `tasks.json` itself root-owned
+# today). Because it is reasserted on EVERY write, not only at creation,
+# an agent that deletes the directory between writes and recreates its own
+# in its place is corrected on the very next write rather than the
+# redirection surviving -- B.1's "every ancestor on the path" concern, one
+# level up from the file itself.
+PROTECTED_TASKS_DIRNAME = ".tasks-protected"
+
+
+def _reject_planted_entry(path: Path) -> None:
+    """If something already sits at `path` and it is not a genuine
+    directory -- a file precreated at this name, or (never followed,
+    `lstat` does not dereference) a symlink planted there before the
+    boundary could protect it -- discard it rather than trust or open
+    through it. Never `Path.mkdir(exist_ok=True)`, whose own existence
+    check follows a symlink's target and would silently accept one."""
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(st.st_mode) and not stat.S_ISLNK(st.st_mode):
+        return
+    if stat.S_ISDIR(st.st_mode):
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _ensure_protected_tasks_dir(path: Path, *, elevated: bool) -> None:
+    """Create `path` if missing, discarding anything planted at that name
+    that is not a real directory, then (when `elevated`) pin it root-owned
+    0700. Called at the top of every authoritative write -- see the module
+    comment above for why this has to be unconditional, not merely
+    creation-time.
+    """
+    _reject_planted_entry(path)
+    path.mkdir(parents=True, exist_ok=True)
+    if elevated:
+        os.chown(path, 0, 0)
+        os.chmod(path, 0o700)
+
+
+def write_protected_tasks_json(protected_path: Path, view_path: Path,
+                                obj: Any) -> None:
+    """Write `obj` as JSON to `protected_path` -- the authoritative task
+    record -- inside `_ensure_protected_tasks_dir`'s self-healing
+    directory, root-owned 0600 under the uid boundary; then refresh an
+    ordinary, agent-readable VIEW copy at `view_path` (task 004,
+    requirement B.3) for every reader that is not the engine itself:
+    `ralphctl tasks`, the hub's task table, the worker/steer prompts, the
+    steer hat's `context-read` tool. The engine's own reads
+    (`RunDir.read_tasks_result`) never go through `view_path` -- only
+    through `protected_path`, elevated the same way this write is.
+
+    Both temp files are created fresh every call (`_reject_planted_entry`
+    on the protected one; the view one lives in an already agent-writable
+    directory so there is nothing to plant that a plain `os.replace`
+    doesn't already handle safely) -- B.2's "a precreated path or a
+    symlink at the temp name cannot redirect the write": once the
+    directory itself denies the agent write access at all, no name inside
+    it -- predictable or not -- is a surface the agent can act on, and the
+    one window that predates that protection (the very first write ever
+    made into a directory an attacker got to before the engine did) is
+    closed by `_ensure_protected_tasks_dir` discarding anything not a
+    genuine directory before trusting it.
+
+    Degrades to an ordinary, unprotected pair of writes (still two files,
+    still atomic) when there is no boundary to raise into
+    (`privsep.separated()` is False) -- the test suite's own unprivileged
+    engine, exactly like `write_root_owned_json`'s documented degrade.
+    """
+    global _write_root_owned_json_warned
+    text = json.dumps(obj, indent=2) + "\n"
+    protected_dir = protected_path.parent
+    tmp = protected_path.with_suffix(protected_path.suffix + ".tmp")
+    with root_for_write() as elevated:
+        if not elevated and not _write_root_owned_json_warned:
+            log.warning(
+                "no uid boundary: %s is being written owned by the agent's "
+                "own uid, not root (#202) -- this is the documented "
+                "degrade (privsep.separated() is False here), not a second "
+                "code path", protected_path)
+            _write_root_owned_json_warned = True
+        _ensure_protected_tasks_dir(protected_dir, elevated=elevated)
+        _reject_planted_entry(tmp)
+        tmp.write_text(text)
+        os.replace(tmp, protected_path)
+        os.chmod(protected_path, 0o600 if elevated else 0o644)
+    # The agent-readable view, written at the engine's own (unelevated,
+    # agent) effective uid -- exactly like any other file it writes into
+    # the run dir. Best-effort: a viewer that misses one refresh sees
+    # `read_tasks_doc()`'s own stale-read fallback on its next poll, never
+    # a hard failure of the authoritative write above.
+    try:
+        view_tmp = view_path.with_suffix(view_path.suffix + ".viewtmp")
+        view_tmp.write_text(text)
+        os.replace(view_tmp, view_path)
+        os.chmod(view_path, 0o644)
+    except OSError:
+        log.warning("could not refresh the agent-readable view copy at %s",
+                    view_path)
+
+
+def release_protected_tasks_dir(run) -> None:
+    """Hand `PROTECTED_TASKS_DIRNAME` back to the agent's own uid, called
+    once from `engine.main.amain()`'s single shutdown funnel, after the
+    job has already reached a terminal (or idle-then-signalled) outcome.
+
+    Protection matters while the container is alive -- an iteration might
+    still run and attack the record. Once the process is exiting there is
+    no further write or read this protection could still be defending,
+    so releasing it here is what lets `ralphctl rm`/the hub's `DELETE
+    /api/runs/<id>` (both host-side, no root available there) delete a
+    finished run's directory exactly as they could before this task --
+    the root-owned directory this function created (task 004) would
+    otherwise be the one thing plain `shutil.rmtree(..., ignore_errors=
+    True)` cannot remove. A `resume`'s fresh container re-protects it
+    before anything reads or writes tasks.json again (every write does,
+    see `write_protected_tasks_json`). A no-op when there is no boundary
+    to release, or nothing was ever protected.
+    """
+    if not separated():
+        return
+    agent = agent_identity()
+    if agent is None:
+        return
+    protected_dir = Path(run.root) / PROTECTED_TASKS_DIRNAME
+    if not protected_dir.is_dir():
+        return
+    with root_for_write():
+        try:
+            for child in protected_dir.iterdir():
+                os.chown(child, agent.uid, agent.gid)
+                os.chmod(child, 0o644)
+            os.chown(protected_dir, agent.uid, agent.gid)
+            os.chmod(protected_dir, 0o755)
+        except OSError as exc:  # pragma: no cover - best effort at exit
+            log.warning("could not release %s back to the agent uid: %r",
+                        protected_dir, exc)

@@ -95,7 +95,7 @@ def _worker_marks_failed(run: RunDir, _prompt: str) -> IterationResult:
     doc = run.read_tasks()
     doc["tasks"][0]["status"] = "failed"
     doc["tasks"][0]["failureKind"] = "requirement-unmet"
-    atomic_write_json(run.tasks_file, doc)
+    run.write_tasks(doc)
     return _ok("cannot satisfy 001 without operator sign-off; marking failed")
 
 

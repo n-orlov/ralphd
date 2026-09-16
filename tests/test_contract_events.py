@@ -777,7 +777,7 @@ def test_check_criteria_edits_refuses_rewrite_at_validation_attempts_zero(tmp_pa
 
     tasks_data = sup.run.read_tasks()
     tasks_data["tasks"][0]["successCriteria"] = "do X, rewritten with no failure yet"
-    sup.run.tasks_file.write_text(json.dumps(tasks_data))
+    sup.run.write_tasks(tasks_data)
 
     sup._check_criteria_edits(sup.run.read_tasks())
     on_disk = sup.run.read_tasks()["tasks"][0]
@@ -811,7 +811,7 @@ def test_check_criteria_edits_refuses_rewrite_after_a_validation_failure(tmp_pat
     tasks_data = sup.run.read_tasks()
     tasks_data["tasks"][0]["successCriteria"] = "ship anything at all"
     tasks_data["tasks"][0]["status"] = "completed"
-    sup.run.tasks_file.write_text(json.dumps(tasks_data))
+    sup.run.write_tasks(tasks_data)
 
     sup._check_criteria_edits(sup.run.read_tasks())
     on_disk = sup.run.read_tasks()["tasks"][0]
@@ -886,7 +886,7 @@ def test_review_verdict_refuses_verified_claim_over_a_flagged_edit(tmp_path):
     tasks_data = sup.run.read_tasks()
     tasks_data["tasks"][0]["successCriteria"] = (
         "the criteria text a worker rewrote on its own authority")
-    sup.run.tasks_file.write_text(json.dumps(tasks_data))
+    sup.run.write_tasks(tasks_data)
     sup._check_criteria_edits(sup.run.read_tasks())
 
     # review.md always produces a findings.json in production (task 004);
