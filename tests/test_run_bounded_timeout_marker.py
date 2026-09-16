@@ -741,6 +741,11 @@ EXEMPT_RUN_STEPS = {
     ("heavy.yml", "browser-tier",
      "Reap root-owned test litter left in the runner workspace"),
     ("heavy.yml", "browser-tier", "Assert the browser toolchain is present"),
+    # Task 011 (requirement H): `chown -R` of this job's own checkout,
+    # evidence directory and `$HOME` -- local, no network fetch, a handful
+    # of seconds even over this tree, the same shape as gate.yml's own
+    # "Create the fast tier's non-root account" above (task 009).
+    ("heavy.yml", "browser-tier", "Prepare the browser tier's non-root account"),
     ("heavy.yml", "browser-tier", "Close stray browser sessions"),
     ("heavy.yml", "browser-tier", CLASSIFIER_STEP),
     ("nightly.yml", "dev-layout", "Record the job start time"),

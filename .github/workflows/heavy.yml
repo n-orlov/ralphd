@@ -198,11 +198,39 @@ jobs:
     # only within one workflow and cannot see what else is running on the
     # runner. Nothing else takes this label: the docker tier above and every
     # `nightly.yml` matrix cell stay label-agnostic and keep both slots.
+    # Still self-hosted for that placement/serialisation reason -- `runs-on`
+    # is unchanged below -- but as of task 011 (requirement H, #205 step 3)
+    # this job ALSO declares `container:`, so the runner's own ambient
+    # provisioning (docs/ci.md's "Provisioned with ... Google Chrome ...
+    # shared browser cache") is no longer this tier's subject: Chrome comes
+    # from the pinned image below, at a version this job's own log names,
+    # not from whatever the runner host happens to have installed. That
+    # ambient provisioning drifted once already (the VPS-to-workstation
+    # move silently lost python3.12.3, #205's own motivation for F) and
+    # nothing stopped it drifting here the same way.
     runs-on: [self-hosted, linux, x64, ralphd-vps, docker-host, browser-runner]
     timeout-minutes: 60
     concurrency:
       group: heavy-browser-${{ github.event_name == 'push' && 'main' || github.ref }}
       cancel-in-progress: true
+    # Pinned by digest (H.1): a tag can be repointed on the registry side, a
+    # digest cannot. `mcr.microsoft.com/playwright:v1.62.1-noble` is an
+    # existing, unauthenticated-pullable public image (verified reachable
+    # from this fleet -- unlike a custom image this task would have to push
+    # somewhere reachable, which task 009's own header already found
+    # impossible: GHCR has no API to make a package public, only its web UI
+    # does). It supplies Node 22, git, and every apt/system dependency
+    # `playwright install-deps` needs; it does NOT bundle `@playwright/cli`
+    # or real Google Chrome (only playwright-managed Chromium), so the
+    # "Install the pinned playwright-cli and Chrome" step below installs
+    # both at a version THIS WORKFLOW pins (`@playwright/cli@0.1.19`,
+    # matching docs/ci.md's own host-provisioning pin), from the image's own
+    # npm/apt -- the same shape gate.yml's `fast` job already uses for its
+    # python deps (task 009): the image pins the hard-to-reproduce base
+    # (interpreter / OS / browser system deps), a job step installs the
+    # lightweight, version-pinned overlay on top of it.
+    container:
+      image: mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
     steps:
       # Task 054 (K.3): see the docker tier's copy of this step above.
       - name: Record the job start time
@@ -220,6 +248,17 @@ jobs:
       # separate checkouts (ws-2, ws-3), the docker tier poisons whichever one
       # it landed on, and the browser tier's own checkout then dies in exactly
       # the same way on that workspace next time it is scheduled there.
+      #
+      # Task 011 (requirement H): unlike the docker tier above, this job now
+      # declares `container:`, so every step -- this one included, it is the
+      # very first -- already runs as the pinned image's own default user,
+      # which is root (verified: `id` inside `mcr.microsoft.com/playwright`
+      # prints `uid=0`). There is no unprivileged-runner problem left to
+      # solve with a nested `docker run --user 0:0`, and no `docker` client
+      # even ships in this image, so a plain `rm -rf` is both sufficient and
+      # correct here -- the nested-container form stays only where the job
+      # (docker-tier, still uncontainerized until task 012) actually runs
+      # unprivileged on the bare runner.
       - name: Reap root-owned test litter left in the runner workspace
         run: |
           ws="${GITHUB_WORKSPACE:?}"
@@ -229,10 +268,7 @@ jobs:
             exit 0
           fi
           ls -d "$ws"/.docker-e2e-tmp-*
-          image=python:3.12-slim-bookworm
-          docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image"
-          docker run --rm --user 0:0 -v "$ws":/reap "$image" \
-            sh -c 'cd /reap && rm -rf .docker-e2e-tmp-*'
+          rm -rf "$ws"/.docker-e2e-tmp-*
           if ls -d "$ws"/.docker-e2e-tmp-* >/dev/null 2>&1; then
             echo "litter survived the reap -- checkout will fail" >&2
             exit 1
@@ -245,46 +281,118 @@ jobs:
           fetch-depth: 0
 
       # Bounded like every other wall-clock-consuming step here (task 054,
-      # K.3).
+      # K.3). `python3.12-venv` is an extra apt install this job did not
+      # need before: the pinned image ships `python3.12` itself but not the
+      # `ensurepip`/`venv` module (`python3 -m venv` fails with "ensurepip is
+      # not available" otherwise -- verified against this exact image before
+      # committing this step).
       - name: Build a clean venv
         run: |
           scripts/run_bounded.sh 600 "venv build" -- bash -euo pipefail -c '
             rm -rf .venv
+            apt-get update -qq
+            apt-get install -y --no-install-recommends -qq python3.12-venv
             python3 -m venv .venv
             .venv/bin/python -m pip install --quiet --upgrade pip
             .venv/bin/python -m pip install --quiet -e ".[dev]"
           '
 
+      # Task 011 (requirement H): the pinned image (see `container:` above)
+      # supplies Node and Chrome's system deps but not `@playwright/cli` or
+      # real Google Chrome itself -- both installed here at a version this
+      # workflow pins, the same recipe `container/Dockerfile` uses for the
+      # product's own image (playwright's `install chrome` channel downloads
+      # the real browser, not the chromium playwright bundles by default).
+      # Also writes `.playwright/cli.config.json` into the checked-out
+      # workspace: launching real Chrome as the container's root user needs
+      # its own PID/user namespace, which this container's seccomp profile
+      # refuses ("Running as root without --no-sandbox is not supported");
+      # the browser tier itself runs as a non-root account below and would
+      # not need this, but the config has to exist before that switch and
+      # does no harm being present at all times -- verified end-to-end
+      # against this exact image and version before committing this step.
+      - name: Install the pinned playwright-cli and Chrome
+        run: |
+          scripts/run_bounded.sh 300 "install playwright-cli and chrome" -- bash -euo pipefail -c '
+            npm install -g --registry https://registry.npmjs.org "@playwright/cli@0.1.19"
+            cd "$(npm root -g)/@playwright/cli"
+            npx playwright install-deps chromium
+            npx playwright install chrome
+            cd "$GITHUB_WORKSPACE"
+            mkdir -p .playwright
+            printf %s "{\"browser\":{\"launchOptions\":{\"args\":[\"--no-sandbox\"]}}}" > .playwright/cli.config.json
+          '
+
       # The module skips itself when `playwright-cli` is absent
       # (tests/test_browser_hub.py: `shutil.which("playwright-cli")`), so a
-      # broken toolchain would silently produce a green lane with 45 skips.
-      # Fail here instead, loudly, before the tier runs.
+      # broken toolchain would silently produce a green lane with skips
+      # instead of a failure. Fail here instead, loudly, before the tier
+      # runs. Task 011 (requirement H, H.2): these versions are now the
+      # PINNED IMAGE's and this step's own npm/apt install above, never the
+      # runner host's ambient provisioning -- the point of this whole task.
       - name: Assert the browser toolchain is present
         run: |
+          echo "container image: mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e"
           command -v playwright-cli
           playwright-cli --version
           google-chrome --version
           echo "PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-<unset>}"
 
-      # Bounded at 2400s (task 054, K.3): with the venv build's 600 that is
-      # 50 of this job's 60 `timeout-minutes`, leaving a 10-minute reserve
-      # for checkout, the toolchain assertion and the session cleanup. #193's
-      # Chrome session drop is exactly the failure mode that can leave a
-      # playwright-cli call waiting on a dead session, and a job that dies
-      # that way used to be indistinguishable from this workflow's own push
-      # collapse.
+      # Task 011 (requirement H) fallout, the same shape gate.yml's `fast`
+      # job uses (task 009, requirement F): give the browser tier a real,
+      # non-root process uid before it runs -- launching real Chrome as this
+      # container's root default user fails even with the sandbox config
+      # above (a second, independent root restriction: "Failed to move to
+      # new namespace ... Operation not permitted", verified against this
+      # exact image). `ubuntu` is this image's own preexisting uid-1000
+      # account (its base is `ubuntu:24.04`, which ships one) -- no `useradd`
+      # needed, unlike gate.yml's python-slim image which has none. The
+      # `chown` hands this job's own checkout, its timeout-evidence
+      # directory and `$HOME` (GitHub's own per-job bind mount, never the
+      # runner service account's real home -- see gate.yml's `container:`
+      # comment for why that distinction matters) to that account. Exempt
+      # from the inner-bound wrapper (tests/test_run_bounded_timeout_marker.
+      # py's EXEMPT_RUN_STEPS): local, no network fetch, a handful of
+      # seconds even over this tree, same shape as gate.yml's own copy.
+      - name: Prepare the browser tier's non-root account
+        run: |
+          chown -R ubuntu:ubuntu "$GITHUB_WORKSPACE" "$RALPHD_TIMEOUT_EVIDENCE_DIR" "$HOME"
+
+      # Bounded at 2400s (task 054, K.3): with the venv build's 600 and the
+      # playwright-cli/Chrome install's 300 that is 55 of this job's 60
+      # `timeout-minutes`, leaving the 300s reserve
+      # tests/test_run_bounded_timeout_marker.py's JOB_RESERVE_S requires for
+      # the steps no wrapper owns (checkout, the toolchain assertion, the
+      # account switch, the session cleanup). #193's Chrome session drop is
+      # exactly the failure mode that can leave a playwright-cli call
+      # waiting on a dead session, and a job that dies that way used to be
+      # indistinguishable from this workflow's own push collapse.
+      #
+      # `su -p ubuntu -c '...'` (task 011, same shape as gate.yml's `su -p
+      # ci`, task 009): runs the whole recipe -- run_bounded.sh included --
+      # as the non-root account the previous step prepared, `-p` so
+      # `$RALPHD_JOB_STARTED_AT`, `$RALPHD_JOB_BOUND_MINUTES`,
+      # `$RALPHD_TIMEOUT_EVIDENCE_DIR` and `$HOME` all survive the user
+      # switch -- verified directly (a disposable container, same image,
+      # same `su -p` invocation, full 60-test browser marker green) before
+      # trusting it here. `su` without `-l` keeps the caller's cwd
+      # ($GITHUB_WORKSPACE), so no explicit `cd` is needed.
       - name: Browser tier
-        run: scripts/run_bounded.sh 2400 "browser tier" -- .venv/bin/python -m pytest -q -m browser --durations=15
+        run: su -p ubuntu -c 'scripts/run_bounded.sh 2400 "browser tier" -- .venv/bin/python -m pytest -q -m browser --durations=15'
 
       # A playwright-cli session is a daemon that outlives a killed pytest.
       # The suite force-closes its own sessions; this catches a cancelled job.
       # Resolve each candidate PID, verify what it is and who owns it, then
       # signal that PID -- never a pattern kill, which is how you take out a
-      # process you never meant to touch.
+      # process you never meant to touch. This step's own `run:` still
+      # executes as the container's root default user (only the tier itself
+      # switched to `ubuntu` above), so `mine` is resolved by name rather
+      # than by `id -u` of the running step -- root can still signal a
+      # uid-1000 daemon it does not own, same as before.
       - name: Close stray browser sessions
         if: always()
         run: |
-          mine=$(id -u)
+          mine=$(id -u ubuntu)
           for pid in $(pgrep -u "$mine" -f 'cliDaemon\.js' || true); do
             cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
             owner=$(stat -c %u "/proc/$pid" 2>/dev/null || true)

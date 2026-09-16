@@ -321,21 +321,33 @@ def check_heavy_browser_runner(workflow: dict) -> list[str]:
 def check_heavy_litter_reap(workflow: dict) -> list[str]:
     """Task 004 (requirement B, #202): every heavy job must reap root-owned
     `.docker-e2e-tmp-*` litter from the runner's reused workspace BEFORE its
-    `actions/checkout` step, with root (a container's -- the box has no
-    sudo). Without it a hard-killed docker-tier container leaves the
-    root-owned authoritative task record inside the checkout, `git clean`
-    cannot remove it and the next job on that workspace dies in checkout
-    (heavy 35108739999/35108738499). An empty list means the order holds.
+    `actions/checkout` step, with root. Without it a hard-killed docker-tier
+    container leaves the root-owned authoritative task record inside the
+    checkout, `git clean` cannot remove it and the next job on that
+    workspace dies in checkout (heavy 35108739999/35108738499). An empty
+    list means the order holds.
+
+    Root comes from one of two places: a nested `docker run --user 0:0 ...`
+    when the job itself still runs unprivileged on the bare runner
+    (docker-tier, until task 012), or -- task 011 (requirement H) -- the
+    job's own pinned `container:`, whose default user already IS root, so a
+    plain `rm -rf` needs no nested privilege escalation (browser-tier, from
+    task 011 on). Only the first shape is held to the nested-docker pattern;
+    a containerized job reaping with a bare `rm -rf` is correct, not a
+    defect this function should flag.
     """
     problems: list[str] = []
     for job_name, job in (workflow.get("jobs") or {}).items():
         steps = job.get("steps") or []
+        containerized = "container" in (job or {})
         reap_at = None
         checkout_at = None
         for index, step in enumerate(steps):
             run = str(step.get("run") or "")
             if reap_at is None and ".docker-e2e-tmp-" in run and "rm -rf" in run:
-                if "docker run" not in run or "--user 0:0" not in run:
+                if not containerized and (
+                    "docker run" not in run or "--user 0:0" not in run
+                ):
                     problems.append(
                         f"job {job_name!r} reaps litter without a root "
                         "container -- an unprivileged rm cannot remove it"
@@ -620,20 +632,17 @@ def test_dev_layout_cell_hardening_guard_fires_on_each_mutation(tmp_path):
 
 # Filenames must match exactly what `_load_all_workflows` (and the CI system
 # itself) sees: the basename of each file under `.github/workflows/`. This
-# allowlist's membership AT THIS COMMIT holds only the jobs tasks 011 and 012
-# have yet to move onto a pinned container: heavy.yml's `browser-tier` (task
-# 011, requirement H) and heavy.yml's `docker-tier` plus nightly.yml's
-# `dev-layout` (both task 012, requirement I). gate.yml's `fast` job needs no
-# entry -- task 009 already gave it a `container:`. Removing a job's entry
-# here without also giving it a `container:` is exactly the case this
-# guard's own first refusal exists to catch.
+# allowlist's membership AT THIS COMMIT holds only the jobs task 012 has yet
+# to move onto a pinned container: heavy.yml's `docker-tier` plus
+# nightly.yml's `dev-layout` (both task 012, requirement I). gate.yml's
+# `fast` job needs no entry -- task 009 already gave it a `container:`.
+# heavy.yml's `browser-tier` needs no entry either -- task 011 (requirement
+# H) gave it one too, and removed its own entry here in that same commit.
+# Removing a job's entry here without also giving it a `container:` is
+# exactly the case this guard's own first refusal exists to catch.
 CONTAINER_ALLOWLIST: dict[tuple[str, str], str] = {
     ("heavy.yml", "docker-tier"): (
         "task 012 (requirement I) containerizes heavy's docker-tier job; "
-        "not yet moved"
-    ),
-    ("heavy.yml", "browser-tier"): (
-        "task 011 (requirement H) containerizes heavy's browser-tier job; "
         "not yet moved"
     ),
     ("nightly.yml", "dev-layout"): (
