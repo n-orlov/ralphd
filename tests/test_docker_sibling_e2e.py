@@ -130,6 +130,117 @@ pytestmark = [pytest.mark.docker,
                                   reason="docker socket not available")]
 
 
+def _host_path(path: Path) -> str:
+    """`path`'s spelling on the REAL host, which is what a sibling
+    container's `-v` source must be. Identical to `path` on a bare host or
+    a CI runner; inside this repo's own selfdev job container `/workspace`
+    is itself a bind mount, so the same translation the hostpath-wrapper
+    applies to `ralphctl`'s mounts applies here (see this module's
+    docstring)."""
+    host_repo = os.environ.get("RALPHD_HOST_WORKSPACE")
+    if not host_repo:
+        return str(path)
+    rel = path.relative_to(REPO)
+    return str(Path(host_repo) / rel) if str(rel) != "." else host_repo
+
+
+def _reap_image() -> str:
+    """The image the reapers below run root in: whatever
+    `container/Dockerfile` is FROM. Deliberately NOT this tier's own
+    `test_image` -- that fixture removes its tags when it finalizes, and a
+    reaper must not depend on being ordered before it -- and not a
+    hardcoded name either, so the base stays a single source of truth."""
+    for line in (REPO / "container" / "Dockerfile").read_text().splitlines():
+        if line.startswith("FROM "):
+            return line.split()[1]
+    return ""
+
+
+def _reap_root_owned(target: Path) -> None:
+    """Remove `target` (a path inside this repo) as ROOT, through a sibling
+    container, and tolerate every failure.
+
+    Why this exists (task 004, requirement B, #202): the authoritative task
+    record lives in a root-owned 0700 directory bind-mounted from
+    `<registry>/configs/<run-id>/record`, and the registry of this tier is a
+    throwaway directory inside the repo checkout (`work_root`, which must
+    live here for the hostpath translation to work). The engine hands that
+    directory back to the agent uid at its own graceful shutdown, but a test
+    that ends with `docker rm -f` -- the `ctl` fixture's own teardown, and
+    any hard container death -- never reaches that funnel, so the directory
+    survives as root-owned litter that NOTHING unprivileged can remove:
+    `shutil.rmtree(ignore_errors=True)` leaves it, the next docker build's
+    context walk cannot even stat it, and on a self-hosted runner the
+    workspace cleanup step fails the whole job (heavy 35105603345, red with
+    a green test tier for exactly this reason). Root inside a container is
+    the only identity that can clear it, and this tier already has one.
+
+    Never a hard failure: if docker is unavailable, this is a no-op and the
+    caller's own `shutil.rmtree` still does what it can."""
+    image = _reap_image()
+    if not REAL_DOCKER or not image:
+        return
+    if not target.name.startswith(".docker-e2e-tmp-"):
+        return
+    subprocess.run(
+        [REAL_DOCKER, "run", "--rm", "--user", "0:0",
+         "--label", f"ralphd.run={RALPHD_RUN_ID}",
+         "--label", "ralphd.role=sibling",
+         "-v", f"{_host_path(REPO)}:/reap", image,
+         "sh", "-c", f"rm -rf /reap/{target.name}"],
+        capture_output=True, timeout=120)
+
+
+SESSION_MARKER = ".session-pid"
+
+
+def _is_stale_litter(d: Path) -> bool:
+    """Whether `d` -- a `.docker-e2e-tmp-*` directory in this repo -- belongs
+    to a pytest process that is no longer alive. `work_root` stamps its own
+    pid into `SESSION_MARKER` when it creates one, so a CONCURRENT module
+    (this tier runs `-n 2 --dist loadfile` in CI) is never swept out from
+    under itself: an unreadable marker means "from before this convention",
+    a live pid means "leave it alone", and only a dead or absent owner makes
+    the directory litter. Conservative on purpose -- a false "live" leaves a
+    directory behind, a false "stale" would delete a running test's registry."""
+    try:
+        pid = int((d / SESSION_MARKER).read_text().strip())
+    except (OSError, ValueError):
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False   # exists but not ours to signal: assume live
+    return False
+
+
+def _reap_stale_litter() -> None:
+    """The same reaping as `_reap_root_owned`, for litter a PREVIOUS session
+    left behind: a self-hosted runner's workspace is reused across jobs, so a
+    root-owned `record/` directory from a hard-killed container would
+    otherwise poison the very first `docker build` of this session (its
+    context walk) and the workspace cleanup of every job after it. Runs
+    before this module's own build for that reason, in `_reap_image()` --
+    the one image guaranteed resolvable before anything of ours is built."""
+    base = _reap_image()
+    if not REAL_DOCKER or not base:
+        return
+    stale = [d.name for d in REPO.glob(".docker-e2e-tmp-*")
+             if d.is_dir() and _is_stale_litter(d)]
+    if not stale:
+        return
+    subprocess.run(
+        [REAL_DOCKER, "run", "--rm", "--user", "0:0",
+         "--label", f"ralphd.run={RALPHD_RUN_ID}",
+         "--label", "ralphd.role=sibling",
+         "-v", f"{_host_path(REPO)}:/reap", base,
+         "sh", "-c", "cd /reap && rm -rf " + " ".join(
+             f"./{name}" for name in stale)],
+        capture_output=True, timeout=300)
+
+
 def _bridge_gateway() -> str:
     res = subprocess.run(
         [REAL_DOCKER, "network", "inspect", "bridge", "--format",
@@ -167,6 +278,10 @@ def test_image():
     Both stages are layer-cached against this daemon's prior builds (e.g.
     this very job's own ``ralphd:dev``), so this is fast in practice even
     though both are genuine, from-source ``docker build``s."""
+    # before the first build: clear any root-owned litter an earlier
+    # session left in this repo, which the build context walk would
+    # otherwise trip over (see `_reap_stale_litter`).
+    _reap_stale_litter()
     res = subprocess.run(
         [REAL_DOCKER, "build", "-f", str(REPO / "container" / "Dockerfile"),
          "-t", BASE_IMAGE_TAG, "--label", f"ralphd.run={RALPHD_RUN_ID}", str(REPO)],
@@ -199,7 +314,13 @@ def work_root():
     skills_src = root / "skills-src" / "demo-skill"
     skills_src.mkdir(parents=True)
     (skills_src / "SKILL.md").write_text("# demo-skill\n\nA fixture skill for task 041.\n")
+    # whoever sweeps stale litter later can tell a live registry from a
+    # dead one by this marker (`_is_stale_litter`).
+    (root / SESSION_MARKER).write_text(f"{os.getpid()}\n")
     yield root
+    # root first (the task record's own directory, if any test in this
+    # module left one behind), then the ordinary unprivileged sweep.
+    _reap_root_owned(root)
     shutil.rmtree(root, ignore_errors=True)
 
 
