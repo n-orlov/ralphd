@@ -200,6 +200,18 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     1,000-byte `ignored` events sitting directly between a thinking flood
     and the `message_end` that repeats the already-streamed text -- see
     `_assert_ignored_gap_after_thinking_matches_full_render_through_every_surface`.
+
+    Extended again (task 006, PRD P) with a FOURTH scenario: the rendered
+    suffix's own 200 visible `message_end` events interleaved ONE FOR ONE
+    with non-rendering `ignored` events, rather than merely preceded by
+    them -- see
+    `_assert_interleaved_ignored_suffix_is_bounded_across_every_surface`
+    (an independent reviewer probe, PRD P's own falsifying case, ported
+    into the shipped suite) -- plus a FIFTH, this task's own further
+    variant (PRD P.6): a different ratio (one visible per three opaque),
+    two distinct unrecognized type names sharing the gap, and a different
+    collapse flag (`toolcallSeen` rather than `textSeen`) -- see
+    `_assert_interleaved_toolcall_suffix_is_bounded_on_disk_and_live`.
     """
     real_lines = [json.dumps({"type": "message_end", "message": {"content": [
         {"type": "text", "text": f"line {i}"}]}}) for i in range(200)]
@@ -240,6 +252,16 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     gap_root.mkdir()
     await _assert_ignored_gap_after_thinking_matches_full_render_through_every_surface(
         gap_root, monkeypatch)
+
+    interleaved_root = tmp_path / "interleaved-suffix"
+    interleaved_root.mkdir()
+    await _assert_interleaved_ignored_suffix_is_bounded_across_every_surface(
+        interleaved_root, monkeypatch)
+
+    toolcall_root = tmp_path / "interleaved-toolcall-suffix"
+    toolcall_root.mkdir()
+    await _assert_interleaved_toolcall_suffix_is_bounded_on_disk_and_live(
+        toolcall_root, monkeypatch)
 
 
 def _write_iteration_with_older_thinking_marker(run_root: pathlib.Path, n: int,
@@ -543,3 +565,305 @@ async def _assert_older_thinking_marker_stays_bounded_across_every_surface(
         assert large_hub_bytes < large_size, (
             f"hub renderer (live={live}) read the ENTIRE grown transcript")
 
+
+def _write_iteration_with_interleaved_ignored_suffix(run_root: pathlib.Path, n: int,
+                                                      older_count: int) -> None:
+    """One iteration whose `output.jsonl` is `older_count` unrelated,
+    IGNORED older raw entries followed by 200 `message_end`/`ignored`
+    PAIRS (task 006, PRD P.2). Unlike `_write_iteration_with_ignored_head`
+    above -- whose `ignored_count` filler sits STRICTLY OLDER than the
+    200 real content lines, entirely outside the requested tail -- the
+    retained tail here interleaves the two, one non-rendering `ignored`
+    event for every visible `message_end`: growing `older_count` still
+    grows only unrelated OLDER history, never the tail's own shape, but
+    the tail itself is no longer built entirely of recognized types the
+    way E.2's fixture is."""
+    d = run_root / "iterations" / f"{n:04d}"
+    d.mkdir(parents=True)
+    meta = {"number": n, "phase": "worker", "model": "stub-model", "approach": 1,
+            "startedAt": "2025-01-01T00:00:00Z", "endedAt": "2025-01-01T00:00:01Z",
+            "exitCode": 0, "error": None, "usage": {"totalTokens": n}}
+    (d / "meta.json").write_text(json.dumps(meta))
+    older = [json.dumps({"type": "ignored", "seq": i}) for i in range(older_count)]
+    suffix: list[str] = []
+    for i in range(200):
+        suffix.append(json.dumps({"type": "message_end", "message": {"content": [
+            {"type": "text", "text": f"visible {i}"}]}}))
+        suffix.append(json.dumps({"type": "ignored", "seq": i}))
+    (d / OUTPUT_FILENAME).write_text("\n".join(older + suffix) + "\n")
+
+
+async def _grown_rendered_tail(fetch, bound_tail: int) -> list[str]:
+    """Mirror `ui_server.rendered_log_lines`'s own growing raw-bound retry
+    (`_fetch_dead_tail`/`_fetch_live_tail`): re-`fetch` a doubled raw
+    content-line bound until the render of what came back has at least
+    `bound_tail` RENDERED lines, or there is provably no more history
+    behind it. Needed here (unlike the "older thinking marker" scenario
+    above, whose real content lines equal its requested tail one for
+    one) because this fixture's retained tail interleaves one `ignored`
+    event for every visible `message_end`: a raw bound of 200 only ever
+    renders 100 of them, so the first attempt alone is never enough."""
+    boundary_token = ui_server._ITERATION_BOUNDARY_TOKEN
+    bound = bound_tail
+    raw_text = await fetch(bound)
+    while True:
+        content_lines = sum(1 for ln in raw_text.splitlines()
+                            if boundary_token not in ln)
+        rendered = render_tail_lines(raw_text, tty=False, n=bound_tail)
+        if len(rendered) >= bound_tail:
+            return rendered
+        if content_lines < bound:
+            return rendered
+        bound *= 2
+        raw_text = await fetch(bound)
+
+
+async def _assert_interleaved_ignored_suffix_is_bounded_across_every_surface(
+        root, monkeypatch) -> None:
+    """Task 006, PRD P's own falsifying scenario: a fixed 200-line
+    rendered suffix whose visible `message_end` events are interleaved
+    ONE FOR ONE with non-rendering `ignored` events (P.2) must read a
+    bounded number of transcript bytes when unrelated OLDER `ignored`
+    history grows from 10 to 100,000 events (P.1), through the real
+    engine `GET /logs` handler AND the on-disk fallback (P.3), output
+    byte-identical to the full render's own last 200 lines and identical
+    between the two fixtures (P.4), with an explicit byte ceiling
+    asserted (P.5). Ported from the v0.21.1 review's own falsifying
+    probe at `e7072b4b` (PRD's Appendix,
+    `test_e_fixed_rendered_suffix_with_interleaved_ignored_event_is_
+    bounded`; not itself committed there -- it names reviewer-local
+    helpers this repo does not have -- but its two scenarios, `live` and
+    `dead`, are both exercised below), which reported
+    `bytes=[49360, 6826540]` for `sizes=[24680, 3413270]`: the byte-read
+    ceiling failed, and only because unrelated interleaved `ignored`
+    events shared the retained tail with the `message_end` lines that
+    still need `textSeen` resolved -- nothing in this fixture ever sets
+    it, at either history size.
+
+    Before this task, `_should_extend_seed_lookback`'s opaque-filler
+    trigger (`_tail_contains_opaque_filler`) fired on ANY `"ignored"`
+    line found ANYWHERE in `tail_lines` -- true for every one of this
+    fixture's 200 pairs -- so growth walked all the way to
+    `reached_start` regardless of how much older history shared the
+    file: `output.jsonl` bytes read grew with `older_count`, not with
+    what the tail itself actually needed. Narrowing the check to
+    `tail_lines[0]` -- the retained tail's own OLDEST member, the actual
+    boundary a further read would grow past -- fixes it without
+    regressing E.3's own gap-after-thinking scenario above (whose
+    `tail_lines[0]` genuinely IS the opaque filler, for every raw bound
+    that scenario's own growing-bound retry ever asks for): this
+    fixture's `tail_lines[0]` is always the oldest retained pair's own
+    `message_end`, never the `ignored` beside it, for any raw bound this
+    interleaved suffix's growing-bound retry ever asks for (200, then
+    400 -- two attempts are enough for 200 rendered lines here, exactly
+    what the ported probe's own comment says).
+    """
+    small_reg, large_reg = root / "small", root / "large"
+    small_root = small_reg / "runs" / "probe"
+    large_root = large_reg / "runs" / "probe"
+    _write_iteration_with_interleaved_ignored_suffix(small_root, 1, 10)
+    _write_iteration_with_interleaved_ignored_suffix(large_root, 1, 100_000)
+    small_size = (small_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
+    large_size = (large_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
+
+    def _expected(run_root: pathlib.Path) -> list[str]:
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        return full[-200:]
+
+    small_expected = _expected(small_root)
+    large_expected = _expected(large_root)
+    assert small_expected == large_expected
+    assert sum(1 for ln in small_expected if "ralphd.iteration" not in ln) == 200
+
+    # -- 1. on-disk fallback, through the same growing-bound retry
+    #    `ui_server._fetch_dead_tail` itself uses ------------------------
+    async def _fetch_merged(run_root: pathlib.Path, bound: int) -> str:
+        return "".join(merged_lines(run_root, tail=bound))
+
+    small_counts = _count_transcript_bytes(monkeypatch)
+    small_direct = await _grown_rendered_tail(
+        lambda b: _fetch_merged(small_root, b), 200)
+    small_bytes = small_counts[0]
+    monkeypatch.undo()
+
+    large_counts = _count_transcript_bytes(monkeypatch)
+    large_direct = await _grown_rendered_tail(
+        lambda b: _fetch_merged(large_root, b), 200)
+    large_bytes = large_counts[0]
+    monkeypatch.undo()
+
+    assert small_direct == small_expected
+    assert large_direct == large_expected
+    assert small_bytes < 1_000_000
+    assert large_bytes < small_bytes * 10
+    assert large_bytes < 1_000_000
+    assert large_bytes < large_size, "fixed suffix read the ENTIRE grown transcript"
+
+    # -- 2. the live engine GET /logs ASGI handler -------------------------
+    (root / "small-workspace").mkdir()
+    (root / "large-workspace").mkdir()
+
+    async def _fetch_api(workspace: pathlib.Path, run_root: pathlib.Path,
+                         bound: int) -> str:
+        return await _api_logs_text(run_root, workspace, bound)
+
+    small_api_counts = _count_transcript_bytes(monkeypatch)
+    small_api = await _grown_rendered_tail(
+        lambda b: _fetch_api(root / "small-workspace", small_root, b), 200)
+    small_api_bytes = small_api_counts[0]
+    monkeypatch.undo()
+
+    large_api_counts = _count_transcript_bytes(monkeypatch)
+    large_api = await _grown_rendered_tail(
+        lambda b: _fetch_api(root / "large-workspace", large_root, b), 200)
+    large_api_bytes = large_api_counts[0]
+    monkeypatch.undo()
+
+    assert small_api == small_expected
+    assert large_api == large_expected
+    assert small_api_bytes < 1_000_000
+    assert large_api_bytes < small_api_bytes * 10
+    assert large_api_bytes < 1_000_000
+    assert large_api_bytes < large_size, "the live handler read the ENTIRE grown transcript"
+
+    # -- 3. the hub's server-side renderer, live AND dead-run fallback ----
+    def _wire_hub(mp, run_root: pathlib.Path, live: bool):
+        def _proxy(reg, run_id, path, **kw):
+            if not live:
+                return False, ""
+            import re
+            m = re.search(r"tail=(\d+)", path)
+            tail = int(m.group(1)) if m else 0
+            return True, "".join(merged_lines(run_root, tail=tail))
+        mp.setattr(ui_server, "_proxy_text", _proxy)
+
+    for live in (False, True):
+        with monkeypatch.context() as m:
+            _wire_hub(m, small_root, live)
+            small_hub_live, small_hub_lines = ui_server.rendered_log_lines(
+                small_reg, "probe", 200)
+        with monkeypatch.context() as m:
+            _wire_hub(m, large_root, live)
+            large_hub_live, large_hub_lines = ui_server.rendered_log_lines(
+                large_reg, "probe", 200)
+
+        assert small_hub_live == live and large_hub_live == live
+        assert small_hub_lines == small_expected
+        assert large_hub_lines == large_expected
+
+
+def _write_iteration_with_interleaved_toolcall_suffix(run_root: pathlib.Path, n: int,
+                                                       older_count: int) -> None:
+    """This task's own further variant (PRD P.6), deliberately unlike the
+    ported probe above in three ways at once: a one-visible-to-THREE-
+    opaque ratio rather than one-for-one, TWO distinct unrecognized type
+    names (`"ignored"` and `"heartbeat"`) sharing both the growing older
+    block and the interleaved gap rather than a single literal type
+    string, and a `toolCall` content item -- resolved by `toolcallSeen`,
+    set only by `tool_execution_start`/`tool_execution_end`, never by
+    anything in `_flags_needed_by_tail`'s `message_update` half -- rather
+    than `text`/`textSeen`. Each `message_end`'s own `bash` invocation
+    carries a unique argument (`echo {i}`), so an equality check catches
+    a reordered or truncated tail, not merely a matching line count."""
+    d = run_root / "iterations" / f"{n:04d}"
+    d.mkdir(parents=True)
+    meta = {"number": n, "phase": "worker", "model": "stub-model", "approach": 1,
+            "startedAt": "2025-01-01T00:00:00Z", "endedAt": "2025-01-01T00:00:01Z",
+            "exitCode": 0, "error": None, "usage": {"totalTokens": n}}
+    (d / "meta.json").write_text(json.dumps(meta))
+    older = [json.dumps({"type": "ignored" if i % 2 == 0 else "heartbeat", "seq": i})
+             for i in range(older_count)]
+    suffix: list[str] = []
+    for i in range(200):
+        suffix.append(json.dumps({"type": "message_end", "message": {"content": [
+            {"type": "toolCall", "name": "bash", "arguments": {"command": f"echo {i}"}}]}}))
+        suffix.append(json.dumps({"type": "ignored", "seq": i, "half": "a"}))
+        suffix.append(json.dumps({"type": "heartbeat", "seq": i}))
+        suffix.append(json.dumps({"type": "ignored", "seq": i, "half": "b"}))
+    (d / OUTPUT_FILENAME).write_text("\n".join(older + suffix) + "\n")
+
+
+async def _assert_interleaved_toolcall_suffix_is_bounded_on_disk_and_live(
+        root, monkeypatch) -> None:
+    """PRD P.6's own further variant: same growing-older-history shape as
+    `_assert_interleaved_ignored_suffix_is_bounded_across_every_surface`
+    above, but with the ratio, the opaque type names, and the resolved
+    collapse flag all changed at once (see
+    `_write_iteration_with_interleaved_toolcall_suffix`'s own docstring),
+    asserting equality and an explicit byte ceiling on both of PRD P.3's
+    named paths: the on-disk fallback and the real engine `GET /logs`
+    handler. `tail_lines[0]` is still always the oldest retained group's
+    own `message_end` for every raw bound this fixture's growing-bound
+    retry asks for (200, 400, 800 -- three attempts, since one visible
+    line now costs four raw ones), so the same fix bounds this shape too,
+    not merely the one-for-one ratio the ported probe happens to use.
+    """
+    small_reg, large_reg = root / "small", root / "large"
+    small_root = small_reg / "runs" / "probe"
+    large_root = large_reg / "runs" / "probe"
+    _write_iteration_with_interleaved_toolcall_suffix(small_root, 1, 10)
+    _write_iteration_with_interleaved_toolcall_suffix(large_root, 1, 100_000)
+    small_size = (small_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
+    large_size = (large_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
+
+    def _expected(run_root: pathlib.Path) -> list[str]:
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        return full[-200:]
+
+    small_expected = _expected(small_root)
+    large_expected = _expected(large_root)
+    assert small_expected == large_expected
+    assert sum(1 for ln in small_expected if "ralphd.iteration" not in ln) == 200
+    assert sum(1 for ln in small_expected if "echo 199" in ln) == 1
+
+    # -- 1. on-disk fallback -----------------------------------------------
+    async def _fetch_merged(run_root: pathlib.Path, bound: int) -> str:
+        return "".join(merged_lines(run_root, tail=bound))
+
+    small_counts = _count_transcript_bytes(monkeypatch)
+    small_direct = await _grown_rendered_tail(
+        lambda b: _fetch_merged(small_root, b), 200)
+    small_bytes = small_counts[0]
+    monkeypatch.undo()
+
+    large_counts = _count_transcript_bytes(monkeypatch)
+    large_direct = await _grown_rendered_tail(
+        lambda b: _fetch_merged(large_root, b), 200)
+    large_bytes = large_counts[0]
+    monkeypatch.undo()
+
+    assert small_direct == small_expected
+    assert large_direct == large_expected
+    assert small_bytes < 1_000_000
+    assert large_bytes < small_bytes * 10
+    assert large_bytes < 1_000_000
+    assert large_bytes < large_size, "fixed suffix read the ENTIRE grown transcript"
+
+    # -- 2. the live engine GET /logs ASGI handler -------------------------
+    (root / "small-workspace").mkdir()
+    (root / "large-workspace").mkdir()
+
+    async def _fetch_api(workspace: pathlib.Path, run_root: pathlib.Path,
+                         bound: int) -> str:
+        return await _api_logs_text(run_root, workspace, bound)
+
+    small_api_counts = _count_transcript_bytes(monkeypatch)
+    small_api = await _grown_rendered_tail(
+        lambda b: _fetch_api(root / "small-workspace", small_root, b), 200)
+    small_api_bytes = small_api_counts[0]
+    monkeypatch.undo()
+
+    large_api_counts = _count_transcript_bytes(monkeypatch)
+    large_api = await _grown_rendered_tail(
+        lambda b: _fetch_api(root / "large-workspace", large_root, b), 200)
+    large_api_bytes = large_api_counts[0]
+    monkeypatch.undo()
+
+    assert small_api == small_expected
+    assert large_api == large_expected
+    assert small_api_bytes < 1_000_000
+    assert large_api_bytes < small_api_bytes * 10
+    assert large_api_bytes < 1_000_000
+    assert large_api_bytes < large_size, "the live handler read the ENTIRE grown transcript"

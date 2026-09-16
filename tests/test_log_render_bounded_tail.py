@@ -27,11 +27,12 @@ parse count grows one call per historical event.
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 
 from ralphd.cli import log_render as log_render_mod
 from ralphd.cli.log_render import new_render_state, render_tail_lines, render_to_lines
-from ralphd.log_merge import boundary_line
+from ralphd.log_merge import OUTPUT_FILENAME, boundary_line
 
 
 def _iteration_meta(n: int) -> dict:
@@ -578,7 +579,10 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
     back under its 5,800 launch ceiling; cure-01-01-2 extended it with two
     MORE gap shapes in the same function for the same reason, rather than
     adding new top-level `def test_...`s; cure-01-03-2 added a fifth,
-    same reason).
+    same reason; task 006 of the CURRENT PRD -- PRD P, a distinct,
+    later requirement that happens to share this same task number under
+    a later numbering epoch -- added a sixth, again for the same reason:
+    `_assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render`).
 
     Without a sound `_should_extend_seed_lookback` trigger, growth would
     stop the moment the SINGLE OLDEST line it had read happened to be
@@ -667,4 +671,144 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
             500, post_thinking_gap_lines=_ignored_filler_lines(1000, 1000)),
         tail_ns=(1, 2, 3, 4, 5, 6, 10, 50),
         text_occurrences=1, thinking_occurrences=1, tool_occurrences=1)
+
+    # Scenario 6 (task 006, PRD P): the fixed 200-line rendered suffix
+    # itself interleaves one non-rendering `ignored` event for every
+    # visible `message_end`, one for one, rather than being preceded by
+    # unrelated filler the way scenarios 1-5 above all are -- see
+    # `_assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render`.
+    _assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render(
+        monkeypatch, tmp_path)
+
+
+def _write_interleaved_ignored_suffix_iteration(run_root, older_count: int) -> None:
+    """A single dead-run iteration (task 006, PRD P): `older_count`
+    unrelated `ignored` older entries followed by 200 `message_end`/
+    `ignored` PAIRS -- the rendered suffix's own 200 visible lines
+    interleaved one for one with non-rendering ones (P.2), rather than
+    merely preceded by them the way every other fixture in this module
+    is. Written straight onto disk via `_write_dead_run_iteration` (this
+    module's own writer, not `test_log_merge_bounded_reads.py`'s) so this
+    file's own regression stays self-contained."""
+    older = [json.dumps({"type": "ignored", "seq": i}) for i in range(older_count)]
+    suffix: list[str] = []
+    for i in range(200):
+        suffix.append(json.dumps({"type": "message_end", "message": {"content": [
+            {"type": "text", "text": f"visible {i}"}]}}))
+        suffix.append(json.dumps({"type": "ignored", "seq": i}))
+    _write_dead_run_iteration(run_root, 1, older + suffix)
+
+
+def _count_output_bytes(monkeypatch) -> list[int]:
+    """This module's own copy of `test_log_merge_bounded_reads.py`'s
+    `_count_transcript_bytes` (task 005, PRD E): every byte actually READ
+    off an `output.jsonl` file, counted by wrapping the file object's own
+    `.read`, in either text or binary mode -- not the number of times the
+    file was opened. Kept as a local copy rather than a cross-module
+    import so this module's own regression stays self-contained the same
+    way `_write_interleaved_ignored_suffix_iteration` above does."""
+    counts = [0]
+    real_open = pathlib.Path.open
+
+    def counted(self, mode="r", *args, **kwargs):
+        f = real_open(self, mode, *args, **kwargs)
+        if self.name == OUTPUT_FILENAME:
+            real_read = f.read
+
+            def read(*a, **k):
+                data = real_read(*a, **k)
+                counts[0] += len(data) if isinstance(data, bytes) else len(data.encode())
+                return data
+
+            f.read = read
+        return f
+
+    monkeypatch.setattr(pathlib.Path, "open", counted)
+    return counts
+
+
+def _assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render(
+        monkeypatch, tmp_path) -> None:
+    """Task 006, PRD P: a fixed 200-line rendered suffix whose visible
+    `message_end` events are interleaved one for one with non-rendering
+    `ignored` events must read a bounded number of transcript bytes when
+    unrelated OLDER `ignored` history grows from 10 to 100,000 events
+    (P.1/P.2), through the on-disk dead-run fallback
+    (`ui_server.rendered_log_lines`) with an explicit byte ceiling
+    asserted (P.3/P.5), output byte-identical to the full render's own
+    last 200 lines and identical between the two fixtures (P.4). The
+    fuller regression -- the same scenario also through the real engine
+    `GET /logs` ASGI handler and the hub's live-container path, plus a
+    further P.6 variant of this task's own design (a different ratio,
+    two distinct opaque type names, and a different collapse flag) --
+    lives in `test_log_merge_bounded_reads.py`, whose fixtures are built
+    the same way (`_write_iteration_with_interleaved_ignored_suffix`).
+
+    Before this task, `_should_extend_seed_lookback`'s opaque-filler
+    trigger fired on ANY `"ignored"` line found ANYWHERE in `tail_lines`,
+    true for every one of this fixture's 200 pairs, so growth walked to
+    `reached_start` regardless of how much older history shared the
+    file. Narrowing the check to `tail_lines[0]` fixes it without
+    touching scenario 5's own opaque-`tail_lines[0]` shape above: this
+    fixture's `tail_lines[0]` is always the oldest retained pair's own
+    `message_end`, for the raw bounds `ui_server`'s own growing-bound
+    retry asks for here (200, then 400).
+    """
+    from ralphd.cli import ui_server
+    from ralphd.log_merge import merged_lines
+
+    small_root = tmp_path / "interleaved-small" / "runs" / "probe"
+    large_root = tmp_path / "interleaved-large" / "runs" / "probe"
+    _write_interleaved_ignored_suffix_iteration(small_root, 10)
+    _write_interleaved_ignored_suffix_iteration(large_root, 100_000)
+    small_size = (small_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
+    large_size = (large_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
+
+    def _expected(run_root) -> list[str]:
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        return full[-200:]
+
+    small_expected = _expected(small_root)
+    large_expected = _expected(large_root)
+    assert small_expected == large_expected
+    assert sum(1 for ln in small_expected if "ralphd.iteration" not in ln) == 200
+
+    monkeypatch.setattr(ui_server, "_proxy_text", lambda *a, **k: (False, ""))
+
+    small_counts = _count_output_bytes(monkeypatch)
+    small_live, small_lines = ui_server.rendered_log_lines(
+        small_root.parent.parent, "probe", 200)
+    small_bytes = small_counts[0]
+    monkeypatch.undo()
+    monkeypatch.setattr(ui_server, "_proxy_text", lambda *a, **k: (False, ""))
+
+    large_counts = _count_output_bytes(monkeypatch)
+    large_live, large_lines = ui_server.rendered_log_lines(
+        large_root.parent.parent, "probe", 200)
+    large_bytes = large_counts[0]
+    monkeypatch.undo()
+
+    assert small_live is False and large_live is False
+    assert small_lines == small_expected
+    assert large_lines == large_expected
+    assert small_bytes < 1_000_000
+    assert large_bytes < small_bytes * 10
+    assert large_bytes < 1_000_000
+    assert large_bytes < large_size, "fixed suffix read the ENTIRE grown transcript"
+
+    # The `_tail_lines_of_file`/`_should_extend_seed_lookback` invariant
+    # itself (E.3's own safe-restart half, PRD P): the seed look-back may
+    # stop for exactly two REAL reasons -- it walked to byte 0
+    # (`reached_start`) or `_should_extend_seed_lookback` finds nothing
+    # left to resolve. Checked directly, not only through what it
+    # renders, across every `n` this module's other scenarios use.
+    from ralphd import log_merge as log_merge_mod
+
+    for run_root in (small_root, large_root):
+        out = run_root / "iterations" / "0001" / OUTPUT_FILENAME
+        for n in (1, 2, 3, 4, 5, 6, 10, 50, 200, 400):
+            kept, reached_start, prefix = log_merge_mod._tail_lines_of_file(out, n)
+            assert (reached_start
+                    or not log_merge_mod._should_extend_seed_lookback(kept, prefix)), n
 

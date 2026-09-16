@@ -356,39 +356,56 @@ _KNOWN_EVENT_TYPES = set(_TYPE_FLAG_GROUPS) | {"message_end", "ralphd.iteration"
 
 
 def _tail_contains_opaque_filler(tail_lines: list[str]) -> bool:
-    """True when `tail_lines` -- the retained tail ITSELF, never merely
-    `prefix_lines` -- carries a raw event of a type this module has no
-    dedicated meaning for at all (task cure-01-03-2, F.1/F.2/F.4, E.3):
-    the counterexample where 1,000 opaque 1,000-byte `{"type": "ignored"}`
-    filler events sit directly between a `message_end` (needing
-    `textSeen`/`thinkingSeen` resolved) and the actual streamed text/
-    thinking further back, so a `needed=2` request's own `tail_lines` is
-    `['ignored', 'message_end']` -- containing NEITHER a
-    `_TYPE_FLAG_GROUPS` member (the trigger-1 gate `_tail_active_flag_
-    groups` reads) NOR anything else this module recognizes.
+    """True when the OLDEST line in `tail_lines` -- `tail_lines[0]`, the
+    retained tail's own boundary against whatever `prefix_lines` will
+    grow into next -- is a raw event of a type this module has no
+    dedicated meaning for at all (task cure-01-03-2, F.1/F.2/F.4, E.3,
+    narrowed by task 006, PRD P: checked at the boundary alone, never
+    `tail_lines` as a whole).
 
-    Trigger 1 already answers "is there something in `tail_lines` proving
-    this iteration streams at all" -- a `tail_lines` built ENTIRELY of
-    plain, understood `message_end` lines (E.2's own fixture: `needed`
-    exactly matches the real content's own count, so no filler ever
-    shares the window) genuinely tells us there is nothing further back
-    worth finding, because the window's own composition is fully known
-    and homogeneous. An opaque type inside `tail_lines` is the opposite
-    signal: the window's own OLDEST member is something this module
-    cannot read at all, so certifying an unresolved flag `False` on the
-    strength of that absence -- what this module did before this task --
-    is exactly the defect these clauses name: "absence of a relevant
-    event in an incidental read window must not certify unknown prefix
-    state as empty". Gated on `tail_lines` alone, mirroring trigger 1's
-    own grounding: an opaque line found only in `prefix_lines` (already
-    read while chasing trigger 1 or 2) changes nothing here, since
-    `tail_lines` itself never changes across the look-back loop.
+    cure-01-03-2's own counterexample is exactly a boundary case: 1,000
+    opaque 1,000-byte `{"type": "ignored"}` filler events sit directly
+    between a `message_end` (needing `textSeen`/`thinkingSeen` resolved)
+    and the actual streamed text/thinking further back, so a `needed=2`
+    request's own `tail_lines` is `['ignored', 'message_end']` --
+    `tail_lines[0]` IS the opaque line. Every flag `tail_lines` needs is
+    read by a `message_end`/`thinking_start` inside it that itself sets
+    nothing (`_TYPE_FLAG_GROUPS` never names `message_end`) -- so with no
+    `_TYPE_FLAG_GROUPS` member anywhere in `tail_lines` (trigger 1's own
+    gate, `_tail_active_flag_groups`, already empty), NOTHING inside
+    `tail_lines` ever changes an unresolved flag's value; the only
+    question a still-unresolved flag poses is what the seed carried in
+    at `tail_lines[0]` -- what came after it, however many further
+    `message_end`/opaque lines, inherits that same answer unchanged.
+    `tail_lines[0]` being unrecognized is exactly "we do not even know
+    what we are missing, and must look further back to find out";
+    `tail_lines[0]` being a plain, understood type (E.2's fixture:
+    `tail_lines` is 200 independent `message_end` lines with no filler
+    sharing the window at all; this task's own PRD-P fixture: 200
+    `message_end`/`ignored` pairs, `tail_lines[0]` is the OLDEST pair's
+    `message_end`, never the `ignored` beside it) answers that same
+    question with a NAME (`_flags_needed_by_tail`) whose resolution
+    trigger 1 already owns -- an opaque line elsewhere in `tail_lines`
+    (never at the boundary) changes that answer for nothing further back
+    than what is already fully in memory, so scanning past `tail_lines[0]`
+    here regressed exactly the unbounded read PRD P's own fixture exists
+    to catch: 100,000 unrelated interleaved `ignored` events walked the
+    WHOLE transcript (49,360 -> 6,826,540 `output.jsonl` bytes read)
+    chasing a `textSeen` no line anywhere in the file ever sets, merely
+    because SOME `ignored` line shared `tail_lines` with the 200
+    `message_end` lines that do need it -- never because the boundary
+    itself was unrecognized.
+
+    Gated on `tail_lines[0]` alone, mirroring trigger 1's own grounding:
+    an opaque line found only in `prefix_lines` (already read while
+    chasing trigger 1 or 2), or anywhere in `tail_lines` OTHER than its
+    own oldest member, changes nothing here, since `tail_lines` itself
+    never changes across the look-back loop.
     """
-    for raw in tail_lines:
-        ev = _safe_json(raw)
-        if ev is not None and ev.get("type") not in _KNOWN_EVENT_TYPES:
-            return True
-    return False
+    if not tail_lines:
+        return False
+    ev = _safe_json(tail_lines[0])
+    return ev is not None and ev.get("type") not in _KNOWN_EVENT_TYPES
 
 
 def _has_relevant_type(lines: list[str], flags: set) -> bool:
