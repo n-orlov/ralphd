@@ -226,8 +226,11 @@ def _chmod_if_ours(d: Path, mode: int) -> None:
 # directory and every iteration record into it), so a dropped child can
 # rename any protected subdirectory of it and drop its own in place --
 # exactly how this task's first attempt was falsified. `/var/lib/ralphd` is
-# root-owned 0755 inside the image, so a directory mounted beneath it can
-# be neither renamed, unlinked nor shadowed at the agent uid, and the
+# root-owned 0755 in the running container -- created by the docker daemon
+# as it materialises this very mount point (it is in no image; task 019
+# measured that, see `privsep.provision_control_credentials()`) -- so a
+# directory mounted beneath it can be neither renamed, unlinked nor
+# shadowed at the agent uid, and the
 # engine chowns the mount point itself root-owned 0700 from inside (there
 # is no user-namespace remap, so that also chowns this HOST inode --
 # `privsep.release_protected_tasks_dir` hands it back at shutdown so

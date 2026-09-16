@@ -1312,10 +1312,13 @@ def key_store_dir() -> Path | None:
     That chown is load-bearing and not merely defensive: on the layout
     `cli.main._bind_run_secrets_mount` actually builds, this path is a
     BIND MOUNT of a host directory that `mkdir`'d agent-owned (whatever
-    uid ran `ralphctl start`/`resume` -- the agent's own uid on the
+    uid that ran `ralphctl start`/`resume` -- the agent's own uid on the
     standard configuration), so "its PARENT is root-owned" (true of
-    `/var/lib/ralphd`, in the image / from `provision_control_
-    credentials()`) says nothing about the MOUNT POINT itself, which
+    `/var/lib/ralphd`, created root-owned at runtime -- by the docker
+    daemon materialising this very mount point, or by
+    `provision_control_credentials()`'s own `mkdir`; it is in no image,
+    see that function's docstring) says nothing about the MOUNT POINT
+    itself, which
     chmod alone cannot fix (chmod never changes an owner). Measured live
     (PRD requirement C, #202's third instance) against a run this build
     predates: the store directory was owned by the agent's own uid inside
@@ -1323,12 +1326,14 @@ def key_store_dir() -> Path | None:
     ancestor-replaceable hole B.1 closed for the task record, one level
     up from where this docstring used to claim protection already held.
     Every ancestor above the mount point in turn -- `/var/lib/ralphd`,
-    `/var/lib`, `/var`, `/` -- is a base-image directory this module
-    never creates or chowns, measured root:root mode 0755 and unmodifiable
-    at the agent uid (`tests/test_run_secrets_key_store_docker.py`, walked
-    all the way to the container root per STEER 002's generalised rule
-    that a protected path is only as protected as its least-protected
-    ancestor). With no boundary and no override there is NO on-disk key
+    `/var/lib`, `/var`, `/` -- measures root:root mode 0755 and
+    unmodifiable at the agent uid (`tests/test_run_secrets_key_store_
+    docker.py`, walked all the way to the container root per STEER 002's
+    generalised rule that a protected path is only as protected as its
+    least-protected ancestor). Only the upper three are base-image
+    directories; `/var/lib/ralphd` is runtime-created root-owned, with the
+    umask caveat `privsep.provision_control_credentials()`'s docstring
+    records (task 019). With no boundary and no override there is NO on-disk key
     at all: a later episode then cannot authenticate an earlier episode's
     record and treats it as empty (fail closed), which is the documented
     degrade.

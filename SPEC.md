@@ -1482,7 +1482,10 @@ agent-owned by construction (the agent writes `notes.md`, `artifacts/` and
 every iteration record into it), so a dropped agent child could rename a
 root-owned `.tasks-protected/` aside and plant its own in its place —
 requirement B.1 asks for **every ancestor entry on the path**, not only the
-file. `/var/lib/ralphd` is root-owned 0755 inside the image, so nothing on the
+file. `/var/lib/ralphd` is root-owned 0755 in the running container — created
+by the docker daemon as it materialises this very mount point, not by an image
+layer (task 019 measured it absent from both `python:3.12-slim-bookworm` and
+the job image) — so nothing on the
 record's container path is modifiable at the agent uid; the host directory
 behind the mount lives under `config_root()`, bind-mounted READ-ONLY at
 `/config`, so no agent-writable path aliases it either. It still survives a

@@ -235,13 +235,29 @@ def provision_control_credentials() -> None:
     Task 019 (STEER 002's generalised rule) confirmed the rest of that
     chain too, not merely the immediate parent: every ancestor of
     `CONTROL_CREDENTIALS_DIR` from the container root down --
-    `/var/lib/ralphd`, `/var/lib`, `/var`, `/` -- is a base-image directory
-    this module never creates or chowns, measured live (via `docker exec`
-    as root, `tests/test_control_plane_auth_docker.py`) root:root mode
-    0755 and unreachable by a dropped agent-uid child's `os.mkdir`/
-    `os.chmod`/`os.rename` attempts against any of them. Every ancestor lies
-    outside every agent-writable path, so the rename-a-directory-entry
-    attack that rejected task 004's first attempt has no foothold here.
+    `/var/lib/ralphd`, `/var/lib`, `/var`, `/` -- measures root:root mode
+    0755 live (via `docker exec` as root,
+    `tests/test_control_plane_auth_docker.py`) and is unreachable by a
+    dropped agent-uid child's `os.mkdir`/`os.chmod`/`os.rename` attempts
+    against any of them. Every ancestor lies outside every agent-writable
+    path, so the rename-a-directory-entry attack that rejected task 004's
+    first attempt has no foothold here.
+
+    Three of those four (`/var/lib`, `/var`, `/`) are base-image
+    directories no ralphd code creates or chowns. `/var/lib/ralphd` is not:
+    it exists in neither `python:3.12-slim-bookworm` nor the job image
+    built from it, and is created at runtime, root-owned, by one of two
+    creators -- the docker daemon materialising the `record`/`run-secrets`
+    bind-mount points beneath it (0755, on the layout `ralphctl start`
+    actually builds, before this function ever runs), or the
+    `mkdir(parents=True)` below when neither mount is present. In that
+    second case its mode is whatever `0o777 & ~umask` gives: 0755 at the
+    umask the engine actually inherits in the job container (measured
+    0022), but 0777 under `umask 000` -- a world-writable ancestor of this
+    0700 directory. That residual is measured and pinned by the same docker
+    module; closing it means setting the created parent's mode explicitly
+    here (a product change task 019 proposes rather than makes), not
+    reading this chain as protected by the image.
 
     Must be called before `separate_engine_identity()` -- while the process
     is still literally root (real, effective AND saved all 0), so the

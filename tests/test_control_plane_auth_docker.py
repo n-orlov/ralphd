@@ -71,8 +71,20 @@ Five things only a real container can show:
    (`os.mkdir`-inside, `os.chmod`, `os.rename`, with `/`'s own rename
    accepting the structural `EBUSY` a mount-namespace root returns instead
    of a permission errno) before the confirmation below is written down.
-   These four are base-image ancestors no ralphd code creates or chowns --
-   they were never task 003's own fix, and this is proof, not a new one.
+   Three of those four (`/var/lib`, `/var`, `/`) are base-image
+   directories no ralphd code creates or chowns. `/var/lib/ralphd` is NOT:
+   it is absent from `python:3.12-slim-bookworm` AND from the job image
+   built on top of it (measured, `_assert_the_control_dir_parent_is_
+   runtime_created_root_owned`), and comes into existence at RUNTIME --
+   root-owned 0755 either way, but by two different creators: the docker
+   daemon materialising the `record`/`run-secrets` bind-mount points
+   beneath it (the layout `ralphctl start` actually builds, before any
+   ralphd code runs), or, on a layout with neither mount,
+   `privsep.provision_control_credentials()`'s own `mkdir(parents=True)`
+   while the engine is still literally root. Its mode in that second case
+   is `0o777 & ~umask`, which is why the umask the engine inherits is
+   measured here too. None of this is task 003's own fix; the proof is
+   that it holds, not that 003 built it.
 5. With `--api-token` enabled, the SAME dropped-agent-uid probe (4) above
    applied to `.api-token` finds it in none of the same leak routes
    either -- a separate, minimal test (enabling `--api-token` makes
@@ -97,6 +109,7 @@ import pytest
 
 from test_docker_sibling_e2e import (  # noqa: F401  (fixtures used by name)
     REAL_DOCKER,
+    RALPHD_RUN_ID,
     Ctl,
     _unique_run_id,
     _wait_status,
@@ -213,7 +226,10 @@ record("<dir>:os.rmdir", lambda: os.rmdir(control_dir))
 # that -- `/var/lib/ralphd` (the control dir's parent), `/var/lib`, `/var`
 # and `/` itself -- is walked and attacked too, exactly the same way task
 # 005 (requirement C) walked the run-secrets store's own ancestor chain.
-# These are the container's base-image ancestors regardless of which
+# `/var/lib`, `/var` and `/` are the container's base-image ancestors and
+# `/var/lib/ralphd` is runtime-created root-owned (see
+# `_assert_the_control_dir_parent_is_runtime_created_root_owned`); all four
+# are the real paths regardless of which
 # control_dir was passed in (the negative control below points control_dir
 # at a /tmp scratch dir, but these four paths are always the real ones),
 # so an attack here proves the SAME boundary every other protected leaf in
@@ -388,6 +404,101 @@ def _assert_the_probe_can_actually_see_a_hole(container: str) -> None:
         subprocess.run(
             [REAL_DOCKER, "exec", container, "rm", "-rf",
              _NEGATIVE_CONTROL_DIR], capture_output=True, timeout=30)
+
+
+def _assert_the_control_dir_parent_is_runtime_created_root_owned(
+        container: str, image: str) -> dict:
+    """Task 019, attempt 2: measure WHERE `/var/lib/ralphd` -- the control
+    credential's immediate parent, and the least-protected ancestor claimed
+    in `privsep.provision_control_credentials()`'s docstring -- actually
+    comes from, instead of asserting a provenance nobody checked.
+
+    Attempt 1's written deliverable called it "a base-image directory
+    ralphd never creates". It is not one: it is absent from the job image
+    (asserted below, `--entrypoint stat` on the very image this run
+    started), and `provision_control_credentials()` does execute
+    `CONTROL_CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)`, which
+    creates it when nothing else has. Both creators are measured:
+
+    * on the layout `ralphctl start` actually builds, the docker daemon
+      creates it root-owned 0755 while materialising the two bind-mount
+      points beneath it (`record`, task 004; `run-secrets`, task 020),
+      before any ralphd code in the container runs at all -- so the
+      engine's own `mkdir` finds it already there;
+    * with neither mount present, the `mkdir` is what creates it, at
+      `0o777 & ~umask`: 0755 under the umask the engine actually inherits
+      (0022, read from the engine process's own `/proc/<pid>/status`), and
+      0777 -- a world-writable ancestor of the 0700 control dir -- under
+      `umask 000`. That second figure is a disclosed residual, pinned here
+      so it cannot rot silently: a product change that sets the created
+      parent's mode explicitly must update this assertion in the same
+      commit.
+
+    Returns the measured figures so the caller can keep them.
+    """
+    out: dict = {}
+    # (i) not in the image: neither the base image's own /var/lib nor any
+    # layer of the job image carries this directory.
+    absent = subprocess.run(
+        [REAL_DOCKER, "run", "--rm", "--label", f"ralphd.run={RALPHD_RUN_ID}",
+         "--label", "ralphd.role=sibling", "--entrypoint", "stat", image,
+         "-c", "%u:%g:%a", "/var/lib/ralphd"],
+        capture_output=True, text=True, timeout=120)
+    assert absent.returncode != 0 and "No such file" in absent.stderr, (
+        "/var/lib/ralphd exists in the job image itself -- the provenance "
+        "this module and privsep's docstring record (runtime-created, not a "
+        f"base-image directory) is wrong: {absent.stdout!r} {absent.stderr!r}")
+    out["in-image"] = "absent"
+
+    # (ii) in the RUNNING container it is root-owned 0755, with the two
+    # bind-mount points whose creation is what put it there.
+    live = subprocess.run(
+        [REAL_DOCKER, "exec", container, "stat", "-c", "%n %u:%g:%a",
+         "/var/lib/ralphd", "/var/lib/ralphd/record",
+         "/var/lib/ralphd/run-secrets"],
+        capture_output=True, text=True, timeout=30)
+    assert live.returncode == 0, live.stderr
+    lines = dict(line.split(" ", 1) for line in live.stdout.strip().splitlines())
+    assert lines["/var/lib/ralphd"] == "0:0:755", lines
+    out["live"] = lines
+
+    # (iii) the umask the engine actually inherits, read from the engine
+    # process itself rather than assumed -- this is the figure that makes
+    # the `mkdir` path's 0755 true.
+    umask = subprocess.run(
+        [REAL_DOCKER, "exec", container, "sh", "-c",
+         "grep ^Umask /proc/1/status"],
+        capture_output=True, text=True, timeout=30)
+    assert umask.returncode == 0, umask.stderr
+    assert umask.stdout.split()[1] == "0022", umask.stdout
+    out["engine-umask"] = umask.stdout.split()[1]
+
+    # (iv) the second creator, exercised in a disposable container of the
+    # same image with NO mount under /var/lib/ralphd, so the `mkdir` inside
+    # `provision_control_credentials()` is what creates it: root-owned
+    # either way, 0755 at the inherited umask and 0777 at `umask 000` (the
+    # disclosed residual).
+    for umask_arg, expected in (("0022", "0:0:755"), ("000", "0:0:777")):
+        made = subprocess.run(
+            [REAL_DOCKER, "run", "--rm", "--label",
+             f"ralphd.run={RALPHD_RUN_ID}", "--label", "ralphd.role=sibling",
+             "--entrypoint", "sh", image, "-c",
+             f"umask {umask_arg}; python -c 'from ralphd.engine import "
+             "privsep; privsep.provision_control_credentials()' && "
+             "stat -c %u:%g:%a /var/lib/ralphd"],
+            capture_output=True, text=True, timeout=180)
+        assert made.returncode == 0, made.stderr
+        got = made.stdout.strip()
+        assert got.startswith("0:0:"), (
+            "provision_control_credentials() created the control dir's parent "
+            f"NOT root-owned under umask {umask_arg}: {got}")
+        assert got == expected, (
+            f"provision_control_credentials() created /var/lib/ralphd {got} "
+            f"under umask {umask_arg}, not the measured {expected} this "
+            "module and privsep's docstring record -- if a product change "
+            "now sets that mode explicitly, update both together")
+        out[f"mkdir-umask-{umask_arg}"] = got
+    return out
 
 
 def _assert_doctor_is_happy_with_the_new_layout(ctl_obj: Ctl, scratch,
@@ -573,6 +684,10 @@ def _assert_dropped_child_cannot_reach_control_credential(
     # through a 0700 ancestor on some other protected leaf's layout, and
     # this repo's standing rule is to never rely on it for this class of
     # check regardless).
+    # `/var/lib/ralphd`'s own PROVENANCE is measured separately, by
+    # `_assert_the_control_dir_parent_is_runtime_created_root_owned` -- it
+    # is runtime-created (docker daemon or `provision_control_credentials()`
+    # itself), not a base-image directory; only the other three are.
     for anc_path, expected_mode in (("/var/lib/ralphd", "755"),
                                     ("/var/lib", "755"),
                                     ("/var", "755"), ("/", "755")):
@@ -636,7 +751,8 @@ def _assert_root_owned_credential_copy_matches_and_survived(
             "silently succeeded")
 
 
-def test_mutating_ralphctl_commands_still_work_and_the_raw_control_gate_holds(ctl, work_root):
+def test_mutating_ralphctl_commands_still_work_and_the_raw_control_gate_holds(
+        ctl, work_root, test_image):
     run_id = _unique_run_id("e004-ctlauth")
     # task 009 (B.3): STUB_HOLD_FILE (a container-side path under
     # /workspace, mounted from work_root/ws below) blocks the job
@@ -664,6 +780,8 @@ def test_mutating_ralphctl_commands_still_work_and_the_raw_control_gate_holds(ct
     # the layout a fresh `start` actually built ----------------------------
     _assert_dropped_child_cannot_reach_control_credential(container, control_token)
     _assert_root_owned_credential_copy_matches_and_survived(container, control_token)
+    _assert_the_control_dir_parent_is_runtime_created_root_owned(
+        container, test_image)
 
     # -- `ralphctl doctor` still passes against this very layout -----------
     _assert_doctor_is_happy_with_the_new_layout(ctl, work_root, run_id)

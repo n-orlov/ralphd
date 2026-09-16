@@ -29,7 +29,11 @@ directory `ralphctl start`/`resume` bind-mount from
 `<registry>/configs/<run-id>/record` on the host -- so it still survives a
 `resume`'s fresh container, and `ralphctl rm`/the hub's DELETE still remove
 it with the rest of the run's state -- under `/var/lib/ralphd`, which is
-root-owned 0755 inside the image. Not one directory entry on that path is
+root-owned 0755 in the running container -- created by the docker daemon as
+it materialises this very mount point, not by any image layer (task 019
+measured `/var/lib/ralphd` absent from both `python:3.12-slim-bookworm` and
+the job image; see `privsep.provision_control_credentials()`). Not one
+directory entry on that path is
 modifiable at the agent uid, and no agent-writable path aliases it (the host
 directory behind the mount lives under `config_root()`, mounted READ-ONLY at
 `/config`, never under the run dir).
