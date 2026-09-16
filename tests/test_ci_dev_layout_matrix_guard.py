@@ -25,6 +25,22 @@ it enforced
 is itself retired in the same commit, so a guard requiring its presence
 would fail against the now-correct workflow file. No surviving node covers
 this one -- the requirement it pinned no longer exists to be covered.
+
+Task 010 (requirement G) adds a third, independent concern to this same
+module rather than a new file: `check_container_or_allowlisted` walks every
+job in every `*.yml` under `.github/workflows/` (auto-discovered, not
+enumerated -- a workflow added tomorrow is covered the first time this
+module is collected) and fails a job that declares neither a `container:`
+nor an entry in `CONTAINER_ALLOWLIST`, and separately fails any allowlist
+entry whose reason is blank. Its own two new nodes prove both refusals
+against a fixture workflow written under `tmp_path`, never a shipped file.
+To keep the fast tier's collected count net-zero (`tests/test_tier_budgets.
+py`'s `TIER_CEILINGS`, already at its 5800 ceiling with no headroom), the
+three separate `_check_cell_hardening` mutation tests
+(`test_dev_layout_guard_fires_when_git_install_is_dropped`,
+`..._the_cell_runs_as_root`, `..._a_docker_socket_is_added`) are merged into
+one `test_dev_layout_cell_hardening_guard_fires_on_each_mutation`, keeping
+all three original assertions -- net -2 there, +2 here, net zero overall.
 """
 
 from __future__ import annotations
@@ -557,41 +573,136 @@ def test_dev_layout_cell_prelude_matches_the_real_workflow():
     assert problems == [], problems
 
 
-def test_dev_layout_guard_fires_when_git_install_is_dropped(tmp_path):
-    broken = copy.deepcopy(_load(NIGHTLY_PATH))
+def test_dev_layout_cell_hardening_guard_fires_on_each_mutation(tmp_path):
+    """Task 010 (requirement G) merges what were three functions -- the
+    git-install, uid-drop and docker-socket mutations of
+    `_check_cell_hardening` -- into one node so the fast tier's collected
+    count stays net-zero while this task adds its own two new
+    allowlist-guard nodes below; all three original assertions survive
+    unchanged, each against its own scratch fixture."""
+    broken_no_git = copy.deepcopy(_load(NIGHTLY_PATH))
     _replace_docker_step_run(
-        broken,
+        broken_no_git,
         lambda run: re.sub(r"apt-get install -y -qq git[^\n]*\n", "", run),
     )
-    fixture = _dump_fixture(tmp_path, "broken-no-git.yml", broken)
+    fixture = _dump_fixture(tmp_path, "broken-no-git.yml", broken_no_git)
     problems = check_nightly_matrix(_load(fixture))
     assert any("installs a git binary" in p for p in problems), problems
 
-
-def test_dev_layout_guard_fires_when_the_cell_runs_as_root(tmp_path):
-    broken = copy.deepcopy(_load(NIGHTLY_PATH))
+    broken_root = copy.deepcopy(_load(NIGHTLY_PATH))
     _replace_docker_step_run(
-        broken,
+        broken_root,
         lambda run: re.sub(
             r"setpriv[^\n]*\\\n[^\n]*scripts/host_like_dev_layout\.sh",
             "scripts/host_like_dev_layout.sh",
             run,
         ),
     )
-    fixture = _dump_fixture(tmp_path, "broken-runs-as-root.yml", broken)
+    fixture = _dump_fixture(tmp_path, "broken-runs-as-root.yml", broken_root)
     problems = check_nightly_matrix(_load(fixture))
     assert any("run as root" in p for p in problems), problems
 
-
-def test_dev_layout_guard_fires_when_a_docker_socket_is_added(tmp_path):
-    broken = copy.deepcopy(_load(NIGHTLY_PATH))
+    broken_docker = copy.deepcopy(_load(NIGHTLY_PATH))
     _replace_docker_step_run(
-        broken,
+        broken_docker,
         lambda run: run.replace(
             "cp -a /src-ro /src",
             "cp -a /src-ro /src\n              apt-get install -y -qq docker.io >/dev/null",
         ),
     )
-    fixture = _dump_fixture(tmp_path, "broken-docker-in-cell.yml", broken)
+    fixture = _dump_fixture(tmp_path, "broken-docker-in-cell.yml", broken_docker)
     problems = check_nightly_matrix(_load(fixture))
     assert any("reachable daemon" in p for p in problems), problems
+
+
+# --- task 010 (requirement G): every workflow job is containerized or ------
+# --- allowlisted with a stated reason --------------------------------------
+
+# Filenames must match exactly what `_load_all_workflows` (and the CI system
+# itself) sees: the basename of each file under `.github/workflows/`. This
+# allowlist's membership AT THIS COMMIT holds only the jobs tasks 011 and 012
+# have yet to move onto a pinned container: heavy.yml's `browser-tier` (task
+# 011, requirement H) and heavy.yml's `docker-tier` plus nightly.yml's
+# `dev-layout` (both task 012, requirement I). gate.yml's `fast` job needs no
+# entry -- task 009 already gave it a `container:`. Removing a job's entry
+# here without also giving it a `container:` is exactly the case this
+# guard's own first refusal exists to catch.
+CONTAINER_ALLOWLIST: dict[tuple[str, str], str] = {
+    ("heavy.yml", "docker-tier"): (
+        "task 012 (requirement I) containerizes heavy's docker-tier job; "
+        "not yet moved"
+    ),
+    ("heavy.yml", "browser-tier"): (
+        "task 011 (requirement H) containerizes heavy's browser-tier job; "
+        "not yet moved"
+    ),
+    ("nightly.yml", "dev-layout"): (
+        "task 012 (requirement I) containerizes nightly's dev-layout cell; "
+        "not yet moved"
+    ),
+}
+
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
+
+
+def check_container_or_allowlisted(
+    workflows: dict[str, dict], allowlist: dict[tuple[str, str], str]
+) -> list[str]:
+    """Return human-readable problems: every job in every workflow in
+    `workflows` (keyed by filename) must either declare a `container:` or
+    carry a non-empty reason in `allowlist`, keyed by `(filename, job_name)`.
+    An empty list means every job in `workflows` passes both checks."""
+    problems: list[str] = []
+    for filename, workflow in workflows.items():
+        jobs = (workflow or {}).get("jobs") or {}
+        for job_name, job in jobs.items():
+            key = (filename, job_name)
+            if key in allowlist:
+                reason = allowlist[key]
+                if not (reason or "").strip():
+                    problems.append(
+                        f"{filename}:{job_name} is allowlisted with no "
+                        "stated reason"
+                    )
+                continue
+            if "container" not in (job or {}):
+                problems.append(
+                    f"{filename}:{job_name} declares neither container: nor "
+                    "an allowlist entry"
+                )
+    return problems
+
+
+def _load_all_workflows() -> dict[str, dict]:
+    return {path.name: _load(path) for path in sorted(WORKFLOWS_DIR.glob("*.yml"))}
+
+
+def test_every_workflow_job_is_containerized_or_allowlisted_with_a_reason():
+    problems = check_container_or_allowlisted(_load_all_workflows(), CONTAINER_ALLOWLIST)
+    assert problems == [], problems
+
+
+def test_container_allowlist_guard_fires_on_a_fixture_workflow(tmp_path):
+    """A fixture workflow -- never an edit to a shipped one -- proves both
+    refusals: a job with neither container: nor an allowlist entry, and an
+    allowlist entry whose reason is absent from the data."""
+    fixture_workflow = {
+        "name": "fixture",
+        "on": {"workflow_dispatch": {}},
+        "jobs": {
+            "unguarded": {
+                "runs-on": "ubuntu-latest",
+                "steps": [{"run": "echo hi"}],
+            },
+        },
+    }
+    fixture = _dump_fixture(tmp_path, "fixture-container-allowlist.yml", fixture_workflow)
+    loaded = _load(fixture)
+
+    problems = check_container_or_allowlisted({fixture.name: loaded}, {})
+    assert any("declares neither" in p for p in problems), problems
+
+    problems = check_container_or_allowlisted(
+        {fixture.name: loaded}, {(fixture.name, "unguarded"): "   "}
+    )
+    assert any("no stated reason" in p for p in problems), problems
