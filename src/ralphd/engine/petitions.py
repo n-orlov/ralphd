@@ -1302,14 +1302,30 @@ def key_store_dir() -> Path | None:
     `run.root/petition-adjudications.key` was not a secret).
     `$RALPHD_RUN_SECRETS_DIR` names the store explicitly (an operator
     putting it on a root-only tmpfs -- a store the agent uid can read is
-    the operator's own trade-off, see the module docstring); otherwise it exists exactly when the
-    uid boundary does (`privsep.separated()`), where
-    `/var/lib/ralphd/run-secrets` is created root-owned 0700 -- neither
-    readable nor replaceable at the agent uid, because its PARENT is
-    root-owned too. With no boundary and no override there is NO on-disk
-    key at all: a later episode then cannot authenticate an earlier
-    episode's record and treats it as empty (fail closed), which is the
-    documented degrade.
+    the operator's own trade-off, see the module docstring); otherwise it
+    exists exactly when the uid boundary does (`privsep.separated()`),
+    where `/var/lib/ralphd/run-secrets` is chowned/chmod'd root-owned
+    0700 -- neither readable nor replaceable at the agent uid -- by
+    `privsep.protect_run_secrets_dir()` at container startup and again,
+    self-healingly, by every `_persist_key` write.
+
+    That chown is load-bearing and not merely defensive: on the layout
+    `cli.main._bind_run_secrets_mount` actually builds, this path is a
+    BIND MOUNT of a host directory that `mkdir`'d agent-owned (whatever
+    uid ran `ralphctl start`/`resume` -- the agent's own uid on the
+    standard configuration), so "its PARENT is root-owned" (true of
+    `/var/lib/ralphd`, in the image / from `provision_control_
+    credentials()`) says nothing about the MOUNT POINT itself, which
+    chmod alone cannot fix (chmod never changes an owner). Measured live
+    (PRD requirement C, #202's third instance) against a run this build
+    predates: the store directory was owned by the agent's own uid inside
+    the container -- traversable, listable and writable -- exactly the
+    ancestor-replaceable hole B.1 closed for the task record, one level
+    up from where this docstring used to claim protection already held.
+    With no boundary and no override there is NO on-disk key at all: a
+    later episode then cannot authenticate an earlier episode's record
+    and treats it as empty (fail closed), which is the documented
+    degrade.
     """
     override = os.environ.get(RUN_SECRETS_DIR_ENV)
     if override:
@@ -1425,14 +1441,32 @@ def _persist_key(run, material: bytes) -> None:
     `privsep.root_for_write()`, HEX encoded (see `_decode_key_material`).
     A failure here is never fatal -- the key stays in memory, this episode
     authenticates its own writes as usual, and only cross-episode
-    verification degrades (to fail-closed)."""
+    verification degrades (to fail-closed).
+
+    The `os.chown(path.parent, 0, 0)` below is not redundant with
+    `os.chmod` beside it (task 005, requirement C, #202's third
+    instance): when `path.parent` is the default store, it is a bind
+    mount whose HOST source `cli.main._bind_run_secrets_mount` created at
+    whatever uid ran `ralphctl start`/`resume` -- the agent's own uid on
+    the standard configuration, since there is no user-namespace remap
+    here. `chmod` alone never changes an owner, so a mode-only fix left
+    the agent as the mount point's OWNER, for whom owner permission bits
+    are irrelevant. `privsep.protect_run_secrets_dir()` already does this
+    chown once at container startup; repeating it here, on every write,
+    is the identical self-healing discipline `_ensure_protected_tasks_dir`
+    already applies to the task record's own directory, for the same
+    reason: a resumed container's freshly re-created mount is agent-owned
+    again until something re-asserts it."""
     path = _stored_key_path(run)
     if path is None:
         return
     from ralphd.engine import privsep
+    override = os.environ.get(RUN_SECRETS_DIR_ENV)
     try:
-        with privsep.root_for_write():
+        with privsep.root_for_write() as elevated:
             path.parent.mkdir(parents=True, exist_ok=True)
+            if elevated and not override:
+                os.chown(path.parent, 0, 0)
             os.chmod(path.parent, 0o700)
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:

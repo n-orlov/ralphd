@@ -660,13 +660,98 @@ def release_protected_tasks_dir(run) -> None:
             log.warning("could not release %s back to the agent uid: %r",
                         protected_dir, exc)
 
+
+# --------------------------------------------------------------------------
+# Task 005 (requirement C, #202's third instance): the petition MAC key
+# store's mount point.
+#
+# `cli.main._bind_run_secrets_mount` binds a HOST directory
+# (`cli.main.run_secrets_dir(run_id)`, `mkdir`'d by whatever uid ran
+# `ralphctl start`/`resume` -- the agent's own uid on the standard
+# uid-1000-both-sides configuration) straight onto `petitions.
+# DEFAULT_RUN_SECRETS_DIR` (`/var/lib/ralphd/run-secrets`) inside the
+# container. There is no user-namespace remap here, so the directory
+# ENTRY presented at that container path is the HOST directory's own
+# inode, owned by that uid -- agent-writable, listable and replaceable,
+# exactly the hole `_bind_task_record_mount`'s sibling closed for the task
+# record, and exactly what PRD requirement C measured live: `docstring`
+# claimed the store was "created root-owned 0700 ... because its PARENT
+# is root-owned too", which is true of `/var/lib/ralphd` (root-owned 0755
+# in the image, and by `provision_control_credentials()`'s own
+# `mkdir(parents=True)` before this ever runs) but false of the mount
+# point itself, which chmod alone (what `petitions._persist_key` did
+# before this task) cannot fix: chmod never changes an owner, and the
+# agent remains the OWNER of its own mount point regardless of mode bits.
+#
+# `protect_run_secrets_dir()` below chowns the mount point root-owned at
+# container startup -- before any iteration can run, closing the window
+# between container start and the first key being minted -- and
+# `petitions._persist_key` does the identical chown on every write, for
+# the same self-healing reason `_ensure_protected_tasks_dir` re-asserts
+# ownership on every authoritative tasks.json write rather than only at
+# creation time.
+def protect_run_secrets_dir() -> None:
+    """Chown/chmod the petition MAC key store's mount point root-owned,
+    called once from `engine.main.amain()` before anything else runs --
+    before the API is listening and long before any iteration exists to
+    race this call.
+
+    A no-op when there is no boundary to raise into, when an operator's
+    own `$RALPHD_RUN_SECRETS_DIR` override is in play (their own choice of
+    ownership -- `petitions.key_store_dir()`'s own docstring, never this
+    function's to override), or when there is no mount at all (a
+    container started by a pre-task-005 build, or the unprivileged test
+    suite's own engine -- the documented degrade).
+    """
+    from ralphd.engine import petitions
+    if not separated():
+        return
+    if os.environ.get(petitions.RUN_SECRETS_DIR_ENV):
+        return
+    store = petitions.DEFAULT_RUN_SECRETS_DIR
     with root_for_write():
+        if not store.is_dir():
+            return
         try:
-            for child in protected_dir.iterdir():
+            os.chown(store, 0, 0)
+            os.chmod(store, 0o700)
+        except OSError as exc:  # pragma: no cover - best effort
+            log.warning("could not protect the run-secrets mount at %s: %r",
+                        store, exc)
+
+
+def release_run_secrets_dir() -> None:
+    """The run-secrets mount's own release-at-shutdown, symmetric with
+    `release_protected_tasks_dir` above and for the identical reason:
+    `ralphctl rm`/the hub's `DELETE /api/runs/<id>` (both host-side,
+    unprivileged) must still be able to remove `cli.main.run_secrets_dir
+    (run_id)` -- this mount's own host source, under `config_root(run_id)`
+    -- after the run ends. A resumed container's own `protect_run_secrets_
+    dir()` call (and every later `_persist_key` write) re-protects it on
+    its very next start, exactly like the task record's own
+    re-protect-on-first-write.
+
+    A no-op with no boundary, an operator override in play (never touched
+    by this module either way), or nothing mounted at all.
+    """
+    from ralphd.engine import petitions
+    if not separated():
+        return
+    if os.environ.get(petitions.RUN_SECRETS_DIR_ENV):
+        return
+    agent = agent_identity()
+    if agent is None:
+        return
+    store = petitions.DEFAULT_RUN_SECRETS_DIR
+    with root_for_write():
+        if not store.is_dir():
+            return
+        try:
+            for child in store.iterdir():
                 os.chown(child, agent.uid, agent.gid)
-                os.chmod(child, 0o644)
-            os.chown(protected_dir, agent.uid, agent.gid)
-            os.chmod(protected_dir, 0o755)
+                os.chmod(child, 0o600)
+            os.chown(store, agent.uid, agent.gid)
+            os.chmod(store, 0o755)
         except OSError as exc:  # pragma: no cover - best effort at exit
             log.warning("could not release %s back to the agent uid: %r",
-                        protected_dir, exc)
+                        store, exc)

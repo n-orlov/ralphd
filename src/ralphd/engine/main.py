@@ -189,6 +189,13 @@ async def amain() -> int:
     # protected copy alone, with no fallback onto an agent-writable
     # location.
     privsep.migrate_task_record(run)
+    # Task 005 (requirement C, #202's third instance): chown the petition
+    # MAC key store's mount point root-owned before anything else runs --
+    # same placement rationale as `migrate_task_record` above (before the
+    # API is listening, before any iteration exists to race it). A no-op
+    # for the documented degrades (no boundary, an operator override, or
+    # no mount at all).
+    privsep.protect_run_secrets_dir()
     # Task 020 (requirement F bullet 4): fold a pre-0.9 run dir's
     # `vigilant-verified.json` sidecar into the task record before anything
     # else touches tasks.json. A no-op for any run dir that never had
@@ -334,6 +341,9 @@ async def amain() -> int:
     # task. A `resume`'s fresh container re-protects it on its own first
     # write.
     privsep.release_protected_tasks_dir(run)
+    # Task 005 (requirement C, #202's third instance): symmetric release
+    # of the run-secrets mount, same shutdown-funnel placement and reason.
+    privsep.release_run_secrets_dir()
     lock_fh.close()
     return 0 if final_state == "succeeded" else 1
 
