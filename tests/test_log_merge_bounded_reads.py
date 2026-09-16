@@ -212,6 +212,15 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     two distinct unrecognized type names sharing the gap, and a different
     collapse flag (`toolcallSeen` rather than `textSeen`) -- see
     `_assert_interleaved_toolcall_suffix_is_bounded_on_disk_and_live`.
+
+    Extended again (task 007, PRD Q) with a SIXTH scenario: a
+    RECOGNIZED, but non-rendering, `message_end` flood between the
+    thinking run and the `message_end` that replays already-streamed
+    text -- see
+    `_assert_recognized_nonrendering_gap_preserves_collapse_state_across_every_surface`,
+    called twice with two distinct recognized-but-silent shapes (PRD
+    Q.2's own empty-content `message_end`, and this task's own Q.6
+    variant, an unrecognized content-item kind).
     """
     real_lines = [json.dumps({"type": "message_end", "message": {"content": [
         {"type": "text", "text": f"line {i}"}]}}) for i in range(200)]
@@ -262,6 +271,22 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     toolcall_root.mkdir()
     await _assert_interleaved_toolcall_suffix_is_bounded_on_disk_and_live(
         toolcall_root, monkeypatch)
+
+    empty_message_end_line = json.dumps(
+        {"type": "message_end", "message": {"content": []}, "padding": "x" * 1000})
+    q_empty_root = tmp_path / "recognized-nonrendering-empty"
+    q_empty_root.mkdir()
+    await _assert_recognized_nonrendering_gap_preserves_collapse_state_across_every_surface(
+        q_empty_root, monkeypatch, "empty-content-message-end", empty_message_end_line)
+
+    citation_message_end_line = json.dumps(
+        {"type": "message_end",
+         "message": {"content": [{"type": "citation", "pad": "x" * 1000}]}})
+    q_citation_root = tmp_path / "recognized-nonrendering-citation"
+    q_citation_root.mkdir()
+    await _assert_recognized_nonrendering_gap_preserves_collapse_state_across_every_surface(
+        q_citation_root, monkeypatch, "unrecognized-content-kind-message-end",
+        citation_message_end_line)
 
 
 def _write_iteration_with_older_thinking_marker(run_root: pathlib.Path, n: int,
@@ -867,3 +892,111 @@ async def _assert_interleaved_toolcall_suffix_is_bounded_on_disk_and_live(
     assert large_api_bytes < small_api_bytes * 10
     assert large_api_bytes < 1_000_000
     assert large_api_bytes < large_size, "the live handler read the ENTIRE grown transcript"
+
+
+def _write_iteration_with_recognized_nonrendering_gap(run_root: pathlib.Path, n: int,
+                                                       text: str, gap_line: str,
+                                                       gap_count: int) -> None:
+    """One iteration (task 007, PRD Q) that streams `text`, floods 500
+    `thinking_delta` events, then floods `gap_count` copies of `gap_line`
+    -- a raw event this module fully RECOGNIZES (`message_end`) but that
+    itself sets no collapse-guard flag and renders no output at all
+    (Q.1) -- then a final `message_end` that replays `text`. PRD Q's own
+    falsifying scenario, ported from the v0.21.1 review's independent
+    probe at `e7072b4b` (`test_f_recognized_nonrendering_gap_preserves_
+    state`, not itself committed -- PRD's Appendix): before this task,
+    the renderer recognized `message_end`, saw it produced no output,
+    and published "never streamed" for text that HAD already streamed
+    far enough back that a small requested tail's own retained window
+    never saw the streaming events directly."""
+    d = run_root / "iterations" / f"{n:04d}"
+    d.mkdir(parents=True)
+    meta = {"number": n, "phase": "worker", "model": "stub-model", "approach": 1,
+            "startedAt": "2025-01-01T00:00:00Z", "endedAt": "2025-01-01T00:00:01Z",
+            "exitCode": 0, "error": None, "usage": {"totalTokens": n}}
+    (d / "meta.json").write_text(json.dumps(meta))
+    lines = [
+        json.dumps({"type": "message_update",
+                    "assistantMessageEvent": {"type": "text_delta", "delta": text}}),
+        json.dumps({"type": "message_update",
+                    "assistantMessageEvent": {"type": "text_end"}}),
+        json.dumps({"type": "message_update",
+                    "assistantMessageEvent": {"type": "thinking_start"}}),
+    ]
+    lines += [json.dumps({"type": "message_update",
+                         "assistantMessageEvent": {"type": "thinking_delta",
+                                                    "delta": "thinking"}})
+              for _ in range(500)]
+    lines += [gap_line for _ in range(gap_count)]
+    lines.append(json.dumps({"type": "message_end", "message": {"content": [
+        {"type": "text", "text": text}]}}))
+    (d / OUTPUT_FILENAME).write_text("\n".join(lines) + "\n")
+
+
+async def _assert_recognized_nonrendering_gap_preserves_collapse_state_across_every_surface(
+        root, monkeypatch, label: str, gap_line: str) -> None:
+    """Task 007, PRD Q's own falsifying scenario (Q.1-Q.3): text
+    streamed, then 500 `thinking_delta`s, then 1,000 RECOGNIZED-but-
+    silent events of `gap_line`'s own shape padded to 1,000 bytes each,
+    then a `message_end` replaying the already-streamed text. The full
+    render's last two lines are the collapsed `[thinking...]` marker and
+    the iteration-end boundary, never the replayed text -- checked
+    through every surface P's own scenarios above already check: the
+    on-disk fallback, the real engine `GET /logs` ASGI handler (the
+    ACTUAL route, never a stand-in for it), and the hub's server-side
+    renderer, both its live and dead-run fallback branches.
+
+    Called twice by the top-level test below with two distinct `gap_line`
+    shapes: PRD Q.2's own scenario (`label ==
+    "empty-content-message-end"`, `content: []`) and this task's own
+    Q.6 variant (`label == "unrecognized-content-kind-message-end"`, a
+    non-empty `content` built entirely of an item kind
+    `_render_message_end`/`_flags_needed_by_tail` do not recognize,
+    `{"type": "citation", ...}`) -- both are `message_end` events this
+    module fully recognizes yet that carry no `text`/`thinking`/
+    `toolCall` item at all, so both are exactly as uninformative about
+    the state before them as an unknown/opaque type would be (Q.5's own
+    property, see `log_merge._message_end_is_uninformative`)."""
+    text = f"{label} streamed text must not replay after 1,000 recognized silent events"
+    run_root = root / "runs" / "probe"
+    _write_iteration_with_recognized_nonrendering_gap(run_root, 1, text, gap_line, 1000)
+
+    full = render_to_lines("".join(merged_lines(run_root)), tty=False, state=new_render_state())
+    assert full[-2].strip() == "[thinking\u2026]", (label, full[-2:])
+    assert sum(1 for ln in full if text in ln) == 1, (label, full)
+    assert all(ln != "" for ln in full[-2:]), (label, full[-2:])
+
+    # -- 1. on-disk fallback, through the same growing-bound retry
+    #    `ui_server._fetch_dead_tail` itself uses ------------------------
+    async def _fetch_merged(bound: int) -> str:
+        return "".join(merged_lines(run_root, tail=bound))
+
+    direct = await _grown_rendered_tail(_fetch_merged, 2)
+    assert direct == full[-2:], (label, direct, full[-2:])
+
+    # -- 2. the live engine GET /logs ASGI handler -------------------------
+    (root / "workspace").mkdir()
+
+    async def _fetch_api(bound: int) -> str:
+        return await _api_logs_text(run_root, root / "workspace", bound)
+
+    api = await _grown_rendered_tail(_fetch_api, 2)
+    assert api == full[-2:], (label, api, full[-2:])
+
+    # -- 3. the hub's server-side renderer, live AND dead-run fallback ----
+    def _wire_hub(mp, live):
+        def _proxy(reg, run_id, path, **kw):
+            if not live:
+                return False, ""
+            import re
+            m = re.search(r"tail=(\d+)", path)
+            n = int(m.group(1)) if m else 0
+            return True, "".join(merged_lines(run_root, tail=n))
+        mp.setattr(ui_server, "_proxy_text", _proxy)
+
+    for live in (False, True):
+        with monkeypatch.context() as m:
+            _wire_hub(m, live)
+            hub_live, hub_lines = ui_server.rendered_log_lines(root, "probe", 2)
+        assert hub_live == live
+        assert hub_lines == full[-2:], (label, live, hub_lines, full[-2:])

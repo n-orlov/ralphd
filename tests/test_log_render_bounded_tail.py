@@ -340,6 +340,29 @@ def _ignored_filler_lines(count: int, line_bytes: int) -> list[str]:
     return [line + "\n" for _ in range(count)]
 
 
+def _recognized_nonrendering_message_end_lines(count: int, line_bytes: int,
+                                                content_item: dict | None) -> list[str]:
+    """`count` `message_end` events (task 007, PRD Q) that this module
+    fully RECOGNIZES (`render_log_line` parses `message_end` without
+    error, `_KNOWN_EVENT_TYPES` names it) but that themselves set no
+    collapse-guard flag and render no output at all -- `content_item is
+    None` (PRD Q.2's own falsifying scenario): `content: []`; otherwise
+    (this task's own Q.6 variant) a single content item of an
+    unrecognized `type` (`_render_message_end`/`_flags_needed_by_tail`
+    act on none of `text`/`thinking`/`toolCall`, so anything else is as
+    silent as an empty list) -- each padded to EXACTLY `line_bytes` bytes
+    via an unrelated top-level field, mirroring `_ignored_filler_lines`'s
+    own exact-byte-size convention so this gap's total size is pinned
+    the identical way scenario 5's opaque gap already is."""
+    content = [content_item] if content_item else []
+    base = json.dumps({"type": "message_end", "message": {"content": content}, "pad": ""})
+    pad_len = max(0, line_bytes - len(base) - 1)
+    line = json.dumps({"type": "message_end", "message": {"content": content},
+                      "pad": "x" * pad_len})
+    assert len(line) + 1 == line_bytes, (len(line) + 1, line_bytes)
+    return [line + "\n" for _ in range(count)]
+
+
 def _tool_call_lines(tool_call_id: str, name: str, args: dict, result: str = "ok",
                      ignored_gap: int = 0, ignored_line_bytes: int | None = None) -> list[str]:
     """A `tool_execution_start` (with `args`) and its matching
@@ -583,6 +606,11 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
     later requirement that happens to share this same task number under
     a later numbering epoch -- added a sixth, again for the same reason:
     `_assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render`).
+    Task 007 (PRD Q) added a seventh and an eighth, same reason again: a
+    RECOGNIZED-but-silent `message_end` gap (empty content, then an
+    unrecognized content-item kind) between the thinking flood and the
+    replaying `message_end`, reusing `_restart_iteration_lines`'s own
+    `post_thinking_gap_lines` parameter.
 
     Without a sound `_should_extend_seed_lookback` trigger, growth would
     stop the moment the SINGLE OLDEST line it had read happened to be
@@ -679,6 +707,37 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
     # `_assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render`.
     _assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render(
         monkeypatch, tmp_path)
+
+    # Scenario 7 (task 007, PRD Q.1/Q.2): 1,000 RECOGNIZED, but silent,
+    # empty-content `message_end` events sit between the thinking flood
+    # and the `message_end` that repeats the tool call, text and
+    # thinking -- exactly like scenario 5's opaque `"ignored"` filler,
+    # except this filler is a type `render_log_line` fully parses
+    # (`message_end`) rather than one it has never heard of at all: PRD
+    # Q's own point is that recognizing an event's type is not the same
+    # as knowing the collapse state it carries (Q.1), so this gap must be
+    # bounded the identical way scenario 5's opaque gap already is.
+    _assert_collapse_state_carries_across_a_cut(
+        monkeypatch, tmp_path, "wide-post-thinking-message-end-gap",
+        _restart_iteration_lines(
+            500, post_thinking_gap_lines=_recognized_nonrendering_message_end_lines(
+                1000, 1000, None)),
+        tail_ns=(1, 2, 3, 4, 5, 6, 10, 50),
+        text_occurrences=1, thinking_occurrences=1, tool_occurrences=1)
+
+    # Scenario 8 (task 007, PRD Q.6): the same gap, built instead from
+    # `message_end` events whose `content` holds one item of an
+    # unrecognized KIND (`"citation"`) rather than being empty outright --
+    # a second, distinct recognized-but-silent shape neither the ported
+    # reviewer probe nor scenario 7 above contains, proving the fix
+    # generalizes past the single literal empty-content case.
+    _assert_collapse_state_carries_across_a_cut(
+        monkeypatch, tmp_path, "wide-post-thinking-citation-gap",
+        _restart_iteration_lines(
+            500, post_thinking_gap_lines=_recognized_nonrendering_message_end_lines(
+                1000, 1000, {"type": "citation"})),
+        tail_ns=(1, 2, 3, 4, 5, 6, 10, 50),
+        text_occurrences=1, thinking_occurrences=1, tool_occurrences=1)
 
 
 def _write_interleaved_ignored_suffix_iteration(run_root, older_count: int) -> None:

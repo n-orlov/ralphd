@@ -355,13 +355,64 @@ def _dangling_tool_call_ids(tail_lines: list[str], prefix_lines: list[str]) -> s
 _KNOWN_EVENT_TYPES = set(_TYPE_FLAG_GROUPS) | {"message_end", "ralphd.iteration"}
 
 
+def _message_end_is_uninformative(ev: dict) -> bool:
+    """True when a `message_end` event's own `content` holds no item this
+    module's renderer or seed-state reader would ever act on -- no
+    `text`, `thinking` or `toolCall` item at all (task 007, PRD Q). An
+    EMPTY content list (Q.2's own falsifying scenario: 1,000
+    `message_end` events padded to 1,000 bytes each via an unrelated
+    top-level field, `content: []`) is the narrowest case, but a
+    NON-empty content list built entirely of item kinds `_render_
+    message_end`/`_flags_needed_by_tail` do not recognize (this task's
+    own Q.6 variant: 1,000 `message_end` events each carrying one
+    `{"type": "citation", ...}` item padded to 1,000 bytes) is exactly
+    the same shape -- `render_log_line` prints nothing for either, and
+    neither line, seen alone, tells `_prior_collapse_state` whether
+    `textSeen`/`thinkingSeen`/`toolcallSeen` holds one way or the other.
+    Mirrors `_flags_needed_by_tail`'s own per-item `kind` check so a
+    future content kind that function learns to read is uninformative
+    here in exactly the same cases, never more or fewer."""
+    content = (ev.get("message") or {}).get("content") or []
+    return not any(isinstance(item, dict) and item.get("type") in ("text", "thinking", "toolCall")
+                  for item in content)
+
+
 def _tail_contains_opaque_filler(tail_lines: list[str]) -> bool:
     """True when the OLDEST line in `tail_lines` -- `tail_lines[0]`, the
     retained tail's own boundary against whatever `prefix_lines` will
-    grow into next -- is a raw event of a type this module has no
+    grow into next -- is EITHER a raw event of a type this module has no
     dedicated meaning for at all (task cure-01-03-2, F.1/F.2/F.4, E.3,
     narrowed by task 006, PRD P: checked at the boundary alone, never
-    `tail_lines` as a whole).
+    `tail_lines` as a whole) OR a `message_end` this module recognizes
+    perfectly well but that itself carries no state information either
+    way (task 007, PRD Q -- see `_message_end_is_uninformative`).
+
+    PRD Q.1's own point is exactly this pairing: an event the renderer
+    *recognizes* but that produces no output is precisely as uninformative
+    about the state before it as one this module cannot parse the
+    meaning of at all -- recognition is not the discriminator; only
+    whether the event actually SETS one of the three collapse-guard
+    flags (`_TYPE_FLAG_GROUPS`) is. Before this task, an uninformative
+    `message_end` sitting at `tail_lines[0]` was treated as a fully
+    KNOWN, RESOLVED boundary (`_KNOWN_EVENT_TYPES` lists `message_end`
+    unconditionally) -- so with no `_TYPE_FLAG_GROUPS` member anywhere in
+    `tail_lines` either (trigger 1's own gate, already empty for a
+    fixture built of nothing but `message_end`), growth stopped
+    immediately and a still-genuinely-unresolved `textSeen`/`thinkingSeen`
+    defaulted to `False` -- publishing "never streamed" for a message
+    that HAD already streamed, minutes and 1,000 padded events earlier,
+    and printing its replayed text where `[thinking…]` belonged (PRD Q's
+    own falsifying probe, `e7072b4b`: `test_f_recognized_nonrendering_gap_
+    preserves_state`). A `message_end` that DOES carry a `text`/
+    `thinking`/`toolCall` item is deliberately excluded from this new
+    half -- it is a READ of a flag (`_flags_needed_by_tail` already names
+    it as `needed`), never silence, and trigger 1's own `tail_lines`-
+    grounded evidence check is what decides whether ITS unresolved flag
+    is worth searching for; conflating the two would regrow exactly the
+    unbounded walk P's own `_write_iteration_with_ignored_head`/
+    interleaved-suffix fixtures exist to bound (every one of THEIR
+    `message_end` lines carries real `text`/`toolCall` content, so this
+    new half never fires for them at all).
 
     cure-01-03-2's own counterexample is exactly a boundary case: 1,000
     opaque 1,000-byte `{"type": "ignored"}` filler events sit directly
@@ -405,7 +456,16 @@ def _tail_contains_opaque_filler(tail_lines: list[str]) -> bool:
     if not tail_lines:
         return False
     ev = _safe_json(tail_lines[0])
-    return ev is not None and ev.get("type") not in _KNOWN_EVENT_TYPES
+    if ev is None:
+        return False
+    etype = ev.get("type")
+    if etype not in _KNOWN_EVENT_TYPES:
+        return True
+    # Task 007, PRD Q: a recognized `message_end` at the boundary that
+    # itself carries no text/thinking/toolCall item is exactly as opaque
+    # to this decision as a wholly unrecognized type -- see this
+    # function's own docstring and `_message_end_is_uninformative`.
+    return etype == "message_end" and _message_end_is_uninformative(ev)
 
 
 def _has_relevant_type(lines: list[str], flags: set) -> bool:
