@@ -70,6 +70,30 @@ jobs:
     concurrency:
       group: heavy-docker-${{ github.event_name == 'push' && 'main' || github.ref }}
       cancel-in-progress: true
+    # Task 012 (requirement I.1, #205 step 4): pinned to the SAME digest
+    # gate.yml's `fast` job already vetted (task 009, requirement F) --
+    # python:3.12.3, Debian 12 "bookworm" (full, not -slim), ships curl+tar
+    # for the docker-client fetch below and defaults to uid 0. Left at that
+    # default for every step in this job (unlike gate's/browser's non-root
+    # switch): the 24 `-m docker` tests never assert THIS job's own process
+    # uid, only the uid of the CONTAINERS it builds and drives, and running
+    # as root is what lets `docker` reach the mounted socket below with no
+    # `--group-add` gymnastics -- root bypasses the socket's `root:docker
+    # 0660` DAC check outright (verified directly: a disposable sibling,
+    # this same image, `-v /var/run/docker.sock:/var/run/docker.sock`, a
+    # `docker run` through it as uid 0 with no group-add, before trusting it
+    # here).
+    #
+    # `options:` mounts the HOST's own docker socket into this job's own
+    # container -- the identical `-v /var/run/docker.sock:/var/run/docker.sock`
+    # shape `docs/architecture.md`'s `--allow-docker` section documents for
+    # the engine's own job containers ("Mechanics"). Containers this job's
+    # tests start via that socket are SIBLINGS on the host daemon, exactly as
+    # before containerization -- only WHERE the client process issuing
+    # `docker run` now lives has changed.
+    container:
+      image: python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6
+      options: -v /var/run/docker.sock:/var/run/docker.sock
     env:
       # Per-run image tag isolation: tests/test_docker_sibling_e2e.py builds
       # `ralphd:test-$RALPHD_RUN_ID` (+ `-base`) and labels its siblings
@@ -80,6 +104,24 @@ jobs:
       # environment, so it cannot leak into a child as if this were a job
       # container.
       RALPHD_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      # Task 012 (requirement I.2): THE HOST-PATH TRANSLATION.
+      #
+      # GitHub Actions' own self-hosted `container:` runtime bind-mounts
+      # `$GITHUB_WORKSPACE` (and `$RUNNER_TEMP`) into a job's container at the
+      # SAME ABSOLUTE PATH they hold on the runner host -- this is what makes
+      # docker-outside-of-docker work at all for a self-hosted runner with a
+      # job container, and it is verified directly below ("Assert this
+      # container's workspace path resolves on the real host too") rather
+      # than assumed. So the path this job's OWN filesystem calls
+      # `$GITHUB_WORKSPACE` IS ALREADY the host's own path -- nothing needs
+      # rewriting, only naming: this is the exact `RALPHD_HOST_WORKSPACE`
+      # variable `ralphctl start --allow-docker` injects for the identical
+      # reason (docs/architecture.md, "Path translation gotcha"), and
+      # `tests/test_docker_sibling_e2e.py::_host_path` /
+      # `tests/test_run_secrets.py`'s `HOST_WORKSPACE` already read it and
+      # degrade to a no-op when it is unset -- unset is what a bare,
+      # uncontainerized runner needed; set is what THIS container needs.
+      RALPHD_HOST_WORKSPACE: ${{ github.workspace }}
     steps:
       # Task 054 (K.3): stamp this job's start, its declared bound and a fresh
       # per-job evidence directory, so the classifier step at the end can tell
@@ -127,6 +169,13 @@ jobs:
       # in tests/test_run_bounded_timeout_marker.py's EXEMPT_RUN_STEPS, and
       # tests/test_ci_dev_layout_matrix_guard.py requires both heavy jobs to
       # keep it ahead of their checkout.
+      #
+      # Task 012 (requirement I): now a PLAIN `rm -rf`, no nested
+      # `docker run --user 0:0` needed any more -- this job's own default
+      # user already IS root (the `container:` above), same simplification
+      # task 011 already made for browser-tier once IT containerized
+      # (`tests/test_ci_dev_layout_matrix_guard.py::check_heavy_litter_reap`
+      # accepts a bare `rm -rf` once `"container" in job`).
       - name: Reap root-owned test litter left in the runner workspace
         run: |
           ws="${GITHUB_WORKSPACE:?}"
@@ -136,12 +185,7 @@ jobs:
             exit 0
           fi
           ls -d "$ws"/.docker-e2e-tmp-*
-          # The image container/Dockerfile is FROM: present on this box from
-          # every docker-tier run, and pinned by tag rather than pulled blind.
-          image=python:3.12-slim-bookworm
-          docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image"
-          docker run --rm --user 0:0 -v "$ws":/reap "$image" \
-            sh -c 'cd /reap && rm -rf .docker-e2e-tmp-*'
+          rm -rf "$ws"/.docker-e2e-tmp-*
           if ls -d "$ws"/.docker-e2e-tmp-* >/dev/null 2>&1; then
             echo "litter survived the reap -- checkout will fail" >&2
             exit 1
@@ -152,6 +196,33 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      # Task 012 (requirement I.1): the docker CLIENT this job's tests and its
+      # own later steps need to reach the socket `options:` above mounted --
+      # the base image ships neither. Static, pinned binary: the identical
+      # recipe and version `container/Dockerfile` already uses for the
+      # engine's own image, so no apt/network-repo dependency and no version
+      # drift between the two. Wrapped like every other post-checkout step.
+      - name: Install the docker client for this pinned container
+        run: |
+          scripts/run_bounded.sh 90 "docker client install" -- bash -euo pipefail -c '
+            curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-29.7.2.tgz" \
+              | tar -xz -C /usr/local/bin --strip-components=1 docker/docker
+            docker --version
+          '
+
+      # Task 012 (requirement I.2): PROVE the translation stated on `env:`
+      # above rather than assume it -- a throwaway sibling mounts
+      # `$GITHUB_WORKSPACE` (this job's own env, unmodified) through the
+      # socket and must see the real checkout, not an empty directory a
+      # wrong path would silently create.
+      - name: Assert this container's workspace path resolves on the real host too
+        run: |
+          scripts/run_bounded.sh 30 "host-path assertion" -- bash -euo pipefail -c '
+            docker run --rm -v "$GITHUB_WORKSPACE":/check:ro \
+              python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6 \
+              sh -c "test -f /check/pyproject.toml && echo host-path-confirmed: pyproject.toml visible through the socket-mounted path"
+          '
 
       # Wrapped in scripts/run_bounded.sh (task 054, K.3) like the tier step
       # below: an inner bound makes an overrun an ordinary step `failure`
@@ -177,14 +248,15 @@ jobs:
       # images and run real containers on a 4-core / 7 GB box. Once we have a
       # number, `-n 2 --dist loadfile` is the next thing to try.
       #
-      # Bounded at 6000s (task 054, K.3): with the venv build's 600 that is
-      # 110 of this job's 120 `timeout-minutes`, leaving the 10-minute
-      # reserve tests/test_run_bounded_timeout_marker.py requires for the
-      # steps no wrapper owns (checkout, the environment report, the image
-      # cleanup). A docker-tier hang -- an image build stalled on a registry,
-      # a container that never exits -- now ends as a step `failure` naming
-      # itself, not as a `cancelled` indistinguishable from the push
-      # collapse this workflow does on purpose.
+      # Bounded at 6000s (task 054, K.3): with the venv build's 600, the
+      # docker-client install's 90 and the host-path assertion's 30 (task
+      # 012, requirement I) that is 6720 of this job's 7200s `timeout-minutes`
+      # budget, leaving the reserve tests/test_run_bounded_timeout_marker.py
+      # requires for the steps no wrapper owns (checkout, the environment
+      # report, the image cleanup). A docker-tier hang -- an image build
+      # stalled on a registry, a container that never exits -- now ends as a
+      # step `failure` naming itself, not as a `cancelled` indistinguishable
+      # from the push collapse this workflow does on purpose.
       - name: Docker tier
         run: scripts/run_bounded.sh 6000 "docker tier" -- .venv/bin/python -m pytest -q -m docker --durations=15
 

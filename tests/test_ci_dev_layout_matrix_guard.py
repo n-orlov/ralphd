@@ -153,9 +153,37 @@ def check_nightly_matrix(workflow: dict) -> list[str]:
         problems.append(f"the '0 2 * * *' cron entry is missing, found {crons!r}")
 
     jobs = workflow.get("jobs") or {}
+    # Task 012 (requirement I): the outer `dev-layout` job now DOES declare a
+    # pinned `container:` of its own (I.1: "both jobs run in pinned
+    # containers") -- its steps drive the per-cell nested `docker run`, which
+    # needs a docker CLIENT and the host socket its own `options:` must
+    # mount. This supersedes the invariant this block used to check (that
+    # `container:` was never used here at all) -- that design assumption is
+    # gone by this task's own explicit requirement, not by drift. Two things
+    # stay real hazards even so, and both are checked below: an outer
+    # container with no socket access (its steps could never launch a cell)
+    # and an outer container built from one of the axis's own three images
+    # (I.3, in so many words: "the outer job's container must not become a
+    # second source of the cell's own packages").
+    axis_images = {image for image, _ in EXPECTED_CELLS}
     for job_name, job in jobs.items():
-        if "container" in job:
-            problems.append(f"job {job_name!r} uses GitHub's own container: key")
+        container = job.get("container")
+        if container is None:
+            continue
+        options = str((container or {}).get("options") or "")
+        if "docker.sock" not in options:
+            problems.append(
+                f"job {job_name!r} declares container: with no docker.sock "
+                "option in options: -- its steps could never launch the "
+                "per-cell docker run"
+            )
+        image = str((container or {}).get("image") or "").split("@")[0]
+        if image in axis_images:
+            problems.append(
+                f"job {job_name!r}'s own container image {image!r} is one of "
+                "the axis's own three images -- a second source of the "
+                "cell's own packages"
+            )
 
     dev_layout = jobs.get("dev-layout")
     if dev_layout is None:
@@ -451,12 +479,32 @@ def test_nightly_matrix_guard_fires_when_fail_fast_is_enabled(tmp_path):
     assert any("fail-fast" in p for p in problems), problems
 
 
-def test_nightly_matrix_guard_fires_when_the_container_key_is_used(tmp_path):
+def test_nightly_matrix_guard_fires_when_the_container_lacks_docker_socket_access(tmp_path):
+    """Task 012 (requirement I): dev-layout's own outer job now DOES declare a
+    pinned `container:` -- superseding the invariant this node used to check
+    (that `container:` was never used here at all), retired because the
+    design it pinned is gone: I.1 explicitly asks both heavy's docker-tier
+    and this job to run in a pinned container. What survives as a real
+    hazard, and what this rewritten node proves instead: an outer container
+    with no docker-socket access, and an outer container built from one of
+    the axis's own three images (I.3's own words: "a second source of the
+    cell's own packages")."""
     broken = copy.deepcopy(_load(NIGHTLY_PATH))
-    broken["jobs"]["dev-layout"]["container"] = "python:3.12"
-    fixture = _dump_fixture(tmp_path, "broken-container-key.yml", broken)
+    broken["jobs"]["dev-layout"]["container"] = {
+        "image": "python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6"
+    }
+    fixture = _dump_fixture(tmp_path, "broken-container-no-socket.yml", broken)
     problems = check_nightly_matrix(_load(fixture))
-    assert any("container:" in p for p in problems), problems
+    assert any("docker.sock" in p for p in problems), problems
+
+    broken_axis = copy.deepcopy(_load(NIGHTLY_PATH))
+    broken_axis["jobs"]["dev-layout"]["container"] = {
+        "image": "ubuntu:24.04",
+        "options": "-v /var/run/docker.sock:/var/run/docker.sock",
+    }
+    fixture2 = _dump_fixture(tmp_path, "broken-container-axis-image.yml", broken_axis)
+    problems2 = check_nightly_matrix(_load(fixture2))
+    assert any("second source" in p for p in problems2), problems2
 
 
 def test_nightly_matrix_guard_fires_on_a_host_level_script_invocation(tmp_path):
@@ -631,24 +679,16 @@ def test_dev_layout_cell_hardening_guard_fires_on_each_mutation(tmp_path):
 # --- allowlisted with a stated reason --------------------------------------
 
 # Filenames must match exactly what `_load_all_workflows` (and the CI system
-# itself) sees: the basename of each file under `.github/workflows/`. This
-# allowlist's membership AT THIS COMMIT holds only the jobs task 012 has yet
-# to move onto a pinned container: heavy.yml's `docker-tier` plus
-# nightly.yml's `dev-layout` (both task 012, requirement I). gate.yml's
-# `fast` job needs no entry -- task 009 already gave it a `container:`.
-# heavy.yml's `browser-tier` needs no entry either -- task 011 (requirement
-# H) gave it one too, and removed its own entry here in that same commit.
-# Removing a job's entry here without also giving it a `container:` is
-# exactly the case this guard's own first refusal exists to catch.
+# itself) sees: the basename of each file under `.github/workflows/`.
+# gate.yml's `fast` job needs no entry -- task 009 already gave it a
+# `container:`. heavy.yml's `browser-tier` needs no entry either -- task 011
+# (requirement H) gave it one too. Task 012 (requirement I) gives BOTH
+# remaining jobs -- heavy.yml's `docker-tier` and nightly.yml's `dev-layout`
+# -- a `container:` of their own in that same commit and removes their two
+# entries here, leaving only the one below. Removing a job's entry here
+# without also giving it a `container:` is exactly the case this guard's own
+# first refusal exists to catch.
 CONTAINER_ALLOWLIST: dict[tuple[str, str], str] = {
-    ("heavy.yml", "docker-tier"): (
-        "task 012 (requirement I) containerizes heavy's docker-tier job; "
-        "not yet moved"
-    ),
-    ("nightly.yml", "dev-layout"): (
-        "task 012 (requirement I) containerizes nightly's dev-layout cell; "
-        "not yet moved"
-    ),
     ("heavy.yml", "browser-image"): (
         "task 011 (requirement H): this job BUILDS the pinned image the "
         "browser tier runs in, over the runner's own docker socket. It cannot "

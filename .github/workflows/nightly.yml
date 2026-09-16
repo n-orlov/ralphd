@@ -44,24 +44,41 @@
 # the only mechanism that keeps browser work serial across workflows.
 #
 # Checkout happens on the HOST (`fetch-depth: 0`), then the checkout is
-# mounted READ-ONLY at /src-ro inside the container and `cp -a`'d (preserving
-# .git) to a container-local /src before anything installs or builds -- a
-# root-in-container process must never write into $GITHUB_WORKSPACE, or the
-# runner's NEXT checkout fails on root-owned *.egg-info/.pytest_cache left
-# behind. This deliberately does NOT use GitHub's own `container:` job key,
-# which mounts the checkout writable and would reintroduce exactly that
-# hazard.
+# mounted READ-ONLY at /src-ro inside the NESTED per-cell container and
+# `cp -a`'d (preserving .git) to a container-local /src before anything
+# installs or builds -- a root-in-CELL process must never write into
+# `$GITHUB_WORKSPACE`, or the runner's NEXT checkout fails on root-owned
+# `*.egg-info`/`.pytest_cache` left behind.
+#
+# Task 012 (requirement I): the OUTER job now DOES declare its own pinned
+# `container:` (I.1: "both jobs run in pinned containers") -- an earlier
+# version of this comment said the opposite ("deliberately does NOT use
+# GitHub's own `container:` job key"), reasoning that it mounts the checkout
+# writable and would reintroduce the same litter hazard the read-only CELL
+# mount avoids. That reasoning does not survive: this job's own steps never
+# write anything into `$GITHUB_WORKSPACE` beyond what `actions/checkout`
+# itself writes (as root, consistently, on every run this job's own pinned
+# image is used for -- there is no unprivileged run left to poison), and the
+# axis's own packages still come exclusively from the CELL's image inside a
+# brand-new sibling container the outer job's own filesystem never touches
+# (I.3: "the outer job's container must not become a second source of the
+# cell's own packages") -- the two containers do not share a filesystem at
+# all, only the read-only mount above. `docker.sock` is bind-mounted into
+# the outer container via `options:` below so its own steps can still issue
+# the nested `docker run` per cell.
 #
 # CORRECTION (task 079, steer 011): an earlier comment here claimed
 # `fetch-depth: 0` meant "no image needs git installed" -- the operator
 # states in steer 011 that that premise was theirs, from steer 008, and was
 # wrong. `fetch-depth: 0` on the HOST checkout supplies the `.git` DIRECTORY
 # (so the records lint sees real commit history once it is copied in), but
-# the suite itself EXECS the `git` BINARY at run time, inside the container,
+# the suite itself EXECS the `git` BINARY at run time, inside the CELL,
 # against that directory: `tests/records/*`, `test_report_claims_git_objects`,
 # `test_issue_traceability`, `test_commit_closing_keyword_scope` and
-# `test_petitions` all shell out to `git`. Every image below therefore gets
-# `git` installed (see the container command).
+# `test_petitions` all shell out to `git`. Every cell image below therefore
+# gets `git` installed (see the container command) -- the outer job's own
+# container never runs this suite itself, so its own git is irrelevant to
+# this requirement.
 #
 # NOTE: `schedule` only fires on the repository's default branch, so this
 # workflow does nothing until it is merged to main. Use `workflow_dispatch` to
@@ -81,6 +98,30 @@ jobs:
   dev-layout:
     name: dev-layout (${{ matrix.image }}, PYTHONUSERBASE ${{ matrix.mode }})
     runs-on: [self-hosted, linux, x64, ralphd-vps, docker-host]
+    # Task 012 (requirement I): pinned to the SAME digest heavy.yml's
+    # docker-tier and gate.yml's fast job already use -- python:3.12.3,
+    # ships curl+tar for the docker-client fetch below, defaults to uid 0
+    # (this job's own steps never need a non-root switch: they only
+    # ORCHESTRATE the per-cell nested `docker run`, whose OWN payload
+    # already drops to uid 1000 via `setpriv` -- unchanged below). `options:`
+    # mounts the host's own docker socket, the identical
+    # `-v /var/run/docker.sock:/var/run/docker.sock` shape heavy.yml's
+    # docker-tier and `docs/architecture.md`'s `--allow-docker` section both
+    # use, for the same reason: this job's own steps issue `docker run` for
+    # each cell and need a client and a reachable daemon to do it.
+    #
+    # Host-path translation (I.2): GitHub Actions' own self-hosted
+    # `container:` runtime bind-mounts `$GITHUB_WORKSPACE` into this job's
+    # container at the SAME ABSOLUTE PATH it holds on the runner host --
+    # verified directly below ("Assert this container's workspace path
+    # resolves on the real host too"), same mechanism and same proof heavy.
+    # yml's docker-tier uses. So the existing `-v "$GITHUB_WORKSPACE:/src-ro:
+    # ro"` mount in the cell step further down needs NO rewriting: the value
+    # this job's own shell already calls `$GITHUB_WORKSPACE` IS the host's
+    # own path.
+    container:
+      image: python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6
+      options: -v /var/run/docker.sock:/var/run/docker.sock
     # Task 035 (steer 026 §4): a wall-clock guard on the CI job, not a test
     # assertion or a node timeout -- 60 was already marginal (58 min observed
     # at bd284e79 with no interference from a concurrent heavy/gate run on
@@ -131,6 +172,33 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      # Task 012 (requirement I.1): the docker CLIENT this job's own steps
+      # need to reach the socket `options:` above mounted -- the base image
+      # ships neither. Static, pinned binary: the identical recipe and
+      # version `container/Dockerfile` and heavy.yml's docker-tier already
+      # use, so no apt/network-repo dependency and no version drift.
+      - name: Install the docker client for this pinned container
+        run: |
+          scripts/run_bounded.sh 90 "docker client install" -- bash -euo pipefail -c '
+            curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-29.7.2.tgz" \
+              | tar -xz -C /usr/local/bin --strip-components=1 docker/docker
+            docker --version
+          '
+
+      # Task 012 (requirement I.2): PROVE the translation stated on
+      # `container:` above rather than assume it -- a throwaway sibling
+      # mounts $GITHUB_WORKSPACE (this job's own env, unmodified) through the
+      # socket and must see the real checkout, not an empty directory a
+      # wrong path would silently create. Same shape as heavy.yml's
+      # docker-tier copy of this step.
+      - name: Assert this container's workspace path resolves on the real host too
+        run: |
+          scripts/run_bounded.sh 30 "host-path assertion" -- bash -euo pipefail -c '
+            docker run --rm -v "$GITHUB_WORKSPACE":/check:ro \
+              python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6 \
+              sh -c "test -f /check/pyproject.toml && echo host-path-confirmed: pyproject.toml visible through the socket-mounted path"
+          '
 
       - name: Report the host environment
         run: |
