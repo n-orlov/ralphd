@@ -159,10 +159,27 @@ def _is_boilerplate(criteria: str) -> bool:
     return stripped.startswith("<") and stripped.endswith(">")
 
 
-def _detect_cycles(tasks: list[dict]) -> list[str]:
-    graph: dict[Any, list[Any]] = {t.get("id"): list(t.get("dependsOn") or []) for t in tasks}
+def _find_cycles(graph: dict[Any, list[Any]]) -> list[list[Any]]:
+    """The graph-only half of `_detect_cycles` below: a plain DFS over
+    `graph` (id -> its own `dependsOn` list; a dep not itself a key in
+    `graph` is ignored here -- unresolved deps are a separate lint) that
+    returns one cycle per cycle actually found, as a plain node list
+    closing back on its own first element, in first-discovery order and
+    de-duplicated by node set (the same cycle reached from two different
+    starting points is reported once).
+
+    Extracted (task 001, PRD requirement D, #206) so a caller that needs
+    the raw cycle shape -- `state.py`'s three `dependsOn` writers that skip
+    the ingestion-time lint entirely (`insert_cure_tasks`,
+    `steer_task_update`, the `task-insert` steer tool) -- can ask "does
+    this candidate edge close a cycle back to this task" without
+    re-parsing `_detect_cycles`'s own formatted strings. `_detect_cycles`
+    itself is unchanged in behaviour: same messages, same order, same
+    dedup -- this is a pure refactor of its internals, not a change to
+    what it says (D.5).
+    """
     color: dict[Any, int] = {tid: 0 for tid in graph}  # 0 white, 1 gray, 2 black
-    errors: list[str] = []
+    cycles: list[list[Any]] = []
     reported: set[frozenset] = set()
 
     def visit(node: Any, path: list[Any]) -> None:
@@ -175,10 +192,7 @@ def _detect_cycles(tasks: list[dict]) -> list[str]:
                 key = frozenset(cycle)
                 if key not in reported:
                     reported.add(key)
-                    errors.append(
-                        f"task {cycle[0]!r}: dependsOn cycle: "
-                        + " -> ".join(repr(c) for c in cycle)
-                    )
+                    cycles.append(cycle)
             elif color.get(dep) == 0:
                 visit(dep, path + [dep])
         color[node] = 2
@@ -186,7 +200,86 @@ def _detect_cycles(tasks: list[dict]) -> list[str]:
     for tid in graph:
         if color[tid] == 0:
             visit(tid, [tid])
-    return errors
+    return cycles
+
+
+def _detect_cycles(tasks: list[dict]) -> list[str]:
+    graph: dict[Any, list[Any]] = {t.get("id"): list(t.get("dependsOn") or []) for t in tasks}
+    return [
+        f"task {cycle[0]!r}: dependsOn cycle: " + " -> ".join(repr(c) for c in cycle)
+        for cycle in _find_cycles(graph)
+    ]
+
+
+def validate_dependency_edges(tasks: list[dict], task_id: str,
+                              candidate_depends_on: list) -> tuple[list, list[dict]]:
+    """Task 001 (PRD requirement D, #206): the one validator the three
+    writers into `tasks.json` that skip `lint_proposal`/`_detect_cycles`
+    entirely -- `state.insert_cure_tasks`, `state.steer_task_update`'s
+    `dependsOn` merge, and the `task-insert` steer tool -- run a candidate
+    `dependsOn` list for `task_id` through before it is ever written.
+
+    Edges are validated one at a time, in `candidate_depends_on` order,
+    against the rest of `tasks` (which is never mutated here) plus every
+    edge already accepted earlier in this same call -- so two candidate
+    edges that only close a cycle together (each fine alone) are both
+    caught once the second is checked against the first. Two refusal
+    shapes, both structural:
+
+    - the id does not name any task actually present in `tasks` (an
+      unresolved dependency);
+    - the edge would close a path back to `task_id` -- built on
+      `_find_cycles`, the exact DFS `_detect_cycles`'s own ingestion-time
+      lint uses, so this is the SAME cycle detection, not a second copy of
+      the rule. A self-loop (`task_id` naming itself) is the length-one
+      case of this and is caught by the identical check, not a special
+      case bolted on beside it.
+
+    Returns `(accepted, rejected)`: `accepted` is `candidate_depends_on`
+    with every bad edge dropped, order preserved; `rejected` is one
+    `{"edge": <id>, "reason": <text>}` dict per dropped edge, same order,
+    so a caller can turn each into its own named refusal event (PRD D.3)
+    while still writing the accepted remainder -- a validation failure
+    here costs exactly the bad edge, never the whole write, and never the
+    task the edge was attached to.
+    """
+    ids_present = {t.get("id") for t in tasks
+                  if isinstance(t, dict) and t.get("id")}
+    accepted: list = []
+    rejected: list[dict] = []
+    for dep in candidate_depends_on or []:
+        if dep == task_id:
+            rejected.append({
+                "edge": dep,
+                "reason": (
+                    f"dependsOn refused: task {task_id!r} names itself -- "
+                    "a self-loop is a dependsOn cycle of length one"),
+            })
+            continue
+        if dep not in ids_present:
+            rejected.append({
+                "edge": dep,
+                "reason": (
+                    f"dependsOn refused: task {task_id!r} names unknown "
+                    f"task {dep!r} -- not in the current plan"),
+            })
+            continue
+        graph = {
+            t.get("id"): list(t.get("dependsOn") or [])
+            for t in tasks
+            if isinstance(t, dict) and t.get("id") and t.get("id") != task_id
+        }
+        graph[task_id] = accepted + [dep]
+        if any(task_id in cycle for cycle in _find_cycles(graph)):
+            rejected.append({
+                "edge": dep,
+                "reason": (
+                    f"dependsOn refused: task {task_id!r} -> {dep!r} would "
+                    "close a dependsOn cycle"),
+            })
+            continue
+        accepted.append(dep)
+    return accepted, rejected
 
 
 # ---------------------------------------------------------------------------

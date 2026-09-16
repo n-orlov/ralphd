@@ -27,6 +27,7 @@ from ..log_merge import (
     iteration_prompt_path,
 )
 from . import contract_enforcement
+from . import plan_ingestion
 from . import privsep
 from . import transitions
 from .faults import explain_fault, matched_signature
@@ -1937,6 +1938,26 @@ def apply_amendment_status_rulings(run: "RunDir", config_root: Path,
 # do by omission. There is deliberately no budget/iteration/approach/
 # deadline tool in this set: the steer hat may reshape `tasks.json` and the
 # standing rules and nothing else.
+# Task 001 (PRD requirement D.3, #206): the one event type every
+# `dependsOn` edge a writer below drops emits, naming the task, the
+# rejected edge and the reason -- shared so the cure-insertion, `task-
+# update` and `task-insert` paths all read identically on `events.jsonl`.
+DEPENDENCY_EDGE_REJECTED_EVENT = "task.dependency_edge_rejected"
+
+
+def _emit_rejected_dependency_edges(run: "RunDir", task_id: str,
+                                    rejected: list, source: str) -> None:
+    """Emit one `DEPENDENCY_EDGE_REJECTED_EVENT` per entry of `rejected`
+    (`plan_ingestion.validate_dependency_edges`'s own return shape,
+    `{"edge", "reason"}`) -- `source` names which of the three writers
+    this task validates dropped it (`"cure-insertion"`, `"task-update"`,
+    `"task-insert"`).
+    """
+    for r in rejected:
+        run.emit(DEPENDENCY_EDGE_REJECTED_EVENT, taskId=task_id,
+                 edge=r.get("edge"), reason=r.get("reason"), source=source)
+
+
 def steer_task_insert(run: "RunDir", task: dict) -> dict:
     """Insert one new task at the end of `tasks.json`'s task list. Always
     lands `pending` -- any `status` key the caller supplied is IGNORED,
@@ -1950,6 +1971,15 @@ def steer_task_insert(run: "RunDir", task: dict) -> dict:
     supplied is IGNORED and overwritten, because the fact being recorded is
     "the steer hat inserted this row", not whatever the tool call happened
     to say about itself.
+
+    Task 001 (PRD requirement D.2/D.3, #206): a candidate `dependsOn` --
+    e.g. the observed self-loop shape `["<the task's own id>"]` -- is run
+    through `plan_ingestion.validate_dependency_edges` before the new task
+    is ever appended. Every bad edge (a self-loop, a longer cycle, or a
+    dependency on an id the table does not hold) is dropped, one event per
+    drop, naming the task, the rejected edge and the reason; every other
+    edge, and the insert itself, still lands -- a bad edge costs itself,
+    never the new task.
     """
     data = run.read_tasks()
     tasks = data.setdefault("tasks", [])
@@ -1959,6 +1989,12 @@ def steer_task_insert(run: "RunDir", task: dict) -> dict:
     new_task = dict(task)
     new_task["status"] = "pending"
     new_task["origin"] = TASK_ORIGIN_STEER
+    candidate_depends_on = new_task.get("dependsOn")
+    if isinstance(candidate_depends_on, list):
+        accepted, rejected = plan_ingestion.validate_dependency_edges(
+            tasks, task_id, candidate_depends_on)
+        _emit_rejected_dependency_edges(run, task_id, rejected, "task-insert")
+        new_task["dependsOn"] = accepted
     tasks.append(new_task)
     run.write_tasks(data)
     return {"inserted": True, "taskId": task_id}
@@ -2127,7 +2163,30 @@ def steer_task_update(run: "RunDir", task_id: str, changes: dict,
                 changes = {k: v for k, v in changes.items()
                           if k != "dependsOn"}
             else:
-                depends_on_result = {"applied": True}
+                # Task 001 (PRD requirement D.2/D.3, #206): the candidate
+                # `dependsOn` -- e.g. the observed self-loop shape
+                # `["<the task's own id>"]` -- is validated edge by edge
+                # against the rest of `tasks` before it is written. A bad
+                # edge (a self-loop, a longer cycle, or a dependency on an
+                # id the table does not hold) is dropped and reported --
+                # never the whole write -- with one `task.dependency_edge_
+                # rejected` event per drop naming the task, the edge and
+                # the reason (`plan_ingestion.validate_dependency_edges`
+                # is the shared cycle detector `_detect_cycles` itself
+                # uses, D.5: neither its call site nor its messages
+                # change).
+                candidate_depends_on = changes.get("dependsOn")
+                if isinstance(candidate_depends_on, list):
+                    accepted, rejected = plan_ingestion.validate_dependency_edges(
+                        tasks, task_id, candidate_depends_on)
+                    _emit_rejected_dependency_edges(
+                        run, task_id, rejected, "task-update")
+                    changes["dependsOn"] = accepted
+                    depends_on_result = ({"applied": True,
+                                          "rejectedEdges": rejected}
+                                         if rejected else {"applied": True})
+                else:
+                    depends_on_result = {"applied": True}
         # Task 013 (PRD requirement D.3, #184): the audit of every OTHER
         # non-`status` field this merge can land on a CLAIMED task.
         # `title`/`notes`/`priority` are plain display/bookkeeping fields
@@ -3935,7 +3994,33 @@ def _failed_task_ids_named_in(text: str, tasks: list) -> list:
     return found
 
 
-def _repoint_dependents_onto_cure_task(tasks: list, failed_id: str,
+def _append_validated_dependency_edge(run: "RunDir", tasks: list, task: dict,
+                                      dep_id: str, source: str) -> None:
+    """Task 001 (PRD requirement D.1/D.3, #206): append `dep_id` to
+    `task`'s own `dependsOn` (creating the list if absent) through the
+    same edge validation `steer_task_update`/`steer_task_insert` run a
+    candidate edge through (`plan_ingestion.validate_dependency_edges`) --
+    a self-loop, a longer cycle, or a dependency on an id `tasks` does not
+    hold is dropped, with a `task.dependency_edge_rejected` event naming
+    the task, the edge and the reason, rather than written. An edge
+    already present is a no-op, same as the unguarded `.append` this
+    replaces. `source` names which of `insert_cure_tasks`'s own several
+    dependsOn writes this one is (always `"cure-insertion"` today).
+    """
+    deps = task.get("dependsOn")
+    if not isinstance(deps, list):
+        deps = []
+    task_id = task.get("id")
+    if dep_id in deps:
+        task["dependsOn"] = deps
+        return
+    accepted, rejected = plan_ingestion.validate_dependency_edges(
+        tasks, task_id, deps + [dep_id])
+    _emit_rejected_dependency_edges(run, task_id, rejected, source)
+    task["dependsOn"] = accepted
+
+
+def _repoint_dependents_onto_cure_task(run: "RunDir", tasks: list, failed_id: str,
                                        cure_task_id: str) -> None:
     """Task 041 (PRD requirement C.4, #149): "When the cure pass appends
     a cure task for a finding whose evidence names a `failed` task,
@@ -3951,6 +4036,14 @@ def _repoint_dependents_onto_cure_task(tasks: list, failed_id: str,
     `dependsOn` is untouched. Mirrors `petitions.apply_confirmed_
     petition_adjudications`'s own dependent re-pointing for the CONFIRMED
     path, the analogous gap C.1-C.3 already closed.
+
+    Task 001 (PRD requirement D.1/D.3, #206): the repointed `dependsOn`
+    is validated (`plan_ingestion.validate_dependency_edges`) before it
+    is written -- a repoint that would leave a self-loop or a longer
+    cycle on the dependent drops exactly that edge, with an event naming
+    the task, the edge and the reason, instead of writing it; the
+    `failed_id` -> `cure_task_id` swap for every other, valid dependent
+    still lands.
     """
     for t in tasks:
         if not isinstance(t, dict):
@@ -3961,7 +4054,11 @@ def _repoint_dependents_onto_cure_task(tasks: list, failed_id: str,
         new_depends = [d for d in depends if d != failed_id]
         if cure_task_id not in new_depends:
             new_depends.append(cure_task_id)
-        t["dependsOn"] = new_depends
+        tid = t.get("id")
+        accepted, rejected = plan_ingestion.validate_dependency_edges(
+            tasks, tid, new_depends)
+        _emit_rejected_dependency_edges(run, tid, rejected, "cure-insertion")
+        t["dependsOn"] = accepted
 
 
 def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
@@ -4075,13 +4172,12 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
         existing_ids.add(cure_task_id)
         inserted.append(cure_task_id)
         if freeze_task is not None:
-            freeze_deps = freeze_task.setdefault("dependsOn", [])
-            if cure_task_id not in freeze_deps:
-                freeze_deps.append(cure_task_id)
+            _append_validated_dependency_edge(
+                run, tasks, freeze_task, cure_task_id, "cure-insertion")
         for failed_id in _failed_task_ids_named_in(
                 finding.get("evidence"), tasks):
             _repoint_dependents_onto_cure_task(
-                tasks, failed_id, cure_task_id)
+                run, tasks, failed_id, cure_task_id)
 
         invalidates = finding.get("invalidates")
         if not isinstance(invalidates, list):
@@ -4094,9 +4190,9 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
             if record_task is not None:
                 for verification_task in verification_tasks:
                     verification_task["status"] = "pending"
-                    deps = verification_task.setdefault("dependsOn", [])
-                    if cure_task_id not in deps:
-                        deps.append(cure_task_id)
+                    _append_validated_dependency_edge(
+                        run, tasks, verification_task, cure_task_id,
+                        "cure-insertion")
                     vid = verification_task.get("id")
                     if vid not in inserted:
                         inserted.append(vid)
@@ -4109,6 +4205,12 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
                     approach, index, path_index, path, cure_task_id)
                 retake_task["id"] = _unique_task_id(
                     retake_task["id"], existing_ids)
+                retake_id = retake_task["id"]
+                accepted, rejected = plan_ingestion.validate_dependency_edges(
+                    tasks, retake_id, retake_task.get("dependsOn") or [])
+                _emit_rejected_dependency_edges(
+                    run, retake_id, rejected, "cure-insertion")
+                retake_task["dependsOn"] = accepted
                 if not _insert_after_id(tasks, retake_task, retake_anchor_id):
                     tasks.append(retake_task)
                 retake_anchor_id = retake_task["id"]

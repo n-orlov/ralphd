@@ -1461,6 +1461,7 @@ def test_dependson_write_to_a_pending_task_stays_legal(tmp_path):
     broker = _broker(tmp_path, [
         {"id": "032", "title": "t", "status": "pending",
          "dependsOn": ["029"]},
+        {"id": "099", "title": "other", "status": "pending"},
     ])
     response = broker.execute("task-update", {
         "taskId": "032",

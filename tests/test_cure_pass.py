@@ -1051,78 +1051,66 @@ def _run_with_tasks(root: Path, tasks: list) -> RunDir:
     return run
 
 
-def test_a_dependent_naming_only_the_failed_task_is_repointed_to_the_cure_task(tmp_path):
+def test_dependent_repointing_covers_only_both_neither_and_no_failed_task_named(tmp_path):
+    """Consolidated (task 001, PRD requirement D, net-zero fast-tier
+    offset for this task's own new coverage, #206): folds four former
+    nodes into one, every assertion kept --
+    `test_a_dependent_naming_only_the_failed_task_is_repointed_to_the_
+    cure_task`, `test_a_dependent_naming_both_the_failed_task_and_
+    another_task_keeps_the_other`, `test_a_dependent_naming_neither_id_
+    is_left_untouched` and `test_evidence_naming_no_failed_task_leaves_
+    every_dependsOn_untouched` -- the first three shared one
+    `insert_cure_tasks` call's worth of setup (a single failed task named
+    once in one finding's evidence, three dependents each shaped
+    differently around it) and are now driven together in one call; the
+    fourth (a `pending`, not `failed`, task named in the evidence) is the
+    second phase, its own separate tasks table and call, exactly as
+    before.
+    """
     tasks = [
         _plan_task("020", status="failed"),
+        _plan_task("019"),
+        _plan_task("018"),
         _plan_task("021", depends_on=["020"]),
+        _plan_task("022", depends_on=["020", "019"]),
+        _plan_task("023", depends_on=["018"]),
     ]
     run = _run_with_tasks(tmp_path / "run", tasks)
 
     finding = _blocking_curable_finding(
         "requirement X (#149)",
-        "task 020 failed its verification with a genuine gap")
+        "task 020 failed its verification -- evidence naming task 020 by id")
     inserted = insert_cure_tasks(run, 1, [finding])
     assert len(inserted) == 1
     cure_id = inserted[0]
 
     data = run.read_tasks()
-    dependent = next(t for t in data["tasks"] if t["id"] == "021")
-    assert dependent["dependsOn"] == [cure_id]
+    by_id = {t["id"]: t for t in data["tasks"]}
 
-    failed = next(t for t in data["tasks"] if t["id"] == "020")
-    assert failed["status"] == "failed"  # the failed task itself is untouched
+    # naming only the failed task: repointed onto the cure task
+    assert by_id["021"]["dependsOn"] == [cure_id]
+    assert by_id["020"]["status"] == "failed"  # the failed task itself is untouched
 
+    # naming both the failed task and another: the other survives
+    assert set(by_id["022"]["dependsOn"]) == {cure_id, "019"}
+    assert "020" not in by_id["022"]["dependsOn"]
 
-def test_a_dependent_naming_both_the_failed_task_and_another_task_keeps_the_other(tmp_path):
-    tasks = [
-        _plan_task("020", status="failed"),
-        _plan_task("019"),
-        _plan_task("022", depends_on=["020", "019"]),
-    ]
-    run = _run_with_tasks(tmp_path / "run", tasks)
+    # naming neither id: left untouched
+    assert by_id["023"]["dependsOn"] == ["018"]
 
-    finding = _blocking_curable_finding("requirement X (#149)",
-                                        "evidence naming task 020 by id")
-    inserted = insert_cure_tasks(run, 1, [finding])
-    cure_id = inserted[0]
-
-    data = run.read_tasks()
-    dependent = next(t for t in data["tasks"] if t["id"] == "022")
-    assert set(dependent["dependsOn"]) == {cure_id, "019"}
-    assert "020" not in dependent["dependsOn"]
-
-
-def test_a_dependent_naming_neither_id_is_left_untouched(tmp_path):
-    tasks = [
-        _plan_task("020", status="failed"),
-        _plan_task("018"),
-        _plan_task("023", depends_on=["018"]),
-    ]
-    run = _run_with_tasks(tmp_path / "run", tasks)
-
-    finding = _blocking_curable_finding("requirement X (#149)",
-                                        "evidence naming task 020 by id")
-    insert_cure_tasks(run, 1, [finding])
-
-    data = run.read_tasks()
-    dependent = next(t for t in data["tasks"] if t["id"] == "023")
-    assert dependent["dependsOn"] == ["018"]
-
-
-def test_evidence_naming_no_failed_task_leaves_every_dependsOn_untouched(tmp_path):
-    tasks = [
+    # phase two: evidence naming no FAILED task (020 here is merely
+    # pending) leaves every dependsOn untouched.
+    tasks2 = [
         _plan_task("020", status="pending"),
         _plan_task("021", depends_on=["020"]),
     ]
-    run = _run_with_tasks(tmp_path / "run", tasks)
-
-    finding = _blocking_curable_finding("requirement X (#149)",
-                                        "no failed task named here")
-    insert_cure_tasks(run, 1, [finding])
-
-    data = run.read_tasks()
-    dependent = next(t for t in data["tasks"] if t["id"] == "021")
-    assert dependent["dependsOn"] == ["020"]  # 020 is not failed, so untouched
+    run2 = _run_with_tasks(tmp_path / "run2", tasks2)
+    finding2 = _blocking_curable_finding("requirement X (#149)",
+                                         "no failed task named here")
+    insert_cure_tasks(run2, 1, [finding2])
+    data2 = run2.read_tasks()
+    dependent2 = next(t for t in data2["tasks"] if t["id"] == "021")
+    assert dependent2["dependsOn"] == ["020"]  # 020 is not failed, so untouched
 
 
 def test_steer_md_documents_the_same_repointing_move_for_task_update():
