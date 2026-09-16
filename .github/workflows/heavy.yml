@@ -239,23 +239,33 @@ jobs:
       group: heavy-browser-${{ github.event_name == 'push' && 'main' || github.ref }}
       cancel-in-progress: true
     # Pinned by digest (H.1): a tag can be repointed on the registry side, a
-    # digest cannot. `mcr.microsoft.com/playwright:v1.62.1-noble` is an
-    # existing, unauthenticated-pullable public image (verified reachable
-    # from this fleet -- unlike a custom image this task would have to push
-    # somewhere reachable, which task 009's own header already found
-    # impossible: GHCR has no API to make a package public, only its web UI
-    # does). It supplies Node 22, git, and every apt/system dependency
-    # `playwright install-deps` needs; it does NOT bundle `@playwright/cli`
-    # or real Google Chrome (only playwright-managed Chromium), so the
-    # "Install the pinned playwright-cli and Chrome" step below installs
-    # both at a version THIS WORKFLOW pins (`@playwright/cli@0.1.19`,
-    # matching docs/ci.md's own host-provisioning pin), from the image's own
-    # npm/apt -- the same shape gate.yml's `fast` job already uses for its
-    # python deps (task 009): the image pins the hard-to-reproduce base
-    # (interpreter / OS / browser system deps), a job step installs the
-    # lightweight, version-pinned overlay on top of it.
+    # digest cannot. This is the image the `browser-image` job at the bottom of
+    # this file builds from `ci/browser/Dockerfile` and pushes -- and it, not a
+    # job step, is where `playwright-cli` and real Google Chrome come from:
+    # playwright-cli 0.1.19 and Google Chrome 153.0.8010.47, printed by that
+    # publishing job from inside this very digest (run 35155997945) and
+    # re-printed by this job's own toolchain assertion step below (H.2). The
+    # base it is built FROM, `mcr.microsoft.com/playwright:v1.62.1-noble`,
+    # supplies Node 22, git, a uid-1000 `ubuntu` account and Chrome's system
+    # dependencies, but neither `@playwright/cli` nor real Chrome (only
+    # playwright-managed Chromium) -- which is why an image of our own exists.
+    #
+    # `credentials:` plus `packages: read`, rather than an unauthenticated
+    # pull: GHCR has no API that makes a package public (only its web UI does,
+    # the same wall task 009's gate.yml header hit), so the package is private.
+    # It is readable by this job's own `GITHUB_TOKEN` because a workflow of
+    # THIS repository published it, which links the package to the repository;
+    # a hand-push with a personal access token does not, and its digest answers
+    # `manifest unknown` to that token (measured -- see the `browser-image`
+    # job's header at the bottom of this file).
+    permissions:
+      contents: read
+      packages: read
     container:
-      image: mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
+      image: ghcr.io/n-orlov/ralphd-browser-ci@sha256:d760ffa130f503b19c7c260f3840222504ba7baa7fa172a76dbc0652a119b0c9
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       # Task 054 (K.3): see the docker tier's copy of this step above.
       - name: Record the job start time
@@ -306,60 +316,51 @@ jobs:
           fetch-depth: 0
 
       # Bounded like every other wall-clock-consuming step here (task 054,
-      # K.3). `python3.12-venv` is an extra apt install this job did not
-      # need before: the pinned image ships `python3.12` itself but not the
-      # `ensurepip`/`venv` module (`python3 -m venv` fails with "ensurepip is
-      # not available" otherwise -- verified against this exact image before
-      # committing this step).
+      # K.3). No apt install of its own any more (task 011): the pinned image
+      # ships `python3.12-venv` -- the base does not, and `python3 -m venv`
+      # fails there with "ensurepip is not available" -- so this step is back
+      # to being a plain venv build against the image's own interpreter.
       - name: Build a clean venv
         run: |
           scripts/run_bounded.sh 600 "venv build" -- bash -euo pipefail -c '
             rm -rf .venv
-            apt-get update -qq
-            apt-get install -y --no-install-recommends -qq python3.12-venv
             python3 -m venv .venv
             .venv/bin/python -m pip install --quiet --upgrade pip
             .venv/bin/python -m pip install --quiet -e ".[dev]"
           '
 
-      # Task 011 (requirement H): the pinned image (see `container:` above)
-      # supplies Node and Chrome's system deps but not `@playwright/cli` or
-      # real Google Chrome itself -- both installed here at a version this
-      # workflow pins, the same recipe `container/Dockerfile` uses for the
-      # product's own image (playwright's `install chrome` channel downloads
-      # the real browser, not the chromium playwright bundles by default).
-      # Also writes `.playwright/cli.config.json` into the checked-out
-      # workspace: launching real Chrome as the container's root user needs
-      # its own PID/user namespace, which this container's seccomp profile
-      # refuses ("Running as root without --no-sandbox is not supported");
-      # the browser tier itself runs as a non-root account below and would
-      # not need this, but the config has to exist before that switch and
-      # does no harm being present at all times -- verified end-to-end
-      # against this exact image and version before committing this step.
-      - name: Install the pinned playwright-cli and Chrome
+      # Task 011 (requirement H): NOT a toolchain install -- `playwright-cli`
+      # and Chrome come from the image (see `container:` above) -- but a launch
+      # option that has to live in the checked-out workspace, because that is
+      # where playwright-cli reads it from. Launching real Chrome as the
+      # container's root user needs its own PID/user namespace, which this
+      # container's seccomp profile refuses ("Running as root without
+      # --no-sandbox is not supported"); the tier itself runs as a non-root
+      # account below and would not need it, but the config has to exist before
+      # that switch and does no harm being present at all times -- verified
+      # end-to-end against this image before committing it. Exempt from the
+      # inner-bound wrapper (tests/test_run_bounded_timeout_marker.py's
+      # EXEMPT_RUN_STEPS): one `mkdir` and one `printf` against local state.
+      - name: Configure Chrome's launch options for this container
         run: |
-          scripts/run_bounded.sh 300 "install playwright-cli and chrome" -- bash -euo pipefail -c '
-            npm install -g --registry https://registry.npmjs.org "@playwright/cli@0.1.19"
-            cd "$(npm root -g)/@playwright/cli"
-            npx playwright install-deps chromium
-            npx playwright install chrome
-            cd "$GITHUB_WORKSPACE"
-            mkdir -p .playwright
-            printf %s "{\"browser\":{\"launchOptions\":{\"args\":[\"--no-sandbox\"]}}}" > .playwright/cli.config.json
-          '
+          mkdir -p .playwright
+          printf %s "{\"browser\":{\"launchOptions\":{\"args\":[\"--no-sandbox\"]}}}" \
+            > .playwright/cli.config.json
+          cat .playwright/cli.config.json
 
       # The module skips itself when `playwright-cli` is absent
       # (tests/test_browser_hub.py: `shutil.which("playwright-cli")`), so a
       # broken toolchain would silently produce a green lane with skips
       # instead of a failure. Fail here instead, loudly, before the tier
-      # runs. Task 011 (requirement H, H.2): these versions are now the
-      # PINNED IMAGE's and this step's own npm/apt install above, never the
-      # runner host's ambient provisioning -- the point of this whole task.
+      # runs. Task 011 (requirement H, H.2): the versions this prints are the
+      # PINNED IMAGE's -- nothing in this job installs either tool, and
+      # nothing here can see the runner host's own provisioning any more.
       - name: Assert the browser toolchain is present
         run: |
-          echo "container image: mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e"
+          echo "container image: ghcr.io/n-orlov/ralphd-browser-ci@sha256:d760ffa130f503b19c7c260f3840222504ba7baa7fa172a76dbc0652a119b0c9"
           command -v playwright-cli
           playwright-cli --version
+          command -v google-chrome
           google-chrome --version
           echo "PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-<unset>}"
 

@@ -740,6 +740,11 @@ EXEMPT_RUN_STEPS = {
     ("heavy.yml", "browser-tier", "Record the job start time"),
     ("heavy.yml", "browser-tier",
      "Reap root-owned test litter left in the runner workspace"),
+    # Task 011 (requirement H): one `mkdir` and one `printf` writing Chrome's
+    # `--no-sandbox` launch option into the checkout -- local, no network
+    # fetch, sub-second. It is not a toolchain install: `playwright-cli` and
+    # Chrome come from the job's pinned image.
+    ("heavy.yml", "browser-tier", "Configure Chrome's launch options for this container"),
     ("heavy.yml", "browser-tier", "Assert the browser toolchain is present"),
     # Task 011 (requirement H): `chown -R` of this job's own checkout,
     # evidence directory and `$HOME` -- local, no network fetch, a handful
