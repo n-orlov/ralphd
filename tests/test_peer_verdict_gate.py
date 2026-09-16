@@ -1015,7 +1015,18 @@ def test_a_mix_of_curable_and_incurable_gate_findings_still_ends_the_run(
     `_step_verdict_gate` in isolation) on the `test020-verdict-gate`
     fixture (`_supervisor` above) with `max_approaches=1` -- the LAST
     approach -- so a wrongly-taken cure pass would be the only thing
-    standing between this mixed rejection and a terminal `failed` state."""
+    standing between this mixed rejection and a terminal `failed` state.
+
+    Task cure-01-01-3 (PRD requirement A.3's removal-specific review
+    rule): this last-approach case must reach that terminal state by the
+    SAME `verdict_gate_rejected_on_merits` edge the approach-left case
+    takes (`..._ends_the_run_with_an_approach_left` below), so the
+    archive/composite-PRD absences are asserted here too. Before that
+    task's fix the `approach < max_approaches` guard let the last approach
+    alone fall through to the ordinary archive/replan-or-finish edges,
+    which archived approach 1 under `approaches/01/` and wrote a
+    `composite-prd.md` nothing downstream ever read -- this test passed
+    anyway, because it never looked."""
     root = tmp_path / "run"
     root.mkdir(parents=True, exist_ok=True)
     run = RunDir(root=root)
@@ -1041,6 +1052,12 @@ def test_a_mix_of_curable_and_incurable_gate_findings_still_ends_the_run(
     # never mistaken for a cure taken or a budget-exhausted cure.
     assert (sup.run.read_status().get("gateRejectionEnding")
             == "rejected_on_the_merits")
+    # A.3: no approach archive and no composite PRD on the LAST approach
+    # either -- the ordinary archive/replan machinery this rejection now
+    # bypasses unconditionally never ran.
+    assert not (root / "approaches" / "01").exists()
+    assert sorted((root / "approaches").iterdir()) == []
+    assert not (root / "composite-prd.md").exists()
     tasks = sup.run.read_tasks()["tasks"]
     cure_tasks = [t for t in tasks if t.get("origin") == "review-cure"]
     assert cure_tasks == []
