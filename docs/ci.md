@@ -151,7 +151,11 @@ shared browser cache at `/opt/ms-playwright` exported to the runner through its
 
 **That host provisioning is no longer what the browser tier runs against (task
 011, requirement H, #205 step 3).** `heavy.yml`'s `browser-tier` declares a
-`container:` pinned by digest to `ghcr.io/n-orlov/ralphd-browser-ci`, built from
+`container:` pinned by digest to this repository's own GitHub Packages container
+package `n-orlov/ralphd-browser-ci` (the literal registry reference lives in
+`heavy.yml`, which is also the only place a digest should be pinned; note this is
+a CI *toolchain* image and has nothing to do with the job image `ralphd:<hash>`,
+which is still built from a checkout and published nowhere). It is built from
 `ci/browser/Dockerfile` (`mcr.microsoft.com/playwright:v1.62.1-noble` + the same
 `@playwright/cli@0.1.19` + real Google Chrome + `python3.12-venv`), and the
 tier's own toolchain-assertion step prints the versions that image supplies. The
@@ -163,8 +167,8 @@ the image is a dispatch of `heavy` with `publish_browser_image: true`; that job
 prints the new digest, which is then pinned in `heavy.yml` by hand in a commit of
 its own. The package is private, is linked to this repository because the
 workflow (not a personal access token) published it, and is pulled with
-`credentials:` from `${{ secrets.GITHUB_TOKEN }}` — GHCR has no API that makes a
-package public, only its web UI does.
+`credentials:` from `${{ secrets.GITHUB_TOKEN }}` — the registry has no API that
+makes a package public, only its web UI does.
 
 The docker-group/uid-1000 paragraphs below describe the runner-user
 model, which is a property of how each slot's agent process is provisioned,
