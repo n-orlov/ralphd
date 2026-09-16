@@ -45,6 +45,7 @@ import pathlib
 import httpx
 
 from ralphd.cli import ui_server
+from ralphd.cli.log_render import new_render_state, render_tail_lines, render_to_lines
 from ralphd.engine.api import create_app
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
@@ -194,6 +195,11 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     of the same growing `ignored` block, which used to defeat the seed
     look-back's bound by itself, checked through every surface this cure
     touches -- see `_assert_older_thinking_marker_stays_bounded_across_every_surface`.
+
+    Extended again (task cure-01-03-2) with a THIRD scenario: 1,000 opaque
+    1,000-byte `ignored` events sitting directly between a thinking flood
+    and the `message_end` that repeats the already-streamed text -- see
+    `_assert_ignored_gap_after_thinking_matches_full_render_through_every_surface`.
     """
     real_lines = [json.dumps({"type": "message_end", "message": {"content": [
         {"type": "text", "text": f"line {i}"}]}}) for i in range(200)]
@@ -230,6 +236,11 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     await _assert_older_thinking_marker_stays_bounded_across_every_surface(
         thinking_root, monkeypatch)
 
+    gap_root = tmp_path / "gap-after-thinking"
+    gap_root.mkdir()
+    await _assert_ignored_gap_after_thinking_matches_full_render_through_every_surface(
+        gap_root, monkeypatch)
+
 
 def _write_iteration_with_older_thinking_marker(run_root: pathlib.Path, n: int,
                                                 ignored_count: int,
@@ -244,6 +255,147 @@ def _write_iteration_with_older_thinking_marker(run_root: pathlib.Path, n: int,
     marker = json.dumps({"type": "message_update",
                          "assistantMessageEvent": {"type": "thinking_start"}})
     _write_iteration_with_ignored_head(run_root, n, ignored_count, [marker] + real_lines)
+
+
+def _write_iteration_with_gap_after_thinking(run_root: pathlib.Path, n: int, text: str,
+                                             deltas: int, ignored_count: int,
+                                             ignored_line_bytes: int) -> None:
+    """One iteration that streams `text`, then `deltas` thinking deltas,
+    then `ignored_count` opaque `{"type": "ignored"}` events padded to
+    exactly `ignored_line_bytes` bytes each, then a `message_end` that
+    repeats `text` (task cure-01-03-2, PRD F.1/F.2/F.4, E.3): the gap
+    sits AFTER the last event that sets a collapse-guard flag, directly
+    adjacent to the `message_end` that reads two of them, so a small
+    requested tail's own retained window is nothing but that opaque
+    filler plus `message_end` -- no `_TYPE_FLAG_GROUPS` member anywhere in
+    it."""
+    d = run_root / "iterations" / f"{n:04d}"
+    d.mkdir(parents=True)
+    meta = {"number": n, "phase": "worker", "model": "stub-model", "approach": 1,
+            "startedAt": "2025-01-01T00:00:00Z", "endedAt": "2025-01-01T00:00:01Z",
+            "exitCode": 0, "error": None, "usage": {"totalTokens": n}}
+    (d / "meta.json").write_text(json.dumps(meta))
+    lines = [
+        json.dumps({"type": "message_update",
+                    "assistantMessageEvent": {"type": "text_delta", "delta": text}}),
+        json.dumps({"type": "message_update",
+                    "assistantMessageEvent": {"type": "text_end"}}),
+        json.dumps({"type": "message_update",
+                    "assistantMessageEvent": {"type": "thinking_start"}}),
+    ]
+    lines += [json.dumps({"type": "message_update",
+                         "assistantMessageEvent": {"type": "thinking_delta",
+                                                    "delta": f"step {i}"}})
+              for i in range(deltas)]
+    base = json.dumps({"type": "ignored", "pad": ""})
+    pad_len = max(0, ignored_line_bytes - len(base) - 1)
+    ignored_line = json.dumps({"type": "ignored", "pad": "x" * pad_len})
+    assert len(ignored_line) + 1 == ignored_line_bytes
+    lines += [ignored_line for _ in range(ignored_count)]
+    lines.append(json.dumps({"type": "message_end", "message": {"content": [
+        {"type": "text", "text": text}]}}))
+    (d / OUTPUT_FILENAME).write_text("\n".join(lines) + "\n")
+
+
+async def _assert_ignored_gap_after_thinking_matches_full_render_through_every_surface(
+        root, monkeypatch):
+    """Task cure-01-03-2, PRD F.1/F.2/F.4 and E.3: 1,000 opaque
+    1,000-byte `{"type": "ignored"}` events sit between a 500-delta
+    thinking flood and the `message_end` that repeats the already-
+    streamed text -- so a `tail=2` request's own retained window carries
+    NEITHER a `_TYPE_FLAG_GROUPS` member nor anything else this module
+    recognizes, only opaque filler plus `message_end` itself. Before this
+    task, `_should_extend_seed_lookback`'s only trigger required
+    `tail_lines` to already contain a `_TYPE_FLAG_GROUPS` member -- absent
+    here by construction -- so growth never ran, `textSeen`/`thinkingSeen`
+    were both falsely certified `False` from that incidental read window,
+    and `message_end`'s repeated text printed a second time instead of
+    collapsing behind the `[thinking...]` marker the full render actually
+    shows (`review4-probes/review3_cases.py::
+    test_f_ignored_gap_after_thinking_preserves_collapse_state`, an
+    independent reviewer probe this ports into the shipped suite).
+
+    Checked through every surface the E.2 marker scenario above already
+    checks: the shared on-disk merge (`log_merge.merged_lines`) directly,
+    the live engine `GET /logs` ASGI handler (the ACTUAL route,
+    `engine/api.py`, not a stand-in for it), and the hub's server-side
+    renderer (`ui_server.rendered_log_lines`), both its live and
+    dead-run on-disk-fallback branches -- byte-identical across all four
+    to the full render's own last two lines, which are the collapsed
+    `[thinking...]` marker and the iteration-end boundary, never the
+    duplicated text and never a spurious blank line.
+    """
+    text = "already streamed text must stay suppressed"
+    run_root = root / "runs" / "probe"
+    _write_iteration_with_gap_after_thinking(
+        run_root, 1, text, deltas=500, ignored_count=1000, ignored_line_bytes=1000)
+
+    full = render_to_lines("".join(merged_lines(run_root)), tty=False, state=new_render_state())
+    assert full[-2].strip() == "[thinking\u2026]"
+    assert sum(1 for ln in full if text in ln) == 1
+    assert all(ln != "" for ln in full[-2:])
+
+    # -- 1. on-disk merge, directly, through the SAME growing-bound retry
+    #    `ui_server._fetch_dead_tail` itself uses --------------------------
+    boundary_token = ui_server._ITERATION_BOUNDARY_TOKEN
+
+    async def _grown_render(fetch, bound_tail: int) -> list[str]:
+        """Mirror `ui_server.rendered_log_lines`'s own growing-bound retry
+        (`_fetch_live_tail`/`_fetch_dead_tail`): re-`fetch` a doubled raw
+        content-line bound until the render of what came back has at
+        least `bound_tail` RENDERED lines, or there is provably no more
+        history behind it. A FIXED small raw bound (here, 2 content
+        lines: the last `ignored` filler line plus `message_end`) never
+        includes the thinking flood itself, so nothing in that narrow
+        window ever triggers printing `[thinking...]` at all -- growing
+        the bound is what pulls the flood into the retained window, the
+        same way the real serving path does for any small requested
+        tail."""
+        bound = bound_tail
+        raw_text = await fetch(bound)
+        while True:
+            content_lines = sum(1 for ln in raw_text.splitlines()
+                                if boundary_token not in ln)
+            rendered = render_tail_lines(raw_text, tty=False, n=bound_tail)
+            if len(rendered) >= bound_tail:
+                return rendered
+            if content_lines < bound:
+                return rendered
+            bound *= 2
+            raw_text = await fetch(bound)
+
+    async def _fetch_merged(bound: int) -> str:
+        return "".join(merged_lines(run_root, tail=bound))
+
+    direct_rendered = await _grown_render(_fetch_merged, 2)
+    assert direct_rendered == full[-2:]
+
+    # -- 2. the live engine GET /logs ASGI handler -------------------------
+    (root / "workspace").mkdir()
+
+    async def _fetch_api(bound: int) -> str:
+        return await _api_logs_text(run_root, root / "workspace", bound)
+
+    api_rendered = await _grown_render(_fetch_api, 2)
+    assert api_rendered == full[-2:]
+
+    # -- 3. the hub's server-side renderer, live AND dead-run fallback ----
+    def _wire_hub(mp, live):
+        def _proxy(reg, run_id, path, **kw):
+            if not live:
+                return False, ""
+            import re
+            m = re.search(r"tail=(\d+)", path)
+            n = int(m.group(1)) if m else 0
+            return True, "".join(merged_lines(run_root, tail=n))
+        mp.setattr(ui_server, "_proxy_text", _proxy)
+
+    for live in (False, True):
+        with monkeypatch.context() as m:
+            _wire_hub(m, live)
+            hub_live, hub_lines = ui_server.rendered_log_lines(root, "probe", 2)
+        assert hub_live == live
+        assert hub_lines == full[-2:]
 
 
 async def _api_logs_text(run_root: pathlib.Path, workspace_root: pathlib.Path, tail: int) -> str:
