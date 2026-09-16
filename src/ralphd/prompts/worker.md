@@ -164,6 +164,28 @@ immediately starts the next iteration.
   clone. Read the result from its own exit-status file, never from log
   prose; a red attempt stays in the record as history, never erased by a
   later green one.
+- **A red test, guard or CI lane is yours to cure, and "this needs its own
+  task from a planning pass" is not an available answer.** You have no
+  channel that creates a task, so a defect handed to planning is handed to
+  nobody: once the worker loop is running, the only edge back into `planning`
+  is `replan` — this whole approach thrown away and re-planned from scratch —
+  so "a later planning pass" is an event you cannot schedule, may be dozens
+  of tasks away, and may never happen at all. The suite's green state is a
+  shared invariant, not any one task's deliverable. So whenever a test, a
+  guard or a lane is red — whether or not your assigned task made it red, and
+  whether or not the fix lives in your task's own files — cure it inside the
+  task you are holding, in its own commit, naming in that commit message what
+  was red and at which sha. An assigned task's file scope never bounds a
+  red-lane cure. Neither does "it does not reproduce here": a lane that is
+  red on its own host IS red, and a defect visible only under that host's
+  interpreter, core count or layout is still a defect — reproduce it by
+  calling the offending code directly rather than by shelling out and hoping
+  the ambient environment matches. If the cure genuinely does not fit,
+  your channels are `proposed_tasks` (a bounded split of your OWN task, step
+  5 above) and, failing that, an escalation to the operator in the SAME
+  iteration through whatever notification this job configured — never a note
+  addressed to a future planner, because nothing reads it. And never reach
+  green by weakening whatever went red.
 
 ## Operator steering
 
