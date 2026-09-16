@@ -1322,9 +1322,15 @@ def key_store_dir() -> Path | None:
     the container -- traversable, listable and writable -- exactly the
     ancestor-replaceable hole B.1 closed for the task record, one level
     up from where this docstring used to claim protection already held.
-    With no boundary and no override there is NO on-disk key at all: a
-    later episode then cannot authenticate an earlier episode's record
-    and treats it as empty (fail closed), which is the documented
+    Every ancestor above the mount point in turn -- `/var/lib/ralphd`,
+    `/var/lib`, `/var`, `/` -- is a base-image directory this module
+    never creates or chowns, measured root:root mode 0755 and unmodifiable
+    at the agent uid (`tests/test_run_secrets_key_store_docker.py`, walked
+    all the way to the container root per STEER 002's generalised rule
+    that a protected path is only as protected as its least-protected
+    ancestor). With no boundary and no override there is NO on-disk key
+    at all: a later episode then cannot authenticate an earlier episode's
+    record and treats it as empty (fail closed), which is the documented
     degrade.
     """
     override = os.environ.get(RUN_SECRETS_DIR_ENV)

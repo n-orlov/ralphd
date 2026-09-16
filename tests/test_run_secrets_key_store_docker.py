@@ -45,9 +45,13 @@ Three things, each needing a real container:
 
 1. A fully dropped agent-uid child cannot read, unlink, symlink, rename,
    replace or chmod the key file OR the store's mount-point directory OR
-   the grandparent `/var/lib/ralphd` -- with the probe's own negative
-   control (an unprotected scratch directory, same container) proving
-   these attempts genuinely succeed when no boundary is claimed
+   any ancestor above it -- walked all the way to the container root
+   (`/var/lib/ralphd`, `/var/lib`, `/var`, `/`), each measured (uid/mode,
+   via `docker exec` as root) and attacked individually, per STEER 002's
+   generalised rule that a protected path is only as protected as its
+   least-protected ancestor -- with the probe's own negative control (an
+   unprotected scratch directory, same container) proving these attempts
+   genuinely succeed when no boundary is claimed
    (`test_a_dropped_child_cannot_touch_the_run_secrets_store_or_its_key`).
 2. The exact ancestor-rename-and-plant attack `docs/`/`notes.md`'s "THE
    ancestor rule" describes, run for real: rename the store's mount point
@@ -145,10 +149,19 @@ def stat_of(p):
 # identical elevation `_persist_key`/`_read_stored_key` themselves use --
 # proving the LAYOUT, not merely reproducing the same EACCES the probe
 # below is supposed to be the one to hit.
+#
+# STEER 002's generalised rule: walk EVERY ancestor of the key file, from
+# the container root down, not merely the mount point's immediate parent.
+# `store.parents` gives exactly that chain for `/var/lib/ralphd/run-secrets`
+# -- `/var/lib/ralphd`, `/var/lib`, `/var`, `/` -- each measured the same
+# elevated way as the store and key themselves, keyed by its own path so
+# the assertions below can name each one.
 with privsep.root_for_write():
     store_stat = stat_of(store)
     key_stat = stat_of(key_path)
-    grandparent_stat = stat_of(Path("/var/lib/ralphd"))
+    ancestors_stat = {}
+    for anc in store.parents:
+        ancestors_stat[str(anc)] = stat_of(anc)
 
 out = {
     "resuid": list(os.getresuid()),
@@ -157,7 +170,7 @@ out = {
     "storeDir": str(store),
     "storeStat": store_stat,
     "keyStat": key_stat,
-    "grandparentStat": grandparent_stat,
+    "ancestorsStat": ancestors_stat,
     "entries": entries,
     "tampered": tampered,
     "mintedHex": minted.hex(),
@@ -228,6 +241,27 @@ attempt("grandparent:os.mkdir-sibling",
 attempt("grandparent:os.rename",
         lambda: os.rename(grandparent, grandparent + "-moved"))
 attempt("grandparent:os.chmod", lambda: os.chmod(grandparent, 0o777))
+
+# -- every remaining ancestor up to the container root (STEER 002's
+# generalised rule: "every ancestor ... not merely the ones this task's
+# own fix touched"). `/var/lib`, `/var` and `/` are base-image ancestors
+# no ralphd code creates or chowns -- walked anyway, because a hole here
+# would defeat the store exactly as surely as a hole at the mount point.
+attempt("varlib:os.mkdir-inside", lambda: os.mkdir("/var/lib/planted-c202"))
+attempt("varlib:os.chmod", lambda: os.chmod("/var/lib", 0o777))
+attempt("varlib:os.rename", lambda: os.rename("/var/lib", "/var/lib-moved"))
+attempt("var:os.mkdir-inside", lambda: os.mkdir("/var/planted-c202"))
+attempt("var:os.chmod", lambda: os.chmod("/var", 0o777))
+attempt("var:os.rename", lambda: os.rename("/var", "/var-moved"))
+attempt("root:os.mkdir-inside", lambda: os.mkdir("/planted-c202-root"))
+attempt("root:os.chmod", lambda: os.chmod("/", 0o777))
+# renaming `/` itself is not a permission question at all -- there is no
+# parent dentry within this mount namespace to rename it IN, so the
+# kernel refuses structurally (EBUSY) before it ever consults the agent
+# uid's permissions. Attempted anyway (never skipped: a silently-omitted
+# attempt is exactly the "acknowledges an attack it does not run" shape
+# STEER 002 named), with EBUSY accepted alongside EACCES/EPERM below.
+attempt("root:os.rename", lambda: os.rename("/", "/-moved"))
 
 sys.stdout.write(json.dumps(out))
 '''
@@ -351,22 +385,45 @@ def test_a_dropped_child_cannot_touch_the_run_secrets_store_or_its_key(ctl):
         "created inside that window inherits the process's own effective "
         "GID (the agent's) -- harmless here because mode 0600 grants "
         f"nothing to any group at all: {setup}")
-    assert setup["grandparentStat"]["uid"] == 0, (
-        "`/var/lib/ralphd` itself is not root-owned -- the ancestor chain "
-        f"above the store breaks here: {setup}")
+    # STEER 002's generalised rule: every ancestor, not merely the one
+    # this task's own fix touched -- `/var/lib`, `/var` and `/` are
+    # base-image ancestors, measured the same elevated way as the store.
+    anc = setup["ancestorsStat"]
+    for path, expected_mode in (("/var/lib/ralphd", "0o755"),
+                                ("/var/lib", "0o755"),
+                                ("/var", "0o755"), ("/", "0o755")):
+        got = anc.get(path)
+        assert got is not None, (path, anc)
+        assert got["uid"] == 0, (
+            f"ancestor {path} is not root-owned -- the ancestor chain "
+            f"above the store breaks here: {got}")
+        assert got["mode"] == expected_mode, (path, got)
 
     doc = _run_key_probe(container, setup["storeDir"], setup["keyPath"],
                          "/tmp/c202-probe-scratch")
     attempts = doc["attempts"]
+    # `root:os.rename` is a structural EBUSY (there is no parent dentry
+    # within this mount namespace to rename `/` IN), never a permission
+    # grant -- everything else must be a genuine permission denial.
     assert all(a["ok"] is False for a in attempts.values()), attempts
     for op in ("key:read", "key:open-truncate", "key:os.unlink",
                "key:os.symlink", "key:os.chmod", "key:os.replace-same-mount",
                "store:listdir", "store:os.mkdir-inside", "store:os.chmod",
                "store:os.rename", "store:os.replace-decoy", "store:os.rmdir",
                "grandparent:os.mkdir-sibling", "grandparent:os.rename",
-               "grandparent:os.chmod"):
+               "grandparent:os.chmod", "varlib:os.mkdir-inside",
+               "varlib:os.chmod", "varlib:os.rename", "var:os.mkdir-inside",
+               "var:os.chmod", "var:os.rename", "root:os.mkdir-inside",
+               "root:os.chmod"):
         got = attempts[op]
         assert got["ok"] is False and got["errno"] in _DENIED, (op, got)
+    # `/` itself: EBUSY is an acceptable denial alongside EACCES/EPERM --
+    # the kernel refuses the rename structurally before it ever consults
+    # the agent uid's permissions, but it is still a genuine denial, run
+    # for real rather than skipped (never the "acknowledges an attack it
+    # does not run" shape STEER 002 named).
+    got = attempts["root:os.rename"]
+    assert got["ok"] is False and got["errno"] in _DENIED + ("EBUSY",), got
     # the two cross-mount ones -- same structural reason
     # `test_tasks_record_docker.py` documents: no agent-writable directory
     # shares the store's mount, so EACCES/EPERM and EXDEV are both denials.
