@@ -313,16 +313,19 @@ jobs:
       # `useradd -u 1000` needs no name to matter (privsep.agent_identity()
       # falls back to `pwd.getpwuid(1000)` by number; `ci` is just a label);
       # the `chown` hands the checked-out workspace (created and built as
-      # root above) and this job's timeout-evidence directory to that
-      # account so pytest's own cache writes and, on an actual overrun,
-      # scripts/run_bounded.sh's evidence write both have somewhere they can
-      # write. Local, no network fetch, a handful of seconds even over this
-      # tree -- same shape as the other exempt steps in
-      # tests/test_run_bounded_timeout_marker.py.
+      # root above), this job's timeout-evidence directory, AND `$HOME`
+      # (`/github/home` -- several fast-tier nodes write config-overlay
+      # fixtures under it, e.g. tests/test_control_plane_auth.py; the
+      # second live dispatch at this task's own commit reddened on exactly
+      # that before this line existed) to that account, so pytest's own
+      # cache writes and, on an actual overrun, scripts/run_bounded.sh's
+      # evidence write all have somewhere they can write. Local, no network
+      # fetch, a handful of seconds even over this tree -- same shape as
+      # the other exempt steps in tests/test_run_bounded_timeout_marker.py.
       - name: Create the fast tier's non-root account
         run: |
           useradd -m -u 1000 -s /bin/bash ci
-          chown -R ci:ci "$GITHUB_WORKSPACE" "$RALPHD_TIMEOUT_EVIDENCE_DIR"
+          chown -R ci:ci "$GITHUB_WORKSPACE" "$RALPHD_TIMEOUT_EVIDENCE_DIR" "$HOME"
 
       # `-n 2 --dist loadfile`: loadfile keeps a module's tests on one worker,
       # which is what this suite's module-scoped fixtures assume
