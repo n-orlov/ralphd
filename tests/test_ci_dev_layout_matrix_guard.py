@@ -302,6 +302,43 @@ def check_heavy_browser_runner(workflow: dict) -> list[str]:
     return problems
 
 
+def check_heavy_litter_reap(workflow: dict) -> list[str]:
+    """Task 004 (requirement B, #202): every heavy job must reap root-owned
+    `.docker-e2e-tmp-*` litter from the runner's reused workspace BEFORE its
+    `actions/checkout` step, with root (a container's -- the box has no
+    sudo). Without it a hard-killed docker-tier container leaves the
+    root-owned authoritative task record inside the checkout, `git clean`
+    cannot remove it and the next job on that workspace dies in checkout
+    (heavy 35108739999/35108738499). An empty list means the order holds.
+    """
+    problems: list[str] = []
+    for job_name, job in (workflow.get("jobs") or {}).items():
+        steps = job.get("steps") or []
+        reap_at = None
+        checkout_at = None
+        for index, step in enumerate(steps):
+            run = str(step.get("run") or "")
+            if reap_at is None and ".docker-e2e-tmp-" in run and "rm -rf" in run:
+                if "docker run" not in run or "--user 0:0" not in run:
+                    problems.append(
+                        f"job {job_name!r} reaps litter without a root "
+                        "container -- an unprivileged rm cannot remove it"
+                    )
+                reap_at = index
+            if checkout_at is None and "checkout" in str(step.get("uses") or ""):
+                checkout_at = index
+        if checkout_at is None:
+            continue
+        if reap_at is None:
+            problems.append(f"job {job_name!r} has no litter-reaping step")
+        elif reap_at > checkout_at:
+            problems.append(
+                f"job {job_name!r} reaps litter at step {reap_at}, AFTER its "
+                f"checkout at step {checkout_at} -- checkout dies first"
+            )
+    return problems
+
+
 # --- the real files -----------------------------------------------------
 
 
@@ -317,9 +354,46 @@ def test_nightly_workflow_carries_no_browser_runner_label_anywhere():
     assert problems == [], problems
 
 
-def test_heavy_workflow_pins_the_browser_tier_to_browser_runner():
-    problems = check_heavy_browser_runner(_load(HEAVY_PATH))
-    assert problems == [], problems
+def test_heavy_workflow_pins_the_browser_tier_and_reaps_litter_before_checkout(
+    tmp_path,
+):
+    """Two properties of the same file, checked in one node on purpose: the
+    fast tier is at its declared collection ceiling, so task 004's reap guard
+    lands as assertions inside this existing node (with its own broken
+    fixture, so it is non-vacuous) rather than as new nodes."""
+    heavy = _load(HEAVY_PATH)
+    assert check_heavy_browser_runner(heavy) == []
+    assert check_heavy_litter_reap(heavy) == []
+
+    dropped = copy.deepcopy(heavy)
+    for job in dropped["jobs"].values():
+        job["steps"] = [
+            step
+            for step in job["steps"]
+            if ".docker-e2e-tmp-" not in str(step.get("run") or "")
+        ]
+    fixture = _dump_fixture(tmp_path, "broken-heavy-no-reap.yml", dropped)
+    problems = check_heavy_litter_reap(_load(fixture))
+    assert [p for p in problems if "no litter-reaping step" in p], problems
+
+    late = copy.deepcopy(heavy)
+    for job in late["jobs"].values():
+        steps = job["steps"]
+        reap = [s for s in steps if ".docker-e2e-tmp-" in str(s.get("run") or "")]
+        job["steps"] = [s for s in steps if s not in reap] + reap
+    fixture = _dump_fixture(tmp_path, "broken-heavy-late-reap.yml", late)
+    problems = check_heavy_litter_reap(_load(fixture))
+    assert [p for p in problems if "AFTER its" in p], problems
+
+    unprivileged = copy.deepcopy(heavy)
+    for job in unprivileged["jobs"].values():
+        for step in job["steps"]:
+            run = str(step.get("run") or "")
+            if ".docker-e2e-tmp-" in run:
+                step["run"] = run.replace("--user 0:0 ", "")
+    fixture = _dump_fixture(tmp_path, "broken-heavy-unprivileged-reap.yml", unprivileged)
+    problems = check_heavy_litter_reap(_load(fixture))
+    assert [p for p in problems if "without a root" in p], problems
 
 
 # --- non-vacuous: each guard must actually fire on a broken fixture -----

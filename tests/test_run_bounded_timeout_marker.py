@@ -719,10 +719,18 @@ EXEMPT_RUN_STEPS = {
     ("gate.yml", "fast", "Report the environment"),
     ("gate.yml", "fast", CLASSIFIER_STEP),
     ("heavy.yml", "docker-tier", "Record the job start time"),
+    # Task 004 (requirement B, #202): the pre-checkout litter reaper. It runs
+    # BEFORE anything is checked out, so `scripts/run_bounded.sh` does not
+    # exist yet to wrap it; its payload is a local `rm -rf` of at most a
+    # handful of directories in a throwaway root container.
+    ("heavy.yml", "docker-tier",
+     "Reap root-owned test litter left in the runner workspace"),
     ("heavy.yml", "docker-tier", "Report the environment"),
     ("heavy.yml", "docker-tier", "Remove this run's test images"),
     ("heavy.yml", "docker-tier", CLASSIFIER_STEP),
     ("heavy.yml", "browser-tier", "Record the job start time"),
+    ("heavy.yml", "browser-tier",
+     "Reap root-owned test litter left in the runner workspace"),
     ("heavy.yml", "browser-tier", "Assert the browser toolchain is present"),
     ("heavy.yml", "browser-tier", "Close stray browser sessions"),
     ("heavy.yml", "browser-tier", CLASSIFIER_STEP),

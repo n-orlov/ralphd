@@ -75,6 +75,57 @@ jobs:
           mkdir -p "$evidence"
           echo "RALPHD_TIMEOUT_EVIDENCE_DIR=$evidence" >> "$GITHUB_ENV"
 
+      # Task 004 (requirement B, #202): reap root-owned test litter BEFORE
+      # `actions/checkout` runs, because a poisoned workspace kills this job
+      # IN CHECKOUT, before any step of ours could clean it.
+      #
+      # The docker tier's throwaway registry has to live inside this very
+      # checkout for the sibling bind-mount hostpath translation to work, and
+      # every run of it writes `configs/<run-id>/record/` -- the authoritative
+      # task record, root-owned inside a root-owned 0700 directory, which is
+      # exactly the property requirement B asks for. A test whose container is
+      # hard-killed (`docker rm -f`) instead of stopped gracefully never runs
+      # the engine's `privsep.release_protected_tasks_dir` funnel, so that
+      # directory stays root-owned: `git clean -ffdx` cannot remove it, the
+      # runner then declares the workspace unclean, tries to recreate it and
+      # dies with `EACCES: permission denied, scandir '.../record'` (heavy
+      # 35108739999 and 35108738499, both jobs, runner workspaces ws-2 and
+      # ws-3). A self-hosted runner reuses its workspace, so the litter is
+      # permanent until something with root removes it -- and the only root
+      # available on this box is a container's.
+      #
+      # `tests/test_docker_sibling_e2e.py` reaps its own litter at teardown
+      # and sweeps stale litter before its first build; this step is the belt
+      # for the case those cannot cover at all -- a tier killed by a
+      # `timeout-minutes` bound or a `cancel-in-progress` supersession, whose
+      # fixtures never get to run. It is deliberately NOT wrapped in
+      # scripts/run_bounded.sh: `scripts/` does not exist yet at this point in
+      # the job (nothing is checked out), and the step is a local `rm -rf` of
+      # at most a handful of directories. It is listed for exactly that reason
+      # in tests/test_run_bounded_timeout_marker.py's EXEMPT_RUN_STEPS, and
+      # tests/test_ci_dev_layout_matrix_guard.py requires both heavy jobs to
+      # keep it ahead of their checkout.
+      - name: Reap root-owned test litter left in the runner workspace
+        run: |
+          ws="${GITHUB_WORKSPACE:?}"
+          mkdir -p "$ws"
+          if ! ls -d "$ws"/.docker-e2e-tmp-* >/dev/null 2>&1; then
+            echo "no .docker-e2e-tmp-* litter in $ws"
+            exit 0
+          fi
+          ls -d "$ws"/.docker-e2e-tmp-*
+          # The image container/Dockerfile is FROM: present on this box from
+          # every docker-tier run, and pinned by tag rather than pulled blind.
+          image=python:3.12-slim-bookworm
+          docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image"
+          docker run --rm --user 0:0 -v "$ws":/reap "$image" \
+            sh -c 'cd /reap && rm -rf .docker-e2e-tmp-*'
+          if ls -d "$ws"/.docker-e2e-tmp-* >/dev/null 2>&1; then
+            echo "litter survived the reap -- checkout will fail" >&2
+            exit 1
+          fi
+          echo "reaped"
+
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -162,6 +213,31 @@ jobs:
           rm -rf "$evidence"
           mkdir -p "$evidence"
           echo "RALPHD_TIMEOUT_EVIDENCE_DIR=$evidence" >> "$GITHUB_ENV"
+
+      # Task 004 (requirement B, #202): the docker tier's copy of this step
+      # above carries the full rationale. It is needed here too because the
+      # litter is per RUNNER WORKSPACE, not per job: the two runner slots keep
+      # separate checkouts (ws-2, ws-3), the docker tier poisons whichever one
+      # it landed on, and the browser tier's own checkout then dies in exactly
+      # the same way on that workspace next time it is scheduled there.
+      - name: Reap root-owned test litter left in the runner workspace
+        run: |
+          ws="${GITHUB_WORKSPACE:?}"
+          mkdir -p "$ws"
+          if ! ls -d "$ws"/.docker-e2e-tmp-* >/dev/null 2>&1; then
+            echo "no .docker-e2e-tmp-* litter in $ws"
+            exit 0
+          fi
+          ls -d "$ws"/.docker-e2e-tmp-*
+          image=python:3.12-slim-bookworm
+          docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image"
+          docker run --rm --user 0:0 -v "$ws":/reap "$image" \
+            sh -c 'cd /reap && rm -rf .docker-e2e-tmp-*'
+          if ls -d "$ws"/.docker-e2e-tmp-* >/dev/null 2>&1; then
+            echo "litter survived the reap -- checkout will fail" >&2
+            exit 1
+          fi
+          echo "reaped"
 
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
