@@ -163,17 +163,32 @@ jobs:
     # scripts/run_bounded.sh (K.3) or squeezed into this job's fixed
     # 45-minute reserve just to make `actions/checkout` work -- `-slim`
     # ships neither and was tried first, then dropped for exactly that
-    # reason. Defaults to uid 0 inside the container, which is what lets the
-    # venv build below run unmodified. F.3: this also removes the last host
-    # inheritance this job had -- with `container:` set, GitHub Actions runs
-    # every step in a fresh per-job container filesystem and points `HOME`
-    # at a bind-mounted directory it creates for this job alone, never at
-    # the runner service account's real home, so #188's stale
-    # `~/.codeartifact/pip.conf` (which lives in that real home) is not on
-    # any path this job's steps can read from -- no volume mounts that real
-    # home in either, on purpose, so nothing has to be excluded by hand. The
-    # "Report the environment" step below prints `$HOME` so this is
-    # checkable from the job log rather than asserted blind.
+    # reason. Defaults to uid 0 inside the container, which is what lets
+    # `actions/checkout` and the venv build below run unmodified.
+    #
+    # Left at that default (root) for every step except "Fast tier" itself:
+    # the fast tier's own suite already assumes a real, non-root process uid
+    # (tests/test_engine_uid_boundary.py asserts `os.getuid() != 0` and
+    # needs `pwd.getpwuid(1000)` to resolve to *something*, both of which
+    # held for free on the previous host-based runner because its service
+    # account happened to sit at uid 1000). A custom pre-built image with a
+    # uid-1000 account baked in was tried first and dropped: it would need
+    # pushing to a registry this runner can pull from unauthenticated, and
+    # GHCR has no API to make a package public (only its web UI does, and
+    # nothing in this run reaches that) -- so the account is created and the
+    # workspace handed to it as this job's own steps instead, see "Create
+    # the fast tier's non-root account" and "Fast tier" below.
+    #
+    # F.3: this also removes the last host inheritance this job had -- with
+    # `container:` set, GitHub Actions runs every step in a fresh per-job
+    # container filesystem and points `HOME` at a bind-mounted directory it
+    # creates for this job alone, never at the runner service account's
+    # real home, so #188's stale `~/.codeartifact/pip.conf` (which lives in
+    # that real home) is not on any path this job's steps can read from --
+    # no volume mounts that real home in either, on purpose, so nothing has
+    # to be excluded by hand. The "Report the environment" step below
+    # prints `$HOME` so this is checkable from the job log rather than
+    # asserted blind.
     container:
       image: python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6
     steps:
@@ -204,6 +219,25 @@ jobs:
           # resolves declared shas against the object store), so a depth-1
           # checkout would fail it for the wrong reason.
           fetch-depth: 0
+
+      # F.1 fallout (task 009): the checked-out workspace is owned by the
+      # HOST runner account, but every step in this job now runs as uid 0
+      # inside the container (the image's default user) -- a mismatch git
+      # 2.35.2+ treats as "dubious ownership" and refuses by default,
+      # regardless of the process being root. `actions/checkout` above
+      # tolerates this for its own internal git calls, but every OTHER git
+      # invocation in this job does not: the fast tier's own suite shells
+      # out to `git show`/`git log` in several nodes
+      # (tests/test_plan_ingestion.py, tests/test_commit_closing_keyword_
+      # scope.py and others), and the first real dispatch of this container
+      # (workflow run 35140908910) reddened 11 of them on exactly this --
+      # "fatal: detected dubious ownership in repository at
+      # '/__w/ralphd/ralphd'" -- before this step existed. One config write,
+      # naming this job's own checkout path and nothing wider, fixes every
+      # later step for the rest of the job (they share this container's
+      # $HOME and therefore this same global git config).
+      - name: Trust the checked-out workspace (container root != host checkout owner)
+        run: git config --global --add safe.directory "${{ github.workspace }}"
 
       # Replaces `actions/setup-python` + `cache: pip`, neither of which this
       # job needs: the pinned `python:3.12.3` container carries `python3.12`
@@ -274,6 +308,22 @@ jobs:
         run: |
           scripts/run_bounded.sh 300 "records lint" -- python -m pytest -q tests/records/
 
+      # F.1 fallout (task 009): give the fast tier a real, non-root process
+      # uid before it runs -- see the `container:` comment above for why.
+      # `useradd -u 1000` needs no name to matter (privsep.agent_identity()
+      # falls back to `pwd.getpwuid(1000)` by number; `ci` is just a label);
+      # the `chown` hands the checked-out workspace (created and built as
+      # root above) and this job's timeout-evidence directory to that
+      # account so pytest's own cache writes and, on an actual overrun,
+      # scripts/run_bounded.sh's evidence write both have somewhere they can
+      # write. Local, no network fetch, a handful of seconds even over this
+      # tree -- same shape as the other exempt steps in
+      # tests/test_run_bounded_timeout_marker.py.
+      - name: Create the fast tier's non-root account
+        run: |
+          useradd -m -u 1000 -s /bin/bash ci
+          chown -R ci:ci "$GITHUB_WORKSPACE" "$RALPHD_TIMEOUT_EVIDENCE_DIR"
+
       # `-n 2 --dist loadfile`: loadfile keeps a module's tests on one worker,
       # which is what this suite's module-scoped fixtures assume
       # (docs/testing.md, "Recipes"). The count is a fixed integer and
@@ -322,9 +372,21 @@ jobs:
       # `cancelled` -- see that script's own header for why a genuine
       # cancel or cancel-in-progress supersession still leaves no marker
       # and still reports `cancelled` as before.
+      #
+      # `su -p ci -c '...'` (task 009, requirement F): runs the whole
+      # recipe -- run_bounded.sh included -- as the non-root account the
+      # previous step created, `-p` so `$RALPHD_JOB_STARTED_AT`,
+      # `$RALPHD_JOB_BOUND_MINUTES`, `$RALPHD_TIMEOUT_EVIDENCE_DIR` and
+      # `$PATH` (carrying `.venv/bin`) all survive the user switch --
+      # verified directly (a disposable container, same image, same `su -p`
+      # invocation) before trusting it here. The wrapped text itself is
+      # unchanged and still matches both
+      # tests/test_gate_pinned_worker_count_guard.py's `-m fast`/`-n 2`
+      # pins: they check substrings of the run string, and the wrapper adds
+      # around that string rather than inside it.
       - name: Fast tier
         run: |
-          scripts/run_bounded.sh 1800 "fast tier" -- python -m pytest -q -m fast -n 2 --dist loadfile --durations=15
+          su -p ci -c 'scripts/run_bounded.sh 1800 "fast tier" -- python -m pytest -q -m fast -n 2 --dist loadfile --durations=15'
 
       # Task 054 (K.3), the classifier half: runs even when this job is
       # cancelled. It prints RALPHD_TIMEOUT_KILL only when a bounded step

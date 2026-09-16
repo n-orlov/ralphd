@@ -717,6 +717,15 @@ JOB_STATUS_EXPR = "job.status"
 EXEMPT_RUN_STEPS = {
     ("gate.yml", "fast", "Record the job start time"),
     ("gate.yml", "fast", "Report the environment"),
+    # Task 009 (requirement F): one `git config --global --add
+    # safe.directory` write against this job's own checkout path -- local,
+    # no network fetch, sub-second, same shape as the other exemptions here.
+    ("gate.yml", "fast",
+     "Trust the checked-out workspace (container root != host checkout owner)"),
+    # Task 009 (requirement F): `useradd` plus one recursive `chown` of this
+    # job's own checkout and evidence directory -- local, no network fetch,
+    # a handful of seconds even over this tree.
+    ("gate.yml", "fast", "Create the fast tier's non-root account"),
     ("gate.yml", "fast", CLASSIFIER_STEP),
     ("heavy.yml", "docker-tier", "Record the job start time"),
     # Task 004 (requirement B, #202): the pre-checkout litter reaper. It runs
