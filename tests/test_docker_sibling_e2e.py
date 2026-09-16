@@ -222,8 +222,10 @@ class Ctl:
         }
         self.cleanup: list[str] = []  # exact container names to force-remove
 
-    def run(self, *argv: str, timeout: int = 90) -> subprocess.CompletedProcess:
-        return subprocess.run([str(RALPHCTL), "--json", *argv], env=self.env,
+    def run(self, *argv: str, timeout: int = 90,
+            env: dict | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run([str(RALPHCTL), "--json", *argv],
+                              env=env or self.env,
                               capture_output=True, text=True, timeout=timeout)
 
     def start(self, run_id: str, *, extra_env: dict | None = None,

@@ -38,6 +38,29 @@ Five things only a real container can show:
    mechanism from `.control-token`'s, so it is not a separate check either.
    Proved on BOTH the layout a fresh `start` builds and the layout a
    `resume` reproduces (a second, independent container, same run id).
+
+   The (d) probe's *child* is the real thing, not an approximation, and
+   this is the whole point of the check: a driver running as root inside
+   the container calls `privsep.separate_engine_identity()` (the engine's
+   own posture: real/saved uid 0, effective uid the agent's) and then
+   spawns the probe through `privsep.agent_child_kwargs()` itself, so the
+   attempts below are made by a genuinely forked, fully dropped child
+   (`getresuid() == (1000, 1000, 1000)`) -- exactly what an iteration is.
+   And the *replacement* attempts are real directory-entry replacements:
+   `os.replace`, `os.rename`, `os.unlink`, `os.link` and `os.symlink`
+   against the entry, plus a whole-directory `os.replace` of the control
+   dir itself. An `open(path, "w")` truncate is kept as one more attempt
+   among them, but it is deliberately NOT the evidence: truncation is
+   refused by the FILE's mode alone and would keep passing even if the
+   parent directory became agent-writable, which is precisely the hole a
+   rename/unlink walks through. The probe also proves the rename attempts
+   failed on permission and not on `EXDEV` by comparing `st_dev` of its
+   own scratch dir against the control dir's. And the probe carries its own
+   negative control, run in the same container immediately before the real
+   check (`_assert_the_probe_can_actually_see_a_hole`): pointed at a
+   deliberately agent-writable parent holding an agent-owned 0400
+   `.control-token`, the SAME probe must report the entry as replaceable --
+   otherwise its verdict on the real directory would prove nothing.
 5. With `--api-token` enabled, the SAME dropped-agent-uid probe (4) above
    applied to `.api-token` finds it in none of the same leak routes
    either -- a separate, minimal test (enabling `--api-token` makes
@@ -84,6 +107,263 @@ def _read_control_token(ctl_obj: Ctl, run_id: str) -> str:
     token = ccfile.read_text().strip()
     assert token
     return token
+
+
+# The probe a fully dropped agent child runs *inside* the job container.
+# Spawned by `_PROBE_DRIVER` below through the engine's own
+# `privsep.agent_child_kwargs()`, so `os.getresuid()` here is
+# `(1000, 1000, 1000)`: real, effective AND saved, with no way back.
+# Every attempt is recorded with its errno rather than asserted here, so
+# the assertions live in the test (a probe that silently swallowed a
+# success would otherwise read as a pass).
+_CHILD_PROBE = r'''
+import errno
+import json
+import os
+import sys
+
+names = json.loads(sys.argv[1])
+control_dir = sys.argv[2]
+scratch = "/tmp/ralphd-a6-probe"
+os.makedirs(scratch, exist_ok=True)
+
+out = {
+    "childResuid": list(os.getresuid()),
+    "childResgid": list(os.getresgid()),
+    "childEnvDump": "\n".join("%s=%s" % kv for kv in sorted(os.environ.items())),
+    "attempts": {},
+}
+try:
+    out["sameDevice"] = os.stat(scratch).st_dev == os.stat(control_dir).st_dev
+except OSError as exc:
+    out["sameDevice"] = "stat failed: %s" % (exc,)
+
+
+def record(key, fn):
+    try:
+        fn()
+    except OSError as exc:
+        out["attempts"][key] = {
+            "ok": False,
+            "exc": type(exc).__name__,
+            "errno": errno.errorcode.get(exc.errno, exc.errno),
+        }
+    else:
+        out["attempts"][key] = {"ok": True}
+
+
+for name in names:
+    path = os.path.join(control_dir, name)
+    for op in ("replace", "rename", "link", "symlink"):
+        src = os.path.join(scratch, "%s.%s" % (name.lstrip("."), op))
+        with open(src, "w") as fh:
+            fh.write("pwned-by-the-dropped-child\n")
+    def src_for(name=name, op=None):
+        return os.path.join(scratch, "%s.%s" % (name.lstrip("."), op))
+    # the read half
+    record("%s:read" % name, lambda p=path: open(p, "rb").read())
+    record("%s:listdir-parent" % name, lambda: os.listdir(control_dir))
+    # the in-place write half -- refused by the FILE's own mode, and NOT
+    # the evidence this probe exists for (see the module docstring)
+    record("%s:open-truncate" % name, lambda p=path: open(p, "w").close())
+    # the directory-entry replacement half: every syscall that would swap,
+    # remove or re-point the entry itself, each needing write permission on
+    # the PARENT directory, none of which the file's own mode can grant
+    record("%s:os.replace" % name,
+           lambda p=path, s=src_for(op="replace"): os.replace(s, p))
+    record("%s:os.rename" % name,
+           lambda p=path, s=src_for(op="rename"): os.rename(s, p))
+    record("%s:os.unlink" % name, lambda p=path: os.unlink(p))
+    record("%s:os.link" % name,
+           lambda p=path, s=src_for(op="link"): os.link(s, p))
+    record("%s:os.symlink" % name,
+           lambda p=path, s=src_for(op="symlink"): os.symlink(s, p))
+
+# and the whole directory: swapping the control dir itself for one the
+# child owns would replace every entry inside it at once
+decoy = os.path.join(scratch, "decoy-control-dir")
+os.makedirs(decoy, exist_ok=True)
+record("<dir>:os.replace", lambda: os.replace(decoy, control_dir))
+record("<dir>:os.rmdir", lambda: os.rmdir(control_dir))
+
+sys.stdout.write(json.dumps(out))
+'''
+
+# The driver: root inside the container, reproducing the engine's own
+# privilege posture and then spawning the probe above exactly the way
+# `engine.runner.PiRunner.run` spawns an iteration -- through
+# `privsep.agent_child_kwargs()`, with `CONTROL_PLANE_ENV_VARS` stripped
+# from the child's environment by the production constant itself.
+_PROBE_DRIVER = r'''
+import json
+import os
+import subprocess
+import sys
+
+from ralphd.engine import privsep
+from ralphd.engine.config import CONTROL_PLANE_ENV_VARS
+
+if os.getuid() != 0:
+    sys.exit("this driver must start as real root to reproduce the engine")
+agent = privsep.separate_engine_identity()
+if agent is None:
+    sys.exit("no agent identity in this container: no boundary to prove")
+if not privsep.separated():
+    sys.exit("uid separation is not active after separate_engine_identity()")
+kwargs = privsep.agent_child_kwargs()
+if kwargs != {"user": agent.uid, "group": agent.gid}:
+    sys.exit("agent_child_kwargs() did not ask for the agent identity: %r"
+             % (kwargs,))
+
+env = {k: v for k, v in os.environ.items() if k not in CONTROL_PLANE_ENV_VARS}
+res = subprocess.run([sys.executable, "-c", CHILD, sys.argv[1], sys.argv[2]],
+                     capture_output=True, text=True, timeout=60, env=env,
+                     **kwargs)
+if res.returncode != 0:
+    sys.exit("the dropped probe child failed (rc=%d): %s%s"
+             % (res.returncode, res.stdout, res.stderr))
+doc = json.loads(res.stdout)
+doc["engineResuid"] = list(os.getresuid())
+doc["agentChildKwargs"] = kwargs
+doc["separated"] = privsep.separated()
+sys.stdout.write(json.dumps(doc))
+'''
+
+_CONTROL_DIR_IN_CONTAINER = "/var/lib/ralphd/control"
+
+_DENIED = ("EACCES", "EPERM")
+
+
+def _run_dropped_child_probe(container: str, names: list[str],
+                             control_dir: str = _CONTROL_DIR_IN_CONTAINER,
+                             strict: bool = True) -> dict:
+    """Run `_CHILD_PROBE` inside `container` as a child spawned through
+    `privsep.agent_child_kwargs()`, and return its findings.
+
+    `strict` (the default) additionally asserts the boundary-shape
+    invariants below; the negative control turns them off only for its own
+    `sameDevice` check, which is about a different directory.
+
+    `docker exec` (no `--user`) enters as the container's default identity,
+    real root -- which is what the driver needs to reproduce
+    `separate_engine_identity()` and then drop a genuine child, rather than
+    merely running a command AT uid 1000 the way `docker exec --user
+    1000:1000` does. The uid the attempts below are made at is therefore
+    established by the engine's own production code path, and is asserted
+    from the child's own `getresuid()`.
+    """
+    driver = "CHILD = " + repr(_CHILD_PROBE) + "\n" + _PROBE_DRIVER
+    res = subprocess.run(
+        [REAL_DOCKER, "exec", container, "python3", "-c", driver,
+         json.dumps(names), control_dir],
+        capture_output=True, text=True, timeout=90)
+    assert res.returncode == 0, res.stdout + res.stderr
+    doc = json.loads(res.stdout)
+    # the child really was fully dropped: real, effective AND saved uid the
+    # agent's, so it can neither climb back nor signal the engine
+    assert doc["childResuid"] == [1000, 1000, 1000], doc
+    assert doc["childResgid"][:2] == [1000, 1000], doc
+    assert doc["separated"] is True, doc
+    assert doc["agentChildKwargs"] == {"user": 1000, "group": 1000}, doc
+    assert doc["engineResuid"] == [0, 1000, 0], doc  # the engine's own shape
+    # ... and the rename attempts below were refused on PERMISSION, not on
+    # EXDEV: the child's scratch dir and the control dir are one filesystem.
+    if strict:
+        assert doc["sameDevice"] is True, doc
+    return doc
+
+
+_NEGATIVE_CONTROL_DIR = "/tmp/a6-negative-control"
+
+
+def _assert_the_probe_can_actually_see_a_hole(container: str) -> None:
+    """The probe's own negative control, run in the same container, right
+    before the real check: point `_CHILD_PROBE` at a directory that HAS the
+    hole -- an agent-owned parent holding an agent-owned 0400
+    `.control-token` -- and require it to report the entry as replaceable.
+
+    This is what makes the real assertions below evidence rather than
+    ceremony. A probe that only tried `open(path, "w")` would call this
+    layout secure (truncation is refused by the file's own 0400 mode) while
+    `os.replace`/`os.rename`/`os.unlink`/`os.link` all succeed through the
+    writable parent -- so the truncate attempt alone cannot distinguish a
+    root-owned 0700 parent from an agent-writable one, and every
+    directory-entry attempt below can.
+    """
+    setup = (
+        f"rm -rf {_NEGATIVE_CONTROL_DIR}; mkdir -p {_NEGATIVE_CONTROL_DIR}; "
+        f"printf 'decoy\\n' > {_NEGATIVE_CONTROL_DIR}/.control-token; "
+        f"chmod 400 {_NEGATIVE_CONTROL_DIR}/.control-token; "
+        f"chmod 700 {_NEGATIVE_CONTROL_DIR}; "
+        f"chown -R 1000:1000 {_NEGATIVE_CONTROL_DIR}")
+    res = subprocess.run([REAL_DOCKER, "exec", container, "sh", "-c", setup],
+                         capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, res.stdout + res.stderr
+    try:
+        doc = _run_dropped_child_probe(
+            container, [".control-token"],
+            control_dir=_NEGATIVE_CONTROL_DIR, strict=False)
+        attempts = doc["attempts"]
+        # the weak attempt is refused here too -- by the FILE's mode alone
+        weak = attempts[".control-token:open-truncate"]
+        assert weak["ok"] is False and weak["errno"] in _DENIED, weak
+        # ... while every directory-entry attempt goes straight through the
+        # writable parent. If any of these were refused, the probe below
+        # would be unable to tell a protected layout from this one.
+        for op in ("os.replace", "os.rename", "os.unlink", "os.link"):
+            got = attempts[f".control-token:{op}"]
+            assert got["ok"] is True, (
+                f"the probe's {op} attempt failed even against a deliberately "
+                f"agent-writable parent ({got}) -- it cannot distinguish a "
+                "protected control dir from an exposed one, so its verdict on "
+                "the real one below would prove nothing")
+    finally:
+        subprocess.run(
+            [REAL_DOCKER, "exec", container, "rm", "-rf",
+             _NEGATIVE_CONTROL_DIR], capture_output=True, timeout=30)
+
+
+def _assert_doctor_is_happy_with_the_new_layout(ctl_obj: Ctl, scratch,
+                                                run_id: str) -> dict:
+    """`ralphctl doctor` against the very registry this test's `start` just
+    built with the new control-creds layout.
+
+    Two runs, because one check in `doctor` is about the OPERATOR's host and
+    nothing else: `pi_host_config` is `(~/.pi/agent/settings.json).exists()`
+    (`cli/main.py`), which is false in the container this test suite itself
+    runs inside (its HOME carries `models.json`/`auth.json` only) and has
+    nothing to do with this task's change. So:
+
+    * with the ambient HOME, every OTHER check must be true, no registry
+      schema issue and no dangling entry may be reported -- i.e. the new
+      `<registry>/control/<run-id>/` sibling breaks nothing `doctor` reads;
+    * with a HOME that satisfies that one host precondition (an operator's
+      does), the SAME doctor against the SAME registry must return
+      `ok: true` and exit 0.
+    """
+    res = ctl_obj.run("doctor", timeout=180)
+    doc = json.loads(res.stdout)
+    for name, value in doc["checks"].items():
+        if name == "pi_host_config":
+            continue
+        assert value is True, (name, doc["checks"])
+    assert doc["registryIssues"] == [], doc["registryIssues"]
+    assert run_id not in [e.get("runId") for e in doc["danglingRegistryEntries"]], \
+        doc["danglingRegistryEntries"]
+    # the run's own control-creds dir is real, and is a sibling of runs/ --
+    # not something under it that a bind mount would carry into a container
+    assert (ctl_obj.registry / "control" / run_id).is_dir()
+
+    home = scratch / "doctor-home"
+    (home / ".pi" / "agent").mkdir(parents=True, exist_ok=True)
+    (home / ".pi" / "agent" / "settings.json").write_text("{}\n")
+    res2 = ctl_obj.run("doctor", timeout=180,
+                       env={**ctl_obj.env, "HOME": str(home)})
+    doc2 = json.loads(res2.stdout)
+    assert doc2["checks"]["pi_host_config"] is True, doc2["checks"]
+    assert doc2["ok"] is True, doc2["checks"]
+    assert res2.returncode == 0, res2.stderr
+    return doc2
 
 
 def _assert_dropped_child_cannot_reach_control_credential(
@@ -163,28 +443,49 @@ def _assert_dropped_child_cannot_reach_control_credential(
     # (d) the in-container, root-owned defense-in-depth copy
     # (`engine.privsep.provision_control_credentials`,
     # `/var/lib/ralphd/control`, never bind-mounted) is neither readable NOR
-    # replaceable at the dropped agent uid -- the read half AND the
-    # directory-entry replacement half of the boundary, both against a real
-    # kernel permission check, exactly `test_engine_uid_docker.py`'s
-    # `tasks.json` proof for the SAME uid -- for `.control-token` AND (when
-    # enabled) the optional `.api-token` beside it.
-    for name in tokens:
-        path = f"/var/lib/ralphd/control/{name}"
-        res = probe("sh", "-c", f"cat {path}; echo RC=$?")
-        assert res.returncode == 0, res.stderr
-        combined_read = res.stdout + res.stderr
-        assert "RC=0" not in combined_read, (
-            f"the dropped agent uid could read the in-container {name} "
-            f"copy: {combined_read!r}")
-        assert "Permission denied" in combined_read, combined_read
+    # replaceable by a child the engine's own `agent_child_kwargs()` spawns
+    # -- the read half AND the real directory-entry replacement half of the
+    # boundary (`os.replace`/`os.rename`/`os.unlink`/`os.link`/`os.symlink`,
+    # plus a whole-directory swap), every one against a real kernel
+    # permission check, exactly `test_engine_uid_docker.py`'s `tasks.json`
+    # proof for the SAME uid -- for `.control-token` AND (when enabled) the
+    # optional `.api-token` beside it.
+    _assert_the_probe_can_actually_see_a_hole(container)
+    doc = _run_dropped_child_probe(container, list(tokens))
+    attempts = doc["attempts"]
 
-        res = probe("sh", "-c", f"echo pwned > {path}; echo RC=$?")
-        assert res.returncode == 0, res.stderr
-        combined_write = res.stdout + res.stderr
-        assert "RC=0" not in combined_write, (
-            f"the dropped agent uid could REPLACE the in-container {name} "
-            f"copy: {combined_write!r}")
-        assert "Permission denied" in combined_write, combined_write
+    # the child's own environment, built by the production
+    # `CONTROL_PLANE_ENV_VARS` strip the engine applies to every iteration,
+    # carries neither value either
+    for name, value in tokens.items():
+        assert value not in doc["childEnvDump"], (
+            f"the dropped child's own environment names the {name} value")
+
+    for name in tokens:
+        # the read half
+        for op in ("read", "listdir-parent"):
+            got = attempts[f"{name}:{op}"]
+            assert got["ok"] is False and got["errno"] in _DENIED, (
+                f"the dropped child could {op} the in-container {name} "
+                f"copy: {got}")
+        # the directory-entry replacement half: the entry itself cannot be
+        # swapped, removed or re-pointed. `open-truncate` is asserted too,
+        # but as the weakest of the six -- the file's own mode refuses it,
+        # so on its own it would still pass with an agent-writable parent.
+        for op in ("open-truncate", "os.replace", "os.rename", "os.unlink",
+                   "os.link", "os.symlink"):
+            got = attempts[f"{name}:{op}"]
+            assert got["ok"] is False and got["errno"] in _DENIED, (
+                f"the dropped child's {op} against the in-container {name} "
+                f"directory entry SUCCEEDED (or failed for an unrelated "
+                f"reason): {got}")
+
+    # and the control directory itself cannot be swapped out or removed
+    for op in ("os.replace", "os.rmdir"):
+        got = attempts[f"<dir>:{op}"]
+        assert got["ok"] is False and got["errno"] in _DENIED, (
+            f"the dropped child's {op} against the control directory itself "
+            f"SUCCEEDED (or failed for an unrelated reason): {got}")
 
 
 def _assert_root_owned_credential_copy_matches_and_survived(
@@ -200,6 +501,16 @@ def _assert_root_owned_credential_copy_matches_and_survived(
     if api_token is not None:
         tokens[".api-token"] = api_token
     for name, expected in tokens.items():
+        stat = subprocess.run(
+            [REAL_DOCKER, "exec", container, "stat", "-c", "%u:%g:%a",
+             f"/var/lib/ralphd/control/{name}"],
+            capture_output=True, text=True, timeout=15)
+        assert stat.returncode == 0, stat.stderr
+        # still root-owned and still 0600: the dropped child's unlink/
+        # rename/link attempts left the entry exactly as provisioned
+        assert stat.stdout.strip() == "0:0:600", (
+            f"the in-container {name} entry is now {stat.stdout.strip()!r} "
+            "-- one of the dropped child's attempts changed it")
         res = subprocess.run(
             [REAL_DOCKER, "exec", container, "cat",
              f"/var/lib/ralphd/control/{name}"],
@@ -240,6 +551,9 @@ def test_mutating_ralphctl_commands_still_work_and_the_raw_control_gate_holds(ct
     # the layout a fresh `start` actually built ----------------------------
     _assert_dropped_child_cannot_reach_control_credential(container, control_token)
     _assert_root_owned_credential_copy_matches_and_survived(container, control_token)
+
+    # -- `ralphctl doctor` still passes against this very layout -----------
+    _assert_doctor_is_happy_with_the_new_layout(ctl, work_root, run_id)
 
     # -- 1. the raw boundary, against the real running container ----------
     # A client presenting no X-Ralphd-Control-Token header at all -- exactly

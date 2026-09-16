@@ -430,7 +430,19 @@ def test_the_inner_bound_is_clamped_to_the_jobs_remaining_wall_clock(tmp_path):
     `timeout-minutes` and the runner's ambiguous job-level kill lands first.
     With the job's start and bound exported, the wrapper clamps itself down
     to the budget that is actually left, so the expiry (and its evidence)
-    happens from the inside, in time to be reported."""
+    happens from the inside, in time to be reported.
+
+    The clamped figure is read out of the wrapper's own line rather than
+    hardcoded, and then required to be consistent everywhere it appears.
+    The nominal budget here is 3s (60s of job bound minus a 57s tail), but
+    the exact integer is inherently either 3 or 2: this test can only export
+    whole seconds (`int(time.time())`, truncated DOWN), while the wrapper
+    reads its own `date +%s` a moment later, so whenever the process spawn
+    crosses a second boundary the wrapper correctly computes one second
+    less. Pinning the digit made this node flake on a loaded runner (gate
+    35066139757 at 7d74c00f: "exceeded its internal bound of 2s"); pinning
+    the *agreement* of all three reports of it, plus the clamp itself and
+    the from-the-inside expiry, is what the wrapper actually owes."""
     evidence_dir = tmp_path / "evidence"
 
     started = time.time()
@@ -445,11 +457,23 @@ def test_the_inner_bound_is_clamped_to_the_jobs_remaining_wall_clock(tmp_path):
     took = time.time() - started
 
     assert result.returncode == 1, result.stdout
-    assert f"{MARKER} late step exceeded its internal bound of 3s" in result.stdout
-    assert "clamping late step's inner bound from 600s to 3s" in result.stdout
+    # the clamp happened at all, and from the declared 600s ...
+    clamp = re.search(r"clamping late step's inner bound from 600s to (\d+)s",
+                      result.stdout)
+    assert clamp, result.stdout
+    effective = int(clamp.group(1))
+    # ... down to the job's remaining budget: 3s nominally, 2s when the
+    # spawn crossed a whole-second boundary (see the docstring); never the
+    # declared bound, never zero, never negative.
+    assert effective in (2, 3), result.stdout
+    # ... and the expiry that followed reports that SAME clamped bound, in
+    # both places the operator can read it: the greppable marker line ...
+    assert (f"{MARKER} late step exceeded its internal bound of {effective}s"
+            in result.stdout), result.stdout
     assert took < 20, took
+    # ... and the recorded evidence file.
     body = (evidence_dir / "late-step.expired").read_text(encoding="utf-8")
-    assert "effective_bound_s=3" in body
+    assert f"effective_bound_s={effective}" in body
     assert "declared_bound_s=600" in body
 
 
