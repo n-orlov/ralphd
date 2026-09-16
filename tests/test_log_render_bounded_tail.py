@@ -394,18 +394,31 @@ def _message_end_repeating_everything() -> str:
 
 def _restart_iteration_lines(deltas: int, ignored_gap: int = 0,
                              ignored_line_bytes: int | None = None,
-                             text_thinking_gap_lines: list[str] | None = None) -> list[str]:
+                             text_thinking_gap_lines: list[str] | None = None,
+                             post_thinking_gap_lines: list[str] | None = None) -> list[str]:
     """`text_thinking_gap_lines`, when given, is opaque filler (task
     cure-01-01-2) spliced BETWEEN the streamed text block and the thinking
     flood -- unlike `ignored_gap` (which only ever separated the tool
     call's own start/end), this widens the gap a still-open TEXT run's own
     start sits behind, the other half of PRD F.1/F.2/F.4 this task's own
-    regressions name."""
+    regressions name.
+
+    `post_thinking_gap_lines`, when given, is opaque filler (task
+    cure-01-03-2) spliced AFTER the thinking flood and BEFORE the
+    `message_end` that repeats everything: widens the gap between the
+    LAST relevant event of the whole iteration and the `message_end`
+    that needs both `textSeen` and `thinkingSeen` resolved, so
+    `tail_lines` for a small requested tail is nothing but opaque filler
+    plus that `message_end` -- no `_TYPE_FLAG_GROUPS` member anywhere in
+    `tail_lines` itself, unlike scenarios 1-4 above (whose `tail_lines`
+    always still holds a live thinking delta or tool call event for a
+    small `n`)."""
     return (_tool_call_lines("t1", _RESTART_TOOL_NAME, _RESTART_TOOL_ARGS,
                              ignored_gap=ignored_gap, ignored_line_bytes=ignored_line_bytes)
             + _text_stream_lines(_RESTART_TEXT)
             + (text_thinking_gap_lines or [])
             + [line + "\n" for line in _thinking_flood_lines(deltas)]
+            + (post_thinking_gap_lines or [])
             + [_message_end_repeating_everything()])
 
 
@@ -564,13 +577,19 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
     separate test functions to bring the fast tier's collected-test count
     back under its 5,800 launch ceiling; cure-01-01-2 extended it with two
     MORE gap shapes in the same function for the same reason, rather than
-    adding new top-level `def test_...`s).
+    adding new top-level `def test_...`s; cure-01-03-2 added a fifth,
+    same reason).
 
     Without a sound `_should_extend_seed_lookback` trigger, growth would
     stop the moment the SINGLE OLDEST line it had read happened to be
     `"ignored"` filler -- even with a genuinely relevant event (a
     `text_delta`, a `tool_execution_start`) still sitting further back
-    behind it -- which is exactly the defect cure-01-01-2 fixes.
+    behind it -- which is exactly the defect cure-01-01-2 fixes. Scenario
+    5 (cure-01-03-2) sharpens this further: the opaque filler sits
+    directly ADJACENT to `message_end` with no relevant event between
+    them at all, so a small tail's own `tail_lines` carries no
+    `_TYPE_FLAG_GROUPS` member whatsoever -- the absence-in-an-incidental-
+    read-window case E.3/F.1/F.2/F.4 name.
 
     Scenario 1 (cure-01-02, #195): the tool call's start/end are separated
     by 3,000 small ignored events, and the thinking flood is widened to
@@ -625,6 +644,27 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
     _assert_collapse_state_carries_across_a_cut(
         monkeypatch, tmp_path, "starved-growth-budget",
         _restart_iteration_lines(3, ignored_gap=1000, ignored_line_bytes=1024),
+        tail_ns=(1, 2, 3, 4, 5, 6, 10, 50),
+        text_occurrences=1, thinking_occurrences=1, tool_occurrences=1)
+
+    # Scenario 5 (cure-01-03-2, PRD F.1/F.2/F.4, E.3): 1,000 opaque
+    # 1,000-byte events sit between the 500-delta thinking flood and the
+    # `message_end` that repeats the tool call, the text, and the
+    # thinking -- so a small requested tail's own `tail_lines` is nothing
+    # but that opaque filler plus `message_end` itself: no `text_delta`,
+    # `thinking_start`/`thinking_delta`, or tool event anywhere IN
+    # `tail_lines`, unlike every scenario above (whose small-`n` tails
+    # always still hold a live thinking delta or tool event). Before this
+    # task, `_should_extend_seed_lookback`'s only trigger keyed off
+    # `tail_lines` containing a `_TYPE_FLAG_GROUPS` member at all, so it
+    # never grew past this window and certified `textSeen`/`thinkingSeen`
+    # both `False` on the strength of that absence -- printing the
+    # streamed text and tool call a second time instead of the collapsed
+    # `[thinking...]` marker the full render actually shows.
+    _assert_collapse_state_carries_across_a_cut(
+        monkeypatch, tmp_path, "wide-post-thinking-gap",
+        _restart_iteration_lines(
+            500, post_thinking_gap_lines=_ignored_filler_lines(1000, 1000)),
         tail_ns=(1, 2, 3, 4, 5, 6, 10, 50),
         text_occurrences=1, thinking_occurrences=1, tool_occurrences=1)
 

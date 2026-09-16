@@ -343,6 +343,54 @@ def _dangling_tool_call_ids(tail_lines: list[str], prefix_lines: list[str]) -> s
     return ends - starts
 
 
+# Every raw event type this module has a DEDICATED meaning for -- either
+# a `_TYPE_FLAG_GROUPS` member (sets a collapse-guard flag) or one of the
+# two structural types `_prior_collapse_state`/`render_log_line` both key
+# off directly. Anything else (this task's own `{"type": "ignored"}`
+# filler, or any other type a future wire event might introduce) is
+# OPAQUE to this module -- `_tail_contains_opaque_filler` below is what
+# tells `_should_extend_seed_lookback` such a line sitting INSIDE
+# `tail_lines` itself carries no information either way, unlike a
+# `tail_lines` built entirely of recognized types (E.2's own fixture).
+_KNOWN_EVENT_TYPES = set(_TYPE_FLAG_GROUPS) | {"message_end", "ralphd.iteration"}
+
+
+def _tail_contains_opaque_filler(tail_lines: list[str]) -> bool:
+    """True when `tail_lines` -- the retained tail ITSELF, never merely
+    `prefix_lines` -- carries a raw event of a type this module has no
+    dedicated meaning for at all (task cure-01-03-2, F.1/F.2/F.4, E.3):
+    the counterexample where 1,000 opaque 1,000-byte `{"type": "ignored"}`
+    filler events sit directly between a `message_end` (needing
+    `textSeen`/`thinkingSeen` resolved) and the actual streamed text/
+    thinking further back, so a `needed=2` request's own `tail_lines` is
+    `['ignored', 'message_end']` -- containing NEITHER a
+    `_TYPE_FLAG_GROUPS` member (the trigger-1 gate `_tail_active_flag_
+    groups` reads) NOR anything else this module recognizes.
+
+    Trigger 1 already answers "is there something in `tail_lines` proving
+    this iteration streams at all" -- a `tail_lines` built ENTIRELY of
+    plain, understood `message_end` lines (E.2's own fixture: `needed`
+    exactly matches the real content's own count, so no filler ever
+    shares the window) genuinely tells us there is nothing further back
+    worth finding, because the window's own composition is fully known
+    and homogeneous. An opaque type inside `tail_lines` is the opposite
+    signal: the window's own OLDEST member is something this module
+    cannot read at all, so certifying an unresolved flag `False` on the
+    strength of that absence -- what this module did before this task --
+    is exactly the defect these clauses name: "absence of a relevant
+    event in an incidental read window must not certify unknown prefix
+    state as empty". Gated on `tail_lines` alone, mirroring trigger 1's
+    own grounding: an opaque line found only in `prefix_lines` (already
+    read while chasing trigger 1 or 2) changes nothing here, since
+    `tail_lines` itself never changes across the look-back loop.
+    """
+    for raw in tail_lines:
+        ev = _safe_json(raw)
+        if ev is not None and ev.get("type") not in _KNOWN_EVENT_TYPES:
+            return True
+    return False
+
+
 def _has_relevant_type(lines: list[str], flags: set) -> bool:
     """Whether ANY line in `lines` -- anywhere in it, not merely as the
     single OLDEST one -- carries a raw TYPE whose `_TYPE_FLAG_GROUPS`
@@ -485,6 +533,16 @@ def _should_extend_seed_lookback(tail_lines: list[str], prefix_lines: list[str])
                   if not seed_flags[flag]}
     active = _tail_active_flag_groups(tail_lines)
     if unresolved & active and _has_relevant_type(combined, unresolved & active):
+        return True
+    # Trigger 3 (task cure-01-03-2, F.1/F.2/F.4, E.3): `tail_lines` itself
+    # carries an OPAQUE event this module cannot read at all (never merely
+    # a recognized-but-irrelevant one, which is what E.2's own fixture
+    # keeps entirely OUT of `tail_lines`) -- so an unresolved flag `tail_
+    # lines` still needs cannot be certified `False` from what has been
+    # read so far; see `_tail_contains_opaque_filler`'s own docstring for
+    # exactly why this is safe against E.2's byte bound (its `tail_lines`
+    # never contains this signal at all, homogeneous `message_end` only).
+    if unresolved and _tail_contains_opaque_filler(tail_lines):
         return True
     return bool(_dangling_tool_call_ids(tail_lines, prefix_lines))
 
