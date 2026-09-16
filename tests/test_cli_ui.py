@@ -220,16 +220,24 @@ def _write_run_with_api(registry: Path, run_id: str, engine: StubEngineApi,
     treats it as a LIVE run (`live: true`, proxied status/tasks/logs).
     `control_token` (#155) seeds `.control-token` beside `.api-token`, the
     file `_proxy_json` forwards as `X-Ralphd-Control-Token` on a mutating
-    request -- the same file `ralphctl start`/`resume` provision on every
-    real run."""
+    request -- read from `<registry>/control/<run-id>/`, host-only and
+    never bind-mounted into any container (task 003, requirement A, #201),
+    the same location every real `ralphctl start`/`resume` provisions."""
     run_dir = _write_dead_run(registry, run_id, **status_fields)
     (run_dir / "host.json").write_text(json.dumps(
         {"runId": run_id, "port": engine.port,
          "apiUrl": f"http://127.0.0.1:{engine.port}"}))
-    if token:
-        (run_dir / ".api-token").write_text(token)
-    if control_token:
-        (run_dir / ".control-token").write_text(control_token)
+    if token or control_token:
+        # Task 003 (requirement A, #201): current layout keeps both
+        # tokens host-only, under `<registry>/control/<run-id>/`, never a
+        # subdirectory of `run_dir` (which a real run bind-mounts into its
+        # container).
+        ccdir = registry / "control" / run_id
+        ccdir.mkdir(parents=True, exist_ok=True)
+        if token:
+            (ccdir / ".api-token").write_text(token)
+        if control_token:
+            (ccdir / ".control-token").write_text(control_token)
     return run_dir
 
 

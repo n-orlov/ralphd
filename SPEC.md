@@ -429,7 +429,10 @@ Everything host-side lives under one directory, `~/.ralphd/`, overridable in ful
 │   ├── operator-termination.json# durable record of an operator abort/stop
 │   ├── auto-resume.json         # crash-loop guard: attempts, lastAt, maxAttempts
 │   ├── host.json                # container id, port, apiUrl, the image record (§3.2), network, workspace
-│   └── .api-token (0600) · .lock
+│   └── .lock
+├── control/<run-id>/           # HOST-ONLY -- never bind-mounted into any container (task 003, #201)
+│   ├── .control-token (0600)  # unconditional; the mutating-only gate's secret
+│   └── .api-token (0600)      # only when --api-token was passed
 └── configs/<run-id>/            # bind-mounted at /config, read-only
     ├── job.yaml                 # the job config as launched
     ├── prd.md                   # as handed to `start`

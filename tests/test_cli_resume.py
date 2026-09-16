@@ -23,7 +23,7 @@ __all__ = ["ctl", "unix_sock"]
 
 
 def _seed_run(c: Ctl, run_id: str, *, iterations: int = 5, workspace=None,
-              token: str | None = None) -> tuple:
+              token: str | None = None, legacy_token_layout: bool = False) -> tuple:
     rdir = c.registry / "runs" / run_id
     cdir = c.registry / "configs" / run_id
     rdir.mkdir(parents=True)
@@ -39,7 +39,19 @@ def _seed_run(c: Ctl, run_id: str, *, iterations: int = 5, workspace=None,
     (rdir / "host.json").write_text(json.dumps(host_meta))
     (rdir / "status.json").write_text(json.dumps({"state": "failed"}))
     if token is not None:
-        (rdir / ".api-token").write_text(token)
+        # Task 003 (requirement A, #201): the CURRENT layout keeps
+        # `.api-token` host-only, under `<registry>/control/<run-id>/`,
+        # never a subdirectory of `rdir` (bind-mounted at `/run/ralphd` on
+        # every real `start`/`resume`). `legacy_token_layout=True` seeds the
+        # PRE-task-003 location instead, for the one test that exists to
+        # prove `resume` self-heals a run dir a pre-change build created
+        # (test_resume_self_heals_a_pre_task_003_run_dir, below).
+        if legacy_token_layout:
+            (rdir / ".api-token").write_text(token)
+        else:
+            ccdir = c.registry / "control" / run_id
+            ccdir.mkdir(parents=True, exist_ok=True)
+            (ccdir / ".api-token").write_text(token)
     return rdir, cdir
 
 
@@ -74,9 +86,27 @@ def test_resume_refuses_when_container_still_running(ctl):
 
 
 def test_resume_removes_stopped_container_and_reuses_mounts(ctl, tmp_path):
+    """Also covers task 003's self-heal (requirement A.5, #201), consolidated
+    into this one node rather than a second fast-tier test (the fast tier's
+    own ceiling has zero headroom, see notes.md): `_seed_run`'s
+    `legacy_token_layout=True` reproduces exactly what a pre-change build
+    wrote -- `.api-token`/`.control-token` straight into `rdir` (bind-mounted
+    at `/run/ralphd`, agent-readable on the standard uid-1000 configuration)
+    -- so the resume this test already drives, for its own mount-reuse
+    assertions below, doubles as the self-heal proof: the same env-forwarding
+    assertion already here shows the OLD-location value still reaches the new
+    container, and the three assertions this docstring's own change adds show
+    the exposed originals are gone and the SAME value now lives at the
+    host-only, never-mounted location every later `ralphctl` invocation reads
+    from."""
     ws = tmp_path / "ws"
     ws.mkdir()
-    rdir, cdir = _seed_run(ctl, "tst-dead", workspace=ws, token="secret-tok")
+    rdir, cdir = _seed_run(ctl, "tst-dead", workspace=ws, token="secret-tok",
+                           legacy_token_layout=True)
+    (rdir / ".control-token").write_text("legacy-ctl-tok")
+    assert (rdir / ".api-token").exists()
+    assert (rdir / ".control-token").exists()
+
     res = ctl.run("resume", "tst-dead", env={
         "STUB_DOCKER_CONTAINERS": "ralphd-tst-dead",
         "STUB_DOCKER_RUNNING": "",  # exists but stopped
@@ -94,10 +124,20 @@ def test_resume_removes_stopped_container_and_reuses_mounts(ctl, tmp_path):
     assert f"{ws}:/workspace" in argv
     ev = env_vars(argv)
     assert "RALPHD_API_TOKEN=secret-tok" in ev
+    assert "RALPHD_CONTROL_TOKEN=legacy-ctl-tok" in ev
     # a fresh host.json was written, workspace preserved
     meta = json.loads((rdir / "host.json").read_text())
     assert meta["workspace"] == str(ws)
     assert meta["container"] == "f" * 64  # stub's fake id
+
+    # self-healed: the exposed originals are gone ...
+    assert not (rdir / ".api-token").exists()
+    assert not (rdir / ".control-token").exists()
+    # ... and the SAME values now live at the host-only, never-mounted
+    # location every later `ralphctl` invocation reads from.
+    ccdir = ctl.registry / "control" / "tst-dead"
+    assert (ccdir / ".api-token").read_text() == "secret-tok"
+    assert (ccdir / ".control-token").read_text() == "legacy-ctl-tok"
 
 
 def test_resume_without_prior_container_skips_rm(ctl):

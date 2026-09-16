@@ -198,6 +198,65 @@ def agent_child_kwargs() -> dict:
 
 
 # --------------------------------------------------------------------------
+# Task 003 (requirement A, #201): a purely container-internal,
+# never-bind-mounted defense-in-depth copy of the control credential (and
+# the optional API token).
+#
+# `cli.main.control_creds_dir` (the HOST side) fixes the actual leak --
+# `.control-token`/`.api-token` are no longer written anywhere this module
+# bind-mounts into a container at all, so a fully dropped agent child has
+# no container-namespace path to either value. Nothing in THIS engine ever
+# reads the copy below back (`engine.config.JobConfig.load()` reads the
+# same `RALPHD_CONTROL_TOKEN`/`RALPHD_API_TOKEN` env vars directly, once,
+# into memory), so this directory's only job is to give the boundary
+# something concrete to fail against, on the layout `start` actually
+# builds: a directory that is root-owned with a root-owned parent, entirely
+# inside this container's own writable layer -- deliberately NOT a
+# subdirectory of a host bind mount (`/run/ralphd`, `/config`, or the
+# `run-secrets` mount `_bind_run_secrets_mount` builds), where chowning it
+# root-owned from inside the container would ALSO chown the *host* file --
+# there is no user-namespace remap here, so uid 0 in the container is real
+# uid 0 on the host too -- locking the operator's own plain host user out
+# of the path it separately needs to keep reading. That mount-overrides-
+# intent trap is requirement C's own cautionary tale
+# (`petitions.key_store_dir`'s docstring); this directory is never mounted
+# at all, so it cannot fall into it.
+CONTROL_CREDENTIALS_DIR = Path(os.environ.get(
+    "RALPHD_CONTROL_CREDENTIALS_DIR", "/var/lib/ralphd/control"))
+
+
+def provision_control_credentials() -> None:
+    """Write `.control-token`/`.api-token` (whichever `RALPHD_*` env var is
+    set) into `CONTROL_CREDENTIALS_DIR`, root-owned 0700 with a root-owned
+    parent, entirely inside this container's own filesystem layer.
+
+    Must be called before `separate_engine_identity()` -- while the process
+    is still literally root (real, effective AND saved all 0), so the
+    mkdir/chmod/write below need no privilege beyond what the process
+    already holds and there is no window in which an unprivileged caller
+    could race the write. A no-op when not running as root (the test
+    suite's unprivileged engine, or `docker run --user 1000`): the
+    documented degrade, not a second code path -- there is no boundary for
+    this directory to be a defense IN DEPTH of, so skipping it changes
+    nothing an unprivileged engine could not already see by reading its own
+    (unelevated) `os.environ`.
+    """
+    if os.getuid() != 0:
+        return
+    CONTROL_CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(CONTROL_CREDENTIALS_DIR, 0o700)
+    for env_name, file_name in (("RALPHD_CONTROL_TOKEN", ".control-token"),
+                                 ("RALPHD_API_TOKEN", ".api-token")):
+        value = os.environ.get(env_name)
+        path = CONTROL_CREDENTIALS_DIR / file_name
+        if value:
+            path.write_text(value)
+            os.chmod(path, 0o600)
+        elif path.exists():
+            path.unlink()
+
+
+# --------------------------------------------------------------------------
 # Task 105 (#60 requirement D): the authoritative task record, root-owned.
 #
 # `agent_child_kwargs()` above is one-directional -- it drops a *child*

@@ -2469,7 +2469,10 @@ continues the job instead of re-planning; `resume` just has to reproduce
   and reused verbatim; the positional resume command never needs
   `--workspace` itself).
 - The recorded `.api-token`, if any (`-e RALPHD_API_TOKEN=...`), so the
-  same client-side token keeps working against the new container.
+  same client-side token keeps working against the new container. Read from
+  `<control-creds-dir>` (task 003, requirement A, #201 -- host-only, never
+  bind-mounted into any container; self-healed off `<run-dir>/.api-token`
+  on the first resume of a run a pre-task-003 build started).
 - **The recorded `.control-token` (task 004, #62 candidate 1, requirement
   A), unconditionally** -- unlike `.api-token`, this one exists on every
   run `start` created after task 004 landed, whether or not `--api-token`
@@ -2477,7 +2480,8 @@ continues the job instead of re-planning; `resume` just has to reproduce
   (`/abort`, `/pause`, `/resume`, `/retry`, `/shutdown`,
   `PATCH /config/budget`, every `PUT`/`DELETE` under `/config`) closed to
   an iteration by default -- see `docs/api.md`'s "container boundary"
-  section. A run started before task 004 (no `.control-token` on disk)
+  section. Read from the same `<control-creds-dir>` as `.api-token`
+  (task 003). A run started before task 004 (no `.control-token` anywhere)
   resumes exactly as it did before: the mutating gate stays open, the same
   as `.api-token`'s own absent-file behaviour, never retrofitted.
 - The `--llm` wiring resolved at `start` time (task 058, operator steering
@@ -2485,11 +2489,12 @@ continues the job instead of re-planning; `resume` just has to reproduce
   base wiring above — `--llm host`'s forwarded `HOST_LLM_ENV` vars
   (`ANTHROPIC_API_KEY`, `AWS_ACCESS_KEY_ID`, ...) and its `~/.aws` mount if
   present, or a named profile's fully-resolved `env:`/`mounts:` (including
-  anything that came from a `${env:}`/`${file:}`/`${cmd:}` reference) — are
-  persisted at `start` time to `<config-dir>/llm-wiring.json` (mode `0600`,
-  never under the run dir proper, never returned by any HTTP route — the
-  same at-rest pattern already used for `<config-dir>/pi/models.json` and
-  `<run-dir>/.api-token`) and reproduced byte-for-byte by `resume`,
+  anything that came from a `${env:}`/`${file:}`/`${cmd:}` reference) --
+  are persisted at `start` time to `<config-dir>/llm-wiring.json` (mode
+  `0600`, never under the run dir proper, never returned by any HTTP
+  route -- the same at-rest pattern already used for
+  `<config-dir>/pi/models.json` and `<control-creds-dir>/.api-token`) and
+  reproduced byte-for-byte by `resume`,
   regardless of what the operator's *current* shell has (or lacks) at
   resume time. A run started before this existed (no `llm-wiring.json` on
   disk) resumes exactly as it did before — no error, just nothing extra to

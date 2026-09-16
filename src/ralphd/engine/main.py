@@ -329,6 +329,13 @@ def main() -> None:
     # the engine is signalable by the uid its iterations use. A no-op with one
     # warning when the engine was not started as root (the test suite, or
     # `docker run --user 1000`): see engine/privsep.py.
+    #
+    # Task 003 (requirement A, #201): provision the defense-in-depth control
+    # credential copy BEFORE that drop -- while this process is still
+    # literally root (real, effective and saved all 0) -- exactly so the
+    # directory it creates is genuinely root-owned and nothing about the
+    # drop that follows needs to elevate back into it.
+    privsep.provision_control_credentials()
     separate_engine_identity()
     sys.exit(asyncio.run(amain()))
 

@@ -2349,8 +2349,10 @@ repair` command for hand-fixing corrupted run state.
 - Default: container port published to `127.0.0.1` only, **no auth**.
 - Optional: `--api-token <t>` (or auto-generate with `--api-token auto`) makes the
   engine require `Authorization: Bearer <t>` on every route; combine with
-  `--api-bind 0.0.0.0` for LAN/remote access. The CLI stores the token in the run
-  registry (`~/.ralphd/runs/<id>/.api-token`, mode 0600) and sends it automatically.
+  `--api-bind 0.0.0.0` for LAN/remote access. The CLI stores the token in the
+  registry's host-only control-creds directory (`~/.ralphd/control/<id>/.api-token`,
+  mode 0600, never bind-mounted into any container -- task 003, requirement A,
+  #201) and sends it automatically.
 - The job config itself (`<config-dir>/job.yaml`) is written **verbatim**, not
   redacted at rest: it is a private host-side file (like `llm-wiring.json` /
   `env-wiring.json` next to it) that only ever reaches the container as a
@@ -2880,10 +2882,12 @@ mount path if present, or a named profile's fully-resolved `env`/`mounts`
 (after every `${env:}`/`${file:}`/`${cmd:}` reference has already been
 evaluated) -- to `<config-dir>/llm-wiring.json`, mode `0600`. This reuses
 the exact secret-at-rest pattern already established by
-`<config-dir>/pi/models.json` (task 013/023-026's resolved `apiKey`) and
-`<run-dir>/.api-token`: a private file under the job's own directories,
-never served by any HTTP route, mounted read-only into the container like
-everything else under `<config-dir>` -- no new secret-storage mechanism was
+`<config-dir>/pi/models.json` (task 013/023-026's resolved `apiKey`,
+mounted read-only into the container like everything else under
+`<config-dir>`) and `<control-creds-dir>/.api-token`
+(`~/.ralphd/control/<id>/.api-token`, task 003 -- host-only, never mounted
+into any container at all): a private file, never served by any HTTP
+route -- no new secret-storage mechanism was
 invented. `ralphctl resume` reads that file (if present -- a run started
 before task 058 simply has none, and resumes exactly as it always did) and
 adds its `env`/`mounts` to the new `docker run` invocation verbatim, before

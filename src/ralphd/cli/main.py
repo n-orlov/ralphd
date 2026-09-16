@@ -197,6 +197,53 @@ def _bind_run_secrets_mount(run_id: str, mounts: list) -> None:
     mounts += ["-v", f"{d}:{petitions.DEFAULT_RUN_SECRETS_DIR}"]
 
 
+# Task 003 (requirement A, #201): where `.control-token`/`.api-token` are
+# now stored on the HOST side, read back by every later `ralphctl`
+# invocation (steer/abort/budget/resume/status/logs/the hub's own proxy --
+# all share this one path convention) that needs to authenticate to a run's
+# API. Deliberately its OWN top-level registry directory, never a
+# subdirectory of `run_root()` (bind-mounted at `/run/ralphd`) or
+# `config_root()` (bind-mounted read-only at `/config`): both of those are
+# passed whole to every `docker run` this module makes, so anything placed
+# inside either one is readable from inside the container regardless of its
+# own mode bits -- the #201 defect exactly (a file owned by the *host*
+# user is also owned by the *agent* uid on the standard configuration,
+# because they are numerically the same uid; `chmod 0600` restricts other
+# uids, not this one). A directory this function never mounts anywhere has
+# no path in the container's own namespace at all, agent or not -- the
+# strongest version of "neither read nor replace" there is.
+def control_creds_dir(run_id: str) -> Path:
+    return registry() / "control" / run_id
+
+
+def _migrate_legacy_control_creds(run_id: str, rdir: Path) -> None:
+    """Task 003 (requirement A.5, #201): self-heal a run directory a
+    pre-change build created. Before this task, `start`/`resume` wrote
+    `.api-token`/`.control-token` straight into `rdir` -- bind-mounted at
+    `/run/ralphd`, agent-readable on the standard uid-1000 configuration.
+    On this run's first `resume` under the new layout, move any such
+    file's VALUE into `control_creds_dir(run_id)` (never mounted into any
+    container) and remove the exposed original, rather than leaving it
+    readable beside the new, protected copy or failing outright because
+    the old layout doesn't match what this build expects. A run dir
+    already on the new layout (no legacy file present) is untouched; a run
+    dir with neither file (no `--api-token`, or -- impossible after task
+    004 -- no control token at all) is also untouched.
+    """
+    dest = control_creds_dir(run_id)
+    dest.mkdir(parents=True, exist_ok=True)
+    os.chmod(dest, 0o700)
+    for name in (".api-token", ".control-token"):
+        legacy = rdir / name
+        if not legacy.exists():
+            continue
+        new = dest / name
+        if not new.exists():
+            new.write_text(legacy.read_text())
+            os.chmod(new, 0o600)
+        legacy.unlink()
+
+
 # The container path every `docker run` in this module binds the run dir at
 # (`-v {rdir}:/run/ralphd`), which is therefore the engine's own
 # `run.root` -- and so the identity `petitions.stored_key_filename` names
@@ -307,7 +354,7 @@ def api(run_id: str, method: str, path: str, body: dict | None = None,
     if not meta.get("apiUrl"):
         die(4, f"no API endpoint recorded for run {run_id}")
     req = urllib.request.Request(meta["apiUrl"] + path, method=method)
-    token_file = run_root(run_id) / ".api-token"
+    token_file = control_creds_dir(run_id) / ".api-token"
     if token_file.exists():
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
     # Task 004 (#62 candidate 1, requirement A): the mutating-only gate.
@@ -319,7 +366,7 @@ def api(run_id: str, method: str, path: str, body: dict | None = None,
     # this one `api()` helper. Read fresh per call, not cached, so a
     # `resume` that rotates the file mid-process is picked up.
     if method in MUTATING_METHODS:
-        control_file = run_root(run_id) / ".control-token"
+        control_file = control_creds_dir(run_id) / ".control-token"
         if control_file.exists():
             req.add_header("X-Ralphd-Control-Token",
                           control_file.read_text().strip())
@@ -492,7 +539,8 @@ def _write_llm_wiring(cdir: Path, mode: str, env: dict[str, str],
 
     These values are genuinely secret (the same class of value already
     written unencrypted-but-mode-0600 to `<cdir>/pi/models.json` for
-    `--llm host`'s resolved `apiKey`, or to `<run-dir>/.api-token`) -- this
+    `--llm host`'s resolved `apiKey`, or to `control_creds_dir`'s
+    `.api-token`) -- this
     reuses that same at-rest pattern (private file under the job's own
     config dir, 0600, never under the run dir proper, never returned by
     any HTTP route, mounted read-only into the container like everything
@@ -1811,10 +1859,23 @@ def cmd_start(args):
     prd = sys.stdin.read() if args.prd == "-" else Path(args.prd).read_text()
     (cdir / "prd.md").write_text(prd)
 
+    # Task 003 (requirement A, #201): `.api-token`/`.control-token` are
+    # HOST-ONLY from here on -- `control_creds_dir` is never bind-mounted
+    # into any container this run starts (unlike `rdir`, the pre-task-003
+    # location, mounted whole at `/run/ralphd`), so a fully dropped agent
+    # child has no container-namespace path to either value at all. The
+    # in-container copy that authenticates the engine's own API is the
+    # `-e RALPHD_API_TOKEN=`/`-e RALPHD_CONTROL_TOKEN=` env vars below,
+    # already stripped from every spawned iteration's own environment
+    # (`engine.config.CONTROL_PLANE_ENV_VARS`, `engine.runner.PiRunner.run`).
+    ccdir = control_creds_dir(run_id)
+    ccdir.mkdir(parents=True, exist_ok=True)
+    os.chmod(ccdir, 0o700)
+
     token = None
     if args.api_token:
         token = secrets.token_urlsafe(24) if args.api_token == "auto" else args.api_token
-        tf = rdir / ".api-token"
+        tf = ccdir / ".api-token"
         tf.write_text(token)
         os.chmod(tf, 0o600)
 
@@ -1824,12 +1885,11 @@ def cmd_start(args):
     # `/shutdown`, `PATCH /config/budget` and every `PUT`/`DELETE` under
     # `/config` to an iteration by default, whether or not the operator
     # ever opted into `--api-token`. `.control-token` lives beside
-    # `.api-token` in the run dir for the same reason `.api-token` does
-    # (task 003 strips `RALPHD_CONTROL_TOKEN` from a spawned iteration's
-    # own environment; the file's readability from inside the container is
-    # requirement D's job, not this one's).
+    # `.api-token` in `control_creds_dir` for the same reason `.api-token`
+    # does now (task 003, requirement A: neither is ever written into a
+    # directory this module bind-mounts into a container).
     control_token = secrets.token_urlsafe(24)
-    ctf = rdir / ".control-token"
+    ctf = ccdir / ".control-token"
     ctf.write_text(control_token)
     os.chmod(ctf, 0o600)
 
@@ -2226,7 +2286,7 @@ def _engine_is_live(run_id: str) -> bool:
     if not url:
         return False
     req = urllib.request.Request(url + "/status")
-    token_file = run_root(run_id) / ".api-token"
+    token_file = control_creds_dir(run_id) / ".api-token"
     if token_file.exists():
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
     try:
@@ -2269,7 +2329,7 @@ def _follow_events(args, run_id: str, fatal: bool = True):
     meta = host_meta(run_id)
     url = meta["apiUrl"] + "/events?since=0"
     req = urllib.request.Request(url)
-    token_file = run_root(run_id) / ".api-token"
+    token_file = control_creds_dir(run_id) / ".api-token"
     if token_file.exists():
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
     connected = False
@@ -2757,14 +2817,21 @@ def cmd_resume(args):
         mounts += ["-v", f"{path}:/workspace/{name}"]
 
     env_args: list[str] = []
-    token_file = rdir / ".api-token"
+    # Task 003 (requirement A.5, #201): heal an older run dir (which wrote
+    # `.api-token`/`.control-token` straight into `rdir`, agent-readable)
+    # before reading either value back -- so the values below always come
+    # from `control_creds_dir`, and the exposed originals never survive a
+    # resume onto this build.
+    _migrate_legacy_control_creds(run_id, rdir)
+    ccdir = control_creds_dir(run_id)
+    token_file = ccdir / ".api-token"
     if token_file.exists():
         env_args += ["-e", f"RALPHD_API_TOKEN={token_file.read_text().strip()}"]
     # Task 004: `.control-token` was provisioned unconditionally at `start`
     # (or, for a run dir predating task 004, is simply absent -- an older
     # run resumes with the mutating gate open, exactly as it always was;
     # `resume` never retrofits a boundary the run did not start with).
-    control_file = rdir / ".control-token"
+    control_file = ccdir / ".control-token"
     if control_file.exists():
         env_args += ["-e", f"RALPHD_CONTROL_TOKEN={control_file.read_text().strip()}"]
 
@@ -4124,7 +4191,7 @@ def _api_reachable(run_id: str, timeout: int = 5) -> bool:
     if not meta.get("apiUrl"):
         return False
     req = urllib.request.Request(meta["apiUrl"] + "/status")
-    token_file = run_root(run_id) / ".api-token"
+    token_file = control_creds_dir(run_id) / ".api-token"
     if token_file.exists():
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
     try:
@@ -4527,7 +4594,7 @@ def _stream_logs(args, path: str, tty: bool, state: dict | None = None,
     if not meta.get("apiUrl"):
         die(4, f"no API endpoint recorded for run {args.run_id}")
     req = urllib.request.Request(meta["apiUrl"] + path)
-    token_file = run_root(args.run_id) / ".api-token"
+    token_file = control_creds_dir(args.run_id) / ".api-token"
     if token_file.exists():
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
     if state is None:

@@ -236,6 +236,16 @@ def host_meta(reg: Path, run_id: str) -> dict:
     return _read_json(reg / "runs" / run_id / "host.json", {}) or {}
 
 
+# Task 003 (requirement A, #201): the same host-only, never-mounted-into-
+# any-container path `cli.main.control_creds_dir` builds -- kept as a small
+# duplicate rather than an import from `cli.main` (which this module never
+# imports from, mirroring `host_meta`'s own pre-existing duplication of the
+# host-side path convention) so the hub's control sends (#155's flow) read
+# `.api-token`/`.control-token` from the same place `ralphctl` itself does.
+def _control_creds_dir(reg: Path, run_id: str) -> Path:
+    return reg / "control" / run_id
+
+
 def _api_reachable(reg: Path, run_id: str, timeout: float = API_PROBE_TIMEOUT_S) -> bool:
     """Task 024 (#8): does the run's container API accept a connection?
 
@@ -378,7 +388,7 @@ def _proxy_json(reg: Path, run_id: str, method: str, path: str,
     if not api_url:
         return False, 0, None
     req = urllib.request.Request(api_url + path, method=method, data=body)
-    token_file = reg / "runs" / run_id / ".api-token"
+    token_file = _control_creds_dir(reg, run_id) / ".api-token"
     if token_file.exists():
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
     # #155: the run's mutating routes (POST /steering, POST /retry, ...)
@@ -391,7 +401,7 @@ def _proxy_json(reg: Path, run_id: str, method: str, path: str,
     # `.api-token` and every hub-initiated steer/retry 401'd against a real
     # run.
     if method in MUTATING_METHODS:
-        control_file = reg / "runs" / run_id / ".control-token"
+        control_file = _control_creds_dir(reg, run_id) / ".control-token"
         if control_file.exists():
             req.add_header("X-Ralphd-Control-Token",
                           control_file.read_text().strip())
@@ -419,7 +429,7 @@ def _proxy_text(reg: Path, run_id: str, path: str, timeout: float = 5.0):
     if not api_url:
         return False, ""
     req = urllib.request.Request(api_url + path, method="GET")
-    token_file = reg / "runs" / run_id / ".api-token"
+    token_file = _control_creds_dir(reg, run_id) / ".api-token"
     if token_file.exists():
         req.add_header("Authorization", f"Bearer {token_file.read_text().strip()}")
     try:

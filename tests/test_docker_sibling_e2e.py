@@ -263,13 +263,15 @@ def ctl(work_root, gateway_ip, test_image):
 
 
 def _wait_status(api_url: str, predicate, timeout: float = 90,
-                  interval: float = 0.4) -> dict:
+                  interval: float = 0.4, headers: dict | None = None) -> dict:
     deadline = time.time() + timeout
     last: dict | None = None
     last_err = None
     while time.time() < deadline:
         try:
             req = urllib.request.Request(api_url + "/status")
+            for name, value in (headers or {}).items():
+                req.add_header(name, value)
             with urllib.request.urlopen(req, timeout=5) as resp:
                 last = json.loads(resp.read())
             if predicate(last):
