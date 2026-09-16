@@ -61,6 +61,18 @@ Five things only a real container can show:
    deliberately agent-writable parent holding an agent-owned 0400
    `.control-token`, the SAME probe must report the entry as replaceable --
    otherwise its verdict on the real directory would prove nothing.
+
+   Task 019 (STEER 002's generalised rule -- a protected path is only as
+   protected as its least-protected ancestor): the (d) check does not stop
+   at the control dir's own directory entry. Every ancestor above it, from
+   the container root down -- `/var/lib/ralphd` (its parent), `/var/lib`,
+   `/var`, `/` -- is measured (uid/mode, via `docker exec` as root, never a
+   host-side `Path.stat()`) and attacked by the SAME dropped child
+   (`os.mkdir`-inside, `os.chmod`, `os.rename`, with `/`'s own rename
+   accepting the structural `EBUSY` a mount-namespace root returns instead
+   of a permission errno) before the confirmation below is written down.
+   These four are base-image ancestors no ralphd code creates or chowns --
+   they were never task 003's own fix, and this is proof, not a new one.
 5. With `--api-token` enabled, the SAME dropped-agent-uid probe (4) above
    applied to `.api-token` finds it in none of the same leak routes
    either -- a separate, minimal test (enabling `--api-token` makes
@@ -193,6 +205,45 @@ decoy = os.path.join(scratch, "decoy-control-dir")
 os.makedirs(decoy, exist_ok=True)
 record("<dir>:os.replace", lambda: os.replace(decoy, control_dir))
 record("<dir>:os.rmdir", lambda: os.rmdir(control_dir))
+
+# Task 019 (STEER 002's generalised rule -- "walk EVERY ancestor from the
+# container root down ... run the attack yourself ... for each
+# agent-reachable ancestor in turn"): the attempts above stop at the
+# control dir's own directory entry inside its parent. Everything above
+# that -- `/var/lib/ralphd` (the control dir's parent), `/var/lib`, `/var`
+# and `/` itself -- is walked and attacked too, exactly the same way task
+# 005 (requirement C) walked the run-secrets store's own ancestor chain.
+# These are the container's base-image ancestors regardless of which
+# control_dir was passed in (the negative control below points control_dir
+# at a /tmp scratch dir, but these four paths are always the real ones),
+# so an attack here proves the SAME boundary every other protected leaf in
+# this run relies on, not a boundary specific to this probe's own target.
+attempt = record  # same shape, named to read like task 005's own probe
+attempt("ancestor:/var/lib/ralphd:os.mkdir-inside",
+        lambda: os.mkdir("/var/lib/ralphd/planted-a201"))
+attempt("ancestor:/var/lib/ralphd:os.chmod",
+        lambda: os.chmod("/var/lib/ralphd", 0o777))
+attempt("ancestor:/var/lib/ralphd:os.rename",
+        lambda: os.rename("/var/lib/ralphd", "/var/lib/ralphd-moved"))
+attempt("ancestor:/var/lib:os.mkdir-inside",
+        lambda: os.mkdir("/var/lib/planted-a201"))
+attempt("ancestor:/var/lib:os.chmod", lambda: os.chmod("/var/lib", 0o777))
+attempt("ancestor:/var/lib:os.rename",
+        lambda: os.rename("/var/lib", "/var/lib-moved"))
+attempt("ancestor:/var:os.mkdir-inside",
+        lambda: os.mkdir("/var/planted-a201"))
+attempt("ancestor:/var:os.chmod", lambda: os.chmod("/var", 0o777))
+attempt("ancestor:/var:os.rename", lambda: os.rename("/var", "/var-moved"))
+attempt("ancestor:/:os.mkdir-inside",
+        lambda: os.mkdir("/planted-a201-root"))
+attempt("ancestor:/:os.chmod", lambda: os.chmod("/", 0o777))
+# renaming `/` itself is a structural question, not a permission one --
+# there is no parent dentry within this mount namespace to rename it IN,
+# so the kernel refuses with EBUSY before it ever consults the agent
+# uid's permissions. Attempted anyway (never skipped: an omitted attempt
+# is exactly the "acknowledges an attack it does not run" shape STEER 002
+# named), with EBUSY accepted alongside EACCES/EPERM in the assertion.
+attempt("ancestor:/:os.rename", lambda: os.rename("/", "/-moved"))
 
 sys.stdout.write(json.dumps(out))
 '''
@@ -446,9 +497,20 @@ def _assert_dropped_child_cannot_reach_control_credential(
         "a token-named file exists under the bind-mounted run dir: "
         + repr(res.stdout))
 
-    # (c) the read-only config mount contains neither token value.
+    # (c) the read-only config mount contains neither token value. Excludes
+    # `/config/run-secrets` -- the SAME host directory `run_secrets_dir()`
+    # bind-mounts a second time at `/var/lib/ralphd/run-secrets`, chowned
+    # root-owned 0700 from inside the container by task 005's own
+    # `protect_run_secrets_dir()` (requirement C) -- which surfaces here too
+    # since it lives under `config_root()`. That boundary is proved by
+    # `test_run_secrets_key_store_docker.py`, not this check; without the
+    # `-prune`, `find /config` would legitimately hit `EACCES` descending
+    # into it at the agent uid, making `find`'s own exit status nonzero for
+    # a reason this check was never about -- caught live, pre-existing
+    # (same red at HEAD `b48489cd`, before any change task 019 made).
     script_c = "cat /config/job.yaml /config/*.json /config/**/*.json 2>/dev/null; " \
-               "find /config -type f -exec cat {} + 2>/dev/null"
+               "find /config -path /config/run-secrets -prune -o " \
+               "-type f -exec cat {} + 2>/dev/null"
     res = probe("sh", "-c", script_c)
     assert res.returncode == 0, res.stderr
     for name, value in tokens.items():
@@ -502,6 +564,41 @@ def _assert_dropped_child_cannot_reach_control_credential(
         assert got["ok"] is False and got["errno"] in _DENIED, (
             f"the dropped child's {op} against the control directory itself "
             f"SUCCEEDED (or failed for an unrelated reason): {got}")
+
+    # Task 019 (STEER 002): confirm the rest of the ancestor chain -- above
+    # the control dir's own directory entry, up to the container root --
+    # is measured and attacked too, not merely reasoned about. `docker exec`
+    # (default identity, real root) reads uid/mode directly; a host-side
+    # `Path.stat()` is never used (it would raise `PermissionError` walking
+    # through a 0700 ancestor on some other protected leaf's layout, and
+    # this repo's standing rule is to never rely on it for this class of
+    # check regardless).
+    for anc_path, expected_mode in (("/var/lib/ralphd", "755"),
+                                    ("/var/lib", "755"),
+                                    ("/var", "755"), ("/", "755")):
+        stat = subprocess.run(
+            [REAL_DOCKER, "exec", container, "stat", "-c", "%u:%g:%a",
+             anc_path], capture_output=True, text=True, timeout=15)
+        assert stat.returncode == 0, stat.stderr
+        uid, gid, mode = stat.stdout.strip().split(":")
+        assert uid == "0", (
+            f"ancestor {anc_path} is not root-owned ({stat.stdout.strip()}) "
+            "-- the ancestor chain above the control credential breaks here")
+        assert mode == expected_mode, (anc_path, stat.stdout.strip())
+
+    # ... and every attack against those same ancestors, run by the SAME
+    # dropped child that just failed against the control dir's own entry,
+    # is denied too (EBUSY accepted alongside EACCES/EPERM only for `/`
+    # itself, a structural refusal -- there is no parent dentry within this
+    # mount namespace to rename `/` IN -- never a silently broadened set).
+    for anc_key in ("/var/lib/ralphd", "/var/lib", "/var", "/"):
+        for op in ("os.mkdir-inside", "os.chmod", "os.rename"):
+            got = attempts[f"ancestor:{anc_key}:{op}"]
+            allowed = _DENIED if not (anc_key == "/" and op == "os.rename") \
+                else _DENIED + ("EBUSY",)
+            assert got["ok"] is False and got["errno"] in allowed, (
+                f"the dropped child's {op} against ancestor {anc_key} "
+                f"SUCCEEDED (or failed for an unrelated reason): {got}")
 
 
 def _assert_root_owned_credential_copy_matches_and_survived(

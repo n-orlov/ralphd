@@ -232,6 +232,17 @@ def provision_control_credentials() -> None:
     set) into `CONTROL_CREDENTIALS_DIR`, root-owned 0700 with a root-owned
     parent, entirely inside this container's own filesystem layer.
 
+    Task 019 (STEER 002's generalised rule) confirmed the rest of that
+    chain too, not merely the immediate parent: every ancestor of
+    `CONTROL_CREDENTIALS_DIR` from the container root down --
+    `/var/lib/ralphd`, `/var/lib`, `/var`, `/` -- is a base-image directory
+    this module never creates or chowns, measured live (via `docker exec`
+    as root, `tests/test_control_plane_auth_docker.py`) root:root mode
+    0755 and unreachable by a dropped agent-uid child's `os.mkdir`/
+    `os.chmod`/`os.rename` attempts against any of them. Every ancestor lies
+    outside every agent-writable path, so the rename-a-directory-entry
+    attack that rejected task 004's first attempt has no foothold here.
+
     Must be called before `separate_engine_identity()` -- while the process
     is still literally root (real, effective AND saved all 0), so the
     mkdir/chmod/write below need no privilege beyond what the process
