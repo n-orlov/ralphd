@@ -160,19 +160,40 @@ jobs:
       # in tests/test_run_bounded_timeout_marker.py's EXEMPT_RUN_STEPS, and
       # tests/test_ci_dev_layout_matrix_guard.py requires both heavy jobs to
       # keep it ahead of their checkout.
+      #
+      # Task 012 (requirement I, branch b): the containerized docker-tier
+      # experiment (b1f3fb80..8daf54f8, since reverted) ran this whole job
+      # as container-root for ~11h across many commits, so EVERY file its
+      # steps touched in this reused checkout -- `.git/objects` included,
+      # not only `.docker-e2e-tmp-*` sibling-test litter -- landed
+      # root-owned on this self-hosted runner's real disk. A host-run job's
+      # own unprivileged user can then neither clean nor overwrite them, so
+      # `actions/checkout` itself failed (heavy run 35207813022, docker-tier
+      # job 105157778298: `EACCES: permission denied, unlink
+      # '.../.git/objects/10/a61deb98...'`) -- the SAME failure mode B's own
+      # comment above already describes for `record`, just spread over the
+      # whole tree instead of one directory. Fixed by chowning the ENTIRE
+      # workspace back to the runner's own uid/gid through a disposable root
+      # sibling, unconditionally and every run -- idempotent (a no-op on an
+      # already-correctly-owned tree) and cheap enough to leave as a
+      # permanent safety net rather than something removed once this one
+      # incident is cleared, since a future root-run step anywhere could
+      # leave the same kind of litter again.
       - name: Reap root-owned test litter left in the runner workspace
         run: |
           ws="${GITHUB_WORKSPACE:?}"
           mkdir -p "$ws"
+          # The image container/Dockerfile is FROM: present on this box from
+          # every docker-tier run, and pinned by tag rather than pulled blind.
+          image=python:3.12-slim-bookworm
+          docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image"
+          docker run --rm --user 0:0 -v "$ws":/reap "$image" \
+            sh -c "chown -R $(id -u):$(id -g) /reap"
           if ! ls -d "$ws"/.docker-e2e-tmp-* >/dev/null 2>&1; then
             echo "no .docker-e2e-tmp-* litter in $ws"
             exit 0
           fi
           ls -d "$ws"/.docker-e2e-tmp-*
-          # The image container/Dockerfile is FROM: present on this box from
-          # every docker-tier run, and pinned by tag rather than pulled blind.
-          image=python:3.12-slim-bookworm
-          docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image"
           docker run --rm --user 0:0 -v "$ws":/reap "$image" \
             sh -c 'cd /reap && rm -rf .docker-e2e-tmp-*'
           if ls -d "$ws"/.docker-e2e-tmp-* >/dev/null 2>&1; then
