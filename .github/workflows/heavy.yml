@@ -352,10 +352,12 @@ jobs:
 
       # Task 004 (requirement B, #202): the docker tier's copy of this step
       # above carries the full rationale. It is needed here too because the
-      # litter is per RUNNER WORKSPACE, not per job: the two runner slots keep
-      # separate checkouts (ws-2, ws-3), the docker tier poisons whichever one
-      # it landed on, and the browser tier's own checkout then dies in exactly
-      # the same way on that workspace next time it is scheduled there.
+      # litter is per RUNNER WORKSPACE, not per job: each of the four eligible
+      # slots (`int21h-ws-1`..`int21h-ws-4`, corrected from the retired VPS's
+      # two slots by task 014, requirement K) keeps its own checkout, the
+      # docker tier poisons whichever one it landed on, and the browser tier's
+      # own checkout then dies in exactly the same way on that workspace next
+      # time it is scheduled there.
       #
       # Task 011 (requirement H): unlike the docker tier above, this job now
       # declares `container:`, so every step -- this one included, it is the

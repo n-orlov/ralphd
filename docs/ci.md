@@ -17,7 +17,7 @@ The tiers themselves — what they cover and what they cost — are
 |---|---|---|---|---|
 | `gate.yml` | records lint, `-m fast` (which is a superset of `-m smoke`) | self-hosted `fast-lane` (`int21h-ws-5`/`-6`, exclusively) | every pull request, every push to `main` | 45 min |
 | `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs, plus a third `browser-image` job that publishes the browser tier's pinned image and runs on nothing but an explicit dispatch with `publish_browser_image: true`, which in turn skips the two tiers (task 011) | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min (40 for the dispatch-only publisher) |
-| `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running the `fast` tier under `scripts/host_like_dev_layout.sh` inside a plain upstream container (task 077, steer 008) | self-hosted, two runner slots (below) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis) |
+| `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running the `fast` tier under `scripts/host_like_dev_layout.sh` inside a plain upstream container (task 077, steer 008) | self-hosted `ralphd-vps` + `docker-host` (`int21h-ws-1`..`-4`, four eligible slots; `max-parallel: 2` caps how many cells run at once, which is a documented ceiling, not the slot count -- see below) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis) |
 
 `gate.yml` was on GitHub's own runners until 14 September 2026, when being the
 lane that runs most often stopped being an argument for hosted runners and
@@ -37,8 +37,12 @@ which is why it asks for neither label.
 14 September 2026, superseding the VPS partition described earlier that day).
 The VPS was a 4-core / 7 GB box and that, not the workflow, was why this lane
 took ~12 minutes: the identical `-n 2` recipe is 592 s on the workstation. Both
-VPS slots were deregistered and their packages removed. The partition survived
-the move; only its halves changed machines:
+VPS slots had their labels and their packages removed, so they are eligible for
+nothing and no lane can land on them; the two registrations themselves
+(`vmi3245594`, `vmi3245594-2`) are still present and online, which is why
+`## The self-hosted runner` below still lists them (re-read live at task 014:
+eight registrations, six labelled as partitioned below, two label-free). The
+partition survived the move; only its halves changed machines:
 
 | slots | labels | takes |
 |---|---|---|

@@ -53,8 +53,16 @@
 # varies with the axis under test. `-m fast` also excludes `-m browser`
 # (tests/conftest.py never stamps a browser-marked node `fast`), which is
 # the second, independent reason no matrix cell here ever drives a browser
-# (steer 009) -- see the `browser-runner` label on heavy.yml's browser tier,
-# the only mechanism that keeps browser work serial across workflows.
+# (steer 009). It is also the only reason left, and that matters: the
+# `browser-runner` label on heavy.yml's browser tier is NOT currently keeping
+# browser work serial across workflows (task 014, requirement K.2).
+# Serialisation was never a property of the label's existence, only of the
+# operator placing it on exactly ONE slot; today the operator has it on all
+# four of `int21h-ws-1`..`int21h-ws-4`, so up to four browser-tier jobs can
+# run at once. Restoring it is runner-label placement (the operator's), not a
+# workflow edit -- read the live placement from
+# `GET /repos/n-orlov/ralphd/actions/runners`, and see docs/ci.md
+# "The self-hosted runner" for #189's unowned placement half.
 #
 # Checkout happens on the HOST (`fetch-depth: 0`), then the checkout is
 # mounted READ-ONLY at /src-ro inside the NESTED per-cell container and
