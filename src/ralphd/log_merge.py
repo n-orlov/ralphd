@@ -275,7 +275,35 @@ _SEED_LOOKBACK_EXTRA_GROWTHS = 12
 # do when the transcript format carries no record of where an iteration's
 # own streaming began (a format change and a side index are both outside
 # this wave's PRD, which is why this is a bound and not a lookup).
-_SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET = 4096
+#
+# LOWERED from 4096 to 2,500 (task cure-01-02-2, PRD P.1/P.5's own
+# materiality rule, review's `test_P_older_padding_cannot_buy_
+# speculative_reads`): a LINE-count budget alone never bounds BYTES --
+# the retained tail's own growing-bound retry (`ui_server.
+# rendered_log_lines`'s doubled re-fetch when one attempt's raw bound
+# under-renders) walks this SAME never-resolving speculative search
+# TWICE for this scenario's own interleaved suffix, and each walk's
+# byte cost is `budget * (bytes an older event happens to occupy)` --
+# at 4,096 lines and 100 bytes of padding per older `ignored` event
+# (~145 bytes/line once the rest of the JSON envelope is counted), two
+# walks cost 1,310,720 bytes, over the unmoved 1,000,000-byte ceiling;
+# at 2,500 lines the same fixture measures 851,968 (comfortably under,
+# with margin for the JSON envelope this comment's own byte-per-line
+# estimate is approximate about). 2,500 still comfortably exceeds every
+# shipped scenario that genuinely NEEDS this trigger to walk far enough
+# to actually RESOLVE something (never merely to give up bounded) --
+# the deepest is PRD Q's own 500-thinking-delta-then-1,000-padded-gap
+# fixture at ~1,503 total raw lines, which this trigger stops for by
+# reaching `reached_start` (byte 0, the file's own natural end) long
+# before any line-count budget would matter, at any of the values named
+# here. A fixture that never resolves (this one; PRD E's older-thinking-
+# marker fixture, though that one's `tail_lines` never activates this
+# trigger at all -- see `_tail_contains_opaque_filler`'s own docstring)
+# only ever gets CHEAPER as this budget shrinks, never wrong: the flag it
+# chases stays unresolved regardless of how far the search is allowed to
+# run, so lowering the cutoff can only reduce bytes read, never change
+# what gets published.
+_SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET = 2500
 
 # The raw NDJSON types/subtypes `_prior_collapse_state` actually flips a
 # collapse-guard flag on (`message_update`'s `text_delta`/`thinking_start`/
@@ -615,15 +643,33 @@ def _flags_needed_by_tail(tail_lines: list[str]) -> set:
     return needed
 
 
-def _should_extend_seed_lookback(tail_lines: list[str], prefix_lines: list[str]) -> bool:
-    """Whether `_tail_lines_of_file` should read one more (bounded) chunk
-    further back purely to widen the collapse-state seed, given what has
-    been read so far. True on either of two independent, concrete signals
-    -- never merely because more history happens to exist, and never
-    merely because a lookback cap or a single opaque edge event lets it
-    stop (cure-01-01-2: `_SEED_LOOKBACK_EXTRA_GROWTHS` caps only how large
-    one read chunk may grow and no longer ends the look-back at all, so
-    THIS function and `reached_start` are its only two exits):
+def _seed_lookback_extension_kind(tail_lines: list[str], prefix_lines: list[str]) -> str | None:
+    """Which of the two independent, concrete signals below wants one more
+    (bounded) chunk read further back purely to widen the collapse-state
+    seed, given what has been read so far -- `"needle"` for trigger 1 or
+    2 (each names a CONCRETE needle whose existence the retained tail
+    itself already evidences, so growth is safe to keep doubling
+    aggressively: it terminates on the needle, never on a cap alone),
+    `"speculative"` for trigger 3 alone (names no needle -- see that
+    trigger's own comment below for why `_tail_lines_of_file` must NOT
+    let it read with the same doubled step a needle-grounded search
+    uses), or `None` if neither wants more.
+
+    `_should_extend_seed_lookback` is the plain boolean callers that only
+    need the yes/no (the two `test_log_render_bounded_tail.py` stopping-
+    condition assertions, `_should_extend_seed_lookback(kept, prefix)`)
+    still use; `_tail_lines_of_file` calls THIS function instead so it
+    can choose a materially different read-step size for the
+    `"speculative"` case (task cure-01-02-2, PRD P.1/P.5's own
+    materiality rule) without changing when growth stops.
+
+    Returns a non-`None` value on either of two independent, concrete
+    signals -- never merely because more history happens to exist, and
+    never merely because a lookback cap or a single opaque edge event
+    lets it stop (cure-01-01-2: `_SEED_LOOKBACK_EXTRA_GROWTHS` caps only
+    how large one read chunk may grow and no longer ends the look-back
+    at all, so THIS function and `reached_start` are its only two
+    exits):
 
     1. `_prior_collapse_state` over `prefix_lines + tail_lines` -- i.e.
        EVERY line read so far, in chronological order, not `prefix_lines`
@@ -692,7 +738,9 @@ def _should_extend_seed_lookback(tail_lines: list[str], prefix_lines: list[str])
                   if not seed_flags[flag]}
     active = _tail_active_flag_groups(tail_lines)
     if unresolved & active and _has_relevant_type(combined, unresolved & active):
-        return True
+        return "needle"
+    if _dangling_tool_call_ids(tail_lines, prefix_lines):
+        return "needle"
     # Trigger 3 (task cure-01-03-2, F.1/F.2/F.4, E.3): `tail_lines` itself
     # carries an OPAQUE event this module cannot read at all (never merely
     # a recognized-but-irrelevant one, which is what E.2's own fixture
@@ -707,11 +755,35 @@ def _should_extend_seed_lookback(tail_lines: list[str], prefix_lines: list[str])
     # P.1/P.5): this trigger names no needle to terminate on, so without a
     # bound it reads to byte 0 of any transcript whose tail boundary
     # happens to be opaque -- review's shifted-interleaving measurement,
-    # see that constant's own comment.
+    # see that constant's own comment. THIS ALONE is also the trigger
+    # `_tail_lines_of_file` reads with a small, un-doubled, FIXED byte
+    # step (task cure-01-02-2, PRD P.1/P.5, the materiality rule review's
+    # padded-older-history variant demands): trigger 1/2's needle-
+    # grounded doubled `chunk` still bounds THEIR overshoot to a constant
+    # multiple of a needle's own depth, but the SAME doubled step applied
+    # here overshoots this trigger's line-count budget by an amount that
+    # scales with how many BYTES each older non-rendering event happens
+    # to occupy -- 100 bytes of padding per older `ignored` event turns
+    # the identical line-count overshoot into ~5x the transcript bytes
+    # read (51,730 vs 1,966,080 measured at 10 vs 100,000 older events,
+    # both padded 100 bytes, both well past the unmoved 1,000,000-byte
+    # ceiling for the larger one) -- so the byte cost of finding out this
+    # trigger has nothing to resolve must be bounded by BYTES, not by how
+    # many of them there are. See `_tail_lines_of_file`'s own read loop.
     if (unresolved and _tail_contains_opaque_filler(tail_lines)
             and len(prefix_lines) < _SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET):
-        return True
-    return bool(_dangling_tool_call_ids(tail_lines, prefix_lines))
+        return "speculative"
+    return None
+
+
+def _should_extend_seed_lookback(tail_lines: list[str], prefix_lines: list[str]) -> bool:
+    """Plain yes/no wrapper around `_seed_lookback_extension_kind` for the
+    callers that only need to know WHETHER `_tail_lines_of_file` should
+    read one more (bounded) chunk further back -- never which of the two
+    reasons it is (only `_tail_lines_of_file`'s own read loop needs
+    that, to size a purely speculative step differently; see that
+    function's `_seed_lookback_extension_kind` call)."""
+    return _seed_lookback_extension_kind(tail_lines, prefix_lines) is not None
 
 
 def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[str]]:
@@ -781,22 +853,42 @@ def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[
         #
         # The loop's exit conditions are exactly two, both of them REAL
         # (cure-01-01-2, second attempt): `reached_start` -- byte 0, no
-        # unread history left at all -- or `_should_extend_seed_lookback`
+        # unread history left at all -- or `_seed_lookback_extension_kind`
         # finding nothing further back that could still resolve what the
         # retained tail actually reads. `_SEED_LOOKBACK_EXTRA_GROWTHS` is
-        # NOT a third exit: it only caps how large a single chunk may
-        # grow, after which the read continues in steady-sized chunks (see
-        # that constant's own comment for the `bash ✓ ok` counterexample
-        # its old stop-condition shape produced).
+        # NOT a third exit: it only caps how large a single NEEDLE-
+        # grounded chunk may grow, after which the read continues in
+        # steady-sized chunks (see that constant's own comment for the
+        # `bash ✓ ok` counterexample its old stop-condition shape
+        # produced).
+        #
+        # A PURELY SPECULATIVE step (task cure-01-02-2, PRD P.1/P.5's own
+        # materiality rule) never uses `chunk` at all, however far it has
+        # already doubled for a still-open needle-grounded search: it
+        # reads at most one FIXED, un-doubled `_TAIL_READ_CHUNK` at a
+        # time, so the most this loop can ever overshoot
+        # `_SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET` by, in BYTES, is one
+        # constant chunk -- never a multiple that grows with how many
+        # bytes an individual older non-rendering event happens to
+        # occupy. `chunk` itself is left untouched by a speculative step
+        # (neither read with it nor doubled from it), so a later needle-
+        # grounded step in the SAME call still doubles from wherever it
+        # last legitimately grew.
         extra_growths = 0
-        while not reached_start and _should_extend_seed_lookback(tail_lines, prefix_lines):
-            read_size = max(1, min(chunk, pos))
+        while not reached_start:
+            kind = _seed_lookback_extension_kind(tail_lines, prefix_lines)
+            if kind is None:
+                break
+            if kind == "speculative":
+                read_size = max(1, min(_TAIL_READ_CHUNK, pos))
+            else:
+                read_size = max(1, min(chunk, pos))
             pos -= read_size
             f.seek(pos)
             data = f.read(read_size) + data
-            if extra_growths < _SEED_LOOKBACK_EXTRA_GROWTHS:
+            if kind != "speculative" and extra_growths < _SEED_LOOKBACK_EXTRA_GROWTHS:
                 chunk *= 2
-            extra_growths += 1
+                extra_growths += 1
             reached_start = pos <= 0
             _, tail_lines, prefix_lines = _split(data)
 
