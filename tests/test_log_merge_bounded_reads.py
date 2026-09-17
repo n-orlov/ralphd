@@ -275,11 +275,25 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     # review's `test_P_interleaved_byte_ceiling[one-extra-trailing-
     # ignored-*]`): the SAME 1,000,000-byte ceiling, unchanged, has to hold
     # for either alignment -- see `log_merge.
-    # _SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET`.
+    # _SEED_LOOKBACK_SPECULATIVE_BYTE_FLOOR`.
     shifted_root = tmp_path / "interleaved-suffix-shifted"
     shifted_root.mkdir()
     await _assert_interleaved_ignored_suffix_is_bounded_across_every_surface(
         shifted_root, monkeypatch, trailing_ignored=1)
+
+    # The SAME shifted suffix once more with every OLDER, non-rendering
+    # entry padded by 500 bytes and the retained tail untouched (task
+    # cure-01-02-2, PRD P.1/P.5's own materiality rule, review's
+    # `test_P_older_padding_cannot_buy_speculative_reads`): what this
+    # ceiling must be independent of is the SIZE of older non-rendering
+    # history, not merely its line count -- a LINE-count bound on the
+    # speculative look-back measured 2,752,512 bytes here, over the
+    # unmoved ceiling, for the very same 200 rendered lines it passes
+    # unpadded.
+    padded_root = tmp_path / "interleaved-suffix-shifted-padded"
+    padded_root.mkdir()
+    await _assert_interleaved_ignored_suffix_is_bounded_across_every_surface(
+        padded_root, monkeypatch, trailing_ignored=1, older_padding=500)
 
     toolcall_root = tmp_path / "interleaved-toolcall-suffix"
     toolcall_root.mkdir()
@@ -616,7 +630,8 @@ async def _assert_older_thinking_marker_stays_bounded_across_every_surface(
 
 def _write_iteration_with_interleaved_ignored_suffix(run_root: pathlib.Path, n: int,
                                                       older_count: int,
-                                                      trailing_ignored: int = 0) -> None:
+                                                      trailing_ignored: int = 0,
+                                                      older_padding: int = 0) -> None:
     """One iteration whose `output.jsonl` is `older_count` unrelated,
     IGNORED older raw entries followed by 200 `message_end`/`ignored`
     PAIRS (task 006, PRD P.2). Unlike `_write_iteration_with_ignored_head`
@@ -626,14 +641,29 @@ def _write_iteration_with_interleaved_ignored_suffix(run_root: pathlib.Path, n: 
     event for every visible `message_end`: growing `older_count` still
     grows only unrelated OLDER history, never the tail's own shape, but
     the tail itself is no longer built entirely of recognized types the
-    way E.2's fixture is."""
+    way E.2's fixture is.
+
+    `older_padding` (task cure-01-02-2, PRD P.1/P.5's own materiality
+    rule) pads each of those OLDER, non-rendering entries by that many
+    bytes without touching the retained tail's own shape by one byte --
+    the axis review's `test_P_older_padding_cannot_buy_speculative_reads`
+    falsified this ceiling on: a LINE-count bound on the speculative seed
+    look-back read 393,216 bytes unpadded and 2,752,512 at 500 bytes of
+    padding per older event, for one identical 200-line rendered tail, so
+    the ceiling held only for events that happened to be small. The bound
+    that replaced it is counted in BYTES and spent at the file's HEAD
+    (`log_merge._SEED_LOOKBACK_SPECULATIVE_BYTE_FLOOR`), so this fixture
+    measures the SAME 393,216 bytes at 0, 100, 500 and 2,000 bytes of
+    padding alike."""
     d = run_root / "iterations" / f"{n:04d}"
     d.mkdir(parents=True)
     meta = {"number": n, "phase": "worker", "model": "stub-model", "approach": 1,
             "startedAt": "2025-01-01T00:00:00Z", "endedAt": "2025-01-01T00:00:01Z",
             "exitCode": 0, "error": None, "usage": {"totalTokens": n}}
     (d / "meta.json").write_text(json.dumps(meta))
-    older = [json.dumps({"type": "ignored", "seq": i}) for i in range(older_count)]
+    older = [json.dumps({"type": "ignored", "seq": i,
+                        **({"padding": "x" * older_padding} if older_padding else {})})
+             for i in range(older_count)]
     suffix: list[str] = []
     for i in range(200):
         suffix.append(json.dumps({"type": "message_end", "message": {"content": [
@@ -676,7 +706,7 @@ async def _grown_rendered_tail(fetch, bound_tail: int) -> list[str]:
 
 
 async def _assert_interleaved_ignored_suffix_is_bounded_across_every_surface(
-        root, monkeypatch, trailing_ignored: int = 0) -> None:
+        root, monkeypatch, trailing_ignored: int = 0, older_padding: int = 0) -> None:
     """Task 006, PRD P's own falsifying scenario: a fixed 200-line
     rendered suffix whose visible `message_end` events are interleaved
     ONE FOR ONE with non-rendering `ignored` events (P.2) must read a
@@ -726,18 +756,24 @@ async def _assert_interleaved_ignored_suffix_is_bounded_across_every_surface(
     24,715 / 3,413,305), over the ceiling. The caller runs this helper
     at BOTH alignments against the SAME unchanged 1,000,000-byte
     ceiling; what holds it for the shifted one is
-    `log_merge._SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET` (~393,216 bytes
-    read at 100,000 older events), a bound on the one look-back trigger
-    that names no needle to terminate on -- never a weakened assertion
-    and never the alignment.
+    `log_merge._SEED_LOOKBACK_SPECULATIVE_BYTE_FLOOR` (393,216 bytes read
+    at 100,000 older events, whatever those events are padded to -- task
+    cure-01-02-2 recounted that bound in BYTES and spends it reading the
+    file's HEAD, where an iteration's own first occurrences live, after a
+    LINE-count bound was measured buying 2,752,512 bytes for the same 200
+    rendered lines at 500 bytes of padding per older event), a bound on
+    the one look-back trigger that names no needle to terminate on --
+    never a weakened assertion and never the alignment.
     """
     small_reg, large_reg = root / "small", root / "large"
     small_root = small_reg / "runs" / "probe"
     large_root = large_reg / "runs" / "probe"
     _write_iteration_with_interleaved_ignored_suffix(
-        small_root, 1, 10, trailing_ignored=trailing_ignored)
+        small_root, 1, 10, trailing_ignored=trailing_ignored,
+        older_padding=older_padding)
     _write_iteration_with_interleaved_ignored_suffix(
-        large_root, 1, 100_000, trailing_ignored=trailing_ignored)
+        large_root, 1, 100_000, trailing_ignored=trailing_ignored,
+        older_padding=older_padding)
     small_size = (small_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
     large_size = (large_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
 

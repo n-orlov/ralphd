@@ -221,8 +221,8 @@ _TAIL_READ_CHUNK = 1 << 16
 # `bash $ printf cap-needle ✓ ok`.
 _SEED_LOOKBACK_EXTRA_GROWTHS = 12
 
-# How many already-read OLDER lines (`prefix_lines`) the look-back's
-# SPECULATIVE trigger alone -- trigger 3 below, "the retained tail's own
+# How many BYTES of already-read OLDER lines (`prefix_lines`) the
+# look-back's SPECULATIVE trigger alone -- trigger 3 below, "the retained tail's own
 # boundary is an event that tells us nothing, so we cannot certify an
 # unresolved flag `False` from what we have read" -- may accumulate before
 # it stops asking for more (task cure-01-02, PRD P.1/P.5, review's
@@ -251,18 +251,45 @@ _SEED_LOOKBACK_EXTRA_GROWTHS = 12
 # ceiling now holds for either alignment, because THIS bound, not that
 # alignment, is what stops the speculative walk.
 #
-# WHY THE BUDGET IS COUNTED IN LINES, NOT BYTES. The speculative search is
-# a search over EVENTS, and how many bytes an event occupies is chosen by
-# whoever wrote the transcript, not by this reader: the shipped
-# gap-after-thinking and Q scenarios each hide their genuine needle behind
-# 1,000 opaque events PADDED to 1,000 bytes each (~1.05 MB, ~1,510 lines),
-# while P's own fixture hides no needle at all behind 100,000 unpadded
-# ~30-byte ones (~3.4 MB). A byte budget that admits the first (>= 1.05 MB)
-# cannot also keep the second under a 1,000,000-byte ceiling read twice; a
-# line budget separates them by what actually differs -- how far back in
-# EVENTS the seed is being asked to speculate. 4,096 lines leaves ~2.7x
-# headroom over the deepest speculative look-back any shipped scenario
-# needs, and caps P's own shifted fixture at ~192 KB per read pass.
+# WHY THE BUDGET IS COUNTED IN BYTES, NOT LINES (task cure-01-02-2, PRD
+# P.1/P.5's own materiality rule, review's
+# `test_P_older_padding_cannot_buy_speculative_reads`). A LINE-count
+# budget never bounds what this reader is actually measured on -- BYTES
+# READ off `output.jsonl` -- because how many bytes an event occupies is
+# chosen by whoever wrote the transcript, not by this reader: the SAME
+# 200-line rendered tail behind the SAME 100,000 older non-rendering
+# events, walked with the SAME line budget, cost 393,216 bytes unpadded,
+# 851,968 at 100 bytes of padding per older event and 2,752,512 at 500 --
+# one line count, three costs, the last of them over the unmoved
+# 1,000,000-byte ceiling. Only a budget counted in BYTES has a cost
+# padding cannot move at all.
+#
+# WHY A BYTE BUDGET IS AFFORDABLE, where the line budget's own comment
+# argued it was not. That argument rested on the speculative search
+# reading BACKWARDS, chunk by chunk, from the retained tail: the shipped
+# gap-after-thinking and Q scenarios hide their genuine needle behind
+# 1,000 opaque events padded to 1,000 bytes each, so a BACKWARD search
+# has to be allowed >= 1.05 MB to cross that gap -- more than P's whole
+# ceiling, read twice. But the state this trigger speculates about is
+# `_prior_collapse_state`, and every flag in it is set by its FIRST
+# occurrence in the iteration: whatever streamed text/thinking or open
+# tool call an omitted prefix establishes, it establishes at the
+# iteration's BEGINNING -- not immediately before the retained tail. So
+# the speculative extension reads the file's HEAD instead
+# (`_tail_lines_of_file`'s head probe: forward from byte 0, in fixed
+# `_TAIL_READ_CHUNK` steps), never the arbitrarily long middle. Those
+# same scenarios resolve inside the FIRST head chunk (their
+# `tool_execution_start`, `text_delta` and `thinking_start` all sit
+# within the first ~1 KB of the iteration, AHEAD of the padded gap), so
+# this budget never has to be big enough to cross a gap at all -- only
+# big enough to read the head, where the answer actually lives, on top of
+# whatever `prefix_lines` the backward read for `needed` already pulled
+# in for free.
+#
+# 131,072 bytes (measured, task cure-01-02-2), or the retained tail's own
+# byte size when that is larger -- see the constant's own comment below
+# for why the budget has to scale with what renders and not merely sit at
+# a fixed floor.
 #
 # STOPPING HERE IS NOT A CLAIM THE SEED IS COMPLETE, and it is not a
 # restart: `reached_start` stays False (its own contract is byte 0 of the
@@ -276,34 +303,41 @@ _SEED_LOOKBACK_EXTRA_GROWTHS = 12
 # own streaming began (a format change and a side index are both outside
 # this wave's PRD, which is why this is a bound and not a lookup).
 #
-# LOWERED from 4096 to 2,500 (task cure-01-02-2, PRD P.1/P.5's own
-# materiality rule, review's `test_P_older_padding_cannot_buy_
-# speculative_reads`): a LINE-count budget alone never bounds BYTES --
-# the retained tail's own growing-bound retry (`ui_server.
-# rendered_log_lines`'s doubled re-fetch when one attempt's raw bound
-# under-renders) walks this SAME never-resolving speculative search
-# TWICE for this scenario's own interleaved suffix, and each walk's
-# byte cost is `budget * (bytes an older event happens to occupy)` --
-# at 4,096 lines and 100 bytes of padding per older `ignored` event
-# (~145 bytes/line once the rest of the JSON envelope is counted), two
-# walks cost 1,310,720 bytes, over the unmoved 1,000,000-byte ceiling;
-# at 2,500 lines the same fixture measures 851,968 (comfortably under,
-# with margin for the JSON envelope this comment's own byte-per-line
-# estimate is approximate about). 2,500 still comfortably exceeds every
-# shipped scenario that genuinely NEEDS this trigger to walk far enough
-# to actually RESOLVE something (never merely to give up bounded) --
-# the deepest is PRD Q's own 500-thinking-delta-then-1,000-padded-gap
-# fixture at ~1,503 total raw lines, which this trigger stops for by
-# reaching `reached_start` (byte 0, the file's own natural end) long
-# before any line-count budget would matter, at any of the values named
-# here. A fixture that never resolves (this one; PRD E's older-thinking-
-# marker fixture, though that one's `tail_lines` never activates this
-# trigger at all -- see `_tail_contains_opaque_filler`'s own docstring)
-# only ever gets CHEAPER as this budget shrinks, never wrong: the flag it
-# chases stays unresolved regardless of how far the search is allowed to
-# run, so lowering the cutoff can only reduce bytes read, never change
-# what gets published.
-_SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET = 2500
+# 131,072 bytes, OR the retained tail's own byte size when that is larger
+# (measured, task cure-01-02-2). The budget is spent on `prefix_lines`
+# BYTES -- whatever the backward read for `needed` pulled in for free plus
+# whatever the head probe adds -- so it has to clear the free part before
+# it can buy a single head chunk, and the free part is itself as large as
+# the retained tail (one `_TAIL_READ_CHUNK` beyond it at most): a FIXED
+# floor alone would silently starve any request whose own retained tail is
+# bigger than the floor (the shipped gap-after-thinking scenario's own
+# growing-bound retry asks for 256 raw lines of 1,000-byte filler, 256 KB
+# of retained tail, and then never reads the head that resolves it).
+# Scaling with the retained tail is the materiality rule itself: what a
+# bounded reader may spend is set by the SIZE OF WHAT IT RENDERS, never by
+# how much older history happens to sit in the same file.
+#
+# P's own grown fixture ends at ~192 KB per read pass -- one 64 KB
+# backward chunk for its (small, unpadded) 200-line tail, then at most two
+# 64 KB head chunks before the floor is spent -- so its two-pass total
+# (`ui_server.rendered_log_lines`'s growing-bound retry) stays ~384 KB:
+# under the unmoved 1,000,000-byte ceiling and under `large_bytes <
+# small_bytes * 10` (the small fixture's own 49,430), at 0, 100 or 500
+# bytes of padding per older event alike -- padding changes how many LINES
+# those ~192 KB hold, and nothing else.
+#
+# A fixture that never resolves (P's own; PRD E's older-thinking-marker
+# fixture, though that one's `tail_lines` never activates this trigger at
+# all -- see `_tail_contains_opaque_filler`'s own docstring) only ever
+# gets CHEAPER as this floor shrinks, never wrong: the flag it chases
+# stays unresolved however far the search is allowed to run, so lowering
+# the cutoff can only reduce bytes read, never change what gets
+# published. What shrinking it CAN break is the other direction -- a
+# scenario whose first head chunk would have resolved the flag, cut off
+# before that chunk is read -- which is why the floor has to stay at least
+# one `_TAIL_READ_CHUNK` clear of what the backward read accumulates on
+# its own.
+_SEED_LOOKBACK_SPECULATIVE_BYTE_FLOOR = 1 << 17
 
 # The raw NDJSON types/subtypes `_prior_collapse_state` actually flips a
 # collapse-guard flag on (`message_update`'s `text_delta`/`thinking_start`/
@@ -750,28 +784,34 @@ def _seed_lookback_extension_kind(tail_lines: list[str], prefix_lines: list[str]
     # exactly why this is safe against E.2's byte bound (its `tail_lines`
     # never contains this signal at all, homogeneous `message_end` only).
     #
-    # Bounded, ALONE of the three, by
-    # `_SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET` (task cure-01-02, PRD
-    # P.1/P.5): this trigger names no needle to terminate on, so without a
+    # Bounded, ALONE of the three, by a byte budget --
+    # `_SEED_LOOKBACK_SPECULATIVE_BYTE_FLOOR` or the retained tail's own
+    # byte size, whichever is larger (task cure-01-02, PRD P.1/P.5,
+    # recounted in bytes by cure-01-02-2): this trigger names no needle
+    # to terminate on, so without a
     # bound it reads to byte 0 of any transcript whose tail boundary
     # happens to be opaque -- review's shifted-interleaving measurement,
     # see that constant's own comment. THIS ALONE is also the trigger
-    # `_tail_lines_of_file` reads with a small, un-doubled, FIXED byte
-    # step (task cure-01-02-2, PRD P.1/P.5, the materiality rule review's
-    # padded-older-history variant demands): trigger 1/2's needle-
-    # grounded doubled `chunk` still bounds THEIR overshoot to a constant
-    # multiple of a needle's own depth, but the SAME doubled step applied
-    # here overshoots this trigger's line-count budget by an amount that
-    # scales with how many BYTES each older non-rendering event happens
-    # to occupy -- 100 bytes of padding per older `ignored` event turns
-    # the identical line-count overshoot into ~5x the transcript bytes
-    # read (51,730 vs 1,966,080 measured at 10 vs 100,000 older events,
-    # both padded 100 bytes, both well past the unmoved 1,000,000-byte
-    # ceiling for the larger one) -- so the byte cost of finding out this
-    # trigger has nothing to resolve must be bounded by BYTES, not by how
-    # many of them there are. See `_tail_lines_of_file`'s own read loop.
+    # `_tail_lines_of_file` serves by reading the file's HEAD instead of
+    # extending the backward walk (task cure-01-02-2, PRD P.1/P.5, the
+    # materiality rule review's padded-older-history variant demands):
+    # triggers 1/2 each name a needle whose existence the retained tail
+    # itself evidences, so walking BACKWARDS terminates on that needle,
+    # while THIS trigger's only question -- did this iteration EVER stream
+    # text/thinking, or open a tool call, before the retained tail? -- is
+    # answered by the iteration's own FIRST events, at the head of the
+    # file, whatever sits in between. Reading the head rather than the
+    # middle is what makes this bound affordable in BYTES: the line-count
+    # budget it replaces cost 393,216 bytes unpadded, 851,968 at 100
+    # bytes of padding per older `ignored` event and 2,752,512 at 500 --
+    # the last well over the unmoved 1,000,000-byte ceiling -- for one and
+    # the same walk, and the byte cost of finding out this trigger has
+    # nothing to resolve must not be movable by padding at all. See
+    # `_tail_lines_of_file`'s own read loop.
     if (unresolved and _tail_contains_opaque_filler(tail_lines)
-            and len(prefix_lines) < _SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET):
+            and (sum(len(line) for line in prefix_lines)
+                 < max(_SEED_LOOKBACK_SPECULATIVE_BYTE_FLOOR,
+                       sum(len(line) for line in tail_lines)))):
         return "speculative"
     return None
 
@@ -784,6 +824,79 @@ def _should_extend_seed_lookback(tail_lines: list[str], prefix_lines: list[str])
     that, to size a purely speculative step differently; see that
     function's `_seed_lookback_extension_kind` call)."""
     return _seed_lookback_extension_kind(tail_lines, prefix_lines) is not None
+
+
+def _head_seed_lines(head_lines: list[str]) -> list[str]:
+    """The head-probe lines (task cure-01-02-2) that are SAFE to seed a
+    collapse state with across a non-contiguous read -- every line except
+    a `tool_execution_start` the head window itself never closes.
+
+    The three collapse-guard flags are MONOTONE: a `text_delta`,
+    `thinking_start`/`thinking_delta`, `tool_execution_start` or
+    `tool_execution_end` anywhere earlier in the iteration sets its flag
+    for good, so reading such a line at the file's head establishes
+    exactly what a full render would have established there, whatever
+    sits in the unread middle -- an unread middle can only COST this seed
+    a flag, never invent one.
+
+    `_prior_collapse_state`'s OTHER half is not monotone: `tool_args`
+    holds calls still OPEN at the cut point, and a call the head window
+    opens may well have been closed by a `tool_execution_end` in the very
+    middle this probe skipped. Seeding it would then claim a call is
+    still in flight that is not, and `render_pending_tool_invocations`
+    prints a phantom invocation line for exactly that claim (measured on
+    `test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_
+    run_and_live`'s wide-tool-gap scenario: `  -> bash $ echo hello`
+    printed on its own, where the full render shows the finished
+    `  -> bash $ echo hello / ok (ok)` line and nothing else). So a start
+    left open at the head window's edge contributes nothing at all --
+    conservative in the one direction that only ever costs a suppression
+    this reader cannot prove, never a line it invents. A call the head
+    window opens AND closes keeps both of its lines: together they set
+    `toolcallSeen` and leave `tool_args` empty, which is precisely the
+    state a full render would carry (the shipped post-thinking-gap
+    scenarios' own tool call, opened and closed in the iteration's first
+    ~200 bytes).
+
+    A backward-read `prefix` is contiguous with the retained tail, so it
+    is never filtered here -- only what the head probe adds is.
+    """
+    open_ids: set = set()
+    for raw in head_lines:
+        ev = _safe_json(raw)
+        if not ev:
+            continue
+        tcid = ev.get("toolCallId")
+        if tcid is None:
+            continue
+        if ev.get("type") == "tool_execution_start":
+            open_ids.add(tcid)
+        elif ev.get("type") == "tool_execution_end":
+            open_ids.discard(tcid)
+    if not open_ids:
+        return head_lines
+    kept = []
+    for raw in head_lines:
+        ev = _safe_json(raw)
+        if (ev and ev.get("type") == "tool_execution_start"
+                and ev.get("toolCallId") in open_ids):
+            continue
+        kept.append(raw)
+    return kept
+
+
+def _whole_lines(raw: bytes) -> list[str]:
+    """The WHOLE newline-terminated lines `raw` holds, dropping a trailing
+    partial one (task cure-01-02-2): the head probe in
+    `_tail_lines_of_file` reads forward from byte 0 in fixed-size chunks,
+    so its last line is cut mid-event unless the chunk boundary happened
+    to land exactly after a `\\n`. Every kept line ends after a `\\n`
+    byte, and `\\n` is always a line boundary in UTF-8, so no multi-byte
+    character is ever split by where a chunk ends."""
+    lines = raw.decode("utf-8", errors="replace").splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines.pop()
+    return lines
 
 
 def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[str]]:
@@ -815,11 +928,26 @@ def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[
       `prefix`        whatever OLDER lines the same growing-chunk read
                       happened to pull in beyond `needed` (e.g. because
                       the read floor is `_TAIL_READ_CHUNK` bytes, not
-                      `needed` lines) -- read already, at no extra disk
-                      cost, so a caller can inspect them for the raw event
-                      types that flip a render collapse guard (task 006)
-                      without any further I/O. Empty exactly when the read
-                      needed no more than `needed` lines' worth of bytes.
+                      `needed` lines), plus -- when the speculative
+                      look-back trigger fired and the file's HEAD was
+                      probed for the collapse state's own first
+                      occurrences (task cure-01-02-2) -- those head lines
+                      ahead of them, in chronological order. Read
+                      already, at no further disk cost, so a caller can
+                      inspect them for the raw event types that flip a
+                      render collapse guard (task 006) without any
+                      further I/O. Empty exactly when the read needed no
+                      more than `needed` lines' worth of bytes and no
+                      head probe happened. NOT necessarily contiguous
+                      with `kept`: when a head probe fired without
+                      meeting the backward read, the middle of the file
+                      stays unread -- which is precisely why
+                      `reached_start` stays False in that case, so no
+                      caller may treat the cut point as a genuine restart
+                      (E.3). An unread middle can only cost this prefix a
+                      flag it would otherwise have carried, never invent
+                      one: every line in it is a genuinely older line of
+                      the same iteration.
     """
     if needed <= 0:
         return [], True, []
@@ -863,36 +991,75 @@ def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[
         # produced).
         #
         # A PURELY SPECULATIVE step (task cure-01-02-2, PRD P.1/P.5's own
-        # materiality rule) never uses `chunk` at all, however far it has
-        # already doubled for a still-open needle-grounded search: it
-        # reads at most one FIXED, un-doubled `_TAIL_READ_CHUNK` at a
-        # time, so the most this loop can ever overshoot
-        # `_SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET` by, in BYTES, is one
-        # constant chunk -- never a multiple that grows with how many
-        # bytes an individual older non-rendering event happens to
-        # occupy. `chunk` itself is left untouched by a speculative step
-        # (neither read with it nor doubled from it), so a later needle-
-        # grounded step in the SAME call still doubles from wherever it
-        # last legitimately grew.
+        # materiality rule) does not extend the BACKWARD read at all: it
+        # reads the file's HEAD instead, forward from byte 0, one fixed
+        # `_TAIL_READ_CHUNK` at a time, and never touches `chunk` (so a
+        # later needle-grounded step in the SAME call still doubles from
+        # wherever it last legitimately grew). The reason is where the
+        # answer lives, not merely how big a step is: every flag
+        # `_prior_collapse_state` carries is set by its FIRST occurrence
+        # in the iteration, so "did this iteration stream text/thinking or
+        # open a tool call before the retained tail?" is answered at the
+        # iteration's beginning -- while a BACKWARD speculative walk pays
+        # for every byte of unrelated middle history on the way there, an
+        # amount padding alone can multiply at will (review's
+        # `test_P_older_padding_cannot_buy_speculative_reads`: 393,216
+        # bytes unpadded, 2,752,512 at 500 bytes of padding per older
+        # event, one and the same walk). Head bytes are counted against
+        # `_SEED_LOOKBACK_SPECULATIVE_BYTE_FLOOR`-or-retained-tail budget
+        # by the very same
+        # `prefix_lines` measurement trigger 3 already stops on, so the
+        # loop's stop conditions stay exactly the two REAL ones
+        # (`reached_start`, or `_seed_lookback_extension_kind` finding
+        # nothing left to resolve) -- the head probe adds no third exit.
+        #
+        # `head_lines` are genuinely OLDER lines of this same iteration,
+        # so every flag they set is one a full render would also have set
+        # before `tail_lines` (never the reverse: an unread middle can
+        # only cost this seed a flag, never invent one). They are NOT
+        # contiguous with `prefix_lines` when the middle stays unread --
+        # which is exactly why `reached_start` stays False in that case,
+        # so no caller may read the cut point as a genuine iteration
+        # start (E.3). When the head probe MEETS the backward read, the
+        # two halves join into one contiguous buffer and `reached_start`
+        # becomes true on its own byte-0 terms.
+        head_buf = b""
+        head_lines: list[str] = []
+        head_pos = 0
         extra_growths = 0
         while not reached_start:
-            kind = _seed_lookback_extension_kind(tail_lines, prefix_lines)
+            kind = _seed_lookback_extension_kind(tail_lines,
+                                                 head_lines + prefix_lines)
             if kind is None:
                 break
             if kind == "speculative":
-                read_size = max(1, min(_TAIL_READ_CHUNK, pos))
+                read_size = max(1, min(_TAIL_READ_CHUNK, pos - head_pos))
+                f.seek(head_pos)
+                head_buf += f.read(read_size)
+                head_pos += read_size
+                if head_pos >= pos:
+                    # The head probe read every byte the backward read had
+                    # not: one contiguous buffer, and a real byte-0 stop.
+                    data = head_buf + data
+                    pos = 0
+                    head_buf = b""
+                    head_lines = []
+                    reached_start = True
+                else:
+                    head_lines = _head_seed_lines(_whole_lines(head_buf))
+                    continue
             else:
                 read_size = max(1, min(chunk, pos))
-            pos -= read_size
-            f.seek(pos)
-            data = f.read(read_size) + data
-            if kind != "speculative" and extra_growths < _SEED_LOOKBACK_EXTRA_GROWTHS:
-                chunk *= 2
-                extra_growths += 1
-            reached_start = pos <= 0
+                pos -= read_size
+                f.seek(pos)
+                data = f.read(read_size) + data
+                if extra_growths < _SEED_LOOKBACK_EXTRA_GROWTHS:
+                    chunk *= 2
+                    extra_growths += 1
+                reached_start = pos <= 0
             _, tail_lines, prefix_lines = _split(data)
 
-    return tail_lines, reached_start, prefix_lines
+    return tail_lines, reached_start, head_lines + prefix_lines
 
 
 # The three raw NDJSON shapes (task 006, PRD F) whose FIRST occurrence in an
