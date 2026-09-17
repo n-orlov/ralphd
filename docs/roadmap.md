@@ -2336,7 +2336,7 @@ recognized non-rendering event no longer certifies prefix collapse state, includ
 `message_end` whose text item carries empty text rather than an empty content list, and neither
 does EXHAUSTION of the bounded look-back: a flag whose setter was never read is published as
 unresolved, by name, beside the fallback boolean, so "we did not find a setter" is no longer
-indistinguishable from "there is no setter" (`69b2a119`, `e80ff352`, `76ab505b`). Which way a
+indistinguishable from "there is no setter" (`69b2a119`, `e80ff352`, `76ab505b`, `e87a1578`). Which way a
 renderer should then fall back is a **disclosed residual** of this wave, not a claim: printing
 repeats text streamed deeper than the budget, while suppressing costs 7.3–30.2 MB on
 requirement P's own fixtures against its unmoved 1,000,000-byte ceiling, and resolving the flag
