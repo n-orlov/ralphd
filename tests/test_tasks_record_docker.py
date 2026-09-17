@@ -68,6 +68,18 @@ Four things, each needing a real container:
    still reads the authoritative record -- continuity across the
    release-at-shutdown / re-protect-on-first-write cycle
    (`test_a_resumed_container_still_reads_the_protected_record`).
+5. Review cure (requirement B.5, #202's second hole): `test_a_resumed_
+   container_still_reads_the_protected_record` above only checks AFTER the
+   resumed job has run a full worker iteration -- by which point the
+   engine's own next authoritative write has already re-protected the
+   directory as a side effect. That left a real window unproven: a
+   `--peer-plan-review` run stopped mid-`plan_review` (BEFORE any
+   subsequent `RunDir.write_tasks()` call) and resumed into a fresh
+   container attacks the record WHILE the resumed plan-review hat child is
+   still running -- exactly the moment `privsep.release_protected_tasks_
+   dir()`'s prior release and `privsep.migrate_task_record()`'s own
+   re-protection race
+   (`test_resume_reprotects_the_record_before_plan_review_child_runs`).
 
 Fixtures, cleanup discipline and the two environment-specific wrinkles
 (bind-mount path translation, API reachability from inside this job's own
@@ -79,6 +91,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+import urllib.request
 
 import pytest
 
@@ -94,6 +107,7 @@ from test_docker_sibling_e2e import (  # noqa: F401  (fixtures used by name)
     test_image,
     work_root,
 )
+from tests.conftest import wait_hold_entered
 
 # `privsep.DEFAULT_TASK_RECORD_DIR`, spelled out rather than imported: this
 # is the path a real `ralphctl start` bind-mounts inside a real container,
@@ -757,3 +771,95 @@ def test_a_resumed_container_still_reads_the_protected_record(ctl, work_root):
     # hard `docker rm -f` teardown, same as the first container above.
     stop_res2 = ctl.stop(run_id, force=True)
     assert stop_res2.returncode == 0, stop_res2.stderr
+
+
+# Review cure (requirement B.5, #202's second hole): the driver run INSIDE
+# the resumed container, root, reproducing the engine's own posture and then
+# spawning the attack as a fully dropped child through `privsep.
+# agent_child_kwargs()` -- the identical shape `_ANCESTOR_ATTACK_DRIVER`
+# above uses, but hitting the record mount DIRECTLY (not the run-dir alias)
+# and read back through the engine's own production read path
+# (`RunDir.read_tasks()`) as well as through this container's real API.
+_RESUME_BOUNDARY_CHILD = r'''
+import os,json
+p='/var/lib/ralphd/record/tasks.json'
+out={'resuid':list(os.getresuid())}
+view=json.load(open('/run/ralphd/tasks.json'))
+view['tasks'][0]['title']='SUBSTITUTED-BY-RESUMED-AGENT'
+try:
+ tmp='/var/lib/ralphd/record/agent-substitute.json'
+ with open(tmp,'w') as f:json.dump(view,f)
+ os.replace(tmp,p)
+ out['replaceSucceeded']=True
+except OSError as e:
+ out.update(replaceSucceeded=False,errno=e.errno)
+print(json.dumps(out))
+'''
+
+_RESUME_BOUNDARY_DRIVER = r'''
+import os,json,subprocess,sys
+from pathlib import Path
+from ralphd.engine import privsep
+from ralphd.engine.state import RunDir
+privsep.separate_engine_identity()
+p=subprocess.run([sys.executable,'-c',CHILD],capture_output=True,text=True,check=True,
+                 **privsep.agent_child_kwargs())
+out=json.loads(p.stdout)
+out['engineTitle']=RunDir(Path('/run/ralphd')).read_tasks()['tasks'][0]['title']
+print(json.dumps(out))
+'''
+
+
+def test_resume_reprotects_the_record_before_plan_review_child_runs(ctl, work_root):
+    """Requirement B.5's second hole, closed by `migrate_task_record`'s own
+    unconditional re-protect: `release_protected_tasks_dir` hands the
+    record mount back to the agent's own uid at shutdown, and neither of
+    the two prior existing-record tests here ever inspects the directory
+    before the resumed engine's own NEXT authoritative write has already
+    re-protected it as a side effect -- so a resumed container's
+    `plan_review` hat child, itself a fully dropped agent-uid child,
+    previously ran while the directory was still agent-writable, renamed
+    it aside and planted a substituted document, and both `RunDir.
+    read_tasks()` and the real `GET /tasks` API believed it. This test
+    holds the resumed container in `plan_review`, attacks the record from
+    inside it via the engine's own `privsep.agent_child_kwargs()` posture,
+    and requires the authoritative record to survive."""
+    rid = _unique_run_id("review-resume-boundary")
+    hold = work_root / "ws" / ".hold-review-resume-boundary"
+    result = ctl.start(rid, extra_env={
+        "STUB_TASKS": "1", "STUB_HOLD_PHASE": "plan_review",
+        "STUB_HOLD_FILE": f"/workspace/{hold.name}", "STUB_HOLD_TIMEOUT_S": "60"},
+        extra=("--peer-plan-review", "--on-complete", "idle"))
+    assert result.returncode == 0, result.stderr
+    wait_hold_entered(hold)
+    meta = json.loads(result.stdout)
+    state = _wait_status(meta["apiUrl"], lambda s: s.get("phase") == "plan_review")
+    assert state["phase"] == "plan_review"
+    result = ctl.stop(rid, force=True)
+    assert result.returncode == 0, result.stderr
+    # Force a new entry marker, not a stale witness from the original process.
+    marker = hold.with_name(hold.name + ".stub-hold-entered")
+    marker.unlink(missing_ok=True)
+    result = ctl.resume(rid, extra=("--iterations", "+10"))
+    assert result.returncode == 0, result.stderr
+    meta2 = json.loads(result.stdout)
+    assert meta2["container"] != meta["container"]
+    wait_hold_entered(hold)
+    try:
+        state = _wait_status(meta2["apiUrl"], lambda s: s.get("phase") == "plan_review")
+        driver = "CHILD = " + repr(_RESUME_BOUNDARY_CHILD) + "\n" + _RESUME_BOUNDARY_DRIVER
+        probe = subprocess.run(
+            [REAL_DOCKER, "exec", f"ralphd-{rid}", "python3", "-c", driver],
+            capture_output=True, text=True, timeout=30)
+        assert probe.returncode == 0, probe.stderr
+        doc = json.loads(probe.stdout)
+        assert doc["resuid"] == [1000, 1000, 1000], (
+            "the attack child was not fully dropped -- a half-dropped child "
+            f"proves nothing: {doc}")
+        with urllib.request.urlopen(meta2["apiUrl"] + "/tasks", timeout=10) as response:
+            api = json.load(response)
+        assert doc["replaceSucceeded"] is False, doc
+        assert doc["engineTitle"] != "SUBSTITUTED-BY-RESUMED-AGENT", doc
+        assert api["tasks"][0]["title"] != "SUBSTITUTED-BY-RESUMED-AGENT", api
+    finally:
+        ctl.stop(rid, force=True)

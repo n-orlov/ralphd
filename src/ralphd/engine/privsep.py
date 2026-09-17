@@ -501,6 +501,41 @@ def migrate_task_record(run) -> None:
     fallback onto an agent-writable location -- the window in which a
     planted `.tasks-protected/tasks.json` could be believed is closed by
     construction rather than by ordering luck.
+
+    Review cure (requirement B.5, #202's second hole): the paragraph above
+    was true only for the branch that actually WRITES here -- a fresh
+    migration protects `record_dir` as a side effect of `write_protected_
+    tasks_json()` -> `_ensure_protected_tasks_dir()`. The far more common
+    case, an already-migrated record (every RESUME, and every iteration of
+    a run started under this build), took neither branch: `doc` stayed
+    `None` and this function returned having asserted nothing about the
+    directory's own ownership. That is a real window, on both starts this
+    function has to cover:
+
+    - **Resume of an existing record.** `release_protected_tasks_dir()`
+      hands `record_dir` back to the agent's own uid at the PRIOR
+      shutdown (mode 0755, so an unprivileged `ralphctl rm` can still
+      remove it) -- so a resumed container begins with this directory
+      agent-owned again, and nothing re-chowns it until the engine's own
+      NEXT authoritative write, which is not this function and does not
+      happen on the resume path itself. A plan-review hat child (a real
+      agent-uid child, `agent_child_kwargs()`) spawned before that next
+      write runs while the directory is still agent-writable, and can
+      rename it aside and plant a substituted document
+      (`tests/test_review_resume_boundary.py`).
+    - **Fresh start, nothing to migrate yet.** The mount as `ralphctl
+      start` builds it is agent-owned (mode 0700 only, never chowned
+      root) until the very first write -- which does not land until
+      AFTER the planner hat, itself a real agent-uid child, has already
+      run and returned its plan. The same window exists here, one level
+      earlier.
+
+    Both are closed the same way: whenever this function is not itself
+    about to perform the migrating write (which already protects the
+    directory), it re-protects `record_dir` directly before returning --
+    still before the API listens and before any hat or iteration child
+    exists, so no agent-uid process is ever alive while the directory is
+    agent-writable.
     """
     record_dir = task_record_dir()
     if record_dir is None:
@@ -511,9 +546,7 @@ def migrate_task_record(run) -> None:
                Path(run.root) / TASK_RECORD_FILENAME)
     doc: Any = None
     with root_for_write():
-        if target.exists():
-            doc = None              # already migrated; only sweep below
-        else:
+        if not target.exists():
             for src in sources:
                 try:
                     parsed = json.loads(src.read_text())
@@ -526,10 +559,20 @@ def migrate_task_record(run) -> None:
         # Outside the borrow above on purpose: `write_protected_tasks_json`
         # takes its own (`root_for_write` is not re-entrant -- the inner
         # exit would restore the effective uid to the agent's and leave the
-        # outer body unelevated).
+        # outer body unelevated). This write already protects `record_dir`
+        # itself (`_ensure_protected_tasks_dir`), so the `else` below is
+        # deliberately skipped on this branch.
         write_protected_tasks_json(target, Path(run.root) / TASK_RECORD_FILENAME,
                                     doc)
         log.info("migrated the authoritative task record into %s", target)
+    else:
+        # Either the record is already migrated (the ordinary resume case)
+        # or there is genuinely nothing to migrate yet (a truly fresh run)
+        # -- either way nobody has asserted this directory's ownership in
+        # THIS process yet, so do it now, unconditionally, before this
+        # function returns and anything else gets a chance to run.
+        with root_for_write() as elevated:
+            _ensure_protected_tasks_dir(record_dir, elevated=elevated)
     with root_for_write():
         if target.exists() and legacy_dir.exists():
             try:
