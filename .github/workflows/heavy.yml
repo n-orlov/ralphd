@@ -267,17 +267,31 @@ jobs:
       # number, `-n 2 --dist loadfile` is the next thing to try.
       #
       # Bounded at 6000s (task 054, K.3): with the venv build's 600, the
-      # docker-client install's 90, the host-path resolution's 30 and the
-      # host-path assertion's 30 (task 012, requirement I) that is 6750 of
-      # this job's 7200s `timeout-minutes` budget, leaving the reserve
+      # docker-client install's 90 and the merged host-path resolution-and-
+      # assertion step's 30 (task 012, requirement I) that is 6720 of this
+      # job's 7200s `timeout-minutes` budget, leaving the reserve
       # tests/test_run_bounded_timeout_marker.py requires for the steps no
       # wrapper owns (checkout, the environment report, the image cleanup). A
       # docker-tier hang -- an image build stalled on a registry, a container
       # that never exits -- now ends as a step `failure` naming itself, not
       # as a `cancelled` indistinguishable from the push collapse this
       # workflow does on purpose.
+      #
+      # `RALPHD_HOST_WORKSPACE` is exported HERE, at the top of this very
+      # step, rather than read back from an earlier step's `$GITHUB_ENV`
+      # write (see the "Resolve and assert..." step's own header for why
+      # that does not reliably reach a later step's `docker exec` on this
+      # self-hosted runner): several docker-tier tests --
+      # tests/test_docker_sibling_e2e.py's `_host_path()`,
+      # tests/test_run_secrets.py's `HOST_WORKSPACE`, and others -- read this
+      # variable from `os.environ` themselves, exactly as `ralphctl start
+      # --allow-docker` injects it for the same reason (docs/architecture.md,
+      # "--allow-docker"). Exported (not just set) so pytest's own child
+      # processes inherit it too.
       - name: Docker tier
-        run: scripts/run_bounded.sh 6000 "docker tier" -- .venv/bin/python -m pytest -q -m docker --durations=15
+        run: |
+          export RALPHD_HOST_WORKSPACE="$(scripts/resolve_container_host_path.sh "$GITHUB_WORKSPACE")"
+          scripts/run_bounded.sh 6000 "docker tier" -- .venv/bin/python -m pytest -q -m docker --durations=15
 
       # Exact tags only -- never a wildcard or label filter (see the repo's
       # cleanup discipline: a ralphd host runs other people's containers).
