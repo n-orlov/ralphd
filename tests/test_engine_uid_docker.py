@@ -78,6 +78,7 @@ from test_docker_sibling_e2e import (  # noqa: F401  (fixtures are used by name)
     test_image,
     work_root,
 )
+from tests.conftest import wait_hold_entered
 
 
 def _engine_creds(container: str) -> dict[str, list[int]]:
@@ -326,6 +327,7 @@ def test_the_engine_can_still_stop_its_own_iteration(ctl, work_root):
     # needed, since `interrupt` ends the held iteration outright the same
     # way SIGTERM does for the in-process hold-based tests.
     hold_rel = ".hold-interrupt-boundary"
+    hold_file_host = work_root / "ws" / hold_rel
     res = ctl.start(run_id, extra_env={"STUB_TASKS": "2",
                                        "STUB_HOLD_FILE": f"/workspace/{hold_rel}",
                                        "STUB_HOLD_PHASE": "worker",
@@ -334,6 +336,19 @@ def test_the_engine_can_still_stop_its_own_iteration(ctl, work_root):
     assert res.returncode == 0, res.stderr
     meta = json.loads(res.stdout)
     _wait_status(meta["apiUrl"], lambda s: s.get("state") == "running", timeout=60)
+    # Task 012 (requirement I, live docker-tier finding): `state: running`
+    # is true from the first iteration onward, not proof the worker CHILD
+    # this call means to interrupt has actually been spawned yet -- the
+    # exact race `tests/conftest.py::wait_hold_entered`'s own docstring
+    # names (two hosted-gate flakes at `7e685e2`/`e7115f2`). Caught live
+    # under this task's own heavier (root) docker-tier job: `interrupt`
+    # landed between the planning iteration's exit and the worker child's
+    # spawn, so the API correctly answered 409 "no iteration running" --
+    # not a boundary defect, a test racing its own setup. CAUSE and OBSERVE
+    # instead of a longer timeout: block until the worker iteration's own
+    # hold-entered marker exists, proof the child this test means to
+    # interrupt is genuinely parked.
+    wait_hold_entered(hold_file_host)
 
     res = ctl.run("interrupt", run_id)
     assert res.returncode == 0, res.stderr

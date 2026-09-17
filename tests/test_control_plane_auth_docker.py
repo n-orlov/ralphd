@@ -619,8 +619,20 @@ def _assert_dropped_child_cannot_reach_control_credential(
     # into it at the agent uid, making `find`'s own exit status nonzero for
     # a reason this check was never about -- caught live, pre-existing
     # (same red at HEAD `b48489cd`, before any change task 019 made).
+    # `/config/record` gets the identical treatment for the identical
+    # reason (task 004/#202's `task_record_dir()`, chowned root-owned 0700
+    # from inside the container the moment planning writes the
+    # authoritative `tasks.json` -- proved by `test_tasks_record_docker.py`,
+    # not this check): confirmed live (task 012, requirement I) with a
+    # manual `STUB_TASKS=1` run held at `planning` -- unreleased, `record`
+    # reads back agent-owned 0700 and this same `find` exits 0; released,
+    # the SAME container's `record` flips root-owned and this `find` starts
+    # failing EACCES exactly like `run-secrets` always would have without
+    # its own `-prune`. Whether a given run's probe lands before or after
+    # that write is a race this check was never about either.
     script_c = "cat /config/job.yaml /config/*.json /config/**/*.json 2>/dev/null; " \
-               "find /config -path /config/run-secrets -prune -o " \
+               "find /config \\( -path /config/run-secrets -o " \
+               "-path /config/record \\) -prune -o " \
                "-type f -exec cat {} + 2>/dev/null"
     res = probe("sh", "-c", script_c)
     assert res.returncode == 0, res.stderr

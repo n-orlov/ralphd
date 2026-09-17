@@ -1957,6 +1957,21 @@ def cmd_start(args):
     _ensure_run_dir_agent_owned(rdir)
     cdir.mkdir(parents=True, exist_ok=True)
     os.chmod(cdir, 0o700)
+    # Task 012 (requirement I, second live docker-tier finding): `cdir` is
+    # bind-mounted read-ONLY at `/config` -- unlike `rdir`, no in-container
+    # root step ever re-chowns it (it can't: the mount is `:ro`), so a
+    # root-launcher `start` (heavy.yml's docker-tier job, since this same
+    # task) leaves it root-owned 0700 forever, EACCES-ing the agent uid on
+    # every path under it -- job.yaml, prd.md, auto-resume.json, the lot --
+    # not just `record` (which is deliberately agent-unreadable on ANY
+    # launcher uid, its own separate nested mount, untouched by this call).
+    # Confirmed live the same way `rdir`'s own fix above was: a root-owned
+    # `/config` 0700 makes `docker exec --user 1000:1000 ... cat
+    # /config/job.yaml` EACCES with nothing written to either stream (the
+    # directory itself refuses `x` to `other`, so `find`/`cat` never even
+    # reach a file to fail ON), which is exactly the empty-stdout/stderr,
+    # exit-1 shape `test_control_plane_auth_docker.py`'s script_c hit.
+    _ensure_run_dir_agent_owned(cdir)
 
     prd = sys.stdin.read() if args.prd == "-" else Path(args.prd).read_text()
     (cdir / "prd.md").write_text(prd)

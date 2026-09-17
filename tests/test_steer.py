@@ -73,7 +73,7 @@ from ralphd.engine.loop import (
 )
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json, read_events
-from tests.conftest import scripted_supervisor
+from tests.conftest import scripted_supervisor, wait_hold_entered
 
 from test_docker_sibling_e2e import (  # noqa: F401  (fixtures used by name)
     REAL_DOCKER,
@@ -1655,7 +1655,20 @@ def spool_run(work_root, gateway_ip, test_image):
     # above (not yet released) guarantees a worker iteration is still
     # blocked, mid-run, when this call is made. Sent through the real
     # `ralphctl steer` (the operator's own channel), not an internal import.
-    _wait_status(meta["apiUrl"], lambda s: s.get("state") == "running", timeout=60)
+    # Task 012 (requirement I, live docker-tier finding): `state: running`
+    # is not proof the worker child this steer message means to land beside
+    # has actually been spawned yet (`tests/conftest.py::wait_hold_entered`'s
+    # own docstring: two hosted-gate flakes were exactly this). Caught live
+    # under this task's own heavier (root) docker-tier job: `ctl.run("steer"
+    # ...)` + the touch below landed AFTER the first task's worker iteration
+    # had already run and completed unheld, so `resume`'s remaining task(s)
+    # finished the whole run before the spooled request ever reached a
+    # `worker -> steer` edge to be consumed on -- `steering: {pending: 1,
+    # consumed: 0}` at a terminal state, forever. CAUSE and OBSERVE instead
+    # of a longer timeout: block until the worker iteration's own
+    # hold-entered marker exists, proof a worker iteration is genuinely
+    # parked before sending the message or releasing the hold.
+    wait_hold_entered(hold_file_host)
     # `ralphctl steer <run> <message>` -- the message is POSITIONAL (there is
     # no `--message` flag; `--file`/stdin are the alternatives).
     steered = ctl.run("steer", run_id, "insert a task through the spool",
