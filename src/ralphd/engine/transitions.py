@@ -299,6 +299,16 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # `loop.py` for the fault payload shape and the separating
         # condition from a merely in-flight dependency (E.6).
         T("paused", "unschedulable_dependency_cycle"),
+        # Review cure cure-01-03 (PRD requirement E.1/E.2, #206's second
+        # defect): the exact sibling of the `unschedulable_dependency_
+        # cycle` edge just above, for a DIFFERENT unreachable shape -- an
+        # actionable task's `dependsOn` names an id that is not a node in
+        # the plan graph at all (no ancestor to follow, no cycle to close,
+        # just an edge pointing at nothing). See `LoopSupervisor._
+        # unresolvable_edge_fault`'s own docstring in `loop.py` for the
+        # fault payload shape and the separating condition from a merely
+        # in-flight dependency (E.6).
+        T("paused", "unresolvable_dependency_edge"),
     ),
     "review": (
         # ledger guard 12: a VERIFIED verdict is discarded while operator
@@ -497,6 +507,14 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # unfinished tasks (here, an operator's `tasks.json` edit to break
         # the cycle), so this resumes straight back into `worker`.
         T("worker", "paused_resumed_unschedulable_cycle"),
+        # Review cure cure-01-03 (PRD requirement E.3, #206): a FOURTH
+        # successor, taken when the pause that parked the run was
+        # `worker`'s own `unresolvable_dependency_edge` edge above --
+        # same reasoning as `paused_resumed_unschedulable_cycle`: there
+        # is no verdict pending, only an operator's `tasks.json` edit to
+        # repair the absent-id edge, so this resumes straight back into
+        # `worker` too.
+        T("worker", "paused_resumed_unresolvable_edge"),
     ),
     # Task 018 (requirement K, #101): `plan_review` has NO base-table entry
     # -- unlike `verify` (which is always a key, forced to `()` when

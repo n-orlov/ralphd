@@ -3440,3 +3440,98 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
     # all three iterations ran -- the tool-heavy one did not short-circuit
     # anything, it simply failed to reset the counter
     assert _worker_iteration_count(root4) == 3
+
+    # -- part 4: an ABSENT-id dependsOn edge faults on the first pass -----
+    #
+    # Review cure cure-01-03 (PRD requirement E.1/E.2, #206's second
+    # defect): `_unschedulable_cycle_fault` (part 1 above) is invisible to
+    # this shape -- `plan_ingestion.dependency_cycles`'s graph only has
+    # nodes for ids that actually exist, so an edge naming an id that is
+    # not in the plan AT ALL never closes a cycle -- and `_doomed_plan_
+    # fault` is invisible to it too (there is no `failed`/`skipped`
+    # ancestor to follow; the id is simply absent). Before this cure, this
+    # exact fixture (a single pending task depending on a nonexistent id,
+    # never a cycle, never a dead ancestor) spun through THREE ordinary
+    # no-task worker dispatches and landed on `stagnation_last_approach`
+    # (GH #206's own second incident) -- proven directly below by driving
+    # the SAME fixture unpatched through the ordinary path first. The cure
+    # makes `_unresolvable_edge_fault` catch it structurally, on the very
+    # FIRST pass, through the REAL `_step_worker` (`_drive_until_paused`,
+    # never the fault helper alone) -- and, in the same fixture, folds in
+    # cure-01-04's own dependent-naming shape (DOWNSTREAM-TASK direct,
+    # TRANSITIVE-TASK two hops) so this new fault's escalation is proven
+    # to name dependents too, not merely the cycle fault's.
+    root5 = tmp_path / "unresolved-edge"
+    RunDir(root=root5).update_status(state="starting")
+    sup5 = _fv_supervisor(root5, {})
+    sent5: list[str] = []
+    sup5.notifier = sent5.append
+    _write_plan(sup5, [
+        _fv_task(dependsOn=["nonexistent"]),
+        _fv_task(id="DOWNSTREAM-TASK", dependsOn=["001"]),
+        _fv_task(id="TRANSITIVE-TASK", dependsOn=["DOWNSTREAM-TASK"]),
+    ])
+    sup5.iterations_used = 1
+
+    asyncio.run(_drive_until_paused(
+        sup5, expect_reason="unresolvable_dependency_edge"))
+
+    status5 = sup5.run.read_status()
+    assert status5.get("health") == "degraded", status5
+
+    assert sent5, sent5
+    assert "001" in sent5[-1], sent5
+    assert "001 -> nonexistent" in sent5[-1], sent5
+    assert "DOWNSTREAM-TASK" in sent5[-1], sent5
+    assert "TRANSITIVE-TASK" in sent5[-1], sent5
+
+    events5 = _fv_events(root5)
+    fault_events5 = [ev for ev in events5
+                    if ev.get("type") == "log" and "unresolvedTaskIds" in ev]
+    assert len(fault_events5) == 1, fault_events5
+    payload5 = fault_events5[0]
+    assert payload5["unresolvedTaskIds"] == ["001"], payload5
+    assert payload5["unresolvedEdges"] == [
+        {"from": "001", "to": "nonexistent"}], payload5
+    assert payload5["dependentTaskIds"] == [
+        "DOWNSTREAM-TASK", "TRANSITIVE-TASK"], payload5
+    assert payload5["planUnverifiable"] is True, payload5
+
+    escalations5 = [ev for ev in events5 if ev.get("type") == "operator_escalation"]
+    assert escalations5 and escalations5[0].get("reason") == \
+        "unresolvable_dependency_edge", escalations5
+
+    # never dispatched a worker iteration at all
+    assert "worker" not in _phases_recorded(root5)
+
+    # THE SEPARATING CONDITION for this fault too: a `dependsOn` naming an
+    # id that DOES exist -- however unfinished -- never trips it, however
+    # long the wait (the legitimate awaiting-validation case part 2/3
+    # above already drives end-to-end; this is the direct unit check).
+    tasks_before5b = sup2.run.read_tasks()
+    assert sup2._unresolvable_edge_fault(tasks_before5b) is None
+
+    # and the pre-cure shape, proven directly: the SAME absent-id fixture,
+    # run through the ordinary no-task worker dispatch with the new fault
+    # helper patched out, still lands on the pre-existing `stagnation_
+    # last_approach` guard after three dispatches -- exactly what this
+    # fixture did before cure-01-03 existed, now reachable only by
+    # deliberately bypassing the new safety net rather than by its absence.
+    root6 = tmp_path / "unresolved-edge-precure-shape"
+    RunDir(root=root6).update_status(state="starting")
+    sup6 = _fv_supervisor(
+        root6, {"worker": lambda s, p="": _fv_ok(
+            json.dumps({"verdict": "no_verdict"}))})
+    sup6._unresolvable_edge_fault = lambda tasks_doc: None   # type: ignore[method-assign]
+    _write_plan(sup6, [_fv_task(dependsOn=["nonexistent"])])
+    sup6._ensure_criteria_baseline()
+    sup6.iterations_used = 1
+    sup6._approach = 1
+
+    outcome6 = asyncio.run(sup6._step_worker())
+
+    assert outcome6 == ("advance", "paused", "stagnation_last_approach"), outcome6
+    status6 = sup6.run.read_status()
+    assert status6.get("pauseReason") == "stagnation", status6
+    assert status6.get("health") != "degraded", status6
+    assert _worker_iteration_count(root6) >= 3

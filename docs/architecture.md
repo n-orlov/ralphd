@@ -172,6 +172,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `worker` | worker | both | `worker` | `worker_deferred_reordered` |
 | `worker` | worker | both | `paused` | `stagnation_last_approach` |
 | `worker` | worker | both | `paused` | `unschedulable_dependency_cycle` |
+| `worker` | worker | both | `paused` | `unresolvable_dependency_edge` |
 | `worker` | worker | vigilant only | `verify` | `completed_task_pending_verification` |
 | `verify` | verify | vigilant only | `worker` | `verify_failed_retry_same_task` |
 | `verify` | verify | vigilant only | `worker` | `verify_passed_next_task` |
@@ -205,6 +206,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `paused` | — | both | `review` | `paused_resumed` |
 | `paused` | — | both | `worker` | `paused_resumed_stagnation` |
 | `paused` | — | both | `worker` | `paused_resumed_unschedulable_cycle` |
+| `paused` | — | both | `worker` | `paused_resumed_unresolvable_edge` |
 | `finishing` | — | both | `reflect` | `reflect_enabled` |
 | `finishing` | — | both | `succeeded` | `reflect_disabled_outcome_succeeded` |
 | `finishing` | — | both | `failed` | `reflect_disabled_outcome_failed` |
@@ -252,6 +254,7 @@ stateDiagram-v2
     worker --> worker : worker_deferred_reordered
     worker --> paused : stagnation_last_approach
     worker --> paused : unschedulable_dependency_cycle
+    worker --> paused : unresolvable_dependency_edge
     review --> worker : steering_pending_at_verified
     review --> finishing : verified
     review --> replan : rejected_approach_left
@@ -273,6 +276,7 @@ stateDiagram-v2
     paused --> review : paused_resumed
     paused --> worker : paused_resumed_stagnation
     paused --> worker : paused_resumed_unschedulable_cycle
+    paused --> worker : paused_resumed_unresolvable_edge
     finishing --> reflect : reflect_enabled
     finishing --> succeeded : reflect_disabled_outcome_succeeded
     finishing --> failed : reflect_disabled_outcome_failed

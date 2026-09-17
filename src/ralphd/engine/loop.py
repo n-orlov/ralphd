@@ -7338,6 +7338,38 @@ class LoopSupervisor:
                                  "unschedulable_dependency_cycle")
                     return ("advance", "paused",
                            "unschedulable_dependency_cycle")
+                # Review cure cure-01-03 (PRD requirement E.1/E.2, #206's
+                # second defect): a FOURTH safety net, checked right after
+                # `_unschedulable_cycle_fault` -- reached only when neither
+                # of the two checks above fired -- for the one remaining
+                # shape neither can see: an actionable task's `dependsOn`
+                # names an id that is not a node in the graph AT ALL (no
+                # `failed`/`skipped` ancestor to follow, no cycle to
+                # detect, just an edge pointing at nothing). Structurally
+                # unreachable by construction, exactly like the cycle
+                # case, so it gets the same "fault on the first pass,
+                # pause and escalate" treatment rather than being left to
+                # spin through `_step_worker`'s ordinary no-task dispatch
+                # until the stagnation guard mis-attributes the cause.
+                edge_fault = self._unresolvable_edge_fault(tasks_before)
+                if edge_fault is not None:
+                    self.run.emit(
+                        "log", level="error",
+                        message=(
+                            "an actionable task's dependsOn names a task "
+                            "id that is not in the plan at all -- no "
+                            "worker iteration could ever move this plan "
+                            "again; pausing and escalating instead of "
+                            "grinding through no-progress iterations "
+                            "(review cure cure-01-03, requirement "
+                            "E.1/E.2, #206)"),
+                        **edge_fault)
+                    self.run.update_status(health="degraded")
+                    self._pause_and_escalate_unresolvable_edge(edge_fault)
+                    self._advance("worker", "paused",
+                                 "unresolvable_dependency_edge")
+                    return ("advance", "paused",
+                           "unresolvable_dependency_edge")
                 if blocked_by:
                     new_ids = sorted(set(blocked_by) - self._blocked_notes_written)
                     if new_ids:
@@ -9813,6 +9845,15 @@ class LoopSupervisor:
             self._advance("paused", "worker",
                           "paused_resumed_unschedulable_cycle")
             return ("advance", "worker", "paused_resumed_unschedulable_cycle")
+        if reason == "unresolvable_dependency_edge":
+            # Review cure cure-01-03 (PRD requirement E.3, #206): the
+            # exact sibling of the `unschedulable_dependency_cycle`
+            # branch just above -- there is no verdict pending, only an
+            # operator's `tasks.json` edit to repair the absent-id edge --
+            # so this resumes straight back into `worker` too.
+            self._advance("paused", "worker",
+                          "paused_resumed_unresolvable_edge")
+            return ("advance", "worker", "paused_resumed_unresolvable_edge")
         self._advance("paused", "review", "paused_resumed")
         return ("advance", "review", "paused_resumed")
 
@@ -10778,6 +10819,81 @@ class LoopSupervisor:
             "planUnverifiable": True,
         }
 
+    def _unresolvable_edge_fault(self, tasks_doc: dict) -> dict | None:
+        """Review cure cure-01-03 (PRD requirement E.1/E.2, #206's second
+        defect): the fault payload iff an actionable task's `dependsOn`
+        names an id that is not present in `tasks_doc` AT ALL -- else
+        `None`. This is a THIRD structural shape, a sibling of
+        `_doomed_plan_fault` (a dead `failed`/`skipped` ancestor) and
+        `_unschedulable_cycle_fault` (a cycle among live nodes) just
+        above: an edge whose far end was never a node in the graph to
+        begin with can never resolve either -- no worker iteration, no
+        adjudication and no status change on any OTHER task will ever
+        make it satisfied, because there is nothing behind it to finish.
+        `scheduler.select_next_task` already treats an absent id exactly
+        like an unfinished one (`status_by_id.get(str(dep))` reads
+        `None`, which is never in `TASK_DEPENDENCY_SATISFIED_STATUSES`),
+        so the task is silently excluded from every future candidate
+        pool forever -- previously invisible to both `_doomed_plan_
+        fault` (which only follows ancestors that are actually IN the
+        plan and dead) and `_unschedulable_cycle_fault` (`plan_ingestion.
+        dependency_cycles`'s graph only has nodes for ids that exist), so
+        the plan spun through `_step_worker`'s ordinary "nothing
+        selectable" dispatch, burning worker iterations with no task
+        assigned, until the stagnation guard eventually mis-attributed
+        the cause as a stalled approach (`stagnation_last_approach`)
+        rather than a structurally unreachable edge -- GH #206's own
+        second incident.
+
+        The separating condition from a dependency that is legitimately
+        IN FLIGHT (PRD E.6, the same condition `_unschedulable_cycle_
+        fault`'s own docstring names for the cycle case): a `dependsOn`
+        entry naming a task id that DOES exist in the plan -- whatever
+        its current status, `pending`/`in-progress`/`validation-failed`/
+        `awaiting-validation` included -- is never flagged here; only an
+        id absent from the plan entirely is. So a task waiting on a real,
+        unfinished sibling never trips this, and a task naming a
+        typo'd/deleted id trips it on the very first pass it exists.
+
+        The payload: `unresolvedTaskIds` (every actionable task with at
+        least one such edge, sorted), `unresolvedEdges` (one
+        `{"from": ..., "to": ...}` per offending edge, naming the
+        absent id directly), `dependentTaskIds` (every task that depends
+        on an unresolved-task id, DIRECTLY or TRANSITIVELY, reusing
+        `_cycle_dependent_ids`'s own reverse-BFS -- the same shape review
+        cure cure-01-04 already gave the cycle fault), and
+        `planUnverifiable: True`, the same direct statement the other two
+        fault payloads make.
+        """
+        tasks = tasks_doc.get("tasks") or []
+        by_id: dict[str, dict] = {}
+        for t in tasks:
+            if not isinstance(t, dict) or t.get("id") in (None, ""):
+                continue
+            by_id[str(t["id"])] = t
+        actionable_ids = {tid for tid, t in by_id.items()
+                          if task_is_actionable(t)}
+        if not actionable_ids:
+            return None
+        edges: list[dict] = []
+        affected: set[str] = set()
+        for tid in sorted(actionable_ids):
+            raw = by_id[tid].get("dependsOn")
+            deps = [str(d) for d in raw] if isinstance(raw, list) else []
+            for dep in deps:
+                if dep not in by_id:
+                    edges.append({"from": tid, "to": dep})
+                    affected.add(tid)
+        if not edges:
+            return None
+        return {
+            "unresolvedTaskIds": sorted(affected),
+            "unresolvedEdges": edges,
+            "dependentTaskIds": sorted(
+                self._cycle_dependent_ids(tasks, affected)),
+            "planUnverifiable": True,
+        }
+
     @staticmethod
     def _cycle_dependent_ids(tasks: list, cycle_ids: set) -> set:
         """Task 002 (PRD requirement E.3, #206, review cure cure-01-04):
@@ -10860,6 +10976,53 @@ class LoopSupervisor:
                       reason="unschedulable_dependency_cycle",
                       escalation=text, **cycle_fault)
         self.pause(reason="unschedulable_dependency_cycle")
+        if self.notifier is not None:
+            self.notifier(text)
+
+    def _unresolvable_edge_escalation_text(self, edge_fault: dict) -> str:
+        """The operator-facing escalation body for an `unresolvable_
+        dependency_edge` pause (review cure cure-01-03, PRD requirement
+        E.1-E.3): names the blocked task ids, the offending edge(s) (the
+        absent id each one names) and every direct/transitive dependent
+        task id, the same shape `_unschedulable_cycle_escalation_text`
+        already gives the cycle fault, plus the exact `ralphctl resume`
+        invocation.
+        """
+        ids = ", ".join(edge_fault.get("unresolvedTaskIds", [])) or "(none)"
+        edges = ", ".join(
+            f"{e.get('from')} -> {e.get('to')}"
+            for e in edge_fault.get("unresolvedEdges", [])) or "(none)"
+        dependents = edge_fault.get("dependentTaskIds") or []
+        dependents_clause = (
+            f" This also blocks its dependent task(s): "
+            f"{', '.join(dependents)}."
+            if dependents else "")
+        return (
+            f"Run {self.cfg.run_id}: task(s) {ids} name a dependsOn edge "
+            f"to a task id that is not in the plan at all -- no worker "
+            f"iteration could ever move this plan again (offending "
+            f"edge(s): {edges})."
+            f"{dependents_clause} "
+            "The run has been paused (existing pause machinery); fix the "
+            "dependsOn edge in tasks.json (an operator edit, outside "
+            "every one of the engine's own writers) and resume with "
+            f"`ralphctl resume {self.cfg.run_id}`.\n"
+        )
+
+    def _pause_and_escalate_unresolvable_edge(self, edge_fault: dict) -> None:
+        """Review cure cure-01-03 (PRD requirement E.3, #206): pause the
+        run through the EXISTING pause machinery, `reason:
+        \"unresolvable_dependency_edge\"` so `_step_paused` resumes
+        straight back into `worker` (there is no verdict pending here,
+        only a `tasks.json` edit an operator has to make by hand) --
+        the exact sibling of `_pause_and_escalate_unschedulable_cycle`
+        just above.
+        """
+        text = self._unresolvable_edge_escalation_text(edge_fault)
+        self.run.emit("operator_escalation",
+                      reason="unresolvable_dependency_edge",
+                      escalation=text, **edge_fault)
+        self.pause(reason="unresolvable_dependency_edge")
         if self.notifier is not None:
             self.notifier(text)
 
