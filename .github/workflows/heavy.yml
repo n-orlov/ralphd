@@ -230,9 +230,12 @@ jobs:
       - name: Assert this container's workspace path resolves on the real host too
         run: |
           scripts/run_bounded.sh 30 "host-path assertion" -- bash -euo pipefail -c '
-            docker run --rm -v "$RALPHD_HOST_WORKSPACE":/check:ro \
+            echo "GITHUB_WORKSPACE ($GITHUB_WORKSPACE) as seen from inside this container:"
+            ls -la "$GITHUB_WORKSPACE" | head -5
+            echo "RALPHD_HOST_WORKSPACE resolved to: $RALPHD_HOST_WORKSPACE"
+            docker run --rm -v "$RALPHD_HOST_WORKSPACE":/check \
               python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6 \
-              sh -c "test -f /check/pyproject.toml && echo host-path-confirmed: pyproject.toml visible through the socket-mounted path"
+              sh -c "echo listing /check:; ls -la /check | head -5; if [ -f /check/pyproject.toml ]; then echo host-path-confirmed: pyproject.toml visible through the socket-mounted path; else echo host-path-NOT-confirmed: no pyproject.toml under /check; exit 1; fi"
           '
 
       # Wrapped in scripts/run_bounded.sh (task 054, K.3) like the tier step
