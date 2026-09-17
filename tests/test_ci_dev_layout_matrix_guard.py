@@ -64,11 +64,15 @@ EXPECTED_CELLS = {
     ("python:3.14-slim", "unset"),
 }
 
-# `-v "$GITHUB_WORKSPACE:<container path>:ro"` -- the mount must name the
-# runner's own checkout, not just any read-only path (a `-v /tmp/x:/src-ro:ro`
-# mount satisfies ":ro appears somewhere" while mounting nothing under test).
+# `-v "$RALPHD_HOST_WORKSPACE:<container path>:ro"` -- the mount must name
+# the runner's own checkout (task 012, requirement I: resolved to its real
+# host-side path rather than named directly -- `$GITHUB_WORKSPACE` is not
+# that path once this job is itself containerized, see
+# scripts/resolve_container_host_path.sh's own header), not just any
+# read-only path (a `-v /tmp/x:/src-ro:ro` mount satisfies ":ro appears
+# somewhere" while mounting nothing under test).
 WORKSPACE_RO_MOUNT_RE = re.compile(
-    r"-v\s+\"?\$(?:\{)?GITHUB_WORKSPACE(?:\})?:(?P<target>[^\s\":]+):ro\"?"
+    r"-v\s+\"?\$(?:\{)?RALPHD_HOST_WORKSPACE(?:\})?:(?P<target>[^\s\":]+):ro\"?"
 )
 # Anything that writes into the tree or the image; each must follow the copy.
 INSTALL_RE = re.compile(r"(apt-get\s+install|apt\s+install|pip3?\s+install)")
@@ -277,10 +281,10 @@ def _check_cell_hardening(run_scripts: list[str]) -> list[str]:
 
 
 def _check_readonly_workspace_mount(run_scripts: list[str]) -> list[str]:
-    """$GITHUB_WORKSPACE must be mounted `:ro` into a `docker run`, and the
-    mount target must be `cp -a`'d to a DIFFERENT container-local path before
-    anything installs -- the whole point being that no root-in-container
-    process writes into the runner's checkout."""
+    """$RALPHD_HOST_WORKSPACE must be mounted `:ro` into a `docker run`, and
+    the mount target must be `cp -a`'d to a DIFFERENT container-local path
+    before anything installs -- the whole point being that no root-in-
+    container process writes into the runner's checkout."""
     problems: list[str] = []
     mounted = False
     for run in run_scripts:
@@ -315,7 +319,7 @@ def _check_readonly_workspace_mount(run_scripts: list[str]) -> list[str]:
     if not mounted:
         problems.append(
             'no step mounts the runner checkout read-only into a docker run '
-            '(-v "$GITHUB_WORKSPACE:<container path>:ro")'
+            '(-v "$RALPHD_HOST_WORKSPACE:<container path>:ro")'
         )
     return problems
 
@@ -544,12 +548,12 @@ def test_nightly_matrix_guard_fires_when_a_seventh_duplicate_cell_is_added(tmp_p
 
 def test_nightly_matrix_guard_fires_when_the_mount_is_not_the_workspace(tmp_path):
     """`:ro` appearing somewhere is not enough -- the mount must name
-    $GITHUB_WORKSPACE itself."""
+    $RALPHD_HOST_WORKSPACE itself."""
     broken = copy.deepcopy(_load(NIGHTLY_PATH))
     for step in broken["jobs"]["dev-layout"]["steps"]:
         if "run" in step and "docker run" in step["run"]:
             step["run"] = step["run"].replace(
-                '"$GITHUB_WORKSPACE:/src-ro:ro"', '"/tmp/unrelated:/src-ro:ro"'
+                '"$RALPHD_HOST_WORKSPACE:/src-ro:ro"', '"/tmp/unrelated:/src-ro:ro"'
             )
     fixture = _dump_fixture(tmp_path, "broken-unrelated-mount.yml", broken)
     problems = check_nightly_matrix(_load(fixture))

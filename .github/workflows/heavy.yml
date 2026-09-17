@@ -104,24 +104,6 @@ jobs:
       # environment, so it cannot leak into a child as if this were a job
       # container.
       RALPHD_RUN_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
-      # Task 012 (requirement I.2): THE HOST-PATH TRANSLATION.
-      #
-      # GitHub Actions' own self-hosted `container:` runtime bind-mounts
-      # `$GITHUB_WORKSPACE` (and `$RUNNER_TEMP`) into a job's container at the
-      # SAME ABSOLUTE PATH they hold on the runner host -- this is what makes
-      # docker-outside-of-docker work at all for a self-hosted runner with a
-      # job container, and it is verified directly below ("Assert this
-      # container's workspace path resolves on the real host too") rather
-      # than assumed. So the path this job's OWN filesystem calls
-      # `$GITHUB_WORKSPACE` IS ALREADY the host's own path -- nothing needs
-      # rewriting, only naming: this is the exact `RALPHD_HOST_WORKSPACE`
-      # variable `ralphctl start --allow-docker` injects for the identical
-      # reason (docs/architecture.md, "Path translation gotcha"), and
-      # `tests/test_docker_sibling_e2e.py::_host_path` /
-      # `tests/test_run_secrets.py`'s `HOST_WORKSPACE` already read it and
-      # degrade to a no-op when it is unset -- unset is what a bare,
-      # uncontainerized runner needed; set is what THIS container needs.
-      RALPHD_HOST_WORKSPACE: ${{ github.workspace }}
     steps:
       # Task 054 (K.3): stamp this job's start, its declared bound and a fresh
       # per-job evidence directory, so the classifier step at the end can tell
@@ -211,15 +193,44 @@ jobs:
             docker --version
           '
 
-      # Task 012 (requirement I.2): PROVE the translation stated on `env:`
-      # above rather than assume it -- a throwaway sibling mounts
-      # `$GITHUB_WORKSPACE` (this job's own env, unmodified) through the
-      # socket and must see the real checkout, not an empty directory a
-      # wrong path would silently create.
+      # Task 012 (requirement I.2): THE HOST-PATH TRANSLATION.
+      #
+      # MEASURED, not assumed (heavy.yml run 35163222049, job 105018454092):
+      # GitHub Actions' self-hosted `container:` runtime does NOT bind-mount
+      # `$GITHUB_WORKSPACE` at an identical host path -- it mounts the
+      # runner's own `_work` directory at the fixed in-container path `/__w`
+      # regardless of the runner host's own absolute path, so a naive
+      # `docker run -v "$GITHUB_WORKSPACE":...` mounts an EMPTY directory (the
+      # daemon auto-creates one at that literal string on the real host,
+      # which by coincidence never exists there) and the assertion step below
+      # caught exactly that the first time this ran. `scripts/
+      # resolve_container_host_path.sh` gets the real host path the only way
+      # available to a container with no other knowledge of its own
+      # placement: it asks the docker daemon, over the very socket `options:`
+      # mounted above, for THIS container's own `Mounts` table (`docker
+      # inspect` on `$(cat /etc/hostname)`, docker's own default hostname for
+      # a container with no `--hostname`/`--network host` override, both true
+      # here), whose `Source` field on each entry already IS the host's own
+      # path, then appends whatever tail of `$GITHUB_WORKSPACE` falls past
+      # the closest-covering `Destination`. Proven against a disposable
+      # sibling first (never against this run's own dir): a real nested
+      # `docker run` mounting the RESOLVED path saw the real file; mounting
+      # `$GITHUB_WORKSPACE` unresolved did not.
+      - name: Resolve this container's real host-side workspace path
+        run: |
+          scripts/run_bounded.sh 30 "host path resolution" -- bash -euo pipefail -c '
+            host_ws="$(scripts/resolve_container_host_path.sh "$GITHUB_WORKSPACE")"
+            echo "resolved $GITHUB_WORKSPACE -> $host_ws"
+            echo "RALPHD_HOST_WORKSPACE=$host_ws" >> "$GITHUB_ENV"
+          '
+
+      # PROVE the resolution above rather than trust it blind -- a throwaway
+      # sibling mounts the RESOLVED path and must see the real checkout, not
+      # an empty directory a wrong resolution would silently create.
       - name: Assert this container's workspace path resolves on the real host too
         run: |
           scripts/run_bounded.sh 30 "host-path assertion" -- bash -euo pipefail -c '
-            docker run --rm -v "$GITHUB_WORKSPACE":/check:ro \
+            docker run --rm -v "$RALPHD_HOST_WORKSPACE":/check:ro \
               python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6 \
               sh -c "test -f /check/pyproject.toml && echo host-path-confirmed: pyproject.toml visible through the socket-mounted path"
           '
@@ -249,14 +260,15 @@ jobs:
       # number, `-n 2 --dist loadfile` is the next thing to try.
       #
       # Bounded at 6000s (task 054, K.3): with the venv build's 600, the
-      # docker-client install's 90 and the host-path assertion's 30 (task
-      # 012, requirement I) that is 6720 of this job's 7200s `timeout-minutes`
-      # budget, leaving the reserve tests/test_run_bounded_timeout_marker.py
-      # requires for the steps no wrapper owns (checkout, the environment
-      # report, the image cleanup). A docker-tier hang -- an image build
-      # stalled on a registry, a container that never exits -- now ends as a
-      # step `failure` naming itself, not as a `cancelled` indistinguishable
-      # from the push collapse this workflow does on purpose.
+      # docker-client install's 90, the host-path resolution's 30 and the
+      # host-path assertion's 30 (task 012, requirement I) that is 6750 of
+      # this job's 7200s `timeout-minutes` budget, leaving the reserve
+      # tests/test_run_bounded_timeout_marker.py requires for the steps no
+      # wrapper owns (checkout, the environment report, the image cleanup). A
+      # docker-tier hang -- an image build stalled on a registry, a container
+      # that never exits -- now ends as a step `failure` naming itself, not
+      # as a `cancelled` indistinguishable from the push collapse this
+      # workflow does on purpose.
       - name: Docker tier
         run: scripts/run_bounded.sh 6000 "docker tier" -- .venv/bin/python -m pytest -q -m docker --durations=15
 
