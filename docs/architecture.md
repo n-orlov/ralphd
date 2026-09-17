@@ -2662,19 +2662,23 @@ serve a 200-line tail -- the SAME number either way, never 300 or 3000 of
 them.
 
 **Measured budget (task 011 of the 0.21.1 wave, PRD J.3, correcting task
-048's own PRD H.6 figure), one hub tab open on a LIVE cloned-engine job
-holding 102 recorded iterations, polling `GET /api/runs/<id>` and `GET
-/api/runs/<id>/logs?tail=200` every 4 s (`REFRESH_MS`) for 60 s (15 polls
-of each): the hub process used 1.53 s of CPU across that 60 s sample and
-its peak resident set size (`/proc/<pid>/status`'s `VmHWM`) was 35 364 kB.**
-Measured against a real `ralphctl ui` subprocess pointed at a real
-directly-spawned `ralphd-engine` from this checkout (`tests.conftest.
-LiveRun`, `registry=True`, `on_complete: idle` so the process keeps
-idling -- and its API answering -- once the job itself reaches a terminal
-state; `job.iterations: 120` and the stub `pi`'s `STUB_TASKS=100`, giving
-1 planning + 100 worker + 1 review = 102 iterations) -- `GET /api/runs/
+048's own PRD H.6 figure), a urllib poller (`ralphctl ui`'s own hub
+process, stdlib-only) simulating one hub tab against a TERMINAL cloned-
+engine job's reachable API, holding 102 recorded iterations, polling
+`GET /api/runs/<id>` and `GET /api/runs/<id>/logs?tail=200` every 4 s
+(`REFRESH_MS`) for 60 s (15 polls of each): the hub process used 1.53 s of
+CPU across that 60 s sample and its peak resident set size (`/proc/<pid>/
+status`'s `VmHWM`) was 35 364 kB.** Measured against a real `ralphctl ui`
+subprocess pointed at a real directly-spawned `ralphd-engine` from this
+checkout (`tests.conftest.LiveRun`, `registry=True`, `on_complete: idle`
+so the process -- and its API -- stays up once the job itself reaches a
+terminal state, rather than exiting; `job.iterations: 120` and the stub
+`pi`'s `STUB_TASKS=100`, giving 1 planning + 100 worker + 1 review = 102
+iterations, `state: succeeded` throughout the sample). `GET /api/runs/
 <id>` reported `live: true` at both the start and the end of the 60 s
-sample, so every poll in it took the LIVE-container path (`_fetch_live_
+sample -- that field names container/API reachability, not an in-progress
+job, and the job HAD already reached its terminal state before the sample
+started -- so every poll in it took the live-container path (`_fetch_live_
 tail`, task 046/H.4), never the dead-run on-disk fallback this task's own
 predecessor (048/H.6) bounded and which used to stand in as this budget's
 sample. Read from `/proc/<pid>/stat` and `/proc/<pid>/status` rather than

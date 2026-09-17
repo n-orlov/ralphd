@@ -870,4 +870,3 @@ def _assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render(
             kept, reached_start, prefix = log_merge_mod._tail_lines_of_file(out, n)
             assert (reached_start
                     or not log_merge_mod._should_extend_seed_lookback(kept, prefix)), n
-

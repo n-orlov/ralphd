@@ -2300,12 +2300,9 @@ collapse state survives a tail window that cuts mid-iteration instead of reprint
 `304` (`5041dc6f`); **H** — the petition writers are run-dir-only, with the workspace-tree
 fallback N.6 asked to remove now actually gone, and the test defending it retired (`97c71cde`);
 **I** — the regrowth guard now sees a really deleted table and a nested report file, not only the
-two narrow mutations its old detectors covered (`64cdff43`).
-
-The run is `selfdev-v0211-a-green-suite-is-not-a-met-requirement`, launched at `fe85db7d`. This
-paragraph is written mid-run, ahead of the run it describes settling — the v0.19, v0.19.1, v0.20,
-v0.20.1, v0.20.2 and v0.21 blocks and rows above are unchanged by this commit; this wave's own
-terminal account is a later task's to write once the run actually ends.
+two narrow mutations its old detectors covered (`64cdff43`). The run is
+`selfdev-v0211-a-green-suite-is-not-a-met-requirement`, launched at `fe85db7d`; the v0.19, v0.19.1,
+v0.20, v0.20.1, v0.20.2 and v0.21 blocks and rows above are unchanged by this commit.
 
 ## Later / explicitly deferred
 

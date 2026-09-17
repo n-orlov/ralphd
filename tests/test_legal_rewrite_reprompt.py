@@ -569,4 +569,3 @@ def test_the_clause_count_overrun_suggestion_reaches_the_planners_next_prompt(tm
     assert "the status is checked" in suggestion
     assert suggestion.startswith(FIVE_CLAUSE_CRITERIA.rstrip(".").rstrip())
     assert suggestion in second_prompt
-
