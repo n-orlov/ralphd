@@ -708,6 +708,13 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
     _assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render(
         monkeypatch, tmp_path)
 
+    # Scenario 6b (task cure-01-02, PRD P.1/P.5): the SAME interleaved
+    # suffix shifted by ONE trailing `ignored` event, so the retained
+    # tail's oldest line is the opaque member of the cycle -- the same
+    # 1,000,000-byte ceiling, unchanged, at the other alignment.
+    _assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render(
+        monkeypatch, tmp_path, trailing_ignored=1)
+
     # Scenario 7 (task 007, PRD Q.1/Q.2): 1,000 RECOGNIZED, but silent,
     # empty-content `message_end` events sit between the thinking flood
     # and the `message_end` that repeats the tool call, text and
@@ -740,7 +747,8 @@ def test_collapse_state_carries_across_a_cut_mid_iteration_direct_dead_run_and_l
         text_occurrences=1, thinking_occurrences=1, tool_occurrences=1)
 
 
-def _write_interleaved_ignored_suffix_iteration(run_root, older_count: int) -> None:
+def _write_interleaved_ignored_suffix_iteration(run_root, older_count: int,
+                                                trailing_ignored: int = 0) -> None:
     """A single dead-run iteration (task 006, PRD P): `older_count`
     unrelated `ignored` older entries followed by 200 `message_end`/
     `ignored` PAIRS -- the rendered suffix's own 200 visible lines
@@ -755,6 +763,13 @@ def _write_interleaved_ignored_suffix_iteration(run_root, older_count: int) -> N
         suffix.append(json.dumps({"type": "message_end", "message": {"content": [
             {"type": "text", "text": f"visible {i}"}]}}))
         suffix.append(json.dumps({"type": "ignored", "seq": i}))
+    # `trailing_ignored` (task cure-01-02, PRD P.1/P.5): that many extra
+    # `ignored` events AFTER the last pair, which shifts the interleaving
+    # by one cycle member so a fixed raw bound retains an OPAQUE oldest
+    # line instead of a visible `message_end` -- review's own falsifying
+    # alignment of this very fixture.
+    suffix += [json.dumps({"type": "ignored", "extra": True})
+               for _ in range(trailing_ignored)]
     _write_dead_run_iteration(run_root, 1, older + suffix)
 
 
@@ -787,7 +802,7 @@ def _count_output_bytes(monkeypatch) -> list[int]:
 
 
 def _assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render(
-        monkeypatch, tmp_path) -> None:
+        monkeypatch, tmp_path, trailing_ignored: int = 0) -> None:
     """Task 006, PRD P: a fixed 200-line rendered suffix whose visible
     `message_end` events are interleaved one for one with non-rendering
     `ignored` events must read a bounded number of transcript bytes when
@@ -808,18 +823,32 @@ def _assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render(
     true for every one of this fixture's 200 pairs, so growth walked to
     `reached_start` regardless of how much older history shared the
     file. Narrowing the check to `tail_lines[0]` fixes it without
-    touching scenario 5's own opaque-`tail_lines[0]` shape above: this
-    fixture's `tail_lines[0]` is always the oldest retained pair's own
+    touching scenario 5's own opaque-`tail_lines[0]` shape above.
+
+    `trailing_ignored` (task cure-01-02) is what stops this assertion
+    resting on that narrowing: at `trailing_ignored=0` this fixture's
+    `tail_lines[0]` is always the oldest retained pair's own
     `message_end`, for the raw bounds `ui_server`'s own growing-bound
-    retry asks for here (200, then 400).
+    retry asks for here (200, then 400) -- so ONE extra trailing
+    `ignored` event shifts the cycle, makes `tail_lines[0]` the opaque
+    member, and (before this task) sent the speculative look-back through
+    the whole grown transcript twice, over the ceiling. The caller runs
+    this helper at BOTH alignments against the SAME unchanged ceiling;
+    `log_merge._SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET` is what holds the
+    shifted one, and the two-real-reasons invariant asserted at the end
+    of this helper still holds with it, because that bound lives INSIDE
+    `_should_extend_seed_lookback` itself rather than as a third loop
+    exit beside it.
     """
     from ralphd.cli import ui_server
     from ralphd.log_merge import merged_lines
 
-    small_root = tmp_path / "interleaved-small" / "runs" / "probe"
-    large_root = tmp_path / "interleaved-large" / "runs" / "probe"
-    _write_interleaved_ignored_suffix_iteration(small_root, 10)
-    _write_interleaved_ignored_suffix_iteration(large_root, 100_000)
+    small_root = tmp_path / f"interleaved-small-{trailing_ignored}" / "runs" / "probe"
+    large_root = tmp_path / f"interleaved-large-{trailing_ignored}" / "runs" / "probe"
+    _write_interleaved_ignored_suffix_iteration(
+        small_root, 10, trailing_ignored=trailing_ignored)
+    _write_interleaved_ignored_suffix_iteration(
+        large_root, 100_000, trailing_ignored=trailing_ignored)
     small_size = (small_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
     large_size = (large_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
 

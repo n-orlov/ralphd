@@ -269,6 +269,18 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     await _assert_interleaved_ignored_suffix_is_bounded_across_every_surface(
         interleaved_root, monkeypatch)
 
+    # The SAME suffix shifted by exactly one trailing `ignored` event, so
+    # that the retained tail's own oldest line is the opaque member of the
+    # interleaving cycle rather than its visible one (task cure-01-02,
+    # review's `test_P_interleaved_byte_ceiling[one-extra-trailing-
+    # ignored-*]`): the SAME 1,000,000-byte ceiling, unchanged, has to hold
+    # for either alignment -- see `log_merge.
+    # _SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET`.
+    shifted_root = tmp_path / "interleaved-suffix-shifted"
+    shifted_root.mkdir()
+    await _assert_interleaved_ignored_suffix_is_bounded_across_every_surface(
+        shifted_root, monkeypatch, trailing_ignored=1)
+
     toolcall_root = tmp_path / "interleaved-toolcall-suffix"
     toolcall_root.mkdir()
     await _assert_interleaved_toolcall_suffix_is_bounded_on_disk_and_live(
@@ -603,7 +615,8 @@ async def _assert_older_thinking_marker_stays_bounded_across_every_surface(
 
 
 def _write_iteration_with_interleaved_ignored_suffix(run_root: pathlib.Path, n: int,
-                                                      older_count: int) -> None:
+                                                      older_count: int,
+                                                      trailing_ignored: int = 0) -> None:
     """One iteration whose `output.jsonl` is `older_count` unrelated,
     IGNORED older raw entries followed by 200 `message_end`/`ignored`
     PAIRS (task 006, PRD P.2). Unlike `_write_iteration_with_ignored_head`
@@ -626,6 +639,14 @@ def _write_iteration_with_interleaved_ignored_suffix(run_root: pathlib.Path, n: 
         suffix.append(json.dumps({"type": "message_end", "message": {"content": [
             {"type": "text", "text": f"visible {i}"}]}}))
         suffix.append(json.dumps({"type": "ignored", "seq": i}))
+    # `trailing_ignored` (task cure-01-02, PRD P.1/P.5) appends that many
+    # further `ignored` events AFTER the last pair, shifting the whole
+    # interleaving by one cycle member with respect to any fixed raw
+    # bound: with it, a raw bound landing mid-cycle retains an OPAQUE
+    # oldest line instead of a visible `message_end`, which is exactly
+    # what review's own falsifying variant of this fixture does.
+    suffix += [json.dumps({"type": "ignored", "extra": True})
+               for _ in range(trailing_ignored)]
     (d / OUTPUT_FILENAME).write_text("\n".join(older + suffix) + "\n")
 
 
@@ -655,7 +676,7 @@ async def _grown_rendered_tail(fetch, bound_tail: int) -> list[str]:
 
 
 async def _assert_interleaved_ignored_suffix_is_bounded_across_every_surface(
-        root, monkeypatch) -> None:
+        root, monkeypatch, trailing_ignored: int = 0) -> None:
     """Task 006, PRD P's own falsifying scenario: a fixed 200-line
     rendered suffix whose visible `message_end` events are interleaved
     ONE FOR ONE with non-rendering `ignored` events (P.2) must read a
@@ -687,18 +708,36 @@ async def _assert_interleaved_ignored_suffix_is_bounded_across_every_surface(
     boundary a further read would grow past -- fixes it without
     regressing E.3's own gap-after-thinking scenario above (whose
     `tail_lines[0]` genuinely IS the opaque filler, for every raw bound
-    that scenario's own growing-bound retry ever asks for): this
-    fixture's `tail_lines[0]` is always the oldest retained pair's own
-    `message_end`, never the `ignored` beside it, for any raw bound this
-    interleaved suffix's growing-bound retry ever asks for (200, then
-    400 -- two attempts are enough for 200 rendered lines here, exactly
-    what the ported probe's own comment says).
+    that scenario's own growing-bound retry ever asks for).
+
+    `trailing_ignored` (task cure-01-02) is what makes this assertion
+    independent of that narrowing rather than reliant on it. With
+    `trailing_ignored=0` this fixture's `tail_lines[0]` is always the
+    oldest retained pair's own `message_end`, never the `ignored` beside
+    it, for any raw bound this interleaved suffix's growing-bound retry
+    ever asks for (200, then 400) -- so the ceiling below held only
+    because the interleaving happened to be ALIGNED that way, which is
+    exactly what review's own falsifying variant
+    (`review_probes.py::test_P_interleaved_byte_ceiling[one-extra-
+    trailing-ignored-*]`) exposed: appending ONE further `ignored` event
+    shifts the cycle, puts the opaque member at `tail_lines[0]`, and the
+    speculative look-back then read the whole grown transcript TWICE
+    (49,430 bytes at 10 older events, 6,826,610 at 100,000 -- files of
+    24,715 / 3,413,305), over the ceiling. The caller runs this helper
+    at BOTH alignments against the SAME unchanged 1,000,000-byte
+    ceiling; what holds it for the shifted one is
+    `log_merge._SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET` (~393,216 bytes
+    read at 100,000 older events), a bound on the one look-back trigger
+    that names no needle to terminate on -- never a weakened assertion
+    and never the alignment.
     """
     small_reg, large_reg = root / "small", root / "large"
     small_root = small_reg / "runs" / "probe"
     large_root = large_reg / "runs" / "probe"
-    _write_iteration_with_interleaved_ignored_suffix(small_root, 1, 10)
-    _write_iteration_with_interleaved_ignored_suffix(large_root, 1, 100_000)
+    _write_iteration_with_interleaved_ignored_suffix(
+        small_root, 1, 10, trailing_ignored=trailing_ignored)
+    _write_iteration_with_interleaved_ignored_suffix(
+        large_root, 1, 100_000, trailing_ignored=trailing_ignored)
     small_size = (small_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
     large_size = (large_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
 

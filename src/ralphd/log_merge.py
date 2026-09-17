@@ -221,6 +221,62 @@ _TAIL_READ_CHUNK = 1 << 16
 # `bash $ printf cap-needle ✓ ok`.
 _SEED_LOOKBACK_EXTRA_GROWTHS = 12
 
+# How many already-read OLDER lines (`prefix_lines`) the look-back's
+# SPECULATIVE trigger alone -- trigger 3 below, "the retained tail's own
+# boundary is an event that tells us nothing, so we cannot certify an
+# unresolved flag `False` from what we have read" -- may accumulate before
+# it stops asking for more (task cure-01-02, PRD P.1/P.5, review's
+# `test_P_interleaved_byte_ceiling[one-extra-trailing-ignored-*]`).
+#
+# WHY THIS ONE TRIGGER AND NOT THE OTHER TWO. Triggers 1 and 2 each name a
+# CONCRETE needle whose existence the retained tail itself already
+# evidences -- a `_TYPE_FLAG_GROUPS` event of the very type `tail_lines`
+# already carries (trigger 1), or the `tool_execution_start` that a
+# `tool_execution_end` inside `tail_lines` proves must exist further back
+# (trigger 2) -- so reading until it is found terminates on the needle,
+# and the shipped scenarios that depend on that are deliberately far back
+# (`test_log_render_bounded_tail.py`'s scenario 3: a tool call's own start
+# ~9.2 MB / 9,000 opaque events behind its end). Those two stay unbounded.
+# Trigger 3 names NO needle: it fires on not-knowing, and "an event that
+# might set this flag might sit somewhere further back" stays true, event
+# for event, all the way to byte 0 of an arbitrarily long transcript. That
+# is precisely review's falsifying measurement: shifting P's interleaved
+# 200-line suffix by ONE trailing `ignored` event puts an opaque line at
+# `tail_lines[0]`, and the look-back then walked the WHOLE grown file
+# TWICE -- 49,430 bytes at 10 older ignored events, 6,826,610 at 100,000
+# (files of 24,715 / 3,413,305) -- past P's 1,000,000-byte ceiling,
+# chasing a `textSeen` no line anywhere in that file ever sets. Whether
+# that walk happened at all depended on nothing but which member of the
+# interleaving cycle the retained tail's oldest line happened to be; the
+# ceiling now holds for either alignment, because THIS bound, not that
+# alignment, is what stops the speculative walk.
+#
+# WHY THE BUDGET IS COUNTED IN LINES, NOT BYTES. The speculative search is
+# a search over EVENTS, and how many bytes an event occupies is chosen by
+# whoever wrote the transcript, not by this reader: the shipped
+# gap-after-thinking and Q scenarios each hide their genuine needle behind
+# 1,000 opaque events PADDED to 1,000 bytes each (~1.05 MB, ~1,510 lines),
+# while P's own fixture hides no needle at all behind 100,000 unpadded
+# ~30-byte ones (~3.4 MB). A byte budget that admits the first (>= 1.05 MB)
+# cannot also keep the second under a 1,000,000-byte ceiling read twice; a
+# line budget separates them by what actually differs -- how far back in
+# EVENTS the seed is being asked to speculate. 4,096 lines leaves ~2.7x
+# headroom over the deepest speculative look-back any shipped scenario
+# needs, and caps P's own shifted fixture at ~192 KB per read pass.
+#
+# STOPPING HERE IS NOT A CLAIM THE SEED IS COMPLETE, and it is not a
+# restart: `reached_start` stays False (its own contract is byte 0 of the
+# file and nothing else), so no caller may treat the cut point as a
+# genuine iteration start on the strength of this bound -- exactly the
+# distinction `_SEED_LOOKBACK_EXTRA_GROWTHS`'s own comment above draws.
+# What it does mean is that after this many events of finding nothing, an
+# unresolved flag is published at its `_prior_collapse_state` default
+# rather than read for indefinitely -- the one thing a bounded reader can
+# do when the transcript format carries no record of where an iteration's
+# own streaming began (a format change and a side index are both outside
+# this wave's PRD, which is why this is a bound and not a lookup).
+_SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET = 4096
+
 # The raw NDJSON types/subtypes `_prior_collapse_state` actually flips a
 # collapse-guard flag on (`message_update`'s `text_delta`/`thinking_start`/
 # `thinking_delta`, `tool_execution_start`, `tool_execution_end`) --
@@ -645,7 +701,15 @@ def _should_extend_seed_lookback(tail_lines: list[str], prefix_lines: list[str])
     # read so far; see `_tail_contains_opaque_filler`'s own docstring for
     # exactly why this is safe against E.2's byte bound (its `tail_lines`
     # never contains this signal at all, homogeneous `message_end` only).
-    if unresolved and _tail_contains_opaque_filler(tail_lines):
+    #
+    # Bounded, ALONE of the three, by
+    # `_SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET` (task cure-01-02, PRD
+    # P.1/P.5): this trigger names no needle to terminate on, so without a
+    # bound it reads to byte 0 of any transcript whose tail boundary
+    # happens to be opaque -- review's shifted-interleaving measurement,
+    # see that constant's own comment.
+    if (unresolved and _tail_contains_opaque_filler(tail_lines)
+            and len(prefix_lines) < _SEED_LOOKBACK_SPECULATIVE_LINE_BUDGET):
         return True
     return bool(_dangling_tool_call_ids(tail_lines, prefix_lines))
 
