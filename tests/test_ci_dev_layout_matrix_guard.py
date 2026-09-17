@@ -686,12 +686,14 @@ def test_dev_layout_cell_hardening_guard_fires_on_each_mutation(tmp_path):
 # itself) sees: the basename of each file under `.github/workflows/`.
 # gate.yml's `fast` job needs no entry -- task 009 already gave it a
 # `container:`. heavy.yml's `browser-tier` needs no entry either -- task 011
-# (requirement H) gave it one too. Task 012 (requirement I) gives BOTH
-# remaining jobs -- heavy.yml's `docker-tier` and nightly.yml's `dev-layout`
-# -- a `container:` of their own in that same commit and removes their two
-# entries here, leaving only the one below. Removing a job's entry here
-# without also giving it a `container:` is exactly the case this guard's own
-# first refusal exists to catch.
+# (requirement H) gave it one too. nightly.yml's `dev-layout` needs no entry
+# either -- task 012 (requirement I) gave IT a `container:` and that half of
+# I is KEPT. heavy.yml's `docker-tier` is the one entry below: task 012 tried
+# containerizing it too (commits b1f3fb80..8daf54f8) and reverted (branch b,
+# its own exit ramp) when the newest run at the reverting decision still
+# showed live failures with a different shape than every fix already tried
+# addressed -- see that entry's own reason and the docker-tier job's own
+# comment in heavy.yml for the measurement.
 CONTAINER_ALLOWLIST: dict[tuple[str, str], str] = {
     ("heavy.yml", "browser-image"): (
         "task 011 (requirement H): this job BUILDS the pinned image the "
@@ -701,6 +703,48 @@ CONTAINER_ALLOWLIST: dict[tuple[str, str], str] = {
         "runner's JS actions need, which no image this repository already "
         "pins supplies. Dispatch-gated (publish_browser_image), so it runs on "
         "no push and no pull request."
+    ),
+    ("heavy.yml", "docker-tier"): (
+        "task 012 (requirement I, branch b -- exit ramp, decided 2026-09-17 "
+        "~09:50Z, docker tier not green by the 12:30Z decision point so "
+        "decided early rather than burning more of the clock): containerized "
+        "at b1f3fb80, then five rounds of live fixes over commits ab55dfe3, "
+        "52d4972d, 3ff44c93, c71e0105, 8daf54f8 cut the tier's own failure "
+        "count from 20 failed to 10 failed to, on run 35202282423 at 8daf54f8 "
+        "(the newest concluded run at the containerized commit), 6 failed + "
+        "3 errors: 3x test_steer.py spool tests ERRORED at setup "
+        "(tests/test_steer.py::test_the_hat_uid_cannot_write_tasks_json_and_"
+        "the_engine_owns_it, ::test_the_spooled_request_is_applied_by_the_"
+        "engine_not_by_the_agent_uid, ::test_a_malformed_spool_request_is_"
+        "refused_without_ending_the_run) because the stub pi worker child's "
+        "own hold-entered marker (.hold-spool-steer.stub-hold-entered) never "
+        "appeared within 30s -- the held phase never ran; "
+        "tests/test_engine_uid_docker.py::test_the_engine_can_still_stop_its_"
+        "own_iteration failed the identical way on a different hold file "
+        "(.hold-interrupt-boundary); "
+        "tests/test_docker_sibling_e2e.py::test_resume_continues_after_"
+        "container_stop and tests/test_tasks_record_docker.py::test_a_"
+        "resumed_container_still_reads_the_protected_record both landed "
+        "state: aborted again, unchanged from the prior (10-failed) run; and "
+        "tests/test_control_plane_auth_docker.py's three A.6 probes failed a "
+        "find /config exit-status race the test's own comment already names "
+        "as pre-existing at b48489cd, before task 012 started. None of that "
+        "failure set is the shape any of the five live fixes above targeted, "
+        "and the ones that ARE new (the hold-never-entered timeouts) share "
+        "one property: every one is a test whose margin is a fixed "
+        "wall-clock hold window (30s/60s) racing an iteration's own child "
+        "spawn, and the client process issuing every sibling docker "
+        "run/exec now lives one container layer deeper than the daemon it "
+        "talks to, on a 4-core/7GB box this workflow's own header documents "
+        "as running the browser tier concurrently by design (job 105139628612 "
+        "of the same run confirms the browser tier ran alongside). The "
+        "client's container-ness costs the wall-clock margin those "
+        "fixed-window tests depend on; it does not change what the tests "
+        "assert. Reverted to the host-run shape in the same commit as this "
+        "entry. nightly.yml's dev-layout containerization (the other half "
+        "of requirement I) is unaffected and stays containerized -- see "
+        "artifacts/reports/v0.22-petitions.md for the petition against this "
+        "docker-tier half only."
     ),
 }
 
