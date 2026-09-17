@@ -243,8 +243,11 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     monkeypatch.undo()
 
     # Byte-identical rendered tail regardless of how much ignored history
-    # sits earlier in the SAME iteration's file.
-    assert small_lines == large_lines
+    # sits earlier in the SAME iteration's file -- and, from task
+    # cure-01-03-2 (PRD Q.1), a grown fixture's bounded read no longer
+    # publishes collapse state indistinguishable from the small fixture's
+    # fully-read one: see `_assert_bounded_and_fully_read_tails_agree`.
+    _assert_bounded_and_fully_read_tails_agree(small_lines, large_lines)
     assert sum(1 for ln in small_lines if "ralphd.iteration" not in ln) == 200
 
     # The bytes actually read off disk stay bounded by a small constant --
@@ -324,6 +327,44 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     await _assert_recognized_nonrendering_gap_preserves_collapse_state_across_every_surface(
         q_empty_text_root, monkeypatch, "empty-text-item-message-end",
         empty_text_message_end_line)
+
+
+def _assert_bounded_and_fully_read_tails_agree(small_lines: list[str],
+                                               large_lines: list[str]) -> None:
+    """Every byte a small (fully read) and a grown (bounded) fixture RENDER
+    is identical, and the ONE difference their raw merged lines carry is the
+    synthetic "start" boundary's own honesty about the difference between the
+    two reads (task cure-01-03-2, PRD Q.1).
+
+    The small fixture's whole `output.jsonl` fits inside the bounded read, so
+    its collapse seed's `false` flags are a MEASUREMENT of the entire omitted
+    prefix (`log_merge._tail_lines_of_file`'s `reached_start`). The grown
+    fixture's read stopped on a byte bound instead, so the same `false` is a
+    bounded reader's FALLBACK and travels with the flag's own name in
+    `collapseSeed["unresolved"]` (`log_merge._unresolved_seed_flags`).
+
+    PRD P.4's cross-fixture equality is about what the tail RENDERS, and this
+    helper pins it twice over -- on the rendered lines and on every raw
+    CONTENT line, neither of which may differ by a single byte, and on the
+    seeds themselves once the disclosure is set aside. PRD Q.1 is the
+    requirement pulling the other way, and it is why the disclosure exists at
+    all: a bounded read that publishes state INDISTINGUISHABLE from a
+    certified one is exactly what "a recognized non-rendering event cannot
+    certify collapse state" forbids."""
+    assert (render_to_lines("".join(small_lines), False, new_render_state())
+            == render_to_lines("".join(large_lines), False, new_render_state()))
+    assert ([ln for ln in small_lines if "ralphd.iteration" not in ln]
+            == [ln for ln in large_lines if "ralphd.iteration" not in ln])
+    small_seeds = [json.loads(ln).get("collapseSeed") or {}
+                   for ln in small_lines if "ralphd.iteration" in ln]
+    large_seeds = [json.loads(ln).get("collapseSeed") or {}
+                   for ln in large_lines if "ralphd.iteration" in ln]
+    assert small_seeds and len(small_seeds) == len(large_seeds)
+    for small_seed, large_seed in zip(small_seeds, large_seeds):
+        assert "unresolved" not in small_seed, small_seed
+        assert {k: v for k, v in large_seed.items()
+                if k != "unresolved"} == small_seed
+    assert any(seed.get("unresolved") for seed in large_seeds), large_seeds
 
 
 def _write_iteration_with_older_thinking_marker(run_root: pathlib.Path, n: int,
@@ -555,7 +596,7 @@ async def _assert_older_thinking_marker_stays_bounded_across_every_surface(
     large_bytes = large_counts[0]
     monkeypatch.undo()
 
-    assert small_lines == large_lines
+    _assert_bounded_and_fully_read_tails_agree(small_lines, large_lines)
     assert _content_lines(small_lines) == 200
     assert large_bytes < small_bytes * 10
     assert large_bytes < 1_000_000
@@ -575,7 +616,9 @@ async def _assert_older_thinking_marker_stays_bounded_across_every_surface(
     large_api_bytes = large_api_counts[0]
     monkeypatch.undo()
 
-    assert small_api_text == large_api_text
+    _assert_bounded_and_fully_read_tails_agree(
+        small_api_text.splitlines(keepends=True),
+        large_api_text.splitlines(keepends=True))
     assert small_api_text.splitlines(keepends=True) == small_lines
     assert large_api_bytes < small_api_bytes * 10
     assert large_api_bytes < 1_000_000

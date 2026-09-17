@@ -345,7 +345,15 @@ def _render_message_end(message: dict, state: dict, tty: bool) -> None:
 def new_render_state() -> dict:
     return {"text_open": False, "text_seen": False, "thinking_seen": False,
             "toolcall_seen": False, "tool_args": {}, "open_tool_line": None,
-            "tool_pending": {}}
+            "tool_pending": {},
+            # Task cure-01-03-2 (PRD Q.1): which of the three collapse flags
+            # above hold a bounded reader's FALLBACK rather than a measured
+            # value -- empty for a genuine, uncut iteration start, where
+            # every flag starts `False` because nothing precedes it. Set from
+            # a cut "start" boundary's `collapseSeed["unresolved"]`; see
+            # `render_log_line`'s own comment there and
+            # `log_merge._unresolved_seed_flags`.
+            "collapse_unresolved": set()}
 
 
 def render_pending_tool_invocations(state: dict, tty: bool) -> None:
@@ -462,6 +470,24 @@ def render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) -
                     # resets tool_args to an empty mapping"). A genuine
                     # start/end boundary carries no `toolArgs` key, so this
                     # defaults to `{}` -- byte-identical to before.
+                    # Task cure-01-03-2 (PRD Q.1): the flags named in
+                    # `seed["unresolved"]` are the ones whose boolean just
+                    # above is `log_merge`'s bounded FALLBACK rather than
+                    # knowledge -- their setter was never read, and "the
+                    # look-back stopped" is not "the omitted prefix set
+                    # nothing" (`log_merge._unresolved_seed_flags`). They are
+                    # carried in the render state, distinct from the booleans,
+                    # so a consumer that must tell "no state" from "unknown
+                    # state" reads this set instead of guessing from a `False`.
+                    # This renderer still prints from the fallback, because it
+                    # must emit something for the line in front of it; the
+                    # alternative fallback (unknown treated as SEEN, so the
+                    # line is suppressed) makes every named Q scenario
+                    # correct and costs 30,248,729 transcript bytes on PRD P's
+                    # own padded fixture against P.1/P.5's unmoved
+                    # 1,000,000-byte ceiling -- a clause conflict filed as a
+                    # petition with that measurement, never decided here.
+                    collapse_unresolved=set(seed.get("unresolved") or ()),
                     tool_args=dict(seed.get("toolArgs") or {}), tool_pending={})
     elif etype == "message_update":
         _render_message_update(ev.get("assistantMessageEvent") or {}, state, tty)

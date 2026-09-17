@@ -134,7 +134,10 @@ def boundary_line(meta: dict, event: str, collapse_seed: dict | None = None) -> 
     the `text_seen`/`thinking_seen`/`toolcall_seen` collapse-guard values a
     REAL iteration start already carries from raw content this boundary's
     OWN emitter chose not to include (see `merge_entries_tail`'s per-
-    iteration bounded read). A genuine, uncut iteration start passes `None`
+    iteration bounded read). It may also carry `"unresolved"`, the sorted
+    names of the flags above whose boolean is a bounded reader's FALLBACK
+    rather than a measurement (task cure-01-03-2, PRD Q.1 --
+    `_unresolved_seed_flags`), and `"toolArgs"` (task cure-01-02). A genuine, uncut iteration start passes `None`
     (the default) -- the resulting JSON is byte-identical to before this
     task, and `render_log_line` seeds every flag `False` exactly as a fresh
     `new_render_state()` always has, so nothing about an ordinary boundary
@@ -296,12 +299,16 @@ _SEED_LOOKBACK_EXTRA_GROWTHS = 12
 # file and nothing else), so no caller may treat the cut point as a
 # genuine iteration start on the strength of this bound -- exactly the
 # distinction `_SEED_LOOKBACK_EXTRA_GROWTHS`'s own comment above draws.
-# What it does mean is that after this many events of finding nothing, an
-# unresolved flag is published at its `_prior_collapse_state` default
-# rather than read for indefinitely -- the one thing a bounded reader can
-# do when the transcript format carries no record of where an iteration's
-# own streaming began (a format change and a side index are both outside
-# this wave's PRD, which is why this is a bound and not a lookup).
+# What it does mean is that after this many bytes of finding nothing, the
+# search stops and the flag is published AS UNRESOLVED (task cure-01-03-2:
+# `_unresolved_seed_flags` names it on the seed) beside the
+# `_prior_collapse_state` default a renderer then has to draw from -- the
+# one thing a bounded reader can do when the transcript format carries no
+# record of where an iteration's own streaming began (a format change and a
+# side index are both outside this wave's PRD, which is why this is a bound
+# and not a lookup). Exhausting the budget is therefore explicitly NOT a
+# certification that the omitted prefix set nothing: that distinction is the
+# whole of PRD Q.1, and it is why the flag's name travels with the value.
 #
 # 131,072 bytes, OR the retained tail's own byte size when that is larger
 # (measured, task cure-01-02-2). The budget is spent on `prefix_lines`
@@ -675,6 +682,66 @@ def _flags_needed_by_tail(tail_lines: list[str]) -> set:
                 elif kind == "toolCall":
                     needed.add("toolcallSeen")
     return needed
+
+
+def _unresolved_seed_flags(tail_lines: list[str], seed_flags: dict,
+                           reached_start: bool) -> set:
+    """The subset of `{"textSeen", "thinkingSeen", "toolcallSeen"}` this
+    cut's collapse seed carries WITHOUT having read the evidence that would
+    settle it -- empty when there is no such flag (task cure-01-03-2, PRD
+    Q.1).
+
+    THE PROPERTY, not a case list (PRD Q.5). A seed flag's value is
+    KNOWLEDGE in exactly two situations, and both are about which bytes were
+    read, never about which event types happened to be seen:
+
+      * something already read SETS it (`_prior_collapse_state` returned
+        True). Every flag is set by its FIRST occurrence and none is ever
+        unset, so `True` is monotone: no unread history can take it back.
+      * the backward read walked to byte 0 of the transcript
+        (`reached_start`), so by `_tail_lines_of_file`'s own contract there
+        is provably NO unread history left and `False` is a measurement of
+        the whole prefix.
+
+    A flag in neither situation, but which the retained tail actually READS
+    (`_flags_needed_by_tail`), is a DEFAULT and not a measurement: the search
+    for its setter stopped on a BOUND -- `_SEED_LOOKBACK_SPECULATIVE_BYTE_
+    FLOOR`, or the retained tail's own byte size -- rather than on evidence,
+    and `False` is then merely what a bounded reader has to render from.
+    Naming those flags on the seed, next to the boolean, is what keeps "we
+    did not find a setter" distinct from "there is no setter": the ONE
+    thing PRD Q.1 forbids is letting the second stand in for the first.
+    Neither of the two things a reader is tempted to read the difference off
+    is the discriminator here, which is why neither appears in this function:
+    not RECOGNITION (a parsed `message_end` with empty content is exactly as
+    uninformative about the state before it as an unknown `{"type":
+    "ignored"}` event -- both are absent from `_TYPE_FLAG_GROUPS` because
+    neither can set a flag), and not EXHAUSTION of the look-back (running out
+    of budget is a fact about this reader, not about the transcript).
+
+    A flag the retained tail never reads is NOT listed even when nothing
+    resolved it: its value cannot change one rendered byte of this tail, so
+    there is no uncertainty for a consumer to act on -- the same materiality
+    line `_flags_needed_by_tail` already draws for the look-back itself.
+
+    WHAT A CONSUMER MAY DO WITH IT, and the one thing this disclosure does
+    NOT buy (task cure-01-03-2's petition against PRD Q.1's arbitrary-depth
+    half). `log_render` still renders an unresolved flag from its `False`
+    fallback -- a renderer has to emit something -- so a `message_end` that
+    repeats text streamed FURTHER back than the look-back's budget still
+    prints that text once more. The alternative fallback (treat an
+    unresolved flag as SEEN and suppress) makes every named Q scenario and
+    review's own silent-prelude variant correct, and was measured to cost
+    30,248,729 transcript bytes on PRD P's own padded fixture -- against
+    P.1/P.5's unmoved 1,000,000-byte ceiling on a 12 MB file whose omitted
+    prefix cannot be certified without reading all of it. Which fallback is
+    right is therefore not a question this reader can decide from state; it
+    is a conflict between two clauses of the same contract, filed as a
+    petition with that measurement rather than settled here by guessing."""
+    if reached_start:
+        return set()
+    return {flag for flag in _flags_needed_by_tail(tail_lines)
+            if not seed_flags.get(flag)}
 
 
 def _seed_lookback_extension_kind(tail_lines: list[str], prefix_lines: list[str]) -> str | None:
@@ -1192,6 +1259,17 @@ def merge_entries_tail(run_root: Path, tail: int,
             if prefix_lines:
                 seed_flags, pending_tool_args = _prior_collapse_state(prefix_lines)
                 collapse_seed = dict(seed_flags)
+                # Task cure-01-03-2 (PRD Q.1): a flag whose setter was never
+                # read is published AS UNRESOLVED, beside its fallback
+                # boolean, instead of silently as `False` -- "we stopped
+                # looking" is not "there is nothing there". See
+                # `_unresolved_seed_flags` for the property, for why neither
+                # recognition nor exhaustion discriminates, and for the one
+                # thing the disclosure deliberately does not decide.
+                unresolved = _unresolved_seed_flags(tail_lines, seed_flags,
+                                                    reached_start)
+                if unresolved:
+                    collapse_seed["unresolved"] = sorted(unresolved)
                 if pending_tool_args:
                     collapse_seed["toolArgs"] = pending_tool_args
             for line in reversed(tail_lines):
