@@ -202,8 +202,7 @@ jobs:
       # regardless of the runner host's own absolute path, so a naive
       # `docker run -v "$GITHUB_WORKSPACE":...` mounts an EMPTY directory (the
       # daemon auto-creates one at that literal string on the real host,
-      # which by coincidence never exists there) and the assertion step below
-      # caught exactly that the first time this ran. `scripts/
+      # which by coincidence never exists there). `scripts/
       # resolve_container_host_path.sh` gets the real host path the only way
       # available to a container with no other knowledge of its own
       # placement: it asks the docker daemon, over the very socket `options:`
@@ -212,30 +211,35 @@ jobs:
       # a container with no `--hostname`/`--network host` override, both true
       # here), whose `Source` field on each entry already IS the host's own
       # path, then appends whatever tail of `$GITHUB_WORKSPACE` falls past
-      # the closest-covering `Destination`. Proven against a disposable
-      # sibling first (never against this run's own dir): a real nested
-      # `docker run` mounting the RESOLVED path saw the real file; mounting
+      # the closest-covering `Destination`.
+      #
+      # MEASURED AGAIN (task 012, attempt 2, live evidence): the earlier
+      # two-step shape -- one step resolving the path and writing it to
+      # `$GITHUB_ENV`, a later step reading `$RALPHD_HOST_WORKSPACE` back --
+      # failed on THIS self-hosted runner even though the runner's own
+      # per-step log header reported the right value. A diagnostic commit
+      # (`43d39e64`, run 35167960180, job 105033188059) printed
+      # `$RALPHD_HOST_WORKSPACE` from inside the very step that used it and
+      # got back the CONTAINER path (`/__w/ralphd/ralphd`), not the resolved
+      # host path the previous step had exported -- this self-hosted
+      # runner's `container:` support does not propagate a `$GITHUB_ENV`
+      # write into the environment of a LATER step's own `docker exec`, even
+      # though it echoes the write correctly in that step's displayed `env:`
+      # header. So this resolves and uses the path in the SAME step, the
+      # same running shell that computed it -- no cross-step environment
+      # hand-off at all -- which sidesteps the defect regardless of its
+      # exact cause upstream. Proven against a disposable sibling first
+      # (never against this run's own dir): a real nested `docker run`
+      # mounting the RESOLVED path saw the real file; mounting
       # `$GITHUB_WORKSPACE` unresolved did not.
-      - name: Resolve this container's real host-side workspace path
+      - name: Resolve and assert this container's workspace path resolves on the real host too
         run: |
-          scripts/run_bounded.sh 30 "host path resolution" -- bash -euo pipefail -c '
+          scripts/run_bounded.sh 30 "host-path resolution and assertion" -- bash -euo pipefail -c '
             host_ws="$(scripts/resolve_container_host_path.sh "$GITHUB_WORKSPACE")"
             echo "resolved $GITHUB_WORKSPACE -> $host_ws"
-            echo "RALPHD_HOST_WORKSPACE=$host_ws" >> "$GITHUB_ENV"
-          '
-
-      # PROVE the resolution above rather than trust it blind -- a throwaway
-      # sibling mounts the RESOLVED path and must see the real checkout, not
-      # an empty directory a wrong resolution would silently create.
-      - name: Assert this container's workspace path resolves on the real host too
-        run: |
-          scripts/run_bounded.sh 30 "host-path assertion" -- bash -euo pipefail -c '
-            echo "GITHUB_WORKSPACE ($GITHUB_WORKSPACE) as seen from inside this container:"
-            ls -la "$GITHUB_WORKSPACE" | head -5
-            echo "RALPHD_HOST_WORKSPACE resolved to: $RALPHD_HOST_WORKSPACE"
-            docker run --rm -v "$RALPHD_HOST_WORKSPACE":/check \
+            docker run --rm -v "$host_ws":/check:ro \
               python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6 \
-              sh -c "echo listing /check:; ls -la /check | head -5; if [ -f /check/pyproject.toml ]; then echo host-path-confirmed: pyproject.toml visible through the socket-mounted path; else echo host-path-NOT-confirmed: no pyproject.toml under /check; exit 1; fi"
+              sh -c "test -f /check/pyproject.toml && echo host-path-confirmed: pyproject.toml visible through the socket-mounted path"
           '
 
       # Wrapped in scripts/run_bounded.sh (task 054, K.3) like the tier step

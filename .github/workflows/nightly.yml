@@ -114,11 +114,12 @@ jobs:
     # `container:` runtime does NOT bind-mount `$GITHUB_WORKSPACE` at an
     # identical host path (measured, not assumed -- see heavy.yml's docker-
     # tier header and `scripts/resolve_container_host_path.sh`'s own header
-    # for the run that caught it). "Resolve this container's real host-side
-    # workspace path" below asks the docker daemon itself, over this same
-    # `options:` socket, for this container's own real host path and stores
-    # it as `RALPHD_HOST_WORKSPACE` -- the cell step further down mounts
-    # THAT variable, not `$GITHUB_WORKSPACE` directly.
+    # for the run that caught it). Each step below that needs the real host
+    # path resolves it FRESH, in its own running shell, by asking the docker
+    # daemon itself over this same `options:` socket for this container's
+    # own real host path -- never via `$GITHUB_ENV` across steps, which was
+    # measured NOT to reach a later step's own `docker exec` on this self-
+    # hosted runner (see the "Resolve and assert..." step's own header).
     container:
       image: python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6
       options: -v /var/run/docker.sock:/var/run/docker.sock
@@ -204,27 +205,31 @@ jobs:
       # a container with no `--hostname`/`--network host` override, both
       # true here), whose `Source` field on each entry already IS the host's
       # own path, then appends whatever tail of `$GITHUB_WORKSPACE` falls
-      # past the closest-covering `Destination`. Proven against a disposable
-      # sibling first (never against this run's own dir): a real nested
-      # `docker run` mounting the RESOLVED path saw the real file; mounting
-      # `$GITHUB_WORKSPACE` unresolved did not (heavy.yml's own first attempt
-      # at this, same commit, caught exactly that).
-      - name: Resolve this container's real host-side workspace path
+      # past the closest-covering `Destination`.
+      #
+      # MEASURED AGAIN (task 012, attempt 2, live evidence -- see heavy.yml's
+      # own copy of this header for the full account): a two-step shape (one
+      # step resolving the path into `$GITHUB_ENV`, a later step reading
+      # `$RALPHD_HOST_WORKSPACE` back) failed on this self-hosted runner --
+      # the value a later step's own `docker exec` actually saw was the
+      # CONTAINER path, not the resolved host path the earlier step had
+      # exported, even though the runner's own displayed `env:` header for
+      # that step claimed the right value. `$GITHUB_ENV` writes do not
+      # reliably reach a LATER step's own `docker exec` under this runner's
+      # `container:` support. So every step below that needs the host path
+      # resolves it itself, in its own running shell, with no cross-step
+      # environment hand-off -- including the per-cell step further down,
+      # which sets `RALPHD_HOST_WORKSPACE` as a plain local shell variable
+      # right before using it, never via `$GITHUB_ENV`. Proven against a
+      # disposable sibling first (never against this run's own dir): a real
+      # nested `docker run` mounting the RESOLVED path saw the real file;
+      # mounting `$GITHUB_WORKSPACE` unresolved did not.
+      - name: Resolve and assert this container's workspace path resolves on the real host too
         run: |
-          scripts/run_bounded.sh 30 "host path resolution" -- bash -euo pipefail -c '
+          scripts/run_bounded.sh 30 "host-path resolution and assertion" -- bash -euo pipefail -c '
             host_ws="$(scripts/resolve_container_host_path.sh "$GITHUB_WORKSPACE")"
             echo "resolved $GITHUB_WORKSPACE -> $host_ws"
-            echo "RALPHD_HOST_WORKSPACE=$host_ws" >> "$GITHUB_ENV"
-          '
-
-      # PROVE the resolution above rather than trust it blind -- a throwaway
-      # sibling mounts the RESOLVED path and must see the real checkout, not
-      # an empty directory a wrong resolution would silently create. Same
-      # shape as heavy.yml's docker-tier copy of this step.
-      - name: Assert this container's workspace path resolves on the real host too
-        run: |
-          scripts/run_bounded.sh 30 "host-path assertion" -- bash -euo pipefail -c '
-            docker run --rm -v "$RALPHD_HOST_WORKSPACE":/check:ro \
+            docker run --rm -v "$host_ws":/check:ro \
               python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6 \
               sh -c "test -f /check/pyproject.toml && echo host-path-confirmed: pyproject.toml visible through the socket-mounted path"
           '
@@ -266,21 +271,29 @@ jobs:
       # deselect for that reason -- see scripts/host_like_dev_layout.sh's
       # own header.
       # Bounded at 6600s in scripts/run_bounded.sh (task 054, K.3): with the
-      # docker-client install's 90, the host-path resolution's 30 and the
-      # host-path assertion's 30 (task 012, requirement I) that is 6750 of
-      # this job's 7200s `timeout-minutes` budget, leaving the reserve
-      # tests/test_run_bounded_timeout_marker.py requires for the steps no
-      # wrapper owns (checkout and the host-environment report). A cell that
-      # wedges inside the container -- an apt mirror that never answers, a
-      # startup watchdog re-arming forever -- now reports a step `failure`
-      # naming this cell instead of the job-level bound's `cancelled`, which
-      # is not a verdict. The bound wraps `docker run` itself, so the TERM it
-      # sends is forwarded to the container by docker as usual.
+      # docker-client install's 90, the merged host-path resolution-and-
+      # assertion step's 30 and this cell's own host-path resolution's 10
+      # (task 012, requirement I) that is 6730 of this job's 7200s
+      # `timeout-minutes` budget, leaving the reserve tests/
+      # test_run_bounded_timeout_marker.py requires for the steps no wrapper
+      # owns (checkout and the host-environment report). A cell that wedges
+      # inside the container -- an apt mirror that never answers, a startup
+      # watchdog re-arming forever -- now reports a step `failure` naming
+      # this cell instead of the job-level bound's `cancelled`, which is not
+      # a verdict. The bound wraps `docker run` itself, so the TERM it sends
+      # is forwarded to the container by docker as usual.
+      #
+      # `RALPHD_HOST_WORKSPACE` is resolved FRESH here, as a plain local
+      # shell variable, in the SAME step that uses it -- never read back from
+      # `$GITHUB_ENV` (see the "Resolve and assert..." step's header above
+      # for why: that write does not reliably reach a later step's own
+      # `docker exec` on this self-hosted runner).
       - name: Dev-layout mode (containerized)
         env:
           CELL_IMAGE: ${{ matrix.image }}
           CELL_MODE: ${{ matrix.mode }}
         run: |
+          RALPHD_HOST_WORKSPACE="$(scripts/run_bounded.sh 10 "cell host-path resolution" -- scripts/resolve_container_host_path.sh "$GITHUB_WORKSPACE")"
           scripts/run_bounded.sh 6600 "dev-layout cell" -- docker run --rm \
             -e HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE="$CELL_MODE" \
             -e CELL_IMAGE="$CELL_IMAGE" \
