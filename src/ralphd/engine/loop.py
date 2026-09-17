@@ -10769,27 +10769,76 @@ class LoopSupervisor:
             return None
         edges = [{"from": a, "to": b}
                  for c in live_cycles for a, b in zip(c, c[1:])]
+        cycle_ids = {n for c in live_cycles for n in c}
         return {
-            "cycleTaskIds": sorted({n for c in live_cycles for n in c}),
+            "cycleTaskIds": sorted(cycle_ids),
             "cycleEdges": edges,
+            "dependentTaskIds": sorted(
+                self._cycle_dependent_ids(tasks, cycle_ids)),
             "planUnverifiable": True,
         }
+
+    @staticmethod
+    def _cycle_dependent_ids(tasks: list, cycle_ids: set) -> set:
+        """Task 002 (PRD requirement E.3, #206, review cure cure-01-04):
+        every task id that depends on a cycled task, DIRECTLY or
+        TRANSITIVELY through any number of intermediate `dependsOn`
+        edges, excluding the cycled tasks themselves. `_unschedulable_
+        cycle_fault`'s own `cycleTaskIds`/`cycleEdges` only name the
+        cycle itself (the self-loop's own edge) -- a task blocked behind
+        that cycle only because it depends on a cycled task, never
+        because it is ON the cycle, was previously invisible to the
+        escalation entirely. Built by walking `dependsOn` in REVERSE (a
+        forward adjacency from every task to the tasks that name it) so
+        the whole descendant set is reachable by ordinary BFS, however
+        many levels deep.
+        """
+        reverse_adj: dict[str, list[str]] = {}
+        for t in tasks:
+            if not isinstance(t, dict):
+                continue
+            tid = t.get("id")
+            if tid in (None, ""):
+                continue
+            for dep in t.get("dependsOn") or []:
+                reverse_adj.setdefault(str(dep), []).append(str(tid))
+        dependents: set = set()
+        queue = list(cycle_ids)
+        seen = set(cycle_ids)
+        while queue:
+            cur = queue.pop()
+            for nxt in reverse_adj.get(cur, []):
+                if nxt in seen:
+                    continue
+                seen.add(nxt)
+                dependents.add(nxt)
+                queue.append(nxt)
+        return dependents
 
     def _unschedulable_cycle_escalation_text(self, cycle_fault: dict) -> str:
         """The operator-facing escalation body for an `unschedulable_
         dependency_cycle` pause (PRD requirement E.3): names the
-        blocked/cycle task ids and the offending edges directly, plus the
-        exact `ralphctl resume` invocation, so a reader never has to open
-        `tasks.json` by hand to find either.
+        blocked/cycle task ids, the offending edges, and every DIRECT and
+        TRANSITIVE dependent task id (review cure cure-01-04: a self-loop
+        that blocks downstream tasks previously escalated naming only the
+        cycle itself, leaving a reader to rediscover the dependents by
+        hand) plus the exact `ralphctl resume` invocation, so a reader
+        never has to open `tasks.json` by hand to find any of it.
         """
         ids = ", ".join(cycle_fault.get("cycleTaskIds", [])) or "(none)"
         edges = ", ".join(
             f"{e.get('from')} -> {e.get('to')}"
             for e in cycle_fault.get("cycleEdges", [])) or "(none)"
+        dependents = cycle_fault.get("dependentTaskIds") or []
+        dependents_clause = (
+            f" This also blocks its dependent task(s): "
+            f"{', '.join(dependents)}."
+            if dependents else "")
         return (
             f"Run {self.cfg.run_id}: the dependsOn graph holds a cycle "
             f"that touches task(s) {ids} -- no worker iteration could "
-            f"ever move this plan again (offending edge(s): {edges}). "
+            f"ever move this plan again (offending edge(s): {edges})."
+            f"{dependents_clause} "
             "The run has been paused (existing pause machinery); fix the "
             "cycle in tasks.json (an operator edit, outside every one of "
             "the engine's own writers) and resume with `ralphctl resume "

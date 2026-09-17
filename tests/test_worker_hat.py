@@ -3285,11 +3285,22 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
     # `status.json` `health: "degraded"`, and routes to the pause-and-
     # escalate path (never `worker` self-looping, never `review`: there is
     # no verdict pending, only a `tasks.json` edit an operator has to make
-    # by hand).
+    # by hand). Two dependents of the cycled task -- DOWNSTREAM-TASK
+    # (direct) and TRANSITIVE-TASK (two hops, through DOWNSTREAM-TASK) --
+    # are folded into the SAME fixture (review cure cure-01-04, PRD
+    # requirement E.3, #206): the fault is on the same pass regardless,
+    # so this also pins that the same-pass escalation notification names
+    # every one of them, not merely the cycle itself.
     root1 = tmp_path / "self-loop"
     RunDir(root=root1).update_status(state="starting")
     sup1 = _fv_supervisor(root1, {})
-    _write_plan(sup1, [_fv_task(dependsOn=["001"])])
+    sent1: list[str] = []
+    sup1.notifier = sent1.append
+    _write_plan(sup1, [
+        _fv_task(dependsOn=["001"]),
+        _fv_task(id="DOWNSTREAM-TASK", dependsOn=["001"]),
+        _fv_task(id="TRANSITIVE-TASK", dependsOn=["DOWNSTREAM-TASK"]),
+    ])
     sup1.iterations_used = 1
 
     asyncio.run(_drive_until_paused(
@@ -3298,6 +3309,15 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
     status1 = sup1.run.read_status()
     assert status1.get("health") == "degraded", status1
 
+    # the same-pass notification names the blocked task, its offending
+    # edge, and BOTH the direct and the transitive dependent -- never
+    # only the cycle itself (review cure cure-01-04, PRD requirement E.3)
+    assert sent1, sent1
+    assert "001" in sent1[-1], sent1
+    assert "001 -> 001" in sent1[-1], sent1
+    assert "DOWNSTREAM-TASK" in sent1[-1], sent1
+    assert "TRANSITIVE-TASK" in sent1[-1], sent1
+
     events1 = _fv_events(root1)
     fault_events = [ev for ev in events1
                     if ev.get("type") == "log" and "cycleTaskIds" in ev]
@@ -3305,6 +3325,8 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
     payload = fault_events[0]
     assert payload["cycleTaskIds"] == ["001"], payload
     assert payload["cycleEdges"] == [{"from": "001", "to": "001"}], payload
+    assert payload["dependentTaskIds"] == [
+        "DOWNSTREAM-TASK", "TRANSITIVE-TASK"], payload
     assert payload["planUnverifiable"] is True, payload
 
     escalations1 = [ev for ev in events1 if ev.get("type") == "operator_escalation"]
