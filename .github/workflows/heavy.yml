@@ -9,20 +9,35 @@
 # Google Chrome through `playwright-cli` (45 tests). On a 4-core hosted runner
 # they would also be several times slower than the measured budgets.
 #
-# Where: `ralphd-vps` is the operator's VPS (4 x86_64 cores, 7 GB + 4 GB swap,
-# docker 29.4.0, Chrome installed under /opt/google/chrome with the playwright
-# browser cache shared at /opt/ms-playwright). The VPS now carries TWO
-# registered runner slots (vmi3245594 and vmi3245594-2, same labels; see
-# docs/ci.md) -- so the docker tier and the browser tier below CAN run
-# concurrently on this box; nothing here serialises them against each other,
-# and they are separate jobs with separate check runs because a red one must
-# not cancel the other's evidence, not because the runner forces it. What
-# DOES still serialise the browser tier -- globally, across every workflow,
-# not just this one -- is the `browser-runner` label on that job below: the
-# operator placed it on exactly one of the two runners (task 077, steer 009).
-# A `concurrency:` group cannot do this itself; it only serialises within one
-# workflow and has no visibility into what else is scheduled on the runner.
-# The docker tier stays label-agnostic and can use either slot.
+# Where (corrected to the fleet that exists, task 014, requirement K -- the
+# VPS this comment used to describe is retired, operator decision, 14 Sep
+# 2026): six runner slots are registered on ONE 12-core / 63 GB workstation
+# (`int21h-ws`; docs/ci.md "The self-hosted runner" -- read the live shape
+# from `GET /repos/n-orlov/ralphd/actions/runners`, never from this comment,
+# which is a snapshot). `int21h-ws-5` and `int21h-ws-6` carry `fast-lane`
+# only and run gate.yml exclusively; `int21h-ws-1`..`int21h-ws-4` carry
+# `ralphd-vps`, `docker-host` and `browser-runner` and run this workflow and
+# nightly.yml. **`ralphd-vps` is now a misnomer** -- a label name kept from
+# before the retirement, not a claim that a VPS still exists in the fleet;
+# renaming it is out of scope here (K.3: it needs an operator label change
+# first), so the label stays and this comment explains it instead. The
+# docker tier below and every nightly.yml cell stay label-agnostic across
+# all four slots, so they CAN run concurrently on this box; nothing here
+# serialises them against each other, and they are separate jobs with
+# separate check runs because a red one must not cancel the other's
+# evidence, not because the runner forces it.
+#
+# `browser-runner`'s serialisation of browser-tier work across *workflows*
+# is a property of OPERATOR LABEL PLACEMENT, not of anything this file
+# enforces, and it is currently NOT in force: the label sits on all four of
+# `int21h-ws-1`..`int21h-ws-4` (task 056, #189), so up to four browser-tier
+# jobs (e.g. from four open pull requests) could now run concurrently
+# instead of queueing for the one slot an earlier placement used to hold it
+# to. A `concurrency:` group cannot restore that itself -- it only
+# serialises within one workflow and has no visibility into what else is
+# scheduled on the runner. Restoring single-slot placement is the
+# operator's to do (runner-registration work; docs/ci.md's "Not done yet"),
+# not something this file can express.
 #
 # When: on every pull request (these are required checks -- a merge waits for
 # them, and auto-merge fires when they go green), and on pushes to main so the
@@ -266,17 +281,22 @@ jobs:
     # Task 011 (requirement H): see the docker tier's copy of this condition --
     # a publish-only dispatch runs the publisher alone.
     if: ${{ !inputs.publish_browser_image }}
-    # `browser-runner` (task 077, steer 009): the operator placed this label
-    # on exactly ONE of the VPS's two runner slots (vmi3245594; not
-    # vmi3245594-2). It is not guessable from this workflow alone, so: the
-    # browser tier drives real `playwright-cli` sessions against real Chrome
-    # on a 4-core host, two concurrent browser-bearing jobs collapse each
-    # other's sessions, and this label is the ONLY mechanism that serialises
-    # browser work across *workflows* -- a `concurrency:` group serialises
-    # only within one workflow and cannot see what else is running on the
-    # runner. Nothing else takes this label: the docker tier above and every
-    # `nightly.yml` matrix cell stay label-agnostic and keep both slots.
-    # Still self-hosted for that placement/serialisation reason -- `runs-on`
+    # `browser-runner` (task 077, steer 009; corrected to the current
+    # placement by task 014, requirement K.2): this label used to sit on
+    # exactly ONE runner slot, which is what made it the sole mechanism that
+    # serialised browser-tier work across *workflows* -- a `concurrency:`
+    # group only serialises within one workflow and cannot see what else is
+    # running on the runner. That placement is gone: the label now sits on
+    # all four of `int21h-ws-1`..`int21h-ws-4` (see this file's own header
+    # above), so the serialisation guarantee it used to give is currently
+    # NOT in force -- the browser tier drives real `playwright-cli` sessions
+    # against real Chrome, and two concurrent browser-bearing jobs on the
+    # same slot would collapse each other's sessions, but nothing in this
+    # repo can currently assert that will not happen. Restoring single-slot
+    # placement is an operator precondition (runner-registration work), not
+    # a requirement of this file. Nothing else takes this label: the docker
+    # tier above and every `nightly.yml` matrix cell stay label-agnostic
+    # across all four slots. Still self-hosted for that reason -- `runs-on`
     # is unchanged below -- but as of task 011 (requirement H, #205 step 3)
     # this job ALSO declares `container:`, so the runner's own ambient
     # provisioning (docs/ci.md's "Provisioned with ... Google Chrome ...

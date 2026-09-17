@@ -16,6 +16,19 @@
 # a push burst. So this lane runs each claim inside a pinned, disposable
 # container instead of on whatever the runner's own OS happens to be today.
 #
+# Where (corrected to the fleet that exists, task 014, requirement K): this
+# job's `runs-on` below carries `ralphd-vps`, `docker-host` -- a label pair
+# now living on `int21h-ws-1`..`int21h-ws-4`, four registrations on ONE
+# 12-core / 63 GB workstation, not on a VPS. The VPS these labels were named
+# for is retired (operator decision, 14 Sep 2026); `int21h-ws-5` and
+# `int21h-ws-6` carry `fast-lane` only and run gate.yml exclusively, and
+# never this job. **`ralphd-vps` is now a misnomer** -- a label name kept
+# from before the retirement, not a claim that a VPS still exists; renaming
+# it needs an operator label change first (K.3) and is out of scope here, so
+# the label stays. See docs/ci.md "The self-hosted runner" for the fuller
+# account, and read the live shape from
+# `GET /repos/n-orlov/ralphd/actions/runners` rather than from this comment.
+#
 # Six cells cross three PLAIN UPSTREAM IMAGES, EACH WITH NO RALPHD INSTALLED
 # AND NEVER THIS JOB'S OWN CONTAINER IMAGE, against the two
 # HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE values that script documents:
@@ -87,7 +100,9 @@ name: nightly
 
 on:
   schedule:
-    # 02:00 UTC -- the VPS is otherwise idle.
+    # 02:00 UTC -- the workstation's four `ralphd-vps`+`docker-host`+
+    # `browser-runner` slots are otherwise idle at that hour (the VPS these
+    # labels were named for is retired; see this file's own header above).
     - cron: '0 2 * * *'
   workflow_dispatch:
 
