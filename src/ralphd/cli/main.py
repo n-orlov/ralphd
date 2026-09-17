@@ -212,6 +212,50 @@ def _chmod_if_ours(d: Path, mode: int) -> None:
         pass
 
 
+# Task 012 (requirement I, live docker-tier finding): the run dir is
+# bind-mounted read-WRITE at `/run/ralphd` (`RunDir.__post_init__` `mkdir`s
+# `steering/`, `iterations/`, ... into it with no chmod of its own -- see
+# `_bind_run_secrets_mount`'s neighbouring comment), and the engine writes
+# into it as its *fixed* agent uid (`privsep.DEFAULT_AGENT_UID`, 1000)
+# after dropping from root. That has always worked because in the
+# "standard configuration" this file's own comments elsewhere describe --
+# a bare host or a job container whose *launcher* process (whoever runs
+# `ralphctl start`) happens to run at uid 1000 too -- `rdir.mkdir()` just
+# above already leaves the directory owned by 1000, so no explicit chown
+# was ever needed. heavy.yml's docker-tier job (this task) breaks that
+# coincidence on purpose: it runs every step as uid 0 (root) so the plain
+# `docker` client can reach the mounted socket with no `--group-add`
+# gymnastics (heavy.yml's own header comment), so `rdir.mkdir()` there
+# leaves `rdir` root-owned 0755 -- unwritable by the sibling's agent uid --
+# and the very first thing the engine does (`RunDir.__post_init__`'s own
+# `steering/` mkdir) dies with `PermissionError: ... '/run/ralphd/
+# steering'` (heavy run 35187342106, job 105092135109, 20/24 docker-tier
+# tests red on exactly this, all as a `Connection refused` further downstream
+# once the engine process is dead before ever binding its API).
+#
+# The fix restores the invariant the standard configuration already gave
+# for free, rather than loosening `rdir`'s mode for every uid (which would
+# also loosen it for whatever OTHER uid a hostile process on the box runs
+# as): when this launcher process is root, chown the freshly created `rdir`
+# to the engine's own fixed agent uid before anything is bind-mounted from
+# it, so the directory the sibling receives is owned by the same uid on
+# both sides of the mount exactly as it always was outside this one
+# containerized job. A no-op everywhere `rdir` was already agent-owned.
+def _ensure_run_dir_agent_owned(d: Path) -> None:
+    if os.getuid() != 0:
+        return
+    try:
+        owner = d.stat().st_uid
+    except OSError:
+        return
+    if owner == privsep.DEFAULT_AGENT_UID:
+        return
+    try:
+        os.chown(d, privsep.DEFAULT_AGENT_UID, privsep.DEFAULT_AGENT_UID)
+    except OSError:
+        pass
+
+
 # Task 004 (requirement B, #202): the host directory `start`/`resume`
 # bind-mount at `privsep.DEFAULT_TASK_RECORD_DIR`
 # (`/var/lib/ralphd/record`) -- where the AUTHORITATIVE tasks.json lives
@@ -1910,6 +1954,7 @@ def cmd_start(args):
                                        dockerfile=args.dockerfile)
     args.image = resolved_image["image"]
     rdir.mkdir(parents=True, exist_ok=True)
+    _ensure_run_dir_agent_owned(rdir)
     cdir.mkdir(parents=True, exist_ok=True)
     os.chmod(cdir, 0o700)
 

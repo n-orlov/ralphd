@@ -200,11 +200,26 @@ def test_engine_binds_its_api_when_the_config_dir_owner_is_not_the_agent_uid(
             f"config dir owned by uid {cfg_stat.st_uid}, not {LAUNCHER_UID} -- "
             "this test's uid-mismatch premise never held")
         assert (cfg_stat.st_mode & 0o777) == 0o700, oct(cfg_stat.st_mode)
-        # This outer process (uid 1000) genuinely cannot read *into* that
-        # 0700-owned-by-4321 directory either -- the same permission this
-        # test's whole premise rests on, from this side of the mismatch.
-        with pytest.raises(PermissionError):
+        # This outer process cannot read *into* that 0700-owned-by-4321
+        # directory either -- the same permission this test's whole premise
+        # rests on, from this side of the mismatch -- UNLESS this outer
+        # process is itself root. Task 012 (requirement I): heavy.yml's
+        # docker-tier job runs every step, this pytest process included, as
+        # uid 0 (its own header explains why: the plain `docker` client
+        # needs no `--group-add` gymnastics to reach the mounted socket),
+        # so the module docstring's "this container's own test process runs
+        # as uid 1000" -- true for this repo's own selfdev job, where the
+        # engine's fixed agent uid and the launcher's uid coincide -- no
+        # longer holds there. Root bypasses every DAC check regardless of a
+        # directory's mode, so the read succeeding is the CORRECT outcome
+        # for a root outer process, not a failure of the uid-mismatch
+        # premise: that premise is the assert above (owned by 4321, mode
+        # 0700), which held regardless of which uid reads it back.
+        if os.getuid() == 0:
             (cdir / "job.yaml").stat()
+        else:
+            with pytest.raises(PermissionError):
+                (cdir / "job.yaml").stat()
         # A root sibling (default `docker run`, no `--user`) can still see
         # what is really there, exactly as the job container's own PID 1
         # (which also starts as root) will -- this only confirms job.yaml
