@@ -2330,10 +2330,19 @@ half stayed containerized (`b1f3fb80` through `8daf54f8`, reverted at `8aad42ff`
 the fleet that exists (`9a6ff3a3`, `b9915eb8`); **L** — the worker prompt's red-lane rule given
 its own guard test (`932198b0`); **P** — a fixed rendered tail's transcript-byte cost bounded by
 what it renders rather than by the history preceding it, the speculative seed look-back itself
-bounded so the ceiling holds at a shifted interleaving too (`d98ba003`, `7d1f67a5`); **Q** — a
+bounded so the ceiling holds at a shifted interleaving too, and counted in BYTES so padding of
+older history cannot buy reads (`d98ba003`, `7d1f67a5`, `f363e56d`, `b4a5a347`); **Q** — a
 recognized non-rendering event no longer certifies prefix collapse state, including a silent
-`message_end` whose text item carries empty text rather than an empty content list
-(`69b2a119`, `e80ff352`); **R** — the four
+`message_end` whose text item carries empty text rather than an empty content list, and neither
+does EXHAUSTION of the bounded look-back: a flag whose setter was never read is published as
+unresolved, by name, beside the fallback boolean, so "we did not find a setter" is no longer
+indistinguishable from "there is no setter" (`69b2a119`, `e80ff352`, `76ab505b`). Which way a
+renderer should then fall back is a **disclosed residual** of this wave, not a claim: printing
+repeats text streamed deeper than the budget, while suppressing costs 7.3–30.2 MB on
+requirement P's own fixtures against its unmoved 1,000,000-byte ceiling, and resolving the flag
+is no cheaper (a setter 1,067,000 bytes from the nearest edge of the file is past that whole
+ceiling) — filed as a petition with those measurements in
+`artifacts/reports/v0.22-petitions.md`. **R** — the four
 records v0.21.1 left inaccurate corrected (`72dd78a8`); and **M** — this version bump and this
 paragraph, have all landed. GitHub **#207** (per-task time and cost summed across approaches --
 `engine/state.py`'s `task_totals()` buckets on `assignedTaskId` alone, so an approach's task 001

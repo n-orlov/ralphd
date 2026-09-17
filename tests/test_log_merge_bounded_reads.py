@@ -223,6 +223,14 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     unrecognized content-item kind; and task cure-01-02's own further
     variant, a RECOGNIZED `text` item whose own `text` field is empty --
     review's own falsifying probe against the shipped Q cure).
+
+    Extended again (task cure-01-03-2, second attempt) with a SEVENTH
+    scenario: review's own silent-PRELUDE variant, where the same silent
+    flood sits BEFORE the streamed text so the `textSeen` setter is 1,067,000
+    bytes into the file -- past P.1/P.5's whole per-call ceiling -- and
+    exhausting the look-back must publish UNKNOWN rather than
+    measured-empty; see
+    `_assert_silent_prelude_publishes_unknown_state_not_empty_state`.
     """
     real_lines = [json.dumps({"type": "message_end", "message": {"content": [
         {"type": "text", "text": f"line {i}"}]}}) for i in range(200)]
@@ -327,6 +335,11 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     await _assert_recognized_nonrendering_gap_preserves_collapse_state_across_every_surface(
         q_empty_text_root, monkeypatch, "empty-text-item-message-end",
         empty_text_message_end_line)
+
+    silent_prelude_root = tmp_path / "recognized-nonrendering-silent-prelude"
+    silent_prelude_root.mkdir()
+    await _assert_silent_prelude_publishes_unknown_state_not_empty_state(
+        silent_prelude_root, monkeypatch)
 
 
 def _assert_bounded_and_fully_read_tails_agree(small_lines: list[str],
@@ -1025,7 +1038,8 @@ async def _assert_interleaved_toolcall_suffix_is_bounded_on_disk_and_live(
 
 def _write_iteration_with_recognized_nonrendering_gap(run_root: pathlib.Path, n: int,
                                                        text: str, gap_line: str,
-                                                       gap_count: int) -> None:
+                                                       gap_count: int,
+                                                       prelude_count: int = 0) -> int:
     """One iteration (task 007, PRD Q) that streams `text`, floods 500
     `thinking_delta` events, then floods `gap_count` copies of `gap_line`
     -- a raw event this module fully RECOGNIZES (`message_end`) but that
@@ -1044,7 +1058,16 @@ def _write_iteration_with_recognized_nonrendering_gap(run_root: pathlib.Path, n:
             "startedAt": "2025-01-01T00:00:00Z", "endedAt": "2025-01-01T00:00:01Z",
             "exitCode": 0, "error": None, "usage": {"totalTokens": n}}
     (d / "meta.json").write_text(json.dumps(meta))
-    lines = [
+    # `prelude_count` copies of the SAME silent event placed BEFORE the
+    # streamed text (task cure-01-03-2's second attempt, review's own
+    # silent-prelude variant): the flag's setter then sits `prelude_bytes`
+    # into the file instead of at byte 0, which is what makes a HEAD probe's
+    # own budget -- and P.1/P.5's per-call byte ceiling -- decide whether it
+    # is reachable at all. Returned so a caller can assert that depth rather
+    # than assume it.
+    prelude = [gap_line for _ in range(prelude_count)]
+    prelude_bytes = sum(len(line) + 1 for line in prelude)
+    lines = prelude + [
         json.dumps({"type": "message_update",
                     "assistantMessageEvent": {"type": "text_delta", "delta": text}}),
         json.dumps({"type": "message_update",
@@ -1060,6 +1083,7 @@ def _write_iteration_with_recognized_nonrendering_gap(run_root: pathlib.Path, n:
     lines.append(json.dumps({"type": "message_end", "message": {"content": [
         {"type": "text", "text": text}]}}))
     (d / OUTPUT_FILENAME).write_text("\n".join(lines) + "\n")
+    return prelude_bytes
 
 
 async def _assert_recognized_nonrendering_gap_preserves_collapse_state_across_every_surface(
@@ -1133,3 +1157,144 @@ async def _assert_recognized_nonrendering_gap_preserves_collapse_state_across_ev
             hub_live, hub_lines = ui_server.rendered_log_lines(root, "probe", 2)
         assert hub_live == live
         assert hub_lines == full[-2:], (label, live, hub_lines, full[-2:])
+
+
+def _consumer_suppressing_disclosed_unknowns(lines: list[str]) -> list[str]:
+    """The same merged tail, with every collapse flag the cut boundary
+    DISCLOSED as unresolved (`collapseSeed["unresolved"]`) read by a consumer
+    that chooses the other fallback -- unknown treated as SEEN, so a
+    `message_end` repeating already-streamed text is suppressed rather than
+    printed.
+
+    A pure consumer-side transformation of bytes `log_merge` already
+    published: it invents no state, reads no further byte of the transcript,
+    and touches no product code. It exists to show that the disclosure is
+    SUFFICIENT -- everything a consumer needs to take either fallback travels
+    on the seed -- which is exactly what a `False` folded in silently did not
+    carry (task cure-01-03-2, PRD Q.1)."""
+    out = []
+    for line in lines:
+        ev = json.loads(line) if "ralphd.iteration" in line else None
+        seed = (ev or {}).get("collapseSeed") or {}
+        if not seed.get("unresolved"):
+            out.append(line)
+            continue
+        seed = dict(seed)
+        for flag in seed.pop("unresolved"):
+            seed[flag] = True
+        ev["collapseSeed"] = seed
+        out.append(json.dumps(ev) + "\n")
+    return out
+
+
+async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
+        root, monkeypatch) -> None:
+    """Review's own silent-prelude variant of PRD Q's scenario, ported into
+    the shipped suite as a STATE property (task cure-01-03-2, second attempt,
+    PRD Q.1/Q.5): 1,000 recognized-but-silent 1,000-byte `message_end` events
+    sit BEFORE the streamed text rather than after it, so the `textSeen`
+    setter is 1,067,000 bytes into the file, and the speculative look-back's
+    head probe is EXHAUSTED long before reaching it.
+
+    What this pins, on the on-disk fallback and on the real engine `GET
+    /logs` route the hub proxies, is the thing PRD Q.1 actually forbids:
+    exhausting the look-back must not publish the omitted prefix as
+    MEASURED-EMPTY. The seed here carries `unresolved: ["textSeen"]` -- the
+    flag's own name beside the fallback boolean -- at a setter depth no
+    budget in this module reaches, so the property holds at arbitrary depth
+    and not merely up to some scenario-sized cap. It is a property of WHICH
+    BYTES WERE READ (`_unresolved_seed_flags`): nothing here is decided by
+    the filler's kind (Q.5) or by the look-back having run out (Q.1).
+
+    And the disclosure is MATERIAL, not decorative: a consumer that takes the
+    other fallback for the flags this seed names --
+    `_consumer_suppressing_disclosed_unknowns`, reading no further byte --
+    stops replaying the streamed text at all, out of the very same bounded
+    bytes; and once the window is grown until it CONTAINS the setter, the
+    seed stops disclosing anything unresolved, because `textSeen` is then
+    measured rather than defaulted (both fallbacks then agree with the full
+    render).
+
+    WHAT IS NOT PINNED GREEN HERE, and why (task cure-01-03-2's petition,
+    `artifacts/reports/v0.22-petitions.md`, type `contradictory-clauses`).
+    The shipped renderer prints from the `False` fallback, so this variant's
+    bounded render still repeats the text once -- asserted below exactly as
+    it is, never hidden, so that a ruling which flips the fallback direction
+    fails this line loudly instead of passing unnoticed. Flipping it here
+    instead is not available to a bounded reader: the setter's own offset
+    (1,067,000 bytes, asserted below) is already past P.1/P.5's ENTIRE
+    1,000,000-byte per-call ceiling, and the only other route -- suppress
+    whenever a material flag is unresolved -- was measured at 7,345,430 /
+    7,607,609 / 30,248,729 bytes on P's own three fixtures against that same
+    unmoved ceiling."""
+    text = "silent-prelude streamed text must not replay after a bounded look-back"
+    gap_line = json.dumps(
+        {"type": "message_end", "message": {"content": []}, "padding": "x" * 1000})
+    run_root = root / "runs" / "probe"
+    prelude_bytes = _write_iteration_with_recognized_nonrendering_gap(
+        run_root, 1, text, gap_line, 10_000, prelude_count=1000)
+    # The setter sits past P.1/P.5's whole per-call ceiling, measured off the
+    # fixture itself rather than assumed: no reader that honours that ceiling
+    # can have read it, from either edge of the file.
+    assert prelude_bytes == 1_067_000, prelude_bytes
+    assert prelude_bytes > 1_000_000, prelude_bytes
+
+    full = render_to_lines("".join(merged_lines(run_root)), tty=False, state=new_render_state())
+    assert full[-2].strip() == "[thinking\u2026]", full[-2:]
+    assert sum(1 for ln in full if text in ln) == 1, full[-3:]
+
+    (root / "workspace").mkdir()
+
+    async def _fetch_merged(bound: int) -> str:
+        return "".join(merged_lines(run_root, tail=bound))
+
+    async def _fetch_api(bound: int) -> str:
+        return await _api_logs_text(run_root, root / "workspace", bound)
+
+    for label, fetch in (("disk", _fetch_merged), ("api", _fetch_api)):
+        raw = (await fetch(2)).splitlines(keepends=True)
+        seeds = [json.loads(ln).get("collapseSeed") or {}
+                 for ln in raw if "ralphd.iteration" in ln]
+        cut_seeds = [seed for seed in seeds if seed]
+        assert cut_seeds, (label, raw[:2])
+        for seed in cut_seeds:
+            # Exhaustion published UNKNOWN, by name -- never a bare `false`
+            # indistinguishable from a fully-read prefix's measurement.
+            assert seed.get("unresolved") == ["textSeen"], (label, seed)
+            assert seed["textSeen"] is False, (label, seed)
+        # The disclosure is MATERIAL and sufficient at these very bytes: a
+        # consumer that takes the other fallback for the flags this seed
+        # names -- reading no further byte of the transcript -- does not
+        # replay the streamed text at all, which is the whole of what the
+        # bare `False` gave it no way to avoid.
+        suppressed = render_to_lines(
+            "".join(_consumer_suppressing_disclosed_unknowns(raw)), tty=False,
+            state=new_render_state())
+        assert not any(text in ln for ln in suppressed), (label, suppressed)
+        # The shipped fallback direction, pinned as the petitioned residual.
+        shipped = render_to_lines("".join(raw), tty=False, state=new_render_state())
+        assert shipped[-2:] == [text, full[-1]], (label, shipped[-2:])
+
+        # And the property really is about WHICH BYTES WERE READ, not about
+        # the filler's kind or the budget running out: grow the same request
+        # through the growing-bound retry `ui_server._fetch_dead_tail` uses
+        # until the window itself contains the setter, and the seed stops
+        # disclosing anything unresolved -- `textSeen` is then MEASURED, and
+        # both fallbacks agree with the full render's own last two lines.
+        bound = 2
+        while True:
+            grown = (await fetch(bound)).splitlines(keepends=True)
+            rendered = render_tail_lines("".join(grown), tty=False, n=2)
+            content = sum(1 for ln in grown if "ralphd.iteration" not in ln)
+            if rendered[-2:] == full[-2:] or content < bound:
+                break
+            bound *= 2
+        assert rendered[-2:] == full[-2:], (label, bound, rendered[-2:])
+        grown_seeds = [json.loads(ln).get("collapseSeed") or {}
+                       for ln in grown if "ralphd.iteration" in ln]
+        for seed in [s for s in grown_seeds if s]:
+            assert "unresolved" not in seed, (label, bound, seed)
+            assert seed["textSeen"] is True, (label, bound, seed)
+        assert render_tail_lines(
+            "".join(_consumer_suppressing_disclosed_unknowns(grown)), tty=False,
+            n=2)[-2:] == full[-2:], (label, bound)

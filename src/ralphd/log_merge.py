@@ -310,6 +310,16 @@ _SEED_LOOKBACK_EXTRA_GROWTHS = 12
 # certification that the omitted prefix set nothing: that distinction is the
 # whole of PRD Q.1, and it is why the flag's name travels with the value.
 #
+# NOR IS RAISING THIS FLOOR THE CURE for a setter that sits deeper than it
+# (task cure-01-03-2, second attempt). Review's own silent-prelude variant
+# puts the `textSeen` setter 1,067,000 bytes from byte 0 (and 10,720,791 from
+# the file's end), so every byte range containing it is larger than P.1/P.5's
+# ENTIRE 1,000,000-byte per-call ceiling: a floor big enough to reach it would
+# spend more than that whole ceiling on P's own fixtures, whose setter does not
+# exist anywhere in the file at all. That is the clause conflict this task
+# petitions, and it is why the answer here is a named unresolved flag rather
+# than a bigger number.
+#
 # 131,072 bytes, OR the retained tail's own byte size when that is larger
 # (measured, task cure-01-02-2). The budget is spent on `prefix_lines`
 # BYTES -- whatever the backward read for `needed` pulled in for free plus
@@ -729,15 +739,30 @@ def _unresolved_seed_flags(tail_lines: list[str], seed_flags: dict,
     half). `log_render` still renders an unresolved flag from its `False`
     fallback -- a renderer has to emit something -- so a `message_end` that
     repeats text streamed FURTHER back than the look-back's budget still
-    prints that text once more. The alternative fallback (treat an
-    unresolved flag as SEEN and suppress) makes every named Q scenario and
-    review's own silent-prelude variant correct, and was measured to cost
-    30,248,729 transcript bytes on PRD P's own padded fixture -- against
-    P.1/P.5's unmoved 1,000,000-byte ceiling on a 12 MB file whose omitted
-    prefix cannot be certified without reading all of it. Which fallback is
-    right is therefore not a question this reader can decide from state; it
-    is a conflict between two clauses of the same contract, filed as a
-    petition with that measurement rather than settled here by guessing."""
+    prints that text once more. Neither direction of that fallback is
+    reachable from state, and the arithmetic says why rather than the wording:
+
+      * suppressing whenever a material flag is unresolved makes every named
+        Q scenario and review's own silent-prelude variant correct, and was
+        measured to cost 7,345,430 / 7,607,609 / 30,248,729 transcript bytes
+        on PRD P's own original, shifted and padded fixtures -- against
+        P.1/P.5's unmoved 1,000,000-byte ceiling, on files of 3.4 MB / 12 MB
+        whose omitted prefix cannot be certified without reading all of it;
+      * reading far enough to RESOLVE the flag instead is not a fallback
+        choice but a bigger budget, and the depth is not payable either: in
+        review's own variant the setter's first byte is 1,067,000 bytes from
+        byte 0 and 10,720,791 from the file's end (measured; the shipped
+        guard `_assert_silent_prelude_publishes_unknown_state_not_empty_state`
+        asserts that offset off the fixture), so EVERY byte range containing
+        it is larger than P's entire per-call ceiling. Only an index would
+        seek to it, and this PRD puts a side index and a transcript-format
+        change both out of scope.
+
+    Which fallback is right is therefore not a question this reader can decide
+    from state; it is a conflict between two clauses of the same contract,
+    filed as a petition with those measurements rather than settled here by
+    guessing, and NOT something exhaustion may quietly decide by publishing a
+    `False` that looks measured -- which is the part this function does fix."""
     if reached_start:
         return set()
     return {flag for flag in _flags_needed_by_tail(tail_lines)

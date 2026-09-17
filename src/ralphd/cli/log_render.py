@@ -485,8 +485,14 @@ def render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) -
                     # line is suppressed) makes every named Q scenario
                     # correct and costs 30,248,729 transcript bytes on PRD P's
                     # own padded fixture against P.1/P.5's unmoved
-                    # 1,000,000-byte ceiling -- a clause conflict filed as a
-                    # petition with that measurement, never decided here.
+                    # 1,000,000-byte ceiling, while RESOLVING the flag instead
+                    # is not payable either -- review's own silent-prelude
+                    # variant puts the setter 1,067,000 bytes from byte 0 and
+                    # 10,720,791 from the file's end, both past that whole
+                    # ceiling -- so the direction is a clause conflict filed
+                    # as a petition with those measurements, never decided
+                    # here. What IS decided here: the unknown travels as a
+                    # name, so a consumer can take the other fallback itself.
                     collapse_unresolved=set(seed.get("unresolved") or ()),
                     tool_args=dict(seed.get("toolArgs") or {}), tool_pending={})
     elif etype == "message_update":
