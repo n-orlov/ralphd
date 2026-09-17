@@ -15,26 +15,33 @@ dir's own files -- strictly black-box, per the PRD's testing rules.
 
 ## Two environment-specific wrinkles this file has to work around
 
-This test file is itself executed *inside* a ralphd job container (this very
-selfdev job's own engine container), not on a bare host shell. Two
-consequences follow directly from that, both solved without touching any
-non-test source file:
+This test file is itself executed *inside* a container whose own filesystem
+is a bind mount of some real host directory -- this repo's own selfdev job
+container normally, but also (task 012, requirement I) heavy.yml's own
+docker-tier job, containerized the same way and mounted at a DIFFERENT
+in-container path (`$GITHUB_WORKSPACE`, e.g. `/__w/ralphd/ralphd`, not
+`/workspace`). Two consequences follow directly from running inside some
+such container, both solved without touching any non-test source file:
 
 1. **Bind-mount path translation.** ``ralphctl`` computes every
    ``-v SRC:DST`` mount source from ``RALPHD_REGISTRY`` and passes that exact
    string to ``docker run``. For the real daemon (a sibling from this
    container's point of view) to resolve SRC on its own filesystem, SRC must
    be a real host path -- but this container's own filesystem only exposes
-   ``/workspace`` (bind-mounted from ``$RALPHD_HOST_WORKSPACE``) and
-   ``/run/ralphd`` (from ``$RALPHD_HOST_RUN_DIR``). ``RALPHD_DOCKER`` (an env
-   var ``ralphctl`` already reads everywhere it shells out to ``docker``,
-   used elsewhere for the recording stub) is pointed at
-   ``tests/docker-hostpath-wrapper/docker``, a thin real-docker-executing
-   shim that rewrites any ``-v`` source under ``/workspace`` to the
+   this repo's own checkout (bind-mounted from ``$RALPHD_HOST_WORKSPACE`` at
+   whatever path ``REPO`` resolves to here -- ``/workspace`` in this repo's
+   own selfdev job, ``$GITHUB_WORKSPACE`` under heavy.yml's containerized
+   docker-tier) and ``/run/ralphd`` (from ``$RALPHD_HOST_RUN_DIR``).
+   ``RALPHD_DOCKER`` (an env var ``ralphctl`` already reads everywhere it
+   shells out to ``docker``, used elsewhere for the recording stub) is
+   pointed at ``tests/docker-hostpath-wrapper/docker``, a thin
+   real-docker-executing shim that rewrites any ``-v`` source under
+   ``str(REPO)`` -- this test file's OWN in-container prefix, read fresh via
+   ``Path(__file__).parent.parent`` rather than assumed -- to the
    ``$RALPHD_HOST_WORKSPACE``-prefixed equivalent before exec'ing the real
-   binary. This is why every temp dir this file uses lives under
-   ``/workspace`` (this repo's own root), matching the requirement that "the
-   registry for these tests must live inside the workspace so the
+   binary. This is why every temp dir this file uses lives under ``REPO``
+   (this repo's own root, wherever it is mounted), matching the requirement
+   that "the registry for these tests must live inside the workspace so the
    container's mounts resolve". On a bare host (no ``RALPHD_HOST_WORKSPACE``
    set) the map degenerates to a no-op and every path is used as-is.
 2. **API reachability.** ``-p 127.0.0.1:PORT:7777`` (the default
@@ -132,11 +139,12 @@ pytestmark = [pytest.mark.docker,
 
 def _host_path(path: Path) -> str:
     """`path`'s spelling on the REAL host, which is what a sibling
-    container's `-v` source must be. Identical to `path` on a bare host or
-    a CI runner; inside this repo's own selfdev job container `/workspace`
-    is itself a bind mount, so the same translation the hostpath-wrapper
-    applies to `ralphctl`'s mounts applies here (see this module's
-    docstring)."""
+    container's `-v` source must be. Identical to `path` on a bare host;
+    inside a container whose own checkout is itself a bind mount (this
+    repo's own selfdev job container at `/workspace`, or heavy.yml's own
+    containerized docker-tier job at `$GITHUB_WORKSPACE`), the same
+    translation the hostpath-wrapper applies to `ralphctl`'s mounts applies
+    here too (see this module's docstring)."""
     host_repo = os.environ.get("RALPHD_HOST_WORKSPACE")
     if not host_repo:
         return str(path)
@@ -352,7 +360,7 @@ def test_image():
 @pytest.fixture(scope="module")
 def work_root():
     """Everything under here is bind-mounted into siblings (via the
-    hostpath-wrapper's /workspace translation), so it must live under this
+    hostpath-wrapper's REPO-prefix translation), so it must live under this
     repo's own workspace root -- never /tmp."""
     root = REPO / f".docker-e2e-tmp-{uuid.uuid4().hex[:8]}"
     ws = root / "ws"
@@ -389,7 +397,7 @@ class Ctl:
             "RALPHD_DOCKER": str(WRAPPER),
             "RALPHD_REAL_DOCKER": REAL_DOCKER,
             "RALPHD_HOSTPATH_MAP": json.dumps(
-                {"/workspace": os.environ.get("RALPHD_HOST_WORKSPACE", "/workspace")}),
+                {str(REPO): os.environ.get("RALPHD_HOST_WORKSPACE", str(REPO))}),
         }
         self.cleanup: list[str] = []  # exact container names to force-remove
 
