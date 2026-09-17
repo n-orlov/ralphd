@@ -2314,8 +2314,10 @@ root-owned directory the agent cannot replace, with an agent-readable view kept 
 inspection (`cffb6955`, `c9afa999`, `0b310de4`); **C** — the petition MAC key store's mount
 point chowned root-owned and its own ancestor chain walked to the container root the same way
 (`809630bd`, `b48489cd`); **D** — `dependsOn` edges validated on the cure-insertion, task-update
-and task-insert paths (`6dd57746`); **E** — an unschedulable plan faults on the first pass
-instead of quietly stagnating (`1db56d19`); **F** — gate's fast job runs in a pinned
+and task-insert paths (`6dd57746`); **E** — an unschedulable plan — a `dependsOn` cycle or an
+edge naming an id absent from the plan graph entirely — faults on the first pass instead of
+quietly stagnating, the escalation naming every direct and transitive dependent
+(`1db56d19`, `2331ff3f`, `d7c4701a`); **F** — gate's fast job runs in a pinned
 `python:3.12.3` container (`0d6a7bfa`, `3797f802`); **G** — a guard that every workflow job is
 containerized or allowlisted with a stated, non-blank reason (`16533c10`); **H** — the browser
 tier's Chrome and `playwright-cli` come from a pinned image (`07322c5c`, `c9cc4ed2`, `9b782ca4`,
@@ -2327,8 +2329,11 @@ half stayed containerized (`b1f3fb80` through `8daf54f8`, reverted at `8aad42ff`
 (`751abe5e`); **K** — `heavy.yml`'s and `nightly.yml`'s headers and `docs/ci.md` corrected to
 the fleet that exists (`9a6ff3a3`, `b9915eb8`); **L** — the worker prompt's red-lane rule given
 its own guard test (`932198b0`); **P** — a fixed rendered tail's transcript-byte cost bounded by
-what it renders rather than by the history preceding it (`d98ba003`); **Q** — a recognized
-non-rendering event no longer certifies prefix collapse state (`69b2a119`); **R** — the four
+what it renders rather than by the history preceding it, the speculative seed look-back itself
+bounded so the ceiling holds at a shifted interleaving too (`d98ba003`, `7d1f67a5`); **Q** — a
+recognized non-rendering event no longer certifies prefix collapse state, including a silent
+`message_end` whose text item carries empty text rather than an empty content list
+(`69b2a119`, `e80ff352`); **R** — the four
 records v0.21.1 left inaccurate corrected (`72dd78a8`); and **M** — this version bump and this
 paragraph, have all landed. GitHub **#207** (per-task time and cost summed across approaches --
 `engine/state.py`'s `task_totals()` buckets on `assignedTaskId` alone, so an approach's task 001
