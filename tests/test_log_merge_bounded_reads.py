@@ -218,9 +218,11 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     thinking run and the `message_end` that replays already-streamed
     text -- see
     `_assert_recognized_nonrendering_gap_preserves_collapse_state_across_every_surface`,
-    called twice with two distinct recognized-but-silent shapes (PRD
-    Q.2's own empty-content `message_end`, and this task's own Q.6
-    variant, an unrecognized content-item kind).
+    called three times with three distinct recognized-but-silent shapes
+    (PRD Q.2's own empty-content `message_end`; Q.6's own variant, an
+    unrecognized content-item kind; and task cure-01-02's own further
+    variant, a RECOGNIZED `text` item whose own `text` field is empty --
+    review's own falsifying probe against the shipped Q cure).
     """
     real_lines = [json.dumps({"type": "message_end", "message": {"content": [
         {"type": "text", "text": f"line {i}"}]}}) for i in range(200)]
@@ -287,6 +289,15 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     await _assert_recognized_nonrendering_gap_preserves_collapse_state_across_every_surface(
         q_citation_root, monkeypatch, "unrecognized-content-kind-message-end",
         citation_message_end_line)
+
+    empty_text_message_end_line = json.dumps(
+        {"type": "message_end", "message": {"content": [{"type": "text", "text": ""}]},
+         "padding": "x" * 1000})
+    q_empty_text_root = tmp_path / "recognized-nonrendering-empty-text"
+    q_empty_text_root.mkdir()
+    await _assert_recognized_nonrendering_gap_preserves_collapse_state_across_every_surface(
+        q_empty_text_root, monkeypatch, "empty-text-item-message-end",
+        empty_text_message_end_line)
 
 
 def _write_iteration_with_older_thinking_marker(run_root: pathlib.Path, n: int,
@@ -946,17 +957,21 @@ async def _assert_recognized_nonrendering_gap_preserves_collapse_state_across_ev
     ACTUAL route, never a stand-in for it), and the hub's server-side
     renderer, both its live and dead-run fallback branches.
 
-    Called twice by the top-level test below with two distinct `gap_line`
-    shapes: PRD Q.2's own scenario (`label ==
-    "empty-content-message-end"`, `content: []`) and this task's own
-    Q.6 variant (`label == "unrecognized-content-kind-message-end"`, a
-    non-empty `content` built entirely of an item kind
-    `_render_message_end`/`_flags_needed_by_tail` do not recognize,
-    `{"type": "citation", ...}`) -- both are `message_end` events this
-    module fully recognizes yet that carry no `text`/`thinking`/
-    `toolCall` item at all, so both are exactly as uninformative about
-    the state before them as an unknown/opaque type would be (Q.5's own
-    property, see `log_merge._message_end_is_uninformative`)."""
+    Called three times by the top-level test below with three distinct
+    `gap_line` shapes: PRD Q.2's own scenario (`label ==
+    "empty-content-message-end"`, `content: []`), Q.6's own variant
+    (`label == "unrecognized-content-kind-message-end"`, a non-empty
+    `content` built entirely of an item kind `_render_message_end`/
+    `_flags_needed_by_tail` do not recognize, `{"type": "citation",
+    ...}`), and task cure-01-02's own further variant (`label ==
+    "empty-text-item-message-end"`, `content: [{"type": "text", "text":
+    ""}]` -- a `text` item this module DOES recognize by kind, but whose
+    own field carries nothing to render). All three are `message_end`
+    events this module fully recognizes yet that carry no item that
+    ACTUALLY RENDERS or establishes state, so all three are exactly as
+    uninformative about the state before them as an unknown/opaque type
+    would be (Q.5's own property, see
+    `log_merge._message_end_is_uninformative`)."""
     text = f"{label} streamed text must not replay after 1,000 recognized silent events"
     run_root = root / "runs" / "probe"
     _write_iteration_with_recognized_nonrendering_gap(run_root, 1, text, gap_line, 1000)

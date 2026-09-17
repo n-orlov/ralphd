@@ -356,25 +356,51 @@ _KNOWN_EVENT_TYPES = set(_TYPE_FLAG_GROUPS) | {"message_end", "ralphd.iteration"
 
 
 def _message_end_is_uninformative(ev: dict) -> bool:
-    """True when a `message_end` event's own `content` holds no item this
-    module's renderer or seed-state reader would ever act on -- no
-    `text`, `thinking` or `toolCall` item at all (task 007, PRD Q). An
-    EMPTY content list (Q.2's own falsifying scenario: 1,000
-    `message_end` events padded to 1,000 bytes each via an unrelated
-    top-level field, `content: []`) is the narrowest case, but a
+    """True when a `message_end` event's own `content` holds no item that
+    ACTUALLY RENDERS anything or establishes any collapse-guard state at
+    all (task 007, PRD Q). An EMPTY content list (Q.2's own falsifying
+    scenario: 1,000 `message_end` events padded to 1,000 bytes each via an
+    unrelated top-level field, `content: []`) is the narrowest case; a
     NON-empty content list built entirely of item kinds `_render_
-    message_end`/`_flags_needed_by_tail` do not recognize (this task's
-    own Q.6 variant: 1,000 `message_end` events each carrying one
-    `{"type": "citation", ...}` item padded to 1,000 bytes) is exactly
-    the same shape -- `render_log_line` prints nothing for either, and
-    neither line, seen alone, tells `_prior_collapse_state` whether
-    `textSeen`/`thinkingSeen`/`toolcallSeen` holds one way or the other.
-    Mirrors `_flags_needed_by_tail`'s own per-item `kind` check so a
-    future content kind that function learns to read is uninformative
-    here in exactly the same cases, never more or fewer."""
+    message_end`/`_flags_needed_by_tail` do not recognize (Q.6's variant:
+    1,000 `message_end` events each carrying one `{"type": "citation",
+    ...}` item padded to 1,000 bytes) is exactly the same shape; and so,
+    one level subtler (cure-01-02's own falsifying scenario), is a `text`
+    item this module DOES recognize whose own `text` field is empty --
+    `_render_message_end` only ever prints something for a `text` item
+    when `state["text_seen"]` is still False, and an empty string is
+    nothing to print either way, so such an item is silence dressed as a
+    KNOWN kind. Checking `item.get("type") in (...)` alone -- kind, not
+    substance -- treated that silence as fully resolved, informative
+    content: exactly review's own falsifying probe (`test_Q_silent_
+    message_preserves_state[empty-text-variant-*]`), a `message_end`
+    carrying `content=[{"type": "text", "text": ""}]` in place of Q.2's
+    `content=[]`, which renders nothing in the full transcript (the real
+    stream's own earlier `text_delta` already set `text_seen`) yet made
+    the bounded two-line tail on both the disk fallback and the real
+    `/logs`-backed hub path replay the streamed text instead of returning
+    `[thinking\u2026]` plus the iteration-end line, because a KNOWN,
+    'resolved' `text` item at `tail_lines[0]` stopped `_tail_contains_
+    opaque_filler` from ever admitting it does not know whether `textSeen`
+    was true before it.
+
+    A `thinking` or `toolCall` item is NOT given the same substance check:
+    `_render_message_end` renders a `thinking` item's fixed `[thinking\u2026]`
+    marker, and a `toolCall` item's invocation line, unconditionally once
+    `state["thinking_seen"]`/`state["toolcall_seen"]` is False, regardless
+    of what (if anything) the item's own payload carries -- so seeing
+    EITHER kind at all is real, substantive evidence this message_end
+    would render something, exactly as before this task."""
     content = (ev.get("message") or {}).get("content") or []
-    return not any(isinstance(item, dict) and item.get("type") in ("text", "thinking", "toolCall")
-                  for item in content)
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type")
+        if kind in ("thinking", "toolCall"):
+            return False
+        if kind == "text" and item.get("text"):
+            return False
+    return True
 
 
 def _tail_contains_opaque_filler(tail_lines: list[str]) -> bool:
