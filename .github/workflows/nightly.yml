@@ -91,6 +91,25 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch:
 
+# Task 013 (requirement J.2): a scheduled run and a manual `workflow_dispatch`
+# of this same workflow had no relationship to each other before this -- a
+# dispatch fired while the 02:00 UTC cron run was still in flight landed on
+# the fleet as a SEVENTH and EIGHTH concurrent claim on top of the matrix's
+# own six, with no mechanism stopping it. A `concurrency:` group is blind
+# across *workflows* (heavy.yml's own comment on the browser tier says so,
+# and docs/ci.md repeats it for this exact pair) but it is exactly the right
+# tool WITHIN one workflow, which this is. Keyed on `github.ref` rather than
+# a fixed literal so a `workflow_dispatch` against a branch does not queue
+# behind main's own nightly run; `cancel-in-progress: true` because a newer
+# dispatch or the next night's cron superseding an older, still-running
+# nightly on the same ref is the right outcome -- nothing reads an
+# intermediate nightly result the way a running task reads `gate` at task
+# start (gate.yml's own asymmetry note makes the same distinction for a
+# different pair of lanes).
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -133,10 +152,24 @@ jobs:
     strategy:
       # Six independent claims -- one red cell must never cancel another.
       fail-fast: false
-      # The VPS carries two registered runner slots (vmi3245594 and
-      # vmi3245594-2, same labels; docs/ci.md). The operator measured load
-      # 1.92 on 4 cores with two jobs in flight and called that comfortable,
-      # not three -- this stops at two, and nothing here proposes raising it.
+      # Task 013 (requirement J.2): corrected to the fleet that exists. The
+      # VPS is retired -- there are no `vmi3245594`/`vmi3245594-2` slots left
+      # to carry a load measurement of their own. All six slots (`fast-lane`
+      # on two, `ralphd-vps`+`docker-host`+`browser-runner` on the other
+      # four this job and heavy.yml actually run on) are registrations on
+      # ONE 12-core / 63 GB workstation (`int21h-ws`; docs/ci.md "The
+      # self-hosted runner"), not six separate machines -- `max-parallel`
+      # counts JOBS, not hosts, so it cannot by itself stop this matrix
+      # sharing CPU with a concurrent `heavy.yml` run on the same box (see
+      # this job's own per-cell `--cpus` flag below for the mechanism that
+      # actually bounds that share). The ceiling stays 2: the VPS-era
+      # measurement this comment used to cite ("2 concurrent heavy-tier jobs
+      # load a 4-core box to 1.92, comfortable, not 3") was re-stated for
+      # the current host in docs/ci.md's "Named requirement" paragraph as
+      # the documentation-only ceiling until a fresh measurement on THIS
+      # host says otherwise -- not because only two slots exist (four of
+      # the six do). Raising it here without that fresh measurement would
+      # silently outrun the one number the ceiling is actually based on.
       max-parallel: 2
       matrix:
         include:
@@ -294,7 +327,17 @@ jobs:
           CELL_MODE: ${{ matrix.mode }}
         run: |
           RALPHD_HOST_WORKSPACE="$(scripts/run_bounded.sh 10 "cell host-path resolution" -- scripts/resolve_container_host_path.sh "$GITHUB_WORKSPACE")"
+          # Task 013 (requirement J.1): an explicit CPU share rather than
+          # whatever the host has left over. Six slots share ONE 12-core
+          # host (docs/ci.md "The self-hosted runner"), so 12/6 = 2 cores is
+          # this cell's own fair-share budget, declared here rather than
+          # left to `max-parallel`'s job-count-not-host-count accounting
+          # (see the comment on that key above). Without this a cell that
+          # happened to land beside a concurrent heavy.yml docker/browser
+          # tier job could consume cores that job's own budget assumed it
+          # had, with nothing in either workflow file saying so.
           scripts/run_bounded.sh 6600 "dev-layout cell" -- docker run --rm \
+            --cpus="2" \
             -e HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE="$CELL_MODE" \
             -e CELL_IMAGE="$CELL_IMAGE" \
             -v "$RALPHD_HOST_WORKSPACE:/src-ro:ro" \
