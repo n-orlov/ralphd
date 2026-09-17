@@ -2304,6 +2304,43 @@ two narrow mutations its old detectors covered (`64cdff43`). The run is
 `selfdev-v0211-a-green-suite-is-not-a-met-requirement`, launched at `fe85db7d`; the v0.19, v0.19.1,
 v0.20, v0.20.1, v0.20.2 and v0.21 blocks and rows above are unchanged by this commit.
 
+## v0.22 — the harness owns its own state
+
+Version `0.22.0` landed at task 016. Requirements **A** — the control credential moved off the
+bind-mounted run dir into a host-only control-creds dir, its directory entry proven
+unreplaceable by a real dropped agent child all the way to the container root (`7d74c00f`,
+`1838422f`, `dd8a9a33`, `49c473b3`); **B** — the authoritative `tasks.json` moved into a
+root-owned directory the agent cannot replace, with an agent-readable view kept for host
+inspection (`cffb6955`, `c9afa999`, `0b310de4`); **C** — the petition MAC key store's mount
+point chowned root-owned and its own ancestor chain walked to the container root the same way
+(`809630bd`, `b48489cd`); **D** — `dependsOn` edges validated on the cure-insertion, task-update
+and task-insert paths (`6dd57746`); **E** — an unschedulable plan faults on the first pass
+instead of quietly stagnating (`1db56d19`); **F** — gate's fast job runs in a pinned
+`python:3.12.3` container (`0d6a7bfa`, `3797f802`); **G** — a guard that every workflow job is
+containerized or allowlisted with a stated, non-blank reason (`16533c10`); **H** — the browser
+tier's Chrome and `playwright-cli` come from a pinned image (`07322c5c`, `c9cc4ed2`, `9b782ca4`,
+`4a27cd23`); **I** — heavy's docker tier and nightly's dev-layout cell containerized, then
+heavy's docker-tier half reverted to host-run and allowlisted under G with its measured reason
+after five live-fix rounds left a wall-clock-margin failure class unresolved, while nightly's
+half stayed containerized (`b1f3fb80` through `8daf54f8`, reverted at `8aad42ff`, `68e2f53f`);
+**J** — a nightly cell's CPU share and concurrency group declared, its setup cost measured
+(`751abe5e`); **K** — `heavy.yml`'s and `nightly.yml`'s headers and `docs/ci.md` corrected to
+the fleet that exists (`9a6ff3a3`, `b9915eb8`); **L** — the worker prompt's red-lane rule given
+its own guard test (`932198b0`); **P** — a fixed rendered tail's transcript-byte cost bounded by
+what it renders rather than by the history preceding it (`d98ba003`); **Q** — a recognized
+non-rendering event no longer certifies prefix collapse state (`69b2a119`); **R** — the four
+records v0.21.1 left inaccurate corrected (`72dd78a8`); and **M** — this version bump and this
+paragraph, have all landed. GitHub **#207** (per-task time and cost summed across approaches --
+`engine/state.py`'s `task_totals()` buckets on `assignedTaskId` alone, so an approach's task 001
+inherits every earlier approach's task 001) was triaged and deliberately deferred to v0.23 rather
+than fixed in this wave. Heavy's docker-tier containerization (requirement I.1/I.2) is likewise
+deferred to v0.23: what shipped instead is nightly's dev-layout cell containerized, with heavy's
+docker tier run host-side behind requirement G's allowlist and its measured reason, under the
+wave-scoped operator ruling `/config/amendments/001-WAVE.md` (STEER 005). Requirements **N**
+(the final green sweep) and **O** (closing the wave's issues) land in later tasks of this same
+run and are not yet reflected here; the v0.19, v0.19.1, v0.20, v0.20.1, v0.20.2, v0.21 and
+v0.21.1 blocks above are unchanged by this commit.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
