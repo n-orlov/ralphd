@@ -755,9 +755,17 @@ def check_container_or_allowlisted(
     workflows: dict[str, dict], allowlist: dict[tuple[str, str], str]
 ) -> list[str]:
     """Return human-readable problems: every job in every workflow in
-    `workflows` (keyed by filename) must either declare a `container:` or
-    carry a non-empty reason in `allowlist`, keyed by `(filename, job_name)`.
-    An empty list means every job in `workflows` passes both checks."""
+    `workflows` (keyed by filename) must either declare a USABLE `container:`
+    or carry a non-empty reason in `allowlist`, keyed by `(filename,
+    job_name)`. An empty list means every job in `workflows` passes both
+    checks.
+
+    Review finding G (task cure-01-05): a `container:` key merely being
+    PRESENT is not enough -- `container: null` (a job that declares the key
+    but supplies nothing) and `container: {}` / `container: ""` (an empty
+    declaration with no image to run in) are exactly as host-reachable as no
+    key at all, so all three are treated as "no usable container" here.
+    """
     problems: list[str] = []
     for filename, workflow in workflows.items():
         jobs = (workflow or {}).get("jobs") or {}
@@ -771,16 +779,25 @@ def check_container_or_allowlisted(
                         "stated reason"
                     )
                 continue
-            if "container" not in (job or {}):
+            container = (job or {}).get("container")
+            if not container:
                 problems.append(
-                    f"{filename}:{job_name} declares neither container: nor "
-                    "an allowlist entry"
+                    f"{filename}:{job_name} declares no usable container: "
+                    "(missing, null or empty) and no allowlist entry"
                 )
     return problems
 
 
-def _load_all_workflows() -> dict[str, dict]:
-    return {path.name: _load(path) for path in sorted(WORKFLOWS_DIR.glob("*.yml"))}
+def _load_all_workflows(workflows_dir: Path | None = None) -> dict[str, dict]:
+    """Discover every workflow under `workflows_dir` (default
+    `WORKFLOWS_DIR`), by BOTH extensions GitHub Actions itself accepts --
+    `*.yml` and `*.yaml` (review finding G: the shipped helper globbed only
+    `*.yml`, so a `.yaml` workflow -- a real host job -- was invisible to
+    this guard entirely, discovery producing an empty dict rather than a
+    rejection)."""
+    directory = workflows_dir if workflows_dir is not None else WORKFLOWS_DIR
+    paths = sorted(directory.glob("*.yml")) + sorted(directory.glob("*.yaml"))
+    return {path.name: _load(path) for path in sorted(paths, key=lambda p: p.name)}
 
 
 def test_every_workflow_job_is_containerized_or_allowlisted_with_a_reason():
@@ -790,8 +807,14 @@ def test_every_workflow_job_is_containerized_or_allowlisted_with_a_reason():
 
 def test_container_allowlist_guard_fires_on_a_fixture_workflow(tmp_path):
     """A fixture workflow -- never an edit to a shipped one -- proves both
-    refusals: a job with neither container: nor an allowlist entry, and an
-    allowlist entry whose reason is absent from the data."""
+    refusals: a job with no usable container: and no allowlist entry, and an
+    allowlist entry whose reason is absent from the data. Task cure-01-05
+    (review finding G) folds two further refusals into this SAME node
+    instead of adding new ones (the fast tier is at its collection ceiling
+    with no headroom): a newly discovered `.yaml` workflow (the shipped
+    helper globbed only `*.yml`) and `container: null` / `container: {}`
+    (present but unusable), each proven through the PRODUCTION discovery
+    helper (`_load_all_workflows`), never a hand-built dict."""
     fixture_workflow = {
         "name": "fixture",
         "on": {"workflow_dispatch": {}},
@@ -806,9 +829,37 @@ def test_container_allowlist_guard_fires_on_a_fixture_workflow(tmp_path):
     loaded = _load(fixture)
 
     problems = check_container_or_allowlisted({fixture.name: loaded}, {})
-    assert any("declares neither" in p for p in problems), problems
+    assert any("no usable container" in p for p in problems), problems
 
     problems = check_container_or_allowlisted(
         {fixture.name: loaded}, {(fixture.name, "unguarded"): "   "}
     )
     assert any("no stated reason" in p for p in problems), problems
+
+    # Discovery: a `.yaml` workflow, dropped into its OWN directory (never
+    # `.github/workflows/`), must be found and rejected by the real
+    # production helper -- not a hand-built dict standing in for discovery.
+    yaml_dir = tmp_path / "yaml-discovery"
+    yaml_dir.mkdir()
+    _dump_fixture(yaml_dir, "new.yaml", fixture_workflow)
+    discovered = _load_all_workflows(yaml_dir)
+    assert "new.yaml" in discovered, discovered
+    problems = check_container_or_allowlisted(discovered, {})
+    assert any("no usable container" in p for p in problems), problems
+
+    # `container: null` and `container: {}` are present but unusable, and
+    # must be refused exactly like a missing key -- not silently accepted
+    # because the key exists.
+    for unusable_container in (None, {}, ""):
+        broken = copy.deepcopy(fixture_workflow)
+        broken["jobs"]["unguarded"]["container"] = unusable_container
+        broken_fixture = _dump_fixture(
+            tmp_path, "fixture-unusable-container.yml", broken
+        )
+        problems = check_container_or_allowlisted(
+            {broken_fixture.name: _load(broken_fixture)}, {}
+        )
+        assert any("no usable container" in p for p in problems), (
+            unusable_container,
+            problems,
+        )
