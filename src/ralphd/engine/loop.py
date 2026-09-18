@@ -7287,11 +7287,16 @@ class LoopSupervisor:
             # at all until the container was restarted.
             #
             # This position is load-bearing three times over. It is after
-            # `self._gate()`, which is where an in-process pause-clear for
-            # `stagnation`/`unschedulable_dependency_cycle`/`unresolvable_
-            # dependency_edge` actually lands (`_step_paused` routes those
-            # three back to `worker`) -- exactly the case the operator is
-            # ruling on. It is before `scheduler.select_next_task` below,
+            # `self._gate()`, and this is the boundary the run re-enters
+            # after an in-process pause-clear for `stagnation`/
+            # `unschedulable_dependency_cycle`/`unresolvable_dependency_
+            # edge` -- exactly the cases the operator is ruling on. The
+            # park itself is `_step_paused`'s OWN `_gate()`, not this one:
+            # it reads `pauseReason`, waits there, then routes those three
+            # back to `worker`, so by the time control reaches this line
+            # the gate above is already a no-op. What matters is that the
+            # ruling is applied before anything in this pass reads the
+            # plan. It is before `scheduler.select_next_task` below,
             # so a ruled task is never handed out and never gets this
             # pass's `in-progress` claim written over it. And it is before
             # `tasks_before = self.run.read_tasks()`, which is the
@@ -9938,12 +9943,16 @@ class LoopSupervisor:
         self.run.emit("phase", phase="review", approach=approach)
         # GH #209 defect 6: the review half of the same boundary
         # re-application -- see `_apply_operator_status_rulings`' docstring.
-        # `self._gate()` just above is where the in-process pause-clear for
-        # every escalation that resumes into `review` lands (the
-        # `rejected_incurable` self-loop, `rejected_last_approach`'s
-        # `paused_resumed` edge, and `review_contract_unrepaired`), i.e.
+        # This is the boundary the run re-enters after an in-process
+        # pause-clear for every escalation that resumes into `review`, i.e.
         # precisely the moment an operator who was asked for a ruling has
-        # just given one. Placed AFTER the `phase` emit so the resulting
+        # just given one. Only the `rejected_incurable` self-loop actually
+        # parks on `self._gate()` just above; `rejected_last_approach`,
+        # `rejected_repeated_signature` and (unit 4) `review_contract_
+        # unrepaired` all advance to `paused` and park on `_step_paused`'s
+        # own `_gate()`, arriving here over its `paused_resumed` edge with
+        # this gate already cleared. Either route runs the applier before
+        # review is asked anything. Placed AFTER the `phase` emit so the
         # `amendment_status_applied` event is bracketed inside the review
         # phase it takes effect for, which is also what lets a test pin the
         # boundary off `events.jsonl` rather than off the load site.
@@ -12530,12 +12539,31 @@ class LoopSupervisor:
         anything in `transitions.TASK_STATUS_TABLE`/`TASK_STATUS_VIGILANT_
         DELTA`, so that reopen cannot and must not be routed through the
         applier (SD-4: routing it would turn requirement E.3, "review never
-        judges stale evidence", into a silent no-op). The consequence is
-        that the cure pass wins PERMANENTLY: from `pending` the standing
-        ruling's target is no longer a legal move, so every later boundary
-        refuses it. That is the defensible ordering (evidence integrity
-        over an operator skip), and the refusal is reported rather than
-        forced -- once per distinct current status, per the dedupe below.
+        judges stale evidence", into a silent no-op). WHICH OF THE TWO WINS
+        after that reopen depends entirely on the ruling's own target,
+        because `pending` has exactly one declared successor,
+        `in-progress`:
+
+        * for every OTHER ruleable target -- `skipped`, `validated`,
+          `completed`, `failed`, `awaiting-validation`,
+          `validation-failed`, `petitioned` -- the cure pass wins
+          PERMANENTLY: from `pending` the standing ruling's target is no
+          longer a legal move, so every later boundary refuses it. That is
+          the defensible ordering for these (evidence integrity over an
+          operator skip), and the refusal is reported rather than forced --
+          once per distinct current status, per the dedupe below. A
+          `--status pending` ruling is the degenerate member of this group:
+          the reopen already put the task where it asked, so the applier
+          reads `already at that status` and says nothing at all;
+        * for `--status in-progress` (the "hand it back to the worker"
+          ruling `_run_job_core`'s own call-site comment names) the
+          STANDING RULING wins instead, and permanently so: `pending ->
+          in-progress` is legal, so the next boundary re-applies it and
+          emits a FRESH `amendment_status_applied` once per reopen
+          (measured against the applier, not inferred). That is the
+          operator's instruction being obeyed rather than a precedence
+          bug -- but no later change may reason from this paragraph that a
+          standing ruling is dead once a cure pass has re-opened its task.
 
         Reads `CONFIG_DIR` directly, exactly as
         `_operator_amendment_review_context` does and for the same reason
@@ -12548,12 +12576,12 @@ class LoopSupervisor:
         ruled `pending -> validated` needs to see that the engine declined
         rather than wonder why nothing moved -- so every non-applied ruling
         is surfaced here as a `log` event. `already at that status` is not
-        reported: that ruling HAS taken effect, and this method runs on
-        every episode of the run, so reporting it would repeat one line for
-        the rest of the run's life. An applied ruling emits its own
-        `amendment_status_applied` audit event from inside the applier
-        (source=operator, surfaced like `budget_changed`), so nothing is
-        emitted twice from here.
+        reported: that ruling HAS taken effect, and this method runs at
+        every step boundary of every episode of the run, so reporting it
+        would repeat one line for the rest of the run's life. An applied
+        ruling emits its own `amendment_status_applied` audit event from
+        inside the applier (source=operator, surfaced like
+        `budget_changed`), so nothing is emitted twice from here.
 
         GH #209 defect 6 adds the same bound to the REFUSAL line, for the
         same reason and now that it is needed: a ruling the table

@@ -1706,12 +1706,11 @@ refused, exit `2`, naming the missing sequence number.
 A THIRD ruling kind (task 006/029, #26 requirement E), alongside the
 waiver/replacement above: a typed status ruling the ENGINE itself applies to
 that task's `status` field in `tasks.json`, at load time and at every later
-worker/review step boundary, rather than one that
-only binds review's judgement of successCriteria. Goes through the exact same
-`write_amendment` writer as every other ruling — `status=` instead of
-`waive=` — there is no second writer and no second on-disk shape; the file
-gets `mode: status` and a `status: <status>` header line instead of
-`mode: waive`/`mode: replace`.
+worker/review step boundary, rather than one that only binds review's
+judgement of successCriteria. Goes through the exact same `write_amendment`
+writer as every other ruling — `status=` instead of `waive=` — there is no
+second writer and no second on-disk shape; the file gets `mode: status` and a
+`status: <status>` header line instead of `mode: waive`/`mode: replace`.
 
 `<status>` must be one of `engine.transitions.OPERATOR_RULEABLE_TASK_STATUSES`
 (`pending`, `in-progress`, `awaiting-validation`, `validated`,
@@ -1730,24 +1729,23 @@ Combining `--status` with `--waive` is a usage error (exit `2`): a ruling is
 exactly one kind, never two at once.
 
 Applying the ruling to `tasks.json` is NOT this command's job —
-`ralphctl amend` never WRITES to the run dir at all, only to `config_root`
-(it does read `tasks.json`/`status.json` there, read-only, for the echo and
-`--approach` default described above — task 036, #168). The
-engine applies it (`LoopSupervisor._apply_operator_status_rulings` →
+`ralphctl amend` never WRITES to the run dir at all, only to `config_root` (it
+does read `tasks.json`/`status.json` there, read-only, for the echo and
+`--approach` default described above — task 036, #168). The engine applies it
+(`LoopSupervisor._apply_operator_status_rulings` →
 `engine.state.apply_amendment_status_rulings`) at the next worker or review
 step boundary of the LIVE run — and again at the top of every later episode —
 so a ruling recorded while the container is up takes effect without a restart
 (GH #209 defect 6, which is what made this true: before it, the applier ran
 once per episode and a ruling on a live run changed nothing at all, since
 `mode: status` entries are deliberately kept out of review's prompt context
-too). It is
-checked against the same declared task-status transition table every other
-status move is checked against; an illegal transition for the CURRENT status
-is refused there, not here, since this command has no way to know the task's
-current status at write time. `ralphctl amend <run-id> --list` shows a
-recorded status ruling as `status  -> <status> (<reason>)` in the table (and
-`mode: "status"` / `status: "<status>"` in `--json`), the same reader as
-every other ruling kind.
+too). It is checked against the same declared task-status transition table
+every other status move is checked against; an illegal transition for the
+CURRENT status is refused there, not here, since this command has no way to
+know the task's current status at write time. `ralphctl amend <run-id> --list`
+shows a recorded status ruling as `status  -> <status> (<reason>)` in the
+table (and `mode: "status"` / `status: "<status>"` in `--json`), the same
+reader as every other ruling kind.
 
 **Why this is unforgeable, and why that's the whole design.** `ralphctl amend`
 runs on the HOST and writes directly into `config_root(run_id)`
@@ -1771,20 +1769,20 @@ caller), each file a small `task:`/`mode:`/`ts:` header followed by a blank
 line and the ruling text verbatim (`engine.state.write_amendment`/
 `amendment_entries`, the ONE reader/writer pair, mirroring the `steering/`
 convention). `engine.loop`'s `_operator_amendment_review_context()` reads this
-directory directly (never the writable overlay) at every point a
-review-phase prompt is built, and appends every *criteria* ruling found (`mode:
-waive`/`mode: replace`) as a mandatory, unconditional instruction — review
-never has to (and must not) ask why the operator is entitled to grant one. A
-`mode: status` ruling (v0.14, requirement E) is deliberately excluded from that
-context: it changes a task's `status` in `tasks.json`, applied by the ENGINE at
-load time and at every later worker/review step boundary
+directory directly (never the writable overlay) at every point a review-phase
+prompt is built, and appends every *criteria* ruling found
+(`mode: waive`/`mode: replace`) as a mandatory, unconditional instruction —
+review never has to (and must not) ask why the operator is entitled to grant
+one. A `mode: status` ruling (v0.14, requirement E) is deliberately excluded
+from that context: it changes a task's `status` in `tasks.json`, applied by
+the ENGINE at load time and at every later worker/review step boundary
 (`LoopSupervisor._apply_operator_status_rulings` →
-`engine.state.apply_amendment_status_rulings`, validated against the task-status
-table, leaving `validationAttempts`, `tierLadderExhausted` and the criteria text
-untouched and emitting an `amendment_status_applied` event with
+`engine.state.apply_amendment_status_rulings`, validated against the
+task-status table, leaving `validationAttempts`, `tierLadderExhausted` and the
+criteria text untouched and emitting an `amendment_status_applied` event with
 `source: operator`), and it binds review's judgement of successCriteria not at
-all — a status ruling is not a claim the criteria were met and must not be able
-to read like one.
+all — a status ruling is not a claim the criteria were met and must not be
+able to read like one.
 
 `--list` has no live half at all: `ralphctl amend` never talks to the engine,
 so there is nothing for a live container to answer differently than the file

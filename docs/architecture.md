@@ -1973,16 +1973,15 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   findings a fresh approach was already shown incapable of curing) and never
   through a throwaway `worker` pass first.
   The rulings the operator recorded while it sat paused reach that review
-  iteration through both ruling channels, so nothing is left silently
-  unruled: `mode: status` rulings are applied by
-  `_apply_operator_status_rulings()` (-> `state.apply_amendment_status_rulings`),
-  which runs unconditionally **once per engine episode** at the top of
-  `_run_job_core()`, ahead of the resume decision, **and at every worker and
-  review step boundary** (`_step_worker`'s `while` head, `_step_review` just
-  after its `phase` emit -- GH #209 defect 6). The episode call is what
-  covers a container restart; the boundary calls are what cover the
-  in-process `POST /resume` path, which before #209 defect 6 re-applied
-  nothing at all. The criteria-ruling channel,
+  iteration through both ruling channels, so nothing is left silently unruled:
+  `mode: status` rulings are applied by `_apply_operator_status_rulings()` (->
+  `state.apply_amendment_status_rulings`), which runs unconditionally **once
+  per engine episode** at the top of `_run_job_core()`, ahead of the resume
+  decision, **and at every worker and review step boundary** (`_step_worker`'s
+  `while` head, `_step_review` just after its `phase` emit -- GH #209 defect
+  6). The episode call is what covers a container restart; the boundary calls
+  are what cover the in-process `POST /resume` path, which before #209 defect
+  6 re-applied nothing at all. The criteria-ruling channel,
   `_operator_amendment_review_context()`, does re-read `CONFIG_DIR` fresh on
   every `_step_review()` call, restart or in-process resume alike -- but it
   was never the fallback for a status ruling that this paragraph once claimed

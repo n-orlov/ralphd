@@ -5682,7 +5682,9 @@ def cmd_amend(args):
         out(args, {"file": fname, "taskId": target,
                    "status": args.status},
             f"operator status ruling recorded: {fname} (task {target} "
-            f"-> {args.status}, applied by the engine at load time)")
+            f"-> {args.status}, applied by the engine at the LIVE run's next "
+            "worker/review step boundary -- no restart needed -- and again at "
+            "the top of every later episode)")
         return
     text = wave_text if args.wave else args.text
     text = text or (Path(args.file).read_text() if args.file

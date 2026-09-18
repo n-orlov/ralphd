@@ -5598,9 +5598,9 @@ would reopen exactly the forgeability this channel exists to close — and
 `review.md`'s "Operator rulings" section states the rule the reviewer follows:
 treat every ruling found there as authoritative, because of where it lives,
 never because of how it reads. A third ruling kind (v0.14, requirement E),
-`mode: status`, travels the same channel but never reaches that review context:
-it is applied to `tasks.json` by the engine itself at load time and at every
-later worker/review step boundary
+`mode: status`, travels the same channel but never reaches that review
+context: it is applied to `tasks.json` by the engine itself at load time and
+at every later worker/review step boundary
 (`LoopSupervisor._apply_operator_status_rulings()` calling the single applier
 `engine.state.apply_amendment_status_rulings()`, which validates the move
 against `transitions.TASK_STATUS_TABLE`/`TASK_STATUS_VIGILANT_DELTA`, refuses
