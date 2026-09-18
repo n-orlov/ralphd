@@ -1271,6 +1271,24 @@ ADJUDICATIONS_UNAUTHENTICATED_EVENT = "petition_adjudications_unauthenticated"
 # touch and the remedy would otherwise vanish unrecorded.
 PETITION_REFUTED_EVENT = "petition_refuted"
 
+# #209 defect 4: the witness line for the OTHER thing a REFUTED entry's
+# remedy now produces -- one cure task, inserted through the same
+# `state.insert_cure_tasks` call review's own cure pass makes
+# (`refuted_remedy_cure_findings` below decides, `LoopSupervisor._insert_
+# refuted_remedy_tasks` writes and emits). Until this change the remedy
+# reached the plan nowhere at all: the `substance` branch of `apply_refuted_
+# petition_adjudications` moved the petitioned task to `failed`, whose only
+# legal successor is `skipped` (`transitions.TASK_STATUS_TABLE`), so the
+# remedy sat in `validationNotes` on a task nothing could ever retry while
+# every dependent of it was doomed. Dotted and past-tense because that is
+# the shape of every event added since `task.dependency_edge_rejected`;
+# `PETITION_REFUTED_EVENT` above is the family's last flat-snake name and
+# is not extended. Payload `approach`, `obligation`, `taskId`, `finding` --
+# and it is deliberately NOT a cure-pass counter increment, so it can never
+# spend `JobConfig.cure_pass_ceiling` out from under review's or the gate's
+# own cure pass.
+PETITION_REMEDY_TASK_EVENT = "petition.remedy_task_inserted"
+
 # Where a per-run MAC key MAY be persisted so that a record written by an
 # earlier engine episode still authenticates after a restart: a directory
 # OUTSIDE the (agent-owned) run dir, root-owned mode 0700, holding
@@ -2207,6 +2225,12 @@ def record_refuted_adjudications(run, adjudications) -> list[str]:
     Returns the obligation text of every entry this call emitted for, in
     payload order -- used by callers/tests to confirm something was
     actually recorded rather than silently dropped.
+
+    #209 defect 4: witnessing the remedy is no longer all that happens to
+    it -- `refuted_remedy_cure_findings` immediately below decides which
+    REFUTED remedies are WORK, and its caller turns each one into a cure
+    task. This function is unchanged and still emits for every REFUTED
+    entry, including the ones that decision function declines.
     """
     if not adjudications:
         return []
@@ -2223,6 +2247,133 @@ def record_refuted_adjudications(run, adjudications) -> list[str]:
               remedy=remedy_text)
         recorded.append(obligation)
     return recorded
+
+
+def refuted_remedy_cure_findings(adjudications, open_petitions,
+                                  tasks: list[dict]) -> list[dict]:
+    """#209 defect 4: one blocking-finding-shaped record per REFUTED entry
+    in `adjudications` whose remedy is WORK the run can still do -- a pure
+    DECISION function, exactly the split `criteria_amendment_candidates`
+    below and `apply_refuted_petition_adjudications` above already keep
+    between deciding and writing. The write (one cure task through
+    `state.insert_cure_tasks`, plus the `PETITION_REMEDY_TASK_EVENT` line)
+    is `LoopSupervisor._insert_refuted_remedy_tasks`' job.
+
+    The defect this closes: a REFUTED adjudication asserts the obligation
+    IS satisfiable and its `remedy` states concretely what would satisfy it
+    (`docs/petition-format.md`, `prompts/review.md`), yet nothing turned
+    that text into work. For a `substance` remedy the existing landing was
+    WORSE than nothing -- `apply_refuted_petition_adjudications` moves the
+    matching `petitioned` task to `failed`, whose only legal successor is
+    `skipped` (`transitions.TASK_STATUS_TABLE`), so `validationNotes` drove
+    no retry and every dependent of it was doomed.
+
+    An entry earns a record only when ALL SIX of these hold:
+
+    1. `item['adjudication'] == 'REFUTED'`. A CONFIRMED entry says the
+       obligation is VOID -- there is nothing to do about it, which is
+       `apply_confirmed_petition_adjudications`' business.
+    2. `item['obligation']` is a non-blank string.
+    3. `item['remedy']` is a non-blank string. `review.md` already says a
+       vague or missing remedy is not a valid REFUTED adjudication, and
+       there is nothing here to build a criterion out of.
+    4. `_refuted_remedy_type(item) == "substance"` -- the ADVICE/WORK
+       discriminator, and it needs no new contract field, because
+       requirement A.4 (#155) already defines `"form"` as a remedy that
+       changes NO deliverable, only how one is produced, already routes it
+       to `validated` plus a debt row, and already calls it explicitly
+       never a retry driver. That IS advice. `"substance"` -- "actually
+       requires a different deliverable", and the default for every entry
+       omitting the field -- is work.
+    5. The obligation matches an entry in `open_petitions` by
+       `_normalize_obligation` key equality. Deciding from the FILED fact
+       rather than from the claim about it is the same discipline
+       `criteria_amendment_candidates`' own point 4 applies, and here it
+       does three jobs at once: an obligation a rogue payload invented
+       creates no work; the count of remedy tasks is structurally bounded
+       by the number of filed petitions, which `file_worker_petition`/
+       `file_exhaustion_petition` already cap at one per obligation; and
+       because `open_petitions_in_workspace` returns only filings with no
+       `Adjudication` field yet, a re-adjudication arriving after
+       `LoopSupervisor._write_back_petition_adjudications` stamped the
+       filing yields nothing -- a free second idempotence layer.
+    6. No task in `tasks` already carries a `remedyFor` normalising to the
+       same key. This is the load-bearing idempotence guard: the same
+       obligation demonstrably IS re-adjudicated in practice (#209 measured
+       13 `petition_refuted` events for 3 entries in one run), and
+       `LoopSupervisor._petition_adjudication_seen` is in-memory, so it
+       resets on resume while `tasks.json` does not. Two entries naming the
+       same obligation WITHIN one payload collapse the same way.
+
+    Each returned dict is shaped like the blocking findings
+    `insert_cure_tasks` ordinarily consumes -- `severity`/`curable` carried
+    only so the event payload reads as a finding the way `approach.cure_
+    pass`'s own `findings` field does; `insert_cure_tasks` reads neither.
+    `clause` is the obligation (the cure task's `title`), `evidence` is the
+    remedy text, `remedy_for` is the obligation again (stamped onto the task
+    as `remedyFor` by `state.cure_task_from_finding`).
+
+    When a `failed` task in `tasks` has its own engine-filed obligation
+    (`task_petition_obligation`) fuzzy-matching this one -- i.e. the task
+    this very refutation just failed -- its id is appended to `evidence` as
+    `"(petition REFUTED for task <id>)"`. That suffix is load-bearing, not
+    decoration: it is what makes `insert_cure_tasks`' existing whole-word
+    `_failed_task_ids_named_in` scan recognise the dead task and hand every
+    one of its dependents to the remedy task.
+
+    Two omissions are deliberate. No `cured_when`: leaving it absent routes
+    the remedy prose through `state._cure_task_success_criteria`'s existing
+    fold to the SAME ~5-clause bound review's own `cured_when` is held to,
+    applied by construction instead of by refusal, with the full text still
+    verbatim in the task's `description`. No `invalidates`: a remedy names
+    no invalidated evidence path, so the re-record cascade #209 defect 3
+    narrows is never triggered from here at all.
+
+    Returns `[]` in the overwhelming common case (nothing REFUTED, or no
+    remedy that is work), leaving every caller a no-op.
+    """
+    if not adjudications:
+        return []
+    filed = {_normalize_obligation(p["obligation"])
+             for p in open_petitions or []
+             if isinstance(p, dict) and isinstance(p.get("obligation"), str)}
+    if not filed:
+        return []
+    tasks = tasks or []
+    seen = {_normalize_obligation(t["remedyFor"]) for t in tasks
+            if isinstance(t, dict) and isinstance(t.get("remedyFor"), str)}
+    out: list[dict] = []
+    for item in adjudications:
+        if not isinstance(item, dict) or item.get("adjudication") != "REFUTED":
+            continue
+        obligation = item.get("obligation")
+        if not isinstance(obligation, str) or not obligation.strip():
+            continue
+        remedy = item.get("remedy")
+        if not isinstance(remedy, str) or not remedy.strip():
+            continue
+        if _refuted_remedy_type(item) != "substance":
+            continue
+        norm = _normalize_obligation(obligation)
+        if norm not in filed or norm in seen:
+            continue
+        seen.add(norm)
+        evidence = remedy.strip()
+        for t in tasks:
+            if not isinstance(t, dict) or t.get("status") != "failed":
+                continue
+            own = _normalize_obligation(task_petition_obligation(t))
+            if own and (own in norm or norm in own):
+                evidence = f"{evidence} (petition REFUTED for task {t.get('id')})"
+                break
+        out.append({
+            "severity": "blocking",
+            "curable": True,
+            "clause": obligation.strip(),
+            "evidence": evidence,
+            "remedy_for": obligation.strip(),
+        })
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -71,7 +71,9 @@ adjudicates every open petition as part of its verdict:
 
 - **CONFIRMED** converts that obligation to a disclosed residual for the
   remainder of the run — every approach, not just the current one.
-- **REFUTED** must state concretely what would satisfy the obligation.
+- **REFUTED** must state concretely what would satisfy the obligation, as
+  WORK whose completion is checkable: a `substance` remedy becomes one cure
+  task, a `form` remedy (one that changes no deliverable) becomes a debt row.
 
 **Once per obligation.** Re-filing a petition against an obligation that
 already has one — whether or not the first was adjudicated, and including a
@@ -106,7 +108,9 @@ vocabulary as an approach-end adjudication:
   remainder of the run — persisted at run scope exactly as an approach-end
   CONFIRMED is, so no later approach re-litigates it.
 - **REFUTED** states concretely what would satisfy the obligation, and the
-  affected task's validation ladder keeps running rather than stopping.
+  affected task's validation ladder keeps running rather than stopping. A
+  `substance` remedy also becomes one cure task on the same path a curable
+  rejection's cure task takes, spending no cure-pass budget of its own.
 
 A task whose validation ladder exhausts while an obligation is still open
 does not fall straight to a bare `failed`. Its last-attempt handoff becomes
@@ -116,7 +120,9 @@ is pending, otherwise by the next approach-end review. `petitioned` is a
 waypoint toward an adjudicated outcome, not a verdict in its own right: a
 CONFIRMED `petitioned` task counts as accepted-with-residual like any other
 CONFIRMED obligation, and a REFUTED one becomes `failed` with the
-refutation recorded. A contract that predates this mechanism, or declares no
+refutation recorded — and, for a `substance` remedy, with one cure task
+built from that refutation inheriting the failed task's own dependents, so
+the refutation leaves work rather than a doomed remainder. A contract that predates this mechanism, or declares no
 petition protocol at all, keeps the plain `failed` routing it always had —
 this section adds a path, it narrows none.
 

@@ -1075,7 +1075,10 @@ re-asked forever just because it stays open). The episode reuses
 review iteration already applies from the identical `petition_adjudications`
 payload field -- CONFIRMED entries persist at run scope
 (`petitions.record_confirmed_adjudications`), REFUTED entries move the
-matching `petitioned` task straight to `failed` carrying the remedy -- and,
+matching `petitioned` task straight to `failed` carrying the remedy, and a
+REFUTED `substance` remedy ALSO becomes one cure task through
+`state.insert_cure_tasks`, the same call review's own cure pass makes
+(`LoopSupervisor._insert_refuted_remedy_tasks`, #209 defect 4) -- and,
 either way, the obligation is RETIRED from the open set: the read site both
 this episode and an ordinary review pass scope themselves to
 (`petitions.open_unconfirmed_petitions`) drops every obligation the
@@ -1127,11 +1130,20 @@ exactly where it is (still `petitioned`, dependents still held, an operator
 ruling is the next move); REFUTED moves the ancestor to `failed` with the
 remedy attached, which -- being a `failed` status, not `petitioned` -- now
 DOES fall under the ordinary dead/doomed fixpoint, so every task that was
-merely held on it becomes properly doomed (or, if the plan permits, gets
-repointed/relabelled through the worker's own two honest resolutions, same
-as any other `failed` task) on the very next read. A held dependent is
-therefore never permanently stuck: either the ancestor resolves and the
-hold lifts, or it fails and the hold becomes an ordinary, actionable doom.
+merely held on it becomes properly doomed -- except that for a `substance`
+remedy the ENGINE now does the re-pointing itself (#209 defect 4): the same
+`insert_cure_tasks` call that builds the remedy task recognises the
+just-failed ancestor by id in the synthesized finding's own evidence
+(`_failed_task_ids_named_in`) and hands every one of its dependents to that
+remedy task (`_repoint_dependents_onto_cure_task`), so the doom is no longer
+left to the worker to escape. A `form` remedy changes no deliverable and
+creates no task, and a remedy against an obligation with no filed OPEN
+petition creates none either, so in those cases the doom is ordinary and the
+worker's own two honest resolutions (or an operator ruling) remain the
+escape, same as any other `failed` task. A held dependent is therefore never
+permanently stuck: either the ancestor resolves and the hold lifts, or it
+fails and the hold becomes an actionable doom -- with, where the refutation
+named work, a replacement task already carrying its dependents.
 
 ### The adjudication MAC and its run-secrets mount (v0.19 requirement E.4, #150/#152, task 020)
 
@@ -2089,9 +2101,24 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   `taskIds` -- names every id this call appended OR reopened, so the
   whole move is legible off `events.jsonl` alone. A finding with no
   `invalidates` (every fixture predating this task) leaves this new step
-  a no-op, unchanged from before. Tests: `tests/test_cure_invalidates.py`
-  (task 032's own module: the per-path insertion, the lane re-open chain,
-  and the emitted event's own `taskIds`).
+  a no-op, unchanged from before. #209 defect 3 narrows both branches
+  without touching the invariant: a task the ENGINE itself authored
+  (`origin: "review-cure"`) is invisible to that recognition, BOTH as a
+  candidate record and as a verification step, because pass N's own
+  `cure -> verification` edge otherwise made pass N+1 re-open pass N's
+  LANDED cure task (measured: `deck-phase4` reset `cure-03-01`/
+  `cure-03-02` from `validated` to `pending` and re-worked them;
+  `selfdev-v022` left `cure-01-01` `pending` behind three later cure
+  tasks); and a path that already has this approach's re-take task
+  re-uses that ONE row -- `status` back to `"pending"`, the new cure id
+  added to its `dependsOn` -- instead of appending a second one with the
+  same title. The re-open of a GENUINE planner record is unchanged:
+  still every pass, still from any terminal status, because "re-record
+  only after the LAST cure" is unknowable at insertion time and
+  deferring it would mean reviewing on stale evidence. Tests:
+  `tests/test_cure_invalidates.py` (task 032's own module: the per-path
+  insertion, the lane re-open chain, the cure-origin exclusion and
+  per-path re-take reuse, and the emitted event's own `taskIds`).
 - **Cure tasks land before the frozen tail, re-take tasks after it (v0.20
   requirement E.4, #167, task 033).** `insert_cure_tasks` no longer only
   ever `tasks.append`s: `state.last_code_touching_task_id(run, tasks)`

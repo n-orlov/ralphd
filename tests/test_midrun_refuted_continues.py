@@ -33,7 +33,17 @@ the shipped sha:
   `LoopSupervisor._apply_criteria_amendments` finds no candidate and
   writes nothing.
 
-Five things pinned:
+Six things pinned -- the sixth added by #209 defect 4, which is why the
+enumeration grew rather than a new module appearing: a `substance` remedy
+(this module's REFUTED entry carries no `remedy_type`, so it is exactly that
+default case) now also BECOMES one cure task, through
+`LoopSupervisor._insert_refuted_remedy_tasks` -> `state.insert_cure_tasks`,
+on the same path review's own cure pass uses. The first five are unchanged
+and still pass unchanged: the remedy task appends at the end of this
+one-task plan (`last_code_touching_task_id` finds no named freeze task), so
+every node reading `tasks[0]` still reads the same task record.
+
+Six things pinned:
 
 1. `successCriteria`/`criteriaFingerprint` byte-identical before/after;
 2. no `task.criteria_amended` event anywhere in `events.jsonl`;
@@ -45,7 +55,13 @@ Five things pinned:
 5. the task continues its ordinary validation ladder -- the SAME
    `_step_worker` call's verify pass, immediately after the episode,
    still reaches and verifies it (`validated`), never blocked or
-   diverted by the REFUTED adjudication.
+   diverted by the REFUTED adjudication;
+6. the remedy becomes WORK -- one extra `pending` task, `origin:
+   "review-cure"`, stamped `remedyFor` with the obligation, witnessed by
+   exactly one `petitions.PETITION_REMEDY_TASK_EVENT` line beside the
+   pre-existing single `petition_refuted` line, and charged against neither
+   cure-pass counter; and the `mid_run` guard that keeps an approach-end
+   review from inserting one it could not act on.
 """
 
 from __future__ import annotations
@@ -254,3 +270,74 @@ def test_other_task_fields_are_otherwise_untouched(tmp_path):
     for key in untouched:
         assert on_disk[key] == before[key], key
     assert on_disk["status"] == "validated"
+
+
+def test_the_substance_remedy_becomes_a_pending_cure_task_through_the_real_engine(
+        tmp_path):
+    """#209 defect 4, through the SAME production path this module already
+    drives (`_step_worker` -> `_maybe_run_midrun_adjudication_episode` ->
+    `_review_verdict(mid_run=True)` -> `_insert_refuted_remedy_tasks`), with
+    no monkeypatch of the behaviour under test. Before this the remedy
+    reached the plan nowhere at all -- it was witnessed on `events.jsonl` and
+    (for a `petitioned` task, which this fixture's task is not) written into
+    `validationNotes` on a task whose only legal successor is `skipped`.
+    """
+    sup, run = _run_refuted_episode(tmp_path, _task_record())
+
+    tasks = run.read_tasks()["tasks"]
+    remedy = [t for t in tasks if t.get("origin") == "review-cure"]
+    assert len(remedy) == 1
+    assert remedy[0]["remedyFor"] == OBLIGATION
+    assert remedy[0]["title"] == OBLIGATION
+    assert REMEDY in remedy[0]["description"]
+
+    # it entered the plan `pending` and the SAME `_step_worker` call's
+    # scheduler then selected it -- i.e. this is actionable work the loop
+    # picks up, not a row parked where nothing can reach it.
+    moves = [(e.get("oldStatus"), e.get("newStatus")) for e in _events(run)
+             if e.get("type") == "task" and e.get("taskId") == remedy[0]["id"]]
+    assert moves[0] == (None, "pending")
+    assert ("pending", "in-progress") in moves
+
+    events = [e for e in _events(run)
+              if e.get("type") == petitions.PETITION_REMEDY_TASK_EVENT]
+    assert len(events) == 1
+    assert events[0]["obligation"] == OBLIGATION
+    assert events[0]["taskId"] == remedy[0]["id"]
+    # the witness line the remedy always had is still emitted exactly once
+    # beside it -- this path adds a channel, it replaces none.
+    assert len([e for e in _events(run)
+                if e.get("type") == "petition_refuted"]) == 1
+
+    # and it spends neither cure-pass counter, so it can never starve
+    # `JobConfig.cure_pass_ceiling` out from under review's or the peer
+    # verdict gate's own cure pass.
+    status = run.read_status()
+    assert not status.get("curePasses")
+    assert not status.get("gateCurePasses")
+    assert sup._cure_passes_for_run() == 0
+
+
+def test_an_approach_end_review_inserts_no_remedy_task(tmp_path):
+    """The `mid_run` guard, and therefore the absence of a silent-loss
+    regression of #209's own shape: at approach-end `_step_review` either
+    rejects (archiving and replanning, which discards the task) or accepts
+    and `_finish("succeeded", ...)` runs with it still `pending`, because
+    `_terminal_success_blockers` names only unsettled steering files and
+    non-terminal STEERING-origin tasks. If a later change lifts the guard,
+    this is the node where widening that predicate gets forced.
+    """
+    sup, run, workspace = _worker_supervisor(tmp_path, _task_record())
+    _make_petitions_file(workspace, OBLIGATION)
+    before = run.read_tasks()["tasks"]
+
+    sup._review_verdict(_refuting_review(sup), mid_run=False)
+
+    after = run.read_tasks()["tasks"]
+    assert len(after) == len(before)
+    assert not [t for t in after if t.get("origin") == "review-cure"]
+    assert not [e for e in _events(run)
+                if e.get("type") == petitions.PETITION_REMEDY_TASK_EVENT]
+    # the REFUTED witness line still fires on this path, unchanged.
+    assert len([e for e in _events(run)
+                if e.get("type") == "petition_refuted"]) == 1

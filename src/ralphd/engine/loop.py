@@ -9192,6 +9192,17 @@ class LoopSupervisor:
         immediately so `_outstanding_for_completion`/`plan_complete` and
         every other reader see it from this point on.
 
+        #209 defect 4: on a `mid_run` call ONLY, the same field's REFUTED
+        entries also get `_insert_refuted_remedy_tasks` -- a `substance`
+        remedy becomes ONE cure task on the same `state.insert_cure_tasks`
+        path review's own cure pass uses, so the refutation's "what would
+        satisfy the obligation" text finally reaches the plan instead of
+        sitting in `validationNotes` on a task whose only legal successor is
+        `skipped`. It runs between the REFUTED write-back and `_write_back_
+        petition_adjudications` for two reasons stated in that method's own
+        docstring, and the `mid_run` guard is what keeps an inserted task
+        from being stranded past `_finish("succeeded", ...)`.
+
         Task 014 (requirement F.1, #144): `mid_run` (default `False`,
         every pre-existing caller unaffected) is `True` only for
         `_maybe_run_midrun_adjudication_episode`'s own bounded, off-budget
@@ -9213,6 +9224,9 @@ class LoopSupervisor:
                 self.run, parsed.get("petition_adjudications"))
             self._apply_refuted_petition_adjudications(
                 parsed.get("petition_adjudications"))
+            if mid_run:
+                self._insert_refuted_remedy_tasks(
+                    parsed.get("petition_adjudications"))
             self._apply_confirmed_petition_adjudications(
                 parsed.get("petition_adjudications"))
             self._apply_criteria_amendments(
@@ -11165,6 +11179,79 @@ class LoopSupervisor:
             self.run.record_debt(task_id, notes)
         return changed
 
+    def _insert_refuted_remedy_tasks(self, adjudications) -> list[str]:
+        """#209 defect 4: the write-back half of `engine.petitions.refuted_
+        remedy_cure_findings` -- turn every REFUTED entry whose remedy is
+        WORK (a `substance` remedy against a still-OPEN filed petition with
+        no remedy task already in the plan; see that function for all six
+        gates) into ONE cure task, through the SAME `state.insert_cure_
+        tasks` call review's own cure pass and the peer verdict gate both
+        make. Returns the ids `insert_cure_tasks` returned, `[]` when
+        nothing was eligible (the overwhelming common case).
+
+        Called from `_review_verdict` immediately AFTER `_apply_refuted_
+        petition_adjudications` and BEFORE `_write_back_petition_
+        adjudications`, and both halves of that position are load-bearing:
+        after, so the petitioned task is already `failed` and `insert_cure_
+        tasks`' own dependent re-pointing hands its dependents to the remedy
+        task instead of leaving them doomed; before, so the filing is still
+        OPEN on disk and gate 5 can see it on this very pass.
+
+        `mid_run`-ONLY, and that is an honest limitation rather than an
+        oversight. The mid-run adjudication episode is the one point where
+        an inserted task is guaranteed to be acted on: it runs inside
+        `_step_worker` right before the `pending_verify` hand-off, over the
+        SAME unarchived approach, so the scheduler picks the new `pending`
+        task up on a later iteration. At approach-end `_step_review` either
+        rejects (the task is discarded with the archived approach) or
+        accepts and `_finish("succeeded", ...)` runs with it still `pending`
+        -- `_terminal_success_blockers` names only unsettled steering files
+        and non-terminal STEERING-origin tasks. Inserting there without also
+        widening that predicate (which costs a third blocker plus a new
+        declared guard in `transitions.TABLE["review"]` AND `PEER_VERDICT_
+        GATE_DELTA["review"]`, since reusing `steering_pending_at_verified`
+        for a non-steering reason would lie in the event log) would
+        manufacture a fresh silent-loss defect of exactly the shape #209 is
+        about.
+
+        The insertion spends NEITHER `curePasses` nor `gateCurePasses`, so
+        it cannot starve `JobConfig.cure_pass_ceiling` out from under the two
+        channels that ceiling exists for -- three REFUTED remedies would
+        otherwise turn the next genuinely curable rejection into an
+        archive-and-replan. The bound is structural instead: one filed
+        petition per obligation (engine-enforced at filing time), gate 5's
+        open-only filter, gate 6's `remedyFor` check, and `_petition_
+        adjudication_seen` bounding episodes per process. Every insertion is
+        countable off `events.jsonl` from its own `PETITION_REMEDY_TASK_
+        EVENT` line.
+
+        No `_emit_task_changes()` call: `_take_cure_pass`/`_take_gate_cure_
+        pass` make none either, and the ordinary end-of-iteration diff picks
+        the new `pending` task up.
+        """
+        if not adjudications:
+            return []
+        all_tasks = self.run.read_tasks().get("tasks") or []
+        remedy_findings = petitions.refuted_remedy_cure_findings(
+            adjudications,
+            petitions.open_petitions_in_workspace(
+                self.workspace, contract_text=self._contract_text(),
+                tasks=all_tasks, run=self.run),
+            all_tasks)
+        if not remedy_findings:
+            return []
+        inserted = state.insert_cure_tasks(
+            self.run, self._approach, remedy_findings)
+        # `zip` is exact: `insert_cure_tasks` returns one id per finding in
+        # finding order, and the extra re-take/re-opened ids it can also
+        # return come only from `invalidates`, which these synthesized
+        # findings never carry.
+        for finding, task_id in zip(remedy_findings, inserted):
+            self.run.emit(
+                petitions.PETITION_REMEDY_TASK_EVENT, approach=self._approach,
+                obligation=finding["clause"], taskId=task_id, finding=finding)
+        return inserted
+
     def _apply_confirmed_petition_adjudications(self, adjudications) -> list[str]:
         """Task 015 (requirement C.3, #149): the write-back half of
         `engine.petitions.apply_confirmed_petition_adjudications` -- the
@@ -12340,8 +12427,13 @@ class LoopSupervisor:
         copies away), REFUTED entries move any matching `petitioned` task
         straight to `failed` carrying the remedy
         (`petitions.apply_refuted_petition_adjudications`, via this
-        class's own `_apply_refuted_petition_adjudications`). This
-        episode's own `verdict` field (required by the `review` contract's
+        class's own `_apply_refuted_petition_adjudications`), and -- since
+        #209 defect 4 -- a `substance` remedy ALSO becomes one cure task on
+        the same `state.insert_cure_tasks` path review's own cure pass uses
+        (`_insert_refuted_remedy_tasks`, `mid_run`-only precisely because
+        THIS episode is the one dispatch site whose inserted task the
+        worker loop still gets to act on). This episode's own `verdict`
+        field (required by the `review` contract's
         schema, `verified`/`rejected`) is NEVER treated as a real review
         outcome here -- no `_advance`, no `_finish`, no terminal-success
         side effect of any kind; only the `petition_adjudications` field's
@@ -12420,8 +12512,12 @@ class LoopSupervisor:
             "omitted) when the remedy actually requires a different "
             "deliverable. A `form` remedy routes the task to `validated` "
             "with the remedy recorded as a debt item, never as a retry "
-            "driver; a `substance` remedy fails the task with the remedy "
-            "as its next handoff, exactly as before this task.\n"
+            "driver; a `substance` remedy fails the petitioned task AND "
+            "becomes ONE cure task built from your remedy text, with every "
+            "dependent of the failed task re-pointed onto it -- so write a "
+            "`substance` remedy as WORK whose completion is checkable (the "
+            "end state that will be true once it is done), and classify a "
+            "remedy that changes no deliverable as `form` instead.\n"
             "\nTask 006 (requirement B.1, #114): if a petition's `Type` is "
             "`contradictory-clauses` or `self-referential` AND its "
             "obligation IS the affected task's own `successCriteria` text "

@@ -193,8 +193,13 @@ a process, restate something already true), or `remedy_type: "substance"`
 (the default when omitted) when it actually requires a different
 deliverable. A `form` remedy routes the affected task to `validated`, with
 the remedy recorded as a debt item rather than a retry driver; a
-`substance` remedy fails the task with the remedy as its next handoff,
-exactly as REFUTED has always behaved. Carry your
+`substance` remedy fails the affected task -- which is then dependency-dead
+-- AND the engine builds ONE cure task out of your remedy text, on the same
+path a curable rejection's cure task takes, re-pointing every dependent of
+the failed task onto it. So write a `substance` remedy as WORK whose
+completion is checkable: the end state that will be true once it is done,
+inside the same bounded-clause shape you hold a `cured_when` to. Classify a
+remedy that changes no deliverable as `form`. Carry your
 adjudications in your verdict payload's `petition_adjudications` field (see
 Verdict below), one entry per petition, naming the obligation and your
 CONFIRMED/REFUTED call (and, for REFUTED, the remedy and its `remedy_type`).

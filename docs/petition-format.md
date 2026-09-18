@@ -115,7 +115,21 @@ Review adjudicates every open petition as part of its verdict:
   an empty confirmed set, so tampering surfaces the obligation for
   adjudication again rather than manufacturing an exemption.
 - **REFUTED** must state concretely what would satisfy the obligation, so
-  the run knows exactly what to do differently. Re-filing a REFUTED
+  the run knows exactly what to do differently — written as WORK whose
+  completion is checkable (the end state that will be true once it is
+  done), because a `substance` remedy (`remedy_type`, the default when the
+  field is omitted) is inserted as ONE cure task on `state.insert_cure_
+  tasks`' own path, `origin: "review-cure"`, stamped `remedyFor` with the
+  obligation, its criteria folded to the same ~5-clause bound a planner's
+  criteria are held to and its full text kept in the task's `description`
+  (#209 defect 4). Every dependent of the `petitioned` task the refutation
+  just failed is re-pointed onto that task, so the refutation leaves no
+  doomed remainder. A `form` remedy — one that changes no deliverable, only
+  how one is produced — is advice, and still becomes a debt row and nothing
+  else. The insertion happens only for a petition still OPEN on disk, only
+  once per obligation, and only from the mid-run adjudication episode: the
+  one dispatch site whose inserted task the worker loop still gets to act
+  on. Re-filing a REFUTED
   petition against the same obligation is the duplicate case above: a
   blocking finding, not a second hearing. A run-scope REFUTED obligation is
   likewise not re-surfaced to review as an OPEN petition on any later

@@ -17,7 +17,14 @@ paths the finding's cure invalidates (`engine/findings.py`'s
   complete once that one edge is added). No new task is appended for
   that path.
 
-Three groups of nodes:
+#209 defect 3 narrows both branches without touching that invariant, and
+its own group of nodes sits between the second and the third below: a task
+the ENGINE authored (`origin: "review-cure"`) is never recognised as the
+record or as a verification step, so a later pass stops re-opening an
+earlier pass's LANDED cure task; and one path re-uses this approach's
+existing re-take row rather than growing a second one with the same title.
+
+Four groups of nodes:
 
 * the per-path insertion itself, direct against `insert_cure_tasks`
   (`_make_run`, the same harness `tests/test_cure_pass.py`'s own
@@ -209,6 +216,173 @@ def test_an_unrelated_path_alongside_the_record_path_still_gets_its_own_task(tmp
     tasks = {t["id"]: t for t in data["tasks"]}
     assert "artifacts/reports/v0.20-suite-budget.md" in tasks[retake_id]["successCriteria"]
     assert tasks[retake_id]["dependsOn"] == [cure_id]
+
+
+# ---------------------------------------------------------------------------
+# #209 defect 3: the engine's own cure output is never lane evidence, and
+# one path never grows a second re-take task.
+# ---------------------------------------------------------------------------
+
+CURE_PATH = "src/ralphd/log_merge.py"
+
+
+def _cure_task(tid: str, *, status: str = "validated", depends=None,
+               title: str | None = None, criteria: str = "cure the finding") -> dict:
+    """A row the ENGINE authored on an earlier cure pass over this same
+    approach (`state.cure_task_from_finding`/`_retake_task_from_path`'s own
+    shape): the distinguishing fact is `origin: "review-cure"`."""
+    return {"id": tid, "title": title if title is not None else tid,
+            "successCriteria": criteria, "status": status,
+            "origin": "review-cure", "dependsOn": list(depends or []),
+            "tier": "normal"}
+
+
+def test_the_engines_own_cure_task_is_never_a_verification_step(tmp_path):
+    """The measured deck-phase4/selfdev-v022 shape: pass 1 adds a `cure ->
+    record` edge onto a genuine planner record, and on pass 2 that edge made
+    the pass-1 CURE TASK look like a verification step to re-open --
+    `deck-phase4` reset `cure-03-01`/`cure-03-02` from `validated` to
+    `pending` and re-worked them; `selfdev-v022` left `cure-01-01` `pending`
+    behind three LATER cure tasks. Both phases of the filter are pinned here
+    because they are one decision with two consequences.
+    """
+    # Phase 1: the record's dependsOn names a planner verification step AND
+    # pass 1's own cure task. Only the planner pair is re-opened.
+    run = _make_run(tmp_path / "run", [
+        _task("057", status="validated", criteria="verify every lane"),
+        _task("058", status="validated", depends=["057", "cure-01-01"],
+              criteria=f"One commit adds {RECORD_PATH} naming the shipped sha."),
+        _cure_task("cure-01-01"),
+    ])
+    finding = _blocking_curable_finding(
+        "the lanes moved again", "a second cure landed after the record",
+        invalidates=[RECORD_PATH])
+    inserted = insert_cure_tasks(run, 1, [finding])
+
+    tasks = {t["id"]: t for t in run.read_tasks()["tasks"]}
+    assert tasks["057"]["status"] == "pending"
+    assert tasks["058"]["status"] == "pending"
+    # the landed cure task keeps its terminal status, its own dependsOn, and
+    # is absent from the ids the pass reports as put back into motion.
+    assert tasks["cure-01-01"]["status"] == "validated"
+    assert tasks["cure-01-01"]["dependsOn"] == []
+    assert "cure-01-01" not in inserted
+    assert set(inserted[1:]) == {"057", "058"}
+
+    # Phase 2: the behaviour this gives up, stated rather than implied -- a
+    # record whose ONLY verification step is an engine-authored row is no
+    # longer re-opened, so the path falls back to a re-take task and is
+    # still re-recorded at the new cure's tree.
+    run2 = _make_run(tmp_path / "run2", [
+        _task("058", status="validated", depends=["cure-01-01"],
+              criteria=f"One commit adds {RECORD_PATH} naming the shipped sha."),
+        _cure_task("cure-01-01"),
+    ])
+    inserted2 = insert_cure_tasks(run2, 1, [finding])
+    tasks2 = {t["id"]: t for t in run2.read_tasks()["tasks"]}
+    assert tasks2["058"]["status"] == "validated"  # not re-opened
+    assert tasks2["cure-01-01"]["status"] == "validated"
+    retakes = [t for t in tasks2.values() if t["title"] == f"Re-take {RECORD_PATH}"]
+    assert len(retakes) == 1
+    assert retakes[0]["id"] in inserted2
+    assert retakes[0]["dependsOn"] == [inserted2[0]]
+
+
+def test_a_later_cure_pass_reuses_the_retake_task_and_never_reopens_the_cure(tmp_path):
+    """Route 1 of the same misclassification, plus Change 2's reuse. A
+    re-take task's own `successCriteria` names its path verbatim and it
+    `dependsOn`s its cure task, so from pass 2 on it satisfied "criteria
+    names the path AND a non-empty dependsOn" and was matched as the plan's
+    own lane-evidence record -- which re-opened its cure task and wrote a
+    cure-to-cure edge (`selfdev-v022`: `cure-01-01.dependsOn ==
+    ['cure-01-02']`). Now the re-take is invisible to that recognition and
+    the path re-uses that ONE row at the new cure's tree instead.
+    """
+    run = _make_run(tmp_path / "run", [])
+    finding = _blocking_curable_finding(
+        "requirement E.3 (#167)", "the merge went stale",
+        invalidates=[CURE_PATH])
+    first = insert_cure_tasks(run, 1, [finding])
+    assert len(first) == 2
+    first_cure, retake_id = first
+
+    # the worker landed both: the re-take is validated when pass 2 arrives.
+    # Written through `run.write_tasks` (not `atomic_write_json` against the
+    # view copy `_make_run` seeds) because `read_tasks` reads only the
+    # protected, authoritative copy the first call above just created.
+    data = run.read_tasks()
+    for t in data["tasks"]:
+        t["status"] = "validated"
+    run.write_tasks(data)
+
+    second = insert_cure_tasks(run, 1, [finding])
+    assert len(second) == 2
+    second_cure = second[0]
+    assert second[1] == retake_id  # the SAME row, named once
+
+    tasks = {t["id"]: t for t in run.read_tasks()["tasks"]}
+    assert len([t for t in tasks.values()
+                if t["title"] == f"Re-take {CURE_PATH}"]) == 1
+    assert tasks[retake_id]["status"] == "pending"      # stale at the new tree
+    assert tasks[retake_id]["dependsOn"] == [first_cure, second_cure]
+    # pass 1's landed cure task is left exactly where the worker left it.
+    assert tasks[first_cure]["status"] == "validated"
+    assert tasks[first_cure]["dependsOn"] == []
+
+
+def test_two_findings_naming_the_same_path_share_one_retake_task(tmp_path):
+    """Change 2 within ONE call: the per-(finding, path) re-take append was
+    the one non-idempotent cost left inside a single `insert_cure_tasks`
+    call. Contrast `test_multiple_paths_on_one_finding_each_get_their_own_
+    retake_task` above, which keeps the one-task-per-DISTINCT-path property.
+    """
+    run = _make_run(tmp_path / "run", [])
+    findings = [
+        _blocking_curable_finding("requirement A", "first",
+                                  invalidates=["docs/testing.md"]),
+        _blocking_curable_finding("requirement B", "second",
+                                  invalidates=["docs/testing.md"]),
+    ]
+    inserted = insert_cure_tasks(run, 1, findings)
+
+    tasks = {t["id"]: t for t in run.read_tasks()["tasks"]}
+    retakes = [t for t in tasks.values()
+               if t["title"] == "Re-take docs/testing.md"]
+    assert len(retakes) == 1
+    # one re-take, depending on BOTH cure tasks in finding order, and named
+    # exactly once in the returned ids.
+    assert retakes[0]["dependsOn"] == ["cure-01-01", "cure-01-02"]
+    assert inserted.count(retakes[0]["id"]) == 1
+    assert inserted == ["cure-01-01", retakes[0]["id"], "cure-01-02"]
+
+
+def test_a_retake_blocked_by_a_dead_cure_dependency_is_not_reused(tmp_path):
+    """The deadlock guard on Change 2's reuse: a re-take whose own
+    `dependsOn` names a `failed`/`skipped` task can never be selected again
+    (`scheduler.select_next_task`), so reusing it would turn today's
+    duplicate row into #206's "no selectable tasks" shape. A fresh re-take
+    is appended instead -- exactly the pre-change behaviour -- and the dead
+    edge is never inherited.
+    """
+    run = _make_run(tmp_path / "run", [
+        _cure_task("cure-01-09", status="failed"),
+        _cure_task("retake-01-09-01", status="validated",
+                   title=f"Re-take {CURE_PATH}", depends=["cure-01-09"],
+                   criteria=f"{CURE_PATH} is re-taken (re-recorded)."),
+    ])
+    finding = _blocking_curable_finding(
+        "requirement E.3 (#167)", "stale again", invalidates=[CURE_PATH])
+    inserted = insert_cure_tasks(run, 1, [finding])
+
+    tasks = {t["id"]: t for t in run.read_tasks()["tasks"]}
+    assert tasks["retake-01-09-01"]["status"] == "validated"      # untouched
+    assert tasks["retake-01-09-01"]["dependsOn"] == ["cure-01-09"]
+    fresh = [t for t in tasks.values()
+             if t["title"] == f"Re-take {CURE_PATH}"
+             and t["id"] != "retake-01-09-01"]
+    assert len(fresh) == 1
+    assert fresh[0]["dependsOn"] == [inserted[0]]
+    assert fresh[0]["id"] in inserted
 
 
 # ---------------------------------------------------------------------------

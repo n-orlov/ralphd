@@ -1066,6 +1066,14 @@ def test_dependent_repointing_covers_only_both_neither_and_no_failed_task_named(
     fourth (a `pending`, not `failed`, task named in the evidence) is the
     second phase, its own separate tasks table and call, exactly as
     before.
+
+    #209 defect 7 adds a THIRD phase to the same subject: the id may sit in
+    the finding's own `clause` rather than its `evidence` and the repoint
+    still fires. Measured in `deck-phase3k`: the dead id `205` was named in
+    the clause while the evidence held only commit shas, so nothing
+    repointed and the operator hand-wrote two `steer task-update` calls.
+    Phases one and two are unchanged and neither of their clauses names any
+    task id, so both still prove exactly what they proved before.
     """
     tasks = [
         _plan_task("020", status="failed"),
@@ -1111,6 +1119,21 @@ def test_dependent_repointing_covers_only_both_neither_and_no_failed_task_named(
     data2 = run2.read_tasks()
     dependent2 = next(t for t in data2["tasks"] if t["id"] == "021")
     assert dependent2["dependsOn"] == ["020"]  # 020 is not failed, so untouched
+
+    # phase three (#209 defect 7): the failed id named in the CLAUSE, with
+    # the evidence holding only shas -- the deck-phase3k shape.
+    tasks3 = [
+        _plan_task("205", status="failed"),
+        _plan_task("206", depends_on=["205"]),
+    ]
+    run3 = _run_with_tasks(tmp_path / "run3", tasks3)
+    finding3 = _blocking_curable_finding(
+        "task 205 never landed its guard (requirement D)",
+        "e87a1578, 6dd57746")
+    inserted3 = insert_cure_tasks(run3, 1, [finding3])
+    data3 = run3.read_tasks()
+    dependent3 = next(t for t in data3["tasks"] if t["id"] == "206")
+    assert dependent3["dependsOn"] == [inserted3[0]]
 
 
 def test_steer_md_documents_the_same_repointing_move_for_task_update():

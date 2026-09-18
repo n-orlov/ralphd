@@ -71,6 +71,12 @@ that scenario in each (`..._with_witness_log` for task 002's two-call
 pipeline, `..._confirmed_store_only` for task 016's single-call one). The
 byte-identical `_run(tmp_path) -> RunDir` helper both of the REFUTED
 sections defined is now shared, defined once.
+
+Section 11 is this module's own subject matter rather than an absorbed
+module: #209 defect 4 -- `petitions.refuted_remedy_cure_findings`, the pure
+decision half of turning a REFUTED `substance` remedy into ONE cure task,
+and its six gates. The write half's own production path is driven end to end
+in `tests/test_midrun_refuted_continues.py`.
 """
 
 from __future__ import annotations
@@ -80,7 +86,13 @@ import json
 import subprocess
 from pathlib import Path
 
-from ralphd.engine import contracts, petitions, run_record, transitions
+from ralphd.engine import (
+    contracts,
+    petitions,
+    plan_ingestion,
+    run_record,
+    transitions,
+)
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.petitions import (
@@ -90,7 +102,12 @@ from ralphd.engine.petitions import (
     record_refuted_adjudications,
 )
 from ralphd.engine.runner import IterationResult
-from ralphd.engine.state import RunDir, atomic_write_json, read_json
+from ralphd.engine.state import (
+    RunDir,
+    atomic_write_json,
+    insert_cure_tasks,
+    read_json,
+)
 from tests.conftest import make_supervisor, supervisor_factory
 
 from test_midrun_adjudication_episode import (
@@ -1678,3 +1695,171 @@ def test_no_petition_adjudications_writes_nothing_and_touches_no_git_state(tmp_p
         json.loads(result.final_text).get("petition_adjudications"))
     assert written == []
     assert _git_status(sup.workspace) == ""
+
+
+# ---------------------------------------------------------------------------
+# 11. A REFUTED petition's remedy becomes WORK (#209 defect 4).
+#
+# `petitions.refuted_remedy_cure_findings` is the pure DECISION half -- the
+# same decide/write split `criteria_amendment_candidates` and `apply_refuted_
+# petition_adjudications` above already keep. Until this change a REFUTED
+# `substance` remedy reached the plan nowhere: the matching `petitioned` task
+# moved to `failed`, whose only legal successor is `skipped`
+# (`transitions.TASK_STATUS_TABLE`), so the remedy sat in `validationNotes`
+# on a task nothing could ever retry while every dependent of it was doomed.
+# ---------------------------------------------------------------------------
+
+REMEDY_OBLIGATION = "Task 44: render the stacked frame without clipping"
+REMEDY_TEXT = ("Create a code-fix task under the plan's freeze-line "
+               "exception and fix renderStackedFrame's width computation.")
+
+
+def _remedy_entry(**overrides) -> dict:
+    entry = {"obligation": REMEDY_OBLIGATION, "adjudication": "REFUTED",
+             "remedy": REMEDY_TEXT}
+    entry.update(overrides)
+    return entry
+
+
+def _filed(obligation: str = REMEDY_OBLIGATION) -> list[dict]:
+    """The FILED petition gate 5 decides from -- shaped like
+    `open_petitions_in_workspace`'s own output, never like the claim about
+    it in the adjudication payload."""
+    return [{"obligation": obligation, "type": "self-referential",
+             "evidence": "the frame clips at every width"}]
+
+
+def _remedy_task(tid: str = "44", **overrides) -> dict:
+    task = {"id": tid, "title": "render the stacked frame without clipping",
+            "successCriteria": "n/a", "status": "pending", "dependsOn": [],
+            "tier": "normal", "origin": "planner"}
+    task.update(overrides)
+    return task
+
+
+def test_a_substance_remedy_becomes_one_finding_that_folds_into_a_bounded_cure_task(
+        tmp_path):
+    """The whole of gate 1-4 clearing, and the shape of what clears them: a
+    finding-shaped record whose `clause` is the obligation, whose `evidence`
+    carries the remedy verbatim, and which deliberately carries NEITHER
+    `cured_when` (so the remedy prose goes through `state._cure_task_success_
+    criteria`'s fold to the same ~5-clause bound review's own `cured_when` is
+    held to, applied by construction rather than by refusal) NOR
+    `invalidates` (a remedy names no invalidated evidence path, so the
+    re-record cascade is never triggered from here). The second half runs the
+    record through the real `insert_cure_tasks` to pin that the fold happens
+    and that the full text survives in `description`.
+    """
+    out = petitions.refuted_remedy_cure_findings(
+        [_remedy_entry()], _filed(), [_remedy_task()])
+    assert len(out) == 1
+    finding = out[0]
+    assert finding["clause"] == REMEDY_OBLIGATION
+    assert REMEDY_TEXT in finding["evidence"]
+    assert finding["remedy_for"] == REMEDY_OBLIGATION
+    assert finding["severity"] == "blocking" and finding["curable"] is True
+    assert "cured_when" not in finding
+    assert "invalidates" not in finding
+
+    # nine sentences of remedy prose: bounded criteria, unbounded description.
+    long_remedy = " ".join(f"Step {n} lands." for n in range(1, 10))
+    long_out = petitions.refuted_remedy_cure_findings(
+        [_remedy_entry(remedy=long_remedy)], _filed(), [_remedy_task()])
+    run = RunDir(root=tmp_path / "run-remedy")
+    run.root.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(run.tasks_file, {"version": 1, "tasks": []})
+    inserted = insert_cure_tasks(run, 1, long_out)
+    task = next(t for t in run.read_tasks()["tasks"] if t["id"] == inserted[0])
+    assert task["origin"] == "review-cure"
+    assert task["remedyFor"] == REMEDY_OBLIGATION
+    assert len(task["successCriteria"].split("; ")) <= \
+        plan_ingestion.MAX_CHECKABLE_CLAUSES
+    assert "Step 9 lands" in task["description"]
+
+
+def test_a_form_remedy_creates_no_work(tmp_path):
+    """Gate 4, the advice/work discriminator, and the reason it needs no new
+    contract field: requirement A.4 (#155) already defines `form` as a remedy
+    that changes NO deliverable, only how one is produced, already routes it
+    to `validated` plus a debt row, and already calls it explicitly never a
+    retry driver. That IS advice. Case and whitespace variants included,
+    since `_refuted_remedy_type` tolerates both.
+    """
+    for value in ("form", "FORM", "  Form  "):
+        assert petitions.refuted_remedy_cure_findings(
+            [_remedy_entry(remedy_type=value)], _filed(),
+            [_remedy_task()]) == []
+    # `substance`, and every entry omitting the field, is work.
+    for value in ("substance", None):
+        entry = (_remedy_entry() if value is None
+                 else _remedy_entry(remedy_type=value))
+        assert len(petitions.refuted_remedy_cure_findings(
+            [entry], _filed(), [_remedy_task()])) == 1
+
+
+def test_an_unfiled_blank_or_already_remedied_obligation_creates_no_work(tmp_path):
+    """The structural bounds -- gates 1, 2, 3, 5 and 6 -- each of which is
+    the reason a rogue payload, a re-adjudication or a resumed episode cannot
+    multiply remedy tasks. Gate 5 is also exactly why
+    `tests/test_petitioned_plan_complete.py::test_a_refuted_then_failed_task_
+    still_blocks_plan_complete` stays green: its fixture files no petition
+    anywhere, so nothing is ever inserted under it.
+    """
+    tasks = [_remedy_task()]
+    # gate 1: CONFIRMED says the obligation is VOID, not that it is work.
+    assert petitions.refuted_remedy_cure_findings(
+        [_remedy_entry(adjudication="CONFIRMED")], _filed(), tasks) == []
+    # gate 2/3: nothing to name, or nothing to build a criterion from.
+    assert petitions.refuted_remedy_cure_findings(
+        [_remedy_entry(obligation="   ")], _filed(), tasks) == []
+    for remedy in ("", "   ", None):
+        assert petitions.refuted_remedy_cure_findings(
+            [_remedy_entry(remedy=remedy)], _filed(), tasks) == []
+    # gate 5: an obligation no petition was ever filed for -- a rogue or
+    # hallucinated obligation cannot manufacture work.
+    assert petitions.refuted_remedy_cure_findings(
+        [_remedy_entry()], _filed("Task 99: something else entirely"),
+        tasks) == []
+    assert petitions.refuted_remedy_cure_findings(
+        [_remedy_entry()], [], tasks) == []
+    # gate 6: a task already carrying `remedyFor` for this obligation. The
+    # load-bearing guard, because the same obligation IS re-adjudicated in
+    # practice (13 `petition_refuted` events for 3 entries, #209) and
+    # `_petition_adjudication_seen` is in-memory while `tasks.json` is not.
+    already = tasks + [_remedy_task(
+        "cure-01-01", origin="review-cure", remedyFor=REMEDY_OBLIGATION)]
+    assert petitions.refuted_remedy_cure_findings(
+        [_remedy_entry()], _filed(), already) == []
+    # and the same collapse WITHIN one payload, which gate 6 cannot see on
+    # disk because nothing has been written yet.
+    assert len(petitions.refuted_remedy_cure_findings(
+        [_remedy_entry(), _remedy_entry()], _filed(), tasks)) == 1
+
+
+def test_the_failed_petitioned_tasks_dependents_are_repointed_onto_the_remedy_task(
+        tmp_path):
+    """Why the `(petition REFUTED for task <id>)` suffix on `evidence` is
+    load-bearing rather than decoration: it is what makes `insert_cure_
+    tasks`' existing whole-word `_failed_task_ids_named_in` scan recognise
+    the task the refutation just failed and hand every one of its dependents
+    to the remedy task. The failed task is never resurrected -- it cannot be,
+    `transitions.TASK_STATUS_TABLE["failed"] == ("skipped",)` -- so a
+    replacement task inheriting the dependents is the only sanctioned escape
+    from the doom the `substance` branch creates.
+    """
+    tasks = [
+        _remedy_task("44", status="failed"),
+        _remedy_task("45", dependsOn=["44"]),
+    ]
+    out = petitions.refuted_remedy_cure_findings(
+        [_remedy_entry()], _filed(), tasks)
+    assert len(out) == 1
+    assert "(petition REFUTED for task 44)" in out[0]["evidence"]
+
+    run = RunDir(root=tmp_path / "run-repoint")
+    run.root.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(run.tasks_file, {"version": 1, "tasks": tasks})
+    inserted = insert_cure_tasks(run, 1, out)
+    by_id = {t["id"]: t for t in run.read_tasks()["tasks"]}
+    assert by_id["44"]["status"] == "failed"
+    assert by_id["45"]["dependsOn"] == [inserted[0]]

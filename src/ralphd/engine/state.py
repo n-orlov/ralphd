@@ -3740,6 +3740,23 @@ def cure_task_from_finding(approach: int, index: int, finding: dict) -> dict:
     `clause` + `evidence` alone (`_cure_task_description` above) -- the
     human-readable context beside whichever text is actually the
     criterion.
+
+    #209 defect 4: an optional `remedy_for` string on the finding is
+    stamped onto the task as `remedyFor` -- the REFUTED petition
+    obligation a remedy-derived cure task was built from (`petitions.
+    refuted_remedy_cure_findings`). Same "the engine stamps provenance,
+    never the caller" pattern `insert_worker_split_tasks` uses for
+    `splitFrom`, and for the same two reasons: a plan reader must be able
+    to tell a remedy-derived cure task from a rejection-derived one, and
+    `refuted_remedy_cure_findings`' own idempotence gate reads this field
+    back off `tasks.json` (which survives a resume, unlike the in-memory
+    `LoopSupervisor._petition_adjudication_seen` set). `origin` stays
+    `TASK_ORIGIN_REVIEW_CURE` -- the task IS engine-inserted review output,
+    so every existing surface (`is_review_cure_origin`, `format_task_
+    status`, the CLI table, the hub row) already marks it correctly and no
+    new origin value is owed. A finding with no `remedy_for` -- every
+    ordinary rejection finding -- yields a task with no `remedyFor` key at
+    all, byte-for-byte as before this change.
     """
     clause = str(finding.get("clause") or "finding").strip() or "finding"
     cured_when = finding.get("cured_when")
@@ -3747,7 +3764,7 @@ def cure_task_from_finding(approach: int, index: int, finding: dict) -> dict:
         success_criteria = cured_when.strip()
     else:
         success_criteria = _cure_task_success_criteria(finding)
-    return {
+    task = {
         "id": f"cure-{approach:02d}-{index:02d}",
         "title": clause,
         "successCriteria": success_criteria,
@@ -3757,6 +3774,10 @@ def cure_task_from_finding(approach: int, index: int, finding: dict) -> dict:
         "dependsOn": [],
         "tier": "normal",
     }
+    remedy_for = finding.get("remedy_for")
+    if isinstance(remedy_for, str) and remedy_for.strip():
+        task["remedyFor"] = remedy_for.strip()
+    return task
 
 
 def _unique_task_id(base_id: str, existing_ids: set) -> str:
@@ -3797,10 +3818,43 @@ def _lane_evidence_record_chain(tasks: list, path: str) -> tuple[dict | None, li
     matches, which is the ordinary case for a path with no such existing
     task -- `insert_cure_tasks` below falls back to appending a brand
     new re-take task for it instead.
+
+    #209 defect 3: a task the ENGINE itself authored on this very path
+    (`is_review_cure_origin` -- a cure task or a re-take task) is
+    invisible to this recognition, BOTH as a candidate record and as a
+    verification step. Both halves are needed and neither is redundant:
+
+    - as a candidate: a re-take task's own `successCriteria` names its
+      path verbatim (`_retake_task_from_path` below writes it) and it
+      `dependsOn`s its cure task, so from the SECOND cure pass over the
+      same approach onward it satisfied "criteria names the path AND a
+      non-empty dependsOn" and was matched as "the plan's OWN final
+      lane-evidence record" it never was.
+    - as a verification step: this is the load-bearing half. Pass 1's own
+      `cure -> verification` edge (measured: `006.dependsOn ==
+      ['cure-01-01']` in `selfdev-v022`, `003.dependsOn == ['002',
+      'cure-03-01','cure-03-02']` in `deck-phase4`) is what made an
+      ORDINARY planner task a candidate on pass 2 with pass 1's landed
+      cure task as its "verification step" to re-open. `deck-phase4` reset
+      `cure-03-01`/`cure-03-02` from `validated` back to `pending` at
+      2026-09-17T13:36:35Z and re-worked them; `selfdev-v022` re-opened
+      `cure-01-01` on passes 2 AND 3 and left it `pending` with
+      `dependsOn: ['cure-01-02','cure-01-02-2','cure-01-03-2',
+      'cure-01-01-3']` -- a landed code cure blocked on three LATER cure
+      tasks, with three more tasks blocked behind it (#206's "no
+      selectable tasks" shape).
+
+    With the filter the verification list of such a task is empty, the
+    existing `if not verification: continue` below skips it, and the scan
+    reaches the SAME record/verification pair pass 1 chose. Chain
+    identification is pass-invariant. The one behaviour deliberately given
+    up: a record whose `dependsOn` names ONLY engine-authored rows is no
+    longer re-opened -- its path takes the re-take branch instead, so it
+    is still re-recorded at the cure's tree and nothing is skipped.
     """
     by_id = {t.get("id"): t for t in tasks if isinstance(t, dict)}
     for t in tasks:
-        if not isinstance(t, dict):
+        if not isinstance(t, dict) or is_review_cure_origin(t):
             continue
         criteria = t.get("successCriteria")
         if not isinstance(criteria, str) or path not in criteria:
@@ -3808,7 +3862,8 @@ def _lane_evidence_record_chain(tasks: list, path: str) -> tuple[dict | None, li
         depends = t.get("dependsOn")
         if not isinstance(depends, list) or not depends:
             continue
-        verification = [by_id[d] for d in depends if d in by_id]
+        verification = [by_id[d] for d in depends
+                        if d in by_id and not is_review_cure_origin(by_id[d])]
         if not verification:
             continue
         return t, verification
@@ -3845,6 +3900,48 @@ def _retake_task_from_path(approach: int, index: int, path_index: int,
         "dependsOn": [cure_task_id],
         "tier": "normal",
     }
+
+
+def _existing_retake_task(tasks: list, path: str) -> dict | None:
+    """#209 defect 3: the re-take task an earlier finding of this SAME
+    call -- or an earlier cure pass over this SAME approach, since
+    `tasks.json` only ever holds the current approach's rows
+    (`LoopSupervisor._archive_approach` writes the authoritative copy to
+    `approaches/NN/tasks.json` before a replan overwrites it) -- already
+    appended for `path`, or `None` when the path has none yet.
+
+    Keyed on the engine's OWN deterministic title (`_retake_task_from_
+    path` above writes `f"Re-take {path}"`) plus `origin: "review-cure"`
+    (`is_review_cure_origin`, the single provenance predicate this defect
+    also filters `_lane_evidence_record_chain` by), never on a planner's
+    prose: the title is engine-authored, so this also matches rows written
+    by versions before this change, which is why a run resumed mid-approach
+    keeps its collapse instead of starting a fresh series.
+
+    Reuse is DECLINED for a re-take whose own `dependsOn` names a task in
+    `TASK_DEPENDENCY_DEAD_STATUSES`: that row can never be selected again
+    (`scheduler.select_next_task` excludes any candidate with an
+    unsatisfiable dependency), so reusing it would convert today's
+    duplicate row into a deadlock -- #206's "no selectable tasks" shape.
+    Pruning the dead edge instead is a policy the engine deliberately does
+    not have (the sanctioned cure is an operator `steer task-update`
+    re-point), so `insert_cure_tasks` appends a fresh re-take for that
+    path, exactly as it did before this change.
+    """
+    dead = {t.get("id") for t in tasks
+            if isinstance(t, dict)
+            and t.get("status", "pending") in TASK_DEPENDENCY_DEAD_STATUSES}
+    title = f"Re-take {path}"
+    for t in tasks:
+        if not isinstance(t, dict) or not is_review_cure_origin(t):
+            continue
+        if t.get("title") != title:
+            continue
+        depends = t.get("dependsOn")
+        if isinstance(depends, list) and any(d in dead for d in depends):
+            continue
+        return t
+    return None
 
 
 # Task 033 (PRD requirement E.4, #167): the phrase a plan uses to name its
@@ -3980,8 +4077,9 @@ def _insert_after_id(tasks: list, new_task: dict, anchor_id: str | None) -> bool
 
 def _failed_task_ids_named_in(text: str, tasks: list) -> list:
     """Task 041 (PRD requirement C.4, #149): every `failed` task in
-    `tasks` whose id appears in `text` (a finding's own `evidence`
-    string) as a whole word (`\btid\b`, never a bare numeric substring
+    `tasks` whose id appears in `text` -- a finding's own free prose about
+    itself: its `evidence`, and since #209 defect 7 its `clause` joined to
+    it -- as a whole word (`\btid\b`, never a bare numeric substring
     of some unrelated id or of surrounding evidence prose). Order
     follows `tasks`, so a caller iterating the result gets a stable,
     reproducible order across calls against the same plan.
@@ -4135,7 +4233,10 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     task, so the plan has no doomed remainder once the cure lands. A
     finding whose evidence names no `failed` task (the ordinary case)
     leaves every other task's `dependsOn` untouched, exactly as before
-    this task.
+    this task. #209 defect 7: that search now covers the finding's own
+    `clause` as well as its `evidence` -- see the comment at the call site
+    for the measured incident where the dead id sat in the clause and the
+    repoint therefore never fired.
 
     Task 032 (PRD requirement E.3, #167, steer 001): a finding's own
     `invalidates` -- zero or more in-checkout paths the finding's cure
@@ -4164,6 +4265,37 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     fixture predating this task) leaves this loop a no-op, so the return
     value is unchanged from before this task in that case.
 
+    #209 defect 3 narrows both of those branches, and neither narrowing
+    touches the invariant requirement E.3 exists for (no task may stay
+    `validated` while the evidence it recorded describes a tree older than
+    the last cure commit touching a path that evidence covers):
+
+    - the chain branch no longer recognises a task the ENGINE itself
+      authored, as the record OR as a verification step
+      (`_lane_evidence_record_chain`'s own filters). Until this change,
+      pass 1's own `cure -> verification` edge made pass 2 re-open pass 1's
+      LANDED cure task as though it were evidence -- measured in two runs,
+      once leaving a code cure `pending` behind three later cure tasks.
+    - the re-take branch re-uses this approach's existing re-take task for
+      a path (`_existing_retake_task`) rather than appending a second row
+      with the same title: `status` back to `pending`, the new cure id
+      added to its own `dependsOn`, its id named once in the return value.
+      So two findings of one pass sharing a path yield ONE re-take task
+      depending on BOTH cure tasks, and a later pass over the same approach
+      re-opens that same row. `taskIds` still names every id the pass put
+      into motion; there are simply fewer duplicate rows to name.
+
+    The re-open of a GENUINE planner evidence record and its planner
+    verification tasks is deliberately unchanged -- every pass, from any
+    terminal status. Paying it once per cure pass is the invariant's price:
+    "re-record only after the LAST cure of the approach" is not
+    implementable here, because whether a further pass is granted is
+    decided by a review verdict that has not been produced yet
+    (`LoopSupervisor._review_cure_pass_available`), and deferring the
+    re-record is worse still -- review only runs once every task is
+    complete, so a re-record left `pending` means reviewing on stale
+    evidence, which is the incident E.3 was written to close.
+
     Task 033 (PRD requirement E.4, #167): every cure task this call
     appends -- always the product of a BLOCKING review finding, so
     always a code cure in the sense this requirement means -- is spliced
@@ -4190,6 +4322,20 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     ladder (`transitions.review_cured_when_errors`) and then used verbatim
     anyway, because `LoopSupervisor._step_review` discards those contract
     errors before granting the cure pass.
+
+    #209 defect 4: this function has a THIRD caller beside review's own
+    cure pass and the peer verdict gate's -- `LoopSupervisor._insert_
+    refuted_remedy_tasks`, which turns a REFUTED petition's `substance`
+    remedy into one cure task on exactly this path (`petitions.refuted_
+    remedy_cure_findings` synthesises the finding). Nothing here is special-
+    cased for it: those findings carry no `cured_when` (so the criteria goes
+    through `_cure_task_success_criteria`'s clause fold), no `invalidates`
+    (so the loop above is a no-op for them), and a `remedy_for` string that
+    `cure_task_from_finding` stamps onto the task as `remedyFor`. They do
+    get the freeze splice and the failed-dependent repoint above, which is
+    the whole point: the petitioned task the refutation just failed is
+    dependency-dead, so its dependents are handed to the remedy task
+    instead of being left doomed.
 
     Task 007 (PRD requirement C.1, gate finding VG-003): list position
     alone is not a scheduling constraint -- `scheduler.select_next_task`
@@ -4240,8 +4386,19 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
         if freeze_task is not None:
             _append_validated_dependency_edge(
                 run, tasks, freeze_task, cure_task_id, "cure-insertion")
+        # #209 defect 7's cheap substitute: search the finding's `clause`
+        # as well as its `evidence` for a `failed` task's id. Measured in
+        # `deck-phase3k`: the dead id `205` sat in the finding's CLAUSE
+        # while its `evidence` held only commit shas, so this repoint never
+        # fired and the operator hand-wrote two `steer task-update` calls to
+        # do it. Both fields are the same reviewer's free prose about the
+        # same finding -- there is no reason a dead id counts in one and not
+        # the other -- and the whole-word match plus the pre-write edge
+        # validation below are unchanged, so a clause that merely mentions a
+        # LIVE task's id still names no `failed` task and changes nothing.
         for failed_id in _failed_task_ids_named_in(
-                finding.get("evidence"), tasks):
+                " ".join(str(finding.get(field) or "")
+                         for field in ("clause", "evidence")), tasks):
             _repoint_dependents_onto_cure_task(
                 run, tasks, failed_id, cure_task_id)
 
@@ -4267,6 +4424,26 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
                 if rid not in inserted:
                     inserted.append(rid)
             else:
+                existing_retake = _existing_retake_task(tasks, path)
+                if existing_retake is not None:
+                    # #209 defect 3: this approach already has a re-take
+                    # task for this path (an earlier finding of this same
+                    # call, or an earlier cure pass over the same approach).
+                    # Re-open that ONE row at the new cure's tree and add
+                    # the new cure edge, instead of appending a second row
+                    # with the identical title and criteria. Nothing is
+                    # re-spliced: `dependsOn`, not list position, is what
+                    # schedules (`scheduler.select_next_task`, requirement
+                    # C.1/VG-003 above), so the row keeps its original
+                    # position relative to the freeze task.
+                    existing_retake["status"] = "pending"
+                    _append_validated_dependency_edge(
+                        run, tasks, existing_retake, cure_task_id,
+                        "cure-insertion")
+                    reused_id = existing_retake.get("id")
+                    if reused_id not in inserted:
+                        inserted.append(reused_id)
+                    continue
                 retake_task = _retake_task_from_path(
                     approach, index, path_index, path, cure_task_id)
                 retake_task["id"] = _unique_task_id(

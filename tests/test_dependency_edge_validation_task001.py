@@ -16,6 +16,14 @@ and the reason, and (c) for the cure-insertion path specifically, still
 land the cure task itself -- a validation failure must never cost the
 cure the finding it was for (D.3).
 
+#209 defect 3 made the cure-insertion path's self-loop shape UNREACHABLE
+rather than merely refused (`_lane_evidence_record_chain` no longer treats
+a task the engine itself authored as a verification step), so that phase
+now pins the stronger property and covers the refusal by calling the
+shared validator directly -- see the comment on the phase itself. The
+other two entry points are untouched and still exercise all three shapes
+organically.
+
 Kept to exactly three new nodes (one per entry point) so this task's own
 new coverage is a net-zero addition to the fast tier's fixed 5,800-node
 ceiling (`tests/test_tier_budgets.py`) -- offset in the SAME commit by
@@ -192,15 +200,30 @@ def test_task_insert_refuses_a_self_loop_a_longer_cycle_and_an_unknown_id(tmp_pa
 # ---------------------------------------------------------------------------
 
 def test_cure_insertion_refuses_a_self_loop_a_longer_cycle_and_an_unknown_id(tmp_path):
-    # Phase 1 (the organic shape observed live, #206): a pre-existing
-    # "lane evidence record" task already names the cure task's own
-    # deterministic id (left over from an earlier pass at the same
-    # approach/index) in ITS OWN dependsOn. Once this pass's second
-    # finding creates a fresh cure task under that exact id, the
-    # invalidates-handling verification step resolves that record task's
-    # dependency back onto the freshly-created cure task itself, and
-    # tries to append the cure task's own id onto ITS OWN dependsOn --
-    # the literal self-loop shape from #206.
+    # Phase 1: the organic shape from #206 -- a pre-existing "lane evidence
+    # record" task already naming the cure task's own deterministic id
+    # (left over from an earlier pass at the same approach/index) in ITS OWN
+    # dependsOn, so that once this pass's second finding creates a fresh
+    # cure task under that exact id, the invalidates handling resolved the
+    # record's dependency back onto the freshly-created cure task and tried
+    # to append that cure task's own id onto ITS OWN dependsOn.
+    #
+    # #209 defect 3 makes that shape UNREACHABLE, which is a strictly
+    # stronger property than refusing the edge after the fact, so this phase
+    # pins the stronger one. `_lane_evidence_record_chain` no longer accepts
+    # an `origin: "review-cure"` row as a verification step, so the fresh
+    # cure task is not a candidate to depend on, the record no longer
+    # matches as a chain at all, the path takes the re-take branch, and the
+    # edge is never even ATTEMPTED: zero `task.dependency_edge_rejected`
+    # events, where this phase previously asserted exactly one carrying
+    # `edge == "cure-01-02"` and `reason` naming a self-loop. Every
+    # assertion that is still true is kept verbatim below (both cure tasks
+    # land, `cure-01-02.dependsOn == []`, its origin, and the record's own
+    # `dependsOn` untouched); the validator's self-loop refusal ON THIS PATH
+    # is still covered, by a direct `validate_dependency_edges` assertion --
+    # the same precedent Phase 3 below already set for the longer-cycle
+    # shape with its own "no organic `insert_cure_tasks` write can produce
+    # one" comment.
     root = tmp_path / "run"
     root.mkdir(parents=True, exist_ok=True)
     run = RunDir(root=root)
@@ -230,12 +253,25 @@ def test_cure_insertion_refuses_a_self_loop_a_longer_cycle_and_an_unknown_id(tmp
     assert cure_02["origin"] == "review-cure"
     assert by_id["existing-record"]["dependsOn"] == ["cure-01-02"]  # untouched
 
-    rejected = _events(run, REJECTED_EVENT)
-    assert len(rejected) == 1
-    assert rejected[0]["taskId"] == "cure-01-02"
-    assert rejected[0]["edge"] == "cure-01-02"
-    assert "self-loop" in rejected[0]["reason"]
-    assert rejected[0]["source"] == "cure-insertion"
+    # the path is still re-recorded at the cure's tree, by its own re-take
+    # task -- nothing is silently skipped in exchange for the unreachability.
+    retakes = [t for t in data["tasks"]
+               if t["title"] == "Re-take some/path.py"]
+    assert len(retakes) == 1
+    assert retakes[0]["dependsOn"] == ["cure-01-02"]
+    assert retakes[0]["id"] in inserted
+
+    # the edge is never attempted at all, so nothing is refused.
+    assert _events(run, REJECTED_EVENT) == []
+
+    # and the refusal itself is still proven on this path's own validator:
+    # the exact call `_append_validated_dependency_edge` would make.
+    accepted1, rejected1 = plan_ingestion.validate_dependency_edges(
+        [dict(cure_02), dict(by_id["existing-record"])], "cure-01-02",
+        ["cure-01-02"])
+    assert accepted1 == []
+    assert rejected1[0]["edge"] == "cure-01-02"
+    assert "self-loop" in rejected1[0]["reason"]
 
     # Phase 2: a dependent's repointed edge naming an id the table does
     # not hold (a hand-corrupted plan) drops that edge instead of writing
