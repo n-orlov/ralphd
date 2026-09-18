@@ -117,7 +117,22 @@ Review adjudicates every open petition as part of its verdict:
 - **REFUTED** must state concretely what would satisfy the obligation, so
   the run knows exactly what to do differently. Re-filing a REFUTED
   petition against the same obligation is the duplicate case above: a
-  blocking finding, not a second hearing.
+  blocking finding, not a second hearing. A run-scope REFUTED obligation is
+  likewise not re-surfaced to review as an OPEN petition on any later
+  review pass, even while its own `<wave>-petitions.md` filing's
+  `Adjudication` field still reads blank — for a workspace filing that
+  field can never close at all, because the engine annotates only its own
+  run-dir petitions file and never a tracked workspace file, so the
+  run-scope record is the only channel a settlement has.
+  `petitions_review_context`/`open_unconfirmed_petitions` consult that
+  record through `engine.petitions.settled_obligations` (CONFIRMED **and**
+  REFUTED) before rendering, and a tampered record is treated as an empty
+  settled set, so tampering surfaces the obligation for a fresh hearing
+  rather than silently hiding it. This changes nothing about exemptions:
+  REFUTED still exempts nothing and is still not something a later approach
+  inherits as an exemption — only the rehearing is retired, never the
+  entry, which stays in the run-scope record, in the `petition_refuted`
+  event and in the run record with its remedy.
 
 The run never grants itself a severity, a curability, or a petition outcome
 — only review adjudicates.

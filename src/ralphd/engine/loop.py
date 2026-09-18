@@ -12458,11 +12458,19 @@ class LoopSupervisor:
         Also passes `self.run` through (task 001, requirement C.4,
         #112): `engine.petitions.petitions_review_context` uses it to
         drop any petition whose obligation the run-scope record
-        (`petitions.confirmed_obligations`) already adjudicated CONFIRMED
+        (`petitions.settled_obligations`) already adjudicated -- CONFIRMED
+        or REFUTED (#209 §5)
         -- an obligation review already ruled on, at run scope, does not
         get a second 'MUST adjudicate' instruction on a later review pass
         just because its filing's own `Adjudication` field (a workspace,
-        per-file fact) is still open. This is engine-side wiring, not a
+        per-file fact) is still open. For a WORKSPACE filing that field can
+        never close at all -- `petitions.write_back_petition_adjudication`
+        annotates `self.run.petitions_file` only, a documented no-op for a
+        tracked workspace file (task 008, requirement H) -- so this record
+        is the only channel a settlement has to reach this prompt through,
+        which is why #209 §5 observed the same REFUTED obligation re-argued
+        on six consecutive review passes while the filter still read
+        `confirmed_obligations` alone. This is engine-side wiring, not a
         test-only convenience: the exclusion applies to every real review
         call through this one method, the same seam every other
         petitions context uses.

@@ -1090,7 +1090,17 @@ def _obligation_confirmed(obligation: str, confirmed: set[str]) -> bool:
     two channels (a petition's `Obligation`, a finding's `clause`) rarely
     agree on exact wording, so an exact-string comparison would silently
     fail to exclude the very obligation `record_confirmed_adjudications`
-    just recorded."""
+    just recorded.
+
+    #209 §5: `confirmed` is whichever set the CALLER holds -- the CONFIRMED
+    set (`confirmed_obligations`, an exemption) or the SETTLED one
+    (`settled_obligations`, CONFIRMED+REFUTED, suppression only). The rule
+    itself is unchanged and deliberately so; substring-either-direction with
+    no minimum length is exactly what makes a settled obligation retire
+    together with a truncated wording of itself, which is the shape #209 §5
+    measured (one ledger entry carried a hard-wrapped `**Obligation**:`
+    field cut at its first line, the workspace filing carried the full
+    text)."""
     clause = _normalize_obligation(obligation)
     return bool(clause) and any(clause in c or c in clause for c in confirmed)
 
@@ -1099,15 +1109,27 @@ def open_unconfirmed_petitions(workspace: Path, run=None, *,
                                 contract_text: str = "",
                                 tasks: list[dict] | None = None) -> list[dict]:
     """Every OPEN petition under `workspace` (`open_petitions_in_workspace`)
-    MINUS whatever a run-scope CONFIRMED adjudication (`confirmed_
-    obligations`) already excludes -- the exact filter `petitions_review_
-    context` below applies before rendering its prompt block, extracted
-    here so a SECOND caller can reuse it without re-deriving the rule
+    MINUS whatever a run-scope adjudication (`settled_obligations`) already
+    settled -- the exact filter `petitions_review_context` below applies
+    before rendering its prompt block, extracted here so a SECOND caller
+    can reuse it without re-deriving the rule
     (fact 16/#65): `LoopSupervisor._maybe_run_midrun_adjudication_episode`
     (task 005, requirement A.2, #114) scopes its bounded episode to
     exactly this list -- the same 'genuinely still open' set review's own
     prompt already restricts itself to, so the episode never re-asks
-    review to adjudicate an obligation already CONFIRMED at run scope.
+    review to adjudicate an obligation already adjudicated at run scope.
+
+    #209 §5: that filter reads `settled_obligations` (CONFIRMED **and**
+    REFUTED), not `confirmed_obligations` (CONFIRMED only, the exemption
+    reader). It used to read the latter, which is why a REFUTED obligation
+    was re-presented as OPEN to every later review pass and re-argued from
+    scratch -- 13 `petition_refuted` events for 3 ledger entries over 6
+    review passes in the `deck-phase4` run. This is the ONE read site that
+    changed; nothing downstream of it treats a REFUTED entry as an
+    exemption, and the entry itself is not deleted -- retirement means "not
+    re-presented in the OPEN block", so the ledger row, its remedy, its
+    `petition_refuted` event and the run record's rendering of all three are
+    byte-identical to before.
 
     `run=None` (every caller that existed before this task) returns
     exactly `open_petitions_in_workspace(workspace)`, unfiltered and
@@ -1122,18 +1144,31 @@ def open_unconfirmed_petitions(workspace: Path, run=None, *,
     Task 065 (requirement N.6, #150): `run` is now ALSO passed through to
     `open_petitions_in_workspace`, so a petition this run's own engine
     filed into `run.petitions_file` (never the workspace tree) is
-    surfaced here too, before the CONFIRMED filter below runs. `run=None`
+    surfaced here too, before the settled filter below runs. `run=None`
     still means "no run-dir file to read", so the byte-for-byte claim
     above holds.
     """
     petitions_list = open_petitions_in_workspace(
         workspace, contract_text=contract_text, tasks=tasks, run=run)
     if run is not None and petitions_list:
-        confirmed, tampered = confirmed_obligations(run)
-        if not tampered and confirmed:
+        # #209 §5: `settled_obligations`, not `confirmed_obligations` -- an
+        # obligation review already RULED ON is no longer genuinely open
+        # whichever way it ruled, and a REFUTED one has no other way to stop
+        # being re-presented (its workspace filing's own `Adjudication`
+        # field is unwritable by the engine -- task 008, requirement H). The
+        # membership test stays `_obligation_confirmed` verbatim: it is a
+        # pure fuzzy match over a caller-supplied set, and this is
+        # deliberately the SAME rule the CONFIRMED half has always used
+        # (fact 16/#65 -- one rule, one place), which is also what makes the
+        # truncated wording of an obligation retire together with its full
+        # one. Suppression is not exemption: the entry still exempts nothing
+        # (see `settled_obligations`), and it stays fully recoverable from
+        # the ledger, `run-record.json` and `run-record.md`.
+        settled, tampered = settled_obligations(run)
+        if not tampered and settled:
             petitions_list = [
                 p for p in petitions_list
-                if not _obligation_confirmed(p["obligation"], confirmed)
+                if not _obligation_confirmed(p["obligation"], settled)
             ]
     return petitions_list
 
@@ -1150,20 +1185,28 @@ def petitions_review_context(workspace: Path, run=None, *,
     review prompts are unaffected until a petition actually exists.
 
     `run` (optional, default `None`) is the run-scope handle whose
-    `confirmed_obligations(run)` record this call consults before
-    rendering: an obligation already CONFIRMED at run scope (PRD
+    adjudication record this call consults before rendering: an obligation
+    already ADJUDICATED at run scope -- CONFIRMED or REFUTED (PRD
     requirement C.4 -- 'a CONFIRMED petition removes its obligation from
     the blocking set' for the REST OF THE RUN, not just the review pass
-    that confirmed it) is no longer genuinely OPEN, so re-issuing a 'MUST
+    that confirmed it; #209 §5 for the REFUTED half) -- is no longer
+    genuinely OPEN, so re-issuing a 'MUST
     adjudicate' instruction naming it on every later review pass would
     either waste a rehearing on an already-settled fact or invite review
-    to flip a CONFIRMED call back open -- neither of which requirement
+    to flip an earlier call back open -- neither of which requirement
     C.4 permits. Passing `run=None` (every pre-existing caller) keeps
     this function's behaviour byte-for-byte unchanged. A tampered record
-    (`confirmed_obligations` returning `tampered=True`) is treated as an
-    EMPTY confirmed set: fail towards surfacing the obligation again for
+    (`settled_obligations` returning `tampered=True`) is treated as an
+    EMPTY settled set: fail towards surfacing the obligation again for
     a fresh adjudication, never towards trusting a record that might
-    have been edited to manufacture a false exemption.
+    have been edited to manufacture a false exemption -- or, for the
+    REFUTED half, edited to keep a still-open obligation out of review's
+    prompt.
+
+    Suppressing a REFUTED obligation here grants it nothing: the settled
+    set is a rendering filter, not an exemption (see `settled_obligations`),
+    and `adjudicated_petitions_review_context` below still renders the
+    CONFIRMED entries as settled history in the same prompt.
 
     `contract_text`/`tasks` (task 018, requirement E.1, #150), passed
     through to `open_unconfirmed_petitions`/`open_petitions_in_workspace`,
@@ -1708,6 +1751,12 @@ def read_adjudications(run) -> tuple[list[dict], bool]:
     whether an obligation is exempt: `confirmed_obligations` /
     `read_confirmed_adjudications` are the exemption readers, and they
     are CONFIRMED-only by construction.
+
+    #209 §5 adds the second legitimate reader beside that render:
+    `settled_obligations`, which needs both verdicts because it answers
+    "has review already ruled on this at all" -- suppressing a rehearing,
+    never granting an exemption. The rule above is unchanged for everyone
+    else.
     """
     return _read_adjudications_record(run)
 
@@ -1824,6 +1873,59 @@ def confirmed_obligations(run) -> tuple[set[str], bool]:
     `tamper_review_context` below for surfacing it to review itself.
     """
     entries, tampered = read_confirmed_adjudications(run)
+    if tampered:
+        return set(), True
+    return ({_normalize_obligation(e["obligation"]) for e in entries
+              if isinstance(e, dict) and isinstance(e.get("obligation"), str)},
+            False)
+
+
+def settled_obligations(run) -> tuple[set[str], bool]:
+    """`(obligations, tampered)` -- the normalised set of obligations
+    ADJUDICATED at run scope so far, CONFIRMED **and** REFUTED alike. This
+    is `confirmed_obligations`'s body with `read_adjudications` (every
+    entry) in place of `read_confirmed_adjudications`, and the two sit side
+    by side on purpose: they answer two different questions, and neither may
+    ever be substituted for the other.
+
+    #209 §5: SETTLED IS NOT EXEMPT. This set has exactly one legitimate use
+    -- stopping an already-adjudicated obligation from being RE-PRESENTED to
+    a later review pass as though nobody had ruled on it
+    (`open_unconfirmed_petitions` above). `confirmed_obligations` /
+    `read_confirmed_adjudications` remain the ONLY exemption readers and
+    stay CONFIRMED-only by construction, so a REFUTED entry still exempts
+    nothing: `downgrade_confirmed_findings` (blocking -> residual),
+    `petitioned_task_accepted` (plan-complete acceptance) and
+    `apply_confirmed_petition_adjudications` are untouched by this
+    function's existence and must never be pointed at it.
+
+    That is also why this is a legitimate SECOND reader of
+    `read_adjudications` even though that function's own docstring says
+    never to read it to decide whether an obligation is exempt: suppressing
+    a rehearing removes no blocking finding, downgrades no severity and
+    accepts no task. The worst a false match here can do is withhold a
+    second hearing for an obligation review has already ruled on once.
+
+    A tampered record is an EMPTY settled set -- identical posture to
+    `confirmed_obligations`: fail towards re-presenting the obligation for
+    a fresh adjudication, never towards trusting a record that might have
+    been edited (here, edited to make a still-open obligation look already
+    settled and so keep it out of review's prompt entirely).
+
+    Why this exists at all (#209 §5, the `deck-phase4` evidence): a REFUTED
+    obligation was re-argued from scratch on every review pass -- 13
+    `petition_refuted` events for 3 ledger entries across 6 review passes.
+    Nothing replays a ledger entry as open; the re-presentation channel is
+    `petitions_review_context` -> `open_unconfirmed_petitions`, which
+    re-parses the WORKSPACE petitions file every pass and, before this
+    change, filtered on `confirmed_obligations` alone. A workspace filing
+    can never self-close either -- `write_back_petition_adjudication`
+    annotates `run.petitions_file` only and is a documented no-op for a
+    workspace filing (task 008, requirement H) -- so the REFUTED entry's
+    settlement had no channel to reach the read site through. This function
+    is that channel.
+    """
+    entries, tampered = read_adjudications(run)
     if tampered:
         return set(), True
     return ({_normalize_obligation(e["obligation"]) for e in entries

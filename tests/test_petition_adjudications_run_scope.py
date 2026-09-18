@@ -85,7 +85,15 @@ def test_refuted_entries_are_persisted_but_never_exempt(tmp_path):
     `confirmed_obligations`) still see CONFIRMED entries only, so a
     REFUTED entry in the store exempts nothing. This test previously
     asserted the file was never written at all; that expectation was the
-    render bug, not the property."""
+    render bug, not the property.
+
+    #209 §5 adds the third reader and the distinction that makes it safe:
+    `settled_obligations` sees BOTH verdicts, because it answers "has review
+    already ruled on this at all" for the one purpose of not re-presenting a
+    settled obligation to a later review pass. The tail of this node pins
+    SETTLED growing while EXEMPT does not -- the exact property that would
+    be violated if a later change pointed an exemption reader at the wider
+    set. Every assertion above is unchanged and none is relaxed."""
     run = RunDir(root=tmp_path / "run")
     petitions.record_confirmed_adjudications(run, [
         {"obligation": "Some other requirement", "adjudication": "REFUTED",
@@ -102,6 +110,30 @@ def test_refuted_entries_are_persisted_but_never_exempt(tmp_path):
     obligations, tampered = petitions.confirmed_obligations(run)
     assert obligations == set()
     assert tampered is False
+
+    # #209 §5: SETTLED covers the REFUTED entry the exemption readers above
+    # deliberately do not see.
+    settled, tampered = petitions.settled_obligations(run)
+    assert tampered is False
+    assert settled == {"some other requirement"}
+
+    # ... and with a CONFIRMED entry recorded alongside it, SETTLED holds
+    # both keys while EXEMPT still holds only the CONFIRMED one.
+    petitions.record_confirmed_adjudications(run, [
+        {"obligation": "Requirement B, DoD predicate 9",
+         "adjudication": "CONFIRMED"},
+    ])
+    settled, tampered = petitions.settled_obligations(run)
+    assert tampered is False
+    assert settled == {"some other requirement",
+                       "requirement b, dod predicate 9"}
+    obligations, tampered = petitions.confirmed_obligations(run)
+    assert tampered is False
+    assert obligations == {"requirement b, dod predicate 9"}
+    entries, tampered = petitions.read_confirmed_adjudications(run)
+    assert tampered is False
+    assert entries == [{"obligation": "Requirement B, DoD predicate 9",
+                        "adjudication": "CONFIRMED"}]
 
 
 def test_record_merges_rather_than_overwrites_across_calls(tmp_path):
