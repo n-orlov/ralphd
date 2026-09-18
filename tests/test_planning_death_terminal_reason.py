@@ -108,8 +108,15 @@ def _pointer_line(path: str = "plan-proposal.json", summary: str = "planned") ->
 # which no bounding phrase can rescue (`_unenumerated_quantifier_rewrite`'s
 # candidate ladder ends on its fixed fallback constant, which is never
 # applied because applying it would delete the clause's demand). Nothing
-# about the mechanism under test moved -- it is still the same lexical
-# quantifier refusal, repeated, that ends the run.
+# about the mechanism under test moved -- the same lexical quantifier
+# refusal is still what this clause draws first and what the assertions
+# below read, repeated identically on both attempts, and it is what ends
+# the run. An empty-range demand is by construction also `unsatisfiable-
+# shape`, so the clause now draws TWO refusals rather than one (unit-2
+# review) -- unavoidable, because a quantifier clause the rewrite ladder
+# CANNOT repair is exactly one whose bounded candidate another clause lint
+# refuses; both attempts draw the same pair, so the normalised signatures
+# still compare equal and the two-strike guard still fires on the second.
 _OFFENDING_CLAUSE = (
     "The audit range must be empty for each of the shipped features")
 

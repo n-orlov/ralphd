@@ -265,13 +265,20 @@ finding's `cured_when` becoming a cure task's criteria) — instead of refusing
 the whole proposal and re-asking the hat for advice the harness could already
 act on. The measured cost of not doing this: one run burnt planning's entire
 three-attempt ladder on the clause-count lint, hit it again after replanning,
-and spent ten planning phases to produce three approaches. The stated limit is
-the two fallback constants each rewrite ladder ends on: those are generic
-**advice** for a human reader and one of them replaces the whole criterion, so
-neither is ever applied — a rewrite that equals either one is not a rewrite,
-and the plain refusal stands. So the refusal survives everywhere no legal
-rewrite exists, which is exactly where a lexical lint is not over-refusing at
-all. This escape is deliberately not extended to a worker's `proposed_tasks`
+and spent ten planning phases to produce three approaches. The first stated
+limit is the two fallback constants each rewrite ladder ends on: those are
+generic **advice** for a human reader and one of them replaces the whole
+criterion, so neither is ever applied — a rewrite that equals either one is
+not a rewrite, and the plain refusal stands. So the refusal survives
+everywhere no legal rewrite exists, which is exactly where a lexical lint is
+not over-refusing at all. The second is the quantifier half's own bound
+phrase, which names `pytest`: that is why the cure-insertion writer admits
+only `clause-count-overrun` (the only lint with jurisdiction over a
+`cured_when` anyway), while plan ingestion — where the text is a task's own
+`successCriteria` and the alternative is refusing the whole plan — admits
+both, so a planner working a non-Python checkout can be handed a `pytest`
+bound it did not write and would have been re-asked for before. This escape
+is deliberately not extended to a worker's `proposed_tasks`
 batch, whose lint has no event sink in reach: repairing there would be a silent
 harness rewrite, and silence is what the criteria-amendment rule above forbids.
 

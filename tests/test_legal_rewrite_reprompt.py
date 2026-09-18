@@ -42,12 +42,19 @@ way (`-- suggested rewrite: <text>`), reusing the exact SAME legality gate
 proved lint-clean. `test_the_unenumerated_quantifier_suggestion_is_itself_
 accepted` and `test_the_clause_count_overrun_suggestion_is_itself_accepted`
 cover proof 2 for these two lints (fixtures shared, not reconstructed,
-with `tests/test_criteria_bound_lint.py`'s own must-catch pins);
-`test_the_unenumerated_quantifier_suggestion_reaches_the_planners_next_
-prompt` and `test_the_clause_count_overrun_suggestion_reaches_the_planners_
-next_prompt` cover proof 4 -- the offending clause and the lint's own name
-(`unenumerated-quantifier` / `clause-count-overrun`) ride beside the
-rewrite in the SAME prompt.md message.
+with `tests/test_criteria_bound_lint.py`'s own must-catch pins).
+
+Proof 4 splits by lint, because the two LEXICAL lints' rewrites are
+APPLIED rather than quoted back at the hat (#209 defect 1,
+`plan_ingestion.repair_criteria`): `test_the_suggested_rewrite_reaches_the_
+planners_next_prompt` still drives the prompt-delivery reach end to end on
+the unsatisfiable-shape lint, which has no repair and is still refused,
+while `test_the_unenumerated_quantifier_repair_reaches_tasks_json_not_a_
+reask` and `test_the_clause_count_overrun_repair_reaches_tasks_json_not_a_
+reask` prove the other delivery: the rewrite lands as the task's own
+`successCriteria` on the FIRST planning attempt, `task.criteria_repaired`
+on `events.jsonl` is the audit trail, and there is no planning
+`contract.violation` and no re-ask at all.
 
 Task 002's SECOND attempt (its first attempt's `validationNotes`: the two
 lexical rewrites were lint-clean but not usable -- the quantifier rewrite
@@ -394,7 +401,12 @@ def test_the_clause_count_rewrite_folds_rather_than_deleting_a_clause():
     a criteria tripping BOTH lexical lints at once is repaired in one
     `repair_criteria` call, both lint names are recorded in the order they
     acted, and the result draws no refusal at all -- so a proposal is never
-    accepted on a criteria that merely traded one lint for another."""
+    accepted on a criteria that merely traded one lint for another. The
+    combined fixture carries TWO bare quantifier clauses on purpose
+    (unit-2 review): the quantifier rewrite bounds one clause per pass, so
+    a single-quantifier fixture cannot tell "the lint names applied" --
+    what `SPEC.md` §5.4 and `docs/api.md` promise the event's `lints` field
+    is -- apart from a per-clause operation log."""
     overrun = pi._clause_count_overrun_rewrite(_A_TO_F_SIX_CLAUSE_CRITERIA)
     assert overrun is not None
     clause_count, overflow_clause, rewrite = overrun
@@ -406,12 +418,15 @@ def test_the_clause_count_rewrite_folds_rather_than_deleting_a_clause():
     assert pi._clause_count_overrun(rewrite) is None
     assert pi.lint_proposal({"tasks": [_task("060", rewrite)]}) == []
 
-    both = "Every widget works. " + _A_TO_F_SIX_CLAUSE_CRITERIA
+    both = ("Every widget works. Each handler returns a value. "
+            + _A_TO_F_SIX_CLAUSE_CRITERIA)
     repaired = pi.repair_criteria(both)
     assert repaired is not None
     lints, criteria = repaired
     assert lints == ["unenumerated-quantifier", "clause-count-overrun"]
     assert "pytest" in criteria
+    assert "Every widget works" in criteria
+    assert "Each handler returns a value" in criteria
     for letter in "ABCDEF":
         assert f"{letter} exists" in criteria, (letter, criteria)
     assert pi._clause_count_overrun(criteria) is None
@@ -465,7 +480,10 @@ def test_both_lexical_rewrite_fallbacks_are_themselves_legal():
 
 
 # ---------------------------------------------------------------------------
-# 3. loop level: the suggestion reaches the planner's NEXT prompt
+# 3. loop level: the suggestion is DELIVERED -- as the next prompt's advice
+# for the lint that is still refused (the unsatisfiable shape), and as the
+# task's own criteria in `tasks.json` for the two lexical lints, whose
+# rewrite is applied instead of re-asked (#209 defect 1)
 # ---------------------------------------------------------------------------
 
 class _ScriptedRunner:

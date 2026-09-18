@@ -3727,7 +3727,13 @@ def cure_task_from_finding(approach: int, index: int, finding: dict) -> dict:
     when_errors`, enforced on review's own contract ladder before a cure
     pass is ever granted), held to the identical bounded-checkable-clause
     lint a planner's own `successCriteria` is (`plan_ingestion.clause_
-    count_overrun`). A finding with no `cured_when` -- a hand-built
+    count_overrun`). #209 defect 1 moved WHERE that bound is enforced for
+    the common case without changing the bound: an overrun `cured_when`
+    whose clauses fold losslessly is repaired at insertion instead
+    (`insert_cure_tasks` -> `_repair_cure_task_criteria`), so review's
+    ladder above sees only the residue -- an overrun no legal rewrite can
+    fix. This function itself is unaffected and still copies `cured_when`
+    VERBATIM. A finding with no `cured_when` -- a hand-built
     fixture, or a finding from before this task existed -- falls back to
     `_cure_task_success_criteria`'s own clause+evidence derivation,
     unchanged. Either way, `description` (new) is always built from

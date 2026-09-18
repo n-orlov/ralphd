@@ -2036,8 +2036,8 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   missing `cured_when` -- or carrying one whose own text overruns the
   plan's bounded-checkable-clause lint, `plan_ingestion.clause_count_
   overrun` (the same public function `lint_proposal` itself now calls,
-  exposed for exactly this cross-module reuse), **and for which no legal
-  rewrite can be computed** (#209 defect 1) -- is a review contract
+  exposed for exactly this cross-module reuse) **and whose overrun has no
+  lossless, lint-clean fold** (#209 defect 1) -- is a review contract
   violation on the SAME ladder a `verified` claim contradicting its own
   findings already rides (`transitions.review_cured_when_errors`, wired
   into `_review_verdict` and `_review_contract_ladder` beside `review_

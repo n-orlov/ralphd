@@ -257,8 +257,13 @@ def test_a_quantifier_word_in_one_clause_does_not_taint_an_unrelated_clause():
 
 
 # ---------------------------------------------------------------------------
-# Wired through the existing plan re-ask ladder, same shape as
-# tests/test_stranding_lints.py's own end-to-end wiring tests.
+# Wired through `enforce_plan_ingestion` end to end -- and for these two
+# LEXICAL lints the repair pre-empts the re-ask ladder entirely, so both
+# nodes below pin ONE attempt and no `prior_errors` at all (#209 defect 1).
+# tests/test_stranding_lints.py's own end-to-end wiring tests
+# (`test_an_unscoped_occurrence_count_reprompts_then_recovers_end_to_end`
+# and its sibling) are where the two-attempt ladder shape is still pinned,
+# for the lints that have no computed rewrite and are still refused.
 # ---------------------------------------------------------------------------
 
 def _pointer(path: str) -> str:

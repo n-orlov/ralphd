@@ -1682,7 +1682,10 @@ def repair_criteria(
     """`(lints_applied, repaired_criteria)` when the two lexical lints'
     own already-computed rewrites turn `criteria` into text
     `_clause_lint_refusals` accepts; `None` when they cannot, which leaves
-    the caller's existing refusal exactly as it was.
+    the caller's existing refusal exactly as it was. `lints_applied` names
+    each lint that acted exactly ONCE, in the order they first acted --
+    it is the set of names the `CRITERIA_REPAIRED_EVENT` publishes, not a
+    per-clause operation count (see the dedupe at the return below).
 
     `lints` names which of the two lexical lints may act -- both by
     default (plan ingestion, where the text IS a task's own
@@ -1740,7 +1743,14 @@ def repair_criteria(
         break
     if current == criteria or _clause_lint_refusals(current):
         return None
-    return applied, current
+    # The loop above bounds ONE clause per pass, so a criteria with three
+    # bare quantifier clauses appends that lint's name three times -- but
+    # what this list becomes is the `lints` field of
+    # `CRITERIA_REPAIRED_EVENT`, which `SPEC.md` §5.4 and `docs/api.md`
+    # both publish as "the lint names applied": which lints acted, not how
+    # many clauses each one touched (#209 defect 1, unit-2 review).
+    # `dict.fromkeys` keeps the order they first acted in.
+    return list(dict.fromkeys(applied)), current
 
 
 def repair_task_criteria(payload: dict) -> list[dict]:
