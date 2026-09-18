@@ -38,6 +38,7 @@ import sys
 
 from ralphd.engine import runner as runner_mod
 from ralphd.engine.runner import PiRunner, process_cpu_seconds
+from tests.conftest import sigint_default_for_children
 
 
 # CPU seconds the "busy" child below burns before it emits its first event --
@@ -124,7 +125,37 @@ def test_a_child_that_consumes_no_cpu_is_still_killed_inside_its_window(
                            timeout_s=60,
                            startup_timeout_s=STARTUP_WINDOW_S)
 
-    result = asyncio.run(go())
+    # `sigint_default_for_children`: this is the ONE node in the file whose
+    # child has to *react* to a signal -- the watchdog's verdict ends the
+    # attempt by SIGINTing the child (`PiRunner.interrupt`), and a child that
+    # ignores that SIGINT is ended by the 60s `timeout_s` instead, which is
+    # exactly what `timed_out is False` below forbids. An IGNORED SIGINT is
+    # inherited across fork+exec (see the helper's docstring), and the fast
+    # tier's own CI recipe hands this process one: `scripts/run_bounded.sh`
+    # runs the wrapped command as a bash BACKGROUND job (`"$@" &`) in a shell
+    # with job control disabled, and POSIX has such a shell set SIGINT and
+    # SIGQUIT to SIG_IGN for it -- measured under the real recipe as
+    # `SigIgn=0x1001006` (SIGINT|SIGQUIT set) against `0x1001000` for the same
+    # interpreter invoked directly. So pytest, both xdist workers and every
+    # `pi` stand-in they spawn ignore SIGINT there unless something in the
+    # session happens to have replaced the disposition first -- which is what
+    # made this node flaky rather than always red: measured under the real
+    # recipe, both xdist workers start at `SIG_IGN`, and the first test that
+    # installs an asyncio signal handler in-process leaves SIGINT at
+    # `default_int_handler` (asyncio's `remove_signal_handler` restores the
+    # default, never the inherited `SIG_IGN`) for the rest of that worker's
+    # life -- so with `--dist loadfile` the outcome depends on which side of
+    # that one-way transition this module lands on. Without the guard the
+    # node asserts something about the CI wrapper's process group rather than
+    # about the watchdog, and fails with the verdict recorded but the 60s
+    # timeout ending the attempt: gate run 35300022633 (fast tier, 4151d682,
+    # 18 Sep 2026, 02:36 UTC) recorded exactly `exit_code=-9,
+    # interrupted=True, timed_out=True, duration_s=61.06,
+    # no_traffic_timeout=True`, and a re-dispatch of the same sha 38 minutes
+    # later was green. Reproduced 100% locally by running this module under
+    # `scripts/run_bounded.sh`, cured 100% by this one line.
+    with sigint_default_for_children():
+        result = asyncio.run(go())
     assert result.no_traffic_timeout is True, (
         "startup watchdog: a child that produced no event AND consumed no "
         "further CPU is blocked -- the fail-fast verdict task 001a exists "
