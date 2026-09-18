@@ -1406,6 +1406,37 @@ HAT_SCHEMAS: dict[str, dict] = {
             # v0.9 requirement H had to pin for "unsatisfiable" and pinned
             # the same way.
             "proposed_tasks": {"type": "array"},
+            # #209 defect 7: `proposed_tasks`' sibling, and the only channel
+            # through which a worker can shape an EXISTING row of
+            # `tasks.json` rather than append a new one. Declared here
+            # because this schema is `additionalProperties: False`, so
+            # without the property the very payload the shipped prompt asks
+            # for is refused as an unexpected field (task 011's own lesson,
+            # just below). Only the outer TYPE is checked here --
+            # `contracts.py`'s restricted schema engine has no `items`
+            # sub-schema for array elements, by design, exactly like
+            # `proposed_tasks` above; the real lint is
+            # `plan_ingestion.lint_worker_task_updates` and the one call
+            # site is `LoopSupervisor._apply_worker_task_updates`.
+            #
+            # Its power is `dependsOn` and nothing else -- never `status`
+            # (that is `apply_task_status_change`'s and the declared
+            # task-status table's business, and `ENGINE_FORCED_TASK_
+            # STATUSES` bars the one status no hat may claim), never
+            # `successCriteria` (a criteria edit is reverted as a blocking
+            # finding), never `title` or `priority`. Standing comes from the
+            # HARNESS's own derivation: only a `pending` task that
+            # `state.task_blocked_by` already reports as blocked may be
+            # re-pointed, only an edge onto a `failed`/`skipped` task may be
+            # dropped and no id in the REPLACEMENT may name one at all, no
+            # cycle and no unresolved id survive
+            # `validate_dependency_edges`, and every
+            # entry carries a mandatory `reason`. Bounded per approach by
+            # `JobConfig.worker_repoint_budget_per_approach` -- which is
+            # also what keeps it from becoming a stagnation escape, since a
+            # re-point edits an existing row and so is NOT filtered out of
+            # the progress diff the way an inserted split task is.
+            "proposed_task_updates": {"type": "array"},
             # Task 011 (requirement C.1, #123): the two fields worker.md's
             # failed-task escape actually instructs -- `task_status` (the
             # target status for the task named by `task_id`) and

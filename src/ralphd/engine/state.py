@@ -1944,6 +1944,13 @@ def apply_amendment_status_rulings(run: "RunDir", config_root: Path,
 # update` and `task-insert` paths all read identically on `events.jsonl`.
 DEPENDENCY_EDGE_REJECTED_EVENT = "task.dependency_edge_rejected"
 
+# #209 defect 7: the ACCEPTED-write sibling of the rejection event just
+# above, for the one writer that replaces an existing task's whole
+# `dependsOn` list on a hat's own report rather than dropping a single bad
+# edge -- `apply_worker_dependency_repoints` below. Same `taskId`/`reason`/
+# `source` field names, so the two read as one family on `events.jsonl`.
+DEPENDENCY_REPOINTED_EVENT = "task.dependency_repointed"
+
 
 def _emit_rejected_dependency_edges(run: "RunDir", task_id: str,
                                     rejected: list, source: str) -> None:
@@ -3637,6 +3644,73 @@ def insert_worker_split_tasks(run: "RunDir", proposed_tasks: list,
     if inserted:
         run.write_tasks(data)
     return inserted
+
+
+def apply_worker_dependency_repoints(run: "RunDir", updates: list) -> list:
+    """#209 defect 7: replace the `dependsOn` list of every task named in an
+    already-linted `proposed_task_updates` batch
+    (`plan_ingestion.lint_worker_task_updates` returned no errors for it --
+    this function trusts its caller exactly the way `insert_worker_split_
+    tasks` above trusts its own). One `read_tasks()`, one `write_tasks()`,
+    and the ids actually re-pointed returned in order, the same shape that
+    function returns its inserted ids in.
+
+    This is the RESIDUAL writer. The engine already re-points dependents
+    itself on two paths that need no worker at all --
+    `_repoint_dependents_onto_cure_task` below (from `insert_cure_tasks`,
+    whenever a blocking finding names the dead task) and
+    `petitions.apply_confirmed_petition_adjudications` -- and neither is
+    replaced here. This one covers only the case where there is no cure task
+    to re-point ONTO: a doomed `pending` task whose replacement is a
+    sibling that already exists.
+
+    Two properties beyond the write itself:
+
+    * the entry's mandatory `reason` is appended to the task's own `notes`
+      through `_JUSTIFICATION_SEPARATOR`, so the re-point leaves a trace on
+      the ROW and not only at ingestion time -- the same auditability
+      `insert_worker_split_tasks`' `splitFrom` stamp exists for, since the
+      lint can check the graph's shape but never the semantic claim that the
+      new edge carries the dead one's work. Appended, never deduplicated:
+      two re-points of one task are two facts about it, and the lint already
+      refuses the repeat that would actually matter (a task whose doom the
+      first re-point cleared is no longer in `task_blocked_by`'s map, so it
+      has no standing for a second);
+    * one `DEPENDENCY_REPOINTED_EVENT` per update, naming the removed and
+      added ids and the reason, with `source="worker-repoint"` -- the same
+      discriminator `_emit_rejected_dependency_edges` already carries.
+
+    A `task_id` that has vanished between the lint and this write is skipped
+    rather than inserted, belt-and-suspenders in exactly the shape
+    `insert_worker_split_tasks`' own collision skip uses.
+    """
+    data = run.read_tasks()
+    tasks = data.get("tasks", [])
+    by_id = {str(t.get("id")): t for t in tasks
+             if isinstance(t, dict) and t.get("id")}
+    repointed: list = []
+    for update in updates:
+        if not isinstance(update, dict):
+            continue
+        task_id = str(update.get("task_id") or "").strip()
+        row = by_id.get(task_id)
+        if row is None:
+            continue
+        old = [str(d) for d in (row.get("dependsOn") or [])]
+        new = [str(d).strip() for d in (update.get("dependsOn") or [])]
+        reason = str(update.get("reason") or "").strip()
+        row["dependsOn"] = new
+        existing_notes = (row.get("notes") or "").strip()
+        row["notes"] = _JUSTIFICATION_SEPARATOR.join(
+            part for part in (existing_notes, reason) if part)
+        repointed.append(task_id)
+        run.emit(DEPENDENCY_REPOINTED_EVENT, taskId=task_id,
+                 removed=sorted(set(old) - set(new)),
+                 added=sorted(set(new) - set(old)),
+                 dependsOn=new, reason=reason, source="worker-repoint")
+    if repointed:
+        run.write_tasks(data)
+    return repointed
 
 
 # Task 009 (PRD requirement C.1, #141): the sibling marker for a task the

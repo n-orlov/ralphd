@@ -5572,9 +5572,100 @@ class LoopSupervisor:
         refusal -- the newest one is the one that matters, and an
         unconsumed stale one would otherwise accumulate across iterations
         that never dispatch a fresh worker prompt in between.
+
+        #209 defect 7: `_apply_worker_task_updates` below is the SECOND
+        caller, for a refused `proposed_task_updates` re-point -- the same
+        key and the same prompt heading, deliberately, for the reasons that
+        method's own docstring records.
         """
         self.run.update_status(**{self.REFUSED_WORKER_SPLIT_STATUS_KEY: {
             "taskId": assigned_task_id, "errors": list(errors)}})
+
+    def _apply_worker_task_updates(self, updates: list,
+                                   assigned_task_id: str | None,
+                                   approach: int) -> None:
+        """#209 defect 7: ingest a worker's optional `proposed_task_updates`
+        re-point (`transitions.HAT_SCHEMAS["worker"]`) through
+        `plan_ingestion.lint_worker_task_updates`, then -- only once that
+        lint is clean AND this approach's
+        `worker_repoint_budget_per_approach` still has room --
+        `state.apply_worker_dependency_repoints`. The structural twin of
+        `_apply_worker_proposed_tasks` above, and deliberately so: same
+        lint-then-budget-then-write order, same refuse-whole discipline,
+        same `EVENT_VIOLATION`-shaped refusal.
+
+        The defect: `tasks.json` is harness-owned (correctly), but a worker
+        holding live work beside a permanently blocked remainder had no way
+        to re-point a `dependsOn`, so an unschedulable remainder took an
+        operator steer. The engine's own two re-point paths
+        (`state._repoint_dependents_onto_cure_task` from `insert_cure_tasks`,
+        and the CONFIRMED-petition path) still do that work unaided wherever
+        they apply; this is the residual for the case with no cure task to
+        re-point onto.
+
+        `state.task_blocked_by` is read with its DEFAULT
+        `include_petitioned=False`: a dependent of a merely `petitioned`
+        ancestor is held, not doomed, and a hold that can still resolve
+        confers no standing to rewrite the graph around it.
+
+        A refusal reuses `REFUSED_WORKER_SPLIT_STATUS_KEY` and its existing
+        "## Your last proposed task split was refused" prompt block rather
+        than minting a second key and heading. Both are refused OPTIONAL
+        plan-shaping proposals from the same channel with no re-ask ladder
+        of their own, the errors are quoted verbatim and already
+        self-identify through their `proposed_task_updates:` prefix, and a
+        second key would cost three pinned assertions in
+        `tests/test_worker_split_refusal_reprompt.py` for no gain. The key
+        holds one unread refusal by design (`_record_refused_worker_split`:
+        the newest is the one that matters), so a refused split and a
+        refused re-point in successive iterations overwrite each other --
+        acceptable, and stated here so it is not later "fixed" into two keys
+        without a reason.
+
+        Like `_apply_worker_proposed_tasks`, deliberately NOT on
+        `contract_enforcement.enforce_contract`'s re-ask ladder: this is an
+        optional side channel that rides ANY verdict (including a plain
+        `no_verdict`, which has no ladder at all). It never raises, never
+        advances a state and never touches `stagnant` directly.
+        """
+        if not isinstance(updates, list) or not updates:
+            return
+        tasks = self.run.read_tasks().get("tasks", [])
+        doomed = set(state.task_blocked_by(tasks))
+        errors = plan_ingestion.lint_worker_task_updates(
+            updates, assigned_task_id=assigned_task_id, tasks=tasks,
+            doomed_ids=doomed)
+        if errors:
+            self.run.emit(
+                contract_enforcement.EVENT_VIOLATION, hat="worker",
+                message="worker's proposed_task_updates re-point was refused",
+                errors=list(errors))
+            self._record_refused_worker_split(assigned_task_id, list(errors))
+            return
+        usage = dict(self.run.read_status().get("workerRepointUpdates") or {})
+        used = int(usage.get(str(approach), 0))
+        budget = self.cfg.worker_repoint_budget_per_approach
+        if used + len(updates) > budget:
+            budget_message = (
+                f"worker's proposed_task_updates re-point was refused: "
+                f"approach {approach} has already used {used}/{budget} of its "
+                f"re-point budget and this batch would add {len(updates)} "
+                f"more")
+            self.run.emit(
+                contract_enforcement.EVENT_VIOLATION, hat="worker",
+                message=budget_message, errors=[])
+            self._record_refused_worker_split(assigned_task_id, [budget_message])
+            return
+        repointed = state.apply_worker_dependency_repoints(self.run, updates)
+        if not repointed:
+            return
+        usage[str(approach)] = used + len(repointed)
+        self.run.update_status(workerRepointUpdates=usage)
+        self.run.emit(
+            "log", level="info",
+            message=(f"worker re-pointed {len(repointed)} doomed task(s) "
+                      f"while holding task {assigned_task_id}: "
+                      f"{', '.join(str(i) for i in repointed)}"))
 
     @staticmethod
     def _fold_inherited_dependsOn(proposed: list, inherited: list | None) -> list:
@@ -8140,6 +8231,29 @@ class LoopSupervisor:
                 if not schema_errors and proposed_split_tasks:
                     self._apply_worker_proposed_tasks(
                         proposed_split_tasks, assigned_id, approach)
+                    tasks_after = self.run.read_tasks()
+                # #209 defect 7: the `dependsOn` re-point side channel, the
+                # same independent treatment `proposed_tasks` gets just
+                # above. The ORDER here is load-bearing, not cosmetic: a
+                # re-point onto a task the SAME reply carved off with
+                # `proposed_tasks` only resolves because that split was
+                # already inserted one block above, so the re-point's
+                # unresolved-id check runs against the post-insert
+                # `tasks.json`. Read straight off `payload` rather than
+                # mirrored into a local the way `proposed_split_tasks` is,
+                # so the three places that re-derive that local (the initial
+                # parse, the `task_status` ladder and the one bounded
+                # schema-repair reentry) need no fourth line each: this
+                # guard sits inside the same inner `while True:` and is
+                # re-evaluated on the repaired payload, and a pass that
+                # reaches this line with `not schema_errors` never
+                # `continue`s, so it cannot apply the same batch twice. (A
+                # clean `schema_errors` already proves `payload` is a dict --
+                # `contracts.validate_payload` refuses anything else
+                # outright -- so no second isinstance guard is needed here.)
+                if not schema_errors and payload.get("proposed_task_updates"):
+                    self._apply_worker_task_updates(
+                        payload["proposed_task_updates"], assigned_id, approach)
                     tasks_after = self.run.read_tasks()
                 # Task 007 (PRD requirement A.3 prompt half, #155): same
                 # independent-side-channel treatment as `proposed_tasks`

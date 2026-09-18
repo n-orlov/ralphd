@@ -2939,6 +2939,187 @@ def lint_worker_split(proposed_tasks: Any, *, assigned_task_id: str | None,
     return errors
 
 
+# #209 defect 7: the two statuses a `proposed_task_updates` re-point may
+# DROP a `dependsOn` edge onto -- duplicated from
+# `state.TASK_DEPENDENCY_DEAD_STATUSES` rather than imported, because this
+# module must not depend on `state` (the real dependency runs the other way:
+# `state` imports `plan_ingestion`), the same module-boundary duplication
+# `state._WORKER_SPLIT_PASSTHROUGH_FIELDS` already makes in the opposite
+# direction for this module's own `_TASK_PASSTHROUGH_FIELDS`. The two tuples
+# are pinned equal by `tests/test_worker_split_proposal.py` so the copy
+# cannot drift.
+_REPOINTABLE_DEAD_STATUSES = ("failed", "skipped")
+
+
+def lint_worker_task_updates(proposed_task_updates: Any, *,
+                             assigned_task_id: str | None,
+                             tasks: list[dict],
+                             doomed_ids: set) -> list[str]:
+    """#209 defect 7: the lint for a worker's optional
+    `proposed_task_updates` re-point (`transitions.HAT_SCHEMAS["worker"]`),
+    the sibling of `lint_worker_split` just above -- and the whole of what
+    makes that channel safe, since the one thing it writes is an EXISTING
+    task's `dependsOn`.
+
+    Why the channel exists at all: `tasks.json` is harness-owned, and a
+    worker's only structural lever was `proposed_tasks`, which can add a
+    row but can never re-point one. The engine already re-points dependents
+    itself on two paths -- `state._repoint_dependents_onto_cure_task` from
+    `insert_cure_tasks`, and `petitions.apply_confirmed_petition_
+    adjudications` for a CONFIRMED petition -- so this is the RESIDUAL
+    case, and only that: a doomed dependent for which no cure task exists
+    to be re-pointed onto (the observed incident re-pointed a `pending`
+    task off a `failed` ancestor onto an already-`validated` sibling).
+    Anything either engine path can clear still clears without this field.
+
+    `tasks` and `doomed_ids` are passed IN by the caller for exactly the
+    reason `lint_worker_split`'s `existing_ids` is: this module stays
+    engine-loop-agnostic and never reads `tasks.json` itself.
+    `doomed_ids` is `state.task_blocked_by`'s own derived map, so the
+    standing to rewrite a graph is the HARNESS's judgement that the task is
+    unschedulable, never the worker's opinion of it.
+
+    The two refusals at the top return alone; past them every ENTRY that
+    fails reports its own first failure and the walk carries on to the next,
+    so one call names every bad entry rather than only the first. Either way
+    the WHOLE array is refused if any entry fails -- there is no partial
+    application. The guards, in order:
+
+    * an assigned task is required, the same standing rule
+      `lint_worker_split` opens with: this is a repair a worker makes in
+      passing while holding real work, not a plan-editing mandate;
+    * each entry is a dict carrying a non-blank `task_id`, a `dependsOn`
+      list of non-blank strings and a non-blank `reason` -- all three
+      mandatory, one entry per `task_id` so the batch has one meaning;
+    * the target must be a task actually present in `tasks`, and its
+      status must be exactly `pending`: narrower than
+      `state.TASK_CLAIMED_STATUSES` on purpose, because an `in-progress`/
+      `validation-failed` target carries the #184 hazard
+      `state._depends_on_claimed_refusal` names (never rewrite the graph
+      under a live attempt) and a terminal one has nothing left to unblock;
+    * the target must be a key of `doomed_ids`;
+    * every DROPPED id must name a task whose status is in
+      `_REPOINTABLE_DEAD_STATUSES` -- the anti-abuse guard: a dependency a
+      worker merely does not want to wait for is alive, and dropping it is
+      refused;
+    * NO id in the replacement list may be dead, so a re-point cannot mint
+      a fresh deadlock ("a failed dependency never satisfies"). Stated over
+      the whole replacement rather than only over the ids it ADDS -- which
+      is stricter than "adds none", deliberately: an entry that KEPT a dead
+      edge it already had would be accepted while leaving the target
+      exactly as doomed as it found it, which is a re-point that achieves
+      nothing except a free stagnation reset. This spelling also makes the
+      rule one the prompt can state in one clause. `petitioned` is
+      deliberately allowed -- a hold can still resolve, which is exactly
+      why `task_blocked_by` keeps `petitioned` out of its own doomed set;
+    * the candidate list goes through `validate_dependency_edges`, the one
+      self-loop/unresolved-id/cycle detector every other `dependsOn`
+      writer already shares. Its contract is "a bad edge costs itself,
+      never the write" -- for THIS caller that would silently produce the
+      outcome the drop-only-dead guard above forbids (an edge quietly
+      vanishing from the replacement list), so here a single rejected edge
+      refuses the whole batch instead. The refusal text is the validator's
+      own reason string, verbatim.
+
+    Entries are folded onto a working copy of the graph as they validate
+    clean, so two entries that only close a cycle TOGETHER are caught --
+    the same discipline `validate_dependency_edges` already applies edge by
+    edge within one call. The working copy is a list of shallow row copies
+    with a FRESH `dependsOn` list assigned, never a deep copy: nothing here
+    mutates a nested value, so the caller's own `tasks` (and the rows
+    inside it) are untouched.
+    """
+    if not assigned_task_id:
+        return ["proposed_task_updates: no task was assigned this iteration "
+                "-- a dependsOn re-point requires a real assignment to ride "
+                "alongside"]
+    if not isinstance(proposed_task_updates, list) or not proposed_task_updates:
+        return ["proposed_task_updates: expected a non-empty array, got "
+                f"{type(proposed_task_updates).__name__}"]
+    working = [dict(t) for t in tasks if isinstance(t, dict)]
+    by_id = {str(t.get("id")): t for t in working if t.get("id")}
+    errors: list[str] = []
+    seen: set[str] = set()
+    for i, entry in enumerate(proposed_task_updates):
+        where = f"$.proposed_task_updates[{i}]"
+        if not isinstance(entry, dict):
+            errors.append(f"{where}: expected an object, got "
+                          f"{type(entry).__name__}")
+            continue
+        raw_id = entry.get("task_id")
+        where = f"{where} (task_id={raw_id!r})"
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            errors.append(f"{where}: missing or blank 'task_id'")
+            continue
+        task_id = raw_id.strip()
+        reason = entry.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            errors.append(f"{where}: missing or blank 'reason' -- a re-point "
+                          "must say which dead edge it drops and what carries "
+                          "that work instead")
+        candidate = entry.get("dependsOn")
+        if not isinstance(candidate, list) or any(
+                not isinstance(d, str) or not d.strip() for d in candidate):
+            errors.append(f"{where}: 'dependsOn' must be an array of "
+                          "non-blank strings (the FULL replacement list, "
+                          "not a delta)")
+            continue
+        if task_id in seen:
+            errors.append(f"{where}: duplicate task_id -- one entry per task, "
+                          "so the batch has exactly one meaning for each")
+            continue
+        seen.add(task_id)
+        row = by_id.get(task_id)
+        if row is None:
+            errors.append(f"{where}: names unknown task {task_id!r} -- not in "
+                          "the current plan")
+            continue
+        status = row.get("status", "pending")
+        if status != "pending":
+            errors.append(
+                f"{where}: task is {status!r}, not 'pending' -- a re-point "
+                "rewrites the graph a claimed task's own attempt is already "
+                "executing against, and a terminal task has nothing left to "
+                "unblock")
+            continue
+        if task_id not in {str(d) for d in doomed_ids}:
+            errors.append(
+                f"{where}: the harness does not derive task {task_id!r} as "
+                "blocked (its taskBlockedBy map is the standing for a "
+                "re-point, not your own reading of the plan)")
+            continue
+        old = [str(d) for d in (row.get("dependsOn") or [])]
+        new = [d.strip() for d in candidate]
+        dropped = [d for d in old if d not in new]
+        live_drops = sorted({
+            d for d in dropped
+            if (by_id.get(d) or {}).get("status", "pending")
+            not in _REPOINTABLE_DEAD_STATUSES})
+        if live_drops:
+            errors.append(
+                f"{where}: refuses to drop live dependency(ies) {live_drops} "
+                "-- only an edge onto a 'failed' or 'skipped' task may be "
+                "dropped, and a dependency you merely do not want to wait "
+                "for is not a dead one")
+            continue
+        dead_kept = sorted({
+            d for d in new
+            if (by_id.get(d) or {}).get("status", "pending")
+            in _REPOINTABLE_DEAD_STATUSES})
+        if dead_kept:
+            errors.append(
+                f"{where}: refuses dependency(ies) {dead_kept} onto a "
+                "'failed'/'skipped' task -- a failed dependency never "
+                "satisfies, so that is a deadlock, not a repair")
+            continue
+        accepted, rejected = validate_dependency_edges(working, task_id, new)
+        if rejected:
+            errors.extend(f"{where}: {r.get('reason')}" for r in rejected)
+            continue
+        row["dependsOn"] = list(accepted)
+    return errors
+
+
 def normalize_task_tiers(payload: dict) -> list[str]:
     """Requirement F, task 013: normalise every task's optional `tier`
     annotation IN PLACE and return a list of WARNING strings -- a channel

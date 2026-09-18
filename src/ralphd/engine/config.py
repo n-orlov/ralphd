@@ -381,6 +381,30 @@ class JobConfig:
     # total over this budget is refused whole (no partial insertion) --
     # see `LoopSupervisor._apply_worker_proposed_tasks`.
     worker_split_budget_per_approach: int = 3
+    # #209 defect 7: an explicit NUMBER -- the maximum count of EXISTING
+    # tasks a worker's optional `proposed_task_updates` re-point
+    # (`transitions.HAT_SCHEMAS["worker"]`) may move across ONE approach.
+    # Tracked in `status.json`'s `workerRepointUpdates[str(approach)]`, the
+    # same disk-backed, per-approach-keyed shape `workerSplitProposals`
+    # above and `planReviewRevisions` already use, so it survives a resumed
+    # process; a batch that would push the running total past this budget is
+    # refused whole (no partial re-point) -- see `LoopSupervisor._apply_
+    # worker_task_updates`. Deliberately its OWN knob rather than sharing
+    # `worker_split_budget_per_approach`: that counter is documented (SPEC
+    # §5.2, `docs/api.md`) as the running total of tasks a split INSERTED,
+    # and a re-point inserts nothing, so sharing it would let three
+    # re-points silently forbid a needed split and make a shipped status
+    # field's documented meaning wrong.
+    #
+    # The bound is also the stagnation answer, and that is not incidental.
+    # A re-point mutates an EXISTING row, so unlike an inserted split task
+    # it is NOT filtered out of the pass's progress diff by
+    # `state.tasks_doc_excluding_new_entries` (which drops whole brand-new
+    # worker-origin ROWS) and so it DOES read as progress and reset
+    # `stagnant`. This number is what keeps that to at most three free
+    # resets per approach instead of an unbounded escape from the
+    # 3-iteration no-progress guard.
+    worker_repoint_budget_per_approach: int = 3
     # Task 020 (PRD requirement L, #101): the opt-in peer VERDICT gate.
     # OFF by default -- `transitions.table_for(vigilant)` (no extra
     # arguments) stays byte-identical to today's table whenever this

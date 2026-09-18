@@ -110,6 +110,33 @@ immediately starts the next iteration.
    colliding id, an exhausted per-approach budget) is refused and logged
    silently, never fed back to you for a retry, and the verdict you sent
    for the assigned task still stands on its own.
+
+   **A doomed dependency is the one thing you may re-point, and only while
+   you hold real work.** Alongside whichever verdict you send, you may ALSO
+   include `"proposed_task_updates": [...]`, an optional array whose only
+   power is to replace one task's `dependsOn` list. A fenced code block's
+   closing line can become the reply's own last non-blank line, which breaks
+   the contract, so the object below is written bare, never inside a fence:
+
+   {"verdict": "no_verdict",
+    "proposed_task_updates": [{"task_id": "<the blocked task's id>",
+                              "dependsOn": ["<the ids that replace its dead edge>"],
+                              "reason": "<which dead edge this drops, and what carries that work instead>"}]}
+
+   All three fields are required on every entry, and the harness — never you
+   — applies the re-point, through the same ingestion the split above goes
+   through. It refuses the WHOLE array, changing nothing, unless every entry
+   holds: a `task_id` naming a `pending` task the harness itself already
+   marks blocked (its `taskBlockedBy` entry, step 2 above); a `dependsOn`
+   that drops only edges naming a `failed` or `skipped` task, names no
+   `failed` or `skipped` task itself, names no id the plan does not hold, and
+   closes no cycle; and a non-empty `reason`. A dependency you simply do not
+   want to wait for is alive, so dropping it is refused: this field clears
+   doom the harness derived, and nothing else — it never changes a status, a
+   title or a `successCriteria`, and it is refused outright when no task was
+   assigned to you this iteration. It carries its own per-approach budget,
+   and a refused array comes back quoted under the same refused-proposal
+   heading in your next prompt.
 6. Update the handoff notes file (keep it under 50 lines — rewrite, don't append
    endlessly): current state, next step, any discovered gotchas. The notes'
    `## Standing rules` block is harness-pinned (task 107): the harness
@@ -131,11 +158,12 @@ immediately starts the next iteration.
   when resolving a permanently `failed` task either (`## Completion
   signal` below): that move rides the `task_status` contract channel in
   your reply's JSON the same way an ordinary verdict does, and the harness
-  applies it. The one channel that lets you shape `tasks.json`'s content
-  at all is the optional `proposed_tasks` field on your own contract
-  report (step 5 above), a bounded SPLIT of the task you were assigned,
-  ingested and applied by the harness itself, never written by you
-  directly.
+  applies it. The only two channels that let you shape `tasks.json`'s
+  content at all are the optional `proposed_tasks` and
+  `proposed_task_updates` fields on your own contract report (step 5
+  above) — a bounded SPLIT of the task you were assigned, and a bounded
+  `dependsOn` re-point of a task the harness itself marks blocked — both
+  ingested and applied by the harness, never written by you directly.
 - If operator steering is present in your prompt, it takes priority over
   everything else — including the PRD and the current task order. Handle it as
   described under `## Operator steering` below: copy it down, then act on it.
@@ -410,9 +438,12 @@ assign it, whichever resolution you picked. Do not pick whichever of the two
 resolutions looks tidiest and call the plan fixed: after you act, reread
 `dependsOn` across `tasks.json` (or the `taskBlockedBy` map) for tasks that
 name the failed task's id, and if any remain, report that doomed set in the
-notes file and stop — clearing it means repointing each dependent's
-`dependsOn` at the new task or a planning/replan pass, not another guess from
-a worker iteration.
+notes file and stop. One narrow repair is yours: when you can say honestly
+which live task carries the dead one's work, carry `proposed_task_updates`
+(step 5 above) in the same reply and let the harness re-point each dependent
+onto it. A refused or over-budget re-point leaves the doomed set exactly
+where it stood, and reporting it in the notes file is then the whole of your
+part in it — never a second guess at the graph.
 
 ## Reporting unsatisfiable criteria
 
