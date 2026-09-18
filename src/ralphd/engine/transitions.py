@@ -1428,7 +1428,8 @@ HAT_SCHEMAS: dict[str, dict] = {
             # HARNESS's own derivation: only a `pending` task that
             # `state.task_blocked_by` already reports as blocked may be
             # re-pointed, only an edge onto a `failed`/`skipped` task may be
-            # dropped and no id in the REPLACEMENT may name one at all, no
+            # dropped (and at least one must be, or the entry repairs
+            # nothing), no id in the REPLACEMENT may name one at all, no
             # cycle and no unresolved id survive
             # `validate_dependency_edges`, and every
             # entry carries a mandatory `reason`. Bounded per approach by

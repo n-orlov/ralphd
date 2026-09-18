@@ -5345,6 +5345,15 @@ class LoopSupervisor:
         text back through. Absent entirely when nothing was refused since
         the last prompt, same "presence is the signal" discipline as the
         two blocks above.
+
+        #209 defect 7 (unit 6 review): `_apply_worker_task_updates`'s
+        refused `proposed_task_updates` re-point rides the same status key
+        and so renders here too, which is why the section's BODY names both
+        channels instead of only the split. The HEADING is left byte-
+        identical -- `tests/test_worker_split_refusal_reprompt.py` pins that
+        string in four places, and one heading is the right surface for one
+        unread refusal -- but a worker that sent only a re-point must not be
+        told its split was refused and then told to fix a split.
         """
         deferred = (self._pending_deferred_tasks(tasks_doc)
                     if isinstance(tasks_doc, dict) else [])
@@ -5368,12 +5377,12 @@ class LoopSupervisor:
             refused_task_id = refused_split.get("taskId")
             refused_split_block = (
                 "\n## Your last proposed task split was refused\n\n"
-                f"Your `proposed_tasks` split reported on task "
-                f"{refused_task_id!r} was refused by the plan-ingestion "
-                "lint before it changed anything:\n\n"
+                f"Your `proposed_tasks` split or `proposed_task_updates` "
+                f"re-point reported on task {refused_task_id!r} was refused "
+                "by the plan-ingestion lint before it changed anything:\n\n"
                 f"{refused_lines}\n\n"
-                "Fix these before proposing another split, or continue "
-                "the assigned task without one.\n")
+                "Fix these before sending another, or continue the assigned "
+                "task without one.\n")
         if not isinstance(task, dict):
             return (
                 "## Task assigned this iteration\n\n"
@@ -5577,9 +5586,27 @@ class LoopSupervisor:
         caller, for a refused `proposed_task_updates` re-point -- the same
         key and the same prompt heading, deliberately, for the reasons that
         method's own docstring records.
+
+        So the overwrite above has ONE exception (unit 6 review of that
+        defect): one reply can be refused on BOTH channels, and then both
+        refusals are fresh and unread, so replacing would cost the worker
+        one of the two it needs. An entry still on the key for the SAME
+        assigned task is by construction exactly that case -- `_step_worker`
+        reads-and-CLEARS the key before every dispatch, so anything found
+        here was written after that clear, i.e. this iteration, and at most
+        the two channels write per iteration -- so its errors are extended
+        rather than dropped. A refusal recorded against a DIFFERENT task is
+        still replaced: there the newest one really is the one that matters.
         """
+        merged = list(errors)
+        existing = self.run.read_status().get(
+            self.REFUSED_WORKER_SPLIT_STATUS_KEY)
+        if (isinstance(existing, dict)
+                and existing.get("taskId") == assigned_task_id
+                and isinstance(existing.get("errors"), list)):
+            merged = [*existing["errors"], *merged]
         self.run.update_status(**{self.REFUSED_WORKER_SPLIT_STATUS_KEY: {
-            "taskId": assigned_task_id, "errors": list(errors)}})
+            "taskId": assigned_task_id, "errors": merged}})
 
     def _apply_worker_task_updates(self, updates: list,
                                    assigned_task_id: str | None,
@@ -5620,7 +5647,11 @@ class LoopSupervisor:
         the newest is the one that matters), so a refused split and a
         refused re-point in successive iterations overwrite each other --
         acceptable, and stated here so it is not later "fixed" into two keys
-        without a reason.
+        without a reason. Two refusals from the SAME reply are NOT one of
+        those cases and are concatenated under the one key instead (unit 6
+        review), because both are unread and the worker has to fix both; the
+        rendered block accordingly names both channels rather than only the
+        split, while its heading stays byte-identical.
 
         Like `_apply_worker_proposed_tasks`, deliberately NOT on
         `contract_enforcement.enforce_contract`'s re-ask ladder: this is an

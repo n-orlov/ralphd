@@ -2030,7 +2030,10 @@ def steer_task_delete(run: "RunDir", task_id: str) -> dict:
 
 # The one separator `steer_task_update` appends a transition justification
 # with. Named because the suppression test below has to recognize its OWN
-# earlier output to stay idempotent (task 038).
+# earlier output to stay idempotent (task 038). #209 defect 7:
+# `apply_worker_dependency_repoints` is the second user -- it appends a
+# re-point's mandatory `reason` to the row's `notes` through this same
+# separator.
 _JUSTIFICATION_SEPARATOR = "\n\n"
 
 

@@ -1886,30 +1886,37 @@ an unmet dependency's satisfaction: `skipped` is not in
 `TASK_DEPENDENCY_SATISFIED_STATUSES` (`completed`, `validated`) any more than
 `failed` was, so every task whose `dependsOn` names the relabelled id stays
 blocked exactly as before the relabel -- clearing that takes a `dependsOn`
-re-point, and three paths produce one. Two are the engine's own and need no
-agent at all: `state._repoint_dependents_onto_cure_task` (from
-`insert_cure_tasks`, whenever a blocking finding names the dead task) and the
-CONFIRMED-petition path. The third covers the residual -- a doomed dependent
-with no cure task to be re-pointed ONTO -- and is the worker's own optional
-`proposed_task_updates` contract field (#209 defect 7): `dependsOn` only,
+re-point, or a planning/replan pass. The engine writes a re-point itself on two
+paths that need no agent at all: `state._repoint_dependents_onto_cure_task`
+(from `insert_cure_tasks`, whenever a blocking finding names the dead task) and
+the CONFIRMED-petition path. An operator's `steer task-update` writes one too,
+and that is what both of #209's own observed incidents were cleared by. The
+residual none of those reaches -- a doomed dependent with no cure task to be
+re-pointed ONTO, whose replacement is a sibling that already exists -- is the
+worker's own optional `proposed_task_updates` contract field (#209 defect 7):
+`dependsOn` only,
 never a status, a title or a `successCriteria`; standing granted solely by
 `state.task_blocked_by`'s own derivation over a `pending` task, so the harness
 decides what is unschedulable and the worker only repairs what it has already
-called so; drops only `failed`/`skipped` edges and the replacement may name no
-`failed`/`skipped` task at all; mandatory `reason`, recorded on the task's own
+called so; drops only `failed`/`skipped` edges, and at least one of them, since
+an entry that drops none leaves the task exactly as blocked as it found it; the
+replacement may name no `failed`/`skipped` task at all; mandatory `reason`,
+recorded on the task's own
 `notes` and on `task.dependency_repointed`; no cycle and no unresolved id (the
 shared `plan_ingestion.validate_dependency_edges`, whose one rejected edge
 refuses this caller's WHOLE array rather than being dropped from it); bounded
 per approach by `worker_repoint_budget_per_approach`; and applied by the
 harness through `state.apply_worker_dependency_repoints`, never by the agent's
-own `tasks.json` write. A fourth guess at the graph from a worker iteration is
-still exactly what the channel exists to prevent -- the lint can check the
-graph's shape but never the semantic claim that the new edge carries the dead
-one's work, which is why the `reason` and the audit event are mandatory and
-why a refused or over-budget re-point leaves the doomed set where it stood,
-reported in the notes file and nothing more. So
-the engine gives the worker exactly one iteration to apply one of them and then
-acts itself: `LoopSupervisor._unresolved_failures()` reports the `failed` tasks of
+own `tasks.json` write. An UNGUARDED guess at the graph from a worker iteration
+is still exactly what that guard set exists to prevent -- the lint can check
+the graph's shape but never the semantic claim that the new edge carries the
+dead one's work, which is why the `reason` and the audit event are mandatory,
+and why a refused or over-budget re-point leaves the doomed set where it stood,
+reported in the notes file and nothing more.
+
+So the engine gives the worker exactly one iteration to apply one of its two
+honest resolutions above and then acts itself:
+`LoopSupervisor._unresolved_failures()` reports the `failed` tasks of
 a plan with nothing actionable left in it, and the worker loop routes to `review`
 — entry to review only, the reviewer still decides the verdict — instead of
 stagnating. Both kinds of `failed` route, because both block the worker's

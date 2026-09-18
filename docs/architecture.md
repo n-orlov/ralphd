@@ -1172,7 +1172,8 @@ creates no task, and a remedy against an obligation with no filed OPEN
 petition creates none either, so in those cases the doom is ordinary and the
 worker's own two honest resolutions -- or its `proposed_task_updates`
 re-point of a dependent the harness itself derives as doomed (#209 defect 7),
-or an operator ruling -- remain the escape, same as any other `failed` task. A held dependent is therefore never
+or an operator ruling -- remain the escape, same as any other `failed` task.
+A held dependent is therefore never
 permanently stuck: either the ancestor resolves and the hold lifts, or it
 fails and the hold becomes an actionable doom -- with, where the refutation
 named work, a replacement task already carrying its dependents.

@@ -127,16 +127,19 @@ immediately starts the next iteration.
    — applies the re-point, through the same ingestion the split above goes
    through. It refuses the WHOLE array, changing nothing, unless every entry
    holds: a `task_id` naming a `pending` task the harness itself already
-   marks blocked (its `taskBlockedBy` entry, step 2 above); a `dependsOn`
-   that drops only edges naming a `failed` or `skipped` task, names no
-   `failed` or `skipped` task itself, names no id the plan does not hold, and
-   closes no cycle; and a non-empty `reason`. A dependency you simply do not
-   want to wait for is alive, so dropping it is refused: this field clears
-   doom the harness derived, and nothing else — it never changes a status, a
-   title or a `successCriteria`, and it is refused outright when no task was
-   assigned to you this iteration. It carries its own per-approach budget,
-   and a refused array comes back quoted under the same refused-proposal
-   heading in your next prompt.
+   marks blocked (its `taskBlockedBy` entry, step 2 above), one entry per
+   task; a `dependsOn` that drops only edges naming a `failed` or `skipped`
+   task, and at least one of them, names no `failed` or `skipped` task
+   itself, names no id the plan does not hold, and closes no cycle; and a
+   non-empty `reason`. A dependency you simply do not want to wait for is
+   alive, so dropping it is refused: this field clears doom the harness
+   derived, and nothing else — it never changes a status, a title or a
+   `successCriteria`, and it is refused outright when no task was assigned to
+   you this iteration. A blocked task whose own `dependsOn` names no `failed`
+   or `skipped` task is blocked only THROUGH a live one, and re-pointing it
+   repairs nothing: re-point the blocked dependency it waits on instead. It
+   carries its own per-approach budget, and a refused array comes back quoted
+   in your next prompt, under the same heading a refused split does.
 6. Update the handoff notes file (keep it under 50 lines — rewrite, don't append
    endlessly): current state, next step, any discovered gotchas. The notes'
    `## Standing rules` block is harness-pinned (task 107): the harness

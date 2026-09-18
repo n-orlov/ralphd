@@ -2980,10 +2980,15 @@ def lint_worker_task_updates(proposed_task_updates: Any, *,
     unschedulable, never the worker's opinion of it.
 
     The two refusals at the top return alone; past them every ENTRY that
-    fails reports its own first failure and the walk carries on to the next,
-    so one call names every bad entry rather than only the first. Either way
-    the WHOLE array is refused if any entry fails -- there is no partial
-    application. The guards, in order:
+    fails reports its failure(s) and the walk carries on to the next, so one
+    call names every bad entry rather than only the first. Plural for one
+    entry in exactly one place, deliberately: a blank `reason` is recorded
+    and the SAME entry is then still checked for its `dependsOn` shape,
+    because both are things the worker has to fix and one round trip per
+    refusal is the cost of splitting them. Either way the WHOLE array is
+    refused if any entry fails -- there is no partial application, and the
+    working-copy fold below is therefore read by nothing but the cycle check
+    of a batch that is already doomed to be refused. The guards, in order:
 
     * an assigned task is required, the same standing rule
       `lint_worker_split` opens with: this is a repair a worker makes in
@@ -3012,6 +3017,18 @@ def lint_worker_task_updates(proposed_task_updates: Any, *,
       rule one the prompt can state in one clause. `petitioned` is
       deliberately allowed -- a hold can still resolve, which is exactly
       why `task_blocked_by` keeps `petitioned` out of its own doomed set;
+    * the replacement must DROP at least one edge (#209 defect 7, unit 6
+      review). An entry whose list is byte-identical to the current one, or
+      that only ADDS, is not a repair and is refused: past the two guards
+      above such a target holds no dead edge of its own, so it is doomed
+      only TRANSITIVELY -- some live dependency of its own is the doomed one
+      -- and adding edges can only constrain it further. Accepting one would
+      write the row, file a `task.dependency_repointed` claiming a re-point
+      that did not happen, and hand back a free progress diff (so a free
+      `stagnant` reset), REPEATABLY, since the target stays in `doomed_ids`.
+      A transitively doomed task therefore has standing here but no legal
+      repair -- only its blocking parent's own re-point (or a replan)
+      clears it, which is what the refusal text says;
     * the candidate list goes through `validate_dependency_edges`, the one
       self-loop/unresolved-id/cycle detector every other `dependsOn`
       writer already shares. Its contract is "a bad edge costs itself,
@@ -3028,6 +3045,14 @@ def lint_worker_task_updates(proposed_task_updates: Any, *,
     with a FRESH `dependsOn` list assigned, never a deep copy: nothing here
     mutates a nested value, so the caller's own `tasks` (and the rows
     inside it) are untouched.
+
+    `doomed_ids` is deliberately the caller's PRE-batch snapshot and is
+    never recomputed as entries fold. Standing can only be LOST by an
+    accepted fold, never gained (a fold only ever removes a dead edge, and
+    the replacement may name none), and an entry naming a target an earlier
+    fold already un-doomed has no dead edge left to drop, so the
+    drop-at-least-one guard above refuses it anyway -- re-deriving the map
+    per entry would refuse the same entries for a different reason.
     """
     if not assigned_task_id:
         return ["proposed_task_updates: no task was assigned this iteration "
@@ -3111,6 +3136,16 @@ def lint_worker_task_updates(proposed_task_updates: Any, *,
                 f"{where}: refuses dependency(ies) {dead_kept} onto a "
                 "'failed'/'skipped' task -- a failed dependency never "
                 "satisfies, so that is a deadlock, not a repair")
+            continue
+        # #209 defect 7 (unit 6 review): AFTER the two guards above, so a
+        # replacement that names a dead task still reads the specific
+        # refusal about that edge rather than this generic one.
+        if not dropped:
+            errors.append(
+                f"{where}: drops no 'failed'/'skipped' edge, so it repairs "
+                "nothing -- this task is blocked only THROUGH a live "
+                "dependency of its own, and only re-pointing THAT dependency "
+                "(or a replan) clears it")
             continue
         accepted, rejected = validate_dependency_edges(working, task_id, new)
         if rejected:

@@ -57,10 +57,14 @@ above already exist to answer. Its own six halves:
   `workerRepointUpdates`) and refuses whole, never partially.
 * The call site runs AFTER the split block in the same reply, so a re-point
   onto a child the same reply carved off resolves.
-* An accepted re-point cannot be repeated on the same task -- it clears the
-  very standing a second one would need -- which is what bounds the
-  stagnation reset a `dependsOn` edit does buy (an in-place row edit is not
-  filtered out of the progress diff the way an inserted split task is).
+* A `dependsOn` edit is an in-place row change, so unlike an inserted split
+  task it is NOT filtered out of the progress diff and an accepted re-point
+  DOES reset the stagnation guard. Two things bound that, and both are
+  pinned: every entry must DROP a `failed`/`skipped` edge, which leaves an
+  accepted re-point unrepeatable on the same task (no dead edge remains for
+  a second entry to drop, and a clearing one also sheds the standing); and
+  `worker_repoint_budget_per_approach` caps re-points across DIFFERENT
+  tasks, end to end through a worker that re-points and does nothing else.
 """
 
 from __future__ import annotations
@@ -720,23 +724,43 @@ def test_repoint_lint_accepts_the_observed_incident_shape():
                  tasks=tasks) == []
 
 
-def test_a_doom_clearing_repoint_cannot_be_repeated_on_the_same_task():
-    """A re-point that actually clears the doom removes exactly the standing
-    a second re-point of the same task would need: the task is no longer a
-    key of `state.task_blocked_by`'s derived map, so asking again is refused.
-    Putting the dead edge back is refused twice over (no standing, and a dead
-    edge in the replacement).
+def test_a_repoint_that_repairs_nothing_is_refused_and_never_repeatable():
+    """Every re-point must DROP a dead edge, and one that does also clears
+    the standing a second would need -- the two halves of the stagnation
+    bound, in one node because they are one property: a `dependsOn` edit
+    reads as progress (it edits an EXISTING row, so unlike an inserted split
+    task it is NOT filtered out of the pass's progress diff by
+    `state.tasks_doc_excluding_new_entries`, pinned above), so an entry that
+    can be re-sent is a free `stagnant` reset on tap.
 
-    This is the honest bound on the stagnation risk. A re-point edits an
-    EXISTING row, so unlike an inserted split task it is NOT filtered out of
-    the pass's progress diff by `state.tasks_doc_excluding_new_entries`
-    (pinned above) and it DOES read as progress. What keeps that from being
-    an unbounded escape from the 3-iteration no-progress guard is: an entry
-    must drop a real dead edge or leave the target still doomed for some
-    OTHER reason, a doom-clearing entry cannot be re-sent, and everything
-    else is capped at `worker_repoint_budget_per_approach` per approach
-    (pinned in the budget node below) -- at most three free resets, never a
-    treadmill."""
+    Half one, the drop-at-least-one guard (#209 defect 7, unit 6 review):
+    `TRANS` below is doomed only THROUGH a live sibling, so its own list
+    holds no dead edge -- the live-drop and dead-edge guards are both
+    vacuous for it, and before this guard a replacement byte-identical to
+    its current list was ACCEPTED, writing the row, emitting a
+    `task.dependency_repointed` recording a re-point of nothing (`removed`
+    and `added` both empty), and -- since the target stays in
+    `task_blocked_by`'s map -- re-sendable for as many free resets as the
+    budget allows. An adds-only entry was accepted the same way. Both are
+    refused, naming the only thing that does clear such a task: re-pointing
+    the live dependency that is itself the doomed one.
+
+    Half two: after a re-point that DOES clear the doom, the same task is no
+    longer a key of the derived map, so asking again is refused for want of
+    standing, and putting the dead edge back is refused twice over. Between
+    the two halves an accepted re-point is never repeatable on one task at
+    all -- it leaves no dead edge for a second entry to drop -- which is why
+    `worker_repoint_budget_per_approach` (pinned in the budget node below,
+    and end to end in the stagnation node) bounds re-points across DIFFERENT
+    tasks rather than backstopping a treadmill on one."""
+    tasks = _doomed_graph() + [_row("TRANS", depends=[DOOMED_1])]
+    doomed = task_blocked_by(tasks)
+    assert doomed["TRANS"] == [DOOMED_1], doomed   # doomed, transitively
+    for depends in ([DOOMED_1], [DOOMED_1, LIVE_1]):     # identical, adds-only
+        nothing = _lint([_update("TRANS", depends=depends)], tasks=tasks)
+        assert len(nothing) == 1, (depends, nothing)
+        assert "repairs nothing" in nothing[0] and "THROUGH" in nothing[0]
+
     tasks = _doomed_graph()
     assert _lint([_update()], tasks=tasks) == []
     repointed = [_row(t["id"], status=t["status"],
@@ -824,7 +848,17 @@ def test_a_refused_repoint_reaches_the_next_worker_prompt(tmp_path):
     The batch here is two entries, the first of them perfectly legal, so it
     also pins the refuse-WHOLE property on the LINT branch (the budget
     branch's own is pinned above): one bad entry leaves the good one's graph
-    exactly as it stood."""
+    exactly as it stood.
+
+    Two properties of the reuse itself, both from the unit 6 review. The
+    rendered BODY names the re-point channel: the heading is shared and
+    stays byte-identical (pinned four times in
+    `tests/test_worker_split_refusal_reprompt.py`), but a worker that sent no
+    split must not read that its split was refused and be told to fix one.
+    And a reply refused on BOTH channels keeps both refusals -- the key holds
+    one unread refusal, so the same-task write EXTENDS it instead of
+    replacing, since otherwise the second channel's refusal would silently
+    cost the first one its only trip back to the worker."""
     tasks = _doomed_graph() + [_row("010", depends=[DEAD_1])]
     sup = _sup(tmp_path / "run", tasks)
     sup._apply_worker_task_updates(
@@ -836,8 +870,24 @@ def test_a_refused_repoint_reaches_the_next_worker_prompt(tmp_path):
     assert any("proposed_task_updates" in e for e in refused["errors"])
     extra = sup._worker_assignment_extra(_task(), refused_split=refused)
     assert "## Your last proposed task split was refused" in extra
+    assert "`proposed_task_updates` re-point reported on task" in extra
     assert "999-nowhere" in extra
     assert "workerRepointUpdates" not in sup.run.read_status()
+
+    # The same reply's OTHER channel is also refused: both texts survive.
+    sup._apply_worker_proposed_tasks(
+        [{"id": TASK_1, "title": "collides with its own parent",
+          "successCriteria": "x works"}], TASK_1, 1)
+    both = sup.run.read_status()[sup.REFUSED_WORKER_SPLIT_STATUS_KEY]["errors"]
+    assert any("proposed_task_updates" in e for e in both)
+    assert any("999-nowhere" in e for e in both)
+    assert any("proposed_task_updates" not in e for e in both)   # the split's
+    # A refusal against a DIFFERENT assigned task still replaces: there the
+    # newest one really is the only one that matters.
+    sup._apply_worker_task_updates([_update("no-such-task")], "other", 1)
+    replaced = sup.run.read_status()[sup.REFUSED_WORKER_SPLIT_STATUS_KEY]
+    assert replaced["taskId"] == "other"
+    assert not any("999-nowhere" in e for e in replaced["errors"])
 
 
 def test_the_repoint_rides_the_real_dispatch_after_the_split(tmp_path):
@@ -868,6 +918,67 @@ def test_the_repoint_rides_the_real_dispatch_after_the_split(tmp_path):
     assert next(t for t in tasks if t["id"] == DOOMED_1)["dependsOn"] == ["021a"]
     assert task_blocked_by(tasks) == {}
     assert sup.run.read_status()["workerRepointUpdates"] == {"1": 1}
+
+
+def _repoint_only(n: int):
+    def _step(sup, prompt=""):
+        payload = {"verdict": "no_verdict",
+                   "proposed_task_updates": [
+                       _update(f"doomed-{n}",
+                               reason=f"005 failed; 004 carries it ({n})")]}
+        return _ok(f"re-pointing only, attempt {n}\n" + json.dumps(payload))
+    return _step
+
+
+def test_repointing_alone_is_bounded_as_a_stagnation_escape(tmp_path):
+    """The counterpart of `test_a_worker_that_only_ever_proposes_splits_
+    still_fails_the_approach` above, for the second side channel, and the
+    node the whole fold into this module is justified by: a worker whose
+    every reply carries ONLY a `proposed_task_updates` re-point still reaches
+    the stagnation outcome.
+
+    It is owed precisely because this channel's answer is the opposite of the
+    split channel's. A re-point edits an EXISTING row, so
+    `state.tasks_doc_excluding_new_entries` cannot filter it out of the
+    pass's progress diff and an ACCEPTED re-point does reset the guard -- the
+    run below needs more than three worker iterations for exactly that
+    reason, where a worker that only proposed splits paused at three. What
+    bounds it is `worker_repoint_budget_per_approach` (left at its DEFAULT
+    here, so the pin is on the shipped number): four doomed dependents are
+    on offer, the fourth re-point is refused whole on budget, and from there
+    the worker buys no progress at all and the approach stagnates and pauses
+    anyway. Every guard in `lint_worker_task_updates` is legal in this
+    script, so what is measured is the budget alone."""
+    root = tmp_path / "run"
+    tasks = [_task(), _row(LIVE_1, status="validated"),
+             _row(DEAD_1, status="failed")] + [
+        _row(f"doomed-{n}", depends=[DEAD_1]) for n in (1, 2, 3, 4)]
+
+    sup = _run_resumed_until_paused(root, {
+        "worker": [_repoint_only(1), _repoint_only(2), _repoint_only(3),
+                   _repoint_only(4)],
+        "review": [_review_verified],
+    }, tasks)
+
+    status = sup.run.read_status()
+    assert status["state"] == "paused", status
+    assert status["pauseReason"] == "stagnation", status
+    # The budget stopped at its default 3, and the fourth re-point changed
+    # nothing -- refused whole, on the record.
+    assert status["workerRepointUpdates"] == {"1": 3}
+    rows = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
+    assert [rows[f"doomed-{n}"]["dependsOn"] for n in (1, 2, 3)] == [
+        [LIVE_1], [LIVE_1], [LIVE_1]]
+    assert rows["doomed-4"]["dependsOn"] == [DEAD_1]
+    events = [json.loads(x) for x in
+              (root / "events.jsonl").read_text().splitlines()]
+    assert any(e.get("type") == "contract.violation"
+               and "re-point budget" in (e.get("message") or "")
+               for e in events)
+    # The three accepted re-points each DID read as progress -- a worker that
+    # reset nothing pauses on its third iteration (the split node above) --
+    # and the run paused regardless, which is the whole claim.
+    assert sup.runner.calls["worker"] > 3       # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -901,7 +1012,10 @@ def test_worker_md_documents_the_repoint_field_and_every_guard_it_enforces():
         "refuses the WHOLE array",
         "`pending` task the harness itself already marks blocked",
         "`taskBlockedBy`",
+        "one entry per task",
         "drops only edges naming a `failed` or `skipped` task",
+        "and at least one of them",                  # the drop-nothing guard
+        "blocked only THROUGH a live one, and re-pointing it repairs nothing",
         "names no `failed` or `skipped` task itself",
         "names no id the plan does not hold",
         "closes no cycle",
