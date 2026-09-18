@@ -1079,9 +1079,9 @@ matching `petitioned` task straight to `failed` carrying the remedy -- and,
 either way, the obligation is RETIRED from the open set: the read site both
 this episode and an ordinary review pass scope themselves to
 (`petitions.open_unconfirmed_petitions`) drops every obligation the
-run-scope record already settled, through
-`petitions.settled_obligations` (CONFIRMED **and** REFUTED, suppression
-only -- never an exemption; the exemption readers stay CONFIRMED-only).
+run-scope record already settled, through `petitions.settled_obligations`
+(CONFIRMED **and** REFUTED, suppression only -- never an exemption; the
+exemption readers stay CONFIRMED-only).
 The in-process `self._petition_adjudication_seen` guard above was not
 enough for that on its own: it is per-process, so it resets on an engine
 restart, and it does not cover an ordinary review pass's own prompt at all
@@ -1089,12 +1089,11 @@ restart, and it does not cover an ordinary review pass's own prompt at all
 consecutive review passes, 13 `petition_refuted` events for 3 recorded
 entries (#209 §5). Retirement is not deletion: the entry, its remedy, its
 `petition_refuted` event and the run record's rendering of all three are
-unchanged. This episode
-never `_advance`s a state, never `_finish`es, and is refunded through the
-same off-budget `grace` channel the grace review already uses, so it never
-competes with the run's iteration budget or a task's own
-`validationAttempts`. See the verdict-values section above for the
-`"adjudicated"` reply value this episode alone may use.
+unchanged. This episode never `_advance`s a state, never `_finish`es, and
+is refunded through the same off-budget `grace` channel the grace review
+already uses, so it never competes with the run's iteration budget or a
+task's own `validationAttempts`. See the verdict-values section above for
+the `"adjudicated"` reply value this episode alone may use.
 
 ### A `petitioned` task holds its dependents, pending exactly this adjudication (v0.19 requirement C.1, #149, task 013)
 

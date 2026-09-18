@@ -415,11 +415,12 @@ class LoopSupervisor:
         # `petitions._normalize_obligation` keys every other obligation
         # comparison in this tree) -- so a petition whose own workspace
         # filing never gains an `Adjudication` field (by that module's own
-        # design: only a run-scope CONFIRMED record, never the file
-        # itself, marks a petition settled) does not trigger a FRESH
-        # bounded episode on every later worker pass. The episode is
-        # scheduled again only once a genuinely NEW obligation appears in
-        # the open-and-unconfirmed set -- see
+        # design: only a run-scope ADJUDICATION record -- CONFIRMED or,
+        # since #209 §5, REFUTED as well (`petitions.settled_obligations`)
+        # -- never the file itself, marks a petition settled) does not
+        # trigger a FRESH bounded episode on every later worker pass. The
+        # episode is scheduled again only once a genuinely NEW obligation
+        # appears in the open-and-unconfirmed set -- see
         # `_maybe_run_midrun_adjudication_episode`. Deliberately
         # per-process, like `_grace_review_granted`: a resumed engine
         # simply re-derives it from scratch off the SAME workspace file
@@ -12310,15 +12311,17 @@ class LoopSupervisor:
         (`run_iteration("review", ...)`, which resolves through
         `tiers.resolve_bundle`/`self.cfg.model_for("review")` -- NEVER the
         worker's model), scoped to every impossibility petition currently
-        open-and-unconfirmed under this workspace
-        (`petitions.open_unconfirmed_petitions`) -- if, and only if, at
-        least one such obligation is both open AND not already given a
-        bounded episode by an earlier pass of THIS same process
-        (`self._petition_adjudication_seen`, updated at the end of this
-        method regardless of the episode's own outcome -- see that set's
-        own docstring in `__init__` for why re-asking forever would
-        otherwise be the default: a petition's workspace filing never
-        gains an `Adjudication` field by this module's own design).
+        open and not yet settled at run scope
+        (`petitions.open_unconfirmed_petitions`, which since #209 §5
+        subtracts every obligation the run-scope record already
+        adjudicated EITHER way, not just the CONFIRMED ones) -- if, and
+        only if, at least one such obligation is both open AND not
+        already given a bounded episode by an earlier pass of THIS same
+        process (`self._petition_adjudication_seen`, updated at the end
+        of this method regardless of the episode's own outcome -- see
+        that set's own docstring in `__init__` for why re-asking forever
+        would otherwise be the default: a petition's workspace filing
+        never gains an `Adjudication` field by this module's own design).
 
         A no-op in the overwhelming common case (no petition open at
         all) -- this method is called unconditionally right before the
@@ -12459,17 +12462,17 @@ class LoopSupervisor:
         #112): `engine.petitions.petitions_review_context` uses it to
         drop any petition whose obligation the run-scope record
         (`petitions.settled_obligations`) already adjudicated -- CONFIRMED
-        or REFUTED (#209 §5)
-        -- an obligation review already ruled on, at run scope, does not
-        get a second 'MUST adjudicate' instruction on a later review pass
-        just because its filing's own `Adjudication` field (a workspace,
-        per-file fact) is still open. For a WORKSPACE filing that field can
-        never close at all -- `petitions.write_back_petition_adjudication`
-        annotates `self.run.petitions_file` only, a documented no-op for a
-        tracked workspace file (task 008, requirement H) -- so this record
-        is the only channel a settlement has to reach this prompt through,
-        which is why #209 §5 observed the same REFUTED obligation re-argued
-        on six consecutive review passes while the filter still read
+        or REFUTED (#209 §5) -- an obligation review already ruled on, at
+        run scope, does not get a second 'MUST adjudicate' instruction on
+        a later review pass just because its filing's own `Adjudication`
+        field (a workspace, per-file fact) is still open. For a WORKSPACE
+        filing that field can never close at all --
+        `petitions.write_back_petition_adjudication` annotates
+        `self.run.petitions_file` only, a documented no-op for a tracked
+        workspace file (task 008, requirement H) -- so this record is the
+        only channel a settlement has to reach this prompt through, which
+        is why #209 §5 observed the same REFUTED obligation re-argued on
+        six consecutive review passes while the filter still read
         `confirmed_obligations` alone. This is engine-side wiring, not a
         test-only convenience: the exclusion applies to every real review
         call through this one method, the same seam every other

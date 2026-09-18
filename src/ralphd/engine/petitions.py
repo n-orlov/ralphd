@@ -1650,13 +1650,23 @@ def record_confirmed_adjudications(run, adjudications) -> None:
     `run-record.json`/`run-record.md` at all. Persisting it changes
     nothing about EXEMPTIONS: `read_confirmed_adjudications` (and hence
     `confirmed_obligations`, `petitioned_task_accepted`,
-    `downgrade_confirmed_findings`, `open_unconfirmed_petitions`,
-    `adjudicated_petitions_review_context`) filters this record down to
-    `adjudication == "CONFIRMED"` entries after authenticating it, so a
-    REFUTED entry in the store can never exempt an obligation, and a
-    REFUTED adjudication is still "not something a later approach
-    inherits" as an exemption (`docs/petition-format.md`) -- it is
-    inherited only as history to render.
+    `downgrade_confirmed_findings`, `adjudicated_petitions_review_
+    context`) filters this record down to `adjudication == "CONFIRMED"`
+    entries after authenticating it, so a REFUTED entry in the store can
+    never exempt an obligation, and a REFUTED adjudication is still "not
+    something a later approach inherits" as an exemption
+    (`docs/petition-format.md`).
+
+    #209 §5 is the one further thing a REFUTED entry here does, and it is
+    why `open_unconfirmed_petitions` is deliberately NOT in the list
+    above: that reader goes through `settled_obligations` (CONFIRMED
+    **and** REFUTED), so the entry also RETIRES its obligation's
+    rehearing -- the filing stops being re-presented as OPEN to a later
+    review pass. Suppression of a rehearing is not an exemption, so every
+    exemption reader named above stays CONFIRMED-only; and it is not a
+    deletion either -- this row, its `remedy` and its `petition_refuted`
+    event all stay exactly as written, which is what `run_record.
+    build_petitions_section` renders.
 
     Merges into whatever is already on disk keyed by normalised
     obligation text, rather than overwriting -- a later approach's review
@@ -2465,16 +2475,29 @@ def adjudicated_petitions_review_context(run) -> str:
     This is deliberately a SEPARATE block from `petitions_review_context`
     above (the OPEN petitions list): an obligation appearing here has
     already been excluded from that OPEN list (`open_unconfirmed_
-    petitions` already filters on the same `confirmed_obligations(run)`
-    set) -- this function's whole job is to state the settled fact
-    explicitly, in-prompt, rather than leaving review to infer "not
-    listed as open" as its only evidence that the obligation is closed.
-    Without this, review sees no textual anchor at all for `review.md`'s
-    own re-file rule ("a duplicate filing against an obligation that
-    already has one ... is itself a BLOCKING finding") to be scoped
-    against -- this block is that anchor: it tells review, per obligation,
-    "this is closed; a NEW filing against it is the violation the rule
-    describes, not this entry's own continued appearance here."
+    petitions` filters on `settled_obligations`, a SUPERSET of this
+    block's CONFIRMED-only set since #209 §5, so everything rendered here
+    is excluded there) -- this function's whole job is to state the
+    settled fact explicitly, in-prompt, rather than leaving review to
+    infer "not listed as open" as its only evidence that the obligation
+    is closed. Without this, review sees no textual anchor at all for
+    `review.md`'s own re-file rule ("a duplicate filing against an
+    obligation that already has one ... is itself a BLOCKING finding") to
+    be scoped against -- this block is that anchor: it tells review, per
+    obligation, "this is closed; a NEW filing against it is the violation
+    the rule describes, not this entry's own continued appearance here."
+
+    The two blocks are therefore NOT complements, and that asymmetry is a
+    decision, not an oversight (#209 §5, rejected alternative 6): a
+    CONFIRMED obligation leaves the OPEN block and reappears here as
+    history, while a REFUTED one leaves the OPEN block and is
+    deliberately not rendered here at all -- rendering it would be more
+    prompt surface inviting the very re-adjudication the retirement
+    exists to stop, and the anchor above is not load-bearing for the
+    REFUTED case: a re-filing against it is refused at the write path
+    (`file_worker_petition` -> `duplicate_petition_error`) and flagged
+    post-hoc by `duplicate_petition_findings`, with no help from this
+    prompt block.
 
     Returns `''` when the record is empty or tampered (`read_confirmed_
     adjudications` already returns `entries=[]` for a tampered record --
