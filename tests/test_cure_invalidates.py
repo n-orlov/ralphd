@@ -31,6 +31,8 @@ Four groups of nodes:
   collision-avoidance section already uses);
 * the lane re-open chain, same harness, a fixture pair shaped like a
   "verify every lane" task depended on by a "record every lane" task;
+* the cure-origin exclusion and the per-path re-take reuse, same harness
+  (#209 defect 3);
 * the emitted event's payload -- driving a real `LoopSupervisor.
   _step_review()` pass over a finding carrying `invalidates` of both
   shapes at once, and reading `approach.cure_pass`'s own `taskIds`
@@ -243,8 +245,12 @@ def test_the_engines_own_cure_task_is_never_a_verification_step(tmp_path):
     the pass-1 CURE TASK look like a verification step to re-open --
     `deck-phase4` reset `cure-03-01`/`cure-03-02` from `validated` to
     `pending` and re-worked them; `selfdev-v022` left `cure-01-01` `pending`
-    behind three LATER cure tasks. Both phases of the filter are pinned here
-    because they are one decision with two consequences.
+    behind three LATER cure tasks. All three phases of the filter are pinned
+    here because they are one decision with three consequences -- the third
+    added by the unit-3 review, which found the CANDIDATE half of the filter
+    discriminated by no fixture at all: for an ordinary re-take row the
+    verification half already decides the outcome by itself, so the candidate
+    half needs the one shape where it does not.
     """
     # Phase 1: the record's dependsOn names a planner verification step AND
     # pass 1's own cure task. Only the planner pair is re-opened.
@@ -287,6 +293,31 @@ def test_the_engines_own_cure_task_is_never_a_verification_step(tmp_path):
     assert retakes[0]["id"] in inserted2
     assert retakes[0]["dependsOn"] == [inserted2[0]]
 
+    # Phase 3: the shape only the CANDIDATE half of the filter reaches -- an
+    # engine-authored re-take row whose own `dependsOn` was re-pointed onto
+    # PLANNER work, which an operator `steer task-update` writes today (and a
+    # worker's accepted `proposed_task_updates` will). Its verification list
+    # is non-empty and legitimate, so the verification half of the filter
+    # does not skip it; without the candidate half the engine's own row is
+    # matched AS the record, `060` is dragged out of `validated`, and the row
+    # never receives this pass's cure edge at all.
+    run3 = _make_run(tmp_path / "run3", [
+        _task("060", status="validated", criteria="verify every lane"),
+        {**_cure_task("retake-01-01-01", status="validated",
+                      title=f"Re-take {RECORD_PATH}", depends=["060"]),
+         "successCriteria": (f"{RECORD_PATH} is re-taken (re-recorded) at "
+                             "the tree cure task cure-01-01 leaves.")},
+    ])
+    inserted3 = insert_cure_tasks(run3, 1, [finding])
+    tasks3 = {t["id"]: t for t in run3.read_tasks()["tasks"]}
+    assert tasks3["060"]["status"] == "validated"     # never dragged back
+    assert tasks3["060"]["dependsOn"] == []           # and never chained onto
+    assert "060" not in inserted3
+    # the re-take row is re-used instead, exactly as any other pass would.
+    assert tasks3["retake-01-01-01"]["status"] == "pending"
+    assert tasks3["retake-01-01-01"]["dependsOn"] == ["060", inserted3[0]]
+    assert inserted3 == [inserted3[0], "retake-01-01-01"]
+
 
 def test_a_later_cure_pass_reuses_the_retake_task_and_never_reopens_the_cure(tmp_path):
     """Route 1 of the same misclassification, plus Change 2's reuse. A
@@ -325,6 +356,12 @@ def test_a_later_cure_pass_reuses_the_retake_task_and_never_reopens_the_cure(tmp
                 if t["title"] == f"Re-take {CURE_PATH}"]) == 1
     assert tasks[retake_id]["status"] == "pending"      # stale at the new tree
     assert tasks[retake_id]["dependsOn"] == [first_cure, second_cure]
+    # and its criterion is restated over THIS pass's cure task rather than
+    # left naming pass 1's (unit-3 review): a verify hat scoring the
+    # re-record must be told the tree it is owed, not one a pass out of date.
+    assert tasks[retake_id]["successCriteria"] == (
+        f"{CURE_PATH} is re-taken (re-recorded) at the tree cure task "
+        f"{second_cure} leaves.")
     # pass 1's landed cure task is left exactly where the worker left it.
     assert tasks[first_cure]["status"] == "validated"
     assert tasks[first_cure]["dependsOn"] == []

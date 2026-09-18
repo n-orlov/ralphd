@@ -1741,14 +1741,26 @@ def test_a_substance_remedy_becomes_one_finding_that_folds_into_a_bounded_cure_t
         tmp_path):
     """The whole of gate 1-4 clearing, and the shape of what clears them: a
     finding-shaped record whose `clause` is the obligation, whose `evidence`
-    carries the remedy verbatim, and which deliberately carries NEITHER
-    `cured_when` (so the remedy prose goes through `state._cure_task_success_
-    criteria`'s fold to the same ~5-clause bound review's own `cured_when` is
-    held to, applied by construction rather than by refusal) NOR
+    carries the remedy verbatim, whose `cured_when` is the REMEDY pre-folded
+    to the clause bound review's own `cured_when` is held to (applied by
+    construction rather than by refusal), and which deliberately carries no
     `invalidates` (a remedy names no invalidated evidence path, so the
     re-record cascade is never triggered from here). The second half runs the
-    record through the real `insert_cure_tasks` to pin that the fold happens
+    record through the real `insert_cure_tasks` to pin that the bound holds
     and that the full text survives in `description`.
+
+    The `cured_when` assertions replace this node's original `assert
+    "cured_when" not in finding`, and inverting that pin is the point rather
+    than a relaxation (unit-3 review): with the field absent, the criterion
+    came from `state._cure_task_success_criteria`, which folds `clause`
+    BEFORE `evidence` and truncates the pair -- so an obligation that is
+    itself five clauses long consumed the whole budget and the remedy was
+    absent from the criterion ENTIRELY, leaving the task scored against the
+    exact text the worker petitioned as unmeetable. The third half below is
+    that regression, and everything the original pin was protecting -- the
+    same bound, no refusal, the full text in `description` -- is still
+    asserted, now against `plan_ingestion.clause_count_overrun` itself so
+    `petitions`' own duplicated bound cannot drift from it.
     """
     out = petitions.refuted_remedy_cure_findings(
         [_remedy_entry()], _filed(), [_remedy_task()])
@@ -1758,7 +1770,9 @@ def test_a_substance_remedy_becomes_one_finding_that_folds_into_a_bounded_cure_t
     assert REMEDY_TEXT in finding["evidence"]
     assert finding["remedy_for"] == REMEDY_OBLIGATION
     assert finding["severity"] == "blocking" and finding["curable"] is True
-    assert "cured_when" not in finding
+    assert finding["cured_when"] in REMEDY_TEXT      # the remedy, not the obligation
+    assert REMEDY_OBLIGATION not in finding["cured_when"]
+    assert plan_ingestion.clause_count_overrun(finding["cured_when"]) is None
     assert "invalidates" not in finding
 
     # nine sentences of remedy prose: bounded criteria, unbounded description.
@@ -1774,7 +1788,32 @@ def test_a_substance_remedy_becomes_one_finding_that_folds_into_a_bounded_cure_t
     assert task["remedyFor"] == REMEDY_OBLIGATION
     assert len(task["successCriteria"].split("; ")) <= \
         plan_ingestion.MAX_CHECKABLE_CLAUSES
+    assert plan_ingestion.clause_count_overrun(task["successCriteria"]) is None
     assert "Step 9 lands" in task["description"]
+
+    # the regression: an obligation that is ITSELF a full five-clause
+    # criterion -- which is exactly what a `contradictory-clauses`/`self-
+    # referential` petition's obligation is, the affected task's own
+    # `successCriteria`. The remedy must still be the text the task is
+    # measured by; the obligation is the title and `remedyFor`, and both
+    # texts are in `description`.
+    five_clause_obligation = (
+        "the merge is idempotent. every lane is green. the record cites its "
+        "own sha. no filing is dropped. the audit range is empty.")
+    wide = petitions.refuted_remedy_cure_findings(
+        [_remedy_entry(obligation=five_clause_obligation)],
+        _filed(five_clause_obligation), [])
+    run2 = RunDir(root=tmp_path / "run-wide")
+    run2.root.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(run2.tasks_file, {"version": 1, "tasks": []})
+    inserted2 = insert_cure_tasks(run2, 1, wide)
+    wide_task = next(t for t in run2.read_tasks()["tasks"]
+                     if t["id"] == inserted2[0])
+    assert "renderStackedFrame" in wide_task["successCriteria"]
+    assert plan_ingestion.clause_count_overrun(
+        wide_task["successCriteria"]) is None
+    assert wide_task["title"] == five_clause_obligation
+    assert five_clause_obligation in wide_task["description"]
 
 
 def test_a_form_remedy_creates_no_work(tmp_path):

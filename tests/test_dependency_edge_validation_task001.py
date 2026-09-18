@@ -219,8 +219,11 @@ def test_cure_insertion_refuses_a_self_loop_a_longer_cycle_and_an_unknown_id(tmp
     # `edge == "cure-01-02"` and `reason` naming a self-loop. Every
     # assertion that is still true is kept verbatim below (both cure tasks
     # land, `cure-01-02.dependsOn == []`, its origin, and the record's own
-    # `dependsOn` untouched); the validator's self-loop refusal ON THIS PATH
-    # is still covered, by a direct `validate_dependency_edges` assertion --
+    # `dependsOn` untouched), and the two that were about the event itself --
+    # `taskId` and `source` -- are re-homed onto Phase 2, which still emits a
+    # real one on this same entry point; the validator's self-loop refusal
+    # ON THIS PATH is still covered, by a direct `validate_dependency_edges`
+    # assertion --
     # the same precedent Phase 3 below already set for the longer-cycle
     # shape with its own "no organic `insert_cure_tasks` write can produce
     # one" comment.
@@ -292,6 +295,12 @@ def test_cure_insertion_refuses_a_self_loop_a_longer_cycle_and_an_unknown_id(tmp
     assert dependent2["dependsOn"] == [cure_id2]  # "ghost" dropped, "120" repointed
     rejected2 = _events(run2, REJECTED_EVENT)
     assert len(rejected2) == 1
+    # `taskId` names the task whose edge was dropped -- guarantee (b) in the
+    # module docstring. Re-homed here from Phase 1 (#209 defect 3, unit-3
+    # review): Phase 1 no longer emits this event at all, and `source` was
+    # already re-covered on this phase, so without this line the
+    # cure-insertion path's `taskId` was the one assertion that rewrite lost.
+    assert rejected2[0]["taskId"] == "121"
     assert rejected2[0]["edge"] == "ghost"
     assert "unknown" in rejected2[0]["reason"]
     assert rejected2[0]["source"] == "cure-insertion"

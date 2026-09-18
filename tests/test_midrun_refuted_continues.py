@@ -33,10 +33,10 @@ the shipped sha:
   `LoopSupervisor._apply_criteria_amendments` finds no candidate and
   writes nothing.
 
-Six things pinned -- the sixth added by #209 defect 4, which is why the
-enumeration grew rather than a new module appearing: a `substance` remedy
-(this module's REFUTED entry carries no `remedy_type`, so it is exactly that
-default case) now also BECOMES one cure task, through
+#209 defect 4 grew the enumeration below from five items to six rather than
+adding a module of its own, because this module's own REFUTED entry (it
+carries no `remedy_type`, so it is exactly the `substance` default) is that
+defect's subject: such a remedy also BECOMES one cure task, through
 `LoopSupervisor._insert_refuted_remedy_tasks` -> `state.insert_cure_tasks`,
 on the same path review's own cure pass uses. The first five are unchanged
 and still pass unchanged: the remedy task appends at the end of this

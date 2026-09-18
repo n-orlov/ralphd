@@ -2249,6 +2249,20 @@ def record_refuted_adjudications(run, adjudications) -> list[str]:
     return recorded
 
 
+# #209 defect 4: the clause boundary and the clause bound a REFUTED remedy's
+# own `cured_when` is folded to below -- `plan_ingestion`'s `_CLAUSE_SPLIT_
+# RE`/`_MAX_CHECKABLE_CLAUSES` and `state._CURE_CLAUSE_SPLIT_RE`, character
+# for character. Duplicated rather than imported, for a harder reason than
+# the one state.py gives for the same duplication: `plan_ingestion` reaches
+# `contract_enforcement` -> `contracts` -> `transitions`, and `transitions`
+# imports THIS module at module level, so an import here would close a
+# genuine cycle. `tests/test_petitions.py` pins a produced `cured_when`
+# against `plan_ingestion.clause_count_overrun` itself, so neither value can
+# drift from the bound it mirrors without a test saying so.
+_REMEDY_CLAUSE_SPLIT_RE = re.compile(r"[.!?;]+(?=\s|$)")
+_REMEDY_MAX_CLAUSES = 5
+
+
 def refuted_remedy_cure_findings(adjudications, open_petitions,
                                   tasks: list[dict]) -> list[dict]:
     """#209 defect 4: one blocking-finding-shaped record per REFUTED entry
@@ -2296,7 +2310,14 @@ def refuted_remedy_cure_findings(adjudications, open_petitions,
        because `open_petitions_in_workspace` returns only filings with no
        `Adjudication` field yet, a re-adjudication arriving after
        `LoopSupervisor._write_back_petition_adjudications` stamped the
-       filing yields nothing -- a free second idempotence layer.
+       filing yields nothing -- but only for a filing in `run.petitions_
+       file`, which is where every filing this engine build writes lands.
+       A filing whose only copy is a WORKSPACE `artifacts/reports/<wave>-
+       petitions.md` section (a pre-committed one, or one an older build
+       wrote) is never stamped at all -- `write_back_petition_adjudication`
+       is a deliberate documented no-op for it -- so for THAT shape this
+       gate never closes and gate 6 below is the only idempotence guard,
+       which is one more reason gate 6 is not belt-and-braces.
     6. No task in `tasks` already carries a `remedyFor` normalising to the
        same key. This is the load-bearing idempotence guard: the same
        obligation demonstrably IS re-adjudicated in practice (#209 measured
@@ -2321,12 +2342,26 @@ def refuted_remedy_cure_findings(adjudications, open_petitions,
     `_failed_task_ids_named_in` scan recognise the dead task and hand every
     one of its dependents to the remedy task.
 
-    Two omissions are deliberate. No `cured_when`: leaving it absent routes
-    the remedy prose through `state._cure_task_success_criteria`'s existing
-    fold to the SAME ~5-clause bound review's own `cured_when` is held to,
-    applied by construction instead of by refusal, with the full text still
-    verbatim in the task's `description`. No `invalidates`: a remedy names
-    no invalidated evidence path, so the re-record cascade #209 defect 3
+    `cured_when` is the REMEDY, and only the remedy, pre-folded to
+    `_REMEDY_MAX_CLAUSES` above. That is not decoration either: leaving it
+    absent routed the criterion through `state._cure_task_success_criteria`,
+    which folds `clause` BEFORE `evidence` and truncates the pair -- so an
+    obligation that is itself five clauses long (and it can be: a
+    `contradictory-clauses`/`self-referential` petition's obligation IS the
+    affected task's own `successCriteria`, which a planner may write up to
+    `plan_ingestion.MAX_CHECKABLE_CLAUSES` clauses of) consumed the whole
+    budget and the remedy vanished from the criterion entirely, leaving the
+    remedy task scored against the exact text the worker petitioned as
+    unmeetable -- the "no path out" shape this defect exists to remove.
+    Pre-folding here keeps the promise the absent field was chosen for (the
+    same bound review's own `cured_when` is held to, applied by construction
+    rather than by refusal, so `state._repair_cure_task_criteria` stays a
+    no-op and no overrun can ever be refused) while making the remedy the
+    thing the task is measured by; the full untruncated remedy still reaches
+    the task's `description` verbatim through `evidence`.
+
+    One omission stays deliberate. No `invalidates`: a remedy names no
+    invalidated evidence path, so the re-record cascade #209 defect 3
     narrows is never triggered from here at all.
 
     Returns `[]` in the overwhelming common case (nothing REFUTED, or no
@@ -2366,11 +2401,19 @@ def refuted_remedy_cure_findings(adjudications, open_petitions,
             if own and (own in norm or norm in own):
                 evidence = f"{evidence} (petition REFUTED for task {t.get('id')})"
                 break
+        remedy_clauses = [c.strip() for c
+                          in _REMEDY_CLAUSE_SPLIT_RE.split(remedy.strip())
+                          if c.strip()]
         out.append({
             "severity": "blocking",
             "curable": True,
             "clause": obligation.strip(),
             "evidence": evidence,
+            # `or remedy.strip()` for the degenerate punctuation-only remedy
+            # the split can empty: the criterion is always built from the
+            # remedy, never silently from the obligation instead.
+            "cured_when": ("; ".join(remedy_clauses[:_REMEDY_MAX_CLAUSES])
+                           or remedy.strip()),
             "remedy_for": obligation.strip(),
         })
     return out

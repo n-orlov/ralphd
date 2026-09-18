@@ -1072,8 +1072,12 @@ def test_dependent_repointing_covers_only_both_neither_and_no_failed_task_named(
     still fires. Measured in `deck-phase3k`: the dead id `205` was named in
     the clause while the evidence held only commit shas, so nothing
     repointed and the operator hand-wrote two `steer task-update` calls.
+    Its second half pins the narrowing that widening needs: a `#NNN` in the
+    clause is an issue citation, never a task id, so it repoints nothing.
     Phases one and two are unchanged and neither of their clauses names any
-    task id, so both still prove exactly what they proved before.
+    task id -- both cite an issue as `(#149)`, which is exactly the shape
+    that must not match -- so both still prove exactly what they proved
+    before.
     """
     tasks = [
         _plan_task("020", status="failed"),
@@ -1134,6 +1138,24 @@ def test_dependent_repointing_covers_only_both_neither_and_no_failed_task_named(
     data3 = run3.read_tasks()
     dependent3 = next(t for t in data3["tasks"] if t["id"] == "206")
     assert dependent3["dependsOn"] == [inserted3[0]]
+
+    # and the other half of reading the clause (#209 defect 7, unit-3
+    # review): a `#NNN` in it is an ISSUE citation, never a task id, so the
+    # identical fixture with `#205` instead of `task 205` repoints nothing.
+    # Without this narrowing every clause of the form "requirement E.3
+    # (#205)" would strip a real edge off task 205's dependents against any
+    # plan numbering its tasks in the range issues are numbered in -- which
+    # deck-phase3k's own plan (tasks 205, 209, 210) did.
+    tasks4 = [
+        _plan_task("205", status="failed"),
+        _plan_task("206", depends_on=["205"]),
+    ]
+    run4 = _run_with_tasks(tmp_path / "run4", tasks4)
+    finding4 = _blocking_curable_finding(
+        "the guard is missing (requirement D, #205)", "e87a1578, 6dd57746")
+    insert_cure_tasks(run4, 1, [finding4])
+    dependent4 = next(t for t in run4.read_tasks()["tasks"] if t["id"] == "206")
+    assert dependent4["dependsOn"] == ["205"]
 
 
 def test_steer_md_documents_the_same_repointing_move_for_task_update():
