@@ -106,8 +106,63 @@ TIER_MARKERS = ("smoke", "fast")
 # lowered ceiling, with headroom for nothing further until a future task
 # earns it the same way every prior raise above did. `modules`/`smoke`
 # are unchanged (no module gained or lost; no smoke test touched).
+#
+# GH #209 ("a refusal is not a repair") is the future task that earned it,
+# and raises `fast`'s test ceiling 5800 -> 5844. It is the ONE raise for
+# that whole change: each of its seven implementation units was forbidden
+# to touch this literal, so `test_the_collected_tier_is_inside_its_declared_
+# budget[fast]` was deliberately red for thirteen commits and one measured
+# raise, made last, closes it -- the same discipline cure-01-04 above
+# established, applied to a change that genuinely does add coverage rather
+# than to one padding a budget. The +44 is regression coverage for seven
+# closing-half defects, each of which REJECTED work that was already done,
+# attributed per unit by collecting `-m fast` at each unit's own tip:
+# defect 5's ledger retirement +3, all in `tests/test_confirmed_petition_
+# not_resurfaced.py`; defect 1's clause-bound criteria repair +0 -- every
+# new proof folded into an existing body, five nodes renamed in
+# `test_criteria_bound_lint.py`/`test_cured_when.py`/`test_legal_rewrite_
+# reprompt.py` and no function added; defects 3+4's cure-insertion
+# correctness and REFUTED-remedy cure task +10 (`test_cure_invalidates.py`
+# 4, `test_petitions.py` 4, `test_midrun_refuted_continues.py` 2); defect
+# 2's exhausted review contract ladder +8 (`test_contract_ladder.py` 7,
+# `test_transitions.py` 1); defect 6's live operator status rulings +4
+# (`test_amendment_status_load_time.py`, 5 added and 1 retired); defect 7's
+# worker `proposed_task_updates` +17, all in `test_worker_split_proposal.
+# py`; and defect 3's residual, the `orderingOnly` edge kind, +2
+# (`test_cure_invalidates.py` 1, `test_plan_ingestion.py` 1). No unit
+# created a new test MODULE (24 existing modules were edited) and no test
+# was deleted, merged or weakened to buy room.
+#
+# Two of those per-unit numbers are three nodes above what the units
+# themselves declared -- defect 2 declared +6 and defect 7 declared +16 --
+# and the difference is named rather than papered over: each unit measured
+# its delta at its implementation commit, and its own review-fix commit
+# then added a further regression node on top. `cf2d1242` added
+# `test_contract_ladder.py::test_a_legible_rejected_verdict_with_a_schema_
+# slip_elsewhere_still_rejects` and `::test_a_normalised_fail_inherits_the_
+# all_residual_recomputation` (+2); `bd6df464` added `test_worker_split_
+# proposal.py::test_a_repoint_that_repairs_nothing_is_refused_and_never_
+# repeatable` and `::test_repointing_alone_is_bounded_as_a_stagnation_
+# escape` while retiring `::test_a_doom_clearing_repoint_cannot_be_
+# repeated_on_the_same_task` into the first of them (+1 net). Nothing else
+# moved: the branch's own base, `e4aee1f1`, measures exactly 5800.
+#
+# Measured directly with `.venv/bin/python -m pytest -m fast --collect-only
+# -q` at this commit's own tip: 5844/5976 tests collected (132 deselected)
+# -- exactly this ceiling, with headroom for NOTHING further, which is the
+# chosen number and not an oversight. Every raise recorded above set the
+# ceiling to the measured count and no higher, cure-01-04 LOWERED it back
+# to the measured count rather than keep room it had not earned, and a
+# ceiling padded above the live count stops guarding in exactly the amount
+# it is padded by. The next task earns its own raise the same way this one
+# did. `modules`/`smoke` are unchanged, and were measured rather than
+# assumed: `-m fast` collects 386 modules (this 390 ceiling has stood 4
+# above the live count since before this branch -- `e4aee1f1` measures 386
+# too), and `-m smoke` collects 4220 tests over 270 modules, the module
+# count sitting exactly on its own zero-headroom ceiling, so no unit here
+# could have added a smoke-tier module either.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 5800, "modules": 390},
+    "fast": {"tests": 5844, "modules": 390},
     "smoke": {"tests": 4300, "modules": 270},
 }
 
@@ -321,7 +376,7 @@ def test_a_missed_prd_target_is_disclosed_with_its_measured_number() -> None:
 # Surviving cover for what it actually bounded (the collected counts):
 #   - `test_the_collected_tier_is_inside_its_declared_budget[fast]` and
 #     `[smoke]` below still refuse a tier that grows past the ratcheting
-#     ceilings, now `TIER_CEILINGS` above (5800/4300 tests, 390/270 modules;
+#     ceilings, now `TIER_CEILINGS` above (5844/4300 tests, 390/270 modules;
 #     moved out of the doc's "budget tests"/"budget modules" columns by
 #     v0.21 task 062, requirement N.4).
 #   - `test_a_missed_prd_target_is_disclosed_with_its_measured_number` above

@@ -22,7 +22,18 @@ judge? Look specifically for:
    and observe.
 3. **Ordering/dependency mistakes.** A task that depends on work no earlier
    task in the plan actually produces, or an ordering that makes an early
-   task impossible to complete as scoped.
+   task impossible to complete as scoped. A task may also carry an optional
+   `orderingOnly` list, naming the subset of its own `dependsOn` ids that
+   are sequencing alone — edges whose dependency produces no part of the
+   evidence this task's `successCriteria` reports on. That claim is the
+   planner's, and it has a cost when it is wrong: an edge listed there is
+   exempted from the re-take a review cure performs when it invalidates
+   that evidence, so the task can end up reporting over an upstream
+   artifact the cure has since superseded. Check each entry against the
+   two tasks' own criteria and object when a listed dependency does
+   produce, measure or record part of what the depending task reports. An
+   absent or empty list claims nothing and is never grounds for an
+   objection.
 4. **Scope that contradicts the PRD.** A task that does something the PRD
    explicitly forbids, or a plan that quietly drops a stated constraint
    (a budget, a compatibility requirement, a security rule).

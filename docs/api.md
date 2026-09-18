@@ -106,7 +106,7 @@ The one-call summary. Response:
   "iterationsBudget": 50,
   "iterationsUsed": 7,
   "iterationsRefunded": {"infra": 2, "grace": 0, "steer": 0},  // earned refunds; survives a resume
-  "verdict": null,                 // "verified" | "verified-with-residuals" | "unverified" | null while running -- settled (non-null) once `state` reaches `finishing`, task 012/#56; "verified-with-residuals" (requirement D.3) is a review VERIFIED verdict whose structured findings channel still carries one or more `severity: "residual"` entries
+  "verdict": null,                 // "verified" | "verified-with-residuals" | "unverified" | "unreviewed" | null while running -- settled (non-null) once `state` reaches `finishing`, task 012/#56; "verified-with-residuals" (requirement D.3) is a review VERIFIED verdict whose structured findings channel still carries one or more `severity: "residual"` entries; "unreviewed" is the narrower negative for an approach review never rendered a judgement on at all, and it has two writers told apart by `reason` and never by the word -- the deadline took the run mid-review before review produced any contract payload (#146, `reason`: "deadline during review"), or review ran to completion and its own contract ladder never got a readable verdict claim out of the hat (#209 defect 2, `reason`: "review never produced a parseable contract payload; no verdict was ever scored"). Neither writer overrides an operator abort, which keeps "unverified" -- SPEC.md §5.2 carries the full rule
   "reason": null,                  // why a non-succeeded run ended (also the grace-review note)
   "onComplete": "idle",
   "createdAt": "2026-08-08T13:08:09Z",

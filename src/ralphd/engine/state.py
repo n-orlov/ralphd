@@ -3606,7 +3606,11 @@ def is_worker_origin(task: dict) -> bool:
 # The two tuples are deliberately NOT equal, and no later change should sync
 # them to "restore" an invariant that never held (unit-7 review): a split
 # child carries neither `estimatedIterations` (a planner's own estimate of a
-# task it planned; `normalize_task_estimated_iterations` defaults the child's)
+# task it planned; the child's is defaulted at READ time instead, by
+# `task_progress_budget_estimate`'s own `task.get("estimatedIterations", 1)` --
+# NOT by `plan_ingestion.normalize_task_estimated_iterations`, which runs only
+# on the planner's file-channel proposal inside `_parse_proposal` and never
+# over a split batch)
 # nor `orderingOnly` (GH #209 defect 3's residual -- a declaration about the
 # PLANNER's edges, whose omission is the conservative default, since an
 # undeclared edge counts as evidence-producing and is re-opened by a cure
