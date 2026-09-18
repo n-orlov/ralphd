@@ -2342,9 +2342,10 @@ prelude 1,000/1,700, past P.1/P.5's whole per-call ceiling either way, re-measur
 still replays the streamed text on both bounded paths, unchanged. Which way a renderer should then
 fall back — printing repeats text streamed deeper than the budget, while suppressing costs 7.3–30.2 MB
 on requirement P's own fixtures against its unmoved 1,000,000-byte ceiling, and resolving the flag is
-no cheaper — is an OPEN petition of this wave, not a self-granted residual and not a claim: filed with
-those measurements in `artifacts/reports/v0.22-petitions.md`, awaiting an adjudication this run cannot
-give itself. **R** — the four
+no cheaper — is an adjudicated petition of this wave: filed with those measurements in
+`artifacts/reports/v0.22-petitions.md` and GRANTED by the operator, so the shipped replay
+fallback stands as a disclosed residual of v0.22 and the real fix is deferred to v0.23 as
+**#214**. **R** — the four
 records v0.21.1 left inaccurate corrected (`72dd78a8`); and **M** — this version bump and this
 paragraph, have all landed. GitHub **#207** (per-task time and cost summed across approaches --
 `engine/state.py`'s `task_totals()` buckets on `assignedTaskId` alone, so an approach's task 001
@@ -2353,8 +2354,9 @@ than fixed in this wave. Heavy's docker-tier containerization (requirement I.1/I
 deferred to v0.23: what shipped instead is nightly's dev-layout cell containerized, with heavy's
 docker tier run host-side behind requirement G's allowlist and its measured reason, under the
 wave-scoped operator ruling `/config/amendments/001-WAVE.md` (STEER 005). Requirements **N**
-(the final green sweep) and **O** (closing the wave's issues) land in later tasks of this same
-run and are not yet reflected here; the v0.19, v0.19.1, v0.20, v0.20.1, v0.20.2, v0.21 and
+(the final green sweep) and **O** (closing the wave's issues) have both landed: O's
+issue-closing task validated, and gate, heavy and nightly all concluded green from a
+`workflow_dispatch` at the shipped sha; the v0.19, v0.19.1, v0.20, v0.20.1, v0.20.2, v0.21 and
 v0.21.1 blocks above are unchanged by this commit.
 
 ## Later / explicitly deferred
