@@ -1231,16 +1231,18 @@ async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
     measured rather than defaulted (both fallbacks then agree with the full
     render).
 
-    WHAT IS NOT PINNED GREEN HERE, and why -- an OPEN petition
+    WHAT IS NOT PINNED GREEN HERE, and why -- an ADJUDICATED petition
     (`artifacts/reports/v0.22-petitions.md`, "PRD requirement Q's fallback
     direction ...", type `contradictory-clauses`, filed by task cure-01-03-2
     and brought into the PRD-designated tracked file by task cure-01-01-3),
-    NOT a residual either task granted itself -- review adjudicates it, and
-    no adjudication has landed as of this commit. The shipped renderer
-    prints from the `False` fallback, so this variant's bounded render still
-    repeats the text once at both prelude depths -- asserted below exactly as
-    it is, never hidden, so that a ruling which flips the fallback direction
-    fails this line loudly instead of passing unnoticed. Flipping it here
+    NOT a residual either task granted itself -- the operator GRANTED it on
+    18 September 2026, so the shipped replay fallback stands as a disclosed
+    residual of v0.22 and the real fix is deferred to v0.23 (GitHub #214).
+    The shipped renderer prints from the `False` fallback, so this variant's
+    bounded render still repeats the text once at both prelude depths --
+    asserted below exactly as it is, never hidden, so that a ruling which
+    flips the fallback direction fails this line loudly instead of passing
+    unnoticed. Flipping it here
     instead is not available to a bounded reader: the setter's own offset
     (asserted below, past P.1/P.5's ENTIRE 1,000,000-byte per-call ceiling at
     either depth) is unreachable within the ceiling, and the only other
