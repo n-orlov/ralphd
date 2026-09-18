@@ -4248,8 +4248,12 @@ def _failed_task_ids_named_in(text: str, tasks: list) -> list:
     """Task 041 (PRD requirement C.4, #149): every `failed` task in
     `tasks` whose id appears in `text` -- a finding's own free prose about
     itself: its `evidence`, and since #209 defect 7 its `clause` joined to
-    it -- as a whole word (`\btid\b`, never a bare numeric substring
-    of some unrelated id or of surrounding evidence prose). Order
+    it for a REVIEWER-authored finding (the caller drops the clause half for
+    defect 4's synthesized `remedy_for` findings, whose `clause` is a filed
+    obligation rather than prose about the finding -- see the call site in
+    `insert_cure_tasks`) -- as a whole word (`\btid\b`, never a bare
+    numeric substring of some unrelated id or of surrounding evidence
+    prose). Order
     follows `tasks`, so a caller iterating the result gets a stable,
     reproducible order across calls against the same plan.
 
@@ -4490,6 +4494,23 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     complete, so a re-record left `pending` means reviewing on stale
     evidence, which is the incident E.3 was written to close.
 
+    Nor is a record re-opened only when the cure's commits really did touch
+    its cited path: #209 §3 asked for that too, and it is NOT implemented
+    (recorded here because this block is otherwise a complete account of
+    that section, and a reader would fairly take it for one). A finding's
+    `invalidates` is the reviewer's PREDICTION, made before the cure exists,
+    and nothing ever reconciles it against the diff the cure landed.
+    Checking it after the fact needs three things this engine does not have:
+    a pre-cure sha persisted per re-opened record, a hook in the completion
+    path to compare against, and an un-reopen transition -- `TASK_STATUS_
+    TABLE` declares no edge back from `pending`, which is the rule the
+    operator states as "a failed dependency never satisfies; there is no
+    edge back to `pending`". The cost of not checking is bounded and was
+    measured: in both #209 reference runs the paths the findings named WERE
+    changed by the cure commits, so the re-record was owed every time; what
+    is paid for nothing is a re-record per PASS, which is the price named in
+    the paragraph above.
+
     Task 033 (PRD requirement E.4, #167): every cure task this call
     appends -- always the product of a BLOCKING review finding, so
     always a code cure in the sense this requirement means -- is spliced
@@ -4521,16 +4542,19 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     cure pass and the peer verdict gate's -- `LoopSupervisor._insert_
     refuted_remedy_tasks`, which turns a REFUTED petition's `substance`
     remedy into one cure task on exactly this path (`petitions.refuted_
-    remedy_cure_findings` synthesises the finding). Nothing here is special-
-    cased for it: those findings carry a `cured_when` their own author
-    already folded to the clause bound (so `_repair_cure_task_criteria`
-    above is a no-op on them), no `invalidates` (so the loop above is a
-    no-op for them), and a `remedy_for` string that
+    remedy_cure_findings` synthesises the finding). Almost nothing here is
+    special-cased for it: those findings carry a `cured_when` their own
+    author already folded to the clause bound (so `_repair_cure_task_
+    criteria` above is a no-op on them), no `invalidates` (so the loop above
+    is a no-op for them), and a `remedy_for` string that
     `cure_task_from_finding` stamps onto the task as `remedyFor`. They do
     get the freeze splice and the failed-dependent repoint above, which is
     the whole point: the petitioned task the refutation just failed is
     dependency-dead, so its dependents are handed to the remedy task
-    instead of being left doomed.
+    instead of being left doomed. The ONE special case is which text that
+    repoint scans (#209, unit 8): a `remedy_for` finding's `clause` is the
+    filed obligation, not prose about the finding, so only its `evidence` is
+    scanned -- see the comment at the scan itself.
 
     Task 007 (PRD requirement C.1, gate finding VG-003): list position
     alone is not a scheduling constraint -- `scheduler.select_next_task`
@@ -4594,9 +4618,27 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
         # gained ONE narrowing with this widening (see `_failed_task_ids_
         # named_in`): a `#NNN` citation is an issue reference, never a task
         # id, and issue citations are exactly what a clause is full of.
+        #
+        # The clause half holds for a REVIEWER's finding and only for one
+        # (#209, unit 8). A `remedy_for` finding is #209 defect 4's
+        # synthesized one (`petitions.refuted_remedy_cure_findings` is its
+        # only writer), and ITS `clause` is not prose about the finding at
+        # all -- it is the FILED OBLIGATION, which for a `contradictory-
+        # clauses`/`self-referential` petition is the affected task's own
+        # `successCriteria` verbatim, planner prose that this codebase's own
+        # plan lints encourage to name other task ids. A bare `failed` id
+        # anywhere in it re-pointed every dependent of THAT task onto a
+        # remedy task which does not do its work -- schedulable again,
+        # reporting over work nobody will now do, and with no event to read
+        # it off (only REJECTED edges emit). Scanning `evidence` alone costs
+        # defect 4 nothing: it plants the one id it wants re-pointed there
+        # itself, as `"(petition REFUTED for task <id>)"`, under the same
+        # obligation match that failed the task in the first place.
+        scan_keys = (("evidence",) if finding.get("remedy_for")
+                     else ("clause", "evidence"))
         for failed_id in _failed_task_ids_named_in(
                 " ".join(str(finding.get(key) or "")
-                         for key in ("clause", "evidence")), tasks):
+                         for key in scan_keys), tasks):
             _repoint_dependents_onto_cure_task(
                 run, tasks, failed_id, cure_task_id)
 
@@ -4661,10 +4703,37 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
                     # the row cannot start until every cure in its own
                     # `dependsOn` has landed, so the tree its evidence is
                     # taken at is at or past all of them.
+                    #
+                    # #209 defect 3 (unit-8 integration), fix #132 again:
+                    # this row is ALREADY on disk, so unlike the fresh cure
+                    # and re-take rows beside it, it already carries a
+                    # `criteriaFingerprint`/`criteriaOfRecord` baseline --
+                    # stamped by `LoopSupervisor._ensure_criteria_baseline`
+                    # or `_check_criteria_edits`, which runs on EVERY worker
+                    # pass. Move that baseline forward in this SAME
+                    # `write_tasks` call, or the next `_check_criteria_edits`
+                    # sees the mismatch, RESTORES pass 1's sentence (undoing
+                    # the restatement just above), emits `task.criteria_
+                    # edit_refused` blaming a worker for the ENGINE's own
+                    # write, and sets the sticky
+                    # `criteriaEditedAfterValidationFailure` marker -- which
+                    # `findings.flagged_criteria_findings` then turns into a
+                    # blocking finding on every later review pass, so no
+                    # `verified` verdict can stand for the rest of the run.
+                    # That is precisely #209's own shape: the engine's repair
+                    # refused as unauthorised tampering. The digest is the
+                    # literal same formula as `LoopSupervisor._criteria_
+                    # fingerprint`, not imported from loop.py, which imports
+                    # this module and would make the import circular -- the
+                    # same reason given at fix #132 in `steer_task_update`.
                     existing_retake["status"] = "pending"
-                    existing_retake["successCriteria"] = _retake_task_from_path(
+                    restated = _retake_task_from_path(
                         approach, index, path_index, path,
                         cure_task_id)["successCriteria"]
+                    existing_retake["successCriteria"] = restated
+                    existing_retake["criteriaFingerprint"] = hashlib.sha256(
+                        restated.encode("utf-8")).hexdigest()
+                    existing_retake["criteriaOfRecord"] = restated
                     _append_validated_dependency_edge(
                         run, tasks, existing_retake, cure_task_id,
                         "cure-insertion")

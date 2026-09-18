@@ -1873,6 +1873,23 @@ def test_an_unfiled_blank_or_already_remedied_obligation_creates_no_work(tmp_pat
     # disk because nothing has been written yet.
     assert len(petitions.refuted_remedy_cure_findings(
         [_remedy_entry(), _remedy_entry()], _filed(), tasks)) == 1
+    # Both gates run the module's ONE obligation rule, not key equality
+    # (#209, unit 8). A truncated wording -- the measured shape: a
+    # hard-wrapped `**Obligation**:` field is read one line at a time, which
+    # is what `tests/test_confirmed_petition_not_resurfaced.py` pins on the
+    # retirement side -- is good enough to FAIL the task through
+    # `apply_refuted_petition_adjudications`' own fuzzy match, so it must be
+    # good enough to earn that task's remedy; otherwise the refutation fails
+    # a task and repairs nothing, which is the state #209 defect 4 exists to
+    # remove.
+    truncated = _remedy_entry(obligation=REMEDY_OBLIGATION[:20])
+    assert len(petitions.refuted_remedy_cure_findings(
+        [truncated], _filed(), tasks)) == 1
+    # and gate 6 has to move with gate 5: a re-adjudication that rewords the
+    # obligation clears gate 5 against the filing, so an exact `remedyFor`
+    # check would mint a second remedy task for work already planned.
+    assert petitions.refuted_remedy_cure_findings(
+        [truncated], _filed(), already) == []
 
 
 def test_the_failed_petitioned_tasks_dependents_are_repointed_onto_the_remedy_task(
@@ -1885,15 +1902,31 @@ def test_the_failed_petitioned_tasks_dependents_are_repointed_onto_the_remedy_ta
     `transitions.TASK_STATUS_TABLE["failed"] == ("skipped",)` -- so a
     replacement task inheriting the dependents is the only sanctioned escape
     from the doom the `substance` branch creates.
+
+    And it is the ONLY task handed over (#209, unit 8). `insert_cure_tasks`
+    scans a reviewer's finding's `clause` as well as its `evidence` for dead
+    ids, but a synthesized remedy finding's `clause` is the filed OBLIGATION
+    -- for a `contradictory-clauses`/`self-referential` petition, the affected
+    task's own `successCriteria` verbatim, which a planner may write naming
+    other task ids. Scanning it re-pointed the dependents of an unrelated
+    `failed` task onto a remedy task that does not do its work: schedulable
+    again, reporting over work nobody will now do, and with no event to read
+    it off, since only REJECTED edges emit.
     """
     tasks = [
         _remedy_task("44", status="failed"),
         _remedy_task("45", dependsOn=["44"]),
+        # the bystander: `12` is dead too, and its id is a word of the
+        # obligation below, but nothing about this refutation redoes its work.
+        _remedy_task("12", status="failed"),
+        _remedy_task("13", dependsOn=["12"]),
     ]
+    obligation = f"{REMEDY_OBLIGATION}, matching 12's measured baseline"
     out = petitions.refuted_remedy_cure_findings(
-        [_remedy_entry()], _filed(), tasks)
+        [_remedy_entry(obligation=obligation)], _filed(obligation), tasks)
     assert len(out) == 1
     assert "(petition REFUTED for task 44)" in out[0]["evidence"]
+    assert "12" in out[0]["clause"]
 
     run = RunDir(root=tmp_path / "run-repoint")
     run.root.mkdir(parents=True, exist_ok=True)
@@ -1902,3 +1935,4 @@ def test_the_failed_petitioned_tasks_dependents_are_repointed_onto_the_remedy_ta
     by_id = {t["id"]: t for t in run.read_tasks()["tasks"]}
     assert by_id["44"]["status"] == "failed"
     assert by_id["45"]["dependsOn"] == [inserted[0]]
+    assert by_id["13"]["dependsOn"] == ["12"]

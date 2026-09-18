@@ -120,14 +120,16 @@ immediately starts the next iteration.
 
    {"verdict": "no_verdict",
     "proposed_task_updates": [{"task_id": "<the blocked task's id>",
-                              "dependsOn": ["<the ids that replace its dead edge>"],
+                              "dependsOn": ["<the task's WHOLE new dependsOn list, not a delta>"],
                               "reason": "<which dead edge this drops, and what carries that work instead>"}]}
 
    All three fields are required on every entry, and the harness — never you
    — applies the re-point, through the same ingestion the split above goes
    through. It refuses the WHOLE array, changing nothing, unless every entry
    holds: a `task_id` naming a `pending` task the harness itself already
-   marks blocked (its `taskBlockedBy` entry, step 2 above), one entry per
+   marks blocked (its `taskBlockedBy` entry, step 2 above — the entry must be
+   caused by a `failed` or `skipped` task, since a `petitioned` cause is a
+   hold and not doom), one entry per
    task; a `dependsOn` that drops only edges naming a `failed` or `skipped`
    task, and at least one of them, names no `failed` or `skipped` task
    itself, names no id the plan does not hold, and closes no cycle; and a
@@ -138,8 +140,13 @@ immediately starts the next iteration.
    you this iteration. A blocked task whose own `dependsOn` names no `failed`
    or `skipped` task is blocked only THROUGH a live one, and re-pointing it
    repairs nothing: re-point the blocked dependency it waits on instead. It
-   carries its own per-approach budget, and a refused array comes back quoted
-   in your next prompt, under the same heading a refused split does.
+   carries its own per-approach budget, charged one per ENTRY across every
+   array you send in that approach, and an array that would exceed what is
+   left of it is refused whole rather than applied in part — so a doomed set
+   larger than the budget is repaired by sending the entries you are surest
+   of, never by one array naming all of them. A refused array comes back quoted
+   in your next prompt, under the same heading a refused split does, and the
+   refusal names both numbers.
 6. Update the handoff notes file (keep it under 50 lines — rewrite, don't append
    endlessly): current state, next step, any discovered gotchas. The notes'
    `## Standing rules` block is harness-pinned (task 107): the harness

@@ -2299,8 +2299,22 @@ def refuted_remedy_cure_findings(adjudications, open_petitions,
        never a retry driver. That IS advice. `"substance"` -- "actually
        requires a different deliverable", and the default for every entry
        omitting the field -- is work.
-    5. The obligation matches an entry in `open_petitions` by
-       `_normalize_obligation` key equality. Deciding from the FILED fact
+    5. The obligation matches an entry in `open_petitions` by this module's
+       one obligation rule, `_obligation_confirmed` (normalised, substring
+       either direction). That rule and not key equality (#209, unit 8):
+       `apply_refuted_petition_adjudications` runs on the SAME payload in
+       the SAME `_review_verdict` pass, two lines earlier, and matches the
+       petitioned task fuzzily -- so under key equality a wording good
+       enough to FAIL the task was not good enough to earn its remedy, and
+       §5's retirement (which also uses the fuzzy rule) then removed every
+       later chance. That left exactly the "no path out" state this defect
+       exists to remove: a `failed` task whose only legal successor is
+       `skipped`, its remedy stranded in `validationNotes`, its dependents
+       doomed. The wording gap is not hypothetical: a hard-wrapped
+       `**Obligation**:` field is read one line at a time (`_FIELD_RE`), and
+       that truncation is the measured shape `tests/test_confirmed_petition_
+       not_resurfaced.py` already pins on §5's retirement side.
+       Deciding from the FILED fact
        rather than from the claim about it is the same discipline
        `criteria_amendment_candidates`' own point 4 applies, and here it
        does three jobs at once: an obligation a rogue payload invented
@@ -2318,13 +2332,19 @@ def refuted_remedy_cure_findings(adjudications, open_petitions,
        is a deliberate documented no-op for it -- so for THAT shape this
        gate never closes and gate 6 below is the only idempotence guard,
        which is one more reason gate 6 is not belt-and-braces.
-    6. No task in `tasks` already carries a `remedyFor` normalising to the
-       same key. This is the load-bearing idempotence guard: the same
+    6. No task in `tasks` already carries a `remedyFor` matching this
+       obligation. This is the load-bearing idempotence guard: the same
        obligation demonstrably IS re-adjudicated in practice (#209 measured
        13 `petition_refuted` events for 3 entries in one run), and
        `LoopSupervisor._petition_adjudication_seen` is in-memory, so it
        resets on resume while `tasks.json` does not. Two entries naming the
-       same obligation WITHIN one payload collapse the same way.
+       same obligation WITHIN one payload collapse the same way. Matched by
+       the SAME `_obligation_confirmed` rule gate 5 uses, necessarily so
+       (#209, unit 8): with gate 5 fuzzy and this gate exact, a
+       re-adjudication that reworded the obligation would clear gate 5
+       against the filing and then miss the remedy task its own earlier
+       wording already minted, so the one guard that bounds remedy tasks
+       across a resume would be the one the rewording walks past.
 
     Each returned dict is shaped like the blocking findings
     `insert_cure_tasks` ordinarily consumes -- `severity`/`curable` carried
@@ -2390,7 +2410,15 @@ def refuted_remedy_cure_findings(adjudications, open_petitions,
         if _refuted_remedy_type(item) != "substance":
             continue
         norm = _normalize_obligation(obligation)
-        if norm not in filed or norm in seen:
+        # Gates 5 and 6, both through `_obligation_confirmed` -- this
+        # module's ONE obligation rule (#209, unit 8). Key equality here
+        # disagreed with `apply_refuted_petition_adjudications`, which
+        # matched the petitioned task fuzzily on this same payload one
+        # step earlier: see gates 5 and 6 in the docstring for why the
+        # two halves have to agree, and why gate 6 has to move with 5.
+        if not _obligation_confirmed(obligation, filed):
+            continue
+        if _obligation_confirmed(obligation, seen):
             continue
         seen.add(norm)
         evidence = remedy.strip()

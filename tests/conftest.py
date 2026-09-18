@@ -794,6 +794,17 @@ def _scrub_notifier_env_in_process(request, monkeypatch, tmp_path_factory):
     # same class of ambient leak as `config.CONFIG_DIR` above. The eleven
     # modules that patch `loop.CONFIG_DIR` themselves still win: their own
     # `monkeypatch.setattr` runs after this autouse fixture.
+    #
+    # Disclosed residual: the `NOTIFIER_ENV` opt-out at the top of this
+    # fixture opts a test out of THIS isolation too (and out of the
+    # `config.CONFIG_DIR` patch above, which has had the same property since
+    # v0.20.2 requirement B.4). A test carrying that marker must therefore
+    # not drive a worker or review step in process -- inside a self-dev
+    # container it would read the operator's real `:ro` `/config/amendments`
+    # mount at every step boundary, and a live `mode: status` ruling on task
+    # `001` (the id nearly every fixture plan uses) would rewrite that test's
+    # own `tasks.json`. Today's only holder spawns a subprocess and never
+    # builds a `LoopSupervisor`, so the hole is unreached rather than closed.
     from ralphd.engine import loop as loop_mod
     monkeypatch.setattr(loop_mod, "CONFIG_DIR", isolated_config_dir)
 

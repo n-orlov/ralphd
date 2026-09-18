@@ -51,6 +51,7 @@ Five groups of nodes:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 
@@ -359,6 +360,16 @@ def test_a_later_cure_pass_reuses_the_retake_task_and_never_reopens_the_cure(tmp
     data = run.read_tasks()
     for t in data["tasks"]:
         t["status"] = "validated"
+        # and `LoopSupervisor._check_criteria_edits` -- which runs on EVERY
+        # worker pass -- has stamped each row's criteria baseline by now, so
+        # the re-take row pass 2 re-uses carries pass 1's fingerprint. This
+        # is what makes the assertion at the end of this node non-vacuous
+        # (#209, unit 8): without the engine moving that baseline forward in
+        # the same write as the restatement, the next `_check_criteria_edits`
+        # RESTORES pass 1's sentence and accuses a worker of tampering.
+        t["criteriaFingerprint"] = hashlib.sha256(
+            t["successCriteria"].encode("utf-8")).hexdigest()
+        t["criteriaOfRecord"] = t["successCriteria"]
     run.write_tasks(data)
 
     second = insert_cure_tasks(run, 1, [finding])
@@ -377,6 +388,17 @@ def test_a_later_cure_pass_reuses_the_retake_task_and_never_reopens_the_cure(tmp
     assert tasks[retake_id]["successCriteria"] == (
         f"{CURE_PATH} is re-taken (re-recorded) at the tree cure task "
         f"{second_cure} leaves.")
+    # and the criteria baseline moved forward in the SAME write as the
+    # restatement (fix #132's rule, applied to this second engine writer):
+    # otherwise the next `_check_criteria_edits` reverts the restatement,
+    # blames a worker for the engine's own write, and sets the sticky
+    # `criteriaEditedAfterValidationFailure` marker that
+    # `findings.flagged_criteria_findings` turns into a blocking finding on
+    # every later review pass -- no `verified` verdict possible thereafter.
+    assert tasks[retake_id]["criteriaFingerprint"] == hashlib.sha256(
+        tasks[retake_id]["successCriteria"].encode("utf-8")).hexdigest()
+    assert (tasks[retake_id]["criteriaOfRecord"]
+            == tasks[retake_id]["successCriteria"])
     # pass 1's landed cure task is left exactly where the worker left it.
     assert tasks[first_cure]["status"] == "validated"
     assert tasks[first_cure]["dependsOn"] == []

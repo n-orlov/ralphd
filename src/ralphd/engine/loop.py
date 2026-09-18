@@ -11772,17 +11772,31 @@ class LoopSupervisor:
         an inserted task is guaranteed to be acted on: it runs inside
         `_step_worker` right before the `pending_verify` hand-off, over the
         SAME unarchived approach, so the scheduler picks the new `pending`
-        task up on a later iteration. At approach-end `_step_review` either
-        rejects (the task is discarded with the archived approach) or
-        accepts and `_finish("succeeded", ...)` runs with it still `pending`
-        -- `_terminal_success_blockers` names only unsettled steering files
-        and non-terminal STEERING-origin tasks. Inserting there without also
-        widening that predicate (which costs a third blocker plus a new
-        declared guard in `transitions.TABLE["review"]` AND `PEER_VERDICT_
-        GATE_DELTA["review"]`, since reusing `steering_pending_at_verified`
-        for a non-steering reason would lie in the event log) would
-        manufacture a fresh silent-loss defect of exactly the shape #209 is
-        about.
+        task up on a later iteration.
+
+        Nothing at approach-end offers that guarantee, and the reason is
+        ORDER, not any one outcome (#209, unit 8 -- an earlier wording of
+        this paragraph claimed a two-outcome dichotomy that is not
+        exhaustive): this method runs from `_review_verdict`, which
+        `_step_review` calls BEFORE it decides which of its branches the
+        verdict takes. At insert time the outcome is therefore not yet
+        known, and it can be any of: accept and `_finish("succeeded", ...)`
+        with the inserted task still `pending` (`_terminal_success_blockers`
+        names only unsettled steering files and non-terminal STEERING-origin
+        tasks, so it would not notice); archive-and-replan, which discards
+        the task with the approach; a rejection whose blocking findings are
+        all curable with a cure pass left, which takes `_step_cure` back
+        into the worker over the SAME approach -- the one case where an
+        inserted task WOULD be worked; or one of the pause-and-escalate
+        branches (incurable, last-approach-curable, repeated signature),
+        which leave the approach unarchived for an operator. Only the
+        episode is known-safe in advance. Widening this past it means
+        widening `_terminal_success_blockers` too (a third blocker plus a
+        new declared guard in `transitions.TABLE["review"]` AND `PEER_
+        VERDICT_GATE_DELTA["review"]`, since reusing `steering_pending_at_
+        verified` for a non-steering reason would lie in the event log) --
+        without that, the accept case manufactures a fresh silent-loss
+        defect of exactly the shape #209 is about.
 
         The insertion spends NEITHER `curePasses` nor `gateCurePasses`, so
         it cannot starve `JobConfig.cure_pass_ceiling` out from under the two
@@ -12203,17 +12217,21 @@ class LoopSupervisor:
         # "unreviewed"` with its own contract-payload reason. Placed
         # immediately after `_review_verdict` for the same task-011 reason
         # `_step_review`'s branch is, and BEFORE the `blockers`/`verified`
-        # block below. Mirrors the interrupted-grace branch above exactly,
-        # minus `_review_deadline_unreviewed`: that flag must NOT be set
-        # here, because `_finish_tail_unverified` hardcodes `reason:
-        # "deadline during review"` for it and no deadline was involved.
+        # block below. Mirrors the interrupted-grace branch above, minus
+        # `_review_deadline_unreviewed`: that flag must NOT be set here,
+        # because `_finish_tail_unverified` hardcodes `reason: "deadline
+        # during review"` for it and no deadline was involved.
+        #
+        # And minus a `_terminal_reason_note` too, deliberately (#209, unit
+        # 8): the very flag this branch fires on is what makes
+        # `_finish_tail_unverified` take its own contract branch, which
+        # hardcodes the `reason` SPEC.md §5.2 and `docs/api.md` document for
+        # this verdict, so a note written here could never be read -- the
+        # same way the deadline flag makes the interrupted branch's note
+        # above unreadable. The approach number and the fact that this was
+        # the off-budget grace attempt reach the record through the error
+        # log line just below instead.
         if self._review_contract_unrepaired:
-            self._terminal_reason_note = (
-                f"the off-budget grace review (approach {approach}) never "
-                "produced a parseable `review` contract payload across "
-                "every attempt the ladder grants; no verdict was ever "
-                "scored, so the approach was not archived and no rejection "
-                "was recorded (GH #209 defect 2)")
             self.run.emit(
                 "log", level="error",
                 message=(f"grace review (approach {approach}) never "

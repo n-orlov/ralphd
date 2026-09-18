@@ -320,12 +320,17 @@ def test_the_substance_remedy_becomes_a_pending_cure_task_through_the_real_engin
 
 def test_an_approach_end_review_inserts_no_remedy_task(tmp_path):
     """The `mid_run` guard, and therefore the absence of a silent-loss
-    regression of #209's own shape: at approach-end `_step_review` either
-    rejects (archiving and replanning, which discards the task) or accepts
-    and `_finish("succeeded", ...)` runs with it still `pending`, because
-    `_terminal_success_blockers` names only unsettled steering files and
-    non-terminal STEERING-origin tasks. If a later change lifts the guard,
-    this is the node where widening that predicate gets forced.
+    regression of #209's own shape. The guard is about ORDER: `_review_
+    verdict` runs before `_step_review` picks a branch, so at insert time
+    the outcome is unknown, and it can be an accept that `_finish
+    ("succeeded", ...)` with the task still `pending` (`_terminal_success_
+    blockers` names only unsettled steering files and non-terminal
+    STEERING-origin tasks, so it would not notice), an archive-and-replan
+    that discards it, a curable rejection with a cure pass left -- which
+    goes back into the worker over the SAME approach and WOULD work it --
+    or one of the pause-and-escalate branches. Only the mid-run episode is
+    known-safe in advance. If a later change lifts the guard, this is the
+    node where widening `_terminal_success_blockers` gets forced.
     """
     sup, run, workspace = _worker_supervisor(tmp_path, _task_record())
     _make_petitions_file(workspace, OBLIGATION)

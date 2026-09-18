@@ -85,7 +85,10 @@ draw its evidence from — and an edge you do not list counts as one of those,
 so a finished, purely sequential dependency is re-opened and re-worked for
 nothing. List an edge here only when re-running the dependency would add
 nothing to what this task records; if the dependency produces or measures any
-part of it, leave that edge unlisted. Every entry must be an id this task's
+part of it, leave that edge unlisted. A wrong listing costs more than a
+missing one: a listed edge is exempted from that re-take, so this task ends up
+reporting over an upstream artifact the cure has since superseded — when in
+doubt, leave the edge unlisted. Every entry must be an id this task's
 own `dependsOn` already names, or the proposal is refused.
 
 `estimatedIterations` is an OPTIONAL per-task integer >= 1: your best guess
