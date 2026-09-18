@@ -1977,12 +1977,18 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   unruled: `mode: status` rulings are applied by
   `_apply_operator_status_rulings()` (-> `state.apply_amendment_status_rulings`),
   which runs unconditionally **once per engine episode** at the top of
-  `_run_job_core()`, ahead of the resume decision -- that once-per-episode
-  call is exactly why the container-restart path re-applies rulings recorded
-  during the pause, while the in-process `POST /resume` path (which never
-  re-runs it mid-episode) relies on the other channel: review's own prompt
-  context, `_operator_amendment_review_context()`, re-reads `CONFIG_DIR`
-  fresh on every `_step_review()` call, restart or in-process resume alike.
+  `_run_job_core()`, ahead of the resume decision, **and at every worker and
+  review step boundary** (`_step_worker`'s `while` head, `_step_review` just
+  after its `phase` emit -- GH #209 defect 6). The episode call is what
+  covers a container restart; the boundary calls are what cover the
+  in-process `POST /resume` path, which before #209 defect 6 re-applied
+  nothing at all. The criteria-ruling channel,
+  `_operator_amendment_review_context()`, does re-read `CONFIG_DIR` fresh on
+  every `_step_review()` call, restart or in-process resume alike -- but it
+  was never the fallback for a status ruling that this paragraph once claimed
+  it was: it filters `mode: status` entries out by design (requirement E -- a
+  ruling must not be able to look like a claim the criteria were met), so it
+  only ever carried the `waive`/`replace` kinds.
   Tests: `tests/test_resume_after_incurable_rejection.py` --
   `test_resume_point_routes_straight_to_review_not_worker_not_replan` pins
   the routing, `test_resume_lands_on_review_and_sees_the_ruling_recorded_while_paused`

@@ -333,6 +333,24 @@ class LoopSupervisor:
         # stays blocked across several worker iterations in a row does not
         # grow notes.md by one duplicate line per iteration.
         self._blocked_notes_written: set[str] = set()
+        # GH #209 defect 6: `_apply_operator_status_rulings()` runs at every
+        # worker and review step boundary, not only once per engine episode,
+        # so a ruling the engine keeps REFUSING (an illegal transition the
+        # operator ordered, a task id no longer in the plan) would otherwise
+        # emit one `log` line per iteration for the rest of the run --
+        # before this it cost one line per EPISODE, which is why the refusal
+        # report needed no dedupe at all. Keyed on `(file, previous, status,
+        # reason)` rather than a bare file name, so a task that walks its
+        # lifecycle under a standing ruling still gets one fresh line per
+        # genuinely different current status: the report stays factually
+        # correct instead of being silenced after the first shape. This is
+        # the same per-signature "once, not once per iteration" shape
+        # `_blocked_notes_written` just above and `_petition_hold_already_
+        # reported` already use. Deliberately per-process, like
+        # `_grace_review_granted`: a restarted engine re-reports each
+        # refusal exactly once, which is precisely the once-per-episode
+        # behaviour this defect's fix inherits and must not lose.
+        self._status_ruling_refusals_reported: set[tuple] = set()
         # Task 018 (requirement K, #101): the peer plan-review hat's most
         # recent objection reason, set by `_step_plan_review` when it
         # routes back to `planning` for a revision, consumed (and cleared)
@@ -2862,14 +2880,17 @@ class LoopSupervisor:
         (-> `state.apply_amendment_status_rulings`) -- called unconditionally
         once per engine EPISODE in `_run_job_core`, ahead of `_resume_point()`
         -- so any `mode: status` ruling recorded while the run sat paused is
-        re-applied on exactly this restart, even though the in-process pause
-        path never re-runs that call mid-episode (it only runs once, at the
-        top of the very episode that reached the pause). A ruling that never
-        provoked a restart at all is not left silently unruled either: the
-        OTHER ruling channel review's prompt reads, `_operator_amendment_
-        review_context()`, hits `CONFIG_DIR` fresh on every `_step_review()`
-        call -- in-process resume or restart alike -- so the very next
-        review iteration sees it either way.
+        re-applied on exactly this restart. GH #209 defect 6 makes the
+        in-process half true as well: that same applier now runs at every
+        worker and review step boundary, so a ruling recorded while the run
+        sat paused on `self._pause` is applied by the `_step_review` the
+        in-process `POST /resume` wakes into, with no restart needed. It
+        never was carried by the other channel, and the claim that it was is
+        what #209 defect 6 corrected: `_operator_amendment_review_context()`
+        does hit `CONFIG_DIR` fresh on every `_step_review()` call, but it
+        deliberately FILTERS `mode: status` entries out (requirement E -- a
+        ruling must not be able to look like a claim the criteria were met),
+        so it only ever carried the `waive`/`replace` kinds.
         """
         escalation_id = None
         iteration_start_id = None
@@ -7258,6 +7279,34 @@ class LoopSupervisor:
         approach_start_head = self._approach_start_head(approach)
         while self.budget_left():
             await self._gate()
+            # GH #209 defect 6: re-read the read-only amendments mount and
+            # apply any `mode: status` ruling recorded since this episode
+            # started. Before this the applier ran exactly once per engine
+            # EPISODE (`_run_job_core`, ahead of `_resume_point()`), so a
+            # ruling the operator recorded against a LIVE run did nothing
+            # at all until the container was restarted.
+            #
+            # This position is load-bearing three times over. It is after
+            # `self._gate()`, which is where an in-process pause-clear for
+            # `stagnation`/`unschedulable_dependency_cycle`/`unresolvable_
+            # dependency_edge` actually lands (`_step_paused` routes those
+            # three back to `worker`) -- exactly the case the operator is
+            # ruling on. It is before `scheduler.select_next_task` below,
+            # so a ruled task is never handed out and never gets this
+            # pass's `in-progress` claim written over it. And it is before
+            # `tasks_before = self.run.read_tasks()`, which is the
+            # stagnation counter's own "before" snapshot: applied after it,
+            # the operator's write would land INSIDE this pass's own
+            # before/after diff and silently read as worker progress,
+            # resetting the no-progress counter. The guard for the position
+            # is `tests/test_amendment_status_load_time.py::test_a_ruling_
+            # recorded_after_the_episode_started_is_applied_at_the_worker_
+            # boundary` -- moved below `tasks_before` it records the pass's
+            # own `in-progress` claim instead of the ruled status (measured).
+            # `tests/test_progress_pin_task015.py` cannot see it: its
+            # fixtures write no amendment, so the applier writes nothing
+            # there either way.
+            self._apply_operator_status_rulings()
             # Task 012 (requirement I, #98): unsettled operator steering is
             # ABSOLUTE TOP PRIORITY -- above a validation-failed retry
             # (guard 1 of this same while loop, computed a few lines below
@@ -9887,6 +9936,18 @@ class LoopSupervisor:
         approach = self._approach
         await self._gate()
         self.run.emit("phase", phase="review", approach=approach)
+        # GH #209 defect 6: the review half of the same boundary
+        # re-application -- see `_apply_operator_status_rulings`' docstring.
+        # `self._gate()` just above is where the in-process pause-clear for
+        # every escalation that resumes into `review` lands (the
+        # `rejected_incurable` self-loop, `rejected_last_approach`'s
+        # `paused_resumed` edge, and `review_contract_unrepaired`), i.e.
+        # precisely the moment an operator who was asked for a ruling has
+        # just given one. Placed AFTER the `phase` emit so the resulting
+        # `amendment_status_applied` event is bracketed inside the review
+        # phase it takes effect for, which is also what lets a test pin the
+        # boundary off `events.jsonl` rather than off the load site.
+        self._apply_operator_status_rulings()
         result = await self._run_review_iteration(approach)
         if result is None:
             return self._review_unjudged_at_budget_end(approach)
@@ -12433,11 +12494,48 @@ class LoopSupervisor:
         return "".join(lines)
 
     def _apply_operator_status_rulings(self) -> None:
-        """Task 005 (requirement E, #99): the load-time call site of the
-        single engine-side task-status applier,
+        """Task 005 (requirement E, #99): the call site of the single
+        engine-side task-status applier,
         `state.apply_amendment_status_rulings`. Called once per engine
         episode from `_run_job_core`, before `_resume_point()` -- see the
-        comment there for why that position matters.
+        comment there for why that position matters -- and, since GH #209
+        defect 6, at every worker and review STEP BOUNDARY as well
+        (`_step_worker`'s `while` head, `_step_review` just after its
+        `phase` emit).
+
+        GH #209 defect 6: the load-time call was the ONLY call site, so a
+        `mode: status` ruling recorded while the run was live changed
+        nothing whatsoever until the container was restarted. Not
+        `tasks.json` -- nothing re-applied -- and not the prompt either:
+        `_operator_amendment_review_context` deliberately filters
+        `mode: status` entries OUT (requirement E: a ruling must not be
+        able to look like a claim the criteria were met), so the "the other
+        channel still carries it" consolation that justified leaving this
+        once-per-episode was never true for this ruling kind.
+
+        Re-application is safe precisely because the applier's own
+        `current == target` branch (`state.apply_task_status_change`,
+        `state.py:1861-1863`) is a silent no-op: it writes nothing and
+        emits nothing, so a ruling already in effect costs one small
+        directory read per boundary and no events at all. That is what
+        makes calling this on every boundary idempotent rather than a
+        stream of duplicate audit lines.
+
+        Interaction with the cure pass (#209 defect 3, `state.insert_cure_
+        tasks`), stated because it is a behaviour change nobody asked for:
+        within ONE `_step_review` this method runs first (before the review
+        iteration) and a later cure pass in the same step may re-open the
+        very task the ruling just moved, writing `status = "pending"`
+        DIRECTLY onto the dict -- `pending` is not a declared successor of
+        anything in `transitions.TASK_STATUS_TABLE`/`TASK_STATUS_VIGILANT_
+        DELTA`, so that reopen cannot and must not be routed through the
+        applier (SD-4: routing it would turn requirement E.3, "review never
+        judges stale evidence", into a silent no-op). The consequence is
+        that the cure pass wins PERMANENTLY: from `pending` the standing
+        ruling's target is no longer a legal move, so every later boundary
+        refuses it. That is the defensible ordering (evidence integrity
+        over an operator skip), and the refusal is reported rather than
+        forced -- once per distinct current status, per the dedupe below.
 
         Reads `CONFIG_DIR` directly, exactly as
         `_operator_amendment_review_context` does and for the same reason
@@ -12457,6 +12555,16 @@ class LoopSupervisor:
         (source=operator, surfaced like `budget_changed`), so nothing is
         emitted twice from here.
 
+        GH #209 defect 6 adds the same bound to the REFUSAL line, for the
+        same reason and now that it is needed: a ruling the table
+        permanently refuses is reported once per
+        `(file, previous, status, reason)` signature
+        (`self._status_ruling_refusals_reported`), not once per boundary.
+        The dedupe suppresses only the log line -- it never gates the
+        APPLICATION, which is re-attempted through the applier on every
+        boundary regardless, so a refusal that later becomes legal (the
+        task moved on) still takes effect the moment it can.
+
         A broken amendments mount costs nothing more than itself (same rule
         as `_verify_skills_placement`): the run continues unruled.
         """
@@ -12471,6 +12579,16 @@ class LoopSupervisor:
         for r in results:
             if r.get("applied") or r.get("reason") == "already at that status":
                 continue
+            # GH #209 defect 6: one line per distinct refusal signature for
+            # the life of the process, not one per step boundary. `previous`
+            # is in the key on purpose -- a task that moves under a standing
+            # ruling is a genuinely different situation and earns a fresh,
+            # factually correct line.
+            key = (r.get("file"), r.get("previous"), r.get("status"),
+                   r.get("reason"))
+            if key in self._status_ruling_refusals_reported:
+                continue
+            self._status_ruling_refusals_reported.add(key)
             self.run.emit("log", message=(
                 f"operator status ruling {r.get('file')} REFUSED for task "
                 f"{r.get('taskId')}: {r.get('reason')} "
@@ -12590,7 +12708,10 @@ class LoopSupervisor:
         # successCriteria" for it is precisely the "a ruling must not be
         # able to look like a claim the criteria were met" failure this
         # requirement forbids. Those entries are applied to tasks.json by
-        # `_apply_operator_status_rulings` and bind review not at all.
+        # `_apply_operator_status_rulings` and bind review not at all --
+        # which, since GH #209 defect 6, that method does at this very
+        # boundary (a few lines earlier in `_step_review`), so the filter
+        # below costs a live status ruling nothing.
         entries = [e for e in state.amendment_entries(CONFIG_DIR)
                    if e.get("mode") != state.AMENDMENT_MODE_STATUS]
         if not entries:

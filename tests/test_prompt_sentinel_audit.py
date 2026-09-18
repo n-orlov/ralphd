@@ -67,6 +67,12 @@ class AbsenceAssertion:
 
 ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
     AbsenceAssertion(
+        "test_amendment_status_load_time.py", (469,), ("**id**: 001",),
+        "the first worker prompt of a pass that began after an operator "
+        "recorded a live `mode: status` ruling (GH #209 defect 6): the "
+        "scheduler must never have been handed the ruled task, so the "
+        "assembled task block must be absent from the rendered prompt", ALL),
+    AbsenceAssertion(
         "test_approach_progress_context.py", (72, 73),
         ("- Approach", "Remaining iteration budget"),
         "the rendered planning prompt", ALL),

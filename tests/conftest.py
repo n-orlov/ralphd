@@ -783,6 +783,19 @@ def _scrub_notifier_env_in_process(request, monkeypatch, tmp_path_factory):
     from ralphd.engine import config as config_mod
     isolated_config_dir = tmp_path_factory.mktemp("notifier-scrub-config-dir")
     monkeypatch.setattr(config_mod, "CONFIG_DIR", isolated_config_dir)
+    # GH #209 defect 6: `engine.loop` holds its OWN binding of the same
+    # default (`from .config import CONFIG_DIR`), and the applier for
+    # operator `mode: status` rulings reads it at every worker and review
+    # step boundary now, not once per episode. Inside a self-dev container
+    # that directory is the operator's REAL `:ro` amendments mount, and
+    # fixture plans overwhelmingly use task id `001` -- so a live ruling on
+    # `001` could rewrite an unrelated test's `tasks.json` from a
+    # `_step_worker` drive. Isolated here, in the same fixture and for the
+    # same class of ambient leak as `config.CONFIG_DIR` above. The eleven
+    # modules that patch `loop.CONFIG_DIR` themselves still win: their own
+    # `monkeypatch.setattr` runs after this autouse fixture.
+    from ralphd.engine import loop as loop_mod
+    monkeypatch.setattr(loop_mod, "CONFIG_DIR", isolated_config_dir)
 
 
 # `_STRIPPED_CHILD_ENV_VARS`: variables a spawned engine must never inherit

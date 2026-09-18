@@ -1705,7 +1705,8 @@ refused, exit `2`, naming the missing sequence number.
 
 A THIRD ruling kind (task 006/029, #26 requirement E), alongside the
 waiver/replacement above: a typed status ruling the ENGINE itself applies to
-that task's `status` field in `tasks.json`, at load time, rather than one that
+that task's `status` field in `tasks.json`, at load time and at every later
+worker/review step boundary, rather than one that
 only binds review's judgement of successCriteria. Goes through the exact same
 `write_amendment` writer as every other ruling — `status=` instead of
 `waive=` — there is no second writer and no second on-disk shape; the file
@@ -1733,7 +1734,13 @@ Applying the ruling to `tasks.json` is NOT this command's job —
 (it does read `tasks.json`/`status.json` there, read-only, for the echo and
 `--approach` default described above — task 036, #168). The
 engine applies it (`LoopSupervisor._apply_operator_status_rulings` →
-`engine.state.apply_amendment_status_rulings`) the next time the run loads,
+`engine.state.apply_amendment_status_rulings`) at the next worker or review
+step boundary of the LIVE run — and again at the top of every later episode —
+so a ruling recorded while the container is up takes effect without a restart
+(GH #209 defect 6, which is what made this true: before it, the applier ran
+once per episode and a ruling on a live run changed nothing at all, since
+`mode: status` entries are deliberately kept out of review's prompt context
+too). It is
 checked against the same declared task-status transition table every other
 status move is checked against; an illegal transition for the CURRENT status
 is refused there, not here, since this command has no way to know the task's
@@ -1770,7 +1777,8 @@ waive`/`mode: replace`) as a mandatory, unconditional instruction — review
 never has to (and must not) ask why the operator is entitled to grant one. A
 `mode: status` ruling (v0.14, requirement E) is deliberately excluded from that
 context: it changes a task's `status` in `tasks.json`, applied by the ENGINE at
-load time (`LoopSupervisor._apply_operator_status_rulings` →
+load time and at every later worker/review step boundary
+(`LoopSupervisor._apply_operator_status_rulings` →
 `engine.state.apply_amendment_status_rulings`, validated against the task-status
 table, leaving `validationAttempts`, `tierLadderExhausted` and the criteria text
 untouched and emitting an `amendment_status_applied` event with

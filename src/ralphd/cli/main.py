@@ -5534,7 +5534,9 @@ def cmd_amend(args):
     `--status <status>` (task 006/029, #26 requirement E) records a THIRD
     ruling kind instead of a criteria waiver/replacement: a typed status
     ruling the engine itself applies to that task's `status` field at load
-    time (`LoopSupervisor._apply_operator_status_rulings` ->
+    time and -- since GH #209 defect 6 -- at every later worker/review step
+    boundary of a LIVE run, so it needs no container restart
+    (`LoopSupervisor._apply_operator_status_rulings` ->
     `engine.state.apply_amendment_status_rulings`), never a claim about
     successCriteria. Goes through the SAME `write_amendment` writer as
     every other ruling (`status=` kwarg instead of `waive=`) -- there is no
