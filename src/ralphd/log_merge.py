@@ -316,8 +316,10 @@ _SEED_LOOKBACK_EXTRA_GROWTHS = 12
 # the file's end), so every byte range containing it is larger than P.1/P.5's
 # ENTIRE 1,000,000-byte per-call ceiling: a floor big enough to reach it would
 # spend more than that whole ceiling on P's own fixtures, whose setter does not
-# exist anywhere in the file at all. That is the clause conflict this task
-# petitions, and it is why the answer here is a named unresolved flag rather
+# exist anywhere in the file at all. That is the clause conflict `artifacts/
+# reports/v0.22-petitions.md` petitions (task cure-01-01-3 filed it in the
+# PRD-designated file there; no adjudication has landed), and it is why the
+# answer here is a named unresolved flag rather
 # than a bigger number.
 #
 # 131,072 bytes, OR the retained tail's own byte size when that is larger
@@ -760,9 +762,13 @@ def _unresolved_seed_flags(tail_lines: list[str], seed_flags: dict,
 
     Which fallback is right is therefore not a question this reader can decide
     from state; it is a conflict between two clauses of the same contract,
-    filed as a petition with those measurements rather than settled here by
-    guessing, and NOT something exhaustion may quietly decide by publishing a
-    `False` that looks measured -- which is the part this function does fix."""
+    filed as a petition (`artifacts/reports/v0.22-petitions.md`, "PRD requirement
+    Q's fallback direction ...") with those measurements rather than settled
+    here by guessing or by this module calling either direction a residual --
+    only review's own adjudication may do that, and none has landed yet
+    (task cure-01-01-3) -- and NOT something exhaustion may quietly decide by
+    publishing a `False` that looks measured -- which is the part this
+    function does fix."""
     if reached_start:
         return set()
     return {flag for flag in _flags_needed_by_tail(tail_lines)

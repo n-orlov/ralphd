@@ -341,6 +341,17 @@ async def test_growing_ignored_older_entries_inside_the_newest_iteration_does_no
     await _assert_silent_prelude_publishes_unknown_state_not_empty_state(
         silent_prelude_root, monkeypatch)
 
+    # Extended again (task cure-01-01-3): review's own SECOND setter depth
+    # for the same silent-prelude variant, `test_Q_silent_prelude_preserves_
+    # full_render[new-setter-depth-*]` -- 1,700 rather than 1,000 padded
+    # silent events before the streamed text -- so the property is pinned at
+    # BOTH depths review's probe names, not merely the one the shipped suite
+    # already had.
+    silent_prelude_root_1700 = tmp_path / "recognized-nonrendering-silent-prelude-1700"
+    silent_prelude_root_1700.mkdir()
+    await _assert_silent_prelude_publishes_unknown_state_not_empty_state(
+        silent_prelude_root_1700, monkeypatch, prelude_count=1700)
+
 
 def _assert_bounded_and_fully_read_tails_agree(small_lines: list[str],
                                                large_lines: list[str]) -> None:
@@ -1188,13 +1199,18 @@ def _consumer_suppressing_disclosed_unknowns(lines: list[str]) -> list[str]:
 
 
 async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
-        root, monkeypatch) -> None:
+        root, monkeypatch, prelude_count: int = 1000) -> None:
     """Review's own silent-prelude variant of PRD Q's scenario, ported into
     the shipped suite as a STATE property (task cure-01-03-2, second attempt,
-    PRD Q.1/Q.5): 1,000 recognized-but-silent 1,000-byte `message_end` events
+    PRD Q.1/Q.5; extended task cure-01-01-3 to also run at `prelude_count`
+    1,700 -- review's own second setter depth, `test_Q_silent_prelude_
+    preserves_full_render[new-setter-depth-*]` -- beside the original 1,000,
+    both called by the top-level test below rather than only the one depth):
+    `prelude_count` recognized-but-silent 1,000-byte `message_end` events
     sit BEFORE the streamed text rather than after it, so the `textSeen`
-    setter is 1,067,000 bytes into the file, and the speculative look-back's
-    head probe is EXHAUSTED long before reaching it.
+    setter is `1,067 * prelude_count` bytes into the file, and the
+    speculative look-back's head probe is EXHAUSTED long before reaching it
+    at either depth.
 
     What this pins, on the on-disk fallback and on the real engine `GET
     /logs` route the hub proxies, is the thing PRD Q.1 actually forbids:
@@ -1215,28 +1231,35 @@ async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
     measured rather than defaulted (both fallbacks then agree with the full
     render).
 
-    WHAT IS NOT PINNED GREEN HERE, and why (task cure-01-03-2's petition,
-    `artifacts/reports/v0.22-petitions.md`, type `contradictory-clauses`).
-    The shipped renderer prints from the `False` fallback, so this variant's
-    bounded render still repeats the text once -- asserted below exactly as
+    WHAT IS NOT PINNED GREEN HERE, and why -- an OPEN petition
+    (`artifacts/reports/v0.22-petitions.md`, "PRD requirement Q's fallback
+    direction ...", type `contradictory-clauses`, filed by task cure-01-03-2
+    and brought into the PRD-designated tracked file by task cure-01-01-3),
+    NOT a residual either task granted itself -- review adjudicates it, and
+    no adjudication has landed as of this commit. The shipped renderer
+    prints from the `False` fallback, so this variant's bounded render still
+    repeats the text once at both prelude depths -- asserted below exactly as
     it is, never hidden, so that a ruling which flips the fallback direction
     fails this line loudly instead of passing unnoticed. Flipping it here
     instead is not available to a bounded reader: the setter's own offset
-    (1,067,000 bytes, asserted below) is already past P.1/P.5's ENTIRE
-    1,000,000-byte per-call ceiling, and the only other route -- suppress
-    whenever a material flag is unresolved -- was measured at 7,345,430 /
-    7,607,609 / 30,248,729 bytes on P's own three fixtures against that same
-    unmoved ceiling."""
-    text = "silent-prelude streamed text must not replay after a bounded look-back"
+    (asserted below, past P.1/P.5's ENTIRE 1,000,000-byte per-call ceiling at
+    either depth) is unreachable within the ceiling, and the only other
+    route -- suppress whenever a material flag is unresolved -- was measured
+    at 7,345,430 / 7,607,609 / 30,248,729 bytes on P's own three fixtures
+    against that same unmoved ceiling (task cure-01-03-2; re-verified, not
+    re-measured, by task cure-01-01-3 -- see the petition for the fresh
+    replay measurement at both depths)."""
+    text = ("silent-prelude streamed text must not replay after a bounded "
+            f"look-back (prelude={prelude_count})")
     gap_line = json.dumps(
         {"type": "message_end", "message": {"content": []}, "padding": "x" * 1000})
     run_root = root / "runs" / "probe"
     prelude_bytes = _write_iteration_with_recognized_nonrendering_gap(
-        run_root, 1, text, gap_line, 10_000, prelude_count=1000)
+        run_root, 1, text, gap_line, 10_000, prelude_count=prelude_count)
     # The setter sits past P.1/P.5's whole per-call ceiling, measured off the
     # fixture itself rather than assumed: no reader that honours that ceiling
-    # can have read it, from either edge of the file.
-    assert prelude_bytes == 1_067_000, prelude_bytes
+    # can have read it, from either edge of the file, at either named depth.
+    assert prelude_bytes == 1067 * prelude_count, prelude_bytes
     assert prelude_bytes > 1_000_000, prelude_bytes
 
     full = render_to_lines("".join(merged_lines(run_root)), tty=False, state=new_render_state())
@@ -1271,7 +1294,9 @@ async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
             "".join(_consumer_suppressing_disclosed_unknowns(raw)), tty=False,
             state=new_render_state())
         assert not any(text in ln for ln in suppressed), (label, suppressed)
-        # The shipped fallback direction, pinned as the petitioned residual.
+        # The shipped fallback direction's CURRENT behavior, pinned exactly
+        # as measured -- not a residual this suite grants itself, and not
+        # evidence that the open petition above is decided either way.
         shipped = render_to_lines("".join(raw), tty=False, state=new_render_state())
         assert shipped[-2:] == [text, full[-1]], (label, shipped[-2:])
 

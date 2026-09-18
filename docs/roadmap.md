@@ -2336,13 +2336,15 @@ recognized non-rendering event no longer certifies prefix collapse state, includ
 `message_end` whose text item carries empty text rather than an empty content list, and neither
 does EXHAUSTION of the bounded look-back: a flag whose setter was never read is published as
 unresolved, by name, beside the fallback boolean, so "we did not find a setter" is no longer
-indistinguishable from "there is no setter" (`69b2a119`, `e80ff352`, `76ab505b`, `e87a1578`). Which way a
-renderer should then fall back is a **disclosed residual** of this wave, not a claim: printing
-repeats text streamed deeper than the budget, while suppressing costs 7.3–30.2 MB on
-requirement P's own fixtures against its unmoved 1,000,000-byte ceiling, and resolving the flag
-is no cheaper (a setter 1,067,000 bytes from the nearest edge of the file is past that whole
-ceiling) — filed as a petition with those measurements in
-`artifacts/reports/v0.22-petitions.md`. **R** — the four
+indistinguishable from "there is no setter" (`69b2a119`, `e80ff352`, `76ab505b`, `e87a1578`); review's
+own silent-prelude variant (the setter 1,067,000/1,813,900 bytes from the nearest edge of the file at
+prelude 1,000/1,700, past P.1/P.5's whole per-call ceiling either way, re-measured task cure-01-01-3)
+still replays the streamed text on both bounded paths, unchanged. Which way a renderer should then
+fall back — printing repeats text streamed deeper than the budget, while suppressing costs 7.3–30.2 MB
+on requirement P's own fixtures against its unmoved 1,000,000-byte ceiling, and resolving the flag is
+no cheaper — is an OPEN petition of this wave, not a self-granted residual and not a claim: filed with
+those measurements in `artifacts/reports/v0.22-petitions.md`, awaiting an adjudication this run cannot
+give itself. **R** — the four
 records v0.21.1 left inaccurate corrected (`72dd78a8`); and **M** — this version bump and this
 paragraph, have all landed. GitHub **#207** (per-task time and cost summed across approaches --
 `engine/state.py`'s `task_totals()` buckets on `assignedTaskId` alone, so an approach's task 001
