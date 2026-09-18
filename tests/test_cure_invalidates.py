@@ -39,8 +39,9 @@ Five groups of nodes:
 * the cure-origin exclusion and the per-path re-take reuse, same harness
   (#209 defect 3);
 * the planner-declared ordering edge, same harness (#209 defect 3's
-  residual): the narrowing, the absent-field default, and a re-pointed edge
-  defaulting back to evidence-producing;
+  residual): the narrowing, the absent-field default, a re-pointed edge
+  defaulting back to evidence-producing, and the one behaviour the narrowing
+  gives up (a declared edge at `failed` is not resurrected);
 * the emitted event's payload -- driving a real `LoopSupervisor.
   _step_review()` pass over a finding carrying `invalidates` of both
   shapes at once, and reading `approach.cure_pass`'s own `taskIds`
@@ -61,6 +62,7 @@ from ralphd.engine.state import (
     apply_worker_dependency_repoints,
     atomic_write_json,
     insert_cure_tasks,
+    task_blocked_by,
 )
 
 from tests.conftest import supervisor_factory
@@ -451,7 +453,7 @@ def test_a_dependency_declared_ordering_only_is_not_dragged_back(tmp_path):
     criteria text, so the plan declares it (`tasks[].orderingOnly`, read
     through `plan_ingestion.ordering_only_dependencies`).
 
-    Three phases, one decision:
+    Four phases, one decision:
 
     * a declared ordering edge keeps its terminal status and is absent from
       the returned ids, and -- the requirement E.3 half, which is why this
@@ -467,7 +469,15 @@ def test_a_dependency_declared_ordering_only_is_not_dragged_back(tmp_path):
       edge some other writer re-pointed (here the real one, `state.apply_
       worker_dependency_repoints` from a worker's `proposed_task_updates`)
       defaults to evidence-producing, and the leftover declaration for an id
-      that is no longer a dependency is inert.
+      that is no longer a dependency is inert;
+    * the ONE behaviour this narrowing gives up, pinned explicitly rather
+      than left to the source docstring (unit-7 review, the same way #209
+      defect 3's own carve-out is pinned in `test_the_engines_own_cure_task_
+      is_never_a_verification_step`): a declared ordering edge sitting at
+      `failed` is NOT resurrected to `pending` by the re-open, so the
+      re-opened record is blocked on it -- which is the input the doomed-plan
+      net (`LoopSupervisor._doomed_plan_fault`, task 007/#99) reads to route
+      the approach to review, not a starved plan.
     """
     record_criteria = f"One commit adds {RECORD_PATH} naming the shipped sha."
     finding = _blocking_curable_finding(
@@ -529,6 +539,26 @@ def test_a_dependency_declared_ordering_only_is_not_dragged_back(tmp_path):
     assert set(inserted3[1:]) == {"013", "014"}
     # the stale declaration for the dropped id is inert, never re-applied
     assert tasks3["013"]["orderingOnly"] == ["012"]
+
+    # Phase 4: the give-up. A declared ordering edge at `failed` is left
+    # `failed` -- an evidence re-open must not write `pending` over a terminal
+    # failure for an edge the plan says is a real ordering requirement -- so
+    # the re-opened record is blocked on it rather than schedulable, and THAT
+    # map is what routes the approach to review (`_doomed_plan_fault`).
+    run4 = _make_run(tmp_path / "run4", [
+        _task("012", status="failed", criteria="the earlier deliverable"),
+        {**_task("013", status="validated", depends=["012"],
+                 criteria=record_criteria),
+         "orderingOnly": ["012"]},
+    ])
+    inserted4 = insert_cure_tasks(run4, 1, [finding])
+    doc4 = run4.read_tasks()
+    tasks4 = {t["id"]: t for t in doc4["tasks"]}
+    assert tasks4["012"]["status"] == "failed"            # not resurrected
+    assert inserted4 == [inserted4[0], "013"]             # and never named
+    assert tasks4["013"]["status"] == "pending"
+    assert tasks4["013"]["dependsOn"] == ["012", inserted4[0]]
+    assert task_blocked_by(doc4["tasks"]) == {"013": ["012"]}
 
 
 # ---------------------------------------------------------------------------

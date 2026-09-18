@@ -1526,19 +1526,25 @@ dependent `blocked` on every surface (`ralphctl tasks`, the hub, and
 `GET /tasks`'/`GET /status`'s own `taskBlockedBy` map / `blocked` count)
 the moment the dependency reaches `failed`/`skipped`. With no
 `dependsOn`/`priority` fields anywhere in the plan this is identical to
-plain sequential list-order picking. A task may also carry `orderingOnly`
-(GH #209 defect 3), a planner-declared subset of its own `dependsOn` ids
-that are pure ORDERING edges -- sequencing alone, producing none of the
-evidence that task's `successCriteria` reports on. It changes no scheduling
-whatsoever; its one reader is the cure pass's evidence walk below, which
+plain sequential list-order picking. This pick rule lives entirely in the
+phase prompts (the engine does not parse or enforce it in code) — it is the
+agent reading `tasks.json` and the prompt's instructions, same as task
+selection always has been; the `blocked` DERIVATION, unlike the pick rule
+itself, is engine code (`engine/state.py`), not prompt text.
+
+A task may also carry `orderingOnly` (GH #209 defect 3), a planner-declared
+subset of its own `dependsOn` ids that are pure ORDERING edges -- sequencing
+alone, producing none of the evidence that task's `successCriteria` reports
+on. It changes no scheduling whatsoever, but unlike the pick rule above it
+IS engine-read, at both ends: refused at ingestion when it is not an array
+or when an entry names an id the task does not depend on
+(`plan_ingestion.validate_proposal_shape`/`lint_proposal` — a bad entry
+refuses the whole proposal), and then read by the cure pass's evidence walk
+below (`plan_ingestion.ordering_only_dependencies`, its one consumer), which
 without it drags such a dependency from `validated` back to `pending` merely
 for sitting in a re-staled record's `dependsOn`. An absent field means
 "every edge produces evidence", so a plan that never names it behaves
-exactly as one written before it existed. This rule lives entirely in the phase
-prompts (the engine does not parse or enforce it in code) — it is the agent
-reading `tasks.json` and the prompt's instructions, same as task selection
-always has been; the `blocked` DERIVATION, unlike the pick rule itself, is
-engine code (`engine/state.py`), not prompt text.
+exactly as one written before it existed.
 
 ### Reading `tasks.json`: unknown is not zero (task 002, #15)
 
@@ -2178,7 +2184,8 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   holds either way. Tests:
   `tests/test_cure_invalidates.py` (task 032's own module: the per-path
   insertion, the lane re-open chain, the cure-origin exclusion and
-  per-path re-take reuse, and the emitted event's own `taskIds`).
+  per-path re-take reuse, the planner-declared ordering edge, and the
+  emitted event's own `taskIds`).
 - **Cure tasks land before the frozen tail, re-take tasks after it (v0.20
   requirement E.4, #167, task 033).** `insert_cure_tasks` no longer only
   ever `tasks.append`s: `state.last_code_touching_task_id(run, tasks)`

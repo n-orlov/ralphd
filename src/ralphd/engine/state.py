@@ -3597,11 +3597,21 @@ def is_worker_origin(task: dict) -> bool:
 
 
 # Fields a worker's proposed split task is allowed to carry through to
-# `tasks.json` verbatim -- the same set `plan_ingestion._TASK_PASSTHROUGH_
-# FIELDS` uses for a planner's proposal, duplicated here (not imported)
-# because this module must not depend on `plan_ingestion` (the reverse
-# dependency already exists: `plan_ingestion.lint_worker_split` is called
-# FROM `LoopSupervisor`, never the other way).
+# `tasks.json` verbatim -- the planner-proposal set `plan_ingestion._TASK_
+# PASSTHROUGH_FIELDS` uses MINUS its planner-only annotations, duplicated
+# here (not imported) because this module must not depend on `plan_ingestion`
+# (the reverse dependency already exists: `plan_ingestion.lint_worker_split`
+# is called FROM `LoopSupervisor`, never the other way).
+#
+# The two tuples are deliberately NOT equal, and no later change should sync
+# them to "restore" an invariant that never held (unit-7 review): a split
+# child carries neither `estimatedIterations` (a planner's own estimate of a
+# task it planned; `normalize_task_estimated_iterations` defaults the child's)
+# nor `orderingOnly` (GH #209 defect 3's residual -- a declaration about the
+# PLANNER's edges, whose omission is the conservative default, since an
+# undeclared edge counts as evidence-producing and is re-opened by a cure
+# pass rather than silently left behind). Both are accepted by `lint_worker_
+# split` and dropped here, the same way round.
 _WORKER_SPLIT_PASSTHROUGH_FIELDS = (
     "id", "title", "successCriteria", "dependsOn", "priority", "tier",
 )
@@ -3949,8 +3959,13 @@ def _lane_evidence_record_chain(tasks: list, path: str) -> tuple[dict | None, li
     the plan's own call rather than the engine's: a dependency the plan
     DECLARES to be a pure ordering edge (`plan_ingestion.ordering_only_
     dependencies`, the planner's optional per-task `orderingOnly` list) is
-    not returned as a verification step, so it is not dragged back to
-    `pending` by the re-open. Measured in `selfdev-v022`: a requirement-G
+    not returned as a verification step, so THAT record's re-open does not
+    drag it back to `pending`. Per-(record, edge), never per-task (unit-7
+    review): the declaration read here is the one on the record row `t`,
+    intersected with `t`'s own `dependsOn`, so the very same task is still
+    re-opened when some OTHER record depends on it without declaring it, and
+    still re-opened as a record in its own right when its criteria name an
+    invalidated path. Measured in `selfdev-v022`: a requirement-G
     finding named a test module, task `013`'s criteria cited that module so
     `013` matched as the record, and `012` -- `validated`, its work landed
     at `751abe5e` with a green nightly, per `013`'s own notes -- was re-opened
@@ -3979,7 +3994,17 @@ def _lane_evidence_record_chain(tasks: list, path: str) -> tuple[dict | None, li
     an edge the plan declares is a real ordering requirement, and clearing it
     is what the re-point levers exist for (`apply_worker_dependency_repoints`,
     an operator `steer task-update`) -- not something an evidence re-open
-    should be doing by writing `pending` over a terminal failure.
+    should be doing by writing `pending` over a terminal failure. Where that
+    leaves the run, stated because it is the reason the outcome is tolerable
+    (unit-7 review): the re-opened record is `pending` but unschedulable
+    (`scheduler.select_next_task` skips a task with an unmet edge), and the
+    moment it is the whole actionable remainder the doomed-plan net routes the
+    approach to `review` for a verdict -- `LoopSupervisor._doomed_plan_fault`,
+    task 007/#99, whose input is exactly the `task_blocked_by` map above. It
+    does NOT starve into the stagnation guard, and review is the judge of a
+    plan with a dead ordering requirement in it, which is what that net is
+    for. Pinned as phase 4 of `tests/test_cure_invalidates.py::test_a_
+    dependency_declared_ordering_only_is_not_dragged_back`.
     """
     by_id = {t.get("id"): t for t in tasks if isinstance(t, dict)}
     for t in tasks:

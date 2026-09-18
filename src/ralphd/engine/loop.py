@@ -12713,11 +12713,16 @@ class LoopSupervisor:
         WHICH tasks that reopen can reach is narrower than "every dependency
         of a re-staled evidence record" (#209 defect 3's residual): a
         dependency the plan itself declares to be a pure ordering edge
-        (`plan_ingestion.ordering_only_dependencies`) is not re-opened at all,
-        so a standing ruling on such a task is never overridden by the cure
-        pass and keeps whatever terminal status it was ruled to. The record
-        task whose criteria names the invalidated path is still re-opened on
-        every pass, so for THAT task the precedence above applies unchanged.
+        (`plan_ingestion.ordering_only_dependencies`) is not re-opened
+        THROUGH THAT RECORD'S chain, so a standing ruling on it survives
+        that record's re-open with whatever terminal status it was ruled to.
+        Scoped that precisely because the declaration is per-(record, edge),
+        NOT per-task (#209 defect 3's residual, unit-7 review): the same task
+        is re-opened as usual when it is an undeclared dependency of some
+        OTHER re-staled record, or when its own criteria name a second
+        invalidated path so it IS a record -- in both of those roles the
+        precedence above applies to it unchanged, as it always does to the
+        record whose criteria names the invalidated path.
 
         Reads `CONFIG_DIR` directly, exactly as
         `_operator_amendment_review_context` does and for the same reason
