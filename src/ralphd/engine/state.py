@@ -4061,6 +4061,47 @@ def _repoint_dependents_onto_cure_task(run: "RunDir", tasks: list, failed_id: st
         t["dependsOn"] = accepted
 
 
+def _repair_cure_task_criteria(run: "RunDir", task: dict) -> None:
+    """#209 defect 1: apply `plan_ingestion.repair_criteria` to a
+    freshly-built cure task's `successCriteria` -- the point at which a
+    finding's own `cured_when` BECOMES a criterion -- and emit
+    `plan_ingestion.CRITERIA_REPAIRED_EVENT` naming both texts when it
+    does. Same shared-constant-plus-`source` shape
+    `_emit_rejected_dependency_edges` above already uses, so the
+    plan-ingestion and cure-insertion writers read identically on
+    `events.jsonl`.
+
+    Only `clause-count-overrun` is in scope here, and both halves of that
+    matter (#209 §1, SD-2):
+
+    - `transitions.review_cured_when_errors` holds a `cured_when` to the
+      overrun bound and to NOTHING else, so the quantifier lint has no
+      jurisdiction over this text -- refusing it was never on the table
+      here, and repairing it would be the harness inventing a criterion
+      nobody refused.
+    - the quantifier rewrite's bound is hardcoded (`plan_ingestion.
+      _quantifier_bound_phrase`: ", verified by rerunning pytest against
+      ...") and this path serves whatever workspace the run points at,
+      including Go ones -- "every frame renders" would silently gain a
+      pytest bound nobody asked for, and there is deliberately no
+      insert-time lint on a cure task at all to catch it.
+
+    A `cured_when` within the bound, and one whose overrun has no lossless
+    fold, both leave `successCriteria` exactly as `cure_task_from_finding`
+    built it -- `repair_criteria` returns `None` and this is a no-op.
+    """
+    old = task.get("successCriteria")
+    repaired = plan_ingestion.repair_criteria(
+        old, lints=("clause-count-overrun",))
+    if repaired is None:
+        return
+    lints, new = repaired
+    task["successCriteria"] = new
+    run.emit(plan_ingestion.CRITERIA_REPAIRED_EVENT, taskId=task.get("id"),
+             oldCriteria=old, newCriteria=new, lints=list(lints),
+             source="cure-insertion")
+
+
 def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     """Task 009 (PRD requirement C.1, #141; cured under task 006, C.1
     finding 4): append exactly one cure task per entry of `blocking` (in
@@ -4132,6 +4173,18 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     returns `None`), both kinds fall back to `tasks.append`, unchanged
     from every approach before this task.
 
+    #209 defect 1: `cure_task_from_finding` still copies a finding's own
+    `cured_when` VERBATIM into `successCriteria`, but this function then
+    runs `_repair_cure_task_criteria` over the result, so the criteria that
+    reaches `tasks.json` is that text UNLESS its clause count overruns the
+    plan's bounded-checkable-clause lint and a lossless fold exists -- in
+    which case the fold lands instead and `task.criteria_repaired`
+    (`source="cure-insertion"`) names both texts. Until this change an
+    overrun `cured_when` was refused three times on review's contract
+    ladder (`transitions.review_cured_when_errors`) and then used verbatim
+    anyway, because `LoopSupervisor._step_review` discards those contract
+    errors before granting the cure pass.
+
     Task 007 (PRD requirement C.1, gate finding VG-003): list position
     alone is not a scheduling constraint -- `scheduler.select_next_task`
     picks a `pending` candidate by `priority` (highest wins), never by
@@ -4167,6 +4220,13 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
         new_task = cure_task_from_finding(approach, index, finding)
         new_task["id"] = _unique_task_id(new_task["id"], existing_ids)
         cure_task_id = new_task["id"]
+        # #209 defect 1: repair an over-long `cured_when` here, after the
+        # id is final (so the event names the collision-resolved id) and
+        # before the task is spliced in. This placement -- rather than
+        # inside `cure_task_from_finding`, which stays a pure function --
+        # covers BOTH cure writers in one line: review's own cure pass and
+        # the peer verdict gate's, which had no bound check of any kind.
+        _repair_cure_task_criteria(run, new_task)
         if not _insert_before_id(tasks, new_task, freeze_id):
             tasks.append(new_task)
         existing_ids.add(cure_task_id)

@@ -311,7 +311,7 @@ def test_own_terminal_state_lint_is_wired_into_proposal_parsing(tmp_path):
     alongside `lint_proposal`, not instead of it -- a proposal can fail on
     both lints at once and both errors surface."""
     payload = {"tasks": [_basic_task("042", successCriteria=pi.TASK_042_SUCCESS_CRITERIA)]}
-    _, errors, _ = pi._parse_proposal(json.dumps(payload))
+    _, errors, _, _ = pi._parse_proposal(json.dumps(payload))
     assert any("terminal state" in e for e in errors)
 
 

@@ -95,7 +95,23 @@ def _pointer_line(path: str = "plan-proposal.json", summary: str = "planned") ->
 # ("quantifies over an unenumerated set") every single time, so the two
 # consecutive planning ATTEMPTS' normalised signatures compare equal and
 # the retained two-strike guard fires on the second one.
-_OFFENDING_CLAUSE = "Each of the shipped features works correctly"
+#
+# #209 defect 1: this clause used to be a bare "Each of the shipped features
+# works correctly", which is REPAIRABLE -- the quantifier lint's own rewrite
+# ladder bounds it with a concrete `pytest` check, and the harness now
+# APPLIES that rewrite (`plan_ingestion.repair_criteria`) instead of refusing
+# the proposal and re-asking, so this module's two planning attempts would
+# never have failed at all and the run would simply have succeeded. That is
+# the intended new behaviour, not a regression, and it makes the old fixture
+# unable to reach the subject this module tests. The clause therefore gains
+# the one thing that puts it beyond any legal rewrite: an empty-range demand,
+# which no bounding phrase can rescue (`_unenumerated_quantifier_rewrite`'s
+# candidate ladder ends on its fixed fallback constant, which is never
+# applied because applying it would delete the clause's demand). Nothing
+# about the mechanism under test moved -- it is still the same lexical
+# quantifier refusal, repeated, that ends the run.
+_OFFENDING_CLAUSE = (
+    "The audit range must be empty for each of the shipped features")
 
 
 def _bad_quantifier_plan(sup: LoopSupervisor) -> IterationResult:

@@ -130,10 +130,13 @@ adjudicating judge and by no one else: not the worker who filed the
 petition, not the planner who wrote the original text, not the run acting
 on its own initiative. Applying it is recorded, never silent: a
 `task.criteria_amended` event captures the old text, the new text and the
-adjudication that authorized it; the task's `criteriaFingerprint` is
-recomputed over the new text; and the amendment plus its authorizing
-adjudication are disclosed in the closing report. Everything else about the
-task — its status, its other fields — is untouched by the amendment itself.
+adjudication that authorized it (its sibling `task.criteria_repaired`, the
+other engine-authored criteria rewrite, is the lexical-lint repair described
+under *Ingestion lints are lexical by design* below); the task's
+`criteriaFingerprint` is recomputed over the new text; and the amendment
+plus its authorizing adjudication are disclosed in the closing report.
+Everything else about the task — its status, its other fields — is untouched
+by the amendment itself.
 An edit to `successCriteria` that does not arrive from an adjudicating judge
 through this path — a worker's own rewrite, a planner's revision outside
 plan-ingestion, anything that targets a task other than the one the
@@ -251,6 +254,26 @@ OTHER task's criteria rescues nothing.
 beside one clause in the same criteria that is still refused:
 `test_an_anaphoric_quantifier_bound_by_an_earlier_clause_is_accepted` and
 `test_an_anaphoric_bound_elsewhere_does_not_rescue_an_unrelated_bare_quantifier`.
+
+Escape #2, in the same register (#209 defect 1): a lexical lint that has
+already computed a **lossless, lint-clean rewrite** of the text it objects to
+now **applies** that rewrite and records it — `plan_ingestion.repair_criteria`,
+a pre-pass over the proposal, and a `task.criteria_repaired` event carrying the
+old text, the new text, the lint names applied and the writer (`source:
+"plan-ingestion"` at plan ingestion, `"cure-insertion"` when the text is a
+finding's `cured_when` becoming a cure task's criteria) — instead of refusing
+the whole proposal and re-asking the hat for advice the harness could already
+act on. The measured cost of not doing this: one run burnt planning's entire
+three-attempt ladder on the clause-count lint, hit it again after replanning,
+and spent ten planning phases to produce three approaches. The stated limit is
+the two fallback constants each rewrite ladder ends on: those are generic
+**advice** for a human reader and one of them replaces the whole criterion, so
+neither is ever applied — a rewrite that equals either one is not a rewrite,
+and the plain refusal stands. So the refusal survives everywhere no legal
+rewrite exists, which is exactly where a lexical lint is not over-refusing at
+all. This escape is deliberately not extended to a worker's `proposed_tasks`
+batch, whose lint has no event sink in reach: repairing there would be a silent
+harness rewrite, and silence is what the criteria-amendment rule above forbids.
 
 ## Why inspection is not evidence
 

@@ -1639,6 +1639,150 @@ def _clause_count_overrun_rewrite(criteria: str) -> tuple[int, str, str] | None:
 
 
 # ---------------------------------------------------------------------------
+# #209 defect 1: a refusal is not a repair
+# ---------------------------------------------------------------------------
+# Both lexical rewrites above already compute a LEGAL, lint-clean rewrite of
+# the criteria they object to -- and until this change that rewrite was used
+# for exactly one thing: advice text spliced into `lint_proposal`'s error
+# string (`-- suggested rewrite: ...`), after which the whole proposal was
+# REFUSED and the planning hat re-asked. Issue #209 §1 measured what that
+# costs: `selfdev-v022` burnt planning's entire 3-attempt ladder to
+# `contract.agent_fault` on `clause-count-overrun` alone, hit the same lint
+# again after replanning, and spent 10 planning phases producing 3
+# approaches. The harness knew the answer on attempt 1 and asked anyway.
+#
+# `repair_criteria` below APPLIES the rewrite instead, on the two lexical
+# lints only, and records what it did (`CRITERIA_REPAIRED_EVENT`). It is a
+# PRE-PASS: `lint_proposal` itself is untouched, because every candidate
+# either rewrite returns is already gated through `_clause_lint_refusals`,
+# so a repaired criteria simply never reaches those two branches while an
+# un-repairable one still does -- the refusal stays alive exactly where no
+# legal rewrite exists, and the ~100 test call sites of `lint_proposal` keep
+# their meaning.
+#
+# THE ONE RULE THAT MUST NOT BE RELAXED (#209 §1, SD-2). Neither rewrite can
+# return `None` once its own lint has fired: each ends its candidate ladder
+# on a fixed fallback constant, and `_OVERRUN_REWRITE_FALLBACK` REPLACES THE
+# WHOLE CRITERIA with a generic sentence. As advice for a human reader that
+# is harmless; APPLIED it is precisely "a deletion dressed as a rewrite ...
+# one that quietly drops a deliverable" -- the verdict recorded in task
+# 002's own comment above `_OVERRUN_REWRITE_FALLBACK`, which exists because
+# the first attempt at that rewrite did exactly this. So `repair_criteria`
+# returns `None` -- i.e. falls back to today's refusal, which is safe and
+# merely wasteful -- whenever the computed rewrite IS either fallback.
+CRITERIA_REPAIRED_EVENT = "task.criteria_repaired"
+
+
+def repair_criteria(
+    criteria: str,
+    *,
+    lints: tuple[str, ...] = ("unenumerated-quantifier",
+                              "clause-count-overrun"),
+) -> tuple[list[str], str] | None:
+    """`(lints_applied, repaired_criteria)` when the two lexical lints'
+    own already-computed rewrites turn `criteria` into text
+    `_clause_lint_refusals` accepts; `None` when they cannot, which leaves
+    the caller's existing refusal exactly as it was.
+
+    `lints` names which of the two lexical lints may act -- both by
+    default (plan ingestion, where the text IS a task's own
+    `successCriteria`), and `("clause-count-overrun",)` from
+    `state.insert_cure_tasks`, whose subject is a finding's `cured_when`.
+    See that call site's own comment for why the quantifier lint has no
+    jurisdiction there.
+
+    `None` is returned for a non-`str`/blank input, when nothing changed,
+    when the result is still refused by some OTHER clause lint in this
+    module, and -- mandatory, see the block comment above -- whenever the
+    computed rewrite is one of the two criterion-destroying fallback
+    constants.
+
+    The candidate loop is bounded by the criteria's own clause count plus
+    one (at most one bounding per clause, plus one fold), so there is no
+    new tuning constant; a pathological criteria that never converges
+    leaves the loop mid-repair and is then caught by the trailing
+    `_clause_lint_refusals` guard, so the worst case is today's refusal,
+    never a half-repaired criterion.
+    """
+    if not isinstance(criteria, str) or not criteria.strip():
+        return None
+    current = criteria
+    applied: list[str] = []
+    for _ in range(len(_checkable_clauses(criteria)) + 1):
+        if "unenumerated-quantifier" in lints:
+            quant = _unenumerated_quantifier_rewrite(current)
+            if quant is not None:
+                clause, rewrite = quant
+                if rewrite == _QUANTIFIER_REWRITE_FALLBACK:
+                    return None
+                clauses = _checkable_clauses(current)
+                if clause not in clauses:
+                    # Defensive: both come from the same `_CLAUSE_SPLIT_RE`
+                    # split, so the offending clause is always one of them.
+                    return None
+                clauses[clauses.index(clause)] = rewrite.rstrip(" .")
+                # The `". ".join` rebuild normalises `;`/`!` clause
+                # delimiters to `.` -- the same normalisation
+                # `_clause_count_overrun_rewrite` already performs on its
+                # own fold, not a new liberty taken here.
+                current = _tidy_sentence(". ".join(clauses))
+                applied.append("unenumerated-quantifier")
+                continue
+        if "clause-count-overrun" in lints:
+            overrun = _clause_count_overrun_rewrite(current)
+            if overrun is not None:
+                _count, _overflow, rewrite = overrun
+                if rewrite == _OVERRUN_REWRITE_FALLBACK:
+                    return None
+                current = rewrite
+                applied.append("clause-count-overrun")
+                continue
+        break
+    if current == criteria or _clause_lint_refusals(current):
+        return None
+    return applied, current
+
+
+def repair_task_criteria(payload: dict) -> list[dict]:
+    """#209 defect 1: apply `repair_criteria` to every task's
+    `successCriteria` IN PLACE and return one record per repair --
+    `{"taskId", "oldCriteria", "newCriteria", "lints"}`, the payload of the
+    `CRITERIA_REPAIRED_EVENT` its caller emits. Non-dict entries and
+    non-`str` criteria are skipped exactly the way `normalize_task_tiers`
+    skips them.
+
+    One thing separates this from its two sibling in-place normalisers
+    (`normalize_task_tiers`, `normalize_task_estimated_iterations`): those
+    run AFTER the lints, over an already-accepted proposal; this runs
+    BEFORE them, because the whole point is to pre-empt a refusal this
+    module can already repair.
+
+    Deliberately NOT wired into `lint_worker_split` (a worker's
+    `proposed_tasks` batch). Its callers write those tasks straight to
+    `tasks.json`, and the lint function has no event sink in reach there --
+    repairing would be a SILENT harness rewrite of a criterion, the one
+    thing `LoopSupervisor._apply_criteria_amendments`' own discipline ("the
+    engine emits, never silently mutates") forbids. #209 §1 records no cost
+    on that path; it stays refusing.
+    """
+    repairs: list[dict] = []
+    for t in payload.get("tasks", []):
+        if not isinstance(t, dict):
+            continue
+        criteria = t.get("successCriteria")
+        if not isinstance(criteria, str):
+            continue
+        repaired = repair_criteria(criteria)
+        if repaired is None:
+            continue
+        lints_applied, new_criteria = repaired
+        t["successCriteria"] = new_criteria
+        repairs.append({"taskId": t.get("id"), "oldCriteria": criteria,
+                        "newCriteria": new_criteria, "lints": lints_applied})
+    return repairs
+
+
+# ---------------------------------------------------------------------------
 # Task 009 (requirement A.5, #154): the plan's EIGHTH lint -- issue #154's
 # own account of `deck-phase3k` (0.18.0) approach 2's task 205 ("Run the
 # ten-run stability gate at the new final code sha"): the worker measured
@@ -2866,29 +3010,40 @@ def normalize_task_estimated_iterations(payload: dict) -> list[str]:
     return warnings
 
 
-def _parse_proposal(text: str | None) -> tuple[dict | None, list[str], list[str]]:
+def _parse_proposal(
+    text: str | None,
+) -> tuple[dict | None, list[str], list[str], list[dict]]:
     """Turn the raw text of `plan-proposal.json` into
-    `(payload, errors, warnings)`, running steps 2 and 3 in order, then
-    tier normalisation (task 013) and estimatedIterations normalisation
-    (task 025). Mirrors `contract_enforcement.parse_response`'s
+    `(payload, errors, warnings, repairs)`, running steps 2 and 3 in order,
+    then tier normalisation (task 013) and estimatedIterations
+    normalisation (task 025). Mirrors `contract_enforcement.parse_response`'s
     three-shapes shape, for the file channel instead of the inline one.
     `warnings` is always `[]` whenever `errors` is non-empty -- warnings are
-    only ever produced for an already-accepted proposal."""
+    only ever produced for an already-accepted proposal.
+
+    #209 defect 1: `repairs` (`repair_task_criteria`'s records, run BEFORE
+    the lints and mutating `payload` in place) deliberately does NOT share
+    that guarantee. A repair is a fact about what the harness did to the
+    text, and it happened whether or not some OTHER lint then refused the
+    proposal -- so the fourth element is populated on the lint-error path
+    too, and only the paths where no task was ever read (absent text,
+    malformed JSON, a shape refusal) return `[]`."""
     if text is None or not text.strip():
-        return None, ["proposal: no plan-proposal.json produced (absent)"], []
+        return None, ["proposal: no plan-proposal.json produced (absent)"], [], []
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
-        return None, [f"proposal: malformed JSON ({exc.msg} at line {exc.lineno} column {exc.colno})"], []
+        return None, [f"proposal: malformed JSON ({exc.msg} at line {exc.lineno} column {exc.colno})"], [], []
     shape_errors = validate_proposal_shape(payload)
     if shape_errors:
-        return None, shape_errors, []
+        return None, shape_errors, [], []
+    repairs = repair_task_criteria(payload)
     lint_errors = lint_proposal(payload) + lint_own_terminal_state(payload)
     if lint_errors:
-        return None, lint_errors, []
+        return None, lint_errors, [], repairs
     warnings = normalize_task_tiers(payload)
     warnings += normalize_task_estimated_iterations(payload)
-    return payload, [], warnings
+    return payload, [], warnings, repairs
 
 
 # ---------------------------------------------------------------------------
@@ -2940,6 +3095,18 @@ class PlanIngestionResult:
     # already-accepted proposal; see `_parse_proposal`'s own docstring).
     # Never causes a re-prompt.
     warnings: list[str] = field(default_factory=list)
+    # #209 defect 1: one record per criteria the two lexical lints' own
+    # rewrites REPAIRED on the ACCEPTED attempt (`repair_task_criteria`'s
+    # `{"taskId", "oldCriteria", "newCriteria", "lints"}` shape), so a
+    # caller holding `tasks_doc` can say which of its criteria the harness
+    # authored rather than the hat. Never causes a re-prompt. The repairs a
+    # REFUSED attempt made are not carried here -- there is no `tasks_doc`
+    # for them to describe -- but they are not lost either: every one is
+    # emitted as `CRITERIA_REPAIRED_EVENT` the moment it is discovered, on
+    # the failed attempt as much as the accepted one (see
+    # `_parse_proposal`'s own docstring on why that channel differs from
+    # `warnings` directly above).
+    repairs: list[dict] = field(default_factory=list)
 
 
 def file_reader(base_dir: Path | str) -> Callable[[str], str | None]:
@@ -2986,13 +3153,28 @@ def enforce_plan_ingestion(
             errors = pointer_errors
         else:
             proposal_text = read_proposal(pointer["proposal_path"])
-            proposal, errors, warnings = _parse_proposal(proposal_text)
+            proposal, errors, warnings, repairs = _parse_proposal(proposal_text)
+            # #209 defect 1: emit the moment it is discovered, the same
+            # discipline the `EVENT_VIOLATION` emit below uses, and BEFORE
+            # the accept/refuse branch -- a criteria the harness rewrote is
+            # recorded even when some other lint then refused the same
+            # proposal, so `events.jsonl` never shows a task whose criteria
+            # silently changed between the hat's file and `tasks.json`.
+            # `hat`/`attempt` are copied from that same emit.
+            if state is not None:
+                for repair in repairs:
+                    state.emit(CRITERIA_REPAIRED_EVENT, hat="planning",
+                               attempt=attempt + 1, source="plan-ingestion",
+                               taskId=repair["taskId"],
+                               oldCriteria=repair["oldCriteria"],
+                               newCriteria=repair["newCriteria"],
+                               lints=list(repair["lints"]))
             if not errors:
                 return PlanIngestionResult(
                     ok=True, tasks_doc=ingest_proposal(proposal),
                     attempts=attempt + 1, agent_fault=False, errors=[],
                     standing_rules=pointer.get("standing_rules") or "",
-                    warnings=warnings,
+                    warnings=warnings, repairs=repairs,
                 )
         if state is not None:
             state.emit(EVENT_VIOLATION, hat="planning", attempt=attempt + 1,

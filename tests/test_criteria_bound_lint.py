@@ -270,41 +270,67 @@ def _write(tmp_path, name: str, doc) -> None:
     (tmp_path / name).write_text(text)
 
 
-def test_an_unenumerated_quantifier_reprompts_then_recovers_end_to_end(tmp_path):
+def test_an_unenumerated_quantifier_is_repaired_not_reprompted_end_to_end(tmp_path):
+    """#209 defect 1: this node used to assert `result.attempts == 2` and
+    that attempt 2's `prior_errors` named the "unenumerated set" refusal --
+    i.e. it pinned the re-ask that IS the defect. The lint already computed
+    a legal, lint-clean bound for this exact criteria and used it only as
+    advice text; `plan_ingestion.repair_criteria` now APPLIES it in a
+    pre-pass, so the proposal is accepted on attempt 1 and the bounded
+    criteria is what reaches `tasks_doc`. Nothing about the lint itself is
+    relaxed: the must-catch pin over the raw text
+    (`test_v016_task_023s_each_shipped_piece_wording_is_caught` above) is
+    untouched and still red-flags this same string.
+    """
     _write(tmp_path, "plan-proposal.json",
            {"tasks": [_basic_task("023", successCriteria=TASK_023_EACH_SHIPPED_PIECE_CRITERIA)]})
     attempts = []
 
     def respond(attempt, prior_errors):
         attempts.append(prior_errors)
-        if attempt == 1:
-            _write(tmp_path, "plan-proposal.json", {"tasks": [_basic_task("023")]})
         return _pointer("plan-proposal.json")
 
     result = pi.enforce_plan_ingestion(
         respond, max_retries=2, read_proposal=pi.file_reader(tmp_path)
     )
     assert result.ok
-    assert result.attempts == 2
-    assert attempts[0] is None
-    assert attempts[1] and any("unenumerated set" in e for e in attempts[1])
+    assert result.attempts == 1
+    assert attempts == [None]
+    repaired = result.tasks_doc["tasks"][0]["successCriteria"]
+    assert repaired != TASK_023_EACH_SHIPPED_PIECE_CRITERIA
+    assert pi.lint_proposal({"tasks": [_basic_task("023", successCriteria=repaired)]}) == []
+    assert [(r["taskId"], r["lints"], r["oldCriteria"], r["newCriteria"])
+            for r in result.repairs] == [
+        ("023", ["unenumerated-quantifier"],
+         TASK_023_EACH_SHIPPED_PIECE_CRITERIA, repaired)]
 
 
-def test_a_clause_count_overrun_reprompts_then_recovers_end_to_end(tmp_path):
+def test_a_clause_count_overrun_is_repaired_not_reprompted_end_to_end(tmp_path):
+    """#209 defect 1, the overrun half of the node above, and the same
+    inversion for the same reason: `result.attempts == 2` and a
+    "clause bound" refusal in attempt 2's `prior_errors` pinned the re-ask.
+    `selfdev-v022` spent planning's whole 3-attempt ladder on precisely
+    this lint. Additionally pins the property that makes applying the
+    rewrite safe at all -- the fold is LOSSLESS: every clause of
+    `SEVEN_CLAUSE_CRITERIA` survives into the repaired text, and the result
+    is under the bound.
+    """
     _write(tmp_path, "plan-proposal.json",
            {"tasks": [_basic_task("050", successCriteria=SEVEN_CLAUSE_CRITERIA)]})
     attempts = []
 
     def respond(attempt, prior_errors):
         attempts.append(prior_errors)
-        if attempt == 1:
-            _write(tmp_path, "plan-proposal.json", {"tasks": [_basic_task("050")]})
         return _pointer("plan-proposal.json")
 
     result = pi.enforce_plan_ingestion(
         respond, max_retries=2, read_proposal=pi.file_reader(tmp_path)
     )
     assert result.ok
-    assert result.attempts == 2
-    assert attempts[0] is None
-    assert attempts[1] and any("clause bound" in e for e in attempts[1])
+    assert result.attempts == 1
+    assert attempts == [None]
+    repaired = result.tasks_doc["tasks"][0]["successCriteria"]
+    assert pi.clause_count_overrun(repaired) is None
+    for clause in (c.strip() for c in SEVEN_CLAUSE_CRITERIA.split(".") if c.strip()):
+        assert clause.lower() in repaired.lower(), (clause, repaired)
+    assert [r["lints"] for r in result.repairs] == [["clause-count-overrun"]]

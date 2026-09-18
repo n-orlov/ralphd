@@ -297,11 +297,21 @@ def test_the_quantifier_rewrite_keeps_the_clauses_own_demand(label, criteria, tm
     named regressions (no new collected test item is added -- the fast
     tier's collected count is pinned, `tests/test_tier_budgets.py`) for
     both "Every widget works." and "Each handler returns a value.": each
-    proves, against the actual `prompt.md` a real loop run writes, that
-    the offered rewrite preserves the offending clause's own demand, is a
-    concrete bounded observable with no unresolved placeholder, rides
-    beside the offending clause and the lint name, and is itself accepted
-    by the unchanged applicable lints."""
+    proves that the offered rewrite preserves the offending clause's own
+    demand, is a concrete bounded observable with no unresolved
+    placeholder, and is itself accepted by the unchanged applicable lints.
+
+    #209 defect 1: that second half used to drive two real loop runs and
+    assert the rewrite arrived in `iterations/0002/prompt.md` beside "Your
+    previous plan-proposal.json was rejected" -- the refusal itself. The
+    rewrite is now APPLIED in a pre-pass instead of quoted as advice, so
+    there is no rejected-proposal re-ask to carry it: the loop-level half
+    asserts the bounded criteria reached `tasks.json` on the FIRST planning
+    iteration, that no planning `contract.violation` was recorded at all,
+    and that iteration 0002 is the worker's. Every direct-rewrite
+    assertion in the first half, and every one in this loop over the two
+    named regressions, is kept verbatim -- what the rewrite says is
+    unchanged; only where it is delivered changed."""
     clause, rewrite = pi._unenumerated_quantifier_rewrite(criteria)
     # The demand survives: every word of the offending clause is still
     # there, in order, except the bare scope adverb "anywhere".
@@ -340,14 +350,26 @@ def test_the_quantifier_rewrite_keeps_the_clauses_own_demand(label, criteria, tm
             return _ok("planned\n" + _pointer_line())
 
         root = tmp_path / f"run-{named_criteria[:5]}"
-        sup = _supervisor(root, [_bad_named_plan, _good_plan, _finish_task, _review_ok])
+        sup = _supervisor(root, [_bad_named_plan, _finish_task, _review_ok])
         _bounded(sup.run_job())
-        second_prompt = (root / "iterations" / "0002" / "prompt.md").read_text()
-        assert "Your previous plan-proposal.json was rejected" in second_prompt
-        assert "unenumerated-quantifier" in second_prompt
-        assert named_clause in second_prompt
-        assert "suggested rewrite:" in second_prompt
-        assert named_rewrite in second_prompt
+        # The rewrite lands as the task's own criteria on the FIRST planning
+        # iteration, and the planning contract was never violated at all --
+        # `contract.violation` is the event every re-ask emits, so its
+        # absence IS the absence of the re-ask, and iteration 0002 is the
+        # worker's rather than a second attempt at the same proposal.
+        assert sup.run.read_tasks()["tasks"][0]["successCriteria"] == named_rewrite
+        assert _planning_violations(root) == []
+        assert _iteration_phase(root, 2) == "worker"
+        repaired = [e for e in _events(root)
+                    if e["type"] == pi.CRITERIA_REPAIRED_EVENT]
+        assert len(repaired) == 1, repaired
+        assert repaired[0]["source"] == "plan-ingestion"
+        assert repaired[0]["hat"] == "planning"
+        assert repaired[0]["attempt"] == 1
+        assert repaired[0]["taskId"] == "001"
+        assert repaired[0]["oldCriteria"] == named_criteria
+        assert repaired[0]["newCriteria"] == named_rewrite
+        assert repaired[0]["lints"] == ["unenumerated-quantifier"]
 
 
 def test_the_quantifier_rewrite_is_a_grammatical_sentence():
@@ -366,7 +388,13 @@ def test_the_quantifier_rewrite_is_a_grammatical_sentence():
 def test_the_clause_count_rewrite_folds_rather_than_deleting_a_clause():
     """The exact shape the first attempt got wrong: a six-clause
     "A exists. ... F exists." criteria comes back with `F exists` still in
-    it, folded into the final clause rather than deleted."""
+    it, folded into the final clause rather than deleted.
+
+    #209 defect 1 folds in the COMBINED case, which no other node covered:
+    a criteria tripping BOTH lexical lints at once is repaired in one
+    `repair_criteria` call, both lint names are recorded in the order they
+    acted, and the result draws no refusal at all -- so a proposal is never
+    accepted on a criteria that merely traded one lint for another."""
     overrun = pi._clause_count_overrun_rewrite(_A_TO_F_SIX_CLAUSE_CRITERIA)
     assert overrun is not None
     clause_count, overflow_clause, rewrite = overrun
@@ -378,15 +406,62 @@ def test_the_clause_count_rewrite_folds_rather_than_deleting_a_clause():
     assert pi._clause_count_overrun(rewrite) is None
     assert pi.lint_proposal({"tasks": [_task("060", rewrite)]}) == []
 
+    both = "Every widget works. " + _A_TO_F_SIX_CLAUSE_CRITERIA
+    repaired = pi.repair_criteria(both)
+    assert repaired is not None
+    lints, criteria = repaired
+    assert lints == ["unenumerated-quantifier", "clause-count-overrun"]
+    assert "pytest" in criteria
+    for letter in "ABCDEF":
+        assert f"{letter} exists" in criteria, (letter, criteria)
+    assert pi._clause_count_overrun(criteria) is None
+    assert pi.lint_proposal({"tasks": [_task("061", criteria)]}) == []
+
 
 def test_both_lexical_rewrite_fallbacks_are_themselves_legal():
     """The far end of each ladder (used only if bounding or folding the
     criteria still leaves it refused) is lint-clean, same discipline as
-    `test_every_shapes_own_default_rewrite_is_legal` above."""
+    `test_every_shapes_own_default_rewrite_is_legal` above.
+
+    #209 defect 1 folds in THE losslessness guard, the single most
+    important line of that fix. Neither rewrite can return `None` once its
+    own lint has fired -- each ends its ladder on one of these two
+    constants -- and `_OVERRUN_REWRITE_FALLBACK` replaces the WHOLE
+    criteria, which is exactly "a deletion dressed as a rewrite ... one
+    that quietly drops a deliverable" (task 002's own recorded verdict on
+    its first attempt, the comment above that constant). Lint-clean as
+    advice is fine; APPLIED it destroys the criterion. So `repair_criteria`
+    must return `None` -- falling back to the plain refusal, which is only
+    wasteful -- whenever the computed rewrite IS either constant, and both
+    branches are reached by a real fixture here rather than asserted in
+    the abstract."""
     for fallback in (pi._QUANTIFIER_REWRITE_FALLBACK,
                      pi._OVERRUN_REWRITE_FALLBACK):
         assert pi._clause_lint_refusals(fallback) == [], fallback
         assert pi.lint_proposal({"tasks": [_task("070", fallback)]}) == []
+
+    # The quantifier ladder's own fallback: a clause carrying a quantifier
+    # AND an unsatisfiable empty-range demand, so bounding it with `pytest`
+    # is still refused and the ladder gives up on the fixed constant.
+    quantifier_dead_end = "The audit range must be empty for every widget."
+    _clause, rewrite = pi._unenumerated_quantifier_rewrite(quantifier_dead_end)
+    assert rewrite == pi._QUANTIFIER_REWRITE_FALLBACK
+    assert pi.repair_criteria(quantifier_dead_end) is None
+
+    # The overrun ladder's own fallback: seven clauses, one of which is
+    # itself unsatisfiable, so no fold is lint-clean.
+    overrun_dead_end = (
+        "clause 1. clause 2. clause 3. clause 4. clause 5. "
+        "the audit range must be empty. clause 7")
+    _count, _overflow, rewrite = pi._clause_count_overrun_rewrite(overrun_dead_end)
+    assert rewrite == pi._OVERRUN_REWRITE_FALLBACK
+    assert pi.repair_criteria(overrun_dead_end) is None
+    assert pi.repair_criteria(
+        overrun_dead_end, lints=("clause-count-overrun",)) is None
+    # ... so today's refusal survives verbatim for it, which is the whole
+    # point of returning `None` rather than applying the constant.
+    assert any("clause bound" in e for e in pi.lint_proposal(
+        {"tasks": [_task("071", overrun_dead_end)]}))
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +504,35 @@ def _ok(text: str) -> IterationResult:
 
 def _pointer_line(path: str = "plan-proposal.json", summary: str = "planned") -> str:
     return json.dumps({"proposal_path": path, "summary": summary})
+
+
+def _events(root) -> list[dict]:
+    """This run's `events.jsonl`, read straight off disk -- the per-module
+    two-liner every other in-process module in this tree keeps its own copy
+    of (`tests/test_contract_ladder.py`'s `_events`)."""
+    path = root / "events.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines()
+            if line.strip()]
+
+
+def _planning_violations(root) -> list[dict]:
+    """Every planning contract violation this run recorded. #209 defect 1:
+    `enforce_plan_ingestion` emits one of these per refused attempt, so an
+    empty list is the positive statement that the proposal was accepted
+    first time -- the property the nodes below used to prove by looking for
+    the re-ask preamble in the next iteration's `prompt.md`."""
+    return [e for e in _events(root)
+            if e["type"] == "contract.violation" and e.get("hat") == "planning"]
+
+
+def _iteration_phase(root, number: int) -> str:
+    """The phase the engine recorded for iteration `number`, from the
+    `meta.json` it writes for every iteration."""
+    meta = json.loads(
+        (root / "iterations" / f"{number:04d}" / "meta.json").read_text())
+    return meta["phase"]
 
 
 def _bad_final_commit_plan(sup: LoopSupervisor) -> IterationResult:
@@ -527,45 +631,71 @@ def test_the_suggested_rewrite_reaches_the_planners_next_prompt(tmp_path):
 
 # Task 002 (requirement B): the SAME loop-level reach, for the two lexical
 # ingestion refusals -- an unenumerated-universal criterion and a
-# clause-count overrun each put their own concrete rewrite into the next
-# planning iteration's prompt.md too, beside the offending clause and the
-# lint name.
+# clause-count overrun.
+#
+# #209 defect 1: both nodes below used to assert that reach as PROMPT TEXT
+# -- "Your previous plan-proposal.json was rejected" plus the suggestion in
+# `iterations/0002/prompt.md`, i.e. the refusal and the re-ask that are the
+# defect. `selfdev-v022` burnt planning's whole 3-attempt ladder to
+# `contract.agent_fault` on the overrun lint and hit it again after
+# replanning: 10 planning phases for 3 approaches. The rewrite is now
+# APPLIED (`plan_ingestion.repair_criteria`, a pre-pass over the proposal),
+# so the reach these nodes prove is to `tasks.json` on the FIRST planning
+# iteration, with `task.criteria_repaired` on `events.jsonl` naming both
+# texts as the audit trail the prompt used to be. Every assertion about
+# WHAT the rewrite says is kept -- it moved to the suggestion computed
+# directly, which `test_the_*_suggestion_is_itself_accepted` above already
+# pins is the same string the lint would have quoted. "No re-ask" is
+# asserted positively rather than as the absence of the preamble in the next
+# prompt: no `contract.violation` at all, and iteration 0002 is the worker's.
+# That is both the stronger proof and the one the tree's own absence-assertion
+# audit (`tests/test_prompt_sentinel_audit.py`) does not have to enumerate.
 
-def test_the_unenumerated_quantifier_suggestion_reaches_the_planners_next_prompt(tmp_path):
+def test_the_unenumerated_quantifier_repair_reaches_tasks_json_not_a_reask(tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(
         root,
-        [_bad_quantifier_plan, _good_plan, _finish_task, _review_ok])
+        [_bad_quantifier_plan, _finish_task, _review_ok])
 
     _bounded(sup.run_job())
 
-    second_prompt = (root / "iterations" / "0002" / "prompt.md").read_text()
-    assert "Your previous plan-proposal.json was rejected" in second_prompt
-    assert "unenumerated-quantifier" in second_prompt
-    offending_clause = pi._unenumerated_quantifier_clause(TASK_023_EACH_SHIPPED_PIECE_CRITERIA)
-    assert offending_clause in second_prompt
-    assert "suggested rewrite:" in second_prompt
     suggestion = _suggestion_for(TASK_023_EACH_SHIPPED_PIECE_CRITERIA)
-    assert suggestion in second_prompt
+    assert sup.run.read_tasks()["tasks"][0]["successCriteria"] == suggestion
+    assert _planning_violations(root) == []
+    assert _iteration_phase(root, 2) == "worker"
+    repaired = [e for e in _events(root)
+                if e["type"] == pi.CRITERIA_REPAIRED_EVENT]
+    assert len(repaired) == 1, repaired
+    assert repaired[0]["source"] == "plan-ingestion"
+    assert repaired[0]["hat"] == "planning"
+    assert repaired[0]["attempt"] == 1
+    assert repaired[0]["lints"] == ["unenumerated-quantifier"]
+    assert repaired[0]["oldCriteria"] == TASK_023_EACH_SHIPPED_PIECE_CRITERIA
+    assert repaired[0]["newCriteria"] == suggestion
 
 
-def test_the_clause_count_overrun_suggestion_reaches_the_planners_next_prompt(tmp_path):
+def test_the_clause_count_overrun_repair_reaches_tasks_json_not_a_reask(tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(
         root,
-        [_bad_overrun_plan, _good_plan, _finish_task, _review_ok])
+        [_bad_overrun_plan, _finish_task, _review_ok])
 
     _bounded(sup.run_job())
 
-    second_prompt = (root / "iterations" / "0002" / "prompt.md").read_text()
-    assert "Your previous plan-proposal.json was rejected" in second_prompt
-    assert "clause-count-overrun" in second_prompt
-    assert "suggested rewrite:" in second_prompt
     suggestion = _suggestion_for(SEVEN_CLAUSE_CRITERIA, task_id="050")
     # The folded rewrite (task 002's second attempt) keeps the overflow
     # clause the refusal names instead of deleting it, and the WHOLE fold
-    # reaches the planner's next prompt.
+    # is what lands as the task's criteria.
     assert "the petition file is untouched" in suggestion
     assert "the status is checked" in suggestion
     assert suggestion.startswith(FIVE_CLAUSE_CRITERIA.rstrip(".").rstrip())
-    assert suggestion in second_prompt
+    assert sup.run.read_tasks()["tasks"][0]["successCriteria"] == suggestion
+    assert _planning_violations(root) == []
+    assert _iteration_phase(root, 2) == "worker"
+    repaired = [e for e in _events(root)
+                if e["type"] == pi.CRITERIA_REPAIRED_EVENT]
+    assert len(repaired) == 1, repaired
+    assert repaired[0]["source"] == "plan-ingestion"
+    assert repaired[0]["lints"] == ["clause-count-overrun"]
+    assert repaired[0]["oldCriteria"] == SEVEN_CLAUSE_CRITERIA
+    assert repaired[0]["newCriteria"] == suggestion

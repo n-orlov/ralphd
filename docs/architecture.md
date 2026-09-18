@@ -2036,17 +2036,26 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   missing `cured_when` -- or carrying one whose own text overruns the
   plan's bounded-checkable-clause lint, `plan_ingestion.clause_count_
   overrun` (the same public function `lint_proposal` itself now calls,
-  exposed for exactly this cross-module reuse) -- is a review contract
+  exposed for exactly this cross-module reuse), **and for which no legal
+  rewrite can be computed** (#209 defect 1) -- is a review contract
   violation on the SAME ladder a `verified` claim contradicting its own
   findings already rides (`transitions.review_cured_when_errors`, wired
   into `_review_verdict` and `_review_contract_ladder` beside `review_
   verdict_findings_errors`); this reaches every engine-authored curable
   finding too (`findings.flagged_criteria_findings`'s criteria-tamper
   finding, `petitions.duplicate_petition_findings`'s duplicate-filing
-  finding), each of which now carries its own `cured_when`.
-  `state.cure_task_from_finding`/`insert_cure_tasks` use `cured_when`
-  VERBATIM as the cure task's `successCriteria` whenever a finding carries
-  one, and always set a new `description` field from `clause` + `evidence`
+  finding), each of which now carries its own `cured_when`. The bound
+  itself is unchanged: an overrun `cured_when` whose clauses fold
+  losslessly and lint-clean is REPAIRED at `state.insert_cure_tasks`
+  (`plan_ingestion.repair_criteria`, event `task.criteria_repaired` with
+  `source: "cure-insertion"`) rather than refused, because the refusal
+  spent a review contract attempt re-asking a hat for advice the harness
+  had already computed and then used the refused text verbatim anyway
+  (`_step_review` discards those contract errors before granting the cure
+  pass). `state.cure_task_from_finding`/`insert_cure_tasks` use
+  `cured_when` as the cure task's `successCriteria` whenever a finding
+  carries one -- VERBATIM unless that lexical repair applies -- and always
+  set a new `description` field from `clause` + `evidence`
   (the specification and its human-readable context, kept separate); a
   finding with no `cured_when` (a fixture predating this task, or a direct
   `insert_cure_tasks` caller that supplies none) falls back to the

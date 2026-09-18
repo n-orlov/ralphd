@@ -30,6 +30,15 @@ Four groups of nodes:
   `cured_when` still falls back to the pre-existing clause+evidence
   derivation (backward compatible with every fixture task 009 already
   pinned).
+
+#209 defect 1 narrows two of those nodes, in place. The bound itself is
+unchanged, but an overrun `cured_when` with a lossless, lint-clean fold is
+now REPAIRED at `state.insert_cure_tasks` (`plan_ingestion.repair_criteria`,
+event `task.criteria_repaired`, `source="cure-insertion"`) rather than
+refused and re-asked -- so the two nodes that pinned the refusal moved to an
+un-repairable fixture and each also pins the repairable side, and the
+`insert_cure_tasks` node pins the fold landing on the task. "Verbatim" above
+therefore reads "verbatim unless the clause-count fold applies".
 """
 
 from __future__ import annotations
@@ -64,6 +73,17 @@ def _result(text: str):
     r = IterationResult(exit_code=0)
     r.final_text = text
     return r
+
+
+def _events(root) -> list[dict]:
+    """This run dir's `events.jsonl`, read straight off disk -- the
+    per-module two-liner every other in-process module in this tree keeps
+    its own copy of."""
+    path = root / "events.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines()
+            if line.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -141,14 +161,35 @@ def test_review_cured_when_errors_flags_a_missing_cured_when():
     assert "cured_when" in errors[0]
 
 
-def test_review_cured_when_errors_flags_an_overrun_cured_when():
-    over_bound = ". ".join(f"clause {n}" for n in range(1, 8))
+def test_review_cured_when_errors_flags_an_unrepairable_overrun_cured_when():
+    """#209 defect 1: this node's fixture used to be
+    `". ".join(f"clause {n}" for n in range(1, 8))`, which is REPAIRABLE --
+    it folds cleanly to five clauses with nothing dropped -- so the node
+    pinned exactly the refusal being removed. `state.insert_cure_tasks` now
+    applies that fold when the text becomes the cure task's criteria, so
+    re-asking the review hat over it buys nothing. Re-pointed at an
+    UN-repairable overrun (one clause is itself unsatisfiable, so no fold
+    is lint-clean and the rewrite ladder ends on the criterion-destroying
+    `_OVERRUN_REWRITE_FALLBACK`, which is never applied), where the
+    original refusal still fires with its original wording -- both
+    assertions below are kept verbatim. Both sides of the boundary are now
+    pinned in one node: the repairable fixture yields no error at all.
+    """
+    unrepairable = (
+        "clause 1. clause 2. clause 3. clause 4. clause 5. "
+        "the audit range must be empty. clause 7")
     overrun = [_curable_blocking("requirement E.2 (#171)", "evidence",
-                                 cured_when=over_bound)]
+                                 cured_when=unrepairable)]
     errors = transitions.review_cured_when_errors(overrun)
     assert len(errors) == 1
     assert "checkable clauses" in errors[0]
     assert "5-clause bound" in errors[0]
+
+    repairable = ". ".join(f"clause {n}" for n in range(1, 8))
+    assert plan_ingestion.clause_count_overrun(repairable) is not None
+    assert transitions.review_cured_when_errors(
+        [_curable_blocking("requirement E.2 (#171)", "evidence",
+                           cured_when=repairable)]) == []
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +279,14 @@ def test_cure_task_from_finding_falls_back_without_cured_when():
 
 
 def test_insert_cure_tasks_persists_cured_when_as_success_criteria(tmp_path):
+    """#209 defect 1 folds in the cure-insertion half of the repair. A
+    within-bound `cured_when` is unaffected -- `repair_criteria` returns
+    `None`, so the verbatim path every assertion above pins is untouched --
+    and an overrun one lands FOLDED, with `task.criteria_repaired`
+    (`source="cure-insertion"`) naming both texts. This is the point at
+    which `cured_when` becomes a criterion, and until this change an
+    overrun one was refused three times on review's contract ladder and
+    then written here verbatim anyway."""
     from ralphd.engine.state import RunDir, atomic_write_json
 
     root = tmp_path / "run"
@@ -257,6 +306,28 @@ def test_insert_cure_tasks_persists_cured_when_as_success_criteria(tmp_path):
         "the notify tool exists and is called on completion")
     assert task["description"] == (
         "requirement E.2 (#171) -- the notify tool is missing")
+    assert [e for e in _events(root)
+            if e["type"] == plan_ingestion.CRITERIA_REPAIRED_EVENT] == []
+
+    over_bound = ". ".join(f"clause {n}" for n in range(1, 8))
+    overrun_finding = _curable_blocking(
+        "requirement E.2 (#171) again", "the notify tool is still missing",
+        cured_when=over_bound)
+    assert insert_cure_tasks(run, 1, [overrun_finding]) == ["cure-01-01-2"]
+    folded = next(t for t in run.read_tasks()["tasks"]
+                  if t["id"] == "cure-01-01-2")["successCriteria"]
+    assert folded != over_bound
+    assert plan_ingestion.clause_count_overrun(folded) is None
+    for n in range(1, 8):
+        assert f"clause {n}" in folded, (n, folded)
+    repaired = [e for e in _events(root)
+                if e["type"] == plan_ingestion.CRITERIA_REPAIRED_EVENT]
+    assert len(repaired) == 1, repaired
+    assert repaired[0]["source"] == "cure-insertion"
+    assert repaired[0]["taskId"] == "cure-01-01-2"
+    assert repaired[0]["oldCriteria"] == over_bound
+    assert repaired[0]["newCriteria"] == folded
+    assert repaired[0]["lints"] == ["clause-count-overrun"]
 
 
 def test_a_cured_when_refused_by_the_bounded_lint_stays_a_criterion_bound_violation():
@@ -266,8 +337,24 @@ def test_a_cured_when_refused_by_the_bounded_lint_stays_a_criterion_bound_violat
     with the identical message shape `lint_proposal` itself uses for an
     oversized task criterion (the '~N-clause bound' phrase), not a
     second, differently-worded rule.
+
+    #209 defect 1: the IDENTICAL bound still applies, and this node still
+    proves it is the same rule with the same wording -- what changed is
+    which overruns reach the refusal. An overrun with a lossless,
+    lint-clean fold is REPAIRED at `state.insert_cure_tasks`
+    (`plan_ingestion.repair_criteria`) instead of refused, because the
+    refusal spent a review contract attempt re-asking a hat for advice the
+    harness had already computed and then, since `_step_review` discards
+    those contract errors, used the refused text verbatim anyway. Only an
+    UN-repairable overrun is still a criterion-bound violation, so this
+    node's fixture moved from the repairable seven-clause string to one
+    whose sixth clause is itself unsatisfiable; the assertion it makes is
+    unchanged.
     """
-    over_bound = ". ".join(f"clause {n}" for n in range(1, 8))
+    over_bound = ("clause 1. clause 2. clause 3. clause 4. clause 5. "
+                  "the audit range must be empty. clause 7")
+    assert plan_ingestion.repair_criteria(
+        over_bound, lints=("clause-count-overrun",)) is None
     finding = _curable_blocking("requirement E.2 (#171)", "evidence",
                                 cured_when=over_bound)
     errors = transitions.review_cured_when_errors([finding])

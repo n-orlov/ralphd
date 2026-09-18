@@ -2001,6 +2001,20 @@ def review_cured_when_errors(findings: "list[dict] | None") -> list[str]:
     verdict_findings_errors`'s own contradiction check; this closes the
     remaining case, a `rejected` claim whose curable blocking findings
     are individually incomplete).
+
+    #209 defect 1: the overrun half of this refusal now fires only where no
+    legal rewrite exists. The identical bound still applies, but a
+    `cured_when` whose overrun folds losslessly and lint-clean under
+    `plan_ingestion.repair_criteria` is REPAIRED at the one point the text
+    becomes a criterion (`state.insert_cure_tasks`) instead of being
+    refused here and the review hat re-asked over advice the harness could
+    already act on. The scope handed to `repair_criteria` --
+    `lints=("clause-count-overrun",)` -- is deliberately the SAME scope
+    that call site uses: a guard that forgave more than the repair applies
+    would let an oversized `cured_when` land verbatim with no refusal
+    anywhere, which is strictly worse than the waste it was meant to
+    remove. The missing-`cured_when` refusal above is untouched -- there is
+    no text there to rewrite.
     """
     if not findings:
         return []
@@ -2015,6 +2029,27 @@ def review_cured_when_errors(findings: "list[dict] | None") -> list[str]:
             "from (PRD requirement E.2, #171)")
     for finding, overrun in findings_mod.curable_findings_with_overrun_cured_when(
             findings):
+        # #209 defect 1: an overrun `cured_when` for which `plan_ingestion`
+        # can compute a LOSSLESS, lint-clean fold -- with its own
+        # clause-count rewrite, the one that computes the `suggested
+        # rewrite` the plan lint has always quoted as advice -- is no
+        # longer refused. `state.insert_cure_tasks` applies that
+        # same fold when it turns the text into the cure task's
+        # `successCriteria` (`plan_ingestion.repair_criteria`, event
+        # `task.criteria_repaired`, `source="cure-insertion"`), so there is
+        # nothing left for review to fix and re-asking a review hat that
+        # already said everything correct wastes a whole contract attempt.
+        # `selfdev-v022` (#209 §1) spent its planning ladder on the twin of
+        # this refusal. The bound itself is UNCHANGED and the refusal below
+        # survives verbatim for the residue: a `cured_when` whose every
+        # fold is still refused by another clause lint, i.e. one where no
+        # legal rewrite exists at all -- including the case where the fold
+        # would be `_OVERRUN_REWRITE_FALLBACK`, which deletes the criterion
+        # and is never applied.
+        if plan_ingestion.repair_criteria(
+                finding.get("cured_when"),
+                lints=("clause-count-overrun",)) is not None:
+            continue
         clause_count, overflow_clause = overrun
         errors.append(
             f"finding {finding.get('clause')!r}: cured_when carries "
