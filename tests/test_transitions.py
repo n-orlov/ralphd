@@ -976,6 +976,24 @@ def test_the_edge_is_also_declared_under_the_peer_verdict_gate_delta():
     assert by_guard["rejected_incurable"] == "review"
 
 
+def test_the_review_contract_unrepaired_edge_is_declared_in_both_variants_and_under_the_gate():
+    """GH #209 defect 2's hold edge, in the same two-assertion shape the
+    two nodes above use for `rejected_incurable`: an exhausted review
+    contract ladder that never got a readable verdict claim out of the hat
+    holds on `review -> paused` rather than scoring a rejection, and the
+    edge is declared in BOTH table variants and identically under the peer
+    verdict gate delta (the check runs on the way to the rejection branch,
+    entirely before the VERIFIED-only gate is ever consulted)."""
+    for vigilant in (True, False):
+        by_guard = {e.guard: e.target for e in
+                   transitions.successors("review", vigilant)}
+        assert by_guard["review_contract_unrepaired"] == "paused"
+    gated = {e.guard: e.target for e in
+            transitions.successors("review", vigilant=False,
+                                   peer_verdict_gate=True)}
+    assert gated["review_contract_unrepaired"] == "paused"
+
+
 # ---------------------------------------------------------------------------
 # 2-4. Driving a real LoopSupervisor to the edge.
 # ---------------------------------------------------------------------------
@@ -1370,7 +1388,16 @@ def _no_progress(sup, prompt="") -> IterationResult:
 
 
 def _review_rejects(sup, prompt="") -> IterationResult:
-    return _ok_doomed("this plan cannot be verified; rejecting")
+    # GH #209 defect 2: this used to reply with the bare prose "this plan
+    # cannot be verified; rejecting", which reached the ordinary rejection
+    # path only because an exhausted review contract ladder was SCORED as a
+    # rejection. It no longer is (the run holds on `review_contract_
+    # unrepaired` instead), and this section's subject is the doomed-plan
+    # fault, not review's contract handling -- so the reply is now the
+    # compliant `review` payload it always meant, and every assertion in
+    # both nodes that use it is unchanged.
+    return _ok_doomed(json.dumps(
+        {"verdict": "rejected", "reason": "this plan cannot be verified"}))
 
 
 

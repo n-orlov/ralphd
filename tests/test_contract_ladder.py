@@ -51,6 +51,7 @@ import asyncio
 import json
 from pathlib import Path
 
+from ralphd.engine import petitions, state, transitions
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
@@ -610,7 +611,20 @@ def test_ladder_exhaustion_still_produces_the_verdict_miss_validation_failed_out
     """The hat never produces a valid payload, across every attempt the
     ladder grants (`contract_retry_max + 1`, default 3) -- exactly the
     pre-task-001 outcome: one validation-failed round recorded, with the
-    generic "no valid contract payload" note."""
+    generic "no valid contract payload" note.
+
+    GH #209 defect 2 changed review's answer to this same question and
+    deliberately did NOT change verify's: an exhausted `_verify_contract_
+    ladder` still produces a substantive negative verdict (`validation-
+    failed` plus one `validationAttempts`), while an exhausted
+    `_review_contract_ladder` that never got a readable verdict claim now
+    holds for an operator (see `test_ladder_exhaustion_holds_for_an_
+    operator_and_never_archives` below, in this same module). The
+    asymmetry is a recorded decision, not an oversight: verify's exhaustion
+    burns a `validationAttempts` slot on ONE task rather than an approach --
+    a different currency, with its own three-strike ladder behind it -- so
+    it is a different fix and #209 does not attempt it. Nothing in this
+    node's assertions changes."""
     prose = "still not sure, let me look again"
 
     sup = _supervisor_verify_ladder(tmp_path, [_ok(prose)])   # every call replays `prose`
@@ -680,17 +694,38 @@ def test_a_prose_final_line_is_repaired_on_reask_and_never_archives_or_composite
     assert not sup.run.composite_prd_file.exists()
 
 
-# -- 2. exhaustion still reaches the ordinary archive/replan path ----------
+# -- 2. exhaustion holds for an operator; it never archives ----------------
 
 
-def test_ladder_exhaustion_still_archives_and_writes_the_composite_prd(
+def test_ladder_exhaustion_holds_for_an_operator_and_never_archives(
         tmp_path):
     """The hat never produces a valid `review` payload across every
-    attempt the ladder grants -- exactly the pre-task-002 outcome for an
-    unparseable reply: the approach is archived, a composite PRD is
-    written for the next one, and the ladder made its full
+    attempt the ladder grants, and the ladder made its full
     `1 + contract_retry_max` attempts (1 reused + `contract_retry_max`
-    uncharged re-asks) before giving up."""
+    uncharged re-asks) before giving up.
+
+    Under its previous name -- `test_ladder_exhaustion_still_archives_and_
+    writes_the_composite_prd` -- this node deliberately pinned the OPPOSITE
+    outcome, "exactly the pre-task-002 outcome for an unparseable reply:
+    the approach is archived, a composite PRD is written for the next one".
+    GH #209 defect 2 is that this was the defect: a reviewer that never
+    produced a parseable verdict at all was scored exactly like a reviewer
+    that read the work and refused it, so a pure schema slip
+    (`$.verdict: 'fail' is not one of ['verified', 'rejected']`) cost the
+    reference run an approach, archived it and wrote a composite PRD for a
+    successor that need not exist. A hat that never returned a verdict has
+    not returned one, so the run now HOLDS for an operator on the existing
+    pause machinery over the same unarchived approach.
+
+    The two assertions the old outcome did not itself dictate survive
+    verbatim: the full attempt count, and the `contract.agent_fault` that
+    witnesses the exhaustion (`enforce_contract` already emitted it -- #209
+    invents no event for this). Everything else is the new outcome. This
+    node's own unbounded drive of the review step is kept exactly as it
+    was, so `tests/test_loop_driving_await_guard.py`'s pinned count of 4
+    grandfathered loop-driving calls for this file stays exact -- every
+    drive #209 ADDS below is wait_for-bounded.
+    """
     prose = "still not sure, let me look again"
 
     sup = _supervisor_review_ladder(tmp_path, [_ok(prose)])   # every call replays `prose`
@@ -698,12 +733,213 @@ def test_ladder_exhaustion_still_archives_and_writes_the_composite_prd(
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "replan", "rejected_approach_left")
+    assert outcome == ("advance", "paused", "review_contract_unrepaired")
     assert sup.runner.calls == 1 + sup.cfg.contract_retry_max
 
-    # today's ordinary archive-with-safe-default consequences, unchanged.
+    # neither consequence of a rejection fires: nothing is archived, no
+    # composite PRD is written, and the approach counter never moves.
+    assert not (root / "approaches" / "01").exists()
+    assert not sup.run.composite_prd_file.exists()
+    status = sup.run.read_status()
+    assert status["state"] == "paused"
+    assert status["pauseReason"] == "review_contract_unrepaired"
+    assert sup._approach == 1          # the approach counter never moved
+
+    events = _events(root)
+    faults = [e for e in events if e.get("type") == "contract.agent_fault"]
+    assert len(faults) == 1 and faults[0]["hat"] == "review", faults
+    escalations = [e for e in events if e.get("type") == "operator_escalation"]
+    assert len(escalations) == 1, escalations
+    assert escalations[0]["reason"] == "review_contract_unrepaired"
+    # the validation errors reach the operator verbatim -- the whole
+    # diagnosis, and unreachable otherwise without reading events.jsonl.
+    assert escalations[0]["contractErrors"], escalations[0]
+    assert any("contract payload" in err
+               for err in escalations[0]["contractErrors"])
+    assert "review" in escalations[0]["escalation"]
+    # the judge never spoke, so the recorded approach verdict says so --
+    # never `rejected`, and no `review rejected approach` log line at all.
+    verdicts = [e for e in events if e.get("type") == "approach.verdict_recorded"]
+    assert [(e["channel"], e["verdict"]) for e in verdicts] == \
+        [("review", "unreviewed")], verdicts
+    assert not [e for e in events if e.get("type") == "log"
+                and "review rejected approach" in (e.get("message") or "")]
+
+
+# -- 3. Half B: the negative-verdict synonym, and its one-directionality ---
+
+
+def test_a_fail_verdict_is_normalised_to_rejected_without_a_single_reask(
+        tmp_path):
+    """GH #209 defect 2 (Half B). The reference run's own reply. `fail` is
+    not in `HAT_SCHEMAS["review"]`'s two-word enum, so it used to cost
+    three attempts, three `contract.violation`s, one `contract.agent_fault`
+    and -- once Half A landed -- would have cost a PAUSE, which is strictly
+    worse than the rejection it plainly meant. It is now normalised ahead
+    of the ladder's own early-exit check, so it never enters
+    `enforce_contract` at all and becomes a real, fully-furnished
+    rejection in ONE runner call."""
+    reply = json.dumps({"verdict": "fail", "reason": "the deck never renders"})
+
+    sup = _supervisor_review_ladder(tmp_path, [_ok(reply)])
+    root = sup.run.root
+
+    outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
+
+    assert outcome == ("advance", "replan", "rejected_approach_left")
+    assert sup.runner.calls == 1          # no re-ask at all
+    events = _events(root)
+    assert not [e for e in events if e.get("type") == "contract.violation"]
+    assert not [e for e in events if e.get("type") == "contract.agent_fault"]
+    # the audit trail keeps what the hat LITERALLY said.
+    normalised = [e for e in events
+                  if e.get("type") == "review.verdict_synonym_normalised"]
+    assert len(normalised) == 1, normalised
+    assert normalised[0]["claimed_verdict"] == "fail"
+    assert normalised[0]["normalised_verdict"] == "rejected"
+    assert normalised[0]["approach"] == 1
+    # a real rejection, not a hold: archive, composite PRD, and the hat's
+    # own words survive into the approach's own metadata.
+    verdicts = [e for e in events if e.get("type") == "approach.verdict_recorded"]
+    assert [e["verdict"] for e in verdicts] == ["rejected"], verdicts
     assert (root / "approaches" / "01").exists()
     assert sup.run.composite_prd_file.exists()
+    entry = state.approach_metadata_channel(root, 1, "review")
+    assert entry["reason"] == "the deck never renders"
+
+
+def test_a_pass_verdict_is_never_normalised_toward_success(tmp_path):
+    """GH #209 defect 2 (Half B) safety property: the synonym map is
+    one-directional by construction, so no wrong guess can ever manufacture
+    a terminal SUCCESS. `pass` is therefore a coercion-proof violation --
+    which is also the second test #92's requirement F2 attaches to any
+    commit that does add a coercion: it rides the full ladder to
+    exhaustion and lands on the hold, never on `("done", "succeeded")`."""
+    reply = json.dumps({"verdict": "pass", "reason": "looks good"})
+
+    sup = _supervisor_review_ladder(tmp_path, [_ok(reply)])
+    root = sup.run.root
+
+    outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
+
+    assert outcome == ("advance", "paused", "review_contract_unrepaired")
+    assert sup.runner.calls == 1 + sup.cfg.contract_retry_max
+    events = _events(root)
+    assert not [e for e in events
+                if e.get("type") == "review.verdict_synonym_normalised"]
+    faults = [e for e in events if e.get("type") == "contract.agent_fault"]
+    assert len(faults) == 1 and faults[0]["hat"] == "review"
+    assert "VERIFIED" not in [e.get("signal") for e in events
+                              if e.get("type") == "signal"]
+    assert sup.run.read_status().get("verdict") is None
+    # and a future entry cannot quietly reopen the hole.
+    assert "verified" not in transitions.NEGATIVE_VERDICT_SYNONYMS.values()
+
+
+def test_a_repaired_reask_clears_the_unrepaired_flag_for_the_next_pass(
+        tmp_path):
+    """GH #209 defect 2: the mutation-facing half of the flag's lifetime.
+    `_review_contract_ladder` resets `_review_contract_unrepaired` at every
+    ordinary entry, so a run whose reviewer has since started answering
+    correctly leaves the hold instead of being stranded in it -- one
+    pass's fault can never leak into the next."""
+    prose = "still not sure, let me look again"
+    good = json.dumps({"verdict": "rejected", "reason": "requirement B unmet"})
+
+    sup = _supervisor_review_ladder(tmp_path, [_ok(prose)])
+    root = sup.run.root
+
+    first = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
+    assert first == ("advance", "paused", "review_contract_unrepaired")
+    assert sup._review_contract_unrepaired is True
+
+    # a working reviewer on the next pass, released the way an operator
+    # releases it (`POST /resume`): the flag clears and the ordinary
+    # rejection path runs, archive and composite PRD included.
+    sup.runner.results = [_ok(good)]
+    sup.resume()
+    second = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
+    assert second == ("advance", "replan", "rejected_approach_left")
+    assert sup._review_contract_unrepaired is False
+    assert (root / "approaches" / "01").exists()
+    verdicts = [e["verdict"] for e in _events(root)
+                if e.get("type") == "approach.verdict_recorded"]
+    assert verdicts == ["unreviewed", "rejected"], verdicts
+
+
+def test_a_petition_adjudication_in_an_unrepairable_payload_is_still_recorded(
+        tmp_path):
+    """GH #209 defect 2: the hold branch sits AFTER `_review_verdict`, not
+    in front of it, so task 011's own recorded decision survives -- a
+    payload that is malformed as a VERDICT can still carry a perfectly
+    valid CONFIRMED adjudication, and that adjudication must not be
+    swallowed by the verdict's unusability. This is the node that goes red
+    if the hold is ever "simplified" into an early return out of
+    `_review_verdict`."""
+    reply = json.dumps({
+        "verdict": "fail-ish",          # un-normalisable: the ladder exhausts
+        "reason": "cannot say",
+        "petition_adjudications": [
+            {"obligation": "task 001 must ship the widget",
+             "adjudication": "CONFIRMED",
+             "remedy": "the widget is genuinely impossible here"}]})
+
+    sup = _supervisor_review_ladder(tmp_path, [_ok(reply)])
+    root = sup.run.root
+
+    outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
+
+    assert outcome == ("advance", "paused", "review_contract_unrepaired")
+    entries, tampered = petitions.read_confirmed_adjudications(sup.run)
+    assert tampered is False
+    assert [e.get("obligation") for e in entries] == \
+        ["task 001 must ship the widget"], entries
+    assert [e.get("type") for e in _events(root)].count(
+        petitions.ADJUDICATIONS_RECORDED_EVENT) == 1
+
+
+def test_a_grace_review_with_an_unrepaired_contract_is_unreviewed_not_rejected(
+        tmp_path):
+    """GH #209 defect 2, the OFF-budget half. `_maybe_grace_review` has no
+    budget to ask again with, no declared edge to take and nothing to hold
+    FOR, so it ends the run truthfully instead of scoring a rejection off a
+    payload nobody could read: `_finish_tail_unverified` writes `verdict:
+    "unreviewed"` with its own contract-payload reason, NOT the deadline's
+    -- the discriminating assertion against reusing `_review_deadline_
+    unreviewed`, whose reason string is hardcoded to "deadline during
+    review" and would have been a lie here. Sibling of
+    `tests/test_deadline.py::test_grace_review_interrupted_is_also_
+    unreviewed_not_rejected`, which pins the same terminal word for the
+    engine-cutoff case this one is deliberately kept distinct from."""
+    prose = "still not sure, let me look again"
+
+    sup = _supervisor_review_ladder(tmp_path, [_ok(prose)])
+    root = sup.run.root
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": [
+        {"id": TASK_1, "title": "do the thing", "status": "validated",
+         "successCriteria": "the thing works"}]})
+
+    ran = asyncio.run(asyncio.wait_for(sup._maybe_grace_review(1), 30.0))
+
+    assert ran is False
+    assert sup._review_contract_unrepaired is True
+    assert sup.run.read_status().get("state") != "paused"
+    events = _events(root)
+    verdicts = [e for e in events if e.get("type") == "approach.verdict_recorded"]
+    assert [(e["channel"], e["verdict"]) for e in verdicts] == \
+        [("review", "unreviewed")], verdicts
+    assert not (root / "approaches" / "01").exists()
+    assert not sup.run.composite_prd_file.exists()
+    assert not [e for e in events if e.get("type") == "log"
+                and "review rejected approach" in (e.get("message") or "")]
+    # the deadline flag is NOT set: no deadline was involved.
+    assert sup._review_deadline_unreviewed is False
+
+    assert sup._finish_tail_unverified() == "failed"
+    status = sup.run.read_status()
+    assert status["verdict"] == "unreviewed"
+    assert "contract payload" in status["reason"]
+    assert "deadline" not in status["reason"]
 
 
 # ===========================================================================
@@ -755,7 +991,22 @@ def test_ladder_exhaustion_on_a_prose_reply_keeps_todays_safe_default(tmp_path):
     unparseable reply: the approach is archived, a composite PRD is
     written (no approach left to try again), and the ladder made its full
     `1 + contract_retry_max` attempts (1 reused + `contract_retry_max`
-    uncharged re-asks) before giving up."""
+    uncharged re-asks) before giving up.
+
+    GH #209 defect 2 changed review's answer to this same question and
+    deliberately did NOT change the verdict gate's (see
+    `test_ladder_exhaustion_holds_for_an_operator_and_never_archives`
+    above, in this same module): `_verdict_gate_verdict` still returns its
+    own `(False, None)` safe default and `_step_verdict_gate` still
+    archives the approach and writes a composite PRD over it. This is a
+    recorded decision, not an oversight -- and it is the higher-value
+    follow-up of the two siblings, because the gate archives an approach on
+    exhaustion exactly as review's did AND it is the terminal-success gate
+    every self-dev run enables. It is a near-mechanical mirror of review's
+    fix (one `T("paused", "verdict_gate_contract_unrepaired")` edge in
+    `PEER_VERDICT_GATE_DELTA["verdict_gate"]`, a third piece of state out of
+    `_verdict_gate_verdict`, one branch in `_step_verdict_gate`) and is out
+    of #209's scope. Nothing in this node's assertions changes."""
     prose = "hard to say, would need another look at this"
 
     sup = _supervisor_verdict_gate_ladder(tmp_path, [_ok(prose)], max_approaches=1)

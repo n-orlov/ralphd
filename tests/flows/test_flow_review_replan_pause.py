@@ -284,37 +284,76 @@ def test_verify_ladder_exhaustion_with_budget_remaining_does_not_end_the_run(liv
     assert st.get("iterationsUsed", 0) < st.get("iterationsBudget", 0), st
 
 
-def test_review_ladder_exhaustion_with_budget_remaining_does_not_end_the_run(live):
+def test_review_ladder_exhaustion_with_budget_remaining_holds_for_the_operator(live):
+    """GH #209 defect 2, at the flow tier. This node USED to pin the
+    opposite outcome, deliberately: an unparseable review reply exhausted
+    the ladder and the engine then applied "today's ordinary archive-with-
+    safe-default consequences" -- approach 1 ARCHIVED, a composite PRD
+    written, `verdict:review:rejected@1` recorded, the run replanned onto
+    approach 2 and succeeded there (`assert st["approach"] == 2`). That is
+    the defect: a reviewer that never produced a parseable verdict at all
+    was scored exactly like a reviewer that read the work and refused it,
+    and it cost an approach. It now HOLDS instead -- `pauseReason:
+    "review_contract_unrepaired"`, approach 1 unarchived, no composite PRD,
+    `verdict:review:unreviewed@1`, one `operator_escalation` -- and a
+    `POST /resume` re-enters review over the SAME approach, where the
+    stub's next (well-formed) reply verifies.
+
+    Every assertion the old outcome did not itself dictate survives
+    verbatim: `review-count == "2"` (one exhausted real invocation, one
+    passing one -- the ladder's uncharged re-asks never advance the
+    marker), every task `completed`, `usage.byPhase.contract` non-empty,
+    and budget genuinely left over. The two that inverted are named above.
+    Sibling of `test_the_last_approach_pauses_for_the_operator_and_a_
+    resume_verifies`, whose shape this now follows exactly."""
     run = live(run_id="g5-review-ladder-exhaustion",
                job={"on_complete": "exit", "max_approaches": 2},
                stub_env={"STUB_REVIEW_MALFORMED_COUNT": "1"})
+
+    paused = run.wait_state(("paused",), timeout=ENGINE_EXIT_WAIT_S)
+    assert paused.get("pauseReason") == "review_contract_unrepaired", paused
+    assert paused.get("approach") == 1, paused
+    # the approach is left UNARCHIVED and no composite PRD is written -- the
+    # two consequences the old outcome imposed and the whole cost of the
+    # defect.
+    assert not any((run.run_dir / "approaches").rglob("*")), sorted(
+        str(p) for p in (run.run_dir / "approaches").rglob("*"))
+    assert not (run.run_dir / "composite-prd.md").exists()
+
+    escalations = events_of(run, "operator_escalation")
+    assert len(escalations) == 1, escalations
+    assert escalations[0].get("reason") == "review_contract_unrepaired", \
+        escalations[0]
+    assert escalations[0].get("contractErrors"), escalations[0]
+    verdicts = events_of(run, "approach.verdict_recorded")
+    assert [(e.get("channel"), e.get("verdict")) for e in verdicts] == \
+        [("review", "unreviewed")], verdicts
+
+    # the operator releases the pause through the engine's own API; review
+    # is asked again over the SAME approach.
+    run.wait_api()
+    code, body = run.api("POST", "/resume")
+    assert (code, body) == (200, {"resumed": True}), (code, body)
     assert run.proc.wait(timeout=ENGINE_EXIT_WAIT_S) == 0
+
     st = status(run)
     assert st.get("state") == "succeeded", st
     assert st.get("verdict") == "verified", st
-    assert st.get("approach") == 2, st
+    assert st.get("approach") == 1, st
+    assert st.get("pauseReason") is None, st
 
     metas = _iteration_metas(run)
     phase_approach = [(m["phase"], m["approach"]) for m in metas]
     assert phase_approach == [
         ("planning", 1), ("worker", 1), ("worker", 1), ("review", 1),
-        ("planning", 2), ("worker", 2), ("worker", 2), ("review", 2),
+        ("review", 1),
     ], phase_approach
 
-    # only ONE real review invocation happened per approach: the ladder's
-    # own uncharged re-asks never advance this marker (they carry no
-    # `Role: Reviewer` text), so it reads exactly 2 -- one exhausted call
-    # for approach 1, one passing call for approach 2.
+    # only ONE real review invocation happened per review pass: the
+    # ladder's own uncharged re-asks never advance this marker (they carry
+    # no `Role: Reviewer` text), so it reads exactly 2 -- one exhausted
+    # call before the hold, one passing call after the resume.
     assert _marker(run, "review-count") == "2"
-
-    # today's ordinary archive-with-safe-default consequences of an
-    # exhausted (unparseable) review reply, unchanged: approach 1 is
-    # archived, approach 2 -- the run's real terminal success -- never is.
-    approaches_dir = run.run_dir / "approaches"
-    assert (approaches_dir / "01").is_dir(), sorted(
-        p.name for p in approaches_dir.iterdir())
-    assert not (approaches_dir / "02").exists()
-    assert (approaches_dir / "01" / "tasks.json").exists()
 
     all_tasks = tasks(run)
     assert all_tasks and all(t["status"] == "completed" for t in all_tasks)

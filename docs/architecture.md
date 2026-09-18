@@ -183,6 +183,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `review` | review | both | `cure` | `rejected_curable_pass_available` |
 | `review` | review | both | `paused` | `rejected_last_approach` |
 | `review` | review | both | `paused` | `rejected_repeated_signature` |
+| `review` | review | both | `paused` | `review_contract_unrepaired` |
 | `review` | review | both | `finishing` | `rejected_no_approach_left` |
 | `review` | review | both | `review` | `review_interrupted` |
 | `review` | review | both | `finishing` | `review_unjudged_at_budget_end` |
@@ -262,6 +263,7 @@ stateDiagram-v2
     review --> cure : rejected_curable_pass_available
     review --> paused : rejected_last_approach
     review --> paused : rejected_repeated_signature
+    review --> paused : review_contract_unrepaired
     review --> finishing : rejected_no_approach_left
     review --> review : review_interrupted
     review --> finishing : review_unjudged_at_budget_end
@@ -1046,6 +1048,22 @@ mid-run non-terminal value that is never written to `status.json` at all.
   `unverified`. Resume routes back into `review` over the same approach
   (`_unreviewed_awaiting_resume`) rather than treating the abandoned
   attempt as a rejection to replan away from.
+  - **`unreviewed` also covers "review's own contract ladder exhausted"
+    (GH #209 defect 2).** A review iteration that ran to completion but
+    whose own verdict claim was never readable across
+    `contract_retry_max + 1` attempts — no parseable object at all, or a
+    `verdict` outside `HAT_SCHEMAS["review"]`'s two-word enum — sets
+    `_review_contract_unrepaired`, and `_finish_tail_unverified()` reads it
+    for a second `unreviewed` branch with its own reason string ("review
+    never produced a parseable contract payload; no verdict was ever
+    scored"), never the deadline's. A run with budget left never reaches
+    that terminal write at all: `_step_review` takes the declared
+    `review_contract_unrepaired` edge and HOLDS (`pauseReason:
+    "review_contract_unrepaired"`, the approach left unarchived, no
+    composite PRD), so only the off-budget grace review lands here. The
+    same word is also what `approach.verdict_recorded` carries for that
+    approach's `review` channel, in place of the `rejected` it used to
+    attribute to a judge that never spoke.
 - **`"adjudicated"` (task 014, requirement F.1, #144) is a MID-RUN reply
   value, never a `status.json` verdict.** The bounded, off-budget petition
   adjudication episode (`_maybe_run_midrun_adjudication_episode`, next

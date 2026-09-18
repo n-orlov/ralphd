@@ -414,6 +414,34 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # approach is left unarchived, so `resume` re-reviews the SAME
         # approach, never a fresh one.
         T("paused", "rejected_repeated_signature"),
+        # GH #209 defect 2: review's OWN contract ladder exhausted
+        # (`contract_enforcement.enforce_contract` gave up after
+        # `contract_retry_max + 1` attempts and emitted `contract.
+        # agent_fault` for hat `review`) with the hat's OWN VERDICT CLAIM
+        # still unreadable -- no parseable object at all, or a `verdict`
+        # absent or outside the enum below; an exhaustion over the review's
+        # findings sidecar alone, with a legible `rejected` verdict in the
+        # payload, deliberately keeps the ordinary rejection edges above
+        # (`LoopSupervisor._review_contract_ladder`'s own
+        # `verdict_claim_unreadable` is where that line is drawn). A hat
+        # that never returned a verdict
+        # has not returned one, so this holds for an operator on the
+        # EXISTING pause machinery (`LoopSupervisor._pause_and_escalate_
+        # review_contract_unrepaired`) instead of scoring a substantive
+        # rejection off a payload nobody could read: before this the
+        # exhausted ladder handed the still-broken reply straight to
+        # `_review_verdict`, whose "not verified" default archived the
+        # approach and wrote a composite PRD for a successor that need not
+        # exist -- one of the reference run's three review faults was the
+        # pure schema pedantry `$.verdict: 'fail' is not one of
+        # ['verified', 'rejected']`, and it cost an approach. Checked
+        # BEFORE every rejection edge above in `_step_review`, because
+        # there is no rejection to classify. Deliberately unconditional
+        # (no `approach < max_approaches` guard), exactly as cure task
+        # cure-01-03 made `rejected_repeated_signature` unconditional; the
+        # approach is left unarchived, so `resume` re-enters `review` over
+        # the SAME approach through `_step_paused`'s default branch.
+        T("paused", "review_contract_unrepaired"),
         # rejected, and this was the last approach / budget is gone.
         T("finishing", "rejected_no_approach_left"),
         # requirement A, #72: the review iteration itself got cut short
@@ -706,6 +734,13 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # signature check runs on the REJECTED branch too, entirely
         # before the (VERIFIED-only) peer verdict gate is ever consulted.
         T("paused", "rejected_repeated_signature"),
+        # GH #209 defect 2: carried over byte-for-byte from
+        # `TABLE["review"]` above -- same reasoning as `rejected_
+        # incurable`/`rejected_repeated_signature` just above, only more
+        # so: this check runs entirely before there is any verdict to
+        # classify at all, so it is reached long before the (VERIFIED-only)
+        # peer verdict gate is ever consulted.
+        T("paused", "review_contract_unrepaired"),
         T("finishing", "rejected_no_approach_left"),
         T("review", "review_interrupted"),
         T("finishing", "review_unjudged_at_budget_end"),
@@ -1633,6 +1668,67 @@ HAT_SCHEMAS: dict[str, dict] = {
         "additionalProperties": False,
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# GH #209 defect 2 (Half B): the one tolerance layered on top of the
+# `["verified", "rejected"]` enum above -- placed here, beside the enum it
+# is a tolerance for, so the two can never drift apart.
+# ---------------------------------------------------------------------------
+
+NEGATIVE_VERDICT_SYNONYMS: dict[str, str] = {"fail": "rejected",
+                                             "failed": "rejected"}
+
+
+def normalize_negative_verdict(payload: dict) -> str | None:
+    """Rewrite `payload["verdict"]` IN PLACE from one of the closed set of
+    words a judging hat has been observed to say when it plainly meant this
+    contract's own NEGATIVE verdict, and return the literal word that was
+    replaced -- `None` when nothing was rewritten (every compliant payload,
+    and every non-`str`/absent `verdict`).
+
+    GH #209 defect 2 exists because one of the reference run's three review
+    agent-faults was nothing but this: `$.verdict: 'fail' is not one of
+    ['verified', 'rejected']` refused three times over, then scored as a
+    substantive rejection that archived the approach. A reviewer that
+    plainly meant "fail" cost an approach.
+
+    Three decisions worth stating here rather than re-deriving:
+
+    * ONE-DIRECTIONAL by construction. There is deliberately no `pass`/
+      `passed` -> `verified` entry: a synonym must never be able to
+      manufacture a terminal SUCCESS (`verified` is the one word
+      `_step_review` turns into `_finish("succeeded", ...)`). The worst a
+      wrong guess can do in this direction is refuse an approach the hat
+      was going to refuse anyway.
+    * This does NOT re-open #92's requirement F2 decision (`ff869a4`,
+      recorded again at docs/roadmap.md's v0.13 block), which refused TYPE
+      coercion of an arbitrary scalar inside `contracts.validate_payload`/
+      `contract_enforcement.parse_response` on the grounds that
+      "normalising one scalar field repairs one line, and the next
+      violation would be a different field". Both of those functions are
+      untouched -- `validate_payload` still rejects `{"verdict": "fail"}`
+      outright -- and this runs strictly outside them, on a closed
+      two-entry map, over ONE field whose legal values are a two-word enum
+      the hat's own prompt (`prompts/review.md`) already states verbatim.
+      The shape copied is `plan_ingestion.normalize_task_tiers` (normalise
+      in place, report what changed, never reject), not a schema coercion.
+    * `hat`-agnostic on purpose: it touches only the `verdict` key, so
+      `_verify_contract_ladder` and `_verdict_gate_verdict` (same
+      `["verified", "rejected"]` enum) can adopt it with no second copy.
+      `plan_review`'s deliberately non-interchangeable `approved`/
+      `objected` vocabulary is out of its reach for the same reason.
+      Exactly one caller today: `LoopSupervisor._review_contract_ladder`.
+    """
+    verdict = payload.get("verdict")
+    if not isinstance(verdict, str):
+        return None
+    said = verdict.strip().lower()
+    replacement = NEGATIVE_VERDICT_SYNONYMS.get(said)
+    if replacement is None or verdict == replacement:
+        return None
+    payload["verdict"] = replacement
+    return verdict
 
 
 # ---------------------------------------------------------------------------

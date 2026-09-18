@@ -351,8 +351,25 @@ def test_a_review_that_mentions_the_verification_line_is_not_a_verdict(tmp_path)
     second gate behind it, so a reviewer explaining why it is NOT verifying must
     not be able to verify the run by accident."""
     root = tmp_path / "run"
+    # GH #209 defect 2: the near-miss prose is what this node is about, and
+    # it is unchanged -- `VERIFIED` appears in the reply but is not its last
+    # line, so `mentioned_verified_not_last` still fires. What is new is the
+    # compliant `review` contract payload after it. Before #209 the reply
+    # was prose ONLY, and it reached the terminal `failed`/`unverified`
+    # write asserted below only because an exhausted review contract ladder
+    # was SCORED as a rejection; it no longer is -- a reply whose verdict
+    # claim was never readable now HOLDS for an operator
+    # (`review_contract_unrepaired`), so a prose-only fixture would park
+    # this whole `_run_job_core()` on `_step_paused`'s gate forever. This
+    # node's subject is that a reviewer explaining why it is NOT verifying
+    # cannot verify by accident, so the reviewer now says its verdict the
+    # way the contract asks and every assertion below is unchanged except
+    # the call count, which task 049's own comment already recorded as the
+    # one incidental number here.
     withheld = ("one requirement is unverifiable, so I am not emitting "
-                f"`{VERIFIED}`")
+                f"`{VERIFIED}`\n"
+                + json.dumps({"verdict": "rejected",
+                              "reason": "one requirement is unverifiable"}))
     RunDir(root=root).update_status(state="starting")
     sup = _supervisor(root, {"planning": _plan_two,
                              "worker": _steps(_finish_one, _finish_one,
@@ -360,18 +377,15 @@ def test_a_review_that_mentions_the_verification_line_is_not_a_verdict(tmp_path)
                              "review": _steps(lambda s: _ok(withheld))})
     outcome = asyncio.run(sup._run_job_core())
     # Task 049 (#119): before the widened `_review_contract_ladder` entry
-    # (task 002 part (a)), this prose-only reply -- unparseable as a
-    # contract payload -- fell straight through to `_review_verdict`'s
-    # non-verified default with exactly one review call. The SAME reply
-    # now legitimately rides the widened ladder's `_ask_contract_fix`
-    # re-ask, and this scripted handler (correctly, for what it is
-    # testing) keeps repeating the identical near-miss text on every
-    # re-ask, so the ladder exhausts after `1 + cfg.contract_retry_max`
-    # calls instead of the old single one -- exhaustion still falls
-    # through to `_review_verdict`'s existing safe default unchanged
-    # (asserted below), which is the behaviour this test actually pins;
-    # only the call count differs from before task 002/049.
-    assert sup.runner.phases.count("review") == 1 + sup.cfg.contract_retry_max
+    # (task 002 part (a)), a prose-only reply -- unparseable as a contract
+    # payload -- fell straight through to `_review_verdict`'s non-verified
+    # default with exactly one review call; the widened ladder then made it
+    # `1 + cfg.contract_retry_max` calls, because the scripted handler
+    # repeats the identical text on every re-ask. GH #209 defect 2 brings
+    # the number back to one: the reply now carries a legible verdict, so
+    # the ladder's own early-exit check accepts it on the first attempt and
+    # never re-asks at all.
+    assert sup.runner.phases.count("review") == 1
     assert "mentioned the verification line but did not end with it" \
         in _log_messages(root)
     assert "VERIFIED" not in _signals(root)

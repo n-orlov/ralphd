@@ -453,6 +453,29 @@ class LoopSupervisor:
         # `reason: "deadline during review"` instead of the ordinary
         # `unverified` outcome -- never set for any other tail exit.
         self._review_deadline_unreviewed: bool = False
+        # GH #209 defect 2: True iff the LAST ordinary (non-`mid_run`) run
+        # of `_review_contract_ladder` EXHAUSTED `contract_enforcement.
+        # enforce_contract`'s ladder WITHOUT ever getting a readable verdict
+        # claim out of the hat -- no parseable object at all, or a `verdict`
+        # absent or outside `HAT_SCHEMAS["review"]`'s two-word enum, across
+        # `contract_retry_max + 1` attempts, witnessed on `events.jsonl` by
+        # the `contract.agent_fault` that call already emits. An exhaustion
+        # over the findings SIDECAR alone, with a legible `rejected`
+        # verdict, deliberately does not set it (see `_review_contract_
+        # ladder`'s `verdict_claim_unreadable`). Written only by
+        # `_review_contract_ladder` (reset at every ordinary entry, set on
+        # exhaustion); read by `_review_verdict` (records `"unreviewed"`
+        # rather than `"rejected"` -- a judge that never spoke did not
+        # reject), by `_step_review` (takes the `review_contract_unrepaired`
+        # hold edge instead of the whole rejection ladder), by
+        # `_maybe_grace_review` (the same fact off-budget, where there is
+        # nothing left to hold for) and by `_finish_tail_unverified`. An
+        # instance flag, exactly the shape `_review_deadline_unreviewed`
+        # just above already uses for the sibling "review never spoke"
+        # fact -- and deliberately NOT that flag, whose terminal reason is
+        # hardcoded to "deadline during review" and no deadline is
+        # involved here.
+        self._review_contract_unrepaired: bool = False
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
         # Task 011 (#5): wall-clock twin of self.deadline (published as
@@ -3113,6 +3136,15 @@ class LoopSupervisor:
         both status.json patches (`_unconsumed_steering_patch`,
         `_deadline_beat_verdict_extra`) are applied every time, each a
         no-op unless its own condition actually holds.
+
+        Two named exceptions have since been carved out of "`verdict` is
+        always `unverified` here", and both write `unreviewed` instead --
+        the word for "review never rendered a judgement this approach",
+        never for "a reviewer looked and did not pass it": the deadline
+        branch below (task 016, requirement F.3, #146) and the exhausted-
+        contract-ladder branch after it (GH #209 defect 2). Neither can
+        ever grant `verified`, so the second test that pins that is
+        unaffected, and neither overrides an actual operator abort.
         """
         final_state = "aborted" if self._abort_reason else "failed"
         # Task 016 (requirement F.3, #146): a deadline that lands mid-
@@ -3123,6 +3155,24 @@ class LoopSupervisor:
         if self._review_deadline_unreviewed and not self._abort_reason:
             self._finish(final_state, "unreviewed",
                         reason="deadline during review",
+                        **self._unconsumed_steering_patch(),
+                        **self._deadline_beat_verdict_extra)
+            return final_state
+        # GH #209 defect 2: the same terminal word for the sibling "review
+        # never spoke" fact, with its own truthful reason instead of the
+        # deadline's -- review's own contract ladder exhausted and no
+        # verdict was ever scored, so `unverified` (which reads as "a
+        # reviewer looked and did not pass it") would be a lie. Placed
+        # AFTER the deadline branch, never before it: a deadline landing on
+        # top of a contract fault is still most truthfully reported as the
+        # deadline, and this ordering leaves every existing test's wording
+        # byte-for-byte unchanged. `_deadline_beat_verdict_extra` is `{}` on
+        # this path, so passing it is the same documented no-op it is on
+        # the ordinary branch below.
+        if self._review_contract_unrepaired and not self._abort_reason:
+            self._finish(final_state, "unreviewed",
+                        reason=("review never produced a parseable contract "
+                                "payload; no verdict was ever scored"),
                         **self._unconsumed_steering_patch(),
                         **self._deadline_beat_verdict_extra)
             return final_state
@@ -9214,6 +9264,19 @@ class LoopSupervisor:
         violation. The ordinary, run-ending review path's own schema is
         untouched by this parameter -- the safe default at ladder
         exhaustion is unchanged.
+
+        #209 defect 2: the ONE thing that safe default no longer does is
+        call itself a rejection. When `_review_contract_ladder` exhausted
+        its re-ask ladder for this pass with the hat's own verdict claim
+        still unreadable (`self._review_contract_unrepaired`), the recorded
+        approach verdict is `"unreviewed"`, not `"rejected"` --
+        see the comment at the `_record_approach_verdict` call below. The
+        return value is untouched (`verified` is still `False`, the payload
+        and the contract errors still come back exactly as before): what to
+        DO about a non-verified outcome stays entirely the caller's
+        business, which is what lets `_step_review`'s own hold branch sit
+        after this method rather than in front of it and keep the petition
+        side effects above intact.
         """
         try:
             parsed = json.loads(last_nonblank_line(result.final_text))
@@ -9269,10 +9332,32 @@ class LoopSupervisor:
         # adjudication episode (task 014, requirement F.1) scores no approach
         # verdict at all and its legal `"adjudicated"` reply must not be
         # recorded as a rejection of the approach it ran inside.
+        #
+        # GH #209 defect 2: a third word. A hat whose contract ladder never
+        # got a readable verdict claim out of it (`self._review_contract_
+        # unrepaired`, set by `_review_contract_ladder` -- narrowly, see its
+        # `verdict_claim_unreadable`) has not returned a verdict at all, so
+        # the engine's own per-approach record says `"unreviewed"` instead
+        # of attributing a rejection to a judge that never rendered one.
+        # `state.record_approach_verdict` takes `verdict` as a free string
+        # and no consumer switches on it (`run_record._channel` passes it
+        # through), and `"unreviewed"` is already the engine's word for
+        # "review never spoke" (`_finish_tail_unverified`, SPEC §5.2). The
+        # audit trail is intact either way: the payload's own `reason` and
+        # the findings still ride along, and the literal validation errors
+        # are on `events.jsonl` as `contract.violation`/`contract.agent_
+        # fault`. Invariant, worth stating: the flag can never be True while
+        # `verified` is -- this method recomputes the identical `contract_
+        # errors` from the identical inputs the ladder's own `extra_
+        # validate` used, so an exhausted ladder always leaves `contract_
+        # errors` non-empty here, and the residual-recomputation branch
+        # above is itself guarded by `not contract_errors`.
         if not mid_run:
             self._record_approach_verdict(
                 self._approach, "review",
-                verdict="verified" if verified else "rejected",
+                verdict=("verified" if verified
+                         else "unreviewed" if self._review_contract_unrepaired
+                         else "rejected"),
                 reason=(payload or {}).get("reason"),
                 findings_list=findings_list)
         return verified, payload, contract_errors
@@ -9336,10 +9421,69 @@ class LoopSupervisor:
         On exhaustion (every re-ask attempt still fails), `result` comes
         back byte-for-byte unchanged -- exactly like `_verify_contract_
         ladder`'s own exhaustion path -- so `_review_verdict` still reads
-        the original broken payload and produces today's ordinary
-        non-verified outcome: the approach is still archived and a
-        composite PRD is still written for a genuinely-exhausted case,
-        unchanged by this task.
+        the original broken payload and produces its ordinary non-verified
+        outcome. What that non-verified outcome COST is what GH #209 defect
+        2 changed: up to that issue the approach was still archived and a
+        composite PRD was still written for a genuinely-exhausted case, so
+        a reviewer that never produced a parseable verdict at all was
+        scored exactly like a reviewer that read the work and refused it --
+        the reference run lost an approach to
+        `$.verdict: 'fail' is not one of ['verified', 'rejected']`. An
+        exhaustion that leaves the hat's OWN VERDICT CLAIM unreadable is
+        now ALSO recorded on `self._review_contract_unrepaired`, so
+        `_step_review` takes the declared `review_contract_unrepaired` hold
+        edge (pause, approach left unarchived, no composite PRD, `resume`
+        re-enters `review` over the SAME approach) and `_review_verdict`
+        records the approach verdict as `"unreviewed"`. No new event
+        witnesses this: `enforce_contract` already emits
+        `contract.agent_fault` for hat `review` on exactly this condition,
+        and that is the fact being routed on.
+
+        "Unreadable verdict claim", not "exhausted", is the condition --
+        see `verdict_claim_unreadable` in the body. This ladder also
+        exhausts over contract errors that live in the review's FINDINGS
+        SIDECAR while the payload's own `{"verdict": "rejected", "reason":
+        ...}` is perfectly legible, and a judge that said "rejected" for a
+        stated reason has rendered a verdict; holding on those would be the
+        mirror of the defect, so they keep today's ordinary rejection
+        ladder untouched.
+
+        Deliberately scoped to review, and the asymmetry is stated rather
+        than left to be discovered: `_verify_contract_ladder` (which burns
+        a `validationAttempts` slot on the task, a different currency) and
+        `_verdict_gate_verdict` (which returns its own `(False, None)`
+        safe default) both still turn their own exhaustion into a
+        substantive negative. Both are near-mechanical mirrors of this
+        change and neither is in GH #209's scope; the two sibling pins in
+        `tests/test_contract_ladder.py` carry the same note.
+
+        Three existing bounds stop a permanently-broken reviewer spinning,
+        and no new counter or knob is added for it: (i) within one pass,
+        `cfg.contract_retry_max` caps the ladder at `contract_retry_max + 1`
+        attempts, only the first of which is charged; (ii) the hold is a
+        `pause()`, so `_step_paused`'s `await self._gate()` parks the run
+        outright -- there is no automatic retry at all, every further review
+        attempt needs an operator `resume`, which is strictly stronger than
+        `_step_generic_hat`'s in-place retry; and (iii) each resumed review
+        attempt is one CHARGED review iteration, so `budget_left()`
+        (`cfg.iterations` + `cfg.job_timeout_s`) terminates the cycle
+        regardless of operator behaviour, landing on `_run_review_
+        iteration`'s existing `return None` -> `_review_unjudged_at_budget_
+        end` -> `("tail",)`.
+
+        GH #209 defect 2 (Half B) also adds ONE tolerance ahead of the
+        ladder: a payload whose `verdict` is a word from `transitions.
+        NEGATIVE_VERDICT_SYNONYMS` (`fail`/`failed`) is rewritten in place
+        to `rejected` and measured by the SAME early-exit check a compliant
+        payload is, so the single most likely real reply -- the reference
+        run's own -- becomes a real, fully-furnished rejection in one
+        runner call with zero re-asks and zero `contract.violation`s
+        instead of exhausting the ladder. The map is one-directional by
+        construction (there is no `pass` -> `verified` entry; see that
+        function's docstring) and the audit trail keeps what the hat
+        LITERALLY said on `review.verdict_synonym_normalised`. Without this
+        half, defect 2's hold would turn that reply into a PAUSE where it
+        used to reject, which is strictly worse than the defect.
 
         Task 014 (requirement F.1, #144): `mid_run` (default `False`,
         every pre-existing caller unaffected) is `True` only for
@@ -9357,6 +9501,17 @@ class LoopSupervisor:
         left at its default) validates against the SAME strict schema it
         always has -- the safe default at ladder exhaustion is unchanged.
         """
+        # GH #209 defect 2: reset at every ordinary entry, BEFORE the guard
+        # below, so the flag always describes THIS review pass -- a
+        # repaired re-ask, an already-valid first reply and an engine-cut-
+        # short attempt all clear it, and one pass's fault can never leak
+        # into the next (a run handed a working reviewer must be able to
+        # leave the hold). `mid_run` never touches the flag at all: the
+        # mid-run adjudication episode scores no approach verdict
+        # (`_review_verdict`'s own `if not mid_run:`) and its exhaustion
+        # must not leak into the run-ending tail write either.
+        if not mid_run:
+            self._review_contract_unrepaired = False
         if result is None or self._review_interrupted(result):
             return result
         findings_list, channel_errors = self._review_findings_channel()
@@ -9364,9 +9519,47 @@ class LoopSupervisor:
             parsed = json.loads(last_nonblank_line(result.final_text))
         except (json.JSONDecodeError, TypeError):
             parsed = None
+        # GH #209 defect 2 (Half B): normalise a negative-verdict synonym
+        # BEFORE the schema check below, so a normalised payload is measured
+        # by the SAME early-exit check a compliant one is and never enters
+        # `enforce_contract` at all. `result` is rebound so `_review_
+        # verdict`'s own independent re-parse sees the normalised payload
+        # too; `dataclasses.replace` is already the idiom this method uses
+        # for its repaired return.
+        if isinstance(parsed, dict):
+            said = transitions.normalize_negative_verdict(parsed)
+            if said is not None:
+                # The audit trail keeps what the hat LITERALLY said; the run
+                # acts on what it plainly meant. Sibling of `review.verdict_
+                # recomputed` (`_review_verdict`), which records the
+                # engine's other verdict rewrite in the same shape, with the
+                # same snake_case payload keys.
+                self.run.emit("review.verdict_synonym_normalised",
+                              approach=self._approach, claimed_verdict=said,
+                              normalised_verdict=parsed["verdict"])
+                result = dataclasses.replace(
+                    result, final_text=json.dumps(parsed))
         schema_errors = [] if not isinstance(parsed, dict) else (
             contracts.validate_against(transitions.MIDRUN_REVIEW_SCHEMA, parsed)
             if mid_run else contracts.validate_payload("review", parsed))
+        # GH #209 defect 2: whether the hat's OWN VERDICT CLAIM is
+        # unreadable -- no parseable object at all, or an object whose
+        # `verdict` is absent or outside `HAT_SCHEMAS["review"]`'s two-word
+        # enum. This, not "the ladder exhausted", is what the hold edge
+        # below is allowed to fire on, and the distinction is load-bearing:
+        # the ladder also exhausts over contract errors in the review's
+        # FINDINGS SIDECAR (an unreadable channel, a `verified` claim
+        # contradicting a blocking finding, a curable finding with no
+        # `cured_when`) while the payload's own `{"verdict": "rejected",
+        # "reason": ...}` is perfectly legible. A judge that said "rejected"
+        # for a stated reason HAS rendered a verdict, so recording that as
+        # `"unreviewed"` and holding for an operator would be the mirror of
+        # the defect -- and task 002's own recorded decision (`tests/
+        # test_run_record.py::test_review_verdict_is_persisted_when_the_
+        # sidecar_does_not_validate`) is precisely that a sidecar-refused
+        # verdict is still recorded as this approach's verdict. Those cases
+        # keep today's ordinary rejection ladder, unchanged.
+        verdict_claim_unreadable = not isinstance(parsed, dict) or bool(schema_errors)
         if isinstance(parsed, dict) and not schema_errors:
             if transitions.review_report_errors(parsed):
                 return result
@@ -9410,6 +9603,18 @@ class LoopSupervisor:
         if enforcement.ok:
             return dataclasses.replace(
                 result, final_text=json.dumps(enforcement.payload))
+        # GH #209 defect 2: the ladder is exhausted -- `enforce_contract`
+        # has already emitted `contract.agent_fault` for hat `review`, and
+        # this records the same fact where the supervisor's own step methods
+        # can read it, but ONLY for the shape the hold is for: a verdict
+        # claim that was never readable (see `verdict_claim_unreadable`
+        # above for why an exhaustion over the findings sidecar alone must
+        # keep the ordinary rejection ladder). `result` still comes back
+        # unchanged (six existing call sites do `_review_verdict(await
+        # _review_contract_ladder(r))`, so returning `None` here would
+        # crash every one of them for a signalling convenience).
+        if not mid_run and verdict_claim_unreadable:
+            self._review_contract_unrepaired = True
         return result
 
     @staticmethod
@@ -9454,6 +9659,25 @@ class LoopSupervisor:
         fall through to `_review_verdict`'s existing "not verified"
         default -- that contract-payload semantics are unchanged by this
         method's existence (a test pins it).
+
+        GH #209 defect 2 SUPERSEDES the second half of that paragraph, and
+        does so deliberately rather than by accident, because it was a
+        documented and test-pinned decision. Two clauses survive intact:
+        this is still the only route onto these two edges, and a malformed
+        payload from a completed iteration still yields "not verified" from
+        `_review_verdict` (`tests/test_review_interrupted_not_rejection.py`
+        is untouched). What is no longer true is the implied "and therefore
+        it is an ordinary REJECTION": a payload that `_review_contract_
+        ladder` could not repair across every attempt it grants now takes
+        the THIRD, separately declared `review_contract_unrepaired` edge to
+        `paused`, and the approach verdict is recorded `"unreviewed"`. The
+        distinction #72 drew -- an engine-side cutoff is not a judgement --
+        is untouched and is precisely why this needed its own edge and its
+        own flag rather than a reuse of these two: an iteration that ran to
+        completion and replied with garbage is emphatically not an engine
+        cutoff, and `_finish_tail_unverified` hardcodes `reason: "deadline
+        during review"` for the interrupted flag, which would have been a
+        lie here.
         """
         return LoopSupervisor._iteration_cut_short_by_engine(result)
 
@@ -9621,7 +9845,12 @@ class LoopSupervisor:
         blocking-clause signature repeats the immediately preceding
         approach's own recorded rejection signature -- pausing rather than
         spending a fresh approach on a wall the run has already lost one
-        approach to).
+        approach to); `review_contract_unrepaired` (GH #209 defect 2: ->
+        paused, checked BEFORE every rejection edge above because there is
+        no rejection to classify -- review's own contract ladder exhausted
+        with the hat's own verdict claim still unreadable, so the approach
+        is left unarchived, no composite PRD is written, and `resume`
+        re-enters `review` over the SAME approach).
         """
         approach = self._approach
         await self._gate()
@@ -9629,7 +9858,7 @@ class LoopSupervisor:
         result = await self._run_review_iteration(approach)
         if result is None:
             return self._review_unjudged_at_budget_end(approach)
-        verified, _payload, _errors = self._review_verdict(result)
+        verified, _payload, contract_errors = self._review_verdict(result)
         if verified:
             # Task 013 (requirement I, #98): ONE exit gate, asked once.
             # It REPLACES the pre-013 mechanism -- `while verified and
@@ -9698,6 +9927,29 @@ class LoopSupervisor:
             self._finish("succeeded", self._review_success_verdict_label(),
                         **self._unconsumed_steering_patch())
             return ("done", "succeeded")
+        # GH #209 defect 2: review's own contract ladder exhausted with the
+        # hat's verdict claim still unreadable across every attempt the
+        # ladder grants, witnessed by the `contract.agent_fault` `enforce_
+        # contract` already emitted. There is no rejection to classify, so
+        # this is checked BEFORE the `review rejected approach N` log and
+        # the whole rejection ladder below it: no `_review_incurable_
+        # rejection`, no cure pass, no rejection signature, no
+        # `_archive_approach`, no `_write_composite_prd`, and
+        # `status.json`'s `approach` never advances. Classifying a rejection
+        # the judge never rendered is what every one of those does.
+        #
+        # Placed AFTER `_review_verdict` on purpose, never in front of it:
+        # task 011's own recorded decision (that method's docstring -- "a
+        # malformed payload elsewhere must not swallow a perfectly valid
+        # CONFIRMED adjudication sitting in the SAME payload") means the
+        # payload's `petition_adjudications` must still be recorded and
+        # applied even when the verdict itself is unusable, and
+        # `_review_verdict` is the only place that does that.
+        if self._review_contract_unrepaired:
+            self._pause_and_escalate_review_contract_unrepaired(
+                approach, contract_errors)
+            self._advance("review", "paused", "review_contract_unrepaired")
+            return ("advance", "paused", "review_contract_unrepaired")
         self.run.emit("log", message=f"review rejected approach {approach}")
         # Task 006 (PRD requirement B.2, #111): a rejection whose BLOCKING
         # findings are ALL incurable takes `rejected_incurable` instead of
@@ -10285,6 +10537,77 @@ class LoopSupervisor:
                       channelErrors=channel_errors, signature=signature,
                       escalation=text)
         self.pause(reason="rejected_repeated_signature")
+        if self.notifier is not None:
+            self.notifier(text)
+
+    def _review_contract_unrepaired_escalation_text(
+        self, approach: int, contract_errors: list[str]
+    ) -> str:
+        """GH #209 defect 2: the operator-facing escalation body for a
+        `review_contract_unrepaired` pause -- the same text-method +
+        pause-method split every sibling in this family uses
+        (`_unresolvable_edge_escalation_text`/`_pause_and_escalate_
+        unresolvable_edge`), worded for the case this edge covers: review
+        made every attempt the ladder grants and never produced a parseable
+        `review` contract payload at all.
+
+        The validation errors are quoted verbatim because they are the
+        whole diagnosis and the operator cannot otherwise see them without
+        reading `events.jsonl`: `$.verdict: 'fail' is not one of
+        ['verified', 'rejected']` names a broken reviewer prompt or a wrong
+        model reference in one line, and that exact string is what cost the
+        reference run an approach when the engine scored it as a rejection
+        instead.
+        """
+        lines = [
+            f"Run {self.cfg.run_id} approach {approach}: review made "
+            f"{1 + self.cfg.contract_retry_max} attempts (one charged "
+            "iteration plus the ladder's uncharged re-asks) and never "
+            "produced a parseable `review` contract payload -- so no "
+            "verdict was ever rendered on this approach (GH #209 defect "
+            "2). The run has been paused (existing pause machinery) "
+            "instead of scoring a rejection against a judge that never "
+            "spoke: the approach was NOT archived, no composite PRD was "
+            "written, and the approach counter did not move. This is "
+            "operator-actionable -- a wrong model reference, prompt drift, "
+            "or a schema the hat has not seen. Once the reviewer is "
+            "working, resume the run and review is asked again over the "
+            f"SAME approach (`ralphctl resume {self.cfg.run_id}`).",
+            "",
+        ]
+        if contract_errors:
+            lines.append("the contract errors review never repaired:")
+            for error in contract_errors:
+                lines.append(f"  {error}")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _pause_and_escalate_review_contract_unrepaired(
+        self, approach: int, contract_errors: list[str]
+    ) -> None:
+        """GH #209 defect 2: pause the run through the EXISTING pause
+        machinery -- the same seam `_pause_and_escalate_repeated_rejection_
+        signature` just above already uses (`self.pause()`, `self.
+        notifier`, an `operator_escalation` event always emitted to
+        `events.jsonl` regardless of whether a notifier is wired in, so the
+        escalation is never only as reachable as an unconfigured notifier).
+
+        `contractErrors` is camelCase to match `channelErrors` on the
+        repeated-signature escalation above. No `_resume_point` bucket is
+        added for this reason, on precedent: `rejected_repeated_signature`,
+        `unschedulable_dependency_cycle` and `unresolvable_dependency_edge`
+        all pause with none either, so a fresh PROCESS started over a run
+        that died while paused here falls to `_resume_point`'s default
+        (skip planning, re-enter `worker`) and costs one throwaway worker
+        iteration before review is asked again -- the same known,
+        precedented cost those three edges already pay.
+        """
+        text = self._review_contract_unrepaired_escalation_text(
+            approach, contract_errors)
+        self.run.emit("operator_escalation", approach=approach,
+                      reason="review_contract_unrepaired",
+                      contractErrors=list(contract_errors), escalation=text)
+        self.pause(reason="review_contract_unrepaired")
         if self.notifier is not None:
             self.notifier(text)
 
@@ -11624,6 +11947,32 @@ class LoopSupervisor:
             return False
         result = await self._review_contract_ladder(result)
         verified, _payload, _errors = self._review_verdict(result)
+        # GH #209 defect 2: the off-budget twin of `_step_review`'s
+        # `review_contract_unrepaired` hold. There is no budget to ask
+        # again with, no declared edge to take (this method returns a bool
+        # into `("tail",)`) and nothing to hold FOR, so it ends the run
+        # truthfully instead of scoring a rejection off a payload nobody
+        # could read -- `_finish_tail_unverified` writes `verdict:
+        # "unreviewed"` with its own contract-payload reason. Placed
+        # immediately after `_review_verdict` for the same task-011 reason
+        # `_step_review`'s branch is, and BEFORE the `blockers`/`verified`
+        # block below. Mirrors the interrupted-grace branch above exactly,
+        # minus `_review_deadline_unreviewed`: that flag must NOT be set
+        # here, because `_finish_tail_unverified` hardcodes `reason:
+        # "deadline during review"` for it and no deadline was involved.
+        if self._review_contract_unrepaired:
+            self._terminal_reason_note = (
+                f"the off-budget grace review (approach {approach}) never "
+                "produced a parseable `review` contract payload across "
+                "every attempt the ladder grants; no verdict was ever "
+                "scored, so the approach was not archived and no rejection "
+                "was recorded (GH #209 defect 2)")
+            self.run.emit(
+                "log", level="error",
+                message=(f"grace review (approach {approach}) never "
+                         "produced a parseable contract payload; ending "
+                         "unreviewed, not rejected (GH #209 defect 2)"))
+            return False
         # Task 013 (requirement I, #98): the SAME single exit-gate
         # predicate `_step_review` asks (`_terminal_success_blockers`),
         # REPLACING this site's own hand-rolled `self.run.pending_

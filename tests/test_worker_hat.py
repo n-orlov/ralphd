@@ -351,7 +351,17 @@ def _fv_review_verified(sup: LoopSupervisor, prompt: str = "") -> IterationResul
 
 
 def _review_rejects(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
-    return _fv_ok("requirement 3 is not met; the failed task is the gap")
+    # GH #209 defect 2: this used to reply with bare prose, which produced
+    # the `review rejected approach 1` log its one caller asserts only
+    # because an exhausted review contract ladder was SCORED as a
+    # rejection. It no longer is (a reply whose verdict claim was never
+    # readable holds for an operator instead), and this node's subject is
+    # that a reviewer DID look and judged the hole fatal -- so the reviewer
+    # now says exactly that through the contract, and every assertion at
+    # the call site is unchanged.
+    return _fv_ok(json.dumps(
+        {"verdict": "rejected",
+         "reason": "requirement 3 is not met; the failed task is the gap"}))
 
 
 @pytest.fixture

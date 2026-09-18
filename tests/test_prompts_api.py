@@ -52,8 +52,17 @@ def _write_mounted_prompt(config_dir: Path, name: str, text: str) -> None:
 def test_list_shows_builtin_then_mounted_then_api(prompts_engine, tmp_path):
     fake_home = tmp_path / "fakehome"
     fake_home.mkdir()
+    # GH #209 defect 2: the heading must spell `Role: Reviewer` -- the stub
+    # `pi` dispatches on exactly that string, and a mounted review prompt
+    # without it sends every review invocation down the stub's prose `else`
+    # branch, so review never produces a parseable verdict. That used to be
+    # scored as a rejection and the run ended `failed`; it now HOLDS on
+    # `review_contract_unrepaired` and never reaches a terminal state, which
+    # this node's own wait below would sit out. Nothing about this module's
+    # subject (the prompts listing/override API) depends on which branch the
+    # stub takes, only that the mounted file exists and the run finishes.
     _write_mounted_prompt(tmp_path / "config", "review",
-                          "# Role: Review\n\nmounted override.\n")
+                          "# Role: Reviewer\n\nmounted override.\n")
     # task 010 (B.4): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" holds the
     # first worker iteration open instead of racing a real STUB_SLEEP
     # window to land the PUT before any worker prompt is built -- it

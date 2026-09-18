@@ -222,7 +222,15 @@ def _review_verified(sup, prompt=""):
 
 
 def _review_rejects(sup, prompt=""):
-    return _ok("task 001's criteria were never actually met; rejecting")
+    # GH #209 defect 2: this used to reply with bare prose, which reached
+    # the ordinary rejection path only because an exhausted review contract
+    # ladder was SCORED as a rejection. It no longer is (the run holds on
+    # `review_contract_unrepaired`), and this module's subject is the
+    # unsatisfiable-criteria routing, not review's contract handling -- so
+    # the reply is now the compliant `review` payload it always meant.
+    return _ok(json.dumps(
+        {"verdict": "rejected",
+         "reason": "task 001's criteria were never actually met"}))
 
 
 def test_other_actionable_work_keeps_the_same_approach_and_the_worker_loop_continues(

@@ -114,6 +114,12 @@ def test_gate_off_by_default_table_is_byte_identical_to_today(vigilant):
         # is byte-identical to TODAY's table (now including this edge),
         # not to a pre-task-016 snapshot of it.
         tr.T("paused", "rejected_repeated_signature"),
+        # GH #209 defect 2: the exhausted-review-contract hold edge, added
+        # to the base table beside `rejected_repeated_signature` -- present
+        # here too for the same reason every edge above is: gate-off is
+        # byte-identical to TODAY's table (now including this edge), not to
+        # a pre-#209 snapshot of it.
+        tr.T("paused", "review_contract_unrepaired"),
         tr.T("finishing", "rejected_no_approach_left"),
         tr.T("review", "review_interrupted"),
         tr.T("finishing", "review_unjudged_at_budget_end"),
