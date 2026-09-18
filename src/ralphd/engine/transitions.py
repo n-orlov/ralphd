@@ -1696,11 +1696,23 @@ def normalize_negative_verdict(payload: dict) -> str | None:
     Three decisions worth stating here rather than re-deriving:
 
     * ONE-DIRECTIONAL by construction. There is deliberately no `pass`/
-      `passed` -> `verified` entry: a synonym must never be able to
-      manufacture a terminal SUCCESS (`verified` is the one word
-      `_step_review` turns into `_finish("succeeded", ...)`). The worst a
-      wrong guess can do in this direction is refuse an approach the hat
-      was going to refuse anyway.
+      `passed` -> `verified` entry: no word in this map may be a route
+      STRAIGHT to a terminal SUCCESS (`verified` is the one word
+      `_step_review` turns into `_finish("succeeded", ...)`), so a wrong
+      guess here can only ever land on the negative word.
+      Precisely, and worth stating because the shorter claim is not true:
+      what the rewritten payload then receives is exactly the treatment a
+      LITERAL `rejected` receives, which includes `_review_verdict`'s own
+      recorded correction of an over-cautious refusal -- a `rejected` claim
+      whose structured findings are ALL `severity: "residual"` is
+      recomputed to `verified` (`review.verdict_recomputed`, task 002's
+      DoD predicate 3). So a hat that writes `fail` while filing only
+      residual findings can still reach `succeeded`, by that route, on its
+      own findings, exactly as it would have with the compliant word. That
+      is the point of the map rather than a hole in it: making `fail`
+      BINDING where `rejected` is correctable would give the contract a
+      second, undeclared verdict vocabulary in which the illegal word
+      outranks the legal one.
     * This does NOT re-open #92's requirement F2 decision (`ff869a4`,
       recorded again at docs/roadmap.md's v0.13 block), which refused TYPE
       coercion of an arbitrary scalar inside `contracts.validate_payload`/

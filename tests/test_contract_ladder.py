@@ -51,7 +51,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from ralphd.engine import petitions, state, transitions
+from ralphd.engine import findings, petitions, state, transitions
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
@@ -766,6 +766,52 @@ def test_ladder_exhaustion_holds_for_an_operator_and_never_archives(
                 and "review rejected approach" in (e.get("message") or "")]
 
 
+def test_a_legible_rejected_verdict_with_a_schema_slip_elsewhere_still_rejects(
+        tmp_path):
+    """GH #209 defect 2: the discriminating sibling of the node above, and
+    the boundary the hold is drawn on. The condition is the hat's OWN
+    VERDICT CLAIM being unreadable -- NOT "the ladder exhausted" and NOT
+    "the payload failed its schema". `HAT_SCHEMAS["review"]` is
+    `additionalProperties: False`, so one stray inline key (`confidence`
+    here -- among the most common slips a hat makes against a closed
+    object) is a schema error, and a hat stubborn enough to repeat its own
+    shape on every re-ask exhausts the ladder over it. That judge said
+    `rejected` for a stated reason, so it HAS rendered a verdict: recording
+    it as `unreviewed` and holding for an operator would be the mirror of
+    the defect this unit fixes, and the reason it fixes it. Sibling in
+    substance of `tests/test_run_record.py::test_review_verdict_is_
+    persisted_when_the_sidecar_does_not_validate`, which is task 002's own
+    recorded decision for the same shape one channel over."""
+    reply = json.dumps({"verdict": "rejected",
+                        "reason": "the deck never renders",
+                        "confidence": 0.9})
+
+    sup = _supervisor_review_ladder(tmp_path, [_ok(reply)])
+    root = sup.run.root
+
+    outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
+
+    # the ladder genuinely exhausted -- the full attempt count and the
+    # `contract.agent_fault` are both here -- and the outcome is still the
+    # ordinary rejection, with every rejection consequence intact.
+    assert sup.runner.calls == 1 + sup.cfg.contract_retry_max
+    events = _events(root)
+    faults = [e for e in events if e.get("type") == "contract.agent_fault"]
+    assert len(faults) == 1 and faults[0]["hat"] == "review", faults
+    assert outcome == ("advance", "replan", "rejected_approach_left")
+    assert sup._review_contract_unrepaired is False
+    assert (root / "approaches" / "01").exists()
+    assert sup.run.composite_prd_file.exists()
+    assert not [e for e in events if e.get("type") == "operator_escalation"]
+    assert sup.run.read_status().get("pauseReason") is None
+    verdicts = [e for e in events if e.get("type") == "approach.verdict_recorded"]
+    assert [(e["channel"], e["verdict"]) for e in verdicts] == \
+        [("review", "rejected")], verdicts
+    # and the hat's own words are still what the approach's metadata carries.
+    assert state.approach_metadata_channel(root, 1, "review")["reason"] == \
+        "the deck never renders"
+
+
 # -- 3. Half B: the negative-verdict synonym, and its one-directionality ---
 
 
@@ -810,11 +856,16 @@ def test_a_fail_verdict_is_normalised_to_rejected_without_a_single_reask(
 
 def test_a_pass_verdict_is_never_normalised_toward_success(tmp_path):
     """GH #209 defect 2 (Half B) safety property: the synonym map is
-    one-directional by construction, so no wrong guess can ever manufacture
-    a terminal SUCCESS. `pass` is therefore a coercion-proof violation --
-    which is also the second test #92's requirement F2 attaches to any
-    commit that does add a coercion: it rides the full ladder to
-    exhaustion and lands on the hold, never on `("done", "succeeded")`."""
+    one-directional by construction -- no entry maps to `verified`, so a
+    wrong guess can only ever land on the NEGATIVE word, never straight on
+    the one `_step_review` turns into `_finish("succeeded", ...)`. `pass` is
+    therefore a coercion-proof violation -- which is also the second test
+    #92's requirement F2 attaches to any commit that does add a coercion:
+    it rides the full ladder to exhaustion and lands on the hold, never on
+    `("done", "succeeded")`. What the negative word then INHERITS is the
+    sibling node below (`test_a_normalised_fail_inherits_the_all_residual_
+    recomputation`), which is where the boundary of this property actually
+    lies."""
     reply = json.dumps({"verdict": "pass", "reason": "looks good"})
 
     sup = _supervisor_review_ladder(tmp_path, [_ok(reply)])
@@ -834,6 +885,56 @@ def test_a_pass_verdict_is_never_normalised_toward_success(tmp_path):
     assert sup.run.read_status().get("verdict") is None
     # and a future entry cannot quietly reopen the hole.
     assert "verified" not in transitions.NEGATIVE_VERDICT_SYNONYMS.values()
+
+
+def test_a_normalised_fail_inherits_the_all_residual_recomputation(tmp_path):
+    """GH #209 defect 2 (Half B): the exact boundary of the node above, and
+    a stated decision rather than a surprise. "One-directional" is a
+    property of the MAP, not a promise about the run's outcome: a rewritten
+    payload then receives precisely the treatment a LITERAL `rejected`
+    receives, and that includes `_review_verdict`'s recorded correction of
+    an over-cautious refusal -- a `rejected` claim whose structured findings
+    are ALL `severity: "residual"` is recomputed to `verified` (task 002's
+    DoD predicate 3, witnessed by `review.verdict_recomputed`). So a hat
+    that writes `fail` while filing only residual findings does reach
+    `succeeded`, by that route, on its own findings, exactly as it would
+    have with the compliant word.
+
+    Pinned deliberately, in both directions: making `fail` BINDING where
+    `rejected` is correctable would give the contract a second, undeclared
+    verdict vocabulary in which the illegal word outranks the legal one, and
+    silently dropping the recomputation for a normalised payload would be
+    that change made by accident."""
+    reply = json.dumps({"verdict": "fail", "reason": "the deck never renders"})
+
+    sup = _supervisor_review_ladder(tmp_path, [_ok(reply)])
+    root = sup.run.root
+    findings.write_findings_json(sup.run.findings_json_file, [
+        {"severity": "residual", "clause": "requirement C",
+         "evidence": "a cosmetic gap remains", "curable": False}])
+
+    outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
+
+    assert outcome == ("done", "succeeded")
+    events = _events(root)
+    # both rewrites are on the audit trail, in order: what the hat said,
+    # then what its own findings said about what it said.
+    normalised = [e for e in events
+                  if e.get("type") == "review.verdict_synonym_normalised"]
+    assert [(e["claimed_verdict"], e["normalised_verdict"])
+            for e in normalised] == [("fail", "rejected")], normalised
+    recomputed = [e for e in events
+                  if e.get("type") == "review.verdict_recomputed"]
+    assert [(e["claimed_verdict"], e["computed_verdict"])
+            for e in recomputed] == [("rejected", "verified")], recomputed
+    assert recomputed[0]["residual_count"] == 1
+    verdicts = [e for e in events if e.get("type") == "approach.verdict_recorded"]
+    assert [(e["channel"], e["verdict"]) for e in verdicts] == \
+        [("review", "verified")], verdicts
+    status = sup.run.read_status()
+    assert status["state"] == "succeeded"
+    # the residuals are named in the terminal verdict, never dropped.
+    assert status["verdict"] == "verified-with-residuals"
 
 
 def test_a_repaired_reask_clears_the_unrepaired_flag_for_the_next_pass(

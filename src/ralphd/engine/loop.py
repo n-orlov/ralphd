@@ -457,12 +457,18 @@ class LoopSupervisor:
         # of `_review_contract_ladder` EXHAUSTED `contract_enforcement.
         # enforce_contract`'s ladder WITHOUT ever getting a readable verdict
         # claim out of the hat -- no parseable object at all, or a `verdict`
-        # absent or outside `HAT_SCHEMAS["review"]`'s two-word enum, across
-        # `contract_retry_max + 1` attempts, witnessed on `events.jsonl` by
-        # the `contract.agent_fault` that call already emits. An exhaustion
-        # over the findings SIDECAR alone, with a legible `rejected`
-        # verdict, deliberately does not set it (see `_review_contract_
-        # ladder`'s `verdict_claim_unreadable`). Written only by
+        # absent or outside `HAT_SCHEMAS["review"]`'s two-word enum, in the
+        # reply the run was CHARGED for (an exhausted ladder returns that
+        # reply unchanged, so it is also the text every downstream reader
+        # still has in hand; the uncharged re-ask answers are discarded),
+        # witnessed on `events.jsonl` by the `contract.agent_fault` that
+        # call already emits. An exhaustion over the findings SIDECAR, or
+        # over a stray or wrong-typed field elsewhere in the payload, while
+        # the payload's own `verdict` is a legible `rejected`, deliberately
+        # does NOT set it -- that judge rendered a verdict (see
+        # `_review_contract_ladder`'s `verdict_claim_unreadable`, which
+        # reads the `verdict` enum itself and not the whole schema for
+        # exactly this reason). Written only by
         # `_review_contract_ladder` (reset at every ordinary entry, set on
         # exhaustion); read by `_review_verdict` (records `"unreviewed"`
         # rather than `"rejected"` -- a judge that never spoke did not
@@ -9439,14 +9445,16 @@ class LoopSupervisor:
         `contract.agent_fault` for hat `review` on exactly this condition,
         and that is the fact being routed on.
 
-        "Unreadable verdict claim", not "exhausted", is the condition --
-        see `verdict_claim_unreadable` in the body. This ladder also
-        exhausts over contract errors that live in the review's FINDINGS
-        SIDECAR while the payload's own `{"verdict": "rejected", "reason":
-        ...}` is perfectly legible, and a judge that said "rejected" for a
-        stated reason has rendered a verdict; holding on those would be the
-        mirror of the defect, so they keep today's ordinary rejection
-        ladder untouched.
+        "Unreadable verdict claim", not "exhausted" and not "the payload
+        failed its schema", is the condition -- see `verdict_claim_
+        unreadable` in the body, which reads the `verdict` enum itself for
+        exactly that reason. This ladder also exhausts over contract errors
+        that live in the review's FINDINGS SIDECAR, and over a stray or
+        wrong-typed field elsewhere in the payload, while the payload's own
+        `{"verdict": "rejected", "reason": ...}` is perfectly legible; a
+        judge that said "rejected" for a stated reason has rendered a
+        verdict, so holding on those would be the mirror of the defect and
+        they keep today's ordinary rejection ladder untouched.
 
         Deliberately scoped to review, and the asymmetry is stated rather
         than left to be discovered: `_verify_contract_ladder` (which burns
@@ -9559,7 +9567,29 @@ class LoopSupervisor:
         # sidecar_does_not_validate`) is precisely that a sidecar-refused
         # verdict is still recorded as this approach's verdict. Those cases
         # keep today's ordinary rejection ladder, unchanged.
-        verdict_claim_unreadable = not isinstance(parsed, dict) or bool(schema_errors)
+        #
+        # Read off the `verdict` enum itself and NOT off `schema_errors`,
+        # which is strictly wider than the words above and would fire the
+        # hold on the very class this narrowing exists to protect:
+        # `HAT_SCHEMAS["review"]` is `additionalProperties: False`, so a
+        # perfectly legible `{"verdict": "rejected", "reason": ...}` carrying
+        # one stray inline key (`confidence`, `summary` -- among the most
+        # common slips a hat makes against a closed object) or one
+        # wrong-typed sibling field is a schema error too, and a hat stubborn
+        # enough to repeat its own shape on every re-ask then exhausts the
+        # ladder. That judge rendered a verdict; only the enum can tell.
+        # SCOPE, stated because the flag's readers depend on it: this is the
+        # verdict claim in the reply the run was CHARGED for -- attempt 0,
+        # the text `_review_verdict` re-reads, since an exhausted ladder
+        # returns `result` byte-for-byte unchanged and every uncharged
+        # re-ask answer is discarded. So it describes exactly what the
+        # engine will still have in hand downstream, which is the fact the
+        # `"unreviewed"` record and the escalation are about, rather than
+        # the best of the attempts.
+        verdict_claim_unreadable = (
+            not isinstance(parsed, dict)
+            or parsed.get("verdict") not in transitions.HAT_SCHEMAS[
+                "review"]["properties"]["verdict"]["enum"])
         if isinstance(parsed, dict) and not schema_errors:
             if transitions.review_report_errors(parsed):
                 return result
@@ -9606,13 +9636,15 @@ class LoopSupervisor:
         # GH #209 defect 2: the ladder is exhausted -- `enforce_contract`
         # has already emitted `contract.agent_fault` for hat `review`, and
         # this records the same fact where the supervisor's own step methods
-        # can read it, but ONLY for the shape the hold is for: a verdict
-        # claim that was never readable (see `verdict_claim_unreadable`
-        # above for why an exhaustion over the findings sidecar alone must
-        # keep the ordinary rejection ladder). `result` still comes back
-        # unchanged (six existing call sites do `_review_verdict(await
-        # _review_contract_ladder(r))`, so returning `None` here would
-        # crash every one of them for a signalling convenience).
+        # can read it, but ONLY for the shape the hold is for: the charged
+        # reply's own verdict claim was unreadable and the ladder did not
+        # repair it (see `verdict_claim_unreadable` above for that scope,
+        # and for why an exhaustion over the findings sidecar or over a
+        # stray field elsewhere must keep the ordinary rejection ladder).
+        # `result` still comes back unchanged (six existing call sites do
+        # `_review_verdict(await _review_contract_ladder(r))`, so returning
+        # `None` here would crash every one of them for a signalling
+        # convenience).
         if not mid_run and verdict_claim_unreadable:
             self._review_contract_unrepaired = True
         return result

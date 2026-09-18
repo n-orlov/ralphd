@@ -1050,9 +1050,10 @@ mid-run non-terminal value that is never written to `status.json` at all.
   attempt as a rejection to replan away from.
   - **`unreviewed` also covers "review's own contract ladder exhausted"
     (GH #209 defect 2).** A review iteration that ran to completion but
-    whose own verdict claim was never readable across
-    `contract_retry_max + 1` attempts — no parseable object at all, or a
-    `verdict` outside `HAT_SCHEMAS["review"]`'s two-word enum — sets
+    whose own verdict claim was unreadable — no parseable object at all, or
+    a `verdict` outside `HAT_SCHEMAS["review"]`'s two-word enum — in the
+    reply the run was CHARGED for, with the ladder then exhausting without
+    ever returning a repaired payload, sets
     `_review_contract_unrepaired`, and `_finish_tail_unverified()` reads it
     for a second `unreviewed` branch with its own reason string ("review
     never produced a parseable contract payload; no verdict was ever
@@ -1063,7 +1064,19 @@ mid-run non-terminal value that is never written to `status.json` at all.
     composite PRD), so only the off-budget grace review lands here. The
     same word is also what `approach.verdict_recorded` carries for that
     approach's `review` channel, in place of the `rejected` it used to
-    attribute to a judge that never spoke.
+    attribute to a judge that never spoke. One thing the parent bullet's
+    last sentence does NOT extend to this writer: `_unreviewed_awaiting_
+    resume` keys on the `review_deadline_unreviewed` EVENT, which this
+    branch deliberately never emits (no deadline was involved), so a FRESH
+    process resuming a run that ended here falls to `_resume_point`'s
+    default — skip planning, re-enter `worker` — and spends one throwaway
+    worker iteration over an all-completed plan before review is asked
+    again. That is the same precedented cost the `review_contract_
+    unrepaired` PAUSE already pays for having no `_resume_point` bucket
+    (`rejected_repeated_signature`, `unschedulable_dependency_cycle` and
+    `unresolvable_dependency_edge` all pause with none either); giving this
+    branch the deadline's event to buy the routing would put "deadline
+    during review" back on a run no deadline touched.
 - **`"adjudicated"` (task 014, requirement F.1, #144) is a MID-RUN reply
   value, never a `status.json` verdict.** The bounded, off-budget petition
   adjudication episode (`_maybe_run_midrun_adjudication_episode`, next
