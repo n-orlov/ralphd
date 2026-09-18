@@ -1526,7 +1526,15 @@ dependent `blocked` on every surface (`ralphctl tasks`, the hub, and
 `GET /tasks`'/`GET /status`'s own `taskBlockedBy` map / `blocked` count)
 the moment the dependency reaches `failed`/`skipped`. With no
 `dependsOn`/`priority` fields anywhere in the plan this is identical to
-plain sequential list-order picking. This rule lives entirely in the phase
+plain sequential list-order picking. A task may also carry `orderingOnly`
+(GH #209 defect 3), a planner-declared subset of its own `dependsOn` ids
+that are pure ORDERING edges -- sequencing alone, producing none of the
+evidence that task's `successCriteria` reports on. It changes no scheduling
+whatsoever; its one reader is the cure pass's evidence walk below, which
+without it drags such a dependency from `validated` back to `pending` merely
+for sitting in a re-staled record's `dependsOn`. An absent field means
+"every edge produces evidence", so a plan that never names it behaves
+exactly as one written before it existed. This rule lives entirely in the phase
 prompts (the engine does not parse or enforce it in code) — it is the agent
 reading `tasks.json` and the prompt's instructions, same as task selection
 always has been; the `blocked` DERIVATION, unlike the pick rule itself, is
@@ -2153,7 +2161,21 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   same title. The re-open of a GENUINE planner record is unchanged:
   still every pass, still from any terminal status, because "re-record
   only after the LAST cure" is unknowable at insertion time and
-  deferring it would mean reviewing on stale evidence. Tests:
+  deferring it would mean reviewing on stale evidence. What #209 defect
+  3's residual narrows is which of that record's DEPENDENCIES come back
+  with it: a dependency the plan declares to be a pure ordering edge
+  (`tasks[].orderingOnly`, read through `plan_ingestion.ordering_only_
+  dependencies`) is not an evidence step, keeps its terminal status and is
+  absent from `taskIds` -- measured in `selfdev-v022`, where the already
+  landed, nightly-green task `012` was re-worked purely for sitting in the
+  record `013`'s `dependsOn`. An absent declaration means "every edge
+  produces evidence", the conservative reading every plan written without
+  the field already gets, and the distinction is PLANNER-DECLARED because
+  no reading of criteria text can tell an evidence edge from an ordering
+  one. When that leaves a record with no re-opened verification step at
+  all, the cure task joins the RECORD's own `dependsOn` instead, so the
+  re-record still cannot be picked ahead of the cure and requirement E.3
+  holds either way. Tests:
   `tests/test_cure_invalidates.py` (task 032's own module: the per-path
   insertion, the lane re-open chain, the cure-origin exclusion and
   per-path re-take reuse, and the emitted event's own `taskIds`).

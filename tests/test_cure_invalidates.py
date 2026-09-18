@@ -23,8 +23,13 @@ the ENGINE authored (`origin: "review-cure"`) is never recognised as the
 record or as a verification step, so a later pass stops re-opening an
 earlier pass's LANDED cure task; and one path re-uses this approach's
 existing re-take row rather than growing a second one with the same title.
+Its RESIDUAL narrows the same walk once more, in the group after that: a
+dependency the PLAN declares to be a pure ordering edge
+(`tasks[].orderingOnly`) is not an evidence step, so the re-open leaves it
+alone -- while an absent declaration still means "every edge produces
+evidence", the reading every plan written without the field gets.
 
-Four groups of nodes:
+Five groups of nodes:
 
 * the per-path insertion itself, direct against `insert_cure_tasks`
   (`_make_run`, the same harness `tests/test_cure_pass.py`'s own
@@ -33,6 +38,9 @@ Four groups of nodes:
   "verify every lane" task depended on by a "record every lane" task;
 * the cure-origin exclusion and the per-path re-take reuse, same harness
   (#209 defect 3);
+* the planner-declared ordering edge, same harness (#209 defect 3's
+  residual): the narrowing, the absent-field default, and a re-pointed edge
+  defaulting back to evidence-producing;
 * the emitted event's payload -- driving a real `LoopSupervisor.
   _step_review()` pass over a finding carrying `invalidates` of both
   shapes at once, and reading `approach.cure_pass`'s own `taskIds`
@@ -48,7 +56,12 @@ from pathlib import Path
 from ralphd.engine import findings
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
-from ralphd.engine.state import RunDir, atomic_write_json, insert_cure_tasks
+from ralphd.engine.state import (
+    RunDir,
+    apply_worker_dependency_repoints,
+    atomic_write_json,
+    insert_cure_tasks,
+)
 
 from tests.conftest import supervisor_factory
 
@@ -420,6 +433,102 @@ def test_a_retake_blocked_by_a_dead_cure_dependency_is_not_reused(tmp_path):
     assert len(fresh) == 1
     assert fresh[0]["dependsOn"] == [inserted[0]]
     assert fresh[0]["id"] in inserted
+
+
+# ---------------------------------------------------------------------------
+# #209 defect 3's residual: a dependency the PLAN declares to be a pure
+# ordering edge is not evidence, so the re-open leaves it alone.
+# ---------------------------------------------------------------------------
+
+
+def test_a_dependency_declared_ordering_only_is_not_dragged_back(tmp_path):
+    """The `selfdev-v022` shape the earlier nodes above could not reach: a
+    requirement-G finding named a test module, the record `013`'s criteria
+    cited that module, and `012` -- `validated`, its work landed at
+    `751abe5e` with a green nightly per `013`'s own notes -- was re-opened
+    and re-worked purely for sitting in `013.dependsOn`. The engine cannot
+    tell that ordering edge from an evidence-producing one by reading
+    criteria text, so the plan declares it (`tasks[].orderingOnly`, read
+    through `plan_ingestion.ordering_only_dependencies`).
+
+    Three phases, one decision:
+
+    * a declared ordering edge keeps its terminal status and is absent from
+      the returned ids, and -- the requirement E.3 half, which is why this
+      belongs in the same node -- the cure edge lands on the RECORD itself
+      when no verification step was re-opened to carry it, so the re-record
+      still cannot be picked ahead of the cure;
+    * the same fixture with the field ABSENT re-opens both tasks, chaining
+      cure -> verification -> record exactly as every plan written without
+      the field already does. That backward compatibility is the field's
+      load-bearing safety property, so it is pinned here and not merely
+      implied by the older nodes above;
+    * a declaration is intersected with the row's LIVE `dependsOn`, so an
+      edge some other writer re-pointed (here the real one, `state.apply_
+      worker_dependency_repoints` from a worker's `proposed_task_updates`)
+      defaults to evidence-producing, and the leftover declaration for an id
+      that is no longer a dependency is inert.
+    """
+    record_criteria = f"One commit adds {RECORD_PATH} naming the shipped sha."
+    finding = _blocking_curable_finding(
+        "the shipped sha's lanes moved", "a later commit landed after the record",
+        invalidates=[RECORD_PATH])
+
+    # Phase 1: declared ordering-only.
+    run = _make_run(tmp_path / "run", [
+        _task("012", status="validated", criteria="the earlier deliverable"),
+        {**_task("013", status="validated", depends=["012"],
+                 criteria=record_criteria),
+         "orderingOnly": ["012"]},
+    ])
+    inserted = insert_cure_tasks(run, 1, [finding])
+
+    tasks = {t["id"]: t for t in run.read_tasks()["tasks"]}
+    cure_id = inserted[0]
+    assert tasks["012"]["status"] == "validated"      # never dragged back
+    assert tasks["012"]["dependsOn"] == []            # and never chained onto
+    assert "012" not in inserted
+    assert inserted == [cure_id, "013"]
+    # the record is still re-opened, every pass, and carries the cure edge
+    # itself now that no verification step was re-opened to carry it.
+    assert tasks["013"]["status"] == "pending"
+    assert tasks["013"]["dependsOn"] == ["012", cure_id]
+
+    # Phase 2: the identical fixture with no declaration -- today's behaviour,
+    # unchanged, because an absent field means "every edge produces evidence".
+    run2 = _make_run(tmp_path / "run2", [
+        _task("012", status="validated", criteria="the earlier deliverable"),
+        _task("013", status="validated", depends=["012"], criteria=record_criteria),
+    ])
+    inserted2 = insert_cure_tasks(run2, 1, [finding])
+    tasks2 = {t["id"]: t for t in run2.read_tasks()["tasks"]}
+    assert tasks2["012"]["status"] == "pending"
+    assert tasks2["013"]["status"] == "pending"
+    assert tasks2["012"]["dependsOn"] == [inserted2[0]]   # cure -> verification
+    assert tasks2["013"]["dependsOn"] == ["012"]          # -> record, untouched
+    assert set(inserted2[1:]) == {"012", "013"}
+
+    # Phase 3: a re-pointed edge nobody declared is evidence-producing.
+    run3 = _make_run(tmp_path / "run3", [
+        _task("012", status="validated", criteria="the earlier deliverable"),
+        _task("014", status="validated", criteria="the replacement deliverable"),
+        {**_task("013", status="validated", depends=["012"],
+                 criteria=record_criteria),
+         "orderingOnly": ["012"]},
+    ])
+    assert apply_worker_dependency_repoints(run3, [
+        {"task_id": "013", "dependsOn": ["014"],
+         "reason": "014 carries the work 012 was standing in for"},
+    ]) == ["013"]
+    inserted3 = insert_cure_tasks(run3, 1, [finding])
+    tasks3 = {t["id"]: t for t in run3.read_tasks()["tasks"]}
+    assert tasks3["014"]["status"] == "pending"           # the new edge IS evidence
+    assert tasks3["014"]["dependsOn"] == [inserted3[0]]
+    assert tasks3["013"]["status"] == "pending"
+    assert tasks3["013"]["dependsOn"] == ["014"]          # no edge on the record
+    assert set(inserted3[1:]) == {"013", "014"}
+    # the stale declaration for the dropped id is inert, never re-applied
+    assert tasks3["013"]["orderingOnly"] == ["012"]
 
 
 # ---------------------------------------------------------------------------

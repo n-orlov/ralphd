@@ -18,7 +18,9 @@ input, in three ordered steps:
      as string constants together and fails the suite if it finds one
      outside `engine/contracts.py` (fact 16/#65's lesson) — this module's
      shape check earns that by construction, not by exemption.
-  3. semantic lint: `dependsOn` refs resolve, no cycles, no duplicate ids,
+  3. semantic lint: `dependsOn` refs resolve, every ordering-only
+     declaration names one of the task's own `dependsOn` ids
+     (`ORDERING_ONLY_FIELD`), no cycles, no duplicate ids,
      no empty/boilerplate `successCriteria`, and — the enforcement point for
      requirement C's rule that a proposal "carrying a status field is
      rejected, not honoured" — no task may smuggle a `status` of its own.
@@ -77,6 +79,61 @@ BOILERPLATE_SUCCESS_CRITERIA = (
     "the work>"
 )
 
+# GH #209 defect 3's residual: the one name of the optional per-task field a
+# PLANNER uses to declare which of its OWN `dependsOn` entries are pure
+# ORDERING edges -- sequencing only, producing none of the evidence that
+# task's `successCriteria` reports on.
+#
+# Declared, never guessed. A review cure whose finding `invalidates` a path
+# re-opens the plan's own evidence record for that path AND every task that
+# record depends on (`state._lane_evidence_record_chain`/`insert_cure_tasks`,
+# requirement E.3), because an evidence record's dependencies are usually the
+# steps that PRODUCED the evidence. Measured in `selfdev-v022`: task `013`'s
+# criteria named an invalidated module, `013.dependsOn == ['012']` was a plain
+# ordering edge, and `012` -- already `validated`, its work landed and
+# nightly-green -- was dragged back to `pending` and re-worked for it. The
+# engine cannot tell the two edge kinds apart by reading criteria text (every
+# textual discriminator tried either broke the pinned E.3 fixture or replaced
+# a correct re-open with thinner evidence), and only the planner that wrote
+# the edge knows which kind it is -- so it says so, here.
+ORDERING_ONLY_FIELD = "orderingOnly"
+
+
+def ordering_only_dependencies(task: dict) -> set[str]:
+    """The ids in `task`'s own `dependsOn` that the plan declares are pure
+    ORDERING edges (`ORDERING_ONLY_FIELD` above), as a set of strings. The
+    ONE reader of that field's shape: `state._lane_evidence_record_chain` is
+    its only consumer today, and `lint_proposal` below checks the RAW value
+    rather than duplicating this tolerance.
+
+    BACKWARD COMPATIBILITY -- the load-bearing safety property of the whole
+    field (GH #209 defect 3's residual): an absent, non-list or empty
+    declaration returns the EMPTY set, so every edge counts as
+    evidence-producing. That is the conservative reading and it is exactly
+    what a plan written without this field already gets, so no existing run,
+    fixture or test loses a correct re-open; a plan that never names the
+    field behaves identically either way.
+
+    The result is INTERSECTED with the row's live `dependsOn`, which is what
+    makes every OTHER `dependsOn` writer safe without any of them knowing
+    this field exists: an edge that was re-pointed onto something else
+    (`state.apply_worker_dependency_repoints` from a worker's own
+    `proposed_task_updates`, a steer `task-update`, `state._repoint_
+    dependents_onto_cure_task`, or the cure pass's own appended cure edge)
+    was declared by nobody and therefore defaults to evidence-producing,
+    while a declaration left behind for an id that is no longer a dependency
+    at all is inert rather than silently applying to whatever replaced it.
+    """
+    raw = task.get(ORDERING_ONLY_FIELD) if isinstance(task, dict) else None
+    if not isinstance(raw, list) or not raw:
+        return set()
+    depends = task.get("dependsOn")
+    if not isinstance(depends, list):
+        return set()
+    live = {str(d) for d in depends}
+    return {str(entry) for entry in raw if str(entry) in live}
+
+
 # Fields a proposal's task is allowed to carry through to the harness's own
 # tasks.json verbatim. Deliberately excludes "status" -- see the module
 # docstring's step 3.
@@ -85,11 +142,15 @@ BOILERPLATE_SUCCESS_CRITERIA = (
 # nothing else in the harness may annotate it -- so a missing/unrecognised
 # tier is defaulted here (`normalize_task_tiers` below), never left for a
 # later stage to invent a value for.
+# GH #209 defect 3's residual: `ORDERING_ONLY_FIELD` rides through beside
+# `dependsOn`, since it is a declaration ABOUT those ids and is worthless to
+# the evidence walk that reads it off `tasks.json` if ingestion drops it.
 _TASK_PASSTHROUGH_FIELDS: tuple[str, ...] = (
     "id",
     "title",
     "successCriteria",
     "dependsOn",
+    ORDERING_ONLY_FIELD,
     "priority",
     "tier",
     "estimatedIterations",
@@ -104,8 +165,9 @@ def validate_proposal_shape(payload: Any) -> list[str]:
     """Ad hoc structural check on the parsed `plan-proposal.json` document:
     an object with a `tasks` array of objects, each carrying non-blank
     `id`/`title`/`successCriteria` strings and, if present, a `dependsOn`
-    that is itself a list. Nothing here treats a schema as data -- see the
-    module docstring for why that distinction matters to the test suite."""
+    (and its ordering-only companion, `ORDERING_ONLY_FIELD`) that is itself
+    a list. Nothing here treats a schema as data -- see the module docstring
+    for why that distinction matters to the test suite."""
     if not isinstance(payload, dict):
         return [f"$: expected an object, got {type(payload).__name__}"]
     errors: list[str] = []
@@ -127,6 +189,14 @@ def validate_proposal_shape(payload: Any) -> list[str]:
                 )
         if "dependsOn" in t and not isinstance(t["dependsOn"], list):
             errors.append(f"$.tasks[{i}] (id={tid!r}): 'dependsOn' must be an array")
+        # GH #209 defect 3's residual: the ordering-only declaration is an
+        # array of ids like `dependsOn` itself, and is refused at shape time
+        # for the same reason that one is -- a bare string here would read as
+        # a set of one-character ids, which `ordering_only_dependencies`
+        # would then quietly intersect down to nothing.
+        if ORDERING_ONLY_FIELD in t and not isinstance(t[ORDERING_ONLY_FIELD], list):
+            errors.append(
+                f"$.tasks[{i}] (id={tid!r}): {ORDERING_ONLY_FIELD!r} must be an array")
         # Requirement D.1 (#157): `estimatedIterations`, when the planner
         # supplies one at all, must be an integer >= 1 -- a missing field
         # is fine here (that is `normalize_task_estimated_iterations`'s job,
@@ -2737,6 +2807,38 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
                     )
                 else:
                     errors.append(f"task {tid!r}: dependsOn references unknown task {dep!r}")
+        # GH #209 defect 3's residual: an ordering-only entry that is not one
+        # of THIS task's own `dependsOn` ids declares nothing at all -- the
+        # field marks a SUBSET of the edges the task actually has. Refused
+        # rather than ignored, because the plausible planner mistake is
+        # naming the right task in the wrong place (a sibling's id, or an id
+        # it meant to depend on and never did), and an inert declaration
+        # reads to its author as an ordering edge that the cure pass then
+        # drags back through anyway.
+        #
+        # This is the ONLY half of the field a lint can check. The semantic
+        # claim -- that this dependency really produces no evidence this task
+        # reports on -- is exactly the judgement the engine cannot make (it is
+        # why the field is planner-declared in the first place), so a wrong
+        # declaration is not caught here and the conservative default is what
+        # bounds it: see `ordering_only_dependencies` above and
+        # `state._lane_evidence_record_chain`, which still re-opens and
+        # re-takes the evidence RECORD itself on every cure pass, so review
+        # never judges stale evidence for the invalidated path however the
+        # edges around it are annotated.
+        declared = t.get(ORDERING_ONLY_FIELD)
+        if isinstance(declared, list) and declared:
+            raw_depends = t.get("dependsOn")
+            own = ({str(d) for d in raw_depends}
+                   if isinstance(raw_depends, list) else set())
+            for entry in declared:
+                if str(entry) not in own:
+                    errors.append(
+                        f"task {tid!r}: {ORDERING_ONLY_FIELD} names {entry!r}, "
+                        f"which is not one of its own dependsOn ids "
+                        f"{sorted(own)!r} -- the field marks a SUBSET of this "
+                        "task's dependencies as pure ordering, so every entry "
+                        "must name an edge the task actually has")
 
     errors.extend(_detect_cycles(tasks))
     return errors

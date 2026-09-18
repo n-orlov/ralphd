@@ -3944,6 +3944,42 @@ def _lane_evidence_record_chain(tasks: list, path: str) -> tuple[dict | None, li
     up: a record whose `dependsOn` names ONLY engine-authored rows is no
     longer re-opened -- its path takes the re-take branch instead, so it
     is still re-recorded at the cure's tree and nothing is skipped.
+
+    #209 defect 3's RESIDUAL narrows the same walk once more, and this one is
+    the plan's own call rather than the engine's: a dependency the plan
+    DECLARES to be a pure ordering edge (`plan_ingestion.ordering_only_
+    dependencies`, the planner's optional per-task `orderingOnly` list) is
+    not returned as a verification step, so it is not dragged back to
+    `pending` by the re-open. Measured in `selfdev-v022`: a requirement-G
+    finding named a test module, task `013`'s criteria cited that module so
+    `013` matched as the record, and `012` -- `validated`, its work landed
+    at `751abe5e` with a green nightly, per `013`'s own notes -- was re-opened
+    for no reason but sitting in `013.dependsOn`. An ordering edge is
+    unguessable from criteria text, which is why it is declared; and the
+    declaration is BACKWARD COMPATIBLE by construction, an absent field
+    meaning "every edge produces evidence", so every plan written without it
+    keeps exactly the re-open it has today (see that function's own
+    docstring, and `tests/test_cure_invalidates.py`'s pin of the absent-field
+    default).
+
+    Requirement E.3 is untouched by this: the RECORD is still re-opened on
+    every pass from any terminal status, so the invalidated path is still
+    re-taken at the cure's tree before review judges it. What a wrong
+    declaration costs is narrower and bounded -- an upstream step that did
+    contribute evidence is not re-run, so the record may report over one
+    cure-old upstream artifact. Nothing else can bound it: no lint can check
+    the semantic claim (`plan_ingestion.lint_proposal` checks only that each
+    entry names one of the task's own edges), so the conservative default is
+    the protection, and the declaration is visible on the row in `tasks.json`
+    to the review hat and the operator that read it.
+
+    One consequence of leaving a declared ordering edge alone: the re-open no
+    longer resurrects it when it is `failed`/`skipped`, so the record stays
+    blocked on it (`task_blocked_by`) instead. That is the right outcome for
+    an edge the plan declares is a real ordering requirement, and clearing it
+    is what the re-point levers exist for (`apply_worker_dependency_repoints`,
+    an operator `steer task-update`) -- not something an evidence re-open
+    should be doing by writing `pending` over a terminal failure.
     """
     by_id = {t.get("id"): t for t in tasks if isinstance(t, dict)}
     for t in tasks:
@@ -3959,7 +3995,18 @@ def _lane_evidence_record_chain(tasks: list, path: str) -> tuple[dict | None, li
                         if d in by_id and not is_review_cure_origin(by_id[d])]
         if not verification:
             continue
-        return t, verification
+        # #209 defect 3's residual: of the evidence steps that survive, drop
+        # the ones the PLAN ITSELF declares are pure ordering edges. The
+        # emptiness check above deliberately runs against the UNFILTERED list,
+        # so the two narrowings stay separable: a record whose steps are all
+        # engine-authored still falls through to the re-take branch (the
+        # behaviour the paragraph above gives up on purpose), while a record
+        # whose every step is declared ordering-only is still recognised and
+        # re-opened -- `insert_cure_tasks` then puts the cure edge on the
+        # record itself, since there is no verification step left to carry it.
+        ordering_only = plan_ingestion.ordering_only_dependencies(t)
+        return t, [v for v in verification
+                   if str(v.get("id")) not in ordering_only]
     return None, []
 
 
@@ -4392,6 +4439,16 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
       depending on BOTH cure tasks, and a later pass over the same approach
       re-opens that same row. `taskIds` still names every id the pass put
       into motion; there are simply fewer duplicate rows to name.
+    - the chain branch also skips a dependency the PLAN declares to be a
+      pure ordering edge rather than an evidence-producing one
+      (`plan_ingestion.ordering_only_dependencies`, the planner's optional
+      per-task `orderingOnly` list, absent meaning "all of them produce
+      evidence"): such a task keeps its terminal status and is absent from
+      the return value. Measured in `selfdev-v022`, where a `validated` `012`
+      was re-worked purely for sitting in the record `013`'s `dependsOn`.
+      When that leaves the record with no re-opened step at all, the cure
+      edge lands on the RECORD itself, so the re-record still cannot run
+      ahead of the cure -- requirement E.3 holds either way.
 
     The re-open of a GENUINE planner evidence record and its planner
     verification tasks is deliberately unchanged -- every pass, from any
@@ -4532,6 +4589,21 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
                     if vid not in inserted:
                         inserted.append(vid)
                 record_task["status"] = "pending"
+                if not verification_tasks:
+                    # #209 defect 3's residual: every evidence step this
+                    # record depends on is declared a pure ordering edge
+                    # (`plan_ingestion.ordering_only_dependencies`), so none
+                    # of them was re-opened and none of them is carrying the
+                    # cure edge. Put it on the RECORD itself, or the re-record
+                    # could be picked before the cure lands and review would
+                    # judge evidence taken at the pre-cure tree -- the exact
+                    # incident requirement E.3 exists to close. With a
+                    # verification step present this edge stays where it
+                    # always was (on the step), completing the same chain
+                    # cure -> verification -> record.
+                    _append_validated_dependency_edge(
+                        run, tasks, record_task, cure_task_id,
+                        "cure-insertion")
                 rid = record_task.get("id")
                 if rid not in inserted:
                     inserted.append(rid)

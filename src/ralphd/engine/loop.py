@@ -12710,6 +12710,15 @@ class LoopSupervisor:
           bug -- but no later change may reason from this paragraph that a
           standing ruling is dead once a cure pass has re-opened its task.
 
+        WHICH tasks that reopen can reach is narrower than "every dependency
+        of a re-staled evidence record" (#209 defect 3's residual): a
+        dependency the plan itself declares to be a pure ordering edge
+        (`plan_ingestion.ordering_only_dependencies`) is not re-opened at all,
+        so a standing ruling on such a task is never overridden by the cure
+        pass and keeps whatever terminal status it was ruled to. The record
+        task whose criteria names the invalidated path is still re-opened on
+        every pass, so for THAT task the precedence above applies unchanged.
+
         Reads `CONFIG_DIR` directly, exactly as
         `_operator_amendment_review_context` does and for the same reason
         (the host's `:ro` bind mount is the only place this run cannot

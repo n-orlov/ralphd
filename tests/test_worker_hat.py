@@ -132,7 +132,8 @@ def _write_plan(sup: LoopSupervisor, tasks: list[dict]) -> None:
 # test claimed to exercise 3). Any test relying on a passthrough value
 # should also assert it back off the ingested record.
 _PROPOSAL_PASSTHROUGH = ("id", "title", "successCriteria", "dependsOn",
-                         "priority", "tier", "estimatedIterations")
+                         "orderingOnly", "priority", "tier",
+                         "estimatedIterations")
 
 
 def _write_proposal(sup: LoopSupervisor, tasks: list[dict],

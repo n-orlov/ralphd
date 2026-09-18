@@ -74,10 +74,24 @@ def test_a_task_missing_required_fields_is_named_by_position_and_id():
 
 
 def test_dependson_must_be_an_array():
+    """GH #209 defect 3's residual extends this node rather than adding a
+    sibling: `orderingOnly` is the same shape rule on the same field pair
+    (an optional array of task ids, refused at shape time when it is not an
+    array), checked in the same three lines of `validate_proposal_shape`.
+    The original `dependsOn` assertion is kept verbatim."""
     errors = pi.validate_proposal_shape(
         {"tasks": [_basic_task("001", dependsOn="002")]}
     )
     assert any("dependsOn" in e for e in errors)
+
+    errors = pi.validate_proposal_shape(
+        {"tasks": [_basic_task("001", dependsOn=["002"], orderingOnly="002")]}
+    )
+    assert any("orderingOnly" in e and "array" in e for e in errors)
+    # and a well-formed one is no shape error at all
+    assert pi.validate_proposal_shape(
+        {"tasks": [_basic_task("001", dependsOn=["002"], orderingOnly=["002"])]}
+    ) == []
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +108,37 @@ def test_unresolved_dependson_is_named():
     payload = {"tasks": [_basic_task("001", dependsOn=["999"])]}
     errors = pi.lint_proposal(payload)
     assert any("001" in e and "999" in e and "dependsOn" in e for e in errors)
+
+
+def test_ordering_only_must_name_one_of_the_tasks_own_dependson_ids():
+    """GH #209 defect 3's residual: `orderingOnly` marks a SUBSET of the
+    edges a task actually has, so an entry that is not one of its own
+    `dependsOn` ids declares nothing and is refused rather than silently
+    ignored -- an inert declaration reads, to the planner that wrote it, as
+    an ordering edge the cure pass then drags back through anyway.
+
+    The SEMANTIC claim (that this dependency really produces none of the
+    evidence the task reports on) is deliberately NOT linted: it is the one
+    judgement the engine cannot make, which is why the field is declared by
+    the planner at all. `plan_ingestion.ordering_only_dependencies`' own
+    conservative default is what bounds a wrong declaration."""
+    payload = {"tasks": [_basic_task("001"),
+                         _basic_task("002", dependsOn=["001"],
+                                     orderingOnly=["001"])]}
+    assert pi.lint_proposal(payload) == []
+
+    payload = {"tasks": [_basic_task("001"),
+                         _basic_task("002", dependsOn=["001"],
+                                     orderingOnly=["003"])]}
+    errors = pi.lint_proposal(payload)
+    assert len(errors) == 1
+    assert "002" in errors[0] and "'003'" in errors[0]
+    assert "orderingOnly" in errors[0] and "dependsOn" in errors[0]
+
+    # a task with no dependsOn at all has no edge to declare ordering-only
+    payload = {"tasks": [_basic_task("001", orderingOnly=["002"]),
+                         _basic_task("002")]}
+    assert any("orderingOnly" in e for e in pi.lint_proposal(payload))
 
 
 def test_extra_known_ids_resolves_a_dependson_outside_the_batch():
@@ -340,10 +385,24 @@ def test_ingest_proposal_never_honours_a_smuggled_status():
 
 
 def test_ingest_preserves_dependson_and_priority():
+    """GH #209 defect 3's residual extends this node rather than adding a
+    sibling: `orderingOnly` is a declaration ABOUT the `dependsOn` ids this
+    node already pins, carried through by the same `_TASK_PASSTHROUGH_FIELDS`
+    tuple, and it is worthless to the evidence walk that reads it off
+    `tasks.json` if ingestion drops it. Both original assertions kept
+    verbatim."""
     payload = {"tasks": [_basic_task("001", dependsOn=["000"], priority=5)]}
     doc = pi.ingest_proposal(payload)
     assert doc["tasks"][0]["dependsOn"] == ["000"]
     assert doc["tasks"][0]["priority"] == 5
+
+    payload = {"tasks": [_basic_task("001", dependsOn=["000"],
+                                     orderingOnly=["000"])]}
+    doc = pi.ingest_proposal(payload)
+    assert doc["tasks"][0]["orderingOnly"] == ["000"]
+    # and a task that never names the field does not gain one
+    doc = pi.ingest_proposal({"tasks": [_basic_task("002", dependsOn=["000"])]})
+    assert "orderingOnly" not in doc["tasks"][0]
 
 
 def test_ingest_carries_goal_and_scope_through():

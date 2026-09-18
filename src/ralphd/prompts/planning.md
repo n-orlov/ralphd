@@ -46,6 +46,7 @@ iteration is to read the PRD and produce a task plan. You do NOT implement anyth
       "title": "<imperative, one deliverable>",
       "successCriteria": "<natural language, independently checkable by someone who did not do the work>",
       "dependsOn": ["<optional: ids of tasks that must be completed first>"],
+      "orderingOnly": ["<optional: the dependsOn ids that are sequencing alone>"],
       "priority": 0
     }
   ],
@@ -73,6 +74,19 @@ them:
 
 A clear, linear plan (most plans) should omit both fields entirely — plain
 list order is the default and requires no annotation.
+
+`orderingOnly` is a third OPTIONAL per-task list, and always a subset of this
+task's own `dependsOn`: the edges that are sequencing alone, where the
+dependency's work is no part of the evidence this task's `successCriteria`
+reports on. It matters when a review cure invalidates a path. The harness then
+re-takes that path's evidence at the tree the cure leaves, by re-opening the
+task whose criteria names the path AND every dependency that task is taken to
+draw its evidence from — and an edge you do not list counts as one of those,
+so a finished, purely sequential dependency is re-opened and re-worked for
+nothing. List an edge here only when re-running the dependency would add
+nothing to what this task records; if the dependency produces or measures any
+part of it, leave that edge unlisted. Every entry must be an id this task's
+own `dependsOn` already names, or the proposal is refused.
 
 `estimatedIterations` is an OPTIONAL per-task integer >= 1: your best guess
 at how many worker iterations the task needs to land. Omit it and the
