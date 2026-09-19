@@ -49,6 +49,7 @@ EXPECTED_MUTATING = frozenset(
         ("POST", "/retry"),
         ("POST", "/abort"),
         ("POST", "/shutdown"),
+        ("POST", "/rule"),
     }
 )
 

@@ -702,6 +702,26 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         fname = run.add_steering(message, (body or {}).get("name"))
         return {"file": fname}
 
+    @app.post("/rule", status_code=202)
+    async def rule(body: dict):
+        # Task 013 (v0.23 PRD requirement A.2, #224): the operator answer
+        # channel's landing route. Deliberately a DISTINCT route from
+        # `/steering` (`steer` is discounted by review by design) and from
+        # anything `amend`-shaped (an `amend` ruling never touches this
+        # process at all -- see `engine.state`'s `rulings/` vocabulary
+        # block). No control-token check written here: `classify_method`
+        # already treats every POST as mutating, so `cfg.control_token`
+        # (when the run has one, which every real `start`/`resume` does)
+        # already gates this the moment it exists (operator ruling 4) --
+        # see `tests/test_control_plane_auth.py`.
+        if finished():
+            raise problem(409, "job finished", "a ruling has no effect")
+        text = (body or {}).get("text", "").strip()
+        if not text:
+            raise problem(422, "text required")
+        fname = run.add_ruling(text, (body or {}).get("name"))
+        return {"file": fname}
+
     @app.get("/steering")
     async def steering_list():
         # Task 016 (#17): the full entries -- name, timestamp, pending/applied

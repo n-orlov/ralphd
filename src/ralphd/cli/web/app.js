@@ -1508,6 +1508,25 @@ async function renderRunDetail(runId, myGen) {
     h("h3", { class: "muted" }, ["Steering history"]),
     h("div", { id: "steering-box" }, [h("p", { class: "muted" }, ["(loading…)"])]),
   ]);
+  // Task 013 (v0.23 requirement A.2, #224): the operator answer channel's
+  // own section -- deliberately a SEPARATE form/route from Steer above (a
+  // ruling answers a specific rejection and reaches both judging hats;
+  // review discounts steering by design), landing through
+  // `POST /api/runs/<id>/rule` into its own on-disk record.
+  const ruleSec = h("section", {}, [
+    h("h2", {}, ["Rule"]),
+    h("p", { class: "muted" }, [
+      "An operator ruling on a rejection the engine is about to spend an " +
+      "approach on -- reaches both review and verify, keyed to the " +
+      "finding signature (never a task id), so it survives a replan.",
+    ]),
+    h("form", { class: "rule", id: "rule-form" }, [
+      h("input", { type: "text", id: "rule-name", placeholder: "name (optional)", size: "10" }),
+      h("textarea", { id: "rule-text", placeholder: "ruling text", required: "required", rows: "4" }),
+      h("button", { type: "submit" }, ["submit ruling"]),
+    ]),
+    h("div", { id: "rule-status", class: "muted" }, []),
+  ]);
 
   app.appendChild(summary);
   app.appendChild(docSec);
@@ -1519,6 +1538,7 @@ async function renderRunDetail(runId, myGen) {
   app.appendChild(timelineSec);
   app.appendChild(logSec);
   app.appendChild(steerSec);
+  app.appendChild(ruleSec);
   app.appendChild(h("footer", { class: "autorefresh" }, [`auto-refreshing every ${REFRESH_MS / 1000}s`]));
 
   document.getElementById("steer-form").addEventListener("submit", async (ev) => {
@@ -1549,6 +1569,37 @@ async function renderRunDetail(runId, myGen) {
         // chain instead of stopping at the first truthy (possibly object)
         // value, so both control surfaces show the SAME reason for the SAME
         // cause and neither can render the literal `[object Object]`.
+        const reason = innermostReason(j, resp.status);
+        statusEl.textContent = "failed: " + String(reason);
+      }
+    } catch (e) {
+      statusEl.textContent = "failed: " + e;
+    }
+  });
+
+  // Task 013 (v0.23 requirement A.2, #224): the operator ruling textarea's
+  // submit handler -- same shape as steer's above, deliberately posting to
+  // its own route (`/rule`, never `/steer`) so a ruling is never discounted
+  // the way steering is by review's design.
+  document.getElementById("rule-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const text = document.getElementById("rule-text").value;
+    const name = document.getElementById("rule-name").value;
+    const statusEl = document.getElementById("rule-status");
+    statusEl.textContent = "sending…";
+    const body = { text: text };
+    if (name) body.name = name;
+    try {
+      const resp = await fetch(hubURL(`/api/runs/${encodeURIComponent(runId)}/rule`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        statusEl.textContent = "recorded (" + (j.file || "ok") + ")";
+        document.getElementById("rule-text").value = "";
+      } else {
         const reason = innermostReason(j, resp.status);
         statusEl.textContent = "failed: " + String(reason);
       }

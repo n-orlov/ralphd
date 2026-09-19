@@ -125,6 +125,21 @@ What it obliges you to do:
   never permission to skip a criterion and never a verdict on any task — the
   task state file remains the only source of truth for that.
 
+## Operator answer-channel ruling(s) (task 013, #224)
+
+If this prompt includes an "Operator answer-channel ruling(s)" section
+below, treat every ruling listed there as **authoritative and binding on
+this verify** too. It was recorded through exactly ONE writer path —
+`ralphctl rule --file`, `POST /rule`, or the hub run page's ruling textarea
+— all landing through the same `RunDir.add_ruling`, never a task-id-keyed
+record. Apply the ruling to the rejection its recorded signature names (or,
+when it carries no signature, to whichever rejection it plainly answers)
+before you decide a verdict, and never demand justification for why the
+operator is entitled to give it: this is exactly what closes the gap a
+ruling that only reached review would otherwise leave open here — verify
+reads this task's own criteria and, absent this section, honours no
+amendment at all.
+
 ## Sandbox safety: you run inside the thing you are verifying
 
 Your shell runs in the job's own container, as the same user, beside the

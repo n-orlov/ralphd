@@ -1958,6 +1958,123 @@ def apply_amendment_status_rulings(run: "RunDir", config_root: Path,
 
 
 # ---------------------------------------------------------------------------
+# Task 013 (v0.23 PRD requirement A.2, #224): the OPERATOR ANSWER CHANNEL --
+# `ralphctl rule <run> --file ruling.md --name <slug>`, `POST /rule` on the
+# container API, and the hub run page's textarea -- all three land a ruling
+# into ONE run-scoped cumulative record, `<run_root>/rulings/NNN-<name>.md`.
+#
+# Deliberately NOT `amendments/` and NOT `config_root`: unlike an `amend`
+# ruling (waives/replaces a task's `successCriteria`, unforgeable because it
+# lives on the host's `:ro` mount), an operator RULING here answers a
+# specific rejection review is about to archive the approach over, and the
+# hub's `POST /api/runs/<id>/rule` proxies straight to the run's own
+# container API -- a route that has to be able to WRITE the record from
+# inside the container, which a `:ro` mount can never do. Storage is
+# `run_root` (bind-mounted read-write, the same directory `steering/`
+# already lives under), and `ralphctl rule` reaches it the same way `ralphctl
+# steer` reaches `steering/`: through the live engine's own API
+# (`POST /rule`), never a second, host-side writer -- one writer
+# (`write_ruling`, called only from `RunDir.add_ruling`), never two ways to
+# land the same fact.
+#
+# The record is keyed to `LoopSupervisor._review_rejection_signature`'s own
+# signature text, NOT a task id (operator ruling 3, PRD requirement A.2):
+# task ids restart at 001 after a replan, which is exactly how a task-keyed
+# ruling (like an `amend` entry) becomes orphaned and reads as "NOT
+# authoritative" to the next review -- a signature is content-derived and
+# survives that trivially, by never mentioning a task id at all.
+# `RunDir.add_ruling` resolves the CURRENT signature itself, from the same
+# `status.json` `rejectionSignatures`/`approach` pair `_repeated_rejection_
+# signature` reads -- the caller (the CLI, the API route, the hub) never
+# passes one explicitly, so there is no ruling-text vocabulary for an
+# operator to get wrong. `signature=None` (no rejection has been recorded
+# for the run yet, e.g. a ruling filed ahead of time) is still written and
+# still rendered -- see `LoopSupervisor._operator_ruling_review_context` --
+# just with no specific signature to scope it to.
+RULING_DIRNAME = "rulings"
+RULING_GLOB = "[0-9][0-9][0-9]-*.md"
+
+
+def rulings_dir(run_root: Path) -> Path:
+    return Path(run_root) / RULING_DIRNAME
+
+
+def write_ruling(run_root: Path, text: str, *, signature: str | None = None,
+                 name: str | None = None) -> str:
+    """Record one operator ruling as the next numbered file under
+    `<run_root>/rulings/`. The ONLY writer -- called from `RunDir.
+    add_ruling`, itself called from `POST /rule` (the CLI goes through that
+    same route, exactly like `ralphctl steer` goes through `POST
+    /steering`), never a second, independent writer. Returns the file name
+    written (`NNN-<name-or-'ruling'>.md`), the same identifier `ruling_
+    entries` reports back.
+
+    The numbering convention mirrors `add_steering`'s: a bare `--name`
+    already carrying its own `NNN-` prefix (e.g. copy-pasted from a prior
+    ruling filename) has it stripped before the engine's own prefix is
+    applied, so the result is never doubled.
+
+    The fixed header is `signature:` (present only when `signature` is not
+    `None` -- absent, never the literal string `"None"`, so `ruling_
+    entries` can tell "unscoped" from "scoped to the empty string") then
+    `ts:`, a blank line, and the ruling text verbatim -- the same tiny,
+    YAML-free shape `write_amendment` uses.
+    """
+    rdir = rulings_dir(run_root)
+    rdir.mkdir(parents=True, exist_ok=True)
+    existing = sorted(rdir.glob(RULING_GLOB))
+    seq = int(existing[-1].name[:3]) + 1 if existing else 1
+    suffix = name or "ruling"
+    m = re.match(r"^\d{3}-(.+)$", suffix)
+    if m:
+        suffix = m.group(1)
+    fname = f"{seq:03d}-{suffix}.md"
+    header = ""
+    if signature is not None:
+        header += f"signature: {signature}\n"
+    header += f"ts: {utcnow()}\n\n"
+    atomic_write(rdir / fname, header + text.rstrip() + "\n")
+    return fname
+
+
+def ruling_entries(run_root: Path) -> list[dict]:
+    """Every recorded ruling for this run, oldest first, as `{seq, file,
+    signature, ts, text}` -- `signature` is `None` for an entry recorded
+    with no rejection signature yet available (never the string `"None"`).
+    The ONE reader, used by both `LoopSupervisor._operator_ruling_review_
+    context` (in-container) and any future `ralphctl rule --list` /
+    hub-panel view, so "what was ruled" is never described two ways.
+
+    `[]` when `<run_root>/rulings/` does not exist at all -- the common
+    case for a run nobody has ever ruled on.
+    """
+    rdir = rulings_dir(Path(run_root))
+    if not rdir.is_dir():
+        return []
+    out: list[dict] = []
+    for p in sorted(rdir.glob(RULING_GLOB)):
+        try:
+            raw = p.read_text()
+        except OSError:
+            continue
+        header, _, body = raw.partition("\n\n")
+        try:
+            seq = int(p.name[:3])
+        except ValueError:
+            continue
+        signature = None
+        ts = None
+        for line in header.splitlines():
+            if line.startswith("signature:"):
+                signature = line[len("signature:"):].strip()
+            elif line.startswith("ts:"):
+                ts = line[len("ts:"):].strip()
+        out.append({"seq": seq, "file": p.name, "signature": signature,
+                    "ts": ts, "text": body.rstrip("\n")})
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Task 010 (PRD requirement H, #98): the steer hat's tool surface.
 #
 # "The authority boundary is the tool surface, not the prompt" -- decided
@@ -8301,6 +8418,32 @@ class RunDir:
         file, joining the operator's message with the steer hat's own
         settlement claim."""
         return steering_ledger(self.root)
+
+    # -- operator rulings (task 013, v0.23 requirement A.2, #224) --------
+    def add_ruling(self, text: str, name: str | None = None) -> str:
+        """Record one operator ruling, resolving its `signature` key from
+        THIS run's own `status.json` -- the entry for the approach that
+        just rejected (`rejectionSignatures[str(approach)]`, the exact map
+        `_record_rejection_signature` writes and `_repeated_rejection_
+        signature` reads), never a value the caller supplies. `None` when
+        no rejection signature has been recorded yet (a ruling filed ahead
+        of one, or a run that has never taken the ordinary-rejection
+        branch at all) -- `write_ruling` still records the entry, unscoped.
+
+        The ONE writer both `POST /rule` and `ralphctl rule` (which posts
+        to that same route, exactly like `ralphctl steer` posts to `POST
+        /steering`) go through -- never a second, host-side writer.
+        """
+        status = self.read_status()
+        approach = status.get("approach")
+        signatures = status.get("rejectionSignatures") or {}
+        signature = signatures.get(str(approach)) if approach is not None else None
+        return write_ruling(self.root, text, signature=signature, name=name)
+
+    def ruling_entries(self) -> list[dict]:
+        """This run's recorded rulings, through the ONE shared reader
+        (module-level `ruling_entries`)."""
+        return ruling_entries(self.root)
 
     def consume_steering(self, files: list[Path], iteration: int) -> None:
         """Mark `files` applied by iteration `iteration` (task 018, #34).

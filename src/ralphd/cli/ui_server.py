@@ -24,9 +24,14 @@ Serves two things:
     themselves -- see
     `iteration_view`/`document_list`/`artifact_list`/`fault_view`/`cost_view`.
     Control routes are proxies too: `POST
-    /api/runs/<id>/steer` -> the run's `/steering`, and (task 017) `POST
+    /api/runs/<id>/steer` -> the run's `/steering`, (task 017) `POST
     /api/runs/<id>/retry` -> the run's `/retry`, behind the hub's "retry
-    now" button on a degraded run-detail card. `DELETE /api/runs/<id>`
+    now" button on a degraded run-detail card, and (task 013, v0.23
+    requirement A.2, #224) `POST /api/runs/<id>/rule` -> the run's
+    `/rule`, behind the run page's operator-ruling textarea -- a distinct
+    proxy from `steer`'s, landing in a distinct on-disk record
+    (`engine.state.write_ruling`/`ruling_entries`), never a variant of
+    steering. `DELETE /api/runs/<id>`
     (task 030) is the one route that is neither a read nor a proxy: it
     performs `ralphctl rm --force`'s removal through the CLI's own
     `remove_run_state`, for a run whose recorded state is terminal and for
@@ -2163,6 +2168,32 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._send_json(resp if isinstance(resp, dict) else {"detail": str(resp)},
                                 code)
+                return
+            if len(segs) == 4 and segs[:2] == ["api", "runs"] and segs[3] == "rule":
+                # Task 013 (v0.23 requirement A.2, #224): the hub run
+                # page's ruling textarea. Pure proxy to the run's own
+                # `POST /rule`, exactly the same shape as the "steer"
+                # branch above -- deliberately its own endpoint, never a
+                # variant of `/steer`, so a ruling is never discounted the
+                # way review discounts steering by design.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                raw = self._read_body()
+                try:
+                    body = json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    self._send_json({"error": "invalid JSON body"}, 400)
+                    return
+                ok, code, resp = _proxy_json(reg, run_id, "POST", "/rule",
+                                              body=json.dumps(body).encode())
+                if not ok:
+                    self._send_json(
+                        {"error": "run's API unreachable or rejected the request",
+                         "detail": resp}, code or 503)
+                    return
+                self._send_json(resp, code)
                 return
             self._send_json({"error": "no such endpoint"}, 404)
         except Exception as e:

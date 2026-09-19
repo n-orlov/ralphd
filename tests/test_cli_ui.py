@@ -135,7 +135,8 @@ class StubEngineApi:
     def __init__(self, status: dict | None = None, retry_status: int = 200,
                  retry_body: dict | None = None, tasks: dict | None = None,
                  prd: str | None = None, steering: list | None = None,
-                 steer_status: int = 202, steer_body: dict | None = None):
+                 steer_status: int = 202, steer_body: dict | None = None,
+                 rule_status: int = 202, rule_body: dict | None = None):
         self.requests: list[tuple[str, str, str | None]] = []
         self.control_tokens: list[str | None] = []
         self.status_body = status if status is not None else {"state": "running"}
@@ -151,6 +152,11 @@ class StubEngineApi:
         # 202 mirrors the real engine's `POST /steering` (engine/api.py).
         self.steer_status = steer_status
         self.steer_body = steer_body if steer_body is not None else {"file": "001-x.md"}
+        # Task 013 (v0.23 requirement A.2, #224): the operator ruling
+        # channel's own route -- a DISTINCT one from `/steering` above,
+        # never a variant of it.
+        self.rule_status = rule_status
+        self.rule_body = rule_body if rule_body is not None else {"file": "001-r.md"}
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -201,6 +207,8 @@ class StubEngineApi:
                     self._reply(outer.retry_status, outer.retry_body)
                 elif path == "/steering":
                     self._reply(outer.steer_status, outer.steer_body)
+                elif path == "/rule":
+                    self._reply(outer.rule_status, outer.rule_body)
                 else:
                     self._reply(404, {"detail": "no such route"})
 
@@ -783,8 +791,9 @@ def test_ui_server_module_never_imports_fastapi_or_uvicorn():
 _HUB_DELETE_ROUTE = "DELETE /api/runs/<id>"
 _HUB_STEER_ROUTE = "POST /api/runs/<id>/steer"
 _HUB_RETRY_ROUTE = "POST /api/runs/<id>/retry"
+_HUB_RULE_ROUTE = "POST /api/runs/<id>/rule"
 _HUB_MUTATING_ROUTE_STRINGS = (_HUB_DELETE_ROUTE, _HUB_STEER_ROUTE,
-                               _HUB_RETRY_ROUTE)
+                               _HUB_RETRY_ROUTE, _HUB_RULE_ROUTE)
 _HUB_NON_LOOPBACK_FLAG = "--allow-non-loopback-bind"
 
 

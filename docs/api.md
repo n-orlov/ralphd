@@ -46,7 +46,7 @@ Two independent gates, and only the second is the boundary:
 
 **Mutating routes** (require `control_token` when one is configured, i.e.
 unconditionally for any run started or resumed by `ralphctl` after task
-004): `POST /steering`, `POST /interrupt`, `POST /pause`, `POST /resume`,
+004): `POST /steering`, `POST /rule`, `POST /interrupt`, `POST /pause`, `POST /resume`,
 `POST /retry`, `POST /abort`, `POST /shutdown`, `PATCH /config/budget`,
 `PUT /config/prompts/{name}`, `PUT`/`DELETE /config/skills/{name}`,
 `PUT`/`DELETE /config/creds/{name}`, `PUT /config/llm`. This list is
@@ -793,6 +793,25 @@ again. Delivery is at-least-once, application at-most-once — the marker append
 idempotent, so re-delivery can never make one note `applied` twice. What each
 attempt was handed vs. what it consumed is in that iteration's `meta.json`
 (`steeringDelivered`/`steeringConsumed`, `GET /iterations`).
+
+### `POST /rule`
+Task 013 (v0.23 requirement A.2, #224): the operator answer channel. Body:
+`{"text": "<markdown>", "name": "optional-slug"}`. Writes the next
+`NNN-<slug>.md` into `<run-root>/rulings/` — deliberately NOT the same
+directory `amend` writes to (`<config-root>/amendments/`), since `POST
+/rule` is handled in-container and needs write access there. `202
+{"file": "003-optional-slug.md"}`; `422` when `text` is missing or blank;
+`409` once the job is finished.
+
+The ruling's `signature` (rendered next to it in every subsequent prompt) is
+resolved from THIS RUN'S OWN `status.json` at write time —
+`rejectionSignatures[str(approach)]` — never from anything in the request
+body, so a ruling can never be misattributed to a signature the caller
+merely claims. A distinct command from both `steer` (discounted by review
+by design) and `amend` (binds review but not verify, and is orphaned by a
+replan renumbering task ids): a ruling reaches BOTH review and verify, and
+is keyed to the rejection signature rather than a task id, so it survives
+exactly the replan an amendment does not.
 
 ### `POST /interrupt`
 SIGINTs the current agent process (the iteration ends as `interrupted`; the loop

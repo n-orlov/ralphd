@@ -5359,6 +5359,45 @@ def cmd_steer(args):
     out(args, res, f"steering accepted: {res}")
 
 
+def cmd_rule(args):
+    """`ralphctl rule <run> --file ruling.md --name <slug>` (task 013,
+    v0.23 requirement A.2, #224): the operator's ANSWER to a rejection the
+    engine is about to spend an approach on -- a distinct command from
+    both `steer` (discounted by review by design) and `amend` (binds
+    review but not verify, and is orphaned by a replan): a ruling is
+    keyed to the finding signature, never a task id, and reaches BOTH
+    judging hats.
+
+    **`--file` is the primary path and a bare positional message is
+    refused rather than silently dropped** -- issue #224's own incident:
+    a positional message slot has previously swallowed a ruling silently
+    while `--file` was ignored. There is deliberately no positional
+    ruling-text argument on this command at all (unlike `steer`/`amend`),
+    so a stray positional is caught here and refused naming `--file`,
+    never left to argparse's generic "unrecognized arguments".
+
+    Goes through the live engine's own API (`POST /rule`), exactly like
+    `ralphctl steer` goes through `POST /steering` -- never a second,
+    host-side writer -- so the CLI, the hub textarea and the container API
+    all land the same ruling into the same record
+    (`engine.state.write_ruling`/`ruling_entries`).
+    """
+    if args.message is not None:
+        die(2, "ralphctl rule does not accept a bare positional ruling "
+               "message (a positional message slot has previously "
+               "swallowed a ruling silently); pass the ruling text via "
+               "--file <path> instead")
+    if not args.file:
+        die(2, "ralphctl rule requires --file <path> (the ruling text); "
+               "there is no positional or stdin form for this command")
+    _require_run(args.run_id)
+    text = Path(args.file).read_text()
+    if not text.strip():
+        die(2, "empty ruling file")
+    res = api(args.run_id, "POST", "/rule", {"text": text, "name": args.name})
+    out(args, res, f"ruling recorded: {res}")
+
+
 _AMEND_SNAPSHOT_NOTICE = (
     "on-disk read: `ralphctl amend` writes host-side into this run's "
     "read-only-mounted /config directory and never touches the API, so "
@@ -6839,6 +6878,7 @@ _HUB_MUTATING_ROUTES = (
     "DELETE /api/runs/<id> (delete a run)",
     "POST /api/runs/<id>/steer (steer a run)",
     "POST /api/runs/<id>/retry (retry a degraded run now)",
+    "POST /api/runs/<id>/rule (record an operator ruling)",
 )
 
 _HUB_NON_LOOPBACK_BIND_FLAG = "--allow-non-loopback-bind"
@@ -7603,6 +7643,7 @@ _TAIL_SYNTAX_RE = re.compile(r"^-(\d+)(f)?$")
 _LEFTOVER_POSITIONAL_FIELDS: dict[str, tuple[tuple[str, object, tuple[str, ...] | None], ...]] = {
     "amend": (("task_id", None, None), ("text", None, None)),
     "steer": (("message", None, None),),
+    "rule": (("message", None, None),),
     "budget": (("iterations", None, None),),
     "suggestions": (("action", "show", ("show", "apply")),),
 }
@@ -8113,6 +8154,16 @@ def build_parser() -> argparse.ArgumentParser:
                         "applied) instead of sending one; works after the "
                         "container is gone")
     s.set_defaults(func=cmd_steer)
+
+    s = sub.add_parser("rule", help="record an operator ruling in answer to "
+                       "a rejection (task 013, #224); a distinct channel "
+                       "from both steer and amend")
+    s.add_argument("run_id")
+    s.add_argument("message", nargs="?", help=argparse.SUPPRESS)
+    s.add_argument("--file", help="the ruling text (required; there is no "
+                        "positional or stdin form)")
+    s.add_argument("--name")
+    s.set_defaults(func=cmd_rule)
 
     s = sub.add_parser("amend", help="record an operator ruling review must "
                        "honour (waiver/replacement of a task's criteria), or "

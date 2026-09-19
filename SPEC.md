@@ -1301,6 +1301,36 @@ is pending.
 - Every terminal write records `unconsumedSteering`, so stranded steering is
   visible from `status.json` alone.
 
+**The operator RULING channel is a distinct one (task 013, v0.23
+requirement A.2, #224), never an extension of steering or of `amend`
+(§13.4).** `ralphctl rule <run> --file ruling.md --name <slug>`, `POST
+/rule` and the hub run page's textarea all land through the ONE path
+(`RunDir.add_ruling` → `state.write_ruling`) into `rulings/NNN-<name>.md`
+under the RUN root -- deliberately not `config_root`/`amendments/`
+(§13.4): `POST /rule` is handled in-container, so the write has to be
+reachable from there, unlike an amendment's host-only, `:ro`-mounted
+write. `ralphctl rule` refuses a bare positional message and names
+`--file` rather than silently dropping the text (#224's own named
+incident -- a positional message slot has previously swallowed a ruling
+this way while `--file` was ignored). Each ruling is keyed to the
+signature `LoopSupervisor._review_rejection_signature` computed for the
+rejection it answers (persisted as `status.json`'s `rejectionSignatures`,
+§5.2) -- resolved from the run's OWN current `approach` at write time,
+never from caller input -- rather than to a task id, so a replan that
+restarts every task id at 001 (as an amendment's task-id key does) leaves
+the ruling record fully intact: `state.ruling_entries` reads every
+recorded ruling for the run unconditionally, with no
+approach/plan-membership scoping to compute. `LoopSupervisor.
+_operator_ruling_review_context` renders all of them as an authoritative
+clause of the contract, and reaches BOTH a subsequently-built `review`
+prompt (via `_review_extra_context`) and a subsequently-built `verify`
+prompt -- verify needs it explicitly, since it reads `tasks.json` and
+honours no amendment today, so a ruling that only reached review would
+come back as a verify failure. No hub-level auth and no new secret: `POST
+/rule` is a POST, and the control-token gate is method-based middleware
+(§13.4), so it is authenticated the moment it exists, and the hub's proxy
+already forwards `X-Ralphd-Control-Token` for every mutating method.
+
 Pause takes effect at iteration boundaries only: `pause()` clears an event that
 `_gate()` awaits before each iteration, so the running agent finishes undisturbed,
 and `resume()` releases it. An operator pause changes no status field; an
@@ -1512,6 +1542,12 @@ strictly append-only.
 │   ├── NNN-<name>.md        # one operator steering message
 │   ├── .consumed.json       # names already actioned by an iteration
 │   └── .ledger.json         # per-message ledger: consumption + the steer hat's settlement claim (§4.6)
+├── rulings/
+│   └── NNN-<name>.md        # one operator RULING (task 013, v0.23 requirement A.2, #224) --
+│                           #   `ralphctl rule --file`/`POST /rule`/the hub textarea, keyed to
+│                           #   `_review_rejection_signature`, never a task id (§4.6 below);
+│                           #   deliberately under the run root, NOT `config_root`/`amendments/`
+│                           #   (§13.4) -- a `POST /rule` handled in-container needs write access
 ├── iterations/
 │   └── NNNN/                # one iteration (§5.5)
 │       ├── meta.json        # what ran, how it ended, what it cost
@@ -3765,6 +3801,7 @@ exists asks this route rather than probing.
 | `PUT` | `/config/llm` | mid-run endpoint or key rotation: `{"env": {...}, "pi": {...}}`; `204` |
 | `POST` | `/steering` | queue a steering message; `202` with the written filename |
 | `GET` | `/steering` | every steering file with a `consumed` flag |
+| `POST` | `/rule` | record an operator RULING keyed to a rejection signature (task 013, requirement A.2, #224); `202` with the written filename -- see §4.6 |
 | `POST` | `/interrupt` | signal the running iteration, optionally queueing a message first |
 | `POST` | `/pause` | stop at the next iteration boundary |
 | `POST` | `/resume` | release an operator pause |
@@ -3921,6 +3958,7 @@ operation that would be a no-op from one that would be a lie:
 | route | `409` condition |
 |---|---|
 | `POST /steering` | the job is finished; steering has no effect |
+| `POST /rule` | the job is finished; a ruling has no effect |
 | `POST /interrupt` | no iteration is running, so no signal was delivered |
 | `POST /pause` | the job is finished |
 | `POST /retry` | the job is finished, or the run is not in an infra backoff wait |
@@ -3986,6 +4024,7 @@ subcommand is mandatory.
 | `prompts <id> …` | `ls`/`set` phase prompt overrides on a live job |
 | `llm …` | `profiles`/`show`/`test` LLM profiles on the host |
 | `steer <id> [msg]` | queue operator guidance for the next iteration, or `--list` what has been queued |
+| `rule <id> --file <path>` | record an operator ruling in answer to a rejection (task 013, requirement A.2, #224), reaching both review and verify, keyed to the rejection signature not a task id |
 | `amend <id> <task> <text>` | record an operator ruling review must honour (waiver/replacement of a task's criteria), or `--list` what's recorded |
 | `retry <id>` | wake a degraded run out of its infra backoff wait immediately |
 | `budget <id> <+N\|N>` | change a running job's iteration budget in flight |
@@ -5473,7 +5512,7 @@ engine's own control plane, over the same loopback port an operator's
 `ralphctl` also reaches. `ralphctl start`/`resume` provision a
 `JobConfig.control_token` **unconditionally**, whether or not the operator
 ever passes `--api-token`, and it gates only the mutating half of the API
-(`POST /steering`, `/interrupt`, `/pause`, `/resume`, `/retry`, `/abort`,
+(`POST /steering`, `/rule`, `/interrupt`, `/pause`, `/resume`, `/retry`, `/abort`,
 `/shutdown`, `PATCH /config/budget`, every `PUT`/`DELETE` under `/config`),
 checked against `X-Ralphd-Control-Token`, a header distinct from `--api-token`'s
 `Authorization: Bearer`. `PiRunner` strips `RALPHD_CONTROL_TOKEN` (and
@@ -5666,6 +5705,22 @@ an illegal one, leaves `validationAttempts`/`tierLadderExhausted`/
 `artifacts/reports/task-027-operator-ruling-design.md` for the mechanisms
 considered and rejected (a signed amendment, a run-dir marker, a GitHub
 comment authenticated with the same token the agent already holds).
+
+**The operator answer channel (task 013, v0.23 requirement A.2, #224) is
+deliberately NOT built on this unforgeability property.** `ralphctl rule
+--file`/`POST /rule`/the hub textarea all need a write path reachable from
+INSIDE the container (`POST /rule` is handled by the very process this
+section is about, not by a host-side `ralphctl` process the way `amend`
+is), so `rulings/` lives under the RUN root, bind-mounted read-write, not
+under `config_root`. Its trust rests on a different property: there is
+exactly ONE writer path to it (`RunDir.add_ruling`, reached identically by
+the CLI, the API and the hub proxy), so a ruling the operator did not
+submit can only appear there if something already holds control-plane
+write access to this run — the same trust boundary `ralphctl steer`
+already relies on, not a NEW one. `review.md`/`task-verify.md`'s "Operator
+answer-channel ruling(s)" section is deliberately a different heading from
+"Operator rulings" in the same prompt, precisely so neither hat conflates
+the two channels' trust justifications.
 
 What is left: the derived-image path above, and PID-namespace isolation per
 iteration (§15), which would additionally let the engine tell "stop this one

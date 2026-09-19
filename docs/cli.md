@@ -1585,6 +1585,41 @@ Pinned by `tests/test_cli_steer_list.py` (including a real engine steered from
 the CLI: pending → applied → container gone, agreeing with the hub at every
 step).
 
+### `ralphctl rule <run-id> --file <path> [--name <slug>]`
+
+Record an operator **ruling** — the answer channel (task 013, v0.23
+requirement A.2, #224) — in response to a rejection the engine is about to
+spend an approach on. A distinct command from both `steer` (discounted by
+review by design) and `amend` (binds review but not verify, and is orphaned
+by a replan): a ruling reaches BOTH judging hats and is keyed to the
+rejection's own signature (`_review_rejection_signature`, persisted as
+`status.json`'s `rejectionSignatures`), never a task id, so it survives a
+replan that renumbers every task back to `001`.
+
+| Option | Meaning |
+|--------|---------|
+| `--file <path>` | **required.** The ruling text. There is no positional or stdin form for this command. |
+| `--name <slug>` | ruling file slug |
+
+**`--file` is the only path in; a bare positional message is refused.** A
+positional message slot has previously swallowed a ruling silently while
+`--file` was ignored (#224's own named incident), so `ralphctl rule <run-id>
+<text>` is exit `2`, naming `--file`, before any request reaches the network
+— unlike `steer`/`amend`, which both accept a positional message.
+
+Posts through the run's own live API (`POST /rule`), exactly the way `steer`
+posts through `POST /steering` — never a second, host-side writer — so the
+CLI, the hub's run-page textarea and a direct `POST /rule` all land the same
+ruling into the same run-scoped, cumulative record
+(`engine.state.write_ruling`/`ruling_entries`, under `<run-root>/rulings/`,
+deliberately NOT the same `<config-root>/amendments/` directory `amend`
+writes to — `POST /rule` is handled in-container and needs write access
+there, unlike an amendment's host-only write).
+
+Exit `0` accepted · `2` usage error (no `--file`, a bare positional message,
+or an empty file) · `3` unknown run · `4` API unreachable · `5` job already
+finished.
+
 ### `ralphctl amend <run-id> <task-id> [text]`
 
 Record an **operator ruling** — a waiver or a replacement of one task's
@@ -3132,12 +3167,13 @@ container API when reachable. `--port` defaults to a free ephemeral port;
 `--bind` defaults to `127.0.0.1`. Ctrl-C to stop.
 
 **The hub has no authentication of its own** (PRD requirement H, operator
-ruling 4 -- no hub-level auth token, no new secret) and it publishes three
+ruling 4 -- no hub-level auth token, no new secret) and it publishes four
 mutating routes: `DELETE /api/runs/<id>` (deletes a run), `POST
-/api/runs/<id>/steer` (steers a run) and `POST /api/runs/<id>/retry` (retries
-a degraded run now). `--bind` accepting any address with no
-warning would let `--bind 0.0.0.0` publish all of those to the LAN
-silently, so **`ralphctl ui` refuses a non-loopback `--bind`**
+/api/runs/<id>/steer` (steers a run), `POST /api/runs/<id>/retry` (retries
+a degraded run now) and (task 013, v0.23 requirement A.2, #224) `POST
+/api/runs/<id>/rule` (records an operator ruling). `--bind` accepting any
+address with no warning would let `--bind 0.0.0.0` publish all of those to
+the LAN silently, so **`ralphctl ui` refuses a non-loopback `--bind`**
 (anything outside `127.0.0.0/8`/`::1`/`localhost`) **unless
 `--allow-non-loopback-bind` is also passed** -- the refusal names the
 address and the flag and exits non-zero without starting the server. A
@@ -3150,7 +3186,8 @@ of its own**, e.g.:
 ralphctl: serving hub at http://127.0.0.1:PORT (registry: ~/.ralphd) --
 mutating routes published: DELETE /api/runs/<id> (delete a run), POST
 /api/runs/<id>/steer (steer a run), POST /api/runs/<id>/retry (retry a
-degraded run now) -- the hub has no authentication of its own
+degraded run now), POST /api/runs/<id>/rule (record an operator ruling) --
+the hub has no authentication of its own
 ```
 
 **Behind a reverse proxy, under a path prefix.** The hub can be mounted at a
@@ -3562,6 +3599,13 @@ JSON endpoints served under `/api/`:
   waiting on an infra fault` refusal, so the UI can say "nothing to wake"
   instead of reporting a generic failure; `503` (with an `error`) only when
   the run's API is unreachable; `404` for an unknown run id.
+- `POST /api/runs/<id>/rule` — the run page's operator-ruling textarea (task
+  013, v0.23 requirement A.2, #224): body `{"text": ..., "name": ...}`,
+  forwarded to the run's live `POST /rule`. Returns the API's own response
+  (`202 {"file": ...}`) on success; `503` with an `error`/`detail` if the
+  run's API is unreachable or rejects it; `404` for an unknown run id. A
+  distinct proxy from `/steer` above, landing in a distinct on-disk record
+  (`rulings/`, never `steering/`) — never a variant of steering.
 - `DELETE /api/runs/<id>` — delete a **finished** run's state (task 030, issue
   #19): exactly what `ralphctl rm <id> --force --yes` does, in one HTTP call —
   the leftover job container is stopped and removed, the run's labeled

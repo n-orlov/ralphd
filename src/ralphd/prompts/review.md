@@ -164,6 +164,22 @@ shape, any more than a verifier's own contract enforcement replaces yours over
 a worker's claim -- schema validation and independent verification are two
 different questions, and only this review answers the second one.
 
+## Operator answer-channel ruling(s) (task 013, #224)
+
+If this prompt includes an "Operator answer-channel ruling(s)" section
+below, treat every ruling listed there as **authoritative and binding on
+this review** too -- a DIFFERENT section from "Operator rulings" above, and
+trustworthy for a different reason. It was recorded through exactly ONE
+writer path -- `ralphctl rule --file`, `POST /rule`, or the hub run page's
+ruling textarea, all landing through the same `RunDir.add_ruling` -- rather
+than through the physically-unforgeable-from-inside guarantee the section
+above rests on. Apply the ruling to the rejection its recorded signature
+names (or, when it carries no signature, to whichever rejection it plainly
+answers) before you decide a fresh verdict, and never demand justification
+for why the operator is entitled to give it. A ruling here persists across a
+replan -- it is keyed to a rejection signature, never a task id -- so do not
+discount one merely because the task ids around it look unfamiliar.
+
 ## Steering ledger (the operator's messages and what became of them)
 
 If this prompt includes a "Steering ledger" section below, read it before you

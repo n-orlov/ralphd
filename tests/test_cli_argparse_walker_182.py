@@ -110,10 +110,14 @@ def test_the_walk_discovers_exactly_the_four_known_affected_subcommands():
     future subcommand that adds a fifth affected shape is surfaced here
     too (the routedness check above would then fail for it on its own,
     but this pins today's inventory against silent drift in either
-    direction)."""
+    direction). Task 013 (v0.23 requirement A.2, #224) added a fifth,
+    `rule`, whose own `message` positional exists only so `cmd_rule` can
+    detect and refuse a bare positional ruling message -- it is still an
+    `nargs="?"` positional beside a flag, so the same #182 workaround has
+    to cover it too."""
     affected = _find_affected(build_parser())
     assert {path[0] for path in affected if len(path) == 1} == {
-        "steer", "amend", "budget", "suggestions",
+        "steer", "amend", "budget", "suggestions", "rule",
     }
 
 

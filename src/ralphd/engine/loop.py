@@ -13202,6 +13202,67 @@ class LoopSupervisor:
                 f"{r.get('taskId')}: {r.get('reason')} "
                 f"({r.get('previous')} -> {r.get('status')})"))
 
+    def _operator_ruling_review_context(self, audience: str = "review") -> str:
+        """Task 013 (v0.23 PRD requirement A.2, #224): render every recorded
+        operator RULING (`ralphctl rule --file` / `POST /rule` / the hub run
+        page's textarea, `state.ruling_entries`) as extra prompt context,
+        naming it authoritative for `audience` ("review" or "verify") --
+        the answer channel A.1's pause edge, A.4's re-ask and A.5's re-park
+        check all build on, none of which exists yet: this method is the
+        one thing all three of them will read from.
+
+        Deliberately NOT the same context builder as `_operator_amendment_
+        review_context`, and deliberately rendered under a DIFFERENT
+        heading from it ("## Operator answer-channel ruling(s)", never
+        "## Operator rulings" -- that heading is already `_operator_
+        amendment_review_context`'s, and `review.md`'s own prose already
+        tells the reviewer that heading's trust rests specifically on
+        `/config/amendments` being unforgeable from inside the container;
+        this channel's trust rests on something else -- there is exactly
+        ONE writer path, `RunDir.add_ruling`, that `ralphctl rule`/`POST
+        /rule`/the hub textarea all resolve to, not on the file being
+        physically unwritable from inside): a ruling is keyed to
+        `_review_rejection_signature`'s own signature text, never a task
+        id, so there is no approach/plan-membership scoping to compute
+        here at all -- every recorded ruling for the run is rendered,
+        unconditionally, every time this is called (task ids restarting
+        at 001 after a replan changes nothing this method reads). `''`
+        when no ruling has ever been recorded for this run -- the common
+        case.
+
+        Verify needs this explicitly (A.2's own cure condition): it reads
+        `tasks.json` and honours no amendment today, so a ruling that only
+        reached review would come back as a verify failure. Both `_review_
+        extra_context` (review) and `_verify_task`'s own `extra` assembly
+        call this -- `audience` here only ever arrives as `"review"` or
+        `"verify"`.
+        """
+        entries = state.ruling_entries(self.run.root)
+        if not entries:
+            return ""
+        decision = "review" if audience == "review" else "verify"
+        lines = [
+            "\n## Operator answer-channel ruling(s) (task 013, #224)\n",
+            "The operator has recorded the following ruling(s) on this run "
+            "(`ralphctl rule --file`, `POST /rule`, or the hub run page's "
+            "ruling textarea) -- a DIFFERENT channel from any 'Operator "
+            "rulings' section elsewhere in this prompt (that one, if "
+            "present, is the unforgeable host-written amendment channel; "
+            "this one is the run-scoped operator answer channel). Each is "
+            "operator-authored and binding on "
+            f"this {decision}: read it as an authoritative clause of the "
+            "contract for the rejection it answers, apply it when deciding "
+            "a fresh verdict, and never demand justification for why the "
+            "operator is entitled to give it.\n",
+        ]
+        for e in entries:
+            sig = e.get("signature")
+            scope = (f"signature: {sig}" if sig
+                    else "unscoped -- filed ahead of a specific rejection, "
+                         "applies to any")
+            lines.append(f"\n### Ruling {e['seq']} ({scope})\n{e['text']}\n")
+        return "".join(lines)
+
     def _operator_amendment_review_context(self, audience: str = "review") -> str:
         """Task 028 (#26): render every operator ruling recorded under
         `CONFIG_DIR/amendments/` (written HOST-SIDE by `ralphctl amend`,
@@ -13868,7 +13929,9 @@ class LoopSupervisor:
         (task 003/004, requirement A.3/A.2, #110/#139), the engine's
         always-present statement of which parts of the run's history are
         its own terminal record (task 008, requirement B.2, #140), any
-        recorded operator ruling (task 028, #26), then every OPEN
+        recorded operator ruling (task 028, #26), then any recorded
+        v0.23-style operator RULING keyed to a rejection signature (task
+        013, requirement A.2, #224), then every OPEN
         impossibility petition (task 010, requirement C, #112), then every
         ALREADY-CONFIRMED petition rendered as settled history (task 014,
         requirement F.1, #144), then any duplicate/re-filed petition
@@ -13883,6 +13946,7 @@ class LoopSupervisor:
                 self._review_materiality_rubric_context() +
                 self._terminal_record_review_context() +
                 self._operator_amendment_review_context() +
+                self._operator_ruling_review_context() +
                 self._petitions_review_context() +
                 self._adjudicated_petitions_review_context() +
                 self._duplicate_petitions_review_context() +
@@ -14062,13 +14126,19 @@ class LoopSupervisor:
         # purely from the contract text and the workspace root; nothing in
         # its body is review-specific, so verify reuses it verbatim rather
         # than re-resolving the same rubric a second way.
-        extra = self._review_materiality_rubric_context() + (
+        # Task 013 (v0.23 requirement A.2, #224): verify also gets every
+        # recorded operator RULING, unconditionally -- A.2's own cure
+        # condition names this explicitly: verify reads `tasks.json` and
+        # honours no amendment today, so a ruling that only reached review
+        # would come back as a verify failure.
+        extra = (self._review_materiality_rubric_context() +
+                self._operator_ruling_review_context(audience="verify") + (
             f"## Task under verification\n\n"
             f"- **id**: {tid}\n"
             f"- **title**: {title}\n"
             f"- **successCriteria**: {criteria}\n"
             f"- **validationAttempts**: {attempts} of {VALIDATION_ATTEMPT_LIMIT}\n"
-        )
+        ))
         # Task 004 (#121, requirement A.4): task-verify.md step 4 tells the
         # verifier to recognise the LAST available attempt from
         # `validationAttempts` itself -- name that condition explicitly here
