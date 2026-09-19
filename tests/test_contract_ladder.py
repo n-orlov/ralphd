@@ -812,6 +812,67 @@ def test_a_legible_rejected_verdict_with_a_schema_slip_elsewhere_still_rejects(
         "the deck never renders"
 
 
+def test_the_second_ladder_flag_separates_unusable_findings_from_an_unreadable_verdict(
+        tmp_path):
+    """Task 010 (requirement C.1, #219): `_review_contract_ladder` now
+    computes a SECOND flag (`self._review_findings_unusable`) alongside
+    `self._review_contract_unrepaired` -- one for a legible verdict claim
+    whose FINDINGS CHANNEL is what's unusable, the other for a verdict
+    claim that was never legible at all -- and `_review_verdict` reads
+    both (the new invariant assertions right where it already read the
+    first one).
+
+    Downstream behaviour is UNCHANGED by this task -- the whole point of
+    the two scenarios below is that both still land exactly where they did
+    before this commit: a legible `rejected` verdict whose sidecar does
+    not re-validate still rides the ordinary rejection ladder to
+    `rejected_approach_left` (archive and composite PRD included), the
+    same outcome as this module's sibling schema-slip node just above; an
+    unreadable verdict claim still holds on `review_contract_unrepaired`
+    (`test_ladder_exhaustion_holds_for_an_operator_and_never_archives`
+    above). What's new, and all this task adds, is that the engine can now
+    tell the two exhaustions apart on its own two flags -- requirement C.2
+    is what a later task lets `_step_review` act on.
+    """
+    legible_rejected = json.dumps({"verdict": "rejected",
+                                   "reason": "the deck never renders"})
+
+    # -- scenario 1: a legible verdict, an unusable (present-but-invalid)
+    # findings sidecar -- one of requirement C's three named shapes ("a
+    # truncated sidecar"), the same fixture `tests/test_run_record.py::
+    # test_review_verdict_is_persisted_when_the_sidecar_does_not_validate`
+    # uses for the identical channel state.
+    sup = _supervisor_review_ladder(tmp_path / "findings-unusable",
+                                    [_ok(legible_rejected)])
+    root = sup.run.root
+    sup.run.findings_json_file.write_text('[{"severity": "blocking"}]')
+
+    outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
+
+    # unchanged downstream: still an ordinary rejection.
+    assert outcome == ("advance", "replan", "rejected_approach_left")
+    assert (root / "approaches" / "01").exists()
+    assert sup.run.composite_prd_file.exists()
+    # what's new: the discriminating flag is set, its sibling is not.
+    assert sup._review_findings_unusable is True
+    assert sup._review_contract_unrepaired is False
+
+    # -- scenario 2: the mirror case -- an unreadable verdict claim sets
+    # the ORIGINAL flag and leaves the new one False. Same prose reply
+    # `test_ladder_exhaustion_holds_for_an_operator_and_never_archives`
+    # drives, in a supervisor of its own so the two scenarios never share
+    # a run directory.
+    prose = "still not sure, let me look again"
+    sup2 = _supervisor_review_ladder(tmp_path / "verdict-unreadable",
+                                     [_ok(prose)])
+
+    outcome2 = asyncio.run(asyncio.wait_for(sup2._step_review(), 30.0))
+
+    assert outcome2 == ("advance", "paused", "review_contract_unrepaired")
+    assert sup2._review_contract_unrepaired is True
+    assert sup2._review_findings_unusable is False
+
+
 # -- 3. Half B: the negative-verdict synonym, and its one-directionality ---
 
 

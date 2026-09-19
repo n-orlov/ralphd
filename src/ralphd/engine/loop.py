@@ -500,6 +500,22 @@ class LoopSupervisor:
         # hardcoded to "deadline during review" and no deadline is
         # involved here.
         self._review_contract_unrepaired: bool = False
+        # Task 010 (requirement C.1, #219): the DISCRIMINATING sibling of
+        # `_review_contract_unrepaired` just above -- True iff the LAST
+        # ordinary (non-`mid_run`) run of `_review_contract_ladder`
+        # exhausted the ladder over a LEGIBLE verdict claim whose FINDINGS
+        # CHANNEL is what's unusable (a channel present on disk that will
+        # not re-validate, a `verified` claim contradicting a blocking
+        # finding, or a curable finding with no `cured_when`) -- never both
+        # this flag and `_review_contract_unrepaired` at once, by
+        # construction of `_review_contract_ladder`'s own `findings_
+        # channel_unusable_reply` (see its comment there for the exact
+        # scope, and for why a stray schema field elsewhere or a `rejected`
+        # verdict with no reason are deliberately excluded from it). This
+        # task computes and stores the flag only; nothing yet acts on it --
+        # requirement C.2 adds the `review_findings_unusable` pause edge
+        # that reads it from `_step_review`.
+        self._review_findings_unusable: bool = False
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
         # Task 011 (#5): wall-clock twin of self.deadline (published as
@@ -9727,6 +9743,31 @@ class LoopSupervisor:
         # validate` used, so an exhausted ladder always leaves `contract_
         # errors` non-empty here, and the residual-recomputation branch
         # above is itself guarded by `not contract_errors`.
+        #
+        # Task 010 (requirement C.1, #219): `_review_verdict` RECEIVES the
+        # sibling flag `_review_contract_ladder` now also computes
+        # (`self._review_findings_unusable`) -- read here, alongside the
+        # flag above, so the invariant the two share is checked in the one
+        # place both are in scope together rather than left implicit: a
+        # verified verdict can never coincide with EITHER flag (an
+        # exhausted ladder -- the only place either flag is ever set True
+        # -- always leaves `contract_errors` non-empty here, by the same
+        # recomputation-off-identical-inputs argument the comment above
+        # already makes), and the two flags can never both be True at once
+        # (`_review_contract_ladder`'s own `findings_channel_unusable_
+        # reply` is constructed to exclude `verdict_claim_unreadable`). No
+        # verdict this task computes changes because of it -- the ternary
+        # just below still reads only `self._review_contract_unrepaired`,
+        # exactly as it did before this task; requirement C.2/C.3 are what
+        # let this method's own recorded verdict react to the new flag.
+        findings_channel_unusable = self._review_findings_unusable
+        assert not (verified and findings_channel_unusable), (
+            "a verified review verdict cannot coincide with an exhausted "
+            "findings-channel ladder pass")
+        assert not (self._review_contract_unrepaired
+                    and findings_channel_unusable), (
+            "an unreadable verdict claim and a legible-but-findings-"
+            "unusable one are mutually exclusive outcomes of the same pass")
         if not mid_run:
             self._record_approach_verdict(
                 self._approach, "review",
@@ -9887,8 +9928,12 @@ class LoopSupervisor:
         # mid-run adjudication episode scores no approach verdict
         # (`_review_verdict`'s own `if not mid_run:`) and its exhaustion
         # must not leak into the run-ending tail write either.
+        # Task 010 (requirement C.1, #219): the sibling flag reset
+        # alongside `_review_contract_unrepaired`, same reason -- one
+        # pass's fault can never leak into the next.
         if not mid_run:
             self._review_contract_unrepaired = False
+            self._review_findings_unusable = False
         if result is None or self._review_interrupted(result):
             return result
         findings_list, channel_errors = self._review_findings_channel()
@@ -9959,6 +10004,39 @@ class LoopSupervisor:
             not isinstance(parsed, dict)
             or parsed.get("verdict") not in transitions.HAT_SCHEMAS[
                 "review"]["properties"]["verdict"]["enum"])
+        # Task 010 (requirement C.1, #219): the DISCRIMINATING sibling of
+        # `verdict_claim_unreadable` -- whether THIS reply, if its verdict
+        # claim is legible, is one the ladder will (or did) enter and
+        # exhaust because the FINDINGS CHANNEL, not the payload's own
+        # `verdict`/`reason`, is what's unusable: a channel present on disk
+        # that will not re-validate, a `verified` claim contradicting a
+        # blocking finding, or a curable finding with no `cured_when`.
+        # Computed off the SAME attempt-0 inputs `verdict_claim_unreadable`
+        # reads off, for the identical reason stated in that flag's own
+        # comment above: it is the reply the run was CHARGED for, the one
+        # every downstream reader still has in hand once the ladder
+        # exhausts (an exhausted ladder returns `result` byte-for-byte
+        # unchanged). Mutually exclusive with `verdict_claim_unreadable` by
+        # construction (`not verdict_claim_unreadable` guards it) -- a
+        # reply cannot be both an unreadable verdict claim and a legible
+        # one whose findings channel is what's broken. Also excludes a
+        # stray/wrong-typed field elsewhere in an otherwise-legible payload
+        # (`schema_errors`) and a `rejected` verdict with no `reason`
+        # (`review_report_errors`) -- both of those are judgements the hat
+        # DID render, and this flag is deliberately narrower than "the
+        # ladder exhausted": see `_review_contract_ladder`'s own docstring
+        # for why those two shapes keep today's ordinary rejection ladder.
+        # This task (C.1) only computes and stores the flag; no caller acts
+        # on it yet -- that is requirement C.2's job.
+        findings_channel_unusable_reply = (
+            not verdict_claim_unreadable
+            and isinstance(parsed, dict)
+            and not schema_errors
+            and not transitions.review_report_errors(parsed)
+            and bool(channel_errors
+                      or transitions.review_verdict_findings_errors(
+                          parsed, findings_list)
+                      or transitions.review_cured_when_errors(findings_list)))
         if isinstance(parsed, dict) and not schema_errors:
             if transitions.review_report_errors(parsed):
                 return result
@@ -10014,8 +10092,17 @@ class LoopSupervisor:
         # `_review_verdict(await _review_contract_ladder(r))`, so returning
         # `None` here would crash every one of them for a signalling
         # convenience).
-        if not mid_run and verdict_claim_unreadable:
-            self._review_contract_unrepaired = True
+        if not mid_run:
+            if verdict_claim_unreadable:
+                self._review_contract_unrepaired = True
+            # Task 010 (requirement C.1, #219): the sibling record, on the
+            # sibling condition -- mutually exclusive with the branch
+            # above by `findings_channel_unusable_reply`'s own construction
+            # (it is guarded by `not verdict_claim_unreadable`). No caller
+            # reads this yet; requirement C.2 adds the pause edge that acts
+            # on it.
+            elif findings_channel_unusable_reply:
+                self._review_findings_unusable = True
         return result
 
     @staticmethod
