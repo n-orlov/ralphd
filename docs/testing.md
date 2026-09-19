@@ -62,6 +62,45 @@ per-task tier affordable at all.
 Nested `pytest --collect-only` children are deliberately *not* in that list: the
 records lint is built that way and the tier table puts records lint in smoke.
 
+## Running the suite inside a ralphd job container
+
+This repository is developed by ralphd runs of its own, so the suite is often
+collected *inside* a ralphd job container -- and such a container already has
+`/var/lib/ralphd/record` (`privsep.DEFAULT_TASK_RECORD_DIR`) materialised
+root-owned 0700, because the engine running that job put the authoritative
+record for *its* run there. `privsep.task_record_dir()` answers truthfully
+that the directory exists (`is_dir()` needs only `x` on the root-owned 0755
+parent), so without isolation every in-process `RunDir.write_tasks()` in the
+suite aims at that directory and dies at the agent uid with `PermissionError:
+[Errno 13] ... '/var/lib/ralphd/record/.tasks-last-good.json'`, and every
+spawned live engine dies the same way before it binds a port -- surfacing as
+the misleading `TimeoutError: engine API never came up`.
+
+`tests/conftest.py::_isolate_ambient_task_record_dir` (autouse) closes that
+ambient leak, in the same spirit as the in-process `$HOME` and
+`RALPHD_NOTIFIER_URL` fixtures beside it: when -- and only when -- the default
+record directory both exists and is unusable at this uid, and the invocation
+named no `$RALPHD_TASK_RECORD_DIR` of its own, it points that variable at a
+path that does not exist. That is precisely the state a developer host or a CI
+runner is in, where nothing ever created the directory: `task_record_dir()`
+returns `None` and the record falls back to the run-dir location
+(`privsep.legacy_protected_tasks_dir`), the degrade privsep.py documents for
+"the test suite's own unprivileged engine". The fixture is therefore inert
+wherever the suite is already green, and `monkeypatch.setenv` reaches spawned
+children through `_child_base_env()`, so the live-engine harness needs no
+second mechanism. No hand-exported override is needed to run the suite from
+inside a job container -- which matters for `scripts/host_like_pytest.sh`,
+whose whole job is to scrub every ambient `RALPHD_*` name and which therefore
+cannot carry one.
+
+The key store (`petitions.key_store_dir()`, `/var/lib/ralphd/run-secrets`,
+root-owned 0700 in the same container) has no counterpart fixture and needs
+none: it resolves to that default only under a real uid boundary
+(`privsep.separated()`), which this suite's agent-uid processes never have, so
+an unusable ambient store is never consulted. Forcing an override there would
+instead *create* a store where a developer host has none, changing the
+memory-only-key degrade under test.
+
 ## Loop-driving tests must be bounded
 
 A test that drives the engine loop through `run_job`, `_run_job_core` or

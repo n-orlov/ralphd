@@ -809,6 +809,105 @@ def _scrub_notifier_env_in_process(request, monkeypatch, tmp_path_factory):
     monkeypatch.setattr(loop_mod, "CONFIG_DIR", isolated_config_dir)
 
 
+# --- the container's own root-owned task record (task 013) --------------
+# A ralphd JOB container -- which is what this suite runs inside whenever it
+# is exercised by a ralphd run of its own -- has
+# `privsep.DEFAULT_TASK_RECORD_DIR` (`/var/lib/ralphd/record`) already
+# materialised as a root-owned 0700 bind mount, because the engine running
+# that job put it there for its OWN authoritative task record
+# (`privsep.protect_run_secrets_dir`'s sibling, see that module's header).
+# `privsep.task_record_dir()` answers "is it a directory?" -- which is true
+# through the root-owned 0755 parent -- so every in-process
+# `RunDir.write_tasks()`/`read_tasks()` in this suite resolves the record to
+# THAT directory and dies on it at the agent uid:
+#
+#   PermissionError: [Errno 13] Permission denied:
+#   '/var/lib/ralphd/record/.tasks-last-good.json'
+#
+# Measured inside such a container before this fixture existed: 13 of 22
+# nodes in tests/test_verify.py, 3 of 15 in
+# tests/test_operator_rule_channel.py, and (through a spawned engine that
+# dies the same way before it binds a port, reported as the usual
+# `TimeoutError: engine API never came up`) most live-engine modules. None of
+# that is a defect in the code under test: it is the ambient container's
+# directory leaking into the suite, the same class of leak as the ambient
+# `$HOME` and the ambient `RALPHD_NOTIFIER_URL` above, and it was previously
+# papered over by asking every invocation to export
+# `RALPHD_TASK_RECORD_DIR=/tmp/no-such-dir` by hand -- which
+# `scripts/host_like_pytest.sh` deliberately cannot do, since it scrubs every
+# ambient `RALPHD_*` name to reproduce a developer host.
+#
+# So the fixture points the override at a path that does NOT exist, which is
+# exactly what a developer host has: `task_record_dir()` returns None there
+# and the record falls back to `legacy_protected_tasks_dir()` inside the run
+# dir -- privsep.py's own documented degrade ("the test suite's own
+# unprivileged engine"). It is inert wherever the suite is already green:
+# it fires only when the default directory both exists AND is unusable at
+# this uid, which is never true on a developer host or a CI runner (nothing
+# created it there) and never true when the invocation named its own
+# override (the operator's or the docker tier's explicit choice, left
+# alone). `monkeypatch.setenv` reaches spawned children too -- `_child_base_
+# env()` below copies `os.environ` -- so the live-engine harness inherits it
+# without a second mechanism. It holds its own `MonkeyPatch` instance rather
+# than the shared `monkeypatch` fixture, so a test body's own
+# `monkeypatch.undo()` cannot hand the ambient directory back mid-test (see
+# the fixture's own comment).
+#
+# The key store (`petitions.key_store_dir()`, `/var/lib/ralphd/run-secrets`,
+# root-owned 0700 in the same container) needs no counterpart: it resolves
+# to the default ONLY under `privsep.separated()`, i.e. a real uid boundary,
+# and this suite's processes run at the agent uid with no boundary at all,
+# so an unreadable ambient store is never consulted. Forcing an override
+# there would instead CREATE a store where a developer host has none,
+# changing the documented memory-only-key degrade.
+def ambient_task_record_dir_unusable(default: Path) -> bool:
+    """True when `default` is the leaking-container shape described above:
+    an existing directory this process cannot actually read, write or
+    traverse. False when it does not exist (a developer host / CI runner --
+    nothing to isolate) and false when it is usable (a legitimately mounted,
+    agent-usable record dir).
+
+    Pure over its argument so it can be pinned by a test without a
+    root-owned directory to hand (tests/test_ambient_task_record_dir.py).
+    """
+    try:
+        if not Path(default).is_dir():
+            return False
+    except OSError:  # pragma: no cover - unreadable ancestor
+        return True
+    return not os.access(default, os.R_OK | os.W_OK | os.X_OK)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ambient_task_record_dir(tmp_path_factory):
+    from ralphd.engine import privsep
+    if os.environ.get(privsep.TASK_RECORD_DIR_ENV) \
+            or not ambient_task_record_dir_unusable(
+                privsep.DEFAULT_TASK_RECORD_DIR):
+        yield
+        return
+    # Deliberately NOT created: "there is no mount" is the state being
+    # reproduced. Under the session's own basetemp so that a stray mkdir by
+    # anything downstream lands somewhere writable and disposable rather
+    # than failing on a root-owned parent.
+    absent = tmp_path_factory.getbasetemp() / "no-ambient-task-record-dir"
+    # Its OWN MonkeyPatch instance, not the shared `monkeypatch` fixture the
+    # two fixtures above use: a test body that calls `monkeypatch.undo()`
+    # mid-test (tests/test_confirmed_petition_survives_archive_and_episode.py
+    # does, to mint a key in one episode and read it back in the next) undoes
+    # every action on the shared instance, including a fixture's -- which
+    # would hand the ambient root-owned directory straight back in the middle
+    # of the test that did it. Measured: that module's whitespace-edged-key
+    # node was the one red in the guard subset when this fixture shared the
+    # instance.
+    mp = pytest.MonkeyPatch()
+    mp.setenv(privsep.TASK_RECORD_DIR_ENV, str(absent))
+    try:
+        yield
+    finally:
+        mp.undo()
+
+
 # `_STRIPPED_CHILD_ENV_VARS`: variables a spawned engine must never inherit
 # from whatever process is running pytest. The three docker-siblings ones may
 # be set in the ambient environment (e.g. this very suite running inside a
