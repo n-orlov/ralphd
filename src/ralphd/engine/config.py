@@ -452,6 +452,29 @@ class JobConfig:
     # it replaces -- see `docs/api.md`'s `curePasses`/`gateCurePasses`
     # rows for the default stated where an operator surface reads it.
     cure_pass_ceiling: int = 3
+    # #208: the operator-authorized disposable-clone protocol for the judging
+    # hats (`prompts/review.md`, `prompts/verdict_gate.md`), as a path to an
+    # executable inside the workspace. Those prompts require every measured
+    # figure to come from a throwaway clone that has PROVEN it is measuring
+    # itself rather than the live tree or the engine's own installed copy;
+    # the `pip install -e .` / `ralphd.__file__` recipe they spell out is one
+    # ecosystem's way to establish that, and it is unsatisfiable by
+    # construction on a product with no `pyproject.toml`. A run pointed at a
+    # Go module therefore had three consecutive reviews execute zero tests
+    # and reject `curable: false`, because a hat honouring its prompt
+    # legitimately cannot measure anything once the bootstrap fails -- and
+    # correctly refused a Go analogue the run had written for itself, since
+    # nothing authorized substituting it.
+    #
+    # Naming the script here is that authorization, granted at launch where
+    # it is auditable, instead of through a mid-run `amend --wave`. `None`
+    # (the default) leaves the prompts' own Python recipe as the protocol,
+    # so every existing job.yaml behaves exactly as before. The engine does
+    # not run, read or validate the script: it only tells the judging hats
+    # that this path is the sanctioned protocol, and the hat runs it and
+    # requires exit 0 before it may cite a measurement. Rendered into every
+    # hat's `## Job context` by `LoopSupervisor._review_clone_protocol_note`.
+    review_clone_protocol: str | None = None
     # Task 022 (PRD requirement B.3, #140): the endpoint the engine-owned
     # `notify` hat tool (`engine/hat_tools.py`) POSTs to, from the engine
     # process itself -- available to the worker and steer hats through the

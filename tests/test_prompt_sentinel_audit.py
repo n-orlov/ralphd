@@ -197,6 +197,15 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         ("Operator rulings (task 028, #26)",),
         "the rendered review prompt (AMENDMENT_MARKER)", ALL),
     AbsenceAssertion(
+        "test_review_clone_protocol.py", (132, 139),
+        ("## Disposable-clone protocol (operator-authorized)",),
+        "every hat's rendered prompt for a run that declares no "
+        "`review_clone_protocol` (#208), and for one that declares only "
+        "whitespace: the engine-built `## Job context` extra block "
+        "(`LoopSupervisor._review_clone_protocol_note`, loop.py:1511) must "
+        "render nothing at all, so an existing job.yaml keeps byte-for-byte "
+        "the prompt it always had", ALL),
+    AbsenceAssertion(
         "test_review_criteria_reverification.py", (92,),
         ("## Criteria edited after a validation failure",),
         "the fully rendered review prompt", ALL),

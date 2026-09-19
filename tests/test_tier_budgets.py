@@ -161,9 +161,44 @@ TIER_MARKERS = ("smoke", "fast")
 # too), and `-m smoke` collects 4220 tests over 270 modules, the module
 # count sitting exactly on its own zero-headroom ceiling, so no unit here
 # could have added a smoke-tier module either.
+#
+# GH #208 ("review/verdict_gate mandate a Python `pip install -e .` clone
+# bootstrap") raises `fast`'s test ceiling 5844 -> 5857 and -- for the first
+# time in this record -- `smoke`'s MODULE ceiling 270 -> 271. It is one
+# change with one new test module, and both raises are that module:
+# `tests/test_review_clone_protocol.py`, 13 tests, carrying no tier marker
+# and so collected by both tiers. Attribution is the whole module, and the
+# 13 split three ways: 2 pin `JobConfig.review_clone_protocol` (the shipped
+# default, and the job.yaml key), 4 pin the rendered `## Disposable-clone
+# protocol` block (every hat sees it, it grants authority and bounds a
+# non-zero exit, absent renders nothing, whitespace-only reads as absent),
+# 4 pin the two judging prompts (the invariant rather than a Python mandate,
+# the operator-authorized protocol, the `curable: false` prohibition, the
+# standing ban on manufacturing identity evidence), and 3 pin `ralphctl
+# start --review-clone-protocol` end to end (flag, absent, template key).
+#
+# A new module rather than a new scenario inside an existing one, stated as
+# a decision: the subject is a config field plus two prompt sections plus a
+# CLI flag, which no single existing module owns -- `test_notifier_url_flag.
+# py` owns a different field's three levels, and folding prompt-text
+# assertions into it would make that module pin two unrelated things, which
+# this block's own prose calls worse than a raised ceiling.
+#
+# Measured directly with `.venv/bin/python -m pytest -m fast --collect-only
+# -q` and `-m smoke --collect-only -q` at this commit's own tip: `-m fast`
+# 5857/5989 tests collected (132 deselected) over 387 modules, `-m smoke`
+# 4233/5989 (1756 deselected) over 271 modules. Both raised literals sit
+# exactly on the measured count with headroom for NOTHING further, the same
+# choice every entry above made. The two UNraised literals were measured
+# rather than assumed: `fast`'s 390 module ceiling still stands 3 above the
+# live 387 (it was 4 above 386 before this module), and `smoke`'s 4300 test
+# ceiling stands 67 above the live 4233. Every one of these six numbers is
+# `_modules(collected(marker))` in this module's own helpers, not a count of
+# `tests/*.py` paths in the raw collect-only text -- the latter over-counts,
+# which is how the 388 first written here was wrong by one.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 5844, "modules": 390},
-    "smoke": {"tests": 4300, "modules": 270},
+    "fast": {"tests": 5857, "modules": 390},
+    "smoke": {"tests": 4300, "modules": 271},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

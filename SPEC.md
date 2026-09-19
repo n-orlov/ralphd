@@ -2710,9 +2710,11 @@ templates/<name>/
 **minutes**, defaults `480` and `45`), `llm`, `model`,
 `thinking`, `price_strategy`, `notifier_url` (§10.2, PRD v0.20.2 requirement
 B.2 — no `ralphctl config` registry level for this one: an endpoint is one
-operator's channel for one job), `network` and `auto_resume`, plus the
- three image supply keys `image`, `base_image` and `dockerfile` (settled as one
-unit, §3.2), plus three
+operator's channel for one job), `review_clone_protocol` (§10.2, #208 — the
+judging hats' disposable-clone identity protocol; no registry level either,
+since the path is a property of one product's repository), `network` and
+`auto_resume`, plus the three image supply keys `image`, `base_image` and
+`dockerfile` (settled as one unit, §3.2), plus three
 path-valued keys resolved relative to the template directory: `skills` (a list of
 directory names), `creds` (one directory name) and `prd` (a filename, default
 `prd.md`). Task 006 retired `model_strategy`/`fast_model` from this list — a
@@ -4031,6 +4033,7 @@ returns immediately.
 | `--thinking LEVEL` | unset | `pi` thinking level |
 | `--price-strategy S` | `none` | derive a cost for routes the provider does not price (or prices with an implausible zero): `aws` uses the built-in Bedrock rate table (§8.6) |
 | `--notifier-url URL` | unset | endpoint the notify hat tool POSTs operator updates to (PRD requirement B.2, #197); written to `job.yaml` as `notifier_url` (§10.2 precedence: `RALPHD_NOTIFIER_URL` beats it; without the flag a `--template`'s own `notifier_url:` key (§6.7) or a hand-set key in the run's own `job.yaml` still reaches it; unset means unconfigured) |
+| `--review-clone-protocol PATH` | unset | workspace-relative executable the `review` and `verdict_gate` hats run inside their disposable clone to prove the clone is measuring itself, in place of the prompts' Python `pip install -e .` / `__file__` recipe (#208); written to `job.yaml` as `review_clone_protocol` (so `resume` replays it), and reachable without the flag via a `--template`'s own key (§6.7) or a hand-set key in the run's own `job.yaml`. Rendered to every hat as the `## Disposable-clone protocol (operator-authorized)` block; the engine neither runs nor validates it. Unset leaves the prompts' Python recipe in force, which a product with no `pyproject.toml` cannot satisfy |
 | `--llm PROFILE` | `host` | `host`, `none`, or a name under `<registry>/llm-profiles/` |
 | `--llm-env KEY=VAL` | none | extra env for the LLM wiring; repeatable |
 | `--llm-header 'Name: value'` | none | set this HTTP header on every provider of the resolved pi config (`Name=value` also accepted; repeatable; a same-named header the profile already carries is overridden, others are kept; `${env:}`/`${file:}`/`${cmd:}` resolve on the host, task 044, #177) |

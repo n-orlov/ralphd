@@ -1141,6 +1141,9 @@ class LoopSupervisor:
         creds_note = self._creds_note()
         if creds_note:
             parts.append(creds_note)
+        clone_note = self._review_clone_protocol_note()
+        if clone_note:
+            parts.append(clone_note)
         pending = self.run.pending_steering()
         if pending:
             if phase in STEERING_ACTIONABLE_PHASES:
@@ -1471,6 +1474,51 @@ class LoopSupervisor:
             "so the token never appears in a `git remote`/`git clone` "
             "argument or in `git remote -v` output.\n")
         return "".join(lines)
+
+    def _review_clone_protocol_note(self) -> str:
+        """#208: name the operator-authorized disposable-clone protocol, when
+        `job.yaml` declares one (`JobConfig.review_clone_protocol`).
+
+        The judging prompts require every measured figure to come from a
+        throwaway clone that has proven it is measuring itself, and spell the
+        requirement out in Python (`pip install -e .`, then assert
+        `ralphd.__file__` resolves inside the clone). On a product with no
+        `pyproject.toml` that bootstrap cannot succeed, so a hat honouring
+        its prompt may measure nothing at all -- which is how a Go product's
+        review executed zero tests across three approaches and rejected
+        `curable: false` each time. The remedy the hat itself named was an
+        operator-authorized analogue; this line is that authorization,
+        delivered at launch rather than through a mid-run `amend --wave`.
+
+        Silent (returns `""`) unless the key is set, so a run that does not
+        declare one sees exactly the prompt text it saw before and keeps the
+        Python recipe as its protocol.
+
+        Rendered into the shared `## Job context` block for EVERY hat, not
+        just the two that measure: the worker is the hat that writes and
+        maintains the script, and a worker that cannot see which path the
+        judge will run is the reason the Go analogue was written somewhere
+        the judge never looked. The engine deliberately neither runs nor
+        validates the script -- "is this a real protocol" is precisely the
+        judgement the reviewing hat is here to make, and an engine-side
+        existence check would turn a typo into a startup failure rather than
+        a finding.
+        """
+        protocol = (self.cfg.review_clone_protocol or "").strip()
+        if not protocol:
+            return ""
+        return (
+            "\n## Disposable-clone protocol (operator-authorized)\n"
+            f"`{protocol}`, relative to the workspace root, is the sanctioned "
+            "protocol for establishing that a disposable clone is measuring "
+            "itself. Run it inside the clone and require exit 0 before citing "
+            "any measurement from that clone; it stands in place of the "
+            "Python `pip install -e .` recipe named in the judging prompts, "
+            "and needs no further authorization, task or amendment. A "
+            "non-zero exit means identity is NOT established and nothing "
+            "measured there may be cited -- report that as a harness "
+            "condition naming this path, never as a defect in the work under "
+            "review.\n")
 
     @staticmethod
     def _docker_siblings_note() -> str:

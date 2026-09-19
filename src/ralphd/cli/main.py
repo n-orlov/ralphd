@@ -1619,6 +1619,15 @@ _TEMPLATE_SCALAR_FIELDS = {
     # notifier_url`): an endpoint is one operator's channel for one job,
     # not a fleet-wide default.
     "notifier_url": None,
+    # #208: the judging hats' operator-authorized disposable-clone protocol.
+    # None means "nobody on the host decided", so the key is omitted from
+    # job.yaml and the prompts' own Python recipe stands. Being in this dict
+    # is what makes a `--template`'s own `review_clone_protocol:` key reach
+    # the run's job.yaml when the flag is absent. No
+    # `_REGISTRY_CONFIG_FIELD_KEYS` entry, for the same reason
+    # `notifier_url` has none: the path is a property of one product's
+    # repository, not a fleet-wide default.
+    "review_clone_protocol": None,
     "network": None,
     # default lives in AUTO_RESUME_DEFAULT alone (task 026) -- never a
     # second literal here
@@ -2153,6 +2162,11 @@ def cmd_start(args):
         # for the full precedence statement (flag/template/job.yaml key <
         # RALPHD_NOTIFIER_URL).
         "notifier_url": args.notifier_url,
+        # #208: same layering as `notifier_url` above (explicit flag >
+        # `--template`'s own `review_clone_protocol:` key > None), and None
+        # omits the key so the judging prompts' Python recipe stays the
+        # protocol for every run that does not declare one.
+        "review_clone_protocol": args.review_clone_protocol,
         # Task 035 (#20 H3): the *recipe* this run's image was derived from,
         # persisted so `ralphctl resume` replays it instead of falling back to
         # some default image (see `_resume_job_image`). Only the ingredients an
@@ -7760,6 +7774,28 @@ def build_parser() -> argparse.ArgumentParser:
                         "start regardless of source [default: the "
                         "--template's own notifier_url, else unset, i.e. "
                         "unconfigured]")
+    # #208: the judging prompts require every measured figure to come from a
+    # disposable clone that has proven it is measuring itself, and spell that
+    # proof out in Python (`pip install -e .`, then assert the package's
+    # `__file__` resolves inside the clone). On a product with no
+    # `pyproject.toml` that bootstrap cannot succeed, and a hat honouring its
+    # prompt then measures nothing: a Go module's review executed zero tests
+    # across three approaches and rejected `curable: false` each time. This
+    # flag names the product's own equivalent, authorizing it at launch where
+    # it is auditable instead of through a mid-run `amend --wave`. The engine
+    # neither runs nor validates the path -- it tells the judging hats which
+    # script is sanctioned, and the hat requires exit 0 before citing a
+    # measurement. Unset leaves the prompts' Python recipe in force, so every
+    # existing job.yaml is unaffected.
+    s.add_argument("--review-clone-protocol", default=None, metavar="PATH",
+                   help="workspace-relative executable the review and "
+                        "verdict-gate hats run inside their disposable clone "
+                        "to prove it is measuring itself, in place of the "
+                        "prompts' Python `pip install -e .` recipe (required "
+                        "for a non-Python product). Written to the run's "
+                        "job.yaml as `review_clone_protocol` so `resume` "
+                        "replays it [default: the --template's own value, "
+                        "else unset, i.e. the Python recipe]")
     s.add_argument("--llm", default=None,
                    help="LLM profile: host|none, or a name from "
                         "<registry>/llm-profiles/<name>.yaml (docs/llm-profiles.md) "

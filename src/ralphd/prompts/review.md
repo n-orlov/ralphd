@@ -55,16 +55,41 @@ trusting nothing the worker wrote about its own work.
 ## Measuring in a disposable clone
 
 Every test you run, count you collect, or figure you cite in step 3's traceability
-table — a pytest node's pass/fail, a `--collect-only` count, a benchmark, a rate
+table — a test node's pass/fail, a collected-test count, a benchmark, a rate
 lookup — must be measured against a **disposable clone**, never against the live
-workspace tree and never against whatever `ralphd` the engine running you already
-has installed in its own site-packages. The protocol: `git clone --no-hardlinks
-<workspace>` into a fresh temp directory, create that clone's own venv, `pip
-install -e .` the clone into that venv, and — before taking any measurement —
-assert that `ralphd.__file__` resolves inside the temp clone's own tree, not
-the installed engine's copy and not the original workspace. Only once that
-assertion holds is a test result or a count from that venv trustworthy evidence
-for a finding. Discard the clone when you are done with it.
+workspace tree and never against whatever copy of the product the engine running
+you already has installed for itself. Two things must hold before a figure from
+that clone counts as evidence: the clone is a throwaway copy (`git clone
+--no-hardlinks <workspace>` into a fresh temp directory), and you have **proven**
+that what you measured resolves inside that clone rather than in the original
+workspace or in the engine's own installed copy. Identity is the load-bearing
+half — without it a green suite may belong to the installed engine, and would say
+nothing at all about the work under review. Discard the clone when you are done
+with it.
+
+How you prove identity is a question about the product's own toolchain. For a
+Python product: create the clone's own venv, `pip install -e .` the clone into
+that venv, and assert the package's `__file__` resolves inside the temp clone's
+tree. For any other ecosystem, use that ecosystem's equivalent — have the build
+system resolve the module or package it will actually compile, and assert the
+resolved path lies inside the clone. Either way, quote the assertion and its
+output in the finding that relies on it; an assertion whose output you can quote
+is what makes the measurement citable.
+
+If `## Job context` names an operator-authorized disposable-clone protocol, that
+script **is** the protocol: run it inside the clone, require exit 0, and cite the
+identity output it prints. It needs no task, tracked document or amendment to
+authorize it.
+
+Being unable to establish identity at all is a condition of the harness or of the
+job's configuration, and never a defect in the work under review. File it as a
+blocking finding that names the command, its exact output, and the remedy — a
+toolchain-appropriate identity assertion the work can provide, or an
+operator-declared protocol in `## Job context` — and leave it **curable**. Marking
+it `curable: false` spends every remaining approach against an obstacle that no
+amount of re-planning the product can move. Never manufacture the evidence
+instead: do not add a stub package, and do not measure the engine's own installed
+copy, to make an identity assertion succeed.
 
 ## Reading a `cancelled` CI conclusion
 

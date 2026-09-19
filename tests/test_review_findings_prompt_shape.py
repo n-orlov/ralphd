@@ -223,18 +223,57 @@ def test_review_md_labels_an_inspection_only_discharge_and_blocks_the_unlabelled
 
 
 def test_review_md_and_verdict_gate_md_both_describe_the_disposable_clone_protocol():
+    """#208 widened what this node pins, and pins MORE of the section, not
+    less. It used to require the two prompts to spell the protocol out in
+    `ralphd`'s own terms -- the literal `ralphd.__file__`, and "resolves
+    inside the temp clone's own tree, not the installed engine's copy and not
+    the original workspace" -- which made the engine's own package name part
+    of the contract every product under review had to satisfy. A product with
+    no `pyproject.toml` cannot, so a hat honouring that prompt measured
+    nothing and rejected `curable: false` on every approach.
+
+    The two halves of the section are now pinned separately, which is what
+    those two literals were standing in for: the INVARIANT (a throwaway
+    clone, plus a *proven* identity claim naming both wrong answers it rules
+    out), and the Python RECIPE as one worked example beside an
+    any-other-ecosystem clause. `git clone --no-hardlinks` and `pip install
+    -e .` survive verbatim, so nothing this node used to catch escapes it;
+    the ecosystem-neutral half is new coverage. The rest of #208's prompt
+    contract -- the operator-authorized protocol, and the `curable: false`
+    prohibition -- is pinned in `tests/test_review_clone_protocol.py`
+    alongside the engine and CLI halves it belongs with.
+    """
     for name, text, norm in (
         ("review.md", REVIEW_MD, REVIEW_MD_NORM),
         ("verdict_gate.md", VERDICT_GATE_MD, VERDICT_GATE_MD_NORM),
     ):
         assert "## Measuring in a disposable clone" in text, name
+        # The invariant: a throwaway clone, and identity PROVEN against both
+        # of the wrong things a measurement could have come from.
         assert "git clone --no-hardlinks" in norm, name
-        assert "pip install -e .` the clone" in norm, name
-        assert "ralphd.__file__" in norm, name
         assert (
-            "resolves inside the temp clone's own tree, not the installed "
-            "engine's copy and not the original workspace" in norm
+            "the clone is a throwaway copy (`git clone --no-hardlinks "
+            "<workspace>` into a fresh temp directory)" in norm
         ), name
+        assert (
+            "you have **proven** that what you measured resolves inside that "
+            "clone rather than in the original workspace or in the engine's "
+            "own installed copy" in norm
+        ), name
+        assert "Identity is the load-bearing half" in norm, name
+        # The Python recipe, offered for a Python product rather than
+        # demanded of every product -- and an equivalent required of the rest.
+        assert "For a Python product" in norm, name
+        assert "pip install -e .` the clone" in norm, name
+        assert (
+            "assert the package's `__file__` resolves inside the temp "
+            "clone's tree" in norm
+        ), name
+        assert "For any other ecosystem, use that ecosystem's equivalent" in norm, name
+        assert (
+            "assert the resolved path lies inside the clone" in norm
+        ), name
+        assert "Discard the clone when you are done with it." in norm, name
 
 
 def test_review_md_states_a_green_suite_is_not_evidence_for_a_removal_requirement():
