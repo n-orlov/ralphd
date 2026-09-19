@@ -131,6 +131,41 @@ def test_blocked_is_deliberately_not_a_status_in_this_table():
 
 
 # ---------------------------------------------------------------------------
+# 1c. the un-reopen edge -- `pending` back to a record's own pre-reopen
+# terminal status (v0.23 requirement B.3, task 007, #221)
+# ---------------------------------------------------------------------------
+
+def test_the_un_reopen_edge_is_declared_out_of_pending():
+    # `validated` is only reachable in the vigilant variant and `completed`
+    # only in the non-vigilant one, but both are declared in the BASE
+    # table (never the delta) because either variant's own reopen can only
+    # ever be undone in that SAME variant -- there is no real vigilant/
+    # non-vigilant overlap here for a delta to express.
+    assert tr.is_legal_task_status_transition("pending", "validated", True)
+    assert tr.is_legal_task_status_transition("pending", "completed", False)
+    # ... and declared, not merely legal by coincidence -- named by the
+    # dedicated predicate `state.apply_task_status_change` uses to pick
+    # which event this transition emits.
+    assert tr.is_un_reopen_transition("pending", "validated")
+    assert tr.is_un_reopen_transition("pending", "completed")
+    assert not tr.is_un_reopen_transition("pending", "in-progress")
+    assert not tr.is_un_reopen_transition("in-progress", "validated")
+
+
+def test_no_status_declares_pending_as_a_successor():
+    # The standing invariant the un-reopen edge does NOT relax: it moves a
+    # record OUT of `pending`, never back INTO it -- nothing in the
+    # declared table, in either variant, names `pending` as a successor of
+    # anything. The two direct writes that set a record/verification task
+    # back to `pending` (`state.py`'s `invalidates` walk) stay direct
+    # writes; re-routing THAT move through this table is explicitly out of
+    # this requirement's scope.
+    for status in tr.TASK_STATUSES:
+        assert "pending" not in tr.legal_next_task_statuses(status, True)
+        assert "pending" not in tr.legal_next_task_statuses(status, False)
+
+
+# ---------------------------------------------------------------------------
 # 1b. `superseded` -- declared because the ENGINE takes the edge, claimable
 # by nobody else (v0.20 requirement B.1, #156, task 019)
 # ---------------------------------------------------------------------------

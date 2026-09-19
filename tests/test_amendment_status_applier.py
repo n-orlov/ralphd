@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ralphd.engine import state
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import (
@@ -23,6 +24,7 @@ from ralphd.engine.state import (
     RunDir,
     amendment_entries,
     apply_amendment_status_rulings,
+    apply_task_status_change,
     write_amendment,
 )
 from tests.conftest import supervisor_factory
@@ -105,10 +107,17 @@ def test_illegal_transition_is_refused_and_nothing_is_written(tmp_path):
          "successCriteria": "do Y"},
     ])
     cdir = tmp_path / "config"
-    write_amendment(cdir, "011", "jump straight to validated",
-                    status="validated")
+    # v0.23 requirement B.3 (task 007, #221): `pending -> validated` became
+    # a legal edge (the un-reopen) the moment this task landed --
+    # `pending -> awaiting-validation` is still nowhere in the declared
+    # table (that status is only ever CLAIMED via `in-progress`, never
+    # ruled straight from `pending`), so this node keeps pinning "an
+    # illegal transition is refused" against a combination that is
+    # genuinely illegal in both variants.
+    write_amendment(cdir, "011", "jump straight to awaiting-validation",
+                    status="awaiting-validation")
 
-    results = apply_amendment_status_rulings(run, cdir, vigilant=False)
+    results = apply_amendment_status_rulings(run, cdir, vigilant=True)
 
     assert len(results) == 1
     assert results[0]["applied"] is False
@@ -118,6 +127,78 @@ def test_illegal_transition_is_refused_and_nothing_is_written(tmp_path):
     # refused, so the status on disk is untouched
     assert task["status"] == "pending"
     assert _events(run) == []
+
+
+# ---------------------------------------------------------------------------
+# the un-reopen edge -- `pending` back to a record's own pre-reopen
+# terminal status (v0.23 requirement B.3, task 007, #221). Drives it
+# through `apply_task_status_change` directly (rather than through the
+# amendment-ruling channel above) since no caller in `loop.py` invokes it
+# yet -- this is the ONE declared move the applier itself must still be
+# provably able to take, with its OWN event, before any caller exists.
+# ---------------------------------------------------------------------------
+
+def test_the_un_reopen_edge_drives_through_apply_task_status_change_and_emits_its_own_event(
+        tmp_path):
+    run = _run(tmp_path)
+    _write_tasks(run, [
+        {"id": "058", "title": "record every lane's check-run result",
+         "status": "pending", "successCriteria": "record it"},
+    ])
+
+    result = apply_task_status_change(
+        run, "058", "validated", True, source="operator",
+        reason="the cure never touched the cited path")
+
+    assert result["applied"] is True
+    assert result["previous"] == "pending"
+    assert result["status"] == "validated"
+    task = run.read_tasks()["tasks"][0]
+    assert task["status"] == "validated"
+
+    events = _events(run)
+    # the un-reopen's OWN event, never the generic amendment_status_applied
+    # every other transition through this same function still emits.
+    assert [e["type"] for e in events] == [state.UN_REOPEN_EVENT]
+    ev = events[0]
+    assert ev["taskId"] == "058"
+    assert ev["previous"] == "pending"
+    assert ev["status"] == "validated"
+    assert ev["source"] == "operator"
+    assert ev["reason"] == "the cure never touched the cited path"
+
+
+def test_the_un_reopen_edge_to_completed_also_emits_its_own_event_non_vigilant(
+        tmp_path):
+    run = _run(tmp_path)
+    _write_tasks(run, [
+        {"id": "059", "title": "record every lane's check-run result",
+         "status": "pending", "successCriteria": "record it"},
+    ])
+
+    result = apply_task_status_change(
+        run, "059", "completed", False, source="steer")
+
+    assert result["applied"] is True
+    events = _events(run)
+    assert [e["type"] for e in events] == [state.UN_REOPEN_EVENT]
+    assert events[0]["status"] == "completed"
+    assert events[0]["source"] == "steer"
+
+
+def test_the_ordinary_pending_claim_edge_is_unaffected_still_no_dedicated_event(
+        tmp_path):
+    # sanity: the un-reopen wiring only fires for the two NEW targets --
+    # the ordinary `pending -> in-progress` claim edge (through THIS same
+    # applier, an unusual but legal call) still emits the generic event,
+    # never `UN_REOPEN_EVENT`.
+    run = _run(tmp_path)
+    _write_tasks(run, [
+        {"id": "060", "title": "t", "status": "pending"},
+    ])
+    apply_task_status_change(run, "060", "in-progress", True, source="steer")
+    events = _events(run)
+    assert [e["type"] for e in events] == ["amendment_status_applied"]
 
 
 def test_preserves_validation_attempts_tier_ladder_and_criteria_text(tmp_path):

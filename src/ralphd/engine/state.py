@@ -1793,6 +1793,22 @@ def amendment_entries(config_root: Path) -> list[dict]:
     return out
 
 
+# v0.23 requirement B.3 (#221, task 007): the un-reopen edge's own
+# dedicated event -- `apply_task_status_change` emits THIS, never the
+# generic `amendment_status_applied` audit event, for the one transition
+# `transitions.is_un_reopen_transition` recognises (`pending` back to a
+# record's own pre-reopen terminal status). `amendment_status_applied`'s
+# own name and payload shape (`file`, an amendment ruling's own filename)
+# is honestly an operator-ruling/steer-tool audit record; this transition
+# is neither of those in its intended caller (requirement B.4, task 008's
+# still-unbuilt completion-path reconciliation hook) even though it is
+# reachable today through the SAME two existing callers
+# (`apply_amendment_status_rulings`/`steer_task_update`) the declared table
+# now also permits it for -- `source` still names whichever caller drove
+# it, exactly as `amendment_status_applied` already does.
+UN_REOPEN_EVENT = "task.un_reopened"
+
+
 def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
                              vigilant: bool, *, source: str,
                              reason: str = "", file: str | None = None,
@@ -1832,7 +1848,17 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
       013), and for `failed -> skipped` ALSO writes `justification` into
       the task's own `notes` field in that SAME write -- never into
       `validationNotes`/`unsatisfiableReason` -- then emits an
-      `amendment_status_applied` audit event;
+      `amendment_status_applied` audit event, EXCEPT for the one declared
+      move `transitions.is_un_reopen_transition` recognises (`pending`
+      back to a record's own pre-reopen terminal status, requirement B.3,
+      task 007, #221), which emits its own dedicated `UN_REOPEN_EVENT`
+      (`"task.un_reopened"`) instead -- naming `taskId`, `previous`
+      (always `"pending"`), `status` (the restored terminal status),
+      `source` and `reason` -- so a reader of the event stream can tell an
+      automated un-reopen apart from an ordinary operator/steer ruling
+      without inspecting `status` itself. No caller takes this edge yet
+      (requirement B.4, task 008, is the completion-path hook that will);
+      this task only declares the edge and wires the event;
     - an ILLEGAL transition, or a `failed -> skipped` move with no
       justification, is refused: nothing is written, and the returned
       record says why.
@@ -1875,9 +1901,13 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
     if current == "failed" and target_status == "skipped":
         task["notes"] = effective_justification
     run.write_tasks(data)
-    run.emit("amendment_status_applied", taskId=task_id, field="status",
-            previous=current, status=target_status, source=source,
-            file=file, reason=reason, justification=effective_justification)
+    if transitions.is_un_reopen_transition(current, target_status):
+        run.emit(UN_REOPEN_EVENT, taskId=task_id, previous=current,
+                 status=target_status, source=source, reason=reason)
+    else:
+        run.emit("amendment_status_applied", taskId=task_id, field="status",
+                previous=current, status=target_status, source=source,
+                file=file, reason=reason, justification=effective_justification)
     record.update(applied=True, reason="")
     return record
 

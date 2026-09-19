@@ -338,6 +338,8 @@ Generated from `src/ralphd/engine/transitions.py`'s task-status mini-FSM (`TASK_
 | Status | Variant | Target |
 |---|---|---|
 | `pending` | both | `in-progress` |
+| `pending` | non-vigilant only | `completed` |
+| `pending` | vigilant only | `validated` |
 | `in-progress` | non-vigilant only | `completed` |
 | `in-progress` | both | `failed` |
 | `in-progress` | both | `skipped` |
@@ -377,6 +379,7 @@ stateDiagram-v2
     state "superseded" as superseded
     [*] --> pending
     pending --> in_progress
+    pending --> validated
     in_progress --> awaiting_validation
     in_progress --> failed
     in_progress --> skipped
@@ -389,6 +392,7 @@ stateDiagram-v2
     validation_failed --> failed
     validation_failed --> skipped
     failed --> skipped
+    pending --> completed : non_vigilant_only
     in_progress --> completed : non_vigilant_only
 ```
 

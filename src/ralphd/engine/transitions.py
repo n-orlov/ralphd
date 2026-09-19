@@ -1052,8 +1052,61 @@ ENGINE_FORCED_TASK_STATUSES: tuple[str, ...] = ("superseded",)
 OPERATOR_RULEABLE_TASK_STATUSES: tuple[str, ...] = tuple(
     s for s in TASK_STATUSES if s not in ENGINE_FORCED_TASK_STATUSES)
 
+# v0.23 requirement B.3 (#221, task 007): the un-reopen edge -- `pending`
+# back to a record's own PRE-REOPEN terminal status. `state.insert_cure_
+# tasks`'s `invalidates` walk re-opens a plan's own lane-evidence record
+# (and its verification steps) from whichever terminal status it held --
+# `completed` in the non-vigilant variant, `validated` in the vigilant one
+# (`tests/test_cure_invalidates.py`'s own fixture defaults, and the
+# `test_the_chain_reopens_regardless_of_the_tasks_prior_terminal_status`
+# node that pins both) -- on the ENGINE's own prediction that the cure
+# would touch the path the finding named. Requirement B.4 (task 008) is
+# the completion-path hook that diffs the persisted pre-cure sha
+# (requirement B.2, task 006) against HEAD and, when the cure's real diff
+# never touched the record's cited path after all, RETRACTS that
+# prediction by walking this edge back to whichever status it undoes.
+#
+# Declared exactly the way `in-progress`'s own claim edge already is:
+# `completed` in the BASE table (`pending -> completed`, the non-vigilant
+# terminal a record can only ever have held before this variant reopened
+# it) and `validated` in the VIGILANT DELTA (`pending -> validated`,
+# replacing `completed` as `in-progress`'s own delta already replaces it
+# with `awaiting-validation`) -- never both in the same variant, because a
+# record reopened under one variant can only ever have held THAT variant's
+# own terminal status to begin with.
+#
+# This does NOT relax the standing invariant that there is no edge INTO
+# `pending` (`tests/test_amendment_status_load_time.py`'s own "a ruling
+# ordering `in-progress -> pending` is refused" node, and `test_task_
+# status_lifecycle.py`'s own table-property pin below) -- the two direct
+# writes that set a record/verification task's `status` back to `pending`
+# (`state.py`, the `invalidates` walk itself) stay exactly as they are;
+# re-routing THAT move through the declared table is a separate change,
+# with its own risk, and is explicitly out of this requirement's scope.
+# This edge only moves a record OUT of `pending`, retracting a move the
+# engine already made on its own prediction.
+UN_REOPEN_TASK_STATUS_TARGETS: tuple[str, ...] = ("validated", "completed")
+
+
+def is_un_reopen_transition(current: str, target: str) -> bool:
+    """True iff `(current, target)` is the un-reopen edge declared just
+    below -- `pending` back to a record's own pre-reopen terminal status,
+    in WHICHEVER variant declares it (the base table declares `pending ->
+    completed`, the vigilant delta replaces it with `pending ->
+    validated` -- this predicate recognises either, variant-agnostically,
+    because by the time `state.apply_task_status_change` calls it the
+    move has already cleared `is_legal_task_status_transition` for
+    whichever variant is actually in force). The one function both that
+    applier (to pick which event this transition emits) and a test that
+    wants to name the move without re-typing the two target strings
+    should call, rather than each re-deriving `current == "pending" and
+    target in (...)` in its own words.
+    """
+    return current == "pending" and target in UN_REOPEN_TASK_STATUS_TARGETS
+
+
 TASK_STATUS_TABLE: dict[str, tuple[str, ...]] = {
-    "pending": ("in-progress",),
+    "pending": ("in-progress", "completed"),
     # non-vigilant's claim path -- vigilant overrides this entry entirely
     # (see TASK_STATUS_VIGILANT_DELTA below).
     # `superseded` (v0.20 requirement B.1, #156, tasks 016/019) is declared
@@ -1131,6 +1184,14 @@ TASK_STATUS_VIGILANT_DELTA: dict[str, tuple[str, ...]] = {
     # overwritten to `failed`/`petitioned` before the single write lands).
     "awaiting-validation": ("validated", "validation-failed", "failed",
                             "petitioned"),
+    # v0.23 requirement B.3 (#221, task 007): the un-reopen edge's vigilant
+    # target -- `validated` replaces `completed` as the status a re-opened
+    # record/verification task is walked back to, mirroring how this same
+    # delta already replaces `completed` with `awaiting-validation` on
+    # `in-progress` above, for the identical reason: a record reopened
+    # under THIS variant can only ever have held THIS variant's own
+    # terminal status before the reopen.
+    "pending": ("in-progress", "validated"),
 }
 
 
