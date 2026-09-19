@@ -4420,6 +4420,44 @@ def _repair_cure_task_criteria(run: "RunDir", task: dict) -> None:
              source="cure-insertion")
 
 
+def invalidates_reopen_walk(tasks: list, invalidates) -> list:
+    """Task 005 (PRD requirement B.1, #221): the pure half of `insert_
+    cure_tasks`'s per-finding `invalidates` walk, extracted with no
+    behaviour change so a future dry-run trigger predicate (requirement
+    A's second trigger condition) and requirement B's own reconciliation
+    hook can both ask what a cure pass WOULD re-open without a `RunDir`
+    and without writing anything.
+
+    Returns one entry per item of `invalidates`, in order: `None` for an
+    item that is not a non-empty string, or for one `_lane_evidence_
+    record_chain` does not recognise as the plan's own final lane-
+    evidence record -- `insert_cure_tasks`'s own re-take branch is the
+    only thing that ever happens to those, and nothing here decides that
+    branch or does any of its bookkeeping -- else the `(record_task,
+    verification_tasks)` pair the chain returned, exactly what the walk
+    WOULD re-open (`status` back to `"pending"` on each). Every lookup
+    reads `tasks` only; nothing here is ever assigned back into it, so a
+    caller that only inspects or discards the returned entries mutates
+    no task by calling this.
+
+    `invalidates` absent, `None`, or anything else that is not a `list`
+    returns `[]` -- the same no-op shape `insert_cure_tasks`'s own loop
+    already treated it as before this extraction.
+    """
+    if not isinstance(invalidates, list):
+        return []
+    walk = []
+    for path in invalidates:
+        if not isinstance(path, str) or not path:
+            walk.append(None)
+            continue
+        record_task, verification_tasks = _lane_evidence_record_chain(
+            tasks, path)
+        walk.append((record_task, verification_tasks)
+                    if record_task is not None else None)
+    return walk
+
+
 def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     """Task 009 (PRD requirement C.1, #141; cured under task 006, C.1
     finding 4): append exactly one cure task per entry of `blocking` (in
@@ -4671,12 +4709,21 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
         invalidates = finding.get("invalidates")
         if not isinstance(invalidates, list):
             continue
-        for path_index, path in enumerate(invalidates, start=1):
+        # Task 005 (PRD requirement B.1): the pure lookup is now
+        # `invalidates_reopen_walk` above -- one entry per path, aligned
+        # with `invalidates` itself, `None` where the walk would not
+        # re-open anything (an invalid entry, or a path the re-take
+        # branch below owns instead). Only the write side -- setting
+        # `status`, splicing the cure edge, and the re-take branch's own
+        # cross-path bookkeeping (`retake_anchor_id`, `_existing_retake_
+        # task`) -- stays inlined here; none of that is pure.
+        reopen_walk = invalidates_reopen_walk(tasks, invalidates)
+        for path_index, (path, reopened) in enumerate(
+                zip(invalidates, reopen_walk), start=1):
             if not isinstance(path, str) or not path:
                 continue
-            record_task, verification_tasks = _lane_evidence_record_chain(
-                tasks, path)
-            if record_task is not None:
+            if reopened is not None:
+                record_task, verification_tasks = reopened
                 for verification_task in verification_tasks:
                     verification_task["status"] = "pending"
                     _append_validated_dependency_edge(

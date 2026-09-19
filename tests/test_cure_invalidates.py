@@ -63,6 +63,7 @@ from ralphd.engine.state import (
     apply_worker_dependency_repoints,
     atomic_write_json,
     insert_cure_tasks,
+    invalidates_reopen_walk,
     task_blocked_by,
 )
 
@@ -234,6 +235,40 @@ def test_an_unrelated_path_alongside_the_record_path_still_gets_its_own_task(tmp
     tasks = {t["id"]: t for t in data["tasks"]}
     assert "artifacts/reports/v0.20-suite-budget.md" in tasks[retake_id]["successCriteria"]
     assert tasks[retake_id]["dependsOn"] == [cure_id]
+
+
+# ---------------------------------------------------------------------------
+# Task 005 (PRD requirement B.1, #221): the pure predicate extracted from
+# the walk above, called directly over a tasks list -- no `RunDir`, no
+# write.
+# ---------------------------------------------------------------------------
+
+
+def test_the_reopen_walk_predicate_pins_the_would_reopen_ids_without_mutating(tmp_path):
+    tasks = _lane_fixture_tasks()
+    before = json.loads(json.dumps(tasks))
+
+    walk = invalidates_reopen_walk(
+        tasks, [RECORD_PATH, "docs/testing.md", "", 7, None])
+
+    assert len(walk) == 5
+    record_task, verification_tasks = walk[0]
+    assert record_task["id"] == "058"
+    assert [t["id"] for t in verification_tasks] == ["057"]
+    # a path with no lane-evidence chain, an empty string, and two
+    # non-string entries all come back `None` -- the re-take branch's
+    # territory, never this predicate's.
+    assert walk[1:] == [None, None, None, None]
+
+    # pure: the tasks list handed in is exactly as it went in.
+    assert tasks == before
+
+
+def test_the_reopen_walk_predicate_returns_empty_for_a_non_list_invalidates(tmp_path):
+    tasks = _lane_fixture_tasks()
+    assert invalidates_reopen_walk(tasks, None) == []
+    assert invalidates_reopen_walk(tasks, "not-a-list") == []
+    assert invalidates_reopen_walk(tasks, []) == []
 
 
 # ---------------------------------------------------------------------------
