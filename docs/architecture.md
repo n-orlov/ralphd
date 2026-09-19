@@ -2190,6 +2190,71 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   insertion, the lane re-open chain, the cure-origin exclusion and
   per-path re-take reuse, the planner-declared ordering edge, and the
   emitted event's own `taskIds`).
+- **The `invalidates` re-open is a prediction, and it is now reconciled
+  against the cure's real diff afterwards (v0.23 requirement B, #221,
+  tasks 005-008).** The bullet above still runs first and unconditionally,
+  from any prior terminal status, on the finding's own `invalidates`
+  prediction alone -- that part is unchanged. What is new is a walk-back
+  in three pieces, extracted and landed as four separate tasks because the
+  whole requirement is the wave's largest and touches a transition table:
+  (1) **B.1 (task 005)** pulled the per-finding walk itself out of
+  `insert_cure_tasks` as a pure predicate, `state.invalidates_reopen_walk`
+  -- one `(record_task, verification_tasks)` pair per `invalidates` entry,
+  `None` where nothing would be re-opened -- with no behaviour change; the
+  write side (status flips, dependency edges) stays inlined in
+  `insert_cure_tasks`, which now just calls the predicate once per finding.
+  (2) **B.2 (task 006)** persists the workspace HEAD sha the cure pass
+  started at -- `insert_cure_tasks`'s own new optional `pre_cure_head`
+  parameter, read once by the caller via `_workspace_head_sha()` -- into
+  `status.json`'s `preCureHeads` map, keyed by the RECORD task's own id
+  (never a verification/retake task's), in the same shape
+  `approachStartHeads` already uses, and emits it on `task.pre_cure_head_
+  recorded`; a later re-open of the same record id overwrites the entry
+  rather than accumulating it. (3) **B.3 (task 007)** declares the move
+  back OUT of `pending` as a real edge in `transitions.TASK_STATUS_TABLE`
+  (`pending -> completed`/`pending -> validated` under the vigilant
+  delta), named variant-agnostically by `transitions.is_un_reopen_
+  transition`, and routes it through `state.apply_task_status_change`,
+  which emits `task.un_reopened` instead of the generic amendment event
+  for exactly this transition. This does not relax the standing rule that
+  there is no edge INTO `pending` -- it is the one declared way OUT of a
+  `pending` the walk above put a record into on its own prediction. No
+  caller invokes the edge yet at this point. (4) **B.4 (task 008)** is the
+  completion-path hook that actually calls it: `state.records_pending_
+  reconciliation` reads back every `task.pre_cure_head_recorded` entry and
+  returns a record only when its live `preCureHeads` baseline still matches
+  the sha a cure re-opened it at, the record is still `pending`, AND every
+  cure task that named that same live baseline has itself reached
+  `completed`/`validated` -- the LAST such owner, not the first, is the one
+  whose completion triggers the check, because one cure pass can insert
+  several cure tasks sharing one baseline and the first owner to land used
+  to restore the record out from under the second owner's still-pending
+  work. `LoopSupervisor._reconcile_pre_cure_heads`, called from both
+  completion-path writers, then diffs that sha against HEAD over every
+  owner's commits: an empty-of-cited-paths diff takes the declared edge
+  (`source: "cure-reconciliation"`) and fires a follow-up notification
+  naming the owning cure tasks, the diffed range and the paths checked; a
+  diff that touches a cited path, an owner that is not yet terminal, an
+  owner that ended `failed`/`skipped`, or a diff that cannot be computed at
+  all (non-git workspace, missing sha) all leave the record exactly where
+  it is -- when in doubt the record stays open, since a false un-reopen
+  ships unverified work and a missed one only costs one extra re-record.
+  This reconciliation does not make A.3's pre-spend trigger any quieter --
+  that gate fires before a cure commit exists at all, so it has only the
+  same prediction to act on, and on the measured reference incidents this
+  walk-back would have suppressed none of them, because every one of those
+  predictions turned out correct. One consequence worth naming explicitly:
+  `approach.cure_pass`'s own `taskIds` (above) is a snapshot taken at
+  insertion time, and is therefore no longer a permanent record of
+  "everything this pass put into motion" -- a record/verification pair it
+  names can be un-reopened later by this same mechanism, visible only as a
+  separate, later `task.un_reopened` event. Tests: `tests/test_cure_
+  invalidates.py` (the same module as above -- the pure predicate's own
+  pins, the persisted/emitted pre-cure head across a fresh OS process, and
+  `records_pending_reconciliation`/`_reconcile_pre_cure_heads`'s full
+  matrix: single-owner, multi-owner, a dead sibling, a stale or already-
+  restored baseline, a diff that does and does not touch the cited path,
+  and the vigilant variant's `validated` target).
 - **Cure tasks land before the frozen tail, re-take tasks after it (v0.20
   requirement E.4, #167, task 033).** `insert_cure_tasks` no longer only
   ever `tasks.append`s: `state.last_code_touching_task_id(run, tasks)`

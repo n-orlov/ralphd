@@ -4616,22 +4616,41 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
     complete, so a re-record left `pending` means reviewing on stale
     evidence, which is the incident E.3 was written to close.
 
-    Nor is a record re-opened only when the cure's commits really did touch
-    its cited path: #209 §3 asked for that too, and it is NOT implemented
-    (recorded here because this block is otherwise a complete account of
-    that section, and a reader would fairly take it for one). A finding's
-    `invalidates` is the reviewer's PREDICTION, made before the cure exists,
-    and nothing ever reconciles it against the diff the cure landed.
-    Checking it after the fact needs three things this engine does not have:
-    a pre-cure sha persisted per re-opened record, a hook in the completion
-    path to compare against, and an un-reopen transition -- `TASK_STATUS_
-    TABLE` declares no edge back from `pending`, which is the rule the
-    operator states as "a failed dependency never satisfies; there is no
-    edge back to `pending`". The cost of not checking is bounded and was
-    measured: in both #209 reference runs the paths the findings named WERE
-    changed by the cure commits, so the re-record was owed every time; what
-    is paid for nothing is a re-record per PASS, which is the price named in
-    the paragraph above.
+    Task 006/007/008 (PRD requirement B.2/B.3/B.4, #221) closed the gap the
+    paragraph above used to disclose as unimplemented: the `invalidates`
+    prediction this call re-opens a record on IS now reconciled against the
+    diff the cure actually landed, in three pieces. (1) The pre-cure sha --
+    this call's own `pre_cure_head` parameter, the workspace HEAD the caller
+    read before invoking it -- is persisted per re-opened record in
+    `status.json`'s `preCureHeads` map and emitted on `task.pre_cure_head_
+    recorded`, keyed by the RECORD task's own id (task 006). (2) A declared
+    `pending -> {validated,completed}` edge now exists in `transitions.
+    TASK_STATUS_TABLE` (`transitions.is_un_reopen_transition`), applied
+    through `state.apply_task_status_change` and emitting `task.un_reopened`
+    rather than the generic amendment event (task 007) -- this does not
+    relax the standing rule that there is no edge INTO `pending`; it is the
+    one declared way OUT of a `pending` this same call put a record into on
+    its own prediction. (3) `state.records_pending_reconciliation` plus
+    `LoopSupervisor._reconcile_pre_cure_heads` (task 008) call that edge from
+    the completion path: the moment EVERY cure task that named a given
+    record's live `preCureHeads` baseline has itself reached `completed`/
+    `validated`, the persisted sha is diffed against HEAD over all their
+    commits, and a record none of whose cited paths that diff touched is
+    un-reopened, with a follow-up notification naming the owning cure tasks,
+    the diffed range and the paths checked. A record still reconciles to
+    NOTHING (stays `pending`) when any owner is still open, ended `failed`/
+    `skipped`, the diff is uncomputable (non-git workspace, missing sha), or
+    the diff DOES touch a cited path -- when in doubt the record stays open,
+    since a false un-reopen ships unverified work and a missed one only
+    costs one extra re-record. This reconciliation is entirely POST-HOC: the
+    re-open above still happens first and unconditionally, from any terminal
+    status, on the prediction alone, exactly as it always has -- only the
+    LATER walk-back is new. It also does not make A.3's pre-spend trigger
+    quieter: that gate fires before this call has run and before any cure
+    commit exists, so it has only the same prediction to act on; measured
+    against the existing reference incidents, this reconciliation would have
+    suppressed none of them, because every one of those predictions turned
+    out to be correct.
 
     Task 033 (PRD requirement E.4, #167): every cure task this call
     appends -- always the product of a BLOCKING review finding, so

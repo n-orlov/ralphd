@@ -229,6 +229,18 @@ def test_a_finding_against_the_final_lane_evidence_record_reopens_the_chain(tmp_
 
 
 def test_the_chain_reopens_regardless_of_the_tasks_prior_terminal_status(tmp_path):
+    """The re-open itself is still unconditional -- every pass, from any
+    prior terminal status, on the finding's `invalidates` prediction alone.
+    But since v0.23 requirement B.4 (task 008) that re-open is PROVISIONAL,
+    not final: once every cure task that named this record's baseline
+    reaches `completed`/`validated`, `state.records_pending_reconciliation`
+    plus `LoopSupervisor._reconcile_pre_cure_heads` may walk it straight
+    back to the very status asserted here through the declared un-reopen
+    edge, if the cure's real diff never touched the record's cited path.
+    This test only pins the re-open moment itself; it does not exercise
+    that later walk-back (see this same module's `test_a_cure_diff_that_
+    misses_the_cited_path_un_reopens_the_record` and its neighbours).
+    """
     root = tmp_path / "run"
     run = _make_run(root, _lane_fixture_tasks(record_status="validated",
                                               verify_status="validated"))
