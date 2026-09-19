@@ -4465,6 +4465,17 @@ def _repair_cure_task_criteria(run: "RunDir", task: dict) -> None:
 # diff on the completion path.
 PRE_CURE_HEAD_RECORDED_EVENT = "task.pre_cure_head_recorded"
 
+# Task 008 (PRD requirement B.4, #221): the two statuses whose arrival on
+# ANY task fires the completion-path reconciliation hook (`LoopSupervisor.
+# _reconcile_pre_cure_heads`), and -- the same pair, deliberately spelled
+# once -- the statuses a re-opening cure task must already hold before the
+# record it re-opened is eligible to be walked back at all
+# (`records_pending_reconciliation` below). One spelling so the trigger and
+# the eligibility test can never drift apart: a record whose re-open is
+# still owned by a cure task that has NOT reached one of these cannot be
+# reconciled yet, because that cure's own diff is not in the record yet.
+CURE_RECONCILIATION_TRIGGER_STATUSES = ("completed", "validated")
+
 
 def invalidates_reopen_walk(tasks: list, invalidates) -> list:
     """Task 005 (PRD requirement B.1, #221): the pure half of `insert_
@@ -4929,22 +4940,43 @@ def records_pending_reconciliation(run: "RunDir", cure_task_id: str) -> list[dic
     own cited path, walks it back through the declared un-reopen edge
     (`transitions.is_un_reopen_transition`, `apply_task_status_change`).
 
-    Returns one `{"recordId", "sha", "successCriteria"}` dict per eligible
-    record, deduplicated by `recordId` (a finding naming the same record
-    for two `invalidates` paths at once emits two identical events; only
-    one entry is returned). "Eligible" means BOTH:
+    Returns one `{"recordId", "sha", "successCriteria", "cureTaskIds"}`
+    dict per eligible record, deduplicated by `recordId` (a finding naming
+    the same record for two `invalidates` paths at once emits two identical
+    events; only one entry is returned). "Eligible" means ALL THREE:
 
     - the record's OWN `preCureHeads[recordId]` entry in `status.json`
-      still equals this event's `sha` -- a LATER reopen of the same
-      record (a different, later cure task) overwrites that entry
-      (B.2's own overwrite-not-accumulate rule), and a stale event must
-      never drive a write against a sha nobody re-opened it at anymore;
-      the caller conservatively does nothing for that record instead
-      (PRD B rule 4: "when in doubt, leave the record open");
+      still equals this cure task's own reopen `sha` -- a LATER reopen of
+      the same record at a NEWER sha overwrites that entry (B.2's own
+      overwrite-not-accumulate rule), and a stale event must never drive a
+      write against a sha nobody re-opened it at anymore; the caller
+      conservatively does nothing for that record instead (PRD B rule 4:
+      "when in doubt, leave the record open");
     - the record's current `status` is still `"pending"` -- an operator
-      ruling, a steer `task-update`, or an earlier reconciliation call may
-      already have moved it on, and this walk must never re-decide a move
-      someone else already made.
+      ruling or a steer `task-update` may already have moved it on, and
+      this walk must never re-decide a move someone else already made;
+    - EVERY cure task that re-opened this record at that same live sha --
+      not only `cure_task_id` -- has itself already reached one of
+      `CURE_RECONCILIATION_TRIGGER_STATUSES`. One cure PASS routinely
+      inserts several cure tasks (one per blocking curable finding) and
+      more than one of them can name the same record in its own
+      `invalidates`; all of those reopens share the one `pre_cure_head`
+      the caller read before the pass, so they are one baseline owned by
+      several cure tasks, not several baselines. A record whose re-open is
+      still owned by a cure task yet to land is NOT eligible: that cure's
+      own diff is not in the tree yet, so a reconciliation now would
+      decide the record against a strictly narrower diff than the one it
+      owes, and restoring it there would let the LAST cure's changes to a
+      cited path land against an already-restored record. Waiting until
+      the last owner is terminal makes the outcome independent of which
+      order the owners complete in, and means the single `sha`..HEAD diff
+      the caller takes then spans every owner's own commits.
+
+    A record whose baseline is owned by a cure task that ends `failed` or
+    `skipped` therefore stays `pending` for good -- deliberately the same
+    conservative direction as an uncomputable diff: nothing proved the
+    cited evidence survived, so the record is re-taken rather than
+    restored.
 
     No `RunDir` write happens here -- this is a read-only lookup, same
     discipline as `invalidates_reopen_walk` (B.1): the actual un-reopen
@@ -4952,30 +4984,38 @@ def records_pending_reconciliation(run: "RunDir", cure_task_id: str) -> list[dic
     direct dict assignment.
     """
     events = read_events(run.root, types=(PRE_CURE_HEAD_RECORDED_EVENT,))
-    seen: set = set()
-    candidates: list[tuple[str, Any]] = []
+    reopens: dict[str, list[dict]] = {}
     for ev in events:
-        if ev.get("cureTaskId") != cure_task_id:
-            continue
         rid = ev.get("taskId")
-        if not rid or rid in seen:
+        if not rid:
             continue
-        seen.add(rid)
-        candidates.append((rid, ev.get("sha")))
-    if not candidates:
+        reopens.setdefault(rid, []).append(ev)
+    mine = [rid for rid, evs in reopens.items()
+            if any(ev.get("cureTaskId") == cure_task_id for ev in evs)]
+    if not mine:
         return []
     pre_cure_heads = run.read_status().get("preCureHeads") or {}
     by_id = {t.get("id"): t for t in run.read_tasks().get("tasks", [])
              if isinstance(t, dict)}
     out = []
-    for rid, sha in candidates:
+    for rid in mine:
         task = by_id.get(rid)
         if task is None or task.get("status") != "pending":
             continue
-        if pre_cure_heads.get(rid) != sha:
+        live_sha = pre_cure_heads.get(rid)
+        at_live_sha = [ev for ev in reopens[rid] if ev.get("sha") == live_sha]
+        if not any(ev.get("cureTaskId") == cure_task_id for ev in at_live_sha):
             continue
-        out.append({"recordId": rid, "sha": sha,
-                    "successCriteria": task.get("successCriteria", "")})
+        owners = [ev.get("cureTaskId") for ev in at_live_sha
+                  if ev.get("cureTaskId")]
+        deduped_owners = list(dict.fromkeys(owners))
+        if any((by_id.get(owner) or {}).get("status")
+               not in CURE_RECONCILIATION_TRIGGER_STATUSES
+               for owner in deduped_owners):
+            continue
+        out.append({"recordId": rid, "sha": live_sha,
+                    "successCriteria": task.get("successCriteria", ""),
+                    "cureTaskIds": deduped_owners})
     return out
 
 

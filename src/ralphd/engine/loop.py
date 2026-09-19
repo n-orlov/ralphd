@@ -4911,7 +4911,7 @@ class LoopSupervisor:
             # hook -- a cheap no-op unless `task_id` is itself a cure task
             # some `invalidates` walk reopened records against (see the
             # method's own docstring).
-            if target in ("completed", "validated"):
+            if target in state.CURE_RECONCILIATION_TRIGGER_STATUSES:
                 self._reconcile_pre_cure_heads(task_id)
         return []
 
@@ -5955,6 +5955,17 @@ class LoopSupervisor:
         does anything here at all; every other caller of this method is a
         cheap no-op (one `read_events` scan, no write).
 
+        "Eligible" is the predicate's own three-part test, and its third
+        part is what makes this hook order-independent when one cure PASS
+        re-opened the same record from more than one finding: a record
+        whose live pre-cure baseline is still owned by a sibling cure task
+        that has not itself reached `completed`/`validated` is NOT
+        reconciled on this call -- the last owner to land is the one that
+        decides it, over a diff spanning every owner's commits. So an
+        earlier owner whose own commit happened to miss the cited paths can
+        never restore a record a later owner is about to change a cited
+        path in.
+
         For each eligible record: diff the persisted pre-cure sha against
         the workspace's CURRENT HEAD (read fresh here, at reconciliation
         time -- a fresher HEAD only ever WIDENS the diff, never narrows
@@ -5999,20 +6010,22 @@ class LoopSupervisor:
             if any(path and path in criteria for path in diff_paths):
                 continue
             target = "validated" if self.cfg.vigilant else "completed"
+            owners = candidate.get("cureTaskIds") or [cure_task_id]
             result = state.apply_task_status_change(
                 self.run, candidate["recordId"], target, self.cfg.vigilant,
                 source="cure-reconciliation",
-                reason=(f"cure task {cure_task_id}'s diff ({sha[:12]}.."
-                        f"{head[:12]}) touched none of this record's cited "
-                        "paths"))
+                reason=(f"cure task(s) {', '.join(owners)} re-opened this "
+                        f"record and have all landed; their diff "
+                        f"({sha[:12]}..{head[:12]}) touched none of its "
+                        "cited paths"))
             if result.get("applied"):
                 restored.append(candidate["recordId"])
         if restored and self.notifier is not None:
             self.notifier(
-                f"Run {self.cfg.run_id}: cure task {cure_task_id}'s diff "
-                f"never touched {', '.join(restored)}'s cited path(s) -- "
-                "restored to its pre-reopen terminal status without a new "
-                "re-record.")
+                f"Run {self.cfg.run_id}: cure task {cure_task_id} landed and "
+                f"every cure that re-opened {', '.join(restored)} left its "
+                "cited path(s) untouched -- restored to its pre-reopen "
+                "terminal status without a new re-record.")
 
     def _workspace_fingerprint(self) -> dict[str, str]:
         """Task 012 (PRD requirement A.2, #156): a content-hash fingerprint

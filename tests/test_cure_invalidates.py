@@ -95,6 +95,19 @@ def _task(tid: str, *, status: str = "pending", depends: list | None = None,
             "dependsOn": list(depends or []), "tier": "normal"}
 
 
+def _set_status(run: RunDir, tid: str, status: str) -> None:
+    """Move one task's `status` on disk, the way a real completion write
+    already has by the time requirement B.4's reconciliation hook runs."""
+    data = run.read_tasks()
+    for t in data["tasks"]:
+        if t["id"] == tid:
+            t["status"] = status
+            break
+    else:                                        # pragma: no cover - fixture
+        raise AssertionError(f"no task {tid} in the fixture")
+    run.write_tasks(data)
+
+
 # ---------------------------------------------------------------------------
 # Per-path insertion: an ordinary invalidated path with no existing task.
 # ---------------------------------------------------------------------------
@@ -829,11 +842,99 @@ def test_records_pending_reconciliation_returns_the_reopened_record(tmp_path):
     inserted = insert_cure_tasks(run, 1, [finding], pre_cure_head="deadbeef01")
     cure_id = inserted[0]
 
+    # the real call site (`_apply_reported_task_status`, and the verify
+    # loop's own write) reaches this predicate only AFTER the cure task's own
+    # terminal status is already on disk -- the fixture says so too, because
+    # a cure task still open owns a diff the tree does not hold yet.
+    _set_status(run, cure_id, "completed")
+
     candidates = records_pending_reconciliation(run, cure_id)
     assert len(candidates) == 1
     assert candidates[0]["recordId"] == "058"
     assert candidates[0]["sha"] == "deadbeef01"
     assert RECORD_PATH in candidates[0]["successCriteria"]
+    assert candidates[0]["cureTaskIds"] == [cure_id]
+
+
+def test_records_pending_reconciliation_is_empty_while_the_cure_itself_is_open(tmp_path):
+    root = tmp_path / "run"
+    run = _make_run(root, _lane_fixture_tasks())
+
+    finding = _blocking_curable_finding(
+        "the shipped sha's lanes moved", "a later commit landed after the record",
+        invalidates=[RECORD_PATH])
+    cure_id = insert_cure_tasks(run, 1, [finding], pre_cure_head="deadbeef01")[0]
+
+    # nothing has landed yet: the cure task is `pending`, so its own diff is
+    # not in the tree and the record it re-opened is not reconcilable.
+    assert records_pending_reconciliation(run, cure_id) == []
+
+
+def test_records_pending_reconciliation_waits_for_a_sibling_cure_on_the_same_record(tmp_path):
+    root = tmp_path / "run"
+    run = _make_run(root, _lane_fixture_tasks())
+
+    # ONE cure pass, two blocking curable findings, both invalidating the
+    # SAME record path -- two cure tasks, one shared pre-cure baseline
+    # (`pre_cure_head` is read once per pass), so the record's re-open is
+    # owned by both of them at once.
+    findings_two = [
+        _blocking_curable_finding("lanes moved", "a later commit landed",
+                                  invalidates=[RECORD_PATH]),
+        _blocking_curable_finding("the record cites a stale sha",
+                                  "the same record, a second finding",
+                                  invalidates=[RECORD_PATH]),
+    ]
+    inserted = insert_cure_tasks(run, 1, findings_two,
+                                pre_cure_head="deadbeef01")
+    cure_ids = [tid for tid in inserted if tid.startswith("cure-")]
+    assert len(cure_ids) == 2
+    first, second = cure_ids
+    # one baseline, both reopens named it, so neither event is stale.
+    assert run.read_status().get("preCureHeads") == {"058": "deadbeef01"}
+    shas = [e["sha"] for e in _events(root, PRE_CURE_HEAD_RECORDED_EVENT)]
+    assert shas == ["deadbeef01", "deadbeef01"]
+
+    # the first owner lands: the record is still owned by the second, whose
+    # diff is not in the tree yet, so NOTHING is reconcilable for either id.
+    _set_status(run, first, "completed")
+    assert records_pending_reconciliation(run, first) == []
+    assert records_pending_reconciliation(run, second) == []
+
+    # the last owner lands: now both owners are terminal, the record is
+    # eligible exactly once, and it names BOTH owners.
+    _set_status(run, second, "validated")
+    candidates = records_pending_reconciliation(run, second)
+    assert len(candidates) == 1
+    assert candidates[0]["recordId"] == "058"
+    assert candidates[0]["cureTaskIds"] == [first, second]
+    # asked about the earlier owner it is the same one entry -- whichever
+    # owner's completion arrives last drives the identical decision.
+    assert records_pending_reconciliation(run, first) == candidates
+
+
+def test_records_pending_reconciliation_stays_empty_when_a_sibling_cure_dies(tmp_path):
+    root = tmp_path / "run"
+    run = _make_run(root, _lane_fixture_tasks())
+
+    findings_two = [
+        _blocking_curable_finding("lanes moved", "a later commit landed",
+                                  invalidates=[RECORD_PATH]),
+        _blocking_curable_finding("the record cites a stale sha",
+                                  "the same record, a second finding",
+                                  invalidates=[RECORD_PATH]),
+    ]
+    inserted = insert_cure_tasks(run, 1, findings_two,
+                                pre_cure_head="deadbeef01")
+    first, second = [tid for tid in inserted if tid.startswith("cure-")]
+
+    _set_status(run, first, "completed")
+    _set_status(run, second, "failed")     # this cure never lands at all
+    # nothing proved the record's cited evidence survived the pass, so the
+    # record is left open for a real re-take -- the same conservative
+    # direction an uncomputable diff takes (PRD B rule 4).
+    assert records_pending_reconciliation(run, first) == []
+    assert records_pending_reconciliation(run, second) == []
 
 
 def test_records_pending_reconciliation_is_empty_for_an_unrelated_cure_task(tmp_path):
@@ -862,6 +963,9 @@ def test_records_pending_reconciliation_skips_a_stale_pre_cure_head(tmp_path):
     # reads "deadbeef02", not the value `cure_id1`'s own event named.
     insert_cure_tasks(run, 2, [finding], pre_cure_head="deadbeef02")
 
+    # the first cure has genuinely landed -- the ONLY thing holding its
+    # record back is that its own baseline is no longer the live one.
+    _set_status(run, cure_id1, "completed")
     assert records_pending_reconciliation(run, cure_id1) == []
 
 
@@ -875,11 +979,9 @@ def test_records_pending_reconciliation_skips_a_record_no_longer_pending(tmp_pat
     inserted = insert_cure_tasks(run, 1, [finding], pre_cure_head="deadbeef01")
     cure_id = inserted[0]
 
-    data = run.read_tasks()
-    for t in data["tasks"]:
-        if t["id"] == "058":
-            t["status"] = "completed"     # e.g. an operator ruling landed first
-    run.write_tasks(data)
+    _set_status(run, cure_id, "completed")
+    # e.g. an operator ruling landed first, while the cure was in flight
+    _set_status(run, "058", "completed")
 
     assert records_pending_reconciliation(run, cure_id) == []
 
@@ -1044,3 +1146,127 @@ def test_a_diff_that_cannot_be_computed_leaves_the_record_pending(tmp_path):
     assert _events(root, "task.un_reopened") == []
     assert restored == []
 
+
+
+# ---------------------------------------------------------------------------
+# Requirement B.4 (task 008, #221), the overlapping-owner case: ONE cure
+# pass whose two blocking curable findings both invalidate the SAME record
+# path inserts TWO cure tasks against one shared pre-cure baseline. The
+# record's re-open is owned by both, so whichever owner lands LAST is the one
+# that decides it, over a diff spanning every owner's commits -- an earlier
+# owner whose own commit missed the cited path can never restore a record a
+# later owner is about to change that path in.
+# ---------------------------------------------------------------------------
+
+
+def _two_cure_pass_over_a_real_workspace(root: Path, workspace: Path):
+    """Like `_cure_pass_over_a_real_workspace`, but the review rejects over
+    TWO blocking curable findings that both name `RECORD_PATH` -- returns
+    `(sup, [first_cure_id, second_cure_id], seed_sha)`.
+    """
+    seed_sha = _init_git_workspace(workspace)
+    sup = _supervisor(root, workspace=workspace)
+    sup._approach = 1
+    atomic_write_json(sup.run.tasks_file,
+                      {"version": 1, "tasks": _lane_fixture_tasks()})
+    findings.write_findings_json(sup.run.findings_json_file, [
+        _blocking_curable_finding(
+            "the shipped sha's lanes moved",
+            "a later commit landed after the record",
+            invalidates=[RECORD_PATH]),
+        _blocking_curable_finding(
+            "the record cites a stale sha",
+            "the same record, a second blocking finding",
+            invalidates=[RECORD_PATH]),
+    ])
+
+    async def _review_rejects(prompt, transcript, **kw):
+        return _result(json.dumps({
+            "verdict": "rejected",
+            "reason": "two blocking curable findings, both invalidating the record",
+        }))
+
+    sup.runner.run = _review_rejects  # type: ignore[method-assign]
+    outcome = asyncio.run(sup._step_review())
+    assert outcome == ("advance", "cure", "rejected_curable_pass_available")
+
+    data = sup.run.read_tasks()
+    cure_ids = [t["id"] for t in data["tasks"] if t["id"].startswith("cure-")]
+    assert len(cure_ids) == 2, cure_ids
+    tasks = {t["id"]: t for t in data["tasks"]}
+    assert tasks["058"]["status"] == "pending"
+    # one pass, one `_workspace_head_sha()` read, so one live baseline that
+    # BOTH reopens named -- neither owner's event is stale.
+    assert sup.run.read_status().get("preCureHeads") == {"058": seed_sha}
+    reopen_events = _events(root, PRE_CURE_HEAD_RECORDED_EVENT)
+    assert [ev["sha"] for ev in reopen_events] == [seed_sha, seed_sha]
+    assert [ev["cureTaskId"] for ev in reopen_events] == cure_ids
+    return sup, cure_ids, seed_sha
+
+
+def test_a_later_owner_touching_the_cited_path_keeps_the_record_pending(tmp_path):
+    root = tmp_path / "run"
+    workspace = tmp_path / "workspace"
+    sup, cure_ids, seed_sha = _two_cure_pass_over_a_real_workspace(root, workspace)
+    first, second = cure_ids
+
+    # the FIRST owner lands, touching nothing 058 cites.
+    _commit_file(workspace, "src/unrelated.py", "pass\n",
+                 "the first cure, touching nothing 058 cites")
+    restored = []
+    sup.notifier = restored.append
+    assert sup._apply_reported_task_status(
+        {"task_id": first, "task_status": "completed"}) == []
+
+    # 058 is NOT restored here: its re-open is still owned by `second`,
+    # whose diff is not in the tree yet.
+    tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
+    assert tasks["058"]["status"] == "pending"
+    assert _events(root, "task.un_reopened") == []
+    assert restored == []
+
+    # the SECOND owner lands on exactly the record's cited path.
+    _commit_file(workspace, RECORD_PATH, "lanes: all green\n",
+                 "the second cure, landing on 058's cited path")
+    assert sup._apply_reported_task_status(
+        {"task_id": second, "task_status": "completed"}) == []
+
+    tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
+    assert tasks["058"]["status"] == "pending"
+    assert _events(root, "task.un_reopened") == []
+    assert restored == []
+
+
+def test_both_owners_missing_the_cited_path_un_reopens_once_on_the_last(tmp_path):
+    root = tmp_path / "run"
+    workspace = tmp_path / "workspace"
+    sup, cure_ids, seed_sha = _two_cure_pass_over_a_real_workspace(root, workspace)
+    first, second = cure_ids
+
+    _commit_file(workspace, "src/unrelated.py", "pass\n",
+                 "the first cure, touching nothing 058 cites")
+    restored = []
+    sup.notifier = restored.append
+    assert sup._apply_reported_task_status(
+        {"task_id": first, "task_status": "completed"}) == []
+    tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
+    assert tasks["058"]["status"] == "pending"      # still owned by `second`
+
+    _commit_file(workspace, "docs/unrelated.md", "prose\n",
+                 "the second cure, also touching nothing 058 cites")
+    assert sup._apply_reported_task_status(
+        {"task_id": second, "task_status": "completed"}) == []
+
+    tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
+    assert tasks["058"]["status"] == "completed"    # its pre-reopen status
+    assert tasks["057"]["status"] == "pending"      # never B's subject
+
+    reopened = _events(root, "task.un_reopened")
+    assert len(reopened) == 1                      # once, on the LAST owner
+    assert reopened[0]["taskId"] == "058"
+    assert reopened[0]["status"] == "completed"
+    assert reopened[0]["source"] == "cure-reconciliation"
+    assert first in reopened[0]["reason"] and second in reopened[0]["reason"]
+
+    assert len(restored) == 1
+    assert "058" in restored[0]
