@@ -59,6 +59,7 @@ from ralphd.engine import findings
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import (
+    PRE_CURE_HEAD_RECORDED_EVENT,
     RunDir,
     apply_worker_dependency_repoints,
     atomic_write_json,
@@ -688,3 +689,120 @@ def test_the_emitted_event_lists_every_id_the_pass_inserted_or_reopened(tmp_path
     assert tasks["058"]["status"] == "pending"
     assert cure_id in tasks["057"]["dependsOn"]
     assert tasks["058"]["dependsOn"] == ["057"]
+
+
+# ---------------------------------------------------------------------------
+# Requirement B.2 (task 006, #221): at the point of re-open, the workspace
+# HEAD the cure pass started at is persisted per re-opened RECORD task (never
+# per verification/retake task) into `status.json`'s `preCureHeads` map, in
+# the exact `{"<taskId>": "<sha>"|null}` shape `approachStartHeads` already
+# uses, and the same sha is emitted on `PRE_CURE_HEAD_RECORDED_EVENT`. Nothing
+# reads the map back yet -- requirement B.4 (task 008) is the consumer.
+# ---------------------------------------------------------------------------
+
+
+def test_the_reopen_persists_and_emits_the_pre_cure_head(tmp_path):
+    root = tmp_path / "run"
+    run = _make_run(root, _lane_fixture_tasks())
+
+    finding = _blocking_curable_finding(
+        "the shipped sha's lanes moved", "a later commit landed after the record",
+        invalidates=[RECORD_PATH])
+    inserted = insert_cure_tasks(run, 1, [finding], pre_cure_head="deadbeef01")
+    cure_id = inserted[0]
+
+    # persisted, keyed by the re-opened RECORD task's own id (058) -- never
+    # the verification task (057), which is not this requirement's subject.
+    status = run.read_status()
+    assert status.get("preCureHeads") == {"058": "deadbeef01"}
+
+    events = _events(root, PRE_CURE_HEAD_RECORDED_EVENT)
+    assert len(events) == 1
+    assert events[0]["taskId"] == "058"
+    assert events[0]["sha"] == "deadbeef01"
+    assert events[0]["cureTaskId"] == cure_id
+    # the fixture assertion the requirement names: the event's own sha
+    # matches the persisted map entry for the same task id.
+    assert events[0]["sha"] == status["preCureHeads"][events[0]["taskId"]]
+
+
+def test_a_second_reopen_of_the_same_record_overwrites_rather_than_accumulates(tmp_path):
+    root = tmp_path / "run"
+    run = _make_run(root, _lane_fixture_tasks())
+
+    finding = _blocking_curable_finding(
+        "the shipped sha's lanes moved", "a later commit landed after the record",
+        invalidates=[RECORD_PATH])
+    insert_cure_tasks(run, 1, [finding], pre_cure_head="deadbeef01")
+    insert_cure_tasks(run, 2, [finding], pre_cure_head="deadbeef02")
+
+    status = run.read_status()
+    # one live baseline per record at a time -- the newer pass's own sha.
+    assert status.get("preCureHeads") == {"058": "deadbeef02"}
+    events = _events(root, PRE_CURE_HEAD_RECORDED_EVENT)
+    assert [e["sha"] for e in events] == ["deadbeef01", "deadbeef02"]
+
+
+def test_no_pre_cure_head_given_persists_null_same_as_approach_start_heads(tmp_path):
+    root = tmp_path / "run"
+    run = _make_run(root, _lane_fixture_tasks())
+
+    finding = _blocking_curable_finding(
+        "the shipped sha's lanes moved", "a later commit landed after the record",
+        invalidates=[RECORD_PATH])
+    insert_cure_tasks(run, 1, [finding])   # no pre_cure_head kwarg at all
+
+    status = run.read_status()
+    assert status.get("preCureHeads") == {"058": None}
+
+
+# ---------------------------------------------------------------------------
+# The literal probe: re-open a record through a real `LoopSupervisor`
+# cure pass, then restart the supervisor in a GENUINELY FRESH OS PROCESS
+# (`tests/_pre_cure_head_fresh_process_episode.py`, no python object, module
+# cache or event loop shared with this test's own process) over the SAME
+# run root/workspace, and read the persisted sha back off `status.json`
+# unchanged -- the same fresh-process shape
+# `tests/test_approach_start_head_persistence.py` already proves for
+# `approachStartHeads`.
+# ---------------------------------------------------------------------------
+
+
+def test_a_fresh_os_process_reads_the_persisted_pre_cure_head_back_unchanged(tmp_path):
+    import subprocess
+    import sys
+
+    workspace = tmp_path / "workspace"
+    root = tmp_path / "run"
+    workspace.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"],
+                   cwd=workspace, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=workspace, check=True)
+    (workspace / "seed.txt").write_text("seed")
+    subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=workspace, check=True)
+    seed_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=workspace,
+                              check=True, capture_output=True,
+                              text=True).stdout.strip()
+
+    helper = Path(__file__).parent / "_pre_cure_head_fresh_process_episode.py"
+    assert helper.exists()
+
+    episode1 = subprocess.run(
+        [sys.executable, str(helper), "1", str(root), str(workspace), seed_sha],
+        capture_output=True, text=True, timeout=60)
+    assert episode1.returncode == 0, (
+        f"episode 1 (its own fresh OS process) failed:\n"
+        f"stdout:\n{episode1.stdout}\nstderr:\n{episode1.stderr}")
+
+    episode2 = subprocess.run(
+        [sys.executable, str(helper), "2", str(root), str(workspace), seed_sha],
+        capture_output=True, text=True, timeout=60)
+    assert episode2.returncode == 0, (
+        f"episode 2 (a SECOND, independently spawned fresh OS process, no "
+        f"python state shared with episode 1's process or this test's own) "
+        f"failed:\nstdout:\n{episode2.stdout}\nstderr:\n{episode2.stderr}")
+
+    status = json.loads((root / "status.json").read_text())
+    assert status.get("preCureHeads") == {"058": seed_sha}

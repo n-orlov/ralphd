@@ -4420,6 +4420,19 @@ def _repair_cure_task_criteria(run: "RunDir", task: dict) -> None:
              source="cure-insertion")
 
 
+# Task 006 (PRD requirement B.2, #221): the accepted-write sibling of
+# `DEPENDENCY_REPOINTED_EVENT` for a re-opened record -- `insert_cure_
+# tasks` below emits one of these per record task the `invalidates` walk
+# re-opens, naming the workspace HEAD the cure pass started at (the SAME
+# value it persists into `status.json`'s `preCureHeads` map, keyed by this
+# event's own `taskId`) so a caller can read the persisted sha back off
+# the event stream alone, without a second read of `status.json`, and
+# confirm the two agree. Nothing downstream consumes the map yet -- task
+# 008 (requirement B.4) is what reconciles it against the cure's real
+# diff on the completion path.
+PRE_CURE_HEAD_RECORDED_EVENT = "task.pre_cure_head_recorded"
+
+
 def invalidates_reopen_walk(tasks: list, invalidates) -> list:
     """Task 005 (PRD requirement B.1, #221): the pure half of `insert_
     cure_tasks`'s per-finding `invalidates` walk, extracted with no
@@ -4458,7 +4471,8 @@ def invalidates_reopen_walk(tasks: list, invalidates) -> list:
     return walk
 
 
-def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
+def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
+                      pre_cure_head: str | None = None) -> list:
     """Task 009 (PRD requirement C.1, #141; cured under task 006, C.1
     finding 4): append exactly one cure task per entry of `blocking` (in
     finding order) to `tasks.json` and return exactly one id per entry.
@@ -4620,6 +4634,27 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
     filed obligation, not prose about the finding, so only its `evidence` is
     scanned -- see the comment at the scan itself.
 
+    Task 006 (PRD requirement B.2, #221): the optional `pre_cure_head`
+    parameter -- the caller's own `_workspace_head_sha()`, read once before
+    this call, `None` for a non-git workspace or a caller that has none to
+    give (every pre-existing call site keeps working unchanged, since a
+    finding with no `invalidates` -- or one naming only fresh re-take
+    paths -- never reads this parameter at all) -- is the workspace HEAD
+    sha this cure pass STARTS at, i.e. the tree the re-opened record's next
+    evidence must be taken AFTER. For every record task the `invalidates`
+    walk re-opens (the chain branch just below, never the fresh re-take
+    branch, which owns no record), this call now: (1) writes that same sha
+    into `status.json`'s `preCureHeads` map, keyed by the record task's own
+    id, in the exact `{"<taskId>": "<sha>"|null}` shape `approachStartHeads`
+    already uses (a later re-open of the SAME record id overwrites the
+    entry with the newer pass's own sha -- there is exactly one live
+    pre-cure baseline per record at a time, the one the CURRENT re-open
+    owes); (2) emits `PRE_CURE_HEAD_RECORDED_EVENT` naming that same sha,
+    so a caller can read it back off the event stream and confirm it
+    matches the map without a second read of `status.json`. Nothing reads
+    the map back yet -- requirement B.4 (task 008) is the reconciliation
+    hook that will.
+
     Task 007 (PRD requirement C.1, gate finding VG-003): list position
     alone is not a scheduling constraint -- `scheduler.select_next_task`
     picks a `pending` candidate by `priority` (highest wins), never by
@@ -4733,6 +4768,23 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list) -> list:
                     if vid not in inserted:
                         inserted.append(vid)
                 record_task["status"] = "pending"
+                # Task 006 (PRD requirement B.2, #221): persist and emit
+                # the pre-cure workspace head THIS record is being
+                # re-opened at, before any of the writes below that could
+                # make `record_task.get("id")` harder to trace back to
+                # this exact reopen. Keyed by the record task's own id --
+                # never the verification task(s) above, which are not the
+                # subject of B.2 -- and overwritten, not accumulated, on a
+                # later pass's re-open of the SAME record.
+                rid_for_head = record_task.get("id")
+                pre_cure_heads_status = run.read_status()
+                pre_cure_heads = dict(
+                    pre_cure_heads_status.get("preCureHeads") or {})
+                pre_cure_heads[rid_for_head] = pre_cure_head
+                run.update_status(preCureHeads=pre_cure_heads)
+                run.emit(PRE_CURE_HEAD_RECORDED_EVENT, taskId=rid_for_head,
+                         sha=pre_cure_head, approach=approach,
+                         cureTaskId=cure_task_id)
                 if not verification_tasks:
                     # #209 defect 3's residual: every evidence step this
                     # record depends on is declared a pure ordering edge

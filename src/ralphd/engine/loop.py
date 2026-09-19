@@ -7084,7 +7084,9 @@ class LoopSupervisor:
         """
         findings_list = self._gate_findings() or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
-        inserted = state.insert_cure_tasks(self.run, approach, blocking)
+        inserted = state.insert_cure_tasks(
+            self.run, approach, blocking,
+            pre_cure_head=self._workspace_head_sha())
         status = self.run.read_status()
         cure_passes = dict(status.get("gateCurePasses") or {})
         new_count = self._gate_cure_passes_for_approach(approach) + 1
@@ -10555,7 +10557,9 @@ class LoopSupervisor:
         """
         findings_list = self._review_findings() or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
-        inserted = state.insert_cure_tasks(self.run, approach, blocking)
+        inserted = state.insert_cure_tasks(
+            self.run, approach, blocking,
+            pre_cure_head=self._workspace_head_sha())
         status = self.run.read_status()
         cure_passes = dict(status.get("curePasses") or {})
         new_count = self._cure_passes_for_approach(approach) + 1
@@ -11873,7 +11877,8 @@ class LoopSupervisor:
         if not remedy_findings:
             return []
         inserted = state.insert_cure_tasks(
-            self.run, self._approach, remedy_findings)
+            self.run, self._approach, remedy_findings,
+            pre_cure_head=self._workspace_head_sha())
         # `zip` is exact: `insert_cure_tasks` returns one id per finding in
         # finding order, and the extra re-take/re-opened ids it can also
         # return come only from `invalidates`, which these synthesized
