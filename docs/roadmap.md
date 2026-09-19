@@ -2353,7 +2353,29 @@ inherits every earlier approach's task 001) was triaged and deliberately deferre
 than fixed in this wave. Heavy's docker-tier containerization (requirement I.1/I.2) is likewise
 deferred to v0.23: what shipped instead is nightly's dev-layout cell containerized, with heavy's
 docker tier run host-side behind requirement G's allowlist and its measured reason, under the
-wave-scoped operator ruling `/config/amendments/001-WAVE.md` (STEER 005). Requirements **N**
+wave-scoped operator ruling `/config/amendments/001-WAVE.md` (STEER 005). Landing after this
+version bump and carrying no version change of its own, GitHub **#209** — an audit of this wave's
+review economics, opened against the harness rather than against a product requirement — was worked
+as eight units on `main`: a SETTLED petition obligation is retired from the open set and not only a
+CONFIRMED one (`9626258a`, `699010d0`); a plan proposal that trips a lexical clause or quantifier
+lint has the rewrite the lint already computed applied to it instead of being refused over it
+(`cf8c4926`, `e0f30a07`); a cure pass stops re-opening the engine's own landed cure tasks, and a
+REFUTED petition's remedy becomes work inside the mid-run adjudication episode (`816245c3`,
+`0bbe8e56`); an exhausted review contract ladder holds for an operator instead of scoring a
+substantive rejection, and a hat's `fail` is read as `rejected` (`765566b4`, `d3d0559e`); an operator
+status ruling reaches the running episode rather than only the next one (`23888dcc`, `8f5cebe3`); a
+worker may re-point a doomed `dependsOn` edge it cannot otherwise repair (`bf607b3d`, `4ce38ec9`); a
+planner may declare an edge ordering-only, so an ordering edge is no longer read as evidence
+(`7231a1f7`, `ab432992`); and one measured tier-ceiling raise plus the doc debts seven units could
+not close themselves landed with the final audit's four real defects fixed and its three residuals
+written where a reader will find them (`1eb6b51a`, `28df2f4f`). #209 closed with five residuals
+carried into v0.23 — **#219** (an exhausted ladder over the FINDINGS channel still costs an
+approach), **#220** (a REFUTED remedy becomes work only in the mid-run episode), **#221** (a cure
+re-opens evidence on the finding's `invalidates` prediction and never reconciles it), **#222**
+(`orderingOnly` over-declaration has no mechanical check) and **#223** (a successful dependency
+re-point emits nothing) — and GitHub **#208** (the judging hats' disposable-clone protocol stated as
+one ecosystem's recipe, so a product with no `pyproject.toml` could satisfy it only by measuring
+nothing) was fixed on `main` in the same post-bump window (`7630a559`). Requirements **N**
 (the final green sweep) and **O** (closing the wave's issues) have both landed: O's
 issue-closing task validated, and gate, heavy and nightly all concluded green from a
 `workflow_dispatch` at the shipped sha; the v0.19, v0.19.1, v0.20, v0.20.1, v0.20.2, v0.21 and
