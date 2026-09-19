@@ -6838,6 +6838,7 @@ def _bind_is_loopback(bind: str) -> bool:
 _HUB_MUTATING_ROUTES = (
     "DELETE /api/runs/<id> (delete a run)",
     "POST /api/runs/<id>/steer (steer a run)",
+    "POST /api/runs/<id>/retry (retry a degraded run now)",
 )
 
 _HUB_NON_LOOPBACK_BIND_FLAG = "--allow-non-loopback-bind"
@@ -6860,7 +6861,7 @@ def cmd_ui(args):
     if not _bind_is_loopback(args.bind) and not args.allow_non_loopback_bind:
         die(2, f"refusing to bind {args.bind}: this is not loopback, and the "
                 f"hub has no authentication of its own -- it would publish "
-                f"{' and '.join(_HUB_MUTATING_ROUTES)} to whoever can reach "
+                f"{', '.join(_HUB_MUTATING_ROUTES)} to whoever can reach "
                 f"{args.bind}. Pass {_HUB_NON_LOOPBACK_BIND_FLAG} to bind it "
                 f"anyway.")
     reg = registry()

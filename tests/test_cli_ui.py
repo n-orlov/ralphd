@@ -774,7 +774,17 @@ def test_ui_server_module_never_imports_fastapi_or_uvicorn():
 # -- PRD requirement H (task 002): the hub's bind-address guard and its
 # startup line naming the mutating routes it publishes ---------------------
 
-_HUB_MUTATING_ROUTE_STRINGS = ("DELETE /api/runs/", "POST /api/runs/")
+# Spelled out in full, on purpose: a startup line that merely mentions
+# *some* `/api/runs/` route satisfies nothing -- requirement H asks for the
+# mutating routes by identity, the run delete route and the steer route
+# above all, so these literals are the identities themselves and a line
+# naming some other route (say a retry route) in place of either one fails
+# here.
+_HUB_DELETE_ROUTE = "DELETE /api/runs/<id>"
+_HUB_STEER_ROUTE = "POST /api/runs/<id>/steer"
+_HUB_RETRY_ROUTE = "POST /api/runs/<id>/retry"
+_HUB_MUTATING_ROUTE_STRINGS = (_HUB_DELETE_ROUTE, _HUB_STEER_ROUTE,
+                               _HUB_RETRY_ROUTE)
 _HUB_NON_LOOPBACK_FLAG = "--allow-non-loopback-bind"
 
 
