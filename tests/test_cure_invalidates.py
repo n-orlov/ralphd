@@ -1281,3 +1281,54 @@ def test_both_owners_missing_the_cited_path_un_reopens_once_on_the_last(tmp_path
 
     assert len(restored) == 1
     assert "058" in restored[0]
+
+
+def test_under_the_vigilant_variant_the_record_is_restored_to_validated(tmp_path):
+    """The un-reopen's target is this run's own variant-conditioned terminal
+    status, the same pair the hook fires on: `validated` under vigilant
+    verification (where a record could only ever have HELD `validated`),
+    `completed` otherwise -- and the declared edge covers both
+    (`transitions.TASK_STATUS_VIGILANT_DELTA`'s `pending -> validated`).
+    """
+    root = tmp_path / "run"
+    workspace = tmp_path / "workspace"
+    seed_sha = _init_git_workspace(workspace)
+    sup = _supervisor(root, workspace=workspace, vigilant=True)
+    sup._approach = 1
+    atomic_write_json(sup.run.tasks_file,
+                      {"version": 1,
+                       "tasks": _lane_fixture_tasks(record_status="validated")})
+    findings.write_findings_json(sup.run.findings_json_file, [
+        _blocking_curable_finding(
+            "the shipped sha's lanes moved",
+            "a later commit landed after the record",
+            invalidates=[RECORD_PATH])])
+
+    async def _review_rejects(prompt, transcript, **kw):
+        return _result(json.dumps({
+            "verdict": "rejected",
+            "reason": "one blocking finding, curable, invalidating the record",
+        }))
+
+    sup.runner.run = _review_rejects  # type: ignore[method-assign]
+    assert _bounded(sup._step_review()) == (
+        "advance", "cure", "rejected_curable_pass_available")
+    cure_id = [t["id"] for t in sup.run.read_tasks()["tasks"]
+               if t["id"].startswith("cure-")][0]
+    assert sup.run.read_status().get("preCureHeads") == {"058": seed_sha}
+
+    _commit_file(workspace, "src/unrelated.py", "pass\n",
+                 "the cure, touching nothing 058 cites")
+    restored = []
+    sup.notifier = restored.append
+    assert sup._apply_reported_task_status(
+        {"task_id": cure_id, "task_status": "validated"}) == []
+
+    tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
+    assert tasks["058"]["status"] == "validated"
+    reopened = _events(root, "task.un_reopened")
+    assert len(reopened) == 1
+    assert reopened[0]["previous"] == "pending"
+    assert reopened[0]["status"] == "validated"
+    assert reopened[0]["source"] == "cure-reconciliation"
+    assert len(restored) == 1 and "058" in restored[0]
