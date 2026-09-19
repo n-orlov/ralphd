@@ -31,6 +31,17 @@ from ralphd.engine.state import RunDir, atomic_write_json
 RECORD_PATH = "artifacts/reports/v0.20-lanes.md"
 
 
+def _bounded(coro, timeout: float = 30.0):
+    """Task 073's guard (`tests/test_loop_driving_await_guard.py`, steer
+    001 \u00a72): a loop-driving await (`_step_review` here) is never run
+    bare -- `_step_paused`'s `await self._gate()` and a repeating scripted
+    step are both forever-traps -- so every drive in this module goes
+    through one bounded wrapper, the same shape task 072 gave
+    `tests/test_peer_verdict_gate.py`.
+    """
+    return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
 def _result(text: str) -> IterationResult:
     r = IterationResult(exit_code=0)
     r.final_text = text
@@ -89,7 +100,7 @@ def episode_one(root: Path, workspace: Path, seed_sha: str) -> None:
 
     sup.runner.run = _review_rejects   # type: ignore[method-assign]
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review())
     assert outcome == ("advance", "cure", "rejected_curable_pass_available"), outcome
 
     status = sup.run.read_status()

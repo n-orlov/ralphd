@@ -74,6 +74,17 @@ from ralphd.engine.state import (
 from tests.conftest import supervisor_factory
 
 
+def _bounded(coro, timeout: float = 30.0):
+    """Task 073's guard (`tests/test_loop_driving_await_guard.py`, steer
+    001 \u00a72): a loop-driving await (`_step_review` here) is never run
+    bare -- `_step_paused`'s `await self._gate()` and a repeating scripted
+    step are both forever-traps -- so every drive in this module goes
+    through one bounded wrapper, the same shape task 072 gave
+    `tests/test_peer_verdict_gate.py`.
+    """
+    return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
 def _blocking_curable_finding(clause: str, evidence: str, **overrides) -> dict:
     payload = {"severity": "blocking", "curable": True, "clause": clause,
                "evidence": evidence}
@@ -679,7 +690,7 @@ def test_the_emitted_event_lists_every_id_the_pass_inserted_or_reopened(tmp_path
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review())
     assert outcome == ("advance", "cure", "rejected_curable_pass_available")
 
     events = _events(root, "approach.cure_pass")
@@ -1045,7 +1056,7 @@ def _cure_pass_over_a_real_workspace(root: Path, workspace: Path):
         }))
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review())
     assert outcome == ("advance", "cure", "rejected_curable_pass_available")
 
     data = sup.run.read_tasks()
@@ -1187,7 +1198,7 @@ def _two_cure_pass_over_a_real_workspace(root: Path, workspace: Path):
         }))
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review())
     assert outcome == ("advance", "cure", "rejected_curable_pass_available")
 
     data = sup.run.read_tasks()

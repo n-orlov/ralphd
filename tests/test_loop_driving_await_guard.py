@@ -98,6 +98,15 @@ def find_bare_loop_driving_awaits(root: Path) -> dict[str, list[int]]:
 # already bounded through `asyncio.wait_for`/a `_bounded()` helper, so they
 # carry zero and need no entry here). Retrofitting these is a future task's
 # job, not this guard's -- see the module docstring above.
+#
+# One entry has since been RETIRED rather than grandfathered: v0.23 task 008
+# (requirement B.4, #221) bound all of `test_cure_invalidates.py`'s drives
+# through that module's own `_bounded()` helper -- and the helper module it
+# spawns, `_pre_cure_head_fresh_process_episode.py`, was bound the same way
+# from the start -- so that file now carries ZERO bare calls and its entry
+# would read as stale (the third mismatch `bare_await_violations` checks).
+# Retiring a bounded file's entry is the direction this allowlist is meant to
+# shrink in; it is never re-added to buy room for a new bare call.
 _GRANDFATHER_REASON = (
     "pre-existing at task 073's own tip (steer 001 \u00a72): grandfathered "
     "as this guard's baseline rather than retrofitted here -- task 073's "
@@ -115,7 +124,6 @@ LOOP_DRIVING_AWAIT_ALLOWLIST: list[dict[str, object]] = [
     {"path": "test_contract_events.py", "count": 3, "reason": _GRANDFATHER_REASON},
     {"path": "test_contract_ladder.py", "count": 4, "reason": _GRANDFATHER_REASON},
     {"path": "test_criteria_amendment_authority.py", "count": 4, "reason": _GRANDFATHER_REASON},
-    {"path": "test_cure_invalidates.py", "count": 1, "reason": _GRANDFATHER_REASON},
     {"path": "test_cure_pass.py", "count": 15, "reason": _GRANDFATHER_REASON},
     {"path": "test_deadline.py", "count": 9, "reason": _GRANDFATHER_REASON},
     {"path": "test_deferred_pin_task024.py", "count": 1, "reason": _GRANDFATHER_REASON},
