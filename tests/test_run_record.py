@@ -478,19 +478,52 @@ def test_review_verdict_is_persisted_without_any_findings_sidecar(tmp_path, monk
         [("review", "rejected")]
 
 
-def test_review_verdict_is_persisted_when_the_sidecar_does_not_validate(
+def test_review_verdict_now_pauses_when_the_sidecar_does_not_validate(
         tmp_path, monkeypatch):
-    """A present-but-unreadable sidecar refuses the verdict (task 002) -- and
-    the refusal itself is still recorded as this approach's verdict, with
-    `findingsChannel: false` saying why the arrays are empty."""
+    """Task 012 (PRD requirement C.3, #219): the inverted sibling of this
+    node's own former self.
+
+    Under its previous name -- `test_review_verdict_is_persisted_when_the_
+    sidecar_does_not_validate` -- this node pinned task 002's original
+    decision for a present-but-unreadable sidecar: the refusal was scored
+    an ordinary rejection, `_step_review` took `rejected_approach_left`,
+    and the run moved straight on to archiving the approach. Requirement C
+    (tasks 010-011, #219) supersedes exactly that run-level consequence --
+    a present-but-invalid findings sidecar is one of the three named
+    `review_findings_unusable` shapes, so the SAME channel state this node
+    has always driven now lands on the discriminating pause instead: the
+    approach stays intact, nothing is archived, no composite PRD is
+    written, and an operator has to look at the sidecar before the run
+    moves again.
+
+    What task 002 actually decided survives underneath the pause,
+    unchanged: `_review_verdict` still folds the unreadable channel into
+    the recorded verdict itself, so the approach's own metadata still
+    reads `verdict: "rejected"` with `findingsChannel: false` explaining
+    why its `blocking`/`residual` arrays are empty, exactly as before --
+    it is only the run's OWN next move (pause vs. spend-the-approach) that
+    requirement C changes, not what gets written about this approach.
+    """
     root = tmp_path / "run"
     sup = _rram035_supervisor(root, monkeypatch, max_approaches=1)
     sup._approach = 1
     sup.run.findings_json_file.write_text('[{"severity": "blocking"}]')
     _stub_runner(sup, {"verdict": "verified", "reason": "all good"})
 
-    asyncio.run(sup._step_review())
+    outcome = asyncio.run(sup._step_review())
 
+    # the new, discriminating pause -- not the ordinary rejection ladder
+    # this node used to pin.
+    assert outcome == ("advance", "paused", "review_findings_unusable")
+    status = sup.run.read_status()
+    assert status["state"] == "paused"
+    assert status["pauseReason"] == "review_findings_unusable"
+    assert sup._approach == 1                     # never archived
+    assert not (root / "approaches" / "01").exists()
+    assert not sup.run.composite_prd_file.exists()
+
+    # task 002's own recorded decision, still intact underneath the pause:
+    # the unreadable channel still forces the recorded verdict itself.
     entry = state_mod.approach_metadata_channel(root, 1, "review")
     assert entry["verdict"] == "rejected"
     assert entry["findingsChannel"] is False

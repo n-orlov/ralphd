@@ -778,10 +778,29 @@ def test_a_legible_rejected_verdict_with_a_schema_slip_elsewhere_still_rejects(
     shape on every re-ask exhausts the ladder over it. That judge said
     `rejected` for a stated reason, so it HAS rendered a verdict: recording
     it as `unreviewed` and holding for an operator would be the mirror of
-    the defect this unit fixes, and the reason it fixes it. Sibling in
-    substance of `tests/test_run_record.py::test_review_verdict_is_
-    persisted_when_the_sidecar_does_not_validate`, which is task 002's own
-    recorded decision for the same shape one channel over."""
+    the defect this unit fixes, and the reason it fixes it.
+
+    Task 012 (requirement C.3, #219) inverts this node's own former
+    sibling, `tests/test_run_record.py::test_review_verdict_is_persisted_
+    when_the_sidecar_does_not_validate` (now `test_review_verdict_now_
+    pauses_when_the_sidecar_does_not_validate`): requirement C gives a
+    present-but-invalid FINDINGS SIDECAR its own discriminating pause
+    (`review_findings_unusable`), so that sibling's outcome flips from
+    "still rejects" to "pauses". This node's own shape does NOT flip with
+    it, and that divergence is the point, not an oversight: the stray key
+    here (`confidence`) is a `schema_errors` violation of the review
+    payload's OWN schema, not a findings-channel refusal --
+    `_review_contract_ladder`'s `findings_channel_unusable_reply` is
+    guarded by `not schema_errors` by construction, and the PRD's own
+    ruling for requirement C names only three findings-channel shapes as
+    now-paused (a truncated sidecar, a `verified` claim contradicting a
+    blocking finding, a curable finding with no `cured_when`) while
+    stating outright that a stray inline key must not be swept in too --
+    "do not widen it back", the same boundary #209 already measured once
+    (widening cost 30 green nodes). So this shape keeps its ORIGINAL
+    outcome (still an ordinary, substantive rejection) precisely BECAUSE
+    requirement C was scoped away from it, which the two new assertions
+    below now pin directly instead of leaving to inference."""
     reply = json.dumps({"verdict": "rejected",
                         "reason": "the deck never renders",
                         "confidence": 0.9})
@@ -800,6 +819,12 @@ def test_a_legible_rejected_verdict_with_a_schema_slip_elsewhere_still_rejects(
     assert len(faults) == 1 and faults[0]["hat"] == "review", faults
     assert outcome == ("advance", "replan", "rejected_approach_left")
     assert sup._review_contract_unrepaired is False
+    # task 012 (requirement C.3): pinned explicitly, not left to inference
+    # -- this schema-slip shape never takes the sibling `review_findings_
+    # unusable` edge either. Requirement C's ruling is scoped to the
+    # findings channel; a stray key in the review payload's own schema is
+    # deliberately outside it.
+    assert sup._review_findings_unusable is False
     assert (root / "approaches" / "01").exists()
     assert sup.run.composite_prd_file.exists()
     assert not [e for e in events if e.get("type") == "operator_escalation"]
