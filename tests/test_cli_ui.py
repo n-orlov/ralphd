@@ -27,12 +27,17 @@ from tests.conftest import RALPHCTL, call_ralphctl_in_process, free_port
 
 
 class UiServer:
-    def __init__(self, registry: Path, env: dict | None = None):
+    def __init__(self, registry: Path, env: dict | None = None,
+                 bind: str = "127.0.0.1", extra_args: tuple[str, ...] = ()):
         self.port = free_port()
         env = {**os.environ, "RALPHD_REGISTRY": str(registry), **(env or {})}
         self.proc = subprocess.Popen(
-            [str(RALPHCTL), "ui", "--port", str(self.port), "--bind", "127.0.0.1"],
+            [str(RALPHCTL), "ui", "--port", str(self.port), "--bind", bind,
+             *extra_args],
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        # A non-loopback bind (e.g. 0.0.0.0) still accepts loopback
+        # connections, so tests always talk to the server over 127.0.0.1
+        # regardless of what was requested on --bind.
         self.base = f"http://127.0.0.1:{self.port}"
 
     def wait_ready(self, timeout=15):
@@ -87,8 +92,9 @@ class UiServer:
 def ui(tmp_path):
     servers = []
 
-    def make(registry, env: dict | None = None):
-        s = UiServer(registry, env=env)
+    def make(registry, env: dict | None = None, bind: str = "127.0.0.1",
+             extra_args: tuple[str, ...] = ()):
+        s = UiServer(registry, env=env, bind=bind, extra_args=extra_args)
         servers.append(s)
         try:
             s.wait_ready()
@@ -763,3 +769,93 @@ def test_ui_server_module_never_imports_fastapi_or_uvicorn():
     res = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
     assert res.returncode == 0, (res.stdout, res.stderr)
     assert res.stdout.strip() == "ok"
+
+
+# -- PRD requirement H (task 002): the hub's bind-address guard and its
+# startup line naming the mutating routes it publishes ---------------------
+
+_HUB_MUTATING_ROUTE_STRINGS = ("DELETE /api/runs/", "POST /api/runs/")
+_HUB_NON_LOOPBACK_FLAG = "--allow-non-loopback-bind"
+
+
+def test_non_loopback_bind_without_flag_refuses_naming_address_and_flag(tmp_path):
+    """A non-loopback `--bind` with no opt-in flag must exit non-zero, and
+    the message must name both the address that was rejected and the flag
+    that would have allowed it -- never a generic refusal."""
+    registry = tmp_path / "reg"
+    registry.mkdir()
+    port = free_port()
+    env = {**os.environ, "RALPHD_REGISTRY": str(registry)}
+    res = subprocess.run(
+        [str(RALPHCTL), "ui", "--port", str(port), "--bind", "0.0.0.0"],
+        env=env, capture_output=True, text=True, timeout=15)
+    assert res.returncode != 0, (res.stdout, res.stderr)
+    combined = res.stdout + res.stderr
+    assert "0.0.0.0" in combined, combined
+    assert _HUB_NON_LOOPBACK_FLAG in combined, combined
+
+
+def test_non_loopback_bind_with_flag_serves_and_names_routes_on_startup(tmp_path, ui):
+    """The same non-loopback bind, with the opt-in flag, must actually
+    start and serve -- and its startup line must name the mutating routes
+    plus the no-authentication fact."""
+    registry = tmp_path / "reg"
+    registry.mkdir()
+    server = ui(registry, bind="0.0.0.0", extra_args=(_HUB_NON_LOOPBACK_FLAG,))
+    status, body = server.get("/api/runs")
+    assert status == 200
+    assert body == {"runs": []}
+    out = server.proc.stdout
+    # drain whatever startup output is already buffered without blocking on
+    # a running, un-terminated process
+    import select
+    startup_line = ""
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        ready, _, _ = select.select([out], [], [], 0.2)
+        if ready:
+            line = out.readline()
+            if not line:
+                break
+            startup_line += line
+            if "serving hub" in startup_line:
+                break
+        else:
+            if startup_line:
+                break
+    assert "0.0.0.0" in startup_line, startup_line
+    for route in _HUB_MUTATING_ROUTE_STRINGS:
+        assert route in startup_line, startup_line
+    assert "no authentication of its own" in startup_line, startup_line
+
+
+def test_loopback_bind_without_flag_is_unchanged(tmp_path, ui):
+    """A loopback bind needs no opt-in flag -- unchanged behaviour -- and
+    its startup line still names the mutating routes and the
+    no-authentication fact."""
+    registry = tmp_path / "reg"
+    registry.mkdir()
+    server = ui(registry)  # default bind=127.0.0.1, no extra_args
+    status, body = server.get("/api/runs")
+    assert status == 200
+    assert body == {"runs": []}
+    out = server.proc.stdout
+    import select
+    startup_line = ""
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        ready, _, _ = select.select([out], [], [], 0.2)
+        if ready:
+            line = out.readline()
+            if not line:
+                break
+            startup_line += line
+            if "serving hub" in startup_line:
+                break
+        else:
+            if startup_line:
+                break
+    assert "127.0.0.1" in startup_line, startup_line
+    for route in _HUB_MUTATING_ROUTE_STRINGS:
+        assert route in startup_line, startup_line
+    assert "no authentication of its own" in startup_line, startup_line

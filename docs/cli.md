@@ -3122,14 +3122,35 @@ ExecStart=/usr/local/bin/ralphctl doctor --fix
 
 Designed as the first command an AI agent should run.
 
-### `ralphctl ui [--port N] [--bind ADDR]`
+### `ralphctl ui [--port N] [--bind ADDR] [--allow-non-loopback-bind]`
 
 Starts the local web hub server (PRD reqs 21-22) in the foreground: a
 stdlib-only HTTP server (`http.server`/`urllib`; no `fastapi`/`uvicorn` on
 this path, even though those are dependencies of the engine side of this
 same package) that reads `~/.ralphd/runs/*` and proxies each run's *live*
 container API when reachable. `--port` defaults to a free ephemeral port;
-prints `serving hub at http://<bind>:<port>` on startup. Ctrl-C to stop.
+`--bind` defaults to `127.0.0.1`. Ctrl-C to stop.
+
+**The hub has no authentication of its own** (PRD requirement H, operator
+ruling 4 -- no hub-level auth token, no new secret) and it publishes two
+mutating routes: `DELETE /api/runs/<id>` (deletes a run) and `POST
+/api/runs/<id>/steer` (steers a run). `--bind` accepting any address with no
+warning would let `--bind 0.0.0.0` publish both of those to the LAN
+silently, so **`ralphctl ui` refuses a non-loopback `--bind`**
+(anything outside `127.0.0.0/8`/`::1`/`localhost`) **unless
+`--allow-non-loopback-bind` is also passed** -- the refusal names the
+address and the flag and exits non-zero without starting the server. A
+loopback bind is unaffected and needs no flag. On every successful start
+-- loopback, or non-loopback with the opt-in flag -- **the startup line
+names both mutating routes and states that the hub has no authentication
+of its own**, e.g.:
+
+```
+ralphctl: serving hub at http://127.0.0.1:PORT (registry: ~/.ralphd) --
+mutating routes published: DELETE /api/runs/<id> (delete a run), POST
+/api/runs/<id>/steer (steer a run) -- the hub has no authentication of its
+own
+```
 
 **Behind a reverse proxy, under a path prefix.** The hub can be mounted at a
 sub-path of another origin — `tailscale serve --bg --set-path=/ralph

@@ -11,6 +11,7 @@ import contextlib
 import functools
 import hashlib
 import io
+import ipaddress
 import json
 import os
 import random
@@ -6816,16 +6817,59 @@ def cmd_suggestions(args):
                      "(the next `start` builds and runs it)"]))
 
 
+def _bind_is_loopback(bind: str) -> bool:
+    """PRD requirement H: `127.0.0.1`/`::1`/anything in `127.0.0.0/8`, plus
+    the conventional `localhost` spelling, are loopback; anything else
+    (including a hostname we cannot resolve to a loopback address without a
+    DNS round trip we are not willing to make here) is treated as
+    non-loopback -- the conservative direction, since the whole point of
+    this guard is to never silently publish a mutating route."""
+    if bind == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(bind).is_loopback
+    except ValueError:
+        return False
+
+
+# PRD requirement H: the hub's own mutating routes (task 002), named here
+# once so the startup line and the refusal message can never drift apart.
+# `POST /rule` joins this tuple at task 013 (see docs/cli.md).
+_HUB_MUTATING_ROUTES = (
+    "DELETE /api/runs/<id> (delete a run)",
+    "POST /api/runs/<id>/steer (steer a run)",
+)
+
+_HUB_NON_LOOPBACK_BIND_FLAG = "--allow-non-loopback-bind"
+
+
 def cmd_ui(args):
     """Local hub HTTP server (PRD reqs 21-22): JSON endpoints reading the
     registry's run dirs and proxying live container APIs, plus (once task
     034 populates it) the static bundle. Runs in the foreground until
-    interrupted -- same shape as any other long-lived dev server."""
+    interrupted -- same shape as any other long-lived dev server.
+
+    PRD requirement H: the hub has no authentication of its own (operator
+    ruling 4 -- no hub-level auth, no new secret), so a non-loopback
+    `--bind` silently publishes its mutating routes to the network. Refuse
+    that unless the operator explicitly opts in with
+    `--allow-non-loopback-bind`, and on every successful start (loopback or
+    opted-in non-loopback) name those routes and the no-auth fact in the
+    startup line, so the operator sees exactly what a given bind exposes.
+    """
+    if not _bind_is_loopback(args.bind) and not args.allow_non_loopback_bind:
+        die(2, f"refusing to bind {args.bind}: this is not loopback, and the "
+                f"hub has no authentication of its own -- it would publish "
+                f"{' and '.join(_HUB_MUTATING_ROUTES)} to whoever can reach "
+                f"{args.bind}. Pass {_HUB_NON_LOOPBACK_BIND_FLAG} to bind it "
+                f"anyway.")
     reg = registry()
     port = args.port or free_port()
     server = ui_server.make_server(reg, args.bind, port)
     print(f"ralphctl: serving hub at http://{args.bind}:{port} "
-          f"(registry: {reg})", flush=True)
+          f"(registry: {reg}) -- mutating routes published: "
+          f"{', '.join(_HUB_MUTATING_ROUTES)} -- the hub has no "
+          f"authentication of its own", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -8274,6 +8318,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("ui", help="local web hub (run list, run detail, steering)")
     s.add_argument("--port", type=int, help="defaults to a free ephemeral port")
     s.add_argument("--bind", default="127.0.0.1")
+    s.add_argument("--allow-non-loopback-bind", action="store_true",
+                   default=False,
+                   help="required to bind anything other than loopback -- "
+                        "the hub has no authentication of its own, so a "
+                        "non-loopback bind is refused without this")
     s.set_defaults(func=cmd_ui)
 
     return p
