@@ -53,6 +53,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 from ralphd.engine import findings
@@ -65,6 +67,7 @@ from ralphd.engine.state import (
     atomic_write_json,
     insert_cure_tasks,
     invalidates_reopen_walk,
+    records_pending_reconciliation,
     task_blocked_by,
 )
 
@@ -806,3 +809,238 @@ def test_a_fresh_os_process_reads_the_persisted_pre_cure_head_back_unchanged(tmp
 
     status = json.loads((root / "status.json").read_text())
     assert status.get("preCureHeads") == {"058": seed_sha}
+
+
+# ---------------------------------------------------------------------------
+# Requirement B.4 (task 008, #221): `state.records_pending_reconciliation`,
+# the pure-read half of the completion-path hook -- which re-opened records
+# a given cure task's own reopen(s) are still eligible to be reconciled
+# against, right now.
+# ---------------------------------------------------------------------------
+
+
+def test_records_pending_reconciliation_returns_the_reopened_record(tmp_path):
+    root = tmp_path / "run"
+    run = _make_run(root, _lane_fixture_tasks())
+
+    finding = _blocking_curable_finding(
+        "the shipped sha's lanes moved", "a later commit landed after the record",
+        invalidates=[RECORD_PATH])
+    inserted = insert_cure_tasks(run, 1, [finding], pre_cure_head="deadbeef01")
+    cure_id = inserted[0]
+
+    candidates = records_pending_reconciliation(run, cure_id)
+    assert len(candidates) == 1
+    assert candidates[0]["recordId"] == "058"
+    assert candidates[0]["sha"] == "deadbeef01"
+    assert RECORD_PATH in candidates[0]["successCriteria"]
+
+
+def test_records_pending_reconciliation_is_empty_for_an_unrelated_cure_task(tmp_path):
+    root = tmp_path / "run"
+    run = _make_run(root, _lane_fixture_tasks())
+
+    finding = _blocking_curable_finding(
+        "the shipped sha's lanes moved", "a later commit landed after the record",
+        invalidates=[RECORD_PATH])
+    insert_cure_tasks(run, 1, [finding], pre_cure_head="deadbeef01")
+
+    assert records_pending_reconciliation(run, "cure-99-99") == []
+
+
+def test_records_pending_reconciliation_skips_a_stale_pre_cure_head(tmp_path):
+    root = tmp_path / "run"
+    run = _make_run(root, _lane_fixture_tasks())
+
+    finding = _blocking_curable_finding(
+        "the shipped sha's lanes moved", "a later commit landed after the record",
+        invalidates=[RECORD_PATH])
+    inserted1 = insert_cure_tasks(run, 1, [finding], pre_cure_head="deadbeef01")
+    cure_id1 = inserted1[0]
+    # a LATER cure pass re-opens the SAME record with a newer sha -- B.2's
+    # own overwrite-not-accumulate rule means `preCureHeads["058"]` now
+    # reads "deadbeef02", not the value `cure_id1`'s own event named.
+    insert_cure_tasks(run, 2, [finding], pre_cure_head="deadbeef02")
+
+    assert records_pending_reconciliation(run, cure_id1) == []
+
+
+def test_records_pending_reconciliation_skips_a_record_no_longer_pending(tmp_path):
+    root = tmp_path / "run"
+    run = _make_run(root, _lane_fixture_tasks())
+
+    finding = _blocking_curable_finding(
+        "the shipped sha's lanes moved", "a later commit landed after the record",
+        invalidates=[RECORD_PATH])
+    inserted = insert_cure_tasks(run, 1, [finding], pre_cure_head="deadbeef01")
+    cure_id = inserted[0]
+
+    data = run.read_tasks()
+    for t in data["tasks"]:
+        if t["id"] == "058":
+            t["status"] = "completed"     # e.g. an operator ruling landed first
+    run.write_tasks(data)
+
+    assert records_pending_reconciliation(run, cure_id) == []
+
+
+# ---------------------------------------------------------------------------
+# Requirement B.4 (task 008, #221): the completion-path hook itself --
+# `LoopSupervisor._reconcile_pre_cure_heads`, driven from a REAL `_step_
+# review()` cure pass against a REAL git workspace, then a real completion
+# write (`_apply_reported_task_status`) for the cure task that reopened it.
+# ---------------------------------------------------------------------------
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+def _init_git_workspace(workspace: Path) -> str:
+    workspace.mkdir(parents=True, exist_ok=True)
+    _git(workspace, "init", "-q")
+    _git(workspace, "config", "user.email", "t@example.com")
+    _git(workspace, "config", "user.name", "t")
+    (workspace / "seed.txt").write_text("seed")
+    _git(workspace, "add", "-A")
+    _git(workspace, "commit", "-q", "-m", "seed")
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=workspace,
+                          check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+def _commit_file(workspace: Path, relpath: str, content: str, message: str) -> str:
+    path = workspace / relpath
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    _git(workspace, "add", "-A")
+    _git(workspace, "commit", "-q", "-m", message)
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=workspace,
+                          check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+def _cure_pass_over_a_real_workspace(root: Path, workspace: Path):
+    """A supervisor with tasks 057/058 already re-opened `pending` by a
+    real `_step_review()` cure pass over a finding naming `RECORD_PATH`,
+    against `workspace` (a real git repo) -- returns `(sup, cure_id,
+    seed_sha)`.
+    """
+    seed_sha = _init_git_workspace(workspace)
+    sup = _supervisor(root, workspace=workspace)
+    sup._approach = 1
+    atomic_write_json(sup.run.tasks_file,
+                      {"version": 1, "tasks": _lane_fixture_tasks()})
+    finding = _blocking_curable_finding(
+        "the shipped sha's lanes moved", "a later commit landed after the record",
+        invalidates=[RECORD_PATH])
+    findings.write_findings_json(sup.run.findings_json_file, [finding])
+
+    async def _review_rejects(prompt, transcript, **kw):
+        return _result(json.dumps({
+            "verdict": "rejected",
+            "reason": "one blocking finding, curable, invalidating the record",
+        }))
+
+    sup.runner.run = _review_rejects  # type: ignore[method-assign]
+    outcome = asyncio.run(sup._step_review())
+    assert outcome == ("advance", "cure", "rejected_curable_pass_available")
+
+    data = sup.run.read_tasks()
+    cure_ids = [t["id"] for t in data["tasks"] if t["id"].startswith("cure-")]
+    assert len(cure_ids) == 1
+    cure_id = cure_ids[0]
+    tasks = {t["id"]: t for t in data["tasks"]}
+    assert tasks["057"]["status"] == "pending"
+    assert tasks["058"]["status"] == "pending"
+    assert sup.run.read_status().get("preCureHeads") == {"058": seed_sha}
+    return sup, cure_id, seed_sha
+
+
+def test_a_cure_diff_that_misses_the_cited_path_un_reopens_the_record(tmp_path):
+    root = tmp_path / "run"
+    workspace = tmp_path / "workspace"
+    sup, cure_id, seed_sha = _cure_pass_over_a_real_workspace(root, workspace)
+
+    # the cure lands, but its commit touches an UNRELATED file -- never
+    # `RECORD_PATH` itself.
+    new_head = _commit_file(workspace, "src/unrelated.py", "pass\n",
+                            "the cure, touching nothing 058 cites")
+    assert new_head != seed_sha
+
+    restored = []
+    sup.notifier = restored.append
+    errors = sup._apply_reported_task_status(
+        {"task_id": cure_id, "task_status": "completed"})
+    assert errors == []
+
+    data = sup.run.read_tasks()
+    tasks = {t["id"]: t for t in data["tasks"]}
+    # 058 (the record) is walked back to its PRE-REOPEN terminal status --
+    # "completed", the default `_lane_fixture_tasks()` seeds it at.
+    assert tasks["058"]["status"] == "completed"
+    # 057 (a verification step, not a record) is deliberately left alone --
+    # requirement B does not re-route the verification-step re-open, only
+    # the record's (PRD B rule 1: "the two direct writes ... stay as they
+    # are").
+    assert tasks["057"]["status"] == "pending"
+
+    reopened = _events(root, "task.un_reopened")
+    assert len(reopened) == 1
+    assert reopened[0]["taskId"] == "058"
+    assert reopened[0]["previous"] == "pending"
+    assert reopened[0]["status"] == "completed"
+    assert reopened[0]["source"] == "cure-reconciliation"
+
+    assert len(restored) == 1
+    assert "058" in restored[0]
+
+
+def test_a_cure_diff_that_touches_the_cited_path_leaves_the_record_pending(tmp_path):
+    root = tmp_path / "run"
+    workspace = tmp_path / "workspace"
+    sup, cure_id, seed_sha = _cure_pass_over_a_real_workspace(root, workspace)
+
+    # the cure's own commit DOES touch the record's cited path this time.
+    new_head = _commit_file(workspace, RECORD_PATH, "lanes: all green\n",
+                            "the cure, landing exactly on 058's cited path")
+    assert new_head != seed_sha
+
+    restored = []
+    sup.notifier = restored.append
+    errors = sup._apply_reported_task_status(
+        {"task_id": cure_id, "task_status": "completed"})
+    assert errors == []
+
+    data = sup.run.read_tasks()
+    tasks = {t["id"]: t for t in data["tasks"]}
+    assert tasks["058"]["status"] == "pending"
+
+    assert _events(root, "task.un_reopened") == []
+    assert restored == []
+
+
+def test_a_diff_that_cannot_be_computed_leaves_the_record_pending(tmp_path):
+    root = tmp_path / "run"
+    workspace = tmp_path / "workspace"
+    sup, cure_id, seed_sha = _cure_pass_over_a_real_workspace(root, workspace)
+
+    _commit_file(workspace, "src/unrelated.py", "pass\n",
+                "the cure, touching nothing 058 cites")
+    # sabotage the workspace's own git metadata -- "a diff that cannot be
+    # computed at all" must never be silently read as an empty one (PRD B
+    # rule 4: "when in doubt, leave the record open").
+    shutil.rmtree(workspace / ".git")
+
+    restored = []
+    sup.notifier = restored.append
+    errors = sup._apply_reported_task_status(
+        {"task_id": cure_id, "task_status": "completed"})
+    assert errors == []
+
+    data = sup.run.read_tasks()
+    tasks = {t["id"]: t for t in data["tasks"]}
+    assert tasks["058"]["status"] == "pending"
+    assert _events(root, "task.un_reopened") == []
+    assert restored == []
+

@@ -4907,6 +4907,12 @@ class LoopSupervisor:
                     break
             self.run.write_tasks(tasks_data)
             self._emit_task_status(task_id, current, target)
+            # Task 008 (PRD requirement B.4, #221): the completion-path
+            # hook -- a cheap no-op unless `task_id` is itself a cure task
+            # some `invalidates` walk reopened records against (see the
+            # method's own docstring).
+            if target in ("completed", "validated"):
+                self._reconcile_pre_cure_heads(task_id)
         return []
 
     def _apply_worker_task_status_report(self, payload: dict,
@@ -5906,6 +5912,107 @@ class LoopSupervisor:
             return None
         sha = result.stdout.strip()
         return sha or None
+
+    def _workspace_diff_paths(self, base_sha: str, head_sha: str) -> list[str] | None:
+        """Task 008 (PRD requirement B.4, #221): the file paths `git diff
+        --name-only` reports changed between `base_sha` and `head_sha` in
+        this run's workspace, or `None` when that cannot be determined at
+        all (no `git`, not a work tree, either sha unresolvable, or the
+        process itself errors) -- `None` is a distinct outcome from `[]`
+        (a real diff that touched nothing) because the caller's own rule
+        is "when in doubt, leave the record open" (PRD B rule 4): an
+        unreadable diff must never be silently treated as an EMPTY one,
+        which would incorrectly un-reopen every record it covers.
+
+        `base_sha == head_sha` (the cure landed no commit of its own, or
+        HEAD has not moved since the pre-cure baseline was taken) is not
+        special-cased -- `git diff --name-only X X` legitimately answers
+        `[]`, which is exactly the right answer here too: nothing changed,
+        so nothing was touched.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self.workspace), "diff", "--name-only",
+                 base_sha, head_sha],
+                capture_output=True, text=True, timeout=30)
+        except OSError:
+            return None
+        if result.returncode != 0:
+            return None
+        return [line for line in result.stdout.splitlines() if line]
+
+    def _reconcile_pre_cure_heads(self, cure_task_id: str) -> None:
+        """Task 008 (PRD requirement B.4, #221): the completion-path hook
+        the disclosure at `state.py:4457` (B.2's own comment) named as the
+        still-missing piece -- called every time ANY task reaches
+        `completed`/`validated` through this engine's two writers
+        (`_apply_reported_task_status`, and the direct verify-pass write
+        inside the per-task verify loop), naming THAT task's own id. Only
+        a task that is itself a cure task some `invalidates` walk actually
+        reopened records against (`state.records_pending_reconciliation` --
+        empty for any ordinary planner/worker-split task, which never
+        appears as a `PRE_CURE_HEAD_RECORDED_EVENT`'s own `cureTaskId`)
+        does anything here at all; every other caller of this method is a
+        cheap no-op (one `read_events` scan, no write).
+
+        For each eligible record: diff the persisted pre-cure sha against
+        the workspace's CURRENT HEAD (read fresh here, at reconciliation
+        time -- a fresher HEAD only ever WIDENS the diff, never narrows
+        it, so reading it late is always at least as safe as reading it
+        exactly on time). A diff that could not be computed at all
+        (`None`), or that touches ANY path the record's own
+        `successCriteria` names verbatim (the same substring relationship
+        `state._lane_evidence_record_chain` uses to recognise the record
+        in the first place, just walked in the other direction -- given
+        the diff's paths, does any of them appear IN the criteria text,
+        rather than given one known path, does it appear in the criteria),
+        leaves that record exactly where it is: still `pending`,
+        unconvinced. Only a diff that is genuinely EMPTY of every path the
+        record cites earns the un-reopen -- through the declared edge
+        (`state.apply_task_status_change`, never a direct dict write), to
+        `validated` under this run's vigilant variant or `completed`
+        otherwise (the same variant-conditioned target every other
+        completion write in this engine already picks).
+
+        Every record this call actually restores is named, once, in a
+        single follow-up notification through `self.notifier` (wired only
+        when `cfg.notifier_url` is set, same seam every other engine-side
+        escalation in this class already uses) -- in ADDITION to, never
+        instead of, the `task.un_reopened` event `apply_task_status_change`
+        itself already emits per record.
+        """
+        candidates = state.records_pending_reconciliation(self.run, cure_task_id)
+        if not candidates:
+            return
+        head = self._workspace_head_sha()
+        if not head:
+            return
+        restored: list[str] = []
+        for candidate in candidates:
+            sha = candidate.get("sha")
+            if not sha:
+                continue
+            diff_paths = self._workspace_diff_paths(sha, head)
+            if diff_paths is None:
+                continue
+            criteria = candidate.get("successCriteria") or ""
+            if any(path and path in criteria for path in diff_paths):
+                continue
+            target = "validated" if self.cfg.vigilant else "completed"
+            result = state.apply_task_status_change(
+                self.run, candidate["recordId"], target, self.cfg.vigilant,
+                source="cure-reconciliation",
+                reason=(f"cure task {cure_task_id}'s diff ({sha[:12]}.."
+                        f"{head[:12]}) touched none of this record's cited "
+                        "paths"))
+            if result.get("applied"):
+                restored.append(candidate["recordId"])
+        if restored and self.notifier is not None:
+            self.notifier(
+                f"Run {self.cfg.run_id}: cure task {cure_task_id}'s diff "
+                f"never touched {', '.join(restored)}'s cited path(s) -- "
+                "restored to its pre-reopen terminal status without a new "
+                "re-record.")
 
     def _workspace_fingerprint(self) -> dict[str, str]:
         """Task 012 (PRD requirement A.2, #156): a content-hash fingerprint
@@ -13846,6 +13953,10 @@ class LoopSupervisor:
                 # `debt.json` writer. Called unconditionally: a non-list or
                 # empty `notes` is a documented no-op there.
                 self.run.record_debt(tid, notes)
+                # Task 008 (PRD requirement B.4, #221): the completion-path
+                # hook -- a cheap no-op unless `tid` is itself a cure task
+                # some `invalidates` walk reopened records against.
+                self._reconcile_pre_cure_heads(tid)
                 self.run.emit("signal", signal="taskVerified", taskId=tid)
                 log.info("task %s verified", tid)
                 return True

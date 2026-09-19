@@ -1800,11 +1800,12 @@ def amendment_entries(config_root: Path) -> list[dict]:
 # record's own pre-reopen terminal status). `amendment_status_applied`'s
 # own name and payload shape (`file`, an amendment ruling's own filename)
 # is honestly an operator-ruling/steer-tool audit record; this transition
-# is neither of those in its intended caller (requirement B.4, task 008's
-# still-unbuilt completion-path reconciliation hook) even though it is
-# reachable today through the SAME two existing callers
-# (`apply_amendment_status_rulings`/`steer_task_update`) the declared table
-# now also permits it for -- `source` still names whichever caller drove
+# is neither of those in its intended caller (requirement B.4, task 008,
+# `LoopSupervisor._reconcile_pre_cure_heads`, the completion-path
+# reconciliation hook -- `source="cure-reconciliation"`) even though it
+# is also reachable through the two pre-existing callers
+# (`apply_amendment_status_rulings`/`steer_task_update`) the declared
+# table permits it for -- `source` still names whichever caller drove
 # it, exactly as `amendment_status_applied` already does.
 UN_REOPEN_EVENT = "task.un_reopened"
 
@@ -1856,9 +1857,10 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
       (always `"pending"`), `status` (the restored terminal status),
       `source` and `reason` -- so a reader of the event stream can tell an
       automated un-reopen apart from an ordinary operator/steer ruling
-      without inspecting `status` itself. No caller takes this edge yet
-      (requirement B.4, task 008, is the completion-path hook that will);
-      this task only declares the edge and wires the event;
+      without inspecting `status` itself. `LoopSupervisor._reconcile_pre_
+      cure_heads` (requirement B.4, task 008) is the completion-path hook
+      that now takes this edge, with `source="cure-reconciliation"`; this
+      task itself only declared the edge and wired the event;
     - an ILLEGAL transition, or a `failed -> skipped` move with no
       justification, is refused: nothing is written, and the returned
       record says why.
@@ -4457,8 +4459,9 @@ def _repair_cure_task_criteria(run: "RunDir", task: dict) -> None:
 # value it persists into `status.json`'s `preCureHeads` map, keyed by this
 # event's own `taskId`) so a caller can read the persisted sha back off
 # the event stream alone, without a second read of `status.json`, and
-# confirm the two agree. Nothing downstream consumes the map yet -- task
-# 008 (requirement B.4) is what reconciles it against the cure's real
+# confirm the two agree. Read back by `state.records_pending_reconciliation`
+# (task 008, requirement B.4) once this event's own `cureTaskId` reaches
+# `completed`/`validated`, to reconcile the map against the cure's real
 # diff on the completion path.
 PRE_CURE_HEAD_RECORDED_EVENT = "task.pre_cure_head_recorded"
 
@@ -4681,9 +4684,9 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
     pre-cure baseline per record at a time, the one the CURRENT re-open
     owes); (2) emits `PRE_CURE_HEAD_RECORDED_EVENT` naming that same sha,
     so a caller can read it back off the event stream and confirm it
-    matches the map without a second read of `status.json`. Nothing reads
-    the map back yet -- requirement B.4 (task 008) is the reconciliation
-    hook that will.
+    matches the map without a second read of `status.json`. Read back by
+    `state.records_pending_reconciliation` (requirement B.4, task 008) once
+    this call's own cure task reaches `completed`/`validated`.
 
     Task 007 (PRD requirement C.1, gate finding VG-003): list position
     alone is not a scheduling constraint -- `scheduler.select_next_task`
@@ -4914,6 +4917,66 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
     if inserted:
         run.write_tasks(data)
     return inserted
+
+
+def records_pending_reconciliation(run: "RunDir", cure_task_id: str) -> list[dict]:
+    """Task 008 (PRD requirement B.4, #221): every re-opened record THIS
+    cure task's own reopen(s) put into motion (`PRE_CURE_HEAD_RECORDED_
+    EVENT` entries on `events.jsonl` naming `cureTaskId == cure_task_id`),
+    still eligible for reconciliation right now -- the caller
+    (`LoopSupervisor._reconcile_pre_cure_heads`) diffs each entry's `sha`
+    against workspace HEAD and, when that diff never touches the record's
+    own cited path, walks it back through the declared un-reopen edge
+    (`transitions.is_un_reopen_transition`, `apply_task_status_change`).
+
+    Returns one `{"recordId", "sha", "successCriteria"}` dict per eligible
+    record, deduplicated by `recordId` (a finding naming the same record
+    for two `invalidates` paths at once emits two identical events; only
+    one entry is returned). "Eligible" means BOTH:
+
+    - the record's OWN `preCureHeads[recordId]` entry in `status.json`
+      still equals this event's `sha` -- a LATER reopen of the same
+      record (a different, later cure task) overwrites that entry
+      (B.2's own overwrite-not-accumulate rule), and a stale event must
+      never drive a write against a sha nobody re-opened it at anymore;
+      the caller conservatively does nothing for that record instead
+      (PRD B rule 4: "when in doubt, leave the record open");
+    - the record's current `status` is still `"pending"` -- an operator
+      ruling, a steer `task-update`, or an earlier reconciliation call may
+      already have moved it on, and this walk must never re-decide a move
+      someone else already made.
+
+    No `RunDir` write happens here -- this is a read-only lookup, same
+    discipline as `invalidates_reopen_walk` (B.1): the actual un-reopen
+    write is the caller's, through `apply_task_status_change`, never a
+    direct dict assignment.
+    """
+    events = read_events(run.root, types=(PRE_CURE_HEAD_RECORDED_EVENT,))
+    seen: set = set()
+    candidates: list[tuple[str, Any]] = []
+    for ev in events:
+        if ev.get("cureTaskId") != cure_task_id:
+            continue
+        rid = ev.get("taskId")
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
+        candidates.append((rid, ev.get("sha")))
+    if not candidates:
+        return []
+    pre_cure_heads = run.read_status().get("preCureHeads") or {}
+    by_id = {t.get("id"): t for t in run.read_tasks().get("tasks", [])
+             if isinstance(t, dict)}
+    out = []
+    for rid, sha in candidates:
+        task = by_id.get(rid)
+        if task is None or task.get("status") != "pending":
+            continue
+        if pre_cure_heads.get(rid) != sha:
+            continue
+        out.append({"recordId": rid, "sha": sha,
+                    "successCriteria": task.get("successCriteria", "")})
+    return out
 
 
 def tasks_doc_excluding_new_entries(tasks_doc: dict, known_ids: set, *,
