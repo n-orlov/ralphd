@@ -1949,6 +1949,11 @@ DEPENDENCY_EDGE_REJECTED_EVENT = "task.dependency_edge_rejected"
 # `dependsOn` list on a hat's own report rather than dropping a single bad
 # edge -- `apply_worker_dependency_repoints` below. Same `taskId`/`reason`/
 # `source` field names, so the two read as one family on `events.jsonl`.
+#
+# Task 003 (PRD requirement E.1): `_repoint_dependents_onto_cure_task`
+# below is the SECOND writer, `source="cure-insertion"` -- the engine's
+# own dependent-repointing on a cure insertion, rather than a worker's
+# `proposed_task_updates` report, gets the same audit trail.
 DEPENDENCY_REPOINTED_EVENT = "task.dependency_repointed"
 
 
@@ -4336,6 +4341,19 @@ def _repoint_dependents_onto_cure_task(run: "RunDir", tasks: list, failed_id: st
     the task, the edge and the reason, instead of writing it; the
     `failed_id` -> `cure_task_id` swap for every other, valid dependent
     still lands.
+
+    Task 003 (PRD requirement E.1): the ACCEPTED write itself now also
+    emits `DEPENDENCY_REPOINTED_EVENT` -- `apply_worker_dependency_
+    repoints`' own audit event, `source="cure-insertion"` in place of its
+    `"worker-repoint"` -- for every dependent whose `dependsOn` actually
+    changes, so the engine's OWN re-point (never a worker report) leaves
+    the same trace on `events.jsonl` the worker-repoint path already
+    does: naming the task, the ids removed and added, the resulting list
+    and why. A dependent this loop never touches (`failed_id` not in its
+    `dependsOn`, the `continue` just above) emits nothing, and so does one
+    whose accepted write ends up identical to what it already held --
+    "changes nothing" is judged against the WRITTEN list, after edge
+    validation, not the candidate before it.
     """
     for t in tasks:
         if not isinstance(t, dict):
@@ -4350,6 +4368,14 @@ def _repoint_dependents_onto_cure_task(run: "RunDir", tasks: list, failed_id: st
         accepted, rejected = plan_ingestion.validate_dependency_edges(
             tasks, tid, new_depends)
         _emit_rejected_dependency_edges(run, tid, rejected, "cure-insertion")
+        if accepted != depends:
+            run.emit(DEPENDENCY_REPOINTED_EVENT, taskId=tid,
+                     removed=sorted(set(depends) - set(accepted)),
+                     added=sorted(set(accepted) - set(depends)),
+                     dependsOn=accepted,
+                     reason=(f"cure task {cure_task_id} covers the scope of "
+                             f"failed task {failed_id}"),
+                     source="cure-insertion")
         t["dependsOn"] = accepted
 
 

@@ -59,7 +59,9 @@ from pathlib import Path
 from ralphd.engine import findings, transitions
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
-from ralphd.engine.state import RunDir, atomic_write_json, insert_cure_tasks
+from ralphd.engine.state import (
+    DEPENDENCY_REPOINTED_EVENT, RunDir, atomic_write_json, insert_cure_tasks,
+)
 
 from test_steer import TASK_1, _ok, _run_resumed
 from tests.conftest import supervisor_factory
@@ -1110,6 +1112,24 @@ def test_dependent_repointing_covers_only_both_neither_and_no_failed_task_named(
     # naming neither id: left untouched
     assert by_id["023"]["dependsOn"] == ["018"]
 
+    # task 003 (requirement E.1): the ACCEPTED write for each dependent
+    # ACTUALLY repointed also emits `task.dependency_repointed`,
+    # `source="cure-insertion"`, naming the task, the removed id, the
+    # added id and the resulting `dependsOn` -- but 023, never touched by
+    # the loop because "020" was never in its own `dependsOn`, emits none.
+    events = [json.loads(line) for line in
+              (run.root / "events.jsonl").read_text().splitlines()]
+    repoints = [e for e in events if e["type"] == DEPENDENCY_REPOINTED_EVENT]
+    by_task = {e["taskId"]: e for e in repoints}
+    assert set(by_task) == {"021", "022"}
+    assert by_task["021"]["removed"] == ["020"]
+    assert by_task["021"]["added"] == [cure_id]
+    assert by_task["021"]["dependsOn"] == [cure_id]
+    assert by_task["021"]["source"] == "cure-insertion"
+    assert by_task["022"]["removed"] == ["020"]
+    assert by_task["022"]["added"] == [cure_id]
+    assert set(by_task["022"]["dependsOn"]) == {cure_id, "019"}
+
     # phase two: evidence naming no FAILED task (020 here is merely
     # pending) leaves every dependsOn untouched.
     tasks2 = [
@@ -1123,6 +1143,13 @@ def test_dependent_repointing_covers_only_both_neither_and_no_failed_task_named(
     data2 = run2.read_tasks()
     dependent2 = next(t for t in data2["tasks"] if t["id"] == "021")
     assert dependent2["dependsOn"] == ["020"]  # 020 is not failed, so untouched
+    # a re-point that never touches a dependent (020 is not `failed`, so
+    # `_repoint_dependents_onto_cure_task` is never even called for it)
+    # emits no `task.dependency_repointed` event either.
+    events_path2 = run2.root / "events.jsonl"
+    events2 = ([json.loads(line) for line in events_path2.read_text().splitlines()]
+              if events_path2.exists() else [])
+    assert not [e for e in events2 if e["type"] == DEPENDENCY_REPOINTED_EVENT]
 
     # phase three (#209 defect 7): the failed id named in the CLAUSE, with
     # the evidence holding only shas -- the deck-phase3k shape.
