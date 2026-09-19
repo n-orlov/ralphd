@@ -61,6 +61,14 @@ def _finding(severity: str, curable: bool, clause: str, evidence: str,
              cured_when: str | None = None) -> dict:
     payload = {"severity": severity, "curable": curable, "clause": clause,
                "evidence": evidence}
+    # Task 011 (PRD requirement C.2, #219): a BLOCKING, curable finding
+    # with no `cured_when` is now one of the three shapes `_review_
+    # contract_ladder` pauses the run over (`review_findings_unusable`)
+    # instead of taking whatever edge this module's own fixtures exist to
+    # drive -- default one in, the same fix `tests/test_cure_pass.py`'s
+    # own `_finding` helper carries.
+    if cured_when is None and severity == "blocking" and curable is True:
+        cured_when = f"{clause} is discharged"
     if cured_when is not None:
         payload["cured_when"] = cured_when
     return payload

@@ -26,9 +26,21 @@ from ralphd.engine.runner import IterationResult
 from tests.conftest import make_supervisor, supervisor_factory
 
 
-def _finding(severity: str, curable: bool, clause: str, evidence: str) -> dict:
-    return {"severity": severity, "curable": curable, "clause": clause,
-            "evidence": evidence}
+def _finding(severity: str, curable: bool, clause: str, evidence: str,
+             cured_when: str | None = None) -> dict:
+    payload = {"severity": severity, "curable": curable, "clause": clause,
+               "evidence": evidence}
+    # Task 011 (PRD requirement C.2, #219): a BLOCKING, curable finding
+    # with no `cured_when` is now one of the three shapes that pauses on
+    # `review_findings_unusable` instead of taking whatever edge this
+    # module's own fixtures exist to drive -- default one in for that
+    # exact shape, the same fix `tests/test_cure_pass.py`'s own `_finding`
+    # helper carries.
+    if cured_when is None and severity == "blocking" and curable is True:
+        cured_when = f"{clause} is discharged"
+    if cured_when is not None:
+        payload["cured_when"] = cured_when
+    return payload
 
 
 def _result(text: str) -> IterationResult:
@@ -263,17 +275,25 @@ def test_no_findings_channel_never_trips_the_repeat_guard(tmp_path):
 
 
 # ===========================================================================
-# 5. Task 015 (PRD requirement F.1/F.3, #198): an UNREADABLE findings
-#    channel -- present on disk, but does not re-validate -- fingerprints
-#    the rejection ERROR itself, so a second identical channel failure
-#    pauses through this exact edge exactly like a readable rejection's own
-#    repeating blocking-clause set already does above. `_review_findings()`
-#    alone (`_review_findings_channel()[0]`) cannot tell "no channel" apart
-#    from "a channel present but unreadable" -- both read `None` -- so
-#    this drives the SAME real `_step_review()` -> `_run_review_iteration`
-#    -> `_review_contract_ladder` -> `_review_verdict` path every other
-#    test in this module does, over a genuinely unreadable sidecar the
-#    real `_review_findings_channel` reads off disk (never faked/mocked).
+# 5. Task 015 (PRD requirement F.1/F.3, #198) gave an UNREADABLE findings
+#    channel -- present on disk, but does not re-validate -- its own
+#    channel-error signature, so a second identical channel failure used
+#    to pause through the SAME `rejected_repeated_signature` edge a
+#    readable rejection's own repeating blocking-clause set does above.
+#
+#    Task 011 (PRD requirement C.2, #219) supersedes that for this shape
+#    specifically: `_step_review` now checks `self._review_findings_
+#    unusable` -- set whenever `_review_contract_ladder` exhausts over a
+#    findings channel present on disk that never re-validates, which is
+#    exactly what an unreadable channel is -- BEFORE it ever reaches
+#    `_review_rejection_signature`'s own channel-error branch (`_step_
+#    review`'s dispatch order: `review_contract_unrepaired`, then
+#    `review_findings_unusable`, then the rejection ladder the repeated-
+#    signature check lives inside). An unreadable channel therefore now
+#    pauses on `review_findings_unusable` on its very FIRST occurrence --
+#    it never reaches the repeated-signature machinery at all, matching
+#    or not, so neither test below seeds or asserts a `rejectionSignatures`
+#    match any longer; the pause fires unconditionally.
 # ===========================================================================
 
 
@@ -289,7 +309,11 @@ def _write_unreadable_channel(sup) -> None:
     sup.run.findings_json_file.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_a_second_identical_unreadable_channel_rejection_pauses(tmp_path):
+def test_an_unreadable_channel_rejection_pauses_on_findings_unusable(tmp_path):
+    """Task 011 (PRD requirement C.2, #219): superseding this module's own
+    original claim (see section 5's header above) -- an unreadable channel
+    now pauses on its FIRST rejection, never needing (or even consulting)
+    a repeated-signature match at all."""
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=3)
     sup._approach = 2
@@ -298,14 +322,11 @@ def test_a_second_identical_unreadable_channel_rejection_pauses(tmp_path):
     sup.notifier = notifier
 
     _write_unreadable_channel(sup)
-    # The real channel read (never faked in this test) is what approach 1's
-    # own recorded signature must equal, exactly as `_record_rejection_
-    # signature` would have persisted it live off THIS SAME formula.
+    # The real channel read (never faked in this test).
     _, channel_errors = sup._review_findings_channel()
     assert channel_errors, "fixture channel must actually fail to re-validate"
-    sup.run.update_status(rejectionSignatures={
-        "1": "channel-error: " + sup._normalize_blocker_signature_text(
-            "; ".join(sorted(channel_errors)))})
+    # Deliberately no `rejectionSignatures` seeded at all -- proving the
+    # new pause fires without ever consulting one.
 
     async def _review_rejects(prompt, transcript, **kw):
         return _result(json.dumps({
@@ -315,10 +336,10 @@ def test_a_second_identical_unreadable_channel_rejection_pauses(tmp_path):
 
     async def _stub_contract_fix(hat, errors, **kw):
         # The hat never repairs the sidecar on re-ask -- exactly what a
-        # genuinely stuck second approach would actually produce, and the
-        # real ladder (`contract_enforcement.enforce_contract`) still
-        # re-reads the channel fresh on this attempt too (`extra_validate`)
-        # before giving up.
+        # genuinely stuck approach would actually produce, and the real
+        # ladder (`contract_enforcement.enforce_contract`) still re-reads
+        # the channel fresh on this attempt too (`extra_validate`) before
+        # giving up.
         return json.dumps({"verdict": "rejected",
                           "reason": "still cannot read the channel"}), {}
 
@@ -327,25 +348,22 @@ def test_a_second_identical_unreadable_channel_rejection_pauses(tmp_path):
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "paused", "rejected_repeated_signature")
+    assert outcome == ("advance", "paused", "review_findings_unusable")
     assert sup._pause.is_set() is False
     status = sup.run.read_status()
-    assert status.get("pauseReason") == "rejected_repeated_signature"
+    assert status.get("pauseReason") == "review_findings_unusable"
     assert status.get("state") not in ("succeeded", "failed")
 
     # never archived, never a composite PRD -- the approach is left for a
-    # resume to re-review, exactly like the readable-rejection case above.
+    # resume to re-review.
     assert not (root / "approaches" / "02").exists()
     assert not sup.run.composite_prd_file.exists()
     assert sup._approach == 2
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
-    assert escalations[0]["reason"] == "rejected_repeated_signature"
-    # no findings LIST at all -- the channel itself, not a blocking
-    # finding, is the wall that repeated.
-    assert escalations[0]["findings"] == []
-    assert escalations[0]["channelErrors"] == channel_errors
+    assert escalations[0]["reason"] == "review_findings_unusable"
+    assert escalations[0]["contractErrors"] == channel_errors
 
     assert len(notifier.messages) == 1
     text = notifier.messages[0]
@@ -353,11 +371,11 @@ def test_a_second_identical_unreadable_channel_rejection_pauses(tmp_path):
     assert "ralphctl resume task016-repeated-rejection-signature" in text
 
 
-def test_a_different_channel_error_never_matches_and_replans_normally(tmp_path):
-    """A different unreadable-channel error text (a different malformed
-    payload, so a different message) is not a repeat -- the ordinary
-    archive/replan edge still fires, mirroring section 3's readable-
-    rejection case above."""
+def test_a_different_channel_error_still_pauses_on_findings_unusable(tmp_path):
+    """A DIFFERENT unreadable-channel error text (a different malformed
+    payload, so a different message) still pauses on the same edge --
+    task 011's `review_findings_unusable` never compares against a prior
+    signature at all, unlike section 3's readable-rejection case above."""
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=3)
     sup._approach = 2
@@ -382,11 +400,16 @@ def test_a_different_channel_error_never_matches_and_replans_normally(tmp_path):
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "replan", "rejected_approach_left")
-    assert not _events(root, "operator_escalation")
+    assert outcome == ("advance", "paused", "review_findings_unusable")
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 1
+    assert escalations[0]["reason"] == "review_findings_unusable"
     status = sup.run.read_status()
+    # approach 1's own previously-recorded signature is untouched -- this
+    # pause never records or compares one of its own.
     signatures = status.get("rejectionSignatures") or {}
-    assert signatures.get("2", "").startswith("channel-error: ")
+    assert signatures == {"1": "channel-error: some entirely different error text"}
+    assert "2" not in signatures
 
 
 # ===========================================================================
@@ -437,29 +460,31 @@ def test_a_residual_only_rejection_still_yields_no_signature_unlike_an_unreadabl
 
 # ===========================================================================
 # 7. Cure task cure-01-03 (PRD requirement F.1, definition of done 12,
-#    #198): the second-rejection pause must ALSO fire on the run's own LAST
-#    approach -- `_step_review` used to guard the whole repeat-signature
-#    check (and the record it depends on) with `approach < max_approaches`,
-#    so `max_approaches=2`'s second (and final) identical rejection fell
-#    through to the ordinary archive/`rejected_no_approach_left` tail
-#    instead of pausing, leaving approach 02 archived and nothing to
-#    resume. Requirement F.1's own text names no last-approach exemption.
+#    #198) required the second-rejection pause to ALSO fire on the run's
+#    own LAST approach. Task 011 (PRD requirement C.2, #219) supersedes
+#    the mechanism entirely for THIS shape (see section 5's header above):
+#    an unreadable/truncated findings sidecar now pauses on `review_
+#    findings_unusable` on its very FIRST `_step_review()` cycle -- there
+#    is no "second identical rejection" to reach here at all, on the last
+#    approach or any other, because the pause fires before the rejection
+#    ladder (and the approach counter) are ever touched.
 #
-#    An independent two-cycle regression: no `rejectionSignatures` seeded
-#    on `status.json` -- both cycles run the REAL `_step_review()` ->
-#    `_run_review_iteration` -> `_review_contract_ladder` ->
-#    `_ask_contract_fix` ladder over a genuinely unreadable findings
-#    sidecar on disk, and the supervisor is torn down and rebuilt against
-#    the SAME run directory between cycles (the shape a real `resume`
-#    takes), so the first cycle's signature can only reach the second
-#    cycle through `status.json` itself, never through in-process state.
+#    What survives from the original two-cycle regression is the shape of
+#    the proof: the supervisor is torn down and rebuilt against the SAME
+#    run directory between cycles (the shape a real `resume` takes), and
+#    both cycles run the REAL `_step_review()` -> `_run_review_iteration`
+#    -> `_review_contract_ladder` -> `_ask_contract_fix` ladder over a
+#    genuinely unreadable findings sidecar on disk -- proving the pause is
+#    reached (and reached identically) the first time, AND that a fresh
+#    process resuming into the same still-unarchived approach reaches it
+#    again rather than silently falling through to some other edge.
 # ===========================================================================
 
 
 def _second_cycle_supervisor(root: Path, max_approaches: int):
     return make_supervisor(
         root, run_id="cure0103-two-real-cycles", cfg_defaults=False,
-        max_approaches=max_approaches, contract_retry_max=2, approach=2)
+        max_approaches=max_approaches, contract_retry_max=2, approach=1)
 
 
 @pytest.mark.parametrize("max_approaches", [2, 3])
@@ -467,7 +492,7 @@ def _second_cycle_supervisor(root: Path, max_approaches: int):
     "payload",
     ['[{"severity":"blocking","curable":true,"clause":"F.1"}]',
      '{truncated'])
-def test_two_real_review_cycles_persist_error_pause_and_keep_second_unarchived_without_seeding(
+def test_two_real_review_cycles_persist_findings_unusable_pause_and_keep_first_unarchived(
         tmp_path, payload, max_approaches):
     root = tmp_path / "run"
     repairs: list[list[str]] = []
@@ -498,27 +523,27 @@ def test_two_real_review_cycles_persist_error_pause_and_keep_second_unarchived_w
     sup.run.findings_json_file.write_text(payload, encoding="utf-8")
 
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "replan", "rejected_approach_left")
-    assert (root / "approaches" / "01").is_dir()
-    assert messages == []
-    first_signature = sup.run.read_status()["rejectionSignatures"]["1"]
-    assert first_signature.startswith("channel-error: ")
-    assert sup._step_replan() == ("advance", "planning", "budget_and_approach_left")
+    assert outcome == ("advance", "paused", "review_findings_unusable")
+    assert not (root / "approaches" / "01").exists()
+    assert len(messages) == 1
+    status = sup.run.read_status()
+    assert status["pauseReason"] == "review_findings_unusable"
+    assert sup._approach == 1 and not sup._pause.is_set()
 
     # A fresh supervisor over the SAME run directory -- the resume shape --
-    # never inheriting anything the first supervisor still held in memory.
+    # never inheriting anything the first supervisor still held in memory,
+    # re-entering `review` over the SAME (still unarchived) approach.
     sup = _second_cycle_supervisor(root, max_approaches)
     wire(sup)
     sup.run.findings_json_file.write_text(payload, encoding="utf-8")
 
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "paused", "rejected_repeated_signature")
-    assert not (root / "approaches" / "02").exists()
+    assert outcome == ("advance", "paused", "review_findings_unusable")
+    assert not (root / "approaches" / "01").exists()
     status = sup.run.read_status()
-    assert status["pauseReason"] == "rejected_repeated_signature"
-    assert status["rejectionSignatures"]["1"] == first_signature
-    assert sup._approach == 2 and not sup._pause.is_set()
-    assert len(messages) == 1
+    assert status["pauseReason"] == "review_findings_unusable"
+    assert sup._approach == 1 and not sup._pause.is_set()
+    assert len(messages) == 2
     assert len(repairs) == 4 and all(repairs)
     findings_list, channel_errors = sup._review_findings_channel()
     assert findings_list is None and channel_errors
@@ -534,10 +559,13 @@ def test_two_real_review_cycles_persist_error_pause_and_keep_second_unarchived_w
 #    `PermissionError` escape `read_findings_json` -> `_review_findings_
 #    channel` -> `_review_contract_ladder` -> `_step_review` uncaught,
 #    crashing the real review/contract-repair path instead of being
-#    treated as one more invalid-findings-channel case. Explicit
-#    `max_approaches=2` per the cure's own definition of done -- the
-#    second (and LAST) identical failure must still pause, never fall
-#    through to the ordinary archive/`rejected_no_approach_left` tail.
+#    treated as one more invalid-findings-channel case.
+#
+#    Task 011 (PRD requirement C.2, #219) supersedes the second-cycle,
+#    repeated-signature half of the original story exactly as section 7's
+#    header above explains -- both cycles below now pause on `review_
+#    findings_unusable`, on the first cycle already, keeping approach 1
+#    itself unarchived across both.
 # ===========================================================================
 
 
@@ -595,29 +623,31 @@ def test_two_real_review_cycles_persist_permission_denied_error_pause_and_keep_s
         assert findings_list is None and channel_errors
 
         outcome = asyncio.run(sup._step_review())
-        assert outcome == ("advance", "replan", "rejected_approach_left")
-        assert (root / "approaches" / "01").is_dir()
-        assert messages == []
-        first_signature = sup.run.read_status()["rejectionSignatures"]["1"]
-        assert first_signature.startswith("channel-error: ")
-        assert sup._step_replan() == (
-            "advance", "planning", "budget_and_approach_left")
+        assert outcome == ("advance", "paused", "review_findings_unusable")
+        assert not (root / "approaches" / "01").exists()
+        assert len(messages) == 1
+        status = sup.run.read_status()
+        assert status["pauseReason"] == "review_findings_unusable"
+        assert sup._approach == 1 and not sup._pause.is_set()
 
         # A fresh supervisor over the SAME run directory -- the resume
         # shape -- never inheriting anything the first supervisor still
-        # held in memory.
+        # held in memory, re-entering `review` over the SAME (still
+        # unarchived) approach. `chmod 000` must be restored first, the
+        # same restore a real resume would need after an operator actually
+        # fixed the sidecar (here, re-broken identically on purpose).
+        os.chmod(sup.run.findings_json_file, 0o644)
         sup = _second_cycle_supervisor(root, max_approaches)
         wire(sup)
         _write_permission_denied_channel(sup)
 
         outcome = asyncio.run(sup._step_review())
-        assert outcome == ("advance", "paused", "rejected_repeated_signature")
-        assert not (root / "approaches" / "02").exists()
+        assert outcome == ("advance", "paused", "review_findings_unusable")
+        assert not (root / "approaches" / "01").exists()
         status = sup.run.read_status()
-        assert status["pauseReason"] == "rejected_repeated_signature"
-        assert status["rejectionSignatures"]["1"] == first_signature
-        assert sup._approach == 2 and not sup._pause.is_set()
-        assert len(messages) == 1
+        assert status["pauseReason"] == "review_findings_unusable"
+        assert sup._approach == 1 and not sup._pause.is_set()
+        assert len(messages) == 2
         assert len(repairs) == 4 and all(repairs)
         findings_list, channel_errors = sup._review_findings_channel()
         assert findings_list is None and channel_errors

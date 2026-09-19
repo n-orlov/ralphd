@@ -691,7 +691,8 @@ def test_the_emitted_event_lists_every_id_the_pass_inserted_or_reopened(tmp_path
 
     finding = _blocking_curable_finding(
         "requirement E.3 (#167)", "the lanes moved and a doc went stale",
-        invalidates=[RECORD_PATH, "docs/testing.md"])
+        invalidates=[RECORD_PATH, "docs/testing.md"],
+        cured_when="the lane result and doc are both refreshed")
     findings.write_findings_json(sup.run.findings_json_file, [finding])
 
     async def _review_rejects(prompt, transcript, **kw):
@@ -1058,7 +1059,8 @@ def _cure_pass_over_a_real_workspace(root: Path, workspace: Path):
                       {"version": 1, "tasks": _lane_fixture_tasks()})
     finding = _blocking_curable_finding(
         "the shipped sha's lanes moved", "a later commit landed after the record",
-        invalidates=[RECORD_PATH])
+        invalidates=[RECORD_PATH],
+        cured_when="the record is refreshed against the moved lanes")
     findings.write_findings_json(sup.run.findings_json_file, [finding])
 
     async def _review_rejects(prompt, transcript, **kw):
@@ -1196,11 +1198,13 @@ def _two_cure_pass_over_a_real_workspace(root: Path, workspace: Path):
         _blocking_curable_finding(
             "the shipped sha's lanes moved",
             "a later commit landed after the record",
-            invalidates=[RECORD_PATH]),
+            invalidates=[RECORD_PATH],
+            cured_when="the record is refreshed against the moved lanes"),
         _blocking_curable_finding(
             "the record cites a stale sha",
             "the same record, a second blocking finding",
-            invalidates=[RECORD_PATH]),
+            invalidates=[RECORD_PATH],
+            cured_when="the record's cited sha is refreshed"),
     ])
 
     async def _review_rejects(prompt, transcript, **kw):
@@ -1314,7 +1318,8 @@ def test_under_the_vigilant_variant_the_record_is_restored_to_validated(tmp_path
         _blocking_curable_finding(
             "the shipped sha's lanes moved",
             "a later commit landed after the record",
-            invalidates=[RECORD_PATH])])
+            invalidates=[RECORD_PATH],
+            cured_when="the record is refreshed against the moved lanes")])
 
     async def _review_rejects(prompt, transcript, **kw):
         return _result(json.dumps({

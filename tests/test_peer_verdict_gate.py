@@ -120,6 +120,12 @@ def test_gate_off_by_default_table_is_byte_identical_to_today(vigilant):
         # byte-identical to TODAY's table (now including this edge), not to
         # a pre-#209 snapshot of it.
         tr.T("paused", "review_contract_unrepaired"),
+        # Task 011 (PRD requirement C.2, #219): the discriminating sibling
+        # pause edge, added to the base table beside `review_contract_
+        # unrepaired` -- present here too for the same reason: gate-off is
+        # byte-identical to TODAY's table (now including this edge), not
+        # to a pre-task-011 snapshot of it.
+        tr.T("paused", "review_findings_unusable"),
         tr.T("finishing", "rejected_no_approach_left"),
         tr.T("review", "review_interrupted"),
         tr.T("finishing", "review_unjudged_at_budget_end"),

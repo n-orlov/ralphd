@@ -10338,6 +10338,12 @@ class LoopSupervisor:
         no rejection to classify -- review's own contract ladder exhausted
         with the hat's own verdict claim still unreadable, so the approach
         is left unarchived, no composite PRD is written, and `resume`
+        re-enters `review` over the SAME approach); `review_findings_
+        unusable` (task 011, PRD requirement C.2, #219: -> paused, checked
+        immediately after the edge above for the identical reason -- a
+        legible verdict claim whose FINDINGS CHANNEL is what the ladder
+        exhausted over instead, so the approach is left unarchived, no
+        composite PRD is written, no cure pass is opened, and `resume`
         re-enters `review` over the SAME approach).
         """
         approach = self._approach
@@ -10454,6 +10460,22 @@ class LoopSupervisor:
                 approach, contract_errors)
             self._advance("review", "paused", "review_contract_unrepaired")
             return ("advance", "paused", "review_contract_unrepaired")
+        # Task 011 (requirement C.2, #219): the discriminating sibling
+        # pause -- a legible verdict claim whose FINDINGS CHANNEL is what
+        # the ladder exhausted over (a present-but-invalid sidecar, a
+        # `verified` claim contradicting a blocking finding, or a curable
+        # finding with no `cured_when`). Checked immediately after the
+        # branch above for the identical reason: there is no rejection to
+        # classify off a channel the engine itself cannot trust, so this
+        # must run BEFORE the ordinary rejection ladder below ever sees
+        # it. Mutually exclusive with the branch above by `_review_
+        # contract_ladder`'s own construction (`_review_findings_
+        # unusable`/`_review_contract_unrepaired` never both True).
+        if self._review_findings_unusable:
+            self._pause_and_escalate_review_findings_unusable(
+                approach, contract_errors)
+            self._advance("review", "paused", "review_findings_unusable")
+            return ("advance", "paused", "review_findings_unusable")
         self.run.emit("log", message=f"review rejected approach {approach}")
         # Task 006 (PRD requirement B.2, #111): a rejection whose BLOCKING
         # findings are ALL incurable takes `rejected_incurable` instead of
@@ -11114,6 +11136,79 @@ class LoopSupervisor:
                       reason="review_contract_unrepaired",
                       contractErrors=list(contract_errors), escalation=text)
         self.pause(reason="review_contract_unrepaired")
+        if self.notifier is not None:
+            self.notifier(text)
+
+    def _review_findings_unusable_escalation_text(
+        self, approach: int, contract_errors: list[str]
+    ) -> str:
+        """Task 011 (PRD requirement C.2, #219): the operator-facing
+        escalation body for a `review_findings_unusable` pause -- the same
+        text-method + pause-method split every sibling in this family
+        uses, worded for the case THIS edge covers: review's own verdict
+        claim WAS legible, but the FINDINGS CHANNEL the ladder re-asked
+        over never became usable -- a sidecar present on disk that will
+        not re-validate, a `verified` claim contradicting a blocking
+        finding, or a curable finding with no `cured_when`. Distinct on
+        purpose from `_review_contract_unrepaired_escalation_text`'s own
+        wording, which is for a verdict that was never legible at all.
+
+        The validation errors are quoted verbatim for the same reason
+        `_review_contract_unrepaired_escalation_text` quotes them: they
+        are the whole diagnosis, and the operator cannot otherwise see
+        them without reading `events.jsonl`.
+        """
+        lines = [
+            f"Run {self.cfg.run_id} approach {approach}: review made "
+            f"{1 + self.cfg.contract_retry_max} attempts (one charged "
+            "iteration plus the ladder's uncharged re-asks) and never "
+            "produced a USABLE findings channel -- a legible verdict claim "
+            "was in hand, but the sidecar it depends on never re-validated "
+            "(a present-but-invalid file, a `verified` claim contradicting "
+            "a blocking finding, or a curable finding with no `cured_"
+            "when`). The run has been paused (existing pause machinery) "
+            "instead of scoring a rejection off a channel the engine "
+            "itself cannot trust: the approach was NOT archived, no "
+            "composite PRD was written, no cure pass was opened, and the "
+            "approach counter did not move. This is operator-actionable -- "
+            "a broken findings writer, a stale sidecar, or a hat that "
+            "cannot reconcile its own verdict with its own findings. Once "
+            "the findings channel is fixed, resume the run and review is "
+            f"asked again over the SAME approach (`ralphctl resume "
+            f"{self.cfg.run_id}`).",
+            "",
+        ]
+        if contract_errors:
+            lines.append("the contract errors review never repaired:")
+            for error in contract_errors:
+                lines.append(f"  {error}")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _pause_and_escalate_review_findings_unusable(
+        self, approach: int, contract_errors: list[str]
+    ) -> None:
+        """Task 011 (PRD requirement C.2, #219): pause the run through the
+        EXISTING pause machinery -- the same seam `_pause_and_escalate_
+        review_contract_unrepaired` just above already uses (`self.
+        pause()`, `self.notifier`, an `operator_escalation` event always
+        emitted to `events.jsonl` regardless of whether a notifier is
+        wired in).
+
+        `contractErrors` is camelCase for the same reason its sibling
+        escalation's is. No `_resume_point` bucket is added, on the exact
+        same precedent `_pause_and_escalate_review_contract_unrepaired`
+        already cites: a fresh PROCESS started over a run that died while
+        paused here falls to `_resume_point`'s default (skip planning,
+        re-enter `worker`) and costs one throwaway worker iteration before
+        review is asked again.
+        """
+        text = self._review_findings_unusable_escalation_text(
+            approach, contract_errors)
+        self.run.emit("operator_escalation", approach=approach,
+                      reason="review_findings_unusable",
+                      contractErrors=list(contract_errors), escalation=text)
+        self.pause(reason="review_findings_unusable")
         if self.notifier is not None:
             self.notifier(text)
 

@@ -1746,6 +1746,14 @@ elif "Role: Reviewer" in prompt:
             "curable": True,
             "clause": "stub curable review clause",
             "evidence": f"stub: curable review rejection #{curable_seen + 1}",
+            # Task 011 (PRD requirement C.2, #219): a curable blocking
+            # finding with no `cured_when` is now one of the three shapes
+            # `_review_contract_ladder` pauses the run over
+            # (`review_findings_unusable`) instead of letting it ride the
+            # ordinary cure-pass edge this stub exists to exercise --
+            # spelled out so the cure-pass flow tests keep testing THAT
+            # edge, not the new pause.
+            "cured_when": f"stub: the curable review rejection #{curable_seen + 1} is fixed",
         }
         # Task 034 (#167, #171): STUB_REVIEW_CURABLE_INVALIDATES folds a
         # test-supplied JSON array of paths onto THIS finding's own

@@ -78,6 +78,20 @@ def _finding(severity: str, curable: bool, clause: str, evidence: str,
              cured_when: str | None = None) -> dict:
     payload = {"severity": severity, "curable": curable, "clause": clause,
                "evidence": evidence}
+    # Task 011 (PRD requirement C.2, #219): a BLOCKING, curable finding
+    # with no `cured_when` is now one of the three shapes `_review_
+    # contract_ladder` pauses the run over (`review_findings_unusable`)
+    # instead of letting it ride the ordinary cure-pass edge this module
+    # exists to exercise -- default one in, exactly like every call site
+    # that already passed its own, so a call site that never cared about
+    # `cured_when` keeps testing the cure-pass edge rather than the new
+    # pause. A call site that DOES pass `cured_when=None` explicitly, or
+    # that wants a genuinely absent one, still gets it (unreachable here
+    # since the sentinel and the deliberate default now coincide for
+    # curable blocking findings -- no call site in this module tests the
+    # missing-`cured_when` shape itself; `tests/test_cured_when.py` does).
+    if cured_when is None and severity == "blocking" and curable is True:
+        cured_when = f"{clause}: {evidence} is fixed"
     if cured_when is not None:
         payload["cured_when"] = cured_when
     return payload
@@ -85,7 +99,11 @@ def _finding(severity: str, curable: bool, clause: str, evidence: str,
 
 def _blocking_curable_finding(clause: str, evidence: str) -> dict:
     """The `severity: "blocking", curable: True` shape task 006's and task
-    041's `insert_cure_tasks` pins both build every finding from."""
+    041's `insert_cure_tasks` pins both build every finding from. No
+    `cured_when` -- every call site in this module feeds `insert_cure_
+    tasks` directly, never a real `_step_review()`/`_review_contract_
+    ladder` pass, so the absent-`cured_when` shape task 011 (PRD
+    requirement C.2, #219) pauses over is never reached from here."""
     return {"severity": "blocking", "curable": True, "clause": clause,
             "evidence": evidence}
 

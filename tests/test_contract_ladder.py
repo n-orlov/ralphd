@@ -822,17 +822,19 @@ def test_the_second_ladder_flag_separates_unusable_findings_from_an_unreadable_v
     both (the new invariant assertions right where it already read the
     first one).
 
-    Downstream behaviour is UNCHANGED by this task -- the whole point of
-    the two scenarios below is that both still land exactly where they did
-    before this commit: a legible `rejected` verdict whose sidecar does
-    not re-validate still rides the ordinary rejection ladder to
-    `rejected_approach_left` (archive and composite PRD included), the
-    same outcome as this module's sibling schema-slip node just above; an
-    unreadable verdict claim still holds on `review_contract_unrepaired`
+    Task 011 (requirement C.2, #219) gave the first flag its own pause
+    edge (`review_findings_unusable`), so scenario 1 below now lands on
+    the SAME kind of hold `review_contract_unrepaired` always has, rather
+    than the ordinary rejection ladder it rode under task 010 alone --
+    see `test_review_findings_unusable_pauses_and_never_archives_or_cures`
+    below for the full pause-shape assertions (state, pauseReason, no
+    approaches dir, approach counter, no cure pass) across the three
+    named unusable-findings shapes. This node keeps its original job: pin
+    that the two flags stay mutually exclusive and each fires only on its
+    own scenario -- an unreadable verdict claim still holds on
+    `review_contract_unrepaired`
     (`test_ladder_exhaustion_holds_for_an_operator_and_never_archives`
-    above). What's new, and all this task adds, is that the engine can now
-    tell the two exhaustions apart on its own two flags -- requirement C.2
-    is what a later task lets `_step_review` act on.
+    above), never on the sibling edge.
     """
     legible_rejected = json.dumps({"verdict": "rejected",
                                    "reason": "the deck never renders"})
@@ -849,11 +851,11 @@ def test_the_second_ladder_flag_separates_unusable_findings_from_an_unreadable_v
 
     outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
 
-    # unchanged downstream: still an ordinary rejection.
-    assert outcome == ("advance", "replan", "rejected_approach_left")
-    assert (root / "approaches" / "01").exists()
-    assert sup.run.composite_prd_file.exists()
-    # what's new: the discriminating flag is set, its sibling is not.
+    # task 011: now the discriminating pause, not the ordinary rejection.
+    assert outcome == ("advance", "paused", "review_findings_unusable")
+    assert not (root / "approaches" / "01").exists()
+    assert not sup.run.composite_prd_file.exists()
+    # what's new (task 010): the discriminating flag is set, its sibling is not.
     assert sup._review_findings_unusable is True
     assert sup._review_contract_unrepaired is False
 
@@ -871,6 +873,93 @@ def test_the_second_ladder_flag_separates_unusable_findings_from_an_unreadable_v
     assert outcome2 == ("advance", "paused", "review_contract_unrepaired")
     assert sup2._review_contract_unrepaired is True
     assert sup2._review_findings_unusable is False
+
+
+def test_review_findings_unusable_pauses_and_never_archives_or_cures(tmp_path):
+    """Task 011 (PRD requirement C.2, #219): the pause edge this task adds
+    (`review -> paused` on `review_findings_unusable`), driven through a
+    real `_step_review()` over each of the THREE named shapes requirement
+    C draws the flag from (`LoopSupervisor._review_contract_ladder`'s own
+    `findings_channel_unusable_reply`): a present-but-invalid (truncated)
+    sidecar, a `verified` claim contradicting a blocking finding, and a
+    curable finding with no `cured_when`. Every shape must leave the SAME
+    fingerprint: `state: "paused"` with `pauseReason: "review_findings_
+    unusable"`, no `approaches/NN/` directory written, no composite PRD,
+    the approach counter unchanged, and no cure pass opened (neither
+    `curePasses` on status.json nor an `approach.cure_pass` event) --
+    exactly the consequences `test_ladder_exhaustion_holds_for_an_operator_
+    and_never_archives` above already pins for the sibling edge.
+    """
+    legible_rejected = json.dumps({"verdict": "rejected",
+                                   "reason": "the deck never renders"})
+
+    def _assert_paused_with_no_side_effects(sup, root):
+        outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
+        assert outcome == ("advance", "paused", "review_findings_unusable")
+        assert sup._review_findings_unusable is True
+        assert sup._review_contract_unrepaired is False
+        assert not (root / "approaches" / "01").exists()
+        assert not sup.run.composite_prd_file.exists()
+        status = sup.run.read_status()
+        assert status["state"] == "paused"
+        assert status["pauseReason"] == "review_findings_unusable"
+        assert sup._approach == 1          # the approach counter never moved
+        assert not status.get("curePasses")
+        events = _events(root)
+        assert not [e for e in events if e.get("type") == "approach.cure_pass"]
+        escalations = [e for e in events if e.get("type") == "operator_escalation"]
+        assert len(escalations) == 1, escalations
+        assert escalations[0]["reason"] == "review_findings_unusable"
+        assert "review" in escalations[0]["escalation"]
+        verdicts = [e for e in events if e.get("type") == "approach.verdict_recorded"]
+        assert [(e["channel"], e["verdict"]) for e in verdicts] == \
+            [("review", "rejected")], verdicts
+        return outcome
+
+    # -- shape 1: a present-but-invalid (truncated) sidecar.
+    sup1 = _supervisor_review_ladder(tmp_path / "shape-truncated-sidecar",
+                                     [_ok(legible_rejected)])
+    sup1.run.findings_json_file.write_text('[{"severity": "blocking"}]')
+    _assert_paused_with_no_side_effects(sup1, sup1.run.root)
+
+    # -- shape 2: a `verified` claim contradicting a blocking finding.
+    legible_verified = json.dumps({"verdict": "verified"})
+    sup2 = _supervisor_review_ladder(tmp_path / "shape-verified-contradiction",
+                                     [_ok(legible_verified)])
+    findings.write_findings_json(sup2.run.findings_json_file, [
+        {"severity": "blocking", "curable": False,
+         "clause": "requirement C", "evidence": "still broken"}])
+    outcome2 = asyncio.run(asyncio.wait_for(sup2._step_review(), 30.0))
+    assert outcome2 == ("advance", "paused", "review_findings_unusable")
+    assert sup2._review_findings_unusable is True
+    assert sup2._review_contract_unrepaired is False
+    root2 = sup2.run.root
+    assert not (root2 / "approaches" / "01").exists()
+    assert not sup2.run.composite_prd_file.exists()
+    status2 = sup2.run.read_status()
+    assert status2["state"] == "paused"
+    assert status2["pauseReason"] == "review_findings_unusable"
+    assert sup2._approach == 1
+    assert not status2.get("curePasses")
+    events2 = _events(root2)
+    assert not [e for e in events2 if e.get("type") == "approach.cure_pass"]
+    # the claimed verdict was `verified`, but `_review_verdict`'s own
+    # ternary only reads `_review_contract_unrepaired` (False here -- the
+    # claim itself was legible) to pick `unreviewed`, so the recorded
+    # approach verdict is still `rejected`, exactly like the other two
+    # shapes -- never `verified` (the invariant assertion in `_review_
+    # verdict` refuses that combination outright).
+    verdicts2 = [e for e in events2 if e.get("type") == "approach.verdict_recorded"]
+    assert [(e["channel"], e["verdict"]) for e in verdicts2] == \
+        [("review", "rejected")], verdicts2
+
+    # -- shape 3: a curable blocking finding with no `cured_when`.
+    sup3 = _supervisor_review_ladder(tmp_path / "shape-missing-cured-when",
+                                     [_ok(legible_rejected)])
+    findings.write_findings_json(sup3.run.findings_json_file, [
+        {"severity": "blocking", "curable": True,
+         "clause": "requirement C", "evidence": "still broken"}])
+    _assert_paused_with_no_side_effects(sup3, sup3.run.root)
 
 
 # -- 3. Half B: the negative-verdict synonym, and its one-directionality ---

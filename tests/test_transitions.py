@@ -1129,7 +1129,8 @@ def test_a_curable_blocking_finding_still_takes_the_ordinary_replan_edge(tmp_pat
 
     mixed_curability = [
         _finding("blocking", False, "requirement B (#111)", "incurable one"),
-        _finding("blocking", True, "requirement D (#99)", "curable one"),
+        {**_finding("blocking", True, "requirement D (#99)", "curable one"),
+         "cured_when": "the curable finding is repaired"},
     ]
     findings.write_findings_json(sup.run.findings_json_file, mixed_curability)
 

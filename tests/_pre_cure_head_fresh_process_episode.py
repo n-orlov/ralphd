@@ -90,6 +90,11 @@ def episode_one(root: Path, workspace: Path, seed_sha: str) -> None:
         "clause": "requirement B.2 (#221)",
         "evidence": "the lane record went stale",
         "invalidates": [RECORD_PATH],
+        # Task 011 (PRD requirement C.2, #219): a curable blocking finding
+        # with no `cured_when` now pauses on `review_findings_unusable`
+        # instead of taking the ordinary cure-pass edge this episode
+        # exists to exercise.
+        "cured_when": "the record is refreshed against the moved lanes",
     }])
 
     async def _review_rejects(prompt, transcript, **kw):

@@ -442,6 +442,26 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # approach is left unarchived, so `resume` re-enters `review` over
         # the SAME approach through `_step_paused`'s default branch.
         T("paused", "review_contract_unrepaired"),
+        # Task 011 (PRD requirement C.2, #219): the DISCRIMINATING sibling
+        # of `review_contract_unrepaired` just above -- a review reply
+        # whose own verdict claim IS legible (a schema-valid `verified`/
+        # `rejected` word) but whose FINDINGS CHANNEL is what the ladder
+        # exhausted over: a present-but-invalid sidecar, a `verified`
+        # claim contradicting a blocking finding, or a curable finding
+        # with no `cured_when` (`LoopSupervisor._review_contract_ladder`'s
+        # own `findings_channel_unusable_reply`, requirement C.1/task 010).
+        # Before this task those three shapes fell through to the ordinary
+        # rejection edges above -- archiving the approach and writing a
+        # composite PRD off a findings channel the engine itself could not
+        # read. Holds instead, on the SAME existing pause machinery
+        # (`LoopSupervisor._pause_and_escalate_review_findings_unusable`),
+        # leaving the approach unarchived so `resume` re-enters `review`
+        # over the SAME approach -- mutually exclusive with the edge above
+        # by `findings_channel_unusable_reply`'s own construction (guarded
+        # by `not verdict_claim_unreadable`), and checked in `_step_review`
+        # immediately after it for the identical reason: there is no
+        # rejection to classify off a channel the engine cannot trust.
+        T("paused", "review_findings_unusable"),
         # rejected, and this was the last approach / budget is gone.
         T("finishing", "rejected_no_approach_left"),
         # requirement A, #72: the review iteration itself got cut short
@@ -741,6 +761,12 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # classify at all, so it is reached long before the (VERIFIED-only)
         # peer verdict gate is ever consulted.
         T("paused", "review_contract_unrepaired"),
+        # Task 011 (PRD requirement C.2, #219): carried over byte-for-byte
+        # from `TABLE["review"]` above -- same reasoning as `review_
+        # contract_unrepaired` just above: this check runs entirely before
+        # there is any verdict to classify at all, so it is reached long
+        # before the (VERIFIED-only) peer verdict gate is ever consulted.
+        T("paused", "review_findings_unusable"),
         T("finishing", "rejected_no_approach_left"),
         T("review", "review_interrupted"),
         T("finishing", "review_unjudged_at_budget_end"),
