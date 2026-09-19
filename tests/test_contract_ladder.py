@@ -766,41 +766,55 @@ def test_ladder_exhaustion_holds_for_an_operator_and_never_archives(
                 and "review rejected approach" in (e.get("message") or "")]
 
 
-def test_a_legible_rejected_verdict_with_a_schema_slip_elsewhere_still_rejects(
+def test_a_legible_rejected_verdict_with_a_schema_slip_elsewhere_now_pauses(
         tmp_path):
-    """GH #209 defect 2: the discriminating sibling of the node above, and
-    the boundary the hold is drawn on. The condition is the hat's OWN
-    VERDICT CLAIM being unreadable -- NOT "the ladder exhausted" and NOT
-    "the payload failed its schema". `HAT_SCHEMAS["review"]` is
-    `additionalProperties: False`, so one stray inline key (`confidence`
-    here -- among the most common slips a hat makes against a closed
-    object) is a schema error, and a hat stubborn enough to repeat its own
-    shape on every re-ask exhausts the ladder over it. That judge said
-    `rejected` for a stated reason, so it HAS rendered a verdict: recording
-    it as `unreviewed` and holding for an operator would be the mirror of
-    the defect this unit fixes, and the reason it fixes it.
+    """Task 012 (PRD requirement C.3, #219): this node, inverted.
 
-    Task 012 (requirement C.3, #219) inverts this node's own former
-    sibling, `tests/test_run_record.py::test_review_verdict_is_persisted_
-    when_the_sidecar_does_not_validate` (now `test_review_verdict_now_
-    pauses_when_the_sidecar_does_not_validate`): requirement C gives a
-    present-but-invalid FINDINGS SIDECAR its own discriminating pause
-    (`review_findings_unusable`), so that sibling's outcome flips from
-    "still rejects" to "pauses". This node's own shape does NOT flip with
-    it, and that divergence is the point, not an oversight: the stray key
-    here (`confidence`) is a `schema_errors` violation of the review
-    payload's OWN schema, not a findings-channel refusal --
-    `_review_contract_ladder`'s `findings_channel_unusable_reply` is
-    guarded by `not schema_errors` by construction, and the PRD's own
-    ruling for requirement C names only three findings-channel shapes as
-    now-paused (a truncated sidecar, a `verified` claim contradicting a
-    blocking finding, a curable finding with no `cured_when`) while
-    stating outright that a stray inline key must not be swept in too --
-    "do not widen it back", the same boundary #209 already measured once
-    (widening cost 30 green nodes). So this shape keeps its ORIGINAL
-    outcome (still an ordinary, substantive rejection) precisely BECAUSE
-    requirement C was scoped away from it, which the two new assertions
-    below now pin directly instead of leaving to inference."""
+    Under its previous name -- `test_a_legible_rejected_verdict_with_a_
+    schema_slip_elsewhere_still_rejects` -- it pinned GH #209 defect 2's
+    own boundary: `HAT_SCHEMAS["review"]` is `additionalProperties:
+    False`, so one stray inline key (`confidence` here -- among the most
+    common slips a hat makes against a closed object) is a schema error,
+    and a hat stubborn enough to repeat its own shape on every re-ask
+    exhausts the ladder over it; because the judge nevertheless said
+    `rejected` for a stated reason, #209 scored that an ordinary,
+    substantive rejection -- the approach archived, a composite PRD
+    written for a successor that need not exist.
+
+    Requirement C supersedes exactly that outcome, and inverting this pin
+    is the contract's own decision rather than this test's: #219 names "a
+    stray inline key" as the fourth of the four shapes whose exhausted
+    review ladder "would still cost an approach today", alongside the
+    truncated sidecar, the `verified` claim contradicting a blocking
+    finding and the curable finding with no `cured_when`. The reasoning
+    #209 used for its own half still holds and is what carries the
+    inversion: a legible verdict means the judge DID speak, so the run
+    still records `rejected` and never `unreviewed` -- but nothing inside
+    the run can synthesize a usable review CONTRACT out of a payload the
+    ladder could not repair, so the only remaining edge is a hold for an
+    operator rather than spending an approach on a reviewer whose channel
+    is broken structurally. The outcome therefore flips to the eighth
+    `pauseReason`, `review_findings_unusable`; `tests/test_run_record.py::
+    test_review_verdict_now_pauses_when_the_sidecar_does_not_validate` is
+    this node's inverted sibling, for the sidecar half of the same ruling.
+
+    What does NOT move, and is asserted below so the narrowing #209
+    measured stays pinned: `_review_contract_unrepaired` stays False (this
+    verdict claim was legible -- an unreadable one keeps its own distinct
+    `review_contract_unrepaired` hold, recorded `unreviewed`, see
+    `test_ladder_exhaustion_holds_for_an_operator_and_never_archives`
+    above), the recorded approach verdict stays `rejected` with the hat's
+    own words, and the hold still fires only on an EXHAUSTED ladder rather
+    than on "the payload failed its schema" per se -- a slip the ladder
+    repairs on a re-ask reaches the ordinary outcome untouched
+    (`test_a_prose_final_line_is_repaired_on_reask_and_never_archives_or_
+    composites` above).
+
+    The two deliberate-asymmetry pins of this module stay as they are,
+    requirement C being review-only: verify's `test_ladder_exhaustion_
+    still_produces_the_verdict_miss_validation_failed_outcome` and the
+    verdict gate's `test_ladder_exhaustion_on_a_prose_reply_keeps_todays_
+    safe_default`."""
     reply = json.dumps({"verdict": "rejected",
                         "reason": "the deck never renders",
                         "confidence": 0.9})
@@ -811,24 +825,32 @@ def test_a_legible_rejected_verdict_with_a_schema_slip_elsewhere_still_rejects(
     outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
 
     # the ladder genuinely exhausted -- the full attempt count and the
-    # `contract.agent_fault` are both here -- and the outcome is still the
-    # ordinary rejection, with every rejection consequence intact.
+    # `contract.agent_fault` are both here -- and the outcome is now the
+    # discriminating hold, with every rejection consequence withheld.
     assert sup.runner.calls == 1 + sup.cfg.contract_retry_max
     events = _events(root)
     faults = [e for e in events if e.get("type") == "contract.agent_fault"]
     assert len(faults) == 1 and faults[0]["hat"] == "review", faults
-    assert outcome == ("advance", "replan", "rejected_approach_left")
+    assert outcome == ("advance", "paused", "review_findings_unusable")
+    status = sup.run.read_status()
+    assert status["state"] == "paused"
+    assert status["pauseReason"] == "review_findings_unusable"
+    # the approach survives: nothing archived, no composite PRD written
+    # for a successor, and the counter never moved.
+    assert not (root / "approaches" / "01").exists()
+    assert not sup.run.composite_prd_file.exists()
+    assert sup._approach == 1
+    # which flag fired, and which deliberately did not: this verdict claim
+    # was legible, so the `review_contract_unrepaired` hold -- whose own
+    # record says the judge never spoke -- is NOT the edge taken here.
+    assert sup._review_findings_unusable is True
     assert sup._review_contract_unrepaired is False
-    # task 012 (requirement C.3): pinned explicitly, not left to inference
-    # -- this schema-slip shape never takes the sibling `review_findings_
-    # unusable` edge either. Requirement C's ruling is scoped to the
-    # findings channel; a stray key in the review payload's own schema is
-    # deliberately outside it.
-    assert sup._review_findings_unusable is False
-    assert (root / "approaches" / "01").exists()
-    assert sup.run.composite_prd_file.exists()
-    assert not [e for e in events if e.get("type") == "operator_escalation"]
-    assert sup.run.read_status().get("pauseReason") is None
+    escalations = [e for e in events if e.get("type") == "operator_escalation"]
+    assert len(escalations) == 1, escalations
+    assert escalations[0]["reason"] == "review_findings_unusable"
+    # the judge DID speak, so the recorded approach verdict is still its
+    # own `rejected` -- never `unreviewed`, which is the half of #209's
+    # narrowing requirement C does not touch.
     verdicts = [e for e in events if e.get("type") == "approach.verdict_recorded"]
     assert [(e["channel"], e["verdict"]) for e in verdicts] == \
         [("review", "rejected")], verdicts

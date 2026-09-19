@@ -486,7 +486,9 @@ class LoopSupervisor:
         # does NOT set it -- that judge rendered a verdict (see
         # `_review_contract_ladder`'s `verdict_claim_unreadable`, which
         # reads the `verdict` enum itself and not the whole schema for
-        # exactly this reason). Written only by
+        # exactly this reason); requirement C's own `_review_findings_
+        # unusable` below is the flag those shapes set instead. Written
+        # only by
         # `_review_contract_ladder` (reset at every ordinary entry, set on
         # exhaustion); read by `_review_verdict` (records `"unreviewed"`
         # rather than `"rejected"` -- a judge that never spoke did not
@@ -503,18 +505,19 @@ class LoopSupervisor:
         # Task 010 (requirement C.1, #219): the DISCRIMINATING sibling of
         # `_review_contract_unrepaired` just above -- True iff the LAST
         # ordinary (non-`mid_run`) run of `_review_contract_ladder`
-        # exhausted the ladder over a LEGIBLE verdict claim whose FINDINGS
-        # CHANNEL is what's unusable (a channel present on disk that will
-        # not re-validate, a `verified` claim contradicting a blocking
-        # finding, or a curable finding with no `cured_when`) -- never both
+        # exhausted the ladder over a LEGIBLE verdict claim whose REVIEW
+        # CONTRACT CHANNEL is what's unusable: a findings channel present
+        # on disk that will not re-validate, a `verified` claim
+        # contradicting a blocking finding, a curable finding with no
+        # `cured_when`, or (task 012, requirement C.3) a stray/wrong-typed
+        # field elsewhere in the payload's own closed schema -- never both
         # this flag and `_review_contract_unrepaired` at once, by
         # construction of `_review_contract_ladder`'s own `findings_
         # channel_unusable_reply` (see its comment there for the exact
-        # scope, and for why a stray schema field elsewhere or a `rejected`
-        # verdict with no reason are deliberately excluded from it). This
-        # task computes and stores the flag only; nothing yet acts on it --
-        # requirement C.2 adds the `review_findings_unusable` pause edge
-        # that reads it from `_step_review`.
+        # scope, and for why a `rejected` verdict with no reason is
+        # deliberately excluded from it). Read by `_step_review`, which
+        # takes the `review_findings_unusable` pause edge on it
+        # (requirement C.2) instead of spending the approach.
         self._review_findings_unusable: bool = False
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
@@ -9975,12 +9978,16 @@ class LoopSupervisor:
         # `cured_when`) while the payload's own `{"verdict": "rejected",
         # "reason": ...}` is perfectly legible. A judge that said "rejected"
         # for a stated reason HAS rendered a verdict, so recording that as
-        # `"unreviewed"` and holding for an operator would be the mirror of
-        # the defect -- and task 002's own recorded decision (`tests/
-        # test_run_record.py::test_review_verdict_is_persisted_when_the_
-        # sidecar_does_not_validate`) is precisely that a sidecar-refused
-        # verdict is still recorded as this approach's verdict. Those cases
-        # keep today's ordinary rejection ladder, unchanged.
+        # `"unreviewed"` and holding for an operator on THIS edge would be
+        # the mirror of the defect. Those shapes hold on requirement C's own
+        # sibling edge instead (`findings_channel_unusable_reply` below,
+        # `pauseReason: "review_findings_unusable"`), which keeps the
+        # legible verdict recorded as this approach's `rejected` verdict --
+        # task 002's own recorded decision (`tests/test_run_record.py::
+        # test_review_verdict_now_pauses_when_the_sidecar_does_not_
+        # validate`) that a sidecar-refused verdict is still recorded as
+        # this approach's verdict is intact; requirement C changed only
+        # what the RUN does next, not what is written about the approach.
         #
         # Read off the `verdict` enum itself and NOT off `schema_errors`,
         # which is strictly wider than the words above and would fire the
@@ -9992,6 +9999,12 @@ class LoopSupervisor:
         # wrong-typed sibling field is a schema error too, and a hat stubborn
         # enough to repeat its own shape on every re-ask then exhausts the
         # ladder. That judge rendered a verdict; only the enum can tell.
+        # (Task 012, requirement C.3: that shape is no longer an ordinary
+        # rejection either -- it takes the sibling `review_findings_
+        # unusable` pause below. The distinction this flag draws is still
+        # load-bearing, because the two holds record different things: an
+        # unreadable verdict claim is recorded `"unreviewed"`, a legible
+        # one stays `"rejected"`.)
         # SCOPE, stated because the flag's readers depend on it: this is the
         # verdict claim in the reply the run was CHARGED for -- attempt 0,
         # the text `_review_verdict` re-reads, since an exhausted ladder
@@ -10019,24 +10032,46 @@ class LoopSupervisor:
         # unchanged). Mutually exclusive with `verdict_claim_unreadable` by
         # construction (`not verdict_claim_unreadable` guards it) -- a
         # reply cannot be both an unreadable verdict claim and a legible
-        # one whose findings channel is what's broken. Also excludes a
-        # stray/wrong-typed field elsewhere in an otherwise-legible payload
-        # (`schema_errors`) and a `rejected` verdict with no `reason`
-        # (`review_report_errors`) -- both of those are judgements the hat
-        # DID render, and this flag is deliberately narrower than "the
-        # ladder exhausted": see `_review_contract_ladder`'s own docstring
-        # for why those two shapes keep today's ordinary rejection ladder.
-        # This task (C.1) only computes and stores the flag; no caller acts
-        # on it yet -- that is requirement C.2's job.
+        # one whose findings channel is what's broken. Still excludes a
+        # `rejected` verdict with no `reason` (`review_report_errors`):
+        # that is a judgement the hat DID render through a channel nothing
+        # is wrong with, and requirement C names no such shape, so it keeps
+        # today's ordinary rejection ladder.
+        #
+        # Task 012 (requirement C.3, #219): a stray/wrong-typed field
+        # elsewhere in an otherwise-legible payload (`schema_errors`) is
+        # now IN scope, superseding task 010's own narrowing of this flag
+        # to the findings channel alone. Requirement C's ruling lists four
+        # shapes that still cost an approach today -- a truncated sidecar,
+        # a `verified` claim contradicting a blocking finding, a curable
+        # finding with no `cured_when`, AND "a stray inline key" -- and it
+        # names the node that pinned the last of them as a pin this
+        # contract INVERTS rather than keeps (`tests/test_contract_ladder.
+        # py::test_a_legible_rejected_verdict_with_a_schema_slip_elsewhere_
+        # now_pauses`, alongside `tests/test_run_record.py::test_review_
+        # verdict_now_pauses_when_the_sidecar_does_not_validate`). The
+        # reasoning is the same for both shapes: `HAT_SCHEMAS["review"]` is
+        # `additionalProperties: False`, so a hat that repeats one stray
+        # inline key on every re-ask exhausts the ladder while its verdict
+        # claim stays perfectly legible, and nothing inside the run can
+        # synthesize a usable review CONTRACT out of it -- which is exactly
+        # what the pause is for. What stays narrow is the boundary #209
+        # measured: this flag fires only when the verdict claim itself IS
+        # legible (`not verdict_claim_unreadable`) and only on an exhausted
+        # ladder, never on "the ladder exhausted" unconditionally -- an
+        # unreadable verdict claim keeps its own `review_contract_
+        # unrepaired` hold, and a slip the ladder repairs on a re-ask sets
+        # nothing at all.
         findings_channel_unusable_reply = (
             not verdict_claim_unreadable
             and isinstance(parsed, dict)
-            and not schema_errors
-            and not transitions.review_report_errors(parsed)
-            and bool(channel_errors
-                      or transitions.review_verdict_findings_errors(
-                          parsed, findings_list)
-                      or transitions.review_cured_when_errors(findings_list)))
+            and (bool(schema_errors)
+                 or (not transitions.review_report_errors(parsed)
+                     and bool(channel_errors
+                              or transitions.review_verdict_findings_errors(
+                                  parsed, findings_list)
+                              or transitions.review_cured_when_errors(
+                                  findings_list)))))
         if isinstance(parsed, dict) and not schema_errors:
             if transitions.review_report_errors(parsed):
                 return result
@@ -10083,11 +10118,12 @@ class LoopSupervisor:
         # GH #209 defect 2: the ladder is exhausted -- `enforce_contract`
         # has already emitted `contract.agent_fault` for hat `review`, and
         # this records the same fact where the supervisor's own step methods
-        # can read it, but ONLY for the shape the hold is for: the charged
+        # can read it, but ONLY for the shape this hold is for: the charged
         # reply's own verdict claim was unreadable and the ladder did not
         # repair it (see `verdict_claim_unreadable` above for that scope,
-        # and for why an exhaustion over the findings sidecar or over a
-        # stray field elsewhere must keep the ordinary rejection ladder).
+        # and `findings_channel_unusable_reply` for the sibling hold a
+        # legible verdict claim with an unusable review contract channel
+        # takes instead).
         # `result` still comes back unchanged (six existing call sites do
         # `_review_verdict(await _review_contract_ladder(r))`, so returning
         # `None` here would crash every one of them for a signalling
@@ -10098,9 +10134,9 @@ class LoopSupervisor:
             # Task 010 (requirement C.1, #219): the sibling record, on the
             # sibling condition -- mutually exclusive with the branch
             # above by `findings_channel_unusable_reply`'s own construction
-            # (it is guarded by `not verdict_claim_unreadable`). No caller
-            # reads this yet; requirement C.2 adds the pause edge that acts
-            # on it.
+            # (it is guarded by `not verdict_claim_unreadable`).
+            # `_step_review` reads it and takes the `review_findings_
+            # unusable` pause edge (requirement C.2).
             elif findings_channel_unusable_reply:
                 self._review_findings_unusable = True
         return result
@@ -11146,10 +11182,12 @@ class LoopSupervisor:
         escalation body for a `review_findings_unusable` pause -- the same
         text-method + pause-method split every sibling in this family
         uses, worded for the case THIS edge covers: review's own verdict
-        claim WAS legible, but the FINDINGS CHANNEL the ladder re-asked
-        over never became usable -- a sidecar present on disk that will
-        not re-validate, a `verified` claim contradicting a blocking
-        finding, or a curable finding with no `cured_when`. Distinct on
+        claim WAS legible, but the REVIEW CONTRACT CHANNEL the ladder
+        re-asked over never became usable -- a findings sidecar present on
+        disk that will not re-validate, a `verified` claim contradicting a
+        blocking finding, a curable finding with no `cured_when`, or (task
+        012, requirement C.3) a stray/wrong-typed field elsewhere in the
+        payload's own closed schema. Distinct on
         purpose from `_review_contract_unrepaired_escalation_text`'s own
         wording, which is for a verdict that was never legible at all.
 
@@ -11162,18 +11200,21 @@ class LoopSupervisor:
             f"Run {self.cfg.run_id} approach {approach}: review made "
             f"{1 + self.cfg.contract_retry_max} attempts (one charged "
             "iteration plus the ladder's uncharged re-asks) and never "
-            "produced a USABLE findings channel -- a legible verdict claim "
-            "was in hand, but the sidecar it depends on never re-validated "
-            "(a present-but-invalid file, a `verified` claim contradicting "
-            "a blocking finding, or a curable finding with no `cured_"
-            "when`). The run has been paused (existing pause machinery) "
+            "produced a USABLE review contract -- a legible verdict claim "
+            "was in hand, but the rest of the contract never validated (a "
+            "present-but-invalid findings sidecar, a `verified` claim "
+            "contradicting a blocking finding, a curable finding with no "
+            "`cured_when`, or a stray/wrong-typed field elsewhere in the "
+            "review payload's own closed schema). The run has been paused "
+            "(existing pause machinery) "
             "instead of scoring a rejection off a channel the engine "
             "itself cannot trust: the approach was NOT archived, no "
             "composite PRD was written, no cure pass was opened, and the "
             "approach counter did not move. This is operator-actionable -- "
             "a broken findings writer, a stale sidecar, or a hat that "
-            "cannot reconcile its own verdict with its own findings. Once "
-            "the findings channel is fixed, resume the run and review is "
+            "cannot emit its own contract shape or reconcile its own "
+            "verdict with its own findings. Once "
+            "the channel is fixed, resume the run and review is "
             f"asked again over the SAME approach (`ralphctl resume "
             f"{self.cfg.run_id}`).",
             "",

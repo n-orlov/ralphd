@@ -445,14 +445,16 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # Task 011 (PRD requirement C.2, #219): the DISCRIMINATING sibling
         # of `review_contract_unrepaired` just above -- a review reply
         # whose own verdict claim IS legible (a schema-valid `verified`/
-        # `rejected` word) but whose FINDINGS CHANNEL is what the ladder
-        # exhausted over: a present-but-invalid sidecar, a `verified`
-        # claim contradicting a blocking finding, or a curable finding
-        # with no `cured_when` (`LoopSupervisor._review_contract_ladder`'s
+        # `rejected` word) but whose REVIEW CONTRACT CHANNEL is what the
+        # ladder exhausted over: a present-but-invalid findings sidecar, a
+        # `verified` claim contradicting a blocking finding, a curable
+        # finding with no `cured_when`, or -- task 012, requirement C.3 --
+        # a stray/wrong-typed field elsewhere in the payload's own closed
+        # schema (`LoopSupervisor._review_contract_ladder`'s
         # own `findings_channel_unusable_reply`, requirement C.1/task 010).
-        # Before this task those three shapes fell through to the ordinary
+        # Before requirement C those shapes fell through to the ordinary
         # rejection edges above -- archiving the approach and writing a
-        # composite PRD off a findings channel the engine itself could not
+        # composite PRD off a review contract the engine itself could not
         # read. Holds instead, on the SAME existing pause machinery
         # (`LoopSupervisor._pause_and_escalate_review_findings_unusable`),
         # leaving the approach unarchived so `resume` re-enters `review`
