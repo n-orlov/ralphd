@@ -108,6 +108,7 @@ from ralphd.engine.state import (
     insert_cure_tasks,
     read_json,
 )
+from ralphd.engine.state import DEPENDENCY_REPOINTED_EVENT
 from tests.conftest import make_supervisor, supervisor_factory
 
 from test_midrun_adjudication_episode import (
@@ -696,6 +697,64 @@ def test_a_dependent_with_no_dependson_at_all_is_left_alone():
     assert "dependsOn" not in dependent
 
 
+def test_a_repoint_with_run_threaded_emits_dependency_repointed_event(tmp_path):
+    """Task 004 (PRD requirement E.2): once `run` is threaded through,
+    `apply_confirmed_petition_adjudications` emits `DEPENDENCY_REPOINTED_
+    EVENT` (`source="cure-insertion"`) for the dependent whose `dependsOn`
+    the CONFIRMED re-point actually rewrites -- naming the removed and
+    added ids and the resulting list, mirroring `state._repoint_
+    dependents_onto_cure_task`'s own emit from task 003 (requirement E.1).
+    """
+    run = RunDir(root=tmp_path / "run")
+    tasks_doc = {"version": 1, "tasks": [
+        _task(),
+        {"id": REPLACEMENT_ID, "title": "the replacement",
+         "status": "pending", "successCriteria": "y"},
+        {"id": DEPENDENT_ID, "title": "depends on it", "status": "pending",
+         "successCriteria": "x", "dependsOn": [TASK_ID]},
+    ]}
+
+    changed = petitions.apply_confirmed_petition_adjudications(tasks_doc, [
+        {"obligation": CLOSES_OBLIGATION, "adjudication": "CONFIRMED",
+         "replacement_task_id": REPLACEMENT_ID},
+    ], run=run)
+
+    assert changed == [TASK_ID]
+    events = [json.loads(x) for x in
+              (run.root / "events.jsonl").read_text().splitlines()]
+    repoints = [e for e in events if e["type"] == DEPENDENCY_REPOINTED_EVENT]
+    assert len(repoints) == 1
+    assert repoints[0]["taskId"] == DEPENDENT_ID
+    assert repoints[0]["removed"] == [TASK_ID]
+    assert repoints[0]["added"] == [REPLACEMENT_ID]
+    assert repoints[0]["dependsOn"] == [REPLACEMENT_ID]
+    assert repoints[0]["source"] == "cure-insertion"
+    assert repoints[0]["reason"]
+
+
+def test_a_repoint_that_touches_nothing_emits_no_event(tmp_path):
+    """The no-op contract holds with `run` threaded, too: a dependent
+    whose `dependsOn` never named the CONFIRMED task in the first place is
+    never touched, so nothing is written to `events.jsonl` at all --
+    `events.jsonl` never even gets created."""
+    run = RunDir(root=tmp_path / "run")
+    tasks_doc = {"version": 1, "tasks": [
+        _task(),
+        {"id": DEPENDENT_ID, "title": "already independent",
+         "status": "pending", "successCriteria": "x",
+         "dependsOn": [REPLACEMENT_ID]},
+    ]}
+
+    changed = petitions.apply_confirmed_petition_adjudications(tasks_doc, [
+        {"obligation": CLOSES_OBLIGATION, "adjudication": "CONFIRMED"},
+    ], run=run)
+
+    assert changed == [TASK_ID]
+    dependent = next(t for t in tasks_doc["tasks"] if t["id"] == DEPENDENT_ID)
+    assert dependent["dependsOn"] == [REPLACEMENT_ID]
+    assert not (run.root / "events.jsonl").exists()
+
+
 def test_supervisor_write_back_persists_the_confirmed_transition(tmp_path):
     sup = _supervisor_closes_task(tmp_path / "run")
     _write_plan(sup, [
@@ -713,6 +772,18 @@ def test_supervisor_write_back_persists_the_confirmed_transition(tmp_path):
     assert on_disk[TASK_ID]["status"] == "skipped"
     assert "CONFIRMED" in on_disk[TASK_ID]["notes"]
     assert on_disk[DEPENDENT_ID]["dependsOn"] == []
+    # Task 004 (requirement E.2): the wrapper threads `self.run` through,
+    # so this same write-back also lands a `task.dependency_repointed`
+    # event on the run's own `events.jsonl`.
+    events = [json.loads(x) for x in
+              (sup.run.root / "events.jsonl").read_text().splitlines()]
+    repoints = [e for e in events if e["type"] == DEPENDENCY_REPOINTED_EVENT]
+    assert len(repoints) == 1
+    assert repoints[0]["taskId"] == DEPENDENT_ID
+    assert repoints[0]["removed"] == [TASK_ID]
+    assert repoints[0]["added"] == []
+    assert repoints[0]["dependsOn"] == []
+    assert repoints[0]["source"] == "cure-insertion"
 
 
 def test_supervisor_write_back_is_a_noop_with_no_adjudications(tmp_path):

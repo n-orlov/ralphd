@@ -2096,7 +2096,8 @@ def apply_refuted_petition_adjudications(tasks_doc: dict, adjudications,
     return changed
 
 
-def apply_confirmed_petition_adjudications(tasks_doc: dict, adjudications) -> list[str]:
+def apply_confirmed_petition_adjudications(tasks_doc: dict, adjudications,
+                                           run=None) -> list[str]:
     """Task 015 (PRD requirement C.3, #149): the CONFIRMED counterpart to
     `apply_refuted_petition_adjudications` above, for the SAME `petitioned`
     task records -- "a CONFIRMED adjudication moves the petitioned task to
@@ -2150,9 +2151,27 @@ def apply_confirmed_petition_adjudications(tasks_doc: dict, adjudications) -> li
     A REFUTED entry in `adjudications` is silently ignored here -- that
     side is `apply_refuted_petition_adjudications`'s job; this function
     only ever moves a task OFF `petitioned` on CONFIRMED.
+
+    Task 004 (PRD requirement E.2): when `run` is given (a `state.RunDir`,
+    optional and defaulting to `None` so every existing caller that only
+    ever passed `tasks_doc`/`adjudications` keeps working unchanged), each
+    dependent whose `dependsOn` list this call actually rewrites also gets
+    one `state.DEPENDENCY_REPOINTED_EVENT` -- the same event, same
+    `source="cure-insertion"`, `state._repoint_dependents_onto_cure_task`
+    already emits for its own re-point (task 003, requirement E.1); this
+    is the confirmed-petition path E.2 threads `run` through for. A
+    dependent whose `new_deps` ends up identical to its prior `deps`
+    (`tid` was never in it, or the replacement it already held makes the
+    write a no-op) emits nothing -- "changes nothing" is judged against
+    the WRITTEN list, exactly like the cure-insertion sibling. `run` is
+    imported function-locally (`from ralphd.engine.state import ...`),
+    matching every other `state` reference this module already makes, to
+    keep `state.py` free of a module-level import of `petitions`.
     """
     if not adjudications:
         return []
+    if run is not None:
+        from ralphd.engine.state import DEPENDENCY_REPOINTED_EVENT
     tasks = tasks_doc.get("tasks") or []
     changed: list[str] = []
     handled: set = set()
@@ -2197,6 +2216,20 @@ def apply_confirmed_petition_adjudications(tasks_doc: dict, adjudications) -> li
                 if (valid_replacement is not None
                         and valid_replacement not in new_deps):
                     new_deps.append(valid_replacement)
+                if run is not None and new_deps != deps:
+                    other_id = other.get("id")
+                    reason = (
+                        f"petitioned task {tid} was skipped after its "
+                        "obligation was adjudicated CONFIRMED"
+                        + (f"; replaced by {valid_replacement}"
+                           if valid_replacement is not None else
+                           "; no replacement task named"))
+                    run.emit(DEPENDENCY_REPOINTED_EVENT, taskId=other_id,
+                             removed=sorted(set(deps) - set(new_deps)),
+                             added=sorted(set(new_deps) - set(deps)),
+                             dependsOn=new_deps,
+                             reason=reason,
+                             source="cure-insertion")
                 other["dependsOn"] = new_deps
     return changed
 

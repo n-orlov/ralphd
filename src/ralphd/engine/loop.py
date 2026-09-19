@@ -11907,6 +11907,13 @@ class LoopSupervisor:
         not -- exactly the same unconditional-call discipline this
         method's REFUTED and criteria-amendment siblings already keep.
 
+        Task 004 (requirement E.2): `self.run` is now threaded through as
+        the wrapped function's `run=` argument, so the re-point itself
+        also emits `state.DEPENDENCY_REPOINTED_EVENT` (`source=
+        "cure-insertion"`) for every dependent whose `dependsOn` actually
+        changes -- the confirmed-petition path's own counterpart to
+        `state._repoint_dependents_onto_cure_task`'s emit from task 003.
+
         Returns the ids of every task this call moved to `skipped`, same
         as the petitions-module function it wraps.
         """
@@ -11914,7 +11921,7 @@ class LoopSupervisor:
             return []
         tasks_doc = self.run.read_tasks()
         changed = petitions.apply_confirmed_petition_adjudications(
-            tasks_doc, adjudications)
+            tasks_doc, adjudications, run=self.run)
         if changed:
             self.run.write_tasks(tasks_doc)
             self._emit_task_changes()
