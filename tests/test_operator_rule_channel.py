@@ -32,12 +32,40 @@ proxy are pinned separately in `tests/test_cli_rule.py`/
 
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 
+from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import ruling_entries, write_ruling
-from tests.conftest import supervisor_factory
+from tests.conftest import make_supervisor, supervisor_factory
 
 _supervisor = supervisor_factory(run_id="unit", run_root="run", workspace="ws")
+
+
+class _FixedRunner:
+    """Records every prompt the supervisor hands it and answers with one
+    fixed contract payload -- the same stand-in shape
+    `tests/test_verify.py::_FixedRunner` uses, so the prompt a PRODUCTION
+    dispatch (`_verify_task`, `_step_review`) actually built can be read
+    back and asserted on."""
+
+    def __init__(self, final_text: str):
+        self.final_text = final_text
+        self.prompts: list[str] = []
+        self.calls = 0
+        self.running = False
+
+    def interrupt(self) -> bool:
+        return self.running
+
+    async def run(self, prompt, transcript, **kw) -> IterationResult:
+        self.prompts.append(prompt)
+        self.calls += 1
+        r = IterationResult(exit_code=0, duration_s=1.0)
+        r.final_text = self.final_text
+        r.usage = {"input": 5, "output": 2, "totalTokens": 7}
+        return r
 
 
 # -- engine.state: write_ruling / ruling_entries -----------------------------
@@ -155,6 +183,76 @@ def test_multiple_rulings_all_render_cumulatively(tmp_path):
     ctx = sup._operator_ruling_review_context()
     assert "First ruling text." in ctx
     assert "Second ruling text." in ctx
+
+
+# -- the prompts PRODUCTION dispatches build, not hand-assembled ones --------
+#
+# The two nodes above hand `_operator_ruling_review_context`'s own output to
+# `build_prompt` themselves, which pins the renderer but NOT the wiring: a
+# `_verify_task` that stopped calling it, or a `_step_review` whose extra
+# context dropped it, would leave both of them green. These two drive the
+# production dispatch instead -- a real `_verify_task(...)`/`_step_review()`
+# over a scripted runner -- and read the prompt the engine itself built.
+
+_VERIFY_TASK = {
+    "id": "004",
+    "title": "the task under verification",
+    "status": "completed",
+    "successCriteria": "the thing works",
+    "validationAttempts": 0,
+}
+
+
+def test_verify_task_itself_builds_a_prompt_carrying_the_ruling(tmp_path):
+    """A.2's own cure condition, through the production path: verify reads
+    `tasks.json` and honours no amendment today, so a ruling that only
+    reached review would come back as a verify failure. Nothing here passes
+    any `extra` in -- `_verify_task` assembles its own."""
+    ruling = "Accept the stub implementation for task 004; it is a residual."
+    sup = make_supervisor(
+        tmp_path, run_id="rule-verify", iterations=8, max_approaches=1,
+        vigilant=True, on_complete="exit", infra_retry_backoff_s=[0.0],
+        infra_retry_backoff_max_s=0.0, infra_outage_budget_s=0.0,
+        tasks=[dict(_VERIFY_TASK)],
+        runner_factory=lambda sup: _FixedRunner(json.dumps(
+            {"task_id": _VERIFY_TASK["id"], "verdict": "verified"})))
+    write_ruling(sup.run.root, ruling, signature="wall-verify")
+
+    assert asyncio.run(sup._verify_task(dict(_VERIFY_TASK))) is True
+
+    prompt = sup.runner.prompts[0]
+    assert "## Task under verification" in prompt, \
+        "this is not the per-task verify prompt"
+    assert ruling in prompt, prompt
+    assert "Operator rulings" in prompt
+    assert "authoritative" in prompt.lower()
+    # keyed to the signature the ruling was recorded against, never a task id
+    assert "wall-verify" in prompt
+
+
+def test_step_review_itself_builds_a_prompt_carrying_the_ruling(tmp_path):
+    """The same, for the review hat: a real `_step_review()` dispatch (whose
+    scripted reviewer then reports `verified`), with no `extra` supplied by
+    the test at all."""
+    ruling = "Waived: these three findings are residuals, not blockers."
+    sup = make_supervisor(
+        tmp_path, run_id="rule-review", run_root="run", workspace="run",
+        prd="# test PRD\n\nDo the thing.\n", status={"state": "running"},
+        approach=1, iterations=8, max_approaches=1, vigilant=True,
+        on_complete="exit", infra_retry_backoff_s=[0.0],
+        infra_retry_backoff_max_s=0.0, infra_outage_budget_s=0.0,
+        runner_factory=lambda sup: _FixedRunner(
+            json.dumps({"verdict": "verified"})))
+    write_ruling(sup.run.root, ruling, signature="wall-review")
+
+    outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
+    assert outcome == ("done", "succeeded"), outcome
+
+    prompt = sup.runner.prompts[0]
+    assert ruling in prompt, prompt
+    assert "Operator rulings" in prompt
+    assert "authoritative" in prompt.lower()
+    assert "wall-review" in prompt
 
 
 # -- survives a replan that restarts task ids at 001 -------------------------
