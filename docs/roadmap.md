@@ -2306,7 +2306,7 @@ v0.20, v0.20.1, v0.20.2 and v0.21 blocks and rows above are unchanged by this co
 
 ## v0.22 — the harness owns its own state
 
-✅ Version `0.22.0` landed at task 016. Requirements **A** — the control credential moved off the
+Version `0.22.0` landed at task 016. Requirements **A** — the control credential moved off the
 bind-mounted run dir into a host-only control-creds dir, its directory entry proven
 unreplaceable by a real dropped agent child all the way to the container root (`7d74c00f`,
 `1838422f`, `dd8a9a33`, `49c473b3`); **B** — the authoritative `tasks.json` moved into a
@@ -2380,6 +2380,7 @@ nothing) was fixed on `main` in the same post-bump window (`7630a559`). Requirem
 issue-closing task validated, and gate, heavy and nightly all concluded green from a
 `workflow_dispatch` at the shipped sha; the v0.19, v0.19.1, v0.20, v0.20.1, v0.20.2, v0.21 and
 v0.21.1 blocks above are unchanged by this commit.
+Shipped sha `7f8575d4`, version 0.22.0, installed host-side by the operator.
 
 ## v0.23 — a decision must reach the work
 

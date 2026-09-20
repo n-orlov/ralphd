@@ -26,6 +26,7 @@ last ran, which is precisely the stale number this module exists to catch.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -271,6 +272,47 @@ def test_a_settled_block_stating_its_shipped_sha_counts_as_shipped():
             f"v{series[0]}.{series[1]}'s shipped-sha line counts for a milestone it "
             "does not name"
         )
+
+    # Regression, folded in here rather than as a new collected item (task
+    # cure-01-09, I.2 / amendment 001-WAVE): the `## v0.22` block's shipped
+    # declaration is the ONE permitted edit inside a historical roadmap
+    # block. Extracted independently of `_roadmap_blocks()` above (which
+    # matches only the `## vX.Y` heading token and so would fold the
+    # heading's own title text into the body) -- bounded instead by the
+    # WHOLE heading line, both here and at the next `## ` heading of any
+    # kind, so the boundary is identical whether or not a later commit
+    # inserts a new `## vX.Y` section right after this one (v0.23 did).
+    # Strip the one added line (matched whole, including its trailing
+    # newline, so removing it restores the pre-wave text exactly) and hash
+    # what remains; it must equal the pre-v0.23 baseline (`7f8575d4`)
+    # block's own hash byte-for-byte, so any other edit inside that
+    # historical block -- a reword, a restatement, a second added line --
+    # trips this assertion instead of silently passing.
+    full_text = ROADMAP.read_text()
+    all_heads = list(re.finditer(r"^## .*$", full_text, re.MULTILINE))
+    v022_start = next(i for i, m in enumerate(all_heads) if m.group(0).startswith("## v0.22 "))
+    v022_body_start = all_heads[v022_start].end()
+    v022_body_end = (
+        all_heads[v022_start + 1].start()
+        if v022_start + 1 < len(all_heads)
+        else len(full_text)
+    )
+    v022 = full_text[v022_body_start:v022_body_end]
+    shipped_whole_line_re = re.compile(
+        r"^Shipped sha\s+`?\w{7,40}`?,\s+version\s+`?(\d+)\.(\d+)\.\d+`?[^\n]*\n",
+        re.MULTILINE,
+    )
+    v022_minus_declaration = shipped_whole_line_re.sub("", v022)
+    v022_pre_wave_hash = (
+        "d07612aca89231b4c18d132fb705559e29b8a7f38e3014b41c819f6c01795655"
+    )
+    assert hashlib.sha256(v022_minus_declaration.encode()).hexdigest() == v022_pre_wave_hash, (
+        "the ## v0.22 block, with its one permitted shipped-sha line stripped back out, "
+        "no longer matches the pre-v0.23 baseline (7f8575d4) byte-for-byte -- something "
+        "else inside that historical block was reworded, restated or added"
+        f"\n\ngot:\n{v022_minus_declaration!r}"
+    )
+    assert "\u2705" not in v022, "the ## v0.22 block must not carry a \u2705 tick (amendment 001-WAVE)"
 
 
 def test_the_roadmap_records_shipped_milestones_at_all():
