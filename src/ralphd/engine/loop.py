@@ -10689,8 +10689,49 @@ class LoopSupervisor:
         # discretionary gate A.3/A.7 add later for the OTHER two trigger
         # conditions, this one is not bounded per approach or per run: an
         # operator gets exactly one chance to answer before EVERY archive,
-        # on every approach, including the run's last.
-        if self.cfg.operator_input_needed_pause:
+        # on every approach, including the run's last. Task 016 (PRD
+        # requirement A.5, #224) narrows that "unbounded" claim in exactly
+        # ONE case: a rejection whose own signature matches a ruling the
+        # operator already filed against THIS approach's recorded
+        # signature gets exactly one re-park for THAT ruling, never two --
+        # see the re-park block just below, which is what actually decides
+        # whether this branch fires or falls through to the ordinary
+        # archive/replan tail.
+        # Task 016 (PRD requirement A.6, #224): the reviewer's own
+        # OPTIONAL escalation request -- read once, here, from THIS
+        # verdict's own payload (`_review_reviewer_requested_operator_
+        # gate`'s own docstring names absence as the backward-compatible
+        # default). Combined with the mechanical flag below, never a
+        # second independent pause branch.
+        reviewer_requested_gate = self._review_reviewer_requested_operator_gate(payload)
+        # Task 016 (PRD requirement A.5, #224, #224's resolved tension 2):
+        # bounded at one re-park per ruling -- `engine/redact.py`'s own
+        # documented lesson, "the bound has to be mechanical, not
+        # advisory." `_ruling_honoured_for_approach` (task 015's own
+        # reader) names the newest ruling addressing THIS approach's
+        # recorded rejection signature; when this FRESH rejection's own
+        # signature is that SAME signature, the ruling the operator just
+        # filed is the one review just re-rejected against, and this
+        # mechanical gate below re-parks for it exactly once
+        # (`_ruling_already_reparked`/`_record_ruling_reparked`, keyed on
+        # the ruling's own `seq` -- a fresh ruling filed later against the
+        # identical signature is a DIFFERENT ruling and earns its own
+        # fresh re-park). A second such rejection on the SAME ruling
+        # proceeds to the ordinary archive/replan tail below instead of
+        # re-parking again. A reviewer-requested gate (just above) is a
+        # fresh, per-verdict decision and is never subject to this bound.
+        ruled = self._ruling_honoured_for_approach(approach)
+        ruling_matches_this_rejection = (
+            ruled is not None and signature is not None
+            and ruled.get("signature") == signature)
+        ruling_re_park_exhausted = (
+            ruling_matches_this_rejection
+            and self._ruling_already_reparked(ruled["seq"]))
+        if reviewer_requested_gate or (
+                self.cfg.operator_input_needed_pause
+                and not ruling_re_park_exhausted):
+            if ruling_matches_this_rejection and not ruling_re_park_exhausted:
+                self._record_ruling_reparked(ruled["seq"])
             replan_available = approach < self.cfg.max_approaches
             self._pause_and_escalate_operator_input_needed(
                 approach, findings_list, replan_available, signature)
@@ -11311,6 +11352,61 @@ class LoopSupervisor:
         matches = [e for e in state.ruling_entries(self.run.root)
                   if e.get("signature") == signature]
         return matches[-1] if matches else None
+
+    def _ruling_already_reparked(self, ruling_seq: int) -> bool:
+        """Task 016 (PRD requirement A.5, #224): has THIS ruling (named by
+        its own `state.ruling_entries` `seq`, never by its signature --
+        the same signature may be shared by more than one ruling filed
+        against it, and each such ruling earns its OWN one-time re-park)
+        already spent the one re-park `_step_review`'s rejection ladder
+        grants it? Read from `status.json`'s own `rulingReparked` list --
+        disk, not memory, the same reasoning every sibling counter in this
+        family (`curePasses`, `rejectionSignatures`) already documents, so
+        the bound survives a resume and a fresh `LoopSupervisor` process.
+        """
+        status = self.run.read_status()
+        reparked = status.get("rulingReparked") or []
+        return ruling_seq in reparked
+
+    def _record_ruling_reparked(self, ruling_seq: int) -> None:
+        """Task 016 (PRD requirement A.5, #224): persist that `ruling_seq`
+        has now spent its one re-park -- called exactly once, from
+        `_step_review`, at the moment a rejection matching that ruling's
+        own recorded signature is about to take the `operator_input_
+        needed` pause edge for it. Idempotent (a `seq` already present is
+        never appended twice), and additive: an earlier entry is never
+        removed, including across a replan that opens a fresh approach --
+        a ruling's own re-park is spent for the life of the RUN, never
+        reset per approach.
+        """
+        status = self.run.read_status()
+        reparked = list(status.get("rulingReparked") or [])
+        if ruling_seq not in reparked:
+            reparked.append(ruling_seq)
+            self.run.update_status(rulingReparked=reparked)
+
+    def _review_reviewer_requested_operator_gate(
+        self, payload: dict | None
+    ) -> bool:
+        """Task 016 (PRD requirement A.6, #224): does THIS review verdict's
+        own payload carry `raise_operator_gate: true` --
+        `transitions.HAT_SCHEMAS["review"]`'s new, STRICTLY OPTIONAL field
+        letting the reviewer itself raise the same `operator_input_needed`
+        gate `_pause_and_escalate_operator_input_needed` takes on an
+        ordinary rejection, on a case the mechanical trigger cannot count?
+
+        `payload` absent, or the field absent, or the field present but
+        not `True`, are ALL the identical backward-compatible default:
+        `False`, never a contract error and never a warning -- a `0.22.0`
+        review hat (this wave's own judge, which will never emit this
+        field) keeps validating and behaving exactly as it did before this
+        task. No natural-language parsing, verb vocabulary or classifier
+        is applied to any OTHER field on this payload to reach this
+        answer -- only this one boolean is ever read.
+        """
+        if not isinstance(payload, dict):
+            return False
+        return payload.get("raise_operator_gate") is True
 
     def _review_contract_unrepaired_escalation_text(
         self, approach: int, contract_errors: list[str]

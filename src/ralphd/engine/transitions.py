@@ -1693,6 +1693,18 @@ HAT_SCHEMAS: dict[str, dict] = {
             # review pass with nothing open (the common case) supplies
             # none, and validates exactly as it always did.
             "petition_adjudications": {"type": "array"},
+            # Task 016 (v0.23 PRD requirement A.6, #224): the reviewer's
+            # own OPTIONAL escalation request -- raises the SAME `paused`/
+            # `operator_input_needed` gate `LoopSupervisor._pause_and_
+            # escalate_operator_input_needed` already takes on an
+            # ordinary rejection, on a case the mechanical trigger cannot
+            # count. STRICTLY OPTIONAL-ADDITIVE (non-negotiable 4/8,
+            # PRD §"Read this" item 1): absent is never a fault -- a
+            # `0.22.0` review hat, which will never emit this field, keeps
+            # validating exactly as it always did. Never added to
+            # `required` above; `additionalProperties: False` stays
+            # exactly as strict as every sibling optional field here.
+            "raise_operator_gate": {"type": "boolean"},
         },
         "additionalProperties": False,
     },
