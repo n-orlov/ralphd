@@ -10459,7 +10459,25 @@ class LoopSupervisor:
         result = await self._run_review_iteration(approach)
         if result is None:
             return self._review_unjudged_at_budget_end(approach)
-        verified, _payload, contract_errors = self._review_verdict(result)
+        verified, payload, contract_errors = self._review_verdict(result)
+        # Task 015 (PRD requirement A.4, #224): the auditable half of "the
+        # ruling causes exactly one re-ask" -- once review has rendered a
+        # LEGIBLE fresh verdict (never on a contract-unrepaired/findings-
+        # unusable pass, which never reached a verdict at all) over an
+        # approach whose `operator_input_needed` pause recorded a rejection
+        # signature a ruling now answers, record which ruling review
+        # honoured -- whatever the fresh verdict turned out to be. This is
+        # the ONLY new event this task adds; no new pause state, no new
+        # verb vocabulary, parser or classifier for the ruling's own text.
+        if not self._review_contract_unrepaired and not self._review_findings_unusable:
+            honoured = self._ruling_honoured_for_approach(approach)
+            if honoured is not None:
+                self.run.emit(
+                    "operator_ruling_honoured", approach=approach,
+                    signature=honoured.get("signature"),
+                    rulingSeq=honoured.get("seq"),
+                    rulingFile=honoured.get("file"),
+                    verdict=(payload or {}).get("verdict"))
         if verified:
             # Task 013 (requirement I, #98): ONE exit gate, asked once.
             # It REPLACES the pre-013 mechanism -- `while verified and
@@ -10675,7 +10693,7 @@ class LoopSupervisor:
         if self.cfg.operator_input_needed_pause:
             replan_available = approach < self.cfg.max_approaches
             self._pause_and_escalate_operator_input_needed(
-                approach, findings_list, replan_available)
+                approach, findings_list, replan_available, signature)
             self._advance("review", "paused", "operator_input_needed")
             return ("advance", "paused", "operator_input_needed")
         self._record_rejection_signature(approach, signature)
@@ -11218,7 +11236,7 @@ class LoopSupervisor:
 
     def _pause_and_escalate_operator_input_needed(
         self, approach: int, findings_list: list[dict] | None,
-        replan_available: bool,
+        replan_available: bool, signature: str | None = None,
     ) -> None:
         """Task 014 (PRD requirement A.1, #224): pause the run through the
         EXISTING pause machinery -- the same seam every sibling in this
@@ -11237,17 +11255,62 @@ class LoopSupervisor:
         escalation's blocking findings are read off the identical channel
         the rest of this rejection was judged from, never a second,
         possibly-different read of the same sidecar.
+
+        Task 015 (PRD requirement A.4, #224): `signature` is that SAME
+        rejection's own `_review_rejection_signature` text, persisted here
+        via `_record_rejection_signature` -- BEFORE this task, this pause
+        fired strictly before the ordinary archive/replan tail's own
+        `_record_rejection_signature` call, so an operator ruling filed
+        while parked (`RunDir.add_ruling`, which resolves its `signature`
+        from THIS SAME `rejectionSignatures[str(approach)]` map) always
+        read back `None` -- unscoped, indistinguishable from a ruling filed
+        ahead of any rejection at all. Recording it here (a pure
+        persistence call, already idempotent and side-effect-free on a
+        `None` signature) is what lets a ruling filed against this exact
+        rejection be found again by its own signature once review is
+        re-asked -- `_ruling_honoured_for_approach` is the reader.
         """
         findings_list = findings_list or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         text = self._operator_input_needed_escalation_text(
             approach, blocking, replan_available)
+        self._record_rejection_signature(approach, signature)
         self.run.emit("operator_escalation", approach=approach,
                       reason="operator_input_needed", findings=blocking,
                       replanAvailable=replan_available, escalation=text)
         self.pause(reason="operator_input_needed")
         if self.notifier is not None:
             self.notifier(text)
+
+    def _ruling_honoured_for_approach(self, approach: int) -> dict | None:
+        """Task 015 (PRD requirement A.4, #224): does a recorded operator
+        ruling (`state.ruling_entries`, task 013's `ralphctl rule`/`POST
+        /rule`/hub textarea) carry the SAME signature `_pause_and_
+        escalate_operator_input_needed` persisted for THIS approach the
+        moment its own `operator_input_needed` pause intercepted a
+        rejection? Plain equality on the same content-derived signature
+        text `_repeated_rejection_signature` already compares elsewhere --
+        no ruling TEXT is read, parsed, or classified here, only its own
+        `signature` field, which is exactly the property the PRD text ("no
+        new... parser or classifier for ruling text") requires.
+
+        Returns the newest matching entry -- an operator may file more than
+        one ruling against the same signature, and the latest is the one
+        this fresh review pass was actually re-asked with -- or `None` when
+        either no rejection signature was ever recorded for `approach` (the
+        gate never fired, or fired with `operator_input_needed_pause`
+        disabled) or no ruling has been filed against it yet -- the common
+        "resumed with no ruling at all" case, still handled unaffected by
+        `_step_review`'s ordinary archive/replan tail.
+        """
+        status = self.run.read_status()
+        signatures = status.get("rejectionSignatures") or {}
+        signature = signatures.get(str(approach))
+        if signature is None:
+            return None
+        matches = [e for e in state.ruling_entries(self.run.root)
+                  if e.get("signature") == signature]
+        return matches[-1] if matches else None
 
     def _review_contract_unrepaired_escalation_text(
         self, approach: int, contract_errors: list[str]
