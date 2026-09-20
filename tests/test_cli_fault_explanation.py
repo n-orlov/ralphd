@@ -69,6 +69,7 @@ from ralphd.engine.state import (
     FAULT_RECOVERED_NOTICE,
     FAULT_SIGNATURE_NONE,
     FAULT_VERDICT_DIVERGED_NOTICE,
+    FAULT_VERDICT_RECLASSIFIED_NOTICE,
     NO_FAULT,
     fault_explanation,
     fault_summary_lines,
@@ -76,6 +77,7 @@ from ralphd.engine.state import (
     format_fault_budget,
     format_fault_ladder,
     format_fault_signature,
+    iteration_detail,
     read_events,
     utc_from_epoch,
 )
@@ -592,15 +594,27 @@ def test_a_signal_killed_iteration_is_not_explained_as_an_operators_doing(tmp_pa
     assert "operator-initiated" not in out.stdout
 
 
-def test_a_zero_filled_usage_block_does_not_diverge_from_a_recorded_infra(tmp_path):
-    """Task 021 (requirement G): pi zero-fills a `usage` block on an in-band
-    error message_end -- every counter present, all zero, still a non-empty
-    dict. Before the fix, `bool(usage)` alone read that shape as traffic, so
-    a CORRECTLY recorded `infra` verdict for it disagreed with the
-    re-derivation and printed a spurious `FAULT_VERDICT_DIVERGED_NOTICE`.
-    `state.billable_tokens(usage) > 0` reads this shape as zero, so the
-    re-derivation now agrees with what the engine recorded and nothing
-    diverges.
+def test_a_historical_zero_token_work_record_reads_back_without_the_generic_divergence(tmp_path):
+    """Task 021 (requirement G) shipped this node seeding an already-correct
+    `infra` fixture (iteration 5, recorded `faultClass="infra"`) that never
+    exercised a real disagreement at all -- the re-derivation agreed with
+    what was recorded and nothing diverged. Task cure-01-08 (F08) rewrites it
+    in place, keeping that first case and ADDING the one that matters: the
+    shape #213's own reference run recorded BEFORE the fix -- iteration 158
+    of `selfdev-v022-the-harness-owns-its-own-state`, `exitCode=0`,
+    `error="terminated"`, `faultClass="work"`, every usage counter zero.
+
+    Iteration 158 is the ORIGINAL recorded classification, not a fixture
+    pre-corrected to already read `infra`: the OLD engine read the
+    zero-filled `usage` dict's mere presence as traffic (`bool(usage)`),
+    landed on `work`, and wrote that to disk. Today's rule
+    (`billable_tokens(usage) > 0`) re-derives `infra` for the same iteration,
+    so `faultClass` and the re-derivation genuinely disagree -- but that
+    disagreement is fully explained by the fix itself
+    (`state._recorded_fault_notice`: the OLD presence-of-usage question
+    reproduces the recorded verdict exactly), so it is NOT the generic
+    `FAULT_VERDICT_DIVERGED_NOTICE` -- both `iteration_detail` and
+    `fault_explanation` say so the same way.
     """
     _, run_dir = _dead_run(tmp_path, state="aborted",
                            abortReason="gave up: no traffic")
@@ -615,6 +629,27 @@ def test_a_zero_filled_usage_block_does_not_diverge_from_a_recorded_infra(tmp_pa
     assert exp["faultClass"] == "infra"
     assert exp["reason"] == FAULT_REASON_NO_TRAFFIC_UNCLASSIFIED
     assert exp["notices"] == [], exp["notices"]
+
+    _, run_dir = _dead_run(tmp_path, run_id="faulty-historical", state="aborted",
+                           abortReason="deadline")
+    _write_iteration(run_dir, 158, _fault_meta(
+        158, error="terminated", exitCode=0, faultClass="work",
+        usage={"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
+               "totalTokens": 0}))
+
+    exp = fault_explanation(run_dir)
+    detail = iteration_detail(run_dir, 158)
+
+    # The engine's recorded verdict stands, on both surfaces -- never
+    # overwritten by the re-derivation.
+    assert exp["faultClass"] == "work"
+    assert detail["faultClass"] == "work"
+    # No generic divergence notice for this known, historical shape...
+    assert FAULT_VERDICT_DIVERGED_NOTICE not in exp["notices"]
+    assert FAULT_VERDICT_DIVERGED_NOTICE not in detail["notices"]
+    # ...but the two readbacks still say the same specific, consistent thing.
+    assert exp["notices"] == [FAULT_VERDICT_RECLASSIFIED_NOTICE]
+    assert detail["notices"] == [FAULT_VERDICT_RECLASSIFIED_NOTICE]
 
 
 def test_the_error_text_is_never_printed_twice(tmp_path):

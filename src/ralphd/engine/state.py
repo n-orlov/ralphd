@@ -2947,8 +2947,9 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
         )
         detail["reason"] = derived["reason"]
         detail["signature"] = derived["signature"]
-        if derived["faultClass"] != recorded_fault:
-            detail["notices"].append(FAULT_VERDICT_DIVERGED_NOTICE)
+        notice = _recorded_fault_notice(detail, recorded_fault, derived)
+        if notice:
+            detail["notices"].append(notice)
     if detail["reason"]:
         fault_class = detail.get("faultClass") or EXIT_REASON_UNKNOWN
         detail["causeText"] = f"{fault_class} -- {detail['reason']}"
@@ -7018,6 +7019,53 @@ FAULT_VERDICT_DIVERGED_NOTICE = (
     "!! the engine recorded a different class than this error alone implies "
     "(usually an abort/interrupt recorded for the run, which is never retried)")
 
+# Task cure-01-08 (requirement G, F08): a recorded/derived disagreement has
+# two very different causes, and only one of them is the genuine kind
+# `FAULT_VERDICT_DIVERGED_NOTICE` exists for. A run dir recorded before this
+# wave's `billable_tokens` fix (task 021) can show `faultClass=work` for a
+# zero-token `terminated` iteration purely because the OLD engine read a
+# zero-filled `usage` dict's mere PRESENCE as traffic (`bool(usage)`) where
+# today's rule reads its token COUNT (`billable_tokens(usage) > 0`) -- see
+# `_recorded_fault_notice`, which re-asks `explain_fault` the OLD question
+# and only uses this notice when that reproduces the recorded verdict
+# exactly. Any other disagreement (an abort carve-out, a genuinely different
+# reason) still gets the generic notice above, unchanged.
+FAULT_VERDICT_RECLASSIFIED_NOTICE = (
+    "the engine recorded this before the zero-token traffic fix (requirement "
+    "G): today's token-count rule reads it differently, but the OLD "
+    "presence-of-usage rule reproduces exactly what was recorded, so this is "
+    "the known historical reclassification, not a new disagreement")
+
+
+def _recorded_fault_notice(detail: dict, recorded_fault, derived: dict) -> str | None:
+    """Which notice (if any) belongs beside a recorded/derived `faultClass`
+    disagreement -- shared by `read_iteration_detail` and `fault_explanation`
+    so the two readbacks can never word the same disagreement differently.
+
+    Returns `None` when there is no disagreement, `FAULT_VERDICT_RECLASSIFIED_
+    NOTICE` when the disagreement is fully explained by task 021's own fix
+    (the old presence-of-usage formula reproduces the recorded verdict
+    exactly), and `FAULT_VERDICT_DIVERGED_NOTICE` for every other kind of
+    disagreement -- so a genuine one (an abort carve-out, or anything else)
+    is never globally suppressed by this check.
+    """
+    if derived["faultClass"] == recorded_fault:
+        return None
+    usage = detail.get("usage") if isinstance(detail.get("usage"), dict) else None
+    old_style = explain_fault(
+        error_text=str(detail.get("error") or ""),
+        exit_code=(detail.get("exitCode")
+                   if isinstance(detail.get("exitCode"), int)
+                   and not isinstance(detail.get("exitCode"), bool) else None),
+        interrupted=bool(detail.get("interrupted")),
+        timed_out=bool(detail.get("timedOut")),
+        no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
+        produced_traffic=bool(usage),
+    )
+    if old_style["faultClass"] == recorded_fault:
+        return FAULT_VERDICT_RECLASSIFIED_NOTICE
+    return FAULT_VERDICT_DIVERGED_NOTICE
+
 # Event types the explanation reads, so a huge events.jsonl is not held in
 # memory to answer one question.
 FAULT_EVENT_TYPES = ("infra_retry", "infra_wait", "infra_recovered",
@@ -7262,8 +7310,9 @@ def fault_explanation(run_root: Path) -> dict:
                    phase=detail.get("phase"),
                    error=str(detail.get("error") or "") or None,
                    iterationDetail=detail)
-        if derived["faultClass"] != recorded:
-            exp["notices"].append(FAULT_VERDICT_DIVERGED_NOTICE)
+        notice = _recorded_fault_notice(detail, recorded, derived)
+        if notice:
+            exp["notices"].append(notice)
     elif last_retry is not None or wait is not None:
         # The retry wrapper is acting on a fault whose iteration meta this
         # reader cannot see (a mid-write meta.json, an iteration dir pruned by
