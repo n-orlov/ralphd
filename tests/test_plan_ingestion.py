@@ -141,6 +141,47 @@ def test_ordering_only_must_name_one_of_the_tasks_own_dependson_ids():
     assert any("orderingOnly" in e for e in pi.lint_proposal(payload))
 
 
+def test_ordering_only_over_declaration_of_the_whole_dependson_set_warns():
+    """Task 023 (PRD requirement F.2, #222): a task that names its WHOLE
+    `dependsOn` set as `orderingOnly` is still ACCEPTED (no error -- the
+    semantic claim is not this lint's to judge) but earns a WARNING naming
+    that task, via the `warnings` out-param -- a channel distinct from the
+    `errors` return value, so an existing caller that never passes
+    `warnings` sees no change in the accepted verdict."""
+    payload = {"tasks": [_basic_task("001"),
+                         _basic_task("002", dependsOn=["001"],
+                                     orderingOnly=["001"])]}
+    warnings: list[str] = []
+    errors = pi.lint_proposal(payload, warnings=warnings)
+    assert errors == []
+    assert len(warnings) == 1
+    assert "002" in warnings[0] and "orderingOnly" in warnings[0]
+    assert "001" in warnings[0]
+
+
+def test_ordering_only_proper_subset_warns_nothing():
+    """A task declaring only PART of its dependsOn as ordering-only keeps
+    real evidence-bearing edges -- no over-declaration, no warning."""
+    payload = {"tasks": [_basic_task("001"), _basic_task("002"),
+                         _basic_task("003", dependsOn=["001", "002"],
+                                     orderingOnly=["001"])]}
+    warnings: list[str] = []
+    errors = pi.lint_proposal(payload, warnings=warnings)
+    assert errors == []
+    assert warnings == []
+
+
+def test_no_ordering_only_key_at_all_is_unaffected():
+    """A proposal that never uses `orderingOnly` is byte-for-byte
+    unaffected by this lint -- no error, no warning, exactly as before."""
+    payload = {"tasks": [_basic_task("001"),
+                         _basic_task("002", dependsOn=["001"])]}
+    warnings: list[str] = []
+    errors = pi.lint_proposal(payload, warnings=warnings)
+    assert errors == []
+    assert warnings == []
+
+
 def test_extra_known_ids_resolves_a_dependson_outside_the_batch():
     """Task 017 (#162): `extra_known_ids` widens `dependsOn` resolution
     past the batch itself -- the default (`None`, every planner call site)

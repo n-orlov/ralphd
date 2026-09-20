@@ -2567,7 +2567,12 @@ def _quoted_baseline_target_gap(task: dict, tasks: list) -> str | None:
     )
 
 
-def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[str]:
+def lint_proposal(
+    payload: dict,
+    *,
+    extra_known_ids: set | None = None,
+    warnings: list[str] | None = None,
+) -> list[str]:
     """Semantic lint over an already shape-valid proposal. Every error
     names the offending task's id. This function does NOT re-check
     requirement H's own-terminal-state rule -- that lint is task 012's
@@ -2605,7 +2610,20 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
     lint has no reason to refuse. `known_ids` becomes the UNION of the
     batch's own ids and this extra set; a dep in neither is still refused,
     with the same message, unchanged for every existing caller that leaves
-    this at its default `None` (treated as empty)."""
+    this at its default `None` (treated as empty).
+
+    `warnings` (task 023, PRD requirement F.2, #222): an optional OUT list,
+    a channel entirely distinct from the `errors` this function returns --
+    a warning never rejects a proposal, so it is never folded into the
+    return value. Every existing caller leaves this at its default `None`
+    (this function makes its own throwaway list and the warning is simply
+    never read back) so nothing about the accepted-or-refused verdict for
+    ANY existing caller changes. `_parse_proposal` is the one caller that
+    passes a real list, to carry the `orderingOnly`-over-declaration
+    warning below onto `PlanIngestionResult.warnings` -- the channel task
+    022 (requirement F.1) made a runtime consumer surface at all."""
+    if warnings is None:
+        warnings = []
     errors: list[str] = []
     tasks = payload.get("tasks", [])
     seen: dict[Any, int] = {}
@@ -2831,14 +2849,38 @@ def lint_proposal(payload: dict, *, extra_known_ids: set | None = None) -> list[
             raw_depends = t.get("dependsOn")
             own = ({str(d) for d in raw_depends}
                    if isinstance(raw_depends, list) else set())
+            all_entries_valid = True
             for entry in declared:
                 if str(entry) not in own:
+                    all_entries_valid = False
                     errors.append(
                         f"task {tid!r}: {ORDERING_ONLY_FIELD} names {entry!r}, "
                         f"which is not one of its own dependsOn ids "
                         f"{sorted(own)!r} -- the field marks a SUBSET of this "
                         "task's dependencies as pure ordering, so every entry "
                         "must name an edge the task actually has")
+            # Task 023 (PRD requirement F.2, #222): the SHAPE half of the
+            # field is validated above (every entry names a real edge); this
+            # is the one MECHANICAL check the degenerate case admits --
+            # `orderingOnly` naming the task's WHOLE `dependsOn` set, not a
+            # proper subset. That is never refused (the semantic claim behind
+            # a correct full declaration is not this lint's to judge -- see
+            # the block comment above), but it is exactly the shape
+            # `state._lane_evidence_record_chain`'s filter turns into an
+            # EMPTY verification list for every re-opened record: a cure pass
+            # over this task re-takes no upstream evidence at all, which is
+            # the loss the conservative default exists to prevent. A WARNING
+            # only -- never folded into `errors` -- naming the task so a
+            # planner (or an operator reading `PlanIngestionResult.warnings`,
+            # task 022's surfaced channel) can see the over-declaration and
+            # confirm it is intended.
+            if all_entries_valid and own and {str(d) for d in declared} == own:
+                warnings.append(
+                    f"task {tid!r}: {ORDERING_ONLY_FIELD} names its WHOLE "
+                    f"dependsOn set {sorted(own)!r} -- every dependency is "
+                    "declared pure ordering, so a cure pass over this task "
+                    "will re-take no upstream evidence at all; confirm that "
+                    "is intended")
 
     errors.extend(_detect_cycles(tasks))
     return errors
@@ -3366,10 +3408,13 @@ def _parse_proposal(
     if shape_errors:
         return None, shape_errors, [], []
     repairs = repair_task_criteria(payload)
-    lint_errors = lint_proposal(payload) + lint_own_terminal_state(payload)
+    lint_warnings: list[str] = []
+    lint_errors = (lint_proposal(payload, warnings=lint_warnings)
+                   + lint_own_terminal_state(payload))
     if lint_errors:
         return None, lint_errors, [], repairs
-    warnings = normalize_task_tiers(payload)
+    warnings = list(lint_warnings)
+    warnings += normalize_task_tiers(payload)
     warnings += normalize_task_estimated_iterations(payload)
     return payload, [], warnings, repairs
 

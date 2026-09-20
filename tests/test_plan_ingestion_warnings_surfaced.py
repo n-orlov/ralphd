@@ -127,3 +127,40 @@ def test_a_proposal_with_no_warnings_emits_no_planning_warning_event(tmp_path):
     assert outcome[0] == "advance"
     assert _planning_warning_events(sup) == []
     assert not any("plan ingestion warning" in m for m in _log_messages(sup))
+
+
+def _ordering_only_whole_set_proposal(sup: LoopSupervisor) -> IterationResult:
+    """Task 023 (PRD requirement F.2, #222): task '002' names its WHOLE
+    `dependsOn` set (just '001') as `orderingOnly` -- the over-declaration
+    `lint_proposal` now warns on (accepted, not refused). `estimatedIterations`
+    supplied explicitly on both tasks so no other warning fires alongside it."""
+    atomic_write_json(sup.run.root / "plan-proposal.json", {"version": 1, "tasks": [
+        {"id": "001", "title": "t1", "successCriteria": "criterion one",
+         "tier": "normal", "estimatedIterations": 1},
+        {"id": "002", "title": "t2", "successCriteria": "criterion two",
+         "tier": "normal", "estimatedIterations": 1,
+         "dependsOn": ["001"], "orderingOnly": ["001"]},
+    ]})
+    return _ok("planned\n" + _pointer_line())
+
+
+def test_an_ordering_only_whole_set_over_declaration_warning_is_surfaced_at_ingestion(tmp_path):
+    """Task 023 (PRD requirement F.2, #222): the warning reaches the run's
+    own records through task 022's already-surfaced channel -- observed
+    here in `events.jsonl` exactly like the pre-existing tier/estimate
+    warnings above, naming the over-declaring task."""
+    sup = _supervisor(tmp_path, iterations=5)
+    sup._approach = 1
+    _stub_attempts(sup, _ordering_only_whole_set_proposal)
+
+    outcome = asyncio.run(sup._step_planning(skip_planning=False))
+
+    assert outcome[0] == "advance"
+    events = _planning_warning_events(sup)
+    assert len(events) == 1
+    assert events[0]["approach"] == 1
+    assert "orderingOnly" in events[0]["warning"] and "002" in events[0]["warning"]
+
+    log_lines = _log_messages(sup)
+    assert any("orderingOnly" in m and "plan ingestion warning" in m
+               for m in log_lines)
