@@ -266,11 +266,24 @@ def test_a_task_update_status_change_is_applied_through_the_one_applier(tmp_path
 
 
 def test_an_illegal_status_transition_is_refused_with_the_documented_reason(tmp_path):
+    # Cure-01-05 (PRD requirement B.3/B.4, F05, #221) moves this node's
+    # fixture from `pending -> validated` to `pending -> awaiting-
+    # validation`, exactly as task 007 already moved
+    # `tests/test_amendment_status_applier.py`'s equivalent node when it
+    # first declared the un-reopen edge: `pending -> validated` is a
+    # DECLARED edge in both variants now (the engine's own restore of a
+    # status it persisted before a cure pass re-opened a record), so it is
+    # no longer an example of the table refusing a move, while `pending ->
+    # awaiting-validation` is nowhere in either variant's table -- that
+    # status is only ever reached by CLAIM, out of `in-progress`. The
+    # documented `"illegal transition"` reason stays pinned, against a
+    # combination that genuinely earns it; the second half of this node
+    # keeps the steer hat's refusal on the un-reopen shape covered too.
     broker = _broker(tmp_path, [{"id": "011", "title": "t",
                                  "status": "pending"}])
     response = broker.execute("task-update",
-                              {"taskId": "011",
-                               "changes": {"status": "validated"}})
+                             {"taskId": "011",
+                              "changes": {"status": "awaiting-validation"}})
     assert response["ok"] is False
     assert "illegal transition" in response["error"]
     assert response["detail"]["statusResult"]["reason"] == "illegal transition"
@@ -280,6 +293,17 @@ def test_an_illegal_status_transition_is_refused_with_the_documented_reason(tmp_
     calls = _events(broker.run.root, hat_tools.EVENT_TOOL_CALL)
     assert [c["tool"] for c in calls] == ["task-update"]
     assert calls[0]["ok"] is False
+
+    # the un-reopen restore itself: declared, but admitted for the engine's
+    # own `source="cure-reconciliation"` call alone, so the steer hat is
+    # refused here with the semantic layer's own reason instead.
+    restore = broker.execute("task-update",
+                             {"taskId": "011",
+                              "changes": {"status": "validated"}})
+    assert restore["ok"] is False
+    assert "cure-reconciliation" in restore["error"]
+    assert broker.run.read_tasks()["tasks"][0]["status"] == "pending"
+    assert _events(broker.run.root, "amendment_status_applied") == []
 
 
 def test_a_non_status_update_is_a_plain_field_write(tmp_path):

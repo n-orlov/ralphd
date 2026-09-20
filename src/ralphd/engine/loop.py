@@ -6091,17 +6091,22 @@ class LoopSupervisor:
         `candidate["priorStatus"]` -- the record's own ACTUAL pre-reopen
         terminal status (`completed`, `validated`, `failed`, `skipped` or
         `superseded`, whichever it genuinely held), persisted by `state.
-        insert_cure_tasks` at reopen time rather than inferred from `cfg.
-        vigilant` after the fact (cure-01-05, requirement B.3/B.4, F05:
-        the old inference silently PROMOTED a `failed`/`skipped`/
-        `superseded` record to `completed`/`validated`).
+        insert_cure_tasks` at reopen time. Nothing here is derived from
+        `cfg.vigilant` (cure-01-05, requirement B.3/B.4, F05: the old
+        inference PROMOTED a `failed`/`skipped`/`superseded` record to
+        `completed`/`validated`, and in a non-vigilant run it asked for a
+        `pending -> validated` edge that variant's table did not declare,
+        leaving a genuinely `validated` record `pending` with no event at
+        all -- the edge is declared for both variants now, and the status
+        comes off disk).
 
-        Every record this call actually restores is named, once, in a
-        single follow-up notification through `self.notifier` (wired only
-        when `cfg.notifier_url` is set, same seam every other engine-side
-        escalation in this class already uses) -- in ADDITION to, never
-        instead of, the `task.un_reopened` event `apply_task_status_change`
-        itself already emits per record.
+        Every record this call actually restores is named, once, with the
+        status it was restored TO, in a single follow-up notification
+        through `self.notifier` (wired only when `cfg.notifier_url` is
+        set, same seam every other engine-side escalation in this class
+        already uses) -- in ADDITION to, never instead of, the
+        `task.un_reopened` event `apply_task_status_change` itself already
+        emits per record.
         """
         candidates = state.records_pending_reconciliation(self.run, cure_task_id)
         if not candidates:
@@ -6109,7 +6114,7 @@ class LoopSupervisor:
         head = self._workspace_head_sha()
         if not head:
             return
-        restored: list[str] = []
+        restored: list[tuple[str, str]] = []
         for candidate in candidates:
             sha = candidate.get("sha")
             if not sha:
@@ -6123,18 +6128,27 @@ class LoopSupervisor:
             # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): the target
             # is the record's own ACTUAL pre-reopen terminal status --
             # `candidate["priorStatus"]`, persisted at reopen time
-            # (`state.insert_cure_tasks`, `preCureStatuses`) -- never a
-            # value inferred from `self.cfg.vigilant` after the fact. The
-            # old inference only ever produced the right answer for a
-            # record that had genuinely held `completed`/`validated`
-            # before the reopen; a record that had held `failed`,
+            # (`state.insert_cure_tasks`, `preCureStatuses`) and read back
+            # by `state.records_pending_reconciliation` -- and NOTHING on
+            # this path is derived from `self.cfg.vigilant`, not even as a
+            # fallback. The old inference only ever produced the right
+            # answer for a record that had genuinely held this variant's
+            # own claim terminal: a record that had held `failed`,
             # `skipped` or `superseded` was silently PROMOTED to
-            # `completed`/`validated` instead, the exact defect F05
-            # names. A candidate somehow missing `priorStatus` (a
-            # pre-cure-01-05 event, or a legacy fixture) falls back to
-            # the old variant-conditioned guess rather than crashing.
-            target = candidate.get("priorStatus") or (
-                "validated" if self.cfg.vigilant else "completed")
+            # `completed`/`validated`, and a `validated` record in a
+            # non-vigilant run was asked for an edge that variant's table
+            # did not declare and was left `pending` with no event at all
+            # -- the two halves of the defect F05 names. A candidate
+            # somehow carrying no `priorStatus` at all (only reachable
+            # from a pre-cure-01-05 event stream or a hand-written
+            # fixture) is LEFT PENDING instead: that is requirement B rule
+            # 4's own direction ("when in doubt, leave the record open"),
+            # the same conservative answer an uncomputable diff already
+            # gets a few lines up, and it is strictly better than guessing
+            # a terminal status from the flag in force right now.
+            target = candidate.get("priorStatus")
+            if not target:
+                continue
             owners = candidate.get("cureTaskIds") or [cure_task_id]
             result = state.apply_task_status_change(
                 self.run, candidate["recordId"], target, self.cfg.vigilant,
@@ -6144,13 +6158,16 @@ class LoopSupervisor:
                         f"({sha[:12]}..{head[:12]}) touched none of its "
                         "cited paths"))
             if result.get("applied"):
-                restored.append(candidate["recordId"])
+                restored.append((candidate["recordId"], target))
         if restored and self.notifier is not None:
+            named = ", ".join(f"{rid} (restored to {status})"
+                              for rid, status in restored)
             self.notifier(
                 f"Run {self.cfg.run_id}: cure task {cure_task_id} landed and "
-                f"every cure that re-opened {', '.join(restored)} left its "
-                "cited path(s) untouched -- restored to its pre-reopen "
-                "terminal status without a new re-record.")
+                f"every cure that re-opened {named} left its "
+                "cited path(s) untouched -- each record is back at the exact "
+                "terminal status it held before the reopen, with no new "
+                "re-record.")
 
     def _workspace_fingerprint(self) -> dict[str, str]:
         """Task 012 (PRD requirement A.2, #156): a content-hash fingerprint

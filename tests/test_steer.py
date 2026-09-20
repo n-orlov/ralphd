@@ -1606,7 +1606,12 @@ def test_steer_criteria_edit_survives_the_next_worker_pass(tmp_path):
 # Asked for by the hat, and every one of them refused or overridden by the
 # applier on the engine's side of the spool: `origin`/`status` are stamped by
 # `state.STEER_HAT_TOOLS["task-insert"]` (task 010, requirement H, #98), and
-# `pending -> validated` is not a legal transition for a non-vigilant run.
+# `pending -> validated` is a move no steer `task-update` may claim in a
+# non-vigilant run: the edge itself is declared in both variants
+# (cure-01-05, PRD requirement B.3/B.4, F05, #221 -- it is the engine's own
+# un-reopen restore of a status it persisted before a cure pass re-opened a
+# record), and `transitions.task_status_report_errors` admits it for the
+# single caller `source="cure-reconciliation"` alone, refusing it here.
 SPOOLED_CALLS = [
     {"tool": "task-insert",
      "args": {"task": {"id": "spooled-1", "title": "via the spool",

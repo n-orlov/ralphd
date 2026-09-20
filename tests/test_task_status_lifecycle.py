@@ -136,13 +136,35 @@ def test_blocked_is_deliberately_not_a_status_in_this_table():
 # ---------------------------------------------------------------------------
 
 def test_the_un_reopen_edge_is_declared_out_of_pending():
-    # `validated` is only reachable in the vigilant variant and `completed`
-    # only in the non-vigilant one, but both are declared in the BASE
-    # table (never the delta) because either variant's own reopen can only
-    # ever be undone in that SAME variant -- there is no real vigilant/
-    # non-vigilant overlap here for a delta to express.
-    assert tr.is_legal_task_status_transition("pending", "validated", True)
-    assert tr.is_legal_task_status_transition("pending", "completed", False)
+    # Cure-01-05 (PRD requirement B.3/B.4, F05, #221) rewrites this node IN
+    # PLACE (zero fast-tier headroom -- one collected item, same as before)
+    # to assert what the criterion REQUIRES -- that restoring a record's
+    # exact pre-reopen status does not depend on the verification mode --
+    # rather than the variant split the shipped table happened to have.
+    # Every one of the five restore targets is declared in BOTH variants,
+    # in the BASE table: the target is the status the engine persisted at
+    # reopen time (`status.json`'s `preCureStatuses`), and `cfg.vigilant`
+    # at reconciliation time is no evidence about it -- which is exactly
+    # how F05's non-vigilant probe over a genuinely `validated` record
+    # found the record left `pending`, with no `task.un_reopened` event and
+    # no notification.
+    for vigilant in (False, True):
+        for target in tr.UN_REOPEN_TASK_STATUS_TARGETS:
+            assert tr.is_legal_task_status_transition(
+                "pending", target, vigilant), (vigilant, target)
+    # ... declared ONCE, so the two variants cannot drift apart again: the
+    # vigilant delta carries no `pending` entry to replace the base tuple
+    # with a narrower one, and the composed tables agree.
+    assert "pending" not in tr.TASK_STATUS_VIGILANT_DELTA
+    assert (tr.legal_next_task_statuses("pending", True)
+            == tr.legal_next_task_statuses("pending", False))
+    assert set(tr.legal_next_task_statuses("pending", False)) == {
+        "in-progress", *tr.UN_REOPEN_TASK_STATUS_TARGETS}
+    # the one helper that still knows the distinction this edge no longer
+    # makes: it gates what a HAT may report out of `pending` (the node two
+    # below), and nothing on the restore path reads it.
+    assert tr.variant_claim_terminal(True) == "validated"
+    assert tr.variant_claim_terminal(False) == "completed"
     # ... and declared, not merely legal by coincidence -- named by the
     # dedicated predicate `state.apply_task_status_change` uses to pick
     # which event this transition emits.
@@ -191,7 +213,7 @@ def test_only_in_progress_and_pending_declare_an_edge_into_superseded():
     adds the one other source: `pending`, the un-reopen edge's own RESTORE
     of a record that genuinely held `superseded` before a cure pass's
     `invalidates` walk reopened it -- retracting a prediction, never a
-    fresh forced split, and gated by `allow_superseded_restore` so no hat
+    fresh forced split, and gated by `allow_un_reopen_restore` so no hat
     may claim it through the ordinary report channel (see the node just
     below)."""
     for vigilant in (False, True):
@@ -209,10 +231,19 @@ def test_no_hat_may_report_superseded_through_the_contract_channel(vigilant):
     the SAME refusal's other source: `pending -> superseded` is now a
     declared edge too (the un-reopen restore), and a hat reporting it
     through this ordinary channel is refused exactly the same way --
-    `allow_superseded_restore` defaults to `False` for every hat-report
+    `allow_un_reopen_restore` defaults to `False` for every hat-report
     call site, and only `state.apply_task_status_change`'s own `source=
     "cure-reconciliation"` branch ever passes `True`, a different code
-    path no report payload can flip on itself."""
+    path no report payload can flip on itself.
+
+    Cure-01-05 folds the OTHER half of the same principle into this same
+    node (zero fast-tier headroom -- no new collected item): the un-reopen
+    edge is now declared for all five restore targets in BOTH variants, so
+    this semantic layer is what keeps a hat out of the OTHER variant's
+    claim terminal -- a vigilant hat may not report `pending -> completed`
+    around verification, and a non-vigilant one may not report a
+    `validated` it has no verify step to earn -- while each variant's OWN
+    claim terminal stays reportable out of `pending`, exactly as before."""
     errors = tr.task_status_report_errors(
         {"task_status": "superseded"}, "in-progress", vigilant)
     assert errors and "applied by the harness itself" in errors[0]
@@ -228,7 +259,23 @@ def test_no_hat_may_report_superseded_through_the_contract_channel(vigilant):
     assert pending_errors and "applied by the harness itself" in pending_errors[0]
     assert tr.task_status_report_errors(
         {"task_status": "superseded"}, "pending", vigilant,
-        allow_superseded_restore=True) == []
+        allow_un_reopen_restore=True) == []
+
+    own_terminal = tr.variant_claim_terminal(vigilant)
+    other_terminal = tr.variant_claim_terminal(not vigilant)
+    # the OTHER variant's claim terminal: declared out of `pending` for the
+    # engine's own restore, refused to a hat, accepted for that restore.
+    other_errors = tr.task_status_report_errors(
+        {"task_status": other_terminal}, "pending", vigilant)
+    assert other_errors and "cure-reconciliation" in other_errors[0]
+    assert other_terminal in other_errors[0]
+    assert tr.task_status_report_errors(
+        {"task_status": other_terminal}, "pending", vigilant,
+        allow_un_reopen_restore=True) == []
+    # this variant's OWN claim terminal out of `pending` is untouched by
+    # that refusal -- reportable before cure-01-05, reportable still.
+    assert tr.task_status_report_errors(
+        {"task_status": own_terminal}, "pending", vigilant) == []
 
 
 def test_superseded_is_not_an_operator_ruleable_status():

@@ -1914,17 +1914,22 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
         return record
     effective_justification = justification or reason
     # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): the ONE source
-    # allowed to restore `superseded` through this channel is this
+    # allowed to take the un-reopen RESTORE through this channel is this
     # function's own reconciliation branch
     # (`LoopSupervisor._reconcile_pre_cure_heads`, `source="cure-
-    # reconciliation"`) -- restoring a status the engine itself persisted
-    # (`preCureStatuses`) before the reopen, never a hat's free-form
-    # claim. Every other caller (an operator amendment ruling, the steer
-    # hat's `task-update`) keeps the ordinary refusal.
+    # reconciliation"`) -- restoring the exact status the engine itself
+    # persisted (`preCureStatuses`) before the reopen, never a hat's
+    # free-form claim. That is what lets the declared edge be
+    # variant-independent (`transitions.UN_REOPEN_TASK_STATUS_TARGETS`,
+    # all five targets in the BASE table) without widening what anyone
+    # else may ask for: every other caller (an operator amendment ruling,
+    # the steer hat's `task-update`, a hat's contract report) keeps the
+    # ordinary refusals -- `superseded` out of any status, and the OTHER
+    # variant's claim terminal out of `pending`.
     status_errors = transitions.task_status_report_errors(
         {"task_status": target_status, "justification": effective_justification},
         current, vigilant,
-        allow_superseded_restore=(source == "cure-reconciliation"))
+        allow_un_reopen_restore=(source == "cure-reconciliation"))
     if status_errors:
         record.update(applied=False, reason=status_errors[0])
         return record
@@ -4844,8 +4849,12 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
     read before invoking it -- is persisted per re-opened record in
     `status.json`'s `preCureHeads` map and emitted on `task.pre_cure_head_
     recorded`, keyed by the RECORD task's own id (task 006). (2) A declared
-    `pending -> {validated,completed}` edge now exists in `transitions.
-    TASK_STATUS_TABLE` (`transitions.is_un_reopen_transition`), applied
+    `pending -> {completed,validated,failed,skipped,superseded}` edge now
+    exists in `transitions.TASK_STATUS_TABLE` -- all five targets in the
+    BASE table, declared for both variants, since the restore target is
+    the status this call persisted and not a function of the verification
+    mode (cure-01-05, PRD requirement B.3/B.4, F05) --
+    (`transitions.is_un_reopen_transition`), applied
     through `state.apply_task_status_change` and emitting `task.un_reopened`
     rather than the generic amendment event (task 007) -- this does not
     relax the standing rule that there is no edge INTO `pending`; it is the

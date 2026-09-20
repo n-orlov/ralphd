@@ -192,7 +192,19 @@ def test_a_refused_ruling_is_surfaced_and_writes_nothing(tmp_path, monkeypatch):
     refusals = [e for e in logs if "REFUSED" in (e.get("message") or "")]
     assert len(refusals) == 1, logs
     msg = refusals[0]["message"]
-    assert fname in msg and "illegal transition" in msg
+    # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): the SUBSTANCE this
+    # node pins is unchanged -- an operator ruling of "just call it done"
+    # over a `pending` task in a non-vigilant run is refused, nothing is
+    # written, and the refusal is surfaced once naming the file and the
+    # move. Only the diagnostic's own wording moved: `pending -> validated`
+    # is now a DECLARED edge in both variants (the engine's own un-reopen
+    # restore of a status it persisted before a cure pass re-opened the
+    # record), so the refusal comes from the semantic layer -- which admits
+    # exactly one caller, `source="cure-reconciliation"` -- rather than
+    # from the table, and says so instead of saying "illegal transition".
+    assert fname in msg
+    assert "cure-reconciliation" in msg
+    assert "claim terminal is 'completed'" in msg
     assert "pending -> validated" in msg
 
 

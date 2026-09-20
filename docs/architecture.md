@@ -348,11 +348,40 @@ that exact status first (`preCureStatuses`). When the completion-path hook
 diff never touched the record's cited path, it walks the prediction back
 through `state.apply_task_status_change` to that persisted status -- for a
 record that had held `superseded`, this is the one call site allowed to
-target it (`allow_superseded_restore=True`, gated on `source ==
+target it (`allow_un_reopen_restore=True`, gated on `source ==
 "cure-reconciliation"` alone); every hat-report call site still refuses it,
 unchanged. This never creates a SECOND `superseded` parent or a second
 split -- it only ever un-does a reopen this same engine made on a
 prediction that turned out to be wrong.
+
+**That whole edge is declared for BOTH variants, and the semantic layer --
+not the table -- is what keeps a hat out of it.** The restore target is
+DATA the engine persisted at reopen time (`preCureStatuses`), so the only
+question the table has to answer is which statuses that map can hold;
+`cfg.vigilant`, the flag in force at reconciliation time, is no evidence
+about what a record held at reopen time (a job resumed with the flag
+flipped, a `tasks.json` written by an earlier configuration, or a
+genuinely `validated` record in a non-vigilant run are all the same
+shape). Task 007 originally split the edge -- `pending -> completed` in
+the base table, `pending -> validated` in the vigilant delta -- which made
+the restore itself mode-dependent: F05 measured a non-vigilant run that
+persisted `preCureStatuses = {"058": "validated"}`, asked a non-vigilant
+table whether `pending -> validated` was legal, got `False`, and left the
+record `pending` with no `task.un_reopened` event and no notification.
+All five targets now sit in the BASE table
+(`transitions.UN_REOPEN_TASK_STATUS_TARGETS`, spliced into its `pending`
+entry), and the vigilant delta carries no `pending` entry at all, so
+`is_legal_task_status_transition` answers identically whichever flag is in
+force. Widening the table this way widens nothing a HAT may claim:
+`task_status_report_errors` refuses a reported `superseded` out of any
+status, as before, and refuses the OTHER variant's claim terminal out of
+`pending` (`transitions.variant_claim_terminal` -- `completed` is refused
+in a vigilant run, so no worker routes around verification, and
+`validated` in a non-vigilant one, where no verify step exists to earn
+it), leaving each variant's own claim terminal exactly as reportable as it
+was. The notification the hook sends names each restored record together
+with the status it was restored TO, so a promotion could not read the same
+way as a genuine restore.
 
 <!-- BEGIN GENERATED TASK-STATUS TABLE (scripts/render_transition_table.py) -->
 
@@ -361,11 +390,11 @@ Generated from `src/ralphd/engine/transitions.py`'s task-status mini-FSM (`TASK_
 | Status | Variant | Target |
 |---|---|---|
 | `pending` | both | `in-progress` |
-| `pending` | non-vigilant only | `completed` |
+| `pending` | both | `validated` |
+| `pending` | both | `completed` |
 | `pending` | both | `failed` |
 | `pending` | both | `skipped` |
 | `pending` | both | `superseded` |
-| `pending` | vigilant only | `validated` |
 | `in-progress` | non-vigilant only | `completed` |
 | `in-progress` | both | `failed` |
 | `in-progress` | both | `skipped` |
@@ -406,6 +435,7 @@ stateDiagram-v2
     [*] --> pending
     pending --> in_progress
     pending --> validated
+    pending --> completed
     pending --> failed
     pending --> skipped
     pending --> superseded
@@ -421,7 +451,6 @@ stateDiagram-v2
     validation_failed --> failed
     validation_failed --> skipped
     failed --> skipped
-    pending --> completed : non_vigilant_only
     in_progress --> completed : non_vigilant_only
 ```
 
@@ -2252,10 +2281,16 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   rather than accumulating it. (3) **B.3 (task 007)** declares the move
   back OUT of `pending` as a real edge in `transitions.TASK_STATUS_TABLE`
   (`pending -> completed`/`pending -> validated` under the vigilant
-  delta -- widened by cure-01-05, PRD requirement B.3/B.4, F05, #221, to
-  also cover `pending -> failed`/`pending -> skipped`/`pending ->
-  superseded`, declared once in the base table since those three are
-  held identically in either variant), named variant-agnostically by
+  delta -- both replaced by cure-01-05, PRD requirement B.3/B.4, F05,
+  #221: all five restore targets (`completed`, `validated`, `failed`,
+  `skipped`, `superseded`) are declared once, in the BASE table, and the
+  vigilant delta carries no `pending` entry at all, because the restore
+  target is the status the engine persisted at reopen time and not a
+  function of the verification mode in force when it is read back --
+  F05 measured the split leaving a genuinely `validated` record `pending`
+  in a non-vigilant run, with no event at all, while a hat's own
+  vocabulary is held where it was by `task_status_report_errors`), named
+  variant-agnostically by
   `transitions.is_un_reopen_
   transition`, and routes it through `state.apply_task_status_change`,
   which emits `task.un_reopened` instead of the generic amendment event
@@ -2279,11 +2314,15 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   status (`records_pending_reconciliation`'s own `priorStatus` field,
   fed from `status.json`'s `preCureStatuses` map -- cure-01-05, PRD
   requirement B.3/B.4, F05, #221 -- never a value inferred from `cfg.
-  vigilant`, which the production hook did until this task and which
+  vigilant`, not even as a fallback: a candidate carrying no persisted
+  prior status at all is left `pending` like any other doubt. The
+  production hook inferred it from the variant until this task, which
   silently PROMOTED a `failed`/`skipped`/`superseded` record to
-  `completed`/`validated` instead of restoring it), and fires a follow-up
+  `completed`/`validated` and left a `validated` record in a non-vigilant
+  run unrestored), and fires a follow-up
   notification
-  naming the owning cure tasks, the diffed range and the paths checked; a
+  naming the owning cure tasks, the status each record was restored TO,
+  the diffed range and the paths checked; a
   diff that touches a cited path, an owner that is not yet terminal, an
   owner that ended `failed`/`skipped`, or a diff that cannot be computed at
   all (non-git workspace, missing sha) all leave the record exactly where

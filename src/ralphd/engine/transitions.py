@@ -1135,14 +1135,9 @@ OPERATOR_RULEABLE_TASK_STATUSES: tuple[str, ...] = tuple(
 # never touched the record's cited path after all, RETRACTS that
 # prediction by walking this edge back to whichever status it undoes.
 #
-# Declared exactly the way `in-progress`'s own claim edge already is:
-# `completed` in the BASE table (`pending -> completed`, the non-vigilant
-# terminal a record can only ever have held before this variant reopened
-# it) and `validated` in the VIGILANT DELTA (`pending -> validated`,
-# replacing `completed` as `in-progress`'s own delta already replaces it
-# with `awaiting-validation`) -- never both in the same variant, because a
-# record reopened under one variant can only ever have held THAT variant's
-# own terminal status to begin with.
+# Declared ONCE, in the BASE table, for all five targets -- never split
+# across the vigilant delta (cure-01-05, F05; see the block at the end of
+# this comment for why the earlier variant split was the defect itself).
 #
 # This does NOT relax the standing invariant that there is no edge INTO
 # `pending` (`tests/test_amendment_status_load_time.py`'s own "a ruling
@@ -1155,31 +1150,67 @@ OPERATOR_RULEABLE_TASK_STATUSES: tuple[str, ...] = tuple(
 # This edge only moves a record OUT of `pending`, retracting a move the
 # engine already made on its own prediction.
 #
-# Cure-01-05 (PRD requirement B.3/B.4, F05, #221): the walk re-opens
-# `state.py`'s own `test_the_chain_reopens_regardless_of_the_tasks_prior_
-# terminal_status` node says so explicitly -- from ANY prior terminal
-# status, not only the variant's own ordinary claim terminal. `failed`
-# and `skipped` are legitimate prior terminal statuses B itself
+# Cure-01-05 (PRD requirement B.3/B.4, F05, #221): the walk re-opens a
+# record from ANY prior terminal status -- `state.py`'s own `test_the_
+# chain_reopens_regardless_of_the_tasks_prior_terminal_status` node says
+# so explicitly -- not only the variant's own ordinary claim terminal.
+# `failed` and `skipped` are legitimate prior terminal statuses B itself
 # preserves, and `superseded` is reachable too (a forced split's own
-# parent, later named in a finding's `invalidates`). None of the three is
-# variant-conditioned -- a `failed`/`skipped`/`superseded` record could
-# only ever have held that same status in EITHER variant, exactly like
-# `"failed": ("skipped",)` below applies identically to both -- so they
-# are declared once, in the BASE table only, alongside `validated`/
-# `completed`'s own variant split.
+# parent, later named in a finding's `invalidates`).
+#
+# All five are declared in the BASE table, and NOTHING about this edge
+# lives in the vigilant delta any more. The restore target is DATA the
+# engine itself persisted at reopen time (`status.json`'s
+# `preCureStatuses`, read back through `state.records_pending_
+# reconciliation`'s `priorStatus`), so the only question this table has to
+# answer is "which statuses can that map hold" -- and `cfg.vigilant`, the
+# flag in force at RECONCILIATION time, is not evidence about what a
+# record held at REOPEN time (a job resumed with the flag flipped, a
+# `tasks.json` written by an earlier configuration, and F05's own
+# non-vigilant probe over a genuinely `validated` record are all the same
+# shape). Splitting `completed`/`validated` across the delta made the
+# restore mode-dependent in exactly that case: the reopen persisted
+# `validated`, the un-reopen then asked a non-vigilant table whether
+# `pending -> validated` was legal, got `False`, and left the record
+# `pending` with no `task.un_reopened` event and no notification -- F05's
+# own finding. Declared for both variants, `is_legal_task_status_
+# transition` answers the same way whichever flag is in force.
+#
+# Declared is still not claimable: `task_status_report_errors` below keeps
+# a HAT's reported move out of the OTHER variant's claim terminal (and out
+# of `superseded` in either), so widening the table for the engine's own
+# restore widens nothing a hat may report.
 UN_REOPEN_TASK_STATUS_TARGETS: tuple[str, ...] = (
     "validated", "completed", "failed", "skipped", "superseded")
 
 
+def variant_claim_terminal(vigilant: bool) -> str:
+    """The ONE terminal status this variant's own claim path produces --
+    `completed` non-vigilant, `validated` vigilant (cure-01-05, PRD
+    requirement B.3/B.4, F05, #221).
+
+    Named here, once, so the two places that care about the distinction
+    read the same function instead of each re-deriving `"validated" if
+    vigilant else "completed"`: `task_status_report_errors` below (which
+    refuses a hat that reports the OTHER variant's terminal out of
+    `pending`, keeping the base table's variant-independent un-reopen
+    declaration from widening what a hat may claim) and the tests that pin
+    that refusal. Deliberately NOT used by the un-reopen restore itself --
+    that reads the status the engine persisted before the reopen
+    (`preCureStatuses`), never a guess derived from the variant, which is
+    the whole substance of F05.
+    """
+    return "validated" if vigilant else "completed"
+
+
 def is_un_reopen_transition(current: str, target: str) -> bool:
     """True iff `(current, target)` is the un-reopen edge declared just
-    below -- `pending` back to a record's own pre-reopen terminal status,
-    in WHICHEVER variant declares it (the base table declares `pending ->
-    completed`, the vigilant delta replaces it with `pending ->
-    validated` -- this predicate recognises either, variant-agnostically,
-    because by the time `state.apply_task_status_change` calls it the
-    move has already cleared `is_legal_task_status_transition` for
-    whichever variant is actually in force). The one function both that
+    below -- `pending` back to a record's own pre-reopen terminal status.
+    Variant-agnostic, and since cure-01-05 (PRD requirement B.3/B.4, F05,
+    #221) so is the declaration it recognises: all five targets sit in the
+    BASE table, so `is_legal_task_status_transition` accepts the edge
+    identically in both variants and this predicate has no variant split
+    left to paper over. The one function both that
     applier (to pick which event this transition emits) and a test that
     wants to name the move without re-typing the two target strings
     should call, rather than each re-deriving `current == "pending" and
@@ -1189,16 +1220,17 @@ def is_un_reopen_transition(current: str, target: str) -> bool:
 
 
 TASK_STATUS_TABLE: dict[str, tuple[str, ...]] = {
-    # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): `failed`, `skipped`
-    # and `superseded` join `completed` here (see `UN_REOPEN_TASK_STATUS_
-    # TARGETS`'s own comment just above) as the un-reopen edge's
-    # variant-independent targets -- the reopen walk takes a record from
-    # ANY prior terminal status, and these three are held identically
-    # in both variants, so they belong in the BASE table rather than the
-    # vigilant delta below (which only ever replaces `completed` with
-    # `validated`).
-    "pending": ("in-progress", "completed", "failed", "skipped",
-                "superseded"),
+    # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): the un-reopen
+    # edge's WHOLE target set is declared here, spliced in from the one
+    # tuple that names it (`UN_REOPEN_TASK_STATUS_TARGETS` above, whose
+    # comment carries the reasoning), and the vigilant delta below no
+    # longer carries a `pending` entry at all -- so the restore of a
+    # record's persisted pre-reopen status is legal in BOTH variants and
+    # `legal_next_task_statuses("pending", ...)` cannot drift apart
+    # between them again. `in-progress` (the ordinary claim edge, the only
+    # non-restore target out of `pending`) is named first, ahead of the
+    # splice.
+    "pending": ("in-progress",) + UN_REOPEN_TASK_STATUS_TARGETS,
     # non-vigilant's claim path -- vigilant overrides this entry entirely
     # (see TASK_STATUS_VIGILANT_DELTA below).
     # `superseded` (v0.20 requirement B.1, #156, tasks 016/019) is declared
@@ -1276,20 +1308,15 @@ TASK_STATUS_VIGILANT_DELTA: dict[str, tuple[str, ...]] = {
     # overwritten to `failed`/`petitioned` before the single write lands).
     "awaiting-validation": ("validated", "validation-failed", "failed",
                             "petitioned"),
-    # v0.23 requirement B.3 (#221, task 007): the un-reopen edge's vigilant
-    # target -- `validated` replaces `completed` as the status a re-opened
-    # record/verification task is walked back to, mirroring how this same
-    # delta already replaces `completed` with `awaiting-validation` on
-    # `in-progress` above, for the identical reason: a record reopened
-    # under THIS variant can only ever have held THIS variant's own
-    # terminal status before the reopen. Cure-01-05 (requirement B.3/B.4,
-    # F05): this whole tuple REPLACES the base table's `pending` entry, so
-    # `failed`/`skipped`/`superseded` are re-stated here too -- otherwise
-    # a vigilant run could never un-reopen a record that had genuinely
-    # held one of them, exactly the gap that dropped them from the base
-    # table's own replaced entry would open.
-    "pending": ("in-progress", "validated", "failed", "skipped",
-                "superseded"),
+    # v0.23 requirement B.3 (#221, task 007) declared the un-reopen edge's
+    # vigilant target here, as a `pending` entry replacing the base
+    # table's. Cure-01-05 (PRD requirement B.3/B.4, F05, #221) REMOVED
+    # that entry: an entry here replaces the base tuple wholesale, which
+    # is exactly how the restore became mode-dependent (a non-vigilant
+    # table refusing `pending -> validated` for a record that genuinely
+    # held `validated`). The whole edge now lives in the base table above,
+    # in both variants; nothing about it is a verification-mode concern,
+    # any more than `"failed": ("skipped",)` is.
 }
 
 
@@ -1321,7 +1348,7 @@ def is_legal_task_status_transition(current: str, target: str, vigilant: bool) -
 
 
 def task_status_report_errors(payload: Any, current_status: str, vigilant: bool,
-                              *, allow_superseded_restore: bool = False) -> list[str]:
+                              *, allow_un_reopen_restore: bool = False) -> list[str]:
     """The semantic check layered ON TOP OF a hat's schema validation
     (`contracts.validate_payload`, the only SCHEMA validator, fact 16/#65 --
     this is not a second one of those: it is a business-rule check of the
@@ -1334,16 +1361,28 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool,
     at all"). Only once a hat's OUTPUT actually proposes a move is there
     anything for the declared table above to accept or refuse.
 
-    Cure-01-05 (PRD requirement B.3/B.4, F05, #221): `allow_superseded_
+    Cure-01-05 (PRD requirement B.3/B.4, F05, #221): `allow_un_reopen_
     restore` is `False` for every hat-report call site (the default, and
-    every argument this function ever received before this task) -- a hat
-    still may never claim `superseded` through this channel, unchanged.
-    The ONE caller that ever passes `True` is `state.apply_task_status_
-    change`'s own `source="cure-reconciliation"` branch, restoring a
-    record to a `superseded` status THE ENGINE ITSELF persisted before the
-    reopen (`preCureStatuses`, never a hat's free-form claim) -- the un-
-    reopen edge (`is_un_reopen_transition`) is the only shape this ever
-    fires for, so this flag never widens what a hat may report.
+    every argument this function ever received before this task). The ONE
+    caller that ever passes `True` is `state.apply_task_status_change`'s
+    own `source="cure-reconciliation"` branch, restoring a record to the
+    exact status THE ENGINE ITSELF persisted before the reopen
+    (`preCureStatuses`, never a hat's free-form claim); the un-reopen edge
+    (`is_un_reopen_transition`) is the only shape it ever fires for.
+
+    Two refusals hang off that flag, and they are what keeps the base
+    table's now variant-independent un-reopen declaration (see
+    `UN_REOPEN_TASK_STATUS_TARGETS` above) from widening a HAT's
+    vocabulary by one status in either variant:
+
+    - `superseded` is refused out of ANY status, as it always was;
+    - out of `pending`, the OTHER variant's claim terminal is refused --
+      `validated` in a non-vigilant run, `completed` in a vigilant one
+      (`variant_claim_terminal`). Declaring both targets for the engine's
+      restore must not hand a vigilant worker a `pending -> completed`
+      route around verification, nor a non-vigilant one a `validated` it
+      has no verify step to earn. Each variant's OWN claim terminal stays
+      reportable out of `pending`, exactly as before this task.
     """
     if not isinstance(payload, dict):
         return []
@@ -1373,10 +1412,28 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool,
     # declared table stays an honest inventory of what the engine does
     # without widening the vocabulary a report may carry.
     if (target == "superseded" and current_status != target
-            and not allow_superseded_restore):
+            and not allow_un_reopen_restore):
         return ["task_status: 'superseded' is applied by the harness itself "
                 "at a forced split (a spent progressBudget); a hat never "
                 "reports it -- carry the split in `proposed_tasks` instead"]
+    # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): same principle, the
+    # other half of the un-reopen edge. The base table declares every
+    # restore target in BOTH variants because the target is a status the
+    # engine persisted, not a function of the variant -- so the one place
+    # that still knows about the variant's own claim path refuses the
+    # OTHER variant's terminal here, in the semantic layer, keeping the
+    # set of moves a hat may report out of `pending` exactly what it was.
+    if (is_un_reopen_transition(current_status, target)
+            and target in ("completed", "validated")
+            and target != variant_claim_terminal(vigilant)
+            and not allow_un_reopen_restore):
+        variant = "vigilant" if vigilant else "non-vigilant"
+        return [f"task_status: {target!r} out of 'pending' is the engine's own "
+                f"un-reopen restore of a status it persisted before a cure "
+                f"pass re-opened the record (preCureStatuses, source="
+                f"'cure-reconciliation'); it is not a move a hat or an "
+                f"operator ruling may claim in the {variant} variant, whose "
+                f"own claim terminal is {variant_claim_terminal(vigilant)!r}"]
     if current_status == "failed" and target == "skipped":
         justification = payload.get("justification")
         if not isinstance(justification, str) or not justification.strip():
