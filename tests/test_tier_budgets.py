@@ -242,10 +242,20 @@ TIER_MARKERS = ("smoke", "fast")
 #   - 007 (B.3, un-reopen task-status edge) `c1fb6ebd`: fast +5, smoke +5,
 #     no module change.
 #   - 008 (B.4, cure-task diff reconciliation + re-open ownership, plus its
-#     own red-lane cure retiring a grandfathered await-binding entry)
-#     `57e13284`: fast +12, smoke +12, no module change.
+#     own red-lane cure retiring a grandfathered await-binding entry and a
+#     final commit pinning the vigilant half of the variant-conditioned
+#     un-reopen target) `83e33dde`: fast +13, smoke +13, no module change.
+#     The task's delta is measured at its LAST commit, `83e33dde`, not at
+#     the red-lane cure `57e13284` one commit earlier: that earlier tip
+#     collects 5885 fast / 4258 smoke, and `83e33dde`'s single added node
+#     in `tests/test_cure_invalidates.py` (the vigilant supervisor over a
+#     real git workspace) takes it to 5886 / 4259, thirteen above task
+#     007's tip `c1fb6ebd` (5873 / 4246).
 #   - 009 (B.5, reconciled invalidates cascade documented) `eca85160`:
-#     fast +1, smoke +1, no module change.
+#     +0/+0 (record-and-prose only -- `SPEC.md`, `docs/architecture.md`,
+#     `state.insert_cure_tasks`'s disclosure paragraph, and a docstring
+#     added to an existing `tests/test_cure_invalidates.py` test; no test
+#     function added, so the tip collects the same 5886 / 4259 as 008's).
 #   - 010 (C.1, legible-verdict-with-unusable-findings discrimination)
 #     `c07b90e1`: fast +1, smoke +1, no module change.
 #   - 011 (C.2, review_findings_unusable pause edge) `f17cc7bd`: fast +1,
