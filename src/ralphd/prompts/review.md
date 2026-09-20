@@ -235,13 +235,13 @@ a process, restate something already true), or `remedy_type: "substance"`
 deliverable. A `form` remedy routes the affected task to `validated`, with
 the remedy recorded as a debt item rather than a retry driver; a
 `substance` remedy fails the affected task -- which is then dependency-dead.
-When this prompt carries the bounded, off-budget mid-run petition
-adjudication episode section (see Verdict below), the engine ALSO builds ONE
-cure task out of your remedy text, on the same path a curable rejection's
-cure task takes, re-pointing every dependent of the failed task onto it. On
-an ordinary run-ending review it does not: the failed task's dependents stay
-dependency-dead, and a doomed remainder your refutation leaves behind is
-yours to raise as a blocking finding. So write a `substance` remedy as WORK whose
+On a `substance` remedy, the engine ALSO builds ONE cure task out of your
+remedy text, on the same path a curable rejection's cure task takes,
+re-pointing every dependent of the failed task onto it -- whether this
+adjudication happens during the bounded, off-budget mid-run petition
+adjudication episode (see Verdict below) or during an ordinary run-ending
+review, so your refutation leaves no doomed remainder. So write a
+`substance` remedy as WORK whose
 completion is checkable: the end state that will be true once it is done,
 inside the same bounded-clause shape you hold a `cured_when` to. Classify a
 remedy that changes no deliverable as `form`. Carry your
