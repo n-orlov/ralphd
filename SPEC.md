@@ -2215,6 +2215,7 @@ reconstruct the whole run, including its restarts.
 |---|---|---|
 | `state` | `state`, `resumed` | the loop enters `running` (with `resumed`), and once with the terminal state |
 | `phase` | `phase`, `approach` | a `planning`/`worker`/`review` phase starts; `reflect` carries no approach |
+| `planning.warning` | `approach`, `warning` | v0.23 requirement F.1 (#222, task 022): the accepted-proposal path (`_step_planning`) surfaces one entry of `plan_ingestion.PlanIngestionResult.warnings` -- until this task accumulated but never read by anything at runtime, so `normalize_task_tiers`' degenerate-all-`hard`-tier warning and `normalize_task_estimated_iterations`' defaulted-estimate warning were invisible outside a unit test. One `log` event (`level: "warning"`) plus one of this event per warning string; a proposal that produces no warning emits neither |
 | `iteration.start` | `number`, `phase`, `model` | an iteration's agent process is about to start |
 | `iteration.attempt_archived` | `number`, `attempt`, `path`, `files` | a reused slot's earlier (crashed) attempt was moved to `iterations/NNNN/attempts/NN/` before the new one wrote (§5.5) |
 | `iteration.end` | `number`, `phase`, `exitCode`, `interrupted`, `sawComplete`, `sawVerified`, `error`, `faultClass` | that iteration finished |

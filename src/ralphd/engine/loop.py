@@ -6656,6 +6656,23 @@ class LoopSupervisor:
             self.run.update_status(planningDeathSignature=None,
                                     planningDeathDetail=None)
             self.run.write_tasks(ingestion.tasks_doc)
+            # Task 022 (requirement F.1, #222): `PlanIngestionResult.
+            # warnings` was accumulated (`normalize_task_tiers`'s
+            # degenerate-all-`hard` warning, `normalize_task_
+            # estimated_iterations`'s defaulted-estimate warning) but had
+            # no runtime consumer at all -- nothing read the field and
+            # both warnings were invisible outside a unit test. One `log`
+            # line (human-readable) plus one dedicated `planning.warning`
+            # event (structured, naming the approach) per warning, so an
+            # operator/hub reader sees exactly what a degenerate or
+            # under-declared proposal warned about. A proposal that
+            # produces no warning emits neither.
+            for warning in ingestion.warnings:
+                self.run.emit(
+                    "log", level="warning",
+                    message=f"plan ingestion warning: {warning}")
+                self.run.emit(
+                    "planning.warning", approach=approach, warning=warning)
             # Task 107 (#60 pillar 3): pin the planner's `standing_rules`
             # contract field, once, as this run's harness-owned copy --
             # `_reinject_standing_rules` (every iteration end, any hat)
