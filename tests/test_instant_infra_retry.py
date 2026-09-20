@@ -264,31 +264,34 @@ async def test_a_zero_token_terminated_failure_is_retried_and_refunded(
 
 
 @pytest.mark.asyncio
-async def test_three_consecutive_zero_token_terminated_failures_trip_the_breaker(
+async def test_three_consecutive_zero_token_terminated_failures_recover_without_tripping_the_breaker(
         tmp_path, monkeypatch):
-    """Task 021 (requirement G): before the fix, three of these attempts
-    classified `work` and never reached `_check_instant_failure` at all --
-    each one returned straight to the caller as an ordinary, unrefunded
-    work failure, which is exactly the shape task 059 named ("11 consecutive
-    ~0.6s nonzero-exit iterations burned all 3 approaches in 7 seconds").
-    Now they are `infra`, so the SAME breaker that guards a broken
-    credential guards this shape too: three identical zero-token attempts
-    end the run fast with a clear diagnosis and all three refunded, never
-    as three burned work failures."""
+    """Cure task cure-01-07 (requirement G, review finding F07): task 021's
+    own shipped version of this test pinned three of these attempts as
+    TRIPPING the instant-failure breaker -- the exact behaviour requirement
+    G's `cured_when` forbids ("fast zero-token terminated failures use the
+    infrastructure retry budget without tripping the instant-failure
+    breaker solely for that zero-traffic shape"). A zero-token `terminated`
+    error still carries pi's own zero-FILLED usage block (present, nothing
+    billed) -- unlike the broken-credential shape below, which has no usage
+    block at all -- so it is exempted from the carve-out exactly like a
+    known infra signature is: three of them, followed by a healthy fourth
+    attempt, must ride the infra retry budget out to that recovery, never
+    abort, and refund every failed attempt."""
     sup = _supervisor(tmp_path, infra_outage_budget_s=14_400.0)
     calls, waits, fake_sleep = _stub_attempts(
         sup, [_terminated_zero_token(), _terminated_zero_token(),
-              _terminated_zero_token()])
+              _terminated_zero_token(), _ok_result()])
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
-    await sup.run_iteration("worker")
+    result = await sup.run_iteration("worker")
 
-    assert len(calls) == LoopSupervisor.MAX_CONSECUTIVE_INSTANT_FAILURES == 3
-    assert sup._infra_refunded == 3, "every attempt refunded, none charged"
-    reason = sup._abort_reason
-    assert reason is not None
-    assert "3 consecutive iterations" in reason
-    assert sup._instant_failure_streak == 3
+    assert result.final_text == "done", "the fourth attempt reached recovery"
+    assert len(calls) == 4, "never fail-fast at 3 -- the breaker never counted these"
+    assert sup._infra_refunded == 3, "every failed attempt refunded, none charged"
+    assert sup._abort_reason is None, "the zero-traffic shape alone must never abort"
+    assert sup._instant_failure_streak == 0, \
+        "a zero-token terminated attempt never touches this streak, in either direction"
 
 
 # -- unit: the broken-environment fast-fail survives -----------------------

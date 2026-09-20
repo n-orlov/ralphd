@@ -13727,17 +13727,41 @@ class LoopSupervisor:
         (hours by default) govern it. An *unclassified* no-traffic failure
         (still classify_fault()'s own "infra", by its deliberate catch-all --
         see explain_fault's FAULT_REASON_NO_TRAFFIC_UNCLASSIFIED -- but with
-        no signature match) is NOT exempted: that shape is exactly the
-        missing/broken-credential incident this breaker exists for, so it
-        keeps counting and can still fail fast well inside the outage
-        budget.
+        no signature match) is NOT exempted BY ITSELF: that catch-all covers
+        two different shapes and this breaker must tell them apart.
+
+        Cure task cure-01-07 (requirement G, review finding F07): task 021
+        made `produced_traffic` a token-count derivation
+        (`state.billable_tokens(usage) > 0`) so a zero-token in-band
+        `terminated` error -- pi's own zero-FILLED usage block, present but
+        nothing billed -- classifies `infra` at this same catch-all. The
+        shipped test pinned this shape as tripping the SAME breaker as a
+        broken credential, which is exactly the behaviour requirement G's
+        `cured_when` forbids ("fast zero-token terminated failures use the
+        infrastructure retry budget without tripping the instant-failure
+        breaker solely for that zero-traffic shape"). The two catch-all
+        shapes are told apart by whether `result.usage` is a non-empty dict
+        at all: a zero-token `terminated` error still has pi's zero-filled
+        usage block (`{"input": 0, ...}`, truthy, nothing billed) because
+        the agent process reached pi's own event stream and got as far as a
+        `message_end`, whereas a broken-credential/missing-binary startup
+        crash (task 059's own incident) dies before any NDJSON event at
+        all, so `IterationResult.usage` is left at its
+        `default_factory=dict` empty `{}` -- falsy. So this breaker exempts
+        an infra verdict whenever EITHER a known signature matched OR
+        `result.usage` is truthy (some usage block was observed, however
+        empty of tokens): only the genuinely no-usage-at-all shape keeps
+        counting towards the streak and can still fail fast well inside the
+        outage budget -- the missing/broken-credential incident this
+        breaker exists for.
         """
         if result is self._instant_scored_result:
             return self._instant_scored_tripped
         self._instant_scored_result = result
         self._instant_scored_tripped = False
         if (self._classify_result(result) == "infra"
-                and matched_signature(result.error_message or "") is not None):
+                and (matched_signature(result.error_message or "") is not None
+                     or bool(result.usage))):
             return False
         signature = self._instant_failure_signature(result)
         if signature is None:
