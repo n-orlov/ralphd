@@ -989,6 +989,48 @@ class LoopSupervisor:
             f"approach {status.get('approach')} in the "
             f"`{status.get('phase')}` phase"))
 
+    def resume_if_ruling_answers_pause(self) -> bool:
+        """Task 015 cure (PRD requirement A.4, #224): does the ruling THIS
+        run just recorded (`RunDir.add_ruling`, called immediately before
+        this) answer the pause the run is CURRENTLY sitting in? If so,
+        release it right here -- `POST /rule`/the hub textarea's own
+        write path -- so filing an accepted ruling against the live
+        `operator_input_needed` pause is what re-asks review, with no
+        separate `ralphctl resume`/`POST /resume` required.
+
+        Deliberately narrow, mirroring `_ruling_honoured_for_approach`'s own
+        signature-equality check (no ruling TEXT is read, parsed or
+        classified here):
+
+        * the run must be recorded PAUSED with `pauseReason ==
+          "operator_input_needed"` right now -- any other pause (an
+          operator's plain `POST /pause`, `rejected_last_approach`,
+          `stagnation`, ...) is left exactly as it was;
+        * THIS approach's `rejectionSignatures[str(approach)]` must be a
+          real (non-`None`) signature -- `RunDir.add_ruling` resolves every
+          ruling's own `signature` from that SAME map, so a ruling filed
+          right now necessarily carries that value; when it is `None` the
+          ruling just filed is unscoped (ahead of any rejection, or against
+          an approach whose escalation recorded no signature at all) and
+          must not be treated as answering this pause.
+
+        Returns whether it actually resumed, so a caller (the `/rule` route)
+        can tell "this filing released the pause" from "it did not" without
+        re-deriving the check itself.
+        """
+        status = self.run.read_status()
+        if status.get("state") != PAUSED_STATE:
+            return False
+        if status.get("pauseReason") != "operator_input_needed":
+            return False
+        approach = status.get("approach")
+        signatures = status.get("rejectionSignatures") or {}
+        signature = signatures.get(str(approach)) if approach is not None else None
+        if signature is None:
+            return False
+        self.resume()
+        return True
+
     def retry_now(self) -> bool:
         """Operator-requested "try the endpoint again right now" (task 015,
         #5). Returns False when the run is not sitting in an infra backoff

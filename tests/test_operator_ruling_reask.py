@@ -38,9 +38,12 @@ import asyncio
 import json
 from pathlib import Path
 
+import httpx
+
 from ralphd.engine import findings
+from ralphd.engine.api import create_app
 from ralphd.engine.runner import IterationResult
-from ralphd.engine.state import ruling_entries, write_ruling
+from ralphd.engine.state import PAUSED_STATE, ruling_entries, write_ruling
 from tests.conftest import supervisor_factory
 
 
@@ -74,6 +77,26 @@ _MIXED_FINDINGS = [
 
 def _bounded(coro, timeout: float = 30.0):
     return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
+def _post_rule(sup, text: str, name: str | None = None) -> httpx.Response:
+    """Cure (F01, task 015): the real `/rule` route over a real ASGI app --
+    the SAME route `ralphctl rule`/the hub textarea's proxy land on -- so
+    the auto-release fix below is proven against production wiring, never
+    the storage primitive (`RunDir.add_ruling`) alone. Deliberately NOT its
+    own `test_` function: the fast tier's own ceiling stands at zero
+    headroom (task 024), so this cure folds its coverage into the existing
+    tests below rather than adding a fresh collected item."""
+    async def _post():
+        app = create_app(sup.cfg, sup.run, sup)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://engine") as client:
+            body = {"text": text}
+            if name is not None:
+                body["name"] = name
+            return await client.post("/rule", json=body)
+    return _bounded(_post())
 
 
 def _events(root: Path, type_: str) -> list[dict]:
@@ -124,6 +147,29 @@ def test_the_pause_persists_the_rejection_signature_before_it_holds(tmp_path):
     assert entries[0]["file"] == fname
     assert entries[0]["signature"] == signature
 
+    # Cure (F01): an UNRELATED live pause must never be released by a
+    # ruling POST -- neither a ruling filed with no current rejection
+    # signature to match (the escalation recorded none at all) nor one
+    # filed while parked for some OTHER reason than `operator_input_
+    # needed`. Folded into this test rather than a fresh one: the fast
+    # tier's own ceiling stands at zero headroom (task 024).
+    sup1.run.update_status(rejectionSignatures={})
+    resp = _post_rule(sup1, "unscoped ruling over the route")
+    assert resp.status_code == 202, resp.text
+    status = sup1.run.read_status()
+    assert status["state"] == PAUSED_STATE
+    assert status["pauseReason"] == "operator_input_needed"
+    assert not sup1._pause.is_set()
+
+    sup1.run.update_status(rejectionSignatures={"1": signature},
+                           pauseReason="stagnation")
+    resp = _post_rule(sup1, "ruling filed against an unrelated live pause")
+    assert resp.status_code == 202, resp.text
+    status = sup1.run.read_status()
+    assert status["state"] == PAUSED_STATE
+    assert status["pauseReason"] == "stagnation"
+    assert not sup1._pause.is_set()
+
 
 # ===========================================================================
 # 2. The re-ask itself: exactly one review call, the ruling authoritative in
@@ -139,8 +185,16 @@ def test_resuming_with_a_ruling_reasks_review_exactly_once_authoritatively_and_r
 
     ruling_text = ("Waived: findings B and A.1 are residuals, not "
                    "blockers -- ship it.")
-    sup1.run.add_ruling(ruling_text)
-    sup1.resume()
+    # Cure (F01, task 015): filing the ANSWER over the real `/rule` route
+    # must itself release the current `operator_input_needed` pause -- no
+    # separate `resume()`/`POST /resume` call anywhere in this test.
+    resp = _post_rule(sup1, ruling_text)
+    assert resp.status_code == 202, resp.text
+    released_status = sup1.run.read_status()
+    assert released_status["state"] == "running"
+    assert released_status.get("pauseReason") is None
+    assert sup1._pause.is_set()
+    assert ruling_entries(root)[-1]["signature"] == signature
 
     # Episode 2: a brand-new process over the same on-disk run dir.
     sup2 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)

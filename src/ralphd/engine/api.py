@@ -720,6 +720,13 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         if not text:
             raise problem(422, "text required")
         fname = run.add_ruling(text, (body or {}).get("name"))
+        # Task 015 cure (PRD requirement A.4, #224): a ruling that answers
+        # the run's CURRENT `operator_input_needed` pause releases it right
+        # here -- no separate `POST /resume`/`ralphctl resume` required. An
+        # unrelated or unscoped ruling (a different pause, or no current
+        # rejection signature to match) leaves any pause exactly as it was;
+        # see `LoopSupervisor.resume_if_ruling_answers_pause`.
+        loop.resume_if_ruling_answers_pause()
         return {"file": fname}
 
     @app.get("/steering")
