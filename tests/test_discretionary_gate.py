@@ -294,6 +294,10 @@ def test_condition_2_holds_before_any_spend_and_carries_the_six_a7_items(
 
     text = ev["escalation"]
     assert "057" in text and "058" in text
+    # the blocking finding's own clause and evidence, verbatim, in the text.
+    assert _CURE_REOPEN_FINDING[0]["clause"] in text
+    assert _CURE_REOPEN_FINDING[0]["evidence"] in text
+    assert "tasks that would be inserted: 1" in text
     assert "$0.42" in text
     assert "336 tokens" in text
     assert "approach 1 of 2" in text
