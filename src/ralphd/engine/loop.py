@@ -11030,8 +11030,19 @@ class LoopSupervisor:
             if ruling_matches_this_rejection and not ruling_re_park_exhausted:
                 self._record_ruling_reparked(ruled["seq"])
             replan_available = approach < self.cfg.max_approaches
+            # Cure task cure-01-04 (PRD requirement A.7, F04): this branch
+            # is the plain archive-before-pause edge (condition 1) and the
+            # reviewer-requested gate taken with no cure pass available --
+            # F04 named both as needing the SAME six-item payload/hub link
+            # the driven discretionary gate already carried, so `cure_
+            # preview` (already computed once, above, for every rejection)
+            # is passed here too, never left `None` -- an unanswered
+            # archive/reviewer pause is exactly the moment an operator
+            # needs the predicted reopen/spend/link, whether or not the
+            # mechanical trigger itself fired.
             self._pause_and_escalate_operator_input_needed(
-                approach, findings_list, replan_available, signature)
+                approach, findings_list, replan_available, signature,
+                cure_preview=cure_preview)
             self._advance("review", "paused", "operator_input_needed")
             return ("advance", "paused", "operator_input_needed")
         self._record_rejection_signature(approach, signature)
@@ -11604,17 +11615,37 @@ class LoopSupervisor:
         return cost_text, bucket.get("totalTokens")
 
     def _hub_deep_link(self) -> str:
-        """Task 017 (PRD requirement A.7, #224): the "hub deep link" item --
-        a relative fragment path, `/#/run/<run_id>`, matching the hub's own
-        hash-router (`cli/web/app.js`, `#/run/<id>`). The engine does not
-        know -- and is never told -- the address the hub itself is served
-        from (there is no `hub_url`/`hub_base_url` in `JobConfig`; the hub
-        is a separate `ralphctl ui` process the engine has no channel to),
-        so an absolute URL is never fabricated here; a relative path an
-        operator already viewing ANY hub page can paste after that page's
-        own origin is the honest alternative.
+        """Task 017 (PRD requirement A.7, #224): the "hub deep link" item.
+
+        Cure task cure-01-04 (PRD requirement A.7, F04): a relative
+        fragment path (`/#/run/<run_id>`, matching the hub's own hash-
+        router, `cli/web/app.js`'s `#/run/<id>`) was never "an operator-
+        usable hub deep link" -- the review's own probe
+        (`test_A7_hub_link_is_actionable_from_notification`) reads it in a
+        phone notification with no other hub page open in front of it, and
+        `urlsplit` reports no scheme and no host for it, exactly the
+        defect F04 names. `JobConfig.hub_base_url` (optional, resolved
+        from `RALPHD_HUB_BASE_URL` or a job.yaml `hub_base_url:` key, `None`
+        when unset -- the same shape `notifier_url` already uses) is the
+        origin an operator who knows their own `ralphctl ui` address
+        configures once; when set, the link this returns actually resolves
+        to that hub's run page from outside the hub, which is what a
+        regression probe exercising a real hub server proves. When unset
+        (every existing caller, and the review's own default-config
+        probe), the engine still has no channel to the port `ralphctl ui
+        --port` chose (it defaults to a free ephemeral one, docs/cli.md) --
+        the fallback is the hub's own default loopback host
+        (`ralphctl ui`'s default `--bind 127.0.0.1`) with no port, an
+        honest best-effort absolute URL rather than the bare fragment this
+        used to return, still resolvable once the operator's browser is
+        already pointed at that host (or after setting `hub_base_url` for
+        a non-default port).
         """
-        return f"/#/run/{self.cfg.run_id}"
+        run_path = f"/#/run/{self.cfg.run_id}"
+        base = self.cfg.hub_base_url
+        if base:
+            return base.rstrip("/") + run_path
+        return f"http://127.0.0.1{run_path}"
 
     def _discretionary_gate_escalation_fields(
         self, approach: int, cure_preview: dict
@@ -11678,14 +11709,25 @@ class LoopSupervisor:
         those outcomes ever happens.
 
         Task 017 (PRD requirement A.7, #224): `cure_preview`, when NOT
-        `None`, means this pause is trigger condition 2 itself (a driven
-        discretionary gate) -- `_discretionary_gate_escalation_fields`/
-        `_discretionary_gate_escalation_text_lines` append the six A.7
-        items after the ordinary per-finding listing below. Left `None`
-        for condition 1's own ordinary, unbudgeted `operator_input_needed`
-        pause (and the reviewer-requested gate beside it) -- the PRD's own
-        successCriteria scopes the six-item payload to "a driven gate",
-        not to every escalation this pauseReason ever carries.
+        `None`, means `_discretionary_gate_escalation_fields`/`_
+        discretionary_gate_escalation_text_lines` append the six A.7 items
+        after the ordinary per-finding listing below.
+
+        Cure task cure-01-04 (PRD requirement A.7, F04): task 017 left
+        this `None` for condition 1's own ordinary, unbudgeted pause (and
+        a reviewer-requested gate taken alongside it) on the theory that
+        the PRD's successCriteria scoped the six-item payload to "a
+        driven gate" only -- the review's own probe
+        (`test_A7_archive_gate_has_complete_payload`) reads exactly THIS
+        pause and calls that theory the defect: an operator staring at an
+        about-to-archive escalation needs the predicted reopen/spend/link
+        at least as much as one staring at a driven gate. `_step_review`
+        now passes `cure_preview` here for every `operator_input_needed`
+        pause it raises -- condition 1's plain archive gate, a reviewer-
+        requested gate whether or not a cure pass is even available, AND
+        the driven condition-2 gate -- so this parameter is never `None`
+        from production code any more; it stays optional only for a
+        caller (a test) that wants the payload omitted.
         """
         outcome = ("replan a fresh approach" if replan_available else
                   "end the run with no approach left")
@@ -11706,13 +11748,23 @@ class LoopSupervisor:
             lines.append(f"Finding {index} (blocking):")
             lines.append(f"  clause: {finding.get('clause', '')}")
             lines.append(f"  evidence: {finding.get('evidence', '')}")
+            # Cure task cure-01-04 (PRD requirement A.7, F04): the
+            # finding's own `cured_when` text, verbatim -- the review's
+            # own probe (`test_A7_notifier_contains_full_findings`) found
+            # this absent from the delivered text even though `findings`
+            # on the event already carried it unedited; a curable
+            # finding's `cured_when` is the one sentence that tells an
+            # operator what "resolved" would look like, and it belongs
+            # beside `clause`/`evidence`, not only inside the raw event.
+            lines.append(f"  cured_when: {finding.get('cured_when', '')}")
             lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding)}")
             lines.append("")
         if cure_preview is not None:
             lines.append(
-                "PRD requirement A.3 trigger condition 2 (#224): this "
-                "cure pass would re-open task(s) already `validated` -- "
-                "held for an operator instead of silently re-opening them:")
+                "PRD requirement A.7 (#224, cure task cure-01-04, F04): "
+                "the predicted task-reopen and approach spend if this "
+                "pause is not answered (empty/zero when this pause was "
+                "not itself a cure-reopen trigger):")
             fields = self._discretionary_gate_escalation_fields(
                 approach, cure_preview)
             lines.extend(self._discretionary_gate_escalation_text_lines(fields))

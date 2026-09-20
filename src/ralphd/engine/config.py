@@ -509,6 +509,18 @@ class JobConfig:
     # operator-supplied endpoint, not a secret exactly, but not part of
     # this task's scope to also surface on the control-plane API.
     notifier_url: str | None = None
+    # Cure task cure-01-04 (PRD requirement A.7, F04): the origin an
+    # `operator_escalation`'s `hubLink` is built against -- `None` (the
+    # default: no `hub_base_url:` in job.yaml and no `RALPHD_HUB_BASE_URL`)
+    # means unconfigured, exactly like `notifier_url` just above; the
+    # engine has no channel to the port `ralphctl ui --port` chose (it
+    # defaults to a free ephemeral one, docs/cli.md), so an operator who
+    # wants the emitted link to actually resolve sets this to the address
+    # their own running hub is reachable at (e.g. `http://127.0.0.1:8080`
+    # after `ralphctl ui --port 8080`). See `LoopSupervisor._hub_deep_
+    # link` for the unconfigured fallback. Kept OUT of `effective()`/
+    # `GET /config`, the same way `notifier_url` is.
+    hub_base_url: str | None = None
     job_timeout_s: int = 8 * 3600
     iteration_timeout_s: int = 45 * 60
     # any pi "provider/model" ref; the plain fallback every hat resolves to
@@ -755,6 +767,8 @@ class JobConfig:
             cfg.router_timeout_s = float(v)
         if v := os.environ.get("RALPHD_NOTIFIER_URL"):
             cfg.notifier_url = v
+        if v := os.environ.get("RALPHD_HUB_BASE_URL"):
+            cfg.hub_base_url = v
         return cfg
 
     def effective(self) -> dict:

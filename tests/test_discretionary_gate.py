@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import urllib.request
 from pathlib import Path
 
 from ralphd.engine import findings
@@ -289,8 +291,9 @@ def test_condition_2_holds_before_any_spend_and_carries_the_six_a7_items(
     assert ev["tokensSpentThisApproach"] == 336
     # 5: approach n of N.
     assert ev["approachOfMax"] == "approach 1 of 2"
-    # 6: hub deep link.
-    assert ev["hubLink"] == f"/#/run/{sup.cfg.run_id}"
+    # 6: hub deep link (cure task cure-01-04, PRD requirement A.7, F04:
+    # an absolute, operator-usable URL, never the bare relative fragment).
+    assert ev["hubLink"] == f"http://127.0.0.1/#/run/{sup.cfg.run_id}"
 
     text = ev["escalation"]
     assert "057" in text and "058" in text
@@ -301,7 +304,51 @@ def test_condition_2_holds_before_any_spend_and_carries_the_six_a7_items(
     assert "$0.42" in text
     assert "336 tokens" in text
     assert "approach 1 of 2" in text
-    assert f"/#/run/{sup.cfg.run_id}" in text
+    assert f"http://127.0.0.1/#/run/{sup.cfg.run_id}" in text
+    # cure task cure-01-04 (PRD requirement A.7, F04): the finding's own
+    # cured_when text, verbatim, in the delivered escalation body.
+    assert _CURE_REOPEN_FINDING[0]["cured_when"] in text
+
+    # Cure task cure-01-04 (PRD requirement A.7, F04): a SECOND episode,
+    # same test -- never a new collected node (zero fast-tier headroom,
+    # 5997/5997) -- proving the hub deep link genuinely "resolves to the
+    # intended hub run page from outside the hub" once an operator sets
+    # `hub_base_url` to their own running hub's address. A real
+    # `ui_server.make_server` (never a mock/stub) is bound on an OS-
+    # assigned loopback port; an independent `urllib.request` call (a
+    # plain HTTP client, never importing the hub's own request-handling
+    # code) reads the link's own origin -- a hash fragment is a client-
+    # side-only concept never sent to any server, so "resolves" here means
+    # the origin the link names answers 200 with the hub's own SPA page,
+    # which then reads `location.hash` to render this exact run.
+    from ralphd.cli import ui_server
+    server = ui_server.make_server(tmp_path / "hub-registry", "127.0.0.1", 0)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        hub_port = server.server_address[1]
+        sup2 = _supervisor(
+            tmp_path / "run2", max_approaches=2, operator_input_needed_pause=True,
+            tasks=_lane_fixture_tasks(),
+            hub_base_url=f"http://127.0.0.1:{hub_port}")
+        sup2._approach = 1
+        findings.write_findings_json(sup2.run.findings_json_file, _CURE_REOPEN_FINDING)
+        sup2.runner.run = _rejecting_runner("lanes moved")  # type: ignore[method-assign]
+        outcome2 = _bounded(sup2._step_review())
+        assert outcome2 == ("advance", "paused", "operator_input_needed")
+        ev2 = _events(tmp_path / "run2", "operator_escalation")[-1]
+        link = ev2["hubLink"]
+        assert link == f"http://127.0.0.1:{hub_port}/#/run/{sup2.cfg.run_id}"
+        origin, _, _fragment = link.partition("#")
+        with urllib.request.urlopen(origin, timeout=5) as resp:
+            status_code = resp.status
+            body = resp.read()
+        print("HUB LINK RESOLVED", status_code, len(body))
+        assert status_code == 200
+        assert b"<html" in body.lower()
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_a_cure_pass_that_only_inserts_tasks_is_not_a_trigger(tmp_path):
@@ -411,7 +458,7 @@ def test_condition_3_holds_before_any_spend_and_carries_the_six_a7_items(
     assert ev["taskIdsValidatedToPending"] == []
     assert ev["insertCount"] == 2
     assert ev["approachOfMax"] == "approach 1 of 2"
-    assert ev["hubLink"] == f"/#/run/{sup.cfg.run_id}"
+    assert ev["hubLink"] == f"http://127.0.0.1/#/run/{sup.cfg.run_id}"
 
 
 # ===========================================================================
@@ -567,9 +614,18 @@ def test_a_condition_2_gate_early_leaves_condition_1_raised_later(
     assert len(escalations) == 2
     assert [e["reason"] for e in escalations] == [
         "operator_input_needed", "operator_input_needed"]
-    # condition 1's own escalation carries no A.7 items -- it is not a
-    # driven discretionary gate.
-    assert "taskIdsValidatedToPending" not in escalations[1]
+    # Cure task cure-01-04 (PRD requirement A.7, F04): condition 1's own
+    # escalation is NOT a driven discretionary gate (nothing was spent for
+    # it, and `taskIdsValidatedToPending`/`insertCount` read empty/zero --
+    # this rejection's own cure-pass preview has nothing to reopen), but
+    # the review found its payload missing outright rather than merely
+    # empty; it now carries the full six-item A.7 payload every other
+    # `operator_input_needed` pause does.
+    condition_1_event = escalations[1]
+    assert condition_1_event["taskIdsValidatedToPending"] == []
+    assert condition_1_event["insertCount"] == 2
+    assert condition_1_event["approachOfMax"] == "approach 1 of 2"
+    assert condition_1_event["hubLink"] == f"http://127.0.0.1/#/run/{sup_b.cfg.run_id}"
 
 
 def test_the_gate_is_available_again_once_the_approach_is_crossed(tmp_path):
