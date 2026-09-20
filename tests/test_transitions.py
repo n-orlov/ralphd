@@ -264,6 +264,60 @@ def test_review_interrupted_edges_declared_in_both_variants_requirement_a_72():
         assert by_guard["review_unjudged_at_budget_end"] == "finishing"
 
 
+def test_review_cure_pending_guard_declared_in_both_variants_and_under_the_gate_requirement_d1():
+    """Task 018 (PRD requirement D.1, #220): the third `_terminal_success_
+    blockers` blocker gets its own declared guard, `review_cure_pending_
+    at_verified`, DISTINCT from `steering_pending_at_verified` -- reusing
+    that name would lie in the event log (the PRD's own words) -- present
+    in `transitions.TABLE["review"]` for both variants and, byte-for-byte,
+    under `PEER_VERDICT_GATE_DELTA["review"]`, targeting `worker` exactly
+    like the steering guard does."""
+    for vigilant in (True, False):
+        by_guard = {edge.guard: edge.target
+                    for edge in tr.successors("review", vigilant=vigilant)}
+        assert "review_cure_pending_at_verified" in by_guard
+        assert by_guard["review_cure_pending_at_verified"] == "worker"
+        assert by_guard["review_cure_pending_at_verified"] != "replan"
+    assert "review_cure_pending_at_verified" != "steering_pending_at_verified"
+    gated = {edge.guard: edge.target
+            for edge in tr.successors("review", vigilant=False,
+                                       peer_verdict_gate=True)}
+    assert gated["review_cure_pending_at_verified"] == "worker"
+
+
+def test_third_terminal_success_blocker_fires_for_a_pending_review_cure_task_and_clears_once_terminal(
+        tmp_path):
+    """Task 018 (PRD requirement D.1, #220): `_terminal_success_blockers`
+    names a non-terminal `review-cure`-origin task (`state.is_review_cure_
+    origin`) as its third blocker, silent once the plan holds none --
+    exactly the same "settled is not done" shape the pre-existing steering-
+    origin blocker already proves, one level over."""
+    from ralphd.engine.state import RunDir
+
+    root = tmp_path / "run"
+    root.mkdir(parents=True, exist_ok=True)
+    run = RunDir(root=root)
+    run.update_status(state="running")
+    atomic_write_json(run.tasks_file, {"version": 1, "tasks": [
+        {"id": "001", "status": "completed"},
+        {"id": "002", "status": "pending", "title": "cure-inserted",
+         "origin": "review-cure"},
+    ]})
+    sup = make_supervisor(root)
+
+    blockers = sup._terminal_success_blockers()
+    assert len(blockers) == 1, blockers
+    assert "002" in blockers[0]
+    assert "not terminal" in blockers[0]
+
+    doc = sup.run.read_tasks()
+    for t in doc["tasks"]:
+        if t["id"] == "002":
+            t["status"] = "completed"
+    atomic_write_json(sup.run.tasks_file, doc)
+    assert sup._terminal_success_blockers() == []
+
+
 def test_approach_boundary_is_a_transition_with_a_guard():
     assert "replan" in tr.ALL_STATES
     edges = tr.successors("replan", vigilant=True)

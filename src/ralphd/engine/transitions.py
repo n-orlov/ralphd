@@ -315,6 +315,18 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # steering is pending, and the run is routed back to worker so it
         # gets consumed (fact 10, STEERING_ACTIONABLE_PHASES).
         T("worker", "steering_pending_at_verified"),
+        # Task 018 (PRD requirement D.1, #220): the THIRD `_terminal_
+        # success_blockers` blocker gets its own declared guard, distinct
+        # from `steering_pending_at_verified` just above (reusing that name
+        # for a different blocker would lie in the event log, PRD D's own
+        # words) -- a VERIFIED verdict discarded while a `review-cure`-
+        # origin task (`state.is_review_cure_origin`) is still non-terminal,
+        # routed back to `worker` exactly like the steering blocker is, so
+        # the engine-inserted remedy/cure task actually gets run rather than
+        # the approach ending out from under it. This task (D.1) only
+        # declares the edge and widens the blocker predicate; a later task
+        # (D.2) is what makes `_step_review` actually TAKE it.
+        T("worker", "review_cure_pending_at_verified"),
         # the run's one success edge.
         T("finishing", "verified"),
         # rejected, and an approach is still available — replan.
@@ -738,6 +750,11 @@ PEER_PLAN_REVIEW_DELTA: dict[str, tuple[Transition, ...]] = {
 PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
     "review": (
         T("worker", "steering_pending_at_verified"),
+        # Task 018 (PRD requirement D.1, #220): carried over identically
+        # from `TABLE["review"]` above -- same reasoning as `steering_
+        # pending_at_verified` just above, since this check runs entirely
+        # on the VERIFIED branch, ahead of the peer verdict gate itself.
+        T("worker", "review_cure_pending_at_verified"),
         T("verdict_gate", "verified_peer_verdict_gate_enabled"),
         T("replan", "rejected_approach_left"),
         # Task 006 (PRD requirement B.2, #111): carried over byte-for-byte

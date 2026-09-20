@@ -5337,6 +5337,29 @@ def steering_origin_outstanding(tasks_doc) -> list:
             if is_steering_origin(t) and not task_is_terminal(t)]
 
 
+def review_cure_origin_outstanding(tasks_doc) -> list:
+    """Every `review-cure`-origin task (`is_review_cure_origin`) that is NOT
+    yet terminal (`task_is_terminal`), in plan order -- the sibling of
+    `steering_origin_outstanding` just above, for `_terminal_success_
+    blockers`'s THIRD blocker (task 018, PRD requirement D.1, #220).
+
+    A `review-cure`-origin task is engine-inserted output from a REFUTED
+    petition's remedy (or an ordinary curable-rejection cure pass) -- the
+    run must not go terminal-succeeded while that remedy task still sits
+    non-terminal, for the exact same reason a steering-origin task's own
+    `settled` is not `done`: the engine created real work and nothing has
+    checked whether it actually landed.
+
+    Accepts either the whole `tasks.json` document (a dict with a `tasks`
+    key) or a bare list of task dicts, mirroring `steering_origin_
+    outstanding`'s own tolerance.
+    """
+    tasks = (tasks_doc.get("tasks") if isinstance(tasks_doc, dict)
+             else tasks_doc)
+    return [t for t in (tasks or [])
+            if is_review_cure_origin(t) and not task_is_terminal(t)]
+
+
 def task_blocked_by(tasks: list, *,
                      include_petitioned: bool = False) -> dict[str, list[str]]:
     """Task 021 (#60 pillar 3): `{task id: [dead/doomed ancestor ids]}` for

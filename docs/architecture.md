@@ -177,6 +177,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `verify` | verify | vigilant only | `worker` | `verify_failed_retry_same_task` |
 | `verify` | verify | vigilant only | `worker` | `verify_passed_next_task` |
 | `review` | review | both | `worker` | `steering_pending_at_verified` |
+| `review` | review | both | `worker` | `review_cure_pending_at_verified` |
 | `review` | review | both | `finishing` | `verified` |
 | `review` | review | both | `replan` | `rejected_approach_left` |
 | `review` | review | both | `review` | `rejected_incurable` |
@@ -259,6 +260,7 @@ stateDiagram-v2
     worker --> paused : unschedulable_dependency_cycle
     worker --> paused : unresolvable_dependency_edge
     review --> worker : steering_pending_at_verified
+    review --> worker : review_cure_pending_at_verified
     review --> finishing : verified
     review --> replan : rejected_approach_left
     review --> review : rejected_incurable

@@ -12157,6 +12157,17 @@ class LoopSupervisor:
           created, and conflating the two is the whole defect requirement
           I names.
 
+        Task 018 (PRD requirement D.1, #220) adds a THIRD blocker, the same
+        "settled is not done" shape one level over: a `review-cure`-origin
+        task (`state.is_review_cure_origin`) -- engine-inserted output from
+        a curable rejection's cure pass, or (once a later task lifts the
+        `if mid_run:` guard `_insert_refuted_remedy_tasks` sits behind
+        today) a REFUTED petition's run-ending remedy -- still non-terminal.
+        Reuses `state.task_is_terminal`, the exact predicate the steering
+        blocker already uses; only the origin filter differs
+        (`_review_cure_origin_outstanding`, the sibling of `_steering_
+        origin_outstanding`).
+
         Task 016 (PRD requirement D.6, #184) widens the first blocker: task
         014's `_handle_unsettled_steering` counts an honest `settled: false`
         right away but deliberately withholds the actual unconsume
@@ -12188,6 +12199,12 @@ class LoopSupervisor:
             ids = ", ".join(str(t.get("id", "?")) for t in outstanding)
             blockers.append(f"steering-origin task(s) ({ids}) are not terminal "
                             "(`settled` is not `done`)")
+        review_cure_outstanding = self._review_cure_origin_outstanding()
+        if review_cure_outstanding:
+            ids = ", ".join(str(t.get("id", "?")) for t in review_cure_outstanding)
+            blockers.append(
+                f"review-cure-origin task(s) ({ids}) are not terminal "
+                "(the engine-inserted remedy is not `done`)")
         return blockers
 
     def _steering_origin_outstanding(self) -> list[dict]:
@@ -12205,6 +12222,21 @@ class LoopSupervisor:
         every other `tasks_doc`-reading call site in this class.
         """
         return state.steering_origin_outstanding(self.run.read_tasks())
+
+    def _review_cure_origin_outstanding(self) -> list[dict]:
+        """Task 018 (PRD requirement D.1, #220): `review-cure`-origin tasks
+        (`state.is_review_cure_origin`) not yet terminal (`state.task_is_
+        terminal`), read fresh from disk -- the THIRD `_terminal_success_
+        blockers()` blocker, sibling to `_steering_origin_outstanding` just
+        above. An engine-inserted remedy/cure task (`state.insert_cure_
+        tasks`, or the run-ending REFUTED-petition remedy a later task
+        wires in) must not be left non-terminal under the run's feet just
+        because a VERIFIED verdict happened to land first.
+        `state.review_cure_origin_outstanding` does the actual filtering;
+        this is just the `self.run.read_tasks()` plumbing around it,
+        matching `_steering_origin_outstanding`'s own shape.
+        """
+        return state.review_cure_origin_outstanding(self.run.read_tasks())
 
     def _unconsumed_steering_patch(self) -> dict:
         """status.json patch (task 006) applied at every terminal-state write:

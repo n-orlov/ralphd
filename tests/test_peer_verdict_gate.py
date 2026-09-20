@@ -86,6 +86,13 @@ def test_gate_off_by_default_table_is_byte_identical_to_today(vigilant):
     assert "verdict_gate" not in off
     assert today["review"] == (
         tr.T("worker", "steering_pending_at_verified"),
+        # Task 018 (PRD requirement D.1, #220): the third `_terminal_
+        # success_blockers` blocker's own guard, added to the base table
+        # beside `steering_pending_at_verified` -- present here too for the
+        # same reason every edge below is: gate-off is byte-identical to
+        # TODAY's table (now including this edge), not to a pre-task-018
+        # snapshot of it.
+        tr.T("worker", "review_cure_pending_at_verified"),
         tr.T("finishing", "verified"),
         tr.T("replan", "rejected_approach_left"),
         # Task 006 (PRD requirement B.2, #111): the incurable-rejection
