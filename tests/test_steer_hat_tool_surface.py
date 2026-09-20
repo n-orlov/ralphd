@@ -101,15 +101,33 @@ def test_task_update_status_change_calls_apply_task_status_change(tmp_path, monk
 
 
 def test_task_update_illegal_status_transition_is_refused_via_the_applier(tmp_path):
+    # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): `pending ->
+    # awaiting-validation` replaces `pending -> validated` as this node's
+    # illegal move -- the same substitution task 007 already made in
+    # `tests/test_amendment_status_applier.py` when it first declared the
+    # un-reopen edge, and cure-01-05 makes that edge legal in BOTH variants
+    # (the engine's own restore of a status it persisted before a cure pass
+    # re-opened a record). `awaiting-validation` is nowhere in either
+    # variant's table as a successor of `pending` -- it is only ever
+    # reached by CLAIM, out of `in-progress` -- so the applier's own
+    # `"illegal transition"` reason stays pinned here on a move that
+    # genuinely earns it, and the second half keeps the steer hat's
+    # refusal on the un-reopen shape covered.
     run = _run(tmp_path)
     _write_tasks(run, [
         {"id": "031", "title": "t", "status": "pending"},
     ])
-    result = steer_task_update(run, "031", {"status": "validated"}, False)
+    result = steer_task_update(run, "031", {"status": "awaiting-validation"},
+                               False)
     assert result["statusResult"]["applied"] is False
     assert result["statusResult"]["reason"] == "illegal transition"
     task = run.read_tasks()["tasks"][0]
     assert task["status"] == "pending"
+
+    restore = steer_task_update(run, "031", {"status": "validated"}, False)
+    assert restore["statusResult"]["applied"] is False
+    assert "cure-reconciliation" in restore["statusResult"]["reason"]
+    assert run.read_tasks()["tasks"][0]["status"] == "pending"
 
 
 def test_task_update_status_change_emits_the_same_audit_event_type(tmp_path):
