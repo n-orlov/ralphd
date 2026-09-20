@@ -10727,12 +10727,7 @@ class LoopSupervisor:
         # apply the ruling first). Computing the decision here and
         # consulting it at each of those two branches (immediately below,
         # and again just before the repeated-signature gate further down)
-        # closes both. `reviewer_requested_gate` (PRD requirement A.6) is
-        # deliberately NOT folded in here -- it stays exactly where it
-        # already was, read fresh at the bottom combined check, only for
-        # the ordinary archive/replan tail; threading it through the cure
-        # and repeated-signature branches too is cure task cure-01-03's own
-        # separate defect (F03), not this one's.
+        # closes both.
         ruled = self._ruling_honoured_for_approach(approach)
         ruling_matches_this_rejection = (
             ruled is not None and signature is not None
@@ -10744,6 +10739,27 @@ class LoopSupervisor:
             self.cfg.operator_input_needed_pause
             and ruling_matches_this_rejection
             and not ruling_re_park_exhausted)
+        # Cure task cure-01-03 (PRD requirement A.6, F03): read the
+        # reviewer's own optional escalation request ONCE, here -- before
+        # ANY rejection edge below can return, including the cure-pass-
+        # available branch just below, which is exactly the case F03 named
+        # ("the mechanical not-a-trigger case is precisely where the
+        # independent reviewer path is needed"): a legible rejected reply
+        # carrying `raise_operator_gate: true` must pause even when this
+        # cure pass would reopen nothing, i.e. when the ordinary mechanical
+        # trigger (`cure_preview["reopenedTaskIds"]`) never fires at all.
+        # The field's own backward-compatible default (absent payload,
+        # absent field, or present-but-not-`True`) is unchanged --
+        # `_review_reviewer_requested_operator_gate`'s docstring still
+        # names it. This single read is reused by every branch below that
+        # used to read it again near the end of this method; it is never
+        # read a second time off a possibly-stale payload. It is also
+        # threaded through `mechanical_ruled_park_due`'s two consulting
+        # branches above/below (cure task cure-01-03's own fix for F03): a
+        # ruling re-park still takes precedence when it applies, but a
+        # reviewer-requested gate on a rejection the ruling does NOT match
+        # still pauses through its own branch below.
+        reviewer_requested_gate = self._review_reviewer_requested_operator_gate(payload)
         # Task 006 (PRD requirement B.2, #111): a rejection whose BLOCKING
         # findings are ALL incurable takes `rejected_incurable` instead of
         # spending (and losing) a fresh approach on findings a fresh
@@ -10808,10 +10824,24 @@ class LoopSupervisor:
             # trigger too. Trigger condition 3 below is a SEPARATE
             # pauseReason (`rejected_repeated_signature`) and reads no such
             # flag, unchanged from task 016.
-            if (self.cfg.operator_input_needed_pause
-                    and cure_preview["reopenedTaskIds"]
-                    and self._discretionary_gate_available(approach)):
-                self._spend_discretionary_gate(approach)
+            # Cure task cure-01-03 (PRD requirement A.6, F03): the
+            # reviewer's own request (read once, above) is a fresh,
+            # unbudgeted, per-verdict decision, exactly like condition 1's
+            # own `operator_input_needed` gate further below -- it never
+            # spends the discretionary gate by itself, and it fires even
+            # when this cure pass would reopen nothing at all (the
+            # explicitly-NOT-a-trigger case F03 names). The mechanical
+            # trigger keeps its own precedence and its own budget spend
+            # exactly as before; the two conditions are independent ORs,
+            # never mutually exclusive, so a verdict that happens to match
+            # both still only pauses once.
+            mechanical_reopen_trigger = (
+                self.cfg.operator_input_needed_pause
+                and cure_preview["reopenedTaskIds"]
+                and self._discretionary_gate_available(approach))
+            if reviewer_requested_gate or mechanical_reopen_trigger:
+                if mechanical_reopen_trigger:
+                    self._spend_discretionary_gate(approach)
                 replan_available = approach < self.cfg.max_approaches
                 self._pause_and_escalate_operator_input_needed(
                     approach, findings_list, replan_available, signature,
@@ -10942,7 +10972,6 @@ class LoopSupervisor:
         # gate`'s own docstring names absence as the backward-compatible
         # default). Combined with the mechanical flag below, never a
         # second independent pause branch.
-        reviewer_requested_gate = self._review_reviewer_requested_operator_gate(payload)
         # Task 016 (PRD requirement A.5, #224, #224's resolved tension 2):
         # bounded at one re-park per ruling -- `engine/redact.py`'s own
         # documented lesson, "the bound has to be mechanical, not

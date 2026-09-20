@@ -323,6 +323,46 @@ def test_a_cure_pass_that_only_inserts_tasks_is_not_a_trigger(tmp_path):
     tasks = sup.run.read_tasks()["tasks"]
     assert len(tasks) == 2  # the cure task, plus the one new retake task
 
+    # Cure task cure-01-03 (PRD requirement A.6, F03): the independent
+    # reviewer path is needed PRECISELY in this same mechanical
+    # not-a-trigger case -- an all-curable rejection whose cure pass would
+    # only insert fresh tasks (never `_review_cure_pass_available`'s own
+    # mechanical `reopenedTaskIds` gate) used to reach `_take_cure_pass`/
+    # the `cure` edge in the SAME rejection without ever consulting this
+    # reply's own `raise_operator_gate: true` -- that field was only read
+    # later, on a line the cure-pass-available branch's own `return`
+    # already made unreachable. A SECOND, FRESH supervisor over its own
+    # tmp subdir -- zero fast-tier headroom (5997/5997) means this is
+    # folded into the sibling test above rather than collected as its own
+    # node -- differing from it in exactly one thing: the reviewer's own
+    # request.
+    root2 = tmp_path / "run2"
+    sup2 = _supervisor(root2, max_approaches=2, operator_input_needed_pause=True)
+    sup2._approach = 1
+    findings.write_findings_json(sup2.run.findings_json_file,
+                                 _CURE_INSERT_ONLY_FINDING)
+
+    async def _review_raises_the_gate(prompt, transcript, **kw):
+        return _result(json.dumps({
+            "verdict": "rejected", "reason": "requires operator",
+            "raise_operator_gate": True,
+        }))
+    sup2.runner.run = _review_raises_the_gate  # type: ignore[method-assign]
+
+    outcome2 = _bounded(sup2._step_review())
+
+    assert outcome2 == ("advance", "paused", "operator_input_needed")
+    status2 = sup2.run.read_status()
+    assert status2["pauseReason"] == "operator_input_needed"
+    # NO cure insertion for this reply: no cure pass recorded, no fresh
+    # retake task appended, and the shared discretionary gate untouched --
+    # this override is unbudgeted, exactly like condition 1's own gate.
+    assert status2.get("curePasses") in (None, {})
+    assert status2.get("discretionaryGateSpent") in (None, {})
+    tasks2 = sup2.run.read_tasks().get("tasks") or []
+    assert len(tasks2) == 0
+    assert not (root2 / "approaches" / "01").exists()
+
 
 # ===========================================================================
 # 3. Trigger condition 3 over `_step_review`: a repeated blocking-clause
