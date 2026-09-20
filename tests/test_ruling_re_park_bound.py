@@ -9,6 +9,19 @@ pause seam, exactly once per ruling (`_ruling_honoured_for_approach`, task
 the ruling's own `seq`). A SECOND such rejection on the SAME ruling
 proceeds to the ordinary archive/replan tail instead of re-parking again.
 
+Cure task cure-01-02 (F02, #224): the mechanical re-park decision above
+must pre-empt EVERY other branch a matching rejection could otherwise take,
+not only the plain archive/replan tail the pre-cure shape checked it
+against. Two extra episodes below drive that through the supervisor: a
+ruled signature that would otherwise take task 009/017's CURE pass
+(`_review_cure_pass_available`, trigger condition 2) still re-parks
+instead, with `curePasses` left unspent; and a ruled signature that ALSO
+repeats the previous approach's own recorded one (task 016/017's own
+repeated-signature trigger condition 3) still re-parks instead of falling
+through to `_archive_approach`, because the ordinary tail's own combined
+check ANDs `not repeated_signature` and would otherwise never reach the
+ruling at all.
+
 A.6 -- the reviewer's own OPTIONAL `raise_operator_gate` field
 (`transitions.HAT_SCHEMAS["review"]`) raises that same gate on a case the
 mechanical `operator_input_needed_pause` flag would not otherwise catch;
@@ -30,6 +43,7 @@ from pathlib import Path
 from ralphd.engine import contracts, findings, transitions
 from ralphd.engine.runner import IterationResult
 from tests.conftest import supervisor_factory
+from tests.test_discretionary_gate import _CURE_REOPEN_FINDING, _lane_fixture_tasks
 
 
 def _result(text: str) -> IterationResult:
@@ -133,6 +147,76 @@ def test_a_re_rejection_on_a_ruled_signature_re_parks_once_and_does_not_spend(
     assert not sup1.run.composite_prd_file.exists()
     # the ruling that was matched has now spent its one re-park.
     assert status.get("rulingReparked") == [1]
+
+    # Cure task cure-01-02 (F02, #224), regression 1: the identical ruled
+    # signature, but this time the rejection's OWN blocking findings are
+    # all curable and would reopen a `validated` task -- trigger condition
+    # 2's own cure branch (`_review_cure_pass_available`,
+    # `state.cure_pass_preview`). Before the cure, this fell straight into
+    # `_take_cure_pass`/`("advance", "cure", ...)`, spending the approach's
+    # cure budget on findings a ruling already addressed and never
+    # re-parking at all -- the mechanical decision was computed only at
+    # the bottom archive/replan tail, after this branch had already
+    # returned.
+    root_cure = tmp_path / "run-cure"
+    tasks = _lane_fixture_tasks()
+    sup_cure0 = _supervisor(root_cure, max_approaches=2,
+                            operator_input_needed_pause=True, tasks=tasks)
+    sup_cure0._approach = 1
+    findings.write_findings_json(sup_cure0.run.findings_json_file,
+                                 _CURE_REOPEN_FINDING)
+    sup_cure0.runner.run = _rejecting_runner("lanes moved")  # type: ignore[method-assign]
+    outcome_cure0 = _bounded(sup_cure0._step_review())
+    assert outcome_cure0 == ("advance", "paused", "operator_input_needed")
+    sup_cure0.run.add_ruling("Those lanes are residual. Ship it.")
+    sup_cure0.resume()
+
+    sup_cure1 = _supervisor(root_cure, max_approaches=2,
+                            operator_input_needed_pause=True, tasks=tasks)
+    sup_cure1._approach = 1
+    findings.write_findings_json(sup_cure1.run.findings_json_file,
+                                 _CURE_REOPEN_FINDING)
+    sup_cure1.runner.run = _rejecting_runner("lanes moved again")  # type: ignore[method-assign]
+    outcome_cure1 = _bounded(sup_cure1._step_review())
+    assert outcome_cure1 == ("advance", "paused", "operator_input_needed")
+    cure_status = sup_cure1.run.read_status()
+    # the cure branch never fired -- no cure pass was ever spent.
+    assert not cure_status.get("curePasses")
+    assert not (root_cure / "approaches" / "01").exists()
+    assert cure_status.get("rulingReparked") == [1]
+
+    # Cure task cure-01-02 (F02, #224), regression 2: the identical ruled
+    # signature, but this time it ALSO repeats the previous approach's own
+    # recorded rejection signature -- trigger condition 3's own repeated-
+    # signature branch. Before the cure, the ordinary archive/replan
+    # tail's combined pause check ANDs `not repeated_signature`, so once
+    # condition 3's own shared discretionary gate was unavailable this
+    # fell through to `_archive_approach`/`("advance", "replan", ...)`
+    # instead of re-parking for the ruling at all.
+    root_repeat = tmp_path / "run-repeat"
+    sup_rep0 = _supervisor(root_repeat, max_approaches=2,
+                          operator_input_needed_pause=True)
+    sup_rep0._approach = 1
+    sig = sup_rep0._review_rejection_signature(_MIXED_FINDINGS, None)
+    sup_rep0.run.update_status(rejectionSignatures={"0": sig})
+    findings.write_findings_json(sup_rep0.run.findings_json_file, _MIXED_FINDINGS)
+    sup_rep0.runner.run = _rejecting_runner("mixed, repeats approach 0")  # type: ignore[method-assign]
+    outcome_rep0 = _bounded(sup_rep0._step_review())
+    assert outcome_rep0[1] == "paused"  # condition 3's own repeated-signature pause
+    sup_rep0.run.add_ruling("Those clauses are residual. Ship it.")
+    sup_rep0.resume()
+
+    sup_rep1 = _supervisor(root_repeat, max_approaches=2,
+                          operator_input_needed_pause=True)
+    sup_rep1._approach = 1
+    findings.write_findings_json(sup_rep1.run.findings_json_file, _MIXED_FINDINGS)
+    sup_rep1.runner.run = _rejecting_runner("mixed, still repeats")  # type: ignore[method-assign]
+    outcome_rep1 = _bounded(sup_rep1._step_review())
+    assert outcome_rep1 == ("advance", "paused", "operator_input_needed")
+    rep_status = sup_rep1.run.read_status()
+    assert not (root_repeat / "approaches" / "01").exists()
+    assert not sup_rep1.run.composite_prd_file.exists()
+    assert rep_status.get("rulingReparked") == [1]
 
 
 def test_a_second_rejection_on_the_same_ruling_proceeds_instead_of_re_parking_again(

@@ -10708,6 +10708,42 @@ class LoopSupervisor:
                                 if f.get("severity") == "blocking"]
         cure_preview = state.cure_pass_preview(
             self.run.read_tasks().get("tasks") or [], blocking_for_preview)
+        # Cure task cure-01-02 (PRD requirement A.5, #224): the MECHANICAL
+        # ruling-match re-park decision, computed ONCE here -- before EVERY
+        # branch below it must pre-empt, not just the ordinary archive/
+        # replan tail at the very bottom. The pre-cure-01-02 shape computed
+        # this only right before that bottom combined check, so a rejection
+        # whose own signature a ruling already addressed span straight past
+        # this decision whenever the cure-pass-available branch just below
+        # or the repeated-signature branch further down fired first --
+        # observed as `_review_v023_probe.py::test_A5_ruled_cure_rejection_
+        # reparks_before_reopening` (a curable rejection matching a ruled
+        # signature silently took the cure pass, `curePasses {1: 1}`, never
+        # re-parking) and `::test_A5_ruled_repeat_signature_reparks_before_
+        # archiving` (a ruled signature that also repeated the previous
+        # approach's own recorded one fell through to the ordinary archive/
+        # replan tail, `archived=True`, because that tail's OWN combined
+        # check ANDs `not repeated_signature` and never got a chance to
+        # apply the ruling first). Computing the decision here and
+        # consulting it at each of those two branches (immediately below,
+        # and again just before the repeated-signature gate further down)
+        # closes both. `reviewer_requested_gate` (PRD requirement A.6) is
+        # deliberately NOT folded in here -- it stays exactly where it
+        # already was, read fresh at the bottom combined check, only for
+        # the ordinary archive/replan tail; threading it through the cure
+        # and repeated-signature branches too is cure task cure-01-03's own
+        # separate defect (F03), not this one's.
+        ruled = self._ruling_honoured_for_approach(approach)
+        ruling_matches_this_rejection = (
+            ruled is not None and signature is not None
+            and ruled.get("signature") == signature)
+        ruling_re_park_exhausted = (
+            ruling_matches_this_rejection
+            and self._ruling_already_reparked(ruled["seq"]))
+        mechanical_ruled_park_due = (
+            self.cfg.operator_input_needed_pause
+            and ruling_matches_this_rejection
+            and not ruling_re_park_exhausted)
         # Task 006 (PRD requirement B.2, #111): a rejection whose BLOCKING
         # findings are ALL incurable takes `rejected_incurable` instead of
         # spending (and losing) a fresh approach on findings a fresh
@@ -10734,6 +10770,22 @@ class LoopSupervisor:
         # `worker`, immediately, in the same dispatch pass, so the worker
         # still runs the appended cure tasks exactly as before.
         if self._review_cure_pass_available(approach):
+            # Cure task cure-01-02 (PRD requirement A.5, #224): a rejection
+            # whose own signature matches a ruling not yet spent re-parks
+            # HERE, before either of condition 2's own two outcomes below
+            # (its driven escalation, or the plain `_take_cure_pass` a
+            # not-a-trigger cure pass would otherwise reach) can act on
+            # findings a ruling already addressed -- see the docstring on
+            # `mechanical_ruled_park_due`'s own computation above for why
+            # this has to be checked before this branch, not only at the
+            # bottom archive/replan tail.
+            if mechanical_ruled_park_due:
+                self._record_ruling_reparked(ruled["seq"])
+                replan_available = approach < self.cfg.max_approaches
+                self._pause_and_escalate_operator_input_needed(
+                    approach, findings_list, replan_available, signature)
+                self._advance("review", "paused", "operator_input_needed")
+                return ("advance", "paused", "operator_input_needed")
             # Task 017 (PRD requirement A.3, #224): trigger condition 2 --
             # a cure pass that would re-open already-`validated` tasks
             # (`state.cure_pass_preview`, task 005's own pure predicate)
@@ -10839,6 +10891,24 @@ class LoopSupervisor:
         # against it.
         repeated_signature = self._repeated_rejection_signature(
             approach, signature)
+        # Cure task cure-01-02 (PRD requirement A.5, #224): the identical
+        # pre-emption as the cure branch above, for the SAME reason -- a
+        # ruling addressing this rejection's own signature must not be
+        # bypassed just because this rejection's signature ALSO happens to
+        # repeat the previous approach's own recorded one. Checked BEFORE
+        # trigger condition 3's own gate below (which would otherwise fall
+        # through to the bottom archive/replan tail whenever the shared
+        # discretionary gate is already spent, and that tail's own combined
+        # check ANDs `not repeated_signature`, never reaching the ruling at
+        # all -- see the docstring above `mechanical_ruled_park_due` is
+        # computed from).
+        if mechanical_ruled_park_due:
+            self._record_ruling_reparked(ruled["seq"])
+            replan_available = approach < self.cfg.max_approaches
+            self._pause_and_escalate_operator_input_needed(
+                approach, findings_list, replan_available, signature)
+            self._advance("review", "paused", "operator_input_needed")
+            return ("advance", "paused", "operator_input_needed")
         if repeated_signature and self._discretionary_gate_available(approach):
             self._spend_discretionary_gate(approach)
             self._pause_and_escalate_repeated_rejection_signature(
@@ -10889,13 +10959,18 @@ class LoopSupervisor:
         # proceeds to the ordinary archive/replan tail below instead of
         # re-parking again. A reviewer-requested gate (just above) is a
         # fresh, per-verdict decision and is never subject to this bound.
-        ruled = self._ruling_honoured_for_approach(approach)
-        ruling_matches_this_rejection = (
-            ruled is not None and signature is not None
-            and ruled.get("signature") == signature)
-        ruling_re_park_exhausted = (
-            ruling_matches_this_rejection
-            and self._ruling_already_reparked(ruled["seq"]))
+        #
+        # Cure task cure-01-02 (PRD requirement A.5, #224): `ruled`/
+        # `ruling_matches_this_rejection`/`ruling_re_park_exhausted` are NOT
+        # recomputed here any more -- they were already computed once,
+        # above (right after `cure_preview`), so the cure and repeated-
+        # signature branches above could consult the SAME decision this
+        # tail's own combined check below still reads. By the time control
+        # reaches here, either the ruling never matched this rejection at
+        # all, or it did and was ALREADY spent before this call (never
+        # inside it -- either earlier branch above would have returned),
+        # so re-reading them fresh here would only ever reproduce the
+        # identical values already held.
         # Task 017 (PRD requirement A.3, #224): `repeated_signature` (read
         # just above, for trigger condition 3's own shared-gate branch) also
         # bounds THIS branch, and it is the one place where the "condition 1
@@ -11444,7 +11519,25 @@ class LoopSupervisor:
         result, carried through so the event and text both gain the six
         A.7 items (`_discretionary_gate_escalation_fields`), camelCase to
         match the sibling fields already on this event line.
+
+        Cure task cure-01-02 (PRD requirement A.5, #224, F02): records
+        `signature` on `rejectionSignatures[str(approach)]`, the SAME call
+        `_pause_and_escalate_operator_input_needed` already makes before
+        returning (the sibling this pause is otherwise modelled on,
+        `_pause_and_escalate_last_approach_rejection`/`_pause_and_escalate_
+        incurable_rejection`, do not make it either -- fixing THAT gap for
+        those two edges is a separate defect, not this one's). Without it,
+        an operator ruling filed while parked on THIS pause
+        (`RunDir.add_ruling`, which resolves its own `signature` from this
+        exact map keyed on the CURRENT approach) always read back
+        unscoped -- indistinguishable from a ruling filed ahead of any
+        rejection at all -- so `_ruling_honoured_for_approach` could never
+        match a rejection whose only intercept was this branch, and a
+        ruled repeat-signature rejection fell straight through to the
+        ordinary archive/replan tail on its very next pass instead of
+        re-parking once for the ruling that addressed it.
         """
+        self._record_rejection_signature(approach, signature)
         findings_list, channel_errors = self._review_findings_channel()
         blocking = [f for f in (findings_list or [])
                    if f.get("severity") == "blocking"]
