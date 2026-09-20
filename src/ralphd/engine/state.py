@@ -2943,7 +2943,7 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
             interrupted=bool(detail.get("interrupted")),
             timed_out=bool(detail.get("timedOut")),
             no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
-            produced_traffic=bool(usage) or bool(detail.get("sawComplete")),
+            produced_traffic=billable_tokens(usage) > 0,
         )
         detail["reason"] = derived["reason"]
         detail["signature"] = derived["signature"]
@@ -7252,7 +7252,7 @@ def fault_explanation(run_root: Path) -> dict:
             interrupted=bool(detail.get("interrupted")),
             timed_out=bool(detail.get("timedOut")),
             no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
-            produced_traffic=bool(usage) or bool(detail.get("sawComplete")),
+            produced_traffic=billable_tokens(usage) > 0,
         )
         exp.update(hasFault=True,
                    faultClass=recorded,

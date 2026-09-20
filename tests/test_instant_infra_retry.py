@@ -65,6 +65,35 @@ def _ok_result() -> IterationResult:
     return r
 
 
+def _terminated_zero_token(
+        error: str = "agent replied with an unexpected shape") -> IterationResult:
+    """Task 021 (requirement G): a plain (non-signature) in-band error whose
+    `usage` block is pi's own zero-fill -- every counter present and 0, a
+    non-empty dict -- rather than absent. Before `_classify_result` derived
+    `produced_traffic` from `state.billable_tokens(usage) > 0`, `bool(usage)`
+    alone read this non-empty-but-nothing-billed dict as traffic, so this
+    exact shape classified `work` (a genuine failure the agent committed)
+    and skipped the infra-retry wrapper -- and its instant-failure breaker --
+    entirely, on every one of today's three named derivation sites."""
+    r = IterationResult(exit_code=1)
+    r.error_message = error
+    r.duration_s = 1.0
+    r.usage = {"input": 0, "output": 0, "totalTokens": 0}
+    return r
+
+
+def _terminated_billed(
+        error: str = "agent replied with an unexpected shape") -> IterationResult:
+    """Same shape as `_terminated_zero_token`, but with real billed usage --
+    the counterpart proving the fix does not just flip every terminated
+    in-band error to `infra`."""
+    r = IterationResult(exit_code=1)
+    r.error_message = error
+    r.duration_s = 1.0
+    r.usage = {"input": 5, "output": 2, "totalTokens": 7}
+    return r
+
+
 _supervisor = supervisor_factory(run_id="unit", infra_retry_backoff_s=[0.1, 0.2, 0.4],
                                  infra_retry_backoff_max_s=10.0,
                                  infra_outage_budget_s=1000.0)
@@ -199,6 +228,67 @@ async def test_a_genuine_infra_signature_streak_of_five_does_not_trip_the_breake
     assert sup._abort_reason is None
     assert sup._instant_failure_streak == 0, \
         "a genuine infra signature never touches this streak, in either direction"
+
+
+# -- unit: requirement G, produced_traffic from billable tokens ------------
+
+
+def test_a_zero_token_terminated_result_classifies_infra(tmp_path):
+    sup = _supervisor(tmp_path)
+    assert sup._classify_result(_terminated_zero_token()) == "infra"
+
+
+def test_a_billed_terminated_result_still_classifies_work(tmp_path):
+    sup = _supervisor(tmp_path)
+    assert sup._classify_result(_terminated_billed()) == "work"
+
+
+@pytest.mark.asyncio
+async def test_a_zero_token_terminated_failure_is_retried_and_refunded(
+        tmp_path, monkeypatch):
+    """The `infra` verdict from the probe above is not just a label: it is
+    what routes a zero-token in-band error through the retry wrapper at all
+    (`fault != "infra"` returns the result straight back, untouched) --
+    refunded here exactly like any other instant infra fault."""
+    sup = _supervisor(tmp_path)
+    calls, waits, fake_sleep = _stub_attempts(
+        sup, [_terminated_zero_token(), _ok_result()])
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    result = await sup.run_iteration("worker")
+
+    assert result.final_text == "done"
+    assert len(calls) == 2
+    assert sup._infra_refunded == 1
+    assert sup._abort_reason is None
+
+
+@pytest.mark.asyncio
+async def test_three_consecutive_zero_token_terminated_failures_trip_the_breaker(
+        tmp_path, monkeypatch):
+    """Task 021 (requirement G): before the fix, three of these attempts
+    classified `work` and never reached `_check_instant_failure` at all --
+    each one returned straight to the caller as an ordinary, unrefunded
+    work failure, which is exactly the shape task 059 named ("11 consecutive
+    ~0.6s nonzero-exit iterations burned all 3 approaches in 7 seconds").
+    Now they are `infra`, so the SAME breaker that guards a broken
+    credential guards this shape too: three identical zero-token attempts
+    end the run fast with a clear diagnosis and all three refunded, never
+    as three burned work failures."""
+    sup = _supervisor(tmp_path, infra_outage_budget_s=14_400.0)
+    calls, waits, fake_sleep = _stub_attempts(
+        sup, [_terminated_zero_token(), _terminated_zero_token(),
+              _terminated_zero_token()])
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    await sup.run_iteration("worker")
+
+    assert len(calls) == LoopSupervisor.MAX_CONSECUTIVE_INSTANT_FAILURES == 3
+    assert sup._infra_refunded == 3, "every attempt refunded, none charged"
+    reason = sup._abort_reason
+    assert reason is not None
+    assert "3 consecutive iterations" in reason
+    assert sup._instant_failure_streak == 3
 
 
 # -- unit: the broken-environment fast-fail survives -----------------------

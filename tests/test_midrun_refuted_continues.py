@@ -215,6 +215,17 @@ def _events(run: RunDir) -> list[dict]:
            if x.strip()]
 
 
+def _bounded(coro, timeout: float = 30.0):
+    """tests/test_loop_driving_await_guard.py's own bound shape (also used
+    by tests/test_peer_verdict_gate.py, tests/test_peer_plan_review_gate.py):
+    a bare drive of `_step_review` can park forever on either the
+    paused-state Event or a repeating scripted-runner step, so every drive
+    of it in this module goes through this wrapper instead.
+    """
+    return asyncio.run(asyncio.wait_for(coro, timeout))
+    return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
 def test_success_criteria_and_fingerprint_byte_identical_after_refuted(tmp_path):
     old_fp = LoopSupervisor._criteria_fingerprint(CRITERIA)
     task = _task_record(criteriaFingerprint=old_fp)
@@ -488,7 +499,7 @@ def test_a_run_ending_verified_review_defers_over_its_own_declared_guard(
     """
     sup, run = _review_supervisor(tmp_path, _task_record(status="completed"))
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review())
 
     remedy = [t for t in run.read_tasks()["tasks"]
               if t.get("origin") == "review-cure"]
@@ -532,7 +543,7 @@ def test_the_deferral_still_names_steering_when_steering_is_what_is_unsettled(
     sup, run = _review_supervisor(tmp_path, _task_record(status="completed"))
     run.add_steering("please also check the migration ordering", name="note")
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review())
 
     assert [t.get("origin") for t in run.read_tasks()["tasks"]
             if t.get("origin") == "review-cure"] == ["review-cure"]

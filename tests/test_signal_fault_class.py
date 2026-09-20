@@ -154,6 +154,11 @@ _supervisor = supervisor_factory(run_id="unit", infra_retry_max=3,
 def _signal_result() -> IterationResult:
     r = IterationResult(exit_code=-15, interrupted=True)
     r.final_text = "partial work"   # traffic: it reached the model
+    # Task 021 (requirement G): `produced_traffic` is now derived from
+    # `state.billable_tokens(usage) > 0`, not from `final_text` -- a
+    # signal-killed iteration that actually reached the model always has
+    # some billed usage recorded alongside its partial text.
+    r.usage = {"input": 12, "output": 4, "totalTokens": 16}
     r.duration_s = 120.0            # not an "instant" failure
     return r
 

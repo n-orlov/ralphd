@@ -68,15 +68,18 @@ def _interrupted(sup: LoopSupervisor | None = None, _prompt: str = "") -> Iterat
     steer 002 for the full incident. Keep the shape aligned with its
     siblings.
 
-    Carries a non-empty `final_text`/`usage` on purpose: `_classify_result`
-    (`loop.py:1002`) computes `produced_traffic = bool(final_text) or
-    bool(usage)`, and `classify_fault` only reaches the `interrupted`
-    branch it scores `FAULT_CLASS_SIGNAL` (neither `infra` nor `work`) when
-    traffic WAS produced -- a no-traffic interrupt is unconditionally
-    `infra` and gets silently retried/refunded by
+    Carries a non-empty `final_text` AND real billed `usage` on purpose:
+    task 021 (requirement G) made `_classify_result` (`loop.py`) derive
+    `produced_traffic` from `state.billable_tokens(usage) > 0` -- pi
+    zero-fills a `usage` block on every in-band error too, so a non-empty
+    dict alone is never enough -- and `classify_fault` only reaches the
+    `interrupted` branch it scores `FAULT_CLASS_SIGNAL` (neither `infra`
+    nor `work`) when traffic WAS produced. A zero-token interrupt is
+    unconditionally `infra` and gets silently retried/refunded by
     `_run_iteration_with_infra_retry` BEFORE `_step_review` ever sees it,
     which would make this module test the pre-existing generic infra
-    retry instead of the review-specific fix task 003 actually adds.
+    retry instead of the review-specific fix task 003 actually adds -- so
+    this fixture's `usage` counts really are billed, not just present.
     """
     r = IterationResult(exit_code=None)
     r.interrupted = True

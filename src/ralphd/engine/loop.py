@@ -69,6 +69,7 @@ from .state import (
     RunDir,
     archive_operator_termination,
     atomic_write_json,
+    billable_tokens,
     format_last_tool_call,
     last_tool_call,
     prd_path,
@@ -2131,7 +2132,7 @@ class LoopSupervisor:
             interrupted=result.interrupted,
             timed_out=result.timed_out,
             no_traffic_timeout=result.no_traffic_timeout,
-            produced_traffic=bool(result.final_text) or bool(result.usage),
+            produced_traffic=billable_tokens(result.usage) > 0,
             operator_abort=self.operator_abort_requested,
             # Steering 004: the verdict is decided by the flag above; this one
             # only lets `explain_fault` word the reason honestly (an abort that

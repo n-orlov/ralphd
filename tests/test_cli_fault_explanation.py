@@ -592,6 +592,31 @@ def test_a_signal_killed_iteration_is_not_explained_as_an_operators_doing(tmp_pa
     assert "operator-initiated" not in out.stdout
 
 
+def test_a_zero_filled_usage_block_does_not_diverge_from_a_recorded_infra(tmp_path):
+    """Task 021 (requirement G): pi zero-fills a `usage` block on an in-band
+    error message_end -- every counter present, all zero, still a non-empty
+    dict. Before the fix, `bool(usage)` alone read that shape as traffic, so
+    a CORRECTLY recorded `infra` verdict for it disagreed with the
+    re-derivation and printed a spurious `FAULT_VERDICT_DIVERGED_NOTICE`.
+    `state.billable_tokens(usage) > 0` reads this shape as zero, so the
+    re-derivation now agrees with what the engine recorded and nothing
+    diverges.
+    """
+    _, run_dir = _dead_run(tmp_path, state="aborted",
+                           abortReason="gave up: no traffic")
+    _write_iteration(run_dir, 5, _fault_meta(
+        5, error="agent replied with an unexpected shape",
+        faultClass="infra",
+        usage={"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0,
+               "totalTokens": 0}))
+
+    exp = fault_explanation(run_dir)
+
+    assert exp["faultClass"] == "infra"
+    assert exp["reason"] == FAULT_REASON_NO_TRAFFIC_UNCLASSIFIED
+    assert exp["notices"] == [], exp["notices"]
+
+
 def test_the_error_text_is_never_printed_twice(tmp_path):
     """The ranked verdict (`error (exit N): ...`) already quotes the error, so
     the standalone `error:` line appears only when the verdict does not carry
