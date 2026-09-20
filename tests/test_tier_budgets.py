@@ -211,92 +211,141 @@ TIER_MARKERS = ("smoke", "fast")
 # test ceiling had 67 (see the GH #208 entry above). Both points were
 # measured at the tip that reached them, not derived:
 #   * `...[fast]` was red from the wave's very first added test. Task 002's
-#     own tip `2b75a8a3` collects 5860 fast tests against the 5857 ceiling
-#     standing then, so every unit-group PR, H onward, carried this one.
+#     own tip `2b75a8a3` (no longer an ancestor of `origin/main` after the
+#     task 029 rebase-merge; reachable rebased commit `1fc9291f`) collects
+#     5860 fast tests against the 5857 ceiling standing then, so every
+#     unit-group PR, H onward, carried this one.
 #   * `...[smoke]` was GREEN on the first four unit-groups -- H (002),
 #     E (003-004), B (005-009), C (010-012). Task 002's tip collects 4233
-#     smoke tests over 271 modules, and C's tip `4bc00afe` collects 4261
-#     over 271, both inside the 4300 tests / 271 modules standing then. It
-#     first went red at task 013 (`bf5c109b`), and through the MODULE half
-#     rather than the test half: 275 smoke modules against a 271 ceiling,
-#     with that tip's smoke test count, 4295, still under 4300. The smoke
-#     test count first exceeded 4300 one task later, at 014 (`5b4d9bbc`,
-#     4315 over 276 modules). So the `[smoke]` red rode only the A
+#     smoke tests over 271 modules, and C's tip `4bc00afe` (no longer an
+#     ancestor after the rebase-merge; reachable rebased commit
+#     `66bcb926`) collects 4261 over 271, both inside the 4300 tests / 271
+#     modules standing then. It first went red at task 013 (`bf5c109b`, no
+#     longer an ancestor after the rebase-merge; reachable rebased commit
+#     `36df53d4`), and through the MODULE half rather than the test half:
+#     275 smoke modules against a 271 ceiling, with that tip's smoke test
+#     count, 4295, still under 4300. The smoke test count first exceeded
+#     4300 one task later, at 014 (`5b4d9bbc`, no longer an ancestor after
+#     the rebase-merge; reachable rebased commit `2405940e`; 4315 over 276
+#     modules). So the `[smoke]` red rode only the A
 #     (013-017), D (018-020), G (021) and F (022-023) PRs; the four earlier
 #     unit-group PRs carried `[fast]` alone.
 # Per-task attribution, measured by checking out each task's own final
 # commit into a throwaway worktree (never this run directory) and running
 # `-m fast --collect-only -q` / `-m smoke --collect-only -q` there, so each
 # delta below is the tier's live count at that exact tip minus the tip
-# before it, not an estimate:
-#   - 002 (H, hub mutating-route identity + startup opt-in) `2b75a8a3`:
-#     fast +3, smoke +0, no module change.
-#   - 003 (E.1, cure-insertion re-point event) `b5b0f445`: +0/+0
-#     (plumbing only, no new test).
-#   - 004 (E.2, confirmed-petition re-point event) `2e66175f`: fast +2,
-#     smoke +2, no module change.
+# before it, not an estimate. Every sha named below is the ORIGINAL
+# pre-rebase-merge measurement revision -- the one actually checked out and
+# measured, task by task, as the wave landed. Task 029's rebase-merge of
+# each unit-group PR onto `origin/main` gave every one of these an
+# equal-diff (identical `git diff <sha>^..<sha>` stat) rebased commit under
+# a new sha, so the original measurement revision named here is NO LONGER
+# an ancestor of `origin/main` after that merge; the reachable rebased
+# commit carrying the same diff is named alongside it in each entry
+# (residual R01):
+#   - 002 (H, hub mutating-route identity + startup opt-in) `2b75a8a3`
+#     (no longer an ancestor after the rebase-merge; the reachable rebased
+#     commit is `1fc9291f`): fast +3, smoke +0, no module change.
+#   - 003 (E.1, cure-insertion re-point event) `b5b0f445` (no longer an
+#     ancestor after the rebase-merge; reachable rebased commit `6c09d625`):
+#     +0/+0 (plumbing only, no new test).
+#   - 004 (E.2, confirmed-petition re-point event) `2e66175f` (no longer an
+#     ancestor after the rebase-merge; reachable rebased commit `b63f5aa6`):
+#     fast +2, smoke +2, no module change.
 #   - 005 (B.1, invalidates re-open walk extracted as a pure predicate)
-#     `c791be84`: fast +2, smoke +2, no module change.
+#     `c791be84` (no longer an ancestor after the rebase-merge; reachable
+#     rebased commit `abcd991d`): fast +2, smoke +2, no module change.
 #   - 006 (B.2, pre-cure workspace HEAD sha per re-opened record)
-#     `7a45acc2`: fast +4, smoke +4, no module change.
-#   - 007 (B.3, un-reopen task-status edge) `c1fb6ebd`: fast +5, smoke +5,
-#     no module change.
+#     `7a45acc2` (no longer an ancestor after the rebase-merge; reachable
+#     rebased commit `4090a785`): fast +4, smoke +4, no module change.
+#   - 007 (B.3, un-reopen task-status edge) `c1fb6ebd` (no longer an
+#     ancestor after the rebase-merge; reachable rebased commit
+#     `d951a82e`): fast +5, smoke +5, no module change.
 #   - 008 (B.4, cure-task diff reconciliation + re-open ownership, plus its
 #     own red-lane cure retiring a grandfathered await-binding entry and a
 #     final commit pinning the vigilant half of the variant-conditioned
-#     un-reopen target) `83e33dde`: fast +13, smoke +13, no module change.
+#     un-reopen target) `83e33dde` (no longer an ancestor after the
+#     rebase-merge; reachable rebased commit `b7bc32ea`): fast +13,
+#     smoke +13, no module change.
 #     The task's delta is measured at its LAST commit, `83e33dde`, not at
-#     the red-lane cure `57e13284` one commit earlier: that earlier tip
-#     collects 5885 fast / 4258 smoke, and `83e33dde`'s single added node
-#     in `tests/test_cure_invalidates.py` (the vigilant supervisor over a
-#     real git workspace) takes it to 5886 / 4259, thirteen above task
-#     007's tip `c1fb6ebd` (5873 / 4246).
-#   - 009 (B.5, reconciled invalidates cascade documented) `eca85160`:
-#     +0/+0 (record-and-prose only -- `SPEC.md`, `docs/architecture.md`,
-#     `state.insert_cure_tasks`'s disclosure paragraph, and a docstring
-#     added to an existing `tests/test_cure_invalidates.py` test; no test
-#     function added, so the tip collects the same 5886 / 4259 as 008's).
+#     the red-lane cure `57e13284` one commit earlier (no longer an
+#     ancestor after the rebase-merge; reachable rebased commit
+#     `0ab97756`): that earlier tip collects 5885 fast / 4258 smoke, and
+#     `83e33dde`'s single added node in `tests/test_cure_invalidates.py`
+#     (the vigilant supervisor over a real git workspace) takes it to
+#     5886 / 4259, thirteen above task 007's tip `c1fb6ebd` (5873 / 4246).
+#   - 009 (B.5, reconciled invalidates cascade documented) `eca85160`
+#     (no longer an ancestor after the rebase-merge; reachable rebased
+#     commit `221cf492`): +0/+0 (record-and-prose only -- `SPEC.md`,
+#     `docs/architecture.md`, `state.insert_cure_tasks`'s disclosure
+#     paragraph, and a docstring added to an existing
+#     `tests/test_cure_invalidates.py` test; no test function added, so
+#     the tip collects the same 5886 / 4259 as 008's).
 #   - 010 (C.1, legible-verdict-with-unusable-findings discrimination)
-#     `c07b90e1`: fast +1, smoke +1, no module change.
-#   - 011 (C.2, review_findings_unusable pause edge) `f17cc7bd`: fast +1,
-#     smoke +1, no module change.
-#   - 012 (C.3, schema-slip pin inversion) `4bc00afe`: +0/+0 (inverted an
-#     existing pin, added none).
+#     `c07b90e1` (no longer an ancestor after the rebase-merge; reachable
+#     rebased commit `e2953198`): fast +1, smoke +1, no module change.
+#   - 011 (C.2, review_findings_unusable pause edge) `f17cc7bd` (no longer
+#     an ancestor after the rebase-merge; reachable rebased commit
+#     `2a0ee098`): fast +1, smoke +1, no module change.
+#   - 012 (C.3, schema-slip pin inversion) `4bc00afe` (no longer an
+#     ancestor after the rebase-merge; reachable rebased commit
+#     `66bcb926`): +0/+0 (inverted an existing pin, added none).
 #   - 013 (A.2, operator answer channel -- `ralphctl rule`, `POST /rule`,
 #     hub textarea, ruling record -- plus the root-owned task-record mount
-#     isolation fix) `bf5c109b`: fast +38 (5 new modules), smoke +34
-#     (4 new modules) -- the largest single jump, matching the size of the
-#     new surface (a new CLI verb, a new route, a new hub control, a new
-#     record kind).
+#     isolation fix) `bf5c109b` (no longer an ancestor after the
+#     rebase-merge; reachable rebased commit `36df53d4`): fast +38
+#     (5 new modules), smoke +34 (4 new modules) -- the largest single
+#     jump, matching the size of the new surface (a new CLI verb, a new
+#     route, a new hub control, a new record kind).
 #   - 014 (A.1, `operator_input_needed` pause before an approach is
-#     archived) `5b4d9bbc`: fast +20 (1 new module), smoke +20 (1 new
-#     module).
+#     archived) `5b4d9bbc` (no longer an ancestor after the rebase-merge;
+#     reachable rebased commit `2405940e`): fast +20 (1 new module),
+#     smoke +20 (1 new module).
 #   - 015 (A.4, review re-asked once with the ruling as an authoritative
-#     clause) `3c11ef42`: fast +6 (1 new module), smoke +6 (1 new module).
+#     clause) `3c11ef42` (no longer an ancestor after the rebase-merge;
+#     reachable rebased commit `1c09adea`): fast +6 (1 new module),
+#     smoke +6 (1 new module).
 #   - 016 (A.5/A.6, operator-ruling re-park bound to one per ruling,
-#     optional reviewer-raised gate field) `335583e5`: fast +8 (1 new
-#     module), smoke +8 (1 new module).
+#     optional reviewer-raised gate field) `335583e5` (no longer an
+#     ancestor after the rebase-merge; reachable rebased commit
+#     `a4b2b289`): fast +8 (1 new module), smoke +8 (1 new module).
 #   - 017 (A.3/A.7, shared discretionary trigger-condition gate, escalation
 #     payload; reworked once after a validation rejection named in this
-#     module's own task-history above) `5443d9b0`: fast +21 (2 new
-#     modules), smoke +21 (2 new modules).
+#     module's own task-history above) `5443d9b0` (no longer an ancestor
+#     after the rebase-merge; reachable rebased commit `492962cd`):
+#     fast +21 (2 new modules), smoke +21 (2 new modules).
 #   - 018 (D.1, third `_terminal_success_blockers` blocker for
-#     non-terminal review-cure tasks) `e069ecdf`: fast +2, smoke +2, no
-#     module change.
+#     non-terminal review-cure tasks) `e069ecdf` (no longer an ancestor
+#     after the rebase-merge; reachable rebased commit `d4be764b`):
+#     fast +2, smoke +2, no module change.
 #   - 019 (D.2, `review_cure_pending_at_verified` edge actually taken for
-#     a run-ending REFUTED remedy) `fec9f84e`: fast +3, smoke +3, no
-#     module change.
+#     a run-ending REFUTED remedy) `fec9f84e` (no longer an ancestor after
+#     the rebase-merge; reachable rebased commit `f70178d3`): fast +3,
+#     smoke +3, no module change.
 #   - 020 (D.3, prompt-only un-scoping of the REFUTED remedy cure-task
-#     paragraph) `b1a9ea23`: +0/+0 (prose, no new test).
+#     paragraph) `b1a9ea23` (no longer an ancestor after the rebase-merge;
+#     reachable rebased commit `944ccc60`): +0/+0 (prose, no new test).
 #   - 021 (G, `produced_traffic` derived from `billable_tokens` at all
-#     three sites) `5358d3df`: fast +5, smoke +0 (the new nodes are
-#     fast-only engine-retry/fault-explanation probes, none marked smoke),
-#     no module change.
+#     three sites) `5358d3df` (no longer an ancestor after the
+#     rebase-merge; reachable rebased commit `59de116d`): fast +5,
+#     smoke +0 (the new nodes are fast-only engine-retry/fault-explanation
+#     probes, none marked smoke), no module change.
 #   - 022 (F.1, `PlanIngestionResult.warnings` surfaced at the accepted-
-#     proposal site) `d4c54c7a`: fast +2 (1 new module), smoke +2 (1 new
-#     module).
-#   - 023 (F.2, `orderingOnly` whole-dependsOn-set warning) `f6dfec97`:
-#     fast +4, smoke +4, no module change.
+#     proposal site) `d4c54c7a` (no longer an ancestor after the
+#     rebase-merge; reachable rebased commit `97f5e170`): fast +2
+#     (1 new module), smoke +2 (1 new module).
+#   - 023 (F.2, `orderingOnly` whole-dependsOn-set warning) `f6dfec97`
+#     (no longer an ancestor after the rebase-merge; reachable rebased
+#     commit `a962e2e0`): fast +4, smoke +4, no module change.
+#
+# Every rebased sha named above (`1fc9291f`, `6c09d625`, `b63f5aa6`,
+# `abcd991d`, `4090a785`, `d951a82e`, `0ab97756`, `b7bc32ea`, `221cf492`,
+# `e2953198`, `2a0ee098`, `66bcb926`, `36df53d4`, `2405940e`, `1c09adea`,
+# `a4b2b289`, `492962cd`, `d4be764b`, `f70178d3`, `944ccc60`, `59de116d`,
+# `97f5e170`, `a962e2e0`) is confirmed an ancestor of `origin/main` with
+# `git merge-base --is-ancestor`, and each one's `git diff <sha>^..<sha>
+# --stat` matches its original counterpart's exactly (residual R01,
+# task 030).
 # The twenty-two deltas above sum to exactly the totals this raise applies:
 # fast +140 tests / +11 modules, smoke +128 tests / +10 modules -- 5857+140
 # = 5997, 387+11 = 398, 4233+128 = 4361 (smoke's own prior-wave base, from
