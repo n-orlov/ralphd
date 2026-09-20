@@ -9681,16 +9681,38 @@ class LoopSupervisor:
         immediately so `_outstanding_for_completion`/`plan_complete` and
         every other reader see it from this point on.
 
-        #209 defect 4: on a `mid_run` call ONLY, the same field's REFUTED
-        entries also get `_insert_refuted_remedy_tasks` -- a `substance`
-        remedy becomes ONE cure task on the same `state.insert_cure_tasks`
-        path review's own cure pass uses, so the refutation's "what would
-        satisfy the obligation" text finally reaches the plan instead of
-        sitting in `validationNotes` on a task whose only legal successor is
+        #209 defect 4: the same field's REFUTED entries also get
+        `_insert_refuted_remedy_tasks` -- a `substance` remedy becomes ONE
+        cure task on the same `state.insert_cure_tasks` path review's own
+        cure pass uses, so the refutation's "what would satisfy the
+        obligation" text finally reaches the plan instead of sitting in
+        `validationNotes` on a task whose only legal successor is
         `skipped`. It runs between the REFUTED write-back and `_write_back_
         petition_adjudications` for two reasons stated in that method's own
-        docstring, and the `mid_run` guard is what keeps an inserted task
-        from being stranded past `_finish("succeeded", ...)`.
+        docstring.
+
+        Task 019 (PRD requirement D.2, #220): this call is UNCONDITIONAL --
+        both on a `mid_run` episode and on an ordinary, run-ending review
+        pass (`mid_run=False`). Before this task the call sat behind an
+        `if mid_run:` guard, because an approach-end insertion had no
+        guarantee of ever being worked (`_insert_refuted_remedy_tasks`'s own
+        docstring lists why: accept, archive-and-replan, a curable
+        rejection, or a pause-and-escalate branch could all follow, and only
+        the episode was known-safe in advance). Task 018 (requirement D.1)
+        removed that gap by adding a THIRD `_terminal_success_blockers()`
+        blocker for any non-terminal `review-cure`-origin task: the accept
+        branch that used to manufacture a silent-loss defect now instead
+        routes back to `worker` (`steering_pending_at_verified`) until the
+        inserted remedy task reaches a terminal status, exactly the same
+        protection steering-origin tasks already had. With that blocker in
+        place, every one of `_insert_refuted_remedy_tasks`'s own listed
+        outcomes is now safe: accept defers instead of stranding, archive-
+        and-replan discards the task along with the rest of the abandoned
+        approach (no different from any other approach-scoped task), a
+        curable rejection's cure pass works it over the same approach, and
+        every pause-and-escalate branch simply leaves it pending for an
+        operator or a later approach to pick up. Lifting the guard is
+        therefore safe rather than merely convenient.
 
         Task 014 (requirement F.1, #144): `mid_run` (default `False`,
         every pre-existing caller unaffected) is `True` only for
@@ -9726,9 +9748,8 @@ class LoopSupervisor:
                 self.run, parsed.get("petition_adjudications"))
             self._apply_refuted_petition_adjudications(
                 parsed.get("petition_adjudications"))
-            if mid_run:
-                self._insert_refuted_remedy_tasks(
-                    parsed.get("petition_adjudications"))
+            self._insert_refuted_remedy_tasks(
+                parsed.get("petition_adjudications"))
             self._apply_confirmed_petition_adjudications(
                 parsed.get("petition_adjudications"))
             self._apply_criteria_amendments(
@@ -12160,9 +12181,11 @@ class LoopSupervisor:
         Task 018 (PRD requirement D.1, #220) adds a THIRD blocker, the same
         "settled is not done" shape one level over: a `review-cure`-origin
         task (`state.is_review_cure_origin`) -- engine-inserted output from
-        a curable rejection's cure pass, or (once a later task lifts the
-        `if mid_run:` guard `_insert_refuted_remedy_tasks` sits behind
-        today) a REFUTED petition's run-ending remedy -- still non-terminal.
+        a curable rejection's cure pass, a mid-run REFUTED petition's remedy,
+        or (task 019, requirement D.2, #220, once that task lifted the
+        `if mid_run:` guard `_insert_refuted_remedy_tasks` used to sit
+        behind) a REFUTED petition's run-ending remedy too -- still
+        non-terminal.
         Reuses `state.task_is_terminal`, the exact predicate the steering
         blocker already uses; only the origin filter differs
         (`_review_cure_origin_outstanding`, the sibling of `_steering_
@@ -12773,36 +12796,44 @@ class LoopSupervisor:
         task instead of leaving them doomed; before, so the filing is still
         OPEN on disk and gate 5 can see it on this very pass.
 
-        `mid_run`-ONLY, and that is an honest limitation rather than an
-        oversight. The mid-run adjudication episode is the one point where
-        an inserted task is guaranteed to be acted on: it runs inside
-        `_step_worker` right before the `pending_verify` hand-off, over the
-        SAME unarchived approach, so the scheduler picks the new `pending`
-        task up on a later iteration.
+        Task 019 (PRD requirement D.2, #220) lifted the `mid_run`-ONLY
+        restriction this method used to carry -- previously the honest
+        limitation was that the mid-run adjudication episode was the ONE
+        point where an inserted task was guaranteed to be acted on: it runs
+        inside `_step_worker` right before the `pending_verify` hand-off,
+        over the SAME unarchived approach, so the scheduler picks the new
+        `pending` task up on a later iteration, while nothing at approach-
+        end offered that guarantee (the reason was ORDER: this method runs
+        from `_review_verdict`, which `_step_review` calls BEFORE it decides
+        which of its branches the verdict takes, so at insert time the
+        outcome was not yet known, and it could be any of: accept and
+        `_finish("succeeded", ...)` with the inserted task still `pending`;
+        archive-and-replan, discarding the task with the approach; a
+        rejection whose blocking findings are all curable with a cure pass
+        left, taking `_step_cure` back into the worker over the SAME
+        approach; or one of the pause-and-escalate branches, leaving the
+        approach unarchived for an operator -- and only the episode's
+        accept-equivalent was known-safe in advance, since `_terminal_
+        success_blockers` named only unsettled steering files and non-
+        terminal STEERING-origin tasks, so an approach-end accept would not
+        have noticed the stranded task at all).
 
-        Nothing at approach-end offers that guarantee, and the reason is
-        ORDER, not any one outcome (#209, unit 8 -- an earlier wording of
-        this paragraph claimed a two-outcome dichotomy that is not
-        exhaustive): this method runs from `_review_verdict`, which
-        `_step_review` calls BEFORE it decides which of its branches the
-        verdict takes. At insert time the outcome is therefore not yet
-        known, and it can be any of: accept and `_finish("succeeded", ...)`
-        with the inserted task still `pending` (`_terminal_success_blockers`
-        names only unsettled steering files and non-terminal STEERING-origin
-        tasks, so it would not notice); archive-and-replan, which discards
-        the task with the approach; a rejection whose blocking findings are
-        all curable with a cure pass left, which takes `_step_cure` back
-        into the worker over the SAME approach -- the one case where an
-        inserted task WOULD be worked; or one of the pause-and-escalate
-        branches (incurable, last-approach-curable, repeated signature),
-        which leave the approach unarchived for an operator. Only the
-        episode is known-safe in advance. Widening this past it means
-        widening `_terminal_success_blockers` too (a third blocker plus a
-        new declared guard in `transitions.TABLE["review"]` AND `PEER_
-        VERDICT_GATE_DELTA["review"]`, since reusing `steering_pending_at_
-        verified` for a non-steering reason would lie in the event log) --
-        without that, the accept case manufactures a fresh silent-loss
-        defect of exactly the shape #209 is about.
+        Task 018 (PRD requirement D.1, #220) is what makes lifting that
+        restriction safe: it adds a THIRD `_terminal_success_blockers()`
+        blocker (`_review_cure_origin_outstanding`, a new declared guard in
+        both `transitions.TABLE["review"]` and `PEER_VERDICT_GATE_DELTA
+        ["review"]`) for any non-terminal `review-cure`-origin task --
+        exactly this method's own inserted remedy task. With that blocker in
+        place every outcome above is now safe: an approach-end accept
+        defers through `steering_pending_at_verified` back to `worker`
+        instead of stranding the task past `_finish`; archive-and-replan
+        discards the inserted task along with the rest of the abandoned
+        approach, same as any other approach-scoped task; a curable
+        rejection's cure pass works it over the same approach; and every
+        pause-and-escalate branch simply leaves it pending for an operator
+        or a later approach. This method is therefore now called
+        unconditionally from `_review_verdict`, on both a `mid_run` episode
+        and an ordinary run-ending review pass.
 
         The insertion spends NEITHER `curePasses` nor `gateCurePasses`, so
         it cannot starve `JobConfig.cure_pass_ceiling` out from under the two
@@ -12814,6 +12845,7 @@ class LoopSupervisor:
         adjudication_seen` bounding episodes per process. Every insertion is
         countable off `events.jsonl` from its own `PETITION_REMEDY_TASK_
         EVENT` line.
+
 
         No `_emit_task_changes()` call: `_take_cure_pass`/`_take_gate_cure_
         pass` make none either, and the ordinary end-of-iteration diff picks
@@ -14212,9 +14244,12 @@ class LoopSupervisor:
         class's own `_apply_refuted_petition_adjudications`), and -- since
         #209 defect 4 -- a `substance` remedy ALSO becomes one cure task on
         the same `state.insert_cure_tasks` path review's own cure pass uses
-        (`_insert_refuted_remedy_tasks`, `mid_run`-only precisely because
-        THIS episode is the one dispatch site whose inserted task the
-        worker loop still gets to act on). This episode's own `verdict`
+        (`_insert_refuted_remedy_tasks`, called unconditionally since task
+        019/D.2 -- this episode was originally the ONE dispatch site whose
+        inserted task the worker loop was guaranteed to act on, but task 018
+        (D.1)'s new `_terminal_success_blockers()` guard made an ordinary
+        run-ending review's own insertion safe too, so the call is no
+        longer restricted to `mid_run`). This episode's own `verdict`
         field (required by the `review` contract's
         schema, `verified`/`rejected`) is NEVER treated as a real review
         outcome here -- no `_advance`, no `_finish`, no terminal-success

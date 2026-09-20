@@ -127,9 +127,13 @@ Review adjudicates every open petition as part of its verdict:
   doomed remainder. A `form` remedy — one that changes no deliverable, only
   how one is produced — is advice, and still becomes a debt row and nothing
   else. The insertion happens only for a petition still OPEN on disk, only
-  once per obligation, and only from the mid-run adjudication episode: the
-  one dispatch site whose inserted task the worker loop still gets to act
-  on. Re-filing a REFUTED
+  once per obligation, and on both the mid-run adjudication episode and an
+  ordinary run-ending review pass (task 019, requirement D.2, #220 —
+  before that task the insertion was restricted to the mid-run episode
+  alone, the one dispatch site whose inserted task the worker loop was
+  guaranteed to act on; task 018's own new terminal-success blocker for a
+  non-terminal `review-cure`-origin task made an approach-end insertion
+  safe too, so the restriction was lifted). Re-filing a REFUTED
   petition against the same obligation is the duplicate case above: a
   blocking finding, not a second hearing. A run-scope REFUTED obligation is
   likewise not re-surfaced to review as an OPEN petition on any later

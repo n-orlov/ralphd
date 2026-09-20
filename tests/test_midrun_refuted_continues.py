@@ -59,9 +59,20 @@ Six things pinned:
 6. the remedy becomes WORK -- one extra `pending` task, `origin:
    "review-cure"`, stamped `remedyFor` with the obligation, witnessed by
    exactly one `petitions.PETITION_REMEDY_TASK_EVENT` line beside the
-   pre-existing single `petition_refuted` line, and charged against neither
-   cure-pass counter; and the `mid_run` guard that keeps an approach-end
-   review from inserting one it could not act on.
+   pre-existing single `petition_refuted` line, and charged against
+   neither cure-pass counter.
+
+Task 019 (PRD requirement D.2, #220) widens this module further: the same
+insertion now also happens on an ordinary, run-ending review pass
+(`mid_run=False`), not only the mid-run adjudication episode -- lifting the
+`if mid_run:` guard `_insert_refuted_remedy_tasks` used to sit behind,
+safe now that requirement D.1 (task 018) gives `_terminal_success_
+blockers()` a third blocker for a non-terminal `review-cure`-origin task.
+Two more nodes below drive the run-ending path directly: one mirrors this
+module's own mid-run remedy-insertion assertions (superseding the earlier
+node that pinned the ABSENCE of a run-ending insertion), the other proves
+a dependent of the refuted task is re-pointed onto the remedy rather than
+left doomed.
 """
 
 from __future__ import annotations
@@ -147,12 +158,15 @@ def _task_record(**overrides) -> dict:
     return base
 
 
-def _worker_supervisor(tmp_path: Path, task: dict) -> tuple[LoopSupervisor, RunDir, Path]:
+def _worker_supervisor(
+        tmp_path: Path, task: dict,
+        extra_tasks: list[dict] | None = None) -> tuple[LoopSupervisor, RunDir, Path]:
     root = tmp_path / "run"
     root.mkdir(parents=True)
     run = RunDir(root=root)
     run.update_status(state="running")
-    atomic_write_json(run.tasks_file, {"version": 1, "tasks": [task]})
+    atomic_write_json(run.tasks_file,
+                      {"version": 1, "tasks": [task] + list(extra_tasks or [])})
     cfg = JobConfig(
         run_id="task007-midrun-refuted", iterations=10, max_approaches=3,
         vigilant=True, on_complete="exit", infra_retry_backoff_s=[0.0],
@@ -318,19 +332,27 @@ def test_the_substance_remedy_becomes_a_pending_cure_task_through_the_real_engin
     assert sup._cure_passes_for_run() == 0
 
 
-def test_an_approach_end_review_inserts_no_remedy_task(tmp_path):
-    """The `mid_run` guard, and therefore the absence of a silent-loss
-    regression of #209's own shape. The guard is about ORDER: `_review_
-    verdict` runs before `_step_review` picks a branch, so at insert time
-    the outcome is unknown, and it can be an accept that `_finish
-    ("succeeded", ...)` with the task still `pending` (`_terminal_success_
-    blockers` names only unsettled steering files and non-terminal
-    STEERING-origin tasks, so it would not notice), an archive-and-replan
-    that discards it, a curable rejection with a cure pass left -- which
-    goes back into the worker over the SAME approach and WOULD work it --
-    or one of the pause-and-escalate branches. Only the mid-run episode is
-    known-safe in advance. If a later change lifts the guard, this is the
-    node where widening `_terminal_success_blockers` gets forced.
+def test_an_approach_end_review_also_inserts_the_remedy_task(tmp_path):
+    """PRD requirement D.2 (task 019, #220) supersedes this node's earlier
+    pin. Until this task the `mid_run` guard `_insert_refuted_remedy_tasks`
+    sat behind meant an ordinary, run-ending review pass (`mid_run=False`)
+    inserted no remedy task at all -- the earlier version of this node
+    pinned exactly that absence, reasoning that nothing at approach-end
+    guaranteed the inserted task would ever be worked (accept could
+    `_finish("succeeded", ...)` over it, archive-and-replan could discard
+    it, and only a curable rejection's cure pass was known to reach it).
+
+    Requirement D.1 (task 018) removed that gap by giving
+    `_terminal_success_blockers()` a THIRD blocker for any non-terminal
+    `review-cure`-origin task: the same protection steering-origin tasks
+    already had. With that blocker in place, requirement D.2 (this task)
+    lifted the `mid_run` guard itself -- `_review_verdict` now calls
+    `_insert_refuted_remedy_tasks` unconditionally, so a REFUTED
+    `substance` remedy becomes work on an approach-end review exactly as it
+    already did on the mid-run adjudication episode
+    (`test_the_substance_remedy_becomes_a_pending_cure_task_through_the_
+    real_engine` above), and the accept branch that used to strand it is
+    now caught by that same blocker before the run can go terminal.
     """
     sup, run, workspace = _worker_supervisor(tmp_path, _task_record())
     _make_petitions_file(workspace, OBLIGATION)
@@ -339,10 +361,86 @@ def test_an_approach_end_review_inserts_no_remedy_task(tmp_path):
     sup._review_verdict(_refuting_review(sup), mid_run=False)
 
     after = run.read_tasks()["tasks"]
-    assert len(after) == len(before)
-    assert not [t for t in after if t.get("origin") == "review-cure"]
-    assert not [e for e in _events(run)
-                if e.get("type") == petitions.PETITION_REMEDY_TASK_EVENT]
-    # the REFUTED witness line still fires on this path, unchanged.
+    remedy = [t for t in after if t.get("origin") == "review-cure"]
+    assert len(after) == len(before) + 1
+    assert len(remedy) == 1
+    assert remedy[0]["remedyFor"] == OBLIGATION
+    assert remedy[0]["title"] == OBLIGATION
+    assert REMEDY in remedy[0]["description"]
+    assert remedy[0]["status"] == "pending"
+
+    events = [e for e in _events(run)
+              if e.get("type") == petitions.PETITION_REMEDY_TASK_EVENT]
+    assert len(events) == 1
+    assert events[0]["obligation"] == OBLIGATION
+    assert events[0]["taskId"] == remedy[0]["id"]
+    # the witness line the remedy always had is still emitted exactly once
+    # beside it -- this path adds a channel, it replaces none.
     assert len([e for e in _events(run)
                 if e.get("type") == "petition_refuted"]) == 1
+
+    # requirement D.1's own blocker names the freshly inserted task: the
+    # run cannot reach terminal success while it sits `pending`, so an
+    # approach-end VERIFIED verdict over this same review pass would defer
+    # back to `worker` rather than stranding it past `_finish`.
+    blockers = sup._terminal_success_blockers()
+    assert any(remedy[0]["id"] in b for b in blockers)
+    outstanding_ids = [t.get("id") for t in sup._review_cure_origin_outstanding()]
+    assert remedy[0]["id"] in outstanding_ids
+
+
+def test_an_approach_end_review_repoints_the_refuted_tasks_own_dependents(
+        tmp_path):
+    """PRD requirement D.2 (task 019, #220): the remedy is WORK the plan
+    can still do, so a task that depended on the now-`failed` petitioned
+    task must not be left doomed with nothing to carry that work instead --
+    exactly the guarantee `state.insert_cure_tasks`' own dependent-
+    repointing already gives an ordinary cure task, driven here through
+    the run-ending review path this task newly unblocked.
+    """
+    petitioned_obligation = petitions.task_petition_obligation(
+        {"id": "1", "title": "make the impossible thing work"})
+    petitioned_task = _task_record(
+        status="petitioned", title="make the impossible thing work")
+    dependent_task = {
+        "id": "2", "title": "a task that cannot start without task 1",
+        "status": "pending", "successCriteria": "depends on task 1",
+        "dependsOn": ["1"], "tier": "hard",
+    }
+    sup, run, workspace = _worker_supervisor(
+        tmp_path, petitioned_task, extra_tasks=[dependent_task])
+    _make_petitions_file(workspace, petitioned_obligation)
+
+    review = _ok("adjudicating the open petition\n" + json.dumps({
+        "verdict": "rejected",
+        "petition_adjudications": [{
+            "obligation": petitioned_obligation,
+            "adjudication": "REFUTED",
+            "remedy": REMEDY,
+        }],
+    }))
+    sup._review_verdict(review, mid_run=False)
+
+    tasks = run.read_tasks()["tasks"]
+    by_id = {t["id"]: t for t in tasks}
+    assert by_id["1"]["status"] == "failed"
+    remedy = [t for t in tasks if t.get("origin") == "review-cure"]
+    assert len(remedy) == 1
+    remedy_id = remedy[0]["id"]
+
+    # the dependent is re-pointed onto the remedy task, never left naming
+    # a dead `failed` id with no compensating work.
+    assert by_id["2"]["dependsOn"] == [remedy_id]
+
+    repoints = [e for e in _events(run)
+                if e.get("type") == "task.dependency_repointed"
+                and e.get("taskId") == "2"]
+    assert len(repoints) == 1
+    assert repoints[0]["removed"] == ["1"]
+    assert repoints[0]["added"] == [remedy_id]
+    assert repoints[0]["source"] == "cure-insertion"
+
+    # and the run cannot go terminal while the remedy carrying that
+    # dependent's unblocked work is itself still non-terminal.
+    outstanding_ids = [t.get("id") for t in sup._review_cure_origin_outstanding()]
+    assert remedy_id in outstanding_ids
