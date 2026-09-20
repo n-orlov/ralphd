@@ -72,6 +72,11 @@ def test_no_detach_exits_nonzero_when_stub_never_verifies(ctl):
     res = ctl.run("start", "--prd", str(ctl.prd), "--run-id", run_id,
                   "--llm", "none", "--on-complete", "exit", "--no-detach",
                   "--iterations", "2", "--max-approaches", "1",
+                  "--no-operator-input-needed-pause",
+                  # Task 014 (#224): with the pause gate on (the default)
+                  # this run's own rejection would hold `paused` instead of
+                  # reaching the `failed`/exit-1 terminal state this test's
+                  # subject actually checks -- disabled so it still ends.
                   # STUB_REVIEW_FAILS is set alongside STUB_VERIFY_FAILS (task
                   # 002): budget exhausts exactly as the sole task completes,
                   # which since task 002 now grants a single off-budget grace

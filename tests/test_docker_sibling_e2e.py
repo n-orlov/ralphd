@@ -629,10 +629,16 @@ def test_no_detach_exits_0_on_verified_and_nonzero_when_unverified(ctl):
     assert meta["runId"] == run_id
 
     bad_id = _unique_run_id("e041-nodetach-bad")
+    # Task 014 (#224): operator_input_needed_pause defaults on, so an
+    # ordinary review rejection would otherwise hold the run `paused`
+    # instead of letting it reach the `rejected_no_approach_left` terminal
+    # tail this test's own subject (`--no-detach`'s exit code) exercises --
+    # disable it here so the run still ends instead of parking forever.
     res = ctl.start(bad_id,
                     extra_env={"STUB_TASKS": "1", "STUB_SLEEP": "0",
                                "STUB_REVIEW_FAILS": "99"},
                     extra=("--iterations", "3", "--max-approaches", "1",
-                           "--on-complete", "exit", "--no-detach"),
+                           "--on-complete", "exit", "--no-detach",
+                           "--no-operator-input-needed-pause"),
                     timeout=90)
     assert res.returncode != 0, (res.stdout, res.stderr)
