@@ -202,11 +202,28 @@ TIER_MARKERS = ("smoke", "fast")
 # the live 387 going in, so 387 -> 398 is the live jump this raise actually
 # earns), and `smoke`'s test ceiling 4300 -> 4361 and its module ceiling
 # 271 -> 281. Twenty-two implementation tasks (002-023) were forbidden to
-# touch this literal, exactly like GH #209's seven units above, so every
-# one of their unit-group PRs carried
-# `test_the_collected_tier_is_inside_its_declared_budget[fast]` (and
-# `[smoke]`) red from the first added test until this one measured raise --
-# disclosed in every PR body and commit message, never fixed early.
+# touch this literal, exactly like GH #209's seven units above, so
+# `test_the_collected_tier_is_inside_its_declared_budget` stayed red across
+# the whole wave until this one measured raise -- disclosed in every PR body
+# and commit message, never fixed early. Its two parameters went red at
+# different points, and the difference is recorded rather than flattened,
+# because `fast`'s test ceiling had zero headroom going in while `smoke`'s
+# test ceiling had 67 (see the GH #208 entry above). Both points were
+# measured at the tip that reached them, not derived:
+#   * `...[fast]` was red from the wave's very first added test. Task 002's
+#     own tip `2b75a8a3` collects 5860 fast tests against the 5857 ceiling
+#     standing then, so every unit-group PR, H onward, carried this one.
+#   * `...[smoke]` was GREEN on the first four unit-groups -- H (002),
+#     E (003-004), B (005-009), C (010-012). Task 002's tip collects 4233
+#     smoke tests over 271 modules, and C's tip `4bc00afe` collects 4261
+#     over 271, both inside the 4300 tests / 271 modules standing then. It
+#     first went red at task 013 (`bf5c109b`), and through the MODULE half
+#     rather than the test half: 275 smoke modules against a 271 ceiling,
+#     with that tip's smoke test count, 4295, still under 4300. The smoke
+#     test count first exceeded 4300 one task later, at 014 (`5b4d9bbc`,
+#     4315 over 276 modules). So the `[smoke]` red rode only the A
+#     (013-017), D (018-020), G (021) and F (022-023) PRs; the four earlier
+#     unit-group PRs carried `[fast]` alone.
 # Per-task attribution, measured by checking out each task's own final
 # commit into a throwaway worktree (never this run directory) and running
 # `-m fast --collect-only -q` / `-m smoke --collect-only -q` there, so each
