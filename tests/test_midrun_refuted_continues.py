@@ -444,3 +444,97 @@ def test_an_approach_end_review_repoints_the_refuted_tasks_own_dependents(
     # dependent's unblocked work is itself still non-terminal.
     outstanding_ids = [t.get("id") for t in sup._review_cure_origin_outstanding()]
     assert remedy_id in outstanding_ids
+
+
+def _verified_review_refuting_the_petition(sup, prompt=""):
+    """A run-ending review pass that adjudicates the open petition REFUTED
+    with a remedy AND claims `verified` for the approach in the same payload
+    -- the exact shape requirement D.2's own risk lives in: before task 018
+    this verdict would have reached `_finish("succeeded", ...)` straight past
+    the freshly inserted remedy task."""
+    return _ok("the approach is done; the open petition is refused\n"
+               + json.dumps({
+                   "verdict": "verified",
+                   "petition_adjudications": [{
+                       "obligation": OBLIGATION,
+                       "adjudication": "REFUTED",
+                       "remedy": REMEDY,
+                   }],
+               }))
+
+
+def _review_supervisor(tmp_path: Path, task: dict,
+                       extra_tasks: list[dict] | None = None,
+                       review_handler=_verified_review_refuting_the_petition):
+    sup, run, workspace = _worker_supervisor(tmp_path, task, extra_tasks)
+    _make_petitions_file(workspace, OBLIGATION)
+    agent = _ScriptedAgent({"review": [review_handler]})
+    agent.sup = sup  # type: ignore[attr-defined]
+    sup.runner = agent  # type: ignore[assignment]
+    return sup, run
+
+
+def test_a_run_ending_verified_review_defers_over_its_own_declared_guard(
+        tmp_path):
+    """PRD requirement D.2 (task 019, #220), the wiring half: the VERIFIED
+    verdict that lands on the SAME run-ending review pass which just
+    inserted the REFUTED petition's remedy task is deferred -- and deferred
+    over the guard task 018 (D.1) declared FOR that blocker,
+    `review_cure_pending_at_verified`, not by borrowing
+    `steering_pending_at_verified`'s name for a blocker that has nothing to
+    do with steering (PRD requirement D: reusing the name would lie in the
+    event log). Drives the whole `_step_review` state, so the edge observed
+    here is the one `_advance` actually recorded.
+    """
+    sup, run = _review_supervisor(tmp_path, _task_record(status="completed"))
+
+    outcome = asyncio.run(sup._step_review())
+
+    remedy = [t for t in run.read_tasks()["tasks"]
+              if t.get("origin") == "review-cure"]
+    assert len(remedy) == 1
+    assert remedy[0]["status"] == "pending"
+    assert remedy[0]["remedyFor"] == OBLIGATION
+
+    assert outcome == ("advance", "worker", "review_cure_pending_at_verified")
+    # `_advance` refuses an undeclared edge (`transitions.IllegalTransition`),
+    # so reaching this return at all proves the guard task 018 declared is
+    # the one the executor accepted here; and the deferral's own warning
+    # line names the review-cure blocker rather than a steering one.
+    deferrals = [e for e in _events(run)
+                 if e.get("type") == "log"
+                 and "VERIFIED verdict deferring" in (e.get("message") or "")]
+    assert len(deferrals) == 1
+    assert "review-cure-origin task" in deferrals[0]["message"]
+    assert remedy[0]["id"] in deferrals[0]["message"]
+    assert "steering" not in deferrals[0]["message"]
+    status = run.read_status()
+    assert status.get("state") != "succeeded"
+    assert status.get("verdict") is None
+    assert not any(e.get("signal") == "VERIFIED" for e in _events(run))
+    # and the blocker naming it is requirement D.1's third one, nothing
+    # steering-shaped at all.
+    blockers = sup._terminal_success_blockers()
+    assert any(remedy[0]["id"] in b for b in blockers)
+    assert not any("steering" in b for b in blockers)
+
+
+def test_the_deferral_still_names_steering_when_steering_is_what_is_unsettled(
+        tmp_path):
+    """The other side of `_pending_at_verified_guard`'s choice: an unsettled
+    steering FILE outstanding beside the inserted remedy task still defers
+    under `steering_pending_at_verified`, because that is the blocker the
+    dispatch loop acts on first (`_step_worker` routes it to the `steer` hat
+    at absolute top priority). One deferral names one blocker -- the one
+    being acted on -- and requirement D.2's new guard never displaces
+    steering's own.
+    """
+    sup, run = _review_supervisor(tmp_path, _task_record(status="completed"))
+    run.add_steering("please also check the migration ordering", name="note")
+
+    outcome = asyncio.run(sup._step_review())
+
+    assert [t.get("origin") for t in run.read_tasks()["tasks"]
+            if t.get("origin") == "review-cure"] == ["review-cure"]
+    assert outcome == ("advance", "worker", "steering_pending_at_verified")
+    assert run.read_status().get("state") != "succeeded"

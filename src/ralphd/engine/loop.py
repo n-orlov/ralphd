@@ -9702,7 +9702,9 @@ class LoopSupervisor:
         removed that gap by adding a THIRD `_terminal_success_blockers()`
         blocker for any non-terminal `review-cure`-origin task: the accept
         branch that used to manufacture a silent-loss defect now instead
-        routes back to `worker` (`steering_pending_at_verified`) until the
+        routes back to `worker` over that blocker's own declared guard
+        (`review_cure_pending_at_verified`, chosen by
+        `_pending_at_verified_guard`) until the
         inserted remedy task reaches a terminal status, exactly the same
         protection steering-origin tasks already had. With that blocker in
         place, every one of `_insert_refuted_remedy_tasks`'s own listed
@@ -10416,8 +10418,8 @@ class LoopSupervisor:
         (-> finishing, i.e. `("tail",)`, when budget/wall clock ran out
         while still interrupted -- see `_review_unjudged_at_budget_end`);
         `steering_pending_at_verified` (-> worker, taken ONCE, whenever
-        `_terminal_success_blockers()` names anything at all -- task 013,
-        requirement I, #98, REPLACES the pre-013 in-place discard loop
+        `_terminal_success_blockers()` names anything on its STEERING side
+        -- task 013, requirement I, #98, REPLACES the pre-013 discard loop
         (`while verified and self.run.pending_steering():`, which
         dispatched a no-task `worker` iteration from inside this method
         until every steering FILE was consumed) with that single
@@ -10425,7 +10427,16 @@ class LoopSupervisor:
         steering is settled by the `steer` hat `_step_worker` routes to at
         absolute top priority (task 012), and a steering-ORIGIN TASK that
         is not terminal blocks terminal success as well -- `settled` is
-        not `done`); `verified` (-> finishing, i.e.
+        not `done`); `review_cure_pending_at_verified` (-> worker, task 019,
+        PRD requirement D.2, #220: the SAME deferral for the THIRD blocker
+        task 018/D.1 added -- a non-terminal `review-cure`-origin task,
+        i.e. engine-inserted cure/remedy work, and in particular the
+        REFUTED petition remedy an ordinary run-ending review pass now
+        inserts -- taken instead of the edge above whenever that blocker is
+        what is outstanding and nothing on the steering side is, so the
+        event log names the blocker that actually held the run rather than
+        borrowing steering's name for it; `_pending_at_verified_guard` is
+        the one place that choice is made); `verified` (-> finishing, i.e.
         `("done", "succeeded")`, reached only once
         `_terminal_success_blockers()` is empty); `rejected_approach_left`
         (-> replan); `rejected_no_approach_left` (-> finishing, i.e.
@@ -10539,6 +10550,15 @@ class LoopSupervisor:
             # the worker signals COMPLETE again.
             blockers = self._terminal_success_blockers()
             if blockers:
+                # Task 019 (requirement D.2, #220): WHICH of the two
+                # declared `*_pending_at_verified` edges this deferral
+                # takes. Both route to `worker` and defer identically; they
+                # differ only in what the event log says held the run, and
+                # task 018 declared the second one precisely so a
+                # `review-cure`-origin blocker is not recorded under
+                # steering's name (PRD requirement D: reusing that name for
+                # a different blocker would lie in the event log).
+                guard = self._pending_at_verified_guard()
                 self.run.emit(
                     "log", level="warning",
                     message=("VERIFIED verdict deferring: "
@@ -10546,8 +10566,8 @@ class LoopSupervisor:
                              + " -- routing back to worker so the ordinary "
                                "lifecycle settles and finishes it before the "
                                "run can go terminal-succeeded"))
-                self._advance("review", "worker", "steering_pending_at_verified")
-                return ("advance", "worker", "steering_pending_at_verified")
+                self._advance("review", "worker", guard)
+                return ("advance", "worker", guard)
             # Task 020 (requirement L, #101): the opt-in, genuinely BLIND
             # peer verdict gate. `transitions.PEER_VERDICT_GATE_DELTA` is
             # what actually declares this alternate edge legal -- this
@@ -12207,13 +12227,7 @@ class LoopSupervisor:
         an outstanding message blocks the ending at all).
         """
         blockers: list[str] = []
-        pending = self.run.pending_steering()
-        deferred = list(self.run.read_status().get(
-            self.STEER_DEFERRED_REDELIVERY_STATUS_KEY) or [])
-        names = [p.name for p in pending]
-        for name in deferred:
-            if name not in names:
-                names.append(name)
+        names = self._unsettled_steering_names()
         if names:
             blockers.append(
                 f"operator steering ({', '.join(names)}) is not settled yet")
@@ -12229,6 +12243,55 @@ class LoopSupervisor:
                 f"review-cure-origin task(s) ({ids}) are not terminal "
                 "(the engine-inserted remedy is not `done`)")
         return blockers
+
+    def _unsettled_steering_names(self) -> list[str]:
+        """The "not settled" half of `_terminal_success_blockers()` above, as
+        bare file names: every steering file no iteration has processed yet
+        (`pending_steering()`), plus anything sitting on task 016/D.6's
+        deferred-redelivery queue (`STEER_DEFERRED_REDELIVERY_STATUS_KEY`),
+        which `steering/.consumed.json` still lists consumed and a bare
+        `pending_steering()` read is therefore blind to. Extracted as its own
+        predicate by task 019 (requirement D.2, #220) so
+        `_pending_at_verified_guard` can ask "is anything on the STEERING
+        side outstanding?" against the very same computation the blocker
+        list is built from -- rather than re-deriving it, or (worse) parsing
+        it back out of the human-readable blocker strings.
+        """
+        deferred = list(self.run.read_status().get(
+            self.STEER_DEFERRED_REDELIVERY_STATUS_KEY) or [])
+        names = [p.name for p in self.run.pending_steering()]
+        for name in deferred:
+            if name not in names:
+                names.append(name)
+        return names
+
+    def _pending_at_verified_guard(self) -> str:
+        """Task 019 (PRD requirement D.2, #220): which of `transitions.
+        TABLE["review"]`'s two declared deferral guards `_step_review` takes
+        when a VERIFIED verdict lands with `_terminal_success_blockers()`
+        non-empty. Both target `worker` and defer the same way; the name is
+        the whole difference, and it is what `events.jsonl`, `status.json`
+        and `docs/architecture.md`'s FSM all record.
+
+        `review_cure_pending_at_verified` (declared by task 018/D.1) when a
+        non-terminal `review-cure`-origin task is outstanding and NOTHING on
+        the steering side is -- the case requirement D.2 creates by letting
+        an ordinary run-ending review insert a REFUTED petition's remedy
+        task. Otherwise `steering_pending_at_verified`, unchanged: an
+        unsettled steering file or a non-terminal steering-origin task keeps
+        its own guard even when a review-cure task happens to be outstanding
+        beside it, because that is the blocker whose settlement the dispatch
+        loop acts on FIRST (`_step_worker` routes an unsettled file to the
+        `steer` hat at absolute top priority, task 012) -- and once it is
+        settled, review is asked again and this method then names the
+        review-cure blocker that remains. One blocker per deferral, always
+        the one being acted on.
+        """
+        if (self._review_cure_origin_outstanding()
+                and not self._unsettled_steering_names()
+                and not self._steering_origin_outstanding()):
+            return "review_cure_pending_at_verified"
+        return "steering_pending_at_verified"
 
     def _steering_origin_outstanding(self) -> list[dict]:
         """Task 013 (requirement I, #98): steering-origin tasks
@@ -12825,7 +12888,9 @@ class LoopSupervisor:
         ["review"]`) for any non-terminal `review-cure`-origin task --
         exactly this method's own inserted remedy task. With that blocker in
         place every outcome above is now safe: an approach-end accept
-        defers through `steering_pending_at_verified` back to `worker`
+        defers through `review_cure_pending_at_verified` back to `worker`
+        (task 019/D.2 wires `_step_review` to TAKE that declared edge --
+        `_pending_at_verified_guard` is the choice site)
         instead of stranding the task past `_finish`; archive-and-replan
         discards the inserted task along with the rest of the abandoned
         approach, same as any other approach-scoped task; a curable

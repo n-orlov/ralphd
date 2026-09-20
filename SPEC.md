@@ -1291,10 +1291,17 @@ is pending.
 - A `VERIFIED` verdict is refused while the exit gate
   (`LoopSupervisor._terminal_success_blockers()`, the one predicate both
   `_step_review` and the grace review ask) names anything: an **unsettled**
-  steering file, or a **non-terminal steering-origin task** (task 013,
-  requirement I, #98 — `settled` is not `done`). The verdict is discarded and
-  the run defers ONCE through the declared `steering_pending_at_verified`
-  edge; the dispatch loop then routes to the `steer` hat (unsettled message)
+  steering file, a **non-terminal steering-origin task** (task 013,
+  requirement I, #98 — `settled` is not `done`), or a **non-terminal
+  `review-cure`-origin task** (v0.23 requirement D.1, #220 — engine-inserted
+  cure/remedy work, including the REFUTED petition remedy a run-ending review
+  inserts under requirement D.2). The verdict is discarded and
+  the run defers ONCE back to `worker` through the declared edge that names
+  the blocker being acted on — `steering_pending_at_verified` while anything
+  on the steering side is outstanding, `review_cure_pending_at_verified` when
+  the non-terminal `review-cure`-origin task is all that is left
+  (`LoopSupervisor._pending_at_verified_guard`, the one choice site);
+  the dispatch loop then routes to the `steer` hat (unsettled message)
   or lets the worker's own scheduler finish the outstanding task, and review
   is asked again the ordinary way. Nothing reads pending steering after a
   terminal state, so going terminal there would strand it forever.

@@ -324,8 +324,12 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # routed back to `worker` exactly like the steering blocker is, so
         # the engine-inserted remedy/cure task actually gets run rather than
         # the approach ending out from under it. This task (D.1) only
-        # declares the edge and widens the blocker predicate; a later task
-        # (D.2) is what makes `_step_review` actually TAKE it.
+        # declared the edge and widened the blocker predicate; task 019
+        # (D.2) is what makes `_step_review` actually TAKE it -- see
+        # `LoopSupervisor._pending_at_verified_guard`, the one site that
+        # chooses between this guard and `steering_pending_at_verified`
+        # above (this one whenever the review-cure blocker is what is
+        # outstanding and nothing on the steering side is).
         T("worker", "review_cure_pending_at_verified"),
         # the run's one success edge.
         T("finishing", "verified"),

@@ -1765,13 +1765,23 @@ the job, the engine must not let the run go terminal-succeeded with that
 steering permanently stranded (a terminal run never reads pending steering
 again). Both exit-gate sites -- `_step_review`'s `VERIFIED` check and the
 off-budget grace review -- therefore ask one shared predicate,
-`LoopSupervisor._terminal_success_blockers()`, which names two things: a
-steering file nothing has settled yet (`Run.pending_steering()`), and a
+`LoopSupervisor._terminal_success_blockers()`, which names three things: a
+steering file nothing has settled yet (`Run.pending_steering()`), a
 steering-origin task that is not terminal (`state.steering_origin_
 outstanding`, task 013 of v0.14 -- `settled` is not `done`, a message can be
-`consumed` with most of the work it asked for still undone). When it names
-anything, the verdict is discarded and the run defers exactly once through
-the declared `steering_pending_at_verified` edge back to `worker`; the
+`consumed` with most of the work it asked for still undone), and a
+non-terminal `review-cure`-origin task (`state.review_cure_origin_
+outstanding`, v0.23 requirement D.1 -- engine-inserted cure/remedy work,
+including the REFUTED petition remedy a run-ending review inserts under
+requirement D.2, gets the same "settled is not done" protection one level
+over). When it names
+anything, the verdict is discarded and the run defers exactly once back to
+`worker` through whichever of the two declared deferral edges names the
+blocker being acted on -- `steering_pending_at_verified` while anything on
+the steering side is outstanding, `review_cure_pending_at_verified` when a
+non-terminal `review-cure`-origin task is the whole of what is left
+(`LoopSupervisor._pending_at_verified_guard` is the single choice site, so
+the event log never records one blocker under the other's name); the
 ordinary dispatch loop then routes an unsettled message to the `steer` hat
 at absolute top priority (which consumes it only on a clean exit) or leaves
 the outstanding task to the worker's own scheduler, and the approach is
