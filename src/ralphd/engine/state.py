@@ -476,6 +476,26 @@ def read_json(path: Path, default: Any = None) -> Any:
 PAUSED_STATE = "paused"
 NONTERMINAL_STATES = ("starting", "running", PAUSED_STATE, "finishing")
 
+# v0.23 requirement A.7, resolved tension 3 (task 017, #224): the ONE shared
+# marker text `ralphctl runs` and the hub run list both render for a run
+# parked with `pauseReason: "operator_input_needed"` -- a run an operator
+# can unblock only by reading a ruling in and resuming, which every OTHER
+# `paused` reason resolves on its own (a `tasks.json` edit, a fresh
+# approach) or needs no ruling to answer. One spelling here so the two
+# surfaces (`cmd_runs`, `ui_server.run_list` -> `app.js`) can never drift.
+OPERATOR_INPUT_NEEDED_PAUSE_REASON = "operator_input_needed"
+PARKED_FOR_INPUT_MARKER = "\u23F8 parked for input"
+
+
+def format_pause_marker(pause_reason) -> str:
+    """`PARKED_FOR_INPUT_MARKER` for a run parked on
+    `OPERATOR_INPUT_NEEDED_PAUSE_REASON`, `""` for anything else (including
+    every other `paused` reason, and a non-`paused` run whose `pauseReason`
+    is absent/`null`) -- task 017 (PRD requirement A.7, #224).
+    """
+    return (PARKED_FOR_INPUT_MARKER
+            if pause_reason == OPERATOR_INPUT_NEEDED_PAUSE_REASON else "")
+
 # Task 030 (#19): its complement -- the recorded `state` values that mean "no
 # engine owns this run any more", i.e. the ONE gate a destructive action may
 # open on. Lives here beside `NONTERMINAL_STATES` for the same reason: three
@@ -4630,6 +4650,60 @@ def invalidates_reopen_walk(tasks: list, invalidates) -> list:
         walk.append((record_task, verification_tasks)
                     if record_task is not None else None)
     return walk
+
+
+def cure_pass_preview(tasks: list, blocking: list[dict]) -> dict:
+    """PRD v0.23 requirement A.3 trigger condition 2, and requirement A.7's
+    escalation payload (task 017, #224): a read-only preview of what a cure
+    pass over `blocking` (the review verdict's own blocking findings) WOULD
+    do to `tasks` if `insert_cure_tasks` were called right now -- no writes,
+    no `RunDir`, built entirely on task 005's own `invalidates_reopen_walk`
+    (B.1) rather than a second copy of that walk. `LoopSupervisor._step_
+    review` calls this BEFORE `_take_cure_pass` ever runs, so the trigger
+    and the escalation it feeds both read the SAME pre-spend prediction.
+
+    Returns `{"reopenedTaskIds": [...], "insertCount": N}`:
+
+    - `reopenedTaskIds`: every task id (a record task or one of its
+      verification tasks) the walk would set back to `pending` that is
+      CURRENTLY `validated` -- in first-seen order, deduplicated. Trigger
+      condition 2 fires only on this ALREADY-validated case (the PRD's own
+      wording); a walked-to task that is not currently `validated` (already
+      `pending`, or some other non-terminal status this walk does not
+      distinguish) is not named here.
+    - `insertCount`: one entry per finding in `blocking` (the cure task
+      `insert_cure_tasks` always appends, one per finding), plus one more
+      for every syntactically valid `invalidates` path the walk does NOT
+      recognise as a lane-evidence record chain (`invalidates_reopen_walk`
+      returning `None` for that path) -- the shape of the brand-new re-take
+      task `insert_cure_tasks` appends for it. Two findings sharing one
+      re-take anchor path collapse to a single task at write time
+      (`insert_cure_tasks`' own `_existing_retake_task` bookkeeping); this
+      preview does not reproduce that dedup, so it may count one extra path
+      no write would actually add a row for -- a residual precision gap in
+      the ESCALATION preview, not in the trigger (which only ever looks at
+      `reopenedTaskIds`).
+    """
+    reopened_ids: list[str] = []
+    insert_count = len(blocking)
+    for finding in blocking:
+        invalidates = finding.get("invalidates")
+        if not isinstance(invalidates, list):
+            continue
+        walk = invalidates_reopen_walk(tasks, invalidates)
+        for path, entry in zip(invalidates, walk):
+            if not isinstance(path, str) or not path:
+                continue
+            if entry is None:
+                insert_count += 1
+                continue
+            record_task, verification_tasks = entry
+            for candidate in (record_task, *verification_tasks):
+                if candidate.get("status") == "validated":
+                    cid = candidate.get("id")
+                    if cid is not None and cid not in reopened_ids:
+                        reopened_ids.append(cid)
+    return {"reopenedTaskIds": reopened_ids, "insertCount": insert_count}
 
 
 def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,

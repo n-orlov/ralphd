@@ -1412,7 +1412,16 @@ async function renderRunList(myGen) {
         h("td", {}, [h("a", { href: "#/run/" + encodeURIComponent(r.runId) }, [r.runId])]),
         h("td", {}, gone
           ? [pill(r.state), h("span", { class: "container-gone-marker" }, [" \u26A0 container gone"])]
-          : [pill(r.state)]),
+          // Task 017 (PRD requirement A.7, #224): the SAME marker
+          // `ralphctl runs` renders (`state.format_pause_marker`) for a
+          // run parked with `pauseReason: "operator_input_needed"` --
+          // the one `pauseReason` a resume alone cannot answer, it needs
+          // a ruling read in first. `r.pauseMarker` is `""` for every
+          // other run (including every OTHER `paused` reason), so
+          // nothing extra renders for them.
+          : (r.pauseMarker
+              ? [pill(r.state), h("span", { class: "operator-input-marker" }, [" " + r.pauseMarker])]
+              : [pill(r.state)])),
         h("td", {}, [pill(r.verdict)]),
         h("td", {}, [String(r.phase || "")]),
         h("td", {}, [approachText(r)]),

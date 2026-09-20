@@ -684,7 +684,13 @@ def _events(root: Path, type_: str) -> list[dict]:
 
 def test_the_emitted_event_lists_every_id_the_pass_inserted_or_reopened(tmp_path):
     root = tmp_path / "run"
-    sup = _supervisor(root)
+    # Task 017 (PRD requirement A.3, #224): this fixture's own lane record
+    # is already `validated` -- exactly trigger condition 2's own shape.
+    # Disabled here so this pre-existing `approach.cure_pass` payload test
+    # keeps driving the REAL cure pass it is testing, the same isolation
+    # `tests/test_repeated_rejection_signature.py` already applies for
+    # condition 3's own mechanism.
+    sup = _supervisor(root, operator_input_needed_pause=False)
     sup._approach = 1
     atomic_write_json(sup.run.tasks_file,
                       {"version": 1, "tasks": _lane_fixture_tasks()})
@@ -1053,7 +1059,15 @@ def _cure_pass_over_a_real_workspace(root: Path, workspace: Path):
     seed_sha)`.
     """
     seed_sha = _init_git_workspace(workspace)
-    sup = _supervisor(root, workspace=workspace)
+    # Task 017 (PRD requirement A.3, #224): this module's own fixture
+    # tasks (`_lane_fixture_tasks`) reopen an already-`validated`
+    # verify/record pair -- exactly trigger condition 2's own shape.
+    # Disabled here so this pre-existing reconciliation-mechanics
+    # module keeps driving the REAL cure pass it is testing, the
+    # same isolation `tests/test_repeated_rejection_signature.py`
+    # already applies for condition 3's own mechanism.
+    sup = _supervisor(root, workspace=workspace,
+                      operator_input_needed_pause=False)
     sup._approach = 1
     atomic_write_json(sup.run.tasks_file,
                       {"version": 1, "tasks": _lane_fixture_tasks()})
@@ -1190,7 +1204,15 @@ def _two_cure_pass_over_a_real_workspace(root: Path, workspace: Path):
     `(sup, [first_cure_id, second_cure_id], seed_sha)`.
     """
     seed_sha = _init_git_workspace(workspace)
-    sup = _supervisor(root, workspace=workspace)
+    # Task 017 (PRD requirement A.3, #224): this module's own fixture
+    # tasks (`_lane_fixture_tasks`) reopen an already-`validated`
+    # verify/record pair -- exactly trigger condition 2's own shape.
+    # Disabled here so this pre-existing reconciliation-mechanics
+    # module keeps driving the REAL cure pass it is testing, the
+    # same isolation `tests/test_repeated_rejection_signature.py`
+    # already applies for condition 3's own mechanism.
+    sup = _supervisor(root, workspace=workspace,
+                      operator_input_needed_pause=False)
     sup._approach = 1
     atomic_write_json(sup.run.tasks_file,
                       {"version": 1, "tasks": _lane_fixture_tasks()})
@@ -1309,7 +1331,15 @@ def test_under_the_vigilant_variant_the_record_is_restored_to_validated(tmp_path
     root = tmp_path / "run"
     workspace = tmp_path / "workspace"
     seed_sha = _init_git_workspace(workspace)
-    sup = _supervisor(root, workspace=workspace, vigilant=True)
+    # Task 017 (PRD requirement A.3, #224): this module's own fixture
+    # tasks (`_lane_fixture_tasks`) reopen an already-`validated`
+    # verify/record pair -- exactly trigger condition 2's own shape.
+    # Disabled here so this pre-existing reconciliation-mechanics
+    # module keeps driving the REAL cure pass it is testing, the
+    # same isolation `tests/test_repeated_rejection_signature.py`
+    # already applies for condition 3's own mechanism.
+    sup = _supervisor(root, workspace=workspace, vigilant=True,
+                      operator_input_needed_pause=False)
     sup._approach = 1
     atomic_write_json(sup.run.tasks_file,
                       {"version": 1,

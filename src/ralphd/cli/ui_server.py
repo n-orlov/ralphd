@@ -89,6 +89,7 @@ from ..engine.state import (
     format_cost,
     format_iteration_log_header,
     format_local_time,
+    format_pause_marker,
     format_provisioning_lines,
     format_run_document_size,
     iteration_detail,
@@ -352,6 +353,14 @@ def run_list(reg: Path) -> list[dict]:
                 "state": status.get("state"),
                 "verdict": status.get("verdict"),
                 "phase": status.get("phase"),
+                # Task 017 (PRD requirement A.7, #224): the SAME marker
+                # `ralphctl runs` renders for a run parked with
+                # `pauseReason: "operator_input_needed"` -- see
+                # `state.format_pause_marker`'s own docstring for why
+                # this ONE reason gets a distinct marker and no other
+                # `paused` reason does.
+                "pauseReason": status.get("pauseReason"),
+                "pauseMarker": format_pause_marker(status.get("pauseReason")),
                 # Task 008 (#16): the raw counter stays exactly as it was (the
                 # hub sorts the APPROACH column numerically on it) and the
                 # denominator travels alongside it, rendered once here by the

@@ -29,7 +29,13 @@ never this run's own events):
    events, in order (a failed send never appears there);
 8. `examples/skills/telegram-notify/SKILL.md` exists, vendored alongside
    `toolchain-sibling/SKILL.md`, and tells the agent to prefer the `notify`
-   tool when present and fall back to the direct HTTP push otherwise.
+   tool when present and fall back to the direct HTTP push otherwise;
+9. task 017 (PRD requirement A.7, #224): a first attempt that fails is
+   retried EXACTLY ONCE, immediately -- one node drives a poster stub
+   returning a failure then a success and pins that the retry's own
+   success is what gets recorded (`notification.sent`, never `.failed`,
+   `httpStatus` from the SECOND call), and that the poster was called
+   exactly twice, never a third time and never only once.
 """
 
 from __future__ import annotations
@@ -193,6 +199,66 @@ def test_a_successful_send_still_emits_notification_sent(tmp_path):
     assert len(sent) == 1
     assert sent[0]["httpStatus"] == 200
     assert _events(run, hat_tools.NOTIFICATION_FAILED_EVENT) == []
+
+
+def test_a_failure_then_success_is_retried_once_and_recorded_as_sent(
+        tmp_path):
+    """Task 017 (PRD requirement A.7, #224): a first attempt that fails is
+    retried EXACTLY ONCE, immediately -- the poster stub below fails on
+    its first call and succeeds on its second, and this pins that the
+    RETRY's own success is what `send_notification` records: exactly one
+    `notification.sent` event (never a `.failed` one, and never two
+    events for the one logical send), carrying the SECOND call's own
+    `httpStatus`, the tool answering `ok=True`, and the poster called
+    exactly twice -- never once (no retry at all) and never three times
+    (a retry loop that keeps going past one).
+    """
+    run = _run(tmp_path)
+    calls = []
+
+    def stub_poster(url, text, timeout_s):
+        calls.append((url, text, timeout_s))
+        if len(calls) == 1:
+            return 503, "service unavailable"
+        return 200, None
+
+    result = hat_tools.send_notification(
+        run, "hello operator", "http://notifier.example/notify",
+        poster=stub_poster)
+
+    assert len(calls) == 2
+    assert result["ok"] is True
+    assert result["error"] is None
+    sent = _events(run, hat_tools.NOTIFICATION_SENT_EVENT)
+    assert len(sent) == 1
+    assert sent[0]["httpStatus"] == 200
+    assert _events(run, hat_tools.NOTIFICATION_FAILED_EVENT) == []
+
+
+def test_two_failures_in_a_row_still_emit_exactly_one_failed_event(
+        tmp_path):
+    """Task 017 (PRD requirement A.7, #224): the retry's OWN failure is
+    the one recorded -- two failures in a row still write exactly one
+    `notification.failed` event (never two), the poster is called exactly
+    twice (the retry, and no more), and the tool answers `ok=False`.
+    """
+    run = _run(tmp_path)
+    calls = []
+
+    def stub_poster(url, text, timeout_s):
+        calls.append((url, text, timeout_s))
+        return 503, "service unavailable"
+
+    result = hat_tools.send_notification(
+        run, "hello operator", "http://notifier.example/notify",
+        poster=stub_poster)
+
+    assert len(calls) == 2
+    assert result["ok"] is False
+    failed = _events(run, hat_tools.NOTIFICATION_FAILED_EVENT)
+    assert len(failed) == 1
+    assert failed[0]["httpStatus"] == 503
+    assert _events(run, hat_tools.NOTIFICATION_SENT_EVENT) == []
 
 
 # ---------------------------------------------------------------------------

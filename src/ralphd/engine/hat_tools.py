@@ -634,6 +634,18 @@ def send_notification(run: RunDir, text: str, url: str | None, *,
     `poster` is `(url, text, timeout_s) -> (status, error)`, defaulting to
     the real `_http_post_text` -- the one seam a test stubs to cover a
     success and a failure without a real network call.
+
+    Task 017 (PRD requirement A.7, #224): a first attempt that fails (a
+    connection error, or a non-2xx status -- the SAME `ok` test the event
+    split above already uses) is retried EXACTLY ONCE, immediately, no
+    backoff, before either event is written -- an escalation notifier is
+    the one send this run may never get a second chance to raise through
+    any other channel, so a single transient failure (a notifier warming
+    up, one dropped connection) must not silently lose it. Still exactly
+    ONE event per call: only the FINAL attempt's outcome is recorded, so a
+    reader of `notification.sent`/`notification.failed` never sees two
+    rows for one logical send. A first attempt that already succeeds
+    never retries at all -- the common case costs nothing extra.
     """
     poster = poster or _http_post_text
     text_sha256 = hashlib.sha256(text.encode()).hexdigest()
@@ -644,9 +656,12 @@ def send_notification(run: RunDir, text: str, url: str | None, *,
         return {"ok": False, "detail": record,
                 "error": "no notifier URL configured"}
     status, error = poster(url, text, timeout_s)
+    ok = status is not None and 200 <= status < 300
+    if not ok:
+        status, error = poster(url, text, timeout_s)
+        ok = status is not None and 200 <= status < 300
     record = {"endpoint": url, "textSha256": text_sha256,
               "httpStatus": status}
-    ok = status is not None and 200 <= status < 300
     run.emit(NOTIFICATION_SENT_EVENT if ok else NOTIFICATION_FAILED_EVENT,
             **record)
     if ok:

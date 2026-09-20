@@ -10586,6 +10586,27 @@ class LoopSupervisor:
             self._advance("review", "paused", "review_findings_unusable")
             return ("advance", "paused", "review_findings_unusable")
         self.run.emit("log", message=f"review rejected approach {approach}")
+        # Task 017 (PRD requirement A.3/A.7, #224): the findings channel and
+        # this rejection's own signature, read ONCE here -- earlier than
+        # every branch below now needs them, not just the repeated-
+        # signature check that used to be the first reader -- so trigger
+        # condition 2's cure-reopen preview (just below) and every
+        # `operator_input_needed`-family escalation this rejection might
+        # take all judge the SAME post-downgrade list, never a second,
+        # possibly different read of the sidecar.
+        findings_list, channel_errors = self._review_findings_channel()
+        signature = self._review_rejection_signature(
+            findings_list, channel_errors)
+        # Task 017 (PRD requirement A.3/A.7, #224): the cure-reopen preview
+        # itself -- computed ONCE, off the SAME `findings_list` just read,
+        # so trigger condition 2 below and trigger condition 3 further
+        # down (whose own A.7 escalation payload names the same `preview`)
+        # both judge -- and report -- the identical prediction, never two
+        # independent walks that could disagree.
+        blocking_for_preview = [f for f in (findings_list or [])
+                                if f.get("severity") == "blocking"]
+        cure_preview = state.cure_pass_preview(
+            self.run.read_tasks().get("tasks") or [], blocking_for_preview)
         # Task 006 (PRD requirement B.2, #111): a rejection whose BLOCKING
         # findings are ALL incurable takes `rejected_incurable` instead of
         # spending (and losing) a fresh approach on findings a fresh
@@ -10612,6 +10633,38 @@ class LoopSupervisor:
         # `worker`, immediately, in the same dispatch pass, so the worker
         # still runs the appended cure tasks exactly as before.
         if self._review_cure_pass_available(approach):
+            # Task 017 (PRD requirement A.3, #224): trigger condition 2 --
+            # a cure pass that would re-open already-`validated` tasks
+            # (`state.cure_pass_preview`, task 005's own pure predicate)
+            # holds for an operator instead of silently re-opening the
+            # ladder tasks 002-008 measured going `validated -> pending`
+            # four times in the reference run. Shares ONE discretionary
+            # gate per approach with trigger condition 3 below
+            # (`_discretionary_gate_available`/`_spend_discretionary_gate`)
+            # -- condition 1's own `operator_input_needed` gate further
+            # below is UNBUDGETED and never reads this counter. A cure pass
+            # that reopens nothing (the ordinary, explicitly-NOT-a-trigger
+            # case: findings that only insert fresh cure/re-take tasks)
+            # never even calls `_spend_discretionary_gate` -- the budget is
+            # untouched for the not-a-trigger case, exactly as required.
+            # Gated on the SAME `operator_input_needed_pause` flag condition
+            # 1 already reads (task 014) -- this pauses under the identical
+            # `operator_input_needed` pauseReason, so the ONE flag that lets
+            # an operator opt out of that whole pause family (`ralphctl
+            # start --no-operator-input-needed-pause`) opts out of this
+            # trigger too. Trigger condition 3 below is a SEPARATE
+            # pauseReason (`rejected_repeated_signature`) and reads no such
+            # flag, unchanged from task 016.
+            if (self.cfg.operator_input_needed_pause
+                    and cure_preview["reopenedTaskIds"]
+                    and self._discretionary_gate_available(approach)):
+                self._spend_discretionary_gate(approach)
+                replan_available = approach < self.cfg.max_approaches
+                self._pause_and_escalate_operator_input_needed(
+                    approach, findings_list, replan_available, signature,
+                    cure_preview=cure_preview)
+                self._advance("review", "paused", "operator_input_needed")
+                return ("advance", "paused", "operator_input_needed")
             self._take_cure_pass(approach)
             self._advance("review", "cure", "rejected_curable_pass_available")
             return ("advance", "cure", "rejected_curable_pass_available")
@@ -10662,18 +10715,32 @@ class LoopSupervisor:
         # no last-approach exemption for the second-rejection pause, so the
         # check (and the record it depends on for the NEXT rejection) now
         # runs unconditionally, before the archive/replan-or-fail tail.
-        # Task 015 (PRD requirement F.1, #198): the channel's second
-        # return value -- `_review_findings()` alone collapses "no
-        # channel" and "channel present but unreadable" into the same
-        # `None`, and the signature must not (see `_review_rejection_
-        # signature`'s docstring for why that distinction is the whole
-        # point of this task).
-        findings_list, channel_errors = self._review_findings_channel()
-        signature = self._review_rejection_signature(
-            findings_list, channel_errors)
-        if self._repeated_rejection_signature(approach, signature):
+        # Task 015 (PRD requirement F.1, #198): `findings_list`/`signature`
+        # were already read once, above (task 017, PRD requirement A.3,
+        # #224 -- trigger condition 2's own preview needed them before this
+        # point ever runs), off the SAME channel read
+        # `_review_findings_channel()`/`_review_rejection_signature` this
+        # branch always used -- never a second, possibly different read.
+        #
+        # Task 017 (PRD requirement A.3, #224): trigger condition 3 -- a
+        # repeated signature match -- shares the SAME per-approach
+        # discretionary gate condition 2 above spends
+        # (`_discretionary_gate_available`/`_spend_discretionary_gate`):
+        # already spent this approach (by condition 2, earlier in this
+        # very rejection, or by an earlier rejection over the same
+        # approach), this match falls through to the ordinary archive/
+        # replan tail below instead of pausing a second time -- the shared
+        # budget is ONE discretionary gate per approach, not one per
+        # trigger. `_repeated_rejection_signature` itself, and its own
+        # persisted `rejectionSignatures` record, are unchanged: a match
+        # the gate happens to refuse is still recorded exactly as before,
+        # so the NEXT approach's own first rejection still compares
+        # against it.
+        if (self._repeated_rejection_signature(approach, signature)
+                and self._discretionary_gate_available(approach)):
+            self._spend_discretionary_gate(approach)
             self._pause_and_escalate_repeated_rejection_signature(
-                approach, signature)
+                approach, signature, cure_preview)
             self._advance("review", "paused", "rejected_repeated_signature")
             return ("advance", "paused", "rejected_repeated_signature")
         # Task 014 (PRD requirement A.1, #224): the pause-before-archive
@@ -11156,6 +11223,7 @@ class LoopSupervisor:
     def _repeated_rejection_signature_escalation_text(
         self, approach: int, blocking: list[dict], signature: str | None,
         channel_errors: list[str] | None = None,
+        cure_preview: dict | None = None,
     ) -> str:
         """The operator-facing escalation body for a `rejected_repeated_
         signature` pause -- the same shape as `_last_approach_rejection_
@@ -11176,6 +11244,14 @@ class LoopSupervisor:
         (a readable rejection with a repeating blocking-clause set, an
         unreadable channel with a repeating error) are mutually exclusive
         by construction (`_review_rejection_signature`).
+        Task 017 (PRD requirement A.3/A.7, #224): this pause now fires
+        ONLY as trigger condition 3's own driven discretionary gate --
+        `cure_preview` is `state.cure_pass_preview`'s own result for this
+        SAME rejection, and `_discretionary_gate_escalation_text_lines`
+        appends the six A.7 items after the per-finding listing below,
+        every time this text is built (unlike condition 1's own text
+        method, where the block is conditional -- this pause edge is
+        NEVER reached except through the shared gate now).
         """
         lines = [
             f"Run {self.cfg.run_id} approach {approach}: review rejected "
@@ -11203,10 +11279,20 @@ class LoopSupervisor:
             lines.append(f"  evidence: {finding.get('evidence', '')}")
             lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding)}")
             lines.append("")
+        if cure_preview is not None:
+            lines.append(
+                "PRD requirement A.3 trigger condition 3 (#224): this "
+                "rejection's own blocking-clause signature repeats the "
+                "previous approach's -- held for an operator instead of "
+                "spending a fresh approach on the same wall:")
+            fields = self._discretionary_gate_escalation_fields(
+                approach, cure_preview)
+            lines.extend(self._discretionary_gate_escalation_text_lines(fields))
         return "\n".join(lines).rstrip() + "\n"
 
     def _pause_and_escalate_repeated_rejection_signature(
-        self, approach: int, signature: str | None
+        self, approach: int, signature: str | None,
+        cure_preview: dict | None = None,
     ) -> None:
         """Task 016 (PRD requirement E.5, #190): pause the run through the
         EXISTING pause machinery -- the same seam `_pause_and_escalate_
@@ -11224,22 +11310,113 @@ class LoopSupervisor:
         that case (there is no findings list to draw it from), but
         `channel_errors` fills the gap instead of leaving the operator an
         escalation naming zero findings for zero visible reason.
+
+        Task 017 (PRD requirement A.3/A.7, #224): `_step_review` now calls
+        this ONLY once trigger condition 3's own shared discretionary gate
+        is confirmed available (and already spends it before this runs) --
+        `cure_preview` is that same rejection's `state.cure_pass_preview`
+        result, carried through so the event and text both gain the six
+        A.7 items (`_discretionary_gate_escalation_fields`), camelCase to
+        match the sibling fields already on this event line.
         """
         findings_list, channel_errors = self._review_findings_channel()
         blocking = [f for f in (findings_list or [])
                    if f.get("severity") == "blocking"]
         text = self._repeated_rejection_signature_escalation_text(
-            approach, blocking, signature, channel_errors)
+            approach, blocking, signature, channel_errors, cure_preview)
+        extra_fields = (
+            self._discretionary_gate_escalation_fields(approach, cure_preview)
+            if cure_preview is not None else {})
         self.run.emit("operator_escalation", approach=approach,
                       reason="rejected_repeated_signature", findings=blocking,
                       channelErrors=channel_errors, signature=signature,
-                      escalation=text)
+                      escalation=text, **extra_fields)
         self.pause(reason="rejected_repeated_signature")
         if self.notifier is not None:
             self.notifier(text)
 
+    def _approach_spend_text(self, approach: int) -> tuple[str | None, int | None]:
+        """Task 017 (PRD requirement A.7, #224): the "dollars and tokens
+        spent on this approach" escalation item -- read from `status.
+        json`'s own `usage.byApproach[str(approach)]` bucket
+        (`LoopSupervisor._accumulate_usage`), never re-derived or
+        re-summed here. Returns `(cost_text, total_tokens)`:
+        `state.format_cost` renders the cost the SAME way every other
+        cost-facing surface does (a partial/unknown/derived bucket reads
+        back honest text, never a bare `$0.00`), and `total_tokens` is
+        the bucket's own `totalTokens` counter, or `None` when this
+        approach has accumulated no usage at all (a discretionary gate can
+        fire on an approach's very first rejection, before any iteration
+        posted usage).
+        """
+        status = self.run.read_status()
+        by_approach = (status.get("usage") or {}).get("byApproach") or {}
+        bucket = by_approach.get(str(approach)) or {}
+        cost_text = state.format_cost(bucket) if bucket else None
+        return cost_text, bucket.get("totalTokens")
+
+    def _hub_deep_link(self) -> str:
+        """Task 017 (PRD requirement A.7, #224): the "hub deep link" item --
+        a relative fragment path, `/#/run/<run_id>`, matching the hub's own
+        hash-router (`cli/web/app.js`, `#/run/<id>`). The engine does not
+        know -- and is never told -- the address the hub itself is served
+        from (there is no `hub_url`/`hub_base_url` in `JobConfig`; the hub
+        is a separate `ralphctl ui` process the engine has no channel to),
+        so an absolute URL is never fabricated here; a relative path an
+        operator already viewing ANY hub page can paste after that page's
+        own origin is the honest alternative.
+        """
+        return f"/#/run/{self.cfg.run_id}"
+
+    def _discretionary_gate_escalation_fields(
+        self, approach: int, cure_preview: dict
+    ) -> dict:
+        """Task 017 (PRD requirement A.7, #224): the six-item escalation
+        payload a DRIVEN discretionary gate (trigger condition 2 or 3)
+        carries, beyond the blocking findings every `operator_input_
+        needed`-family escalation already names -- `cure_preview` is the
+        SAME `state.cure_pass_preview` result `_step_review` computed once
+        for the trigger check itself (condition 2) or purely for this
+        payload (condition 3, which never reads `reopenedTaskIds` as its
+        own trigger).
+        """
+        cost_text, tokens = self._approach_spend_text(approach)
+        return {
+            "taskIdsValidatedToPending": list(
+                cure_preview.get("reopenedTaskIds") or []),
+            "insertCount": cure_preview.get("insertCount", 0),
+            "costSpentThisApproach": cost_text,
+            "tokensSpentThisApproach": tokens,
+            "approachOfMax": f"approach {approach} of {self.cfg.max_approaches}",
+            "hubLink": self._hub_deep_link(),
+        }
+
+    @staticmethod
+    def _discretionary_gate_escalation_text_lines(fields: dict) -> list[str]:
+        """Task 017 (PRD requirement A.7, #224): render `_discretionary_
+        gate_escalation_fields`' own dict as the lines both the cure-reopen
+        (condition 2) and repeated-signature (condition 3) escalation
+        bodies append, so the SAME six items read identically in either
+        text.
+        """
+        ids = fields["taskIdsValidatedToPending"]
+        cost_text = fields["costSpentThisApproach"]
+        tokens = fields["tokensSpentThisApproach"]
+        return [
+            "tasks that would go validated -> pending: "
+            + (", ".join(ids) if ids else "(none)"),
+            f"tasks that would be inserted: {fields['insertCount']}",
+            "spent this approach: "
+            f"{cost_text if cost_text is not None else 'unavailable'} "
+            f"({tokens if tokens is not None else 'unavailable'} tokens)",
+            fields["approachOfMax"],
+            f"hub: {fields['hubLink']}",
+            "",
+        ]
+
     def _operator_input_needed_escalation_text(
         self, approach: int, blocking: list[dict], replan_available: bool,
+        cure_preview: dict | None = None,
     ) -> str:
         """Task 014 (PRD requirement A.1, #224): the operator-facing
         escalation body for an `operator_input_needed` pause -- the same
@@ -11251,6 +11428,16 @@ class LoopSupervisor:
         approach budget is spent) is held instead, so the operator can
         answer with a ruling (`ralphctl rule`, task 013) before either of
         those outcomes ever happens.
+
+        Task 017 (PRD requirement A.7, #224): `cure_preview`, when NOT
+        `None`, means this pause is trigger condition 2 itself (a driven
+        discretionary gate) -- `_discretionary_gate_escalation_fields`/
+        `_discretionary_gate_escalation_text_lines` append the six A.7
+        items after the ordinary per-finding listing below. Left `None`
+        for condition 1's own ordinary, unbudgeted `operator_input_needed`
+        pause (and the reviewer-requested gate beside it) -- the PRD's own
+        successCriteria scopes the six-item payload to "a driven gate",
+        not to every escalation this pauseReason ever carries.
         """
         outcome = ("replan a fresh approach" if replan_available else
                   "end the run with no approach left")
@@ -11273,11 +11460,20 @@ class LoopSupervisor:
             lines.append(f"  evidence: {finding.get('evidence', '')}")
             lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding)}")
             lines.append("")
+        if cure_preview is not None:
+            lines.append(
+                "PRD requirement A.3 trigger condition 2 (#224): this "
+                "cure pass would re-open task(s) already `validated` -- "
+                "held for an operator instead of silently re-opening them:")
+            fields = self._discretionary_gate_escalation_fields(
+                approach, cure_preview)
+            lines.extend(self._discretionary_gate_escalation_text_lines(fields))
         return "\n".join(lines).rstrip() + "\n"
 
     def _pause_and_escalate_operator_input_needed(
         self, approach: int, findings_list: list[dict] | None,
         replan_available: bool, signature: str | None = None,
+        cure_preview: dict | None = None,
     ) -> None:
         """Task 014 (PRD requirement A.1, #224): pause the run through the
         EXISTING pause machinery -- the same seam every sibling in this
@@ -11310,15 +11506,28 @@ class LoopSupervisor:
         `None` signature) is what lets a ruling filed against this exact
         rejection be found again by its own signature once review is
         re-asked -- `_ruling_honoured_for_approach` is the reader.
+
+        Task 017 (PRD requirement A.7, #224): `cure_preview` not `None`
+        means this call is trigger condition 2's own driven gate -- the
+        event gains the same six `_discretionary_gate_escalation_fields`
+        the escalation text already appended, camelCase to match every
+        other event field on this line (`taskIdsValidatedToPending`,
+        `insertCount`, `costSpentThisApproach`, `tokensSpentThisApproach`,
+        `approachOfMax`, `hubLink`), so a reader of `events.jsonl` alone
+        (no notifier configured) still gets the whole A.7 payload.
         """
         findings_list = findings_list or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         text = self._operator_input_needed_escalation_text(
-            approach, blocking, replan_available)
+            approach, blocking, replan_available, cure_preview=cure_preview)
         self._record_rejection_signature(approach, signature)
+        extra_fields = (
+            self._discretionary_gate_escalation_fields(approach, cure_preview)
+            if cure_preview is not None else {})
         self.run.emit("operator_escalation", approach=approach,
                       reason="operator_input_needed", findings=blocking,
-                      replanAvailable=replan_available, escalation=text)
+                      replanAvailable=replan_available, escalation=text,
+                      **extra_fields)
         self.pause(reason="operator_input_needed")
         if self.notifier is not None:
             self.notifier(text)
@@ -11384,6 +11593,47 @@ class LoopSupervisor:
         if ruling_seq not in reparked:
             reparked.append(ruling_seq)
             self.run.update_status(rulingReparked=reparked)
+
+    def _discretionary_gate_available(self, approach: int) -> bool:
+        """Task 017 (PRD requirement A.3, #224): is the ONE shared
+        discretionary gate for `approach` still unspent? Trigger
+        condition 2 (a cure pass that would re-open `validated` tasks) and
+        trigger condition 3 (a repeated rejection signature) draw from
+        this SAME per-approach budget -- whichever of them fires first in
+        an approach spends it, and the other, should it also fire later in
+        the SAME approach, falls through to its ordinary edge instead
+        (the cure pass is taken silently; the repeated signature is
+        recorded and the approach archived/replanned exactly as if no
+        signature had repeated). Condition 1's own `operator_input_needed`
+        gate is a SEPARATE, unbudgeted pause and never reads this counter
+        -- an ordinary rejection later in the SAME approach still raises
+        it even after this budget is spent.
+
+        Read from `status.json`'s own `discretionaryGateSpent` map
+        (`{"<approach>": true}`), the same disk-backed, per-approach-keyed
+        shape `curePasses`/`rejectionSignatures` already use -- a fresh
+        approach (a replan, or the run's very first) always reads `False`
+        here, because the key is written under THIS approach's own string
+        key and no other.
+        """
+        status = self.run.read_status()
+        spent = status.get("discretionaryGateSpent") or {}
+        return not spent.get(str(approach))
+
+    def _spend_discretionary_gate(self, approach: int) -> None:
+        """Task 017 (PRD requirement A.3, #224): mark `approach`'s one
+        shared discretionary gate spent -- called exactly once, from
+        whichever of trigger condition 2 or 3 fires first in this
+        approach, immediately before it pauses. Idempotent (re-marking an
+        already-spent approach is a harmless no-op) and additive: an
+        earlier approach's own entry is never touched, so a later replan's
+        fresh approach reads its OWN key back `False` via `_discretionary_
+        gate_available` above.
+        """
+        status = self.run.read_status()
+        spent = dict(status.get("discretionaryGateSpent") or {})
+        spent[str(approach)] = True
+        self.run.update_status(discretionaryGateSpent=spent)
 
     def _review_reviewer_requested_operator_gate(
         self, payload: dict | None

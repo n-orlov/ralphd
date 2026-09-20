@@ -52,11 +52,18 @@ def _result(text: str) -> IterationResult:
 
 def _make_supervisor(root: Path, workspace: Path) -> LoopSupervisor:
     run = RunDir(root=root)
+    # Task 017 (PRD requirement A.3, #224): this episode's own lane record
+    # is already `validated` -- exactly trigger condition 2's own shape.
+    # Disabled here so this pre-existing cross-process reconciliation test
+    # keeps driving the REAL cure pass it is testing, the same isolation
+    # `tests/test_repeated_rejection_signature.py` already applies for
+    # condition 3's own mechanism.
     cfg = loop_mod.JobConfig(run_id="task006-pre-cure-head-fresh-os-process",
                              vigilant=False, on_complete="exit",
                              iterations=20, infra_retry_backoff_s=[0.0],
                              infra_retry_backoff_max_s=0.0,
-                             infra_outage_budget_s=1000.0, max_approaches=3)
+                             infra_outage_budget_s=1000.0, max_approaches=3,
+                             operator_input_needed_pause=False)
     sup = LoopSupervisor(cfg, run, workspace)
     sup._approach = 1
     return sup

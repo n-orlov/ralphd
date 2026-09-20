@@ -90,6 +90,7 @@ from ..engine.state import (
     format_last_tool_call,
     format_local_time,
     format_provisioning_lines,
+    format_pause_marker,
     format_router_calls_listing,
     format_run_document_listing,
     format_task_counts,
@@ -3233,6 +3234,19 @@ def cmd_runs(args):
             rows.append({"runId": d.name, "state": status.get("state"),
                          "verdict": status.get("verdict"),
                          "phase": status.get("phase"),
+                         # Task 017 (PRD requirement A.7, #224): the SAME
+                         # marker text the hub run list renders
+                         # (`ui_server.run_list`/`app.js`) for a run parked
+                         # with `pauseReason: "operator_input_needed"` --
+                         # the one `pauseReason` an operator cannot resolve
+                         # by waiting or editing `tasks.json` alone; it
+                         # needs a ruling read in. `pauseReason` itself
+                         # rides along raw for a machine consumer;
+                         # `pauseMarker` is `""` for every other reason
+                         # (including every OTHER `paused` run).
+                         "pauseReason": status.get("pauseReason"),
+                         "pauseMarker": format_pause_marker(
+                             status.get("pauseReason")),
                          "approach": status.get("approach"),
                          # Task 007 (#16): BOTH numbers in --json (raw, for
                          # sorting and machine consumers) next to the human
@@ -3276,8 +3290,11 @@ def cmd_runs(args):
                          phase="PHASE", approach="APPROACH", tasks="TASKS",
                          iterations="ITER", startedAt="STARTED"))
         for r in rows:
+            state_display = str(r["state"])
+            if r.get("pauseMarker"):
+                state_display = f"{state_display} {r['pauseMarker']}"
             print(fmt.format(
-                runId=str(r["runId"]), state=str(r["state"]),
+                runId=str(r["runId"]), state=state_display,
                 verdict=str(r["verdict"]), phase=str(r["phase"]),
                 # Task 007 (#16): the rendered `n/m` (blank for a run with no
                 # approach yet) -- the raw number stays in --json and is what

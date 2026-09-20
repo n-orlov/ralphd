@@ -148,6 +148,10 @@ h2 {
 /* task 024 (#8): a run recorded non-terminal whose API is gone. */
 .container-gone { color: var(--warn); font-weight: 600; margin-top: 0.4rem; }
 .container-gone-marker { color: var(--warn); font-weight: 600; }
+/* task 017 (PRD requirement A.7, #224): a run parked with `pauseReason:
+   "operator_input_needed"` -- the one pause reason an operator cannot
+   resolve without reading a ruling in first. */
+.operator-input-marker { color: var(--warn); font-weight: 600; }
 tr.row-warning td { background: #fffaf0; }
 .steering-warning { color: var(--err); font-weight: 600; }
 .infra-retry-note { color: var(--warn); font-weight: 600; }
