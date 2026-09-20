@@ -245,6 +245,82 @@ def _roadmap_milestones() -> list[tuple[tuple[int, int], bool]]:
     return [(series, _records_shipped(series, body)) for series, body in _roadmap_blocks()]
 
 
+# Every `## ` block of `docs/roadmap.md` that precedes `## v0.23`, in file order,
+# with the sha256 of its body (everything after the heading line up to the next
+# `## ` heading of any kind) as it stood at the pre-v0.23 baseline `7f8575d4`.
+# The `## v0.22` entry is the hash of that baseline body too: the ONE permitted
+# edit inside a historical block -- its shipped-sha declaration line, amendment
+# 001-WAVE clauses 1 and 2 -- is stripped back out before hashing, so the
+# comparison is against the pre-wave bytes for that block as well. Regenerate
+# only from git, never from the working tree:
+#   git show 7f8575d4:docs/roadmap.md
+_PRE_V023_BASELINE_BLOCK_SHA256 = {
+    "## v0.1 \u2014 the working loop (MVP)":
+        "fad779bc64934d3db59d836928206550d773fbc9336e3acc06951e67559b9b92",
+    "## v0.2 \u2014 durability & recovery":
+        "73f67cfb77b07c992eccceb410e09cd5af40d5af4fa62ca846c7de91c32d334c",
+    "## v0.3 \u2014 hub UI":
+        "2746a3621cdcddbdb3f32f749f5ba06ffa12a2e910fac72f9ecb39c603caf0d5",
+    "## v0.4 \u2014 quality-of-life":
+        "1c63baf40bc2725bbeba43ce926f4213dc92495197760d43112c3e0d1c14be2e",
+    "## v0.5 \u2014 session resilience & self-recovery":
+        "9b4c15334abec91d22eb349b735c9d4226234065c51307eead24f8968a2cb35f",
+    "## v0.6 \u2014 first-release polish":
+        "87856cc643e45d3fd56a1c31345288d66848340ce3d02ec4812f805a4279d656",
+    "## v0.7 \u2014 trustworthy unattended operation":
+        "d3af970e53c37196754a211fb1cc4fa0147724f6c8b73e35602ebcccba7cfd37",
+    "## v0.8 \u2014 a run a human can interrupt, audit and believe":
+        "a716921b1544d3cf1b047d104e4c3673249c74a263879c049d6cb3ad8d37e835",
+    "## After v0.8 \u2014 the harness stops assuming its own environment (#64, #65, #67)":
+        "2f1522accb50cbb00d5cd9e0924e77f8906e8e530c9fe1653586dccef693891d",
+    "## v0.9 \u2014 the loop's rules become data, and only the harness writes state":
+        "346e8eddaeef4da1fde6f0a9d49a89fcb27dd7b444cf66eb3cf9c0c6ea5fa870",
+    "## v0.10 \u2014 the clock is not a verdict":
+        "0f78d0c59c863f77076ca6767e2db2e7a334126b66cd5f2b5fbcfd966f38bcf8",
+    "## v0.12 \u2014 green on a real host":
+        "5342d7816914c03020a0fe6d1e9cb95c33413254da68f4f4495b345489671735",
+    "## v0.13 \u2014 a broken contract is a conversation":
+        "28e463d9dff3ec4ccda83636420f38bfe7489583ac1d85ff627ca169cd81d44a",
+    "## v0.14 \u2014 every hand on the plan is named":
+        "5014dac68f1e3b1a836c2ce035372b7ebf66fec51fc0461826c69f686fb7d6d1",
+    "## v0.14.1 \u2014 a guard that cannot see, and a rule that cannot finish":
+        "d54512b3829baee6acd27d8aee6dc20633050532422e021096b799bec0591304",
+    "## v0.14.2 \u2014 green where it runs":
+        "90795750d0d9b6785be921ee416bef98589458cdd97f11037e8f2360a07e285b",
+    "## v0.15 \u2014 impossible is an answer":
+        "91a7785d49acbed7f0b49f02700978298e86dbf903625477e756bea48cf271e3",
+    "## v0.16 \u2014 a petition is not a postmortem":
+        "024e1b01267d04d5e33eb6e8e862aa064782da18cd4da2a127d9b87a977c5d35",
+    "## v0.17 \u2014 a slip is not a verdict":
+        "1e4b752518ef692058e97164e3d57a6ffefb5edc2231b6bfac0ce483403df66e",
+    "## v0.18 \u2014 the run can finish":
+        "f677fed1c68b6d385945ee4aa8600426c32052cbb4353be68c49cb3b852524cf",
+    "## v0.19 \u2014 a note is not a rejection":
+        "e9cf57fc83b1b5100185760b8093401405274e39399d148fc338f021b219f71b",
+    "## v0.19.1 \u2014 a gate is not a wall":
+        "9ac3405b47ea50b6420eecd33d63bf7dcf6e80c755eb04e6a5889ff0eb8eb3bf",
+    "## v0.20 \u2014 a commit is progress":
+        "126c67584ad00a62556c8ec3ea929ae508bb4ddb760ecce0f2fa66e61f2fdde1",
+    "## v0.20.1 \u2014 inspection is not evidence":
+        "baa234c114dd1b245c252ca582e46476962df560faca012cde1f392c3d1f9009",
+    "## v0.20.2 \u2014 a requirement cannot be orphaned":
+        "470ae9db217f9ede6d960629f1dcc872a66ee9f7193573b475780080a046318c",
+    "## v0.21 \u2014 the budget belongs to the work":
+        "c1432082d74bec4a07deb7c93ee5640c71f6e52f038ac60e28b34cdc106d06e9",
+    "## v0.21.1 \u2014 a green suite is not a met requirement":
+        "f67bd456ca15a184428310deb1cdf8e08f607a8b8d2156bf2da1aee9b9c3f47c",
+    "## v0.22 \u2014 the harness owns its own state":
+        "d07612aca89231b4c18d132fb705559e29b8a7f38e3014b41c819f6c01795655",
+}
+
+# The whole declaration LINE, including its trailing newline, so removing it
+# restores the pre-wave text exactly.
+_SHIPPED_DECLARATION_LINE_RE = re.compile(
+    r"^Shipped sha\s+`?\w{7,40}`?,\s+version\s+`?(\d+)\.(\d+)\.\d+`?[^\n]*\n",
+    re.MULTILINE,
+)
+
+
 def test_a_settled_block_stating_its_shipped_sha_counts_as_shipped():
     """The v0.18 form: a settled terminal account that ticks nothing.
 
@@ -274,45 +350,60 @@ def test_a_settled_block_stating_its_shipped_sha_counts_as_shipped():
         )
 
     # Regression, folded in here rather than as a new collected item (task
-    # cure-01-09, I.2 / amendment 001-WAVE): the `## v0.22` block's shipped
-    # declaration is the ONE permitted edit inside a historical roadmap
-    # block. Extracted independently of `_roadmap_blocks()` above (which
-    # matches only the `## vX.Y` heading token and so would fold the
-    # heading's own title text into the body) -- bounded instead by the
-    # WHOLE heading line, both here and at the next `## ` heading of any
-    # kind, so the boundary is identical whether or not a later commit
-    # inserts a new `## vX.Y` section right after this one (v0.23 did).
-    # Strip the one added line (matched whole, including its trailing
-    # newline, so removing it restores the pre-wave text exactly) and hash
-    # what remains; it must equal the pre-v0.23 baseline (`7f8575d4`)
-    # block's own hash byte-for-byte, so any other edit inside that
-    # historical block -- a reword, a restatement, a second added line --
-    # trips this assertion instead of silently passing.
+    # cure-01-09, I.2 / amendment 001-WAVE): EVERY `## ` block preceding
+    # `## v0.23` is pinned to its pre-v0.23 baseline (`7f8575d4`) bytes, and
+    # the `## v0.22` block's shipped declaration is the ONE permitted edit
+    # inside any of them -- exactly one such line, in that one block.
+    # Blocks are extracted independently of `_roadmap_blocks()` above (which
+    # matches only the `## vX.Y` heading token, so it would fold the
+    # heading's own title text into the body and collide v0.19 with
+    # v0.19.1) -- bounded here by the WHOLE heading line, both at the top
+    # and at the next `## ` heading of any kind, so the boundary is
+    # identical whether or not a later commit inserts a new section right
+    # after one of them (v0.23 did). Any other edit anywhere in the
+    # historical record -- a reword in v0.21, a restatement in v0.18, a
+    # second declaration line in v0.22, a renamed, dropped, reordered or
+    # newly inserted pre-v0.23 heading -- trips one of these assertions
+    # instead of silently passing.
     full_text = ROADMAP.read_text()
     all_heads = list(re.finditer(r"^## .*$", full_text, re.MULTILINE))
-    v022_start = next(i for i, m in enumerate(all_heads) if m.group(0).startswith("## v0.22 "))
-    v022_body_start = all_heads[v022_start].end()
-    v022_body_end = (
-        all_heads[v022_start + 1].start()
-        if v022_start + 1 < len(all_heads)
-        else len(full_text)
+    v023_index = next(
+        i for i, m in enumerate(all_heads) if m.group(0).startswith("## v0.23 ")
     )
-    v022 = full_text[v022_body_start:v022_body_end]
-    shipped_whole_line_re = re.compile(
-        r"^Shipped sha\s+`?\w{7,40}`?,\s+version\s+`?(\d+)\.(\d+)\.\d+`?[^\n]*\n",
-        re.MULTILINE,
+    pre_headings = [all_heads[i].group(0) for i in range(v023_index)]
+    assert pre_headings == list(_PRE_V023_BASELINE_BLOCK_SHA256), (
+        "the sequence of `## ` headings preceding ## v0.23 in docs/roadmap.md no longer "
+        "matches the pre-v0.23 baseline (7f8575d4) -- a historical block was added, "
+        "removed, renamed or reordered"
+        f"\n\ngot:\n{pre_headings!r}"
     )
-    v022_minus_declaration = shipped_whole_line_re.sub("", v022)
-    v022_pre_wave_hash = (
-        "d07612aca89231b4c18d132fb705559e29b8a7f38e3014b41c819f6c01795655"
-    )
-    assert hashlib.sha256(v022_minus_declaration.encode()).hexdigest() == v022_pre_wave_hash, (
-        "the ## v0.22 block, with its one permitted shipped-sha line stripped back out, "
-        "no longer matches the pre-v0.23 baseline (7f8575d4) byte-for-byte -- something "
-        "else inside that historical block was reworded, restated or added"
-        f"\n\ngot:\n{v022_minus_declaration!r}"
-    )
-    assert "\u2705" not in v022, "the ## v0.22 block must not carry a \u2705 tick (amendment 001-WAVE)"
+    for i, heading in enumerate(pre_headings):
+        body_start = all_heads[i].end()
+        body_end = all_heads[i + 1].start()
+        section = full_text[body_start:body_end]
+        if heading.startswith("## v0.22 "):
+            declarations = _SHIPPED_DECLARATION_LINE_RE.findall(section)
+            assert len(declarations) == 1, (
+                f"the ## v0.22 section carries {len(declarations)} shipped-sha declaration "
+                "lines; amendment 001-WAVE permits exactly ONE added line in that section "
+                "and nothing else"
+            )
+            assert "\u2705" not in section, (
+                "the ## v0.22 section must not carry a \u2705 tick (amendment 001-WAVE: the "
+                "form is the prose declaration line, and 39c783ca's tick was reverted)"
+            )
+            section = _SHIPPED_DECLARATION_LINE_RE.sub("", section)
+        # Every other section is hashed as it stands, declaration lines and all
+        # (v0.18's own settled declaration is part of its baseline bytes), so a
+        # declaration line added to one of them trips the pin below too.
+        assert hashlib.sha256(section.encode()).hexdigest() == (
+            _PRE_V023_BASELINE_BLOCK_SHA256[heading]
+        ), (
+            f"{heading} no longer matches the pre-v0.23 baseline (7f8575d4) byte-for-byte "
+            "-- requirement I.2 forbids editing a historical roadmap section, and amendment "
+            "001-WAVE's single permitted exception is the ## v0.22 shipped-sha line"
+            f"\n\ngot:\n{section!r}"
+        )
 
 
 def test_the_roadmap_records_shipped_milestones_at_all():

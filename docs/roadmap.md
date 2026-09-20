@@ -2380,7 +2380,7 @@ nothing) was fixed on `main` in the same post-bump window (`7630a559`). Requirem
 issue-closing task validated, and gate, heavy and nightly all concluded green from a
 `workflow_dispatch` at the shipped sha; the v0.19, v0.19.1, v0.20, v0.20.1, v0.20.2, v0.21 and
 v0.21.1 blocks above are unchanged by this commit.
-Shipped sha `7f8575d4`, version 0.22.0, installed host-side by the operator.
+Shipped sha `4151d682`, version 0.22.0, installed host-side by the operator.
 
 ## v0.23 — a decision must reach the work
 
