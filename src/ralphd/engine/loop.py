@@ -3000,6 +3000,30 @@ class LoopSupervisor:
             return False
         return iteration_start_id is None or iteration_start_id < escalation_id
 
+    def _paused_awaiting_operator_input_needed_ruling(self, approach: int) -> bool:
+        """Task 014 (PRD requirement A.1, #224): the exact same crashed/
+        restarted-episode shape as `_paused_awaiting_last_approach_ruling`
+        just above, for the `operator_input_needed` reason -- this pause is
+        exactly as resumable, and for exactly the same reason: landing
+        anywhere other than `review` risks reaching `replan` (or `worker`)
+        over an approach this edge deliberately left unarchived so an
+        operator could still answer for it.
+        """
+        escalation_id = None
+        iteration_start_id = None
+        for ev in state.read_events(
+                self.run.root,
+                types=("operator_escalation", "iteration.start")):
+            if ev.get("type") == "operator_escalation":
+                if (ev.get("reason") == "operator_input_needed"
+                        and ev.get("approach") == approach):
+                    escalation_id = ev.get("id")
+            else:
+                iteration_start_id = ev.get("id")
+        if escalation_id is None:
+            return False
+        return iteration_start_id is None or iteration_start_id < escalation_id
+
     def _paused_awaiting_stagnation_last_approach_ruling(self, approach: int) -> bool:
         """Task 012 (PRD requirement B.3, #153): the same crashed/
         restarted-episode shape as `_paused_awaiting_last_approach_ruling`
@@ -3111,6 +3135,16 @@ class LoopSupervisor:
         verdict, took): a resume with a fresh window asks review again
         over the SAME approach.
 
+        A seventh case (task 014, PRD requirement A.1, #224): the prior
+        episode paused on the new `operator_input_needed` escalation (see
+        `_paused_awaiting_operator_input_needed_ruling`) and died before an
+        operator's `ralphctl resume` ever woke it back up in-process -- the
+        same reasoning as the fifth case (`rejected_incurable`)/the fifth's
+        sibling above: `worker` has nothing actionable, and landing
+        anywhere other than `review` risks reaching `replan` over a fresh
+        approach this edge deliberately held to let an operator answer
+        first.
+
         Returns (start_approach, skip_planning_for_start_approach,
         start_step).
         """
@@ -3156,6 +3190,17 @@ class LoopSupervisor:
                     "directly into review (never a fresh, nonexistent "
                     "approach) so any ruling recorded while paused is seen "
                     "by the next review iteration"))
+            return approach, False, "review"
+        if self._paused_awaiting_operator_input_needed_ruling(approach):
+            self.run.emit(
+                "log",
+                message=(
+                    f"resuming existing run-dir state: approach {approach} "
+                    "was paused on an operator_input_needed escalation with "
+                    "no operator resume ever reaching this episode; resuming "
+                    "directly into review (never a fresh approach) so any "
+                    "ruling recorded while paused is seen by the next "
+                    "review iteration (PRD requirement A.1, #224)"))
             return approach, False, "review"
         if self._paused_awaiting_stagnation_last_approach_ruling(approach):
             self.run.emit(
@@ -10380,7 +10425,17 @@ class LoopSupervisor:
         legible verdict claim whose FINDINGS CHANNEL is what the ladder
         exhausted over instead, so the approach is left unarchived, no
         composite PRD is written, no cure pass is opened, and `resume`
-        re-enters `review` over the SAME approach).
+        re-enters `review` over the SAME approach); `operator_input_needed`
+        (task 014, PRD requirement A.1, #224: -> paused, checked LAST among
+        the rejection edges above -- ON by default
+        (`JobConfig.operator_input_needed_pause`), any ORDINARY rejection
+        that would otherwise reach `_archive_approach` below, whether the
+        next step would have been a fresh `replan` or the terminal
+        `rejected_no_approach_left` tail, holds instead so an operator can
+        answer -- with a ruling (task 013's `ralphctl rule`) or a plain
+        `resume` -- before the approach is thrown away; `resume` re-enters
+        `review` over the SAME approach, exactly like every sibling in this
+        family).
         """
         approach = self._approach
         await self._gate()
@@ -10603,6 +10658,26 @@ class LoopSupervisor:
                 approach, signature)
             self._advance("review", "paused", "rejected_repeated_signature")
             return ("advance", "paused", "rejected_repeated_signature")
+        # Task 014 (PRD requirement A.1, #224): the pause-before-archive
+        # gate itself -- checked LAST among the rejection edges, after every
+        # other special-case pause above keeps its own precedence exactly
+        # as documented at each of their own call sites, and strictly
+        # BEFORE `_record_rejection_signature`/`_archive_approach`/
+        # `_write_composite_prd` below ever run. ON by default
+        # (`JobConfig.operator_input_needed_pause`); `ralphctl start
+        # --no-operator-input-needed-pause` restores the pre-014 behaviour
+        # of archiving immediately. Unbudgeted (PRD A.3 trigger condition
+        # 1, "an approach can only be archived once") -- unlike the
+        # discretionary gate A.3/A.7 add later for the OTHER two trigger
+        # conditions, this one is not bounded per approach or per run: an
+        # operator gets exactly one chance to answer before EVERY archive,
+        # on every approach, including the run's last.
+        if self.cfg.operator_input_needed_pause:
+            replan_available = approach < self.cfg.max_approaches
+            self._pause_and_escalate_operator_input_needed(
+                approach, findings_list, replan_available)
+            self._advance("review", "paused", "operator_input_needed")
+            return ("advance", "paused", "operator_input_needed")
         self._record_rejection_signature(approach, signature)
         self._archive_approach(approach)
         self._write_composite_prd(approach)
@@ -11101,6 +11176,76 @@ class LoopSupervisor:
                       channelErrors=channel_errors, signature=signature,
                       escalation=text)
         self.pause(reason="rejected_repeated_signature")
+        if self.notifier is not None:
+            self.notifier(text)
+
+    def _operator_input_needed_escalation_text(
+        self, approach: int, blocking: list[dict], replan_available: bool,
+    ) -> str:
+        """Task 014 (PRD requirement A.1, #224): the operator-facing
+        escalation body for an `operator_input_needed` pause -- the same
+        text-method + pause-method split every sibling in this family uses
+        (`_last_approach_rejection_escalation_text`/`_pause_and_escalate_
+        last_approach_rejection`), worded for the edge this task adds: an
+        ORDINARY rejection that would otherwise archive the approach (and
+        either replan, if `replan_available`, or end the run once the
+        approach budget is spent) is held instead, so the operator can
+        answer with a ruling (`ralphctl rule`, task 013) before either of
+        those outcomes ever happens.
+        """
+        outcome = ("replan a fresh approach" if replan_available else
+                  "end the run with no approach left")
+        lines = [
+            f"Run {self.cfg.run_id} approach {approach}: review rejected "
+            f"this approach. Before this task, the engine would now archive "
+            f"approach {approach} and {outcome} -- the run has been paused "
+            "instead (PRD requirement A.1, #224) so an operator can answer "
+            "before that spend happens: record a ruling "
+            f"(`ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
+            "<slug>`) and resume, or resume with none to let the archive "
+            f"proceed (`ralphctl resume {self.cfg.run_id}`). The approach "
+            "was NOT archived, no composite PRD was written, and the "
+            "approach counter did not move.",
+            "",
+        ]
+        for index, finding in enumerate(blocking, start=1):
+            lines.append(f"Finding {index} (blocking):")
+            lines.append(f"  clause: {finding.get('clause', '')}")
+            lines.append(f"  evidence: {finding.get('evidence', '')}")
+            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding)}")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _pause_and_escalate_operator_input_needed(
+        self, approach: int, findings_list: list[dict] | None,
+        replan_available: bool,
+    ) -> None:
+        """Task 014 (PRD requirement A.1, #224): pause the run through the
+        EXISTING pause machinery -- the same seam every sibling in this
+        family uses (`self.pause()`, `self.notifier`, an `operator_
+        escalation` event always emitted to `events.jsonl` regardless of
+        whether a notifier is wired in) -- taken in `_step_review` BEFORE
+        `_archive_approach`/`_write_composite_prd` ever run, unlike every
+        edge this family already had (each of which fires only once an
+        approach has already been thrown away or a cure pass already
+        opened -- the PRD's own diagnosis, "eight pause edges exist and
+        every one fires after the money is spent").
+
+        `findings_list` is the caller's OWN `_review_findings_channel()`
+        first return value, not a fresh call -- the same value the caller
+        just used to compute this rejection's own signature, so the
+        escalation's blocking findings are read off the identical channel
+        the rest of this rejection was judged from, never a second,
+        possibly-different read of the same sidecar.
+        """
+        findings_list = findings_list or []
+        blocking = [f for f in findings_list if f.get("severity") == "blocking"]
+        text = self._operator_input_needed_escalation_text(
+            approach, blocking, replan_available)
+        self.run.emit("operator_escalation", approach=approach,
+                      reason="operator_input_needed", findings=blocking,
+                      replanAvailable=replan_available, escalation=text)
+        self.pause(reason="operator_input_needed")
         if self.notifier is not None:
             self.notifier(text)
 

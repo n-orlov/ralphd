@@ -144,3 +144,41 @@ def test_template_model_and_llm_defaults(ctl):
     assert res.returncode == 0, res.stderr
     job = _job_yaml(ctl, "tpl-llm")
     assert job["model"] == "anthropic/claude-x"
+
+
+# ---------------------------------------------------------------------------
+# Task 014 (PRD requirement A.1, #224): `operator_input_needed_pause` --
+# hard-defaults `True` with no template/flag at all (unlike the two peer
+# gates, which default to `None`/omitted), a template's own
+# `operator_input_needed_pause:` key overrides that default, and an
+# explicit `--no-operator-input-needed-pause` flag wins over both.
+# ---------------------------------------------------------------------------
+
+
+def test_operator_input_needed_pause_defaults_true_with_no_template(ctl):
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "oin-default")
+    assert res.returncode == 0, res.stderr
+    job = _job_yaml(ctl, "oin-default")
+    assert job["operator_input_needed_pause"] is True
+
+
+def test_template_can_disable_operator_input_needed_pause(ctl):
+    tdir = _template_dir(ctl, "oin-off")
+    (tdir / "job.yaml").write_text("operator_input_needed_pause: false\n")
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "tpl-oin-off", "--template", "oin-off")
+    assert res.returncode == 0, res.stderr
+    job = _job_yaml(ctl, "tpl-oin-off")
+    assert job["operator_input_needed_pause"] is False
+
+
+def test_the_disable_flag_overrides_a_template_that_leaves_it_on(ctl):
+    tdir = _template_dir(ctl, "oin-on")
+    (tdir / "job.yaml").write_text("operator_input_needed_pause: true\n")
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "none",
+                  "--run-id", "tpl-oin-flag-wins", "--template", "oin-on",
+                  "--no-operator-input-needed-pause")
+    assert res.returncode == 0, res.stderr
+    job = _job_yaml(ctl, "tpl-oin-flag-wins")
+    assert job["operator_input_needed_pause"] is False

@@ -75,10 +75,16 @@ def _sig(sup, *clauses: str) -> str:
     return sup._normalize_blocker_signature_text(text)
 
 
+# Task 014 (PRD requirement A.1, #224): `cfg_defaults=False` means the bare
+# `JobConfig` default applies, and that default is now `True` for
+# `operator_input_needed_pause` -- explicitly off below, so this module's
+# own subject (the repeated-rejection-signature edge, not task 014's gate)
+# still reaches the ordinary replan outcome it always did; task 014's own
+# edge has its own module (`tests/test_operator_input_needed_pause.py`).
 _supervisor = supervisor_factory(
     run_id="task016-repeated-rejection-signature", cfg_defaults=False,
     prd="# task 016 fixture PRD\n\nDo the thing.\n",
-    status={"state": "running"})
+    status={"state": "running"}, operator_input_needed_pause=False)
 
 
 # ===========================================================================

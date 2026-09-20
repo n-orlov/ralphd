@@ -943,8 +943,16 @@ def _result(text: str) -> IterationResult:
     return r
 
 
+# Task 014 (PRD requirement A.1, #224): `cfg_defaults=False` here means
+# the bare `JobConfig` default applies, and that default is now `True` for
+# `operator_input_needed_pause` -- explicitly off, so this module's own
+# subject (the `rejected_incurable`/`rejected_no_approach_left` edges, not
+# task 014's gate) still reaches exactly the ordinary archive/replan/tail
+# outcomes it always did; task 014's own edge has its own module
+# (`tests/test_operator_input_needed_pause.py`).
 _supervisor_rejected_incurable = supervisor_factory(run_id="task006-rejected-incurable", cfg_defaults=False,
-                                 status={"state": "running"})
+                                 status={"state": "running"},
+                                 operator_input_needed_pause=False)
 
 
 class _StubNotifier:

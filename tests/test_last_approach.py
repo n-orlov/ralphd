@@ -107,10 +107,18 @@ def _host_status(root: Path) -> dict:
 
 # task 011 + task 007's shape: a bare review-only run, `notifier_url`
 # overridable per call (task 007's own notifier-wiring tests).
+# Task 014 (PRD requirement A.1, #224): `cfg_defaults=False` means the bare
+# `JobConfig` default applies, and that default is now `True` for
+# `operator_input_needed_pause` -- explicitly off below, so this module's
+# own subject (the `rejected_last_approach` family, not task 014's own
+# gate) still reaches the ordinary `rejected_no_approach_left`/replan
+# outcomes it always did; task 014's own edge has its own module
+# (`tests/test_operator_input_needed_pause.py`).
 _supervisor_review = supervisor_factory(
     run_id="task011-last-approach-pause", cfg_defaults=False,
     prd="# task 011 fixture PRD\n\nDo the thing.\n",
-    status={"state": "running"}, max_approaches=1)
+    status={"state": "running"}, max_approaches=1,
+    operator_input_needed_pause=False)
 
 # task 036's shape: `seed_status=False` is the crashed-episode form -- a
 # second supervisor over the SAME run dir must read whatever the previous

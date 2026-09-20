@@ -1239,6 +1239,23 @@ class LiveRun:
 DEFAULT_SUPERVISOR_CFG = {
     "infra_retry_backoff_s": [0.0],
     "infra_retry_backoff_max_s": 0.0,
+    # Task 014 (PRD requirement A.1, #224): `JobConfig.operator_input_
+    # needed_pause` now defaults `True` in production, but the entire
+    # pre-existing fast suite was written against the OLD behaviour --
+    # every ordinary rejection this new edge intercepts used to fall
+    # straight through to `_archive_approach`/replan-or-terminate, and
+    # hundreds of nodes drive a full `_run_job_core()` through exactly
+    # that path with no operator ever wired in to answer a pause (the
+    # same generalisation the stagnation pause's own `_drive_until_paused`
+    # helper exists for -- see `tests/test_transitions.py`). Off here
+    # keeps every node that gets its config through this default dict
+    # (`cfg_defaults=True`, the vast majority) running exactly as before;
+    # a module whose SUBJECT is this new gate passes `cfg_defaults=False`
+    # instead (`tests/test_operator_input_needed_pause.py`, same shape
+    # `tests/test_last_approach.py`'s own modules already use to measure
+    # `JobConfig`'s own default un-obscured), or sets
+    # `operator_input_needed_pause=True` explicitly.
+    "operator_input_needed_pause": False,
 }
 
 _real_asyncio_sleep = asyncio.sleep
@@ -1555,7 +1572,14 @@ def live(tmp_path):
 
     def make(run_id="logtest", job=None, stub_env=None):
         defaults = {"run_id": run_id, "iterations": 12, "max_approaches": 3,
-                    "on_complete": "idle"}
+                    "on_complete": "idle",
+                    # Task 014 (#224): see `DEFAULT_SUPERVISOR_CFG` above for
+                    # why the fast suite's own fixtures pin this off by
+                    # default -- this module's entire pre-existing flow
+                    # catalogue was written against ordinary rejections
+                    # replanning/archiving/terminating with no operator ever
+                    # wired in to answer a pause.
+                    "operator_input_needed_pause": False}
         r = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env,
                     run_id=run_id, registry=True)
         runs.append(r)
@@ -1576,7 +1600,9 @@ def engine_factory(tmp_path):
 
     def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
         defaults = {"run_id": "e2e", "iterations": 12,
-                    "max_approaches": 3, "on_complete": "idle"}
+                    "max_approaches": 3, "on_complete": "idle",
+                    # Task 014 (#224): see `live`'s own fixture above.
+                    "operator_input_needed_pause": False}
         e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)
         return e

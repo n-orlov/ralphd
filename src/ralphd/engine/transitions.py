@@ -464,6 +464,20 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # immediately after it for the identical reason: there is no
         # rejection to classify off a channel the engine cannot trust.
         T("paused", "review_findings_unusable"),
+        # Task 014 (PRD requirement A.1, #224): an ORDINARY rejection that
+        # would otherwise reach `_archive_approach` -- whether the next
+        # step would be `rejected_approach_left` (below) or `rejected_no_
+        # approach_left` (further below) -- holds instead, ON by default
+        # (`JobConfig.operator_input_needed_pause`), so an operator can
+        # answer before the approach is thrown away. Checked LAST among the
+        # rejection edges (`LoopSupervisor._step_review`), after every
+        # other special-case pause above keeps its own precedence exactly
+        # as documented at each of their own call sites -- this is the
+        # generic case none of them caught, not a replacement for any of
+        # them. The approach is left unarchived, so `resume` re-enters
+        # `review` over the SAME approach, exactly like every sibling in
+        # this family.
+        T("paused", "operator_input_needed"),
         # rejected, and this was the last approach / budget is gone.
         T("finishing", "rejected_no_approach_left"),
         # requirement A, #72: the review iteration itself got cut short
@@ -769,6 +783,12 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # there is any verdict to classify at all, so it is reached long
         # before the (VERIFIED-only) peer verdict gate is ever consulted.
         T("paused", "review_findings_unusable"),
+        # Task 014 (PRD requirement A.1, #224): carried over byte-for-byte
+        # from `TABLE["review"]` above -- same reasoning as `review_
+        # findings_unusable` just above: this check runs on the REJECTED
+        # branch too, entirely before the (VERIFIED-only) peer verdict
+        # gate is ever consulted.
+        T("paused", "operator_input_needed"),
         T("finishing", "rejected_no_approach_left"),
         T("review", "review_interrupted"),
         T("finishing", "review_unjudged_at_budget_end"),

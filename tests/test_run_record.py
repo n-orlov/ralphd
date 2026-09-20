@@ -367,7 +367,15 @@ _rram035_supervisor = lambda root, monkeypatch, **cfg: make_supervisor(
        "status": {"state": "running"},
        "tasks": [{"id": "001", "title": "t", "successCriteria": "c",
                   "status": "completed"}],
-       "max_approaches": 1, "reflect": False, **cfg})
+       "max_approaches": 1, "reflect": False,
+       # Task 014 (PRD requirement A.1, #224): `cfg_defaults=False` means
+       # the bare `JobConfig` default applies, and that default is now
+       # `True` for `operator_input_needed_pause` -- explicitly off below,
+       # so this module's own subject (the archived-approach-history
+       # record, not task 014's own gate) still reaches its own
+       # ordinary archive/replan/tail outcomes; task 014's own edge has
+       # its own module (`tests/test_operator_input_needed_pause.py`).
+       "operator_input_needed_pause": False, **cfg})
 
 
 def _stub_runner(sup: LoopSupervisor, payload: dict) -> None:

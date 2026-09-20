@@ -352,6 +352,27 @@ class JobConfig:
     on_complete: str = "exit"  # idle | exit (idle is an explicit debugging opt-in)
     on_complete_cmd: str | None = None  # shell hook run once at terminal state
     reflect: bool = False  # run one extra 'reflect' iteration after terminal state
+    # Task 014 (PRD requirement A.1, #224): the pause-before-archive gate.
+    # ON by default (#224's design decision 2, PRD "Enabled by default"):
+    # a rejection that would otherwise archive the approach (whether the
+    # next stop is a fresh `replan` or the terminal `rejected_no_approach_
+    # left` tail) instead pauses the run with `pauseReason:
+    # "operator_input_needed"` -- `LoopSupervisor._step_review`'s own new
+    # `_pause_and_escalate_operator_input_needed` sibling on the existing
+    # pause seam, checked after every other rejection edge (incurable,
+    # cure-pass-available, last-approach-curable, repeated-signature) keeps
+    # its own precedence exactly as before, but strictly BEFORE `_archive_
+    # approach`/`_write_composite_prd` ever run. `ralphctl start
+    # --no-operator-input-needed-pause` sets this False and writes
+    # `operator_input_needed_pause: false` to the run's `job.yaml` --
+    # required, not optional (a job.yaml-only key would force the `start`
+    # -> `docker stop` -> edit -> `resume` dance this wave removes), so an
+    # unattended run that wants the pre-014 behaviour back can still ask
+    # for it at launch. This changes behaviour for every EXISTING job.yaml
+    # on upgrade and every unattended run that never sets the flag -- the
+    # operator's explicit ruling, and requirement A.7's notifier retry plus
+    # listing marker (a later task) are what make that safe.
+    operator_input_needed_pause: bool = True
     # Task 018 (PRD requirement K, #101): the opt-in peer plan-review gate.
     # OFF by default -- `transitions.table_for(vigilant)` (no third
     # argument) is byte-identical to today's table whenever this stays
@@ -774,6 +795,12 @@ class JobConfig:
                 # not just `vigilant`.
                 "peerPlanReview": self.peer_plan_review,
                 "peerVerdictGate": self.peer_verdict_gate,
+                # Task 014 (PRD requirement A.1, #224): ON by default,
+                # surfaced here for the same reason the two peer gates
+                # above are -- an operator can see whether this run would
+                # pause for a ruling before an approach is archived
+                # without reading job.yaml.
+                "operatorInputNeededPause": self.operator_input_needed_pause,
             },
             # Task 010: the response-contract re-prompt policy (requirement
             # C). `retryMax` is re-prompts granted after the first attempt

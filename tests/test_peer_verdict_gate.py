@@ -126,6 +126,12 @@ def test_gate_off_by_default_table_is_byte_identical_to_today(vigilant):
         # byte-identical to TODAY's table (now including this edge), not
         # to a pre-task-011 snapshot of it.
         tr.T("paused", "review_findings_unusable"),
+        # Task 014 (PRD requirement A.1, #224): the pause-before-archive
+        # gate, added to the base table beside `review_findings_unusable`
+        # -- present here too for the same reason every edge above is:
+        # gate-off is byte-identical to TODAY's table (now including this
+        # edge), not to a pre-task-014 snapshot of it.
+        tr.T("paused", "operator_input_needed"),
         tr.T("finishing", "rejected_no_approach_left"),
         tr.T("review", "review_interrupted"),
         tr.T("finishing", "review_unjudged_at_budget_end"),

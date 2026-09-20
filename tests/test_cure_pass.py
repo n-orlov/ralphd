@@ -122,23 +122,33 @@ def _events(root: Path, type_: str) -> list[dict]:
     return [ev for ev in (json.loads(x) for x in lines) if ev.get("type") == type_]
 
 
+# Task 014 (PRD requirement A.1, #224): `cfg_defaults=False` means the bare
+# `JobConfig` default applies, and that default is now `True` for
+# `operator_input_needed_pause` -- explicitly off below, so this module's
+# own subject (the cure-pass edges, not task 014's gate) still reaches the
+# ordinary replan/archive outcomes it always did; task 014's own edge has
+# its own module (`tests/test_operator_input_needed_pause.py`).
+
 # task 009's shape: a bare review-only run.
 _supervisor = supervisor_factory(run_id="task009-cure-pass", cfg_defaults=False,
                                  status={"state": "running"},
                                  prd="# task 009 fixture PRD\n\nDo the thing.\n",
-                                 max_approaches=3)
+                                 max_approaches=3,
+                                 operator_input_needed_pause=False)
 
 # task 010's shape: the same, under its own run id.
 _supervisor_bounded = supervisor_factory(
     run_id="task010-bounded-cure-pass", cfg_defaults=False,
     status={"state": "running"},
-    prd="# task 010 fixture PRD\n\nDo the thing.\n", max_approaches=3)
+    prd="# task 010 fixture PRD\n\nDo the thing.\n", max_approaches=3,
+    operator_input_needed_pause=False)
 
 # task 039's shape: the same, under its own run id.
 _supervisor_tamper = supervisor_factory(
     run_id="task039-tamper-not-curable", cfg_defaults=False,
     status={"state": "running"},
-    prd="# task 039 fixture PRD\n\nDo the thing.\n", max_approaches=3)
+    prd="# task 039 fixture PRD\n\nDo the thing.\n", max_approaches=3,
+    operator_input_needed_pause=False)
 
 
 # ---------------------------------------------------------------------------

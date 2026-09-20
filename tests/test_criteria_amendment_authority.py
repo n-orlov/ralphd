@@ -117,7 +117,16 @@ _supervisor = lambda root, run_id, **cfg: make_supervisor(
              "on_complete": "exit", "infra_retry_backoff_s": [0.0],
              "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
              "model_overrides": {"worker": "prov/worker-model-x",
-                                 "review": "prov/review-model-y"}, **cfg})
+                                 "review": "prov/review-model-y"},
+             # Task 014 (PRD requirement A.1, #224): `cfg_defaults=False`
+             # means the bare `JobConfig` default applies, and that
+             # default is now `True` for `operator_input_needed_pause` --
+             # explicitly off below, so this module's own subject (the
+             # tamper-forced rejection archiving/replanning) still reaches
+             # its own `rejected_approach_left` outcome; task 014's own
+             # edge has its own module
+             # (`tests/test_operator_input_needed_pause.py`).
+             "operator_input_needed_pause": False, **cfg})
 
 
 # ---------------------------------------------------------------------------

@@ -265,6 +265,32 @@ def test_job_config_load_when_the_engine_uid_is_not_the_config_dir_owner(
     assert job_yaml.stat().st_mode & 0o777 == 0o600
 
 
+# -- task 014 (PRD requirement A.1, #224): the pause-before-archive gate ---
+
+def test_operator_input_needed_pause_defaults_true():
+    """ON by default -- unlike `peer_plan_review`/`peer_verdict_gate`, this
+    gate is a disable, not an enable (`ralphctl start
+    --no-operator-input-needed-pause`); the black-box `start`/template
+    precedence chain is covered in `tests/test_cli_templates.py`, and the
+    behavioural edge itself in `tests/test_operator_input_needed_pause.py`.
+    """
+    assert JobConfig().operator_input_needed_pause is True
+
+
+def test_job_config_load_respects_explicit_operator_input_needed_pause_false(
+        tmp_path):
+    p = tmp_path / "job.yaml"
+    p.write_text("operator_input_needed_pause: false\n")
+    cfg = JobConfig.load(p)
+    assert cfg.operator_input_needed_pause is False
+
+
+def test_job_config_load_with_no_job_yaml_defaults_operator_input_needed_pause_true(
+        tmp_path):
+    cfg = JobConfig.load(tmp_path / "does-not-exist.yaml")
+    assert cfg.operator_input_needed_pause is True
+
+
 def test_job_config_load_with_no_boundary_reads_normally(tmp_path, monkeypatch):
     """No boundary to raise into (the test suite's own unprivileged engine,
     or `docker run --user 1000`) -- `root_for_write()` is a documented no-op

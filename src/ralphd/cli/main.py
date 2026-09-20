@@ -1599,6 +1599,12 @@ _TEMPLATE_SCALAR_FIELDS = {
     "iterations": 25, "max_approaches": 3, "vigilant": False,
     "reflect": False, "on_complete": "exit", "on_complete_cmd": None, "timeout": 480,
     "iteration_timeout": 45, "llm": "host",
+    # Task 014 (PRD requirement A.1, #224): ON by default, unlike every
+    # other boolean in this table -- the hard default here mirrors
+    # `JobConfig.operator_input_needed_pause`'s own default so an unset
+    # flag and an unset template key both resolve to the same `True` the
+    # engine would apply anyway.
+    "operator_input_needed_pause": True,
     # Task 006 (#60 pillar 4 cleanup): `model_strategy`/`fast_model` are
     # RETIRED (see `cmd_config`'s rejection for the config-key half, and
     # `engine/config._migrate_legacy_model_config` for the job.yaml half) --
@@ -2101,6 +2107,12 @@ def cmd_start(args):
         # applies unconditionally-off, same as the two flags it sits beside.
         "peer_plan_review": args.peer_plan_review,
         "peer_verdict_gate": args.peer_verdict_gate,
+        # Task 014 (PRD requirement A.1, #224): resolved by the
+        # `_TEMPLATE_SCALAR_FIELDS` loop above (explicit flag > template's
+        # own key > hard default `True`), so this is never `None` by the
+        # time it reaches this dict -- unlike `peer_plan_review`/`peer_
+        # verdict_gate` above, job.yaml always carries an explicit value.
+        "operator_input_needed_pause": args.operator_input_needed_pause,
         "model": args.model or (llm_profile.get("model") if llm_profile else None),
         # Task 047 (#177): the display-redacted `--llm-header` map, right
         # beside `model` -- so `ralphctl docs`'s redacted `job.yaml` view
@@ -7807,6 +7819,23 @@ def build_parser() -> argparse.ArgumentParser:
                    help="opt-in, genuinely blind peer verdict gate (PRD "
                         "requirement L, #101): a second peer model "
                         "re-verifies completed work before terminal success")
+    # Task 014 (PRD requirement A.1, #224): ON by default (unlike the two
+    # peer gates above) -- this flag is the disable, not the enable. Left
+    # unpassed, `args.operator_input_needed_pause` stays `None` and the
+    # `_TEMPLATE_SCALAR_FIELDS` loop below fills it from the template's own
+    # `operator_input_needed_pause:` key or the hard default `True`, so
+    # job.yaml always carries an explicit value -- an operator reading a
+    # started run's job.yaml sees the gate's state without having to know
+    # engine/config.py's own default to interpret an absent key.
+    s.add_argument("--no-operator-input-needed-pause",
+                   dest="operator_input_needed_pause",
+                   action="store_false", default=None,
+                   help="disable the operator_input_needed pause (PRD "
+                        "requirement A.1, #224): by default a rejection "
+                        "that would archive the approach instead pauses "
+                        "the run for an operator ruling; this flag restores "
+                        "the pre-A.1 behaviour of archiving and replanning "
+                        "(or ending the run) immediately")
     s.add_argument("--model", help="pi model ref, e.g. provider/model-id")
     s.add_argument("--model-for", action="append", metavar="HAT=REF",
                    help="per-hat model override (repeatable), e.g. "
