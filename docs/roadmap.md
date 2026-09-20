@@ -2381,6 +2381,31 @@ issue-closing task validated, and gate, heavy and nightly all concluded green fr
 `workflow_dispatch` at the shipped sha; the v0.19, v0.19.1, v0.20, v0.20.1, v0.20.2, v0.21 and
 v0.21.1 blocks above are unchanged by this commit.
 
+## v0.23 — a decision must reach the work
+
+This wave closes the gap where the engine computes a decision and the decision never reaches the
+work. Requirement **A** built the operator answer channel (`ralphctl rule`, `POST /rule`, the hub
+textarea) and the pre-spend `operator_input_needed` pause that gates an approach archive, a cure
+re-open and the two discretionary trigger conditions, with a bounded re-ask and a one-re-park-per-
+ruling refusal on a re-rejection the ruling already addressed; **B** made a cure's re-opened
+record evidence provisional, reconciled against the cure's real diff rather than only its
+`invalidates` prediction; **C** gave a legible verdict whose findings channel is unusable its own
+`review_findings_unusable` pause instead of costing an approach; **D** wired a REFUTED petition's
+remedy task into the run-ending review, not only the mid-run episode; **E** emitted
+`task.dependency_repointed` on a successful re-point from both a cure insertion and a confirmed
+petition adjudication; **F** surfaced `PlanIngestionResult.warnings` at the accepted-proposal site
+and added the mechanical `orderingOnly` whole-set over-declaration warning; **G** derived
+`produced_traffic` from billable token counts at its three sites so a zero-traffic failure is
+refunded instead of charged; **H** made `ralphctl ui` refuse a non-loopback bind without an
+explicit opt-in flag and state its published mutating routes and lack of authentication on
+startup; and **I** is this version bump, this paragraph, and the confirmation that the operator's
+`#209` settlement trail already landed inside the `## v0.22` section above. Requirements **J** (the
+three lanes green at the resolved code sha, then the unit-group PRs rebase-merged into `main`) and
+**K** (closing the wave's issues with evidence) are later tasks of this same run, so this paragraph
+names rather than claims settled the issues this wave answers: **#224**, **#219**, **#220**,
+**#221**, **#222**, **#223** and **#213**. The v0.19 through v0.22 blocks above are unchanged by
+this commit.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
