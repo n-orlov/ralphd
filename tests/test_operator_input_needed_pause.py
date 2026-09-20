@@ -86,6 +86,15 @@ _supervisor = supervisor_factory(
     status={"state": "running", "phase": "review", "approach": 1})
 
 
+# Task 057 (`tests/test_loop_driving_await_guard.py`'s own subject): a bare
+# `asyncio.run(...)` over `_step_review` can wait forever on the
+# paused-state Event or a repeating scripted-runner step -- the same bound
+# `tests/test_peer_verdict_gate.py`/`tests/test_peer_plan_review_gate.py`
+# already carry for the identical reason.
+def _bounded(coro, timeout: float = 30.0):
+    return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
 def _reject(sup, reason="mixed curability"):
     async def _review_rejects(prompt, transcript, **kw):
         return _result(json.dumps({"verdict": "rejected", "reason": reason}))
@@ -136,7 +145,7 @@ def test_an_ordinary_rejection_with_a_replan_available_pauses_instead(
 
     assert sup._pause.is_set() is True  # not paused yet
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review())
 
     assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False
@@ -181,7 +190,7 @@ def test_an_ordinary_rejection_on_the_last_approach_pauses_instead_of_ending(
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     _reject(sup)
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review())
 
     assert outcome == ("advance", "paused", "operator_input_needed")
     status = sup.run.read_status()
@@ -203,7 +212,7 @@ def test_the_escalation_is_emitted_to_events_jsonl_with_no_notifier(tmp_path):
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     _reject(sup)
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review())
     assert outcome == ("advance", "paused", "operator_input_needed")
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
@@ -227,7 +236,7 @@ def test_disabling_the_flag_falls_through_to_the_ordinary_archive_and_replan(
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     _reject(sup)
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review())
 
     assert outcome == ("advance", "replan", "rejected_approach_left")
     status = sup.run.read_status()
@@ -248,7 +257,7 @@ def test_disabling_the_flag_on_the_last_approach_ends_the_run(tmp_path):
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     _reject(sup)
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _bounded(sup._step_review())
     assert outcome == ("tail",)
     assert (root / "approaches" / "01").exists()
 
@@ -272,7 +281,7 @@ def test_resume_detects_the_pause_and_re_enters_review(tmp_path):
     findings.write_findings_json(sup1.run.findings_json_file, _MIXED_FINDINGS)
     _reject(sup1)
 
-    outcome = asyncio.run(sup1._step_review())
+    outcome = _bounded(sup1._step_review())
     assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup1._pause.is_set() is False
 
@@ -297,7 +306,7 @@ def test_paused_awaiting_operator_input_needed_ruling_is_false_once_a_new_iterat
     sup._approach = 1
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     _reject(sup)
-    asyncio.run(sup._step_review())
+    _bounded(sup._step_review())
 
     assert sup._paused_awaiting_operator_input_needed_ruling(1) is True
 
@@ -312,7 +321,7 @@ def test_resume_clears_the_persisted_pause_and_keeps_approach_and_phase(
     sup._approach = 1
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     _reject(sup)
-    asyncio.run(sup._step_review())
+    _bounded(sup._step_review())
     assert _host_status(root)["state"] == "paused"
 
     sup.resume()
