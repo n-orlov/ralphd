@@ -1913,9 +1913,18 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
         record.update(applied=False, reason="illegal transition")
         return record
     effective_justification = justification or reason
+    # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): the ONE source
+    # allowed to restore `superseded` through this channel is this
+    # function's own reconciliation branch
+    # (`LoopSupervisor._reconcile_pre_cure_heads`, `source="cure-
+    # reconciliation"`) -- restoring a status the engine itself persisted
+    # (`preCureStatuses`) before the reopen, never a hat's free-form
+    # claim. Every other caller (an operator amendment ruling, the steer
+    # hat's `task-update`) keeps the ordinary refusal.
     status_errors = transitions.task_status_report_errors(
         {"task_status": target_status, "justification": effective_justification},
-        current, vigilant)
+        current, vigilant,
+        allow_superseded_restore=(source == "cure-reconciliation"))
     if status_errors:
         record.update(applied=False, reason=status_errors[0])
         return record
@@ -5041,7 +5050,6 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
                     vid = verification_task.get("id")
                     if vid not in inserted:
                         inserted.append(vid)
-                record_task["status"] = "pending"
                 # Task 006 (PRD requirement B.2, #221): persist and emit
                 # the pre-cure workspace head THIS record is being
                 # re-opened at, before any of the writes below that could
@@ -5050,15 +5058,40 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
                 # never the verification task(s) above, which are not the
                 # subject of B.2 -- and overwritten, not accumulated, on a
                 # later pass's re-open of the SAME record.
+                #
+                # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): the
+                # record's own status is read HERE, before the `pending`
+                # write just below overwrites it, and persisted alongside
+                # the sha -- the ACTUAL pre-reopen terminal status
+                # (`completed`, `validated`, `failed`, `skipped` or
+                # `superseded`, whichever it genuinely held), never a
+                # value inferred from `cfg.vigilant` after the fact. A
+                # record already `pending` here (a still-unreconciled
+                # earlier reopen this same approach) is NOT a terminal
+                # status to capture -- its own persisted `preCureStatuses`
+                # entry from that earlier reopen already names the real
+                # one, and this later reopen must not clobber it with
+                # `"pending"`.
                 rid_for_head = record_task.get("id")
                 pre_cure_heads_status = run.read_status()
                 pre_cure_heads = dict(
                     pre_cure_heads_status.get("preCureHeads") or {})
                 pre_cure_heads[rid_for_head] = pre_cure_head
-                run.update_status(preCureHeads=pre_cure_heads)
+                pre_cure_statuses = dict(
+                    pre_cure_heads_status.get("preCureStatuses") or {})
+                current_record_status = record_task.get("status", "pending")
+                if current_record_status == "pending":
+                    prior_status = pre_cure_statuses.get(
+                        rid_for_head, current_record_status)
+                else:
+                    prior_status = current_record_status
+                record_task["status"] = "pending"
+                pre_cure_statuses[rid_for_head] = prior_status
+                run.update_status(preCureHeads=pre_cure_heads,
+                                  preCureStatuses=pre_cure_statuses)
                 run.emit(PRE_CURE_HEAD_RECORDED_EVENT, taskId=rid_for_head,
-                         sha=pre_cure_head, approach=approach,
-                         cureTaskId=cure_task_id)
+                         sha=pre_cure_head, priorStatus=prior_status,
+                         approach=approach, cureTaskId=cure_task_id)
                 if not verification_tasks:
                     # #209 defect 3's residual: every evidence step this
                     # record depends on is declared a pure ordering edge
@@ -5170,10 +5203,17 @@ def records_pending_reconciliation(run: "RunDir", cure_task_id: str) -> list[dic
     own cited path, walks it back through the declared un-reopen edge
     (`transitions.is_un_reopen_transition`, `apply_task_status_change`).
 
-    Returns one `{"recordId", "sha", "successCriteria", "cureTaskIds"}`
-    dict per eligible record, deduplicated by `recordId` (a finding naming
-    the same record for two `invalidates` paths at once emits two identical
-    events; only one entry is returned). "Eligible" means ALL THREE:
+    Returns one `{"recordId", "sha", "priorStatus", "successCriteria",
+    "cureTaskIds"}` dict per eligible record, deduplicated by `recordId` (a
+    finding naming the same record for two `invalidates` paths at once
+    emits two identical events; only one entry is returned). `priorStatus`
+    is the ACTUAL terminal status the record held immediately before this
+    reopen (cure-01-05, requirement B.3/B.4, F05) -- read from `status.
+    json`'s `preCureStatuses` map, the same live-baseline-per-record
+    discipline `preCureHeads` already uses, never re-derived from `cfg.
+    vigilant` -- so the caller restores `completed`, `validated`, `failed`,
+    `skipped` or `superseded` alike, whichever this record genuinely held.
+    "Eligible" means ALL THREE:
 
     - the record's OWN `preCureHeads[recordId]` entry in `status.json`
       still equals this cure task's own reopen `sha` -- a LATER reopen of
@@ -5225,6 +5265,7 @@ def records_pending_reconciliation(run: "RunDir", cure_task_id: str) -> list[dic
     if not mine:
         return []
     pre_cure_heads = run.read_status().get("preCureHeads") or {}
+    pre_cure_statuses = run.read_status().get("preCureStatuses") or {}
     by_id = {t.get("id"): t for t in run.read_tasks().get("tasks", [])
              if isinstance(t, dict)}
     out = []
@@ -5243,7 +5284,19 @@ def records_pending_reconciliation(run: "RunDir", cure_task_id: str) -> list[dic
                not in CURE_RECONCILIATION_TRIGGER_STATUSES
                for owner in deduped_owners):
             continue
+        # `pre_cure_statuses` is the live map (overwritten, not
+        # accumulated, on a later reopen -- same rule as `preCureHeads`);
+        # a record predating this map (no entry at all) falls back to the
+        # matching event's own `priorStatus` field, and only then to the
+        # record's OWN current status (a legacy event with neither is the
+        # one shape that could only arise before this field existed).
+        live_prior_status = pre_cure_statuses.get(rid)
+        if live_prior_status is None:
+            live_prior_status = next(
+                (ev.get("priorStatus") for ev in at_live_sha
+                 if ev.get("priorStatus")), task.get("status"))
         out.append({"recordId": rid, "sha": live_sha,
+                    "priorStatus": live_prior_status,
                     "successCriteria": task.get("successCriteria", ""),
                     "cureTaskIds": deduped_owners})
     return out

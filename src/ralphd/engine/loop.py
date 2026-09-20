@@ -6088,9 +6088,13 @@ class LoopSupervisor:
         unconvinced. Only a diff that is genuinely EMPTY of every path the
         record cites earns the un-reopen -- through the declared edge
         (`state.apply_task_status_change`, never a direct dict write), to
-        `validated` under this run's vigilant variant or `completed`
-        otherwise (the same variant-conditioned target every other
-        completion write in this engine already picks).
+        `candidate["priorStatus"]` -- the record's own ACTUAL pre-reopen
+        terminal status (`completed`, `validated`, `failed`, `skipped` or
+        `superseded`, whichever it genuinely held), persisted by `state.
+        insert_cure_tasks` at reopen time rather than inferred from `cfg.
+        vigilant` after the fact (cure-01-05, requirement B.3/B.4, F05:
+        the old inference silently PROMOTED a `failed`/`skipped`/
+        `superseded` record to `completed`/`validated`).
 
         Every record this call actually restores is named, once, in a
         single follow-up notification through `self.notifier` (wired only
@@ -6116,7 +6120,21 @@ class LoopSupervisor:
             criteria = candidate.get("successCriteria") or ""
             if any(path and path in criteria for path in diff_paths):
                 continue
-            target = "validated" if self.cfg.vigilant else "completed"
+            # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): the target
+            # is the record's own ACTUAL pre-reopen terminal status --
+            # `candidate["priorStatus"]`, persisted at reopen time
+            # (`state.insert_cure_tasks`, `preCureStatuses`) -- never a
+            # value inferred from `self.cfg.vigilant` after the fact. The
+            # old inference only ever produced the right answer for a
+            # record that had genuinely held `completed`/`validated`
+            # before the reopen; a record that had held `failed`,
+            # `skipped` or `superseded` was silently PROMOTED to
+            # `completed`/`validated` instead, the exact defect F05
+            # names. A candidate somehow missing `priorStatus` (a
+            # pre-cure-01-05 event, or a legacy fixture) falls back to
+            # the old variant-conditioned guess rather than crashing.
+            target = candidate.get("priorStatus") or (
+                "validated" if self.cfg.vigilant else "completed")
             owners = candidate.get("cureTaskIds") or [cure_task_id]
             result = state.apply_task_status_change(
                 self.run, candidate["recordId"], target, self.cfg.vigilant,

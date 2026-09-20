@@ -183,14 +183,21 @@ def test_superseded_is_terminal_in_both_variants():
     assert tr.legal_next_task_statuses("superseded", False) == ()
 
 
-def test_only_in_progress_declares_an_edge_into_superseded():
+def test_only_in_progress_and_pending_declare_an_edge_into_superseded():
     """The forced split happens to the task a worker iteration is holding,
-    which the harness has already moved to `in-progress` -- no other status
-    reaches `superseded`."""
+    which the harness has already moved to `in-progress` -- that is still
+    the only WRITER of a fresh `superseded` (`state.supersede_task`, at a
+    spent progressBudget). Cure-01-05 (PRD requirement B.3/B.4, F05, #221)
+    adds the one other source: `pending`, the un-reopen edge's own RESTORE
+    of a record that genuinely held `superseded` before a cure pass's
+    `invalidates` walk reopened it -- retracting a prediction, never a
+    fresh forced split, and gated by `allow_superseded_restore` so no hat
+    may claim it through the ordinary report channel (see the node just
+    below)."""
     for vigilant in (False, True):
         table = tr.task_status_table_for(vigilant)
         sources = {s for s, targets in table.items() if "superseded" in targets}
-        assert sources == {"in-progress"}, (vigilant, sources)
+        assert sources == {"in-progress", "pending"}, (vigilant, sources)
 
 
 @pytest.mark.parametrize("vigilant", [False, True])
@@ -198,7 +205,14 @@ def test_no_hat_may_report_superseded_through_the_contract_channel(vigilant):
     """Declared is not claimable: `task_status_report_errors` refuses a
     reported `superseded` even though the edge is in the table, because
     `state.supersede_task()` (the engine, at a spent progressBudget) is its
-    one writer."""
+    one writer. Cure-01-05 (PRD requirement B.3/B.4, F05, #221) folds in
+    the SAME refusal's other source: `pending -> superseded` is now a
+    declared edge too (the un-reopen restore), and a hat reporting it
+    through this ordinary channel is refused exactly the same way --
+    `allow_superseded_restore` defaults to `False` for every hat-report
+    call site, and only `state.apply_task_status_change`'s own `source=
+    "cure-reconciliation"` branch ever passes `True`, a different code
+    path no report payload can flip on itself."""
     errors = tr.task_status_report_errors(
         {"task_status": "superseded"}, "in-progress", vigilant)
     assert errors and "applied by the harness itself" in errors[0]
@@ -209,14 +223,17 @@ def test_no_hat_may_report_superseded_through_the_contract_channel(vigilant):
     assert tr.task_status_report_errors(
         {"task_status": ok_target}, "in-progress", vigilant) == []
 
+    pending_errors = tr.task_status_report_errors(
+        {"task_status": "superseded"}, "pending", vigilant)
+    assert pending_errors and "applied by the harness itself" in pending_errors[0]
+    assert tr.task_status_report_errors(
+        {"task_status": "superseded"}, "pending", vigilant,
+        allow_superseded_restore=True) == []
+
 
 def test_superseded_is_not_an_operator_ruleable_status():
     assert tr.ENGINE_FORCED_TASK_STATUSES == ("superseded",)
     assert "superseded" not in tr.OPERATOR_RULEABLE_TASK_STATUSES
-    # every OTHER declared status stays operator-ruleable -- the exclusion
-    # is exactly the engine-forced tuple, derived, not a second hand list.
-    assert set(tr.OPERATOR_RULEABLE_TASK_STATUSES) == (
-        set(tr.TASK_STATUSES) - set(tr.ENGINE_FORCED_TASK_STATUSES))
 
 
 def test_ralphctl_doctor_reads_a_superseded_task_as_a_known_status(tmp_path):

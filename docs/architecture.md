@@ -337,6 +337,23 @@ a split carries `proposed_tasks` instead, and the harness decides), and
 tuple) -- an operator never RULES a task superseded, the engine only ever
 forces the split itself.
 
+**Cure-01-05 (PRD requirement B.3/B.4, F05, #221) adds one more edge INTO
+`superseded`, from `pending` -- still not a second writer for a fresh
+split, only a RESTORE.** A cure pass's `invalidates` walk
+(`state.insert_cure_tasks`) re-opens a plan's own lane-evidence record from
+WHATEVER terminal status it genuinely held, `superseded` included (a
+forced-split parent later named in a finding's `invalidates`), persisting
+that exact status first (`preCureStatuses`). When the completion-path hook
+(`LoopSupervisor._reconcile_pre_cure_heads`) later finds the cure's real
+diff never touched the record's cited path, it walks the prediction back
+through `state.apply_task_status_change` to that persisted status -- for a
+record that had held `superseded`, this is the one call site allowed to
+target it (`allow_superseded_restore=True`, gated on `source ==
+"cure-reconciliation"` alone); every hat-report call site still refuses it,
+unchanged. This never creates a SECOND `superseded` parent or a second
+split -- it only ever un-does a reopen this same engine made on a
+prediction that turned out to be wrong.
+
 <!-- BEGIN GENERATED TASK-STATUS TABLE (scripts/render_transition_table.py) -->
 
 Generated from `src/ralphd/engine/transitions.py`'s task-status mini-FSM (`TASK_STATUS_TABLE` / `TASK_STATUS_VIGILANT_DELTA`, composed by `task_status_table_for`) by `scripts/render_transition_table.py` — do not hand-edit this block; regenerate it with `python scripts/render_transition_table.py --write` and let `tests/test_transitions.py` catch drift. This table governs one `tasks.json` record's `status` field, not the run's own FSM position. Every move here is applied by the harness at a step transition, never written by an agent itself; `superseded` is forced by the engine alone — no hat may report it (`task_status_report_errors`) and no operator may rule it (`ralphctl amend --status`, which validates against `OPERATOR_RULEABLE_TASK_STATUSES`).
@@ -345,6 +362,9 @@ Generated from `src/ralphd/engine/transitions.py`'s task-status mini-FSM (`TASK_
 |---|---|---|
 | `pending` | both | `in-progress` |
 | `pending` | non-vigilant only | `completed` |
+| `pending` | both | `failed` |
+| `pending` | both | `skipped` |
+| `pending` | both | `superseded` |
 | `pending` | vigilant only | `validated` |
 | `in-progress` | non-vigilant only | `completed` |
 | `in-progress` | both | `failed` |
@@ -386,6 +406,9 @@ stateDiagram-v2
     [*] --> pending
     pending --> in_progress
     pending --> validated
+    pending --> failed
+    pending --> skipped
+    pending --> superseded
     in_progress --> awaiting_validation
     in_progress --> failed
     in_progress --> skipped
@@ -2229,7 +2252,11 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   rather than accumulating it. (3) **B.3 (task 007)** declares the move
   back OUT of `pending` as a real edge in `transitions.TASK_STATUS_TABLE`
   (`pending -> completed`/`pending -> validated` under the vigilant
-  delta), named variant-agnostically by `transitions.is_un_reopen_
+  delta -- widened by cure-01-05, PRD requirement B.3/B.4, F05, #221, to
+  also cover `pending -> failed`/`pending -> skipped`/`pending ->
+  superseded`, declared once in the base table since those three are
+  held identically in either variant), named variant-agnostically by
+  `transitions.is_un_reopen_
   transition`, and routes it through `state.apply_task_status_change`,
   which emits `task.un_reopened` instead of the generic amendment event
   for exactly this transition. This does not relax the standing rule that
@@ -2248,7 +2275,14 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   work. `LoopSupervisor._reconcile_pre_cure_heads`, called from both
   completion-path writers, then diffs that sha against HEAD over every
   owner's commits: an empty-of-cited-paths diff takes the declared edge
-  (`source: "cure-reconciliation"`) and fires a follow-up notification
+  (`source: "cure-reconciliation"`), to the record's own ACTUAL pre-reopen
+  status (`records_pending_reconciliation`'s own `priorStatus` field,
+  fed from `status.json`'s `preCureStatuses` map -- cure-01-05, PRD
+  requirement B.3/B.4, F05, #221 -- never a value inferred from `cfg.
+  vigilant`, which the production hook did until this task and which
+  silently PROMOTED a `failed`/`skipped`/`superseded` record to
+  `completed`/`validated` instead of restoring it), and fires a follow-up
+  notification
   naming the owning cure tasks, the diffed range and the paths checked; a
   diff that touches a cited path, an owner that is not yet terminal, an
   owner that ended `failed`/`skipped`, or a diff that cannot be computed at

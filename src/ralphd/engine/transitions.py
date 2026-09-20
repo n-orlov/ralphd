@@ -1154,7 +1154,21 @@ OPERATOR_RULEABLE_TASK_STATUSES: tuple[str, ...] = tuple(
 # with its own risk, and is explicitly out of this requirement's scope.
 # This edge only moves a record OUT of `pending`, retracting a move the
 # engine already made on its own prediction.
-UN_REOPEN_TASK_STATUS_TARGETS: tuple[str, ...] = ("validated", "completed")
+#
+# Cure-01-05 (PRD requirement B.3/B.4, F05, #221): the walk re-opens
+# `state.py`'s own `test_the_chain_reopens_regardless_of_the_tasks_prior_
+# terminal_status` node says so explicitly -- from ANY prior terminal
+# status, not only the variant's own ordinary claim terminal. `failed`
+# and `skipped` are legitimate prior terminal statuses B itself
+# preserves, and `superseded` is reachable too (a forced split's own
+# parent, later named in a finding's `invalidates`). None of the three is
+# variant-conditioned -- a `failed`/`skipped`/`superseded` record could
+# only ever have held that same status in EITHER variant, exactly like
+# `"failed": ("skipped",)` below applies identically to both -- so they
+# are declared once, in the BASE table only, alongside `validated`/
+# `completed`'s own variant split.
+UN_REOPEN_TASK_STATUS_TARGETS: tuple[str, ...] = (
+    "validated", "completed", "failed", "skipped", "superseded")
 
 
 def is_un_reopen_transition(current: str, target: str) -> bool:
@@ -1175,7 +1189,16 @@ def is_un_reopen_transition(current: str, target: str) -> bool:
 
 
 TASK_STATUS_TABLE: dict[str, tuple[str, ...]] = {
-    "pending": ("in-progress", "completed"),
+    # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): `failed`, `skipped`
+    # and `superseded` join `completed` here (see `UN_REOPEN_TASK_STATUS_
+    # TARGETS`'s own comment just above) as the un-reopen edge's
+    # variant-independent targets -- the reopen walk takes a record from
+    # ANY prior terminal status, and these three are held identically
+    # in both variants, so they belong in the BASE table rather than the
+    # vigilant delta below (which only ever replaces `completed` with
+    # `validated`).
+    "pending": ("in-progress", "completed", "failed", "skipped",
+                "superseded"),
     # non-vigilant's claim path -- vigilant overrides this entry entirely
     # (see TASK_STATUS_VIGILANT_DELTA below).
     # `superseded` (v0.20 requirement B.1, #156, tasks 016/019) is declared
@@ -1259,8 +1282,14 @@ TASK_STATUS_VIGILANT_DELTA: dict[str, tuple[str, ...]] = {
     # delta already replaces `completed` with `awaiting-validation` on
     # `in-progress` above, for the identical reason: a record reopened
     # under THIS variant can only ever have held THIS variant's own
-    # terminal status before the reopen.
-    "pending": ("in-progress", "validated"),
+    # terminal status before the reopen. Cure-01-05 (requirement B.3/B.4,
+    # F05): this whole tuple REPLACES the base table's `pending` entry, so
+    # `failed`/`skipped`/`superseded` are re-stated here too -- otherwise
+    # a vigilant run could never un-reopen a record that had genuinely
+    # held one of them, exactly the gap that dropped them from the base
+    # table's own replaced entry would open.
+    "pending": ("in-progress", "validated", "failed", "skipped",
+                "superseded"),
 }
 
 
@@ -1291,7 +1320,8 @@ def is_legal_task_status_transition(current: str, target: str, vigilant: bool) -
     return target in legal_next_task_statuses(current, vigilant)
 
 
-def task_status_report_errors(payload: Any, current_status: str, vigilant: bool) -> list[str]:
+def task_status_report_errors(payload: Any, current_status: str, vigilant: bool,
+                              *, allow_superseded_restore: bool = False) -> list[str]:
     """The semantic check layered ON TOP OF a hat's schema validation
     (`contracts.validate_payload`, the only SCHEMA validator, fact 16/#65 --
     this is not a second one of those: it is a business-rule check of the
@@ -1303,6 +1333,17 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool)
     PRD's operator ruling describes ("in-step there is no task-state change
     at all"). Only once a hat's OUTPUT actually proposes a move is there
     anything for the declared table above to accept or refuse.
+
+    Cure-01-05 (PRD requirement B.3/B.4, F05, #221): `allow_superseded_
+    restore` is `False` for every hat-report call site (the default, and
+    every argument this function ever received before this task) -- a hat
+    still may never claim `superseded` through this channel, unchanged.
+    The ONE caller that ever passes `True` is `state.apply_task_status_
+    change`'s own `source="cure-reconciliation"` branch, restoring a
+    record to a `superseded` status THE ENGINE ITSELF persisted before the
+    reopen (`preCureStatuses`, never a hat's free-form claim) -- the un-
+    reopen edge (`is_un_reopen_transition`) is the only shape this ever
+    fires for, so this flag never widens what a hat may report.
     """
     if not isinstance(payload, dict):
         return []
@@ -1331,7 +1372,8 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool)
     # through this channel. Refused here, in the semantic layer, so the
     # declared table stays an honest inventory of what the engine does
     # without widening the vocabulary a report may carry.
-    if target == "superseded" and current_status != target:
+    if (target == "superseded" and current_status != target
+            and not allow_superseded_restore):
         return ["task_status: 'superseded' is applied by the harness itself "
                 "at a forced split (a spent progressBudget); a hat never "
                 "reports it -- carry the split in `proposed_tasks` instead"]

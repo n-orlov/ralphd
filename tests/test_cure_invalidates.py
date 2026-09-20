@@ -57,6 +57,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from ralphd.engine import findings
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
@@ -1052,11 +1054,15 @@ def _commit_file(workspace: Path, relpath: str, content: str, message: str) -> s
                           text=True).stdout.strip()
 
 
-def _cure_pass_over_a_real_workspace(root: Path, workspace: Path):
+def _cure_pass_over_a_real_workspace(root: Path, workspace: Path,
+                                     record_status: str = "completed"):
     """A supervisor with tasks 057/058 already re-opened `pending` by a
     real `_step_review()` cure pass over a finding naming `RECORD_PATH`,
     against `workspace` (a real git repo) -- returns `(sup, cure_id,
-    seed_sha)`.
+    seed_sha)`. `record_status` (cure-01-05, requirement B.3/B.4, F05) is
+    the record's OWN status before this reopen -- default `"completed"`
+    unchanged from every call site predating this task; a caller wanting
+    `failed`/`skipped`/`superseded` passes it explicitly.
     """
     seed_sha = _init_git_workspace(workspace)
     # Task 017 (PRD requirement A.3, #224): this module's own fixture
@@ -1070,7 +1076,8 @@ def _cure_pass_over_a_real_workspace(root: Path, workspace: Path):
                       operator_input_needed_pause=False)
     sup._approach = 1
     atomic_write_json(sup.run.tasks_file,
-                      {"version": 1, "tasks": _lane_fixture_tasks()})
+                      {"version": 1,
+                       "tasks": _lane_fixture_tasks(record_status=record_status)})
     finding = _blocking_curable_finding(
         "the shipped sha's lanes moved", "a later commit landed after the record",
         invalidates=[RECORD_PATH],
@@ -1099,42 +1106,66 @@ def _cure_pass_over_a_real_workspace(root: Path, workspace: Path):
 
 
 def test_a_cure_diff_that_misses_the_cited_path_un_reopens_the_record(tmp_path):
-    root = tmp_path / "run"
-    workspace = tmp_path / "workspace"
-    sup, cure_id, seed_sha = _cure_pass_over_a_real_workspace(root, workspace)
+    """Cure-01-05 (PRD requirement B.3/B.4, F05, #221) rewrites this node IN
+    PLACE (zero fast-tier headroom -- one collected item, same as before
+    this task) to loop over every prior terminal status a non-vigilant
+    record could genuinely have held before the reopen -- `completed`
+    (this test's own original subject), `failed`, `skipped` and
+    `superseded` -- instead of adding three siblings. Before this task the
+    production hook derived its restore target purely from `cfg.vigilant`,
+    which happened to answer `completed` correctly here but would have
+    silently PROMOTED a `failed`/`skipped`/`superseded` record to
+    `completed` instead of restoring it -- exactly F05's non-vigilant probe
+    failures. Each iteration also exercises `records_pending_
+    reconciliation`'s own `priorStatus` field directly, the thing the
+    production hook now reads instead of guessing.
+    """
+    for record_status in ("completed", "failed", "skipped", "superseded"):
+        root = tmp_path / f"run-{record_status}"
+        workspace = tmp_path / f"workspace-{record_status}"
+        sup, cure_id, seed_sha = _cure_pass_over_a_real_workspace(
+            root, workspace, record_status=record_status)
 
-    # the cure lands, but its commit touches an UNRELATED file -- never
-    # `RECORD_PATH` itself.
-    new_head = _commit_file(workspace, "src/unrelated.py", "pass\n",
-                            "the cure, touching nothing 058 cites")
-    assert new_head != seed_sha
+        # the cure lands, but its commit touches an UNRELATED file --
+        # never `RECORD_PATH` itself.
+        new_head = _commit_file(workspace, "src/unrelated.py", "pass\n",
+                                "the cure, touching nothing 058 cites")
+        assert new_head != seed_sha
 
-    restored = []
-    sup.notifier = restored.append
-    errors = sup._apply_reported_task_status(
-        {"task_id": cure_id, "task_status": "completed"})
-    assert errors == []
+        # the persisted baseline names this record's own ACTUAL prior
+        # status -- never inferred -- read straight off `records_pending_
+        # reconciliation`'s own pure lookup before the cure task's own
+        # completion write drives the real restore just below.
+        assert sup.run.read_status().get("preCureStatuses") == {
+            "058": record_status}
 
-    data = sup.run.read_tasks()
-    tasks = {t["id"]: t for t in data["tasks"]}
-    # 058 (the record) is walked back to its PRE-REOPEN terminal status --
-    # "completed", the default `_lane_fixture_tasks()` seeds it at.
-    assert tasks["058"]["status"] == "completed"
-    # 057 (a verification step, not a record) is deliberately left alone --
-    # requirement B does not re-route the verification-step re-open, only
-    # the record's (PRD B rule 1: "the two direct writes ... stay as they
-    # are").
-    assert tasks["057"]["status"] == "pending"
+        restored = []
+        sup.notifier = restored.append
+        errors = sup._apply_reported_task_status(
+            {"task_id": cure_id, "task_status": "completed"})
+        assert errors == []
 
-    reopened = _events(root, "task.un_reopened")
-    assert len(reopened) == 1
-    assert reopened[0]["taskId"] == "058"
-    assert reopened[0]["previous"] == "pending"
-    assert reopened[0]["status"] == "completed"
-    assert reopened[0]["source"] == "cure-reconciliation"
+        data = sup.run.read_tasks()
+        tasks = {t["id"]: t for t in data["tasks"]}
+        # 058 (the record) is walked back to its GENUINE PRE-REOPEN
+        # terminal status -- never coerced to `completed` when the real
+        # answer is `failed`/`skipped`/`superseded`.
+        assert tasks["058"]["status"] == record_status
+        # 057 (a verification step, not a record) is deliberately left
+        # alone -- requirement B does not re-route the verification-step
+        # re-open, only the record's (PRD B rule 1: "the two direct writes
+        # ... stay as they are").
+        assert tasks["057"]["status"] == "pending"
 
-    assert len(restored) == 1
-    assert "058" in restored[0]
+        reopened = _events(root, "task.un_reopened")
+        assert len(reopened) == 1
+        assert reopened[0]["taskId"] == "058"
+        assert reopened[0]["previous"] == "pending"
+        assert reopened[0]["status"] == record_status
+        assert reopened[0]["source"] == "cure-reconciliation"
+
+        assert len(restored) == 1
+        assert "058" in restored[0]
 
 
 def test_a_cure_diff_that_touches_the_cited_path_leaves_the_record_pending(tmp_path):
@@ -1321,61 +1352,79 @@ def test_both_owners_missing_the_cited_path_un_reopens_once_on_the_last(tmp_path
     assert "058" in restored[0]
 
 
-def test_under_the_vigilant_variant_the_record_is_restored_to_validated(tmp_path):
-    """The un-reopen's target is this run's own variant-conditioned terminal
-    status, the same pair the hook fires on: `validated` under vigilant
-    verification (where a record could only ever have HELD `validated`),
-    `completed` otherwise -- and the declared edge covers both
-    (`transitions.TASK_STATUS_VIGILANT_DELTA`'s `pending -> validated`).
+def test_under_the_vigilant_variant_the_record_is_restored_to_its_actual_status(tmp_path):
+    """Cure-01-05 (PRD requirement B.3/B.4, F05, #221) rewrites this node IN
+    PLACE (zero fast-tier headroom -- one collected item, same as before
+    this task) to loop over every prior terminal status a VIGILANT record
+    could genuinely have held before the reopen -- `validated` (this
+    test's own original subject), plus `failed`, `skipped` and
+    `superseded` (variant-independent, declared once in the base table and
+    re-stated in the vigilant delta's own `pending` tuple). The un-reopen's
+    target is `candidate["priorStatus"]` -- persisted at reopen time
+    (`state.insert_cure_tasks`'s `preCureStatuses` map) and read back
+    through `state.records_pending_reconciliation`, asserted directly here
+    too -- never a value inferred from `cfg.vigilant` after the fact, which
+    would have silently PROMOTED a `failed`/`skipped`/`superseded` record
+    to `validated` instead of restoring it.
     """
-    root = tmp_path / "run"
-    workspace = tmp_path / "workspace"
-    seed_sha = _init_git_workspace(workspace)
-    # Task 017 (PRD requirement A.3, #224): this module's own fixture
-    # tasks (`_lane_fixture_tasks`) reopen an already-`validated`
-    # verify/record pair -- exactly trigger condition 2's own shape.
-    # Disabled here so this pre-existing reconciliation-mechanics
-    # module keeps driving the REAL cure pass it is testing, the
-    # same isolation `tests/test_repeated_rejection_signature.py`
-    # already applies for condition 3's own mechanism.
-    sup = _supervisor(root, workspace=workspace, vigilant=True,
-                      operator_input_needed_pause=False)
-    sup._approach = 1
-    atomic_write_json(sup.run.tasks_file,
-                      {"version": 1,
-                       "tasks": _lane_fixture_tasks(record_status="validated")})
-    findings.write_findings_json(sup.run.findings_json_file, [
-        _blocking_curable_finding(
-            "the shipped sha's lanes moved",
-            "a later commit landed after the record",
-            invalidates=[RECORD_PATH],
-            cured_when="the record is refreshed against the moved lanes")])
+    for record_status in ("validated", "failed", "skipped", "superseded"):
+        root = tmp_path / f"run-{record_status}"
+        workspace = tmp_path / f"workspace-{record_status}"
+        seed_sha = _init_git_workspace(workspace)
+        # Task 017 (PRD requirement A.3, #224): this module's own fixture
+        # tasks (`_lane_fixture_tasks`) reopen an already-`validated`
+        # verify/record pair -- exactly trigger condition 2's own shape.
+        # Disabled here so this pre-existing reconciliation-mechanics
+        # module keeps driving the REAL cure pass it is testing, the
+        # same isolation `tests/test_repeated_rejection_signature.py`
+        # already applies for condition 3's own mechanism.
+        sup = _supervisor(root, workspace=workspace, vigilant=True,
+                          operator_input_needed_pause=False)
+        sup._approach = 1
+        atomic_write_json(
+            sup.run.tasks_file,
+            {"version": 1,
+             "tasks": _lane_fixture_tasks(record_status=record_status)})
+        findings.write_findings_json(sup.run.findings_json_file, [
+            _blocking_curable_finding(
+                "the shipped sha's lanes moved",
+                "a later commit landed after the record",
+                invalidates=[RECORD_PATH],
+                cured_when="the record is refreshed against the moved lanes")])
 
-    async def _review_rejects(prompt, transcript, **kw):
-        return _result(json.dumps({
-            "verdict": "rejected",
-            "reason": "one blocking finding, curable, invalidating the record",
-        }))
+        async def _review_rejects(prompt, transcript, **kw):
+            return _result(json.dumps({
+                "verdict": "rejected",
+                "reason": "one blocking finding, curable, invalidating the record",
+            }))
 
-    sup.runner.run = _review_rejects  # type: ignore[method-assign]
-    assert _bounded(sup._step_review()) == (
-        "advance", "cure", "rejected_curable_pass_available")
-    cure_id = [t["id"] for t in sup.run.read_tasks()["tasks"]
-               if t["id"].startswith("cure-")][0]
-    assert sup.run.read_status().get("preCureHeads") == {"058": seed_sha}
+        sup.runner.run = _review_rejects  # type: ignore[method-assign]
+        assert _bounded(sup._step_review()) == (
+            "advance", "cure", "rejected_curable_pass_available")
+        cure_id = [t["id"] for t in sup.run.read_tasks()["tasks"]
+                   if t["id"].startswith("cure-")][0]
+        assert sup.run.read_status().get("preCureHeads") == {"058": seed_sha}
+        assert sup.run.read_status().get("preCureStatuses") == {
+            "058": record_status}
 
-    _commit_file(workspace, "src/unrelated.py", "pass\n",
-                 "the cure, touching nothing 058 cites")
-    restored = []
-    sup.notifier = restored.append
-    assert sup._apply_reported_task_status(
-        {"task_id": cure_id, "task_status": "validated"}) == []
+        _commit_file(workspace, "src/unrelated.py", "pass\n",
+                     "the cure, touching nothing 058 cites")
+        _set_status(sup.run, cure_id, "validated")
+        candidates = records_pending_reconciliation(sup.run, cure_id)
+        assert len(candidates) == 1
+        assert candidates[0]["priorStatus"] == record_status
+        _set_status(sup.run, cure_id, "pending")
 
-    tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
-    assert tasks["058"]["status"] == "validated"
-    reopened = _events(root, "task.un_reopened")
-    assert len(reopened) == 1
-    assert reopened[0]["previous"] == "pending"
-    assert reopened[0]["status"] == "validated"
-    assert reopened[0]["source"] == "cure-reconciliation"
-    assert len(restored) == 1 and "058" in restored[0]
+        restored = []
+        sup.notifier = restored.append
+        assert sup._apply_reported_task_status(
+            {"task_id": cure_id, "task_status": "validated"}) == []
+
+        tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
+        assert tasks["058"]["status"] == record_status
+        reopened = _events(root, "task.un_reopened")
+        assert len(reopened) == 1
+        assert reopened[0]["previous"] == "pending"
+        assert reopened[0]["status"] == record_status
+        assert reopened[0]["source"] == "cure-reconciliation"
+        assert len(restored) == 1 and "058" in restored[0]
