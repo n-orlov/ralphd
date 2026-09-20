@@ -4676,16 +4676,24 @@ def cure_pass_preview(tasks: list, blocking: list[dict]) -> dict:
       for every syntactically valid `invalidates` path the walk does NOT
       recognise as a lane-evidence record chain (`invalidates_reopen_walk`
       returning `None` for that path) -- the shape of the brand-new re-take
-      task `insert_cure_tasks` appends for it. Two findings sharing one
-      re-take anchor path collapse to a single task at write time
-      (`insert_cure_tasks`' own `_existing_retake_task` bookkeeping); this
-      preview does not reproduce that dedup, so it may count one extra path
-      no write would actually add a row for -- a residual precision gap in
-      the ESCALATION preview, not in the trigger (which only ever looks at
-      `reopenedTaskIds`).
+      task `insert_cure_tasks` appends for it -- counted through the SAME
+      dedup the write path applies, so the number an A.7 escalation reports
+      is the number of rows a cure pass would actually add. Two findings
+      naming one re-take anchor path collapse to a single task at write
+      time, and a path this approach ALREADY has a re-usable re-take row
+      for adds no row at all (both decided by `insert_cure_tasks`' own
+      `_existing_retake_task` bookkeeping, which this preview calls rather
+      than second-guessing): such a path is counted once, or not at all,
+      exactly as the write would.
     """
     reopened_ids: list[str] = []
     insert_count = len(blocking)
+    # Every unresolved re-take anchor path already accounted for by this
+    # preview -- `insert_cure_tasks` appends at most ONE re-take row per
+    # path across the whole pass (a later finding naming the same path
+    # re-uses the row the earlier finding just appended), so a path seen
+    # twice here must be counted once.
+    retake_paths_seen: set[str] = set()
     for finding in blocking:
         invalidates = finding.get("invalidates")
         if not isinstance(invalidates, list):
@@ -4695,7 +4703,18 @@ def cure_pass_preview(tasks: list, blocking: list[dict]) -> dict:
             if not isinstance(path, str) or not path:
                 continue
             if entry is None:
-                insert_count += 1
+                if path in retake_paths_seen:
+                    continue
+                retake_paths_seen.add(path)
+                # A re-usable row already on disk (an earlier cure pass over
+                # this same approach) is re-opened in place, not appended:
+                # no new task, so nothing to count. `_existing_retake_task`
+                # itself declines a row whose `dependsOn` names a dead task,
+                # and the write appends a fresh one in that case -- reading
+                # the decision from that one function is what keeps the
+                # count and the write from drifting apart.
+                if _existing_retake_task(tasks, path) is None:
+                    insert_count += 1
                 continue
             record_task, verification_tasks = entry
             for candidate in (record_task, *verification_tasks):

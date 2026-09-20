@@ -10736,8 +10736,9 @@ class LoopSupervisor:
         # the gate happens to refuse is still recorded exactly as before,
         # so the NEXT approach's own first rejection still compares
         # against it.
-        if (self._repeated_rejection_signature(approach, signature)
-                and self._discretionary_gate_available(approach)):
+        repeated_signature = self._repeated_rejection_signature(
+            approach, signature)
+        if repeated_signature and self._discretionary_gate_available(approach):
             self._spend_discretionary_gate(approach)
             self._pause_and_escalate_repeated_rejection_signature(
                 approach, signature, cure_preview)
@@ -10794,9 +10795,33 @@ class LoopSupervisor:
         ruling_re_park_exhausted = (
             ruling_matches_this_rejection
             and self._ruling_already_reparked(ruled["seq"]))
+        # Task 017 (PRD requirement A.3, #224): `repeated_signature` (read
+        # just above, for trigger condition 3's own shared-gate branch) also
+        # bounds THIS branch, and it is the one place where the "condition 1
+        # is unbudgeted" rule yields: a rejection that matched trigger
+        # condition 3 and was refused its pause because the approach's ONE
+        # discretionary gate is already spent must not then take condition
+        # 1's gate for the very same rejection. The budget is one
+        # discretionary gate per approach for conditions 2 and 3 TOGETHER
+        # (PRD A.3, "conditions 2 and 3 compete for one discretionary gate
+        # per approach"), so without this a spent condition-3 match fell
+        # straight through into an unbudgeted condition-1 pause and an
+        # approach paid for two gates -- the shared budget would have been
+        # a no-op under the default-enabled flag, observable as two
+        # `operator_escalation` events for one approach's condition-2-then-
+        # condition-3 pair. A rejection that never matched condition 3 (the
+        # ordinary case: a fresh blocking-clause signature, or none at all)
+        # is untouched and still raises condition 1's gate however many
+        # times it happens over an approach, spent discretionary budget or
+        # not. SPEC.md's own `operator_escalation` row already states this
+        # tail ("the repeated signature recorded and the approach archived/
+        # replanned"). A.6's reviewer-requested gate is a fresh per-verdict
+        # decision and, exactly as it already overrides the flag and the
+        # A.5 re-park bound, it overrides this too.
         if reviewer_requested_gate or (
                 self.cfg.operator_input_needed_pause
-                and not ruling_re_park_exhausted):
+                and not ruling_re_park_exhausted
+                and not repeated_signature):
             if ruling_matches_this_rejection and not ruling_re_park_exhausted:
                 self._record_ruling_reparked(ruled["seq"])
             replan_available = approach < self.cfg.max_approaches

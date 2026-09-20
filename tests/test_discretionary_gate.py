@@ -28,7 +28,12 @@ from pathlib import Path
 
 from ralphd.engine import findings
 from ralphd.engine.runner import IterationResult
-from ralphd.engine.state import cure_pass_preview
+from ralphd.engine.state import (
+    RunDir,
+    atomic_write_json,
+    cure_pass_preview,
+    insert_cure_tasks,
+)
 
 from tests.conftest import supervisor_factory
 
@@ -160,6 +165,80 @@ def test_no_invalidates_at_all_is_the_plain_not_a_trigger_case():
 
     assert preview["reopenedTaskIds"] == []
     assert preview["insertCount"] == 1
+
+
+def _run_with_tasks(root: Path, tasks: list) -> RunDir:
+    """The same minimal on-disk harness `tests/test_cure_invalidates.py`
+    drives `insert_cure_tasks` through -- used here only to measure what a
+    real cure pass WRITES against what `cure_pass_preview` PREDICTED for
+    the identical fixture."""
+    root.mkdir(parents=True, exist_ok=True)
+    run = RunDir(root=root)
+    atomic_write_json(run.tasks_file, {"version": 1, "tasks": tasks})
+    return run
+
+
+def _rows_added(run: RunDir, blocking: list) -> int:
+    before = len(run.read_tasks()["tasks"])
+    insert_cure_tasks(run, 1, blocking)
+    return len(run.read_tasks()["tasks"]) - before
+
+
+def test_two_findings_sharing_one_retake_path_are_counted_once(tmp_path):
+    # A.7 item 3 is "how many tasks would be inserted" -- so the preview's
+    # own number has to be the number of rows the write would actually add.
+    # `insert_cure_tasks` collapses two findings naming the SAME unresolved
+    # path onto ONE re-take row (#209 defect 3's `_existing_retake_task`
+    # reuse), so a preview counting the path twice overstates the page it
+    # sends an operator.
+    shared = [
+        _finding("blocking", True, "requirement E.3 (#167)",
+                 "the record went stale", invalidates=["docs/testing.md"]),
+        _finding("blocking", True, "requirement F.1 (#198)",
+                 "the same record, other clause",
+                 invalidates=["docs/testing.md"]),
+    ]
+    preview = cure_pass_preview([], shared)
+    # two cure tasks plus ONE shared re-take row.
+    assert preview["insertCount"] == 3
+
+    run = _run_with_tasks(tmp_path / "run", [])
+    assert _rows_added(run, shared) == preview["insertCount"]
+
+
+def test_a_path_with_a_reusable_retake_row_already_on_disk_adds_none(tmp_path):
+    # An earlier cure pass over this SAME approach already appended the
+    # re-take row for this path: the write re-opens that row in place and
+    # appends nothing, so the preview must count only the cure task.
+    existing = {"id": "retake-01-01-01", "title": "Re-take docs/testing.md",
+                "successCriteria": "docs/testing.md is re-taken.",
+                "status": "completed", "origin": "review-cure",
+                "dependsOn": ["cure-01-01"], "tier": "normal"}
+    preview = cure_pass_preview([existing], _CURE_INSERT_ONLY_FINDING)
+    assert preview["insertCount"] == 1
+
+    run = _run_with_tasks(tmp_path / "run", [existing])
+    assert _rows_added(run, _CURE_INSERT_ONLY_FINDING) == preview["insertCount"]
+
+
+def test_a_retake_row_behind_a_dead_dependency_is_counted_again(tmp_path):
+    # `_existing_retake_task` DECLINES to re-use a row whose own `dependsOn`
+    # names a dead task (it could never be selected again), so the write
+    # appends a fresh re-take row for the path -- and the preview, reading
+    # that same decision from that same function, counts it.
+    dead = {"id": "cure-01-01", "title": "dead cure",
+            "successCriteria": "n/a", "status": "failed",
+            "origin": "review-cure", "dependsOn": [], "tier": "normal"}
+    stranded = {"id": "retake-01-01-01",
+                "title": "Re-take docs/testing.md",
+                "successCriteria": "docs/testing.md is re-taken.",
+                "status": "pending", "origin": "review-cure",
+                "dependsOn": ["cure-01-01"], "tier": "normal"}
+    preview = cure_pass_preview([dead, stranded], _CURE_INSERT_ONLY_FINDING)
+    assert preview["insertCount"] == 2
+
+    run = _run_with_tasks(tmp_path / "run", [dead, stranded])
+    assert _rows_added(run, _CURE_INSERT_ONLY_FINDING) == preview["insertCount"]
 
 
 # ===========================================================================
@@ -320,12 +399,14 @@ def test_condition_2_then_condition_3_in_one_approach_share_one_gate(
     sup_a.resume()
 
     # Episode B: fresh supervisor, same run dir, same approach -- a MIXED
-    # rejection whose signature matches approach 0's recorded one.
-    # `operator_input_needed_pause=False` here so condition 1's own
-    # UNBUDGETED gate (which would otherwise fire on any ordinary
-    # rejection regardless of the shared budget) never masks what this
-    # probe is actually watching: whether condition 3 itself fires.
-    sup_b = _supervisor(root, max_approaches=2, operator_input_needed_pause=False)
+    # rejection whose signature matches approach 0's recorded one, driven
+    # under the DEFAULT `operator_input_needed_pause=True`, because that is
+    # the configuration every run ships with: a shared budget that only
+    # holds while condition 1's own gate is switched off would be no budget
+    # at all. A condition-3 match refused its pause by the spent shared gate
+    # does not then take condition 1's gate for the SAME rejection -- it
+    # reaches the ordinary archive/replan tail.
+    sup_b = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
     sup_b._approach = 1
     findings.write_findings_json(sup_b.run.findings_json_file, _MIXED_FINDINGS)
     sup_b.runner.run = _rejecting_runner("still mixed")  # type: ignore[method-assign]
@@ -380,7 +461,37 @@ def test_condition_3_then_condition_2_in_one_approach_share_the_same_gate(
     assert escalations[0]["reason"] == "rejected_repeated_signature"
 
 
-def test_a_condition_2_gate_early_leaves_condition_1_raised_later(tmp_path):
+def test_a_reviewer_raised_gate_still_pauses_once_the_shared_gate_is_spent(
+        tmp_path):
+    # A.6's reviewer field is a fresh per-verdict decision, never subject to
+    # the shared discretionary budget: a repeated-signature rejection that
+    # the spent gate refuses still pauses when THIS verdict asked for it.
+    root = tmp_path / "run"
+    signature = _mixed_signature()
+    sup = _supervisor(
+        root, max_approaches=2, operator_input_needed_pause=True,
+        status={"state": "running", "phase": "review", "approach": 1,
+                "rejectionSignatures": {"0": signature},
+                "discretionaryGateSpent": {"1": True}})
+    sup._approach = 1
+    findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
+
+    async def _review_raises_the_gate(prompt, transcript, **kw):
+        return _result(json.dumps({
+            "verdict": "rejected", "reason": "the predicate cannot count this",
+            "raise_operator_gate": True,
+        }))
+    sup.runner.run = _review_raises_the_gate  # type: ignore[method-assign]
+
+    outcome = _bounded(sup._step_review())
+
+    assert outcome == ("advance", "paused", "operator_input_needed")
+    assert sup.run.read_status()["pauseReason"] == "operator_input_needed"
+    assert not (root / "approaches" / "01").exists()
+
+
+def test_a_condition_2_gate_early_leaves_condition_1_raised_later(
+        tmp_path):
     root = tmp_path / "run"
     sup_a = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
                         tasks=_lane_fixture_tasks())
