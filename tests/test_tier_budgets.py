@@ -196,9 +196,97 @@ TIER_MARKERS = ("smoke", "fast")
 # `_modules(collected(marker))` in this module's own helpers, not a count of
 # `tests/*.py` paths in the raw collect-only text -- the latter over-counts,
 # which is how the 388 first written here was wrong by one.
+#
+# v0.23 (this wave, tasks 002-024) raises `fast`'s test ceiling 5857 -> 5997
+# and its module ceiling 390 -> 398 (the module ceiling was already 3 above
+# the live 387 going in, so 387 -> 398 is the live jump this raise actually
+# earns), and `smoke`'s test ceiling 4300 -> 4361 and its module ceiling
+# 271 -> 281. Twenty-two implementation tasks (002-023) were forbidden to
+# touch this literal, exactly like GH #209's seven units above, so every
+# one of their unit-group PRs carried
+# `test_the_collected_tier_is_inside_its_declared_budget[fast]` (and
+# `[smoke]`) red from the first added test until this one measured raise --
+# disclosed in every PR body and commit message, never fixed early.
+# Per-task attribution, measured by checking out each task's own final
+# commit into a throwaway worktree (never this run directory) and running
+# `-m fast --collect-only -q` / `-m smoke --collect-only -q` there, so each
+# delta below is the tier's live count at that exact tip minus the tip
+# before it, not an estimate:
+#   - 002 (H, hub mutating-route identity + startup opt-in) `2b75a8a3`:
+#     fast +3, smoke +0, no module change.
+#   - 003 (E.1, cure-insertion re-point event) `b5b0f445`: +0/+0
+#     (plumbing only, no new test).
+#   - 004 (E.2, confirmed-petition re-point event) `2e66175f`: fast +2,
+#     smoke +2, no module change.
+#   - 005 (B.1, invalidates re-open walk extracted as a pure predicate)
+#     `c791be84`: fast +2, smoke +2, no module change.
+#   - 006 (B.2, pre-cure workspace HEAD sha per re-opened record)
+#     `7a45acc2`: fast +4, smoke +4, no module change.
+#   - 007 (B.3, un-reopen task-status edge) `c1fb6ebd`: fast +5, smoke +5,
+#     no module change.
+#   - 008 (B.4, cure-task diff reconciliation + re-open ownership, plus its
+#     own red-lane cure retiring a grandfathered await-binding entry)
+#     `57e13284`: fast +12, smoke +12, no module change.
+#   - 009 (B.5, reconciled invalidates cascade documented) `eca85160`:
+#     fast +1, smoke +1, no module change.
+#   - 010 (C.1, legible-verdict-with-unusable-findings discrimination)
+#     `c07b90e1`: fast +1, smoke +1, no module change.
+#   - 011 (C.2, review_findings_unusable pause edge) `f17cc7bd`: fast +1,
+#     smoke +1, no module change.
+#   - 012 (C.3, schema-slip pin inversion) `4bc00afe`: +0/+0 (inverted an
+#     existing pin, added none).
+#   - 013 (A.2, operator answer channel -- `ralphctl rule`, `POST /rule`,
+#     hub textarea, ruling record -- plus the root-owned task-record mount
+#     isolation fix) `bf5c109b`: fast +38 (5 new modules), smoke +34
+#     (4 new modules) -- the largest single jump, matching the size of the
+#     new surface (a new CLI verb, a new route, a new hub control, a new
+#     record kind).
+#   - 014 (A.1, `operator_input_needed` pause before an approach is
+#     archived) `5b4d9bbc`: fast +20 (1 new module), smoke +20 (1 new
+#     module).
+#   - 015 (A.4, review re-asked once with the ruling as an authoritative
+#     clause) `3c11ef42`: fast +6 (1 new module), smoke +6 (1 new module).
+#   - 016 (A.5/A.6, operator-ruling re-park bound to one per ruling,
+#     optional reviewer-raised gate field) `335583e5`: fast +8 (1 new
+#     module), smoke +8 (1 new module).
+#   - 017 (A.3/A.7, shared discretionary trigger-condition gate, escalation
+#     payload; reworked once after a validation rejection named in this
+#     module's own task-history above) `5443d9b0`: fast +21 (2 new
+#     modules), smoke +21 (2 new modules).
+#   - 018 (D.1, third `_terminal_success_blockers` blocker for
+#     non-terminal review-cure tasks) `e069ecdf`: fast +2, smoke +2, no
+#     module change.
+#   - 019 (D.2, `review_cure_pending_at_verified` edge actually taken for
+#     a run-ending REFUTED remedy) `fec9f84e`: fast +3, smoke +3, no
+#     module change.
+#   - 020 (D.3, prompt-only un-scoping of the REFUTED remedy cure-task
+#     paragraph) `b1a9ea23`: +0/+0 (prose, no new test).
+#   - 021 (G, `produced_traffic` derived from `billable_tokens` at all
+#     three sites) `5358d3df`: fast +5, smoke +0 (the new nodes are
+#     fast-only engine-retry/fault-explanation probes, none marked smoke),
+#     no module change.
+#   - 022 (F.1, `PlanIngestionResult.warnings` surfaced at the accepted-
+#     proposal site) `d4c54c7a`: fast +2 (1 new module), smoke +2 (1 new
+#     module).
+#   - 023 (F.2, `orderingOnly` whole-dependsOn-set warning) `f6dfec97`:
+#     fast +4, smoke +4, no module change.
+# The twenty-two deltas above sum to exactly the totals this raise applies:
+# fast +140 tests / +11 modules, smoke +128 tests / +10 modules -- 5857+140
+# = 5997, 387+11 = 398, 4233+128 = 4361 (smoke's own prior-wave base, from
+# the GH #208 entry above, not the 4300 ceiling it was measured 67 under),
+# and 271+10 = 281.
+#
+# Measured directly with `.venv/bin/python -m pytest -m fast --collect-only
+# -q` and `-m smoke --collect-only -q` at this commit's own tip (task 024):
+# `-m fast` 5997/6130 tests collected (133 deselected) over 398 modules,
+# `-m smoke` 4361/6130 (1769 deselected) over 281 modules. All four numbers
+# sit exactly on the measured count, headroom for NOTHING further -- the
+# same choice every entry above made. Confirmed against
+# `_modules(collected(marker))`, this module's own helpers, not a raw path
+# count.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 5857, "modules": 390},
-    "smoke": {"tests": 4300, "modules": 271},
+    "fast": {"tests": 5997, "modules": 398},
+    "smoke": {"tests": 4361, "modules": 281},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
