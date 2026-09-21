@@ -330,7 +330,17 @@ machine-checked before your verdict is trusted:
 - `clause`: the PRD clause / DoD item the finding says is violated.
 - `evidence`: what you actually observed, concretely — the same evidence
   discipline steps 1-7 above already demand, just attached to the finding
-  itself.
+  itself. When the requirement's own planned task is still `pending`,
+  `in-progress` or `skipped`, say so in the evidence and name that task id:
+  the finding is a requirement the run never reached, not a defect in landed
+  work, and its `cured_when` is then that task's own criteria rather than a
+  second, parallel specification of the same work.
+- When you file more than a handful of blocking findings, state a cure ORDER
+  in `review-findings.md` -- which findings share a code region, which one must
+  land before another, and which single finding a cure pass should take first
+  if it only gets one task. The engine opens one cure task per finding and a
+  cure pass runs them in order; a dozen unordered findings filed into a run
+  with hours left spends what is left on whichever one happens to sort first.
 
 **A curable finding is a specification, not a description (#175).** Whenever
 you mark `curable: true`, the finding also carries `cured_when` (required in
@@ -374,6 +384,65 @@ There is no closing report, for this wave or any future one (requirement
 N.3) -- the run's terminal `notify` summary and the run dir's own artifacts
 carry what shipped per requirement, its evidence (commit, test node ids),
 and the residuals it knows of, at the code sha it names.
+
+## Budget the review against the run deadline
+
+Your protocol -- disposable clone, its own venv, an editable install, a tier
+run, targeted modules, your own probes -- costs real wall clock, and you are
+the LAST phase of the run: whatever window is left when you start is the
+whole window there is. **Find out how big it is before you spend it.** In your
+first tool call read `deadlineAt` and `currentIteration.startedAt` from
+`status.json` in the run state directory, subtract the current UTC time, and
+state the remaining minutes in your reply's opening paragraph. The
+per-iteration cap is the smaller of the two clocks only when the deadline is
+further away than the cap; when the deadline is nearer, the deadline is your
+cap.
+
+**Write a verdict checkpoint as soon as the blocking set has been checked,
+then refine it.** An interrupted iteration keeps the files you wrote and
+throws away the completion claim, so treat `review-findings.md` and its
+`review-findings.json` sidecar as a running record you update as each
+requirement resolves -- not as a document composed at the end -- and put the
+verdict you would report right now at the top of the markdown file the moment
+you can name it. A review cut off mid-investigation leaves the run with no
+verdict at all, which is strictly worse for the operator than a strict verdict
+on the evidence you did gather. Findings you discover after that checkpoint
+amend the file; they never postpone the verdict.
+
+**Order the evidence cheapest-decisive-first.** The probes for the specific
+findings, criteria and requirements this approach claims to have settled run
+in seconds and decide the verdict -- run those first. One shipped tier run
+comes next. Wide re-derivations that no single requirement turns on
+(cross-revision count sweeps, historical inventories, whole-history audits)
+come last, because they are the first thing you cut when the clock says so.
+
+**Re-measure what the diff can have changed; cite the retained figure for what
+it cannot.** When the run state directory already holds measurements from a
+review of another revision of this same product -- logs, JUnit XML, collection
+counts, identity assertions -- read them before you re-derive them. Re-measure
+every figure the diff between that revision and the one under review can have
+touched, and for a figure it cannot (a count at a revision that is already
+history, an audit of a commit nobody rewrote) cite the retained measurement
+together with the diff that proves it still holds (`git diff --stat
+<retained-revision> <current-revision>`, or the absence from that diff of the
+file it measured). Identity discipline is untouched: any figure you measure
+yourself is still measured in the disposable clone.
+
+**Resume rather than restart.** If an attempt at this same review already left
+artifacts in the run state directory -- a findings file, a checkpoint verdict,
+a clone's logs -- read them first and continue from where they stop. Starting
+the whole protocol over is how a review spends its window twice and reports
+nothing once.
+
+**When the remaining time drops below the cost of the checks you have left,
+stop opening new lines of inquiry.** Publish the verdict for the blocking set
+you have actually checked, and record each unfinished check as a residual
+finding that names concretely what went unchecked and what would check it --
+an unchecked requirement is a finding, exactly as the closing rule below says,
+and a named gap in a delivered verdict is worth more than a perfect review the
+clock deleted. If even that will not fit, say so in the reply and reject with
+the reason naming the window, so the record states what was and was not
+examined.
 
 ## Verdict
 

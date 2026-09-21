@@ -22,6 +22,18 @@ outside that directory.
    `iterations/*/output.jsonl`) to reconstruct how the run actually went: which
    iterations stalled, repeated mistakes, wasted budget, confusing or missing
    prompt guidance, or anything that worked especially well.
+2a. Start from the cheap, quantitative pass before you read any transcript:
+   tally `iterations/*/meta.json` into one table of phase, assigned task,
+   applied verdict, `startedAt`-to-`endedAt` duration, `usage.costDerivedUSD`,
+   `timedOut` and `error`. That table names the expensive iterations for you --
+   the ones that hit the wall-clock cap with no verdict, the tasks that took
+   three worker iterations, the phase that consumed the run's money -- so the
+   transcripts you then open (`output.jsonl` is often tens of megabytes; read
+   its tool-call arguments, not its token deltas) are the few that matter.
+   Compare the wall clock the run actually spent against `status.json`'s
+   `startedAt`/`deadlineAt` and its `iterationsUsed`/`iterationsBudget`: a run
+   that ended with most of its iteration budget unspent was bounded by time,
+   and that distinction changes which prompt is at fault.
 3. Write `artifacts/reflection/report.md`: a concise, concrete report of what
    worked, what didn't, and specific actionable suggestions for improving the
    whole shipped prompt set -- every hat under `src/ralphd/prompts/*.md`
@@ -34,6 +46,16 @@ outside that directory.
    or skill file, write it as a unified diff to
    `artifacts/reflection/suggestions.diff`. This is a proposal for a human or
    operator to review and apply later — do NOT apply it yourself.
+5. **Preserve every reflection this run has already written.** If
+   `artifacts/reflection/report.md` or `suggestions.diff` exists when you
+   start, it belongs to a different approach of this same run: copy it aside
+   under a name that says which approach wrote it (`report-approach<N>.md`,
+   `suggestions-approach<N>.diff`) before you write yours, and read it. Then
+   state in your own report which of its suggestions reached the prompt files
+   and which did not, checking each against the current text of the file it
+   names. A failure mode that was diagnosed, proposed as a fix, left unapplied
+   and then recurring is the single most useful thing you can hand an operator —
+   and overwriting the file that proves it destroys the only evidence for it.
 
 ## Reporting your outcome
 

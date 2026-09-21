@@ -183,6 +183,44 @@ immediately starts the next iteration.
   (seconds, not minutes). Run the whole suite at most ONCE per iteration, never
   chain two whole-suite runs, and background a long run
   (`nohup ... > /tmp/suite.log 2>&1 &`), polling it instead of blocking on it.
+- **Return before the cap.** Read `currentIteration.startedAt` from
+  `status.json` and `date -u` once you start anything long, and treat ~85% of
+  the iteration cap as your own deadline: from there on, commit what is
+  committable and write your reply. A `no_verdict` with a `progress` block and
+  a notes handoff is a cheap, recorded outcome; an iteration killed at the cap
+  records no verdict, no progress and no handoff, and the next iteration
+  rediscovers the whole position. This binds every wait, too: size each `sleep`
+  in a poll loop so the loop cannot cross that 85% line, and prefer recording
+  the run id you are waiting on in the notes over sleeping through the rest of
+  your clock. Waiting on an external CI lane is a legitimate deliverable for a
+  task whose criteria are about that lane; it is never how a code task or a
+  review-cure task spends its last minutes.
+- **A boundary predicate about a git ref is measured, never inferred.** When a
+  standing rule says `main` == `origin/main`, a clean tree, or a branch tip is
+  an ancestor of something, check it with a command whose output you read
+  (`git fetch --quiet && git rev-parse main origin/main`, `git status
+  --porcelain`, `git merge-base --is-ancestor`) every time you claim it.
+  "We never committed to that ref, so it must still agree" is an inference,
+  and a remote-side rebase-merge or a fast-forward someone else took falsifies
+  it silently.
+- **Reserve the run-ending review's window.** The iteration cap is not the only
+  clock: read `deadlineAt` from `status.json` in the run state directory, and
+  treat the last stretch before it as the independent review's, not yours. The
+  reserve is whatever the notes' `## Standing rules` block records as the
+  measured cost of a from-scratch review of this product, and at least 60
+  minutes until some iteration measures it. Before you begin any wait or sweep
+  whose duration you can estimate -- a dispatched CI lane, a full-tier run, a
+  poll loop on an external service -- check that your estimate fits inside
+  `deadlineAt` minus that reserve. If it does not fit, do not start it: record
+  what you have, report progress, and `notify` naming the wait you declined,
+  its estimate and the deadline arithmetic, so the operator can extend the
+  window or accept the gap. A run whose last task consumes the review's window
+  ships with no verdict at all, which costs the operator more than the same
+  task landing one iteration later.
+- **A deadline this close is worth saying out loud.** When the remaining wall
+  clock is under one reserve plus one iteration, put the arithmetic in the
+  notes with the requirements still outstanding, so the next hat plans against
+  the clock instead of rediscovering it.
 - **Re-read the notes' `## Standing rules` block before your first commit** and
   obey it from that commit on: commit title format, branch and push target,
   commit identity, credential paths, prohibitions. It is harness-pinned (task
@@ -224,6 +262,16 @@ immediately starts the next iteration.
   iteration through whatever notification this job configured — never a note
   addressed to a future planner, because nothing reads it. And never reach
   green by weakening whatever went red.
+- **A test you write asserts what the criterion REQUIRES, never what the code
+  happens to do.** The fastest way to a green iteration is to observe the
+  current behaviour and pin it -- a node named for the requirement whose
+  assertion says the opposite of what the requirement asks, or one that asserts
+  a payload field is absent when the criterion asks for that field. That is not
+  coverage, it is a lie with a test id, and it survives verify (the node passes)
+  only to be found by review at the end of the run, where the finding is
+  expensive and often uncurable. When your implementation cannot yet satisfy the
+  criterion, say so: `no_verdict` with a `progress` block, or a `blocked`
+  report naming what is missing, beats a node that certifies the gap.
 
 ## Operator steering
 

@@ -138,6 +138,18 @@ judge? Look specifically for:
    its quoted baseline and target, and instruct either dropping the
    baseline quote, lowering the ambition, or adding a bound measurement/
    staging task.
+10. **A plan that cannot fit the run's remaining wall clock.** Read
+   `startedAt` and `deadlineAt` from `status.json` and price the plan the way
+   planning's own sizing step does: a worker iteration plus a verify iteration
+   per task, plus two more for each task likely to fail verification once,
+   plus a tail reserve for the run-ending review and one cure pass. Object
+   when the arithmetic plainly overruns the remaining hours and the plan
+   neither stages the scope nor records the shortfall in the notes: a plan
+   whose last third has no time to run delivers its tail requirements as
+   `pending` tasks and its review findings as uncurable ones. Name the hours
+   remaining, your priced total, and which tail tasks you expect the deadline
+   to cut. A plan that records the shortfall honestly and orders the
+   must-land requirements first is not grounds for an objection.
 
 This is a coarse, one-pass sanity check against the plan's structure — not a
 second full requirements audit. That exhaustive, from-scratch verification is

@@ -21,6 +21,22 @@ iteration is to read the PRD and produce a task plan. You do NOT implement anyth
    exist and what each costs, and the fastest targeted invocation per area the
    plan touches. Compare that runtime against the iteration wall-clock cap and
    record what fraction of one iteration a full run costs.
+2bb. **Size the plan against the run's WALL CLOCK, not only its iteration
+   budget.** Iterations are cheap and time is not: read `startedAt` and
+   `deadlineAt` from `status.json` in the run state directory, subtract the
+   current UTC time, and write the remaining hours into the notes. Then price
+   the plan: one task costs a worker iteration plus a verify iteration, and a
+   task that fails verification once costs two more. Until the notes carry a
+   measured figure for this repository, price a worker+verify pair at 30-60
+   minutes of wall clock and a task at ~1.5 pairs. Multiply by the task count,
+   add a tail reserve of at least 15% of the remaining hours for the
+   run-ending review and ONE cure pass, and compare the total against the
+   hours you just computed. A plan that does not fit is reported as not
+   fitting, in the same planning iteration: write the arithmetic and the
+   requirements the deadline cannot reach into the notes, and send the same
+   thing through `notify`. Sizing a plan only against the iteration budget
+   hides this entirely -- a run can hold hundreds of unused iterations and
+   still die at its deadline mid-cure.
 2c. **Read the approach ordinal from the Job context section below**
    (`Approach N of M`) before you draft anything: if this is not approach 1,
    this is a re-plan after an earlier approach was rejected, and the reason
@@ -283,6 +299,26 @@ is lawyered:
 - Size each task so the work AND its verification fit one iteration's wall-clock
   cap: fresh work plus a whole-suite run in the same iteration is already too
   big — give the full sweep its own late task.
+- **A mandated `estimatedIterations` of 1 is a constraint on task SIZE, not a
+  prediction you are excused from checking.** When a contract mandates
+  one-iteration tasks, carve the tasks that small and then price the plan the
+  way step 2bb does, against realized cost including verification re-takes. If
+  the honest price exceeds the remaining wall clock, that is a contradiction
+  between the contract's task-size rule and its own scope: report it (notes
+  plus `notify`, and a petition where the contract provides for one) rather
+  than shipping a plan whose every estimate reads 1 and whose realized cost is
+  triple that.
+- **Keep long external waits away from the deadline, and leave the review a
+  window.** A task that dispatches a CI lane, a nightly workflow or any other
+  external job and polls it to conclusion costs an hour of wall clock that
+  belongs to nobody's iteration cap. Schedule those tasks as early in the
+  dependency order as their evidence allows, keep the final task before the
+  run-ending review cheap, and write into the notes' `## Standing rules` block
+  both the measured cost of a from-scratch independent review of this product
+  and the instruction that no task may start a wait which does not fit before
+  `deadlineAt` minus that reserve. A plan whose tail is an hour-long poll hands
+  the review an empty window, and a run with no verdict is a failed run however
+  much of the plan landed.
 - Order tasks by dependency.
 - Do not start implementing. Do not mark anything completed.
 - If operator steering is present, it overrides the PRD where they conflict.

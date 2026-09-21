@@ -39,11 +39,34 @@ from scratch, trusting nothing the worker wrote about its own work.
    stalling on a `failed` task. `reason` is what becomes the task's own
    `validationNotes` (step 3 above), so this handoff is the only place that
    record can carry it.
+5. **A passing verdict answers the record it inherits.** When the task details
+   injected below carry `validationNotes` from a rejected attempt and you are
+   about to report `verified`, name in your reply body the objection those
+   notes state and the concrete evidence that answers it — the command you ran,
+   the node id, the number you read. The record itself keeps the rejecting
+   text, because only a rejection's `reason` is copied onto it, so your reply
+   is the only place a reader can find out that a validated task's notes
+   describe a repaired state rather than a live defect. A `verified` verdict on
+   a task whose inherited objection you cannot answer with evidence is not a
+   pass: re-check that specific objection first, and reject if it still holds.
 
 ## Rules
 
 - You verify exactly the one task described below. Do not attempt to fix anything,
   do not complete other tasks, do not modify tasks.json at all — see step 3 above.
+- **Read the DIRECTION of the evidence, not only its presence.** When a criterion names a behaviour and the evidence
+  offered is a test or probe the worker wrote, open that node and read its
+  assertions against the criterion's own words. A node whose name matches the
+  requirement while its assertions pin the behaviour the criterion forbids --
+  asserting that the breaker trips when the criterion says such a failure must
+  not fail the run, asserting a payload field is absent when the criterion
+  lists it as required -- is an ABSENT deliverable, which rejects; it is not a
+  form or wording gap to pass with a note. The same goes for a probe that
+  exercises the happy path only when the criterion names the negative case, and
+  for a criterion saying "a probe observes X" discharged by a node that merely
+  imports the code path. Say in `reason` which assertion contradicts which
+  clause. A passing node is evidence about the code only once you have read
+  what it claims.
 - **Be strict, but reject only on substance (task 004, requirement A.1,
   #154).** Reject a criterion only for one of these: its *deliverable* --
   the thing it names as built or wired in -- is absent or wrong; a test the
