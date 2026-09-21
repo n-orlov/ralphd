@@ -10810,10 +10810,26 @@ class LoopSupervisor:
         # consulting it at each of those two branches (immediately below,
         # and again just before the repeated-signature gate further down)
         # closes both.
-        ruled = self._ruling_honoured_for_approach(approach)
-        ruling_matches_this_rejection = (
-            ruled is not None and signature is not None
-            and ruled.get("signature") == signature)
+        #
+        # Task 002 (PRD finding F02): looked up by THIS rejection's OWN
+        # signature (`signature`, read just above), never by `_ruling_
+        # honoured_for_approach`'s `status["rejectionSignatures"][approach]`
+        # -- that map holds only the approach's LAST recorded rejection
+        # signature, so an intervening rejection on a different signature
+        # (which overwrites it, `_record_rejection_signature`) would make
+        # this lookup silently miss a still-unspent ruling on the ORIGINAL
+        # signature once it recurs, and could instead hand a ruling that
+        # never matched this rejection at all a spurious re-park once the
+        # map happened to be overwritten back. `_ruling_honoured_for_
+        # signature` reads the cumulative `state.ruling_entries()` record
+        # directly by the signature being judged, so it is unaffected by
+        # whatever an intervening rejection on another signature did to
+        # that per-approach map. `_ruling_honoured_for_approach` itself is
+        # unchanged and still used for the audit-only `operator_ruling_
+        # honoured` event above, where "the ruling that answered THIS
+        # approach's last recorded pause" is exactly the right question.
+        ruled = self._ruling_honoured_for_signature(signature)
+        ruling_matches_this_rejection = ruled is not None and signature is not None
         ruling_re_park_exhausted = (
             ruling_matches_this_rejection
             and self._ruling_already_reparked(ruled["seq"]))
@@ -11991,6 +12007,37 @@ class LoopSupervisor:
         status = self.run.read_status()
         signatures = status.get("rejectionSignatures") or {}
         signature = signatures.get(str(approach))
+        if signature is None:
+            return None
+        matches = [e for e in state.ruling_entries(self.run.root)
+                  if e.get("signature") == signature]
+        return matches[-1] if matches else None
+
+    def _ruling_honoured_for_signature(self, signature: str | None) -> dict | None:
+        """Task 002 (PRD finding F02): the mechanical re-park's own
+        lookup -- does a recorded operator ruling carry EXACTLY the
+        signature of the rejection being judged right now, read directly
+        off the cumulative `state.ruling_entries()` record?
+
+        Sibling of `_ruling_honoured_for_approach` above, and reuses its
+        exact matching rule (newest entry wins; no ruling TEXT is read,
+        parsed or classified), but keyed by a signature the CALLER
+        already computed for THIS rejection -- never by `status.json`'s
+        `rejectionSignatures[str(approach)]`, which only ever holds the
+        approach's LAST recorded rejection signature. That map is
+        overwritten every time `_record_rejection_signature` runs, so an
+        intervening rejection on a different signature (never ruled)
+        would make `_ruling_honoured_for_approach` silently stop finding a
+        still-unspent ruling once the original signature recurs, or hand
+        an unrelated ruling a re-park it never earned once the map
+        happened to point at it again -- the exact defect a fresh
+        `LoopSupervisor` reading persisted state observes across an
+        intervening rejection on another signature
+        (`tests/test_ruling_re_park_bound.py`,
+        `_review_additional.py::test_A5_same_ruling_across_changed_other_
+        signature`). Returns `None` when `signature` itself is `None` (no
+        rejection to match) or no ruling has ever been filed against it.
+        """
         if signature is None:
             return None
         matches = [e for e in state.ruling_entries(self.run.root)

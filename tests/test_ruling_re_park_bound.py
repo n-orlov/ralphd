@@ -284,9 +284,28 @@ def test_a_rejection_on_a_different_signature_is_not_bounded_by_an_unrelated_rul
     """A ruling addressing signature S1 must not silently cover a LATER
     rejection whose own blocking-clause set (and therefore signature) has
     changed -- the bound is per SIGNATURE MATCH, never "any ruling exists
-    for this approach"."""
+    for this approach".
+
+    Task 002 (PRD finding F02), extended in place: the SAME episode then
+    goes back to the ORIGINAL signature S -- the mechanical re-park lookup
+    must be keyed to the CURRENT rejection's own signature, never to
+    `status.json`'s `rejectionSignatures[str(approach)]`, which only ever
+    holds the approach's LAST recorded rejection signature and is
+    overwritten by every intervening rejection on a different one
+    (`_record_rejection_signature`) -- here, by the different-signature
+    rejection just above. The ruling filed against S must still spend its
+    one re-park once S recurs, whatever the intervening pause did to that
+    per-approach map; a further rejection on S then proceeds to the
+    ordinary archive/replan tail instead of re-parking a second time.
+    Every episode is a FRESH `LoopSupervisor` over the SAME on-disk run
+    dir, per this file's own multi-episode convention -- the bound is read
+    back from PERSISTED state, never from Python state a single process
+    happened to keep around.
+    """
     root = tmp_path / "run"
     sup0 = _first_pause_no_ruling_yet(root)
+    signature_s = (sup0.run.read_status().get("rejectionSignatures") or {}).get("1")
+    assert signature_s is not None
     sup0.run.add_ruling("Waived: ship it.")
     sup0.resume()
 
@@ -318,6 +337,42 @@ def test_a_rejection_on_a_different_signature_is_not_bounded_by_an_unrelated_rul
     # rejection's own (different) signature.
     assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup1.run.read_status().get("rulingReparked") in (None, [])
+    signature_t = sup1.run.read_status().get("rejectionSignatures", {}).get("1")
+    assert signature_t is not None and signature_t != signature_s
+    sup1.resume()
+
+    # Episode 3 (task 002, F02): back to signature S -- the ruling filed
+    # against it in episode 1 has never been spent, and the intervening T
+    # pause (episode 2, which overwrote `rejectionSignatures["1"]` from S
+    # to T) must not have cost it its one re-park.
+    sup2 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
+    sup2._approach = 1
+    findings.write_findings_json(sup2.run.findings_json_file, _MIXED_FINDINGS)
+    sup2.runner.run = _rejecting_runner("back to the original wall")  # type: ignore[method-assign]
+    outcome_s1 = _bounded(sup2._step_review())
+    assert outcome_s1 == ("advance", "paused", "operator_input_needed")
+    status_s1 = sup2.run.read_status()
+    assert status_s1["pauseReason"] == "operator_input_needed"
+    assert status_s1["approach"] == 1
+    assert not (root / "approaches" / "01").exists()
+    assert not sup2.run.composite_prd_file.exists()
+    assert status_s1.get("rulingReparked") == [1]
+    sup2.resume()
+
+    # Episode 4: a SECOND rejection on S proceeds to the ordinary
+    # archive/replan tail instead of re-parking again -- the same ruling's
+    # one re-park is now spent.
+    sup3 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
+    sup3._approach = 1
+    findings.write_findings_json(sup3.run.findings_json_file, _MIXED_FINDINGS)
+    sup3.runner.run = _rejecting_runner("the original wall, again")  # type: ignore[method-assign]
+    outcome_s2 = _bounded(sup3._step_review())
+    assert outcome_s2 == ("advance", "replan", "rejected_approach_left")
+    status_s2 = sup3.run.read_status()
+    assert status_s2["state"] != "paused"
+    assert (root / "approaches" / "01").exists()
+    assert sup3.run.composite_prd_file.exists()
+    assert status_s2.get("rulingReparked") == [1]
 
 
 # ===========================================================================
