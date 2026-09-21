@@ -6031,6 +6031,28 @@ class LoopSupervisor:
         unreadable diff must never be silently treated as an EMPTY one,
         which would incorrectly un-reopen every record it covers.
 
+        Cure-01-06 (PRD requirement B rulings 3/4 and B.4, task 008, F06):
+        this reads `-z`, NUL-delimited, rather than newline-delimited --
+        git's own `--name-only` display quotes any path holding a
+        non-ASCII or otherwise "unusual" byte (`"docs/r\\303\\251sultats.
+        md"` for `docs/r\u00e9sultats.md`) unless asked for the raw NUL
+        form, and the caller's own substring check (`path in criteria`)
+        compares against the record's cited path AS WRITTEN in
+        `successCriteria` -- the real path, never git's quoted rendering
+        of it. A cure that committed exactly such a path used to report
+        `['\"docs/r\\303\\251sultats.md\"']` here, which never matched the
+        criteria's own unquoted text, so the diff looked "untouched" and
+        the record was un-reopened over evidence that had in fact moved.
+        `-z` also means no ambiguity from an embedded newline in a path,
+        and needs no `core.quotePath` override.
+
+        A diff whose bytes cannot be decoded as this process's own text
+        encoding (a path git could commit but cannot render as text) is
+        exactly the "indeterminate" case PRD B rule 4 already covers for
+        an unreadable diff -- conservatively `None`, never a partial or
+        best-effort decode that might silently drop or mangle a path a
+        record's criteria actually cites.
+
         `base_sha == head_sha` (the cure landed no commit of its own, or
         HEAD has not moved since the pre-cure baseline was taken) is not
         special-cased -- `git diff --name-only X X` legitimately answers
@@ -6040,13 +6062,13 @@ class LoopSupervisor:
         try:
             result = subprocess.run(
                 ["git", "-C", str(self.workspace), "diff", "--name-only",
-                 base_sha, head_sha],
+                 "-z", base_sha, head_sha],
                 capture_output=True, text=True, timeout=30)
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return None
         if result.returncode != 0:
             return None
-        return [line for line in result.stdout.splitlines() if line]
+        return [path for path in result.stdout.split("\x00") if path]
 
     def _reconcile_pre_cure_heads(self, cure_task_id: str) -> None:
         """Task 008 (PRD requirement B.4, #221): the completion-path hook

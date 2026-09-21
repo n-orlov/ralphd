@@ -1055,14 +1055,20 @@ def _commit_file(workspace: Path, relpath: str, content: str, message: str) -> s
 
 
 def _cure_pass_over_a_real_workspace(root: Path, workspace: Path,
-                                     record_status: str = "completed"):
+                                     record_status: str = "completed",
+                                     record_path: str = RECORD_PATH):
     """A supervisor with tasks 057/058 already re-opened `pending` by a
-    real `_step_review()` cure pass over a finding naming `RECORD_PATH`,
+    real `_step_review()` cure pass over a finding naming `record_path`,
     against `workspace` (a real git repo) -- returns `(sup, cure_id,
     seed_sha)`. `record_status` (cure-01-05, requirement B.3/B.4, F05) is
     the record's OWN status before this reopen -- default `"completed"`
     unchanged from every call site predating this task; a caller wanting
-    `failed`/`skipped`/`superseded` passes it explicitly.
+    `failed`/`skipped`/`superseded` passes it explicitly. `record_path`
+    (cure-01-06, PRD B rulings 3/4 and B.4, task 008, F06) defaults to the
+    module's own ASCII `RECORD_PATH`, unchanged for every pre-existing call
+    site; a caller probing the Unicode-path defect passes a path git itself
+    would display-quote. The two are independent -- a caller may vary
+    either, or both, without affecting the other's default.
     """
     seed_sha = _init_git_workspace(workspace)
     # Task 017 (PRD requirement A.3, #224): this module's own fixture
@@ -1075,12 +1081,13 @@ def _cure_pass_over_a_real_workspace(root: Path, workspace: Path,
     sup = _supervisor(root, workspace=workspace,
                       operator_input_needed_pause=False)
     sup._approach = 1
-    atomic_write_json(sup.run.tasks_file,
-                      {"version": 1,
-                       "tasks": _lane_fixture_tasks(record_status=record_status)})
+    tasks = _lane_fixture_tasks(record_status=record_status)
+    tasks[1]["successCriteria"] = (
+        f"One commit adds {record_path} naming the shipped sha.")
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
     finding = _blocking_curable_finding(
         "the shipped sha's lanes moved", "a later commit landed after the record",
-        invalidates=[RECORD_PATH],
+        invalidates=[record_path],
         cured_when="the record is refreshed against the moved lanes")
     findings.write_findings_json(sup.run.findings_json_file, [finding])
 
@@ -1214,27 +1221,44 @@ def test_a_cure_diff_that_misses_the_cited_path_un_reopens_the_record(tmp_path):
 
 
 def test_a_cure_diff_that_touches_the_cited_path_leaves_the_record_pending(tmp_path):
-    root = tmp_path / "run"
-    workspace = tmp_path / "workspace"
-    sup, cure_id, seed_sha = _cure_pass_over_a_real_workspace(root, workspace)
+    """Cure-01-06 (PRD B rulings 3/4 and B.4, task 008, F06) rewrites this
+    node IN PLACE (zero fast-tier headroom -- one collected item, same as
+    before this task) to loop over an ASCII cited path (this test's own
+    original subject) and a Unicode one git's own `--name-only`
+    display-quotes (`\"docs/r\\303\\251sultats.md\"` for
+    `docs/r\u00e9sultats.md`) instead of adding a sibling test. Before this
+    task `_workspace_diff_paths` read that quoted rendering, which never
+    appears as a substring of the record's own unquoted `successCriteria`
+    text, so a cure that actually committed the cited Unicode path still
+    looked "untouched" here and un-reopened the record over evidence that
+    had in fact moved; the fix reads `-z`, NUL-delimited output instead, so
+    the reported path matches the criteria's own text again and both
+    iterations land on the same `pending` outcome.
+    """
+    for label, record_path in (("ascii", RECORD_PATH),
+                               ("unicode", "docs/r\u00e9sultats.md")):
+        root = tmp_path / f"run-{label}"
+        workspace = tmp_path / f"workspace-{label}"
+        sup, cure_id, seed_sha = _cure_pass_over_a_real_workspace(
+            root, workspace, record_path=record_path)
 
-    # the cure's own commit DOES touch the record's cited path this time.
-    new_head = _commit_file(workspace, RECORD_PATH, "lanes: all green\n",
-                            "the cure, landing exactly on 058's cited path")
-    assert new_head != seed_sha
+        # the cure's own commit DOES touch the record's cited path this time.
+        new_head = _commit_file(workspace, record_path, "lanes: all green\n",
+                                "the cure, landing exactly on 058's cited path")
+        assert new_head != seed_sha
 
-    restored = []
-    sup.notifier = restored.append
-    errors = sup._apply_reported_task_status(
-        {"task_id": cure_id, "task_status": "completed"})
-    assert errors == []
+        restored = []
+        sup.notifier = restored.append
+        errors = sup._apply_reported_task_status(
+            {"task_id": cure_id, "task_status": "completed"})
+        assert errors == []
 
-    data = sup.run.read_tasks()
-    tasks = {t["id"]: t for t in data["tasks"]}
-    assert tasks["058"]["status"] == "pending"
+        data = sup.run.read_tasks()
+        tasks = {t["id"]: t for t in data["tasks"]}
+        assert tasks["058"]["status"] == "pending"
 
-    assert _events(root, "task.un_reopened") == []
-    assert restored == []
+        assert _events(root, "task.un_reopened") == []
+        assert restored == []
 
 
 def test_a_diff_that_cannot_be_computed_leaves_the_record_pending(tmp_path):
