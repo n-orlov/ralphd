@@ -10901,11 +10901,25 @@ class LoopSupervisor:
             # exactly as before; the two conditions are independent ORs,
             # never mutually exclusive, so a verdict that happens to match
             # both still only pauses once.
+            # Cure task cure-01-02-3 (PRD requirement A.5, #224): the
+            # reviewer's own request is a fresh per-verdict decision
+            # against every OTHER signature, but it is not a second door
+            # into the SAME ruling's already-spent re-park -- a rejection
+            # whose signature matches a ruling that already spent its one
+            # re-park (`ruling_matches_this_rejection and ruling_re_park_
+            # exhausted`) proceeds here exactly as it would with the field
+            # absent, even though the reply repeats `raise_operator_gate:
+            # true`. A rejection on a genuinely different signature (no
+            # match, or a match that has not yet spent its re-park -- the
+            # latter already returned above, at `mechanical_ruled_park_
+            # due`) is untouched.
+            reviewer_requested_gate_applies = reviewer_requested_gate and not (
+                ruling_matches_this_rejection and ruling_re_park_exhausted)
             mechanical_reopen_trigger = (
                 self.cfg.operator_input_needed_pause
                 and cure_preview["reopenedTaskIds"]
                 and self._discretionary_gate_available(approach))
-            if reviewer_requested_gate or mechanical_reopen_trigger:
+            if reviewer_requested_gate_applies or mechanical_reopen_trigger:
                 if mechanical_reopen_trigger:
                     self._spend_discretionary_gate(approach)
                 replan_available = approach < self.cfg.max_approaches
@@ -11087,9 +11101,21 @@ class LoopSupervisor:
         # not. SPEC.md's own `operator_escalation` row already states this
         # tail ("the repeated signature recorded and the approach archived/
         # replanned"). A.6's reviewer-requested gate is a fresh per-verdict
-        # decision and, exactly as it already overrides the flag and the
-        # A.5 re-park bound, it overrides this too.
-        if reviewer_requested_gate or (
+        # decision and, exactly as it already overrides the flag, it
+        # overrides this too -- EXCEPT for the one case cure task
+        # cure-01-02-3 (PRD requirement A.5, #224) fixes: a rejection whose
+        # signature matches a ruling that already spent its one re-park.
+        # That bound is mechanical, not advisory (`engine/redact.py`'s own
+        # documented lesson), so the reviewer's own optional field cannot
+        # buy the SAME ruling a second re-park just by repeating `raise_
+        # operator_gate: true` on the identical rejection -- see the
+        # matching guard on `reviewer_requested_gate_applies` above, for
+        # trigger condition 2. A rejection on a different signature (no
+        # match at all) is untouched: `reviewer_requested_gate` there is
+        # still a fresh, unbounded, per-verdict decision.
+        reviewer_requested_gate_applies = reviewer_requested_gate and not (
+            ruling_matches_this_rejection and ruling_re_park_exhausted)
+        if reviewer_requested_gate_applies or (
                 self.cfg.operator_input_needed_pause
                 and not ruling_re_park_exhausted
                 and not repeated_signature):

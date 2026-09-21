@@ -221,6 +221,26 @@ def test_a_re_rejection_on_a_ruled_signature_re_parks_once_and_does_not_spend(
 
 def test_a_second_rejection_on_the_same_ruling_proceeds_instead_of_re_parking_again(
         tmp_path):
+    """Cure task cure-01-02-3 (PRD requirement A.5, #224): both rejections
+    below carry `raise_operator_gate: true` on their own reply -- the bound
+    is mechanical, not advisory, so a reviewer that keeps setting the field
+    on the SAME ruled signature still only buys ONE re-park, never a
+    second. Before this cure, the archive/replan tail's own combined check
+    ORed in the reviewer's field unconditionally alongside the mechanical
+    flag, so episode 3 below re-parked a second time on the identical
+    ruling with `rulingReparked` never gaining a fresh entry (the record
+    guard only fires when the ruling is NOT yet exhausted) while the
+    outcome stayed `paused` regardless
+    (`tests/_review_edges.py::test_A5_second_ruled_rejection_proceeds_after_reviewer_request`).
+    """
+    def _rejecting_with_gate(reason: str):
+        async def _run(prompt, transcript, **kw):
+            return _result(json.dumps({
+                "verdict": "rejected", "reason": reason,
+                "raise_operator_gate": True,
+            }))
+        return _run
+
     root = tmp_path / "run"
     sup0 = _first_pause_no_ruling_yet(root)
     sup0.run.add_ruling("Waived: ship it, these are residuals.")
@@ -229,18 +249,22 @@ def test_a_second_rejection_on_the_same_ruling_proceeds_instead_of_re_parking_ag
     sup1 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
     sup1._approach = 1
     findings.write_findings_json(sup1.run.findings_json_file, _MIXED_FINDINGS)
-    sup1.runner.run = _rejecting_runner("still mixed")  # type: ignore[method-assign]
+    sup1.runner.run = _rejecting_with_gate("still mixed")  # type: ignore[method-assign]
     outcome1 = _bounded(sup1._step_review())
     assert outcome1 == ("advance", "paused", "operator_input_needed")  # re-park #1
+    assert sup1.run.read_status().get("rulingReparked") == [1]
     sup1.resume()
 
-    # Episode 3: SAME ruling (seq 1, same signature) rejects a THIRD time.
-    # The bound is spent -- this proceeds to the ordinary archive/replan
-    # tail instead of re-parking a second time.
+    # Episode 3: SAME ruling (seq 1, same signature) rejects a THIRD time,
+    # its own reply repeating `raise_operator_gate: true` again. The
+    # bound is spent -- this proceeds to the ordinary archive/replan tail
+    # instead of re-parking a second time, exactly as it would with the
+    # field absent. A fresh `LoopSupervisor` over the SAME persisted run
+    # dir, per this file's own multi-episode convention.
     sup2 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
     sup2._approach = 1
     findings.write_findings_json(sup2.run.findings_json_file, _MIXED_FINDINGS)
-    sup2.runner.run = _rejecting_runner("still mixed, again")  # type: ignore[method-assign]
+    sup2.runner.run = _rejecting_with_gate("still mixed, again")  # type: ignore[method-assign]
 
     outcome2 = _bounded(sup2._step_review())
 
@@ -274,7 +298,19 @@ def test_a_rejection_on_a_different_signature_is_not_bounded_by_an_unrelated_rul
     sup1 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
     sup1._approach = 1
     findings.write_findings_json(sup1.run.findings_json_file, other_findings)
-    sup1.runner.run = _rejecting_runner("a new wall entirely")  # type: ignore[method-assign]
+
+    # Cure task cure-01-02-3 (PRD requirement A.5, #224): the reply on
+    # this genuinely different signature carries `raise_operator_gate:
+    # true` too -- the bound above is per-SIGNATURE-MATCH, never "a ruling
+    # exists somewhere on this approach", so the field still requests its
+    # own fresh, unbounded initial gate here exactly as if no ruling had
+    # ever been filed.
+    async def _new_wall_with_gate(prompt, transcript, **kw):
+        return _result(json.dumps({
+            "verdict": "rejected", "reason": "a new wall entirely",
+            "raise_operator_gate": True,
+        }))
+    sup1.runner.run = _new_wall_with_gate  # type: ignore[method-assign]
 
     outcome = _bounded(sup1._step_review())
 
