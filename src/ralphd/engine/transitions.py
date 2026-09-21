@@ -1376,13 +1376,20 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool,
     vocabulary by one status in either variant:
 
     - `superseded` is refused out of ANY status, as it always was;
-    - out of `pending`, the OTHER variant's claim terminal is refused --
-      `validated` in a non-vigilant run, `completed` in a vigilant one
-      (`variant_claim_terminal`). Declaring both targets for the engine's
-      restore must not hand a vigilant worker a `pending -> completed`
-      route around verification, nor a non-vigilant one a `validated` it
-      has no verify step to earn. Each variant's OWN claim terminal stays
-      reportable out of `pending`, exactly as before this task.
+    - out of `pending`, EVERY un-reopen target is refused, unconditionally
+      -- cure-01-05-2 (F05's own worker-reported gap): cure-01-05 refused
+      only the OTHER variant's claim terminal (`validated` in a
+      non-vigilant run, `completed` in a vigilant one), which left the
+      restore reportable by an ordinary hat in two shapes:
+      `skipped`/`failed` (never named by that narrower filter at all) and
+      a hat's OWN variant's claim terminal out of `pending` (a task that
+      was never even started has no `in-progress`/`awaiting-validation`
+      leg to have earned it through). Declaring all five targets for the
+      engine's restore must not hand ANY hat -- worker, steer, or an
+      operator ruling -- a `pending -> <anything>` finish/validate/fail/
+      skip on a task nothing ever reopened. `allow_un_reopen_restore=True`
+      is the one door, and only `state.apply_task_status_change`'s own
+      `source="cure-reconciliation"` branch ever opens it.
     """
     if not isinstance(payload, dict):
         return []
@@ -1416,16 +1423,33 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool,
         return ["task_status: 'superseded' is applied by the harness itself "
                 "at a forced split (a spent progressBudget); a hat never "
                 "reports it -- carry the split in `proposed_tasks` instead"]
-    # Cure-01-05 (PRD requirement B.3/B.4, F05, #221): same principle, the
-    # other half of the un-reopen edge. The base table declares every
-    # restore target in BOTH variants because the target is a status the
-    # engine persisted, not a function of the variant -- so the one place
-    # that still knows about the variant's own claim path refuses the
-    # OTHER variant's terminal here, in the semantic layer, keeping the
-    # set of moves a hat may report out of `pending` exactly what it was.
+    # Cure-01-05-2 (PRD requirement B.3/B.4, F05, #221): the un-reopen
+    # edge is an ENGINE reconciliation of a genuinely reopened record to
+    # its own persisted pre-reopen status (`preCureStatuses`) -- never a
+    # hat's free-form claim, and never legal through this channel for a
+    # task that was never reopened at all, whatever target it names.
+    # Cure-01-05 narrowed this refusal to `target in ("completed",
+    # "validated") and target != variant_claim_terminal(vigilant)`, which
+    # left two gaps a worker's own `test_B_restore_edge_does_not_allow_
+    # worker_to_finish_untouched_task` (four parametrizations) caught
+    # live: (1) `skipped`/`failed` were un-reopen targets too
+    # (`UN_REOPEN_TASK_STATUS_TARGETS`) but were never named by that
+    # `target in (...)` filter, so a hat could report `pending ->
+    # skipped`/`pending -> failed` on a never-started task and have it
+    # applied with `errors == []`; (2) even for `completed`/`validated`,
+    # a hat reporting its OWN variant's claim terminal (`validated`
+    # vigilant, `completed` non-vigilant) slipped past `target !=
+    # variant_claim_terminal(vigilant)` even though the transition still
+    # ORIGINATES at `pending`, not the ordinary claim path's own
+    # `in-progress`/`awaiting-validation` -- a never-started task has no
+    # verify step to earn either terminal, own-variant or not. Refusing
+    # every un-reopen target unconditionally (dropping both narrowings)
+    # closes all four: the restore stays available ONLY through
+    # `allow_un_reopen_restore=True`, `state.apply_task_status_change`'s
+    # own `source="cure-reconciliation"` branch, reading the status the
+    # engine itself persisted -- never a hat's or an operator's own
+    # claim, in either variant, for any of the five restore targets.
     if (is_un_reopen_transition(current_status, target)
-            and target in ("completed", "validated")
-            and target != variant_claim_terminal(vigilant)
             and not allow_un_reopen_restore):
         variant = "vigilant" if vigilant else "non-vigilant"
         return [f"task_status: {target!r} out of 'pending' is the engine's own "

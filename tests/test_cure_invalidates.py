@@ -1158,6 +1158,15 @@ def test_a_cure_diff_that_misses_the_cited_path_un_reopens_the_record(tmp_path):
                 in _events(root, PRE_CURE_HEAD_RECORDED_EVENT)] == [
                     record_status]
 
+        # Cure-01-05-2 (F05's own worker-reported gap, requirement B.3/
+        # B.4): the un-reopen edge out of `pending` is no longer available
+        # through this ordinary report channel at all -- only the engine's
+        # own `source="cure-reconciliation"` restore may take it -- so this
+        # fixture now advances the cure task to `in-progress` first, the
+        # same status a real harness assignment would have already put it
+        # in before a worker's own completion report lands.
+        _set_status(sup.run, cure_id, "in-progress")
+
         restored = []
         sup.notifier = restored.append
         errors = sup._apply_reported_task_status(
@@ -1210,6 +1219,9 @@ def test_a_cure_diff_that_misses_the_cited_path_un_reopens_the_record(tmp_path):
         stripped.append(json.dumps(ev))
     log.write_text("\n".join(stripped) + "\n")
 
+    # Cure-01-05-2 (requirement B.3/B.4, F05): same reason as above.
+    _set_status(sup.run, cure_id, "in-progress")
+
     restored = []
     sup.notifier = restored.append
     assert sup._apply_reported_task_status(
@@ -1247,6 +1259,10 @@ def test_a_cure_diff_that_touches_the_cited_path_leaves_the_record_pending(tmp_p
                                 "the cure, landing exactly on 058's cited path")
         assert new_head != seed_sha
 
+        # Cure-01-05-2 (requirement B.3/B.4, F05): same reason as above --
+        # the un-reopen edge is no longer reportable out of `pending`.
+        _set_status(sup.run, cure_id, "in-progress")
+
         restored = []
         sup.notifier = restored.append
         errors = sup._apply_reported_task_status(
@@ -1272,6 +1288,10 @@ def test_a_diff_that_cannot_be_computed_leaves_the_record_pending(tmp_path):
     # computed at all" must never be silently read as an empty one (PRD B
     # rule 4: "when in doubt, leave the record open").
     shutil.rmtree(workspace / ".git")
+
+    # Cure-01-05-2 (requirement B.3/B.4, F05): same reason as above -- the
+    # un-reopen edge is no longer reportable out of `pending`.
+    _set_status(sup.run, cure_id, "in-progress")
 
     restored = []
     sup.notifier = restored.append
@@ -1362,6 +1382,11 @@ def test_a_later_owner_touching_the_cited_path_keeps_the_record_pending(tmp_path
     # the FIRST owner lands, touching nothing 058 cites.
     _commit_file(workspace, "src/unrelated.py", "pass\n",
                  "the first cure, touching nothing 058 cites")
+    # Cure-01-05-2 (requirement B.3/B.4, F05): the un-reopen edge is no
+    # longer reportable out of `pending` through this channel; advance
+    # each owner to `in-progress` first, as a real harness assignment
+    # already would have.
+    _set_status(sup.run, first, "in-progress")
     restored = []
     sup.notifier = restored.append
     assert sup._apply_reported_task_status(
@@ -1377,6 +1402,7 @@ def test_a_later_owner_touching_the_cited_path_keeps_the_record_pending(tmp_path
     # the SECOND owner lands on exactly the record's cited path.
     _commit_file(workspace, RECORD_PATH, "lanes: all green\n",
                  "the second cure, landing on 058's cited path")
+    _set_status(sup.run, second, "in-progress")
     assert sup._apply_reported_task_status(
         {"task_id": second, "task_status": "completed"}) == []
 
@@ -1394,6 +1420,8 @@ def test_both_owners_missing_the_cited_path_un_reopens_once_on_the_last(tmp_path
 
     _commit_file(workspace, "src/unrelated.py", "pass\n",
                  "the first cure, touching nothing 058 cites")
+    # Cure-01-05-2 (requirement B.3/B.4, F05): same reason as above.
+    _set_status(sup.run, first, "in-progress")
     restored = []
     sup.notifier = restored.append
     assert sup._apply_reported_task_status(
@@ -1403,6 +1431,7 @@ def test_both_owners_missing_the_cited_path_un_reopens_once_on_the_last(tmp_path
 
     _commit_file(workspace, "docs/unrelated.md", "prose\n",
                  "the second cure, also touching nothing 058 cites")
+    _set_status(sup.run, second, "in-progress")
     assert sup._apply_reported_task_status(
         {"task_id": second, "task_status": "completed"}) == []
 
@@ -1486,7 +1515,16 @@ def test_under_the_vigilant_variant_the_record_is_restored_to_its_actual_status(
         candidates = records_pending_reconciliation(sup.run, cure_id)
         assert len(candidates) == 1
         assert candidates[0]["priorStatus"] == record_status
-        _set_status(sup.run, cure_id, "pending")
+        # Cure-01-05-2 (requirement B.3/B.4, F05): reset to
+        # `awaiting-validation`, never `pending` -- the un-reopen edge this
+        # call is about to take (`pending -> validated`) is no longer
+        # reportable through this channel at all, only through the
+        # engine's own `source="cure-reconciliation"` restore;
+        # `awaiting-validation -> validated` is the ordinary vigilant claim
+        # edge (`in-progress -> validated` is not itself declared in the
+        # vigilant delta), and re-driving it here still forces `target !=
+        # current` so `_reconcile_pre_cure_heads` fires again.
+        _set_status(sup.run, cure_id, "awaiting-validation")
 
         restored = []
         sup.notifier = restored.append

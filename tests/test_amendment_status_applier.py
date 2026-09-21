@@ -132,14 +132,63 @@ def test_illegal_transition_is_refused_and_nothing_is_written(tmp_path):
 # ---------------------------------------------------------------------------
 # the un-reopen edge -- `pending` back to a record's own pre-reopen
 # terminal status (v0.23 requirement B.3, task 007, #221). Drives it
-# through `apply_task_status_change` directly (rather than through the
-# amendment-ruling channel above) since no caller in `loop.py` invokes it
-# yet -- this is the ONE declared move the applier itself must still be
-# provably able to take, with its OWN event, before any caller exists.
+# through `apply_task_status_change` directly. Cure-01-05-2 (PRD
+# requirement B.3/B.4, F05, #221) corrected this section's own original
+# premise -- that `source="operator"`/`source="steer"` were legitimate
+# free-standing callers of the edge before `_reconcile_pre_cure_heads`
+# (B.4, task 008) existed. F05's `cured_when` is explicit: the edge is
+# available ONLY for the engine's own reconciliation, never a hat's or an
+# operator's claim -- so every non-`"cure-reconciliation"` source is now
+# refused, and only the engine's own reconciliation caller still takes it.
 # ---------------------------------------------------------------------------
 
-def test_the_un_reopen_edge_drives_through_apply_task_status_change_and_emits_its_own_event(
+def test_the_un_reopen_edge_is_refused_for_an_operator_or_steer_claim_never_a_free_claim(
         tmp_path):
+    """Cure-01-05-2 (PRD requirement B.3/B.4, F05, #221) corrects this
+    node's own original claim -- that an OPERATOR ruling or a STEER update
+    could drive the un-reopen edge directly through `apply_task_status_
+    change`, before `_reconcile_pre_cure_heads` (B.4, task 008) existed to
+    be the edge's real caller. F05's own `cured_when` is explicit: "the
+    declared un-reopen edge is available only for an ENGINE reconciliation
+    of a genuinely reopened record to its persisted prior status" --
+    ruling 1 itself never carved out an operator or a steer exception, and
+    either one moving a never-reopened task straight to a terminal status
+    is exactly the same widening as a worker's. `apply_task_status_change`
+    only ever passes `allow_un_reopen_restore=True` for its own `source=
+    "cure-reconciliation"` branch (`state.py`), so every other source is
+    refused -- checked here for both real production callers,
+    `apply_amendment_status_rulings`'s own `source="operator"` and
+    `steer_task_update`'s own `source="steer"`, kept as ONE parametrized
+    node (zero fast-tier headroom -- no new collected item over the two
+    this replaces) rather than a sibling per source.
+    """
+    for source, target, vigilant, tid in (("operator", "validated", True, "058"),
+                                          ("steer", "completed", False, "059")):
+        run = _run(tmp_path / source)
+        _write_tasks(run, [
+            {"id": tid, "title": "record every lane's check-run result",
+             "status": "pending", "successCriteria": "record it"},
+        ])
+
+        result = apply_task_status_change(
+            run, tid, target, vigilant, source=source,
+            reason="the cure never touched the cited path")
+
+        assert result["applied"] is False, (source, result)
+        assert result["previous"] == "pending"
+        assert result["reason"].startswith("task_status:")
+        assert "cure-reconciliation" in result["reason"]
+        task = run.read_tasks()["tasks"][0]
+        # refused, so the status on disk is untouched
+        assert task["status"] == "pending"
+        assert _events(run) == []
+
+
+def test_the_un_reopen_edge_still_applies_for_the_engines_own_reconciliation(
+        tmp_path):
+    """The one door cure-01-05-2 leaves open: `source="cure-reconciliation"`
+    -- `LoopSupervisor._reconcile_pre_cure_heads`'s own caller identity --
+    still takes the edge and still emits `UN_REOPEN_EVENT`, unchanged."""
     run = _run(tmp_path)
     _write_tasks(run, [
         {"id": "058", "title": "record every lane's check-run result",
@@ -147,43 +196,19 @@ def test_the_un_reopen_edge_drives_through_apply_task_status_change_and_emits_it
     ])
 
     result = apply_task_status_change(
-        run, "058", "validated", True, source="operator",
+        run, "058", "validated", True, source="cure-reconciliation",
         reason="the cure never touched the cited path")
 
     assert result["applied"] is True
-    assert result["previous"] == "pending"
     assert result["status"] == "validated"
-    task = run.read_tasks()["tasks"][0]
-    assert task["status"] == "validated"
-
     events = _events(run)
-    # the un-reopen's OWN event, never the generic amendment_status_applied
-    # every other transition through this same function still emits.
     assert [e["type"] for e in events] == [state.UN_REOPEN_EVENT]
     ev = events[0]
     assert ev["taskId"] == "058"
     assert ev["previous"] == "pending"
     assert ev["status"] == "validated"
-    assert ev["source"] == "operator"
+    assert ev["source"] == "cure-reconciliation"
     assert ev["reason"] == "the cure never touched the cited path"
-
-
-def test_the_un_reopen_edge_to_completed_also_emits_its_own_event_non_vigilant(
-        tmp_path):
-    run = _run(tmp_path)
-    _write_tasks(run, [
-        {"id": "059", "title": "record every lane's check-run result",
-         "status": "pending", "successCriteria": "record it"},
-    ])
-
-    result = apply_task_status_change(
-        run, "059", "completed", False, source="steer")
-
-    assert result["applied"] is True
-    events = _events(run)
-    assert [e["type"] for e in events] == [state.UN_REOPEN_EVENT]
-    assert events[0]["status"] == "completed"
-    assert events[0]["source"] == "steer"
 
 
 def test_the_ordinary_pending_claim_edge_is_unaffected_still_no_dedicated_event(

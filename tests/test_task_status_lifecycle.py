@@ -236,14 +236,22 @@ def test_no_hat_may_report_superseded_through_the_contract_channel(vigilant):
     "cure-reconciliation"` branch ever passes `True`, a different code
     path no report payload can flip on itself.
 
-    Cure-01-05 folds the OTHER half of the same principle into this same
-    node (zero fast-tier headroom -- no new collected item): the un-reopen
-    edge is now declared for all five restore targets in BOTH variants, so
-    this semantic layer is what keeps a hat out of the OTHER variant's
-    claim terminal -- a vigilant hat may not report `pending -> completed`
-    around verification, and a non-vigilant one may not report a
-    `validated` it has no verify step to earn -- while each variant's OWN
-    claim terminal stays reportable out of `pending`, exactly as before."""
+    Cure-01-05-2 corrects this same node's own final assertion, which is
+    exactly the F05-shaped widening it was written to catch: it claimed a
+    hat's OWN variant's claim terminal stayed reportable out of `pending`
+    "exactly as before" cure-01-05 -- but a task sitting at `pending` was
+    never started at all, has no `in-progress`/`awaiting-validation` leg
+    behind it, and cure-01-05-2's own worker-reported probe
+    (`test_B_restore_edge_does_not_allow_worker_to_finish_untouched_task`,
+    all four of (vigilant, target) = (True, validated), (False,
+    completed), (True, skipped), (False, failed)) demonstrated the shipped
+    code applying exactly that "still reportable" claim to finish/skip/
+    fail a task nothing had reopened. The un-reopen edge is now refused
+    for ALL FIVE restore targets, unconditionally, out of `pending`,
+    regardless of variant or of which terminal a hat names -- own variant
+    or the other one, `completed`/`validated`/`failed`/`skipped`/
+    `superseded` alike -- and the restore stays reachable ONLY through
+    `allow_un_reopen_restore=True`."""
     errors = tr.task_status_report_errors(
         {"task_status": "superseded"}, "in-progress", vigilant)
     assert errors and "applied by the harness itself" in errors[0]
@@ -272,10 +280,31 @@ def test_no_hat_may_report_superseded_through_the_contract_channel(vigilant):
     assert tr.task_status_report_errors(
         {"task_status": other_terminal}, "pending", vigilant,
         allow_un_reopen_restore=True) == []
-    # this variant's OWN claim terminal out of `pending` is untouched by
-    # that refusal -- reportable before cure-01-05, reportable still.
+    # Cure-01-05-2 (F05's own worker-reported gap): this variant's OWN
+    # claim terminal out of `pending` is now refused too -- a task at
+    # `pending` was never started, so there is no verify step, own-variant
+    # or not, that a hat's report could be honestly claiming to have
+    # earned -- and the restore door still opens it.
+    own_errors = tr.task_status_report_errors(
+        {"task_status": own_terminal}, "pending", vigilant)
+    assert own_errors and "cure-reconciliation" in own_errors[0]
+    assert own_terminal in own_errors[0]
     assert tr.task_status_report_errors(
-        {"task_status": own_terminal}, "pending", vigilant) == []
+        {"task_status": own_terminal}, "pending", vigilant,
+        allow_un_reopen_restore=True) == []
+    # ... and the same is true of the two un-reopen targets neither of the
+    # blocks above ever named: `skipped`/`failed` were always declared
+    # restore targets (`UN_REOPEN_TASK_STATUS_TARGETS`) but cure-01-05's
+    # own refusal filter (`target in ("completed", "validated")`) never
+    # covered them, so a hat could report either straight out of `pending`
+    # with `errors == []` before this task.
+    for leftover_target in ("skipped", "failed"):
+        leftover_errors = tr.task_status_report_errors(
+            {"task_status": leftover_target}, "pending", vigilant)
+        assert leftover_errors and "cure-reconciliation" in leftover_errors[0]
+        assert tr.task_status_report_errors(
+            {"task_status": leftover_target}, "pending", vigilant,
+            allow_un_reopen_restore=True) == []
 
 
 def test_superseded_is_not_an_operator_ruleable_status():
