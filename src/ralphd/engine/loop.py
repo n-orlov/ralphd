@@ -10864,8 +10864,16 @@ class LoopSupervisor:
             if mechanical_ruled_park_due:
                 self._record_ruling_reparked(ruled["seq"])
                 replan_available = approach < self.cfg.max_approaches
+                # Cure task cure-01-03-3 (PRD requirement A.7, #224): this
+                # re-park is itself a driven gate over the SAME rejection
+                # `cure_preview` was computed for above -- an operator
+                # parked here needs the identical predicted reopen/spend/
+                # link every other driven gate on this rejection already
+                # carries, so `cure_preview` is passed here too, never
+                # left `None`.
                 self._pause_and_escalate_operator_input_needed(
-                    approach, findings_list, replan_available, signature)
+                    approach, findings_list, replan_available, signature,
+                    cure_preview=cure_preview)
                 self._advance("review", "paused", "operator_input_needed")
                 return ("advance", "paused", "operator_input_needed")
             # Task 017 (PRD requirement A.3, #224): trigger condition 2 --
@@ -11015,8 +11023,17 @@ class LoopSupervisor:
         if mechanical_ruled_park_due:
             self._record_ruling_reparked(ruled["seq"])
             replan_available = approach < self.cfg.max_approaches
+            # Cure task cure-01-03-3 (PRD requirement A.7, #224): same fix
+            # as the sibling `mechanical_ruled_park_due` branch above --
+            # `cure_preview` was left `None` here too, so a ruled-signature
+            # re-park's own `operator_escalation` event omitted all six
+            # A.7 fields (`test_A7_ruled_signature_repark_payload_is_
+            # complete`). Passed through now, unconditionally, exactly as
+            # every other `operator_input_needed`-family pause on this
+            # rejection already does.
             self._pause_and_escalate_operator_input_needed(
-                approach, findings_list, replan_available, signature)
+                approach, findings_list, replan_available, signature,
+                cure_preview=cure_preview)
             self._advance("review", "paused", "operator_input_needed")
             return ("advance", "paused", "operator_input_needed")
         if repeated_signature and self._discretionary_gate_available(approach):
@@ -11610,6 +11627,16 @@ class LoopSupervisor:
             lines.append(f"Finding {index} (blocking):")
             lines.append(f"  clause: {finding.get('clause', '')}")
             lines.append(f"  evidence: {finding.get('evidence', '')}")
+            # Cure task cure-01-03-3 (PRD requirement A.7, #224): the
+            # finding's own `cured_when` text, verbatim -- the sibling
+            # `_operator_input_needed_escalation_text` already carries this
+            # beside `clause`/`evidence` (cure task cure-01-04's own fix
+            # for F04); this text omitted it (`test_A7_condition3_notifier_
+            # carries_full_finding`), the one place a curable finding's own
+            # "what resolved would look like" sentence was missing from a
+            # driven gate's delivered body even though `findings` on the
+            # event already carried it unedited.
+            lines.append(f"  cured_when: {finding.get('cured_when', '')}")
             lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding)}")
             lines.append("")
         if cure_preview is not None:
