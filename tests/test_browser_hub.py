@@ -2417,22 +2417,38 @@ def test_timeline_row_shows_task_id_tier_and_cost(tmp_path, pw):
 
 
 def test_task_table_shows_summed_time_and_cost_across_two_iterations(tmp_path, pw):
-    """Task 036 (G.4): the hub tasks table's new time/cost columns are
-    AGGREGATED per task, not the last iteration's own figures -- a task that
-    took two attempts (a validation-failed re-entry dispatching a second
-    iteration against the SAME task id) must show the SUM across both, never
-    just the second attempt's numbers.
+    """Task 036 (G.4), inverted for task 001/PRD I.1 (#207/#29): the hub
+    tasks table's time/cost columns are AGGREGATED per task, not the last
+    iteration's own figures -- a task that took two attempts WITHIN THE
+    RUN'S CURRENT APPROACH (a validation-failed re-entry dispatching a
+    second iteration against the SAME task id) must show the SUM across
+    both -- but that sum must never pick up an EARLIER approach's own dead
+    attempt at the same-numbered task id, exactly the cross-approach
+    summing bug #207 reported ("$52.50 reported where $8.31 belonged").
 
-    Two iterations both carry `assignedTaskId: "030"` -- iteration 1 (the
-    first attempt, ended in `validation-failed`) and iteration 2 (the
-    re-claim that finished it) -- each with its own duration and its own
-    fully-priced `usage`, built off the same `_base_meta` fixture helper task
-    034's test above uses. `engine.state.task_totals` sums `durationS` and
-    rolls the two `usage` dicts together (`_accumulate_task_usage`, the same
-    algorithm `LoopSupervisor._merge_usage` uses for status.json's own
+    Three iterations, all `assignedTaskId: "030"`, spanning an approach
+    boundary: iteration 1 is a STALE approach 1 attempt (a big, easily
+    distinguished spend); iterations 2 and 3 are the run's CURRENT approach
+    2's own two attempts at the same-numbered task -- a validation-failed
+    first attempt and the re-claim that finished it -- each with its own
+    duration and its own fully-priced `usage`, built off the same
+    `_base_meta` fixture helper task 034's test above uses. The run's own
+    `status.json` records `approach: 2` (`_write_dead_run`'s override
+    below), so the hub must show ONLY approach 2's own figures for task
+    "030" -- the sum of iterations 2 and 3 -- never approach 1's iteration 1
+    folded in too. `engine.state.task_totals` sums `durationS` and rolls the
+    matching-approach `usage` dicts together (`_accumulate_task_usage`, the
+    same algorithm `LoopSupervisor._merge_usage` uses for status.json's own
     buckets), so the expected total is computed here from the SAME two
-    numbers the fixture writes, never a hand-typed literal that could drift
-    from the fixture.
+    (approach-2-only) numbers the fixture writes, never a hand-typed literal
+    that could drift from the fixture -- and is asserted to differ from what
+    a flat, approach-blind sum of all three iterations would have produced.
+
+    Against the pre-fix `task_totals` (bd94c695, before task 001/32044015
+    approach-namespaced the keys), this node fails: a flat `taskId`-only key
+    folds iteration 1's stale approach-1 spend into approach 2's task "030"
+    row, so `expected_time`/`expected_cost` below do not match what the row
+    actually renders (see the commit message for the captured failure).
     """
     from ralphd.cli.ui_server import run_detail
 
@@ -2441,24 +2457,33 @@ def test_task_table_shows_summed_time_and_cost_across_two_iterations(tmp_path, p
 
     registry = tmp_path / "registry"
     run_dir = _write_dead_run(registry, "run-task-totals", state="succeeded",
-                              verdict="verified")
+                              verdict="verified", approach=2)
     (run_dir / "tasks.json").write_text(json.dumps({
         "version": 1, "goal": "ship it",
         "tasks": [{"id": "030", "title": "add the totals column",
                    "status": "completed", "validationAttempts": 1}],
     }))
 
-    meta1 = _base_meta(1, assignedTaskId="030",
+    # -- a STALE approach 1 attempt at the same-numbered task "030" -- large
+    # and easily distinguished spend that must NOT reach approach 2's row --
+    meta_stale = _base_meta(1, assignedTaskId="030", approach=1,
+                            startedAt="2026-09-01T09:00:00Z",
+                            endedAt="2026-09-01T09:10:00Z",
+                            usage={"input": 900, "output": 900,
+                                   "totalTokens": 1800,
+                                   "costUSD": 50.0, "costPriced": True})
+    # -- the CURRENT approach 2's own two attempts at task "030" ------------
+    meta1 = _base_meta(2, assignedTaskId="030", approach=2,
                        startedAt="2026-09-02T10:00:00Z",
                        endedAt="2026-09-02T10:01:00Z",
                        usage={"input": 10, "output": 20, "totalTokens": 30,
                               "costUSD": 0.01, "costPriced": True})
-    meta2 = _base_meta(2, assignedTaskId="030",
+    meta2 = _base_meta(3, assignedTaskId="030", approach=2,
                        startedAt="2026-09-02T11:00:00Z",
                        endedAt="2026-09-02T11:02:00Z",
                        usage={"input": 15, "output": 25, "totalTokens": 40,
                               "costUSD": 0.02, "costPriced": True})
-    for number, meta in ((1, meta1), (2, meta2)):
+    for number, meta in ((1, meta_stale), (2, meta1), (3, meta2)):
         d = run_dir / "iterations" / f"{number:04d}"
         d.mkdir(parents=True)
         (d / "meta.json").write_text(json.dumps(meta))
@@ -2470,14 +2495,20 @@ def test_task_table_shows_summed_time_and_cost_across_two_iterations(tmp_path, p
         _wait_for_count_ge(pw, "document.querySelectorAll('#task-box tbody tr').length", 1)
 
         # -- the server's own payload -- the expected sum, derived from the
-        # SAME two iterations, never a hand-typed literal --------------------
+        # SAME two approach-2 iterations, never a hand-typed literal, and
+        # never the stale approach-1 iteration's own numbers ---------------
         detail = run_detail(registry, "run-task-totals")
         task_row = detail["tasks"]["tasks"][0]
         assert task_row["id"] == "030"
         expected_time = task_row["timeDisplay"]
         expected_cost = task_row["costDisplay"]
-        assert expected_time == "3m"  # 60s + 120s
-        assert expected_cost == "$0.0300"  # 0.01 + 0.02
+        assert expected_time == "3m"  # 60s + 120s -- NOT + the stale 600s
+        assert expected_cost == "$0.0300"  # 0.01 + 0.02 -- NOT + the stale $50
+        # -- the cross-approach summing bug's own shape, explicitly refused -
+        wrong_time_if_summed_across_approaches = "13m"  # 600 + 60 + 120
+        wrong_cost_if_summed_across_approaches = "$50.0300"
+        assert expected_time != wrong_time_if_summed_across_approaches
+        assert expected_cost != wrong_cost_if_summed_across_approaches
 
         # -- the TASK TABLE ROW itself shows the summed figure, unopened -----
         row_text = pw.eval_js(
@@ -2491,18 +2522,29 @@ def test_task_table_shows_summed_time_and_cost_across_two_iterations(tmp_path, p
 
 
 def test_task_dialog_lists_the_iterations_behind_its_total(tmp_path, pw):
-    """Task 037 (G.5): the task dialog opened from the tasks table lists the
-    INDIVIDUAL iterations the row's own timeDisplay/costDisplay total (task
-    036, G.4) was summed from -- each with its tier and its own per-
-    iteration cost -- bounded to exactly the fixture's own two iterations
-    (never a third, never a different task's).
+    """Task 037 (G.5), inverted for task 001/PRD I.1 (#207/#29): the task
+    dialog opened from the tasks table lists the INDIVIDUAL iterations the
+    row's own timeDisplay/costDisplay total (task 036, G.4) was summed from
+    -- each with its tier and its own per-iteration cost -- bounded to
+    exactly the run's CURRENT approach's own two iterations against this
+    task, never a different task's, and never an EARLIER approach's own
+    same-numbered task attempt either.
 
-    Same two-iteration fixture shape as
+    Same three-iteration, approach-boundary fixture shape as
     `test_task_table_shows_summed_time_and_cost_across_two_iterations`
-    above (task id `030`, one `validation-failed` re-entry) plus a THIRD
-    iteration dispatched against a DIFFERENT task (`999`), so the breakdown
-    proves it is bounded to task `030`'s own two, not every iteration in the
-    run.
+    above (task id `030`, a stale approach-1 attempt plus the current
+    approach 2's validation-failed-then-re-claim pair) PLUS a FOURTH
+    iteration, also in the current approach, dispatched against a
+    DIFFERENT task (`999`) -- so the breakdown proves it is bounded to BOTH
+    this approach AND this task: never the stale approach-1 iteration
+    (iteration #1, same task id, wrong approach) and never the approach-2
+    iteration against the unrelated task (#4, same approach, wrong task).
+
+    Against the pre-fix `task_totals` (bd94c695, before task 001/32044015
+    approach-namespaced the keys), this node fails: a flat `taskId`-only key
+    folds iteration #1's stale approach-1 entry into task "030"'s
+    breakdown, so `[b["number"] for b in breakdown] == [2, 3]` below does
+    not hold (see the commit message for the captured failure).
     """
     from ralphd.cli.ui_server import run_detail
 
@@ -2511,7 +2553,7 @@ def test_task_dialog_lists_the_iterations_behind_its_total(tmp_path, pw):
 
     registry = tmp_path / "registry"
     run_dir = _write_dead_run(registry, "run-task-breakdown", state="succeeded",
-                              verdict="verified")
+                              verdict="verified", approach=2)
     (run_dir / "tasks.json").write_text(json.dumps({
         "version": 1, "goal": "ship it",
         "tasks": [{"id": "030", "title": "add the totals column",
@@ -2520,22 +2562,29 @@ def test_task_dialog_lists_the_iterations_behind_its_total(tmp_path, pw):
                    "status": "completed"}],
     }))
 
-    meta1 = _base_meta(1, assignedTaskId="030", effectiveTier="normal",
+    meta_stale = _base_meta(1, assignedTaskId="030", approach=1,
+                            effectiveTier="urgent",
+                            startedAt="2026-09-01T09:00:00Z",
+                            endedAt="2026-09-01T09:10:00Z",
+                            usage={"input": 900, "output": 900,
+                                   "totalTokens": 1800,
+                                   "costUSD": 50.0, "costPriced": True})
+    meta1 = _base_meta(2, assignedTaskId="030", approach=2, effectiveTier="normal",
                        startedAt="2026-09-02T10:00:00Z",
                        endedAt="2026-09-02T10:01:00Z",
                        usage={"input": 10, "output": 20, "totalTokens": 30,
                               "costUSD": 0.01, "costPriced": True})
-    meta2 = _base_meta(2, assignedTaskId="030", effectiveTier="hard",
+    meta2 = _base_meta(3, assignedTaskId="030", approach=2, effectiveTier="hard",
                        startedAt="2026-09-02T11:00:00Z",
                        endedAt="2026-09-02T11:02:00Z",
                        usage={"input": 15, "output": 25, "totalTokens": 40,
                               "costUSD": 0.02, "costPriced": True})
-    meta3 = _base_meta(3, assignedTaskId="999", effectiveTier="normal",
+    meta3 = _base_meta(4, assignedTaskId="999", approach=2, effectiveTier="normal",
                        startedAt="2026-09-02T12:00:00Z",
                        endedAt="2026-09-02T12:01:00Z",
                        usage={"input": 1, "output": 1, "totalTokens": 2,
                               "costUSD": 0.05, "costPriced": True})
-    for number, meta in ((1, meta1), (2, meta2), (3, meta3)):
+    for number, meta in ((1, meta_stale), (2, meta1), (3, meta2), (4, meta3)):
         d = run_dir / "iterations" / f"{number:04d}"
         d.mkdir(parents=True)
         (d / "meta.json").write_text(json.dumps(meta))
@@ -2544,7 +2593,7 @@ def test_task_dialog_lists_the_iterations_behind_its_total(tmp_path, pw):
     detail = run_detail(registry, "run-task-breakdown")
     task_row = next(t for t in detail["tasks"]["tasks"] if t["id"] == "030")
     breakdown = task_row["iterationsBreakdown"]
-    assert [b["number"] for b in breakdown] == [1, 2]
+    assert [b["number"] for b in breakdown] == [2, 3]
     cost1, cost2 = breakdown[0]["costDisplay"], breakdown[1]["costDisplay"]
 
     server = UiServer(registry)
@@ -2556,14 +2605,16 @@ def test_task_dialog_lists_the_iterations_behind_its_total(tmp_path, pw):
         pw.click('tr.task-row[data-task-id="030"]')
         body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
                          "iterations behind this total")
-        # -- exactly the two iterations task 030's own total was computed
-        # from, each with its own tier and cost, and NOT iteration 3 (a
-        # different task) -----------------------------------------------
-        assert "#1" in body and "tier: normal" in body, body
-        assert "#2" in body and "tier: hard" in body, body
+        # -- exactly the two CURRENT-APPROACH iterations task 030's own
+        # total was computed from, each with its own tier and cost, and
+        # NOT #1 (the stale approach-1 attempt at the same task) and NOT
+        # #4 (this approach's OTHER task) ---------------------------------
+        assert "#2" in body and "tier: normal" in body, body
+        assert "#3" in body and "tier: hard" in body, body
         assert cost1 in body, body
         assert cost2 in body, body
-        assert "#3" not in body, body
+        assert "#1" not in body, body
+        assert "#4" not in body, body
         pw.screenshot(SCREENSHOTS_DIR / "27-task-dialog-iteration-breakdown.png")
     finally:
         server.stop()
