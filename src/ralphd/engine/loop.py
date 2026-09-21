@@ -6067,11 +6067,27 @@ class LoopSupervisor:
         special-cased -- `git diff --name-only X X` legitimately answers
         `[]`, which is exactly the right answer here too: nothing changed,
         so nothing was touched.
+
+        Cure-01-04-2 (PRD requirement B rulings 3/4 and B.4, #221): `--no-
+        renames` is passed explicitly. Git's own rename detection (on by
+        default for `diff.renames`) collapses a plain `git mv` into a
+        single R-status pair and `--name-only` then reports ONLY the
+        rename's destination path -- the source path a record's own
+        `successCriteria` actually cites never appears in this method's
+        return at all. The caller (`_reconcile_pre_cure_heads`) asks
+        "does any diffed path appear in the record's cited text", so a
+        renamed-away cited file looked exactly like an untouched one and
+        the record was wrongly un-reopened. With rename detection off,
+        git instead reports the rename as a delete of the old path plus
+        an add of the new one, so BOTH the source and the destination of
+        a rename are present in the returned list, and the substring
+        check at the call site recognises the source without needing any
+        change there.
         """
         try:
             result = subprocess.run(
                 ["git", "-C", str(self.workspace), "diff", "--name-only",
-                 "-z", base_sha, head_sha],
+                 "--no-renames", "-z", base_sha, head_sha],
                 capture_output=True, text=True, timeout=30)
         except (OSError, UnicodeDecodeError):
             return None
