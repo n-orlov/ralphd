@@ -206,7 +206,10 @@ def test_superseded_is_terminal_in_both_variants():
 
 
 def test_only_in_progress_and_pending_declare_an_edge_into_superseded():
-    """The forced split happens to the task a worker iteration is holding,
+    """Task 004 (F03): names the surviving cover the retiring commit
+    `e01743ded92b9c22e87b5a3692bb31b70245958d` itself did not -- this node
+    supersedes `test_only_in_progress_declares_an_edge_into_superseded`,
+    retired by that commit. The forced split happens to the task a worker iteration is holding,
     which the harness has already moved to `in-progress` -- that is still
     the only WRITER of a fresh `superseded` (`state.supersede_task`, at a
     spent progressBudget). Cure-01-05 (PRD requirement B.3/B.4, F05, #221)

@@ -1451,7 +1451,11 @@ def test_both_owners_missing_the_cited_path_un_reopens_once_on_the_last(tmp_path
 
 
 def test_under_the_vigilant_variant_the_record_is_restored_to_its_actual_status(tmp_path):
-    """Cure-01-05 (PRD requirement B.3/B.4, F05, #221) rewrites this node IN
+    """Task 004 (F03): names the surviving cover the retiring commit
+    `e01743ded92b9c22e87b5a3692bb31b70245958d` itself did not -- this node
+    supersedes `test_under_the_vigilant_variant_the_record_is_restored_to_validated`,
+    retired by that commit. Cure-01-05 (PRD requirement B.3/B.4, F05, #221)
+    rewrites this node IN
     PLACE (zero fast-tier headroom -- one collected item, same as before
     this task) to loop over ALL SIX prior terminal statuses a record could
     genuinely have held before the reopen -- `validated` (this
