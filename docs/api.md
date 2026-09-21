@@ -815,15 +815,18 @@ replan renumbering task ids): a ruling reaches BOTH review and verify, and
 is keyed to the rejection signature rather than a task id, so it survives
 exactly the replan an amendment does not.
 
-Task 015 cure (#224): when the run is CURRENTLY parked on the
-`operator_input_needed` pause (task 014) and this ruling's own resolved
+Task 015 cure (#224), widened by cure-01-01-3 (PRD A.3/A.4, #224): when the
+run is CURRENTLY parked on the `operator_input_needed` pause (task 014, PRD
+A.3 trigger condition 1) **or** the `rejected_repeated_signature` pause
+(task 017, PRD A.3 trigger condition 3) and this ruling's own resolved
 signature is a real (non-`None`) match for that pause's own
 `rejectionSignatures[str(approach)]` entry, filing it releases that pause
 itself — `state` flips back to `running` and `pauseReason` clears in the
 SAME request, no separate `POST /resume`/`ralphctl resume` needed. A
-ruling filed while parked for any OTHER reason, or with no current
-rejection signature to match, leaves whatever pause is in effect exactly
-as it was.
+ruling filed while parked for any OTHER reason (an operator's plain
+`POST /pause`, `rejected_last_approach`, `stagnation`, ...), or with no
+current rejection signature to match, leaves whatever pause is in effect
+exactly as it was.
 
 ### `POST /interrupt`
 SIGINTs the current agent process (the iteration ends as `interrupted`; the loop

@@ -1002,10 +1002,18 @@ class LoopSupervisor:
         signature-equality check (no ruling TEXT is read, parsed or
         classified here):
 
-        * the run must be recorded PAUSED with `pauseReason ==
-          "operator_input_needed"` right now -- any other pause (an
-          operator's plain `POST /pause`, `rejected_last_approach`,
-          `stagnation`, ...) is left exactly as it was;
+        * the run must be recorded PAUSED with `pauseReason` one of
+          `"operator_input_needed"` (PRD A.3 trigger condition 1, task 014)
+          or `"rejected_repeated_signature"` (PRD A.3 trigger condition 3,
+          task 017) right now -- any other pause (an operator's plain
+          `POST /pause`, `rejected_last_approach`, `stagnation`, ...) is
+          left exactly as it was. Cure task cure-01-01-3 (PRD A.3/A.4,
+          #224): condition 3's own pause records `rejectionSignatures[str(
+          approach)]` too (`_pause_and_escalate_repeated_rejection_
+          signature`, cure-01-02's own fix), so the identical scoped-match
+          logic below already applies to it unchanged -- the gap this cure
+          closes was only the single hardcoded reason string above, never
+          the matching itself;
         * THIS approach's `rejectionSignatures[str(approach)]` must be a
           real (non-`None`) signature -- `RunDir.add_ruling` resolves every
           ruling's own `signature` from that SAME map, so a ruling filed
@@ -1021,7 +1029,8 @@ class LoopSupervisor:
         status = self.run.read_status()
         if status.get("state") != PAUSED_STATE:
             return False
-        if status.get("pauseReason") != "operator_input_needed":
+        if status.get("pauseReason") not in (
+                "operator_input_needed", "rejected_repeated_signature"):
             return False
         approach = status.get("approach")
         signatures = status.get("rejectionSignatures") or {}

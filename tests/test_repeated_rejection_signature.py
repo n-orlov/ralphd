@@ -19,10 +19,13 @@ import json
 import os
 from pathlib import Path
 
+import httpx
 import pytest
 
 from ralphd.engine import findings, transitions
+from ralphd.engine.api import create_app
 from ralphd.engine.runner import IterationResult
+from ralphd.engine.state import ruling_entries
 from tests.conftest import make_supervisor, supervisor_factory
 
 
@@ -176,6 +179,56 @@ def test_a_second_identical_rejection_signature_pauses_instead_of_replanning(
     text = notifier.messages[0]
     assert same_clause in text
     assert "ralphctl resume task016-repeated-rejection-signature" in text
+
+    # Cure cure-01-01-3 (PRD A.3/A.4, #224): trigger condition 3's own
+    # pause -- `rejected_repeated_signature` -- releases through the SAME
+    # `/rule` route the sibling `operator_input_needed` pause already does
+    # (condition 1, `tests/test_operator_ruling_reask.py`), no separate
+    # `POST /resume`/`ralphctl resume` call anywhere in this test. Folded
+    # into this existing test rather than a fresh collected node -- task
+    # 024's own fast-tier ceiling stands at zero headroom.
+    signature = status.get("rejectionSignatures", {}).get("2")
+    assert signature is not None
+    # `add_ruling`/`resume_if_ruling_answers_pause` both resolve the
+    # signature off `status.json`'s own `approach` field -- ordinarily
+    # written by `_step_planning` at approach start; this fixture drives
+    # `_step_review()` directly without ever going through planning for
+    # approach 2, so seed it here the way a real approach-2 planning pass
+    # already would have.
+    sup.run.update_status(approach=2)
+
+    def _post_rule(body: dict) -> httpx.Response:
+        async def _post():
+            app = create_app(sup.cfg, sup.run, sup)
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport,
+                                         base_url="http://engine") as client:
+                return await client.post("/rule", json=body)
+        return asyncio.run(_post())
+
+    # An unrelated live pause (an operator's plain pause, a different
+    # engine escalation, ...) is left exactly as it was, even though the
+    # SAME signature is still on record -- "rulings filed against
+    # unrelated pauses remain non-resuming".
+    sup.run.update_status(pauseReason="stagnation")
+    resp = _post_rule({"text": "ruling filed against an unrelated live pause"})
+    assert resp.status_code == 202, resp.text
+    unrelated = sup.run.read_status()
+    assert unrelated["state"] == "paused"
+    assert unrelated["pauseReason"] == "stagnation"
+    assert not sup._pause.is_set()
+
+    # Restore the ACTUAL current pause and file the authoritative ruling
+    # against it -- this is the one that must release it, in the same
+    # request, with no separate resume command.
+    sup.run.update_status(pauseReason="rejected_repeated_signature")
+    resp = _post_rule({"text": "These clauses are residuals; ship."})
+    assert resp.status_code == 202, resp.text
+    released = sup.run.read_status()
+    assert released["state"] == "running"
+    assert released.get("pauseReason") is None
+    assert sup._pause.is_set()
+    assert ruling_entries(root)[-1]["signature"] == signature
 
 
 def test_the_escalation_is_emitted_to_events_jsonl_with_no_notifier(tmp_path):
