@@ -7707,7 +7707,9 @@ def task_totals(iterations: list) -> dict:
     fields -- never re-reads meta.json here -- the same "shape once, render
     everywhere" discipline `iteration_detail`'s own `costDisplay` follows. A
     task id no iteration ever carried gets no entry at all, so a caller can
-    tell "never attempted" apart from "attempted for $0.00".
+    tell "never attempted" apart from "attempted for $0.00"; `task_totals_zero`
+    below is the bucket a caller renders for a task THIS approach never
+    dispatched once the run records attribution at all.
 
     `iterations` (task 037, G.5): the SAME breakdown the total was computed
     from, one entry per iteration that named this task -- `{"number":
@@ -7751,6 +7753,36 @@ def task_totals(iterations: list) -> dict:
             "iterations": bucket["iterations"],
         }
     return out
+
+
+def task_totals_zero() -> dict:
+    """The MEASURED-ZERO bucket (task 001, PRD I.1 definition-of-done 10:
+    "a `pending` task in the current approach shows zero") -- `task_totals`'s
+    own bucket shape with nothing in it, formatted by the same two formatters
+    a real bucket goes through (`format_duration`/`format_cost`), so a task
+    the current approach never dispatched renders `"0s"`/`"$0.0000"` rather
+    than a hand-written literal here that could drift from the real
+    rendering.
+
+    Spelled next to `task_totals` rather than in its caller: the rule that
+    zero minutes and zero dollars are FORMATTED the same way one minute and
+    one cent are belongs to the module that owns the rollup.
+
+    This is NOT the same statement as `task_totals`'s absent entry. An absent
+    entry says "this run records no dispatch attribution at all" (a pre-task-
+    027 run dir, whose iterations carry no `assignedTaskId` -- task 038/G.6),
+    which is a genuine "nothing to say", and the hub still renders its em
+    dash for that. A zero bucket says "this run DOES record attribution, and
+    this approach dispatched nothing against this task", which is a number,
+    not a gap.
+    """
+    return {
+        "durationS": 0.0,
+        "durationDisplay": format_duration(0.0),
+        "costDisplay": format_cost({"costUSD": 0.0}, decimals=4) or USAGE_NONE,
+        "iterationCount": 0,
+        "iterations": [],
+    }
 
 
 # Task 039 (PRD I.1): cause/actor labels for exactly the extra fields a

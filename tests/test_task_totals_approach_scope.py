@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from test_cli_iteration_detail import _base_meta, _write_iteration
 
 from ralphd.cli.ui_server import _with_task_totals
-from ralphd.engine.state import iteration_detail, task_totals
+from ralphd.engine.state import iteration_detail, task_totals, task_totals_zero
 from ralphd.log_merge import iteration_numbers
 
 
@@ -78,8 +78,9 @@ def test_with_task_totals_scopes_to_the_rendered_approach(tmp_path):
     """`_with_task_totals` passes the approach it is rendering and returns
     ONLY that approach's own minutes/dollars/iteration numbers for a task
     id -- never another approach's, and a task the CURRENT approach has
-    never dispatched reads zero (no `timeDisplay`/`costDisplay` key at
-    all), even though an earlier approach's same-numbered task has real
+    never dispatched reads ZERO (`0s`/`$0.0000`, PRD I.1's own
+    definition-of-done 10: "a `pending` task in the current approach shows
+    zero"), even though an earlier approach's same-numbered task has real
     spend on disk."""
     run_dir = _fixture(tmp_path)
     iterations = _iterations(run_dir)
@@ -97,10 +98,35 @@ def test_with_task_totals_scopes_to_the_rendered_approach(tmp_path):
     assert row2["timeDisplay"] == "5m"
     assert [b["number"] for b in row2["iterationsBreakdown"]] == [2]
 
-    # -- a THIRD approach never dispatched task "001" at all: zero, not the
-    # bare-id union of both real approaches' figures ------------------------
+    # -- a THIRD approach never dispatched task "001" at all: a real zero,
+    # not the bare-id union of both real approaches' figures ---------------
     approach3 = _with_task_totals(tasks, iterations, 3)
     row3 = approach3["tasks"][0]
-    assert "costDisplay" not in row3
-    assert "timeDisplay" not in row3
+    assert row3["timeDisplay"] == "0s"
+    assert row3["costDisplay"] == "$0.0000"
+    assert row3["timeDisplay"] == task_totals_zero()["durationDisplay"]
+    assert row3["costDisplay"] == task_totals_zero()["costDisplay"]
+    # nothing to break down behind a zero, and a forged breakdown on the
+    # incoming task doc is dropped rather than carried through
     assert "iterationsBreakdown" not in row3
+    forged = {"tasks": [{"id": "001", "title": "t",
+                         "iterationsBreakdown": [{"number": 1}]}]}
+    assert "iterationsBreakdown" not in _with_task_totals(forged, iterations, 3)["tasks"][0]
+
+
+def test_a_run_recording_no_dispatch_attribution_still_reads_as_unknown(tmp_path):
+    """The zero above is a MEASURED zero, so it is not claimed for a run
+    that measures nothing: a pre-task-027 run dir, whose iterations carry no
+    `assignedTaskId` at all, still gets NEITHER key (the em dash task 038 /
+    G.6's `test_pre_dispatch_record_run_dir_still_renders` pins in the
+    browser). "Never measured" and "measured zero" must stay distinguishable.
+    """
+    run_dir = tmp_path / "run-legacy"
+    (run_dir / "iterations").mkdir(parents=True)
+    meta = _base_meta(1)
+    assert "assignedTaskId" not in meta
+    _write_iteration(run_dir, 1, meta)
+
+    tasks = {"tasks": [{"id": "001", "title": "a task from before the change"}]}
+    row = _with_task_totals(tasks, _iterations(run_dir), 1)["tasks"][0]
+    assert "timeDisplay" not in row and "costDisplay" not in row

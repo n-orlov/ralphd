@@ -2406,12 +2406,15 @@ function renderTasks(el, tasks, progressBudget) {
       // INCLUDING a validation-failed re-entry's second attempt -- never
       // recomputed here, and never another approach's spend against a
       // same-numbered task (every approach's planning pass renumbers
-      // `tasks.json` from "001", #207/#29). Absent entirely for a task no
-      // iteration in THIS approach was ever dispatched against
-      // (`_with_task_totals` adds neither key), so it renders the same em
-      // dash the timeline row's task-id cell already uses for "nothing to
-      // say" -- even when an earlier approach's same-numbered task has
-      // real spend.
+      // `tasks.json` from "001", #207/#29). A task THIS approach never
+      // dispatched reads a real zero -- `0s`/`$0.0000`, from
+      // `state.task_totals_zero()` -- not a dash, because that figure is
+      // known, not missing (PRD I.1: "a `pending` task in the current
+      // approach shows zero"), even when an earlier approach's same-numbered
+      // task has real spend. The em dash below is left for the one case the
+      // server says nothing at all about: a pre-dispatch-record run dir
+      // whose iterations carry no `assignedTaskId`, where neither key is
+      // attached (task 038, G.6).
       h("td", { class: "task-time" }, [String(t.timeDisplay || "\u2014")]),
       h("td", { class: "task-cost" }, [String(t.costDisplay || "\u2014")]),
     ]));

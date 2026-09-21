@@ -108,6 +108,7 @@ from ..engine.state import (
     task_blocked_by,
     task_failure_kinds,
     task_totals,
+    task_totals_zero,
     task_transition_history,
     tasks_read_notice,
 )
@@ -1268,31 +1269,42 @@ def _with_task_totals(tasks: dict, iterations: list, approach) -> dict:
     number already follows, never a client-side re-sum, and never another
     approach's figures: every approach's planning pass renumbers
     `tasks.json` from "001", so without this scoping approach 2's task
-    "001" would show approach 1's minutes and dollars too (#207). A task
-    the CURRENT approach has never dispatched reads zero (no key added at
-    all) even when an EARLIER approach's same-numbered task has real spend
-    -- `totals.get(f"{approach}:{tid}")` finds nothing for that pair, which
-    is exactly the point.
+    "001" would show approach 1's minutes and dollars too (#207).
 
-    A task no iteration in this approach was ever dispatched against gets
-    NEITHER key added at all (never a counted `$0.00`/`0s`), so app.js can
-    render its own "nothing yet" dash for exactly the tasks `task_totals`
-    has nothing to say about for THIS approach -- the same absent-key
-    discipline `_with_tasks_read_label` just above uses for
-    `tasksNotice`/`tasksLabel`.
+    A task the CURRENT approach has never dispatched reads ZERO -- PRD I.1's
+    own definition of done ("a `pending` task in the current approach shows
+    zero"): both keys are attached from `engine.state.task_totals_zero()`, so
+    the row renders `0s`/`$0.0000` and not an em dash, even when an EARLIER
+    approach's same-numbered task has real spend on disk. That zero is the
+    honest reading of a run that DOES record dispatch attribution: this
+    approach dispatched no iteration against this task, so its minutes and
+    dollars are zero, and a dash there would read as "unknown" for a figure
+    that is in fact known. Any `iterationsBreakdown` the incoming task doc
+    carried is dropped on that path, the same forged-key discipline
+    `_with_tasks_read_label` above uses for `tasksNotice`/`tasksLabel` --
+    there are no iterations behind a zero.
+
+    The ONE case that still renders the em dash is a run whose `task_totals`
+    is empty outright: a pre-task-027 run dir records no `assignedTaskId` on
+    any iteration, so nothing about any task's spend is measurable and
+    neither key is attached (task 038, G.6 --
+    `test_pre_dispatch_record_run_dir_still_renders` pins exactly that).
+    "Never measured" and "measured zero" are different statements and the hub
+    says them differently.
 
     Also attaches `iterationsBreakdown` (task 037, G.5): the SAME per-
     iteration list `task_totals` built the total from -- `{"number",
     "tier", "costDisplay"}` per entry -- so a task detail view can list
     exactly the iterations behind its total, bounded to this run's own
     iteration set AND this approach, without re-deriving anything
-    client-side. Absent when that list is empty, same discipline as
-    `timeDisplay`/`costDisplay`.
+    client-side. Absent when that list is empty (including every zero-bucket
+    row above).
     """
     totals = task_totals(iterations)
     if not totals:
         return tasks
     approach = approach if isinstance(approach, int) and not isinstance(approach, bool) else 1
+    zero = task_totals_zero()
     out = dict(tasks)
     new_list = []
     for t in tasks.get("tasks") or []:
@@ -1303,6 +1315,10 @@ def _with_task_totals(tasks: dict, iterations: list, approach) -> dict:
                  "costDisplay": agg["costDisplay"]}
             if agg.get("iterations"):
                 t["iterationsBreakdown"] = agg["iterations"]
+        else:
+            t = {**t, "timeDisplay": zero["durationDisplay"],
+                 "costDisplay": zero["costDisplay"]}
+            t.pop("iterationsBreakdown", None)
         new_list.append(t)
     out["tasks"] = new_list
     return out
@@ -1317,8 +1333,9 @@ def _with_task_transitions(tasks: dict, run_dir: Path) -> dict:
     carries. A task with no recorded transition (never seen by an
     `_emit_task_changes()` diff -- pre-v0.9 run dir, or a plan rewritten
     since the last poll) gets no key at all, the same absent-key discipline
-    `_with_task_totals` just above already uses for `timeDisplay`/
-    `costDisplay`.
+    `_with_task_totals` just above uses for `iterationsBreakdown` (and, for a
+    run recording no dispatch attribution at all, for `timeDisplay`/
+    `costDisplay` too).
 
     Purely on-disk, like `task_transition_history` itself, so this runs the
     same for a live run and a dead one with no container.

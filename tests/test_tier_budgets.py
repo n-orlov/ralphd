@@ -360,9 +360,15 @@ TIER_MARKERS = ("smoke", "fast")
 # same choice every entry above made. Confirmed against
 # `_modules(collected(marker))`, this module's own helpers, not a raw path
 # count.
+#
+# Ratcheted again at task 001 (v0.24, requirement I.1): +1 module and +3 tests
+# for `tests/test_task_totals_approach_scope.py` (fast 5997/398 -> 6000/399,
+# smoke 4361/281 -> 4364/282), re-measured with this module's own
+# `collected()`/`_modules()` helpers at this commit's tip. This is the ratchet
+# moving for legitimately added tests, not a raised safety ceiling.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 5999, "modules": 399},
-    "smoke": {"tests": 4363, "modules": 282},
+    "fast": {"tests": 6000, "modules": 399},
+    "smoke": {"tests": 4364, "modules": 282},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
