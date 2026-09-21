@@ -1254,36 +1254,50 @@ def _with_tasks_read_label(tasks: dict) -> dict:
     return out
 
 
-def _with_task_totals(tasks: dict, iterations: list) -> dict:
-    """Task 036 (G.4): attach each task's own aggregated `timeDisplay`/
-    `costDisplay` -- summed from every entry in `iterations` (THIS run's own
-    `run_detail` iteration list, `engine.state.iteration_detail` shaped) that
-    named it via `assignedTaskId`, via `engine.state.task_totals` -- so the
-    hub tasks table's new time/cost columns render server-formatted strings,
-    exactly the `usage.costDisplay`/`startedAtLocal` discipline every other
-    hub number already follows, never a client-side re-sum.
+def _with_task_totals(tasks: dict, iterations: list, approach) -> dict:
+    """Task 036 (G.4; re-scoped task 001/PRD I.1, #207/#29's defect
+    recurring in this new place): attach each task's own aggregated
+    `timeDisplay`/`costDisplay` -- summed from every entry in `iterations`
+    (THIS run's own `run_detail` iteration list, `engine.state.
+    iteration_detail` shaped) that named it via `assignedTaskId` AND whose
+    OWN `approach` field matches `approach` (the caller's own current
+    approach, from `status.json`) -- via `engine.state.task_totals`'s
+    approach-namespaced `"<approach>:<taskId>"` keys -- so the hub tasks
+    table's new time/cost columns render server-formatted strings, exactly
+    the `usage.costDisplay`/`startedAtLocal` discipline every other hub
+    number already follows, never a client-side re-sum, and never another
+    approach's figures: every approach's planning pass renumbers
+    `tasks.json` from "001", so without this scoping approach 2's task
+    "001" would show approach 1's minutes and dollars too (#207). A task
+    the CURRENT approach has never dispatched reads zero (no key added at
+    all) even when an EARLIER approach's same-numbered task has real spend
+    -- `totals.get(f"{approach}:{tid}")` finds nothing for that pair, which
+    is exactly the point.
 
-    A task no iteration was ever dispatched against gets NEITHER key added
-    at all (never a counted `$0.00`/`0s`), so app.js can render its own
-    "nothing yet" dash for exactly the tasks `task_totals` has nothing to
-    say about -- the same absent-key discipline `_with_tasks_read_label`
-    just above uses for `tasksNotice`/`tasksLabel`.
+    A task no iteration in this approach was ever dispatched against gets
+    NEITHER key added at all (never a counted `$0.00`/`0s`), so app.js can
+    render its own "nothing yet" dash for exactly the tasks `task_totals`
+    has nothing to say about for THIS approach -- the same absent-key
+    discipline `_with_tasks_read_label` just above uses for
+    `tasksNotice`/`tasksLabel`.
 
     Also attaches `iterationsBreakdown` (task 037, G.5): the SAME per-
     iteration list `task_totals` built the total from -- `{"number",
     "tier", "costDisplay"}` per entry -- so a task detail view can list
     exactly the iterations behind its total, bounded to this run's own
-    iteration set, without re-deriving anything client-side. Absent when
-    that list is empty, same discipline as `timeDisplay`/`costDisplay`.
+    iteration set AND this approach, without re-deriving anything
+    client-side. Absent when that list is empty, same discipline as
+    `timeDisplay`/`costDisplay`.
     """
     totals = task_totals(iterations)
     if not totals:
         return tasks
+    approach = approach if isinstance(approach, int) and not isinstance(approach, bool) else 1
     out = dict(tasks)
     new_list = []
     for t in tasks.get("tasks") or []:
         tid = t.get("id")
-        agg = totals.get(str(tid)) if tid is not None else None
+        agg = totals.get(f"{approach}:{tid}") if tid is not None else None
         if agg:
             t = {**t, "timeDisplay": agg["durationDisplay"],
                  "costDisplay": agg["costDisplay"]}
@@ -1672,10 +1686,15 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         if detail is not None and detail.get("hasMeta"):
             iterations.append(detail)
 
-    # Task 036 (G.4): the hub tasks table's time/cost columns -- per-task
-    # sums over exactly the iterations just built above, so a task's total
-    # can never disagree with what its own timeline rows already show.
-    tasks = _with_task_totals(tasks, iterations)
+    # Task 036 (G.4; re-scoped task 001/PRD I.1, #207): the hub tasks
+    # table's time/cost columns -- per-task sums over exactly the
+    # iterations just built above, scoped to the CURRENT approach
+    # (`shaped_status`'s own `approach`, the same field `_with_approach_
+    # display` renders and `current_approach()` falls back to 1 for), so a
+    # task's total can never disagree with what its own timeline rows
+    # already show, and never picks up another approach's spend against a
+    # same-numbered task.
+    tasks = _with_task_totals(tasks, iterations, shaped_status.get("approach"))
     # Task 039 (PRD I.1): each task's own transition history, read straight
     # off this run's own events.jsonl -- never derived from the iterations
     # list just built above, so a transition recorded before this run's

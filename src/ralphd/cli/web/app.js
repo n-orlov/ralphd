@@ -2397,14 +2397,21 @@ function renderTasks(el, tasks, progressBudget) {
         ...(budget ? [" ", pill("budget " + budget.used + "/" + budget.budget)] : []),
       ]),
       h("td", {}, [String(t.title || "")]),
-      // Task 036 (G.4): each task's own aggregated time and cost --
-      // `timeDisplay`/`costDisplay`, summed server-side (`engine.state.
-      // task_totals`) from every iteration this task's own `assignedTaskId`
-      // named, INCLUDING a validation-failed re-entry's second attempt --
-      // never recomputed here. Absent entirely for a task no iteration was
-      // ever dispatched against (`_with_task_totals` adds neither key), so
-      // it renders the same em dash the timeline row's task-id cell already
-      // uses for "nothing to say".
+      // Task 036 (G.4; re-scoped task 001/PRD I.1, #207): each task's own
+      // aggregated time and cost -- `timeDisplay`/`costDisplay`, summed
+      // server-side (`engine.state.task_totals`) from every iteration this
+      // task's own `assignedTaskId` named WITHIN THE CURRENT APPROACH ONLY
+      // (`_with_task_totals` passes the approach it is rendering and reads
+      // back only that approach's own `"<approach>:<taskId>"` bucket),
+      // INCLUDING a validation-failed re-entry's second attempt -- never
+      // recomputed here, and never another approach's spend against a
+      // same-numbered task (every approach's planning pass renumbers
+      // `tasks.json` from "001", #207/#29). Absent entirely for a task no
+      // iteration in THIS approach was ever dispatched against
+      // (`_with_task_totals` adds neither key), so it renders the same em
+      // dash the timeline row's task-id cell already uses for "nothing to
+      // say" -- even when an earlier approach's same-numbered task has
+      // real spend.
       h("td", { class: "task-time" }, [String(t.timeDisplay || "\u2014")]),
       h("td", { class: "task-cost" }, [String(t.costDisplay || "\u2014")]),
     ]));

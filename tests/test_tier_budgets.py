@@ -361,8 +361,8 @@ TIER_MARKERS = ("smoke", "fast")
 # `_modules(collected(marker))`, this module's own helpers, not a raw path
 # count.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 5997, "modules": 398},
-    "smoke": {"tests": 4361, "modules": 281},
+    "fast": {"tests": 5999, "modules": 399},
+    "smoke": {"tests": 4363, "modules": 282},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

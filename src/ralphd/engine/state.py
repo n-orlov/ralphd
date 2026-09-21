@@ -7678,14 +7678,30 @@ def _accumulate_task_usage(bucket: dict, usage: dict) -> dict:
 
 
 def task_totals(iterations: list) -> dict:
-    """Per-task aggregated time/cost for the hub tasks table (task 036, G.4):
-    `{task_id: {"durationS": float, "durationDisplay": str, "costDisplay":
-    str, "iterationCount": int, "iterations": [...]}}`, summed from every
-    entry in `iterations` (`iteration_detail`'s own shape -- this run's
-    `run_detail` iteration list) whose `assignedTaskId` names that task,
-    INCLUDING a validation-failed re-entry that dispatched a second
-    iteration against the same task id -- a task's total reflects every
-    attempt at it, never only its last one.
+    """Per-task aggregated time/cost for the hub tasks table (task 036,
+    G.4; re-keyed task 001/PRD I.1, #29's defect recurring in this new
+    place): `{"<approach>:<taskId>": {"durationS": float, "durationDisplay":
+    str, "costDisplay": str, "iterationCount": int, "iterations": [...]}}`,
+    summed from every entry in `iterations` (`iteration_detail`'s own shape
+    -- this run's `run_detail` iteration list) whose `assignedTaskId` names
+    that task, INCLUDING a validation-failed re-entry that dispatched a
+    second iteration against the same task id -- a task's total reflects
+    every attempt at it, never only its last one.
+
+    Keys are approach-namespaced -- `"<approach>:<taskId>"` -- following the
+    #29 fix site's own stated rule (`RunDir.migrate_legacy_vigilant_verified`
+    above): every approach's planning pass renumbers `tasks.json` from
+    "001", so a flat `taskId`-only key would let approach 2's task "001"
+    inherit approach 1's minutes and dollars, exactly the bug this task
+    fixes (#207 -- "$52.50 reported where $8.31 belonged"). The approach
+    namespace comes from EACH iteration's own `approach` field (the
+    dispatch-time write, `engine/loop.py`'s `assignedTaskId` sibling) --
+    never a single approach passed in here -- so one call still separates
+    every approach's iterations correctly even though the caller
+    (`_with_task_totals`) only ever reads one approach's slice back out. An
+    iteration recorded before that field existed (predates the dispatch
+    write, task 027) falls back to approach 1, the same convention the #29
+    fix site uses for its own pre-fix sidecar entries.
 
     Reads `durationS`/`usage` off `iteration_detail`'s already-derived
     fields -- never re-reads meta.json here -- the same "shape once, render
@@ -7708,8 +7724,10 @@ def task_totals(iterations: list) -> dict:
         tid = it.get("assignedTaskId")
         if tid is None:
             continue
-        tid = str(tid)
-        bucket = raw.setdefault(tid, {"durationS": 0.0, "usage": {},
+        approach = it.get("approach")
+        approach = approach if isinstance(approach, int) and not isinstance(approach, bool) else 1
+        key = f"{approach}:{tid}"
+        bucket = raw.setdefault(key, {"durationS": 0.0, "usage": {},
                                       "iterationCount": 0, "iterations": []})
         dur = it.get("durationS")
         if isinstance(dur, (int, float)) and not isinstance(dur, bool):
