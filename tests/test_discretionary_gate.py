@@ -460,6 +460,50 @@ def test_condition_3_holds_before_any_spend_and_carries_the_six_a7_items(
     assert ev["approachOfMax"] == "approach 1 of 2"
     assert ev["hubLink"] == f"http://127.0.0.1/#/run/{sup.cfg.run_id}"
 
+    # Task 003 (PRD finding F01): a SECOND episode, over a REAL archive/
+    # replan (never a seeded `rejectionSignatures` map), where the repeat
+    # rejection's own cure pass would be mechanically AVAILABLE (all
+    # findings now curable, each naming an `invalidates` path) and would
+    # reopen only `completed` -- never `validated` -- records, so
+    # condition 2 itself never fires. F01: `_step_review` used to return
+    # `("advance", "cure", "rejected_curable_pass_available")` here,
+    # spending `curePasses` and moving 057/058 back to `pending`, because
+    # the cure-pass branch ran before this comparison was ever reached.
+    sup2 = _supervisor(tmp_path / "run2", max_approaches=3, operator_input_needed_pause=True)
+    sup2._approach = 1
+    findings.write_findings_json(sup2.run.findings_json_file, _MIXED_FINDINGS)
+    sup2.runner.run = _rejecting_runner("mixed curability, second episode")  # type: ignore[method-assign]
+    outcome2a = _bounded(sup2._step_review())
+    assert outcome2a[1] == "paused"  # condition 1's own unbudgeted gate
+    sup2.resume()
+    sup2._archive_approach(1)
+    sup2._step_replan()
+    assert sup2._approach == 2
+
+    sup2.run.write_tasks({"version": 1,
+                         "tasks": _lane_fixture_tasks(record_status="completed",
+                                                      verify_status="completed")})
+    repeated = [dict(f, curable=True, cured_when="Fix " + f["clause"],
+                     invalidates=[RECORD_PATH]) for f in _MIXED_FINDINGS]
+    assert (sup2._review_rejection_signature(repeated, None)
+            == sup2.run.read_status()["rejectionSignatures"]["1"])
+    findings.write_findings_json(sup2.run.findings_json_file, repeated)
+
+    outcome2b = _bounded(sup2._step_review())
+
+    assert outcome2b == ("advance", "paused", "rejected_repeated_signature")
+    status2 = sup2.run.read_status()
+    assert status2["pauseReason"] == "rejected_repeated_signature"
+    assert status2.get("discretionaryGateSpent") == {"2": True}
+    # no cure task inserted, and the completed records untouched.
+    assert status2.get("curePasses", {}).get("2", 0) == 0
+    tasks2 = {t["id"]: t for t in sup2.run.read_tasks()["tasks"]}
+    assert tasks2["057"]["status"] == "completed"
+    assert tasks2["058"]["status"] == "completed"
+    # the approach is left unarchived -- `resume` re-reviews the same one.
+    assert not (sup2.run.root / "approaches" / "02").exists()
+    assert sup2._approach == 2
+
 
 # ===========================================================================
 # 4. The shared budget: one gate for conditions 2 and 3 together, in

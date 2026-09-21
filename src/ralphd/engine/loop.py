@@ -10870,6 +10870,37 @@ class LoopSupervisor:
             self._pause_and_escalate_incurable_rejection(approach)
             self._advance("review", "review", "rejected_incurable")
             return ("advance", "review", "rejected_incurable")
+        # Task 003 (PRD finding F01, A.3 condition 3): "already an edge,
+        # but it fires after the approach is spent; pull the same
+        # comparison forward" -- computed here, before the cure-pass
+        # branch below, so a rejection whose own blocking-clause signature
+        # already repeats the immediately preceding approach's recorded
+        # one takes this gate BEFORE `_review_cure_pass_available`'s own
+        # branch can reopen already-`completed` (not merely `validated`)
+        # records or insert a fresh cure task on the identical wall this
+        # run already lost one approach to. F01: `_step_review` used to
+        # return `("advance", "cure", "rejected_curable_pass_available")`
+        # here, spending `curePasses` and moving evidence tasks back to
+        # `pending`, without ever reaching this comparison. Pure and
+        # read-only (`_repeated_rejection_signature` only reads `status.
+        # json`'s `rejectionSignatures` map); the actual record
+        # (`_record_rejection_signature`) still happens only in the
+        # ordinary archive/replan tail below, unchanged. `mechanical_
+        # ruled_park_due` still wins first -- an operator-filed ruling
+        # against this exact signature is a stronger answer than the
+        # mechanical repeat check -- and is re-checked at its own two
+        # existing call sites (top of the cure-pass branch below, and the
+        # archive/replan tail) for the cases this early gate does not
+        # reach.
+        repeated_signature = self._repeated_rejection_signature(
+            approach, signature)
+        if (not mechanical_ruled_park_due and repeated_signature
+                and self._discretionary_gate_available(approach)):
+            self._spend_discretionary_gate(approach)
+            self._pause_and_escalate_repeated_rejection_signature(
+                approach, signature, cure_preview)
+            self._advance("review", "paused", "rejected_repeated_signature")
+            return ("advance", "paused", "rejected_repeated_signature")
         # Task 009 (PRD requirement C.1, #141): a rejection whose blocking
         # findings are ALL curable, with this approach's own cure pass
         # still unspent, is a cure pass -- not a replan. Checked AFTER the
@@ -11025,33 +11056,28 @@ class LoopSupervisor:
         # `_review_findings_channel()`/`_review_rejection_signature` this
         # branch always used -- never a second, possibly different read.
         #
-        # Task 017 (PRD requirement A.3, #224): trigger condition 3 -- a
-        # repeated signature match -- shares the SAME per-approach
-        # discretionary gate condition 2 above spends
-        # (`_discretionary_gate_available`/`_spend_discretionary_gate`):
-        # already spent this approach (by condition 2, earlier in this
-        # very rejection, or by an earlier rejection over the same
-        # approach), this match falls through to the ordinary archive/
-        # replan tail below instead of pausing a second time -- the shared
-        # budget is ONE discretionary gate per approach, not one per
-        # trigger. `_repeated_rejection_signature` itself, and its own
-        # persisted `rejectionSignatures` record, are unchanged: a match
-        # the gate happens to refuse is still recorded exactly as before,
-        # so the NEXT approach's own first rejection still compares
-        # against it.
-        repeated_signature = self._repeated_rejection_signature(
-            approach, signature)
-        # Cure task cure-01-02 (PRD requirement A.5, #224): the identical
-        # pre-emption as the cure branch above, for the SAME reason -- a
-        # ruling addressing this rejection's own signature must not be
-        # bypassed just because this rejection's signature ALSO happens to
-        # repeat the previous approach's own recorded one. Checked BEFORE
-        # trigger condition 3's own gate below (which would otherwise fall
-        # through to the bottom archive/replan tail whenever the shared
-        # discretionary gate is already spent, and that tail's own combined
-        # check ANDs `not repeated_signature`, never reaching the ruling at
-        # all -- see the docstring above `mechanical_ruled_park_due` is
-        # computed from).
+        # Task 017 (PRD requirement A.3, #224)/Task 003 (F01): `repeated_
+        # signature` was already computed once, above -- before the
+        # cure-pass branch -- and, together with `_discretionary_gate_
+        # available`, already returned there whenever it matched with the
+        # shared gate still unspent. Reaching this point means either it
+        # never matched at all, or it matched with the gate already spent
+        # (by condition 2 inside the cure-pass branch above, or by an
+        # earlier rejection over the same approach) -- in the latter case
+        # this falls through to the ordinary archive/replan tail below
+        # instead of pausing a second time, the shared budget being ONE
+        # discretionary gate per approach, not one per trigger.
+        # `_repeated_rejection_signature` itself, and its own persisted
+        # `rejectionSignatures` record, are unchanged: a match the gate
+        # happens to refuse is still recorded exactly as before, so the
+        # NEXT approach's own first rejection still compares against it.
+        #
+        # Cure task cure-01-02 (PRD requirement A.5, #224): a ruling
+        # addressing this rejection's own signature, not yet spent, still
+        # re-parks HERE, for the one case the early gate above does not
+        # reach -- a rejection whose cure pass was not available at all
+        # (so the early gate's own `not mechanical_ruled_park_due` guard
+        # never even faced a live cure-pass branch to pre-empt).
         if mechanical_ruled_park_due:
             self._record_ruling_reparked(ruled["seq"])
             replan_available = approach < self.cfg.max_approaches
@@ -11068,12 +11094,6 @@ class LoopSupervisor:
                 cure_preview=cure_preview)
             self._advance("review", "paused", "operator_input_needed")
             return ("advance", "paused", "operator_input_needed")
-        if repeated_signature and self._discretionary_gate_available(approach):
-            self._spend_discretionary_gate(approach)
-            self._pause_and_escalate_repeated_rejection_signature(
-                approach, signature, cure_preview)
-            self._advance("review", "paused", "rejected_repeated_signature")
-            return ("advance", "paused", "rejected_repeated_signature")
         # Task 014 (PRD requirement A.1, #224): the pause-before-archive
         # gate itself -- checked LAST among the rejection edges, after every
         # other special-case pause above keeps its own precedence exactly
