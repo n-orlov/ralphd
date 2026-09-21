@@ -1115,28 +1115,28 @@ def _cure_pass_over_a_real_workspace(root: Path, workspace: Path,
 def test_a_cure_diff_that_misses_the_cited_path_un_reopens_the_record(tmp_path):
     """Cure-01-05 (PRD requirement B.3/B.4, F05, #221) rewrites this node IN
     PLACE (zero fast-tier headroom -- one collected item, same as before
-    this task) to loop over ALL FIVE prior terminal statuses a record could
+    this task) to loop over ALL SIX prior terminal statuses a record could
     genuinely have held before the reopen -- `completed` (this test's own
-    original subject), `validated`, `failed`, `skipped` and `superseded` --
-    instead of adding four siblings. `validated` is in the list for this
-    NON-VIGILANT run deliberately: it is F05's own probe, and the reason
-    the un-reopen edge is declared for both variants rather than split
-    across the vigilant delta. A record's status is data on disk, so the
-    flag in force at reconciliation time is no evidence about what it held
-    at reopen time; before this task the restore asked a non-vigilant table
-    for `pending -> validated`, was refused, and left the record `pending`
-    with no `task.un_reopened` event and no notification, while a
-    `failed`/`skipped`/`superseded` record was silently PROMOTED to
-    `completed`. Each iteration also asserts the persisted provenance the
-    production hook reads instead of guessing -- `preCureStatuses` and the
-    reopen event's own `priorStatus` -- and the notification's own text,
-    which now names the status each record was restored TO; the tail of the
-    node covers the one shape that carries no persisted prior status at
-    all, where the hook leaves the record `pending` rather than inventing
-    one.
+    original subject), `validated`, `failed`, `skipped`, `superseded` and
+    (task 001, F04) `petitioned` -- instead of adding five siblings.
+    `validated` is in the list for this NON-VIGILANT run deliberately: it
+    is F05's own probe, and the reason the un-reopen edge is declared for
+    both variants rather than split across the vigilant delta. A record's
+    status is data on disk, so the flag in force at reconciliation time is
+    no evidence about what it held at reopen time; before this task the
+    restore asked a non-vigilant table for `pending -> validated`, was
+    refused, and left the record `pending` with no `task.un_reopened`
+    event and no notification, while a `failed`/`skipped`/`superseded`
+    record was silently PROMOTED to `completed`. Each iteration also
+    asserts the persisted provenance the production hook reads instead of
+    guessing -- `preCureStatuses` and the reopen event's own `priorStatus`
+    -- and the notification's own text, which now names the status each
+    record was restored TO; the tail of the node covers the one shape that
+    carries no persisted prior status at all, where the hook leaves the
+    record `pending` rather than inventing one.
     """
     for record_status in ("completed", "validated", "failed", "skipped",
-                          "superseded"):
+                          "superseded", "petitioned"):
         root = tmp_path / f"run-{record_status}"
         workspace = tmp_path / f"workspace-{record_status}"
         sup, cure_id, seed_sha = _cure_pass_over_a_real_workspace(
@@ -1453,14 +1453,14 @@ def test_both_owners_missing_the_cited_path_un_reopens_once_on_the_last(tmp_path
 def test_under_the_vigilant_variant_the_record_is_restored_to_its_actual_status(tmp_path):
     """Cure-01-05 (PRD requirement B.3/B.4, F05, #221) rewrites this node IN
     PLACE (zero fast-tier headroom -- one collected item, same as before
-    this task) to loop over ALL FIVE prior terminal statuses a record could
+    this task) to loop over ALL SIX prior terminal statuses a record could
     genuinely have held before the reopen -- `validated` (this
-    test's own original subject), plus `completed`, `failed`, `skipped` and
-    `superseded`, every one of them declared once in the BASE table and
-    none of them in the vigilant delta, which carries no `pending` entry
-    at all any more. `completed` is in the list for this VIGILANT run for
-    the same reason `validated` is in the non-vigilant node's: the
-    un-reopen's
+    test's own original subject), plus `completed`, `failed`, `skipped`,
+    `superseded` and (task 001, F04) `petitioned`, every one of them
+    declared once in the BASE table and none of them in the vigilant
+    delta, which carries no `pending` entry at all any more. `completed`
+    is in the list for this VIGILANT run for the same reason `validated`
+    is in the non-vigilant node's: the un-reopen's
     target is `candidate["priorStatus"]` -- persisted at reopen time
     (`state.insert_cure_tasks`'s `preCureStatuses` map) and read back
     through `state.records_pending_reconciliation`, asserted directly here
@@ -1469,7 +1469,7 @@ def test_under_the_vigilant_variant_the_record_is_restored_to_its_actual_status(
     `validated` and ask for an edge the other variant's table refused.
     """
     for record_status in ("validated", "completed", "failed", "skipped",
-                          "superseded"):
+                          "superseded", "petitioned"):
         root = tmp_path / f"run-{record_status}"
         workspace = tmp_path / f"workspace-{record_status}"
         seed_sha = _init_git_workspace(workspace)

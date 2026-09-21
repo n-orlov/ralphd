@@ -368,7 +368,8 @@ the restore itself mode-dependent: F05 measured a non-vigilant run that
 persisted `preCureStatuses = {"058": "validated"}`, asked a non-vigilant
 table whether `pending -> validated` was legal, got `False`, and left the
 record `pending` with no `task.un_reopened` event and no notification.
-All five targets now sit in the BASE table
+All six targets (task 001, F04, added `petitioned` to the original five)
+now sit in the BASE table
 (`transitions.UN_REOPEN_TASK_STATUS_TARGETS`, spliced into its `pending`
 entry), and the vigilant delta carries no `pending` entry at all, so
 `is_legal_task_status_transition` answers identically whichever flag is in
@@ -395,6 +396,7 @@ Generated from `src/ralphd/engine/transitions.py`'s task-status mini-FSM (`TASK_
 | `pending` | both | `failed` |
 | `pending` | both | `skipped` |
 | `pending` | both | `superseded` |
+| `pending` | both | `petitioned` |
 | `in-progress` | non-vigilant only | `completed` |
 | `in-progress` | both | `failed` |
 | `in-progress` | both | `skipped` |
@@ -439,6 +441,7 @@ stateDiagram-v2
     pending --> failed
     pending --> skipped
     pending --> superseded
+    pending --> petitioned
     in_progress --> awaiting_validation
     in_progress --> failed
     in_progress --> skipped

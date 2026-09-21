@@ -1921,7 +1921,7 @@ def apply_task_status_change(run: "RunDir", task_id: str, target_status: str,
     # persisted (`preCureStatuses`) before the reopen, never a hat's
     # free-form claim. That is what lets the declared edge be
     # variant-independent (`transitions.UN_REOPEN_TASK_STATUS_TARGETS`,
-    # all five targets in the BASE table) without widening what anyone
+    # all six targets in the BASE table) without widening what anyone
     # else may ask for: every other caller (an operator amendment ruling,
     # the steer hat's `task-update`, a hat's contract report) keeps the
     # ordinary refusals -- `superseded` out of any status, and the OTHER
@@ -4850,7 +4850,7 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
     `status.json`'s `preCureHeads` map and emitted on `task.pre_cure_head_
     recorded`, keyed by the RECORD task's own id (task 006). (2) A declared
     `pending -> {completed,validated,failed,skipped,superseded}` edge now
-    exists in `transitions.TASK_STATUS_TABLE` -- all five targets in the
+    exists in `transitions.TASK_STATUS_TABLE` -- all six targets in the
     BASE table, declared for both variants, since the restore target is
     the status this call persisted and not a function of the verification
     mode (cure-01-05, PRD requirement B.3/B.4, F05) --

@@ -1135,7 +1135,7 @@ OPERATOR_RULEABLE_TASK_STATUSES: tuple[str, ...] = tuple(
 # never touched the record's cited path after all, RETRACTS that
 # prediction by walking this edge back to whichever status it undoes.
 #
-# Declared ONCE, in the BASE table, for all five targets -- never split
+# Declared ONCE, in the BASE table, for all six targets -- never split
 # across the vigilant delta (cure-01-05, F05; see the block at the end of
 # this comment for why the earlier variant split was the defect itself).
 #
@@ -1181,7 +1181,7 @@ OPERATOR_RULEABLE_TASK_STATUSES: tuple[str, ...] = tuple(
 # of `superseded` in either), so widening the table for the engine's own
 # restore widens nothing a hat may report.
 UN_REOPEN_TASK_STATUS_TARGETS: tuple[str, ...] = (
-    "validated", "completed", "failed", "skipped", "superseded")
+    "validated", "completed", "failed", "skipped", "superseded", "petitioned")
 
 
 def variant_claim_terminal(vigilant: bool) -> str:
@@ -1207,7 +1207,7 @@ def is_un_reopen_transition(current: str, target: str) -> bool:
     """True iff `(current, target)` is the un-reopen edge declared just
     below -- `pending` back to a record's own pre-reopen terminal status.
     Variant-agnostic, and since cure-01-05 (PRD requirement B.3/B.4, F05,
-    #221) so is the declaration it recognises: all five targets sit in the
+    #221) so is the declaration it recognises: all six targets sit in the
     BASE table, so `is_legal_task_status_transition` accepts the edge
     identically in both variants and this predicate has no variant split
     left to paper over. The one function both that
@@ -1384,7 +1384,7 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool,
       `skipped`/`failed` (never named by that narrower filter at all) and
       a hat's OWN variant's claim terminal out of `pending` (a task that
       was never even started has no `in-progress`/`awaiting-validation`
-      leg to have earned it through). Declaring all five targets for the
+      leg to have earned it through). Declaring all six targets for the
       engine's restore must not hand ANY hat -- worker, steer, or an
       operator ruling -- a `pending -> <anything>` finish/validate/fail/
       skip on a task nothing ever reopened. `allow_un_reopen_restore=True`
@@ -1448,7 +1448,7 @@ def task_status_report_errors(payload: Any, current_status: str, vigilant: bool,
     # `allow_un_reopen_restore=True`, `state.apply_task_status_change`'s
     # own `source="cure-reconciliation"` branch, reading the status the
     # engine itself persisted -- never a hat's or an operator's own
-    # claim, in either variant, for any of the five restore targets.
+    # claim, in either variant, for any of the six restore targets.
     if (is_un_reopen_transition(current_status, target)
             and not allow_un_reopen_restore):
         variant = "vigilant" if vigilant else "non-vigilant"
