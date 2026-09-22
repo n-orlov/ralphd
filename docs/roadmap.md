@@ -2408,6 +2408,34 @@ names rather than claims settled the issues this wave answers: **#224**, **#219*
 this commit.
 Shipped sha `59afb532`, version 0.23.0, installed host-side by the operator.
 
+## v0.24 — a budget is a boundary, not a verdict
+
+This wave closes the gap where a budget boundary the harness crosses destroys work that was already
+true on the other side of it. Requirement **A** stopped the job deadline from interrupting a running
+iteration, leaving only a steer's `--now`, the per-iteration cap, `abort` and `stop` free to do so,
+and a probe confirmed an iteration already in flight survives its own deadline; **B** added the
+non-terminal `timed_out` run state in all three spellings, with `verdict` staying null on entry and
+no reflect hat, terminal accounting or grace review run against a hold; **C** routed an exhausted
+iteration budget through B's own hold path while exhausting `max_approaches` keeps failing the run,
+unchanged; **D** let a passing run-ending-review verdict conclude the run normally even after the
+deadline passed, and a rejecting one hold the run instead; **E** removed the grace review and its
+verdict gate from the engine and reconciled `SPEC.md` and `docs/api.md` to match; **F** gave a bare
+`ralphctl resume` on a held run a fresh full window while `auto_resume` never resumes one; **G**
+published the deadline and remaining wall clock in every hat's Job context; **H** re-aimed the
+fast-tracked reserve guidance in `src/ralphd/prompts/` at the clocks that still bite now that the
+deadline itself no longer destroys anything; **I** bucketed the hub's per-task time and cost per
+`(approach, taskId)` instead of summing every iteration that ever carried a task's id across every
+approach, inverted the two shipped tests that encoded the bug, and closed **#207** — filed 17 Sep,
+deferred out of both v0.22 and v0.23, closed with a truthful evidence comment and reconfirmed here
+by a fresh GET; **J** settled the four A.5/A.3 edge questions the last wave's review left open with
+tracked tests; **K** front-loaded review's own findings with a probe-audit task per requirement
+group in planning and a default-off mid-plan review episode; **L** is this version bump, this
+paragraph and the issue closures with evidence; and **M** files, without working, the two issues
+this contract explicitly defers. A later task of this same run files M's two issues and another
+verifies the three lanes green at the records-group branch tip and on `main`, so this paragraph
+names rather than claims those settled. The v0.19 through v0.23 blocks above are unchanged by this
+commit.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
