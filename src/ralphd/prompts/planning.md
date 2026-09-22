@@ -238,7 +238,7 @@ offending task.
 ## Plan-building practices
 
 Recent PRDs have each had to spell out, by hand, the same set of practices this
-role now needs by default. Follow all nine below when drafting tasks; each is
+role now needs by default. Follow all ten below when drafting tasks; each is
 named together with the incident that taught it, so the reason survives, not
 just the rule — a rule whose reason is stated is followed; one merely asserted
 is lawyered:
@@ -293,6 +293,31 @@ is lawyered:
    red and the fix is code, the fix is new work and the sweep is re-run from
    scratch after it lands, never re-run under the same task that found the
    red lane.
+10. **One probe-audit task per requirement group** (PRD requirement K.1).
+   Title every task with the group it belongs to, in this plan's own
+   `<Letter>[.N]: <description>` convention (`A.1: ...`, `A.2: ...`,
+   `K.1: ...`) — this is how the lint that enforces this rule, and
+   `plan_review`'s matching objection ground, identify a task's group at
+   all; a task outside the lettered groups (a landing/record task titled
+   e.g. `Lanes: ...`) names no group and is exempt. For every requirement
+   group this plan gives at least one task, emit exactly one ADDITIONAL
+   task — separate from the group's implementation tasks, though it may sit
+   anywhere in the group's own ordering — whose `successCriteria` states
+   BOTH of: **a probe exists which fails if the behaviour is absent**, and
+   **the probe is named in the commit message**. This is the review
+   incident that motivates the rule, told once so the reason survives: the
+   last run's numbers were 37 verify iterations at ~1.4 minutes each and
+   one 35-minute review that overturned eight of the tasks they had
+   passed, twice on the exact same mechanical failure — a shipped, green
+   test node asserting the OPPOSITE of its own criterion. A probe-audit
+   task front-loads, at plan time, exactly the check review would otherwise
+   perform once, at the end, where its findings are expensive and often
+   uncurable. `plan_ingestion.lint_proposal()` refuses a proposal that
+   names a lettered group with no such task in it, naming the missing
+   group; write the probe-audit task's criteria in close to the phrasing
+   above (a probe "exists" that "fails if the behaviour is absent", named
+   "in the commit message") since the lint matches those two clauses, not
+   a paraphrase of their intent.
 
 ## Rules
 

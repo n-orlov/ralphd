@@ -441,9 +441,17 @@ TIER_MARKERS = ("smoke", "fast")
 # 400 modules, no new module), smoke 4369 -> 4372 (well inside its existing
 # 4381 ceiling, no smoke bump needed), measured with
 # `.venv/bin/python -m pytest -q -m <tier> --collect-only`.
+# Task 021 (v0.24 requirement K.1, #169) added TWO new in-process modules
+# (no `live(`/process-boundary usage in either, so both count in smoke too):
+# `tests/test_plan_ingestion_probe_audit_lint.py` (the probe-audit lint's
+# flagged/clean proposals) and `tests/test_probe_audit_prompt_shape.py`
+# (the two prompt additions) -- fast 6034 -> 6050 tests over 400 -> 402
+# modules, smoke 4372 -> 4388 tests over 282 -> 284 modules, measured with
+# `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this task's
+# own tip.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6034, "modules": 400},
-    "smoke": {"tests": 4381, "modules": 283},
+    "fast": {"tests": 6050, "modules": 402},
+    "smoke": {"tests": 4388, "modules": 284},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
