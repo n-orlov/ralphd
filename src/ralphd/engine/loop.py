@@ -14896,6 +14896,27 @@ class LoopSupervisor:
         either the run's iteration budget or a task's own
         `validationAttempts` count.
         """
+        if not self.budget_left():
+            # Task cure-01-01-2 (v0.24 requirement A.1/B.3, DoD 1-3,
+            # #169): this episode is a bare async call from inside
+            # `_step_worker`'s own `while self.budget_left():` loop body
+            # (both of this method's own call sites -- the petitioned-
+            # hold branch and the `pending_verify` branch -- are reached
+            # without the loop's boundary check running again in
+            # between), the same shape `_maybe_run_mid_plan_review_
+            # episode` (task cure-01-03) already guards. Checked first,
+            # before even reading the petitions file, so a worker
+            # iteration that just expired the wall-clock deadline (or
+            # spent the last of the iteration budget) starts NO new
+            # adjudication review iteration -- an iteration refund is not
+            # permission to ignore the job deadline (requirement A.1). A
+            # petition left open by this early return stays unsettled and
+            # eligible again after an operator resume: `_petition_
+            # adjudication_seen` is untouched, and `_step_worker`'s own
+            # end-of-body `if not self.budget_left():` check is what still
+            # lands the run in the shared `timed_out`/null-verdict freeze
+            # path this same pass.
+            return
         open_petitions = petitions.open_unconfirmed_petitions(
             self.workspace, self.run,
             contract_text=self._contract_text(),

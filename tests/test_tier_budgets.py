@@ -523,8 +523,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `timed_out` run's rendering, plus its unchanged running-outage and
     # terminal-degraded control cases. No `docker`/`browser`/process-
     # boundary fixture, so it sorts into both tiers, not fast-only.
-    "fast": {"tests": 6072, "modules": 404},
-    "smoke": {"tests": 4403, "modules": 286},
+    # cure-01-01-2 (v0.24 requirement A.1/B.3, DoD 1-3): fast 6072 -> 6074,
+    # smoke 4403 -> 4405 (+2 tests, 0 new modules) for the already-
+    # expired-boundary no-dispatch probe (parametrized deadline/
+    # iterations) on `_maybe_run_midrun_adjudication_episode`'s OTHER
+    # dispatch site -- tests/test_midrun_adjudication_episode.py, a
+    # module that already sorts into both tiers (no process-boundary
+    # fixture), so both ceilings move together.
+    "fast": {"tests": 6074, "modules": 404},
+    "smoke": {"tests": 4405, "modules": 286},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

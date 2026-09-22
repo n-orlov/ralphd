@@ -26,7 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time as real_time
 from pathlib import Path
+
+import pytest
 
 from ralphd.engine import petitions
 from ralphd.engine.config import JobConfig
@@ -185,6 +188,93 @@ def test_episode_runs_before_verify_on_the_review_hat_model_and_confirms_at_run_
     # retired off-budget grace review's "grace" to "adjudication" --
     # same off-budget mechanism, new name.
     assert sup.run.read_status().get("iterationsRefunded", {}).get("adjudication", 0) >= 1
+
+
+@pytest.mark.parametrize("boundary", ["deadline", "iterations"])
+def test_no_adjudication_episode_starts_at_an_already_expired_boundary(
+        tmp_path, boundary):
+    """Task cure-01-01-2 (v0.24 requirement A.1/B.3, DoD 1-3, #169): this
+    episode is a bare async call from inside `_step_worker`'s own `while
+    self.budget_left():` loop BODY, so the loop's own boundary check (only
+    re-consulted at the top of the next turn) does not stand between a
+    worker iteration that just spent the last of the budget/deadline and
+    this call -- exactly the `review_edges.py::test_petition_
+    adjudication_does_not_start_after_deadline` reproduction this task
+    cures, now driven through the SAME real `_step_worker` path and
+    `_worker_supervisor` fixture the ordinary in-budget test above uses
+    (canonical run-side open petition, task already `awaiting-
+    validation`, so `_maybe_run_midrun_adjudication_episode` is reached
+    from the `pending_verify` branch, strictly after the worker
+    iteration that expires the boundary INSIDE itself).
+
+    An already-expired boundary must start NO new adjudication review
+    iteration; the petition stays open (unsettled, eligible again after
+    an operator resume -- `_petition_adjudication_seen` is never touched
+    by the early return); and the pass still lands in the shared
+    `timed_out`/null-verdict freeze path (task 010/011's C.1 path), never
+    a second freeze implementation of its own.
+    """
+    sup, run, workspace = _worker_supervisor(tmp_path)
+    _make_petitions_file(workspace, OBLIGATION)
+    assert petitions.open_unconfirmed_petitions(
+        workspace, run, tasks=run.read_tasks()["tasks"])
+    if boundary == "iterations":
+        sup.cfg.iterations = 1
+
+    def _worker_expires_the_boundary(s, prompt=""):
+        if boundary == "deadline":
+            s.deadline = real_time.monotonic() - 1.0
+            s._deadline_epoch = real_time.time() - 1.0
+        return _ok(json.dumps({"verdict": "no_verdict"}))
+
+    agent = _ScriptedAgent({
+        "worker": [_worker_expires_the_boundary],
+        "review": [_confirming_review],
+        "verify": [_verified],
+    })
+    agent.sup = sup  # type: ignore[attr-defined]
+    sup.runner = agent  # type: ignore[assignment]
+
+    assert sup.budget_left() is True, (
+        "precondition: the boundary is still open at `_step_worker`'s own "
+        "loop top, so the worker iteration below really is dispatched")
+
+    outcome = asyncio.run(sup._step_worker())
+
+    # 1. no new adjudication review iteration was dispatched after the
+    # boundary expired mid-worker.
+    assert sup.budget_left() is False
+    assert agent.calls.get("review", 0) == 0, (
+        "requirement A.1: an already-expired boundary must start NO new "
+        "adjudication review iteration")
+    assert agent.order == ["worker"], (
+        f"only the worker iteration that spent the budget ran, got "
+        f"{agent.order!r}")
+    starts = [json.loads(x) for x in
+             (run.root / "events.jsonl").read_text().splitlines() if x.strip()
+             and json.loads(x).get("type") == "iteration.start"]
+    assert [e["phase"] for e in starts] == ["worker"]
+
+    # 2. the petition is left unsettled -- never adjudicated by an
+    # episode that never ran -- and stays eligible again after an
+    # operator resume.
+    assert sup._petition_adjudication_seen == set()
+    confirmed, tampered = petitions.confirmed_obligations(sup.run)
+    assert not tampered
+    assert not confirmed
+    open_after = petitions.open_unconfirmed_petitions(
+        workspace, run, tasks=run.read_tasks()["tasks"])
+    assert open_after
+
+    # 3. the pass ends in the SHARED freeze path -- `timed_out`, null
+    # verdict, no second freeze mechanism of its own.
+    assert outcome == ("tail",)
+    assert sup._budget_exhausted_tail is True
+    assert sup._finish_tail_unverified() == "timed_out"
+    status = run.read_status()
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
+    assert status.get("endedAt") is None, "a held run has not ended"
 
 
 def test_no_open_petition_is_a_no_op_episode(tmp_path):
