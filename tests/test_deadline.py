@@ -36,7 +36,8 @@ from ralphd.engine import loop as loop_mod
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json, read_events, utc_from_epoch
-from tests.conftest import make_supervisor, supervisor_factory
+from tests.conftest import (ScriptedRunner, attach_runner, make_supervisor,
+                            supervisor_factory)
 
 from test_review_interrupted_not_rejection import (
     _complete_task as _rir_complete_task,
@@ -920,6 +921,100 @@ def test_finish_timed_out_never_runs_the_two_phase_finishing_dance(tmp_path):
     assert sup._pending_terminal is None, (
         "the timed_out branch must never arm the reflect-promotion "
         "machinery -- there is nothing to promote later")
+
+
+# ===========================================================================
+# Section G -- task 011 (v0.24 requirement C.1, #169): an exhausted
+# iteration budget holds through B.3's path.
+#
+# Section F above proved `_finish_timed_out()`'s own entry mechanism by
+# calling it directly / stubbing `_run_job_core`; this section proves the
+# REAL trigger this task wires onto it -- `_step_worker`'s ordinary
+# `while self.budget_left():` loop running dry with tasks still
+# incomplete -- drives the SAME path, through a real `run_job()` call, no
+# second implementation of the freeze.
+# ===========================================================================
+
+def _task011_no_verdict_worker(sup, prompt):
+    """A bare `no_verdict` reply -- the worker loop never finishes a task,
+    so `budget_left()` alone (never a grace review: `_maybe_grace_review`
+    only fires when every task is already `completed`) is what ends this
+    run."""
+    r = IterationResult(exit_code=0)
+    r.final_text = json.dumps({"verdict": "no_verdict"})
+    r.duration_s = 1.0
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+def test_iteration_budget_exhaustion_holds_timed_out_through_the_real_worker_loop(tmp_path):
+    """A tracked probe: `iterations=2`, one already spent (simulating a
+    completed planning attempt via `iterations_used=1`, which also makes
+    `_resuming_existing_run_dir()`/`_resume_point()` skip straight to
+    `worker` over the pre-seeded, still-`pending` plan) -- `_step_worker`'s
+    own `while self.budget_left():` loop runs exactly one real worker
+    iteration (spending the last unit of budget), the loop condition then
+    reads false with the sole task still incomplete, and
+    `_finish_tail_unverified` (this task's own new branch, checked ahead of
+    the ordinary `unverified` fallback) routes through `_finish_timed_out`
+    -- task 010's B.3 path -- instead of ending `failed`/`unverified`.
+    `reflect=True` here specifically so a reflect iteration that fired
+    would be caught, exactly like Section F's own no-reflect node."""
+    sup = make_supervisor(
+        tmp_path, run_id="task011-budget-exhausted", reflect=True,
+        max_approaches=1, iterations=2, iterations_used=1, approach=1,
+        tasks=[{"id": "T1", "title": "do the thing",
+                "successCriteria": "done", "status": "pending"}])
+    attach_runner(sup, ScriptedRunner({"worker": [_task011_no_verdict_worker]}))
+
+    reflect_calls: list[bool] = []
+    orig_reflection = sup._run_reflection
+
+    async def _spy_reflection():
+        reflect_calls.append(True)
+        await orig_reflection()
+
+    sup._run_reflection = _spy_reflection  # type: ignore[method-assign]
+
+    iterations_dir = sup.run.root / "iterations"
+
+    state = asyncio.run(asyncio.wait_for(sup.run_job(), 30.0))
+
+    assert state == "timed_out"
+    assert sup._budget_exhausted_tail is True, (
+        "the plain out-of-budget worker-loop tail must set the C.1 flag "
+        "_finish_tail_unverified reads")
+    assert reflect_calls == [], (
+        "no reflect iteration may run on the way into the timed_out hold")
+
+    # The real worker iteration this last unit of budget bought DOES leave
+    # an iteration directory behind (this is a genuine budget-exhaustion
+    # drive, not a no-op fixture) -- but none of them may be a `reflect`
+    # phase, which is the thing this node actually pins.
+    phases = [json.loads((d / "meta.json").read_text()).get("phase")
+             for d in iterations_dir.glob("*")] if iterations_dir.exists() else []
+    assert "reflect" not in phases, (
+        f"no reflect iteration may run on the way into the timed_out hold, "
+        f"got phases={phases!r}")
+    # Exactly the one real worker iteration the remaining budget afforded
+    # ran -- this is a genuine iteration-count exhaustion, not a fixture
+    # that started already exhausted.
+    assert sup.iterations_used == 2
+
+    status = sup.run.read_status()
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
+    assert status.get("pendingTerminalState") is None
+    assert status.get("endedAt") is None, (
+        "a held run has not ended -- no terminal accounting")
+
+    tasks = sup.run.read_tasks()["tasks"]
+    assert tasks[0]["status"] != "completed", (
+        "the sole task never completed -- this is a genuine budget-only "
+        "hold, not a disguised grace-review success")
+
+    state_events = _events(sup.run, "state")
+    assert state_events[-1]["state"] == "timed_out"
 
 
 # ===========================================================================

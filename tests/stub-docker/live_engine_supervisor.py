@@ -28,7 +28,21 @@ import subprocess
 import time
 from pathlib import Path
 
-TERMINAL = ("succeeded", "failed", "aborted")
+# Task 011 (v0.24 requirement C.1, #169): `timed_out` joins this tuple too.
+# It is deliberately not one of `state.TERMINAL_STATES` in the engine itself
+# (a future `resume` can still revive the run dir), but the *simulation*
+# this supervisor exists to reproduce -- "the container's API dies right as
+# the job stops making progress" -- applies just as much to a run that
+# freezes on an exhausted iteration budget as to one that succeeds, fails,
+# or aborts outright (see api.py's own `finished()`, task 010/task 011,
+# which now agrees `timed_out` means "no more work is coming from this
+# process"). Without this, a `--no-detach` run that lands on `timed_out`
+# never gets its terminal event caught here, and the real engine (which now
+# also shuts its own API down gracefully once `finished()` says so) is left
+# to exit on its own instead of being pulled out from under an open reader
+# the way the other three endings are -- a live scenario this task's own
+# coverage exercises, not just a stub-supervisor nicety.
+TERMINAL = ("succeeded", "failed", "aborted", "timed_out")
 
 
 def main() -> None:

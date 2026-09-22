@@ -196,15 +196,36 @@ def test_v09_iteration_185_regression_reflect_past_the_deadline_still_reports(
     task's fix, reflect's own attempt got the 60s floor same as every other
     phase and this scenario is exactly what starved it; now it must produce
     a real report.
+
+    Task 011 (v0.24 requirement C.1, #169) repointed that exact guard at
+    `_finish_timed_out()` -- a hold, not a terminal outcome, so no reflect
+    iteration follows it at all now (by design, task 010, requirement
+    B.3). A pre-recorded operator abort (`self._abort_reason` set before
+    `run_job()`) is layered on top so this scenario still lands on an
+    ordinary terminal tail (`"aborted"`) that DOES still run reflect --
+    the one thing this test actually pins.
     """
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=1, on_complete="exit")
     sup.run.prd_file.write_text("# PRD\n\nDo the thing.\n")
     sup.deadline = time.monotonic() - 5.0
+    # Task 011 (v0.24 requirement C.1, #169) changed what the SAME
+    # `_step_planning` guard this reproduction exploits (a deadline
+    # already gone before the job even starts) now does: it holds
+    # `timed_out` through `_finish_timed_out()` instead of ending the run
+    # -- and `_finish_timed_out()` is deliberately NOT a terminal outcome
+    # (task 010, requirement B.3), so no reflect iteration follows it at
+    # all, by design. To keep reproducing the actual v0.9 regression
+    # (reflect still gets a real, unstarved attempt once the deadline is
+    # already behind it) this scenario now also pre-records an operator
+    # abort, so `_finish_tail_unverified`'s `and not self._abort_reason`
+    # check steers back to the ordinary terminal tail (`"aborted"`) that
+    # still runs reflect, exactly as before this task.
+    sup._abort_reason = "operator abort requested before this run started"
 
     state = asyncio.run(sup.run_job())
 
-    assert state in ("failed", "aborted")
+    assert state == "aborted"
     assert [c["phase"] for c in sup.runner.calls] == ["reflect"]
 
     report = root / "artifacts" / "reflection" / "report.md"

@@ -231,7 +231,14 @@ def test_unpause_hits_resume_endpoint(live, capsys):
     the response body's `resumed: true` only comes from that handler."""
     run = live(run_id="unpause-test",
               job={"iterations": 2, "max_approaches": 1, "on_complete": "idle"})
-    run.wait_terminal()
+    # Task 011 (v0.24 requirement C.1, #169): 2 iterations is not enough for
+    # the stub worker/reviewer to reach a verdict, so this now freezes on
+    # `timed_out` (task 010's `_finish_timed_out` path) instead of the old
+    # `failed` ending -- `wait_terminal` doesn't know that state. `/resume`
+    # itself has no `finished()` guard either way (see api.py), so which
+    # settled state the run is in when `unpause` hits it is not this test's
+    # subject; just wait for the run to actually settle first.
+    run.wait_state(("timed_out",))
     res = call_ralphctl_in_process(
         ["--json", "unpause", run.run_id],
         env={**os.environ, "RALPHD_REGISTRY": str(run.registry)}, capsys=capsys)

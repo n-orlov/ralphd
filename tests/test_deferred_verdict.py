@@ -239,11 +239,15 @@ def test_deferring_the_assigned_task_reorders_it_behind_the_other_runnable_task(
     assert sup._approach == 1
     assert not (root / "approaches" / "01").exists()
 
-    # the run ends "failed" (budget genuinely exhausted -- task 001 is
-    # still outstanding, deferred, with no wake-up mechanism yet, task
-    # 022's job) rather than "paused"/"aborted": no stagnation trip, no
-    # contract violation.
-    assert state == "failed", sup.run.read_status()
+    # the run ends `timed_out`/`verdict: null` (budget genuinely
+    # exhausted -- task 001 is still outstanding, deferred, with no
+    # wake-up mechanism yet, task 022's job) rather than "paused"/
+    # "aborted"/"failed": no stagnation trip, no contract violation.
+    # Task 011 (v0.24 requirement C.1, #169): this plain out-of-budget
+    # ending now holds through the same `_finish_timed_out()` path task
+    # 010 established.
+    assert state == "timed_out", sup.run.read_status()
+    assert sup.run.read_status()["verdict"] is None
     assert "contract violation" not in _log_messages(root)
 
 
@@ -278,4 +282,10 @@ def test_a_report_with_a_blank_reason_is_a_contract_violation_and_the_move_is_re
 
     assert sup._abort_reason is None
     assert "contract violation" not in _log_messages(root)
-    assert state == "failed", sup.run.read_status()
+    # Task 011 (v0.24 requirement C.1, #169): the ladder exhausted, the
+    # run kept going per the table, and the ITERATION budget is what
+    # actually ended it -- the plain shape now holds `timed_out`/
+    # `verdict: null` through the same `_finish_timed_out()` path task
+    # 010 established, never `"failed"`.
+    assert state == "timed_out", sup.run.read_status()
+    assert sup.run.read_status()["verdict"] is None

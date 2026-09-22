@@ -68,8 +68,14 @@ def test_hook_nonzero_exit_logged_but_state_verdict_and_exit_code_unaffected(
                        stub_env={"STUB_TASKS": "5"})  # forces a failed job
     assert e.proc.wait(timeout=60) == 1
     status = json.loads((e.run_dir / "status.json").read_text())
-    assert status["state"] == "failed"
-    assert status["verdict"] == "unverified"
+    # Task 011 (v0.24 requirement C.1, #169): a plain out-of-budget ending
+    # now holds `timed_out`/`verdict: null`, never `failed`/`unverified`
+    # -- the `on_complete_cmd` hook still fires exactly the same either
+    # way (it is called unconditionally with whatever `run_job()`
+    # returns, main.py's `_run_on_complete_cmd`), which is the actual
+    # subject this test pins.
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
 
     deadline = time.time() + 10
     while not marker.exists() and time.time() < deadline:

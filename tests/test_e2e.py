@@ -81,10 +81,14 @@ def test_budget_exhaustion_fails_job(engine_factory):
                        stub_env={"STUB_TASKS": "5"})
     assert e.proc.wait(timeout=60) == 1
     status = json.loads((e.run_dir / "status.json").read_text())
-    assert status["state"] == "failed"
+    # Task 011 (v0.24 requirement C.1, #169): a plain out-of-budget ending
+    # now holds `timed_out` (verdict null) through the same `_finish_
+    # timed_out()` path task 010 established, never `"failed"`.
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
     assert status["iterationsUsed"] == 2
     # Task 002 negative case: tasks are NOT all completed at exhaustion, so
-    # no grace review is granted -- fails exactly as before this feature.
+    # no grace review is granted -- holds exactly as before this feature.
     assert not status.get("graceReview")
 
 
@@ -117,15 +121,18 @@ def test_grace_review_when_budget_exhausts_with_all_tasks_completed(engine_facto
 
 def test_grace_review_not_granted_twice_and_can_fail(engine_factory):
     """A grace review that comes back unsatisfied must not loop: the job
-    ends failed/unverified (as it would have without this feature) rather
-    than granting a second free review or burning more budget."""
+    holds `timed_out`/`verdict: null` (task 011, v0.24 requirement C.1,
+    #169 -- the grace review is itself an off-budget shot inside the
+    SAME plain out-of-budget `_step_planning` guard C.1 routes into the
+    B.3 freeze) rather than granting a second free review or burning more
+    budget."""
     e = engine_factory(job={"on_complete": "exit", "iterations": 3,
                             "max_approaches": 1},
                        stub_env={"STUB_TASKS": "2", "STUB_REVIEW_FAILS": "1"})
     assert e.proc.wait(timeout=60) == 1
     status = json.loads((e.run_dir / "status.json").read_text())
-    assert status["state"] == "failed"
-    assert status["verdict"] == "unverified"
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
     assert "grace review" in status["reason"]
     assert not status.get("graceReview")
     iters = sorted((e.run_dir / "iterations").iterdir())

@@ -471,8 +471,9 @@ def test_an_unrecognised_verdict_value_exhausts_the_ladder_and_still_refuses_the
     all, exactly like an ordinary `"no_verdict"` reply) rather than
     aborting outright. With the run's own iteration budget already spent
     by the one charged attempt below (`iterations=2`, one already seeded
-    used), the run ends `"failed"` (unverified, no abort) via the ordinary
-    tail, never `"aborted"`.
+    used), the run ends `timed_out`/`verdict: null` (task 011, v0.24
+    requirement C.1, #169 -- budget genuinely exhausted, the plain shape)
+    via the ordinary tail, never `"failed"`/`"aborted"`.
     """
     root = tmp_path / "run"
     tasks = [_task(status="in-progress")]
@@ -496,12 +497,16 @@ def test_an_unrecognised_verdict_value_exhausts_the_ladder_and_still_refuses_the
     assert len(fault_events) == 1, "the ladder must be exhausted exactly once"
 
     # agent-fault continuation, NEVER a contract-violation abort: no
-    # `_abort_reason`, no "contract violation" log message, and the run
-    # ends `"failed"` (budget genuinely exhausted), not `"aborted"`.
+    # `_abort_reason`, no "contract violation" log message. Task 011
+    # (v0.24 requirement C.1, #169): the run ends `timed_out`/`verdict:
+    # null` (budget genuinely exhausted, the plain shape) through the
+    # same `_finish_timed_out()` path task 010 established, never
+    # `"failed"`/`"aborted"`.
     assert sup._abort_reason is None
     msgs = _log_messages(root)
     assert "contract violation" not in msgs
-    assert state == "failed", sup.run.read_status()
+    assert state == "timed_out", sup.run.read_status()
+    assert sup.run.read_status()["verdict"] is None
 
 
 # ===========================================================================

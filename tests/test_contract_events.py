@@ -694,10 +694,16 @@ def test_consecutive_distinct_ingestion_errors_never_trigger_the_two_strike_rule
 
     final_state = asyncio.run(sup.run_job())
 
-    assert final_state == "failed"
+    # Task 011 (v0.24 requirement C.1, #169): nothing but the run's own
+    # ITERATION budget ended this run -- exactly the plain shape C.1 now
+    # routes into `timed_out`/`verdict: null` instead of `failed`/
+    # `unverified`, through the same `_finish_timed_out()` path task 010
+    # established (this is `_step_planning`'s own plain `if not self.
+    # budget_left():` guard, one of the five sites that flag sets).
+    assert final_state == "timed_out"
     status = sup.run.read_status()
-    assert status["state"] == "failed"
-    assert status["verdict"] == "unverified"
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
     # The repeated-blocker-signature guard never fired -- every
     # consecutive pair's own ingestion-error signature is genuinely
     # distinct -- so `health` never moved off "ok" either.

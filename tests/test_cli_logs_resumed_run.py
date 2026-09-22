@@ -153,16 +153,17 @@ def _state_events(run: LiveRun) -> list[dict]:
 
 
 def _dead_first_episode(episodes, run_id: str) -> LiveRun:
-    """Episode 1: a budget too small for the plan -> a real terminal
-    (`failed`) state written to `status.json` AND a terminal `state` event
-    appended to `events.jsonl`, with completed iteration dirs on disk. This
-    is precisely the on-disk shape that made `watch` close early (#13)."""
+    """Episode 1: a budget too small for the plan -> a real out-of-budget
+    hold (`timed_out`, task 011 v0.24 requirement C.1, #169) written to
+    `status.json` AND a matching `state` event appended to
+    `events.jsonl`, with completed iteration dirs on disk. This is
+    precisely the on-disk shape that made `watch` close early (#13)."""
     e1 = episodes(run_id, {"iterations": 2, "max_approaches": 1,
                            "on_complete": "exit"},
                   {"STUB_TASKS": "5"})
     assert e1.proc.wait(timeout=60) == 1
-    assert _state(e1) == "failed"
-    assert [ev["state"] for ev in _state_events(e1)] == ["running", "failed"]
+    assert _state(e1) == "timed_out"
+    assert [ev["state"] for ev in _state_events(e1)] == ["running", "timed_out"]
     assert len(sorted((e1.run_dir / "iterations").iterdir())) == 2
     return e1
 

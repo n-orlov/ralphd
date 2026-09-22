@@ -16,7 +16,7 @@ ends the job `failed`/`unverified` with no review at all.
 Four nodes, each exercising a different corner of that fork:
 
   * **ordinary exhaustion, tasks incomplete** -- the iteration count runs out
-    with work still outstanding; no review, no grace, straight to `failed`
+    with work still outstanding; no review, no grace, straight to `timed_out`
     (mirrors `tests/test_e2e.py::test_budget_exhaustion_fails_job`, read here
     through the reduced event sequence instead of iteration-directory counts);
   * **grace review granted and VERIFIED** -- the iteration that completes the
@@ -25,8 +25,8 @@ Four nodes, each exercising a different corner of that fork:
     runs and a satisfied stub review lands the job `succeeded`;
   * **grace review granted but does not verify** -- same shape, but the stub
     review rejects; the grace review is a single off-budget shot, never
-    granted twice, and the job ends `failed`/`unverified` naming "grace
-    review" in its `reason`;
+    granted twice, and the job holds `timed_out`/`verdict: null` (task 011,
+    v0.24 requirement C.1, #169) naming "grace review" in its `reason`;
   * **the deadline, not the iteration count, ends the cycle** -- a
     `job_timeout_s` far below what the iteration budget would allow forces
     `budget_left()` false on the wall clock, not on `cfg.iterations`, with
@@ -36,8 +36,9 @@ Four nodes, each exercising a different corner of that fork:
     count is NOT pinned exactly -- `flowlib.assert_steps_include` checks the
     fixed prefix/suffix in order instead of the whole sequence, and the
     deadline-not-iteration-count claim is pinned instead on `status.json`
-    (`iterationsUsed` strictly under `iterationsBudget`, `deadlineAt` at or
-    before `endedAt`).
+    (`iterationsUsed` strictly under `iterationsBudget`, `deadlineAt`
+    published with no `endedAt` at all -- task 011/C.1's `timed_out` hold
+    is not a terminal outcome, so there is nothing to end).
 
 Every job below uses `max_approaches: 1` -- a budget-exhaustion ending must
 never spend a fresh approach, so keeping only one available and still
@@ -61,7 +62,7 @@ ORDINARY_STEPS = [
     "iteration:worker",          # the only worker attempt the 2-iteration
                                  # budget allows; STUB_TASKS=5 leaves work
                                  # outstanding
-    "state:failed",
+    "state:timed_out",
 ]
 
 
@@ -79,8 +80,11 @@ def test_ordinary_budget_exhaustion_with_tasks_incomplete_fails_with_no_review(
                          flow="flow budget/deadline/grace (ordinary)")
 
     st = status(run)
-    assert st.get("state") == "failed" and st.get("verdict") == "unverified", (
-        f"flow budget/deadline/grace (ordinary): expected failed/unverified, "
+    # Task 011 (v0.24 requirement C.1, #169): a plain out-of-budget ending
+    # now holds `timed_out`/`verdict: null` through the same `_finish_
+    # timed_out()` path task 010 established, never `failed`/`unverified`.
+    assert st.get("state") == "timed_out" and st.get("verdict") is None, (
+        f"flow budget/deadline/grace (ordinary): expected timed_out/None, "
         f"got state={st.get('state')!r} verdict={st.get('verdict')!r}")
     assert st.get("iterationsUsed") == 2, st
     assert not st.get("graceReview"), (
@@ -148,7 +152,7 @@ GRACE_REJECTED_STEPS = [
     "phase:review@1",
     "iteration:review",
     "verdict:review:rejected@1",
-    "state:failed",
+    "state:timed_out",
 ]
 
 
@@ -166,9 +170,13 @@ def test_grace_review_granted_but_unsatisfied_ends_failed_with_no_second_attempt
                          flow="flow budget/deadline/grace (grace rejected)")
 
     st = status(run)
-    assert st.get("state") == "failed" and st.get("verdict") == "unverified", (
+    # Task 011 (v0.24 requirement C.1, #169): the grace review is itself
+    # an off-budget shot inside the SAME plain out-of-budget `_step_
+    # planning` guard C.1 routes into the B.3 freeze -- `timed_out`/
+    # `verdict: null`, never `failed`/`unverified`.
+    assert st.get("state") == "timed_out" and st.get("verdict") is None, (
         f"flow budget/deadline/grace (grace rejected): expected "
-        f"failed/unverified, got state={st.get('state')!r} "
+        f"timed_out/None, got state={st.get('state')!r} "
         f"verdict={st.get('verdict')!r}")
     assert not st.get("graceReview"), (
         "flow budget/deadline/grace (grace rejected): the grace review did "
@@ -204,16 +212,19 @@ def test_the_wall_clock_deadline_ends_the_cycle_before_the_iteration_count_does(
     assert_steps_include(
         steps,
         ["state:running", "phase:planning@1", "iteration:planning",
-         "iteration:worker", "state:failed"],
+         "iteration:worker", "state:timed_out"],
         flow="flow budget/deadline/grace (deadline)")
-    assert steps[-1] == "state:failed", steps
+    assert steps[-1] == "state:timed_out", steps
     assert "phase:review" not in " ".join(steps), (
         "flow budget/deadline/grace (deadline): no review slot existed and "
         f"tasks were incomplete, so no review phase may appear: {steps}")
 
     st = status(run)
-    assert st.get("state") == "failed" and st.get("verdict") == "unverified", (
-        f"flow budget/deadline/grace (deadline): expected failed/unverified, "
+    # Task 011 (v0.24 requirement C.1, #169): plain out-of-budget ending
+    # (over the deadline half of `budget_left()`) holds `timed_out`/
+    # `verdict: null`, never `failed`/`unverified`.
+    assert st.get("state") == "timed_out" and st.get("verdict") is None, (
+        f"flow budget/deadline/grace (deadline): expected timed_out/None, "
         f"got state={st.get('state')!r} verdict={st.get('verdict')!r}")
     assert not st.get("graceReview"), st
     budget = st.get("iterationsBudget")
@@ -223,11 +234,13 @@ def test_the_wall_clock_deadline_ends_the_cycle_before_the_iteration_count_does(
         f"short of the 50-iteration budget -- the WALL CLOCK ended it, not "
         f"the iteration count -- got iterationsUsed={used!r} against "
         f"iterationsBudget={budget!r}")
-    assert st.get("deadlineAt") and st.get("endedAt"), st
-    assert st.get("deadlineAt") <= st.get("endedAt"), (
-        f"flow budget/deadline/grace (deadline): the run must not end "
-        f"before its own published deadline, got deadlineAt="
-        f"{st.get('deadlineAt')!r} endedAt={st.get('endedAt')!r}")
+    assert st.get("deadlineAt"), st
+    # Task 010 (v0.24 requirement B.3, #169): `_finish(TIMED_OUT_STATE, ...)`
+    # deliberately pops `endedAt` rather than defaulting it -- the run has
+    # not ended, it is frozen exactly where it stands and immediately
+    # resumable -- so there is no `endedAt` to compare the deadline
+    # against here any more.
+    assert st.get("endedAt") is None, st
 
 
 # ---------------------------------------------------------------------------
@@ -271,14 +284,22 @@ def _wait_for_last_budget_slot(run, timeout: float = 60.0) -> dict:
 
 def test_run_without_topup_dies_of_budget_exhaustion(live):
     """Counterfactual for the test below: this job cannot finish on the
-    budget it started with."""
+    budget it started with. Task 011 (v0.24 requirement C.1, #169): a
+    plain out-of-budget ending holds `timed_out`/`verdict: null` through
+    the same `_finish_timed_out()` path task 010 established, never
+    `failed`/`unverified`."""
     run = live(run_id="budget-control",
                job={"iterations": TOPUP_STARTING_BUDGET},
                stub_env={"STUB_TASKS": str(TOPUP_PLAN_TASKS)})
-    st = run.wait_terminal()
+    # `wait_terminal()` only recognises the three genuinely TERMINAL
+    # states -- `timed_out` (task 010, requirement B.3) is deliberately
+    # NOT one of them (a resumable freeze, not an ending) -- so this is
+    # `wait_state()`, the same helper `tests/test_deadline.py`'s own
+    # `paused` waits already use for the same reason.
+    st = run.wait_state(("timed_out",))
 
-    assert st["state"] == "failed"
-    assert st["verdict"] == "unverified"
+    assert st["state"] == "timed_out"
+    assert st["verdict"] is None
     assert st["iterationsUsed"] == TOPUP_STARTING_BUDGET
     all_tasks = tasks(run)
     assert len(all_tasks) == TOPUP_PLAN_TASKS

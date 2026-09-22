@@ -32,6 +32,7 @@ from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
 
 from ralphd.engine.config import JobConfig
+from ralphd.engine import findings
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import (
@@ -205,7 +206,29 @@ def test_succeeded_outcome_goes_through_finishing_before_promoting(tmp_path):
 
 
 def test_failed_outcome_goes_through_finishing_before_promoting(tmp_path):
-    """The stagnation path (3 iterations, no progress, no COMPLETE)."""
+    """An incurable review rejection with no approach left (`_step_review`'s
+    `rejected_no_approach_left` edge -- the SAME mechanism `tests/
+    test_transitions.py::test_rejected_no_approach_left_still_wins_when_
+    approaches_are_exhausted` pins in isolation, driven here through a
+    real `run_job()`).
+
+    Task 011 (v0.24 requirement C.1, #169) retired this test's ORIGINAL
+    mechanism -- "the ordinary iteration budget running out" over a
+    stagnating, no-progress worker -- because that ending now holds
+    `timed_out` instead of failing (exactly the new behaviour C.1 adds);
+    the stagnation-guard workaround this test resorted to (see the removed
+    comment this replaces, in the commit that made this change) was
+    already unavailable on the LAST approach (task 012 pauses instead of
+    failing there), and now plain budget exhaustion is unavailable too.
+    An incurable (`curable: False`) blocking finding is the one rejection
+    shape `_step_review` does NOT convert into a pause on the last
+    approach (`_review_last_approach_curable_rejection` requires EVERY
+    blocking finding curable for that pause; one incurable finding alone
+    already defeats it, and `rejected_no_approach_left` "wins... even
+    though every blocking finding is incurable" once the approach budget
+    is spent, per that sibling test's own comment) -- a genuine,
+    unaffected-by-C.1 terminal `failed`, still reached through `_step_
+    review`, a state `_budget_exhausted_tail` is never set on."""
     root = tmp_path / "run"
     RunDir(root=root).update_status(state="starting")
     seen_during_reflect: list[dict] = []
@@ -214,17 +237,17 @@ def test_failed_outcome_goes_through_finishing_before_promoting(tmp_path):
         seen_during_reflect.append(sup.run.read_status())
         return _write_reflect_report(sup)
 
-    # _plan produces a task, but nothing ever completes it or signals
-    # COMPLETE. Two of these no-progress passes never even reach the
-    # 3-in-a-row stagnation guard -- what ends the approach here is the
-    # ORDINARY iteration budget running out first (`iterations=3`: one
-    # `planning` pass plus two `worker` passes), a path task 012
-    # (requirement B.3) never touches, since the LAST approach's own
-    # stagnation guard now pauses instead of failing outright and this
-    # test needs a genuine terminal `failed` to prove the `finishing`
-    # window wraps it correctly.
-    sup = _supervisor(root, [_plan, _no_progress, _no_progress,
-                            snapshot_then_reflect], reflect=True, iterations=3)
+    def _review_rejects_incurable(sup: LoopSupervisor) -> IterationResult:
+        findings.write_findings_json(sup.run.findings_json_file, [
+            {"severity": "blocking", "curable": False,
+             "clause": "requirement X (#169)",
+             "evidence": "never actually fixable this approach"}])
+        return _ok("rejected\n" + json.dumps({
+            "verdict": "rejected", "reason": "incurable finding",
+            "findings_path": str(sup.run.findings_json_file)}))
+
+    sup = _supervisor(root, [_plan, _finish_task, _review_rejects_incurable,
+                            snapshot_then_reflect], reflect=True)
 
     final_state = asyncio.run(sup.run_job())
 

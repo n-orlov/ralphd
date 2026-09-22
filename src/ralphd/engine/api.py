@@ -43,6 +43,7 @@ from .skills import (
 )
 from .state import (
     STEERING_GLOB,
+    TIMED_OUT_STATE,
     RunDir,
     image_record,
     prd_path,
@@ -148,7 +149,20 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         return await call_next(request)
 
     def finished() -> bool:
-        return run.read_status().get("state") in ("succeeded", "failed", "aborted")
+        # Task 011 (v0.24 requirement C.1, #169): `timed_out` is deliberately
+        # NOT one of `state.TERMINAL_STATES` -- a future `resume` can still
+        # revive the run dir -- but *this* process's job is over the moment
+        # it lands there (task 010, requirement B.3: the whole `run_job()`
+        # coroutine returns and `main.py` heads straight into its shutdown
+        # funnel). Every caller of `finished()` here is asking "is there any
+        # more work coming from *this* engine process", not "is the run
+        # permanently done" -- so a plain `state.TERMINAL_STATES` check
+        # leaves `/logs?follow=true` (and `/pause`, `/steering`, `/ruling`,
+        # `/retry`, `/abort`, `PATCH /config/budget`) all waiting forever on
+        # a state that will never again change in this process, which is
+        # exactly the live hang this task's own new coverage caught.
+        return run.read_status().get("state") in ("succeeded", "failed",
+                                                    "aborted", TIMED_OUT_STATE)
 
     # -- observation -----------------------------------------------------
     @app.get("/healthz")

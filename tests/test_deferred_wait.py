@@ -203,4 +203,10 @@ def test_an_until_past_the_deadline_is_refused_with_the_deadline_in_the_hint(
     assert all(far_until in ev["errors"][0] for ev in violation_events)
 
     assert sup.runner.calls["worker"] == sup.cfg.contract_retry_max + 1  # type: ignore[attr-defined]
-    assert final_state == "failed", sup.run.read_status()
+    # Task 011 (v0.24 requirement C.1, #169): the ladder exhausted (an
+    # agent fault, not silence) and the run kept going per the table;
+    # the ITERATION budget is what actually ended it -- the plain shape
+    # now holds `timed_out`/`verdict: null` through the same
+    # `_finish_timed_out()` path task 010 established, never `"failed"`.
+    assert final_state == "timed_out", sup.run.read_status()
+    assert sup.run.read_status()["verdict"] is None

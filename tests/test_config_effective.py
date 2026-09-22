@@ -135,7 +135,14 @@ def test_get_config_shows_effective_config_no_secrets(config_engine, tmp_path):
     assert SECRET_LLM_VALUE not in blob
     assert "TOKEN" not in blob  # the cred's key name isn't surfaced either
 
-    e.wait_state(("succeeded", "failed", "aborted"))
+    # Task 011 (v0.24 requirement C.1, #169): this fixture's stub worker
+    # never signals COMPLETE, so the run's own `iterations=3` budget is
+    # what ends it -- the plain shape C.1 now routes through
+    # `_finish_timed_out()` (task 010's B.3 freeze path) instead of ending
+    # `failed`/`unverified`. This test is about `/config`'s own response
+    # shape, not about how the run ends, so it only needs to wait for
+    # settlement, not assert a particular one.
+    e.wait_state(("succeeded", "failed", "aborted", "timed_out"))
 
 
 def test_get_config_fieldless_job_defaults(config_engine, tmp_path):
@@ -154,4 +161,8 @@ def test_get_config_fieldless_job_defaults(config_engine, tmp_path):
     assert all(p["source"] == "builtin" for p in doc["prompts"])
     assert doc["flags"]["vigilant"] is False
 
-    e.wait_state(("succeeded", "failed", "aborted"))
+    # Task 011 (v0.24 requirement C.1, #169): see the comment on the sibling
+    # node above -- this fixture's own worker never completes either, so
+    # plain budget exhaustion now holds `timed_out` rather than ending
+    # `failed`.
+    e.wait_state(("succeeded", "failed", "aborted", "timed_out"))

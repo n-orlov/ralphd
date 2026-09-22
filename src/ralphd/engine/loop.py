@@ -473,6 +473,26 @@ class LoopSupervisor:
         # `reason: "deadline during review"` instead of the ordinary
         # `unverified` outcome -- never set for any other tail exit.
         self._review_deadline_unreviewed: bool = False
+        # Task 011 (v0.24 requirement C.1, #169): True iff the terminal
+        # `("tail",)` exit this episode is about to write is the PLAIN
+        # "budget/wall clock ran out, nothing review-specific or abort-
+        # worthy to say about it" shape -- set by the ordinary
+        # `if not self.budget_left(): return ("tail",)` guards in
+        # `_step_planning`, `_step_plan_review`, `_step_verdict_gate`,
+        # `_step_worker` (its own off-budget grace-review attempt) and
+        # `_step_generic_hat`'s engine-cut-short retry loop -- the same
+        # shape `_review_deadline_unreviewed` just above is for review's
+        # OWN budget-out self-loop, kept as its own flag rather than folded
+        # into this one because its terminal reason/verdict wording is a
+        # distinct, already-shipped mechanism (task 009/016) this task
+        # must not touch. `_finish_tail_unverified` reads this to route
+        # through `_finish_timed_out()` (task 010's B.3 freeze path)
+        # instead of ending `failed`/`unverified` -- never set by any of
+        # the genuinely structural tails (`max_approaches` exhaustion,
+        # a repeated blocker signature, a verdict-gate merits rejection),
+        # which end regardless of `budget_left()` and so keep requirement
+        # C.2's "still fails, unchanged" by construction.
+        self._budget_exhausted_tail: bool = False
         # GH #209 defect 2: True iff the LAST ordinary (non-`mid_run`) run
         # of `_review_contract_ladder` EXHAUSTED `contract_enforcement.
         # enforce_contract`'s ladder WITHOUT ever getting a readable verdict
@@ -3378,6 +3398,29 @@ class LoopSupervisor:
         verdict out of review; `unreviewed` is still a word (any non-null
         string reads as "there was an outcome" to a `--json` consumer),
         and this hold has none yet -- `null` is the only honest value.
+
+        Task 011 (v0.24 requirement C.1, #169) carves a THIRD exception,
+        checked after both of the above: `self._budget_exhausted_tail` is
+        True iff this tail exit is the ordinary, non-review, non-abort
+        shape of "budget/wall clock ran out with nothing left to say about
+        it" -- the plain `if not self.budget_left(): return ("tail",)`
+        guards in `_step_planning`, `_step_plan_review`, `_step_verdict_
+        gate`, `_step_worker` (after its own off-budget grace-review
+        attempt) and `_step_generic_hat`'s engine-cut-short retry loop,
+        none of which ever set `self._abort_reason` or either review-
+        specific flag above. Requirement C.1 reads this as "running out of
+        iterations enters B.1's state, by the same code path" -- so this
+        branch calls `self._finish_timed_out()` (task 010's THE one call
+        path into `TIMED_OUT_STATE`) instead of `self._finish()` directly,
+        never a second implementation of the freeze. `max_approaches`
+        exhaustion (`_step_replan`'s `budget_or_approach_exhausted`,
+        `_step_review`'s/`_step_verdict_gate`'s `..._no_approach_left`) and
+        the genuinely structural tails (`repeated_blocker_signature`,
+        `verdict_gate_rejected_on_merits`, the contract-violation-once-
+        budget-is-also-gone branch in `_step_generic_hat`) never set this
+        flag -- they end regardless of `budget_left()`, so requirement
+        C.2's "still fails, unchanged" holds by construction, not by an
+        extra check here.
         """
         final_state = "aborted" if self._abort_reason else "failed"
         # Task 009 (v0.24 requirement B.2, #169): a deadline that lands
@@ -3408,6 +3451,19 @@ class LoopSupervisor:
                         **self._unconsumed_steering_patch(),
                         **self._deadline_beat_verdict_extra)
             return final_state
+        # Task 011 (v0.24 requirement C.1, #169): the plain budget/wall-
+        # clock exhaustion tail -- no abort, no review-specific hold above
+        # -- holds through B.3's own freeze path (`_finish_timed_out`)
+        # rather than ending `failed`/`unverified`. Checked after both
+        # review-specific branches (mutually exclusive with each by
+        # construction: neither call site that sets either flag above ever
+        # also sets this one) and before the ordinary fallback below.
+        if self._budget_exhausted_tail and not self._abort_reason:
+            return self._finish_timed_out(
+                reason=(self._terminal_reason_note
+                        or "the run holds: no iteration budget or wall "
+                           "clock remained to continue (requirement C.1, "
+                           "#169)"))
         self._finish(final_state, "unverified",
                     reason=self._abort_reason or self._terminal_reason_note,
                     **self._unconsumed_steering_patch(),
@@ -4668,6 +4724,10 @@ class LoopSupervisor:
                         "again; no contract payload was ever judged, so this "
                         "is not read as a contract violation (requirement A, "
                         "#72)")
+                    # Task 011 (requirement C.1, #169): plain budget/wall-
+                    # clock exhaustion, no contract violation -- holds
+                    # through B.3's freeze path, not `failed`/`unverified`.
+                    self._budget_exhausted_tail = True
                     return ("tail",)
                 await self._gate()
                 continue
@@ -6770,6 +6830,9 @@ class LoopSupervisor:
             # process died/ran out of budget before any review ran at all.
             if await self._maybe_grace_review(approach):
                 return ("done", "succeeded")
+            # Task 011 (requirement C.1, #169): the plain out-of-budget
+            # shape (no grace review success) -- holds, not `failed`.
+            self._budget_exhausted_tail = True
             return ("tail",)
         if not skip_planning:
             self.run.emit("phase", phase="planning", approach=approach)
@@ -6822,6 +6885,8 @@ class LoopSupervisor:
                 state=self.run,
             )
             if not self.budget_left():
+                # Task 011 (requirement C.1, #169): plain out-of-budget.
+                self._budget_exhausted_tail = True
                 return ("tail",)
             if not ingestion.ok:
                 self.run.emit(
@@ -7037,6 +7102,8 @@ class LoopSupervisor:
         """
         approach = self._approach
         if not self.budget_left():
+            # Task 011 (requirement C.1, #169): plain out-of-budget.
+            self._budget_exhausted_tail = True
             return ("tail",)
         self.run.emit("phase", phase="plan_review", approach=approach)
         result = await self.run_iteration("plan_review")
@@ -7202,6 +7269,8 @@ class LoopSupervisor:
         """
         approach = self._approach
         if not self.budget_left():
+            # Task 011 (requirement C.1, #169): plain out-of-budget.
+            self._budget_exhausted_tail = True
             return ("tail",)
         self.run.emit("phase", phase="verdict_gate", approach=approach)
         result = await self.run_iteration(
@@ -9461,6 +9530,9 @@ class LoopSupervisor:
             # path, not straight to a real review.
             if await self._maybe_grace_review(approach):
                 return ("done", "succeeded")
+            # Task 011 (requirement C.1, #169): the plain out-of-budget
+            # shape (no grace review success) -- holds, not `failed`.
+            self._budget_exhausted_tail = True
             return ("tail",)
         if not verdict_ready:
             # Task 018 (PRD requirement B.3, #156): generalising task
