@@ -6,10 +6,11 @@
   deadline, distinguished from an infra-wait credit by `reason` (task 016,
   folded as section B below).
 - PRD requirement F.3 (#146) -- a deadline landing mid-review ends the run
-  `verdict: "unreviewed"`, never an ordinary rejection, and resumes straight
-  back onto review for the same approach (task 016, folded as section C
-  below; supersedes the `"unverified"` string section A originally pinned,
-  as noted inline there).
+  `verdict: null` (task 009, v0.24 requirement B.2, #169 narrowed this from
+  the original `"unreviewed"` string), never an ordinary rejection, and
+  resumes straight back onto review for the same approach (task 016, folded
+  as section C below; supersedes the `"unverified"` string section A
+  originally pinned, as noted inline there).
 - Task 048 (B.5 follow-on, operator steer 005) -- `LiveRun.stop()` skips the
   SIGTERM grace it cannot honour on an engine already parked `paused`
   (section D below).
@@ -67,11 +68,12 @@ def test_v09_iteration_183_regression_status_carries_the_marker(tmp_path):
 
     assert state == "failed"
     status = sup.run.read_status()
-    # Task 016 (requirement F.3, #146): this specific path -- review cut
-    # short at budget end -- writes the dedicated "unreviewed" verdict, not
-    # the ordinary "unverified" this file was written against; the marker
-    # assertions below (this task's own subject) are unaffected.
-    assert status["verdict"] == "unreviewed"
+    # Task 016 (requirement F.3, #146) had this specific path -- review
+    # cut short at budget end -- write the dedicated "unreviewed" verdict,
+    # not the ordinary "unverified" this file was written against. Task
+    # 009 (v0.24 requirement B.2, #169) narrowed that further: a held run
+    # carries NO verdict at all, so this now reads `None`, not a string --
+    # the marker assertions below (this task's own subject) are unaffected.
     marker = status.get("deadlineBeatVerdict")
     assert isinstance(marker, dict), (
         "status.json must carry a deadlineBeatVerdict marker when every "
@@ -118,7 +120,10 @@ def test_path_never_writes_verdict_verified(tmp_path):
 
     assert state == "failed"
     status = sup.run.read_status()
-    assert status["verdict"] == "unreviewed"
+    # Task 009 (v0.24 requirement B.2, #169): null, never the "unreviewed"
+    # string this used to be -- see test_deadline_mid_review_carries_a_
+    # null_verdict below for the dedicated coverage.
+    assert status["verdict"] is None
     assert status["verdict"] != "verified"
     assert isinstance(status.get("deadlineBeatVerdict"), dict)
 
@@ -132,7 +137,7 @@ def test_path_never_writes_verdict_verified(tmp_path):
 
     assert state2 == "failed"
     status2 = sup2.run.read_status()
-    assert status2["verdict"] == "unreviewed"
+    assert status2["verdict"] is None
     assert status2["verdict"] != "verified"
     assert status2.get("deadlineBeatVerdict") is None
 
@@ -668,10 +673,12 @@ def _unreviewed_events(run: RunDir) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# 1. Ordinary path: self-loop exhaustion ends `unreviewed`, not `rejected`.
+# 1. Ordinary path: self-loop exhaustion ends with a null verdict, not
+#    `"rejected"` and (task 009, v0.24 requirement B.2, #169) not the
+#    `"unreviewed"` string either -- a held run carries no verdict at all.
 # ---------------------------------------------------------------------------
 
-def test_ordinary_path_interrupted_review_at_budget_end_is_unreviewed(tmp_path):
+def test_ordinary_path_interrupted_review_at_budget_end_carries_a_null_verdict(tmp_path):
     handlers = {
         "planning": [_plan],
         "worker": [_complete_task],
@@ -684,7 +691,7 @@ def test_ordinary_path_interrupted_review_at_budget_end_is_unreviewed(tmp_path):
 
     assert state == "failed"
     status = sup.run.read_status()
-    assert status["verdict"] == "unreviewed"
+    assert status["verdict"] is None
     assert status["reason"] == "deadline during review"
     assert status["approach"] == 1
     assert not (sup.run.root / "approaches" / "01").exists()
@@ -697,7 +704,7 @@ def test_ordinary_path_interrupted_review_at_budget_end_is_unreviewed(tmp_path):
 # 2. The off-budget grace review itself interrupted: same outcome.
 # ---------------------------------------------------------------------------
 
-def test_grace_review_interrupted_is_also_unreviewed_not_rejected(tmp_path):
+def test_grace_review_interrupted_also_carries_a_null_verdict_not_rejected(tmp_path):
     handlers = {
         "planning": [_plan],
         "worker": [_complete_task],
@@ -712,7 +719,7 @@ def test_grace_review_interrupted_is_also_unreviewed_not_rejected(tmp_path):
 
     assert state == "failed"
     status = sup.run.read_status()
-    assert status["verdict"] == "unreviewed"
+    assert status["verdict"] is None
     assert status["reason"] == "deadline during review"
     assert status["approach"] == 1
     assert not (sup.run.root / "approaches" / "01").exists()
@@ -740,7 +747,7 @@ def test_resume_after_unreviewed_lands_on_review_same_approach_and_succeeds(tmp_
     sup1 = _review_supervisor(root, handlers1, iterations=3)
     state1 = asyncio.run(sup1._run_job_core())
     assert state1 == "failed"
-    assert sup1.run.read_status()["verdict"] == "unreviewed"
+    assert sup1.run.read_status()["verdict"] is None
 
     # Episode 2: a FRESH LoopSupervisor over the SAME run dir -- what
     # `ralphctl resume` leaves behind (`self._pause`/`self._grace_review_
@@ -777,7 +784,7 @@ def test_resume_after_grace_review_unreviewed_also_lands_on_review(tmp_path):
     sup1 = _review_supervisor(root, handlers1, iterations=2)
     state1 = asyncio.run(sup1._run_job_core())
     assert state1 == "failed"
-    assert sup1.run.read_status()["verdict"] == "unreviewed"
+    assert sup1.run.read_status()["verdict"] is None
 
     handlers2 = {"review": [_verified]}
     sup2 = _review_supervisor(root, handlers2, iterations=6)

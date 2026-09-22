@@ -3343,23 +3343,37 @@ class LoopSupervisor:
         `_deadline_beat_verdict_extra`) are applied every time, each a
         no-op unless its own condition actually holds.
 
-        Two named exceptions have since been carved out of "`verdict` is
-        always `unverified` here", and both write `unreviewed` instead --
-        the word for "review never rendered a judgement this approach",
-        never for "a reviewer looked and did not pass it": the deadline
-        branch below (task 016, requirement F.3, #146) and the exhausted-
-        contract-ladder branch after it (GH #209 defect 2). Neither can
-        ever grant `verified`, so the second test that pins that is
-        unaffected, and neither overrides an actual operator abort.
+        One named exception has since been carved out of "`verdict` is
+        always `unverified` here", and writes `unreviewed` instead -- the
+        word for "review never rendered a judgement this approach", never
+        for "a reviewer looked and did not pass it": the exhausted-
+        contract-ladder branch below (GH #209 defect 2). It can never grant
+        `verified`, so the second test that pins that is unaffected, and it
+        never overrides an actual operator abort.
+
+        Task 009 (v0.24 requirement B.2, #169) carved a SECOND, stricter
+        exception out of that same "always `unverified`" sentence, ahead of
+        the GH #209 branch: a deadline that lands mid-review (ordinary
+        self-loop exhaustion or the off-budget grace attempt) writes
+        `verdict: None` (JSON `null`), not `unreviewed` and not
+        `unverified` -- extending, not replacing, the existing
+        `_review_deadline_unreviewed`/`_unreviewed_awaiting_resume`/
+        `_review_verdict` mechanism task 016 (requirement F.3, #146)
+        already built for this exact situation: the flag, the resume
+        predicate and the `review_deadline_unreviewed` event are all
+        unchanged, only the WORD this call site writes for the flag
+        changed. A held run's operator resumed specifically to get a
+        verdict out of review; `unreviewed` is still a word (any non-null
+        string reads as "there was an outcome" to a `--json` consumer),
+        and this hold has none yet -- `null` is the only honest value.
         """
         final_state = "aborted" if self._abort_reason else "failed"
-        # Task 016 (requirement F.3, #146): a deadline that lands mid-
-        # review (ordinary self-loop exhaustion or the off-budget grace
-        # attempt) is `unreviewed`, not `unverified` -- never overrides an
-        # actual operator abort, which keeps its own reason and verdict
-        # unchanged.
+        # Task 009 (v0.24 requirement B.2, #169): a deadline that lands
+        # mid-review (ordinary self-loop exhaustion or the off-budget grace
+        # attempt) carries NO verdict at all -- never overrides an actual
+        # operator abort, which keeps its own reason and verdict unchanged.
         if self._review_deadline_unreviewed and not self._abort_reason:
-            self._finish(final_state, "unreviewed",
+            self._finish(final_state, None,
                         reason="deadline during review",
                         **self._unconsumed_steering_patch(),
                         **self._deadline_beat_verdict_extra)
@@ -3388,7 +3402,7 @@ class LoopSupervisor:
                     **self._deadline_beat_verdict_extra)
         return final_state
 
-    def _finish(self, state: str, verdict: str, **fields) -> str:
+    def _finish(self, state: str, verdict: str | None, **fields) -> str:
         """THE terminal-outcome write (task 012, #56) -- every place
         `_run_job_core` decides the job's fate calls this instead of writing
         `state`/`verdict` on status.json directly, so the reflect window has

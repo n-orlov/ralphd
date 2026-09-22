@@ -111,9 +111,10 @@ def test_a_deadline_fired_garbage_reflect_leaves_the_works_outcome_intact(tmp_pa
     # `state` on disk (task 012, #56): the reflect window is still ahead.
     assert mid_status["state"] == "finishing"
     assert mid_status["pendingTerminalState"] == "failed"
-    # task 016, #146 SUPERSEDED: this run's review is cut short by an
-    # interrupted iteration, which writes the dedicated "unreviewed" verdict.
-    assert mid_status["verdict"] == "unreviewed"
+    # task 016, #146 SUPERSEDED (and task 009, v0.24 requirement B.2, #169
+    # narrowed it further): this run's review is cut short by an
+    # interrupted iteration, which writes a null verdict, not a string.
+    assert mid_status["verdict"] is None
     marker = mid_status.get("deadlineBeatVerdict")
     assert isinstance(marker, dict) and marker.get("deadline"), (
         "the work's own terminal record must carry requirement B's marker "
@@ -127,7 +128,7 @@ def test_a_deadline_fired_garbage_reflect_leaves_the_works_outcome_intact(tmp_pa
     # -- 3. the work's own outcome is untouched -----------------------------
     final_status = sup.run.read_status()
     assert final_status["state"] == "failed"
-    assert final_status["verdict"] == "unreviewed"
+    assert final_status["verdict"] is None
     assert final_status.get("pendingTerminalState") is None
     assert final_status["deadlineBeatVerdict"] == marker
     assert final_status["reason"] == mid_status["reason"]
@@ -143,7 +144,9 @@ def test_a_deadline_fired_garbage_reflect_leaves_the_works_outcome_intact(tmp_pa
     assert f"class: {LoopSupervisor.REFLECT_FAULT_DEGRADED}" in tombstone
     # names the work's state, does not (and structurally cannot) change it
     assert "terminal state: failed" in tombstone
-    assert "verdict unreviewed" in tombstone
+    # task 009 (v0.24 requirement B.2, #169): the word this names is now
+    # `None`, not the "unreviewed" string it used to be.
+    assert "verdict None" in tombstone
     assert final_status["state"] == "failed"  # re-checked after reading FAILED.md
 
 
