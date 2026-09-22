@@ -130,3 +130,58 @@ def test_a_run_recording_no_dispatch_attribution_still_reads_as_unknown(tmp_path
     tasks = {"tasks": [{"id": "001", "title": "a task from before the change"}]}
     row = _with_task_totals(tasks, _iterations(run_dir), 1)["tasks"][0]
     assert "timeDisplay" not in row and "costDisplay" not in row
+
+
+def test_pending_task_shows_zero_before_any_dispatch(tmp_path):
+    """cure-01-06 (PRD I.1, DoD 10): a NEW attribution-capable run -- one
+    whose only iteration so far is planning, which already writes
+    `"assignedTaskId": null` (task 027's unconditional dispatch write) --
+    must read the pending task's total as a MEASURED zero (`0s`/`$0.0000`),
+    never the em-dash "unknown" the legacy case above renders. Before this
+    fix, `task_totals()` returning `{}` (no iteration named the task) was
+    indistinguishable from the legacy no-attribution-at-all case, so this
+    task read as unknown too -- the exact review finding this task cures.
+    """
+    run_dir = tmp_path / "run-planning-only"
+    (run_dir / "iterations").mkdir(parents=True)
+    meta = _base_meta(1, phase="planning", assignedTaskId=None)
+    assert meta["assignedTaskId"] is None
+    _write_iteration(run_dir, 1, meta)
+
+    tasks = {"tasks": [{"id": "001", "title": "not dispatched yet",
+                       "status": "pending"}]}
+    row = _with_task_totals(tasks, _iterations(run_dir), 1)["tasks"][0]
+    assert row["timeDisplay"] == task_totals_zero()["durationDisplay"] == "0s"
+    assert row["costDisplay"] == task_totals_zero()["costDisplay"] == "$0.0000"
+    assert "iterationsBreakdown" not in row
+
+
+def test_new_run_pending_task_shows_zero_before_any_dispatch_via_run_detail(tmp_path):
+    """The same case as above, but through the actual `run_detail` surface
+    a browser probe reads (`ui_server.run_detail`) rather than calling
+    `_with_task_totals` directly -- the shape the shipped review finding
+    itself exercised, re-taken here as permanent coverage.
+    """
+    import json as _json
+    import sys as _sys
+    from ralphd.cli.ui_server import run_detail
+    _sys.path.insert(0, str(Path(__file__).parent))
+    from test_cli_ui import _write_dead_run
+
+    reg = tmp_path / "registry"
+    run = _write_dead_run(reg, "new-v024", state="running", engineVersion="0.24.0",
+                          workspaceVersion="0.24.0", approach=1, iterationsUsed=1)
+    (run / "tasks.json").write_text(_json.dumps({"version": 1, "tasks": [
+        {"id": "001", "title": "A: not dispatched", "status": "pending",
+         "successCriteria": "done"}]}))
+    it = run / "iterations" / "0001"
+    it.mkdir(parents=True)
+    (it / "meta.json").write_text(_json.dumps({
+        "number": 1, "approach": 1, "phase": "planning",
+        "startedAt": "2026-09-22T10:00:00Z", "endedAt": "2026-09-22T10:01:00Z",
+        "assignedTaskId": None, "exitCode": 0}))
+
+    doc = run_detail(reg, "new-v024")
+    row = doc["tasks"]["tasks"][0]
+    assert row.get("timeDisplay") == "0s"
+    assert row.get("costDisplay") == "$0.0000"

@@ -7765,6 +7765,37 @@ def task_totals(iterations: list) -> dict:
     return out
 
 
+def task_totals_records_attribution(iterations: list) -> bool:
+    """Whether THIS run's iteration list is capable of answering "how much
+    did this task cost" at all -- cure-01-06 (PRD I.1, DoD 10): the fix for
+    the defect `task_totals`'s own absent-entry rule (below) could not tell
+    apart on its own.
+
+    `task_totals` returns `{}` in TWO different situations that must render
+    differently in the hub: a legacy run dir whose iterations never carry
+    an `assignedTaskId` key at all (task 038/G.6's em-dash case -- nothing
+    about this run's dispatch attribution is known), and a brand-new
+    v0.24+ run that DOES record attribution on every dispatch (task 027)
+    but has not yet dispatched any iteration against ANY task -- a
+    planning-only iteration still carries `"assignedTaskId": null`, a
+    written, present key, never an absent one. An empty `task_totals()`
+    result cannot distinguish those two on its own, because a bucket is
+    only ever built from a NON-null `assignedTaskId` (a real dispatch); the
+    key's mere PRESENCE (whatever its value) is the signal this function
+    reads instead.
+
+    True the moment any iteration in the list is a dict carrying the
+    `assignedTaskId` key at all (including a `None` value, exactly the
+    planning/reflect/run-review dispatch write leaves) -- one such
+    iteration is enough to know every OTHER iteration in this same run dir
+    would carry the key too, since the write is unconditional from task 027
+    onward. False for an empty iteration list, or one where not a single
+    entry carries the key (the pre-task-027 case).
+    """
+    return any(isinstance(it, dict) and "assignedTaskId" in it
+               for it in iterations)
+
+
 def task_totals_zero() -> dict:
     """The MEASURED-ZERO bucket (task 001, PRD I.1 definition-of-done 10:
     "a `pending` task in the current approach shows zero") -- `task_totals`'s

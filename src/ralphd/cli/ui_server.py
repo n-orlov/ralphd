@@ -108,6 +108,7 @@ from ..engine.state import (
     task_blocked_by,
     task_failure_kinds,
     task_totals,
+    task_totals_records_attribution,
     task_totals_zero,
     task_transition_history,
     tasks_read_notice,
@@ -1284,13 +1285,22 @@ def _with_task_totals(tasks: dict, iterations: list, approach) -> dict:
     `_with_tasks_read_label` above uses for `tasksNotice`/`tasksLabel` --
     there are no iterations behind a zero.
 
-    The ONE case that still renders the em dash is a run whose `task_totals`
-    is empty outright: a pre-task-027 run dir records no `assignedTaskId` on
-    any iteration, so nothing about any task's spend is measurable and
-    neither key is attached (task 038, G.6 --
+    The ONE case that still renders the em dash is a run that never records
+    dispatch attribution at all: a pre-task-027 run dir, where NO iteration
+    carries the `assignedTaskId` key, so nothing about any task's spend is
+    measurable and neither key is attached (task 038, G.6 --
     `test_pre_dispatch_record_run_dir_still_renders` pins exactly that).
-    "Never measured" and "measured zero" are different statements and the hub
-    says them differently.
+    Distinct from a brand-new v0.24+ run that DOES record attribution but
+    has not yet dispatched any iteration against any task -- its own
+    planning iteration already carries `"assignedTaskId": null`, a present
+    key, so `task_totals_records_attribution` (below) reads it as
+    attribution-capable and every pending task still gets the zero bucket,
+    never the dash (cure-01-06, PRD I.1, DoD 10). "Never measured" and
+    "measured zero" are different statements and the hub says them
+    differently -- and `task_totals()` alone returning `{}` cannot tell
+    those two apart, since neither a truly legacy run NOR a fresh run with
+    zero dispatches so far builds any bucket; only the key's presence on at
+    least one iteration answers it.
 
     Also attaches `iterationsBreakdown` (task 037, G.5): the SAME per-
     iteration list `task_totals` built the total from -- `{"number",
@@ -1301,7 +1311,7 @@ def _with_task_totals(tasks: dict, iterations: list, approach) -> dict:
     row above).
     """
     totals = task_totals(iterations)
-    if not totals:
+    if not totals and not task_totals_records_attribution(iterations):
         return tasks
     approach = approach if isinstance(approach, int) and not isinstance(approach, bool) else 1
     zero = task_totals_zero()

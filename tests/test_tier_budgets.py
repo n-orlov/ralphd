@@ -490,6 +490,18 @@ TIER_MARKERS = ("smoke", "fast")
 # --collect-only` at this task's own tip. Same ratchet under operator
 # ruling 001 as every entry above: no test retired, skipped, de-marked or
 # weakened to buy the room.
+# Task cure-01-06 (v0.24 requirement I.1, DoD 10, #169) added TWO nodes to
+# an already-counted module, `tests/test_task_totals_approach_scope.py`
+# (`test_pending_task_shows_zero_before_any_dispatch` and
+# `test_new_run_pending_task_shows_zero_before_any_dispatch_via_run_detail`
+# -- the measured-zero-before-any-dispatch probe the review finding named,
+# plus the same case through the real `run_detail` surface), neither
+# crossing a process boundary so both sort `fast`+`smoke` like the rest of
+# that module -- fast 6070 -> 6072 tests, smoke 4401 -> 4403 tests, both
+# module ceilings unchanged at 404/286 (no module added). Measured with
+# `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this task's
+# own tip. Same ratchet under operator ruling 001 as every entry above: no
+# test retired, skipped, de-marked or weakened to buy the room.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
     # cure-01-03 (v0.24 requirement A.1/B.3/K.2): fast 6057 -> 6061, smoke
     # 4394 -> 4396, +4 tests (0 new modules) for the two already-expired-
@@ -511,8 +523,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `timed_out` run's rendering, plus its unchanged running-outage and
     # terminal-degraded control cases. No `docker`/`browser`/process-
     # boundary fixture, so it sorts into both tiers, not fast-only.
-    "fast": {"tests": 6070, "modules": 404},
-    "smoke": {"tests": 4401, "modules": 286},
+    "fast": {"tests": 6072, "modules": 404},
+    "smoke": {"tests": 4403, "modules": 286},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
