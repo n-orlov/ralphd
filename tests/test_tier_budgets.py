@@ -500,7 +500,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # tests/test_deadline.py -- a module that already carries a real
     # `LiveRun`/`engine_factory` process-boundary test further down, so
     # every node in it (old and new alike) sorts `fast`-only, never smoke.
-    "fast": {"tests": 6064, "modules": 403},
+    # cure-01-04, second attempt (same requirements): fast 6064 -> 6065,
+    # smoke unchanged (+1 test, 0 new modules) for the D.1 hold/resume probe
+    # that measures where a held-at-the-peer-gate run resumes and proves the
+    # peer gate itself still renders a verdict there -- same module.
+    "fast": {"tests": 6065, "modules": 403},
     "smoke": {"tests": 4396, "modules": 285},
 }
 

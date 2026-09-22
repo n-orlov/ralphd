@@ -1561,11 +1561,27 @@ def test_no_new_review_iteration_starts_at_an_already_expired_boundary(
 # deadline anyway (breaks the no-new-iteration boundary the rest of this
 # wave, and task 011 before it, hold as absolute). Per this task's own
 # instructions, that is reported as a petition rather than silently
-# resolved either way; the THIRD probe below pins the behaviour the
-# petition leaves in place -- the run holds `timed_out` with a null
-# verdict, exactly like an ordinary out-of-budget tail, so a resumed run
-# with a fresh window lands back on the still-pending `verdict_gate` step
-# and the peer's own verdict is rendered for real, never skipped.
+# resolved either way; the THIRD and FOURTH probes below pin the behaviour
+# the petition leaves in place -- the run holds `timed_out` with a null
+# verdict, exactly like an ordinary out-of-budget tail, and peer
+# verification is DEFERRED rather than lost: a resumed run with a fresh
+# window does genuinely reach `verdict_gate` and render the peer's own
+# verdict.
+#
+# HOW it gets there is measured by the fourth probe rather than assumed,
+# and it is NOT "the still-pending `verdict_gate` step is resumed" (the
+# first attempt at this task asserted that in prose and it is false:
+# `_finish_timed_out` writes `phase=None`, and no `_resume_point()` bucket
+# claims a held-at-the-gate run, so `_resume_point()` returns the ordinary
+# `(approach, skip_planning=True, ENTRY_STATE)` default -- measured as
+# `(1, True, "planning")`). The route it actually takes, end to end, is:
+# planning is SKIPPED (no planning iteration is dispatched), the worker is
+# asked once over the already-`completed` plan and answers `plan_complete`,
+# review is asked again over the SAME approach, and only then does
+# `verdict_gate` run -- one real, blind peer call whose verdict decides the
+# conclusion. The gate is therefore reached and never rubber-stamped; it
+# costs one worker and one review iteration of the fresh window to get
+# there, which is what the petition's adjudication should weigh.
 # ===========================================================================
 
 
@@ -1750,9 +1766,9 @@ def test_peer_verdict_gate_verified_review_after_the_deadline_holds_pending_the_
     choosing -- see this module's own `# Section Jc` docstring above -- and
     this probe pins the behaviour the petition leaves standing: the SAME
     shared C.1 hold every other out-of-budget tail takes, never a fabricated
-    `succeeded`, so a resumed run with a fresh window lands on the still-
-    pending `verdict_gate` step and the peer's own verdict is genuinely
-    rendered, never skipped.
+    `succeeded`, with the peer gate's own handler never called. That peer
+    verification is DEFERRED rather than lost -- and by which route -- is
+    the next probe's job, measured rather than asserted in prose.
     """
     sup = make_supervisor(
         tmp_path, run_id="cure0104-peer-gate-passing-past-deadline",
@@ -1787,6 +1803,120 @@ def test_peer_verdict_gate_verified_review_after_the_deadline_holds_pending_the_
     # The peer gate genuinely never ran -- its own scripted handler was
     # never called -- so nothing here rubber-stamped the check.
     assert sup.runner.calls.get("verdict_gate", 0) == 0
+
+
+def _cure0104_worker_reports_plan_complete(sup, prompt):
+    r = IterationResult(exit_code=0)
+    r.final_text = ("every task on disk is already completed\n"
+                    + json.dumps({"verdict": "plan_complete"}))
+    r.duration_s = 0.2
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+def _cure0104_review_verified(sup, prompt):
+    r = IterationResult(exit_code=0)
+    r.final_text = json.dumps({"verdict": "verified"})
+    r.duration_s = 0.5
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+def test_peer_verdict_gate_hold_resumes_and_the_peer_gate_still_renders_a_verdict(
+        tmp_path):
+    """D.1's petitioned case, the OTHER half: peer verification survives the
+    hold. The probe above pins episode 1 (the hold, with the gate never
+    called); this one continues that SAME run directory into episode 2 -- a
+    fresh `LoopSupervisor` with a fresh full window, which is exactly what
+    `ralphctl resume` starts (Section K) -- and measures where it lands and
+    what runs, rather than asserting a mechanism.
+
+    What it measures, and why each half matters to the petition:
+
+    1. The hold is NOT resumed at the pending `verdict_gate` step.
+       `_finish_timed_out` writes `phase=None` and no `_resume_point()`
+       bucket claims a held-at-the-gate run, so `_resume_point()` returns
+       its ordinary default -- `(1, skip_planning=True, ENTRY_STATE)`, i.e.
+       `(1, True, "planning")`. This is pinned as the TRUTH about the
+       engine as it stands, not as the behaviour D.1 would prefer.
+    2. No new `planning` iteration is dispatched anyway (`skip_planning`),
+       so resume does not throw the approach away -- it continues the one
+       that was held, over the same `completed` task on disk.
+    3. The peer gate DOES run: the worker is asked once and answers
+       `plan_complete`, review is asked again over the same approach, and
+       `verdict_gate`'s own blind handler is then genuinely called exactly
+       once, its verdict deciding the conclusion (`succeeded`, verdict
+       `verified`). So the hold defers peer verification by one worker plus
+       one review iteration of the fresh window; it never skips it and
+       never rubber-stamps it.
+    """
+    root = tmp_path / "run"
+
+    # Episode 1: the hold, identical in shape to the probe above.
+    sup1 = make_supervisor(
+        root, run_id="cure0104-peer-gate-hold-then-resume",
+        max_approaches=1, approach=1, iterations_used=1, prd=True,
+        peer_verdict_gate=True,
+        tasks=[{"id": "T1", "title": "do the thing", "successCriteria": "done",
+               "status": "pending"}])
+    attach_runner(sup1, ScriptedRunner({
+        "worker": [_cure0104_worker_completes],
+        "review": [_cure0104_review_verified_expires_deadline_mid_flight],
+        "verdict_gate": [_cure0104_gate_verified],
+    }))
+
+    assert asyncio.run(asyncio.wait_for(sup1.run_job(), 10.0)) == "timed_out"
+    assert sup1.run.read_status()["verdict"] is None
+    assert sup1.runner.calls.get("verdict_gate", 0) == 0, (
+        "precondition: the peer gate is still outstanding when the run holds")
+    assert [t["status"] for t in sup1.run.read_tasks()["tasks"]] == ["completed"]
+    iterations_before = len(read_events(root, types=("iteration.start",)))
+
+    # Episode 2: a FRESH supervisor over the SAME run dir, fresh full window
+    # (`job_timeout_s` from THIS start, never the held run's stale
+    # `deadlineAt` -- requirement F.1, Section K), same optional gate on.
+    sup2 = make_supervisor(
+        root, run_id="cure0104-peer-gate-hold-then-resume", job_timeout_s=100,
+        prd=True, peer_verdict_gate=True)
+    assert sup2.budget_left() is True
+
+    # 1. The measured resume point: the ordinary default, NOT the pending
+    # `verdict_gate` step the hold stopped at (`phase` was cleared).
+    assert sup2.run.read_status().get("phase") is None
+    assert sup2._resume_point() == (1, True, "planning")
+
+    attach_runner(sup2, ScriptedRunner({
+        "worker": [_cure0104_worker_reports_plan_complete],
+        "review": [_cure0104_review_verified],
+        "verdict_gate": [_cure0104_gate_verified],
+    }))
+
+    state = asyncio.run(asyncio.wait_for(sup2.run_job(), 30.0))
+
+    # 2. Planning was skipped -- the held approach is continued, not replanned.
+    assert sup2.runner.calls.get("planning", 0) == 0
+    assert not [ev for ev in read_events(root, types=("iteration.start",))
+                if ev.get("phase") == "planning"]
+
+    # 3. The peer gate ran for real, exactly once, and its verdict decided.
+    assert sup2.runner.calls.get("verdict_gate", 0) == 1, (
+        "peer verification must be DEFERRED by the hold, never skipped: the "
+        "resumed episode has to reach `verdict_gate` and render a real peer "
+        f"verdict, got calls={sup2.runner.calls!r}")
+    assert state == "succeeded"
+    status = sup2.run.read_status()
+    assert status["state"] == "succeeded"
+    assert status["verdict"] == "verified"
+
+    # ... reached via one worker iteration (answering `plan_complete` over
+    # the already-completed plan) and one fresh review of the SAME approach,
+    # in that order, after the hold -- the route this petition's own
+    # adjudication should weigh.
+    resumed_phases = [ev.get("phase") for ev
+                      in read_events(root, types=("iteration.start",))][
+                          iterations_before:]
+    assert resumed_phases == ["worker", "review", "verdict_gate"], (
+        f"unexpected resumed route, got {resumed_phases!r}")
 
 
 # ===========================================================================
