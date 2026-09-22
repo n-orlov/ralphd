@@ -742,7 +742,26 @@ def _write_auto_resume_setting(cdir: Path, enabled: bool) -> None:
 def _read_auto_resume_setting(run_id: str) -> bool:
     """The run's persisted `auto_resume` opt-in, falling back to
     `AUTO_RESUME_DEFAULT` for a run started before task 026 (no file at
-    all) or one whose config dir is gone."""
+    all) or one whose config dir is gone.
+
+    Task 018 (v0.24 requirement F.2, issue #46): also False while the run
+    is currently recorded `timed_out` -- the hold exists so a human decides
+    to spend another window, and an unattended `doctor --fix` sweep that
+    keeps granting one back defeats the point (the budget stops being a
+    budget). This is the ONE call site `_auto_resume_dangling` consults to
+    decide whether to act on a dangling entry at all -- before it ever
+    reads the crash-loop guard's own bookkeeping (`_read_auto_resume_state`/
+    `_write_auto_resume_state`) or asks the backoff schedule
+    (`_auto_resume_backoff_s`) anything -- so the exclusion lives here and
+    nowhere else: neither the guard's per-run attempt/lastAt record nor the
+    backoff arithmetic has to learn about the hold, both keep covering
+    everything else they cover today exactly as before, and a held run's
+    crash-loop counters are left untouched (neither advanced nor reset)
+    while it stays held, matching the PRD's "only the hold is excluded".
+    """
+    status = _read_json(run_root(run_id) / "status.json", {}) or {}
+    if status.get("state") == TIMED_OUT_STATE:
+        return False
     doc = _read_json(_auto_resume_path(config_root(run_id)), {}) or {}
     if "auto_resume" not in doc:
         return AUTO_RESUME_DEFAULT
@@ -7090,10 +7109,13 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
     waiting: [{runId, attempts, nextAttemptAt}],
     gaveUp: [{runId, attempts, reason}],
     operatorTerminated: [{runId, action, at, reason}],
-    recovered: [...]}` -- `skipped` stays exactly "opted out of
-    auto_resume", the guard's two refusals and task 029's two are their own
-    buckets so a cron consumer can tell "not now" from "never again" from
-    "never asked" from "deliberately killed".
+    recovered: [...]}` -- `skipped` means "not eligible to auto-resume right
+    now": opted out of `auto_resume` (task 026), same as always, or (task 018,
+    v0.24 requirement F.2) currently held `timed_out` -- both read the same
+    single `_read_auto_resume_setting` bool, so both land here rather than
+    forcing a bucket per reason; the guard's two refusals and task 029's two
+    stay their own buckets since a cron consumer still needs "not now" vs
+    "never again" vs "never asked" vs "deliberately killed" told apart.
     """
     resumed: list[str] = []
     skipped: list[str] = []

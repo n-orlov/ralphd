@@ -227,3 +227,44 @@ def test_opted_out_run_is_never_recorded_by_the_guard(ctl):
     doc = _doctor_fix(ctl, "--fix")
     assert doc["autoResume"]["skipped"] == ["tst-guard-off"]
     assert not _guard_path(ctl, "tst-guard-off").exists()
+
+
+# --------------------------------------------------- held (timed_out)
+def _hold_container(ctl: Ctl, run_id: str) -> None:
+    """The run is HELD, not dangling in the crash sense: status.json
+    records the deadline hold (`timed_out`) and no container exists for it
+    -- the same on-disk shape `_dangling_run_entry` matches (so doctor still
+    reports it), but the operator, not `doctor --fix`, owns what happens
+    next (task 018, v0.24 requirement F.2, #46)."""
+    (ctl.registry / "runs" / run_id / "status.json").write_text(
+        json.dumps({"state": "timed_out", "schemaVersion": 1,
+                    "iterationsUsed": 3}))
+
+
+def test_auto_resume_never_resumes_a_held_timed_out_run(ctl):
+    """Task 018 (v0.24 requirement F.2, #46): the hold exists so a human
+    decides to spend another window -- an `auto_resume`-enabled run left
+    `timed_out` must be reported (still `dangling`, so an operator sees it)
+    but never resumed, and it never touches the crash-loop guard's own
+    bookkeeping (no `auto-resume.json` is written for it at all)."""
+    _start(ctl, "tst-guard-held", "--auto-resume")
+    _hold_container(ctl, "tst-guard-held")
+    runs_before = len(_docker_runs(ctl))
+
+    doc = _doctor_fix(ctl, "--fix")
+    assert doc["autoResume"]["resumed"] == []
+    assert doc["autoResume"]["skipped"] == ["tst-guard-held"]
+    assert doc["autoResume"]["waiting"] == []
+    assert doc["autoResume"]["gaveUp"] == []
+    assert doc["autoResume"]["operatorTerminated"] == []
+    assert not _guard_path(ctl, "tst-guard-held").exists()
+    assert [d["runId"] for d in doc["danglingRegistryEntries"]] == \
+        ["tst-guard-held"]
+    assert len(_docker_runs(ctl)) == runs_before, "no resume container started"
+
+    # a second sweep behaves identically -- not a one-shot skip, and never
+    # starts accruing crash-loop attempts while the hold stands
+    doc2 = _doctor_fix(ctl, "--fix")
+    assert doc2["autoResume"]["resumed"] == []
+    assert doc2["autoResume"]["skipped"] == ["tst-guard-held"]
+    assert not _guard_path(ctl, "tst-guard-held").exists()

@@ -427,8 +427,14 @@ TIER_MARKERS = ("smoke", "fast")
 # `succeeded`, never `timed_out` -- fast 6028 -> 6029, measured the same
 # way. Still fast-only (same module-wide `live(` scan trip), smoke
 # unaffected.
+# Task 018 (v0.24 requirement F.2, #46) added ONE node to the already-
+# counted `tests/test_cli_auto_resume_guard.py` (in-process CLI, so it
+# counts in both tiers) pinning that an `auto_resume`-enabled `timed_out`
+# run is never resumed by `doctor --fix` -- fast 6030 -> 6031, smoke 4368 ->
+# 4369 (well inside its existing 4381 ceiling, no smoke bump needed),
+# measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6030, "modules": 400},
+    "fast": {"tests": 6031, "modules": 400},
     "smoke": {"tests": 4381, "modules": 283},
 }
 
