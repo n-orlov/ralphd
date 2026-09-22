@@ -11640,7 +11640,7 @@ class LoopSupervisor:
             return set()
         return {v for v in value if isinstance(v, str)}
 
-    def _take_cure_pass(self, approach: int) -> None:
+    def _take_cure_pass(self, approach: int) -> list[str]:
         """Task 009 (requirement C.1, #141): the consequence of taking the
         cure-pass edge -- append one cure task per blocking finding to
         THIS approach's `tasks.json` (`state.insert_cure_tasks`),
@@ -11652,7 +11652,11 @@ class LoopSupervisor:
         `worker` -- this method only performs the append/counter/event
         side effects, mirroring how `_pause_and_escalate_incurable_
         rejection` only performs ITS side effects and leaves the edge
-        itself to `_step_review`.
+        itself to `_step_review`. Returns the inserted task ids (task
+        cure-01-01, #169): `_maybe_run_mid_plan_review_episode` reuses
+        THIS method for its own admitted-cure accounting rather than
+        re-deriving the insert/counter side effects, and needs the ids
+        back for its own observability event.
 
         Task 030 (PRD requirement E.1, #167): also persists `cureBlocking
         [approach]` -- THIS pass's own blocking clause set
@@ -11684,6 +11688,7 @@ class LoopSupervisor:
                       curePasses=new_count, taskIds=inserted,
                       findings=blocking, blockingBefore=blocking_before,
                       blockingAfter=blocking_after, passNumber=new_count)
+        return inserted
 
     def _review_last_approach_curable_rejection(self, approach: int) -> bool:
         """Task 011 (PRD requirement D.1, #142): does this rejection,
@@ -15002,9 +15007,14 @@ class LoopSupervisor:
         already reached terminal-success, run exactly ONE review iteration
         (on the review hat's own model, `run_iteration("review", ...)`)
         scoped to those already-validated requirements, and open a cure
-        task per BLOCKING finding it reports -- through the SAME `state.
-        insert_cure_tasks` path `_take_cure_pass` already uses for an
-        ordinary run-ending review's own cure pass.
+        task per BLOCKING finding it reports -- through the SAME admission
+        gate AND accounting path (`_review_cure_pass_available`/`_take_
+        cure_pass`, task cure-01-01) an ordinary run-ending review's own
+        cure pass already answers to: an exhausted run-wide `cure_pass_
+        ceiling` or an incurable blocking finding inserts no cure task,
+        and an admitted one updates the SAME persisted `curePasses`/
+        `cureBlocking` counters, never a direct unguarded `state.insert_
+        cure_tasks` call.
 
         Modelled directly on `_maybe_run_midrun_adjudication_episode`: a
         bare async call from inside `_step_worker`, never a declared FSM
@@ -15050,12 +15060,33 @@ class LoopSupervisor:
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         if not blocking:
             return
-        inserted = state.insert_cure_tasks(
-            self.run, approach, blocking,
-            pre_cure_head=self._workspace_head_sha())
+        # Task cure-01-01 (K.2 existing cure machinery unchanged, #169;
+        # non-negotiable 2): a mid-plan finding earns a cure task through
+        # the SAME admission gate an ordinary review rejection's cure pass
+        # already answers to (`_review_cure_pass_available` -- the run-wide
+        # `cure_pass_ceiling`, criteria-tamper exclusion, and per-blocking-
+        # finding curability all apply here too), never a direct unguarded
+        # `state.insert_cure_tasks` call that bypasses every one of those
+        # checks. An exhausted ceiling or an incurable blocking finding
+        # therefore inserts NO cure task and leaves the persisted counters
+        # untouched, exactly as it would for an ordinary rejection that
+        # fails the same gate.
+        if not self._review_cure_pass_available(approach):
+            self.run.emit(
+                "approach.mid_plan_review_cure", approach=approach,
+                taskIds=[], findings=blocking, admitted=False)
+            return
+        # Admissible: `_take_cure_pass` is the SAME accounting path an
+        # ordinary review's cure pass uses -- it appends the cure task(s)
+        # via `state.insert_cure_tasks`, increments and persists
+        # `curePasses[approach]`, and records this pass's own blocking
+        # clause set into `cureBlocking[approach]` (both read back by the
+        # NEXT rejection's own admission check, ordinary or mid-plan
+        # alike), emitting its own `approach.cure_pass` event.
+        inserted = self._take_cure_pass(approach)
         self.run.emit(
             "approach.mid_plan_review_cure", approach=approach,
-            taskIds=inserted, findings=blocking)
+            taskIds=inserted, findings=blocking, admitted=True)
 
     def _petitions_review_context(self) -> str:
         """Task 010 (requirement C, #112): render every OPEN impossibility

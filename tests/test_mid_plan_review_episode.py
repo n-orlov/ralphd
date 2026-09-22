@@ -137,6 +137,14 @@ _BLOCKING_FINDING = {
 }
 
 
+_INCURABLE_BLOCKING_FINDING = {
+    "severity": "blocking", "curable": False,
+    "clause": "requirement A (task 022 fixture, incurable)",
+    "evidence": "the mid-plan review episode found a defect it judges "
+                "unfixable within this approach",
+}
+
+
 def test_flag_on_runs_one_scoped_episode_before_verify_and_opens_a_cure_task(
         tmp_path):
     sup, run, workspace = _worker_supervisor(tmp_path, mid_plan_review=True)
@@ -321,3 +329,107 @@ def test_an_interrupted_episode_still_spends_the_approachs_one_episode(tmp_path)
     mid_plan_phase_events = [e for e in events if e.get("type") == "phase"
                              and e.get("midPlanReview") is True]
     assert len(mid_plan_phase_events) == 1
+
+
+def test_admitted_mid_plan_cure_updates_the_persisted_cure_counters(tmp_path):
+    """Task cure-01-01 (K.2 existing cure machinery unchanged, #169;
+    non-negotiable 2): an ADMISSIBLE mid-plan finding does not merely open
+    a cure task -- it goes through the SAME accounting `_take_cure_pass`
+    performs for an ordinary review rejection, so `status.json`'s
+    `curePasses`/`cureBlocking` (the run-wide cure budget's own persisted
+    counters, task 002/030) record this pass exactly as they would record
+    an ordinary one."""
+    sup, run, workspace = _worker_supervisor(tmp_path, mid_plan_review=True)
+    findings.write_findings_json(run.findings_json_file, [_BLOCKING_FINDING])
+    assert run.read_status().get("curePasses") is None
+
+    agent = _ScriptedAgent({"review": [_adjudicated_review]})
+    agent.sup = sup  # type: ignore[attr-defined]
+    sup.runner = agent  # type: ignore[assignment]
+
+    asyncio.run(sup._maybe_run_mid_plan_review_episode())
+
+    tasks = sup.run.read_tasks()["tasks"]
+    cure_tasks = [t for t in tasks if t.get("origin") == "review-cure"]
+    assert len(cure_tasks) == 1
+
+    status = run.read_status()
+    assert status.get("curePasses") == {"1": 1}
+    assert status.get("cureBlocking") == {
+        "1": sorted(findings.blocking_finding_clauses([_BLOCKING_FINDING]))}
+
+    events = [json.loads(x) for x in
+             (run.root / "events.jsonl").read_text().splitlines() if x.strip()]
+    cure_events = [e for e in events if e.get("type") == "approach.mid_plan_review_cure"]
+    assert len(cure_events) == 1
+    assert cure_events[0]["admitted"] is True
+    assert cure_events[0]["taskIds"] == [cure_tasks[0]["id"]]
+    # The SAME accounting event an ordinary review cure pass emits also
+    # fired -- never a second, parallel bookkeeping mechanism.
+    assert any(e.get("type") == "approach.cure_pass" and e.get("passNumber") == 1
+               for e in events)
+
+
+def test_exhausted_run_wide_cure_budget_admits_no_mid_plan_cure_task(tmp_path):
+    """Task cure-01-01: a mid-plan finding earns a cure task through the
+    SAME run-wide `cure_pass_ceiling` gate an ordinary rejection answers
+    to (`_review_cure_pass_available`). With the run's cure budget already
+    exhausted (`curePasses` already at the ceiling), the episode inserts
+    NO cure task and leaves the counter exactly where it stood -- never a
+    direct, unguarded `state.insert_cure_tasks` call that ignores the
+    ceiling."""
+    sup, run, workspace = _worker_supervisor(
+        tmp_path, mid_plan_review=True, cure_pass_ceiling=3)
+    findings.write_findings_json(run.findings_json_file, [_BLOCKING_FINDING])
+    run.update_status(curePasses={"1": 3})
+
+    agent = _ScriptedAgent({"review": [_adjudicated_review]})
+    agent.sup = sup  # type: ignore[attr-defined]
+    sup.runner = agent  # type: ignore[assignment]
+
+    asyncio.run(sup._maybe_run_mid_plan_review_episode())
+
+    tasks = sup.run.read_tasks()["tasks"]
+    cure_tasks = [t for t in tasks if t.get("origin") == "review-cure"]
+    assert cure_tasks == []
+    # The counter is exactly where it stood -- an exhausted budget never
+    # backslides, and it is never bumped for a finding it refused to cure.
+    assert run.read_status().get("curePasses") == {"1": 3}
+
+    events = [json.loads(x) for x in
+             (run.root / "events.jsonl").read_text().splitlines() if x.strip()]
+    cure_events = [e for e in events if e.get("type") == "approach.mid_plan_review_cure"]
+    assert len(cure_events) == 1
+    assert cure_events[0]["admitted"] is False
+    assert cure_events[0]["taskIds"] == []
+    assert not any(e.get("type") == "approach.cure_pass" for e in events)
+
+
+def test_incurable_blocking_finding_admits_no_mid_plan_cure_task(tmp_path):
+    """Task cure-01-01: a mid-plan finding with `curable: false` is not
+    curable through this episode either, exactly as it is not curable
+    through an ordinary review rejection (`findings.all_blocking_findings_
+    curable`) -- no cure task is inserted and no counter is touched."""
+    sup, run, workspace = _worker_supervisor(tmp_path, mid_plan_review=True)
+    findings.write_findings_json(
+        run.findings_json_file, [_INCURABLE_BLOCKING_FINDING])
+    assert run.read_status().get("curePasses") is None
+
+    agent = _ScriptedAgent({"review": [_adjudicated_review]})
+    agent.sup = sup  # type: ignore[attr-defined]
+    sup.runner = agent  # type: ignore[assignment]
+
+    asyncio.run(sup._maybe_run_mid_plan_review_episode())
+
+    tasks = sup.run.read_tasks()["tasks"]
+    cure_tasks = [t for t in tasks if t.get("origin") == "review-cure"]
+    assert cure_tasks == []
+    assert run.read_status().get("curePasses") is None
+
+    events = [json.loads(x) for x in
+             (run.root / "events.jsonl").read_text().splitlines() if x.strip()]
+    cure_events = [e for e in events if e.get("type") == "approach.mid_plan_review_cure"]
+    assert len(cure_events) == 1
+    assert cure_events[0]["admitted"] is False
+    assert cure_events[0]["taskIds"] == []
+    assert not any(e.get("type") == "approach.cure_pass" for e in events)
