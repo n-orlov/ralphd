@@ -2406,6 +2406,7 @@ three lanes green at the resolved code sha, then the unit-group PRs rebase-merge
 names rather than claims settled the issues this wave answers: **#224**, **#219**, **#220**,
 **#221**, **#222**, **#223** and **#213**. The v0.19 through v0.22 blocks above are unchanged by
 this commit.
+Shipped sha `59afb532`, version 0.23.0, installed host-side by the operator.
 
 ## Later / explicitly deferred
 
