@@ -458,9 +458,26 @@ TIER_MARKERS = ("smoke", "fast")
 # one-per-approach marker is written at dispatch and so survives an episode
 # cancelled mid-flight -- fast 6052 -> 6053, smoke 4390 -> 4391, still 403/
 # 285 modules, measured the same way.
+# Task cure-01-01 (v0.24 requirement K.2, #169; review finding R7) added THREE
+# nodes to that same already-counted `tests/test_mid_plan_review_episode.py`
+# (`test_admitted_mid_plan_cure_updates_the_persisted_cure_counters`,
+# `test_exhausted_run_wide_cure_budget_admits_no_mid_plan_cure_task`,
+# `test_incurable_blocking_finding_admits_no_mid_plan_cure_task` -- the
+# exhausted/incurable/admitted probes the finding's `cured_when` asks for),
+# all `fast`+`smoke`-stamped since the module never crosses a process
+# boundary -- fast 6053 -> 6056 tests, smoke 4391 -> 4394 tests, both module
+# ceilings unchanged at 403/285 (no module added). Measured with this
+# module's own `collected()`/`_modules()` helpers at this commit's own tip:
+# `-m fast` 6056 tests over 403 modules, `-m smoke` 4394 over 285. Both
+# raised literals sit exactly on the measured count, headroom for NOTHING
+# further, the same choice every entry above made. This is the ratchet
+# moving for legitimately added tests under operator ruling 001 ("a tier
+# ratchet is not a budget ceiling", 2026-09-22), not a raised safety
+# ceiling and not a weakened guard: no test was retired, skipped,
+# de-marked or weakened to buy room.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6053, "modules": 403},
-    "smoke": {"tests": 4391, "modules": 285},
+    "fast": {"tests": 6056, "modules": 403},
+    "smoke": {"tests": 4394, "modules": 285},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
