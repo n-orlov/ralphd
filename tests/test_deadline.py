@@ -820,6 +820,109 @@ def test_an_iteration_since_the_unreviewed_ending_stops_the_predicate(tmp_path):
 
 
 # ===========================================================================
+# Section F -- task 010 (v0.24 requirement B.3, #169): freeze on the spot
+# when entering the `timed_out` hold.
+#
+# `_finish_timed_out()` is the one call path that enters TIMED_OUT_STATE
+# (later tasks -- C.1's budget exhaustion, D.2's deadline-during-review
+# rejection -- wire real triggers onto it; this section proves the path
+# itself, built on `make_supervisor`, never this run's own directory).
+# ===========================================================================
+
+def test_timed_out_freezes_on_the_spot_no_reflect_no_accounting(tmp_path):
+    """Entering `timed_out` goes through `_finish()` with the reflect
+    iteration, the terminal accounting (`endedAt`, `pendingTerminalState`)
+    skipped -- `reflect: true` is configured here specifically so a
+    reflect iteration that fired would be caught."""
+    sup = make_supervisor(
+        tmp_path, run_id="task010-timed-out", reflect=True,
+        tasks=[{"id": "T1", "title": "do the thing",
+                "successCriteria": "done", "status": "in-progress"}])
+    # Position a mid-flight episode the way a real deadline expiring
+    # between iterations would leave one: `running`, mid `worker`, approach
+    # 1, with an `iteration.start` already on record.
+    sup.run.emit("iteration.start", number=1, phase="worker")
+    sup.run.update_status(state="running", phase="worker", approach=1)
+    sup._approach = 1
+
+    reflect_calls: list[bool] = []
+    orig_reflection = sup._run_reflection
+
+    async def _spy_reflection():
+        reflect_calls.append(True)
+        await orig_reflection()
+
+    sup._run_reflection = _spy_reflection  # type: ignore[method-assign]
+
+    async def _fake_run_job_core():
+        # Stands in for the future budget-exhaustion/deadline-during-review
+        # call site (C.1/D.2) that decides the ending IS the hold -- the
+        # decision itself is out of this task's scope; only the entry
+        # mechanism through `_finish()` is.
+        return sup._finish_timed_out(reason="deadline expired between iterations")
+
+    sup._run_job_core = _fake_run_job_core  # type: ignore[method-assign]
+
+    iterations_dir = sup.run.root / "iterations"
+    before = sorted(p.name for p in iterations_dir.glob("*")) if iterations_dir.exists() else []
+
+    state = asyncio.run(asyncio.wait_for(sup.run_job(), 30.0))
+
+    assert state == "timed_out"
+    assert reflect_calls == [], (
+        "no reflect iteration may run on the way into the timed_out hold")
+
+    after = sorted(p.name for p in iterations_dir.glob("*")) if iterations_dir.exists() else []
+    assert after == before, (
+        "no reflect iteration directory may appear in the fixture run's "
+        "iterations/ tree for this ending")
+
+    status = sup.run.read_status()
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
+    assert status.get("pendingTerminalState") is None
+    assert status.get("endedAt") is None, (
+        "a held run has not ended -- no terminal accounting")
+    # Enough position to resume from: the mid-flight fields this episode
+    # already recorded are left intact, not cleared the way a genuine
+    # terminal write clears them.
+    assert status.get("approach") == 1
+
+    state_events = _events(sup.run, "state")
+    assert state_events[-1]["state"] == "timed_out"
+    # events.jsonl is flushed synchronously by `RunDir.emit` on every call
+    # (task 010's own criterion: readable back immediately, not buffered).
+    raw = (sup.run.root / "events.jsonl").read_text()
+    assert json.loads(raw.splitlines()[-1])["state"] == "timed_out"
+
+    assert (sup.run.artifacts_dir / "run-record.json").exists()
+    assert (sup.run.artifacts_dir / "run-record.md").exists()
+    record = json.loads((sup.run.artifacts_dir / "run-record.json").read_text())
+    assert record.get("state") == "timed_out"
+
+
+def test_finish_timed_out_never_runs_the_two_phase_finishing_dance(tmp_path):
+    """`_finish_timed_out()` calling `_finish()` directly (not through
+    `run_job()`) never leaves the non-terminal `finishing` state on disk
+    even with `reflect: true` -- `_finish()`'s own `state ==
+    TIMED_OUT_STATE` branch is checked first and returns immediately,
+    which is the mechanism `run_job()`'s reflect-skip in the sibling test
+    above builds on."""
+    sup = make_supervisor(tmp_path, run_id="task010-finish-direct",
+                          reflect=True)
+    result = sup._finish_timed_out(reason="deadline expired")
+
+    assert result == "timed_out"
+    status = sup.run.read_status()
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
+    assert status.get("pendingTerminalState") is None
+    assert sup._pending_terminal is None, (
+        "the timed_out branch must never arm the reflect-promotion "
+        "machinery -- there is nothing to promote later")
+
+
+# ===========================================================================
 # Section D -- task 048 (B.5 follow-on, operator steer 005): paused teardown
 # ===========================================================================
 

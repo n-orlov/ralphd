@@ -402,8 +402,16 @@ TIER_MARKERS = ("smoke", "fast")
 # `timed_out` run with six that pin the acceptance the requirement actually
 # asks for (+3 nodes, module count unchanged) -- fast 6020 -> 6023, measured
 # with the same helpers; smoke (4373) stays inside its existing ceiling.
+# Task 010 (v0.24 requirement B.3, #169) added two nodes to
+# `tests/test_deadline.py` (already-counted module, +2 nodes) pinning
+# `_finish_timed_out()`'s freeze-on-the-spot entry path -- fast 6023 ->
+# 6025, measured with this module's own `collected()` helper at this
+# commit's tip. `test_deadline.py`'s whole module is fast-only (its
+# Section D/E `live(` fixture usages trip `_module_is_in_process`'s
+# source-level scan for every node in the file), so smoke (4373) is
+# unaffected and stays inside its existing 4381 ceiling.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6023, "modules": 400},
+    "fast": {"tests": 6025, "modules": 400},
     "smoke": {"tests": 4381, "modules": 283},
 }
 

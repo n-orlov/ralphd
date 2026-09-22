@@ -64,6 +64,7 @@ from .state import (
     TERMINATION_CLASS_OPERATOR,
     TERMINATION_CLASS_SELF,
     TERMINAL_STATES,
+    TIMED_OUT_STATE,
     VALIDATION_ATTEMPT_LIMIT,
     REMOVE_STATUS_KEY,
     RunDir,
@@ -3304,10 +3305,10 @@ class LoopSupervisor:
         """Runs the job to a terminal state, then (if `reflect: true`) one
         extra 'reflect' iteration analyzing the run for prompt/skill
         improvements (PRD req 24). Returns final state: succeeded | failed |
-        aborted -- unaffected by the reflect iteration, which runs strictly
-        after the outcome below is already settled (though, with `reflect:
-        true`, status.json's `state` field itself reads the non-terminal
-        `finishing` until reflect is over -- see `_finish()`).
+        aborted | timed_out -- unaffected by the reflect iteration, which
+        runs strictly after the outcome below is already settled (though,
+        with `reflect: true`, status.json's `state` field itself reads the
+        non-terminal `finishing` until reflect is over -- see `_finish()`).
 
         Task 012 (#56): a process that starts up over a run dir already
         recorded `finishing` (this same job, an earlier episode, settled the
@@ -3317,12 +3318,23 @@ class LoopSupervisor:
         that was already settled and written down; the only honest thing to
         do is finish what the crashed episode could not, and stop. See
         _promote_recorded_finishing_state().
+
+        Task 010 (v0.24 requirement B.3, #169): `_run_job_core()` returning
+        `TIMED_OUT_STATE` is the one other case besides the `finishing`
+        early-return above where nothing after `_finish()` may run --
+        `_finish()` itself never sets `self._pending_terminal` for this
+        state (see its own docstring), so `_promote_finishing_state()` is
+        already a no-op below regardless, but the reflect iteration is a
+        SEPARATE, unconditional-on-`cfg.reflect` call sitting right here in
+        this method, not inside `_finish()` -- skipping it is this
+        method's own share of "freeze on the spot", the other half of the
+        one call path the commit that adds this branch names.
         """
         status = self.run.read_status()
         if status.get("state") == "finishing":
             return self._promote_recorded_finishing_state(status)
         state = await self._run_job_core()
-        if self.cfg.reflect:
+        if self.cfg.reflect and state != TIMED_OUT_STATE:
             await self._run_reflection()
         self._promote_finishing_state()
         return state
@@ -3402,6 +3414,27 @@ class LoopSupervisor:
                     **self._deadline_beat_verdict_extra)
         return final_state
 
+    def _finish_timed_out(self, *, reason: str) -> str:
+        """THE one call path that enters TIMED_OUT_STATE (task 010, v0.24
+        requirement B.3, #169) -- every future caller that decides the
+        run's ending is the deadline hold rather than a genuine terminal
+        outcome (an exhausted iteration budget through the same path,
+        C.1; a rejecting verdict landing after the deadline, D.2) calls
+        THIS, never self._finish(TIMED_OUT_STATE, ...) directly, so there
+        is exactly one place that decides what accompanies the freeze.
+
+        Delegates straight to _finish(), which already special-cases
+        state == TIMED_OUT_STATE to skip the terminal two-phase finishing
+        dance (no endedAt, no pendingTerminalState) -- see its own
+        docstring. verdict is always None here (v0.24 requirement
+        B.2/task 009's same reasoning: a held run carries no verdict,
+        because a verdict is what the operator resumed in order to get)
+        and is not a caller-supplied argument, so nothing calling this
+        can accidentally smuggle one in.
+        """
+        return self._finish(TIMED_OUT_STATE, None, reason=reason,
+                            **self._unconsumed_steering_patch())
+
     def _finish(self, state: str, verdict: str | None, **fields) -> str:
         """THE terminal-outcome write (task 012, #56) -- every place
         `_run_job_core` decides the job's fate calls this instead of writing
@@ -3429,7 +3462,30 @@ class LoopSupervisor:
         resumed process, reading this exact record back) is what writes the
         real terminal state; both read `self._pending_terminal`/status.json
         rather than re-deciding anything.
+
+        Task 010 (v0.24 requirement B.3, #169): `state == TIMED_OUT_STATE` is
+        a THIRD branch, checked first, that skips the two-phase dance above
+        entirely -- entering the deadline hold is not a terminal outcome at
+        all (it stays in `NONTERMINAL_STATES`), so there is no reflect
+        iteration to run afterward, no `pendingTerminalState` to promote
+        later, and no terminal accounting (`endedAt` is popped rather than
+        defaulted -- the run has not ended, it is frozen exactly where it
+        stands and immediately resumable). This is deliberately the same
+        `self.run.emit("state", ...)`-then-`update_status`-then-`_write_
+        run_record()` sequence the non-reflect branch below already uses --
+        B.3's own retained write is this existing method entered on this
+        existing path, not a new writer -- so a caller that reaches
+        `_finish("timed_out", None, ...)` (any grace-review/budget-
+        exhaustion call site that chooses to, later tasks) gets the freeze
+        for free with no further branching of its own.
         """
+        if state == TIMED_OUT_STATE:
+            fields.pop("endedAt", None)
+            self.run.emit("state", state=state)
+            self.run.update_status(state=state, verdict=verdict, phase=None,
+                                   pendingTerminalState=None, **fields)
+            self._write_run_record()
+            return state
         fields.setdefault("endedAt", utcnow())
         if self.cfg.reflect:
             self._pending_terminal = (state, verdict, dict(fields))
