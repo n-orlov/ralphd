@@ -32,7 +32,7 @@ import time as real_time
 
 import pytest
 
-from ralphd.engine import loop as loop_mod
+from ralphd.engine import findings, loop as loop_mod
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json, read_events, utc_from_epoch
@@ -1238,6 +1238,149 @@ def test_a_passing_verdict_after_the_deadline_concludes_the_run_normally(tmp_pat
     # run dir would find nothing to resume into.
     assert read_events(sup.run.root, types=("review_deadline_unreviewed",)) == []
     assert sup._unreviewed_awaiting_resume(1) is False
+
+
+# ===========================================================================
+# Section J -- task 014 (v0.24 requirement D.2, #169): a rejecting verdict
+# after the deadline holds the run.
+#
+# The pre-named D petition ("the verdict is not readable at the point the
+# run's ending is chosen") was checked again for this sibling task and NOT
+# filed: `_finish(self, state, verdict, **fields)` (loop.py:3376) is still
+# the one call site that decides `state` and `verdict` together, reached
+# here through `_finish_tail_unverified` -> `_finish_timed_out` exactly as
+# it is for the plain budget-exhaustion tail (task 011, C.1).
+#
+# Same shape as Section I (task 013): a tracked probe over `make_supervisor`
+# pushes the job deadline into the past between the worker's own COMPLETE
+# and the dispatch loop's next step, so review is entered with the deadline
+# already behind it -- but this time review renders a REJECTING verdict
+# with one blocking, curable finding. `_step_review` dispatches
+# unconditionally (task 006, requirement A.1) exactly like the passing
+# case, so the rejection runs its ordinary ladder: with `max_approaches=2`
+# and `approach=1`, no incurable/repeated-signature/ruled branch applies
+# (a fresh approach, one curable finding, no prior rejection signature), so
+# `_review_cure_pass_available` takes the cure-pass edge -- `_take_cure_
+# pass` appends one cure task to tasks.json and bumps `curePasses["1"]` to
+# 1 -- and `_step_cure` advances straight to `worker`, in the same dispatch
+# pass. `_step_worker`'s own `while self.budget_left():` loop (one of the
+# five plain out-of-budget `_budget_exhausted_tail` sites, task 011) never
+# runs its body -- the deadline is already past -- and the freshly-
+# inserted cure task is still `pending`, so `_all_tasks_completed()` is
+# False and `_maybe_grace_review` never even attempts a second review: the
+# run holds `timed_out` with the rejection's findings and cure task intact
+# on disk, exactly as requirement D.2 asks.
+# ===========================================================================
+
+
+def _task014_worker_completes(sup, prompt):
+    r = IterationResult(exit_code=0)
+    r.final_text = json.dumps({"verdict": "complete", "task_id": "T1"})
+    r.duration_s = 0.5
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+def _task014_review_rejects_curable(sup, prompt):
+    # Written from inside the scripted review step itself -- the same
+    # position a real reviewer hat's own sidecar write would occupy,
+    # immediately before its contract payload is read back.
+    findings.write_findings_json(sup.run.findings_json_file, [
+        {"severity": "blocking", "curable": True,
+         "clause": "requirement D.2 fixture clause unmet",
+         "evidence": "the thing is not actually done",
+         "cured_when": "the thing is actually done"},
+    ])
+    r = IterationResult(exit_code=0)
+    r.final_text = json.dumps({"verdict": "rejected", "reason": "not done yet"})
+    r.duration_s = 0.5
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+def test_a_rejecting_verdict_after_the_deadline_holds_the_run(tmp_path):
+    """Same fixture shape as Section I's own passing-verdict sibling
+    (`test_a_passing_verdict_after_the_deadline_concludes_the_run_normally`):
+    `iterations_used=1` plus a pre-seeded task skip planning straight to
+    `worker`; the worker completes the sole task while the deadline is
+    still ordinarily in the future; wrapping `_step_worker` pushes the job
+    deadline into the past exactly between the worker's own COMPLETE and
+    the dispatch loop's next `step = self._advance(...)`, so review is
+    entered with the deadline already past. This time review renders a
+    REJECTING verdict over one blocking, curable finding -- the run must
+    hold `timed_out` with a null verdict, and the rejection's findings and
+    the cure task it opened must both still be on disk, with the ordinary
+    cure-pass counter exactly as it would read for an in-budget rejection.
+    """
+    sup = make_supervisor(
+        tmp_path, run_id="task014-rejecting-verdict-past-deadline",
+        max_approaches=2, approach=1, iterations_used=1, prd=True,
+        operator_input_needed_pause=False,
+        tasks=[{"id": "T1", "title": "do the thing", "successCriteria": "done",
+               "status": "pending"}])
+    attach_runner(sup, ScriptedRunner({
+        "worker": [_task014_worker_completes],
+        "review": [_task014_review_rejects_curable],
+    }))
+
+    orig_step_worker = sup._step_worker
+
+    async def _step_worker_then_expire_deadline():
+        outcome = await orig_step_worker()
+        sup.deadline = real_time.monotonic() - 1.0
+        sup._deadline_epoch = real_time.time() - 1.0
+        return outcome
+
+    sup._step_worker = _step_worker_then_expire_deadline  # type: ignore[method-assign]
+
+    assert sup.budget_left() is True, (
+        "precondition: the deadline is still ordinarily in the future "
+        "before the worker phase runs")
+
+    state = asyncio.run(asyncio.wait_for(sup.run_job(), 30.0))
+
+    assert sup.budget_left() is False, (
+        "precondition actually exercised: the deadline really is in the "
+        "past by the time review renders its verdict")
+    assert state == "timed_out", (
+        f"a rejecting verdict after the deadline must hold the run in "
+        f"B.1's state, got state={state!r}")
+    assert sup._budget_exhausted_tail is True, (
+        "the hold must reach TIMED_OUT_STATE through the same C.1 flag "
+        "the plain budget-exhaustion tail sets, never a second freeze path")
+
+    status = sup.run.read_status()
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
+    assert status.get("pendingTerminalState") is None
+    assert status.get("endedAt") is None, "a held run has not ended"
+
+    # The rejection's own findings channel is still on disk -- untouched,
+    # never archived away, exactly as an in-budget rejection leaves it
+    # while parked mid-cure.
+    findings_list = findings.read_findings_json(sup.run.findings_json_file)
+    assert findings_list is not None and len(findings_list) == 1
+    assert findings_list[0]["clause"] == "requirement D.2 fixture clause unmet"
+    assert findings_list[0]["severity"] == "blocking"
+
+    # The cure task the rejection opened is present on disk, still pending
+    # -- it is what left `_all_tasks_completed()` False and so kept the
+    # (pre-E) grace-review mechanism from ever firing a second review.
+    tasks = sup.run.read_tasks()["tasks"]
+    cure_tasks = [t for t in tasks if str(t.get("id", "")).startswith("cure-")]
+    assert len(cure_tasks) == 1, (
+        f"the rejection's own cure task must be present on disk, got "
+        f"tasks={tasks!r}")
+    assert cure_tasks[0]["status"] == "pending"
+
+    # The cure-pass counter reads exactly the value it would for an
+    # in-budget rejection: one cure pass spent on approach 1, same shape
+    # `_take_cure_pass`/`_cure_passes_for_approach` always persist.
+    assert status.get("curePasses", {}).get("1") == 1
+    assert sup._cure_passes_for_approach(1) == 1
+
+    state_events = _events(sup.run, "state")
+    assert state_events[-1]["state"] == "timed_out"
 
 
 # ===========================================================================

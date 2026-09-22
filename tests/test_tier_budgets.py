@@ -428,7 +428,7 @@ TIER_MARKERS = ("smoke", "fast")
 # way. Still fast-only (same module-wide `live(` scan trip), smoke
 # unaffected.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6029, "modules": 400},
+    "fast": {"tests": 6030, "modules": 400},
     "smoke": {"tests": 4381, "modules": 283},
 }
 
