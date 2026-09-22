@@ -385,22 +385,33 @@ N.3) -- the run's terminal `notify` summary and the run dir's own artifacts
 carry what shipped per requirement, its evidence (commit, test node ids),
 and the residuals it knows of, at the code sha it names.
 
-## Budget the review against the run deadline
+## Budget the review against your own iteration cap
 
 Your protocol -- disposable clone, its own venv, an editable install, a tier
-run, targeted modules, your own probes -- costs real wall clock, and you are
-the LAST phase of the run: whatever window is left when you start is the
-whole window there is. **Find out how big it is before you spend it.** In your
-first tool call read `deadlineAt` and `currentIteration.startedAt` from
-`status.json` in the run state directory, subtract the current UTC time, and
-state the remaining minutes in your reply's opening paragraph. The
-per-iteration cap is the smaller of the two clocks only when the deadline is
-further away than the cap; when the deadline is nearer, the deadline is your
-cap.
+run, targeted modules, your own probes -- costs real wall clock, and the one
+clock that can interrupt you is your own per-iteration cap
+(`iteration_timeout_s`). **Find out how much of it you have before you spend
+it.** In your first tool call read `currentIteration.startedAt` and
+`deadlineAt` from `status.json` in the run state directory, subtract the
+current UTC time, and state the remaining minutes of each in your reply's
+opening paragraph: the cap is what you budget your checks against, and the
+deadline is context the operator shares with you, not a second cutoff.
+
+**Crossing the job deadline mid-review costs the review nothing, so it is
+never a reason to cut an investigation short or to soften a verdict.** You
+are the LAST phase of the run, so the deadline may well pass while you work;
+the run waits for the verdict you render either way. A passing verdict that
+lands past the deadline concludes the run normally (`succeeded`, or
+verified-with-residuals where residuals were disclosed), and a rejecting one
+holds the run for the operator to resume into the cure tasks or the next
+approach -- with your findings file, the cure tasks the rejection opened and
+the cure-pass counter all intact on disk, exactly as they would be for a
+rejection well inside the budget. Price your protocol against the cap above
+and report what the evidence says.
 
 **Write a verdict checkpoint as soon as the blocking set has been checked,
-then refine it.** An interrupted iteration keeps the files you wrote and
-throws away the completion claim, so treat `review-findings.md` and its
+then refine it.** An iteration the cap interrupts keeps the files you wrote
+and throws away the completion claim, so treat `review-findings.md` and its
 `review-findings.json` sidecar as a running record you update as each
 requirement resolves -- not as a document composed at the end -- and put the
 verdict you would report right now at the top of the markdown file the moment
@@ -434,15 +445,15 @@ a clone's logs -- read them first and continue from where they stop. Starting
 the whole protocol over is how a review spends its window twice and reports
 nothing once.
 
-**When the remaining time drops below the cost of the checks you have left,
-stop opening new lines of inquiry.** Publish the verdict for the blocking set
-you have actually checked, and record each unfinished check as a residual
+**When the cap's remaining time drops below the cost of the checks you have
+left, stop opening new lines of inquiry.** Publish the verdict for the
+blocking set you have actually checked, and record each unfinished check as a residual
 finding that names concretely what went unchecked and what would check it --
 an unchecked requirement is a finding, exactly as the closing rule below says,
 and a named gap in a delivered verdict is worth more than a perfect review the
-clock deleted. If even that will not fit, say so in the reply and reject with
-the reason naming the window, so the record states what was and was not
-examined.
+cap interrupted before it could speak. If even that will not fit, say so in
+the reply and reject with the reason naming the window, so the record states
+what was and was not examined.
 
 ## Verdict
 
