@@ -3580,6 +3580,25 @@ def _format_degraded_lines(status: dict) -> list[str]:
                 lines.extend(f"           {extra}" for extra in wrapped[1:])
                 return lines
             return ["degraded:  run ended degraded (no reason recorded)"]
+        # Cure-01-02-2 (v0.24 requirement B.1, #169): `timed_out` is the
+        # deadline/budget HOLD (task 008) -- resume-eligible, nothing in
+        # flight, no retry attempt actually running and no backoff wait
+        # pending. It is not in TERMINAL_STATES above (a hold is not an
+        # outcome, `timed_out` never joins that tuple) but it must not fall
+        # into the generic "a retry attempt is running" sentence below
+        # either -- that is exactly the still-working misreading B.1
+        # forbids (the same bug cure-01-05 already fixed in app.js's
+        # `renderInfraWait`). `reason` is the hold's own note
+        # (`_finish_timed_out`, docs/api.md), quoted the same way the
+        # terminal branch above quotes its own reason.
+        if status.get("state") == TIMED_OUT_STATE:
+            reason = str(status.get("reason") or "").strip()
+            note = (f"held at the deadline ({reason})" if reason
+                    else "held at the deadline (no reason recorded)")
+            wrapped = textwrap.wrap(note, width=64) or [note]
+            lines = [f"degraded:  {wrapped[0]}"]
+            lines.extend(f"           {extra}" for extra in wrapped[1:])
+            return lines
         return [("degraded:  infra outage episode in progress "
                  "(a retry attempt is running, no backoff wait pending)")]
     lines = [(f"degraded:  infra outage: attempt {wait.get('attempt')} "

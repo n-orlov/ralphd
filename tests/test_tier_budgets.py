@@ -530,8 +530,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # dispatch site -- tests/test_midrun_adjudication_episode.py, a
     # module that already sorts into both tiers (no process-boundary
     # fixture), so both ceilings move together.
-    "fast": {"tests": 6074, "modules": 404},
-    "smoke": {"tests": 4405, "modules": 286},
+    # cure-01-02-2 (v0.24 requirement B.1): fast 6074 -> 6077, smoke 4405
+    # -> 4408 (+3 tests, 0 new modules) for the CLI-status analogue of
+    # cure-01-05's app.js fix -- `_format_degraded_lines`'s own `timed_out`
+    # branch, tests/test_cli_status_degraded.py, a module that already
+    # sorts into both tiers (no process-boundary fixture), so both
+    # ceilings move together.
+    "fast": {"tests": 6077, "modules": 404},
+    "smoke": {"tests": 4408, "modules": 286},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -136,6 +136,59 @@ def test_run_genuinely_between_infra_retry_attempts_still_reports_the_episode():
     assert lines[0].startswith("degraded:  infra outage episode in progress")
 
 
+def test_timed_out_hold_reports_held_not_a_retry_running():
+    """Cure-01-02-2 (v0.24 requirement B.1, #169): the same wrong fallback
+    cure-01-05 fixed in app.js's `renderInfraWait` also existed here --
+    `timed_out` (task 008's deadline/budget hold: resume-eligible, no retry
+    attempt actually running, no backoff wait pending) is not in
+    TERMINAL_STATES (a hold is not an outcome, `timed_out` never joins that
+    tuple), so it fell into the generic "infra outage episode in progress
+    (a retry attempt is running...)" sentence -- a still-working
+    misreading of a run that is in fact held. It must render as held
+    instead, quoting its own `reason`, without ever making `timed_out`
+    terminal."""
+    lines = _format_degraded_lines({
+        "state": "timed_out",
+        "health": "degraded",
+        "infraWait": None,
+        "reason": "deadline reached mid-iteration",
+    })
+    assert len(lines) == 1
+    assert lines[0] == "degraded:  held at the deadline (deadline reached mid-iteration)"
+    assert "infra outage episode in progress" not in lines[0]
+    assert "retry" not in lines[0]
+
+
+def test_timed_out_hold_with_no_reason_says_so():
+    lines = _format_degraded_lines({
+        "state": "timed_out",
+        "health": "degraded",
+        "infraWait": None,
+        "reason": None,
+    })
+    assert lines == ["degraded:  held at the deadline (no reason recorded)"]
+
+
+def test_running_and_terminal_degraded_control_cases_unchanged_by_the_timed_out_branch():
+    """The two pre-existing branches this cure sits beside must keep their
+    exact prior behavior: a genuinely running mid-outage episode still gets
+    the outage sentence, and a TERMINAL degraded run (task 050's
+    ingestion-termination path) still quotes its own terminal reason --
+    neither swaps onto the new `timed_out` branch."""
+    running = _format_degraded_lines({
+        "state": "running", "health": "degraded", "infraWait": None,
+    })
+    assert running == ["degraded:  infra outage episode in progress "
+                        "(a retry attempt is running, no backoff wait pending)"]
+
+    terminal = _format_degraded_lines({
+        "state": "failed", "health": "degraded", "infraWait": None,
+        "reason": "approach 3 failed the same plan-ingestion lexical lint",
+    })
+    assert terminal == ["degraded:  approach 3 failed the same plan-ingestion "
+                         "lexical lint"]
+
+
 def test_malformed_next_attempt_timestamp_does_not_crash():
     lines = _format_degraded_lines({"health": "degraded",
                                     "infraWait": _wait(nextAttemptAt="whenever")})
