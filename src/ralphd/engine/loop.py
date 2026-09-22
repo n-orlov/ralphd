@@ -207,6 +207,22 @@ CONTRACT_REASK_FINAL_TEXT_MAX_CHARS = 4000
 # either rejection site itself any more.
 CURE_PASS_CEILING = 3
 
+# Task 022 (PRD requirement K.2, #169): the declared fraction of an
+# approach's own plan that must already have reached this run's
+# terminal-success status before its ONE mid-plan review episode
+# (`LoopSupervisor._maybe_run_mid_plan_review_episode`) becomes due --
+# an explicit NUMBER, stated once, here, the same "declared, never
+# implicit" discipline `CURE_PASS_CEILING` above and `JobConfig.cure_
+# pass_ceiling`/`peer_plan_review_max_revisions` already follow for their
+# own budgets. Half the plan: early enough to front-load findings review
+# would otherwise only surface at the very end (K's own PRD complaint),
+# late enough that the episode is never asked to judge a near-empty plan.
+# Behind `JobConfig.mid_plan_review` (OFF by default), so this constant
+# is inert for every job.yaml that never opts in; not itself a `JobConfig`
+# field -- the success criteria name one flag/field pair (the on/off
+# switch), and this number only needs to be declared, not operator-tunable.
+MID_PLAN_REVIEW_FRACTION = 0.5
+
 # Task 017 (PRD requirement E.3, #190/#191): the literal `_check_workspace_
 # version_drift` scrapes out of the WORKSPACE's own `src/ralphd/__init__.py`
 # -- deliberately the same regex shape `tests/test_packaging_metadata.py`
@@ -9297,6 +9313,13 @@ class LoopSupervisor:
                     # `_verify_task` calls, i.e. before every one of these
                     # tasks' NEXT validation attempt.
                     await self._maybe_run_midrun_adjudication_episode()
+                    # Task 022 (PRD requirement K.2, #169): the mid-plan
+                    # review episode, when due, runs HERE too -- same
+                    # seam, same "strictly before this pass's own
+                    # `_verify_task` calls" ordering, scoped to whatever
+                    # is ALREADY validated rather than to the tasks about
+                    # to be verified this pass.
+                    await self._maybe_run_mid_plan_review_episode()
                     self._advance("worker", "verify",
                                  "completed_task_pending_verification")
                     any_failed = False
@@ -14881,6 +14904,154 @@ class LoopSupervisor:
                 f"  **Type**: {p['type']}\n"
                 f"  **Evidence**: {p['evidence']}\n")
         return "".join(lines)
+
+    def _mid_plan_review_done_for_approach(self, approach: int) -> bool:
+        """Task 022 (PRD requirement K.2, #169): whether THIS approach has
+        already spent its one mid-plan review episode -- read back from
+        `status.json`'s `midPlanReviewEpisodes[str(approach)]`, the same
+        disk-backed, survives-a-resume shape `curePasses`/`planReviewRevisions`
+        already use for their own per-approach counters, so a resumed
+        process never re-runs the episode a crashed one already spent.
+        """
+        episodes = self.run.read_status().get("midPlanReviewEpisodes") or {}
+        return bool(episodes.get(str(approach)))
+
+    def _record_mid_plan_review_done(self, approach: int) -> None:
+        """Persist that `approach` has spent its one mid-plan review
+        episode, BEFORE the episode's own `run_iteration` call could be
+        interrupted by a crash/deadline -- the same "credit is on disk
+        before anything that could kill it" discipline `_refund_iteration`
+        already follows.
+        """
+        status = self.run.read_status()
+        episodes = dict(status.get("midPlanReviewEpisodes") or {})
+        episodes[str(approach)] = True
+        self.run.update_status(midPlanReviewEpisodes=episodes)
+
+    def _mid_plan_review_validated_tasks(self, tasks_doc: dict) -> list[dict]:
+        """Task 022 (PRD requirement K.2, #169): the requirements this
+        approach's mid-plan review episode is scoped to -- every task that
+        has ALREADY reached this run's own terminal-success claim status
+        (`transitions.variant_claim_terminal(self.cfg.vigilant)`: `validated`
+        under vigilant, `completed` otherwise). The PRD's own words name
+        `validated` specifically; under a non-vigilant run no task is ever
+        marked `validated` (vigilant's own terminal, `transitions.
+        variant_claim_terminal`), so this reads the variant-correct
+        terminal-success status rather than the literal string, the same
+        distinction `variant_claim_terminal`'s own docstring draws.
+        """
+        terminal = transitions.variant_claim_terminal(self.cfg.vigilant)
+        return [t for t in tasks_doc.get("tasks", [])
+                if isinstance(t, dict) and t.get("status") == terminal]
+
+    def _mid_plan_review_due(self, tasks_doc: dict) -> bool:
+        """Task 022 (PRD requirement K.2, #169): whether the declared
+        fraction (`MID_PLAN_REVIEW_FRACTION`) of THIS approach's own plan
+        has already reached terminal-success -- `False` for an empty plan
+        (nothing to scope a review to).
+        """
+        tasks = [t for t in tasks_doc.get("tasks", []) if isinstance(t, dict)]
+        if not tasks:
+            return False
+        validated = self._mid_plan_review_validated_tasks({"tasks": tasks})
+        return (len(validated) / len(tasks)) >= MID_PLAN_REVIEW_FRACTION
+
+    def _mid_plan_review_extra(self, validated_tasks: list[dict]) -> str:
+        """The scoped prompt context for the mid-plan review episode
+        (`_maybe_run_mid_plan_review_episode`) -- named exactly which
+        already-validated requirements are in scope, and instructions that
+        findings against them open cure tasks through the SAME structured
+        findings channel (`findings_path`) an ordinary run-ending review
+        already uses, never a second mechanism. Modelled on `_midrun_
+        adjudication_extra`'s own shape: `verdict` carries NO terminal
+        effect for this episode either (`transitions.MIDRUN_REVIEW_SCHEMA`
+        is what `_review_contract_ladder(..., mid_run=True)` validates
+        against here too), so a reply may answer `"verdict": "adjudicated"`
+        or omit `verdict` entirely with no contract violation.
+        """
+        lines = [
+            "\n## Mid-plan review episode (task 022, PRD requirement K.2, "
+            "#169)\n\n"
+            "This is a SCOPED review episode, running MID-PLAN rather than "
+            "at the end of the run, because a declared fraction of this "
+            "approach's own plan has already reached terminal-success. "
+            "Your `verdict` field has NO terminal effect here -- it never "
+            "ends the approach, never archives it, and is never recorded "
+            "as the run's own review verdict; you may answer "
+            "`\"verdict\": \"adjudicated\"` (naming what this reply "
+            "actually is) or omit `verdict` entirely, neither is a "
+            "contract violation for THIS episode. Your ONLY job this "
+            "iteration is to probe the requirements named below -- every "
+            "one of them already independently validated -- exactly the "
+            "way an ordinary run-ending review would, and report any "
+            "defect through the SAME structured findings channel "
+            "(`findings_path`) an ordinary review already uses. A finding "
+            "you report here opens a cure task through the EXISTING cure "
+            "machinery, the same `state.insert_cure_tasks` path an "
+            "ordinary review's own cure pass already takes -- never a new "
+            "or different mechanism.\n\n### Already-validated requirements "
+            "in scope\n",
+        ]
+        for t in validated_tasks:
+            lines.append(f"\n- **{t.get('id')}**: {t.get('title', '')}\n")
+        return "".join(lines)
+
+    async def _maybe_run_mid_plan_review_episode(self) -> None:
+        """Task 022 (PRD requirement K.2, #169): once per approach, once
+        the declared fraction `MID_PLAN_REVIEW_FRACTION` of the plan has
+        already reached terminal-success, run exactly ONE review iteration
+        (on the review hat's own model, `run_iteration("review", ...)`)
+        scoped to those already-validated requirements, and open a cure
+        task per BLOCKING finding it reports -- through the SAME `state.
+        insert_cure_tasks` path `_take_cure_pass` already uses for an
+        ordinary run-ending review's own cure pass.
+
+        Modelled directly on `_maybe_run_midrun_adjudication_episode`: a
+        bare async call from inside `_step_worker`, never a declared FSM
+        state -- `transitions.TABLE`/`table_for` are untouched by this
+        method, exactly as they are by the petition-adjudication episode.
+        `self.cfg.mid_plan_review` is OFF by default (PRD's own "no
+        existing job's cost changes"), so this is a no-op the moment it is
+        called on a run that never opted in -- the FIRST line below.
+
+        Deduped per approach via `_mid_plan_review_done_for_approach`/
+        `_record_mid_plan_review_done`, disk-backed so a resumed process
+        never re-runs it. The record is written immediately after the
+        episode's own `run_iteration` call, before the result is even
+        inspected -- the same "the attempt was spent" bookkeeping order
+        `_maybe_run_midrun_adjudication_episode` follows for its own
+        `_petition_adjudication_seen` update.
+        """
+        if not self.cfg.mid_plan_review:
+            return
+        approach = self._approach
+        if self._mid_plan_review_done_for_approach(approach):
+            return
+        tasks_doc = self.run.read_tasks()
+        if not self._mid_plan_review_due(tasks_doc):
+            return
+        validated_tasks = self._mid_plan_review_validated_tasks(tasks_doc)
+        await self._gate()
+        self.run.emit("phase", phase="review", approach=approach,
+                      midPlanReview=True)
+        result = await self.run_iteration(
+            "review", extra=self._mid_plan_review_extra(validated_tasks),
+            tier=state.run_level_verify_tier())
+        self._record_mid_plan_review_done(approach)
+        if result is None:
+            return
+        result = await self._review_contract_ladder(result, mid_run=True)
+        self._review_verdict(result, mid_run=True)
+        findings_list = self._review_findings() or []
+        blocking = [f for f in findings_list if f.get("severity") == "blocking"]
+        if not blocking:
+            return
+        inserted = state.insert_cure_tasks(
+            self.run, approach, blocking,
+            pre_cure_head=self._workspace_head_sha())
+        self.run.emit(
+            "approach.mid_plan_review_cure", approach=approach,
+            taskIds=inserted, findings=blocking)
 
     def _petitions_review_context(self) -> str:
         """Task 010 (requirement C, #112): render every OPEN impossibility

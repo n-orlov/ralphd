@@ -449,9 +449,14 @@ TIER_MARKERS = ("smoke", "fast")
 # modules, smoke 4372 -> 4388 tests over 282 -> 284 modules, measured with
 # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this task's
 # own tip.
+# Task 022 (v0.24 requirement K.2, #169) added ONE new in-process module
+# (`tests/test_mid_plan_review_episode.py`, two nodes, no `live(`/process-
+# boundary usage, so it counts in smoke too) -- fast 6050 -> 6052 tests over
+# 402 -> 403 modules, smoke 4388 -> 4390 tests over 284 -> 285 modules,
+# measured the same way at this task's own tip.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6050, "modules": 402},
-    "smoke": {"tests": 4388, "modules": 284},
+    "fast": {"tests": 6052, "modules": 403},
+    "smoke": {"tests": 4390, "modules": 285},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

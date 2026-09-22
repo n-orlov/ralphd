@@ -441,6 +441,24 @@ class JobConfig:
     # in this task's own commit message and `artifacts/reports/task-020-
     # requirement-l-rejection-semantics.md`.
     peer_verdict_gate: bool = False
+    # Task 022 (PRD requirement K.2, #169): the mid-plan review episode's
+    # own opt-in flag -- OFF by default, same "gate off -> today's engine
+    # unchanged" shape `peer_plan_review`/`peer_verdict_gate` above already
+    # carry. When True, `LoopSupervisor._maybe_run_mid_plan_review_episode`
+    # (called from the same `_step_worker` seam the mid-run petition-
+    # adjudication episode already uses, `loop.py`) runs one bounded review
+    # iteration per approach, scoped to whichever tasks have already
+    # reached this run's terminal-success status (`validated` under
+    # vigilant, the only variant that ever produces one before the plan is
+    # done), once the declared fraction `loop.MID_PLAN_REVIEW_FRACTION` of
+    # the plan's own tasks has reached it. Its findings open cure tasks
+    # through the SAME `state.insert_cure_tasks` path an ordinary
+    # run-ending review's cure pass already uses -- no new cure mechanism,
+    # no new FSM state (unlike the two peer gates above, this episode
+    # never advances through `transitions.TABLE` at all, exactly like the
+    # mid-run adjudication episode it is modelled on). Never wired into
+    # `table_for`/`successors`/`is_legal` for that reason.
+    mid_plan_review: bool = False
     # Task 006 (PRD requirement B.1, #122): an explicit NUMBER -- the
     # maximum number of times ONE steering message may be redelivered
     # (unconsumed and handed back to a following steer iteration) after a
@@ -815,6 +833,11 @@ class JobConfig:
                 # pause for a ruling before an approach is archived
                 # without reading job.yaml.
                 "operatorInputNeededPause": self.operator_input_needed_pause,
+                # Task 022 (PRD requirement K.2, #169): surfaced the same
+                # way the two peer gates above are -- an operator can see
+                # whether this run would ever run a scoped mid-plan review
+                # episode without reading job.yaml.
+                "midPlanReview": self.mid_plan_review,
             },
             # Task 010: the response-contract re-prompt policy (requirement
             # C). `retryMax` is re-prompts granted after the first attempt

@@ -178,6 +178,7 @@ keys with no section of their own below:
 | `planningDeathDetail` | the RAW ingestion-error text (task 007, requirement B.3, #135 wording preserved) paired with `planningDeathSignature` — quoted verbatim into the terminal reason when the two-strike guard fires on it. Absent for a run that has never had a plan proposal refused at ingestion |
 | `planReviewRevisions` | per-approach peer plan-review revision counter (task 018, PRD requirement K, #101) — `{"<approach>": <count>}`, incremented each time the opt-in `plan_review` hat objects to a plan and a revision is still available; `_step_plan_review`'s `plan_review_revision_bound_reached` guard compares the entry for the current approach against `peer_plan_review_max_revisions` (default 2) to decide when the plan proceeds regardless of further objections. Absent for a run with `peer_plan_review: false` (the default) or one that has never had an approach objected to |
 | `planReviewApproved` | per-approach marker that the peer plan review let the plan proceed (`approved`, or `plan_review_revision_bound_reached`) -- `{"<approach>": true}`, written by `_step_plan_review` (#161). `_step_planning(skip_planning=True)` on a resume takes `planning_skipped_plan_already_reviewed` -> `worker` when the entry is present (or when any task is already past `pending`), instead of re-running `plan_review`; `_step_plan_review` itself refuses a revision over a worked plan (`plan_review_revision_refused_work_recorded`) because ingesting a fresh proposal resets every task to `pending`. Absent for a run with `peer_plan_review: false` or one whose plan review has not spoken yet |
+| `midPlanReviewEpisodes` | per-approach mid-plan review episode marker (task 022, PRD requirement K.2, #169) — `{"<approach>": true}`, written by `LoopSupervisor._record_mid_plan_review_done` the moment the episode's own `run_iteration` call is dispatched, so a resumed process never re-runs the ONE episode an approach is entitled to. `LoopSupervisor._maybe_run_mid_plan_review_episode` (called from the same `_step_worker` seam the mid-run petition-adjudication episode already uses) runs the episode once the declared fraction (`loop.MID_PLAN_REVIEW_FRACTION`) of the plan has already reached terminal-success, scoped to those requirements; its findings open a cure task per blocking finding through the existing `state.insert_cure_tasks` path. Absent for a run with `mid_plan_review: false` (the default) or one that has not yet reached the declared fraction |
 | `workerSplitProposals` | per-approach worker split-proposal counter (task 021, PRD requirement N, #102) — `{"<approach>": <count>}`, the running total of tasks a worker's optional `proposed_tasks` contract field (`transitions.HAT_SCHEMAS["worker"]`) has actually inserted for that approach; `LoopSupervisor._apply_worker_proposed_tasks` refuses a proposal whole (never partially) once accepting it would push the total past `worker_split_budget_per_approach` (default 3). Absent for a run that has never had an accepted split proposal |
 | `workerRepointUpdates` | per-approach worker `dependsOn` re-point counter (#209 defect 7) — `{"<approach>": <count>}`, the running total of EXISTING tasks a worker's optional `proposed_task_updates` contract field (`transitions.HAT_SCHEMAS["worker"]`) has actually re-pointed for that approach; `LoopSupervisor._apply_worker_task_updates` refuses a batch whole (never partially) once accepting it would push the total past `worker_repoint_budget_per_approach` (default 3). A separate counter from `workerSplitProposals` above because a re-point inserts no task. Absent for a run that has never had an accepted re-point |
 | `steerRedeliveries` | per-MESSAGE steering redelivery counter (task 006, PRD requirement B.1, #122) — `{"<steering-file-name>": <count>}`, incremented each time a clean `steer` iteration honestly reports `settled: false` for that message: `LoopSupervisor._handle_unsettled_steering` UNCONSUMES the file (`RunDir.unconsume_steering`) so it is genuinely redelivered to the next actionable iteration, up to `steer_redelivery_max` (default 3) redeliveries. Once a message's count reaches the cap it stops being redelivered and is instead recorded settled-BY-EXHAUSTION, with the reason, in the internal steering ledger that `state.steering_ledger` renders into every following hat's prompt (`settledByExhaustion`/`exhaustionReason` entries — not fields of this endpoint's own payload). `settled: true` never touches this counter — it consumes exactly once, as before this task. Absent for a run that has never had a `settled: false` steer reply |
@@ -903,7 +904,7 @@ contents, no LLM env values):
               "infraStartupTimeoutS": 150.0, "infraRetryBackoffS": [2, 5, 15, 30, 60, 120, 300],
               "infraRetryBackoffMaxS": 300.0, "infraRetryMax": null, "infraOutageBudgetS": 14400.0,
               "routerTimeoutS": 60.0},
-  "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false, "peerPlanReview": false, "peerVerdictGate": false, "operatorInputNeededPause": true},
+  "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false, "peerPlanReview": false, "peerVerdictGate": false, "operatorInputNeededPause": true, "midPlanReview": false},
   "contracts": {"retryMax": 2},  // response-contract re-prompt policy, task 010
   "model": {"model": null, "routerModel": null, "overrides": {}, "thinking": null,
              "thinkingOverrides": {}},
@@ -933,6 +934,16 @@ second, blind peer's re-verification between `review`'s `verified` edge and
 terminal success. Neither has a `resume` flag — like `vigilant`/`reflect`,
 they are a `start`-time choice only, replayed unchanged by `job.yaml` on
 every later `resume`.
+
+`flags.midPlanReview` (`job.yaml` key `mid_plan_review`, `ralphctl start
+--mid-plan-review`) is a THIRD opt-in gate (task 022, PRD requirement K.2,
+#169, OFF by default): once per approach, once the declared fraction
+(`loop.MID_PLAN_REVIEW_FRACTION`) of the plan has already reached
+terminal-success, the engine runs one review iteration scoped to those
+requirements, opening a cure task per blocking finding through the
+existing cure machinery (`state.insert_cure_tasks`) — see
+`midPlanReviewEpisodes` under `GET /status` above. No `resume` equivalent,
+for the same reason the two peer gates above have none.
 
 `flags.operatorInputNeededPause` (`job.yaml` key
 `operator_input_needed_pause`, `ralphctl start

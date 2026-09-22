@@ -2128,6 +2128,11 @@ def cmd_start(args):
         # applies unconditionally-off, same as the two flags it sits beside.
         "peer_plan_review": args.peer_plan_review,
         "peer_verdict_gate": args.peer_verdict_gate,
+        # Task 022 (PRD requirement K.2, #169): forwarded exactly like the
+        # two peer gates above -- omitted from job.yaml entirely when the
+        # flag is absent, so the engine's own `JobConfig.mid_plan_review`
+        # default (False) applies.
+        "mid_plan_review": args.mid_plan_review,
         # Task 014 (PRD requirement A.1, #224): resolved by the
         # `_TEMPLATE_SCALAR_FIELDS` loop above (explicit flag > template's
         # own key > hard default `True`), so this is never `None` by the
@@ -7878,6 +7883,20 @@ def build_parser() -> argparse.ArgumentParser:
                    help="opt-in, genuinely blind peer verdict gate (PRD "
                         "requirement L, #101): a second peer model "
                         "re-verifies completed work before terminal success")
+    # Task 022 (PRD requirement K.2, #169): a THIRD opt-in gate, same
+    # `action="store_true", default=None` shape as the two peer gates
+    # above so an unset flag stays out of job.yaml entirely and the
+    # engine's own `JobConfig.mid_plan_review` default (False) applies.
+    # `resume` has no equivalent flag for the same reason the two peer
+    # gates don't: a `start`-time choice only, replayed unchanged by
+    # job.yaml on every later `resume`.
+    s.add_argument("--mid-plan-review", action="store_true", default=None,
+                   help="opt-in mid-plan review episode (PRD requirement "
+                        "K.2, #169): once per approach, when a declared "
+                        "fraction of the plan has already validated, run "
+                        "one review episode scoped to those requirements, "
+                        "opening cure tasks from its findings through the "
+                        "existing cure machinery")
     # Task 014 (PRD requirement A.1, #224): ON by default (unlike the two
     # peer gates above) -- this flag is the disable, not the enable. Left
     # unpassed, `args.operator_input_needed_pause` stays `None` and the
