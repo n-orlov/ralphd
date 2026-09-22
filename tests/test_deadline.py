@@ -1392,6 +1392,142 @@ def test_a_rejecting_verdict_after_the_deadline_holds_the_run(tmp_path):
 
 
 # ===========================================================================
+# Section K -- task 017 (v0.24 requirement F.1, #169): a bare `ralphctl
+# resume` grants a held (`timed_out`) run a fresh full window.
+#
+# The PRD (F.1) is explicit that no engine code changes here: `self.deadline`
+# / `self._deadline_epoch` are computed once, unconditionally, in
+# `LoopSupervisor.__init__` from `cfg.job_timeout_s` (loop.py:524/537) --
+# never seeded from a prior episode's `status.json` `deadlineAt` -- so a
+# fresh process (a new container, which is exactly what `cmd_resume` starts)
+# ALREADY grants a fresh full window, whatever state the run dir was left
+# in. `make_supervisor` constructing a `LoopSupervisor` IS that fresh
+# process, so these nodes pin the existing mechanism directly rather than
+# separating anything. `--timeout`'s override semantics against `job.yaml`
+# (`_apply_job_timeout_topup`) are already pinned end to end by
+# `tests/test_cli_features.py::test_resume_timeout_topup_bumps_job_yaml`
+# (task 004) -- not re-pinned here, since nothing about that path changed.
+# ===========================================================================
+
+def _task017_status_with_stale_deadline(state: str, *, approach: int = 1) -> dict:
+    """The shape a genuinely held run dir left on disk: a `deadlineAt` that
+    already passed (long before `real_time.time()`), so a resume that
+    accidentally seeded `self._deadline_epoch`/`self.deadline` from it
+    instead of from `cfg.job_timeout_s` would immediately re-expire -- the
+    exact regression this section exists to catch."""
+    return {"state": state, "approach": approach,
+           "deadlineAt": "2020-01-01T00:00:00+00:00"}
+
+
+def test_bare_resume_of_a_timed_out_run_grants_a_fresh_full_window(tmp_path):
+    job_timeout_s = 100
+    before_monotonic = real_time.monotonic()
+    before_epoch = real_time.time()
+
+    sup = make_supervisor(
+        tmp_path, run_id="task017-timedout-fresh-window",
+        job_timeout_s=job_timeout_s,
+        status=_task017_status_with_stale_deadline("timed_out"))
+
+    # A full job_timeout_s from THIS engine start -- not from the stale,
+    # already-past `deadlineAt` the held run dir carried on disk.
+    assert before_monotonic + job_timeout_s <= sup.deadline <= (
+        real_time.monotonic() + job_timeout_s + 5.0)
+    assert before_epoch + job_timeout_s <= sup._deadline_epoch <= (
+        real_time.time() + job_timeout_s + 5.0)
+    assert sup.budget_left(), (
+        "a fresh full window must read as time remaining, never as already "
+        "expired")
+
+
+@pytest.mark.parametrize("state", ["failed", "succeeded", "aborted", "paused"])
+def test_bare_resume_of_any_other_state_is_unaffected_still_gets_a_fresh_window(
+        tmp_path, state):
+    """The control: F.1 adds nothing new for `failed`/`succeeded`/`aborted`/
+    `paused` -- a bare resume of any of these keeps today's exact behaviour,
+    which is the SAME unconditional fresh-window construction `timed_out`
+    now relies on too (there is no per-state branch to add or remove)."""
+    job_timeout_s = 100
+    before_monotonic = real_time.monotonic()
+
+    sup = make_supervisor(
+        tmp_path, run_id=f"task017-resume-unaffected-{state}",
+        job_timeout_s=job_timeout_s,
+        status=_task017_status_with_stale_deadline(state))
+
+    assert before_monotonic + job_timeout_s <= sup.deadline
+    assert sup.budget_left()
+
+
+def _task017_completes(task_id):
+    def handler(sup, prompt):
+        r = IterationResult(exit_code=0)
+        r.final_text = json.dumps({"verdict": "complete", "task_id": task_id})
+        r.duration_s = 0.5
+        r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+        return r
+    return handler
+
+
+def _task017_reviews_verified():
+    def handler(sup, prompt):
+        r = IterationResult(exit_code=0)
+        r.final_text = json.dumps({"verdict": "verified"})
+        r.duration_s = 0.5
+        r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+        return r
+    return handler
+
+
+def test_resumed_timed_out_run_continues_at_the_task_and_iteration_it_stopped_at(
+        tmp_path):
+    """A held run dir with T1 already `completed` and one iteration already
+    recorded must resume straight into `worker` over T2 -- never replanning
+    (no fresh `planning` iteration appears on disk) and never re-doing T1
+    (the worker script below only ever answers for T2; a re-ask for T1 would
+    raise `StopIteration` from the exhausted script)."""
+    sup = make_supervisor(
+        tmp_path, run_id="task017-timedout-continues", job_timeout_s=100,
+        prd=True, iterations_used=1,
+        status=_task017_status_with_stale_deadline("timed_out", approach=1),
+        tasks=[
+            {"id": "T1", "title": "already done", "successCriteria": "done",
+             "status": "completed"},
+            {"id": "T2", "title": "still pending", "successCriteria": "done",
+             "status": "pending"},
+        ])
+    attach_runner(sup, ScriptedRunner({
+        "worker": [_task017_completes("T2")],
+        "review": [_task017_reviews_verified()],
+    }))
+
+    state = asyncio.run(asyncio.wait_for(sup.run_job(), 30.0))
+
+    assert state == "succeeded"
+    status = sup.run.read_status()
+    assert status["verdict"] == "verified"
+    tasks = sup.run.read_tasks()["tasks"]
+    assert {t["id"]: t["status"] for t in tasks} == {
+        "T1": "completed", "T2": "completed"}
+
+    # No new `planning` iteration was ever recorded past resume -- the run
+    # picked up exactly where it stopped, iteration numbering continuing
+    # from the one already on disk (iterations_used=1 seeded above).
+    phases = []
+    for d in sorted((sup.run.root / "iterations").iterdir()):
+        meta_path = d / "meta.json"
+        if meta_path.exists():
+            phases.append((int(d.name), json.loads(meta_path.read_text()).get("phase")))
+    new_phases = [phase for number, phase in phases if number > 1]
+    assert new_phases, "the resumed run must have recorded at least one new iteration"
+    assert "planning" not in new_phases, (
+        f"a resume over an existing plan must never replan, got phases={phases!r}")
+    assert new_phases[0] == "worker", (
+        "the FIRST iteration after resume must be worker over the SAME "
+        f"approach's remaining task, got phases={phases!r}")
+
+
+# ===========================================================================
 # Section D -- task 048 (B.5 follow-on, operator steer 005): paused teardown
 # ===========================================================================
 
