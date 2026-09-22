@@ -4442,7 +4442,8 @@ then `rm`: it runs exactly `stop`'s teardown first (`/shutdown`, `docker rm -f`
 the job container, reap the run's siblings, record the operator-termination
 marker) and then deletes both directories. It is a shortcut past a *stale*
 container, not a way to kill live work — it deletes only when the run's recorded
-state is terminal, and anything else (`starting`/`running`, an unrecognized
+state is terminal (or `finishing`/`timed_out`, neither of which has an iteration
+in flight), and anything else (`starting`/`running`, an unrecognized
 state, a missing or unreadable `status.json`) exits `5` having touched nothing at
 all: no container removed, no directory deleted. Killing a live job stays
 explicit (`abort`, or `stop --force`). A run with no container record takes the

@@ -9,10 +9,11 @@ spellings (v0.24 requirement B.1, task 008, #169):
 
 B.1 is the state alone -- B.2/B.3/C/D/F (later tasks) are what actually
 drives an engine INTO `timed_out` and what a plain `resume` does once
-there. This module pins only what B.1 promises: the tuple memberships, and
-that `stop`/`rm`/`resume` already treat a `timed_out` run exactly like any
-other non-terminal one (`running`, `starting`) with no special-casing and
-no new state gate.
+there. This module pins only what B.1 promises: the tuple memberships, the
+still-holding ordering, that `stop` and `rm` accept a `timed_out` run
+exactly as they accept a stopped one (the hold has no iteration in flight,
+so neither command demands an `abort` first), and that it stays
+resume-eligible with no new state gate.
 """
 
 from __future__ import annotations
@@ -94,18 +95,40 @@ def test_cli_run_state_order_matches_app_js():
 
 
 # ---------------------------------------------------------------------------
-# `stop`/`rm` treat `timed_out` exactly like any other non-terminal state
+# `stop`/`rm` accept a `timed_out` run exactly as they accept a stopped one
 # ---------------------------------------------------------------------------
 
-def test_plain_stop_refuses_a_timed_out_run_without_force(rm_ctl):
+def test_plain_stop_accepts_a_timed_out_run_with_no_force(rm_ctl):
+    """Requirement B.1: `stop` treats the hold as it treats a stopped run.
+    A held run has no iteration in flight, so plain `stop` tears it down
+    instead of exiting 5 to demand `abort`/`--force` the way it still does
+    for `running` (the control node below)."""
     rm_ctl.seed("tst-stop-timedout", state="timed_out")
-    res = rm_ctl.run("stop", "tst-stop-timedout")
+    res = rm_ctl.run("stop", "tst-stop-timedout",
+                     env={"STUB_DOCKER_PS_IDS": "sibS"})
+
+    assert res.returncode == 0, res.stderr
+    assert "job still running" not in res.stderr
+    rec = rm_ctl.recorded()
+    assert ["rm", "-f", "ralphd-tst-stop-timedout"] in rec
+    assert ["rm", "-f", "sibS"] in rec
+    # `stop` never deletes the run dir, held or not.
+    assert rm_ctl.run_dir("tst-stop-timedout").exists()
+
+
+def test_plain_stop_still_refuses_a_running_run_without_force(rm_ctl):
+    """The control: widening the gate for `timed_out` must not have widened
+    it for a genuinely live job."""
+    rm_ctl.seed("tst-stop-running", state="running")
+    res = rm_ctl.run("stop", "tst-stop-running")
+
     assert res.returncode == 5
     assert "job still running" in res.stderr
     assert "stop --force" in res.stderr
+    assert rm_targets(rm_ctl.recorded()) == []
 
 
-def test_stop_force_tears_down_a_timed_out_run_like_any_nonterminal_one(rm_ctl):
+def test_stop_force_tears_down_a_timed_out_run_too(rm_ctl):
     rm_ctl.seed("tst-stop-timedout-force", state="timed_out")
     res = rm_ctl.run("stop", "tst-stop-timedout-force", "--force",
                      env={"STUB_DOCKER_PS_IDS": "sib1"})
@@ -115,38 +138,65 @@ def test_stop_force_tears_down_a_timed_out_run_like_any_nonterminal_one(rm_ctl):
     assert ["rm", "-f", "sib1"] in rec
 
 
-def test_plain_rm_refuses_a_timed_out_job_exactly_like_running(rm_ctl):
-    """Same refusal shape as `test_rm_force_refuses_a_running_job_and_
-    touches_nothing`/`_a_starting_job` in test_cli_rm_force.py -- `timed_out`
-    is just another `NONTERMINAL_STATES` member, no special case."""
-    rm_ctl.seed("tst-rm-timedout", state="timed_out")
-    res = rm_ctl.run("rm", "tst-rm-timedout", "--yes", "--force",
-                     env={**HAS_CONTAINER, "STUB_DOCKER_PS_IDS": "sib1"})
-
-    assert res.returncode == 5
-    assert "job still running" in res.stderr
-    assert "state: timed_out" in res.stderr
-    assert "abort" in res.stderr
-    assert rm_targets(rm_ctl.recorded()) == []
-    assert rm_ctl.run_dir("tst-rm-timedout").exists()
-    assert rm_ctl.config_dir("tst-rm-timedout").exists()
-
-
-def test_rm_force_also_refuses_a_timed_out_run_same_as_running(rm_ctl):
-    """Unlike `finishing` (which `--force`'s guard deliberately widens to
-    accept), `timed_out` gets NO carve-out -- `rm --force` alone refuses it
-    exactly as it refuses `running`/`starting`; only `stop --force` (which
-    issues its own `abort` first) or an explicit `abort` then `rm --force`
-    gets past it."""
+def test_rm_force_deletes_a_timed_out_run_like_a_stopped_one(rm_ctl):
+    """`--force`'s recorded-state guard accepts `timed_out` exactly as it
+    accepts a terminal (stopped) run: container torn down through `stop`'s
+    own sequence, then both directories deleted."""
     rm_ctl.seed("tst-rm-timedout-force", state="timed_out")
     res = rm_ctl.run("rm", "tst-rm-timedout-force", "--yes", "--force",
                      env={**HAS_CONTAINER, "STUB_DOCKER_PS_IDS": "sibT"})
 
+    assert res.returncode == 0, res.stderr
+    rec = rm_ctl.recorded()
+    assert ["rm", "-f", "ralphd-tst-rm-timedout-force"] in rec
+    assert ["rm", "-f", "sibT"] in rec
+    assert not rm_ctl.run_dir("tst-rm-timedout-force").exists()
+    assert not rm_ctl.config_dir("tst-rm-timedout-force").exists()
+
+
+def test_rm_force_deletes_a_timed_out_run_with_no_container(rm_ctl):
+    rm_ctl.seed("tst-rm-timedout-nocont", state="timed_out")
+    res = rm_ctl.run("rm", "tst-rm-timedout-nocont", "--yes", "--force")
+
+    assert res.returncode == 0, res.stderr
+    assert not rm_ctl.run_dir("tst-rm-timedout-nocont").exists()
+    assert not rm_ctl.config_dir("tst-rm-timedout-nocont").exists()
+
+
+def test_plain_rm_of_a_timed_out_run_has_no_state_refusal_of_its_own(rm_ctl):
+    """Unlike `finishing` (which draws its own dedicated plain-`rm` refusal
+    naming the unwind), the hold draws none: with no container record left,
+    plain `rm` deletes a `timed_out` run exactly as it deletes a stopped
+    one."""
+    rm_ctl.seed("tst-rm-timedout-plain", state="timed_out")
+    res = rm_ctl.run("rm", "tst-rm-timedout-plain", "--yes")
+
+    assert res.returncode == 0, res.stderr
+    assert not rm_ctl.run_dir("tst-rm-timedout-plain").exists()
+    assert not rm_ctl.config_dir("tst-rm-timedout-plain").exists()
+
+
+def test_plain_rm_of_a_timed_out_run_refuses_only_for_the_container(rm_ctl):
+    """The one refusal a `timed_out` run can still draw is the generic
+    container-still-exists one -- word for word the refusal a stopped
+    (`succeeded`) run with a leftover container draws, and never the
+    `job still running` wording reserved for live work."""
+    rm_ctl.seed("tst-rm-timedout", state="timed_out")
+    res = rm_ctl.run("rm", "tst-rm-timedout", "--yes", env=HAS_CONTAINER)
+
     assert res.returncode == 5
-    assert "job still running" in res.stderr
+    assert "container still exists" in res.stderr
+    assert "job still running" not in res.stderr
+    assert "reflect unwind" not in res.stderr
     assert rm_targets(rm_ctl.recorded()) == []
-    assert rm_ctl.run_dir("tst-rm-timedout-force").exists()
-    assert rm_ctl.config_dir("tst-rm-timedout-force").exists()
+    assert rm_ctl.run_dir("tst-rm-timedout").exists()
+    assert rm_ctl.config_dir("tst-rm-timedout").exists()
+
+    # ... byte-for-byte the stopped run's own refusal.
+    rm_ctl.seed("tst-rm-succeeded", state="succeeded")
+    stopped = rm_ctl.run("rm", "tst-rm-succeeded", "--yes", env=HAS_CONTAINER)
+    assert stopped.returncode == res.returncode
+    assert stopped.stderr == res.stderr
 
 
 # ---------------------------------------------------------------------------

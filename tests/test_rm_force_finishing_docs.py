@@ -69,7 +69,11 @@ def test_mutation_force_widening_is_really_in_the_guard():
     removed, `--force` would refuse a finishing run again and this
     assertion (grep-equivalent over the live source) would fail."""
     source = inspect.getsource(cli_main.cmd_rm)
-    assert 'state != "finishing"' in source
+    # Task 008 (v0.24 requirement B.1, #169) turned the single-state carve-out
+    # into a tuple so the deadline hold (`timed_out`) rides alongside
+    # `finishing`; both members have to be in the guard, and the dedicated
+    # plain-`rm` refusal stays `finishing`-only.
+    assert 'state not in ("finishing", TIMED_OUT_STATE)' in source
     assert 'state == "finishing" and not args.force' in source
 
 

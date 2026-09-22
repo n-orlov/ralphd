@@ -397,8 +397,13 @@ TIER_MARKERS = ("smoke", "fast")
 # literal `RALPHCTL`/`RALPHD_ENGINE`/real-engine spawn) -- fast 6005/399 ->
 # 6020/400, smoke 4368/282 -> 4381/283, re-measured with this module's own
 # `collected()`/`_modules()` helpers at this commit's tip.
+# Task 008's second attempt (same requirement B.1, #169) replaced three
+# `tests/test_timed_out_state.py` nodes that pinned `stop`/`rm` REFUSING a
+# `timed_out` run with six that pin the acceptance the requirement actually
+# asks for (+3 nodes, module count unchanged) -- fast 6020 -> 6023, measured
+# with the same helpers; smoke (4373) stays inside its existing ceiling.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6020, "modules": 400},
+    "fast": {"tests": 6023, "modules": 400},
     "smoke": {"tests": 4381, "modules": 283},
 }
 

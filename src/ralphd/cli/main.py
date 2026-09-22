@@ -66,6 +66,7 @@ from ..engine.state import (
     TASK_STATUS_LABELS,
     TERMINAL_STATES,
     TERMINATION_CLASS_SELF,
+    TIMED_OUT_STATE,
     amendment_entries,
     archived_approach_dir,
     archived_approach_numbers,
@@ -5934,7 +5935,19 @@ def _teardown_container(run_id: str, reason: str) -> None:
 
 def cmd_stop(args):
     status = _read_json(run_root(args.run_id) / "status.json", {})
-    if status.get("state") not in TERMINAL_STATES:
+    state = status.get("state")
+    # Task 008 (v0.24 requirement B.1, #169): a `timed_out` run is HELD, not
+    # working -- its job deadline (or iteration budget) expired, the
+    # iteration that was in flight finished on its own, and the engine wrote
+    # the position a later `resume` starts from. There is nothing in flight
+    # for `abort` to interrupt, so `stop` accepts it exactly as it accepts a
+    # run that has already stopped: no `--force` demanded, no `/abort` call,
+    # straight to the teardown below. `timed_out` still stays out of
+    # `TERMINAL_STATES` (a hold is not an outcome, and the hub must keep
+    # reading it as still-holding) -- this gate is the one place the hold and
+    # a stopped run are deliberately treated alike, which is what B.1 asks
+    # for. `rm`'s own guard (cmd_rm) carries the same carve-out.
+    if state not in TERMINAL_STATES and state != TIMED_OUT_STATE:
         if not args.force:
             die(5, "job still running — use `abort` first or `stop --force`")
         try:
@@ -6009,6 +6022,13 @@ def cmd_rm(args):
     `finishing` too -- deliberately, matching `ui_server.deletion_refusal`'s
     reasoning for the same state (task 013): a settled-but-not-yet-terminal
     verdict is exactly the case `--force` exists to let an operator past.
+
+    Task 008 (v0.24 requirement B.1, #169): the deadline hold's `timed_out`
+    state is accepted the same way, and for the stronger reason -- a held run
+    has no iteration in flight at all, so `--force`'s guard lets it through
+    like a stopped run, and plain `rm` gives it NO dedicated refusal of its
+    own: the only thing that can refuse a `timed_out` run is the generic
+    container-still-exists check every terminal run faces too.
     """
     run_id = args.run_id
     if not run_root(run_id).exists():
@@ -6021,7 +6041,7 @@ def cmd_rm(args):
     if container_exists and not args.force:
         die(5, "container still exists — `stop` first (or `rm --force`)")
     if (container_exists and state not in TERMINAL_STATES
-            and state != "finishing"):
+            and state not in ("finishing", TIMED_OUT_STATE)):
         die(5, f"job still running (state: {state or 'unknown'}) — `abort` "
                "first, then `rm --force`")
     if not args.yes and sys.stdin.isatty():

@@ -1938,7 +1938,11 @@ Terminate the job (state `aborted`, honors on-complete mode).
 
 Shut down an **idle finished** container (calls `/shutdown`, then `docker rm`).
 For a running job, refuses with exit `5` — use `abort` first, or `--force` to
-abort+stop in one step. Run dir is never deleted by `stop`.
+abort+stop in one step. A `timed_out` run (the deadline hold, v0.24
+requirement B.1) is accepted with no `--force` and no `abort`, exactly as a
+stopped run in a terminal state is: the hold means the deadline expired and the
+iteration in flight already finished, so there is nothing live to interrupt.
+Run dir is never deleted by `stop`.
 
 ### `ralphctl rm <run-id> [--force]`
 
@@ -1957,7 +1961,10 @@ label discipline is the same one `stop` uses.
 
 `--force` is a shortcut past a **stale** container, not a way to kill live work:
 it deletes only when the run's recorded state is terminal (`succeeded`,
-`failed`, `aborted`) **or `finishing`** (task 014, #56). Anything else —
+`failed`, `aborted`) **or `finishing`** (task 014, #56) **or `timed_out`**
+(v0.24 requirement B.1 — the deadline hold has no iteration in flight at all,
+so it is accepted like a stopped run; plain `rm` gives it no refusal of its own
+either, only the generic container-still-exists one). Anything else —
 `starting`/`running`, an unrecognized state, or a `status.json` that is
 missing or unreadable — exits `5` with
 "job still running (state: …) — `abort` first, then `rm --force`" and touches
