@@ -679,3 +679,195 @@ def test_the_gate_is_available_again_once_the_approach_is_crossed(tmp_path):
     sup._spend_discretionary_gate(1)
     assert sup._discretionary_gate_available(1) is False
     assert sup._discretionary_gate_available(2) is True
+
+
+# ===========================================================================
+# 5. Task 005 (J.2, PRD requirement A.3, #224): the two A.3 trigger
+# questions the v0.23 review's own probes (`_review_new_edges.py`/
+# `_review_positive.py`, not present on this host -- reconstructed here from
+# the v0.24 PRD's own descriptions of them) raised against this file's
+# shipped code.
+# ===========================================================================
+
+
+def test_A3_repeated_insert_only_is_still_explicit_nontrigger(tmp_path):
+    """Probe 3 (reconstructed): "A.3 explicitly excludes findings that
+    merely insert tasks without a replan or reopen." Judged PROBE-RIGHT,
+    and already true of shipped code -- this test pins the ALREADY-CORRECT
+    behaviour rather than changing anything, settling the tracked-test half
+    of the question the same way probe 2 of J.1 did.
+
+    The deciding source line is `mechanical_reopen_trigger`'s own
+    `cure_preview["reopenedTaskIds"]` conjunct (:11020) -- an insert-only
+    finding's preview (`state.cure_pass_preview`) always returns an EMPTY
+    `reopenedTaskIds` (nothing walked from its `invalidates` path is
+    currently `validated`; `_CURE_INSERT_ONLY_FINDING`'s own path names no
+    lane-evidence record chain at all), so this conjunct is false and
+    condition 2 never fires -- `test_a_cure_pass_that_only_inserts_tasks_
+    is_not_a_trigger` above already pins this for ONE such rejection. The
+    named question is whether REPEATING the identical insert-only
+    rejection manufactures a trigger the single occurrence does not --
+    it does not, because `mechanical_reopen_trigger` reads the SAME
+    per-rejection `cure_preview`, never an accumulated count, and
+    `discretionaryGateSpent` (trigger conditions 2/3's own shared budget)
+    stays completely untouched across both episodes below even though the
+    SECOND episode does end up pausing -- via condition 1's own separate,
+    unbudgeted `operator_input_needed` gate (:11217-11221), once this
+    approach's own one cure pass is already spent and the rejection falls
+    through to the ordinary archive-before-pause tail. That pause is real
+    but orthogonal to A.3's own discretionary-gate exclusion, which this
+    test's `discretionaryGateSpent` assertions isolate.
+
+    Two episodes, one on-disk run dir, a fresh `LoopSupervisor` each time:
+
+    1. the insert-only finding rejects for the first time -- taken as an
+       ungated, ungated cure pass (`rejected_curable_pass_available`),
+       spending this approach's one cure pass but no discretionary gate.
+    2. the IDENTICAL finding rejects again -- this approach's cure pass is
+       already spent, so it falls to the ordinary archive-before-pause
+       tail and pauses via condition 1 (`operator_input_needed`) -- but
+       `discretionaryGateSpent` is STILL untouched: condition 2 never even
+       considered this rejection a candidate, repeated or not.
+    """
+    root = tmp_path / "run"
+    sup1 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
+    sup1._approach = 1
+    findings.write_findings_json(sup1.run.findings_json_file,
+                                 _CURE_INSERT_ONLY_FINDING)
+    sup1.runner.run = _rejecting_runner("record went stale")  # type: ignore[method-assign]
+
+    outcome1 = _bounded(sup1._step_review())
+
+    assert outcome1 == ("advance", "cure", "rejected_curable_pass_available")
+    status1 = sup1.run.read_status()
+    assert status1.get("discretionaryGateSpent") in (None, {})
+    assert status1.get("curePasses") == {"1": 1}
+    sup1.resume()
+
+    sup2 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
+    sup2._approach = 1
+    findings.write_findings_json(sup2.run.findings_json_file,
+                                 _CURE_INSERT_ONLY_FINDING)
+    sup2.runner.run = _rejecting_runner("record went stale again")  # type: ignore[method-assign]
+
+    outcome2 = _bounded(sup2._step_review())
+
+    # the repeat DOES pause -- this approach's one cure pass is already
+    # spent -- but through condition 1's own separate, unbudgeted gate,
+    # never through trigger condition 2's discretionary one.
+    assert outcome2 == ("advance", "paused", "operator_input_needed")
+    status2 = sup2.run.read_status()
+    assert status2["pauseReason"] == "operator_input_needed"
+    # unchanged from episode 1 -- still no cure task inserted for this
+    # repeat, and the discretionary gate never spent by either episode.
+    assert status2.get("curePasses") == {"1": 1}
+    assert status2.get("discretionaryGateSpent") in (None, {})
+    tasks = sup2.run.read_tasks()["tasks"]
+    assert len(tasks) == 2  # the one cure task episode 1 inserted, unchanged
+    escalations = _events(root, "operator_escalation")
+    assert [e["reason"] for e in escalations] == ["operator_input_needed"]
+
+
+def test_A3_discretionary_gate_renews_after_actual_replan(tmp_path):
+    """Probe 4 (reconstructed): observed `('advance', 'paused',
+    'rejected_repeated_signature')`, expected `('advance', 'paused',
+    'operator_input_needed')`. Judged PROBE-OVER-REACHES against A.3's own
+    text.
+
+    A.3 gives trigger conditions 2 and 3 exactly ONE shared discretionary
+    gate per approach (this file's own module docstring; `docs/api.md`'s
+    `discretionaryGateSpent` field description: "whichever of the two
+    fires FIRST in an approach spends the entry for that approach's own
+    string key"), and `_step_review`'s own dispatch order is what decides
+    which one that is: trigger condition 3's repeated-signature check
+    (:10895-10903) runs strictly BEFORE the cure-pass branch that houses
+    trigger condition 2's `mechanical_reopen_trigger` (:11018-11022) --
+    already exercised for a SEEDED signature map by
+    `test_condition_3_then_condition_2_in_one_approach_share_the_same_
+    gate` above. Nothing in A.3's text gives condition 2 precedence over
+    condition 3 when both predicates hold for the identical rejection, or
+    ties either one to whether the discretionary gate happens to have just
+    renewed across a replan -- the gate renewing is real (proved below,
+    `_discretionary_gate_available(2)` reads `True` going into this
+    rejection) but orthogonal to WHICH condition spends it once it fires,
+    which the code's own dispatch order alone decides. The probe's
+    expectation that a freshly-renewed gate should redirect the outcome to
+    condition 2's own `operator_input_needed` pauseReason has no basis in
+    A.3's text and is not what the shared-budget design it names
+    describes.
+
+    Drives an ACTUAL archive/replan (never a seeded approach field, task
+    004/J.1's own precedent) and constructs a SINGLE rejection in the
+    fresh approach whose blocking-clause signature repeats the
+    immediately preceding approach's own recorded one (condition 3's own
+    predicate) AND whose cure-pass preview would reopen an already-
+    `validated` task (condition 2's own predicate) -- both true at once,
+    on the identical rejection, to settle which one the shared gate
+    actually answers.
+    """
+    root = tmp_path / "run"
+
+    # Approach 1: an ordinary MIXED rejection matching no prior signature
+    # -- condition 1's own unbudgeted gate pauses it (the default-enabled
+    # `operator_input_needed_pause`), which records ITS OWN signature via
+    # `_pause_and_escalate_operator_input_needed` exactly as the ordinary
+    # archive tail would. Resuming and driving `_archive_approach`/`_step_
+    # replan` by hand (this module's own precedent, `test_condition_3_
+    # holds_before_any_spend_and_carries_the_six_a7_items`'s second
+    # episode) is what makes this an ACTUAL replan, not a seeded field.
+    sup1 = _supervisor(root, max_approaches=3, operator_input_needed_pause=True)
+    sup1._approach = 1
+    findings.write_findings_json(sup1.run.findings_json_file, _MIXED_FINDINGS)
+    sup1.runner.run = _rejecting_runner("mixed curability")  # type: ignore[method-assign]
+
+    outcome1 = _bounded(sup1._step_review())
+
+    assert outcome1 == ("advance", "paused", "operator_input_needed")
+    signature = sup1._review_rejection_signature(_MIXED_FINDINGS, None)
+    assert signature is not None
+    assert sup1.run.read_status()["rejectionSignatures"]["1"] == signature
+    sup1.resume()
+    sup1._archive_approach(1)
+    replan_outcome = sup1._step_replan()
+    assert replan_outcome[0] == "advance"
+    assert sup1._approach == 2
+
+    # Approach 2 (an ACTUAL fresh approach): the shared gate has renewed.
+    sup2 = _supervisor(root, max_approaches=3, operator_input_needed_pause=True,
+                       tasks=_lane_fixture_tasks())
+    sup2._approach = 2
+    assert sup2._discretionary_gate_available(2) is True
+
+    # The SAME wall recurs -- identical blocking-clause signature to
+    # approach 1's -- but this time it is ALL curable and would reopen a
+    # `validated` task: condition 2's own predicate is also true on this
+    # very rejection.
+    repeated = [dict(f, curable=True, cured_when=f"{f['clause']} is discharged",
+                     invalidates=[RECORD_PATH])
+                for f in _MIXED_FINDINGS]
+    assert sup2._review_rejection_signature(repeated, None) == signature
+    findings.write_findings_json(sup2.run.findings_json_file, repeated)
+    sup2.runner.run = _rejecting_runner("same wall recurs in approach 2")  # type: ignore[method-assign]
+
+    outcome2 = _bounded(sup2._step_review())
+
+    # condition 3 (checked FIRST in `_step_review`'s own dispatch order)
+    # wins the shared gate -- exactly the "observed" tuple the probe
+    # itself names, and the CORRECT one: never `operator_input_needed`,
+    # even though condition 2's own mechanical reopen trigger would
+    # plainly apply to this identical rejection.
+    assert outcome2 == ("advance", "paused", "rejected_repeated_signature")
+    status2 = sup2.run.read_status()
+    assert status2["pauseReason"] == "rejected_repeated_signature"
+    assert status2.get("discretionaryGateSpent") == {"2": True}
+    # no cure pass taken, and the validated task never reopened -- the
+    # rejection paused before the cure-pass branch (and condition 2's own
+    # check inside it) ever ran.
+    assert status2.get("curePasses") in (None, {})
+    tasks2 = {t["id"]: t for t in sup2.run.read_tasks()["tasks"]}
+    assert tasks2["058"]["status"] == "validated"
+    assert not (root / "approaches" / "02").exists()
+
+    escalations = _events(root, "operator_escalation")
+    assert [e["reason"] for e in escalations] == [
+        "operator_input_needed", "rejected_repeated_signature"]

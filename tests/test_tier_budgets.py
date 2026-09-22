@@ -375,9 +375,18 @@ TIER_MARKERS = ("smoke", "fast")
 # module never crosses a process boundary), fast 6000/399 -> 6002/399, smoke
 # 4364/282 -> 4366/282, re-measured with this module's own `collected()`/
 # `_modules()` helpers at this commit's tip.
+#
+# Ratcheted again at task 005 (v0.24, requirement J.2): +0 modules, +2 tests
+# in the EXISTING `tests/test_discretionary_gate.py` (the two A.3 trigger
+# questions' own tracked tests, `test_A3_repeated_insert_only_is_still_
+# explicit_nontrigger`/`test_A3_discretionary_gate_renews_after_actual_
+# replan`, both stamped `fast`+`smoke` by `pytest_collection_modifyitems`
+# since the module never crosses a process boundary), fast 6002/399 ->
+# 6004/399, smoke 4366/282 -> 4368/282, re-measured with this module's own
+# `collected()`/`_modules()` helpers at this commit's tip.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6002, "modules": 399},
-    "smoke": {"tests": 4366, "modules": 282},
+    "fast": {"tests": 6004, "modules": 399},
+    "smoke": {"tests": 4368, "modules": 282},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
