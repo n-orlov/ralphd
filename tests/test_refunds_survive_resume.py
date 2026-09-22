@@ -397,7 +397,10 @@ def test_the_status_field_is_in_the_spec_table():
     rows = [line for line in _spec_section("### 5.2").splitlines()
             if line.startswith("| `iterationsRefunded`")]
     assert len(rows) == 1, rows
-    assert "infra" in rows[0] and "grace" in rows[0]
+    # Task 015 (requirement E.1, #169) renamed the third counter from
+    # `grace` to `adjudication` -- `grace` now survives only as history
+    # ("task 015 ... renamed ... from `grace`"), not as a live key.
+    assert "infra" in rows[0] and "adjudication" in rows[0]
     assert "resume" in rows[0]
 
 
@@ -418,18 +421,32 @@ def test_the_retry_section_promises_the_refunds_survive_a_resume():
 
 
 def test_the_budget_section_says_neither_counter_is_lost_at_a_resume():
-    """4.5 is where `budget_left()` and the two refunds are spelled out; the
-    charged formula there is wrong if the counters restart at zero."""
-    para = [p for p in _spec_section("### 4.5").split("\n\n")
-            if "_grace_refunded" in p or "grace\nreview" in p]
-    survives = [p for p in para
+    """4.5 is where `budget_left()` and the refund kinds are spelled out; the
+    charged formula there is wrong if the counters restart at zero.
+
+    Task 015 (requirement E.1, #169) retired the off-budget grace review, so
+    the paragraph this used to pin (`_grace_refunded`/"grace review") is gone
+    from §4.5 -- its surviving cover is this same predicate, re-aimed at the
+    section naming the CURRENT third counter, `_adjudication_refunded`.
+    """
+    section = _spec_section("### 4.5")
+    assert "_adjudication_refunded" in section
+    survives = [p for p in section.split("\n\n")
                 if "iterationsRefunded" in p and "resume" in p]
-    assert survives, para
+    assert survives, section
 
 
 def test_the_spec_records_the_unpersisted_grace_grant_as_a_limitation():
+    """8.4's residual-limitation paragraph used to be about
+    `_grace_review_granted`, the retired off-budget grace review's own
+    once-per-approach guard. Task 015 (requirement E.1, #169) retired that
+    mechanism outright; its surviving cover is this same predicate, re-aimed
+    at the CURRENT per-process guard the midrun adjudication episode uses,
+    `_petition_adjudication_seen` -- same shape (a policy guard that is
+    per-process while the refund itself survives a resume), different name.
+    """
     section = _spec_section("### 8.4")
-    para = [p for p in section.split("\n\n") if "_grace_review_granted" in p]
+    para = [p for p in section.split("\n\n") if "_petition_adjudication_seen" in p]
     assert len(para) == 1, para
     assert "per-process" in para[0] and "resumed" in para[0]
 
@@ -443,9 +460,10 @@ def test_the_api_doc_gives_both_fields_their_semantics():
     assert "charged" in rows["iterationsUsed"][0]
     refunded = rows["iterationsRefunded"][0]
     assert "#32" in refunded and "resume" in refunded
-    # Task 014 (requirement J, #98) widened the shape from two counters to
-    # three -- the OLD claim was `{infra, grace}`.
-    assert "{infra, grace, steer}" in refunded
+    # Task 015 (requirement E.1, #169) retired the off-budget grace review
+    # and renamed the object's third key from `grace` to `adjudication` --
+    # the OLD claim here was `{infra, grace, steer}`.
+    assert "{infra, steer, adjudication}" in refunded
 
 
 def _blocks(text: str) -> list[str]:
