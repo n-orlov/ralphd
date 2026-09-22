@@ -1018,6 +1018,129 @@ def test_iteration_budget_exhaustion_holds_timed_out_through_the_real_worker_loo
 
 
 # ===========================================================================
+# Section H -- task 012 (v0.24 requirement C.2, #169): exhausting
+# max_approaches still fails the run, unchanged by task 011's C.1.
+#
+# `set_max_approaches`' own docstring (`loop.py:2811`-`:2814`) names the two
+# places `self.cfg.max_approaches` is read at a replan decision: `_step_
+# replan`'s own `if self._approach < self.cfg.max_approaches:` (its
+# `budget_or_approach_exhausted` edge), and `_step_review`'s post-rejection
+# twin, `if approach < self.cfg.max_approaches:` -- the bottom archive/
+# replan tail an ordinary, uncured, unescalated rejection falls through to
+# once every earlier branch (incurable/curable/repeated-signature/ruled)
+# has declined to act -- whose own `rejected_no_approach_left` edge is the
+# SAME shape. (`_step_verdict_gate` carries a THIRD, structurally identical
+# `approach < self.cfg.max_approaches` check of its own, `verdict_gate_
+# rejected_no_approach_left`, already pinned end to end by `tests/test_
+# peer_verdict_gate.py::test_gate_on_rejection_with_no_approach_left_fails_
+# open_to_finishing` -- not re-pinned here.)
+#
+# Both sites already live on a SEPARATE code path from the budget boundary
+# task 011 built (`self._budget_exhausted_tail`, set only by the five plain
+# `if not self.budget_left(): return ("tail",)` guards) -- `_finish_tail_
+# unverified`'s own docstring already names both `_step_replan`'s and
+# `_step_review`'s/`_step_verdict_gate`'s `..._no_approach_left` edges in its
+# C.1 exception list, and neither call site ever sets that flag. So this
+# section is a REGRESSION PIN, not a separation: no code moved, nothing was
+# shared to begin with, and each node below asserts `_budget_exhausted_tail
+# is False` alongside the terminal `failed` read, so a future change that
+# DID start sharing the path would be caught here.
+# ===========================================================================
+
+
+def _task012_worker_completes(task_id):
+    def handler(sup, prompt):
+        r = IterationResult(exit_code=0)
+        r.final_text = json.dumps({"verdict": "complete", "task_id": task_id})
+        r.duration_s = 0.5
+        r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+        return r
+    return handler
+
+
+def _task012_review_rejects(reason):
+    def handler(sup, prompt):
+        r = IterationResult(exit_code=0)
+        r.final_text = json.dumps({"verdict": "rejected", "reason": reason})
+        r.duration_s = 0.5
+        r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+        return r
+    return handler
+
+
+def test_step_replans_own_check_exhausts_max_approaches_to_failed(tmp_path):
+    """`_step_replan`'s OWN read of the live budget (docstring site 1).
+
+    Reachable at this state only because the run already arrived at
+    `replan` from an edge that checked the SAME live field at an earlier
+    moment (`_step_review`'s/`_step_verdict_gate`'s own approach-left
+    edges both check `approach < self.cfg.max_approaches` before ever
+    transitioning to `replan`; the worker stagnation guard's uncured
+    `stagnation_exhausted` edge, `loop.py:9584`, transitions to `replan`
+    with no approach check of its own at all, relying on `_step_replan`
+    to be the one that actually decides) -- a live `PATCH /config/budget`
+    lowering `maxApproaches` between that earlier decision and this
+    dispatch is exactly why two separate reads of one live field exist.
+    Seeded directly at `approach == max_approaches` (the post-PATCH
+    shape), `_step_replan()` must read the CURRENT value, not one carried
+    from whichever edge put the run in `replan`, and take `budget_or_
+    approach_exhausted` straight to the ordinary `failed` tail through
+    `_finish_tail_unverified()` -- never `_finish_timed_out()`, which is
+    what task 011's `_budget_exhausted_tail` flag would route it through
+    if this edge ever started setting it."""
+    sup = make_supervisor(tmp_path, run_id="task012-step-replan-exhausted",
+                          max_approaches=2, approach=2)
+
+    outcome = sup._step_replan()
+
+    assert outcome == ("tail",)
+    assert sup._budget_exhausted_tail is False, (
+        "max_approaches exhaustion must never set the C.1 budget-boundary "
+        "flag -- it is a structural tail, not a budget one")
+
+    state = sup._finish_tail_unverified()
+
+    assert state == "failed"
+    status = sup.run.read_status()
+    assert status["state"] == "failed"
+    assert status["verdict"] == "unverified"
+
+
+def test_review_post_rejection_tail_exhausts_max_approaches_to_failed(tmp_path):
+    """`_step_review`'s post-rejection twin (docstring site 2): an
+    ordinary, bare-reason rejection (no findings.json written, so none of
+    the curable/incurable/repeated-signature/ruled branches above the
+    bottom tail ever fire) on the LAST approach falls straight through to
+    `rejected_no_approach_left`, driven through a real `run_job()` over
+    `make_supervisor` (never this run's own directory) -- the in-process
+    sibling of `tests/flows/test_flow_review_replan_pause.py::test_a_
+    rejection_on_the_last_approach_with_nothing_curable_fails`, which
+    already pins the same edge end to end over a real engine subprocess;
+    this node additionally asserts the C.1 flag directly, which that flow
+    test (reading only `state`/`verdict`) does not."""
+    sup = make_supervisor(
+        tmp_path, run_id="task012-review-tail-exhausted", max_approaches=1,
+        approach=1, iterations_used=1, prd=True,
+        tasks=[{"id": "T1", "title": "do the thing", "successCriteria": "done",
+               "status": "pending"}])
+    attach_runner(sup, ScriptedRunner({
+        "worker": [_task012_worker_completes("T1")],
+        "review": [_task012_review_rejects("no budget left to try again")],
+    }))
+
+    state = asyncio.run(asyncio.wait_for(sup.run_job(), 30.0))
+
+    assert state == "failed"
+    assert sup._budget_exhausted_tail is False, (
+        "an ordinary review rejection with no approach left must never set "
+        "the C.1 budget-boundary flag -- it is a structural tail, not a "
+        "budget one")
+    status = sup.run.read_status()
+    assert status["state"] == "failed"
+    assert status["verdict"] == "unverified"
+
+
+# ===========================================================================
 # Section D -- task 048 (B.5 follow-on, operator steer 005): paused teardown
 # ===========================================================================
 

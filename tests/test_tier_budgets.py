@@ -415,8 +415,14 @@ TIER_MARKERS = ("smoke", "fast")
 # `_step_worker` budget exhaustion through `run_job()` onto the same
 # `_finish_timed_out()` path -- fast 6025 -> 6026, measured the same way.
 # Still fast-only (same module-wide `live(` scan trip), smoke unaffected.
+# Task 012 (v0.24 requirement C.2, #169) added TWO more nodes to the same
+# already-counted `tests/test_deadline.py` (Section H) pinning that
+# `_step_replan`'s own `max_approaches` check and `_step_review`'s
+# post-rejection twin both still reach `failed`, unchanged by task 011 --
+# fast 6026 -> 6028, measured the same way. Still fast-only (same
+# module-wide `live(` scan trip), smoke unaffected.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6026, "modules": 400},
+    "fast": {"tests": 6028, "modules": 400},
     "smoke": {"tests": 4381, "modules": 283},
 }
 
