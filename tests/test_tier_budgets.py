@@ -391,9 +391,15 @@ TIER_MARKERS = ("smoke", "fast")
 # 6005/399, smoke unchanged at 4368/282 (the new node is not itself smoke-
 # marked; module count on both tiers is unchanged), re-measured with this
 # module's own `collected()`/`_modules()` helpers at this commit's tip.
+# Task 008 (v0.24 requirement B.1, #169): one new module,
+# `tests/test_timed_out_state.py`, `fast`+`smoke`-stamped throughout (it
+# never crosses a process boundary -- `call_ralphctl_in_process` only, no
+# literal `RALPHCTL`/`RALPHD_ENGINE`/real-engine spawn) -- fast 6005/399 ->
+# 6020/400, smoke 4368/282 -> 4381/283, re-measured with this module's own
+# `collected()`/`_modules()` helpers at this commit's tip.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6005, "modules": 399},
-    "smoke": {"tests": 4368, "modules": 282},
+    "fast": {"tests": 6020, "modules": 400},
+    "smoke": {"tests": 4381, "modules": 283},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

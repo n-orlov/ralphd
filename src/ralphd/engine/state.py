@@ -474,7 +474,17 @@ def read_json(path: Path, default: Any = None) -> Any:
 # no destructive action may open on it. An OPERATOR pause (`POST /pause`)
 # still records no state at all -- see `LoopSupervisor.pause`.
 PAUSED_STATE = "paused"
-NONTERMINAL_STATES = ("starting", "running", PAUSED_STATE, "finishing")
+# Task 008 (v0.24 requirement B.1, #169): `timed_out` -- the deadline hold,
+# entered when a run's job deadline expires (or a rejecting verdict holds
+# it, D.2) and the current iteration/hat call has finished. A live engine
+# still owns the run's on-disk position (task/iteration to resume from), so
+# it belongs beside `paused`/`finishing` here, never in `TERMINAL_STATES`
+# below -- see `engine.transitions.TIMED_OUT_STATE`/`ALL_STATES` for the
+# same state declared in the transition table, and `cli/web/app.js`'s
+# `RUN_STATE_ORDER` for the third spelling this PRD requirement names.
+TIMED_OUT_STATE = "timed_out"
+NONTERMINAL_STATES = ("starting", "running", PAUSED_STATE, "finishing",
+                      TIMED_OUT_STATE)
 
 # v0.23 requirement A.7, resolved tension 3 (task 017, #224): the ONE shared
 # marker text `ralphctl runs` and the hub run list both render for a run

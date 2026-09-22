@@ -120,8 +120,16 @@ STEP_STATES: tuple[str, ...] = (
 
 RUN_TERMINAL_STATES: tuple[str, ...] = ("succeeded", "failed", "aborted")
 
+# Task 008 (v0.24 requirement B.1, #169): the deadline hold, deliberately
+# NOT a member of RUN_TERMINAL_STATES -- a held run still has task/iteration
+# position an operator can resume from, unlike a genuine terminal outcome.
+# Named here, separately from RUN_TERMINAL_STATES, so ALL_STATES below
+# carries it without ever widening the terminal set.
+TIMED_OUT_STATE = "timed_out"
+
 # Every state the table can name, step states plus the run-level ones.
-ALL_STATES: tuple[str, ...] = STEP_STATES + ("finishing",) + RUN_TERMINAL_STATES
+ALL_STATES: tuple[str, ...] = (STEP_STATES + ("finishing", TIMED_OUT_STATE)
+                              + RUN_TERMINAL_STATES)
 
 # The table's single entry point (requirement B: "entry at `planning`").
 ENTRY_STATE: str = "planning"
@@ -596,6 +604,22 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # `worker` too.
         T("worker", "paused_resumed_unresolvable_edge"),
     ),
+    # Task 008 (v0.24 requirement B.1, #169): `timed_out` -- the deadline
+    # hold, entered when a run's job deadline expires and the current
+    # iteration has finished (B.3/C.1, later tasks) or a rejecting verdict
+    # holds the run (D.2). Non-terminal on purpose (`state.py`'s own
+    # `NONTERMINAL_STATES`, absent from `RUN_TERMINAL_STATES` below): a
+    # frozen run still has task/iteration position an operator can resume
+    # from, unlike a genuinely terminal outcome. The one declared way out
+    # is back into `worker`, over a fresh window (F.1, later task) --
+    # `resume_timed_out` is that edge's guard name, declared here so this
+    # state is never left with an empty successors tuple (this table's own
+    # non-terminal-states-have-successors invariant, `test_transitions.py`)
+    # even though B.1 wires only the state itself, not yet the transitions
+    # into or out of it at runtime.
+    "timed_out": (
+        T("worker", "resume_timed_out"),
+    ),
     # Task 018 (requirement K, #101): `plan_review` has NO base-table entry
     # -- unlike `verify` (which is always a key, forced to `()` when
     # non-vigilant), this state's edges exist ONLY inside
@@ -904,6 +928,10 @@ STATE_HAT: dict[str, str | None] = {
     # above -- no hat of their own, no prompt, no schema.
     "cure": None,
     "paused": None,
+    # Task 008 (v0.24 requirement B.1, #169): `timed_out` is a deterministic
+    # harness decision like `paused`/`finishing` above -- no hat, no prompt,
+    # no schema of its own.
+    TIMED_OUT_STATE: None,
     # Task 009 (requirement G, #98): the steer hat occupies its own state.
     "steer": "steer",
     # Task 018 (requirement K, #101): the peer plan-review hat occupies its

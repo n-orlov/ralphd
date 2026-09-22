@@ -512,7 +512,7 @@ def test_the_choice_set_check_would_catch_an_invented_price_strategy():
 # ---- `runs --state` filters on every state a run dir can record -----------
 
 def _documented_state_filter(text: str) -> set[str]:
-    span = re.search(r"--state ([a-z|]+)", text)
+    span = re.search(r"--state ([a-z_|]+)", text)
     assert span, "docs/cli.md no longer shows `ralphctl runs --state`'s values"
     return set(span.group(1).split("|"))
 

@@ -1628,7 +1628,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `runId` | string | the run id |
 | `engineVersion` | string | v0.21 requirement F.4 (#159/#194, task 030) -- the running engine's own `ralphd.__version__`, written unconditionally by `LoopSupervisor._record_engine_version` at every process start (the same "once per process start" placement as the drift check and the notifier-configured check below it), alongside the matching `run_record.ENGINE_STARTED_EVENT` startup event. Distinct from the drift check just below: this one names the ENGINE's own version and fires on every run, drift or not; `_check_workspace_version_drift`'s `workspace_version_mismatch` event names the WORKSPACE's own version and fires only on a mismatch |
 | `workspaceVersion` | string | v0.21 requirement G.3 (task 035) -- the workspace's own `__version__` literal, persisted by `LoopSupervisor._record_workspace_version` once per process start whenever that literal is READABLE at all, whether or not it matches the running engine's, so a hub run page can show both this run's engine version and the version of the workspace it is executing without scanning the raw event log itself. Absent only when the workspace names no version (a pre-literal checkout, one mid-edit), i.e. its absence means "not knowable here", never "equal to `engineVersion`". Deliberately a WIDER condition than E.3's `workspace_version_mismatch` event (task 017), which still fires on a mismatch alone |
-| `state` | string | `starting` \| `running` \| `paused` \| `finishing` \| `succeeded` \| `failed` \| `aborted` (task 012, #56 adds `finishing`: the outcome is settled, the post-terminal `reflect` iteration has not run yet -- see §12.2; v0.18 task 036, #142, adds `paused`: an ENGINE-initiated hold on the `rejected_last_approach` escalation edge, never an operator `POST /pause` -- see `pauseReason` below) |
+| `state` | string | `starting` \| `running` \| `paused` \| `finishing` \| `timed_out` \| `succeeded` \| `failed` \| `aborted` (task 012, #56 adds `finishing`: the outcome is settled, the post-terminal `reflect` iteration has not run yet -- see §12.2; v0.18 task 036, #142, adds `paused`: an ENGINE-initiated hold on the `rejected_last_approach` escalation edge, never an operator `POST /pause` -- see `pauseReason` below; v0.24 task 008, #169, adds `timed_out`: the deadline hold, resume-eligible, never a member of `TERMINAL_STATES`) |
 | `schemaVersion` | int | run-dir schema this state was written under (§5.7) |
 | `health` | string | `ok` \| `degraded` — degraded while sitting out an infra outage |
 | `infraWait` | object \| null | the backoff wait in progress: `since`, `attempt`, `error`, `phase`, `nextAttemptAt`, `waitedS`, `budgetS`, `remainingS`; `null` whenever nothing is being waited on |
@@ -3612,11 +3612,12 @@ whether a figure is partial or derived.
 ### 8.7 Vanished containers, repair and doctor
 
 A run whose recorded state is non-terminal (`NONTERMINAL_STATES` is
-`("starting", "running", "paused", "finishing")` -- task 012, #56, adds
+`("starting", "running", "paused", "finishing", "timed_out")` -- task 012, #56, adds
 `finishing`: an engine that dies mid-reflect leaves a dangling run exactly like
 one that dies mid-worker; v0.18 task 036, #142, adds `paused` for the same
 reason, since an engine parked on the `rejected_last_approach` escalation still
-owns the run through an in-process `asyncio.Event`) while **no container is
+owns the run through an in-process `asyncio.Event`; v0.24 task 008, #169, adds
+`timed_out` for the deadline hold, resume-eligible and never terminal) while **no container is
 running for it** is a dangling run. It is the shape a host reboot, an OOM kill or a `docker rm`
 leaves behind, and the run dir alone cannot distinguish it from a run that is
 working normally.
