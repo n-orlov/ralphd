@@ -476,7 +476,11 @@ TIER_MARKERS = ("smoke", "fast")
 # ceiling and not a weakened guard: no test was retired, skipped,
 # de-marked or weakened to buy room.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6056, "modules": 403},
+    # cure-01-02 (v0.24 requirement B.3/operator ruling 3): 6056 -> 6057,
+    # +1 test (0 new modules) for `test_hold_does_not_run_completion_hook`
+    # in tests/test_on_complete_cmd.py, re-measured with this module's own
+    # `collected()`/`_modules()` helpers at this commit's tip.
+    "fast": {"tests": 6057, "modules": 403},
     "smoke": {"tests": 4394, "modules": 285},
 }
 

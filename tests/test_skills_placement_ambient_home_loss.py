@@ -106,7 +106,7 @@ def test_child_engine_without_home_override_preserves_ambient_home_skills(
     # set above.
     e = LiveRun(
         tmp_path / "engine",
-        {"run_id": "skills-loss-repro", "iterations": 1,
+        {"run_id": "skills-loss-repro", "iterations": 8,
          "max_approaches": 1, "on_complete": "idle"},
     )
     try:

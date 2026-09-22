@@ -214,7 +214,7 @@ def test_skill_placed_at_engine_startup_is_still_discoverable_after_a_real_suite
                                             "human-placed/mounted skill.\n")
 
     e = LiveRun(engine_root,
-                   {"run_id": "job-container-repro", "iterations": 1,
+                   {"run_id": "job-container-repro", "iterations": 8,
                     "max_approaches": 1, "on_complete": "idle"},
                    stub_env={"HOME": str(ambient_home)})
     try:
@@ -267,7 +267,7 @@ def test_skill_placed_at_engine_startup_is_still_discoverable_after_previously_a
                                             "human-placed/mounted skill.\n")
 
     e = LiveRun(engine_root,
-                   {"run_id": "job-container-repro-2", "iterations": 1,
+                   {"run_id": "job-container-repro-2", "iterations": 8,
                     "max_approaches": 1, "on_complete": "idle"},
                    stub_env={"HOME": str(ambient_home)})
     try:

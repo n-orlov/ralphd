@@ -430,7 +430,7 @@ def test_a_live_engine_serves_the_record_from_its_own_run_dir(live):
     """The same thing against a real engine process: `ralphctl status` on a
     LIVE run gets the image out of `GET /status`, not from its own host.json
     read."""
-    run = live(run_id="rec-live", job={"iterations": 1, "on_complete": "idle"})
+    run = live(run_id="rec-live", job={"iterations": 8, "on_complete": "idle"})
     run.wait_api()
     (run.run_dir / "host.json").write_text(json.dumps({
         "runId": "rec-live", "container": "f" * 12, "port": run.port,

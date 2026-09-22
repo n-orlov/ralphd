@@ -25,7 +25,7 @@ def config_engine(tmp_path):
     procs: list[LiveRun] = []
 
     def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
-        defaults = {"run_id": "config-api-e2e", "iterations": 3,
+        defaults = {"run_id": "config-api-e2e", "iterations": 8,
                     "max_approaches": 1, "on_complete": "idle",
                     "vigilant": True, "models": {"worker": "prov/fast-x"}}
         e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
@@ -60,7 +60,7 @@ def _skill_tar(name: str) -> bytes:
 
 
 def test_get_config_shows_effective_config_no_secrets(config_engine, tmp_path):
-    e = config_engine(job={"iterations": 3, "max_approaches": 1,
+    e = config_engine(job={"iterations": 8, "max_approaches": 1,
                             "on_complete": "idle"},
                        stub_env={"HOME": str(tmp_path / "fakehome1")})
     _mount_skill(e.config_dir, "mounted-skill")
@@ -91,7 +91,7 @@ def test_get_config_shows_effective_config_no_secrets(config_engine, tmp_path):
     assert status_code == 200
 
     # Budgets / flags / model overrides.
-    assert doc["budgets"]["iterations"] == 3
+    assert doc["budgets"]["iterations"] == 8
     assert doc["budgets"]["maxApproaches"] == 1
     # Task 006 (#5): the infra-resilience knobs are part of the budgets
     # contract -- the effective schedule, per-wait cap, outage budget, and
@@ -148,7 +148,7 @@ def test_get_config_shows_effective_config_no_secrets(config_engine, tmp_path):
 def test_get_config_fieldless_job_defaults(config_engine, tmp_path):
     """A job with no skills/creds/llm/prompt overrides still returns a
     complete, well-shaped document (no crashes, empty lists)."""
-    e = config_engine(job={"iterations": 3, "max_approaches": 1,
+    e = config_engine(job={"iterations": 8, "max_approaches": 1,
                            "on_complete": "idle", "vigilant": False},
                        stub_env={"HOME": str(tmp_path / "fakehome2")})
     e.wait_api()

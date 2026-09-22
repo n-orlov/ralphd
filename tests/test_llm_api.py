@@ -145,7 +145,7 @@ def test_llm_pi_fragment_merges_into_models_json(llm_engine, tmp_path):
     models_path = fake_home / ".pi" / "agent" / "models.json"
     models_path.write_text(json.dumps(existing))
 
-    e = llm_engine(job={"iterations": 3, "max_approaches": 1},
+    e = llm_engine(job={"iterations": 8, "max_approaches": 1},
                    stub_env={"HOME": str(fake_home)})
     e.wait_api()
 
@@ -172,7 +172,7 @@ def test_llm_pi_fragment_merges_into_models_json(llm_engine, tmp_path):
 
 
 def test_put_llm_validation(llm_engine, tmp_path):
-    e = llm_engine(job={"iterations": 3, "max_approaches": 1},
+    e = llm_engine(job={"iterations": 8, "max_approaches": 1},
                    stub_env={"HOME": str(tmp_path / "fakehome3")})
     e.wait_api()
 

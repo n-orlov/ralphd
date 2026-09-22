@@ -155,7 +155,7 @@ def test_resume_remounts_named_workspaces(ctl, tmp_path):
 # --------------------------------------------------------------------------
 # Engine-side: prompts list the mounted workspace names
 def test_prompt_lists_mounted_workspace_names(engine_factory):
-    e = engine_factory(job={"on_complete": "idle", "iterations": 1},
+    e = engine_factory(job={"on_complete": "idle", "iterations": 8},
                         stub_env={"RALPHD_WORKSPACES": "app,lib"})
     e.wait_api()
     prompt_path = _wait_for_prompt(e.run_dir)
@@ -166,7 +166,7 @@ def test_prompt_lists_mounted_workspace_names(engine_factory):
 
 
 def test_prompt_single_workspace_line_unchanged_without_env(engine_factory):
-    e = engine_factory(job={"on_complete": "idle", "iterations": 1})
+    e = engine_factory(job={"on_complete": "idle", "iterations": 8})
     e.wait_api()
     prompt_path = _wait_for_prompt(e.run_dir)
     text = prompt_path.read_text()

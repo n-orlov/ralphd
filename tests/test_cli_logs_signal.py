@@ -120,7 +120,7 @@ def test_piped_follow_never_blocks_on_open_unwritten_stdin(live):
     # quickly if (and only if) the CLI never actually tried to read a key
     # from stdin -- an open, never-written-to, never-closed PIPE is
     # exactly the case a stray `sys.stdin.read(1)` would block on forever.
-    run = live(run_id="piped-follow-noblock", job={"iterations": 3},
+    run = live(run_id="piped-follow-noblock", job={"iterations": 8},
                stub_env={"STUB_RICH_EVENTS": "1"})
     run.wait_api()
 

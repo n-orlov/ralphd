@@ -28,7 +28,7 @@ def creds_engine(tmp_path):
     procs: list[LiveRun] = []
 
     def make(job: dict | None = None, stub_env: dict | None = None) -> LiveRun:
-        defaults = {"run_id": "creds-api-e2e", "iterations": 3,
+        defaults = {"run_id": "creds-api-e2e", "iterations": 8,
                     "max_approaches": 1, "on_complete": "idle"}
         e = LiveRun(tmp_path, {**defaults, **(job or {})}, stub_env)
         procs.append(e)

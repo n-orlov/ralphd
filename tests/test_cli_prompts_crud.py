@@ -32,7 +32,7 @@ def _in_process_ralphctl(run, capsys):
 def prompts_run(tmp_path, live, capsys):
     home = tmp_path / "home"
     home.mkdir()
-    r = live(run_id="prompts-cli", job={"iterations": 3, "vigilant": False},
+    r = live(run_id="prompts-cli", job={"iterations": 8, "vigilant": False},
              stub_env={"HOME": str(home)})
     r.wait_api()
     yield _in_process_ralphctl(r, capsys)

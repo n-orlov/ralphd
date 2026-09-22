@@ -228,17 +228,24 @@ def test_resume_labels_job_role_and_exports_self_container_id(ctl):
 def test_unpause_hits_resume_endpoint(live, capsys):
     """The rename (old `resume` -> `unpause`) must still hit the engine's
     `POST /resume` (not a no-op / not renamed to a nonexistent route):
-    the response body's `resumed: true` only comes from that handler."""
+    the response body's `resumed: true` only comes from that handler.
+
+    cure-01-02 (v0.24 B.3/operator ruling 3, #169): this used to park on
+    plain budget exhaustion (now `timed_out`) to get to a settled state
+    cheaply, but a hold now exits the engine process outright (no more
+    idling under `on_complete: idle`) -- so hitting a dead process's API
+    would just be a connection-refused error, not a `/resume` regression.
+    `/resume` unpauses an operator *pause*, so the natural, still-alive
+    state to prove it against is the genuine worker stagnation pause
+    (`test_e2e.py::test_stagnation_guard_fails_job`'s own
+    `STUB_WORKER_STALLS` shape), which is non-terminal and leaves the
+    engine's API up.
+    """
     run = live(run_id="unpause-test",
-              job={"iterations": 2, "max_approaches": 1, "on_complete": "idle"})
-    # Task 011 (v0.24 requirement C.1, #169): 2 iterations is not enough for
-    # the stub worker/reviewer to reach a verdict, so this now freezes on
-    # `timed_out` (task 010's `_finish_timed_out` path) instead of the old
-    # `failed` ending -- `wait_terminal` doesn't know that state. `/resume`
-    # itself has no `finished()` guard either way (see api.py), so which
-    # settled state the run is in when `unpause` hits it is not this test's
-    # subject; just wait for the run to actually settle first.
-    run.wait_state(("timed_out",))
+              job={"max_approaches": 1, "on_complete": "idle"},
+              stub_env={"STUB_WORKER_STALLS": "1"})
+    status = run.wait_state(("paused",))
+    assert status["pauseReason"] == "stagnation"
     res = call_ralphctl_in_process(
         ["--json", "unpause", run.run_id],
         env={**os.environ, "RALPHD_REGISTRY": str(run.registry)}, capsys=capsys)

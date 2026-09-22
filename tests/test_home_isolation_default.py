@@ -43,7 +43,7 @@ def _wait_for_env_marker(path: Path, timeout: float = 20) -> dict:
 
 
 def _defaults(run_id: str) -> dict:
-    return {"run_id": run_id, "iterations": 1,
+    return {"run_id": run_id, "iterations": 8,
             "max_approaches": 1, "on_complete": "idle"}
 
 

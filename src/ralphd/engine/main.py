@@ -22,7 +22,8 @@ from .loop import LoopSupervisor
 from .privsep import agent_child_kwargs, separate_engine_identity
 from .redact import refresh_redaction_map
 from .skills import ambient_home, place_skills, verify_placement_and_report
-from .state import CURRENT_SCHEMA_VERSION, RunDir, RunDirLocked, SchemaVersionTooNew, utcnow
+from .state import (CURRENT_SCHEMA_VERSION, TIMED_OUT_STATE, RunDir, RunDirLocked,
+                    SchemaVersionTooNew, utcnow)
 
 log = logging.getLogger("ralphd")
 
@@ -323,11 +324,26 @@ async def amain() -> int:
     # time this coroutine resumes, both have already happened, in that
     # order. Emitting it again here would double it.
 
-    await _run_on_complete_cmd(cfg, run, final_state)
+    # Operator ruling 3 (v0.24 requirement B.3, #169, cure-01-02): a hold
+    # (`timed_out`) is not a terminal outcome at all -- it is the run
+    # frozen exactly where it stands, immediately resumable -- so neither
+    # half of the ordinary completion dance below applies to it. The
+    # operator-supplied `on_complete_cmd` hook is a "the job is over, do
+    # something" notification; running it on a hold would tell the
+    # operator (and any wrap-up automation keyed off it) that the run
+    # concluded when it did not. And idling forever with `on_complete=
+    # idle` would leave a held engine process sitting around with nothing
+    # left to do -- a resume starts a *fresh* container/process against
+    # the frozen run dir; this one's job is done the moment the freeze is
+    # written. So a hold skips `_run_on_complete_cmd` entirely and falls
+    # straight through to the ordinary shutdown-funnel cleanup below,
+    # whatever `cfg.on_complete` says.
+    if final_state != TIMED_OUT_STATE:
+        await _run_on_complete_cmd(cfg, run, final_state)
 
-    if cfg.on_complete == "idle" and not stop.is_set():
-        log.info("idling (on_complete=idle); POST /shutdown or stop the container")
-        await stop.wait()
+        if cfg.on_complete == "idle" and not stop.is_set():
+            log.info("idling (on_complete=idle); POST /shutdown or stop the container")
+            await stop.wait()
 
     server.should_exit = True
     await api_task

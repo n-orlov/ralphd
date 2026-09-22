@@ -61,21 +61,24 @@ def test_hook_runs_once_with_correct_env_on_success(engine_factory, tmp_path):
 
 def test_hook_nonzero_exit_logged_but_state_verdict_and_exit_code_unaffected(
         engine_factory, tmp_path):
+    # Task 011/cure-01-02 (v0.24 requirement B.3/C.1, #169): this node used
+    # to force the job itself to fail (STUB_TASKS=5 with iterations=2), but
+    # that plain out-of-budget ending now HOLDS (`timed_out`/verdict null)
+    # rather than reaching a real terminal state -- and B.3/operator ruling
+    # 3 forbid running `on_complete_cmd` at all on a hold (see
+    # `test_hold_does_not_run_completion_hook` below). So this node now
+    # drives an ordinary, genuinely-terminal `succeeded` job instead: the
+    # subject it pins is purely "a nonzero-exit hook is logged but never
+    # changes the job's own state/verdict/exit code", which is just as
+    # true (and faster to prove) on a real terminal outcome as it was on
+    # the old accidental-hold one.
     marker = tmp_path / "hook-ran-fail"
     cmd = f"touch {marker} && exit 7"
-    e = engine_factory(job={"on_complete_cmd": cmd,
-                            "max_approaches": 1, "iterations": 2},
-                       stub_env={"STUB_TASKS": "5"})  # forces a failed job
-    assert e.proc.wait(timeout=60) == 1
+    e = engine_factory(job={"on_complete_cmd": cmd})
+    assert e.proc.wait(timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
-    # Task 011 (v0.24 requirement C.1, #169): a plain out-of-budget ending
-    # now holds `timed_out`/`verdict: null`, never `failed`/`unverified`
-    # -- the `on_complete_cmd` hook still fires exactly the same either
-    # way (it is called unconditionally with whatever `run_job()`
-    # returns, main.py's `_run_on_complete_cmd`), which is the actual
-    # subject this test pins.
-    assert status["state"] == "timed_out"
-    assert status["verdict"] is None
+    assert status["state"] == "succeeded"
+    assert status["verdict"] == "verified"
 
     deadline = time.time() + 10
     while not marker.exists() and time.time() < deadline:
@@ -88,6 +91,39 @@ def test_hook_nonzero_exit_logged_but_state_verdict_and_exit_code_unaffected(
                     if ev.get("level") == "error"
                     and "on_complete_cmd exited 7" in (ev.get("message") or "")]
     assert error_events, f"no on_complete_cmd failure event found: {events}"
+
+
+def test_hold_does_not_run_completion_hook(engine_factory, tmp_path):
+    """B.3/operator ruling 3 (v0.24, #169, cure-01-02): a real engine that
+    enters `timed_out` (the hold) must skip `on_complete_cmd` entirely --
+    running the operator's completion hook on a hold would falsely tell it
+    the job is over -- and must exit through its ordinary shutdown cleanup
+    (release the protected dirs, close the lock, return) even with
+    `on_complete: idle`, never idle forever waiting for a signal that a
+    genuinely-finished run would have been waiting for. Forces the hold via
+    the same plain-budget-exhaustion shape `test_budget_exhaustion_fails_job`
+    (tests/test_e2e.py) and the superseded node above used to use."""
+    marker = tmp_path / "forbidden-wrapup"
+    e = engine_factory(job={"on_complete_cmd": f"touch {marker}",
+                            "on_complete": "idle",
+                            "max_approaches": 1, "iterations": 2},
+                       stub_env={"STUB_TASKS": "5"})
+    status = e.wait_state(("timed_out",), timeout=30)
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
+
+    # `on_complete: idle` would ordinarily keep the process alive waiting on
+    # a signal/`/shutdown` -- a hold must exit through the ordinary shutdown
+    # funnel regardless, so the process must still end on its own.
+    assert e.proc.wait(timeout=15) == 1
+
+    assert not marker.exists(), (
+        "B.3 permits only frozen status/events/run-record on a hold, not "
+        "the operator's completion hook")
+
+    events = [json.loads(ln) for ln in
+             (e.run_dir / "events.jsonl").read_text().splitlines()]
+    assert not any("on_complete_cmd" in (ev.get("message") or "") for ev in events)
 
 
 def test_no_hook_configured_runs_nothing(engine_factory):
