@@ -1218,6 +1218,7 @@ class LoopSupervisor:
                      f"- Task state file: {self.run.tasks_file}\n"
                      f"- Handoff notes file: {self.run.notes_file}\n"
                      f"- Artifacts directory: {self.run.artifacts_dir}\n")
+        parts.append(self._deadline_context())
         parts.append(self._approach_progress_context())
         docker_note = self._docker_siblings_note()
         if docker_note:
@@ -1251,6 +1252,38 @@ class LoopSupervisor:
         if extra:
             parts.append("\n" + extra)
         return "".join(parts)
+
+    def _deadline_context(self) -> str:
+        """Task 019 (PRD requirement G, #169): publish the job deadline and
+        the remaining wall clock into every hat's `## Job context`, next to
+        the `Remaining iteration budget` line `_approach_progress_context`
+        already renders below.
+
+        Every prompt built through `build_prompt` gets these two lines,
+        unconditionally -- unlike `_approach_progress_context`'s own three
+        lines, this does not wait for an approach to be committed to disk,
+        because `self._deadline_epoch` is seeded at `__init__` (never from
+        an in-memory counter that a resumed process could disagree with)
+        and is therefore always present, including for the very first
+        planning attempt of a fresh run.
+
+        Before this task the review hat -- whose own clone-and-measure
+        protocol measurably costs 35-60 minutes -- had to go and read
+        `deadlineAt`/`startedAt` out of `status.json` by hand to learn this
+        at all (the PRD's own motivating incident: a run ended at 603
+        iterations and zero minutes, the budget was never the constraint).
+        Rendering it here means every hat sees the same two figures the
+        same way, in the same block, with no extra file read.
+
+        `remaining` is clamped at `0` rather than going negative, the same
+        convention `_approach_progress_context`'s own `Remaining iteration
+        budget` line already uses for `budget - used`.
+        """
+        deadline_at = utc_from_epoch(self._deadline_epoch)
+        remaining_s = max(0.0, self._deadline_epoch - time.time())
+        remaining_minutes = int(remaining_s // 60)
+        return (f"- Deadline: {deadline_at}\n"
+                f"- Remaining wall clock: {remaining_minutes} minutes\n")
 
     def _approach_progress_context(self) -> str:
         """Task 035 (PRD requirement F.1/F.4, #172): "an approach has a

@@ -433,8 +433,16 @@ TIER_MARKERS = ("smoke", "fast")
 # run is never resumed by `doctor --fix` -- fast 6030 -> 6031, smoke 4368 ->
 # 4369 (well inside its existing 4381 ceiling, no smoke bump needed),
 # measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`.
+# Task 019 (v0.24 requirement G, #169) added three nodes pinning the new
+# `Deadline`/`Remaining wall clock` lines in every hat's `## Job context`
+# (`tests/test_approach_progress_context.py`,
+# `tests/test_review_clone_protocol.py`,
+# `tests/test_planning_reflection_additions.py`) -- fast 6031 -> 6034 (still
+# 400 modules, no new module), smoke 4369 -> 4372 (well inside its existing
+# 4381 ceiling, no smoke bump needed), measured with
+# `.venv/bin/python -m pytest -q -m <tier> --collect-only`.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6031, "modules": 400},
+    "fast": {"tests": 6034, "modules": 400},
     "smoke": {"tests": 4381, "modules": 283},
 }
 

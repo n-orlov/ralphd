@@ -132,6 +132,22 @@ def test_absent_renders_nothing_at_all():
             assert BLOCK_HEADING not in prompt, phase
 
 
+def test_every_hat_also_learns_the_deadline_and_remaining_wall_clock():
+    """Task 019 (PRD requirement G, #169): the shared `## Job context`
+    block published `Remaining iteration budget` to every hat and nothing
+    about wall clock -- the review hat's own clone-and-measure protocol
+    measurably costs 35-60 minutes and had no way to learn how much time it
+    had left. `Deadline` and `Remaining wall clock` are rendered for every
+    phase this module already exercises, independent of the clone-protocol
+    key under test here."""
+    with tempfile.TemporaryDirectory() as td:
+        sup = _supervisor(Path(td))
+        for phase in PHASES:
+            prompt = sup.build_prompt(phase)
+            assert "- Deadline: " in prompt, phase
+            assert "- Remaining wall clock: " in prompt, phase
+
+
 def test_a_whitespace_only_declaration_is_treated_as_absent():
     with tempfile.TemporaryDirectory() as td:
         prompt = _supervisor(Path(td),

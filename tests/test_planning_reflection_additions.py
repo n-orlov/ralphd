@@ -6,15 +6,25 @@ task), step 2c (read the approach ordinal from Job context) and step 3a
 the practice-count sentence agrees with the numbered list beneath it, so a
 tenth practice added later without updating the count sentence fails here
 rather than being read as nine forever.
+
+Task 019 (PRD requirement G, #169) also pins that the very "Job context"
+section step 2c points the planner at (`Approach N of M`) now also carries
+the `Deadline` and `Remaining wall clock` lines, for the planning phase
+like every other hat.
 """
 
 from __future__ import annotations
 
 import re
+import tempfile
 from pathlib import Path
+
+from tests.conftest import supervisor_factory
 
 REPO = Path(__file__).resolve().parents[1]
 PLANNING_MD = (REPO / "src" / "ralphd" / "prompts" / "planning.md").read_text()
+
+_supervisor = supervisor_factory(run_id="unit", run_root="run", workspace="workspace")
 
 _NUMBER_WORDS = {
     1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
@@ -102,3 +112,16 @@ def test_planning_md_still_carries_exactly_one_fence():
     fences = re.findall(r"```[^\n]*\n(.*?)```", PLANNING_MD, re.DOTALL)
     assert len(fences) == 1
     assert '"estimatedIterations"' not in fences[0]
+
+
+def test_the_job_context_section_2c_points_at_also_carries_the_deadline():
+    """Task 019 (PRD requirement G, #169): step 2c sends the planner to the
+    'Job context' section below for `Approach N of M`; that same rendered
+    section now also carries `Deadline` and `Remaining wall clock`, for the
+    planning phase like every other hat."""
+    with tempfile.TemporaryDirectory() as td:
+        sup = _supervisor(Path(td))
+        prompt = sup.build_prompt("planning")
+        assert "## Job context" in prompt
+        assert "- Deadline: " in prompt
+        assert "- Remaining wall clock: " in prompt

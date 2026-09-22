@@ -5,6 +5,11 @@ iteration budget, rendered by ONE shared method inside `build_prompt`'s
 the worker and review phases (and every other hat that reaches
 `build_prompt`) get the same three lines from the same code path.
 
+Task 019 (PRD requirement G, #169) adds two more lines next to those
+three, rendered by the sibling method `LoopSupervisor._deadline_context`:
+`Deadline` and `Remaining wall clock` -- present for every hat, including
+before any approach is committed to disk.
+
 Unit-level, the same style `tests/test_debt_resolution.py` and
 `tests/test_steering_ledger.py` already use for a context block appended
 to every hat's prompt: a `LoopSupervisor` built directly via
@@ -37,6 +42,8 @@ def test_worker_prompt_carries_approach_cure_passes_and_remaining_budget():
         assert "- Approach 2 of 5" in prompt
         assert "- Cure passes used for this approach: 1" in prompt
         assert "- Remaining iteration budget: 8" in prompt
+        assert "- Deadline: " in prompt
+        assert "- Remaining wall clock: " in prompt
 
 
 def test_review_prompt_carries_approach_cure_passes_and_remaining_budget():
@@ -49,6 +56,8 @@ def test_review_prompt_carries_approach_cure_passes_and_remaining_budget():
         assert "- Approach 2 of 5" in prompt
         assert "- Cure passes used for this approach: 1" in prompt
         assert "- Remaining iteration budget: 8" in prompt
+        assert "- Deadline: " in prompt
+        assert "- Remaining wall clock: " in prompt
 
 
 def test_cure_passes_defaults_to_zero_for_an_approach_never_cured():
@@ -71,3 +80,18 @@ def test_silent_before_any_approach_is_committed_to_status_json():
         prompt = sup.build_prompt("planning")
         assert "- Approach" not in prompt
         assert "Remaining iteration budget" not in prompt
+
+
+def test_deadline_and_remaining_wall_clock_render_even_before_an_approach_exists():
+    """Task 019 (PRD requirement G, #169): unlike the approach/cure-pass/
+    iteration-budget lines above, the deadline and remaining wall clock
+    never wait on `status.json`'s `approach` key -- `self._deadline_epoch`
+    is seeded at `__init__`, so even the very first planning attempt of a
+    fresh run (before any approach is committed) sees both lines."""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        sup = _supervisor(Path(td))
+        prompt = sup.build_prompt("planning")
+        assert "- Deadline: " in prompt
+        assert "- Remaining wall clock: " in prompt
