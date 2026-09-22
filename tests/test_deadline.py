@@ -1152,18 +1152,21 @@ def test_review_post_rejection_tail_exhausts_max_approaches_to_failed(tmp_path):
 # Section I -- task 013 (v0.24 requirement D.1, #169): a passing verdict
 # after the deadline concludes the run normally.
 #
-# `_step_review` (loop.py) dispatches unconditionally from `_run_job_core`'s
-# dispatch loop, never gated on `budget_left()` -- task 006's own
-# requirement A.1 change made the job deadline a boundary that only stops a
-# NEW iteration from being *started*, never a running review from finishing
-# once it has begun. So once review is entered with the deadline already
-# past, a passing verdict must still reach `_finish("succeeded", ...)` --
-# loop.py's `_finish(self, state, verdict, **fields)` (the one call site
-# that decides `state` and `verdict` together) -- exactly like an in-budget
-# pass does: never the `timed_out` hold task 010/011 built, and no
-# resume-position marker (`review_deadline_unreviewed` /
-# `_unreviewed_awaiting_resume`) either, since review positively DID render
-# a judgement this approach.
+# `_step_review` (loop.py) declines to dispatch a NEW review iteration once
+# `budget_left()` is already False at the boundary (task cure-01-03,
+# requirement A.1) -- but a review that was ALREADY dispatched while budget
+# was still available runs to completion under its own
+# `iteration_timeout_s` regardless of the clock, exactly like every other
+# in-flight iteration requirement A protects. So the deadline here is
+# pushed into the past from INSIDE the running review iteration itself --
+# after `_step_review` has already consulted `budget_left()` and dispatched
+# it, never before -- and a passing verdict rendered from that point must
+# still reach `_finish("succeeded", ...)` -- loop.py's `_finish(self,
+# state, verdict, **fields)` (the one call site that decides `state` and
+# `verdict` together) -- exactly like an in-budget pass does: never the
+# `timed_out` hold task 010/011 built, and no resume-position marker
+# (`review_deadline_unreviewed` / `_unreviewed_awaiting_resume`) either,
+# since review positively DID render a judgement this approach.
 # ===========================================================================
 
 
@@ -1175,17 +1178,46 @@ def _task013_worker_completes(sup, prompt):
     return r
 
 
+def _task013_review_verified_expires_deadline_mid_flight(sup, prompt):
+    """Expires the deadline from INSIDE the running review iteration --
+    `_step_review` has already consulted `budget_left()` (True) and
+    dispatched this very iteration before this function ever runs, so
+    this is the deadline landing WHILE review runs, never before its own
+    dispatch (task cure-01-03: the shipped D.1 probe used to expire the
+    deadline between the worker's COMPLETE and review's dispatch, which
+    passed for the wrong reason -- `_step_review` dispatched unconditionally
+    regardless of the clock -- and would no longer exercise D.1 at all now
+    that `_step_review` declines a boundary dispatch on an already-expired
+    clock).
+
+    Both halves of the deadline -- `self.deadline` (monotonic, what
+    `budget_left()` actually compares against) and its wall-clock twin
+    `self._deadline_epoch` -- moved together, the same pair `set_job_
+    deadline`/`_extend_deadline_by` always move together, and set squarely
+    into the past (not merely nudged: the default job timeout is 8 hours,
+    so a relative nudge of a few thousand seconds would still read as "in
+    the future").
+    """
+    sup.deadline = real_time.monotonic() - 1.0
+    sup._deadline_epoch = real_time.time() - 1.0
+    r = IterationResult(exit_code=0)
+    r.final_text = json.dumps({"verdict": "verified"})
+    r.duration_s = 0.5
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
 def test_a_passing_verdict_after_the_deadline_concludes_the_run_normally(tmp_path):
     """A tracked probe over `make_supervisor` (never this run's own
     directory): `iterations_used=1` plus a pre-seeded task skip planning
     straight to `worker` (the same shape task 012's own nodes
     (`test_step_replans_own_check_exhausts_max_approaches_to_failed` et al.)
     use). The worker completes the sole task while the deadline is still
-    ordinarily in the future; wrapping `_step_worker` pushes the job
-    deadline into the past exactly between the worker's own COMPLETE
-    and the dispatch loop's next `step = self._advance(...)` -- the same
-    boundary a real deadline expiring mid-run would cross -- so review is
-    entered with the deadline already past. Review then renders an
+    ordinarily in the future, so review is dispatched normally (`_step_
+    review`'s own `budget_left()` boundary check still passes); the
+    deadline is then pushed into the past from INSIDE the running review
+    iteration itself, the same boundary a real deadline expiring while
+    review is already running would cross. Review still renders an
     ordinary `verified` verdict, and the run must still reach `succeeded`,
     never the `timed_out` hold, and must leave no resume position behind.
     """
@@ -1196,37 +1228,21 @@ def test_a_passing_verdict_after_the_deadline_concludes_the_run_normally(tmp_pat
                "status": "pending"}])
     attach_runner(sup, ScriptedRunner({
         "worker": [_task013_worker_completes],
-        "review": [_verified],
+        "review": [_task013_review_verified_expires_deadline_mid_flight],
     }))
-
-    orig_step_worker = sup._step_worker
-
-    async def _step_worker_then_expire_deadline():
-        outcome = await orig_step_worker()
-        # Both halves of the deadline -- `self.deadline` (monotonic, what
-        # `budget_left()` actually compares against) and its wall-clock
-        # twin `self._deadline_epoch` -- moved together, the same pair
-        # `set_job_deadline`/`_extend_deadline_by` always move together, and
-        # set squarely into the past (not merely nudged: the default job
-        # timeout is 8 hours, so a relative nudge of a few thousand seconds
-        # would still read as "in the future").
-        sup.deadline = real_time.monotonic() - 1.0
-        sup._deadline_epoch = real_time.time() - 1.0
-        return outcome
-
-    sup._step_worker = _step_worker_then_expire_deadline  # type: ignore[method-assign]
 
     assert sup.budget_left() is True, (
         "precondition: the deadline is still ordinarily in the future "
-        "before the worker phase runs")
+        "before review is ever dispatched")
 
     state = asyncio.run(asyncio.wait_for(sup.run_job(), 30.0))
 
     assert sup.budget_left() is False, (
         "precondition actually exercised: the deadline really is in the "
-        "past by the time review renders its verdict")
+        "past by the time review's own verdict is read back -- expired "
+        "from INSIDE the running review iteration, never before its "
+        "dispatch (task cure-01-03)")
     assert state == "succeeded", (
-        f"a passing verdict after the deadline must conclude the run "
         f"normally, got state={state!r}")
     status = sup.run.read_status()
     assert status["state"] == "succeeded"
@@ -1259,25 +1275,25 @@ def test_a_passing_verdict_after_the_deadline_concludes_the_run_normally(tmp_pat
 # here through `_finish_tail_unverified` -> `_finish_timed_out` exactly as
 # it is for the plain budget-exhaustion tail (task 011, C.1).
 #
-# Same shape as Section I (task 013): a tracked probe over `make_supervisor`
-# pushes the job deadline into the past between the worker's own COMPLETE
-# and the dispatch loop's next step, so review is entered with the deadline
-# already behind it -- but this time review renders a REJECTING verdict
-# with one blocking, curable finding. `_step_review` dispatches
-# unconditionally (task 006, requirement A.1) exactly like the passing
-# case, so the rejection runs its ordinary ladder: with `max_approaches=2`
-# and `approach=1`, no incurable/repeated-signature/ruled branch applies
-# (a fresh approach, one curable finding, no prior rejection signature), so
-# `_review_cure_pass_available` takes the cure-pass edge -- `_take_cure_
-# pass` appends one cure task to tasks.json and bumps `curePasses["1"]` to
-# 1 -- and `_step_cure` advances straight to `worker`, in the same dispatch
-# pass. `_step_worker`'s own `while self.budget_left():` loop (one of the
-# five plain out-of-budget `_budget_exhausted_tail` sites, task 011) never
-# runs its body -- the deadline is already past -- and the freshly-
-# inserted cure task is still `pending`, so `_all_tasks_completed()` is
-# False and `_maybe_grace_review` never even attempts a second review: the
-# run holds `timed_out` with the rejection's findings and cure task intact
-# on disk, exactly as requirement D.2 asks.
+# Same shape as Section I (task 013): the worker completes the sole task
+# while the deadline is still ordinarily in the future, so `_step_review`'s
+# own `budget_left()` boundary check (task cure-01-03) still passes and
+# review is dispatched normally -- the deadline is pushed into the past
+# from INSIDE that already-running review iteration itself, never before
+# its dispatch, and this time review renders a REJECTING verdict with one
+# blocking, curable finding. The rejection runs its ordinary ladder: with
+# `max_approaches=2` and `approach=1`, no incurable/repeated-signature/
+# ruled branch applies (a fresh approach, one curable finding, no prior
+# rejection signature), so `_review_cure_pass_available` takes the
+# cure-pass edge -- `_take_cure_pass` appends one cure task to tasks.json
+# and bumps `curePasses["1"]` to 1 -- and `_step_cure` advances straight to
+# `worker`, in the same dispatch pass. `_step_worker`'s own `while self.
+# budget_left():` loop (one of the plain out-of-budget `_budget_exhausted_
+# tail` sites, task 011) never runs its body -- the deadline is already
+# past -- and the freshly-inserted cure task is still `pending`, so
+# `_all_tasks_completed()` is False and `_maybe_grace_review` never even
+# attempts a second review: the run holds `timed_out` with the rejection's
+# findings and cure task intact on disk, exactly as requirement D.2 asks.
 # ===========================================================================
 
 
@@ -1289,10 +1305,19 @@ def _task014_worker_completes(sup, prompt):
     return r
 
 
-def _task014_review_rejects_curable(sup, prompt):
-    # Written from inside the scripted review step itself -- the same
-    # position a real reviewer hat's own sidecar write would occupy,
-    # immediately before its contract payload is read back.
+def _task014_review_rejects_curable_expires_deadline_mid_flight(sup, prompt):
+    """Same reasoning as Section I's `_task013_review_verified_expires_
+    deadline_mid_flight`: `_step_review` has already consulted `budget_
+    left()` (True) and dispatched this very iteration before this
+    function ever runs, so the deadline lands WHILE review runs, never
+    before its own dispatch (task cure-01-03).
+
+    Written from inside the scripted review step itself -- the same
+    position a real reviewer hat's own sidecar write would occupy,
+    immediately before its contract payload is read back.
+    """
+    sup.deadline = real_time.monotonic() - 1.0
+    sup._deadline_epoch = real_time.time() - 1.0
     findings.write_findings_json(sup.run.findings_json_file, [
         {"severity": "blocking", "curable": True,
          "clause": "requirement D.2 fixture clause unmet",
@@ -1311,14 +1336,13 @@ def test_a_rejecting_verdict_after_the_deadline_holds_the_run(tmp_path):
     (`test_a_passing_verdict_after_the_deadline_concludes_the_run_normally`):
     `iterations_used=1` plus a pre-seeded task skip planning straight to
     `worker`; the worker completes the sole task while the deadline is
-    still ordinarily in the future; wrapping `_step_worker` pushes the job
-    deadline into the past exactly between the worker's own COMPLETE and
-    the dispatch loop's next `step = self._advance(...)`, so review is
-    entered with the deadline already past. This time review renders a
-    REJECTING verdict over one blocking, curable finding -- the run must
-    hold `timed_out` with a null verdict, and the rejection's findings and
-    the cure task it opened must both still be on disk, with the ordinary
-    cure-pass counter exactly as it would read for an in-budget rejection.
+    still ordinarily in the future, so review is dispatched normally; the
+    deadline is then pushed into the past from INSIDE the running review
+    iteration itself. This time review renders a REJECTING verdict over
+    one blocking, curable finding -- the run must hold `timed_out` with a
+    null verdict, and the rejection's findings and the cure task it opened
+    must both still be on disk, with the ordinary cure-pass counter exactly
+    as it would read for an in-budget rejection.
     """
     sup = make_supervisor(
         tmp_path, run_id="task014-rejecting-verdict-past-deadline",
@@ -1328,22 +1352,12 @@ def test_a_rejecting_verdict_after_the_deadline_holds_the_run(tmp_path):
                "status": "pending"}])
     attach_runner(sup, ScriptedRunner({
         "worker": [_task014_worker_completes],
-        "review": [_task014_review_rejects_curable],
+        "review": [_task014_review_rejects_curable_expires_deadline_mid_flight],
     }))
-
-    orig_step_worker = sup._step_worker
-
-    async def _step_worker_then_expire_deadline():
-        outcome = await orig_step_worker()
-        sup.deadline = real_time.monotonic() - 1.0
-        sup._deadline_epoch = real_time.time() - 1.0
-        return outcome
-
-    sup._step_worker = _step_worker_then_expire_deadline  # type: ignore[method-assign]
 
     assert sup.budget_left() is True, (
         "precondition: the deadline is still ordinarily in the future "
-        "before the worker phase runs")
+        "before review is ever dispatched")
 
     state = asyncio.run(asyncio.wait_for(sup.run_job(), 30.0))
 

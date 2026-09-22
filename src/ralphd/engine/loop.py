@@ -10825,6 +10825,30 @@ class LoopSupervisor:
         family).
         """
         approach = self._approach
+        if not self.budget_left():
+            # Task cure-01-03 (v0.24 requirement A.1, #169): every OTHER
+            # `_step_*` handler that can be entered at an iteration
+            # boundary (`_step_planning`, `_step_plan_review`, `_step_
+            # verdict_gate`, `_step_worker`'s own `while self.budget_
+            # left():` loop) already declines to dispatch a NEW iteration
+            # once the deadline or the iteration budget is spent, holding
+            # instead through the same `_budget_exhausted_tail` flag /
+            # `_finish_timed_out` freeze path (task 011, requirement
+            # C.1). `_step_review` was the one handler in this family
+            # missing that check: `_run_review_iteration`'s own self-loop
+            # only consulted `budget_left()` AFTER an interrupted attempt,
+            # never before the FIRST one, so entering `review` with the
+            # clock already spent still dispatched one full review
+            # iteration regardless. Checked here, before `_run_review_
+            # iteration` (and therefore before `run_iteration("review",
+            # ...)`) is ever called, so this affects only a FRESH
+            # dispatch at an already-expired boundary -- a review that
+            # was entered while budget was still available runs to
+            # completion under its own `iteration_timeout_s` exactly as
+            # requirement A intends, and D.1/D.2 decide its verdict
+            # exactly as before, unaffected by this check.
+            self._budget_exhausted_tail = True
+            return ("tail",)
         await self._gate()
         self.run.emit("phase", phase="review", approach=approach)
         # GH #209 defect 6: the review half of the same boundary
@@ -15037,6 +15061,23 @@ class LoopSupervisor:
         interruption.
         """
         if not self.cfg.mid_plan_review:
+            return
+        if not self.budget_left():
+            # Task cure-01-03 (v0.24 requirement A.1/K.2, #169): this
+            # episode is a bare async call from inside `_step_worker`'s
+            # own `while self.budget_left():` loop body, never a
+            # declared FSM state of its own -- so the loop's boundary
+            # check (re-consulted only at the TOP of the loop's next
+            # turn) never runs again between a worker iteration that
+            # just spent the last of the deadline/iteration budget and
+            # this call, which used to dispatch one more (review) hat
+            # iteration regardless. Checked first, before even reading
+            # tasks.json, so an already-expired boundary starts no new
+            # mid-plan review iteration; the loop's own end-of-body
+            # `if not self.budget_left(): self._budget_exhausted_tail = 
+            # True; return ("tail",)` check (a few dozen lines below this
+            # method's own call site) is what still lands the run in the
+            # shared `timed_out` freeze path this same pass.
             return
         approach = self._approach
         if self._mid_plan_review_done_for_approach(approach):
