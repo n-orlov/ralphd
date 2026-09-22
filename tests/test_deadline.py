@@ -1515,6 +1515,281 @@ def test_no_new_review_iteration_starts_at_an_already_expired_boundary(
 
 
 # ===========================================================================
+# Section Jc -- cure task cure-01-04 (v0.24 requirement D.1/D.2, operator
+# rulings 3-5, DoD 5, #169): D.1/D.2 with the two OPTIONAL gates enabled --
+# `peer_verdict_gate` (requirement L, task 020) and `operator_input_needed_
+# pause` (requirement A.1, task 014) -- both off by default, so Sections I
+# and J above never exercised either.
+#
+# D.2 -- operator-input gate: a REAL gap, now fixed. `_step_paused` (every
+# `paused`-family rejection's own step, task 004) parked on `self._gate()`
+# UNCONDITIONALLY, never consulting `budget_left()` the way every sibling
+# boundary (`_step_planning`, `_step_plan_review`, `_step_verdict_gate`,
+# `_step_worker`'s own loop and, since cure-01-03, `_step_review` itself)
+# already does. A rejection that reaches the plain, unbudgeted `operator_
+# input_needed` gate (condition 1: no cure pass available, no ruling, no
+# repeated signature) after the deadline already passed while review ran
+# therefore stayed `state: "paused"`, process alive, blocked indefinitely
+# on `self._pause` -- never `timed_out`, never exited, straight against
+# operator ruling 3 ("it persists where it stopped and exits") and D.2
+# ("holds the run in B.1's state"). `_step_paused` now checks `budget_
+# left()` before the park and holds through the shared C.1 freeze path
+# instead -- see its own docstring. The two probes below pin the SAME two
+# ends -- broken before the fix, `timed_out`/null verdict/durable findings
+# after -- by driving the real `_step_paused` code path, never a stub.
+#
+# D.1 -- peer-verdict gate: NOT resolved the same way, and this is the one
+# place this task files the PRD's own pre-named petition (#4: "a
+# contradiction between two requirements of this contract"). `review`'s
+# own `verified` verdict is not the DECISIVE one once `peer_verdict_gate`
+# is on -- task 020 moved "the run's real success edge" onto `verdict_
+# gate` itself, a genuinely BLIND second hat call that has to be DISPATCHED
+# (a fresh `iteration.start`) to render an actual peer verdict; there is no
+# way to reach a real (non-rubber-stamped) `succeeded` without that call.
+# But `_step_verdict_gate` carries the SAME budget_left() guard every other
+# fresh-dispatch boundary does (task 011, requirement C.1 -- predating this
+# whole wave), and by the time review's own (in-flight-protected) iteration
+# returns `verified` after the deadline has already passed, budget_left()
+# reads False: dispatching the gate now would be a genuinely NEW iteration
+# starting after the boundary, exactly what that guard (and operator ruling
+# 1/cure-01-03's uniform "nothing new past budget" policy) forbids. D.1's
+# own text argues the run should conclude BECAUSE "there is nothing left to
+# resume for" -- false here: the peer verdict is still outstanding. Making
+# D.1 literally true for this case needs one of: (a) skip the gate and
+# declare `succeeded` anyway (breaks peer verification -- the one thing
+# requirement L exists for), or (b) dispatch `verdict_gate` past the
+# deadline anyway (breaks the no-new-iteration boundary the rest of this
+# wave, and task 011 before it, hold as absolute). Per this task's own
+# instructions, that is reported as a petition rather than silently
+# resolved either way; the THIRD probe below pins the behaviour the
+# petition leaves in place -- the run holds `timed_out` with a null
+# verdict, exactly like an ordinary out-of-budget tail, so a resumed run
+# with a fresh window lands back on the still-pending `verdict_gate` step
+# and the peer's own verdict is rendered for real, never skipped.
+# ===========================================================================
+
+
+def _cure0104_worker_completes(sup, prompt):
+    r = IterationResult(exit_code=0)
+    r.final_text = json.dumps({"verdict": "complete", "task_id": "T1"})
+    r.duration_s = 0.5
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+def _cure0104_review_verified_expires_deadline_mid_flight(sup, prompt):
+    sup.deadline = real_time.monotonic() - 1.0
+    sup._deadline_epoch = real_time.time() - 1.0
+    r = IterationResult(exit_code=0)
+    r.final_text = json.dumps({"verdict": "verified"})
+    r.duration_s = 0.5
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+def _cure0104_review_rejects_expires_deadline_mid_flight(sup, prompt):
+    sup.deadline = real_time.monotonic() - 1.0
+    sup._deadline_epoch = real_time.time() - 1.0
+    findings.write_findings_json(sup.run.findings_json_file, [
+        {"severity": "blocking", "curable": True,
+         "clause": "cure-01-04 D.2 operator-input-gate fixture",
+         "evidence": "a curable finding with this approach's cure pass "
+                     "already spent, so it falls through to the plain "
+                     "unbudgeted operator_input_needed gate rather than "
+                     "the cure-pass edge",
+         "cured_when": "the thing is actually done"},
+    ])
+    r = IterationResult(exit_code=0)
+    r.final_text = json.dumps({"verdict": "rejected", "reason": "not done yet"})
+    r.duration_s = 0.5
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+def _cure0104_gate_verified(sup, prompt):
+    r = IterationResult(exit_code=0)
+    r.final_text = json.dumps({"verdict": "verified"})
+    r.duration_s = 0.1
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+def test_operator_input_gate_rejection_after_the_deadline_holds_never_parks(tmp_path):
+    """D.2, operator-input gate ENABLED (`operator_input_needed_pause=
+    True`, off by default in production and in this harness -- Section J's
+    own probe left it off). This approach's one cure pass is pre-spent
+    (`curePasses={"1": cure_pass_ceiling}`) so the rejection's curable
+    finding cannot take the cure-pass edge and instead reaches the plain,
+    unbudgeted `operator_input_needed` gate (condition 1) -- the exact
+    branch that used to park `_step_paused` indefinitely, unconditioned on
+    the clock, rather than holding `timed_out`.
+    """
+    sup = make_supervisor(
+        tmp_path, run_id="cure0104-operator-gate-rejecting-past-deadline",
+        max_approaches=2, approach=1, iterations_used=1, prd=True,
+        operator_input_needed_pause=True,
+        tasks=[{"id": "T1", "title": "do the thing", "successCriteria": "done",
+               "status": "pending"}])
+    sup.run.update_status(curePasses={"1": sup.cfg.cure_pass_ceiling})
+    attach_runner(sup, ScriptedRunner({
+        "worker": [_cure0104_worker_completes],
+        "review": [_cure0104_review_rejects_expires_deadline_mid_flight],
+    }))
+
+    assert sup.budget_left() is True, (
+        "precondition: the deadline is still ordinarily in the future "
+        "before review is ever dispatched")
+
+    state = asyncio.run(asyncio.wait_for(sup.run_job(), 5.0))
+
+    assert sup.budget_left() is False
+    assert state == "timed_out", (
+        "an operator-input-gate rejection after the deadline must hold the "
+        f"run in B.1's state, never park in `paused`, got state={state!r}")
+    assert sup._budget_exhausted_tail is True
+
+    status = sup.run.read_status()
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
+    assert status.get("pendingTerminalState") is None
+    assert status.get("endedAt") is None, "a held run has not ended"
+
+    findings_list = findings.read_findings_json(sup.run.findings_json_file)
+    assert findings_list is not None and len(findings_list) == 1
+    assert findings_list[0]["clause"] == (
+        "cure-01-04 D.2 operator-input-gate fixture")
+
+
+def test_operator_input_gate_pause_still_parks_normally_in_budget(tmp_path):
+    """The fix is a BUDGET check, not a blanket removal of the pause: with
+    budget still available, `_step_paused` must keep parking exactly as
+    before -- an operator answering `ralphctl rule`/`POST /resume` while
+    the process is still alive and the window is not spent must still
+    work. Resumes immediately (this test's own runner releases the gate
+    right away) and finishes normally, never `timed_out`.
+    """
+    sup = make_supervisor(
+        tmp_path, run_id="cure0104-operator-gate-in-budget-pause",
+        max_approaches=2, approach=1, iterations_used=1, prd=True,
+        operator_input_needed_pause=True,
+        tasks=[{"id": "T1", "title": "do the thing", "successCriteria": "done",
+               "status": "pending"}])
+    sup.run.update_status(curePasses={"1": sup.cfg.cure_pass_ceiling})
+
+    def worker(s, p):
+        r = IterationResult(exit_code=0)
+        r.final_text = json.dumps({"verdict": "complete", "task_id": "T1"})
+        r.duration_s = 0.1
+        r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+        return r
+
+    def review_rejects(s, p):
+        findings.write_findings_json(s.run.findings_json_file, [
+            {"severity": "blocking", "curable": True,
+             "clause": "cure-01-04 D.2 in-budget control",
+             "evidence": "fixture", "cured_when": "fixture"},
+        ])
+        r = IterationResult(exit_code=0)
+        r.final_text = json.dumps({"verdict": "rejected", "reason": "not done"})
+        r.duration_s = 0.1
+        r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+        return r
+
+    def review_verifies(s, p):
+        findings.write_findings_json(s.run.findings_json_file, [])
+        r = IterationResult(exit_code=0)
+        r.final_text = json.dumps({"verdict": "verified"})
+        r.duration_s = 0.1
+        r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+        return r
+
+    # `review_rejects` fires once (the rejection that opens the pause);
+    # `resume()` (below) re-enters `review` over the SAME approach
+    # (`paused_resumed` -> `review`), and `ScriptedRunner` repeats the
+    # LAST step of a list forever, so this second (and every later) call
+    # renders `verified` instead -- an operator answering the pause with
+    # an actual fix, never a second identical rejection this fixture
+    # would otherwise loop on forever.
+    attach_runner(sup, ScriptedRunner({
+        "worker": [worker], "review": [review_rejects, review_verifies]}))
+
+    async def _resume_once_paused():
+        for i in range(2000):
+            st = sup.run.read_status()
+            if st.get("pauseReason") == "operator_input_needed":
+                sup.resume()
+                return
+            await asyncio.sleep(0.001)
+        raise AssertionError("the run never reached the operator_input_needed pause")
+
+    async def _drive():
+        results = await asyncio.gather(sup.run_job(), _resume_once_paused())
+        return results[0]
+
+    result = asyncio.run(asyncio.wait_for(_drive(), 10.0))
+    status = sup.run.read_status()
+    assert result == "succeeded", (
+        f"an in-budget operator_input_needed pause must still park and "
+        f"resume normally to a genuine conclusion, got result={result!r} "
+        f"status={status!r}")
+    assert status["state"] == "succeeded"
+
+
+def test_peer_verdict_gate_verified_review_after_the_deadline_holds_pending_the_gate(tmp_path):
+    """D.1, peer-verdict gate ENABLED (`peer_verdict_gate=True`, off by
+    default -- Section I's own probe left it off). Review renders
+    `verified` after the deadline (same in-flight-crossing shape as Section
+    I), but the run's REAL success edge sits on `verdict_gate` (task 020),
+    a second, genuinely blind hat call that has not run yet and cannot be
+    dispatched past the deadline (`_step_verdict_gate`'s own pre-existing
+    C.1 guard, task 011). Concluding `succeeded` here without ever running
+    that call would rubber-stamp the peer check; dispatching it anyway
+    would violate the no-new-iteration boundary every other fresh-dispatch
+    site in this wave holds absolute. This task petitions that
+    contradiction (PRD pre-named petition #4) rather than silently
+    choosing -- see this module's own `# Section Jc` docstring above -- and
+    this probe pins the behaviour the petition leaves standing: the SAME
+    shared C.1 hold every other out-of-budget tail takes, never a fabricated
+    `succeeded`, so a resumed run with a fresh window lands on the still-
+    pending `verdict_gate` step and the peer's own verdict is genuinely
+    rendered, never skipped.
+    """
+    sup = make_supervisor(
+        tmp_path, run_id="cure0104-peer-gate-passing-past-deadline",
+        max_approaches=1, approach=1, iterations_used=1, prd=True,
+        peer_verdict_gate=True,
+        tasks=[{"id": "T1", "title": "do the thing", "successCriteria": "done",
+               "status": "pending"}])
+    attach_runner(sup, ScriptedRunner({
+        "worker": [_cure0104_worker_completes],
+        "review": [_cure0104_review_verified_expires_deadline_mid_flight],
+        "verdict_gate": [_cure0104_gate_verified],
+    }))
+
+    assert sup.budget_left() is True, (
+        "precondition: the deadline is still ordinarily in the future "
+        "before review is ever dispatched")
+
+    state = asyncio.run(asyncio.wait_for(sup.run_job(), 5.0))
+
+    assert sup.budget_left() is False
+    assert state == "timed_out", (
+        "a verified review with the peer gate still outstanding must hold "
+        f"the run rather than fabricate a decision, got state={state!r}")
+    assert sup._budget_exhausted_tail is True
+
+    status = sup.run.read_status()
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
+    assert status.get("pendingTerminalState") is None
+    assert status.get("endedAt") is None, "a held run has not ended"
+
+    # The peer gate genuinely never ran -- its own scripted handler was
+    # never called -- so nothing here rubber-stamped the check.
+    assert sup.runner.calls.get("verdict_gate", 0) == 0
+
+
+# ===========================================================================
 # Section K -- task 017 (v0.24 requirement F.1, #169): a bare `ralphctl
 # resume` grants a held (`timed_out`) run a fresh full window.
 #

@@ -11529,7 +11529,59 @@ class LoopSupervisor:
         it releases the gate (`_clear_persisted_pause`) -- reading it
         after would always see `None` and could never tell the two cases
         apart.
+
+        Cure task cure-01-04 (v0.24 requirement D.2, #169): a budget
+        check BEFORE the park, missing until now. `_pause_and_escalate_*`
+        (whichever one fired -- `operator_input_needed`,
+        `rejected_last_approach`, `rejected_repeated_signature`,
+        `review_contract_unrepaired`'s and `review_findings_unusable`'s
+        own escalation writes) already recorded `pauseReason` and
+        notified BEFORE `_step_review`/`_step_worker` ever advanced here,
+        exactly like `_pause_and_escalate_incurable_rejection`'s sibling
+        self-loop back into `review` already does -- that write is not
+        wrap-up, it is the ordinary escalation every rejection of this
+        family always makes, in or out of budget. What was missing is
+        what happens NEXT: every OTHER step boundary that can be entered
+        fresh (`_step_planning`, `_step_plan_review`, `_step_verdict_
+        gate`, `_step_worker`'s own loop, and -- since cure-01-03 --
+        `_step_review` itself) already declines to do its own next thing
+        once `budget_left()` is False, holding through the shared
+        `_budget_exhausted_tail`/`_finish_timed_out` freeze path instead.
+        `_step_paused` was the one member of that family that still did
+        its own next thing -- `await self._gate()`, an INDEFINITE
+        in-process park on `self._pause`, wholly unconditioned on the
+        clock -- regardless of whether any budget was left to resume
+        into. A rejection that reached the unbudgeted `operator_input_
+        needed` gate (PRD requirement D.2's own enabled-operator-input-
+        gate case) after the deadline had already passed while review
+        ran therefore stayed `state: "paused"`, `verdict: null`, process
+        alive and blocked on `self._pause` -- never `timed_out`, never
+        exited -- straight against operator ruling 3 ("it persists where
+        it stopped and exits") and D.2 ("holds the run in B.1's state").
+        Continuing to park makes no sense once there is no budget left to
+        spend on whatever answer eventually arrives either: ruling 2's
+        own "the operator decides whether to spend more" is answered from
+        OUTSIDE a held, exited process (`ralphctl resume`, a fresh
+        window), not by `ralphctl rule`/`POST /resume` reaching into one
+        still running with nothing left to dispatch. So this checks
+        `budget_left()` once, here, before ever awaiting the park -- the
+        SAME plain `if not self.budget_left(): self._budget_exhausted_
+        tail = True; return ("tail",)` guard every sibling boundary
+        already carries -- and holds through the identical freeze path
+        instead of parking. The findings channel and any cure task a
+        rejection already opened are untouched (nothing here ever wrote
+        them; the escalation call already made above did, and did so
+        before this check, in or out of budget), so they are exactly as
+        durable on disk as an in-budget pause's own. Every OTHER pause
+        reason (`stagnation`, `unschedulable_dependency_cycle`,
+        `unresolvable_dependency_edge`, `rejected_last_approach`, ...)
+        shares this one entry point and gets the identical fix for free --
+        none of them has a reason to keep parking once the run's own
+        clock is what would decide there is nothing left to wait for.
         """
+        if not self.budget_left():
+            self._budget_exhausted_tail = True
+            return ("tail",)
         reason = self.run.read_status().get("pauseReason")
         await self._gate()
         if reason == "stagnation":

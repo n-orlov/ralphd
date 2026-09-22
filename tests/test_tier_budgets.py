@@ -494,7 +494,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # cure-01-03 (v0.24 requirement A.1/B.3/K.2): fast 6057 -> 6061, smoke
     # 4394 -> 4396, +4 tests (0 new modules) for the two already-expired-
     # boundary no-dispatch probes described directly above.
-    "fast": {"tests": 6061, "modules": 403},
+    # cure-01-04 (v0.24 requirement D.1/D.2, operator rulings 3-5, DoD 5):
+    # fast 6061 -> 6064, smoke unchanged (+3 tests, 0 new modules) for the
+    # two enabled-gate D.1/D.2 probes plus their in-budget control, all in
+    # tests/test_deadline.py -- a module that already carries a real
+    # `LiveRun`/`engine_factory` process-boundary test further down, so
+    # every node in it (old and new alike) sorts `fast`-only, never smoke.
+    "fast": {"tests": 6064, "modules": 403},
     "smoke": {"tests": 4396, "modules": 285},
 }
 
