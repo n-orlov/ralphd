@@ -365,8 +365,6 @@ def test_tasks_approach_and_all_are_mutually_exclusive(ctl: Ctl):
 # Folded from tests/test_inflight_budget_setters_task094.py (task 028, requirement D.7).
 # ----------------------------------------------------------------------
 
-import time
-
 import pytest
 
 from ralphd.engine.config import JobConfig
@@ -421,18 +419,19 @@ def test_set_iteration_timeout_rebinds_cfg(tmp_path):
 
 def test_set_iteration_timeout_is_observed_by_run_iterations_own_formula(tmp_path):
     """Pins the read site: `run_iteration`'s own
-    `timeout = min(self.cfg.iteration_timeout_s, max(...))` -- reproduced
-    here (not re-imported, since it is inline in `run_iteration`, not a
-    standalone helper) with a deadline far enough out that the configured
-    timeout, not the deadline floor, is the binding term both before and
-    after the change."""
-    sup = _supervisor(tmp_path, iteration_timeout_s=45 * 60,
-                      job_timeout_s=8 * 3600)
+    `timeout = min(self.cfg.iteration_timeout_s, ...)` -- reproduced here
+    (not re-imported, since it is inline in `run_iteration`, not a
+    standalone helper). As of task 006 (requirement A.1) this formula no
+    longer reads `self.deadline` at all, so `job_timeout_s` plays no role
+    here any more -- the configured `iteration_timeout_s` is simply the
+    binding term for a non-reflect phase, both before and after the
+    change."""
+    sup = _supervisor(tmp_path, iteration_timeout_s=45 * 60)
 
     def _binding_timeout(phase: str) -> float:
         return min(sup.cfg.iteration_timeout_s,
-                   max(sup.REFLECT_TAIL_TIMEOUT_S if phase == "reflect"
-                       else 60, int(sup.deadline - time.monotonic())))
+                   sup.REFLECT_TAIL_TIMEOUT_S if phase == "reflect"
+                   else sup.cfg.iteration_timeout_s)
 
     assert _binding_timeout("worker") == 45 * 60
     sup.set_iteration_timeout(90)

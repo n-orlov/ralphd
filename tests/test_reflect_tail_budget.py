@@ -21,7 +21,16 @@ The fix (chosen from the PRD's three options -- see
 ones and why): reflect's own per-attempt timeout is now independent of
 `self.deadline` -- `LoopSupervisor.REFLECT_TAIL_TIMEOUT_S` (600s) is a hard
 floor for its ONE attempt, still capped by `cfg.iteration_timeout_s` so it
-cannot grow without bound. Every other phase keeps the exact old formula.
+cannot grow without bound. Every other phase kept the exact old formula --
+UNTIL task 006 (requirement A.1, #169): that formula's `self.deadline` read
+for every OTHER phase is now gone too, since `budget_left()` is the one
+place the deadline should act (refusing to START the next iteration), not
+a second, partial check baked into the dispatched subprocess timeout. A
+non-reflect phase's dispatched timeout is now simply `cfg.iteration_timeout_s`,
+unconditionally -- see `tests/test_deadline.py`'s
+`test_dispatch_timeout_ignores_a_past_deadline_task006` for the direct pin;
+test 3 below is updated in the same task to assert the NEW invariant
+instead of the retired 60s floor.
 
 Tests:
 
@@ -30,8 +39,10 @@ Tests:
 2. `test_reflect_floor_is_capped_by_iteration_timeout_s` -- the hard cap: a
    smaller `iteration_timeout_s` still wins, so reflect cannot extend a run
    indefinitely.
-3. `test_other_phases_keep_the_plain_60s_floor` -- the fix is reflect-only;
-   every other phase's arithmetic is untouched.
+3. `test_other_phases_ignore_the_deadline_entirely_task006` -- the fix is
+   reflect-only in WHICH constant floors it, but as of task 006 no phase's
+   dispatched timeout reads `self.deadline` any more; every other phase's
+   timeout is simply `cfg.iteration_timeout_s`.
 4. `test_v09_iteration_185_regression_reflect_past_the_deadline_still_reports`
    -- the named regression, reproducing `selfdev-v09-fsm-loop`'s exact
    shape (deadline already gone before reflect's one attempt) end to end
@@ -155,14 +166,18 @@ def test_reflect_floor_is_capped_by_iteration_timeout_s(tmp_path):
 # 3. every other phase's arithmetic is untouched
 # ---------------------------------------------------------------------------
 
-def test_other_phases_keep_the_plain_60s_floor(tmp_path):
+def test_other_phases_ignore_the_deadline_entirely_task006(tmp_path):
+    """Task 006 (requirement A.1): as of that task, NO phase's dispatched
+    timeout reads `self.deadline` -- a non-reflect phase's timeout is
+    simply `cfg.iteration_timeout_s`, deadline aside entirely (previously
+    this collapsed to the plain 60s floor once the deadline had passed)."""
     sup = _supervisor(tmp_path, job_timeout_s=3600)
     sup.deadline = time.monotonic() - 10_000.0
 
     asyncio.run(sup.run_iteration("worker"))
 
     assert [c["phase"] for c in sup.runner.calls] == ["worker"]
-    assert sup.runner.calls[0]["timeout_s"] == 60
+    assert sup.runner.calls[0]["timeout_s"] == sup.cfg.iteration_timeout_s
 
 
 # ---------------------------------------------------------------------------

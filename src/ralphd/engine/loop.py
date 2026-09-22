@@ -2329,9 +2329,24 @@ class LoopSupervisor:
                                                  "model": model,
                                                  "startedAt": meta["startedAt"]})
 
+        # Task 006 (requirement A.1): the job deadline is a BOUNDARY, not a
+        # per-dispatch input -- `budget_left()` is the one place it acts (it
+        # already refuses to start a new iteration once `self.deadline` has
+        # passed). This formula used to also mix `self.deadline -
+        # time.monotonic()` into the dispatched subprocess timeout, which
+        # meant a deadline already in the past did not stop an iteration
+        # from starting -- it just collapsed the started iteration's own
+        # timeout down to the 60s floor (or REFLECT_TAIL_TIMEOUT_S for
+        # `reflect`), silently shortening work instead of refusing to begin
+        # it. No second boundary check is built here: the dispatched
+        # timeout is simply the configured `iteration_timeout_s`, except
+        # for `reflect` (always dispatched post-terminal, i.e. always past
+        # `self.deadline` in practice) which keeps its own fixed
+        # REFLECT_TAIL_TIMEOUT_S floor -- that arm's value and selection are
+        # unchanged from before.
         timeout = min(self.cfg.iteration_timeout_s,
-                      max(self.REFLECT_TAIL_TIMEOUT_S if phase == "reflect"
-                          else 60, int(self.deadline - time.monotonic())))
+                      self.REFLECT_TAIL_TIMEOUT_S if phase == "reflect"
+                      else self.cfg.iteration_timeout_s)
         # Task 001a: the startup-window watchdog applies to exactly the
         # phases the infra-retry wrapper protects -- a phase whose zero-
         # traffic hang nobody would retry should not be killed early
@@ -3522,18 +3537,21 @@ class LoopSupervisor:
     REFLECT_OUTAGE_BUDGET_S = 300.0
 
     # Task 008 (requirement C, #72): the reflect iteration's own per-attempt
-    # wall-clock floor, independent of self.deadline -- see
-    # _run_iteration_once's `timeout` computation. `finishing`/`reflect` is
-    # the run's own account of itself (PRD req 24) and it is the first thing
-    # a deadline that fires mid-run eats: once self.deadline is already in
-    # the past, the ordinary formula (`max(60, deadline - now)`) gives EVERY
-    # phase, including reflect, exactly the 60s floor -- nowhere near enough
-    # for a real post-mortem write (v0.9's iteration 185, `selfdev-
-    # v09-fsm-loop`, died this way). Reflect now gets at least this many
-    # seconds for its one attempt even when the deadline is long gone (still
-    # capped by cfg.iteration_timeout_s), which is a hard, fixed extension --
-    # not a moving target, since _run_reflection() runs this exactly once per
-    # process. Rejected alternatives (a reserved tail budget carved out of
+    # wall-clock floor -- see _run_iteration_once's `timeout` computation.
+    # `finishing`/`reflect` is the run's own account of itself (PRD req 24)
+    # and it is the first thing a deadline that fires mid-run eats: reflect
+    # is only ever dispatched post-terminal (`_run_reflection`), i.e.
+    # always after the job's own deadline/budget is already exhausted --
+    # nowhere near enough time for a real post-mortem write on the plain
+    # 60s default (v0.9's iteration 185, `selfdev-v09-fsm-loop`, died this
+    # way). Reflect now gets at least this many seconds for its one attempt
+    # regardless of how the job ended (still capped by cfg.iteration_timeout_s),
+    # which is a hard, fixed extension -- not a moving target, since
+    # _run_reflection() runs this exactly once per process. As of task 006
+    # (requirement A.1) the dispatch formula no longer reads `self.deadline`
+    # at all -- `budget_left()` is the one place the deadline acts, and this
+    # constant is unconditional rather than deadline-conditional. Rejected
+    # alternatives (a reserved tail budget carved out of
     # job_timeout_s up front; extending self.deadline itself the way
     # _account_infra_wait does for infra waits) are written down in
     # artifacts/reports/task-008-finishing-tail-budget.md.

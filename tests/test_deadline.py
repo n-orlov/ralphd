@@ -308,34 +308,43 @@ async def test_deadline_extended_reason_distinguishes_pause_from_infra_wait(
     assert status["infraWaitTotalS"] == pytest.approx(7.0)
 
 
-# -- pin 3: the extension actually rescues the 60s iteration-timeout floor -
+# -- pin 3: RETIRED (task 006, requirement A.1) -- the 60s floor this pin
+# demonstrated pausing away no longer exists at all: `run_iteration`'s
+# dispatch-timeout formula stopped reading `self.deadline` outright, so a
+# deadline already past no longer collapses the dispatched subprocess
+# timeout down to a floor for ANY pause to rescue. Surviving cover: pin 1
+# above (`test_pause_credits_only_the_actually_parked_time`) already pins
+# that a pause credit still moves `self.deadline`/`self._deadline_epoch`
+# themselves (the one place the deadline still acts, via `budget_left()`);
+# `test_dispatch_timeout_ignores_a_past_deadline_task006` below pins the
+# new formula directly, and `tests/test_iteration_timeout_contained.py`'s
+# pre-existing `test_a_timed_out_iteration_costs_one_iteration_not_the_engine`
+# (a real 3-second `iteration_timeout_s` cutting off a genuinely hung
+# worker iteration, end to end through the real engine) is the tracked
+# test that `iteration_timeout_s` still interrupts a long iteration --
+# untouched by this task, since it never sets `job_timeout_s` near the
+# iteration and the removed deadline term was never the binding one there
+# either.
 
 
 @pytest.mark.asyncio
-async def test_pause_credit_avoids_the_60s_floor(tmp_path):
-    # A deadline that is already effectively "now" gives every non-reflect
-    # phase's per-iteration timeout formula (`max(60, deadline - now)`,
-    # min-ed against `iteration_timeout_s`) exactly the 60s floor.
+async def test_dispatch_timeout_ignores_a_past_deadline_task006(tmp_path):
+    """Requirement A.1 (#169): the job deadline stops starting iterations
+    instead of shortening them. A deadline that is already effectively
+    "now" (`job_timeout_s=0`) used to collapse a non-reflect phase's
+    dispatched subprocess timeout down to a 60s floor (`max(60, deadline -
+    now)`, min-ed against `iteration_timeout_s`); `budget_left()` is the
+    one place the deadline should act (refusing to START the next
+    iteration at all), so the dispatched timeout for an iteration that DID
+    start must equal the configured `iteration_timeout_s` regardless of
+    how far in the past the deadline already is."""
     sup = _pause_supervisor(tmp_path, job_timeout_s=0, iteration_timeout_s=3600)
     runner = _TimeoutCapturingRunner()
     sup.runner = runner  # type: ignore[assignment]
 
     await sup._run_iteration_once("worker")
-    assert runner.timeouts[-1] == 60
 
-    # Crediting a (stubbed, no real wait) pause of 1000s -- exactly what
-    # `_gate()` would do for a pause actually parked that long -- pushes the
-    # deadline back out well past the floor.
-    async def fake_park() -> float:
-        return 1000.0
-
-    sup._park_until_resumed = fake_park  # type: ignore[method-assign]
-    sup.pause()
-    await sup._gate()
-
-    await sup._run_iteration_once("worker")
-    assert runner.timeouts[-1] != 60
-    assert runner.timeouts[-1] > 900
+    assert runner.timeouts[-1] == sup.cfg.iteration_timeout_s == 3600
 
 
 # -- pin 4: a pause requested WHILE an iteration is genuinely in flight ----
