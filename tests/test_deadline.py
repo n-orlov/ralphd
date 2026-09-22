@@ -1141,6 +1141,106 @@ def test_review_post_rejection_tail_exhausts_max_approaches_to_failed(tmp_path):
 
 
 # ===========================================================================
+# Section I -- task 013 (v0.24 requirement D.1, #169): a passing verdict
+# after the deadline concludes the run normally.
+#
+# `_step_review` (loop.py) dispatches unconditionally from `_run_job_core`'s
+# dispatch loop, never gated on `budget_left()` -- task 006's own
+# requirement A.1 change made the job deadline a boundary that only stops a
+# NEW iteration from being *started*, never a running review from finishing
+# once it has begun. So once review is entered with the deadline already
+# past, a passing verdict must still reach `_finish("succeeded", ...)` --
+# loop.py's `_finish(self, state, verdict, **fields)` (the one call site
+# that decides `state` and `verdict` together) -- exactly like an in-budget
+# pass does: never the `timed_out` hold task 010/011 built, and no
+# resume-position marker (`review_deadline_unreviewed` /
+# `_unreviewed_awaiting_resume`) either, since review positively DID render
+# a judgement this approach.
+# ===========================================================================
+
+
+def _task013_worker_completes(sup, prompt):
+    r = IterationResult(exit_code=0)
+    r.final_text = json.dumps({"verdict": "complete", "task_id": "T1"})
+    r.duration_s = 0.5
+    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+    return r
+
+
+def test_a_passing_verdict_after_the_deadline_concludes_the_run_normally(tmp_path):
+    """A tracked probe over `make_supervisor` (never this run's own
+    directory): `iterations_used=1` plus a pre-seeded task skip planning
+    straight to `worker` (the same shape task 012's own nodes
+    (`test_step_replans_own_check_exhausts_max_approaches_to_failed` et al.)
+    use). The worker completes the sole task while the deadline is still
+    ordinarily in the future; wrapping `_step_worker` pushes the job
+    deadline into the past exactly between the worker's own COMPLETE
+    and the dispatch loop's next `step = self._advance(...)` -- the same
+    boundary a real deadline expiring mid-run would cross -- so review is
+    entered with the deadline already past. Review then renders an
+    ordinary `verified` verdict, and the run must still reach `succeeded`,
+    never the `timed_out` hold, and must leave no resume position behind.
+    """
+    sup = make_supervisor(
+        tmp_path, run_id="task013-passing-verdict-past-deadline",
+        max_approaches=1, approach=1, iterations_used=1, prd=True,
+        tasks=[{"id": "T1", "title": "do the thing", "successCriteria": "done",
+               "status": "pending"}])
+    attach_runner(sup, ScriptedRunner({
+        "worker": [_task013_worker_completes],
+        "review": [_verified],
+    }))
+
+    orig_step_worker = sup._step_worker
+
+    async def _step_worker_then_expire_deadline():
+        outcome = await orig_step_worker()
+        # Both halves of the deadline -- `self.deadline` (monotonic, what
+        # `budget_left()` actually compares against) and its wall-clock
+        # twin `self._deadline_epoch` -- moved together, the same pair
+        # `set_job_deadline`/`_extend_deadline_by` always move together, and
+        # set squarely into the past (not merely nudged: the default job
+        # timeout is 8 hours, so a relative nudge of a few thousand seconds
+        # would still read as "in the future").
+        sup.deadline = real_time.monotonic() - 1.0
+        sup._deadline_epoch = real_time.time() - 1.0
+        return outcome
+
+    sup._step_worker = _step_worker_then_expire_deadline  # type: ignore[method-assign]
+
+    assert sup.budget_left() is True, (
+        "precondition: the deadline is still ordinarily in the future "
+        "before the worker phase runs")
+
+    state = asyncio.run(asyncio.wait_for(sup.run_job(), 30.0))
+
+    assert sup.budget_left() is False, (
+        "precondition actually exercised: the deadline really is in the "
+        "past by the time review renders its verdict")
+    assert state == "succeeded", (
+        f"a passing verdict after the deadline must conclude the run "
+        f"normally, got state={state!r}")
+    status = sup.run.read_status()
+    assert status["state"] == "succeeded"
+    assert status["state"] != "timed_out"
+    assert status["verdict"] in ("verified", "verified-with-residuals")
+
+    # Never entered the hold: no pause reason, no terminal-write left
+    # pending, and the run genuinely ended.
+    assert status.get("pauseReason") is None
+    assert status.get("pendingTerminalState") is None
+    assert status.get("endedAt") is not None, "a concluded run has ended"
+
+    # Wrote no resume position: review positively rendered a judgement this
+    # approach, so the deadline-mid-review marker (task 016's own
+    # `review_deadline_unreviewed` event) and its `_unreviewed_awaiting_
+    # resume` predicate must both stay unset -- a fresh episode over this
+    # run dir would find nothing to resume into.
+    assert read_events(sup.run.root, types=("review_deadline_unreviewed",)) == []
+    assert sup._unreviewed_awaiting_resume(1) is False
+
+
+# ===========================================================================
 # Section D -- task 048 (B.5 follow-on, operator steer 005): paused teardown
 # ===========================================================================
 

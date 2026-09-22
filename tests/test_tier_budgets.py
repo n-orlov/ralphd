@@ -421,8 +421,14 @@ TIER_MARKERS = ("smoke", "fast")
 # post-rejection twin both still reach `failed`, unchanged by task 011 --
 # fast 6026 -> 6028, measured the same way. Still fast-only (same
 # module-wide `live(` scan trip), smoke unaffected.
+# Task 013 (v0.24 requirement D.1, #169) added ONE more node to the same
+# already-counted `tests/test_deadline.py` (new Section I) pinning that a
+# passing verdict rendered after the deadline still concludes the run
+# `succeeded`, never `timed_out` -- fast 6028 -> 6029, measured the same
+# way. Still fast-only (same module-wide `live(` scan trip), smoke
+# unaffected.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6028, "modules": 400},
+    "fast": {"tests": 6029, "modules": 400},
     "smoke": {"tests": 4381, "modules": 283},
 }
 
