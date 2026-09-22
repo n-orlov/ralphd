@@ -124,7 +124,7 @@ SonarQube — arrive as operator-prepared env files that the agent sources on de
 | **R2** | **Operator-initiated termination is never undone.** An `abort`/`stop` is recorded durably (`operator-termination.json` in the run dir) and is authoritative over every automatic mechanism: `classify_fault(operator_abort=...)` can never call it `"infra"`, the backoff wrapper never re-runs the iteration the operator just stopped, and `doctor --fix` never auto-resumes such a run. | Otherwise a `SIGINT` — which `pi` reports as the bare in-band error `aborted`, textually identical to a provider aborting a stream — reads as a transient fault, and the run the operator deliberately killed sits in backoff or comes back as a fresh container. |
 | **R3** | **The run directory on the host is the source of truth and outlives the container.** `~/.ralphd/runs/<run-id>/` is *always* a bind-mount (at `/run/ralphd`); `status.json`/`tasks.json` are written temp-then-rename; every host-side surface — `status`, `logs`, `runs`, the hub, `repair` — falls back to reading that directory when the API is unreachable, and says so (`"live": false`) rather than erroring. | Otherwise the container's death takes the run's observability with it: 29,720 lines of on-disk transcript with an empty log tail in the UI, `tasks: (none)` next to a 25 KB `tasks.json`, and every post-mortem done by hand in `output.jsonl`. |
 | **R4** | **Every terminal state produces a post-mortem or an explicit record of why it could not.** The optional `reflect` iteration runs exactly once, strictly after the terminal state, through the same retry wrapper; a failure is recorded as `status.json`'s `reflect: {ok: false, error: …}` plus `artifacts/reflection/FAILED.md` and surfaced by `ralphctl status` and the hub. A signal taking the engine down instead records `reflect: {ok: null, attempted, skipped}` — no attempt, no tombstone (§8.4). | Otherwise the analysis of the run silently produces nothing — the one outcome indistinguishable, from outside, from never having asked for it. |
-| **R5** | **"Done" is a claim; only verification is a verdict.** The worker's whole-plan `"plan_complete"` verdict (retiring the `<promise>COMPLETE</promise>` marker, v0.14 requirement O) gates entry to review and nothing else; the job succeeds only on the reviewer's own `{"verdict": "verified"}` contract report, and only when no steering is left unconsumed. A budget exhausted with every task `completed` still gets one off-budget **grace review** per approach, and a plan whose only unresolved tasks are `failed` ones is routed to review by the engine rather than left to stagnate (§5.3). | Otherwise a confident agent ends the job, and the two shapes that actually cost operators time recur: a "successful" run nobody re-checked, and a `failed/unverified` run whose work was in fact complete but whose last budgeted iteration went to finishing it instead of reviewing it. |
+| **R5** | **"Done" is a claim; only verification is a verdict.** The worker's whole-plan `"plan_complete"` verdict (retiring the `<promise>COMPLETE</promise>` marker, v0.14 requirement O) gates entry to review and nothing else; the job succeeds only on the reviewer's own `{"verdict": "verified"}` contract report, and only when no steering is left unconsumed. A budget exhausted before review ever renders a judgement now **holds** — the run enters the non-terminal `timed_out` state with `verdict: null` (v0.24 requirements A–D, #169) rather than being granted an extra off-budget review or ending terminal `failed`/`unverified` with the work done and nobody having looked at it — and a plan whose only unresolved tasks are `failed` ones is routed to review by the engine rather than left to stagnate (§5.3). | Otherwise a confident agent ends the job, and the two shapes that actually cost operators time recur: a "successful" run nobody re-checked, and a `failed/unverified` run whose work was in fact complete but whose last budgeted iteration went to finishing it instead of reviewing it. |
 | **R6** | **Secrets never reach disk or a transcript.** Credentials arrive as `<name>.env` files, are placed at `~/.creds/*.env` (mode `0600`) by the engine itself, and are never auto-exported into the agent's environment; only file *names* ever reach the run dir, the persisted job config, or a log line. On top of the prompt rule, redaction is **mechanical**: known secret values are scrubbed from `output.jsonl` at write time, from `events.jsonl` at emit time, and again as `GET /logs` serves. The redaction set is memory-only and no route returns it. | Otherwise one `cat` of a cred file, or one `docker inspect` of the engine container, writes a live token into host-visible history permanently — which prompt guidance alone demonstrably does not prevent. Persisting the redaction map to enable a second pass would put every secret on disk next to the transcript it protects, so that is forbidden too. |
 | **R7** | **Unknown cost reads as unknown, never as `$0.0000`.** An iteration with tokens but no provider-quoted price is marked `costPriced: false`; a run total mixing priced and unpriced iterations reads *partial*; an optional host-side pricing map may supply a *derived* cost, which lives in its own `costDerivedUSD` field with its own marker and is never merged into provider-reported `costUSD`. | Otherwise a 102M-token run reads as free, a cheap per-hat models table optimises against zeros, and no surface can distinguish "free" from "unmeasured". |
 | **R8** | **The engine cannot be killed by the agent it supervises.** The job container carries `ralphd.role=job` alongside `ralphd.run=<run-id>`, siblings carry `ralphd.role=sibling`, and the container is told its own name via `RALPHD_SELF_CONTAINER_ID`. Every documented cleanup command — prompt, skill example, docs — is the two-filter, sibling-only form. | Otherwise the idiom ralphd itself teaches deletes the job container mid-iteration: that iteration's work and transcript are lost and the run dir is left non-terminal, which is exactly how a run becomes a zombie that `status` reports as healthy and still-running. |
@@ -558,7 +558,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/engine/main.py` | Entrypoint and startup order: argparse-only `--help`/`--version`, run-dir `flock`, `schemaVersion` check, creds/skills placement, redaction-set build, PRD copy, then `LoopSupervisor.run_job()` + `uvicorn` in one event loop. Owns the `on_complete_cmd` hook and the process exit codes. |
 | `src/ralphd/engine/config.py` | `JobConfig` (every budget, flag, timeout and retry knob, with its default and `RALPHD_*` override) and its `effective()` view for `GET /config`; the container path constants; the overlay → `/config` → builtin resolution order (`overlay_or_config`, `overlay_write_path`); per-hat model resolution (`model_for`, `MODEL_HATS`) and the retired-knob migration (`_migrate_legacy_model_config`, task 006). |
 | `src/ralphd/engine/state.py` | The run directory as an object: paths, atomic write-then-rename JSON, `status.json` merge-patch updates, `events.jsonl` emit (scrubbed), the `.lock` flock, iteration directories and `max_iteration_number()`, steering inbox and consumed marker, the vigilant-verified record, operator-termination record, schema-version policy, the hardened `tasks.json` read (`read_tasks_doc()` → `TasksRead`, §5.3), and the shared duration/time/cost/approach/task-count/image formatters both sides render with. |
-| `src/ralphd/engine/loop.py` | `LoopSupervisor`: the whole loop. Approaches and composite PRDs, per-phase prompt assembly, budget accounting and refunds, vigilant verification, criteria fingerprinting, the stagnation and instant-failure guards, the infra-retry wrapper and outage-budget episode clock, grace review, steering application, pause/interrupt/abort/retry gates, the live `tasks.json` poller, and reflection. |
+| `src/ralphd/engine/loop.py` | `LoopSupervisor`: the whole loop. Approaches and composite PRDs, per-phase prompt assembly, budget accounting and refunds, vigilant verification, criteria fingerprinting, the stagnation and instant-failure guards, the infra-retry wrapper and outage-budget episode clock, the deadline-hold (`timed_out`) freeze path, steering application, pause/interrupt/abort/retry gates, the live `tasks.json` poller, and reflection. |
 | `src/ralphd/engine/transitions.py` | The declared FSM table (§4, task 008/014): states, legal transitions, guard-predicate names and per-hat entries as one data structure, with vigilant and non-vigilant as two variants of it (`VIGILANT_DELTA`), plus `TransitionExecutor` — the one code path that walks the table and refuses an illegal move — and the router's declared per-state fallback (`ROUTER_FALLBACK`). |
 | `src/ralphd/engine/tiers.py` | Task 012 (#68 half 2, requirements E/J): the three-tier vocabulary (`trivial < normal < hard`) with `escalate_tier`/`step_down_tier` as the only ordering moves, and `resolve_bundle` — the pure `(hat, effective_tier, host_map) -> HatBundle` resolver, no I/O, no clock, never touching `transitions.TABLE`. `default_host_map` is the one place a `JobConfig` is consulted, delegating to `JobConfig.bundle_for` rather than opening a second model-resolution pathway. Applied at the single dispatch call site in `loop.py` (task 016), never inside the transition table itself. |
 | `src/ralphd/engine/scheduler.py` | Task 115 (#60, requirement C/F): the pure task-selection algorithm (`select_next_task()`) -- validation-failed first, then in-progress, then the `dependsOn`/`priority`-aware pending scheduler, else `None` -- mirroring `worker.md`'s documented pick rule. Wired into `loop.py`'s `_step_worker` (task 116): the harness runs it and writes the pre-spawn `in-progress` claim itself, before the worker subprocess ever starts (§4.1). |
@@ -992,7 +992,7 @@ a separate, wider schema instead (`transitions.MIDRUN_REVIEW_SCHEMA`) that
 adds the third legal value `"adjudicated"` -- naming exactly what a reply
 with nothing terminal to claim is answering -- and also accepts `verdict`
 being omitted entirely. `"adjudicated"` is illegal everywhere else: an
-ordinary run-ending review or grace review that answers it is a contract
+ordinary run-ending review that answers it is a contract
 violation like any other malformed `verdict`.
 
 `COMPLETE` is matched in `engine/runner.py` (`IterationResult.saw_complete`) as
@@ -1142,7 +1142,7 @@ could dodge every automated check by moving the bar after failing it.
 
 ```python
 charged = (self.iterations_used - self._infra_refunded
-          - self._grace_refunded - self._steer_refunded)
+          - self._steer_refunded - self._adjudication_refunded)
 return (charged < self.cfg.iterations
         and time.monotonic() < self.deadline
         and self._abort_reason is None)
@@ -1150,12 +1150,16 @@ return (charged < self.cfg.iterations
 
 Raw attempts always increase — every attempt gets its own iteration number and
 directory — but three kinds are refunded and never charged: an attempt retried
-after a fault `classify_fault()` scored as `infra`, an off-budget grace
-review (`_maybe_grace_review()`), and the `steer` hat's own iteration (task
+after a fault `classify_fault()` scored as `infra`, an off-budget midrun
+adjudication episode (`_maybe_run_midrun_adjudication_episode()`, task 014,
+requirement F.1, #144 — settling an open workspace-impossibility petition; v0.24
+task 015, requirement E.1, #169 renamed this bucket's `"grace"` predecessor,
+the retired off-budget grace review, to `"adjudication"` and kept its one
+distinguishing behaviour, see below), and the `steer` hat's own iteration (task
 014, requirement J, #98 — "an operator message must not cost the run a work
 iteration"). `status.json`'s `iterationsUsed` publishes raw attempts minus
-infra AND steer refunds (a grace refund is deliberately not subtracted from
-it — it stays visible as a used iteration, see below), so a refund an
+infra AND steer refunds (an adjudication refund is deliberately not subtracted
+from it — it stays visible as a used iteration, see below), so a refund an
 operator was shown is never quietly re-charged. All three counters are
 persisted as `iterationsRefunded` and seeded back on the next engine process
 (§8.4), so none is lost across a resume, either.
@@ -1210,12 +1214,24 @@ turn the new budget applies at the next iteration boundary, with no container
 restart and no re-read of the read-only `job.yaml`. A budget can only be raised to
 the current usage or above, and the change is recorded as a `budget_changed` event.
 
-When the budget runs out with every task already `completed`, the approach gets
-exactly one **off-budget grace review** rather than going terminal
-`failed`/`unverified` with all the work done and nobody having looked at it. It is
-granted at most once per approach, never loops back into the worker, and is
-refunded from the charged count; a run that succeeds this way records
-`graceReview: true`.
+**When the budget runs out, the run holds instead of ending unreviewed (v0.24
+requirements A–D, #169).** Task 015 (requirement E.1) retired the off-budget
+**grace review** this used to read as "exactly one extra review, granted at
+most once per approach, when every task was already `completed`" — requirements
+A and D instead move the ordinary review path itself so it finishes before the
+deadline/iteration budget cuts it short, so there is no off-budget shot left to
+attempt. The plain out-of-budget shape (`_finish_tail_unverified`'s
+`self._budget_exhausted_tail`, set by every `if not self.budget_left(): return
+("tail",)` guard that is not already a review-specific hold) now calls
+`_finish_timed_out()` (task 010, requirement B.3) instead of ending terminal
+`failed`/`unverified`: the run enters the non-terminal `timed_out` state
+(§5.2) with `verdict: null` and a `reason` naming the hold, and is
+resume-eligible like any other hold — an operator resume gets it back into the
+ordinary dispatch loop with a fresh window, never a second implementation of
+the old grace pass. `max_approaches` exhaustion and the genuinely structural
+tails (a repeated blocker signature, a verdict-gate rejection on the merits,
+the contract-violation-once-budget-is-also-gone branch) never set this flag —
+they still fail, unchanged (requirement C.2).
 
 **A worker's optional `progress` claim is corroborated against the workspace tree,
 not merely logged (PRD requirement A.2, #156, task 012).** Alongside
@@ -1289,8 +1305,9 @@ is pending.
   steer is NOT a waiver — only operator amendments in `/config/amendments`
   waive an obligation (§13.4).
 - A `VERIFIED` verdict is refused while the exit gate
-  (`LoopSupervisor._terminal_success_blockers()`, the one predicate both
-  `_step_review` and the grace review ask) names anything: an **unsettled**
+  (`LoopSupervisor._terminal_success_blockers()`, the one predicate
+  `_step_review` asks -- v0.24 task 015/E.1 retired the off-budget grace
+  review's own second call site) names anything: an **unsettled**
   steering file, a **non-terminal steering-origin task** (task 013,
   requirement I, #98 — `settled` is not `done`), or a **non-terminal
   `review-cure`-origin task** (v0.23 requirement D.1, #220 — engine-inserted
@@ -1472,7 +1489,9 @@ never economises.** Task 015 (decision 7/8): a per-task verify/review dispatch
 runs at `state.task_verify_tier(task)` -- `tiers.step_down_tier` applied to the
 task's CURRENT effective tier (post-escalation), floored at `trivial`. The
 run-ending verification that decides whether the run itself goes terminal
-(`_review_verdict`/`_maybe_grace_review`) always provisions at `tiers.TOP_TIER`
+(`_review_verdict`, the ordinary run-ending call -- v0.24 task 015/E.1
+retired its off-budget `_maybe_grace_review` twin) always provisions at
+`tiers.TOP_TIER`
 (`state.run_level_verify_tier()`) regardless of any task's tier -- there is no
 task in hand to read one from, and the exit gate is never a bottom-rung rubber
 stamp. Every hat with no task in hand at all -- `planning`, `reflect`, and the
@@ -1642,18 +1661,17 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `phase` | string \| null | the phase running now; `null` between phases and once terminal |
 | `iteration` | int | the current (raw) iteration number |
 | `iterationsUsed` | int | charged iterations: raw attempts minus infra and steer refunds (task 014, #98) |
-| `iterationsRefunded` | object | the run's earned refunds, `{infra, grace, steer}` — the counters `budget_left()` subtracts, persisted here so they survive a resume (§8.4); absent (read as zeroes) until the run earns its first refund |
+| `iterationsRefunded` | object | the run's earned refunds, `{infra, steer, adjudication}` — the counters `budget_left()` subtracts, persisted here so they survive a resume (§8.4); absent (read as zeroes) until the run earns its first refund. v0.24 task 015 (requirement E.1, #169) renamed this object's third key from `grace` (the retired off-budget grace review's own bucket) to `adjudication` (the midrun petition-adjudication episode, task 014/F.1, that inherited its refund shape); a pre-v0.24 run dir's persisted `grace` key is read as history, never migrated |
 | `iterationsBudget` | int | the current iteration budget, including in-flight top-ups |
 | `currentIteration` | object \| null | `{number, phase, model, startedAt}` while an iteration runs, or `{phase, note}` while retrying after an infra fault; `null` otherwise |
 | `approach` | int | the approach running now |
 | `maxApproaches` | int | configured approach ceiling, so every surface can render `approach 2/3` rather than a bare number |
 | `model` | string \| null | the model reference the run's iterations actually reported, `provider/model`; `null` until an iteration observes one |
 | `modelRaw` | string \| null | the provider's own id when it differs from the resolved reference (a gateway-local spelling); `null` when it does not |
-| `verdict` | string \| null | `verified` \| `verified-with-residuals` \| `unverified` \| `unreviewed`; `null` until terminal -- `verified-with-residuals` (task 012, requirement D.3) is review's own VERIFIED edge written instead of plain `verified` when the settled findings channel carries at least one `severity: "residual"` finding (`LoopSupervisor._review_success_verdict_label`), so a clean approach still reads `verified`; `unverified` is the ordinary negative (review ran and rejected with no approach/budget left, or the run was aborted); `unreviewed` is the narrower case where review never rendered a judgement on this approach at all, and it has TWO writers, told apart by `reason` and never by the word: the deadline took the run mid-review -- self-loop exhaustion or the off-budget grace attempt -- before review produced any contract payload (task 016, requirement F.3, #146), so `reason` reads `"deadline during review"`; or review ran to completion and its own contract ladder never got a readable verdict claim out of the hat (`LoopSupervisor._review_contract_unrepaired`, GH #209 defect 2), so `reason` reads `"review never produced a parseable contract payload; no verdict was ever scored"` and no deadline was involved -- only the off-budget grace review reaches that terminal write, since a run with budget left HOLDS on `pauseReason: "review_contract_unrepaired"` instead. Either way `reason` is not a real rejection reason, and neither writer overrides an actual operator abort (which keeps `unverified`) |
+| `verdict` | string \| null | `verified` \| `verified-with-residuals` \| `unverified` \| `unreviewed`; `null` until terminal, and also the value while `state` is the non-terminal `timed_out` hold (v0.24 task 010, requirement B.3, #169 -- a budget/deadline exhaustion no longer ends the approach terminal, see §4.5) -- `verified-with-residuals` (task 012, requirement D.3) is review's own VERIFIED edge written instead of plain `verified` when the settled findings channel carries at least one `severity: "residual"` finding (`LoopSupervisor._review_success_verdict_label`), so a clean approach still reads `verified`; `unverified` is the ordinary negative (review ran and rejected with no approach/budget left, or the run was aborted). A deadline that lands mid-review (self-loop exhaustion) used to write `unreviewed` here too; v0.24 task 009 (requirement B.2, #169) carved that case out to carry `null` instead (`reason` still reads `"deadline during review"`), because the run is resumable and a resumed review may still render a real verdict -- `unreviewed` is now written by exactly ONE site: review ran to completion and its own contract ladder never got a readable verdict claim out of the hat (`LoopSupervisor._review_contract_unrepaired`, GH #209 defect 2), so `reason` reads `"review never produced a parseable contract payload; no verdict was ever scored"` -- reached only when the iteration/wall-clock budget is ALSO exhausted at that point (the ordinary tail exit into `_finish_tail_unverified`), since a run with budget left instead HOLDS on `pauseReason: "review_contract_unrepaired"`. Either way `reason` is not a real rejection reason, and neither writer overrides an actual operator abort (which keeps `unverified`) |
 | `pendingTerminalState` | string | present only while `state` is `finishing`: the terminal state this run is going to become once the reflect window closes (§12.2) |
-| `reason` | string | why a non-succeeded run ended, or the grace-review note; **episode-scoped** like `endedAt` |
+| `reason` | string | why a non-succeeded run ended, including the `timed_out` hold's own note (§4.5); **episode-scoped** like `endedAt` |
 | `termination` | object \| null | present only for the CURRENT episode, and only once it was told to stop: `{class, action, at, signal, reason, evidence}`, where `class` is `operator` (someone asked through `POST /abort`) or `self-inflicted` (a signal reached the engine and nobody claimed it — §4.6). `evidence` is the last tool call before the signal (`{iteration, tool, args, transcript}`) or `null`. Task 005 (#173): a resume that opens a fresh episode folds the SUPERSEDED episode's `termination` into the matching `previousEndings` entry (below) and **removes the top-level key outright** (not `null`: a presence test is how consumers ask "was this run told to stop?"), so a run stopped by an operator and then resumed into a clean ending carries no `termination` key at all, and a `--json` consumer/the hub/any future classifier reading a terminal run's `termination` is reading the CURRENT episode's own record, never a stale one two episodes old |
-| `graceReview` | bool | present and `true` when an off-budget grace review verified the run |
 | `reflect` | object | `{ok, error, endedAt}` — the post-terminal reflect phase's own verdict; `error` is `null` when it produced a report, and a failure also leaves `artifacts/reflection/FAILED.md`. `ok: null` with `{attempted, skipped}` instead means a signal was already taking the engine down, so the phase produced no verdict and no tombstone was written (§8.4) |
 | `unconsumedSteering` | array | steering files still pending at the terminal write |
 | `steerSettled` | object \| null | the most recent `steer` hat iteration's own `settled` claim: `{settled, at, notes}`; `null` until the first `steer` iteration runs. `settled` is a harness-observable fact SEPARATE from `done` (task 013, requirement I, #98) -- it means only "the hat processed this iteration's pending steering message(s) and applied its changes to the plan", never a claim about whether the tasks it inserted or changed will pass. That verdict is read off those tasks' own `status` plus their `origin: "steer"` marker (`tasks[].origin`, §5.3) -- the exit gate (R11 below) waits on THAT, never on this field |
@@ -3283,9 +3301,12 @@ disk. `status.json`'s `iterationsUsed` publishes the charged figure
 (`iterations_used - _infra_refunded`).
 
 **Refunds survive a resume** (task 023, #32; task 014 added the third
-counter). `_refund_iteration()` is the one place that bumps any counter,
-and it writes all three to `status.json` as
-`iterationsRefunded: {infra, grace, steer}` in the same breath — an outage
+counter; v0.24 task 015, requirement E.1, #169 renamed that third counter
+from `grace` to `adjudication` when it retired the off-budget grace review
+and handed the same off-budget-refund shape to the midrun
+petition-adjudication episode). `_refund_iteration()` is the one place that
+bumps any counter, and it writes all three to `status.json` as
+`iterationsRefunded: {infra, steer, adjudication}` in the same breath — an outage
 retry is precisely when a run is most likely to be killed and resumed. A
 new engine process seeds the counters back from that field
 (`_seed_refunds()`), each clamped into `[0, iterations_used]` with their
@@ -3295,13 +3316,16 @@ that counter is also the number of the next iteration directory, so a resumed
 engine would reuse a number a *finished* iteration already holds and
 `begin_iteration_dir()` (§4.2) would archive a completed record as a crashed
 attempt. What is discounted is the budget comparison, never the numbering.
-Refunds also cannot be re-derived from the iteration dirs afterwards: a grace
-review is refunded and carries no `infra` faultClass at all.
+Refunds also cannot be re-derived from the iteration dirs afterwards: an
+adjudication episode is refunded and carries no `infra` faultClass at all.
 
-*Residual limitation, deliberately unchanged:* `_grace_review_granted` (the
-"one grace review per approach" guard, §4.5) is still per-process, so a resumed
-engine may grant one more — the refund is a budget fact that has to survive, the
-guard is a policy whose resume behaviour predates #32 and is not part of it.
+*Residual limitation, deliberately unchanged:* the midrun adjudication
+episode's own per-process guard (`self._petition_adjudication_seen`, an
+obligation set rather than an approach-keyed count) is still per-process, so
+a resumed engine may run one more bonus episode over an obligation an earlier
+process already adjudicated in this same approach — the refund is a budget
+fact that has to survive, the guard is a policy whose resume behaviour is not
+part of #32.
 
 The backoff is `infra_retry_backoff_s`, defaulting to
 `DEFAULT_INFRA_RETRY_BACKOFF_S` in `src/ralphd/engine/config.py`:
