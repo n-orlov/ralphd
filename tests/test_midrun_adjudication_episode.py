@@ -181,7 +181,10 @@ def test_episode_runs_before_verify_on_the_review_hat_model_and_confirms_at_run_
 
     # Off-budget: the episode never competed with the run's ordinary
     # iteration budget (iterations=2 covered exactly worker + verify).
-    assert sup.run.read_status().get("iterationsRefunded", {}).get("grace", 0) >= 1
+    # Task 015 (requirement E.1, #169) renamed this refund bucket from the
+    # retired off-budget grace review's "grace" to "adjudication" --
+    # same off-budget mechanism, new name.
+    assert sup.run.read_status().get("iterationsRefunded", {}).get("adjudication", 0) >= 1
 
 
 def test_no_open_petition_is_a_no_op_episode(tmp_path):

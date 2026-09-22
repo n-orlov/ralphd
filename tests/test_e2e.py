@@ -87,58 +87,48 @@ def test_budget_exhaustion_fails_job(engine_factory):
     assert status["state"] == "timed_out"
     assert status["verdict"] is None
     assert status["iterationsUsed"] == 2
-    # Task 002 negative case: tasks are NOT all completed at exhaustion, so
-    # no grace review is granted -- holds exactly as before this feature.
+    # Negative case retained after task 015 (requirement E.1, #169) removed
+    # the off-budget grace review: `graceReview` is a dead field now (no
+    # code path ever sets it again) -- still worth pinning that it stays
+    # absent rather than silently reappearing.
     assert not status.get("graceReview")
 
 
-def test_grace_review_when_budget_exhausts_with_all_tasks_completed(engine_factory):
-    """Task 002: budget sized so the worker iteration that completes the
-    LAST task is also the iteration that exhausts the budget -- no
-    budget-permitted review slot exists (planning=1, worker=2, worker=3 ==
-    the whole 3-iteration budget). The job must still get exactly one
-    off-budget grace review, and a satisfied stub review (STUB_REVIEW_FAILS
-    unset) verifies it."""
-    e = engine_factory(job={"on_complete": "exit", "iterations": 3,
-                            "max_approaches": 1},
-                       stub_env={"STUB_TASKS": "2"})
-    assert e.proc.wait(timeout=60) == 0
-    status = json.loads((e.run_dir / "status.json").read_text())
-    assert status["state"] == "succeeded"
-    assert status["verdict"] == "verified"
-    assert status["graceReview"] is True
-    assert "grace review" in status["reason"]
-    tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
-    assert tasks and all(t["status"] == "completed" for t in tasks)
-    iters = sorted((e.run_dir / "iterations").iterdir())
-    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
-    assert [m["phase"] for m in metas] == ["planning", "worker", "worker", "review"]
-    # The off-budget grace-review iteration still got its own iteration
-    # number/directory (4) even though it never counted against the
-    # 3-iteration budget (the job would otherwise have failed at 3).
-    assert status["iterationsUsed"] == 4
+def test_budget_exhausted_with_all_tasks_completed_holds_timed_out(engine_factory):
+    """Task 015 (requirement E.1, #169), inverting the old `test_grace_
+    review_when_budget_exhausts_with_all_tasks_completed`/`test_grace_
+    review_not_granted_twice_and_can_fail`: budget sized so the worker
+    iteration that completes the LAST task is also the iteration that
+    exhausts the budget (planning=1, worker=2, worker=3 == the whole
+    3-iteration budget). The off-budget grace review this used to grant
+    is gone -- the run now holds `timed_out`/`verdict: null` through the
+    same plain out-of-budget path C.1 (task 011) established, with no
+    review iteration ever dispatched, REGARDLESS of what the stub review
+    would have said -- proved by running the exact same budget/task shape
+    with `STUB_REVIEW_FAILS` both unset and set and observing the SAME
+    outcome either way, which is the surviving cover for both retired
+    tests."""
+    for stub_review_fails in (False, True):
+        stub_env = {"STUB_TASKS": "2"}
+        if stub_review_fails:
+            stub_env["STUB_REVIEW_FAILS"] = "1"
+        e = engine_factory(job={"on_complete": "exit", "iterations": 3,
+                                "max_approaches": 1},
+                           stub_env=stub_env)
+        assert e.proc.wait(timeout=60) == 1
+        status = json.loads((e.run_dir / "status.json").read_text())
+        assert status["state"] == "timed_out", stub_review_fails
+        assert status["verdict"] is None, stub_review_fails
+        assert not status.get("graceReview"), stub_review_fails
+        tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
+        assert tasks and all(t["status"] == "completed" for t in tasks)
+        iters = sorted((e.run_dir / "iterations").iterdir())
+        metas = [json.loads((d / "meta.json").read_text()) for d in iters]
+        # no review iteration -- the budget ran out before one could be
+        # dispatched, and there is no off-budget shot left to grant one.
+        assert [m["phase"] for m in metas] == ["planning", "worker", "worker"]
+        assert status["iterationsUsed"] == 3
 
-
-def test_grace_review_not_granted_twice_and_can_fail(engine_factory):
-    """A grace review that comes back unsatisfied must not loop: the job
-    holds `timed_out`/`verdict: null` (task 011, v0.24 requirement C.1,
-    #169 -- the grace review is itself an off-budget shot inside the
-    SAME plain out-of-budget `_step_planning` guard C.1 routes into the
-    B.3 freeze) rather than granting a second free review or burning more
-    budget."""
-    e = engine_factory(job={"on_complete": "exit", "iterations": 3,
-                            "max_approaches": 1},
-                       stub_env={"STUB_TASKS": "2", "STUB_REVIEW_FAILS": "1"})
-    assert e.proc.wait(timeout=60) == 1
-    status = json.loads((e.run_dir / "status.json").read_text())
-    assert status["state"] == "timed_out"
-    assert status["verdict"] is None
-    assert "grace review" in status["reason"]
-    assert not status.get("graceReview")
-    iters = sorted((e.run_dir / "iterations").iterdir())
-    metas = [json.loads((d / "meta.json").read_text()) for d in iters]
-    # exactly one grace review, no second attempt/approach
-    assert [m["phase"] for m in metas] == ["planning", "worker", "worker", "review"]
 
 def test_api_observation_and_idle_lifecycle(engine_factory):
     e = engine_factory()  # idle mode

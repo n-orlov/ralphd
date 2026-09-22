@@ -727,8 +727,8 @@ def _garbage(sup, prompt=""):
     return _ok("this is not JSON, and steer requires a `settled` boolean")
 
 
-def test_steer_hat_state_is_refunded_like_grace_and_infra():
-    assert LoopSupervisor.REFUND_KINDS == ("infra", "grace", "steer")
+def test_steer_hat_state_is_refunded_like_the_other_kinds():
+    assert LoopSupervisor.REFUND_KINDS == ("infra", "steer", "adjudication")
 
 
 def test_a_clean_steer_iteration_gets_a_slot_but_is_refunded(tmp_path):
@@ -746,10 +746,10 @@ def test_a_clean_steer_iteration_gets_a_slot_but_is_refunded(tmp_path):
     assert sup.iterations_used == 4
     # exactly one of those four was the steer hat, and it is refunded
     assert sup._steer_refunded == 1
-    assert sup._infra_refunded == 0 and sup._grace_refunded == 0
+    assert sup._infra_refunded == 0 and sup._adjudication_refunded == 0
 
     status = json.loads(sup.run.status_file.read_text())
-    assert status["iterationsRefunded"] == {"infra": 0, "grace": 0, "steer": 1}
+    assert status["iterationsRefunded"] == {"infra": 0, "steer": 1, "adjudication": 0}
     # the published, budget-relevant figure excludes the steer slot entirely
     assert status["iterationsUsed"] == 3 == sup.iterations_used_charged
     # ... yet the steer iteration still has its own real, numbered slot --

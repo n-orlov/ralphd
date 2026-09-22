@@ -13,9 +13,11 @@ Two facts this flow pins together that no earlier flow module combines:
     it ever records a verdict), and a fresh engine resuming over the SAME
     run dir must not re-charge or drop that refund -- `_seed_refunds`
     reads `iterationsRefunded` straight back off disk rather than
-    re-deriving it from the iteration directories, precisely because a
-    grace refund carries no `faultClass` at all and could never be told
-    apart from a charged attempt by directory contents alone.
+    re-deriving it from the iteration directories, precisely because an
+    off-budget refund (`adjudication`, task 015/E.1's rename of the
+    retired grace review's own `grace` bucket) carries no `faultClass` at
+    all and could never be told apart from a charged attempt by directory
+    contents alone.
 
 The crash lands deterministically, never by a real-time race: the stub's
 bounded hold primitive (task 007/008, B.1/B.2, `STUB_HOLD_PHASE=review`)
@@ -227,10 +229,10 @@ def test_crash_mid_review_then_resume_preserves_the_infra_refund(engine_factory,
 
     # The refund accounting that survived the crash: exactly the one infra
     # refund earned before the kill, never re-charged and never dropped by
-    # the resume; grace/steer stay at zero (nothing in this path earns
-    # them).
+    # the resume; steer/adjudication stay at zero (nothing in this path
+    # earns them).
     refunded = st.get("iterationsRefunded") or {}
-    assert refunded == {"infra": 1, "grace": 0, "steer": 0}, (
+    assert refunded == {"infra": 1, "steer": 0, "adjudication": 0}, (
         f"flow crash/resume/refunds: the crash/resume boundary must "
         f"preserve exactly one infra refund and invent none of the other "
         f"kinds, got iterationsRefunded={refunded!r}")

@@ -243,34 +243,25 @@ def test_mutation_stops_discriminating_interrupt_is_read_as_ordinary_verdict(
         # widened `_review_contract_ladder` entry (task 002 part (a)), the
         # mutated `_interrupted` result's prose final_text fell straight
         # through to `_review_verdict`'s non-verified default with no
-        # re-ask at all, so the main review call and the grace call were
-        # the only two runner calls this scenario ever made -- the second
-        # queue entry existed purely for the grace call (see the comment
-        # that used to sit here). Now the SAME unparseable prose also rides
-        # the widened ladder's `_ask_contract_fix` re-ask *before*
-        # `_review_verdict` ever reads it, which consumes what used to be
-        # the grace call's reserved entry -- leaving the actual grace call
-        # (`_maybe_grace_review`, below) with an EMPTY queue for phase
-        # "review", which `_ScriptedAgent.run` turns into a loud
-        # `AssertionError`. That exception is caught by `run_iteration`'s
-        # own `except BaseException` boundary (loop.py's containment
-        # comment above `_run_iteration_once`) and classified as an infra
-        # fault -- exactly steer 002's own trap, one level up: retried
-        # forever against the `infra_retry_backoff_s: [0.0]` schedule,
-        # whose `no_backoff` stub reports each wait as fully "waited"
-        # without the outage-budget clock ever actually advancing, so the
-        # retry never gives up. That is the hang task 049 diagnosed (see
-        # `artifacts/reports/v0.17-review-battery-reconciliation.md`), not
-        # a new bug in the widened entry itself. Fixed by giving the ladder's
-        # re-ask its OWN answer (a schema-valid `rejected` payload with a
-        # reason -- no report/channel/findings-contradiction errors, so it
-        # is accepted on the re-ask's first attempt with no further calls)
-        # separate from the grace call's own answer.
+        # re-ask at all, so the main review call and the (since task 015,
+        # requirement E.1, #169, RETIRED) off-budget grace call were the
+        # only two runner calls this scenario ever made -- the second
+        # queue entry existed purely for that retired grace call (see the
+        # comment that used to sit here). Now the SAME unparseable prose
+        # also rides the widened ladder's `_ask_contract_fix` re-ask
+        # *before* `_review_verdict` ever reads it, which consumes what
+        # used to be the grace call's reserved entry. The THIRD entry
+        # below is a leftover from when the retired grace call still had
+        # its own reserved answer -- it is unused now (this budget-
+        # exhausted mutation scenario never reaches a second review call
+        # of any kind since task 015 removed the off-budget one), kept
+        # only so this list's shape does not need re-deriving if some
+        # future re-ask widens the ladder's own consumption again.
         "review": [_interrupted,
                   lambda sup, prompt: _ok("repaired on re-ask\n" +
                                           json.dumps({"verdict": "rejected",
                                                      "reason": "insufficient evidence"})),
-                  lambda sup, prompt: _ok("grace review: still not enough\n" +
+                  lambda sup, prompt: _ok("unused reserved slot\n" +
                                           json.dumps({"verdict": "rejected",
                                                      "reason": "insufficient evidence"}))],
     }

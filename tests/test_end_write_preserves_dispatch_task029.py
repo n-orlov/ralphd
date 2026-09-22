@@ -32,12 +32,14 @@ Two tests, one per half of F.3:
 
 Bounded per the standing rules: `_step_worker` is awaited under
 `asyncio.wait_for(..., 10)`, `iterations=2` (a fixed, small budget --
-never an unbounded `while` -- one more than the single completing worker
-iteration needs, so the off-budget grace review `_maybe_grace_review`
-grants once all tasks complete and the budget is exhausted does not fire
-on a budget of exactly 1 and drag in a `review` phase this test never
-scripts), `on_complete="exit"`, no real sleeping (`make_supervisor`'s
-default).
+never an unbounded `while`; task 015, requirement E.1, #169 retired the
+off-budget grace review `_maybe_grace_review` used to grant once all
+tasks complete and the budget was exhausted, so `_step_worker`'s own
+budget check now falls straight through to the timed-out tail on a
+budget of exactly 1 with no `review` phase involved either way -- kept
+at 2 anyway, since that is still what leaves room for the one completing
+worker iteration this test drives), `on_complete="exit"`, no real
+sleeping (`make_supervisor`'s default).
 """
 
 from __future__ import annotations

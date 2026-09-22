@@ -400,8 +400,19 @@ def _in_process_ralphctl(run, capsys):
 def test_real_reflect_run_report_is_printable_after_the_engine_is_gone(live, capsys):
     """The fixture is `artifacts/reflection/` as the REFLECT PHASE wrote it:
     `ralphctl artifacts` must list and print it once the engine (the stand-in
-    for the container) is gone."""
-    r = _in_process_ralphctl(live(run_id="artreal", job={"iterations": 2,
+    for the container) is gone.
+
+    Task 015 (requirement E.1, #169) retired the off-budget grace review
+    this fixture's `iterations: 2` used to lean on: planning (1) + worker
+    (1) left no budget for the review that turns the run terminal, and
+    the retired grace review used to supply that review off-budget for
+    free once every task (there is exactly one, `STUB_TASKS: 1`) was
+    complete. Without it the run now holds `timed_out` with no review
+    ever run and no `reflect` phase to write the report this test looks
+    for -- so the budget now covers the ordinary planning+worker+review
+    path outright, same as any other real-engine fixture past this task.
+    """
+    r = _in_process_ralphctl(live(run_id="artreal", job={"iterations": 3,
                                     "max_approaches": 1,
                                     "reflect": True, "on_complete": "idle"},
              stub_env={"STUB_TASKS": "1"}), capsys)

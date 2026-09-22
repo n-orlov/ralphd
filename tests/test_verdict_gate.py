@@ -501,26 +501,15 @@ def test_a_flagged_peek_on_a_rejection_is_still_just_recorded(tmp_path):
     assert set(peeks[0]["calls"][0]["matched"]) == {"iterations/", "output.jsonl"}
 
 
-def test_the_off_budget_grace_gate_is_checked_too(tmp_path):
-    """`_grace_verdict_gate` (the second call site) is covered by the same
-    `_record_verdict_gate_peek` helper -- a peek there is recorded and the
-    grace path's own approval still stands."""
-    root = tmp_path / "run"
-    _seed_all_completed(root)
-    sup = _supervisor(
-        root,
-        {"review": [_review_verifies()],
-         "verdict_gate": [_verdict_gate_approves]},
-        peer_verdict_gate=True)
-    sup._approach = 1
-    _inject_after_phase(sup.runner, "verdict_gate",
-                        _tool_event(f"cat {root}/events.jsonl"))
-
-    assert _bounded(sup._maybe_grace_review(1)) is True
-    status = sup.run.read_status()
-    assert status.get("state") == "succeeded"
-    peeks = status.get("verdictGatePeeks")
-    assert peeks and len(peeks) == 1
+def test_there_is_only_one_verdict_gate_call_site_now(tmp_path):
+    """Task 015 (requirement E.1, #169) retired `_maybe_grace_review` and its
+    off-budget `_grace_verdict_gate` twin, the second call site the retired
+    `test_the_off_budget_grace_gate_is_checked_too` used to cover here.
+    `_step_verdict_gate` is the only one left; this pins that both retired
+    names are actually gone rather than merely unused, so nothing could
+    quietly resurrect a second, unaccounted-for peer-gate path."""
+    assert not hasattr(LoopSupervisor, "_maybe_grace_review")
+    assert not hasattr(LoopSupervisor, "_grace_verdict_gate")
 
 
 # ===========================================================================

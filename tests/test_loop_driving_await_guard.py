@@ -125,7 +125,15 @@ LOOP_DRIVING_AWAIT_ALLOWLIST: list[dict[str, object]] = [
     {"path": "test_contract_ladder.py", "count": 4, "reason": _GRANDFATHER_REASON},
     {"path": "test_criteria_amendment_authority.py", "count": 4, "reason": _GRANDFATHER_REASON},
     {"path": "test_cure_pass.py", "count": 15, "reason": _GRANDFATHER_REASON},
-    {"path": "test_deadline.py", "count": 9, "reason": _GRANDFATHER_REASON},
+    # Task 015 (requirement E.1, #169) retired the off-budget grace review,
+    # which was `test_resume_after_grace_review_unreviewed_also_lands_on_
+    # review`'s own SECOND bare `_run_job_core()` call over a fresh episode
+    # -- its replacement, `test_resume_of_a_timed_out_budget_exhaustion_
+    # run_does_not_reenter_review`, checks `_unreviewed_awaiting_resume`
+    # directly instead of driving a second episode to a terminal state, so
+    # this file's own bare-call count dropped from 9 to 8, measured the
+    # same way this guard measures it.
+    {"path": "test_deadline.py", "count": 8, "reason": _GRANDFATHER_REASON},
     {"path": "test_deferred_pin_task024.py", "count": 1, "reason": _GRANDFATHER_REASON},
     {"path": "test_deferred_tasks_surface.py", "count": 1, "reason": _GRANDFATHER_REASON},
     {"path": "test_deferred_verdict.py", "count": 1, "reason": _GRANDFATHER_REASON},

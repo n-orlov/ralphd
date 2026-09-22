@@ -1203,46 +1203,19 @@ def test_a_petition_adjudication_in_an_unrepairable_payload_is_still_recorded(
 
 def test_a_grace_review_with_an_unrepaired_contract_is_unreviewed_not_rejected(
         tmp_path):
-    """GH #209 defect 2, the OFF-budget half. `_maybe_grace_review` has no
-    budget to ask again with, no declared edge to take and nothing to hold
-    FOR, so it ends the run truthfully instead of scoring a rejection off a
-    payload nobody could read: `_finish_tail_unverified` writes `verdict:
-    "unreviewed"` with its own contract-payload reason, NOT the deadline's
-    -- the discriminating assertion against reusing `_review_deadline_
-    unreviewed`, whose reason string is hardcoded to "deadline during
-    review" and would have been a lie here. Sibling of
-    `tests/test_deadline.py::test_grace_review_interrupted_is_also_
-    unreviewed_not_rejected`, which pins the same terminal word for the
-    engine-cutoff case this one is deliberately kept distinct from."""
-    prose = "still not sure, let me look again"
-
-    sup = _supervisor_review_ladder(tmp_path, [_ok(prose)])
-    root = sup.run.root
-    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": [
-        {"id": TASK_1, "title": "do the thing", "status": "validated",
-         "successCriteria": "the thing works"}]})
-
-    ran = asyncio.run(asyncio.wait_for(sup._maybe_grace_review(1), 30.0))
-
-    assert ran is False
-    assert sup._review_contract_unrepaired is True
-    assert sup.run.read_status().get("state") != "paused"
-    events = _events(root)
-    verdicts = [e for e in events if e.get("type") == "approach.verdict_recorded"]
-    assert [(e["channel"], e["verdict"]) for e in verdicts] == \
-        [("review", "unreviewed")], verdicts
-    assert not (root / "approaches" / "01").exists()
-    assert not sup.run.composite_prd_file.exists()
-    assert not [e for e in events if e.get("type") == "log"
-                and "review rejected approach" in (e.get("message") or "")]
-    # the deadline flag is NOT set: no deadline was involved.
-    assert sup._review_deadline_unreviewed is False
-
-    assert sup._finish_tail_unverified() == "failed"
-    status = sup.run.read_status()
-    assert status["verdict"] == "unreviewed"
-    assert "contract payload" in status["reason"]
-    assert "deadline" not in status["reason"]
+    """RETIRED (task 015, requirement E.1, #169): this pinned GH #209 defect
+    2's OFF-budget half, driven directly through the now-removed
+    `_maybe_grace_review`. The grace review (and its off-budget verdict
+    path) no longer exists -- requirement A's contract-ladder fix and
+    requirement D's own budget/deadline fixes already covered the root
+    causes it existed to patch over. The ON-budget half this was a sibling
+    of (`_run_review_iteration`'s own "unreviewed, not rejected" write for
+    an unrepaired contract, exercised by the tests around line 807-926
+    above) is unaffected and still covers the surviving mechanism; the
+    `tests/test_deadline.py` sibling this docstring used to name is
+    likewise retired.
+    """
+    assert not hasattr(LoopSupervisor, "_maybe_grace_review")
 
 
 # ===========================================================================

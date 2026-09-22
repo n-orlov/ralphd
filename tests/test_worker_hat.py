@@ -2708,11 +2708,18 @@ def test_both_blockers_are_named_by_the_one_shared_predicate(tmp_path):
     assert sup._terminal_success_blockers() == []
 
 
-def test_the_grace_gate_asks_the_same_predicate(tmp_path):
-    """`_maybe_grace_review`'s own hand-rolled `pending_steering()` test is
-    replaced by the same predicate: a VERIFIED grace review still may not
-    make the run terminal-succeeded while an operator message is unsettled,
-    and the reason note now says so in the shared vocabulary."""
+def test_the_review_verified_gate_asks_the_same_predicate(tmp_path):
+    """RETIRED/replaced (task 015, requirement E.1, #169): this used to
+    drive the retired off-budget grace review's own hand-rolled
+    `pending_steering()` check, alongside `_step_review`'s ordinary
+    VERIFIED check. `_maybe_grace_review` no longer exists -- `_step_
+    review` (already covered by every sibling test above) is now the
+    ONLY site that reads `_terminal_success_blockers()` before a VERIFIED
+    verdict may make the run terminal-succeeded, so this pins THAT call
+    site directly instead: an operator message still unsettled defers a
+    genuinely VERIFIED review back to the `worker` hat rather than ending
+    the run, and the deferral's own log line says so in the shared
+    vocabulary."""
     root = tmp_path / "run"
     run = _seed(root, [{"id": svd013_TASK_1, "status": "completed"}])
     fname = run.add_steering("one last thing", "last")
@@ -2720,10 +2727,15 @@ def test_the_grace_gate_asks_the_same_predicate(tmp_path):
     sup = _svd013_supervisor(root, {"review": [_review_verifies]})
     sup._approach = 1
 
-    assert asyncio.run(sup._maybe_grace_review(1)) is False
+    outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
+
+    assert outcome != ("done", "succeeded")
+    assert outcome[:2] == ("advance", "worker")
     assert sup.run.read_status().get("state") != "succeeded"
-    note = sup._terminal_reason_note or ""
-    assert "grace" in note and fname in note and "not settled" in note, note
+    logs = [e for e in read_events(sup.run.root, types=("log",))
+           if "VERIFIED verdict deferring" in (e.get("message") or "")]
+    assert logs, "the deferral must be logged"
+    assert fname in logs[0]["message"] and "not settled" in logs[0]["message"]
 
 
 # ---------------------------------------------------------------------------

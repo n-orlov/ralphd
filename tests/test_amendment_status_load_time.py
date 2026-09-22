@@ -282,7 +282,23 @@ def _resumed_run_with_ruling(tmp_path, monkeypatch, **amend):
     cdir = _config_dir(monkeypatch, tmp_path)
     RunDir(root=root).update_status(state="starting")
     sup = _supervisor(root, {
-        "worker": lambda s, p: _ok("nothing actionable remains"),
+        # Task 015 (requirement E.1, #169) retired the off-budget grace
+        # review this fixture used to lean on implicitly: with the sole
+        # task already ruled terminal (`skipped`) before this episode's
+        # first pass, `scheduler.select_next_task` finds nothing pickable,
+        # so the worker is dispatched with no task in hand -- and the
+        # engine's ordinary path only ever transitions to `review` once
+        # the worker SAYS the plan is done (`verdict: "plan_complete"`,
+        # `_apply_worker_plan_complete_report`), never merely because
+        # every task happens to already be terminal. A worker reply that
+        # never claims this (the plain prose this used to be) now just
+        # gets asked again, every pass, until the budget itself runs dry
+        # -- exactly the `timed_out` shape the retired grace review used
+        # to paper over. This module is about the RULING wiring, not
+        # worker-verdict signalling, so the fixture now says what a real
+        # worker would say once nothing is left to do.
+        "worker": lambda s, p: _ok(
+            "nothing actionable remains\n" + json.dumps({"verdict": "plan_complete"})),
         "review": lambda s, p: _ok(
             "nothing actionable remains\n" + json.dumps({"verdict": "verified"})),
     })
@@ -302,7 +318,6 @@ def test_run_job_core_applies_the_ruling_at_load_time(tmp_path, monkeypatch):
     sup, final_state = _resumed_run_with_ruling(
         tmp_path, monkeypatch,
         text="unmeetable as written; stand it down", status="skipped")
-
     on_disk = sup.run.read_tasks()["tasks"][0]
     assert on_disk["status"] == "skipped", on_disk
     assert on_disk["validationAttempts"] == 2

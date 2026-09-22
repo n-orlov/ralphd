@@ -348,10 +348,11 @@ class LoopSupervisor:
         # correct instead of being silenced after the first shape. This is
         # the same per-signature "once, not once per iteration" shape
         # `_blocked_notes_written` just above and `_petition_hold_already_
-        # reported` already use. Deliberately per-process, like
-        # `_grace_review_granted`: a restarted engine re-reports each
-        # refusal exactly once, which is precisely the once-per-episode
-        # behaviour this defect's fix inherits and must not lose.
+        # reported` already use. Deliberately per-process, like every
+        # other once-per-episode guard in this constructor: a restarted
+        # engine re-reports each refusal exactly once, which is precisely
+        # the once-per-episode behaviour this defect's fix inherits and
+        # must not lose.
         self._status_ruling_refusals_reported: set[tuple] = set()
         # Task 018 (requirement K, #101): the peer plan-review hat's most
         # recent objection reason, set by `_step_plan_review` when it
@@ -377,7 +378,7 @@ class LoopSupervisor:
         # Task 023 (#32): seeded from status.json, not from 0 -- see
         # _seed_refunds() for why the counters are persisted rather than
         # folded into the iterations_used seed above.
-        self._infra_refunded, self._grace_refunded, self._steer_refunded = (
+        self._infra_refunded, self._steer_refunded, self._adjudication_refunded = (
             self._seed_refunds())
         # Task 033 (#114): the steer hat's live tool broker, non-None only
         # while a steer iteration is in flight (`_run_hat_iteration`) -- it
@@ -421,13 +422,6 @@ class LoopSupervisor:
         self._infra_episode_attempts = 0
         self._infra_episode_waited_s = 0.0
         self._infra_episode_started_at: float | None = None
-        # Task 002: at most one grace review per approach (set of approach
-        # numbers that have already had one); its refund counter uses the same
-        # mechanism as _infra_refunded (and, since task 023/#32, the same
-        # persistence) so a grace review never counts against the job's
-        # iteration budget. The *granted* set itself is deliberately still
-        # per-process: see _seed_refunds().
-        self._grace_review_granted: set[int] = set()
         # Task 005 PART 2 (requirement A.2, #114): the normalised set of
         # open-and-unconfirmed petition obligations the mid-run
         # adjudication episode has ALREADY been given a bounded shot at
@@ -442,13 +436,14 @@ class LoopSupervisor:
         # episode is scheduled again only once a genuinely NEW obligation
         # appears in the open-and-unconfirmed set -- see
         # `_maybe_run_midrun_adjudication_episode`. Deliberately
-        # per-process, like `_grace_review_granted`: a resumed engine
-        # simply re-derives it from scratch off the SAME workspace file
-        # and run-scope record, which is the safe direction (at worst one
-        # extra bounded episode after a restart, never a missed one).
+        # per-process: a resumed engine simply re-derives it from scratch
+        # off the SAME workspace file and run-scope record, which is the
+        # safe direction (at worst one extra bounded episode after a
+        # restart, never a missed one).
         self._petition_adjudication_seen: set[str] = set()
-        # Descriptive note for the terminal `reason` when a grace review ran
-        # but did NOT result in a VERIFIED verdict -- kept separate from
+        # Descriptive note for the terminal `reason` some tail exits set
+        # when they have something more specific to say than the ordinary
+        # failed/unverified outcome -- kept separate from
         # self._abort_reason so the terminal `state` (aborted vs failed)
         # keeps its existing meaning (aborted == an actual abort/infra
         # condition set _abort_reason); this is purely informational text.
@@ -464,9 +459,10 @@ class LoopSupervisor:
         # Task 016 (requirement F.3, #146): True iff the terminal `("tail",)`
         # exit this episode is about to write is specifically "the deadline
         # took the last review attempt before it could speak" -- set by
-        # `_review_unjudged_at_budget_end` (ordinary self-loop exhaustion)
-        # and by `_maybe_grace_review`'s own interrupted-grace-attempt
-        # branch, the two and only two call sites that positively know
+        # `_review_unjudged_at_budget_end` (ordinary self-loop exhaustion),
+        # the one and only call site (since task 015/E.1 removed the
+        # off-budget grace review's own interrupted-grace-attempt branch,
+        # the sibling site this used to have) that positively knows
         # review itself was cut short by the ENGINE rather than having
         # rendered (or failed to render) a real verdict. `_finish_tail_
         # unverified` reads this to write `verdict: "unreviewed"` /
@@ -479,8 +475,8 @@ class LoopSupervisor:
         # worthy to say about it" shape -- set by the ordinary
         # `if not self.budget_left(): return ("tail",)` guards in
         # `_step_planning`, `_step_plan_review`, `_step_verdict_gate`,
-        # `_step_worker` (its own off-budget grace-review attempt) and
-        # `_step_generic_hat`'s engine-cut-short retry loop -- the same
+        # `_step_worker` and `_step_generic_hat`'s engine-cut-short retry
+        # loop -- the same
         # shape `_review_deadline_unreviewed` just above is for review's
         # OWN budget-out self-loop, kept as its own flag rather than folded
         # into this one because its terminal reason/verdict wording is a
@@ -514,9 +510,8 @@ class LoopSupervisor:
         # `_review_contract_ladder` (reset at every ordinary entry, set on
         # exhaustion); read by `_review_verdict` (records `"unreviewed"`
         # rather than `"rejected"` -- a judge that never spoke did not
-        # reject), by `_step_review` (takes the `review_contract_unrepaired`
-        # hold edge instead of the whole rejection ladder), by
-        # `_maybe_grace_review` (the same fact off-budget, where there is
+        # reject) and by `_step_review` (takes the `review_contract_unrepaired`
+        # hold edge instead of the whole rejection ladder), where there is
         # nothing left to hold for) and by `_finish_tail_unverified`. An
         # instance flag, exactly the shape `_review_deadline_unreviewed`
         # just above already uses for the sibling "review never spoke"
@@ -803,30 +798,35 @@ class LoopSupervisor:
                           self.cfg.run_id)
 
     # -- refund bookkeeping (task 023, #32) --------------------------------
-    # Task 014 (requirement J, #98): "steer" joins "infra"/"grace" here.
-    # A steer hat's own iteration is refunded the instant it returns
-    # (`_step_generic_hat`'s call site), for the same underlying reason a
-    # grace review's is refunded: "an operator message must not cost the
-    # run a work iteration" (PRD requirement J) is a BUDGET fact, and this
-    # is this engine's one existing mechanism for "this attempt happened,
-    # occupies a real numbered `iterations/NNNN` directory, and is fully
-    # observable -- but never counts against `cfg.iterations`." Unlike
-    # grace (deliberately still shown as a used iteration number -- see
-    # `_run_iteration_once`'s own comment), a steer refund is ALSO
-    # subtracted from the published `iterationsUsed` figure: full parity
-    # with the router/`_ask_contract_fix` channels' own unchargedness
-    # (neither leaves ANY trace in `iterationsUsed`), which is the literal
-    # comparison the PRD draws for this case ("uncharged, like the router
-    # and the v0.13 contract re-ask").
-    REFUND_KINDS = ("infra", "grace", "steer")
+    # Task 014 (requirement J, #98): "steer" joins "infra" here. A steer
+    # hat's own iteration is refunded the instant it returns
+    # (`_step_generic_hat`'s call site): "an operator message must not cost
+    # the run a work iteration" (PRD requirement J) is a BUDGET fact, and
+    # this is this engine's one existing mechanism for "this attempt
+    # happened, occupies a real numbered `iterations/NNNN` directory, and
+    # is fully observable -- but never counts against `cfg.iterations`."
+    # A steer refund is ALSO subtracted from the published `iterationsUsed`
+    # figure: full parity with the router/`_ask_contract_fix` channels' own
+    # unchargedness (neither leaves ANY trace in `iterationsUsed`), which
+    # is the literal comparison the PRD draws for this case ("uncharged,
+    # like the router and the v0.13 contract re-ask"). Task 015
+    # (requirement E.1, #169) retired the third original kind, the
+    # off-budget grace review's own "grace", and its replacement --
+    # "adjudication", the mid-run petition-adjudication episode's bonus
+    # iteration (task 005 PART 2, `_maybe_run_midrun_adjudication_episode`)
+    # -- keeps grace's OTHER distinguishing behaviour: deliberately still
+    # shown as a used iteration number (see `_run_iteration_once`'s own
+    # comment), unlike infra/steer.
+    REFUND_KINDS = ("infra", "steer", "adjudication")
 
     def _seed_refunds(self) -> tuple[int, int, int]:
         """The refunds this run has ALREADY earned, read back from
-        status.json's `iterationsRefunded` as `(infra, grace, steer)` --
-        `(0, 0, 0)` for a fresh run dir or any run dir written before this
-        field existed.
+        status.json's `iterationsRefunded` as `(infra, steer, adjudication)`
+        -- `(0, 0, 0)` for a fresh run dir or any run dir written before
+        this field existed (or written before task 015 retired the old
+        `grace` bucket this replaced).
 
-        Task 023 (#32). Both counters used to start at 0 on every engine
+        Task 023 (#32). All counters used to start at 0 on every engine
         process while `iterations_used` was seeded from the *raw*
         `max_iteration_number()`, so every `ralphctl resume` (and every
         auto-resume after a crash) silently re-charged the refunds earned
@@ -843,17 +843,10 @@ class LoopSupervisor:
         attempt, and two different iterations would share one number in the
         merged transcript and every `iterations/NNNN` URL. Refunds are also
         decisions this engine made per attempt and cannot be re-derived from
-        the iteration dirs: a grace review is refunded and carries no `infra`
-        faultClass at all, and `iterationsUsed` alone cannot say which of the
-        two counters a discount came from (grace refunds are deliberately not
-        subtracted from it, see _run_iteration_once).
-
-        Deliberately NOT persisted: `_grace_review_granted`. The refund is a
-        budget fact that must survive; "this approach already had its one
-        grace review" is a per-process guard whose resume behaviour predates
-        this task and is unchanged by it (a resumed engine may still grant
-        one more) -- SPEC 8.4 records it as a residual limitation rather than
-        having this task quietly change two contracts at once.
+        the iteration dirs: an adjudication episode is refunded and carries
+        no `infra` faultClass at all, and `iterationsUsed` alone cannot say
+        which of the counters a discount came from (adjudication refunds are
+        deliberately not subtracted from it, see _run_iteration_once).
 
         Values are clamped into `[0, iterations_used]` (and their sum to
         iterations_used) so a hand-edited or truncated status file can never
@@ -864,11 +857,10 @@ class LoopSupervisor:
         if not isinstance(recorded, dict):
             return 0, 0, 0
         # Sequential clamp, generalising the old two-counter special case
-        # (`grace = max(0, iterations_used - infra)`) to however many kinds
-        # `REFUND_KINDS` names: each kind is capped by whatever of
-        # `iterations_used` the EARLIER kinds have not already claimed, so
-        # a hand-edited or truncated status file can never make the kinds'
-        # sum exceed `iterations_used`.
+        # to however many kinds `REFUND_KINDS` names: each kind is capped
+        # by whatever of `iterations_used` the EARLIER kinds have not
+        # already claimed, so a hand-edited or truncated status file can
+        # never make the kinds' sum exceed `iterations_used`.
         counts: list[int] = []
         claimed = 0
         for kind in self.REFUND_KINDS:
@@ -883,23 +875,23 @@ class LoopSupervisor:
 
     def _refund_iteration(self, kind: str) -> None:
         """Refund the attempt that just finished: bump the counter
-        `budget_left()` subtracts and write both counters to status.json in
+        `budget_left()` subtracts and write all counters to status.json in
         the same breath (task 023, #32), so the credit is on disk before the
         engine does anything that could kill it -- an outage retry is exactly
         the moment a run is most likely to be killed and resumed.
         """
         if kind == "infra":
             self._infra_refunded += 1
-        elif kind == "grace":
-            self._grace_refunded += 1
         elif kind == "steer":
             self._steer_refunded += 1
+        elif kind == "adjudication":
+            self._adjudication_refunded += 1
         else:  # pragma: no cover - programming error
             raise ValueError(f"unknown refund kind: {kind}")
         self.run.update_status(
             iterationsRefunded={"infra": self._infra_refunded,
-                                "grace": self._grace_refunded,
-                                "steer": self._steer_refunded})
+                                "steer": self._steer_refunded,
+                                "adjudication": self._adjudication_refunded})
 
     # -- control surface (called from API) --------------------------------
     @property
@@ -2340,9 +2332,10 @@ class LoopSupervisor:
         # Task 005 (#11): the *charged* count, not the raw attempt number --
         # an infra-classified attempt is refunded (budget_left()) and must
         # stay refunded in what the operator reads, not be silently
-        # re-charged by the next iteration's status write. (A grace review's
-        # refund is deliberately NOT subtracted here: it keeps showing as a
-        # used iteration number, see test_e2e's grace-review contract.)
+        # re-charged by the next iteration's status write. (An adjudication
+        # episode's refund is deliberately NOT subtracted here, the same
+        # way the retired off-budget grace review's never was: it keeps
+        # showing as a used iteration number.)
         self.run.update_status(phase=phase, iteration=n,
                                iterationsUsed=(n - self._infra_refunded
                                               - self._steer_refunded),
@@ -2883,7 +2876,7 @@ class LoopSupervisor:
         # configured budget. Task 014 (requirement J, #98): a steer hat's
         # own iteration joins the subtraction for the same reason.
         charged = (self.iterations_used - self._infra_refunded
-                  - self._grace_refunded - self._steer_refunded)
+                  - self._steer_refunded - self._adjudication_refunded)
         return (charged < self.cfg.iterations
                 and time.monotonic() < self.deadline
                 and self._abort_reason is None)
@@ -3145,9 +3138,9 @@ class LoopSupervisor:
         episode shape as `_paused_awaiting_incurable_ruling`/`_paused_
         awaiting_last_approach_ruling` just above, keyed off the
         `review_deadline_unreviewed` event `_review_unjudged_at_budget_end`
-        and `_maybe_grace_review`'s own interrupted-grace branch each emit
-        the instant they positively know the deadline, not a rejection,
-        ended review for `approach` -- True iff the most recent such event
+        emits the instant it positively knows the deadline, not a
+        rejection, ended review for `approach` -- True iff the most recent
+        such event
         for THIS approach has no `iteration.start` recorded since (i.e. no
         later episode has already re-entered review over it).
 
@@ -3214,8 +3207,9 @@ class LoopSupervisor:
 
         A sixth case (task 016, requirement F.3, #146): the prior episode
         ended this approach `unreviewed` because the deadline took the
-        last review attempt (ordinary self-loop exhaustion or the
-        off-budget grace attempt) before it could speak (see `_unreviewed_
+        last review attempt (the ordinary self-loop exhaustion the
+        `review_deadline_unreviewed` event records) before it could speak
+        (see `_unreviewed_
         awaiting_resume`) -- the dispatch loop must land at `review`
         directly too, for the same reason as the fourth/fifth cases
         (nothing actionable for `worker`, and the approach was never
@@ -3386,7 +3380,7 @@ class LoopSupervisor:
         Task 009 (v0.24 requirement B.2, #169) carved a SECOND, stricter
         exception out of that same "always `unverified`" sentence, ahead of
         the GH #209 branch: a deadline that lands mid-review (ordinary
-        self-loop exhaustion or the off-budget grace attempt) writes
+        self-loop exhaustion) writes
         `verdict: None` (JSON `null`), not `unreviewed` and not
         `unverified` -- extending, not replacing, the existing
         `_review_deadline_unreviewed`/`_unreviewed_awaiting_resume`/
@@ -3405,9 +3399,9 @@ class LoopSupervisor:
         shape of "budget/wall clock ran out with nothing left to say about
         it" -- the plain `if not self.budget_left(): return ("tail",)`
         guards in `_step_planning`, `_step_plan_review`, `_step_verdict_
-        gate`, `_step_worker` (after its own off-budget grace-review
-        attempt) and `_step_generic_hat`'s engine-cut-short retry loop,
-        none of which ever set `self._abort_reason` or either review-
+        gate`, `_step_worker` and `_step_generic_hat`'s engine-cut-short
+        retry loop, none of which ever set `self._abort_reason` or either
+        review-
         specific flag above. Requirement C.1 reads this as "running out of
         iterations enters B.1's state, by the same code path" -- so this
         branch calls `self._finish_timed_out()` (task 010's THE one call
@@ -3424,9 +3418,9 @@ class LoopSupervisor:
         """
         final_state = "aborted" if self._abort_reason else "failed"
         # Task 009 (v0.24 requirement B.2, #169): a deadline that lands
-        # mid-review (ordinary self-loop exhaustion or the off-budget grace
-        # attempt) carries NO verdict at all -- never overrides an actual
-        # operator abort, which keeps its own reason and verdict unchanged.
+        # mid-review (ordinary self-loop exhaustion) carries NO verdict at
+        # all -- never overrides an actual operator abort, which keeps its
+        # own reason and verdict unchanged.
         if self._review_deadline_unreviewed and not self._abort_reason:
             self._finish(final_state, None,
                         reason="deadline during review",
@@ -3531,7 +3525,7 @@ class LoopSupervisor:
         run_record()` sequence the non-reflect branch below already uses --
         B.3's own retained write is this existing method entered on this
         existing path, not a new writer -- so a caller that reaches
-        `_finish("timed_out", None, ...)` (any grace-review/budget-
+        `_finish("timed_out", None, ...)` (any budget-
         exhaustion call site that chooses to, later tasks) gets the freeze
         for free with no further branching of its own.
         """
@@ -4304,8 +4298,8 @@ class LoopSupervisor:
         `verify` is walked the same way, nested inside `_step_worker` (it
         always returns straight to `worker`, per the table, before that
         method's own state-changing return). The two exceptional escapes
-        that predate the table -- budget exhaustion (with its grace-review
-        attempt) and the instant-failure fail-fast abort -- are not
+        that predate the table -- budget exhaustion and the
+        instant-failure fail-fast abort -- are not
         table-declared edges (the PRD's minimum transition list does not
         name them) and remain short-circuit returns straight to the tail,
         exactly as before.
@@ -4834,7 +4828,7 @@ class LoopSupervisor:
         # this iteration's pending messages and applied its changes"; it
         # says nothing about whether the resulting tasks will pass -- the
         # exit gate (`_steering_origin_outstanding`, called from
-        # `_step_review`/`_maybe_grace_review`) is what waits on THAT, never
+        # `_step_review`) is what waits on THAT, never
         # on this claim. Recorded twice, deliberately: an event (the
         # append-only audit trail) and a status.json field (the latest
         # snapshot, same pattern as `currentIteration` above) -- so both
@@ -6790,10 +6784,9 @@ class LoopSupervisor:
         handled by `_one_planning_attempt`'s inner retry `while True`
         without ever leaving this method -- an in-place retry is not a
         state CHANGE), `empty_plan` (-> replan) and
-        `planning_produced_tasks` (-> worker). Returns `("done", <state>)`
-        on an off-budget grace-reviewed success, `("tail",)` to fall
-        straight to the terminal-failure/-abort tail (budget ran out with
-        no grace review, or an instant-failure streak just tripped
+        `planning_produced_tasks` (-> worker). Returns `("tail",)` to fall
+        straight to the terminal-failure/-abort tail (budget ran out, or
+        an instant-failure streak just tripped
         `self._abort_reason`), or `("advance", target, guard)`.
 
         Task 120 (requirement C, #60 pillar 1): the planning hat no longer
@@ -6825,13 +6818,14 @@ class LoopSupervisor:
         approach = self._approach
         self.run.update_status(approach=approach)
         if not self.budget_left():
-            # Task 002: covers the resume edge case where a prior process
+            # Task 015 (requirement E.1, #169): the grace review that used
+            # to be tried here at the resume edge case (a prior process
             # already completed every task for this approach but the
-            # process died/ran out of budget before any review ran at all.
-            if await self._maybe_grace_review(approach):
-                return ("done", "succeeded")
-            # Task 011 (requirement C.1, #169): the plain out-of-budget
-            # shape (no grace review success) -- holds, not `failed`.
+            # process died/ran out of budget before any review ran at
+            # all) is gone -- requirements A and D already make the
+            # ordinary review path finish before the deadline/budget cuts
+            # it short, so there is no off-budget shot left to attempt.
+            # The plain out-of-budget shape holds, not `failed`.
             self._budget_exhausted_tail = True
             return ("tail",)
         if not skip_planning:
@@ -7581,12 +7575,12 @@ class LoopSupervisor:
 
     async def _verdict_gate_verdict(self, result) -> tuple[bool, dict | None]:
         """Task 020 (requirement L, #101): the ONE parser of a
-        `verdict_gate` hat reply, consulted by BOTH sites that can let the
-        peer gate bless a run -- the ordinary `_step_verdict_gate` state
-        and the off-budget `_grace_verdict_gate` call `_maybe_grace_review`
-        makes (the same single-predicate discipline task 013 imposed on
+        `verdict_gate` hat reply, consulted by the ordinary
+        `_step_verdict_gate` state (the off-budget `_grace_verdict_gate`
+        call site task 015/E.1 retired used to be the second) -- the same
+        single-predicate discipline task 013 imposed on
         `_terminal_success_blockers`, for the same reason: two hand-rolled
-        copies of a gate's parsing rules drift).
+        copies of a gate's parsing rules drift.
 
         Task 003 (requirement A.3, #119): the uncharged re-ask ladder
         every other contract site already has
@@ -7674,9 +7668,10 @@ class LoopSupervisor:
     def _record_gate_approach_verdict(self, approach: int, approved: bool,
                                       payload: dict | None) -> None:
         """Task 035 (requirement B.1): the peer verdict gate's half of
-        `_record_approach_verdict` -- called from BOTH sites that can settle a
-        gate verdict (`_step_verdict_gate`, `_grace_verdict_gate`), the same
-        two `_record_verdict_gate_peek` is called from, strictly after
+        `_record_approach_verdict` -- called from `_step_verdict_gate` (the
+        off-budget `_grace_verdict_gate` twin task 015/E.1 retired used to
+        call it too), the same site `_record_verdict_gate_peek` is called
+        from, strictly after
         `_verdict_gate_verdict` has returned.
 
         The gate's own structured sidecar is read here only as a SOURCE of
@@ -7699,9 +7694,10 @@ class LoopSupervisor:
 
     def _record_verdict_gate_peek(self, approach: int) -> list[dict]:
         """Task 020 (D.5, #125 A): a post-hoc, honor-system check over the
-        `verdict_gate` iteration that JUST FINISHED -- called from both of
-        the peer gate's two call sites (`_step_verdict_gate`,
-        `_grace_verdict_gate`) strictly AFTER `_verdict_gate_verdict` has
+        `verdict_gate` iteration that JUST FINISHED -- called from
+        `_step_verdict_gate` (the off-budget `_grace_verdict_gate` twin
+        task 015/E.1 retired used to call it too) strictly AFTER
+        `_verdict_gate_verdict` has
         already decided `approved`/`payload`, so nothing this method finds
         can reach back into that decision (see `state.
         detect_verdict_gate_peek`'s own docstring for why this ordering is
@@ -8933,7 +8929,7 @@ class LoopSupervisor:
                     # 005/006's map left unresolved): `applied_this_
                     # iteration` simply stays False on exhaustion --
                     # nothing was actually applied to tasks.json, so the
-                    # grace-review/`_outstanding_for_completion` block
+                    # budget-exhaustion/`_outstanding_for_completion` block
                     # below (gated on `applied_this_iteration`) is
                     # correctly skipped, same as it already is for a
                     # `"no_verdict"` reply. No `_advance` call, no
@@ -9518,20 +9514,17 @@ class LoopSupervisor:
                 break
 
         if not self.budget_left():
-            # Task 002: a job whose worker loop ran out of budget with
-            # every task already completed -- whether or not the worker
-            # happened to signal COMPLETE on that final iteration -- gets
-            # exactly one off-budget grace review rather than going
-            # terminal failed/unverified with all work done and no
-            # reviewer ever having looked at it. Checked BEFORE
-            # `verdict_ready` below on purpose, matching the pre-cutover
-            # ordering exactly: an honoured COMPLETE that lands in the same
-            # instant the budget runs out still goes through the grace
-            # path, not straight to a real review.
-            if await self._maybe_grace_review(approach):
-                return ("done", "succeeded")
-            # Task 011 (requirement C.1, #169): the plain out-of-budget
-            # shape (no grace review success) -- holds, not `failed`.
+            # Task 015 (requirement E.1, #169): a job whose worker loop
+            # ran out of budget with every task already completed --
+            # whether or not the worker happened to signal COMPLETE on
+            # that final iteration -- used to be granted exactly one
+            # off-budget grace review here rather than going terminal
+            # failed/unverified with all work done and no reviewer ever
+            # having looked at it. Requirements A and D now make the
+            # ordinary review path itself finish before the deadline/
+            # budget cuts it short, so there is no off-budget shot left to
+            # attempt -- the plain out-of-budget shape holds, not
+            # `failed`.
             self._budget_exhausted_tail = True
             return ("tail",)
         if not verdict_ready:
@@ -9892,9 +9885,10 @@ class LoopSupervisor:
 
         Called from every site that is about to write `_finish("succeeded",
         ...)` off the back of a review verdict that resolved VERIFIED --
-        `_step_review`'s own direct success, the ordinary (non-grace) peer
-        verdict-gate approval in `_step_verdict_gate`, and the off-budget
-        grace review's success in `_maybe_grace_review` -- each re-reads
+        `_step_review`'s own direct success and the peer
+        verdict-gate approval in `_step_verdict_gate` (the off-budget
+        grace review's own success site, task 015/E.1 retired, used to be
+        a third) -- each re-reads
         the channel independently via `_review_findings_channel` rather
         than threading a value through `_review_verdict`'s own return
         shape, exactly the same independence `_review_incurable_rejection`/
@@ -10164,8 +10158,11 @@ class LoopSupervisor:
         silently treating the claim as non-verified with no chance for the
         hat to correct it. Called once per settled review iteration,
         strictly before `_review_verdict` ever reads the result --
-        `_run_review_iteration`'s return and `_maybe_grace_review`'s own
-        `run_iteration` call are the two sites.
+        `_run_review_iteration`'s return and the mid-run petition-
+        adjudication episode's own `run_iteration` call
+        (`_maybe_run_midrun_adjudication_episode`) are the two sites (the
+        off-budget grace review's own call, task 015/E.1 retired, used to
+        be a third).
 
         Task 002 (requirement A.2, #119) widens the entry condition
         again, on top of the above: a review reply with NO parseable
@@ -12799,9 +12796,10 @@ class LoopSupervisor:
             self.notifier(text)
 
     def _terminal_success_blockers(self) -> list[str]:
-        """Task 013 (requirement I, #98): the ONE predicate both exit-gate
-        sites (`_step_review`'s VERIFIED check and `_maybe_grace_review`)
-        consult before a VERIFIED verdict is allowed to make the run
+        """Task 013 (requirement I, #98): the ONE predicate the exit-gate
+        site (`_step_review`'s VERIFIED check; the off-budget grace
+        review's own VERIFIED check task 015/E.1 retired used to be a
+        second) consults before a VERIFIED verdict is allowed to make the run
         terminal-succeeded -- one human-readable reason per blocker, empty
         list when the run may finish. Defined once so the two sites cannot
         drift apart the way they did while each hand-rolled its own
@@ -12924,8 +12922,10 @@ class LoopSupervisor:
         (`state.is_steering_origin`) not yet terminal (`state.task_is_
         terminal`), read fresh from disk -- the "not done" half of
         `_terminal_success_blockers()`, which is what REPLACED the pre-013
-        `self.run.pending_steering()` discard loop at the two exit-gate
-        sites (`_step_review`'s VERIFIED check, `_maybe_grace_review`).
+        `self.run.pending_steering()` discard loop at the exit-gate
+        site (`_step_review`'s VERIFIED check; the off-budget
+        `_maybe_grace_review`'s own check task 015/E.1 retired used to be
+        a second).
         Task 012's absolute-top-priority routing settles every steering
         FILE in the `steer` hat, but a settled message can still leave the
         TASK it produced undone -- `settled` is not `done`.
@@ -13362,8 +13362,9 @@ class LoopSupervisor:
         An empty or unreadable plan returns [] -- the signal is honoured and
         review, which re-derives everything from the PRD, is the gate. Refusing
         here instead would strand such a run in the stagnation guard with no
-        reviewer ever looking at it, which is the failure shape task 002's
-        grace review and task 024's route-to-review both exist to avoid.
+        reviewer ever looking at it, which is the failure shape the retired
+        off-budget grace review (task 002, task 015/E.1) and task 024's
+        route-to-review both exist to avoid.
 
         Task 016 (PRD requirement B.1, #156): a `superseded` task -- the
         parent of an accepted forced split -- does not show up here, for
@@ -13860,7 +13861,7 @@ class LoopSupervisor:
         gate; `awaiting-validation`, the other non-blocking status, is
         deliberately NOT accepted here -- it is waiting on verify, which
         is work this gate must not skip past), not just the literal
-        `completed`. Task 002's grace-review
+        `completed`. This
         gate: an empty or missing tasks list (e.g. planning never ran/
         produced nothing) must never be treated as "all done". Task 018
         (#77/#78): without this, a vigilant run whose plan is entirely
@@ -13871,227 +13872,6 @@ class LoopSupervisor:
             state.TASK_STATUS_SUPERSEDED,)
         return bool(tasks) and all(
             t.get("status") in accepted for t in tasks)
-
-    async def _maybe_grace_review(self, approach: int) -> bool:
-        """Task 002: invariant -- a job whose tasks are ALL completed by the
-        time the iteration budget exhausts should still get a review
-        verdict if at all possible, rather than going terminal
-        failed/unverified with e.g. 7/7 tasks done and no reviewer ever
-        having looked at it (the live incident this closes: the operator
-        had to `ralphctl resume +3` just to get a review slot).
-
-        Design choice (stated here and in docs/architecture.md): rather
-        than reserving the final budget slot ahead of time (which would
-        require predicting exhaustion before it happens), grant a single
-        OFF-BUDGET review iteration at the moment budget is discovered to
-        be exhausted, if and only if every task is already completed and
-        this approach hasn't already had one. This is simpler to reason
-        about (no speculative slot-reservation bookkeeping earlier in the
-        loop) and bounded by construction: `_grace_review_granted` records
-        one entry per approach, so this can never run twice for the same
-        approach, and it never loops back into the worker -- exactly one
-        review, then the job's fate is decided.
-
-        Returns True iff the grace review came back VERIFIED and
-        status.json has already been written terminal-succeeded (caller
-        should return "succeeded" immediately). Returns False otherwise,
-        having set `self._terminal_reason_note` to explain what happened
-        (grace review didn't run because tasks weren't all complete, or it
-        ran but did not verify) for the normal failed/aborted terminal
-        write that follows in the caller.
-        """
-        if approach in self._grace_review_granted:
-            return False
-        if not self._all_tasks_completed():
-            return False
-        self._grace_review_granted.add(approach)
-        self.run.emit("log", message=(
-            "iteration budget exhausted with all tasks completed; granting "
-            "a single off-budget grace review before ending the job "
-            "(task 002)"))
-        await self._gate()
-        self.run.emit("phase", phase="review", approach=approach)
-        # Task 016 (requirement I/decision 8): the grace review is still
-        # the run-ending review -- verify's top tier, unconditionally.
-        result = await self.run_iteration(
-            "review", extra=self._review_extra_context(),
-            tier=state.run_level_verify_tier())
-        # Off-budget: this attempt must never count against the job's
-        # iteration budget (same mechanism, and since task 023/#32 the same
-        # persistence, as the infra-retry refund).
-        self._refund_iteration("grace")
-        # Task 016 (requirement F.3, #146): the grace attempt is a single
-        # off-budget shot -- there is no budget left to self-loop on an
-        # engine-cut-short attempt the way `_run_review_iteration`'s
-        # ordinary path does, so an interrupted/timed-out grace review
-        # must land on the SAME `unreviewed` outcome as the ordinary path's
-        # own budget-exhaustion case, never fall through to the rejected-
-        # verdict ladder below (which would misread the engine's own
-        # cutoff as review's judgement, exactly the mistake requirement A,
-        # #72 already fixed for the ordinary path).
-        if self._review_interrupted(result):
-            self._review_deadline_unreviewed = True
-            self._terminal_reason_note = (
-                f"the off-budget grace review (approach {approach}) was "
-                "itself interrupted by the engine with no budget left to "
-                "ask again; no verdict was ever scored (requirement F.3, "
-                "#146)")
-            self.run.emit("review_deadline_unreviewed", approach=approach)
-            self.run.emit(
-                "log",
-                message=(f"grace review (approach {approach}) was "
-                         "interrupted by the engine; ending unreviewed, "
-                         "not rejected (requirement F.3, #146)"))
-            return False
-        result = await self._review_contract_ladder(result)
-        verified, _payload, _errors = self._review_verdict(result)
-        # GH #209 defect 2: the off-budget twin of `_step_review`'s
-        # `review_contract_unrepaired` hold. There is no budget to ask
-        # again with, no declared edge to take (this method returns a bool
-        # into `("tail",)`) and nothing to hold FOR, so it ends the run
-        # truthfully instead of scoring a rejection off a payload nobody
-        # could read -- `_finish_tail_unverified` writes `verdict:
-        # "unreviewed"` with its own contract-payload reason. Placed
-        # immediately after `_review_verdict` for the same task-011 reason
-        # `_step_review`'s branch is, and BEFORE the `blockers`/`verified`
-        # block below. Mirrors the interrupted-grace branch above, minus
-        # `_review_deadline_unreviewed`: that flag must NOT be set here,
-        # because `_finish_tail_unverified` hardcodes `reason: "deadline
-        # during review"` for it and no deadline was involved.
-        #
-        # And minus a `_terminal_reason_note` too, deliberately (#209, unit
-        # 8): the very flag this branch fires on is what makes
-        # `_finish_tail_unverified` take its own contract branch, which
-        # hardcodes the `reason` SPEC.md §5.2 and `docs/api.md` document for
-        # this verdict, so a note written here could never be read -- the
-        # same way the deadline flag makes the interrupted branch's note
-        # above unreadable. The approach number and the fact that this was
-        # the off-budget grace attempt reach the record through the error
-        # log line just below instead.
-        if self._review_contract_unrepaired:
-            self.run.emit(
-                "log", level="error",
-                message=(f"grace review (approach {approach}) never "
-                         "produced a parseable contract payload; ending "
-                         "unreviewed, not rejected (GH #209 defect 2)"))
-            return False
-        # Task 013 (requirement I, #98): the SAME single exit-gate
-        # predicate `_step_review` asks (`_terminal_success_blockers`),
-        # REPLACING this site's own hand-rolled `self.run.pending_
-        # steering()` test -- so "not settled" and "not done" are decided
-        # in one place for both gates, and a VERIFIED grace review can no
-        # more strand an unsettled operator message than it can bless a
-        # non-terminal steering-origin task. (`_all_tasks_completed()`,
-        # this method's caller-side guard, already requires every task --
-        # steering-origin or not -- to be in `TASK_COMPLETION_STATUSES`
-        # before a grace review is granted at all, so the task half is
-        # empty by construction on every path that reaches here; kept
-        # explicit rather than assumed so a future change to that guard
-        # cannot silently reopen the gap this closes.)
-        blockers = self._terminal_success_blockers()
-        if verified and not blockers:
-            # Task 020 rework (requirement L, #101): the peer verdict gate
-            # guards EVERY terminal-success path, not only the ordinary
-            # `review -> verdict_gate` edge. This off-budget grace review
-            # is the second (and only other) site that can write
-            # `succeeded`/`verified`, so when the gate is on it gets its
-            # own off-budget, equally blind peer call before the run may
-            # finish -- otherwise a run that exhausts its budget on the
-            # very iteration its last task completes reaches terminal
-            # success with the gate never having run, which is exactly the
-            # hole an opt-in "nothing succeeds unless a second, independent
-            # peer agrees" gate exists to close. Decision (recorded in
-            # `artifacts/reports/task-020-requirement-l-rejection-
-            # semantics.md`): an off-budget grace REVIEW gets an
-            # off-budget grace VERDICT GATE -- charging it would be
-            # incoherent (the budget is already spent, which is why we are
-            # here at all), and skipping it would make the gate's
-            # guarantee conditional on how the budget ran out.
-            if self.cfg.peer_verdict_gate and \
-                    not await self._grace_verdict_gate(approach):
-                self._terminal_reason_note = (
-                    "budget exhausted with all tasks completed; the grace "
-                    "review VERIFIED but the off-budget blind peer verdict "
-                    "gate did not")
-                return False
-            self.run.emit("signal", signal="VERIFIED")
-            self._finish("succeeded", self._review_success_verdict_label(),
-                        graceReview=True,
-                        reason=("budget exhausted with all tasks completed; "
-                                "the grace review ran and VERIFIED"),
-                        **self._unconsumed_steering_patch())
-            return True
-        if verified:
-            self._terminal_reason_note = (
-                "budget exhausted with all tasks completed; the grace "
-                "review VERIFIED but the run cannot go terminal-succeeded: "
-                + "; ".join(blockers))
-        else:
-            self._terminal_reason_note = (
-                "budget exhausted with all tasks completed; a grace "
-                "review ran but did not verify")
-        self.run.emit("log", message=f"grace review did not verify approach {approach}")
-        return False
-
-    async def _grace_verdict_gate(self, approach: int) -> bool:
-        """Task 020 rework (requirement L, #101): the off-budget peer
-        verdict-gate call that guards the OTHER terminal-success site --
-        `_maybe_grace_review`'s VERIFIED grace review (task 002) -- so the
-        opt-in gate is a property of the run reaching terminal success, not
-        a property of one particular edge into `finishing`.
-
-        Bounded by construction exactly as the grace review itself is: it
-        is reached only from inside the `_grace_review_granted`-guarded
-        block, so at most one call per approach, and it never loops back
-        into the worker.
-
-        Off-budget (`_refund_iteration("grace")`, the same mechanism and
-        persistence the grace review's own refund uses): the ordinary
-        `_step_verdict_gate` charges its iteration like `plan_review`, but
-        this path exists precisely because the budget is already exhausted,
-        so charging it would either be a no-op or push the run further
-        negative for a gate the operator asked for.
-
-        Genuinely BLIND on the same terms as `_step_verdict_gate`:
-        `run_iteration("verdict_gate", ...)` carries no review context --
-        review's verdict and `reason` (including THIS grace review's,
-        which `_maybe_grace_review` has in hand and deliberately does not
-        pass) never reach the peer's prompt. The operator-ruling context
-        rides along on the same terms as the ordinary gate call (task 018,
-        D.8, #196): host-written, `''` when no ruling exists, and silent
-        about every judge's conclusion.
-
-        Returns True iff the peer independently verified; False for a
-        rejection or any unusable reply (`_verdict_gate_verdict`'s safe
-        default), leaving the caller to write the ordinary
-        failed/unverified terminal state -- fail OPEN in the sense the
-        decision note means (never a deadlock, never a stuck run), never a
-        silently granted `verified`.
-        """
-        await self._gate()
-        self.run.emit("log", message=(
-            "grace review VERIFIED with the peer verdict gate enabled; "
-            "granting a single off-budget BLIND peer verdict-gate "
-            "iteration before the run may go terminal-succeeded (task 020)"))
-        self.run.emit("phase", phase="verdict_gate", approach=approach)
-        result = await self.run_iteration(
-            "verdict_gate",
-            extra=self._operator_amendment_review_context(
-                audience="verdict_gate"),
-            tier=state.run_level_verify_tier())
-        self._refund_iteration("grace")
-        approved, payload = await self._verdict_gate_verdict(result)
-        self._record_gate_approach_verdict(approach, approved, payload)
-        self._record_verdict_gate_peek(approach)
-        if approved:
-            return True
-        reason = (payload or {}).get("reason")
-        self.run.emit(
-            "log", level="warning",
-            message=(f"off-budget peer verdict gate rejected approach {approach}"
-                     + (f": {reason}" if reason else
-                        " (no usable verdict_gate payload)")))
-        return False
 
     # Bounded retries for a verify iteration that errors out mid-stream
     # (agent/provider failure such as a Bedrock 502, message stopReason ==
@@ -14716,7 +14496,7 @@ class LoopSupervisor:
 
         Task 018 (D.8, #196), second half: the JUDGING hats are review AND
         the peer verdict gate, so this same builder is what both of them
-        are handed -- `_step_verdict_gate` and `_grace_verdict_gate` call
+        are handed -- `_step_verdict_gate` calls
         it with `audience="verdict_gate"`, which only changes the prose
         naming the decision a ruling binds ("this verdict-gate decision"
         instead of "this review"). A ruling is operator-authored context,
@@ -14971,10 +14751,11 @@ class LoopSupervisor:
         side effect of any kind; only the `petition_adjudications` field's
         side effect is what this episode exists for.
 
-        Off-budget by the SAME mechanism and persistence the grace review
-        already uses (`_refund_iteration("grace")`): a bonus iteration
-        granted outside the ordinary iteration budget, exactly like the
-        grace review is, so it never competes with (or is billed against)
+        Off-budget by its own `_refund_iteration("adjudication")` refund
+        kind (task 015/E.1 renamed this from the retired grace review's
+        "grace", keeping the same mechanism and persistence): a bonus
+        iteration granted outside the ordinary iteration budget, so it
+        never competes with (or is billed against)
         either the run's iteration budget or a task's own
         `validationAttempts` count.
         """
@@ -14995,7 +14776,7 @@ class LoopSupervisor:
         result = await self.run_iteration(
             "review", extra=self._midrun_adjudication_extra(open_petitions),
             tier=state.run_level_verify_tier())
-        self._refund_iteration("grace")
+        self._refund_iteration("adjudication")
         self._petition_adjudication_seen |= obligations_now
         if result is None:
             return
@@ -15524,7 +15305,8 @@ class LoopSupervisor:
             # Task 016 (requirement H/J): per-task verify runs one rung
             # down from the task's CURRENT effective tier -- `state.
             # task_verify_tier`, never `run_level_verify_tier` (that is the
-            # run-ending pass in `_step_review`/`_maybe_grace_review`, a
+            # run-ending pass in `_step_review` and the mid-run petition-
+            # adjudication episode's own bounded call, a
             # separate dispatch from this per-task one).
             # Task 004 (PRD requirement D.1): the in-hand task's own id
             # rides this call the same way `tier` already does, so the
@@ -15701,7 +15483,8 @@ class LoopSupervisor:
         # so the #187 deadlock shape (every other open task blocked on this
         # one, directly or transitively) could sit un-adjudicated for the
         # whole rest of the approach. Calling it here closes that gap: the
-        # episode is off-budget (`_refund_iteration("grace")`) and already
+        # episode is off-budget (`_refund_iteration("adjudication")`) and
+        # already
         # deduped per obligation (`self._petition_adjudication_seen`), so
         # firing it unconditionally the moment the status write lands costs
         # nothing extra on every other pass that reaches it a second time

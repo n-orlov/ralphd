@@ -252,7 +252,16 @@ def test_logs_follow_shows_tool_invocation_before_tool_ends(live, tmp_path):
     stub_env = {"STUB_RICH_EVENTS": "1",
                 "STUB_TOOL_HOLD_FILE": str(hold_file),
                 "STUB_TOOL_HOLD_TIMEOUT_S": "30"}
-    run = live(run_id="followtest-toolopen", job={"iterations": 3},
+    # Task 015 (requirement E.1, #169) retired the off-budget grace review
+    # this fixture's `iterations: 3` used to lean on: the stub planner's
+    # default two tasks cost planning(1) + worker(1) + worker(1) = 3,
+    # leaving no budget for the review that turns the run terminal --
+    # the retired grace review used to supply that review off-budget for
+    # free once both tasks were complete. Without it the run held
+    # `timed_out` with no review ever run, so `run.wait_terminal` below
+    # never saw `succeeded`. One more iteration covers the ordinary
+    # planning+worker+worker+review path outright.
+    run = live(run_id="followtest-toolopen", job={"iterations": 4},
                stub_env=stub_env)
     run.wait_api()
 

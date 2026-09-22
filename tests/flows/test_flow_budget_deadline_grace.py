@@ -1,36 +1,43 @@
-"""Flow (task 017, requirement C.6): **budget exhaustion, the deadline, and
-the grace review** -- the run-ending machinery that fires when the loop's
-own worker cycle never reaches a `_step_review` on budget alone, over a real
+"""Flow (task 017, requirement C.6): **budget exhaustion and the
+deadline** -- the run-ending machinery that fires when the loop's own
+worker cycle never reaches a `_step_review` on budget alone, over a real
 `ralphd-engine` subprocess with the stub `pi` binary on PATH, `STUB_SLEEP=0`.
 
 `LoopSupervisor.budget_left()` (loop.py) is a conjunction of two clocks: the
 iteration count (`cfg.iterations`) and the wall-clock deadline
 (`self.deadline`, published as `status.json`'s `deadlineAt`). Either one
 reaching zero ends the worker cycle the same way -- `not budget_left()` in
-`_step_worker`'s dispatch. From there `_maybe_grace_review` (task 002) is the
-one fork: if every task is already `completed` at that instant, the run gets
-exactly one OFF-BUDGET review before its fate is sealed; otherwise (or if
-that review does not verify) the ordinary `_finish_tail_unverified` write
-ends the job `failed`/`unverified` with no review at all.
+`_step_worker`'s dispatch, landing on the plain out-of-budget `timed_out`
+freeze (task 011, v0.24 requirement C.1, #169) with no review of any kind.
 
-Four nodes, each exercising a different corner of that fork:
+Task 015 (requirement E.1, #169) retired `_maybe_grace_review`, the off-
+budget fork this module's name and its first two nodes used to be about:
+if every task was already `completed` at the exact instant the budget ran
+out, the run used to get one OFF-BUDGET review before its fate was sealed.
+Requirements A and D already make the ordinary review path itself finish
+before the budget/deadline cuts it short, so that fork no longer exists --
+the two nodes that used to pin "grace review verified"/"grace review
+rejected" are replaced below by a single pair of nodes proving the SAME
+scenario (the iteration that completes the LAST task also exhausts the
+budget) now holds `timed_out` with no review at all, whether or not a
+review would have verified.
+
+Four nodes, each exercising a different corner:
 
   * **ordinary exhaustion, tasks incomplete** -- the iteration count runs out
-    with work still outstanding; no review, no grace, straight to `timed_out`
+    with work still outstanding; no review, straight to `timed_out`
     (mirrors `tests/test_e2e.py::test_budget_exhaustion_fails_job`, read here
     through the reduced event sequence instead of iteration-directory counts);
-  * **grace review granted and VERIFIED** -- the iteration that completes the
-    LAST task is also the iteration that exhausts the iteration-count
-    budget: no ordinary review slot exists, so the off-budget grace review
-    runs and a satisfied stub review lands the job `succeeded`;
-  * **grace review granted but does not verify** -- same shape, but the stub
-    review rejects; the grace review is a single off-budget shot, never
-    granted twice, and the job holds `timed_out`/`verdict: null` (task 011,
-    v0.24 requirement C.1, #169) naming "grace review" in its `reason`;
+  * **the last task exhausts the budget, no review** (two nodes, one per
+    what review WOULD have said) -- the iteration that completes the LAST
+    task is also the iteration that exhausts the iteration-count budget: no
+    ordinary review slot exists, and (task 015/E.1) no off-budget one
+    either, so the run holds `timed_out` with no review phase at all,
+    regardless of `STUB_REVIEW_FAILS`;
   * **the deadline, not the iteration count, ends the cycle** -- a
     `job_timeout_s` far below what the iteration budget would allow forces
     `budget_left()` false on the wall clock, not on `cfg.iterations`, with
-    tasks still incomplete (no grace review possible either). Because how
+    tasks still incomplete. Because how
     many worker iterations fit before a wall-clock deadline fires is itself
     a race against process-spawn/scheduler jitter, this node's own worker
     count is NOT pinned exactly -- `flowlib.assert_steps_include` checks the
@@ -88,13 +95,14 @@ def test_ordinary_budget_exhaustion_with_tasks_incomplete_fails_with_no_review(
         f"got state={st.get('state')!r} verdict={st.get('verdict')!r}")
     assert st.get("iterationsUsed") == 2, st
     assert not st.get("graceReview"), (
-        "flow budget/deadline/grace (ordinary): tasks were never all "
-        f"completed, so no grace review may be granted, got {st.get('graceReview')!r}")
+        "flow budget/deadline/grace (ordinary): `graceReview` is a dead "
+        f"field now (task 015 removed the mechanism that ever set it), "
+        f"got {st.get('graceReview')!r}")
 
 
-# -- grace review granted and VERIFIED --------------------------------------
+# -- retired grace-review nodes: last task exhausts the budget, no review --
 
-GRACE_VERIFIED_STEPS = [
+GRACE_RETIRED_STEPS = [
     "state:running",
     "phase:planning@1",
     "iteration:planning",
@@ -102,88 +110,85 @@ GRACE_VERIFIED_STEPS = [
     "iteration:worker",          # task 2/2 -- COMPLETE and the 3-iteration
                                  # budget both land on this same attempt
     "signal:COMPLETE",
-    "phase:review@1",
-    "iteration:review",
-    "verdict:review:verified@1",
-    "signal:VERIFIED",
-    "state:succeeded",
-]
-
-
-def test_grace_review_granted_when_the_last_task_exhausts_the_budget_and_verifies(
-        engine_factory):
-    run = engine_factory(
-        job={"run_id": "flow-budget-grace-verified", "on_complete": "exit",
-             "iterations": 3, "max_approaches": 1},
-        stub_env={"STUB_TASKS": "2"})
-    assert run.proc.wait(timeout=60) == 0, (
-        "flow budget/deadline/grace (grace verified): the engine must exit "
-        "0 once the off-budget grace review verifies")
-
-    assert_step_sequence(flow_steps(run), GRACE_VERIFIED_STEPS,
-                         flow="flow budget/deadline/grace (grace verified)")
-
-    st = status(run)
-    assert st.get("state") == "succeeded" and st.get("verdict") == "verified", (
-        f"flow budget/deadline/grace (grace verified): expected "
-        f"succeeded/verified, got state={st.get('state')!r} "
-        f"verdict={st.get('verdict')!r}")
-    assert st.get("graceReview") is True, st
-    assert "grace review" in (st.get("reason") or ""), st
-    # The off-budget review got its own iteration number (4) even though it
-    # never counted against the 3-iteration budget -- the job would
-    # otherwise have failed at 3 with no review ever having run.
-    assert st.get("iterationsUsed") == 4, (
-        f"flow budget/deadline/grace (grace verified): planning + 2 workers "
-        f"+ the off-budget review == 4, got "
-        f"iterationsUsed={st.get('iterationsUsed')!r}")
-    assert st.get("iterationsRefunded", {}).get("grace") == 1, st
-
-
-# -- grace review granted but does not verify: no second attempt -----------
-
-GRACE_REJECTED_STEPS = [
-    "state:running",
-    "phase:planning@1",
-    "iteration:planning",
-    "iteration:worker",
-    "iteration:worker",
-    "signal:COMPLETE",
-    "phase:review@1",
-    "iteration:review",
-    "verdict:review:rejected@1",
     "state:timed_out",
 ]
 
 
-def test_grace_review_granted_but_unsatisfied_ends_failed_with_no_second_attempt(
+def test_last_task_exhausting_the_budget_holds_timed_out_with_no_review(
         engine_factory):
+    """RETIRED/replaced (task 015, requirement E.1, #169): this is the exact
+    scenario the retired off-budget grace review existed for -- the
+    iteration that completes the LAST task is also the iteration that
+    exhausts the iteration-count budget, so no ordinary review slot ever
+    existed. The grace review used to grant one off-budget review here
+    (`_maybe_grace_review`); requirements A and D already make the
+    ordinary review path finish before the budget/deadline cuts it short,
+    so there is nothing left to grant -- the run now holds
+    `timed_out`/`verdict: null` with NO review phase at all, the same
+    plain out-of-budget freeze the first node above pins."""
     run = engine_factory(
-        job={"run_id": "flow-budget-grace-rejected", "on_complete": "exit",
+        job={"run_id": "flow-budget-last-task-exhausts", "on_complete": "exit",
              "iterations": 3, "max_approaches": 1},
-        stub_env={"STUB_TASKS": "2", "STUB_REVIEW_FAILS": "1"})
+        stub_env={"STUB_TASKS": "2"})
     assert run.proc.wait(timeout=60) == 1, (
-        "flow budget/deadline/grace (grace rejected): the engine must exit "
-        "non-zero once the off-budget grace review does not verify")
+        "flow budget/deadline/grace (retired grace node): the engine must "
+        "exit non-zero once the run holds timed_out with no review")
 
-    assert_step_sequence(flow_steps(run), GRACE_REJECTED_STEPS,
-                         flow="flow budget/deadline/grace (grace rejected)")
+    steps = flow_steps(run)
+    assert_step_sequence(steps, GRACE_RETIRED_STEPS,
+                         flow="flow budget/deadline/grace (retired grace node)")
+    assert "phase:review" not in " ".join(steps), (
+        "flow budget/deadline/grace (retired grace node): no review slot "
+        f"existed, so no review phase may appear: {steps}")
 
     st = status(run)
-    # Task 011 (v0.24 requirement C.1, #169): the grace review is itself
-    # an off-budget shot inside the SAME plain out-of-budget `_step_
-    # planning` guard C.1 routes into the B.3 freeze -- `timed_out`/
-    # `verdict: null`, never `failed`/`unverified`.
     assert st.get("state") == "timed_out" and st.get("verdict") is None, (
-        f"flow budget/deadline/grace (grace rejected): expected "
+        f"flow budget/deadline/grace (retired grace node): expected "
         f"timed_out/None, got state={st.get('state')!r} "
         f"verdict={st.get('verdict')!r}")
     assert not st.get("graceReview"), (
-        "flow budget/deadline/grace (grace rejected): the grace review did "
-        f"not verify, so graceReview must not be set, got {st.get('graceReview')!r}")
-    assert "grace review" in (st.get("reason") or ""), st
-    # Exactly one grace attempt: no second review, no fresh approach.
-    assert st.get("iterationsUsed") == 4, st
+        "flow budget/deadline/grace (retired grace node): `graceReview` "
+        f"is a dead field now (task 015 removed the mechanism that ever "
+        f"set it), got {st.get('graceReview')!r}")
+    assert st.get("iterationsUsed") == 3, st
+
+
+# -- grace review granted but does not verify: retired the same way --------
+
+
+def test_last_task_exhausting_the_budget_holds_timed_out_regardless_of_a_would_be_rejection(
+        engine_factory):
+    """RETIRED/replaced (task 015, requirement E.1, #169): the sibling of
+    the node above for what used to be the grace review's OWN rejection
+    outcome (`STUB_REVIEW_FAILS`). Since no review ever runs in this
+    scenario anymore, whether the stub WOULD have rejected is now
+    irrelevant -- the outcome is identical to the plain "grants nothing"
+    node above: `timed_out`/`verdict: null`, no review phase, regardless
+    of `STUB_REVIEW_FAILS`."""
+    run = engine_factory(
+        job={"run_id": "flow-budget-last-task-exhausts-review-fails",
+             "on_complete": "exit", "iterations": 3, "max_approaches": 1},
+        stub_env={"STUB_TASKS": "2", "STUB_REVIEW_FAILS": "1"})
+    assert run.proc.wait(timeout=60) == 1, (
+        "flow budget/deadline/grace (retired grace node, would-be rejection): "
+        "the engine must exit non-zero once the run holds timed_out with no "
+        "review")
+
+    steps = flow_steps(run)
+    assert_step_sequence(
+        steps, GRACE_RETIRED_STEPS,
+        flow="flow budget/deadline/grace (retired grace node, would-be rejection)")
+    assert "phase:review" not in " ".join(steps), (
+        "flow budget/deadline/grace (retired grace node, would-be rejection): "
+        f"no review slot existed, so no review phase may appear: {steps}")
+
+    st = status(run)
+    assert st.get("state") == "timed_out" and st.get("verdict") is None, (
+        f"flow budget/deadline/grace (retired grace node, would-be "
+        f"rejection): expected timed_out/None, got "
+        f"state={st.get('state')!r} verdict={st.get('verdict')!r}")
+    assert not st.get("graceReview"), st
+    assert st.get("iterationsUsed") == 3, st
     assert st.get("approach") == 1, st
 
 

@@ -1,12 +1,12 @@
 """Refund counters survive a resume (task 023, #32).
 
-`budget_left()` charges `iterations_used - _infra_refunded - _grace_refunded`,
-but both refund counters used to start at 0 in every engine process while
-`iterations_used` was seeded from the *raw* `max_iteration_number()`. So every
-`ralphctl resume` -- and every auto-resume after a crash -- silently re-charged
-the refunds earned before it: `selfdev-v06-release` earned 27 infra refunds and
-kept 10, and its permanent record says 145 iterations used where the guarantee
-implies 128.
+`budget_left()` charges `iterations_used - _infra_refunded - _steer_refunded
+- _adjudication_refunded`, but every refund counter used to start at 0 in
+every engine process while `iterations_used` was seeded from the *raw*
+`max_iteration_number()`. So every `ralphctl resume` -- and every
+auto-resume after a crash -- silently re-charged the refunds earned before
+it: `selfdev-v06-release` earned 27 infra refunds and kept 10, and its
+permanent record says 145 iterations used where the guarantee implies 128.
 
 The fix persists the counters (`status.json`'s `iterationsRefunded`,
 `LoopSupervisor._refund_iteration()`) and seeds them back (`_seed_refunds()`),
@@ -15,10 +15,21 @@ counter is also the number of the next iteration directory, and reusing the
 number of a *finished* iteration would make `begin_iteration_dir()` (task 019,
 #44) archive a completed record as a crashed attempt.
 
-Covered here: the write as a refund is earned (both kinds), the seed, and
+Covered here: the write as a refund is earned (every kind), the seed, and
 `budget_left()` itself -- credited after a resume, still enforced, unbreakable
 by a corrupt record -- the combination with task 019's reused slot, a real
 engine killed after earning a refund and resumed, and the doc claims.
+
+Task 015 (requirement E.1, #169) retired the off-budget grace review and its
+`grace` refund bucket; `adjudication` (the mid-run petition-adjudication
+episode's own off-budget bonus, `LoopSupervisor.
+_maybe_run_midrun_adjudication_episode`) replaced it, keeping the same
+mechanism -- still not subtracted from the published `iterationsUsed`, unlike
+`infra`/`steer`. The tests that exercised the retired `_maybe_grace_review`
+directly are retired; their surviving cover is `test_each_kind_bumps_only_
+its_own_counter` below (the generic bump/persist mechanism, now over
+`adjudication`) plus `tests/test_midrun_adjudication_episode.py`'s own
+off-budget assertion (a live `adjudication` refund end to end).
 """
 
 from __future__ import annotations
@@ -38,7 +49,7 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 from ralphd.log_merge import iteration_attempt_dirs, iteration_numbers
-from tests.conftest import make_supervisor, stub_contract_reask
+from tests.conftest import make_supervisor
 
 __all__ = ["engine_factory"]
 
@@ -130,42 +141,11 @@ async def test_an_infra_refund_is_recorded_in_status_as_it_is_earned(tmp_path):
 
     assert result.final_text == "done", "the wrapper rode the outage out"
     assert sup._infra_refunded == 3
-    # Task 014 (requirement J, #98) widened `REFUND_KINDS` to a third kind
-    # ("steer") -- the record now always carries all three, 0 for the two
-    # this scenario never earns.
-    assert _refund_record(run) == {"infra": 3, "grace": 0, "steer": 0}
-
-
-@pytest.mark.asyncio
-async def test_a_grace_review_refund_is_recorded_in_status(tmp_path):
-    run = _seed_run(tmp_path, finished=3)
-    sup = _supervisor(run, iterations=3)
-
-    async def fake_review(phase, extra="", prompt_name=None, tier=None, task_id=None):
-        assert phase == "review"
-        sup.iterations_used += 1
-        r = IterationResult(exit_code=0)
-        r.duration_s = 5.0
-        r.final_text = "not verified"  # so the job still ends failed
-        return r
-
-    sup.run_iteration = fake_review  # type: ignore[method-assign]
-    # `fake_review`'s prose reply enters `_review_contract_ladder`, whose
-    # re-ask channel is `_ask_contract_fix` -- NOT `run_iteration`, so the
-    # stub above does not cover it. Left unstubbed it spawns the real `pi`
-    # binary twice (`contract_retry_max` = 2), each spawn bounded only by
-    # `router_timeout_s` = 60 s: 120 s of real waiting for an answer this
-    # test then ignores. The empty reply below is what a failed re-ask
-    # returns anyway, so the ladder still exhausts and every assertion
-    # below is judged on exactly the same outcome (task 050, G.2).
-    stub_contract_reask(sup)
-    verified = await sup._maybe_grace_review(1)
-
-    assert verified is False
-    assert sup._grace_refunded == 1
-    # Task 014 (requirement J, #98): the record now always carries all
-    # three `REFUND_KINDS`, 0 for the two this scenario never earns.
-    assert _refund_record(run) == {"infra": 0, "grace": 1, "steer": 0}
+    # Task 014 (requirement J, #98) widened `REFUND_KINDS` to a third kind;
+    # task 015 (requirement E.1, #169) renamed that third kind from the
+    # retired grace review's "grace" to "adjudication" -- the record now
+    # always carries all three, 0 for the two this scenario never earns.
+    assert _refund_record(run) == {"infra": 3, "steer": 0, "adjudication": 0}
 
 
 @pytest.mark.asyncio
@@ -185,29 +165,44 @@ async def test_a_live_runs_published_count_matches_the_charged_count(tmp_path):
 
 def test_each_kind_bumps_only_its_own_counter(tmp_path):
     sup = _supervisor(_seed_run(tmp_path, finished=4))
-    # Task 014 (requirement J, #98) widens this from 2 to 3 kinds -- the
-    # OLD claim was `("infra", "grace")`; the new one is stronger (a third
-    # kind, "steer", exercised below) because a steer hat's own iteration
-    # must never cost the run a work iteration either.
-    assert LoopSupervisor.REFUND_KINDS == ("infra", "grace", "steer")
+    # Task 014 (requirement J, #98) widened this from 2 to 3 kinds -- the
+    # OLD claim was `("infra", "grace")`, then `("infra", "grace", "steer")`.
+    # Task 015 (requirement E.1, #169) retired the off-budget grace review
+    # and renamed its "grace" bucket to "adjudication" (the mid-run
+    # petition-adjudication episode's own off-budget bonus).
+    assert LoopSupervisor.REFUND_KINDS == ("infra", "steer", "adjudication")
     sup._refund_iteration("infra")
-    assert (sup._infra_refunded, sup._grace_refunded, sup._steer_refunded) == (1, 0, 0)
-    sup._refund_iteration("grace")
-    assert (sup._infra_refunded, sup._grace_refunded, sup._steer_refunded) == (1, 1, 0)
+    assert (sup._infra_refunded, sup._steer_refunded, sup._adjudication_refunded) == (1, 0, 0)
     sup._refund_iteration("steer")
-    assert (sup._infra_refunded, sup._grace_refunded, sup._steer_refunded) == (1, 1, 1)
-    assert _refund_record(sup.run) == {"infra": 1, "grace": 1, "steer": 1}
+    assert (sup._infra_refunded, sup._steer_refunded, sup._adjudication_refunded) == (1, 1, 0)
+    sup._refund_iteration("adjudication")
+    assert (sup._infra_refunded, sup._steer_refunded, sup._adjudication_refunded) == (1, 1, 1)
+    assert _refund_record(sup.run) == {"infra": 1, "steer": 1, "adjudication": 1}
     with pytest.raises(ValueError):
         sup._refund_iteration("approach")
 
 
 # -- the seed: a new engine process over the same run dir ------------------
-def test_a_resumed_engine_seeds_both_counters_from_the_run_dir(tmp_path):
-    run = _seed_run(tmp_path, finished=6, refunded={"infra": 2, "grace": 1})
+def test_a_resumed_engine_seeds_all_counters_from_the_run_dir(tmp_path):
+    run = _seed_run(tmp_path, finished=6, refunded={"infra": 2, "adjudication": 1})
     sup = _supervisor(run)
     assert sup.iterations_used == 6, "numbering still continues from the raw max"
-    assert (sup._infra_refunded, sup._grace_refunded) == (2, 1)
+    assert (sup._infra_refunded, sup._adjudication_refunded) == (2, 1)
     assert sup.iterations_used_charged == 4
+
+
+def test_a_pre_task015_grace_bucket_is_silently_ignored_on_seed(tmp_path):
+    """Task 015 (requirement E.1, #169) retired the off-budget grace review's
+    `grace` refund bucket. A run dir written by an older engine that
+    persisted one must not error, and its old credit is not resurrected
+    under the new `adjudication` name -- it simply reads as zero, the same
+    as any other unrecognised key `REFUND_KINDS` no longer names."""
+    run = _seed_run(tmp_path, finished=4, refunded={"infra": 1, "grace": 2})
+    sup = _supervisor(run)
+    assert sup._infra_refunded == 1
+    assert sup._steer_refunded == 0
+    assert sup._adjudication_refunded == 0
+    assert sup.iterations_used_charged == 3
 
 
 def test_a_pre_v07_run_dir_has_no_refunds_to_seed(tmp_path):
@@ -216,7 +211,7 @@ def test_a_pre_v07_run_dir_has_no_refunds_to_seed(tmp_path):
     run = _seed_run(tmp_path, finished=5)
     assert "iterationsRefunded" not in json.loads(run.status_file.read_text())
     sup = _supervisor(run)
-    assert (sup._infra_refunded, sup._grace_refunded) == (0, 0)
+    assert (sup._infra_refunded, sup._adjudication_refunded) == (0, 0)
     assert sup.iterations_used_charged == 5
 
 
@@ -226,7 +221,7 @@ def test_the_published_count_does_not_jump_back_up_after_a_resume(tmp_path):
     (`iterations_used - _infra_refunded`, i.e. iterations_used_charged) has to
     produce that same 4 -- re-charging the refunds would silently walk the
     number an operator already read back up to 6."""
-    run = _seed_run(tmp_path, finished=6, refunded={"infra": 2, "grace": 0},
+    run = _seed_run(tmp_path, finished=6, refunded={"infra": 2, "adjudication": 0},
                     extra={"iterationsUsed": 4})
     published = json.loads(run.status_file.read_text())["iterationsUsed"]
     assert _supervisor(run).iterations_used_charged == published == 4
@@ -237,7 +232,7 @@ def test_budget_left_credits_the_refunds_earned_before_the_resume(tmp_path):
     """THE defect, at the gate that decides whether the run may keep working:
     6 raw attempts of which 2 were refunded is 4 charged, so a 5-iteration job
     has budget left. Re-charging the refunds ends the run instead."""
-    run = _seed_run(tmp_path, finished=6, refunded={"infra": 2, "grace": 0})
+    run = _seed_run(tmp_path, finished=6, refunded={"infra": 2, "adjudication": 0})
     assert _supervisor(run, iterations=5).budget_left() is True
 
 
@@ -248,8 +243,8 @@ def test_without_the_persisted_record_the_same_run_dir_is_out_of_budget(tmp_path
     assert _supervisor(run, iterations=5).budget_left() is False
 
 
-def test_a_grace_refund_is_credited_after_a_resume_too(tmp_path):
-    run = _seed_run(tmp_path, finished=4, refunded={"infra": 0, "grace": 1})
+def test_an_adjudication_refund_is_credited_after_a_resume_too(tmp_path):
+    run = _seed_run(tmp_path, finished=4, refunded={"infra": 0, "adjudication": 1})
     assert _supervisor(run, iterations=4).budget_left() is True
     assert _supervisor(run, iterations=3).budget_left() is False
 
@@ -257,7 +252,7 @@ def test_a_grace_refund_is_credited_after_a_resume_too(tmp_path):
 def test_the_budget_is_still_enforced_after_a_resume(tmp_path):
     """A credited refund is a discount, not an exemption: 5 raw minus 1 refund
     is 4 charged, which exhausts a 4-iteration budget."""
-    run = _seed_run(tmp_path, finished=5, refunded={"infra": 1, "grace": 0})
+    run = _seed_run(tmp_path, finished=5, refunded={"infra": 1, "adjudication": 0})
     assert _supervisor(run, iterations=4).budget_left() is False
 
 
@@ -266,22 +261,22 @@ def test_the_budget_is_still_enforced_after_a_resume(tmp_path):
     "lots",                                 # not an object
     [1, 2],                                 # not an object either
     {},                                     # object, no counters
-    {"infra": -3, "grace": -4},             # negative: never a credit
-    {"infra": "two", "grace": None},        # non-numeric
-    {"infra": 999, "grace": 999},           # more refunds than attempts
-    {"infra": 3, "grace": 3},               # sum over the attempts on disk
+    {"infra": -3, "adjudication": -4},      # negative: never a credit
+    {"infra": "two", "adjudication": None}, # non-numeric
+    {"infra": 999, "adjudication": 999},    # more refunds than attempts
+    {"infra": 3, "adjudication": 3},        # sum over the attempts on disk
 ])
 def test_a_corrupt_refund_record_cannot_inflate_the_budget(tmp_path, record):
     run = _seed_run(tmp_path, finished=4,
                     refunded=record if record is not None else None)
     sup = _supervisor(run, iterations=4)
-    assert sup._infra_refunded >= 0 and sup._grace_refunded >= 0
-    assert sup._infra_refunded + sup._grace_refunded <= sup.iterations_used
+    assert sup._infra_refunded >= 0 and sup._adjudication_refunded >= 0
+    assert sup._infra_refunded + sup._adjudication_refunded <= sup.iterations_used
     assert sup.iterations_used_charged >= 0
     # 4 attempts against a 4-iteration budget: no refund record, however
     # broken, may hand this run more work.
     assert (sup.budget_left() is False
-            or sup._infra_refunded + sup._grace_refunded > 0
+            or sup._infra_refunded + sup._adjudication_refunded > 0
             and record not in (None, "lots", [1, 2], {}))
 
 
@@ -292,7 +287,7 @@ def test_a_crashed_slot_and_its_archive_are_not_refunds_or_iterations(tmp_path):
     Neither the unfinished slot nor the archive may change what this task
     seeds: 4 finished attempts, 1 refunded, slot 5 crashed."""
     run = _seed_run(tmp_path, finished=4, crashed=5,
-                    refunded={"infra": 1, "grace": 0})
+                    refunded={"infra": 1, "adjudication": 0})
     # the resumed engine reuses slot 5, archiving what the dead one left
     run.begin_iteration_dir(5)
     assert len(iteration_attempt_dirs(run.root, 5)) == 1
@@ -311,7 +306,7 @@ def test_the_clamp_uses_the_finished_attempts_not_the_archive(tmp_path):
     seed more refunds than the finished count -- otherwise a resumed run's
     charged count could go negative."""
     run = _seed_run(tmp_path, finished=1, crashed=2,
-                    refunded={"infra": 9, "grace": 0})
+                    refunded={"infra": 9, "adjudication": 0})
     for _ in range(3):
         atomic_write_json(run.iteration_dir(2) / "meta.json", {"number": 2})
         run.begin_iteration_dir(2)
@@ -377,10 +372,11 @@ def test_a_refund_earned_before_a_crash_is_still_credited_after_the_resume(
     status = json.loads((e2.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
     raw = max(iteration_numbers(e2.run_dir))
-    # Task 014 (requirement J, #98): the record now always carries all
-    # three `REFUND_KINDS`, 0 for "steer" since this scenario has no
-    # operator steering at all.
-    assert status["iterationsRefunded"] == {"infra": 1, "grace": 0, "steer": 0}
+    # Task 014 (requirement J, #98) widened this to three `REFUND_KINDS`;
+    # task 015 (requirement E.1, #169) renamed the third from "grace" to
+    # "adjudication" -- 0 for both "steer" and "adjudication" since this
+    # scenario has no operator steering or petition adjudication at all.
+    assert status["iterationsRefunded"] == {"infra": 1, "steer": 0, "adjudication": 0}
     assert status["iterationsUsed"] == raw - 1, (
         "the refund earned before the crash was re-charged by the resume")
 

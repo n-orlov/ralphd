@@ -31,12 +31,14 @@ opened the prompt with "review has already emitted a `verified` verdict",
 which handed the peer review's conclusion however clean the `extra`
 plumbing was.
 
-Part 8 pins the other half of "before the run may reach terminal success":
-`_maybe_grace_review` (task 002's off-budget grace review) is the only
-other site that writes `succeeded`/`verified`, so with the gate on it gets
-its own single off-budget, equally blind `verdict_gate` call before any
-terminal write -- and with the gate off it behaves exactly as it always
-did.
+Part 8 used to pin the other half of "before the run may reach terminal
+success": `_maybe_grace_review` (task 002's off-budget grace review) was
+the only other site that wrote `succeeded`/`verified`, so with the gate on
+it got its own single off-budget, equally blind `verdict_gate` call before
+any terminal write. Task 015 (requirement E.1, #169) retired the grace
+review and its off-budget gate twin entirely, so `_step_verdict_gate`
+(covered by every other Part of this file) is the ONLY call site left --
+Part 8 now just pins that both retired names are actually gone.
 """
 
 from __future__ import annotations
@@ -766,8 +768,15 @@ def test_the_rendered_verdict_gate_prompt_never_states_what_review_concluded(tmp
 
 
 # ---------------------------------------------------------------------------
-# 8. the gate guards EVERY terminal-success path, including the off-budget
-#    grace review (task 002) -- task 020 rework
+# 8. RETIRED (task 015, requirement E.1, #169): the gate used to also guard
+#    the off-budget grace review's own SECOND terminal-success path
+#    (`_maybe_grace_review` -> its own off-budget `_grace_verdict_gate`
+#    twin). Task 015 removed the grace review entirely, so `_step_verdict_
+#    gate` (covered by every other Part of this file) is now the ONLY
+#    call site the peer gate has -- there is no second path left to pin
+#    here. `_seed_all_completed` is kept (re-exported for
+#    `tests/test_verdict_gate.py`'s own historical import) even though
+#    nothing in this file calls it anymore.
 # ---------------------------------------------------------------------------
 
 
@@ -782,137 +791,14 @@ def _seed_all_completed(root: Path) -> RunDir:
     return run
 
 
-def test_grace_review_alone_can_no_longer_reach_terminal_success_with_the_gate_on(tmp_path):
-    """The hole this rework closes: `_maybe_grace_review` is the SECOND
-    site that can write `succeeded`/`verified`, and with
-    `peer_verdict_gate=True` it used to do so with `phases_seen ==
-    ['review']` and zero verdict_gate calls -- terminal success without the
-    peer gate ever running. Now the grace review's VERIFIED verdict only
-    stands if an off-budget, equally blind peer agrees.
-    """
-    root = tmp_path / "run"
-    _seed_all_completed(root)
-    sup = _supervisor(
-        root,
-        {"review": [_review_verifies(REVIEW_SECRET_REASON)],
-         "verdict_gate": [_verdict_gate_approves]},
-        peer_verdict_gate=True)
-    sup._approach = 1
-
-    assert _bounded(sup._maybe_grace_review(1)) is True
-    agent = sup.runner
-    assert agent.phases_seen == ["review", "verdict_gate"]
-    assert agent.calls == {"review": 1, "verdict_gate": 1}
-    status = sup.run.read_status()
-    assert status.get("state") == "succeeded"
-    assert status.get("verdict") == "verified"
-    # blind on this path too: the grace review's own reason is in hand at
-    # the call site and still never reaches the peer.
-    assert REVIEW_SECRET_REASON not in agent.prompts[1]
-    assert _review_verdict_attributions(agent.prompts[1]) == []
-
-
-def test_a_grace_review_peer_rejection_never_reaches_terminal_success(tmp_path):
-    """Fail closed on success, open on deadlock: the peer's rejection on
-    the grace path leaves the ordinary failed/unverified terminal write to
-    the caller (the budget is already spent, so there is no approach to
-    replan into) -- never `succeeded`, never a hang."""
-    root = tmp_path / "run"
-    _seed_all_completed(root)
-    sup = _supervisor(
-        root,
-        {"review": [_review_verifies()],
-         "verdict_gate": [_verdict_gate_rejects("the peer disagrees")]},
-        peer_verdict_gate=True)
-    sup._approach = 1
-
-    assert _bounded(sup._maybe_grace_review(1)) is False
-    assert sup.run.read_status().get("state") != "succeeded"
-    note = sup._terminal_reason_note or ""
-    assert "grace" in note and "peer verdict gate" in note, note
-
-
-def test_a_malformed_grace_peer_reply_takes_the_same_safe_default(tmp_path):
-    """One parser, one safe default, both sites: an unusable
-    `verdict_gate` reply on the grace path is not verified either."""
-    root = tmp_path / "run"
-    _seed_all_completed(root)
-    sup = _supervisor(
-        root,
-        {"review": [_review_verifies()],
-         "verdict_gate": [lambda sup, prompt="": _ok("not json at all")]},
-        peer_verdict_gate=True)
-    sup._approach = 1
-
-    assert _bounded(sup._maybe_grace_review(1)) is False
-    assert sup.run.read_status().get("state") != "succeeded"
-
-
-def test_the_grace_path_is_untouched_when_the_gate_is_off(tmp_path):
-    """Off by default stays off HERE too: a gate-off grace review reaches
-    terminal success exactly as it did before this task, with no
-    verdict_gate phase and no extra iteration."""
-    root = tmp_path / "run"
-    _seed_all_completed(root)
-    sup = _supervisor(root, {"review": [_review_verifies()]},
-                     peer_verdict_gate=False)
-    sup._approach = 1
-
-    assert _bounded(sup._maybe_grace_review(1)) is True
-    assert sup.runner.phases_seen == ["review"]
-    status = sup.run.read_status()
-    assert status.get("state") == "succeeded"
-    assert status.get("graceReview") is True
-
-
-def test_the_grace_verdict_gate_iteration_is_off_budget(tmp_path):
-    """The grace review is off-budget (task 002) because the budget is
-    already exhausted when it runs; its peer gate is granted on the same
-    terms -- charging an iteration against a spent budget would be
-    incoherent. Both refunds are recorded as `grace`."""
-    root = tmp_path / "run"
-    _seed_all_completed(root)
-    sup = _supervisor(
-        root, {"review": [_review_verifies()],
-               "verdict_gate": [_verdict_gate_approves]},
-        peer_verdict_gate=True)
-    sup._approach = 1
-
-    assert _bounded(sup._maybe_grace_review(1)) is True
-    # two off-budget attempts ran, and BOTH are credited back through the
-    # same `grace` channel the grace review has always used (the channel
-    # `budget_left()` subtracts). `iterationsUsed` stays the raw attempt
-    # count by long-standing design -- only infra/steer refunds are netted
-    # out of the published figure, and this task changes neither.
-    status = sup.run.read_status()
-    assert (status.get("iterationsRefunded") or {}).get("grace") == 2, status
-
-    # gate OFF on the same scenario: exactly one grace refund, unchanged.
-    root2 = tmp_path / "run-off"
-    _seed_all_completed(root2)
-    sup2 = _supervisor(root2, {"review": [_review_verifies()]},
-                      peer_verdict_gate=False)
-    sup2._approach = 1
-    assert _bounded(sup2._maybe_grace_review(1)) is True
-    assert (sup2.run.read_status().get("iterationsRefunded")
-            or {}).get("grace") == 1
-
-
-def test_only_one_off_budget_peer_gate_per_approach(tmp_path):
-    """Bounded by construction, exactly as the grace review itself is: the
-    peer call lives inside the `_grace_review_granted`-guarded block, so a
-    second `_maybe_grace_review(1)` runs neither phase again."""
-    root = tmp_path / "run"
-    _seed_all_completed(root)
-    sup = _supervisor(
-        root, {"review": [_review_verifies()],
-               "verdict_gate": [_verdict_gate_rejects("no")]},
-        peer_verdict_gate=True)
-    sup._approach = 1
-
-    assert _bounded(sup._maybe_grace_review(1)) is False
-    assert _bounded(sup._maybe_grace_review(1)) is False
-    assert sup.runner.calls == {"review": 1, "verdict_gate": 1}
+def test_the_retired_grace_gate_symbols_are_actually_gone(tmp_path):
+    """Pins the retirement above: neither the grace review nor its own
+    off-budget verdict-gate twin exist anymore, so there is no way for a
+    second, unaccounted-for terminal-success path to have quietly come
+    back."""
+    assert not hasattr(LoopSupervisor, "_maybe_grace_review")
+    assert not hasattr(LoopSupervisor, "_grace_verdict_gate")
+    assert not hasattr(LoopSupervisor, "_grace_review_granted")
 
 
 # ---------------------------------------------------------------------------

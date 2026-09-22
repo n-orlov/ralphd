@@ -465,10 +465,12 @@ def test_a_held_pass_runs_the_episode_and_still_dispatches_the_worker(tmp_path):
 
     # Off-budget: the episode never competed with the run's own iteration
     # budget (iterations=1 covered exactly the one worker dispatch).
+    # Task 015 (requirement E.1, #169) renamed this refund bucket from the
+    # retired off-budget grace review's "grace" to "adjudication".
     assert sup.run.read_status().get(
-        "iterationsRefunded", {}).get("grace", 0) >= 1
+        "iterationsRefunded", {}).get("adjudication", 0) >= 1
     charged = (sup.iterations_used - sup._infra_refunded
-              - sup._grace_refunded - sup._steer_refunded)
+              - sup._steer_refunded - sup._adjudication_refunded)
     assert charged == 1
 
     # tasks.json is untouched by the hold itself -- A is still `petitioned`

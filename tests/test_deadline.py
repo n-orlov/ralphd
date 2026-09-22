@@ -487,14 +487,13 @@ async def test_deadline_expiring_mid_flight_leaves_the_iterations_own_outcome_un
     fake_time = _FakeMonotonic(real_time, start=1_000_000.0)
     monkeypatch.setattr(loop_mod, "time", fake_time)
 
-    # Two tasks, not one: with only one task, completing it leaves nothing
-    # outstanding and the SAME budget-exhaustion branch that fires here
-    # (`_maybe_grace_review`) would instead grant a second, off-budget
-    # review iteration -- a real and separately-tested mechanism, but not
-    # this probe's subject. With a second task still pending afterwards,
-    # `_maybe_grace_review` declines immediately (not every task is
-    # completed) and the run correctly ends this pass with exactly the one
-    # iteration this probe drives.
+    # Two tasks, not one: this fixture predates task 015 (requirement E.1,
+    # #169), which retired the off-budget grace review that a single
+    # completed task used to trigger here (`_maybe_grace_review`) instead
+    # of ending the pass with the one worker iteration this probe drives.
+    # Kept at two tasks anyway -- it is still the simplest fixture that
+    # keeps `_outstanding_for_completion` non-empty after the claim lands,
+    # which is what actually drives the assertion below.
     sup = make_supervisor(
         tmp_path, run_id="task007-inflight-deadline", prd=True,
         vigilant=False, job_timeout_s=100,
@@ -574,8 +573,7 @@ async def test_deadline_expiring_mid_flight_leaves_the_iterations_own_outcome_un
     # `_outstanding_for_completion` is non-empty, so the loop returns to
     # its own `while self.budget_left():` guard -- which now reads False,
     # the deadline having expired while the first iteration was in flight
-    # -- and ends the pass here, never granting the (separately-tested,
-    # here-declined) off-budget grace review.
+    # -- and ends the pass here.
     assert advanced == ("tail",)
     assert sup.iterations_used == 1
 
@@ -596,7 +594,7 @@ def _interrupted(sup: LoopSupervisor | None = None, _prompt: str = "") -> Iterat
     """The engine's own cutoff -- see `tests/test_review_interrupted_not_
     rejection.py`'s `_interrupted` for why `final_text`/`usage` are non-empty
     (a no-traffic interrupt is scored `infra` and silently retried before
-    `_step_review`/`_maybe_grace_review` ever see it)."""
+    `_step_review` ever sees it)."""
     r = IterationResult(exit_code=None)
     r.interrupted = True
     r.duration_s = 5.0
@@ -702,36 +700,44 @@ def test_ordinary_path_interrupted_review_at_budget_end_carries_a_null_verdict(t
 
 
 # ---------------------------------------------------------------------------
-# 2. The off-budget grace review itself interrupted: same outcome.
+# 2. RETIRED (task 015, requirement E.1, #169): the off-budget grace review
+#    itself interrupted used to land here with the same null-verdict/
+#    "deadline during review" outcome as section 1 above. Requirements A
+#    and D already make the ordinary review path finish before the
+#    budget/deadline cuts it short, so the grace review's own bonus
+#    attempt is gone -- this exact scenario (worker completes the LAST
+#    task on the LAST budgeted iteration, so review's own state is never
+#    even entered) now holds `timed_out` instead, pinned below.
 # ---------------------------------------------------------------------------
 
-def test_grace_review_interrupted_also_carries_a_null_verdict_not_rejected(tmp_path):
+def test_worker_budget_exhaustion_with_all_tasks_complete_holds_timed_out(tmp_path):
+    """What replaced the retired off-budget grace review's own
+    review-interrupted branch: a worker that completes the LAST task on
+    the LAST budgeted iteration never even reaches review's own state --
+    `_step_worker`'s own `budget_left()` check fires first and the run
+    holds `timed_out` (task 011, requirement C.1, #169's own pre-existing
+    freeze path), never a review verdict of any kind, never the retired
+    `unreviewed`/"deadline during review" outcome this scenario used to
+    produce through the grace review's own interrupted attempt."""
     handlers = {
         "planning": [_plan],
         "worker": [_complete_task],
-        "review": [_interrupted],
     }
-    # 2 iterations: plan, worker(COMPLETE) -- the ordinary budget is spent
-    # the instant the task completes, with review never having started;
-    # `_maybe_grace_review` grants one OFF-budget attempt, which is itself
-    # interrupted.
+    # 2 iterations: plan, worker(COMPLETE) -- review's own state is never
+    # entered; `_step_worker`'s own out-of-budget check fires first.
     sup = _review_supervisor(tmp_path / "run", handlers, iterations=2)
     state = asyncio.run(sup._run_job_core())
 
-    assert state == "failed"
+    assert state == "timed_out"
     status = sup.run.read_status()
     assert status["verdict"] is None
-    assert status["reason"] == "deadline during review"
     assert status["approach"] == 1
     assert not (sup.run.root / "approaches" / "01").exists()
     assert _rejected_events(sup.run) == []
-    assert len(_unreviewed_events(sup.run)) == 1
-    assert _unreviewed_events(sup.run)[0]["approach"] == 1
-    # the grace review really was granted and really did run (off-budget,
-    # so it does not appear in status.json's iterationsUsed count).
+    assert _unreviewed_events(sup.run) == []
     grace_logs = [e for e in read_events(sup.run.root, types=("log",))
                   if "grace review" in (e.get("message") or "")]
-    assert grace_logs
+    assert not grace_logs
 
 
 # ---------------------------------------------------------------------------
@@ -751,8 +757,8 @@ def test_resume_after_unreviewed_lands_on_review_same_approach_and_succeeds(tmp_
     assert sup1.run.read_status()["verdict"] is None
 
     # Episode 2: a FRESH LoopSupervisor over the SAME run dir -- what
-    # `ralphctl resume` leaves behind (`self._pause`/`self._grace_review_
-    # granted` etc. are in-memory only; nothing here carries over).
+    # `ralphctl resume` leaves behind (`self._pause` etc. are in-memory
+    # only; nothing here carries over).
     handlers2 = {"review": [_verified]}
     sup2 = _review_supervisor(root, handlers2, iterations=6)  # fresh, bigger window
 
@@ -775,28 +781,30 @@ def test_resume_after_unreviewed_lands_on_review_same_approach_and_succeeds(tmp_
     assert sup2.runner.calls == 1
 
 
-def test_resume_after_grace_review_unreviewed_also_lands_on_review(tmp_path):
+def test_resume_of_a_timed_out_budget_exhaustion_run_does_not_reenter_review(tmp_path):
+    """RETIRED/replaced (task 015, requirement E.1, #169): this used to pin
+    that a resume after the retired off-budget grace review's own
+    interrupted attempt lands back on `review`, same as an ordinary
+    unreviewed ending does (`test_resume_after_unreviewed_lands_on_review_
+    same_approach_and_succeeds` above). That scenario -- worker completes
+    the LAST task on the LAST budgeted iteration -- now holds `timed_out`
+    with NO `review_deadline_unreviewed` event at all (review's own state
+    is never entered, see `test_worker_budget_exhaustion_with_all_tasks_
+    complete_holds_timed_out` above), so there is nothing `_unreviewed_
+    awaiting_resume` could find here: this is a different terminal shape
+    now, not one this file's resume family covers."""
     root = tmp_path / "run"
     handlers1 = {
         "planning": [_plan],
         "worker": [_complete_task],
-        "review": [_interrupted],
     }
     sup1 = _review_supervisor(root, handlers1, iterations=2)
     state1 = asyncio.run(sup1._run_job_core())
-    assert state1 == "failed"
+    assert state1 == "timed_out"
     assert sup1.run.read_status()["verdict"] is None
 
-    handlers2 = {"review": [_verified]}
-    sup2 = _review_supervisor(root, handlers2, iterations=6)
-
-    assert sup2._unreviewed_awaiting_resume(1) is True
-    start_approach, skip_planning, step = sup2._resume_point()
-    assert (start_approach, step) == (1, "review")
-
-    state2 = asyncio.run(sup2._run_job_core())
-    assert state2 == "succeeded"
-    assert sup2.run.read_status()["approach"] == 1
+    sup2 = _review_supervisor(root, {}, iterations=6)
+    assert sup2._unreviewed_awaiting_resume(1) is False
 
 
 # ---------------------------------------------------------------------------

@@ -828,9 +828,9 @@ def detect_verdict_gate_peek(
     `LoopSupervisor._verdict_gate_verdict` consults this function, and no
     caller may let its result change `approved`/`payload` -- see
     `LoopSupervisor._record_verdict_gate_peek`, which calls this strictly
-    AFTER the verdict is already decided, at both of the two call sites the
-    peer gate has (`_step_verdict_gate`, the off-budget `_grace_verdict_
-    gate`).
+    AFTER the verdict is already decided, at the peer gate's call site
+    (`_step_verdict_gate`; the off-budget `_grace_verdict_gate` twin task
+    015/E.1 retired used to be a second).
 
     Scans the WHOLE transcript, not just the tail `last_tool_call` reads
     (which truncates to its newest `TERMINATION_EVIDENCE_TAIL_BYTES`): a
@@ -3636,8 +3636,8 @@ def mark_tier_ladder_exhausted_if_at_top(task: dict) -> bool:
 # ladder itself).
 #
 # Decision 8: the run-level final verification -- the pass whose VERIFIED
-# verdict ends the run (`LoopSupervisor._review_verdict`/`_maybe_grace_
-# review`) -- is the one dispatch requirement I's "hats with no task in
+# verdict ends the run (`LoopSupervisor._review_verdict`, and previously
+# the retired off-budget `_maybe_grace_review` too) -- is the one dispatch requirement I's "hats with no task in
 # hand keep their static half-1 role" rule does NOT cover: it always
 # provisions at `tiers.TOP_TIER`, regardless of any task's baseline or
 # effective tier (there is no task in hand to read one from, and even if
