@@ -1993,6 +1993,24 @@ function renderInfraWait(el, s, runId, live) {
       ]));
       return;
     }
+    // Cure-01-05 (v0.24 requirement B.1, DoD 3, #169): `timed_out` is the
+    // deadline/budget HOLD (task 008) -- resume-eligible, nothing in
+    // flight, no retry attempt actually running and no backoff wait
+    // pending. It is not in TERMINAL_STATES above (a hold is not an
+    // outcome) but it must not fall into the generic "a retry attempt is
+    // running" sentence below either -- that is exactly the
+    // still-working misreading B.1 forbids. `s.reason` is the hold's own
+    // note (`_finish_timed_out`, docs/api.md), quoted the same way the
+    // terminal branch above quotes its own reason.
+    if (s.state === "timed_out") {
+      const reason = String(s.reason == null ? "" : s.reason).trim();
+      el.appendChild(h("p", { class: "infra-wait" }, [
+        "\u26A0 degraded: held at the deadline " +
+        (reason ? "(" + reason + ")" : "(no reason recorded)"),
+        faultBadge(runId, "infra-wait", " explain"),
+      ]));
+      return;
+    }
     el.appendChild(h("p", { class: "infra-wait" }, [
       "\u26A0 degraded: infra outage episode in progress " +
       "(a retry attempt is running, no backoff wait pending)",

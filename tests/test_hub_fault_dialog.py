@@ -285,11 +285,14 @@ def test_app_js_opens_the_fault_dialog_from_both_badges():
     assert "openTextDialog(faultTitle(runId), text, null)" in src
     # both ways in: a failed/aborted run's state pill and a degraded card
     assert 'faultBadge(detail.runId, "state", pillEl)' in src
-    # three shapes of degraded card, each carrying the badge: a pending
-    # backoff wait, a live episode between attempts, and a run the outage
+    # four shapes of degraded card, each carrying the badge: a pending
+    # backoff wait, a live episode between attempts, a run the outage
     # already ended (task 050's terminal-reason branch, whose first cut
-    # dropped the badge and turned the browser tier red).
-    assert src.count('faultBadge(runId, "infra-wait"') == 3
+    # dropped the badge and turned the browser tier red), and a run HELD at
+    # its deadline (cure-01-05, v0.24 requirement B.1, DoD 3) -- distinct
+    # from the "live episode between attempts" shape precisely because
+    # nothing is actually running for it.
+    assert src.count('faultBadge(runId, "infra-wait"') == 4
     assert 'FAULT_BADGE_STATES = new Set(["failed", "aborted"])' in src
 
 

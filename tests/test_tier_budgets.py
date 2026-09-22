@@ -504,8 +504,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # smoke unchanged (+1 test, 0 new modules) for the D.1 hold/resume probe
     # that measures where a held-at-the-peer-gate run resumes and proves the
     # peer gate itself still renders a verdict there -- same module.
-    "fast": {"tests": 6065, "modules": 403},
-    "smoke": {"tests": 4396, "modules": 285},
+    # cure-01-05 (v0.24 requirement B.1, DoD 3): fast 6065 -> 6070, smoke
+    # 4396 -> 4401 (+5 tests, +1 module each) for
+    # tests/test_hub_infra_wait_timed_out.py -- the runtime probe that
+    # evals app.js's real `renderInfraWait` under Node and pins a held
+    # `timed_out` run's rendering, plus its unchanged running-outage and
+    # terminal-degraded control cases. No `docker`/`browser`/process-
+    # boundary fixture, so it sorts into both tiers, not fast-only.
+    "fast": {"tests": 6070, "modules": 404},
+    "smoke": {"tests": 4401, "modules": 286},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
