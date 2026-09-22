@@ -1270,10 +1270,13 @@ def test_a_passing_verdict_after_the_deadline_concludes_the_run_normally(tmp_pat
 #
 # The pre-named D petition ("the verdict is not readable at the point the
 # run's ending is chosen") was checked again for this sibling task and NOT
-# filed: `_finish(self, state, verdict, **fields)` (loop.py:3376) is still
+# filed: `_finish(self, state, verdict, **fields)` (loop.py:3537) is still
 # the one call site that decides `state` and `verdict` together, reached
 # here through `_finish_tail_unverified` -> `_finish_timed_out` exactly as
-# it is for the plain budget-exhaustion tail (task 011, C.1).
+# it is for the plain budget-exhaustion tail (task 011, C.1). Re-checked
+# again at cure-01-04's landing sha (01e6c2d5): still not filed -- the
+# call site moved (loop.py:3376 -> :3537, from intervening tasks 015-024
+# and cure-01-01..04's own edits) but its shape did not.
 #
 # Same shape as Section I (task 013): the worker completes the sole task
 # while the deadline is still ordinarily in the future, so `_step_review`'s
