@@ -147,9 +147,9 @@ judge? Look specifically for:
    neither stages the scope nor records the shortfall in the notes: a plan
    whose last third has no time to run delivers its tail requirements as
    `pending` tasks and its review findings as uncurable ones. Name the hours
-   remaining, your priced total, and which tail tasks you expect the deadline
-   to cut. A plan that records the shortfall honestly and orders the
-   must-land requirements first is not grounds for an objection.
+   remaining, your priced total, and which tail tasks you expect the shortfall
+   to leave for a top-up. A plan that records the shortfall honestly and orders
+   the must-land requirements first is not grounds for an objection.
 
 This is a coarse, one-pass sanity check against the plan's structure — not a
 second full requirements audit. That exhaustive, from-scratch verification is

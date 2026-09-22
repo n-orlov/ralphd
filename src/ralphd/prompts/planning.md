@@ -31,12 +31,16 @@ iteration is to read the PRD and produce a task plan. You do NOT implement anyth
    minutes of wall clock and a task at ~1.5 pairs. Multiply by the task count,
    add a tail reserve of at least 15% of the remaining hours for the
    run-ending review and ONE cure pass, and compare the total against the
-   hours you just computed. A plan that does not fit is reported as not
-   fitting, in the same planning iteration: write the arithmetic and the
-   requirements the deadline cannot reach into the notes, and send the same
-   thing through `notify`. Sizing a plan only against the iteration budget
+   hours you just computed. A priced total that exceeds the remaining hours
+   is a plan that will need a top-up, not a plan whose verdict is at risk --
+   crossing the deadline holds the run for the operator to extend or settle
+   rather than ending it. Report the shortfall in the same planning
+   iteration regardless: write the arithmetic and the requirements the
+   remaining hours cannot reach into the notes, and send the same thing
+   through `notify`, so the operator learns about the top-up from you rather
+   than from a held run. Sizing a plan only against the iteration budget
    hides this entirely -- a run can hold hundreds of unused iterations and
-   still die at its deadline mid-cure.
+   still need that top-up when its deadline arrives mid-cure.
 2c. **Read the approach ordinal from the Job context section below**
    (`Approach N of M`) before you draft anything: if this is not approach 1,
    this is a re-plan after an earlier approach was rejected, and the reason
@@ -314,11 +318,13 @@ is lawyered:
   belongs to nobody's iteration cap. Schedule those tasks as early in the
   dependency order as their evidence allows, keep the final task before the
   run-ending review cheap, and write into the notes' `## Standing rules` block
-  both the measured cost of a from-scratch independent review of this product
-  and the instruction that no task may start a wait which does not fit before
-  `deadlineAt` minus that reserve. A plan whose tail is an hour-long poll hands
-  the review an empty window, and a run with no verdict is a failed run however
-  much of the plan landed.
+  the measured cost of a from-scratch independent review of this product as
+  the reserve every later task prices its own waits against. Crossing the
+  deadline holds the run for the operator to extend or settle rather than
+  ending it, so this reserve discloses the size of a needed top-up rather
+  than fencing a wait off outright -- a plan whose tail is an hour-long poll
+  still owes the operator that arithmetic, in the notes, ahead of the run
+  ever reaching it.
 - Order tasks by dependency.
 - Do not start implementing. Do not mark anything completed.
 - If operator steering is present, it overrides the PRD where they conflict.

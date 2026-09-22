@@ -203,20 +203,22 @@ immediately starts the next iteration.
   "We never committed to that ref, so it must still agree" is an inference,
   and a remote-side rebase-merge or a fast-forward someone else took falsifies
   it silently.
-- **Reserve the run-ending review's window.** The iteration cap is not the only
-  clock: read `deadlineAt` from `status.json` in the run state directory, and
-  treat the last stretch before it as the independent review's, not yours. The
-  reserve is whatever the notes' `## Standing rules` block records as the
-  measured cost of a from-scratch review of this product, and at least 60
-  minutes until some iteration measures it. Before you begin any wait or sweep
-  whose duration you can estimate -- a dispatched CI lane, a full-tier run, a
-  poll loop on an external service -- check that your estimate fits inside
-  `deadlineAt` minus that reserve. If it does not fit, do not start it: record
-  what you have, report progress, and `notify` naming the wait you declined,
-  its estimate and the deadline arithmetic, so the operator can extend the
-  window or accept the gap. A run whose last task consumes the review's window
-  ships with no verdict at all, which costs the operator more than the same
-  task landing one iteration later.
+- **Reserve the run-ending review's window, and leave a resumable position.**
+  The iteration cap is not the only clock: read `deadlineAt` from
+  `status.json` in the run state directory, and treat the last stretch before
+  it as the independent review's, not yours. The reserve is whatever the
+  notes' `## Standing rules` block records as the measured cost of a
+  from-scratch review of this product, and at least 60 minutes until some
+  iteration measures it. Before you begin any wait or sweep whose duration
+  you can estimate -- a dispatched CI lane, a full-tier run, a poll loop on
+  an external service -- check that your estimate fits inside `deadlineAt`
+  minus that reserve, and write the arithmetic into the notes either way.
+  Crossing the job deadline holds the run rather than ending it, and the
+  operator, not the clock, decides whether to extend the window or accept
+  the gap the wait left behind -- so your job at that boundary is to leave a
+  position the operator can resume cleanly (work committed, the run id or
+  lane you are mid-wait on recorded in the notes), not to dodge the boundary
+  itself.
 - **A deadline this close is worth saying out loud.** When the remaining wall
   clock is under one reserve plus one iteration, put the arithmetic in the
   notes with the requirements still outstanding, so the next hat plans against
