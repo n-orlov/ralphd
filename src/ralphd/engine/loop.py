@@ -10984,11 +10984,41 @@ class LoopSupervisor:
             # match, or a match that has not yet spent its re-park -- the
             # latter already returned above, at `mechanical_ruled_park_
             # due`) is untouched.
-            reviewer_requested_gate_applies = reviewer_requested_gate and not (
+            # Task 004 (v0.24 PRD requirement J.1, A.5, #224): the SAME
+            # door, for the MECHANICAL reopen trigger. cure-01-02-3 above
+            # closed the reviewer's own field as a second way into an
+            # already-spent ruling re-park, but left trigger condition 2's
+            # mechanical gate open: a re-rejection on a ruled signature
+            # whose one re-park is spent, arriving while THIS approach's
+            # shared discretionary gate is still UNSPENT (a ruling filed
+            # against a signature whose first re-park went through
+            # `mechanical_ruled_park_due`, which spends no gate at all --
+            # or any fresh approach, since `discretionaryGateSpent` is
+            # keyed per approach while `rulingReparked` is not), paused a
+            # SECOND time under the identical `operator_input_needed`
+            # pauseReason and spent the gate doing it -- observed as
+            # `('advance', 'paused', 'operator_input_needed')` with
+            # `discretionaryGateSpent {1: True}` where A.5 requires "the
+            # second rejection on the same ruling to proceed" (the v0.23
+            # review's own `test_A5_second_ruled_rejection_cannot_use_
+            # unspent_reopen_gate`, now tracked in
+            # `tests/test_ruling_re_park_bound.py`). A.5's own text is a
+            # "one-re-park-per-ruling refusal on a re-rejection the ruling
+            # already addressed" (`docs/roadmap.md`'s v0.23 block), and
+            # that bound is on the RE-PARK, not on one branch's route to
+            # it: the ruling decision already pre-empts this very branch
+            # while it is unspent, so once it IS spent this rejection
+            # proceeds to the ordinary cure pass exactly as an unruled one
+            # would -- and the gate it could not use stays unspent for a
+            # genuinely different rejection later.
+            ruling_bound_spent_here = (
                 ruling_matches_this_rejection and ruling_re_park_exhausted)
+            reviewer_requested_gate_applies = (
+                reviewer_requested_gate and not ruling_bound_spent_here)
             mechanical_reopen_trigger = (
                 self.cfg.operator_input_needed_pause
                 and cure_preview["reopenedTaskIds"]
+                and not ruling_bound_spent_here
                 and self._discretionary_gate_available(approach))
             if reviewer_requested_gate_applies or mechanical_reopen_trigger:
                 if mechanical_reopen_trigger:
