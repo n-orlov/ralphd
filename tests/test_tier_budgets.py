@@ -384,8 +384,15 @@ TIER_MARKERS = ("smoke", "fast")
 # since the module never crosses a process boundary), fast 6002/399 ->
 # 6004/399, smoke 4366/282 -> 4368/282, re-measured with this module's own
 # `collected()`/`_modules()` helpers at this commit's tip.
+#
+# Task 007 (requirement A.2, #169): one new `fast`+`smoke`-stamped node in
+# the EXISTING `tests/test_deadline.py` (`test_deadline_expiring_mid_
+# flight_leaves_the_iterations_own_outcome_untouched`) -- fast 6004/399 ->
+# 6005/399, smoke unchanged at 4368/282 (the new node is not itself smoke-
+# marked; module count on both tiers is unchanged), re-measured with this
+# module's own `collected()`/`_modules()` helpers at this commit's tip.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6004, "modules": 399},
+    "fast": {"tests": 6005, "modules": 399},
     "smoke": {"tests": 4368, "modules": 282},
 }
 

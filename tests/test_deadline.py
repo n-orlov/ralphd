@@ -464,6 +464,116 @@ async def test_pause_mid_flight_iteration_credits_only_the_real_park(
     assert status["deadlineAt"] == utc_from_epoch(sup._deadline_epoch)
 
 
+# -- pin 5 (task 007, requirement A.2): a deadline that expires WHILE a
+# worker iteration is genuinely in flight does not disturb that iteration's
+# own outcome -- it ends on its own exit code (no engine-side cutoff, no
+# `faultClass: "signal"`), and the completion claim it reports is applied to
+# the fixture's `tasks.json` exactly as any other successful worker
+# iteration's claim would be. Built on `make_supervisor` (`tests/
+# conftest.py`), never this run's own directory -- the SAME blocking-runner/
+# fake-monotonic-clock technique pin 4 above uses to hold an iteration
+# genuinely in flight with no real sleep of any kind on either side.
+
+
+@pytest.mark.asyncio
+async def test_deadline_expiring_mid_flight_leaves_the_iterations_own_outcome_untouched(
+        tmp_path, monkeypatch):
+    fake_time = _FakeMonotonic(real_time, start=1_000_000.0)
+    monkeypatch.setattr(loop_mod, "time", fake_time)
+
+    # Two tasks, not one: with only one task, completing it leaves nothing
+    # outstanding and the SAME budget-exhaustion branch that fires here
+    # (`_maybe_grace_review`) would instead grant a second, off-budget
+    # review iteration -- a real and separately-tested mechanism, but not
+    # this probe's subject. With a second task still pending afterwards,
+    # `_maybe_grace_review` declines immediately (not every task is
+    # completed) and the run correctly ends this pass with exactly the one
+    # iteration this probe drives.
+    sup = make_supervisor(
+        tmp_path, run_id="task007-inflight-deadline", prd=True,
+        vigilant=False, job_timeout_s=100,
+        tasks=[{"id": "001", "title": "do the thing",
+                "successCriteria": "the thing is done", "status": "pending"},
+               {"id": "002", "title": "do another thing",
+                "successCriteria": "the other thing is done",
+                "status": "pending"}])
+    orig_deadline = sup.deadline
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _BlockingCompleteRunner:
+        """Mirrors pin 4's `_BlockingRunner` exactly (signals `entered` the
+        instant it is called, then parks on `release`), but on release
+        reports the worker's own `verdict: "complete"` contract payload
+        for the task the harness assigned -- read off disk, exactly like
+        `test_review_interrupted_not_rejection.py`'s `_complete_task`
+        does -- so this pins the full production claim-application path,
+        not just the dispatch-timeout formula pin 4/pin 3 already cover."""
+
+        def interrupt(self) -> bool:
+            return False
+
+        async def run(self, prompt, transcript, **kw) -> IterationResult:
+            entered.set()
+            await release.wait()
+            doc = sup.run.read_tasks()
+            task_id = next(t["id"] for t in doc["tasks"]
+                          if t["status"] == "in-progress")
+            r = IterationResult(exit_code=0)
+            r.final_text = "done\n" + json.dumps(
+                {"verdict": "complete", "task_id": task_id})
+            r.duration_s = 1.0
+            r.usage = {"input": 10, "output": 5, "totalTokens": 15}
+            return r
+
+    sup.runner = _BlockingCompleteRunner()  # type: ignore[assignment]
+
+    task = asyncio.ensure_future(sup._step_worker())
+    await asyncio.wait_for(entered.wait(), timeout=5)
+
+    # The iteration is genuinely in flight -- blocked inside the runner,
+    # nothing recorded yet -- when the deadline itself expires.
+    assert not task.done()
+    assert sup.budget_left() is True  # not yet: the deadline is still ahead
+    fake_time.advance(200.0)  # now well past orig_deadline (job_timeout_s=100)
+    assert sup.deadline == orig_deadline, "nothing paused/credited here"
+    assert sup.budget_left() is False, "the deadline must have genuinely expired"
+    assert not task.done(), "the in-flight iteration must not be disturbed"
+
+    release.set()
+    advanced = await asyncio.wait_for(task, timeout=5)
+
+    # The iteration ended on its OWN exit code, never the engine's: no
+    # signal-shaped cutoff, no timeout, and the fault classifier's verdict
+    # is null (a clean success), never "signal".
+    meta = json.loads((sup.run.iteration_dir(1) / "meta.json").read_text())
+    assert meta["exitCode"] == 0
+    assert meta["interrupted"] is False
+    assert meta["timedOut"] is False
+    assert meta.get("faultClass") != "signal"
+    assert meta.get("faultClass") is None
+
+    # The completion claim that iteration made -- `{"verdict": "complete",
+    # "task_id": "001"}` -- was applied to the fixture's OWN tasks.json,
+    # exactly like any other successful worker iteration's claim; task
+    # "002" (never touched) is untouched proof this is the real per-task
+    # write, not some coarser fixture-wide stub.
+    tasks_doc = sup.run.read_tasks()
+    task_status = {t["id"]: t["status"] for t in tasks_doc["tasks"]}
+    assert task_status["001"] == "completed"
+    assert task_status["002"] == "pending"
+
+    # Exactly one iteration ran: the second task still outstanding means
+    # `_outstanding_for_completion` is non-empty, so the loop returns to
+    # its own `while self.budget_left():` guard -- which now reads False,
+    # the deadline having expired while the first iteration was in flight
+    # -- and ends the pass here, never granting the (separately-tested,
+    # here-declined) off-budget grace review.
+    assert advanced == ("tail",)
+    assert sup.iterations_used == 1
+
+
 # ===========================================================================
 # Section C -- task 016 (PRD requirement F.3, #146): deadline mid-review
 # ===========================================================================
