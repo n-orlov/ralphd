@@ -471,3 +471,176 @@ def test_the_re_park_adds_no_new_terminal_or_nonterminal_state():
     assert "operator_input_needed" not in state.NONTERMINAL_STATES
     assert "operator_input_needed" not in state.TERMINAL_STATES
     assert state.PAUSED_STATE in state.NONTERMINAL_STATES
+
+
+# ===========================================================================
+# Task 004 (J.1, PRD requirement A.5, #224): the two A.5 bound questions the
+# v0.23 review's own probes (`_review_new_edges.py`/`_review_positive.py`,
+# not present on this host -- reconstructed here from the v0.24 PRD's own
+# descriptions of them) raised against this file's shipped code. Both
+# probes judged RIGHT against A.5's own text ("a bounded re-ask and a
+# one-re-park-per-ruling refusal on a re-rejection the ruling already
+# addressed", `docs/roadmap.md`'s v0.23 section) -- each test below pins
+# the probe's own expectation directly against the fixed product code,
+# never a rewritten claim.
+# ===========================================================================
+
+
+def test_A5_second_ruled_rejection_cannot_use_unspent_reopen_gate(tmp_path):
+    """Probe 1 (reconstructed): "A.5 requires the second rejection on the
+    same ruling to proceed." Judged RIGHT against `loop.py`'s own
+    `mechanical_ruled_park_due` computation (:10836) and its docstring's
+    claim that the ruling decision must "pre-empt... EVERY branch below it"
+    (:10796) -- but the deciding line for THIS test's own scenario is
+    `mechanical_reopen_trigger`'s coupling to `_spend_discretionary_gate`
+    (:10989-10999): the shared per-approach discretionary gate is spent the
+    FIRST time a cure-reopen-eligible rejection fires, whether or not any
+    ruling exists yet -- so by construction, once a ruling's OWN one-time
+    re-park is later spent on that identical signature, the gate this
+    second rejection could otherwise have used is already gone. The second
+    ruled rejection genuinely "cannot use" it, and falls through to the
+    ordinary, ungated cure pass instead of a second pause -- never a
+    second `operator_input_needed`, and never a fresh `discretionaryGateSpent`
+    write on this episode.
+
+    Three episodes, one on-disk run dir, a fresh `LoopSupervisor` each time
+    (this file's own multi-episode convention):
+
+    1. no ruling yet -- the cure-reopen rejection pauses via the ordinary
+       mechanical trigger (condition 2), spending the approach's one
+       discretionary gate right there.
+    2. a ruling is filed against that signature and the SAME rejection
+       recurs -- `mechanical_ruled_park_due` re-parks it (task 016's own
+       bound), spending nothing further; the gate is untouched by this
+       branch (already spent from episode 1).
+    3. the SAME rejection recurs a THIRD time, the ruling now exhausted --
+       `mechanical_ruled_park_due` is `False`, and `mechanical_reopen_
+       trigger` is ALSO `False` because `_discretionary_gate_available`
+       already reads back spent, so this rejection takes the plain,
+       unpaused cure pass (`rejected_curable_pass_available`) instead of
+       any `operator_input_needed` pause -- the reopen gate it would need
+       to pause a second time was never there to use.
+    """
+    root = tmp_path / "run"
+    tasks = _lane_fixture_tasks()
+
+    sup0 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
+                       tasks=tasks)
+    sup0._approach = 1
+    findings.write_findings_json(sup0.run.findings_json_file, _CURE_REOPEN_FINDING)
+    sup0.runner.run = _rejecting_runner("lanes moved")  # type: ignore[method-assign]
+    outcome0 = _bounded(sup0._step_review())
+    assert outcome0 == ("advance", "paused", "operator_input_needed")
+    status0 = sup0.run.read_status()
+    # episode 1 already spent the shared gate, via the ordinary mechanical
+    # reopen trigger -- no ruling exists yet to have re-parked anything.
+    assert status0.get("discretionaryGateSpent") == {"1": True}
+    assert not status0.get("rulingReparked")
+    sup0.run.add_ruling("Those lanes are residual. Ship it.")
+    sup0.resume()
+
+    sup1 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
+                       tasks=tasks)
+    sup1._approach = 1
+    findings.write_findings_json(sup1.run.findings_json_file, _CURE_REOPEN_FINDING)
+    sup1.runner.run = _rejecting_runner("lanes moved again")  # type: ignore[method-assign]
+    outcome1 = _bounded(sup1._step_review())
+    assert outcome1 == ("advance", "paused", "operator_input_needed")
+    status1 = sup1.run.read_status()
+    assert status1.get("rulingReparked") == [1]
+    assert not status1.get("curePasses")
+    sup1.resume()
+
+    sup2 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
+                       tasks=tasks)
+    sup2._approach = 1
+    findings.write_findings_json(sup2.run.findings_json_file, _CURE_REOPEN_FINDING)
+    sup2.runner.run = _rejecting_runner("lanes moved a third time")  # type: ignore[method-assign]
+
+    outcome2 = _bounded(sup2._step_review())
+
+    # the third episode -- same ruling, its one re-park already spent --
+    # takes the plain cure pass, never a second pause: the reopen gate it
+    # would have needed was already spent in episode 1, before this
+    # ruling's own re-park bound was even relevant.
+    assert outcome2 == ("advance", "cure", "rejected_curable_pass_available")
+    status2 = sup2.run.read_status()
+    assert status2.get("curePasses") == {"1": 1}
+    # unchanged from episode 2 -- no new re-park, no new gate spend.
+    assert status2.get("rulingReparked") == [1]
+    assert status2.get("discretionaryGateSpent") == {"1": True}
+    assert not (root / "approaches" / "01").exists()
+
+
+def test_A5_same_ruling_bound_survives_actual_replan(tmp_path):
+    """Probe 2 (reconstructed): "the A.5 bound is per ruling, not per
+    approach." Judged RIGHT against `_record_ruling_reparked`'s own
+    docstring (:12082): "additive... including across a replan that opens
+    a fresh approach -- a ruling's own re-park is spent for the life of
+    the RUN, never reset per approach." `rulingReparked` (`status.json`)
+    carries no approach key at all -- unlike `discretionaryGateSpent` and
+    `rejectionSignatures`, both keyed `{"<approach>": ...}` and correctly
+    reset by a fresh approach -- so the ruling's exhaustion is the one
+    counter in this family that must NOT reset. This test drives an
+    ACTUAL archive/replan (never a seeded status field) and confirms the
+    SAME ruling, recurring by signature in the FRESH approach, still does
+    not re-park a second time.
+
+    `rejectionSignatures` is cleared before the approach-2 episode purely
+    to isolate this claim from trigger condition 3's own unrelated
+    repeated-signature check (`_repeated_rejection_signature`), which would
+    otherwise intercept first and pause on ITS OWN, different, pauseReason
+    -- never because the ruling bound reset.
+    """
+    root = tmp_path / "run"
+    sup0 = _first_pause_no_ruling_yet(root)
+    sup0.run.add_ruling("Waived: ship it, these are residuals.")
+    sup0.resume()
+
+    # episode 1: the ruling's one re-park is spent, approach 1.
+    sup1 = _supervisor(root, max_approaches=3, operator_input_needed_pause=True)
+    sup1._approach = 1
+    findings.write_findings_json(sup1.run.findings_json_file, _MIXED_FINDINGS)
+    sup1.runner.run = _rejecting_runner("still mixed")  # type: ignore[method-assign]
+    outcome1 = _bounded(sup1._step_review())
+    assert outcome1 == ("advance", "paused", "operator_input_needed")
+    assert sup1.run.read_status().get("rulingReparked") == [1]
+    sup1.resume()
+
+    # episode 2: a SECOND rejection on the same (now exhausted) ruling --
+    # proceeds to the ordinary archive/replan tail, an ACTUAL replan, never
+    # a seeded approach field.
+    sup2 = _supervisor(root, max_approaches=3, operator_input_needed_pause=True)
+    sup2._approach = 1
+    findings.write_findings_json(sup2.run.findings_json_file, _MIXED_FINDINGS)
+    sup2.runner.run = _rejecting_runner("still mixed, again")  # type: ignore[method-assign]
+    outcome2 = _bounded(sup2._step_review())
+    assert outcome2 == ("advance", "replan", "rejected_approach_left")
+    assert (root / "approaches" / "01").exists()
+    replan_outcome = sup2._step_replan()
+    assert replan_outcome[0] == "advance"
+    assert sup2._approach == 2
+    # the ruling bound survives the boundary untouched -- still one entry.
+    assert sup2.run.read_status().get("rulingReparked") == [1]
+
+    # episode 3: fresh approach 2, the identical signature recurs (a
+    # contrived but legitimate case -- the same underlying wall was never
+    # actually fixed). Isolate from trigger condition 3's own unrelated
+    # repeated-signature check by clearing the map it reads.
+    sup3 = _supervisor(root, max_approaches=3, operator_input_needed_pause=True)
+    sup3.run.update_status(rejectionSignatures={})
+    sup3._approach = 2
+    findings.write_findings_json(sup3.run.findings_json_file, _MIXED_FINDINGS)
+    sup3.runner.run = _rejecting_runner("same wall recurs in approach 2")  # type: ignore[method-assign]
+
+    outcome3 = _bounded(sup3._step_review())
+
+    # the SAME ruling does not buy a second re-park just because a fresh
+    # approach began: this falls straight through to the ordinary
+    # archive/replan tail again, exactly as an unruled rejection would.
+    assert outcome3 == ("advance", "replan", "rejected_approach_left")
+    status3 = sup3.run.read_status()
+    assert (root / "approaches" / "02").exists()
+    # still exactly one entry -- the bound is per RULING, for the life of
+    # the run, never reset by the approach boundary just crossed.
+    assert status3.get("rulingReparked") == [1]

@@ -366,9 +366,18 @@ TIER_MARKERS = ("smoke", "fast")
 # smoke 4361/281 -> 4364/282), re-measured with this module's own
 # `collected()`/`_modules()` helpers at this commit's tip. This is the ratchet
 # moving for legitimately added tests, not a raised safety ceiling.
+#
+# Ratcheted again at task 004 (v0.24, requirement J.1): +0 modules, +2 tests
+# in the EXISTING `tests/test_ruling_re_park_bound.py` (the two A.5 bound
+# questions' own tracked tests, `test_A5_second_ruled_rejection_cannot_use_
+# unspent_reopen_gate`/`test_A5_same_ruling_bound_survives_actual_replan`,
+# both stamped `fast`+`smoke` by `pytest_collection_modifyitems` since the
+# module never crosses a process boundary), fast 6000/399 -> 6002/399, smoke
+# 4364/282 -> 4366/282, re-measured with this module's own `collected()`/
+# `_modules()` helpers at this commit's tip.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6000, "modules": 399},
-    "smoke": {"tests": 4364, "modules": 282},
+    "fast": {"tests": 6002, "modules": 399},
+    "smoke": {"tests": 4366, "modules": 282},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
