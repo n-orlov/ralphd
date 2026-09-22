@@ -159,6 +159,14 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "test_last_approach.py", (794,), ("Operator rulings (task 028, #26)",),
         "the rendered review prompt (AMENDMENT_MARKER)", ALL),
     AbsenceAssertion(
+        "test_mid_plan_review_episode.py", (181,),
+        ("requirement C: pending verification",),
+        "the rendered review prompt of the mid-plan review episode (task "
+        "022, v0.24 requirement K.2, #169): the episode is SCOPED to the "
+        "requirements whose tasks already reached terminal-success, so the "
+        "fixture task still awaiting validation must not be named anywhere "
+        "in that prompt", ALL),
+    AbsenceAssertion(
         "test_operator_ruling.py", (333, 336),
         ("Historical rulings", "purpose of this review"),
         "the operator-ruling context string `_operator_amendment_review_"

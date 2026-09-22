@@ -9,21 +9,31 @@ iteration scoped to the already-validated requirements, and opens a cure
 task per BLOCKING finding it reports through the SAME `state.insert_cure_
 tasks` path an ordinary run-ending review's own cure pass already takes.
 
-Two things pinned here, driving the real `LoopSupervisor._step_worker`
+Three things pinned here, driving the real `LoopSupervisor._step_worker`
 path with a phase-dispatching scripted agent (never a test-local shim),
 mirroring `tests/test_midrun_adjudication_episode.py`'s own shape:
 
 1. flag ON, fraction reached -- the episode's "review" call happens
-   strictly before the "verify" call, and its findings open a cure task;
+   strictly before the "verify" call, the prompt that dispatch actually
+   carries is SCOPED to the already-validated requirements (each one named,
+   the not-yet-validated one absent), and its findings open a cure task;
 2. flag OFF (the default) -- no "review" call happens at all and today's
-   iteration sequence (worker -> verify) is unchanged.
+   iteration sequence (worker -> verify) is unchanged;
+3. flag ON but the episode is INTERRUPTED mid-dispatch -- the
+   one-per-approach marker is already on disk at dispatch (read back from
+   inside the review dispatch itself), it survives the interruption, and a
+   fresh supervisor over the same run directory dispatches no second
+   episode for the same approach.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from pathlib import Path
+
+import pytest
 
 from ralphd.engine import findings
 from ralphd.engine.config import JobConfig
@@ -49,6 +59,7 @@ class _ScriptedAgent:
         self.handlers = handlers
         self.calls: dict[str, int] = {}
         self.order: list[str] = []
+        self.prompts: dict[str, list[str]] = {}
         self.running = False
 
     def interrupt(self) -> bool:
@@ -59,12 +70,31 @@ class _ScriptedAgent:
         n = self.calls.get(phase, 0)
         self.calls[phase] = n + 1
         self.order.append(phase)
+        self.prompts.setdefault(phase, []).append(str(prompt))
         steps = self.handlers[phase]
         self.running = True
         try:
-            return steps[min(n, len(steps) - 1)](self.sup, prompt)
+            out = steps[min(n, len(steps) - 1)](self.sup, prompt)
+            if inspect.isawaitable(out):
+                out = await out
+            return out
         finally:
             self.running = False
+
+
+def _supervisor_over(run: RunDir, root: Path, **cfg_kw) -> LoopSupervisor:
+    """A supervisor over an EXISTING run directory -- used both for the
+    first process and, in the interrupted-episode probe, for the fresh
+    process that resumes the same run dir after an episode was killed
+    mid-dispatch."""
+    kw = {"iterations": 10, "max_approaches": 3, "vigilant": True,
+          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
+          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
+          **cfg_kw}
+    cfg = JobConfig(run_id="task022-mid-plan-review", **kw)
+    sup = LoopSupervisor(cfg, run, root)
+    sup._approach = 1
+    return sup
 
 
 def _worker_supervisor(tmp_path: Path, **cfg_kw) -> tuple[LoopSupervisor, RunDir, Path]:
@@ -83,14 +113,7 @@ def _worker_supervisor(tmp_path: Path, **cfg_kw) -> tuple[LoopSupervisor, RunDir
         {"id": "3", "title": "requirement C: pending verification",
          "status": "awaiting-validation", "successCriteria": "n/a"},
     ]})
-    kw = {"iterations": 10, "max_approaches": 3, "vigilant": True,
-          "on_complete": "exit", "infra_retry_backoff_s": [0.0],
-          "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
-          **cfg_kw}
-    cfg = JobConfig(run_id="task022-mid-plan-review", **kw)
-    sup = LoopSupervisor(cfg, run, root)
-    sup._approach = 1
-    return sup, run, root
+    return _supervisor_over(run, root, **cfg_kw), run, root
 
 
 def _no_verdict(sup, prompt=""):
@@ -139,6 +162,24 @@ def test_flag_on_runs_one_scoped_episode_before_verify_and_opens_a_cure_task(
     assert agent.order.index("review") < agent.order.index("verify")
     assert agent.calls.get("review") == 1
     assert agent.calls.get("verify") == 1
+
+    # 1b. SCOPING: the prompt that dispatch actually carried names every
+    # requirement whose task has already reached terminal-success, and
+    # none of the ones that have not -- the criterion's "scoped review
+    # episode running over the requirements whose tasks are `validated`".
+    review_prompt = agent.prompts["review"][0]
+    assert "SCOPED review episode" in review_prompt
+    head, _, scoped = review_prompt.partition(
+        "### Already-validated requirements in scope")
+    assert scoped, "the review dispatch carried no scoped-requirements block"
+    for tid, title in (("1", "requirement A: already validated"),
+                       ("2", "requirement B: already validated")):
+        assert f"**{tid}**" in scoped
+        assert title in scoped
+    # The task still awaiting validation is NOT in the episode's scope,
+    # anywhere in the prompt.
+    assert "requirement C: pending verification" not in review_prompt
+    assert "**3**" not in scoped
 
     # 2. the episode is recorded once per approach.
     assert sup.run.read_status().get("midPlanReviewEpisodes") == {"1": True}
@@ -205,3 +246,78 @@ def test_flag_off_by_default_runs_no_episode_and_the_sequence_is_unchanged(
     assert not any(e.get("type") == "approach.mid_plan_review_cure" for e in events)
     assert not any(e.get("type") == "phase" and e.get("midPlanReview")
                   for e in events)
+
+
+def test_an_interrupted_episode_still_spends_the_approachs_one_episode(tmp_path):
+    """The one-per-approach guarantee has to hold across an episode killed
+    mid-dispatch (a crash, an operator interrupt, the job deadline
+    cancelling the iteration task): the marker `midPlanReviewEpisodes` is
+    written at DISPATCH -- what SPEC.md's and `docs/api.md`'s own rows claim
+    -- so it is already readable from inside the review dispatch itself,
+    survives a genuine external cancellation of the episode's task, and a
+    FRESH supervisor over the same run directory dispatches no second
+    episode for the same approach.
+    """
+    sup, run, root = _worker_supervisor(tmp_path, mid_plan_review=True)
+    marker_at_dispatch: dict = {}
+
+    async def _interrupted_mid_dispatch(s, prompt=""):
+        # Read the marker from inside the dispatch itself, then hang until
+        # something outside kills us -- exactly the shape of an iteration
+        # in flight when the process dies.
+        marker_at_dispatch["value"] = (
+            s.run.read_status().get("midPlanReviewEpisodes"))
+        await asyncio.sleep(3600)
+        raise AssertionError("the dispatch was never cancelled")
+
+    agent = _ScriptedAgent({
+        "worker": [_no_verdict],
+        "review": [_interrupted_mid_dispatch],
+        "verify": [_verified],
+    })
+    agent.sup = sup  # type: ignore[attr-defined]
+    sup.runner = agent  # type: ignore[assignment]
+
+    async def _dispatch_then_cancel() -> None:
+        episode = asyncio.ensure_future(
+            sup._maybe_run_mid_plan_review_episode())
+        for _ in range(2000):
+            if "value" in marker_at_dispatch:
+                break
+            await asyncio.sleep(0.005)
+        else:  # pragma: no cover - the dispatch never happened
+            episode.cancel()
+            raise AssertionError("the review dispatch never started")
+        episode.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await episode
+
+    asyncio.run(_dispatch_then_cancel())
+
+    # The marker was on disk BEFORE the dispatch that got interrupted --
+    # read back by the dispatch itself, not after the fact.
+    assert marker_at_dispatch["value"] == {"1": True}
+    # ... and it survived the cancellation.
+    assert run.read_status().get("midPlanReviewEpisodes") == {"1": True}
+
+    # A fresh supervisor over the SAME run directory (the resumed process)
+    # spends no second episode on approach 1.
+    sup2 = _supervisor_over(run, root, mid_plan_review=True)
+    agent2 = _ScriptedAgent({
+        "worker": [_no_verdict],
+        "review": [_adjudicated_review],
+        "verify": [_verified],
+    })
+    agent2.sup = sup2  # type: ignore[attr-defined]
+    sup2.runner = agent2  # type: ignore[assignment]
+
+    asyncio.run(sup2._maybe_run_mid_plan_review_episode())
+
+    assert agent2.calls.get("review", 0) == 0
+    assert agent2.order == []
+    assert run.read_status().get("midPlanReviewEpisodes") == {"1": True}
+    events = [json.loads(x) for x in
+             (run.root / "events.jsonl").read_text().splitlines() if x.strip()]
+    mid_plan_phase_events = [e for e in events if e.get("type") == "phase"
+                             and e.get("midPlanReview") is True]
+    assert len(mid_plan_phase_events) == 1

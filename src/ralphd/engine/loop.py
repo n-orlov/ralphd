@@ -15016,11 +15016,15 @@ class LoopSupervisor:
 
         Deduped per approach via `_mid_plan_review_done_for_approach`/
         `_record_mid_plan_review_done`, disk-backed so a resumed process
-        never re-runs it. The record is written immediately after the
-        episode's own `run_iteration` call, before the result is even
-        inspected -- the same "the attempt was spent" bookkeeping order
-        `_maybe_run_midrun_adjudication_episode` follows for its own
-        `_petition_adjudication_seen` update.
+        never re-runs it. The record is written at DISPATCH -- strictly
+        before the `await run_iteration(...)` that could be interrupted by
+        a crash, a cancellation or the job deadline -- so an episode killed
+        mid-flight still counts as the ONE episode this approach is
+        entitled to and a fresh supervisor over the same run directory
+        dispatches no second one. Writing it after the await would make the
+        one-per-approach guarantee (and SPEC.md's/`docs/api.md`'s own claim
+        that the marker lands at dispatch) false across exactly that
+        interruption.
         """
         if not self.cfg.mid_plan_review:
             return
@@ -15034,10 +15038,10 @@ class LoopSupervisor:
         await self._gate()
         self.run.emit("phase", phase="review", approach=approach,
                       midPlanReview=True)
+        self._record_mid_plan_review_done(approach)
         result = await self.run_iteration(
             "review", extra=self._mid_plan_review_extra(validated_tasks),
             tier=state.run_level_verify_tier())
-        self._record_mid_plan_review_done(approach)
         if result is None:
             return
         result = await self._review_contract_ladder(result, mid_run=True)

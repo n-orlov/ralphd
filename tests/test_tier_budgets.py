@@ -453,10 +453,14 @@ TIER_MARKERS = ("smoke", "fast")
 # (`tests/test_mid_plan_review_episode.py`, two nodes, no `live(`/process-
 # boundary usage, so it counts in smoke too) -- fast 6050 -> 6052 tests over
 # 402 -> 403 modules, smoke 4388 -> 4390 tests over 284 -> 285 modules,
-# measured the same way at this task's own tip.
+# measured the same way at this task's own tip. Its cure (same task, same
+# requirement) added a THIRD node to that same module, pinning that the
+# one-per-approach marker is written at dispatch and so survives an episode
+# cancelled mid-flight -- fast 6052 -> 6053, smoke 4390 -> 4391, still 403/
+# 285 modules, measured the same way.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6052, "modules": 403},
-    "smoke": {"tests": 4390, "modules": 285},
+    "fast": {"tests": 6053, "modules": 403},
+    "smoke": {"tests": 4391, "modules": 285},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
