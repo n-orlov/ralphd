@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import time as real_time
 from pathlib import Path
 
 import pytest
@@ -329,6 +330,108 @@ def test_an_interrupted_episode_still_spends_the_approachs_one_episode(tmp_path)
     mid_plan_phase_events = [e for e in events if e.get("type") == "phase"
                              and e.get("midPlanReview") is True]
     assert len(mid_plan_phase_events) == 1
+
+
+@pytest.mark.parametrize("boundary", ["deadline", "iterations"])
+def test_no_mid_plan_review_episode_starts_at_an_already_expired_boundary(
+        tmp_path, boundary):
+    """Task cure-01-03 (v0.24 requirement A.1/K.2, DoD 1-3, #169): the
+    episode is a bare async call from inside `_step_worker`'s own `while
+    self.budget_left():` loop BODY, so the loop's own boundary check (only
+    re-consulted at the top of the next turn) does not stand between a
+    worker iteration that just spent the last of the budget and this call.
+    Requirement A.1 forbids starting a new iteration there: an
+    already-expired boundary must dispatch NO mid-plan review iteration --
+    and the pass must still land in the shared `timed_out` freeze path
+    (`_budget_exhausted_tail` -> `_finish_tail_unverified` ->
+    `_finish_timed_out`, task 010/011's own C.1 path) with a null verdict.
+
+    Driven through the REAL `_step_worker` call site, with the worker
+    iteration itself spending the last of the budget -- the exact ordering
+    the guard exists for -- over both halves of `budget_left()`: an
+    expired job deadline and an exhausted iteration budget. Everything
+    else about the episode is left DUE (flag on, fraction reached,
+    marker unspent, a blocking finding waiting on disk), so the absence of
+    a dispatch can only be the boundary: `test_flag_on_runs_one_scoped_
+    episode_before_verify_and_opens_a_cure_task` above dispatches one from
+    this very fixture. The in-flight counterpart -- a review already
+    dispatched while budget WAS available finishes and its verdict is
+    applied -- is pinned in `tests/test_deadline.py`'s Sections I/J, with
+    the ordinary run-ending review's own no-dispatch twin in that file's
+    Section Jb.
+    """
+    sup, run, root = _worker_supervisor(tmp_path, mid_plan_review=True)
+    findings.write_findings_json(run.findings_json_file, [_BLOCKING_FINDING])
+    if boundary == "iterations":
+        # One iteration left, and `iterations_used` is charged at DISPATCH:
+        # the worker pass below is the one that spends it, so the boundary
+        # is open at `_step_worker`'s own loop top (asserted below) and
+        # closed by the time the episode is reached.
+        sup.cfg.iterations = 1
+
+    def _worker_spends_the_last_of_the_budget(s, prompt=""):
+        if boundary == "deadline":
+            # Both halves of the deadline moved together, the same pair
+            # `set_job_deadline`/`_extend_deadline_by` always move, and
+            # squarely into the past -- from INSIDE the worker iteration
+            # `_step_worker` already dispatched.
+            s.deadline = real_time.monotonic() - 1.0
+            s._deadline_epoch = real_time.time() - 1.0
+        return _no_verdict(s, prompt)
+
+    agent = _ScriptedAgent({
+        "worker": [_worker_spends_the_last_of_the_budget],
+        "review": [_adjudicated_review],
+        "verify": [_verified],
+    })
+    agent.sup = sup  # type: ignore[attr-defined]
+    sup.runner = agent  # type: ignore[assignment]
+
+    assert sup._mid_plan_review_due(sup.run.read_tasks()) is True, (
+        "precondition: the episode is otherwise DUE -- only the boundary "
+        "may keep it from dispatching")
+    assert sup._mid_plan_review_done_for_approach(1) is False
+    assert sup.budget_left() is True, (
+        "precondition: the boundary is still open at `_step_worker`'s own "
+        "loop top, so the worker iteration below really is dispatched")
+
+    outcome = asyncio.run(sup._step_worker())
+
+    # 1. the boundary really was expired by the time the episode was
+    # reached, and no mid-plan review iteration was dispatched.
+    assert sup.budget_left() is False
+    assert agent.calls.get("review", 0) == 0, (
+        "requirement A.1: an already-expired boundary must start NO new "
+        "mid-plan review iteration")
+    assert agent.order == ["worker"], (
+        f"only the worker iteration that spent the budget ran, got "
+        f"{agent.order!r}")
+
+    # 2. the episode's one-per-approach marker was NOT spent on a dispatch
+    # that never happened, and nothing it would have written is on disk.
+    assert run.read_status().get("midPlanReviewEpisodes") is None
+    assert sup._mid_plan_review_done_for_approach(1) is False
+    tasks = sup.run.read_tasks()["tasks"]
+    assert [t for t in tasks if t.get("origin") == "review-cure"] == []
+    events = [json.loads(x) for x in
+             (run.root / "events.jsonl").read_text().splitlines() if x.strip()]
+    assert not any(e.get("type") == "phase" and e.get("midPlanReview")
+                  for e in events)
+    assert not any(e.get("type") == "approach.mid_plan_review_cure"
+                  for e in events)
+
+    # 3. the pass ends in the SHARED freeze path -- the same `("tail",)`
+    # outcome and C.1 flag every other budget boundary sets -- and that
+    # tail holds `timed_out` with a null verdict, never a second freeze
+    # implementation of its own.
+    assert outcome == ("tail",)
+    assert sup._budget_exhausted_tail is True
+    assert sup._finish_tail_unverified() == "timed_out"
+    status = run.read_status()
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
+    assert status.get("endedAt") is None, "a held run has not ended"
+    assert status.get("pendingTerminalState") is None
 
 
 def test_admitted_mid_plan_cure_updates_the_persisted_cure_counters(tmp_path):

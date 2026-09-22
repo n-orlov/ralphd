@@ -475,13 +475,27 @@ TIER_MARKERS = ("smoke", "fast")
 # ratchet is not a budget ceiling", 2026-09-22), not a raised safety
 # ceiling and not a weakened guard: no test was retired, skipped,
 # de-marked or weakened to buy room.
+# Task cure-01-03 (v0.24 requirement A.1/B.3, DoD 1-3, K.2, #169) added FOUR
+# nodes, both parametrized pairs, to two already-counted modules: the
+# already-expired-boundary no-dispatch probe for the ordinary run-ending
+# review (`tests/test_deadline.py`'s new Section Jb,
+# `test_no_new_review_iteration_starts_at_an_already_expired_boundary
+# [deadline|iterations]`, fast-only like its whole module) and the same
+# boundary at the mid-plan review episode's own call site
+# (`tests/test_mid_plan_review_episode.py::test_no_mid_plan_review_episode_
+# starts_at_an_already_expired_boundary[deadline|iterations]`,
+# `fast`+`smoke` like its whole module) -- fast 6057 -> 6061 tests, smoke
+# 4394 -> 4396 tests, both module ceilings unchanged at 403/285 (no module
+# added). Measured with `.venv/bin/python -m pytest -q -m <tier>
+# --collect-only` at this task's own tip. Same ratchet under operator
+# ruling 001 as every entry above: no test retired, skipped, de-marked or
+# weakened to buy the room.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    # cure-01-02 (v0.24 requirement B.3/operator ruling 3): 6056 -> 6057,
-    # +1 test (0 new modules) for `test_hold_does_not_run_completion_hook`
-    # in tests/test_on_complete_cmd.py, re-measured with this module's own
-    # `collected()`/`_modules()` helpers at this commit's tip.
-    "fast": {"tests": 6057, "modules": 403},
-    "smoke": {"tests": 4394, "modules": 285},
+    # cure-01-03 (v0.24 requirement A.1/B.3/K.2): fast 6057 -> 6061, smoke
+    # 4394 -> 4396, +4 tests (0 new modules) for the two already-expired-
+    # boundary no-dispatch probes described directly above.
+    "fast": {"tests": 6061, "modules": 403},
+    "smoke": {"tests": 4396, "modules": 285},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

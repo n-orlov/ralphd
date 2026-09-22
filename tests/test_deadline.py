@@ -1406,6 +1406,115 @@ def test_a_rejecting_verdict_after_the_deadline_holds_the_run(tmp_path):
 
 
 # ===========================================================================
+# Section Jb -- task cure-01-03 (v0.24 requirement A.1/B.3, DoD 1-3, #169):
+# the OTHER half of the boundary Sections I and J pin, and the one those two
+# sections deliberately do NOT cover.
+#
+# Sections I/J are the IN-FLIGHT case: `_step_review` consulted
+# `budget_left()` (True), dispatched a review iteration, and the deadline
+# then expired while that iteration was still running -- the review
+# finishes and its verdict is applied (I: `succeeded`; J: the hold, with
+# the rejection's findings and cure task intact).
+#
+# This section is the NO-DISPATCH case: the boundary is ALREADY expired
+# when `_step_review` is entered, so requirement A.1 forbids starting a new
+# iteration at all -- no review hat process is launched, and the run holds
+# `timed_out` with a null verdict through the SAME shared freeze path
+# (`_budget_exhausted_tail` -> `_finish_tail_unverified` -> `_finish_timed_
+# out`, task 010/011's own C.1 path) every other `_step_*` boundary already
+# uses, never review's own `deadline during review` branch.
+#
+# Both halves of `budget_left()` are exercised (an expired job deadline and
+# an exhausted iteration budget), because requirement A.1 names both and
+# `_step_review`'s guard is one check over the pair. The sibling no-dispatch
+# probe for the mid-plan review episode's own call site lives in
+# `tests/test_mid_plan_review_episode.py::test_no_mid_plan_review_episode_
+# starts_at_an_already_expired_boundary`.
+# ===========================================================================
+
+
+@pytest.mark.parametrize("boundary", ["deadline", "iterations"])
+def test_no_new_review_iteration_starts_at_an_already_expired_boundary(
+        tmp_path, boundary):
+    """A supervisor entering `review` with its budget already spent
+    dispatches NO review iteration (the scripted agent is never called at
+    all) and holds `timed_out` with a null verdict through the shared C.1
+    freeze path.
+
+    Episode 1 is Section C's own resume shape (plan, worker COMPLETE,
+    review interrupted), purely to leave a run directory whose resume
+    point genuinely IS `review` with a task already complete -- so
+    episode 2's fresh supervisor is positioned exactly where a resumed run
+    that still owes a verdict would be, rather than at a boundary this
+    file's harness hand-placed. Episode 2 is the probe: its boundary is
+    already expired before its first dispatch -- by an expired job
+    deadline (`job_timeout_s=0.0`) or by an exhausted iteration budget
+    (`iterations_used == iterations`), the two halves `budget_left()`
+    checks -- and it must start nothing.
+    """
+    root = tmp_path / "run"
+    sup1 = _review_supervisor(root, {
+        "planning": [_plan],
+        "worker": [_complete_task],
+        "review": [_interrupted],
+    }, iterations=3)
+    assert asyncio.run(asyncio.wait_for(sup1._run_job_core(), 30.0)) == "failed"
+    assert sup1.run.read_status()["verdict"] is None
+    iterations_before = len(read_events(root, types=("iteration.start",)))
+    assert iterations_before == 3
+
+    # Episode 2: a FRESH supervisor over the SAME run dir (what `ralphctl
+    # resume` leaves behind), whose budget is already gone.
+    expired = ({"iterations": 6, "job_timeout_s": 0.0} if boundary == "deadline"
+               else {"iterations": 3, "iterations_used": 3})
+    sup2 = _review_supervisor(root, {"review": [_verified]}, **expired)
+
+    # Preconditions: review really is where this episode would go, and the
+    # boundary really is expired before anything is dispatched.
+    assert sup2._unreviewed_awaiting_resume(1) is True
+    start_approach, _skip_planning, step = sup2._resume_point()
+    assert (start_approach, step) == (1, "review")
+    assert sup2.budget_left() is False
+    if boundary == "deadline":
+        # the deadline half, not the iteration half: budget remains
+        assert (sup2.iterations_used - sup2._infra_refunded
+                - sup2._steer_refunded - sup2._adjudication_refunded) < sup2.cfg.iterations
+        assert real_time.monotonic() >= sup2.deadline
+    else:
+        # the iteration half, not the deadline half: wall clock remains
+        assert real_time.monotonic() < sup2.deadline
+        assert sup2.iterations_used == sup2.cfg.iterations
+
+    state = asyncio.run(asyncio.wait_for(sup2._run_job_core(), 30.0))
+
+    # 1. NO new review iteration was dispatched: the scripted agent (which
+    # would have returned an ordinary `verified` verdict, concluding the
+    # run `succeeded`) was never called, and no `iteration.start` joined
+    # episode 1's three.
+    assert sup2.runner.calls == 0, (
+        "requirement A.1: an already-expired boundary must start NO new "
+        "review iteration")
+    assert len(read_events(root, types=("iteration.start",))) == iterations_before
+    assert state != "succeeded"
+
+    # 2. ... and the run held `timed_out` with a null verdict.
+    assert state == "timed_out"
+    status = sup2.run.read_status()
+    assert status["state"] == "timed_out"
+    assert status["verdict"] is None
+    assert status.get("endedAt") is None, "a held run has not ended"
+    assert status.get("pendingTerminalState") is None
+
+    # 3. ... through the SHARED freeze path (task 011's own C.1 flag into
+    # `_finish_timed_out`), never review's own deadline-during-review
+    # branch and never a second freeze implementation.
+    assert sup2._budget_exhausted_tail is True
+    assert sup2._review_deadline_unreviewed is False
+    assert status["reason"] != "deadline during review"
+    assert _events(sup2.run, "state")[-1]["state"] == "timed_out"
+
+
+# ===========================================================================
 # Section K -- task 017 (v0.24 requirement F.1, #169): a bare `ralphctl
 # resume` grants a held (`timed_out`) run a fresh full window.
 #
