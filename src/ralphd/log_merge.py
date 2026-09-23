@@ -997,7 +997,8 @@ def _whole_lines(raw: bytes) -> list[str]:
     return lines
 
 
-def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[str]]:
+def _tail_lines_of_file(path: Path, needed: int, *,
+                        skip_seed_lookback: bool = False) -> tuple[list[str], bool, list[str]]:
     """The last `needed` newline-terminated lines of `path`, read from the
     END of the file in growing chunks -- never the whole file -- so bytes
     read are bounded by `needed`, not by how much unrelated OLDER content
@@ -1006,6 +1007,19 @@ def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[
     5,281,670 `output.jsonl` bytes read, because the newest iteration's
     WHOLE transcript was `read_text()`-ed regardless of how much of it the
     requested tail actually needed).
+
+    `skip_seed_lookback` (task 021, PRD G.3/G.6): when the caller already
+    has a validated `collapse_index` for this same file, it can resolve
+    the collapse-state seed by an O(1) lookup (`collapse_index.
+    resolve_flags_at_offset`) instead of by this function's own bounded
+    LOOK-BACK GROWTH below -- so that growth (bytes read proportional to
+    how far back the deciding setter sits) becomes pure waste: it would
+    read real bytes only to have their answer discarded in favour of the
+    index's. Passing `True` here skips straight past the loop below,
+    leaving `reached_start`/`prefix_lines` exactly as the single, needed-
+    bounded read above already computed them -- `merge_entries_tail` is
+    the only caller that ever passes it, and only once `collapse_index.
+    load_index` has already validated an index for this same file.
 
     Reads in binary mode and only decodes once a run of whole lines has
     been isolated: every chunk boundary this function ever stops at lands
@@ -1125,7 +1139,7 @@ def _tail_lines_of_file(path: Path, needed: int) -> tuple[list[str], bool, list[
         head_lines: list[str] = []
         head_pos = 0
         extra_growths = 0
-        while not reached_start:
+        while not reached_start and not skip_seed_lookback:
             kind = _seed_lookback_extension_kind(tail_lines,
                                                  head_lines + prefix_lines)
             if kind is None:
@@ -1265,7 +1279,46 @@ def merge_entries_tail(run_root: Path, tail: int,
         collapse_seed = None
         if out.exists():
             remaining = max(tail - content_count, 1)
-            tail_lines, reached_start, prefix_lines = _tail_lines_of_file(out, remaining)
+            # Task 021 (PRD G.3/G.6): a validated side index (task 020,
+            # PRD G.1) resolves the collapse-state seed by an O(1) lookup
+            # -- one `bisect` over a handful of segments, no re-read of
+            # `out` at all -- so the bounded look-back growth
+            # `_tail_lines_of_file` would otherwise pay for, proportional
+            # to how far back the deciding setter sits, is skipped
+            # entirely (`skip_seed_lookback=True` below). Absence,
+            # truncation or a stale index (`load_index` returning `None`)
+            # is not an error (PRD G.4): the growth-based look-back below
+            # still runs exactly as it always has, unaffected. Imported
+            # locally, not at module scope, so this module never has to
+            # order itself around `collapse_index`'s own module-level
+            # `from .log_merge import OUTPUT_FILENAME` -- the two modules
+            # would otherwise import each other.
+            from .collapse_index import load_index as _load_collapse_index
+            from .collapse_index import resolve_flags_at_offset as _resolve_flags_at_offset
+            index = _load_collapse_index(d, output_filename=OUTPUT_FILENAME)
+            tail_lines, reached_start, prefix_lines = _tail_lines_of_file(
+                out, remaining, skip_seed_lookback=index is not None)
+            if index is not None:
+                # The cut point is wherever `tail_lines` -- exactly the
+                # tail this call retains, whether or not the growth
+                # loop above ran -- begins in the file: the file's
+                # CURRENT size minus the bytes those lines re-encode to.
+                # `tail_lines` is always a literal suffix of `out`'s own
+                # bytes (task 005's own contract), so this needs no
+                # further disk read -- one `stat()` plus arithmetic on
+                # lines already in hand.
+                try:
+                    file_size = out.stat().st_size
+                except OSError:
+                    file_size = 0
+                tail_bytes = len("".join(tail_lines).encode("utf-8"))
+                cut_offset = max(file_size - tail_bytes, 0)
+                if cut_offset > 0:
+                    flags = _resolve_flags_at_offset(d, cut_offset,
+                                                     output_filename=OUTPUT_FILENAME)
+                    collapse_seed = {"textSeen": flags["textSeen"],
+                                     "thinkingSeen": flags["thinkingSeen"],
+                                     "toolcallSeen": flags["toolcallSeen"]}
             # Task 006 (PRD F): whether or not this read reached byte 0 of
             # the file (`reached_start`), the fabricated "start" boundary
             # below is NOT a real iteration start whenever `prefix_lines`
@@ -1287,7 +1340,7 @@ def merge_entries_tail(run_root: Path, tail: int,
             # tool call `prefix_lines` opened but did not also close --
             # for a `tool_execution_end` kept in `tail_lines` whose own
             # `tool_execution_start` fell outside even that widened read.
-            if prefix_lines:
+            if collapse_seed is None and prefix_lines:
                 seed_flags, pending_tool_args = _prior_collapse_state(prefix_lines)
                 collapse_seed = dict(seed_flags)
                 # Task cure-01-03-2 (PRD Q.1): a flag whose setter was never

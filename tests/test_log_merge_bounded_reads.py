@@ -50,6 +50,7 @@ from ralphd.engine.api import create_app
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
+from ralphd import collapse_index, log_merge
 from ralphd.log_merge import OUTPUT_FILENAME, merged_lines
 
 
@@ -1325,3 +1326,131 @@ async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
         assert render_tail_lines(
             "".join(_consumer_suppressing_disclosed_unknowns(grown)), tty=False,
             n=2)[-2:] == full[-2:], (label, bound)
+
+
+def test_collapse_index_resolves_the_seed_flag_in_o1_bytes_regardless_of_setter_depth(
+        tmp_path, monkeypatch):
+    """Task 021, PRD G.3/G.6: with a validated `collapse_index` present,
+    `merge_entries_tail` resolves the `textSeen`/`thinkingSeen` seed by
+    ONE lookup (`collapse_index.resolve_flags_at_offset`'s `bisect` over
+    the index's own segments) instead of `_tail_lines_of_file`'s bounded
+    LOOK-BACK GROWTH -- so the `output.jsonl` bytes actually read to
+    answer a `tail=2` request stay the SAME however far back the
+    deciding setter (the `text_delta`/`thinking_start` pair) sits, rather
+    than growing with that distance the way a re-reading growth ladder
+    would.
+
+    `prelude_count` (`_write_iteration_with_recognized_nonrendering_gap`,
+    `gap_count=0` so nothing else sits between the setter and the final
+    replaying `message_end`) places the setter 1,067 * `prelude_count`
+    bytes into the file -- 2,134,000 bytes at the smaller depth checked
+    here, 250x that (533,500,000 bytes) at the larger one -- and both
+    reads measure the exact same `_TAIL_READ_CHUNK` (65,536 bytes): the
+    ONE backward chunk `_tail_lines_of_file`'s ordinary `needed`-bounded
+    read always takes for a 2-line tail, with no extra growth at all
+    (`skip_seed_lookback=True`, since a valid index exists), and no
+    second read of any kind for the flags themselves -- those come from
+    the index file, never from `out`.
+
+    Byte-boundedness alone is not the property: a policy that stayed
+    cheap by DISCLOSING the flag unresolved (the shipped fallback this
+    same module already ships, PRD Q.1) would also read a constant
+    number of bytes here, and still answer wrong. So this also pins the
+    resolved seed itself, at both depths: no `unresolved` key, and both
+    `textSeen`/`thinkingSeen` measured `True` -- the setter really was
+    found, in O(1) work, not merely given up on cheaply."""
+    text = "distant-setter tail must resolve, not merely stay cheap"
+    gap_line = json.dumps(
+        {"type": "message_end", "message": {"content": []}, "padding": "x" * 1000})
+
+    def _bytes_and_seed(prelude_count: int) -> tuple[int, dict]:
+        run_root = tmp_path / f"depth-{prelude_count}" / "runs" / "probe"
+        _write_iteration_with_recognized_nonrendering_gap(
+            run_root, 1, text, gap_line, 0, prelude_count=prelude_count)
+        collapse_index.write_index(run_root / "iterations" / "0001")
+        counts = _count_transcript_bytes(monkeypatch)
+        raw = "".join(merged_lines(run_root, tail=2))
+        monkeypatch.undo()
+        seeds = [json.loads(ln).get("collapseSeed") or {}
+                 for ln in raw.splitlines() if "ralphd.iteration" in ln]
+        cut_seeds = [seed for seed in seeds if seed]
+        assert cut_seeds, raw
+        return counts[0], cut_seeds[0]
+
+    shallow_bytes, shallow_seed = _bytes_and_seed(2_000)
+    deep_bytes, deep_seed = _bytes_and_seed(500_000)
+
+    assert shallow_bytes == deep_bytes, (shallow_bytes, deep_bytes)
+    assert shallow_bytes <= log_merge._TAIL_READ_CHUNK, shallow_bytes
+    for seed in (shallow_seed, deep_seed):
+        assert "unresolved" not in seed, seed
+        assert seed["textSeen"] is True, seed
+        assert seed["thinkingSeen"] is True, seed
+
+
+async def test_silent_prelude_case_renders_the_full_renderers_last_two_lines_on_both_real_paths(
+        tmp_path, monkeypatch):
+    """Task 021, PRD G.5: review3's own setter-depth variants of the
+    silent-prelude scenario -- `prelude_count` 1,000 and 1,700 padded
+    silent `message_end` events before the streamed text, 500 thinking
+    deltas, 10,000 padded silent events after, then a `message_end` that
+    replays the text (`_write_iteration_with_recognized_nonrendering_gap`,
+    the exact fixture `_assert_silent_prelude_publishes_unknown_state_
+    not_empty_state` above already builds at both depths) -- checked on
+    BOTH real paths this module already proves every other cure through:
+    the on-disk fallback (`merged_lines`, direct) and the live engine
+    `GET /logs` ASGI handler feeding the hub's own growing-bound renderer
+    (`_grown_render`/`render_tail_lines`, the exact shape `ui_server.
+    rendered_log_lines` uses). 2 depths x 2 paths = the four checks this
+    task's own commit records 4/4 failing before `collapse_index` was
+    wired into `merge_entries_tail`'s seed resolution, and 4/4 passing
+    after: each one's growing request starts at the SAME small `tail=2`
+    bound the shipped fallback already answers wrong (PRD's own
+    "shipped" row: renders from `False`, replays the text) -- with the
+    index resolving the seed correctly at that same first, small bound,
+    the collapsed text is never printed at all, so the growing consumer
+    correctly keeps growing (rather than stopping early on a spurious
+    match) until it reaches this iteration's own last genuinely visible
+    line, which is the SAME collapsed `[thinking\u2026]` marker line (plus
+    the iteration-end boundary) the full, untailed render prints last --
+    never the replayed text, and never an extra blank line."""
+    boundary_token = ui_server._ITERATION_BOUNDARY_TOKEN
+
+    async def _grown_render(fetch, bound_tail: int) -> list[str]:
+        bound = bound_tail
+        raw_text = await fetch(bound)
+        while True:
+            content_lines = sum(1 for ln in raw_text.splitlines()
+                                if boundary_token not in ln)
+            rendered = render_tail_lines(raw_text, tty=False, n=bound_tail)
+            if len(rendered) >= bound_tail or content_lines < bound:
+                return rendered
+            bound *= 2
+            raw_text = await fetch(bound)
+
+    (tmp_path / "workspace").mkdir()
+    for prelude_count in (1000, 1700):
+        text = f"silent-prelude streamed text must not replay (depth={prelude_count})"
+        gap_line = json.dumps(
+            {"type": "message_end", "message": {"content": []}, "padding": "x" * 1000})
+        run_root = tmp_path / f"prelude-{prelude_count}" / "runs" / "probe"
+        _write_iteration_with_recognized_nonrendering_gap(
+            run_root, 1, text, gap_line, 10_000, prelude_count=prelude_count)
+        collapse_index.write_index(run_root / "iterations" / "0001")
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        assert full[-2].strip() == "[thinking\u2026]", (prelude_count, full[-2:])
+        assert sum(1 for ln in full if text in ln) == 1, (prelude_count, full[-3:])
+
+        async def _fetch_disk(bound: int) -> str:
+            return "".join(merged_lines(run_root, tail=bound))
+
+        async def _fetch_api(bound: int) -> str:
+            return await _api_logs_text(run_root, tmp_path / "workspace", bound)
+
+        for label, fetch in (("disk", _fetch_disk), ("api", _fetch_api)):
+            rendered = await _grown_render(fetch, 2)
+            assert rendered[-2:] == full[-2:], (prelude_count, label, rendered[-2:])
+            assert not any(text in ln for ln in rendered), (prelude_count, label, rendered)
+            assert all(ln != "" for ln in rendered[-2:]), (prelude_count, label, rendered)

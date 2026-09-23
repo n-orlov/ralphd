@@ -503,6 +503,14 @@ TIER_MARKERS = ("smoke", "fast")
 # own tip. Same ratchet under operator ruling 001 as every entry above: no
 # test retired, skipped, de-marked or weakened to buy the room.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
+    # Task 021 (PRD G.3/G.5/G.6, #214): fast 6157 -> 6159, smoke 4483 ->
+    # 4485 (+2 tests, 0 new modules -- both land in
+    # tests/test_log_merge_bounded_reads.py, already counted in both
+    # tiers) for the O(1)-in-setter-depth collapse-index resolution proof
+    # and the silent-prelude 4/4 render-correctness check (both real
+    # paths, review3's own two setter depths). Measured with
+    # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
+    # task's own tip.
     # cure-01-03 (v0.24 requirement A.1/B.3/K.2): fast 6057 -> 6061, smoke
     # 4394 -> 4396, +4 tests (0 new modules) for the two already-expired-
     # boundary no-dispatch probes described directly above.
@@ -678,8 +686,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # index state assertions, so every node sorts into both tiers.
     # Measured with `.venv/bin/python -m pytest -q -m <tier>
     # --collect-only` at this task's own tip.
-    "fast": {"tests": 6157, "modules": 413},
-    "smoke": {"tests": 4483, "modules": 294},
+    "fast": {"tests": 6159, "modules": 413},
+    "smoke": {"tests": 4485, "modules": 294},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
