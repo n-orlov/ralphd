@@ -25,7 +25,11 @@ The two things this file exists to keep identical across the four flows:
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import select
+import subprocess
 import time
 from pathlib import Path
 
@@ -155,6 +159,181 @@ def wait_step_recorded(run, step: str, timeout: float = 30,
                 f"wait_step_recorded: step {step!r} never landed in "
                 f"events.jsonl within {timeout}s; steps seen so far: {seen!r}")
         time.sleep(interval)
+
+
+# --- waiting for the engine subprocess to exit, with a real diagnosis on a
+# timeout (task 016, F.1/F.5, #216) -----------------------------------------
+
+def wait_engine_exit(run, timeout: float = 60, *, tail: int = 20) -> int:
+    """The one barrier every flow uses to wait for the engine subprocess to
+    exit: `run.proc.wait(timeout=timeout)`, unchanged. The only thing this
+    adds is what happens on a `TimeoutExpired` -- instead of that bare,
+    diagnosis-free exception, the failure carries the engine's own process
+    tree (state + wchan for the engine pid and every live descendant),
+    whatever bytes are sitting unread in its stdout pipe, `status.json`, and
+    an `events.jsonl` tail, and it NAMES which of the two shapes #216's hunt
+    found it is looking at -- a hung child process still alive past this
+    wait's own budget, or a parked run sitting in `_park_until_resumed`
+    (which ignores SIGTERM, per `LiveRun.stop`'s own docstring) -- rather
+    than leaving the reader to infer it from the dump.
+
+    **F.3's acceptance boundary, restated here because it travels with the
+    code, not only with the PRD**: this helper's obligation is the DUMP --
+    the helper existing, a synthetic hang exercising it and asserting the
+    dump's content, and the helper wired into the node's wait (task 017,
+    F.2/F.5) -- never reproducing the CI flake itself. #216's hunt ran
+    ~100+ executions, including on the real CI host, and did not reproduce
+    it; that is not grounds to reject this requirement, and closing #216 for
+    good plausibly needs a soak in the reviewer's own environment (memory
+    pressure was the only lever that ever moved it) that no test in this
+    repo can manufacture. F.4 (also restated): no bound is raised and no
+    barrier sits ahead of the caller's own `timeout` -- this function is a
+    thin wrapper around the SAME single `proc.wait(timeout=timeout)`, and
+    the dump is built only in the `except` branch, strictly after that one
+    wait already expired.
+    """
+    try:
+        return run.proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise AssertionError(_engine_exit_timeout_dump(run, timeout, tail=tail)) from None
+
+
+def _engine_exit_shape(run) -> str:
+    """Which of #216's two shapes this timeout looks like, in words a
+    failure message can quote directly: a PARKED RUN (status.json reads
+    `state: "paused"` -- `_park_until_resumed`, which ignores SIGTERM) or a
+    HUNG CHILD (the process is simply still alive, nothing paused it)."""
+    st = status(run)
+    if st.get("state") == "paused":
+        return (f"a parked run -- status.json reads state='paused', "
+                f"pauseReason={st.get('pauseReason')!r} (_park_until_resumed "
+                f"ignores SIGTERM, per LiveRun.stop's own docstring)")
+    return (f"a hung child process -- pid {run.proc.pid} is still alive past "
+            f"this wait's own budget and status.json does not read "
+            f"state='paused'")
+
+
+def _pid_children(pid: int) -> list[int]:
+    """Every direct child of `pid`, read off `/proc/<pid>/task/*/children`
+    (best-effort: a pid that has already exited, or that this process lacks
+    permission to inspect, simply contributes no children)."""
+    out: list[int] = []
+    task_dir = Path(f"/proc/{pid}/task")
+    try:
+        tid_dirs = list(task_dir.iterdir())
+    except OSError:
+        return out
+    for tid_dir in tid_dirs:
+        try:
+            text = (tid_dir / "children").read_text().strip()
+        except OSError:
+            continue
+        if text:
+            out.extend(int(x) for x in text.split())
+    return out
+
+
+def _process_tree(root_pid: int) -> list[int]:
+    """`root_pid` and every live descendant, breadth-first, each pid listed
+    exactly once."""
+    seen = [root_pid]
+    frontier = [root_pid]
+    while frontier:
+        nxt: list[int] = []
+        for pid in frontier:
+            for child in _pid_children(pid):
+                if child not in seen:
+                    seen.append(child)
+                    nxt.append(child)
+        frontier = nxt
+    return seen
+
+
+def _proc_state(pid: int) -> str:
+    """`/proc/<pid>/status`'s own `State:` line (e.g. `"S (sleeping)"`), or
+    `"<exited>"` for a pid that is gone by the time this reads it."""
+    try:
+        text = Path(f"/proc/{pid}/status").read_text()
+    except OSError:
+        return "<exited>"
+    for line in text.splitlines():
+        if line.startswith("State:"):
+            return line.split(":", 1)[1].strip()
+    return "<unknown>"
+
+
+def _proc_wchan(pid: int) -> str:
+    """`/proc/<pid>/wchan`'s contents (the kernel function the process is
+    blocked in, empty when running), or `"<unavailable>"` for a pid this
+    process cannot read it for (already exited, or no permission)."""
+    try:
+        text = Path(f"/proc/{pid}/wchan").read_text().strip()
+    except OSError:
+        return "<unavailable>"
+    return text or "<running, no wchan>"
+
+
+def _pending_pipe_bytes(proc) -> tuple[int, str]:
+    """Bytes sitting unread in `proc.stdout` right now, read non-blocking so
+    this never itself hangs the diagnosis. Draining them is fine here --
+    this only runs once the caller has already decided to fail."""
+    stream = getattr(proc, "stdout", None)
+    if stream is None:
+        return 0, "<no stdout pipe>"
+    try:
+        fd = stream.fileno()
+    except (OSError, ValueError):
+        return 0, "<stdout pipe closed>"
+    chunks: list[bytes] = []
+    try:
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        try:
+            while True:
+                ready, _, _ = select.select([fd], [], [], 0)
+                if not ready:
+                    break
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        finally:
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags)
+    except OSError:
+        return 0, "<pipe read failed>"
+    data = b"".join(chunks)
+    return len(data), data.decode("utf-8", errors="replace")
+
+
+def _engine_exit_timeout_dump(run, timeout: float, *, tail: int = 20) -> str:
+    """The four-section dump F.1 asks for, plus the shape name F.2 asks for
+    named up front -- a hung child vs. a parked run, never left for the
+    reader to infer."""
+    shape = _engine_exit_shape(run)
+    pid = run.proc.pid
+    tree_pids = _process_tree(pid)
+    tree_lines = "\n".join(
+        f"  pid={p} state={_proc_state(p)!r} wchan={_proc_wchan(p)!r}"
+        for p in tree_pids) or "  (no live pid found)"
+    pipe_len, pipe_text = _pending_pipe_bytes(run.proc)
+    status_text = json.dumps(status(run), indent=2, sort_keys=True)
+    log = run.run_dir / "events.jsonl"
+    lines = log.read_text().splitlines() if log.exists() else []
+    tail_lines = lines[-tail:]
+    events_tail = ("\n".join(f"  {line}" for line in tail_lines)
+                  if tail_lines else "  (events.jsonl empty or absent)")
+    return (
+        f"wait_engine_exit: the engine did not exit within {timeout}s -- "
+        f"observed shape: {shape}\n\n"
+        f"process tree (pid {pid} and its live descendants, state + wchan):\n"
+        f"{tree_lines}\n\n"
+        f"pending pipe bytes ({pipe_len} bytes read from stdout without "
+        f"blocking):\n  {pipe_text!r}\n\n"
+        f"status.json:\n{status_text}\n\n"
+        f"events.jsonl tail (last {tail} lines):\n{events_tail}\n\n"
+        f"F.3 (#216): this dump is the obligation; reproducing the CI flake "
+        f"is not -- ~100+ hunt attempts including on the real CI host never "
+        f"reproduced it, and that is not grounds to reject this diagnosis.")
 
 
 def status(run) -> dict:

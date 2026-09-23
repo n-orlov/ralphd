@@ -633,8 +633,19 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # getdoc(LoopSupervisor._verify_task)`), so the new module sorts into
     # both tiers. Measured with `.venv/bin/python -m pytest -q -m <tier>
     # --collect-only` at this commit's own tip.
-    "fast": {"tests": 6121, "modules": 409},
-    "smoke": {"tests": 4451, "modules": 291},
+    # task 016 (v0.25 requirement F.1/F.3, #216): fast 6121 -> 6124, smoke
+    # 4451 -> 4454 (+3 tests, +1 module each) for tests/test_flowlib_engine_
+    # exit_wait.py -- the new `wait_engine_exit` helper's own two synthetic-
+    # hang probes (a hung child process and a parked-run status, each
+    # asserting the correct shape name plus all four dump sections) plus
+    # the happy-path exit-code control. No `LiveRun`/`engine_factory`/
+    # `RALPHD_ENGINE`/process-boundary fixture (a bare `subprocess.Popen`
+    # sleeper against a hand-written run dir, like tests/flows/test_
+    # flowlib_status_barrier.py's own fake-run nodes), so all three sort
+    # into both tiers. Measured with `.venv/bin/python -m pytest -q -m
+    # <tier> --collect-only` at this commit's own tip.
+    "fast": {"tests": 6124, "modules": 410},
+    "smoke": {"tests": 4454, "modules": 292},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
