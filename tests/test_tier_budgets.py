@@ -565,8 +565,23 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # tests/test_reflect_tail_budget.py's own nodes), so it sorts into
     # both tiers. Measured with `.venv/bin/python -m pytest -q -m <tier>
     # --collect-only` at this commit's own tip.
-    "fast": {"tests": 6085, "modules": 407},
-    "smoke": {"tests": 4416, "modules": 289},
+    # task 007 (v0.25 requirement C.2/C.3/C.4, #211): fast 6085 -> 6094,
+    # smoke 4416 -> 4425 (+9 tests, +1 module each) for the C.2 drop of
+    # `report_written`/`suggestions_written` from the `reflect` contract:
+    # 2 new nodes in tests/test_response_contracts.py (a historical
+    # both-booleans payload still validates clean; an empty `{}` reflect
+    # payload validates clean now that nothing is required) plus the new
+    # tests/test_reflect_derived_facts.py (7 nodes: the four present/
+    # absent file combinations `_reflect_derived_facts()` tracks, a
+    # missing-report failure and a report-present success with an empty
+    # contract, and the historical-payload end-to-end case). No
+    # `docker`/`browser`/process-boundary fixture anywhere in the new set
+    # (pure `make_supervisor`/`_reflect_verdict`/`_reflect_failure` calls,
+    # like tests/test_reflect_tombstone_cleared.py's in-process tier),
+    # so all 9 sort into both tiers. Measured with `.venv/bin/python -m
+    # pytest -q -m <tier> --collect-only` at this commit's own tip.
+    "fast": {"tests": 6094, "modules": 408},
+    "smoke": {"tests": 4425, "modules": 290},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

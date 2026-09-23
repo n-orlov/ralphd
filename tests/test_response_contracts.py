@@ -45,6 +45,21 @@ def test_a_hat_missing_from_the_schema_map_is_caught():
 def test_every_schema_is_an_object_schema_with_required_fields(hat):
     schema = tr.HAT_SCHEMAS[hat]
     assert schema["type"] == "object"
+    if hat == "reflect":
+        # Task 007 (PRD C.3/C.4, #211): the one deliberate exception. Both
+        # facts `reflect`'s contract used to require
+        # (`report_written`/`suggestions_written`) are derived from disk
+        # now instead of claimed, so nothing about this contract is
+        # mandatory any longer -- and `additionalProperties` is `True` so
+        # a payload recorded by an *earlier* engine that still carries the
+        # two retired booleans keeps reading clean (PRD C.4) rather than
+        # erroring on an "unexpected" field. See
+        # `test_a_historical_reflect_payload_with_both_retired_booleans_
+        # still_validates_clean` below for the concrete case this carves
+        # out for.
+        assert schema["required"] == []
+        assert schema["additionalProperties"] is True
+        return
     assert schema["required"], f"{hat}'s schema declares no required fields"
     assert schema["additionalProperties"] is False
 
@@ -83,11 +98,32 @@ def test_a_value_outside_the_enum_is_reported():
 
 def test_an_unexpected_field_is_reported_not_silently_dropped():
     errors = contracts.validate_payload(
-        "reflect",
-        {"report_written": True, "suggestions_written": True,
-         "typo_field": "oops"},
+        "verify",
+        {"task_id": "001", "verdict": "verified", "typo_field": "oops"},
     )
     assert any("typo_field" in e for e in errors)
+
+
+def test_a_historical_reflect_payload_with_both_retired_booleans_still_validates_clean():
+    """Task 007 (PRD C.3/C.4, #211): `report_written`/`suggestions_written`
+    are no longer declared by `HAT_SCHEMAS["reflect"]` at all -- a payload
+    recorded by an *earlier* engine that still carries both (the exact
+    shape every reflect payload used to be required to send) must not
+    error. "An extra field in a historical record is not a contract
+    violation" (PRD C.4).
+    """
+    errors = contracts.validate_payload(
+        "reflect",
+        {"report_written": True, "suggestions_written": True,
+         "notes": "a historical payload from before task 007"},
+    )
+    assert errors == []
+
+
+def test_a_reflect_payload_with_no_fields_at_all_still_validates_clean():
+    """Nothing about the `reflect` contract is required any more -- both
+    facts it used to ask for are derived from disk instead of claimed."""
+    assert contracts.validate_payload("reflect", {}) == []
 
 
 def test_the_wrong_top_level_shape_is_reported():
@@ -101,7 +137,7 @@ def test_a_valid_payload_for_every_hat_validates_clean():
         "worker": {"verdict": "complete", "task_id": "001"},
         "verify": {"task_id": "001", "verdict": "verified"},
         "review": {"verdict": "verified"},
-        "reflect": {"report_written": True, "suggestions_written": True},
+        "reflect": {"notes": "the run went smoothly"},
     }
     for hat, payload in samples.items():
         assert contracts.validate_payload(hat, payload) == [], (hat, payload)

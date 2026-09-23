@@ -3896,6 +3896,11 @@ class LoopSupervisor:
     # endpoint and the run dir looked like reflect had never been enabled).
     REFLECT_REPORT = "report.md"
 
+    # Task 007 (PRD C.3/C.4, #211): the other file `_reflect_derived_facts()`
+    # checks for -- the reflect phase's OPTIONAL prompt/skill diff proposal,
+    # never required to exist the way `REFLECT_REPORT` is.
+    REFLECT_SUGGESTIONS = "suggestions.diff"
+
     # The tombstone _record_reflect_outcome() leaves when the phase produced no
     # report -- and, since task 017 (#43), removes again the moment an attempt
     # finally does. It is an assertion ("the reflection was tried and left you
@@ -3906,8 +3911,8 @@ class LoopSupervisor:
     # once here and used nowhere else. #87's own incident (a deadline-fired
     # reflect returning an unparseable contract payload) is a DEGRADED
     # reflection: the iteration ran to a clean exit and left an untrustworthy
-    # or missing deliverable (no report, an invalid/unparseable contract, or
-    # a contract that itself disclaims report_written). FATAL is reserved for
+    # or missing deliverable (no report on disk, or an invalid/unparseable
+    # contract). FATAL is reserved for
     # the other shape -- the iteration itself never produced a trustworthy
     # attempt at all (it did not run to completion, was interrupted, timed
     # out, errored, or exited nonzero).
@@ -4008,7 +4013,6 @@ class LoopSupervisor:
             "reflect", respond,
             max_retries=self.cfg.contract_retry_max,
             state=self.run,
-            extra_validate=transitions.reflect_report_errors,
         )
         if enforcement.ok:
             return dataclasses.replace(
@@ -4016,18 +4020,22 @@ class LoopSupervisor:
         return result
 
     def _reflect_verdict(self, result: IterationResult) -> tuple[dict | None, list[str]]:
-        """Task 121 (#60 pillar 3, fact 9): parse the reflect hat's final
-        line as a `reflect` contract payload (`{"report_written": ...,
-        "suggestions_written": ..., "notes": ...}`,
-        `transitions.HAT_SCHEMAS["reflect"]`) -- `reflect.md` no longer ends
+        """Task 121 (#60 pillar 3, fact 9) parses the reflect hat's final
+        line as a `reflect` contract payload against
+        `transitions.HAT_SCHEMAS["reflect"]` -- `reflect.md` no longer ends
         its reply with the bare `<promise>REFLECTED</promise>` sentinel
-        (never scored by the engine to begin with); `_reflect_failure()`
-        below reads this payload ON TOP OF, never instead of, the existing
-        `artifacts/reflection/report.md` file-presence check -- a validated
-        claim is now required in addition to the file actually being there,
-        mirroring `_review_verdict`'s split between schema validation
-        (`contracts.validate_payload`) and the semantic sibling check
-        (`transitions.reflect_report_errors`).
+        (never scored by the engine to begin with).
+
+        Task 007 (PRD C.3/C.4, #211): the payload no longer carries
+        `report_written`/`suggestions_written` at all -- both are derived
+        from disk by `_reflect_derived_facts()` instead of trusted from a
+        claim, so there is no semantic sibling check left to run here on
+        top of schema validation (there was one, `transitions.
+        reflect_report_errors`, retired in the same commit). A malformed
+        or non-object final line is still reported as a contract error --
+        that half of the split (`_review_verdict`'s schema-validation vs.
+        business-rule split) still applies, there is just nothing left in
+        the business-rule half for `reflect` specifically.
         """
         try:
             parsed = json.loads(last_nonblank_line(result.final_text))
@@ -4035,8 +4043,7 @@ class LoopSupervisor:
             parsed = None
         if isinstance(parsed, dict):
             payload = parsed
-            contract_errors = (contracts.validate_payload("reflect", payload)
-                                or transitions.reflect_report_errors(payload))
+            contract_errors = contracts.validate_payload("reflect", payload)
         else:
             payload = None
             contract_errors = [
@@ -4059,26 +4066,28 @@ class LoopSupervisor:
         The one thing that is *not* reported as a reflect failure is the
         promise line: the report on disk is the deliverable.
 
-        Task 121 adds a second, independent requirement layered on top of
+        Task 121 added a second, independent requirement layered on top of
         the file check above, never replacing it: the reflect hat's own
-        `reflect` contract payload (`_reflect_verdict`) must also validate
-        and must claim `report_written: true`. A report that exists on disk
-        but comes with no valid contract (or with the contract itself
-        claiming it was not written) is still a reflect failure -- the
-        validated claim, not the file's mere existence, is now the thing
-        the harness trusts, exactly the move task 116/118/119 already made
-        for worker/verify/review.
+        `reflect` contract payload (`_reflect_verdict`) had to also validate
+        AND claim `report_written: true`. Task 007 (PRD C.3/C.4, #211)
+        drops the claim half of that: `report_written` is no longer part of
+        the `reflect` contract at all, so there is nothing left for the
+        agent to claim about it -- `_reflect_derived_facts()` below reads
+        the fact straight off disk instead, which is exactly what the file
+        check just above already did. The contract payload is still
+        validated (a malformed final line is still a reflect failure), just
+        never asked whether it thinks the report exists.
 
         Task 014 (#87) adds the fault-class half: every branch below that
         fires because the ITERATION ITSELF never produced a trustworthy
         attempt (no result, interrupted, timed out, an in-band error, a
         nonzero exit) returns `REFLECT_FAULT_FATAL`; every branch that fires
         because the iteration ran cleanly but the DELIVERABLE is missing or
-        invalid (no report file, an unparseable/invalid contract, or a
-        contract that disclaims `report_written`) returns
-        `REFLECT_FAULT_DEGRADED` -- the exact shape of #87's own incident.
-        Neither class changes what `_record_reflect_outcome` does with the
-        result: see `REFLECT_FAULT_FATAL`'s own comment for why.
+        invalid (no report file on disk, or an unparseable/invalid
+        contract) returns `REFLECT_FAULT_DEGRADED` -- the exact shape of
+        #87's own incident. Neither class changes what `_record_reflect_
+        outcome` does with the result: see `REFLECT_FAULT_FATAL`'s own
+        comment for why.
         """
         if result is None:
             return ("the reflect iteration did not run to completion",
@@ -4095,20 +4104,30 @@ class LoopSupervisor:
         if result.exit_code not in (0, None):
             return (f"the reflect agent exited {result.exit_code}",
                     self.REFLECT_FAULT_FATAL)
-        report = self.run.artifacts_dir / "reflection" / self.REFLECT_REPORT
-        if not report.exists():
+        if not self._reflect_derived_facts()["report_written"]:
             return (f"the reflect iteration wrote no artifacts/reflection/"
                     f"{self.REFLECT_REPORT}", self.REFLECT_FAULT_DEGRADED)
-        payload, contract_errors = self._reflect_verdict(result)
+        _payload, contract_errors = self._reflect_verdict(result)
         if contract_errors:
             return ("the reflect iteration's outcome contract was invalid: "
                     + "; ".join(contract_errors), self.REFLECT_FAULT_DEGRADED)
-        if payload.get("report_written") is not True:
-            return ("the reflect iteration's own contract claims "
-                    f"report_written is not true even though "
-                    f"{self.REFLECT_REPORT} exists on disk",
-                    self.REFLECT_FAULT_DEGRADED)
         return None, None
+
+    def _reflect_derived_facts(self) -> dict[str, bool]:
+        """Task 007 (PRD C.3/C.4, #211): the two facts the `reflect`
+        contract used to make the agent claim (`report_written`,
+        `suggestions_written`) -- both booleans, both required, both
+        removed from `transitions.HAT_SCHEMAS["reflect"]`. Neither fact
+        needed an agent's word in the first place: they are exactly the
+        two things the engine can check on its own, so this reads them
+        straight off `artifacts/reflection/` instead of trusting a claim.
+        Called fresh each time -- never cached -- since it is cheap
+        (two `Path.exists()` calls) and the answer can change attempt to
+        attempt.
+        """
+        outdir = self.run.artifacts_dir / "reflection"
+        return {"report_written": (outdir / self.REFLECT_REPORT).exists(),
+                "suggestions_written": (outdir / self.REFLECT_SUGGESTIONS).exists()}
 
     def _record_reflect_outcome(self, result: IterationResult | None) -> None:
         """Records the reflect phase's verdict in the run state (task 019, #5):

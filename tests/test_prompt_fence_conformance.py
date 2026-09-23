@@ -19,12 +19,16 @@ scope):
 
 1. **No contract object inside a fence.** A "contract object" here is any
    fenced code block whose content contains one of the top-level keys the
-   shipped hats' own JSON contracts are keyed on (`"verdict"`, `"settled"`,
-   `"report_written"`) -- `planning.md`'s one surviving fence (the
+   shipped hats' own JSON contracts are keyed on (`"verdict"`, `"settled"`)
+   -- `planning.md`'s one surviving fence (the
    `plan-proposal.json` FILE schema, pinned open by
    `tests/test_estimated_iterations.py`) carries none of those keys and is
    deliberately left alone; it is a schema for a file the planner writes,
-   never the reply contract a fence's closing line could stomp on.
+   never the reply contract a fence's closing line could stomp on. Task 007
+   (#211) retired `"report_written"` from this list along with the field
+   itself -- `reflect`'s own contract no longer declares it (see
+   `transitions.HAT_SCHEMAS["reflect"]`), so it is no longer one of the
+   keys a fenced block could be mistaken for.
 2. **The sentence.** `steer.md`, `reflect.md`, `planning.md` and `worker.md`
    each state, in prose, that a fence's closing line breaks the contract --
    the corollary that explains WHY check 1 matters, so a future edit that
@@ -44,7 +48,7 @@ FENCE_RE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 
 # The top-level keys that mark a fenced block's content as one of the
 # shipped hats' own reply-contract objects, never a mere schema example.
-CONTRACT_KEYS = ('"verdict"', '"settled"', '"report_written"')
+CONTRACT_KEYS = ('"verdict"', '"settled"')
 
 # Prompts that must carry the "a fence's closing line breaks the contract"
 # sentence (#170 names exactly these four).
@@ -126,8 +130,12 @@ def test_steer_reports_its_outcome_bare():
 
 def test_reflect_reports_its_outcome_bare():
     text = (PROMPTS_DIR / "reflect.md").read_text()
-    assert '{"report_written": true, "suggestions_written": true}' in text
-    assert '```json\n{"report_written"' not in text
+    assert '{"notes": ""}' in text
+    assert '```json\n{"notes"' not in text
+    assert '"report_written"' not in text, (
+        "reflect.md still asks the agent for report_written (task 007, #211)")
+    assert '"suggestions_written"' not in text, (
+        "reflect.md still asks the agent for suggestions_written (task 007, #211)")
 
 
 def test_worker_shows_no_fenced_verdict_examples():

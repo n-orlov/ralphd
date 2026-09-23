@@ -1882,23 +1882,33 @@ HAT_SCHEMAS: dict[str, dict] = {
     },
     "reflect": {
         "type": "object",
-        # Task 121 (#60 pillar 3, fact 9): replaces the bare
-        # `<promise>REFLECTED</promise>` sentinel (never scored by the
-        # engine, `_reflect_failure()` inferred outcome from disk alone)
-        # with a claim the harness reads. `report_written`/
-        # `suggestions_written` are the two facts the PRD's reflect phase
-        # already promises on disk (`artifacts/reflection/report.md`,
-        # optionally `suggestions.diff`) -- this schema just makes the
-        # agent SAY which of those it actually did, so the harness has a
-        # claim to validate against the files instead of only the files
-        # themselves.
-        "required": ["report_written", "suggestions_written"],
+        # Task 121 (#60 pillar 3, fact 9) replaced the bare
+        # `<promise>REFLECTED</promise>` sentinel with a claim the harness
+        # read: `report_written`/`suggestions_written`, both required
+        # booleans. Task 007 (PRD C.3/C.4, #211) removes both -- the two
+        # facts they claimed are exactly the two the engine can check
+        # itself (`report.md`/`suggestions.diff` either exist under
+        # `artifacts/reflection/` or they do not), so trusting an
+        # agent-supplied claim on top of that was never buying anything;
+        # `LoopSupervisor._reflect_derived_facts` (loop.py) now derives
+        # both directly from disk. Neither name is required OR declared
+        # in `properties` below any longer -- the one surviving ask is
+        # the agent's free-text `notes`, and `required` is deliberately
+        # empty: nothing about this contract is mandatory now that the
+        # two facts it used to gate on are read straight off disk.
+        #
+        # `additionalProperties` is `True` here -- the one exception among
+        # every schema in this table (see `test_response_contracts.py`'s
+        # own carve-out and comment) -- so a payload recorded by an
+        # *earlier* engine that still carries the two retired booleans
+        # (PRD C.4: "an extra field in a historical record is not a
+        # contract violation") keeps reading clean instead of failing on
+        # an unrecognised field.
+        "required": [],
         "properties": {
-            "report_written": {"type": "boolean"},
-            "suggestions_written": {"type": "boolean"},
             "notes": {"type": "string"},
         },
-        "additionalProperties": False,
+        "additionalProperties": True,
     },
     "steer": {
         "type": "object",
@@ -2545,31 +2555,13 @@ def verdict_gate_report_errors(payload: Any) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Task 121 (#60 pillar 3, fact 9): reflect's sibling to `review_report_
-# errors`/`verify_report_errors` just above -- reflect.md no longer leaves
-# its outcome to be inferred from `artifacts/reflection/report.md`'s mere
-# existence on disk; `LoopSupervisor._reflect_verdict` reads its
-# `{"report_written": ..., "suggestions_written": ..., "notes": ...}`
-# contract payload instead (`HAT_SCHEMAS["reflect"]`). Same split as every
-# sibling check in this module: schema validation is `contracts.
-# validate_payload`'s job, this is the business rule -- a claim of
-# `report_written: false` with no `notes` explaining why leaves no record
-# at all of what went wrong, exactly the gap a mandatory `reason` on a
-# rejected `verify`/`review` verdict already closes for those two hats.
+# Task 121 (#60 pillar 3, fact 9) added `reflect_report_errors` here as
+# reflect's sibling to `review_report_errors`/`verify_report_errors` above,
+# checking a `report_written: false` claim carried a `notes` explanation.
+# Task 007 (PRD C.3/C.4, #211) retired the function along with the two
+# booleans it was written to police: `report_written` is no longer part of
+# the `reflect` contract at all (`HAT_SCHEMAS["reflect"]` above), so there
+# is no claim left to have an opinion about -- `LoopSupervisor.
+# _reflect_derived_facts` reads `report.md`/`suggestions.diff` off disk
+# directly instead of trusting anything the agent said.
 # ---------------------------------------------------------------------------
-
-
-def reflect_report_errors(payload: Any) -> list[str]:
-    """Errors in a reflector's `report_written: false` report, or an empty
-    list when the report is well-formed. A payload that does not claim
-    `report_written == False` at all (including a `True` claim, which
-    carries no such requirement) is never in violation here -- same
-    "nothing proposed, nothing to check" shape every sibling check in this
-    module uses.
-    """
-    if not isinstance(payload, dict) or payload.get("report_written") is not False:
-        return []
-    notes = payload.get("notes")
-    if not isinstance(notes, str) or not notes.strip():
-        return ["report_written 'false' requires a non-empty notes explaining why"]
-    return []
