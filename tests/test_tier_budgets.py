@@ -775,8 +775,21 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # semantics for these three judging hats. Measured with
     # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
     # task's own tip.
-    "fast": {"tests": 6212, "modules": 420},
-    "smoke": {"tests": 4519, "modules": 299},
+    # task 029 (v0.25 requirement I.2's content, filed as "I.1", #210): fast
+    # 6212 -> 6222, smoke 4519 -> 4529 (+10 tests, +1 module each) for
+    # tests/test_commit_scan_boundary.py's 9 task-boundary git-sink scan
+    # nodes (a synthetic value caught in a commit message and in a staged
+    # diff; the shape-vs-value corpora clean; the no-push-on-a-hit gate;
+    # the variable-name-only refusal) plus the one parametrized dead-
+    # return-after-return lint node tests/test_ingestion_lints.py grows
+    # for the new src/ralphd/engine/commit_scan.py module. No `docker`/
+    # `browser`/process-boundary fixture (plain subprocess calls to `git`
+    # in a scratch `tmp_path` repo, like tests/test_progress_pin_task015.py's
+    # own nodes), so all 10 sort into both tiers. Measured with
+    # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
+    # task's own tip.
+    "fast": {"tests": 6222, "modules": 421},
+    "smoke": {"tests": 4529, "modules": 300},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
