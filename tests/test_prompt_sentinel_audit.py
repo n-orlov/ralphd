@@ -82,6 +82,14 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "not an absence assertion at all -- a dict-membership branch in "
         "`_unrouted`, no rendered artifact and no literal"),
     AbsenceAssertion(
+        "test_collapse_index.py", (140,), (),
+        "`vars(ralphd.cli.log_render)` -- the render module's own import "
+        "namespace, read as a structural pin that no render path can reach "
+        "`ralphd.collapse_index` (task 020, PRD G.10)", None,
+        "not a rendered artifact at all: the search matches because the "
+        "module object is named `log_render`, and the forbidden name is an "
+        "import symbol, not a literal any prompt template could contain"),
+    AbsenceAssertion(
         "test_contract_events.py", (1194,),
         ("THE ONE RULE: exactly one task, then stop",),
         "`_ask_contract_fix`'s re-ask prompt (WORKER_PROMPT_FRAGMENT)", None,

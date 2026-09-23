@@ -668,8 +668,18 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # (11 nodes) plus one new tests/test_ingestion_lints.py parametrization
     # for the new src/ralphd/collapse_index.py source file (that lint test's
     # own module was already counted, so 0 extra modules from it).
-    "fast": {"tests": 6143, "modules": 413},
-    "smoke": {"tests": 4469, "modules": 294},
+    # task 020's cure (same requirements): fast 6143 -> 6157, smoke
+    # 4469 -> 4483 (+14 tests, 0 new modules) for
+    # tests/test_collapse_index.py's new TestFlagsResetAtEveryMessageStart
+    # class -- the multi-message/`message_start`-reset probes the first
+    # attempt lacked (two five-way parametrizations, the second-message
+    # `textSeen` pin, the per-message segment shape, the `collapseSeed`
+    # boundary, and the no-transcript-read proof). Pure in-process render/
+    # index state assertions, so every node sorts into both tiers.
+    # Measured with `.venv/bin/python -m pytest -q -m <tier>
+    # --collect-only` at this task's own tip.
+    "fast": {"tests": 6157, "modules": 413},
+    "smoke": {"tests": 4483, "modules": 294},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

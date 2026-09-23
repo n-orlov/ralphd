@@ -96,12 +96,17 @@ class TestWriteNeverOnRenderPath:
         idx_path = itdir / collapse_index.INDEX_FILENAME
         assert idx_path.exists()
         idx = json.loads(idx_path.read_text())
-        # every flag's setter offset landed strictly inside the transcript,
-        # each one recorded once and never at the very first byte (0) --
-        # this transcript's setters are the bash tool call, the streamed
-        # text, and the thinking burst, in that order.
-        assert idx["toolcallSeenAtByte"] == 0
-        assert 0 < idx["textSeenAtByte"] < idx["thinkingSeenAtByte"]
+        # This transcript carries no reset line (no `message_start`, no
+        # boundary), so it is exactly ONE segment, opening at byte 0, and
+        # every flag's setter offset landed strictly inside the file: the
+        # bash call's `tool_execution_end`, then the streamed text, then
+        # the thinking burst, in that order.
+        assert idx["version"] == collapse_index.INDEX_VERSION
+        assert len(idx["segments"]) == 1
+        seg = idx["segments"][0]
+        assert seg["startByte"] == 0
+        assert 0 < seg["toolcallSeenAtByte"] < seg["textSeenAtByte"] \
+            < seg["thinkingSeenAtByte"]
         assert idx["transcriptBytes"] == len((itdir / "output.jsonl").read_bytes())
 
     def test_rendering_repeatedly_never_writes_or_touches_the_index(
@@ -255,3 +260,229 @@ class TestNoIndexRendersLikeToday:
         # scripted result) -- only the presence of the side index differs,
         # and the rendered transcript is byte-identical either way.
         assert lines_with == lines_without
+
+
+# -- the flags are NOT monotone: every message_start resets all three -------
+
+
+def _multi_message_transcript() -> str:
+    """One iteration, TWO assistant messages -- the shape task 019 (PRD
+    G.8) fixed in the renderer and the shape a monotone, one-offset-per-
+    flag index gets wrong. Message 1 streams its text ("first") and makes
+    a tool call; message 2 does NOT stream at all, carrying its text
+    ("second") only in its own `message_end`. A full render prints both
+    texts; an index that thinks `text_seen` stays true for the rest of the
+    iteration makes a bounded reader seed message 2 with `textSeen=True`,
+    and `_render_message_end` then prints nothing for it."""
+    return "\n".join([
+        _line({"type": "message_start", "message": {"role": "assistant"}}),
+        _line({"type": "message_update", "assistantMessageEvent": {
+            "type": "text_delta", "contentIndex": 0, "delta": "first"}}),
+        _line({"type": "message_update", "assistantMessageEvent": {
+            "type": "text_end", "contentIndex": 0, "content": "first"}}),
+        _line({"type": "message_update", "assistantMessageEvent": {
+            "type": "thinking_start", "contentIndex": 1}}),
+        _line({"type": "tool_execution_start", "toolCallId": "t1",
+              "toolName": "bash", "args": {"command": "echo hi"}}),
+        _line({"type": "tool_execution_end", "toolCallId": "t1",
+              "toolName": "bash", "result": "hi", "isError": False}),
+        _line({"type": "message_end", "message": {
+            "role": "assistant", "content": [{"type": "text", "text": "first"}]}}),
+        _line({"type": "message_start", "message": {"role": "assistant"}}),
+        _line({"type": "message_end", "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "second"},
+                        {"type": "thinking", "thinking": "hmm"},
+                        {"type": "toolCall", "name": "read",
+                         "arguments": {"path": "/tmp/x"}}]}}),
+    ]) + "\n"
+
+
+def _render_probe(transcript: str, cut_offset: int) -> tuple[list[str], dict]:
+    """`(lines, state)` from rendering ONLY the transcript's first
+    `cut_offset` bytes through the real renderer -- the independent,
+    obviously-correct answer this module's index and fallback scan are
+    measured against, computed without touching `collapse_index` at all."""
+    state = new_render_state()
+    prefix = transcript.encode("utf-8")[:cut_offset].decode(
+        "utf-8", errors="replace")
+    return render_to_lines(prefix, False, state), state
+
+
+def _line_offsets(transcript: str) -> list[int]:
+    """Every byte offset a real cut point can land on: the start of each
+    line, plus end-of-file (a bounded reader only ever keeps whole NDJSON
+    lines)."""
+    offsets, at = [], 0
+    for raw_line in transcript.encode("utf-8").splitlines(keepends=True):
+        offsets.append(at)
+        at += len(raw_line)
+    offsets.append(at)
+    return offsets
+
+
+def _perturb(idx_path: Path, scenario: str) -> None:
+    if scenario == "valid_index":
+        return
+    if scenario == "absent":
+        idx_path.unlink()
+    elif scenario == "truncated":
+        raw = idx_path.read_bytes()
+        idx_path.write_bytes(raw[: len(raw) // 2])  # cuts the JSON mid-token
+    elif scenario == "size_mismatch":
+        idx = json.loads(idx_path.read_text())
+        idx["transcriptBytes"] += 1  # stale relative to the real file now
+        idx_path.write_text(json.dumps(idx))
+    elif scenario == "unknown_version":
+        idx = json.loads(idx_path.read_text())
+        idx["version"] = collapse_index.INDEX_VERSION + 7
+        idx_path.write_text(json.dumps(idx))
+    else:  # pragma: no cover - a typo in a parametrization must not pass
+        raise AssertionError(f"unknown scenario {scenario!r}")
+
+
+_SCENARIOS = ["valid_index", "absent", "truncated", "size_mismatch",
+              "unknown_version"]
+
+
+class TestFlagsResetAtEveryMessageStart:
+    """The cure for task 020's first rejection: a valid multi-message
+    transcript. `render_log_line` resets all three collapse guards at
+    `message_start` (task 019, PRD G.8), so neither the index nor the
+    fallback scan may treat them as monotone within one iteration."""
+
+    @pytest.mark.parametrize("scenario", _SCENARIOS)
+    def test_the_flags_match_the_renderer_at_every_cut_point(
+            self, tmp_path, scenario):
+        transcript = _multi_message_transcript()
+        itdir = _run_one_iteration(tmp_path, transcript)
+        _perturb(itdir / collapse_index.INDEX_FILENAME, scenario)
+        # the parametrization is not vacuous: only the untouched index is
+        # actually trusted, the other four really do fall back to the scan
+        assert (collapse_index.load_index(itdir) is not None) == (
+            scenario == "valid_index")
+        for cut in _line_offsets(transcript):
+            _lines, state = _render_probe(transcript, cut)
+            expected = {"textSeen": state["text_seen"],
+                        "thinkingSeen": state["thinking_seen"],
+                        "toolcallSeen": state["toolcall_seen"]}
+            got = collapse_index.resolve_flags_at_offset(itdir, cut)
+            assert got == expected, f"{scenario} disagreed at byte {cut}"
+
+    def test_the_second_message_starts_with_text_unseen(self, tmp_path):
+        """The single offset the first attempt got wrong, pinned on its
+        own: immediately after the SECOND `message_start`, nothing of
+        message 2 has been shown, so `textSeen` is False -- even though
+        message 1 streamed text earlier in the same iteration."""
+        transcript = _multi_message_transcript()
+        itdir = _run_one_iteration(tmp_path, transcript)
+        raw = transcript.encode("utf-8").splitlines(keepends=True)
+        second_start = [i for i, l in enumerate(raw)
+                        if json.loads(l).get("type") == "message_start"][1]
+        cut = sum(len(l) for l in raw[:second_start + 1])
+        assert collapse_index.resolve_flags_at_offset(itdir, cut) == {
+            "textSeen": False, "thinkingSeen": False, "toolcallSeen": False}
+
+    @pytest.mark.parametrize("scenario", _SCENARIOS)
+    def test_a_seeded_render_of_the_suffix_completes_the_full_render(
+            self, tmp_path, scenario):
+        """End to end, on the rendered bytes rather than the flags: at
+        every cut point where the renderer holds no half-finished state
+        besides the three collapse flags (no open text block, no open tool
+        call), a fresh state seeded from `resolve_flags_at_offset` renders
+        the retained suffix into exactly the lines a full render produces
+        after the prefix's own -- in all five index scenarios, never an
+        error and never a wrong render."""
+        transcript = _multi_message_transcript()
+        itdir = _run_one_iteration(tmp_path, transcript)
+        _perturb(itdir / collapse_index.INDEX_FILENAME, scenario)
+        full_lines, _full_state = _render_probe(
+            transcript, len(transcript.encode("utf-8")))
+        assert full_lines[0] == "first" and "second" in full_lines
+        checked = 0
+        for cut in _line_offsets(transcript):
+            prefix_lines, state = _render_probe(transcript, cut)
+            if state["text_open"] or state["tool_args"] or state["tool_pending"]:
+                continue  # mid-stream cut: not a seedable restart point
+            flags = collapse_index.resolve_flags_at_offset(itdir, cut)
+            seeded = new_render_state()
+            seeded.update(text_seen=flags["textSeen"],
+                          thinking_seen=flags["thinkingSeen"],
+                          toolcall_seen=flags["toolcallSeen"])
+            suffix = transcript.encode("utf-8")[cut:].decode("utf-8")
+            assert prefix_lines + render_to_lines(suffix, False, seeded) \
+                == full_lines, f"{scenario} rendered wrong from byte {cut}"
+            checked += 1
+        assert checked >= 5  # the sweep really did exercise several cuts
+
+    def test_the_index_records_one_segment_per_message(self, tmp_path):
+        transcript = _multi_message_transcript()
+        itdir = _run_one_iteration(tmp_path, transcript)
+        idx = json.loads(
+            (itdir / collapse_index.INDEX_FILENAME).read_text())
+        # One segment per `message_start`: this transcript opens with one,
+        # so byte 0's implicit segment is that same segment rather than a
+        # second one at the same offset (`startByte`s ascend strictly).
+        assert len(idx["segments"]) == 2
+        assert [s["startByte"] for s in idx["segments"]] == sorted(
+            s["startByte"] for s in idx["segments"])
+        # message 2 (the last segment) sets nothing at all: it streams
+        # nothing, and its `message_end` is not a setter for any flag.
+        assert idx["segments"][-1]["textSeenAtByte"] is None
+        assert idx["segments"][-1]["thinkingSeenAtByte"] is None
+        assert idx["segments"][-1]["toolcallSeenAtByte"] is None
+
+    def test_a_cut_boundary_carrying_a_collapse_seed_is_honoured(self, tmp_path):
+        """`log_merge.merge_entries_tail` synthesizes a `ralphd.iteration`
+        start line carrying a `collapseSeed` for a window that cuts INTO an
+        iteration, and `render_log_line` seeds the three flags from it
+        instead of resetting them to False. The index and the fallback scan
+        mirror that, so a transcript blob containing such a boundary
+        resolves the same way the renderer does."""
+        blob = "\n".join([
+            _line({"type": "message_update", "assistantMessageEvent": {
+                "type": "text_delta", "contentIndex": 0, "delta": "x"}}),
+            _line({"type": "ralphd.iteration", "event": "start", "n": 2,
+                   "collapseSeed": {"textSeen": True, "thinkingSeen": False,
+                                    "toolcallSeen": True}}),
+            _line({"type": "message_end", "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "kept"}]}}),
+        ]) + "\n"
+        itdir = tmp_path / "iter"
+        itdir.mkdir()
+        (itdir / "output.jsonl").write_text(blob)
+        collapse_index.write_index(itdir)
+        assert collapse_index.load_index(itdir) is not None
+        for cut in _line_offsets(blob):
+            _lines, state = _render_probe(blob, cut)
+            expected = {"textSeen": state["text_seen"],
+                        "thinkingSeen": state["thinking_seen"],
+                        "toolcallSeen": state["toolcall_seen"]}
+            assert collapse_index.resolve_flags_at_offset(itdir, cut) == expected
+            (itdir / collapse_index.INDEX_FILENAME).rename(
+                itdir / "stashed.json")
+            assert collapse_index.resolve_flags_at_offset(itdir, cut) == expected
+            (itdir / "stashed.json").rename(
+                itdir / collapse_index.INDEX_FILENAME)
+
+    def test_resolution_does_not_read_the_transcript_when_the_index_is_valid(
+            self, tmp_path, monkeypatch):
+        """The index's whole point (G.3/G.6): with a valid index, the
+        answer costs a binary search over the segments and no re-read of
+        the transcript at any distance -- so a deciding setter 100x
+        further back costs the same, and the transcript file is not opened
+        for reading at all beyond `load_index`'s own size stat."""
+        transcript = _multi_message_transcript()
+        itdir = _run_one_iteration(tmp_path, transcript)
+        opened: list[str] = []
+        real_open = Path.open
+
+        def _watch(self, *a, **kw):
+            opened.append(self.name)
+            return real_open(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "open", _watch)
+        collapse_index.resolve_flags_at_offset(
+            itdir, len(transcript.encode("utf-8")))
+        assert "output.jsonl" not in opened
