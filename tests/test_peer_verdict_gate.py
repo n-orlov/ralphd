@@ -208,9 +208,18 @@ def test_review_s_other_edges_are_unchanged_by_the_gate(vigilant):
     # every edge except `verified`'s target changes; the rest carry over.
     without_gate_minus_verified = {
         (t, g) for t, g in without_gate if g != "verified"}
+    # Task 027 (PRD requirement H.5, #264): the gate-on table gains ONE
+    # genuinely new edge with no gate-off twin at all --
+    # `verified_peer_verdict_gate_deferred_past_deadline` -> `finishing`,
+    # taken only when the deadline passes while review is still in flight
+    # (`_step_review`'s own `budget_left()` check), so review concludes on
+    # its own verdict instead of dispatching `verdict_gate` past the
+    # boundary. Excluded here by name, same as the enabled-gate's own
+    # `verified_peer_verdict_gate_enabled` just below.
     with_gate_minus_new = {
         (t, g) for t, g in with_gate
-        if g != "verified_peer_verdict_gate_enabled"}
+        if g not in ("verified_peer_verdict_gate_enabled",
+                     "verified_peer_verdict_gate_deferred_past_deadline")}
     assert without_gate_minus_verified == with_gate_minus_new
 
 

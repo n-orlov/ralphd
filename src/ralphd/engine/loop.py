@@ -11265,6 +11265,59 @@ class LoopSupervisor:
             # about which table variant is in force (the same shape
             # `_step_planning`'s `peer_plan_review` check already uses).
             if self.cfg.peer_verdict_gate:
+                if not self.budget_left():
+                    # Task 027 (PRD requirement H.5, #264, v0.24's own D.1
+                    # CONFIRMED contradiction petition, cure-01-04): review
+                    # is in-flight-protected (task cure-01-03/C.1) so it can
+                    # still return `verified` after the deadline has
+                    # already passed while it was running. Dispatching
+                    # `verdict_gate` at THIS point would be a brand new
+                    # iteration started past the boundary -- exactly what
+                    # `_step_verdict_gate`'s own `budget_left()` guard (task
+                    # 011, requirement C.1) forbids absolute for every
+                    # fresh-dispatch site in this engine, this one included.
+                    # v0.24 shipped the only choice that existed then --
+                    # holding `timed_out` with a null verdict, pinned as
+                    # history by `tests/test_deadline.py::
+                    # test_peer_verdict_gate_verified_review_after_the_deadline_holds_pending_the_gate`
+                    # and confirmed via the pre-named contradiction petition
+                    # -- which is exactly the defect H.5 closes. This wave
+                    # chooses mechanism (b): conclude on review's own
+                    # verdict alone, with the gate's non-dispatch disclosed
+                    # in the record as a named residual
+                    # (`verdictGateResidual`) rather than as a null verdict.
+                    # Mechanism (a) -- running the gate inside the same
+                    # boundary -- would need merging two genuinely separate
+                    # blind hat calls (review, then the peer gate) into one
+                    # dispatch, which does not fit this engine's existing
+                    # one-hat-per-iteration shape without a much larger
+                    # restructuring than this task's own scope; (b) reuses
+                    # the transition table's existing fail-open shape
+                    # (`verdict_gate_rejected_no_approach_left` already
+                    # concludes rather than holding hostage once ITS OWN
+                    # budget is spent) and costs one new declared edge.
+                    self._advance(
+                        "review", "finishing",
+                        "verified_peer_verdict_gate_deferred_past_deadline")
+                    self.run.emit("signal", signal="VERIFIED")
+                    residual = {
+                        "gate": "peer_verdict_gate",
+                        "reason": (
+                            "the run's own deadline passed while review "
+                            "was still in flight, before the peer verdict "
+                            "gate could be dispatched; review's own "
+                            "verified verdict decided the outcome instead "
+                            "of holding timed_out with a null verdict"),
+                        "recordedAt": utcnow(),
+                    }
+                    self.run.emit("verdict_gate_deferred_past_deadline",
+                                 approach=approach,
+                                 reason=residual["reason"])
+                    self._finish(
+                        "succeeded", self._review_success_verdict_label(),
+                        verdictGateResidual=residual,
+                        **self._unconsumed_steering_patch())
+                    return ("done", "succeeded")
                 self._advance("review", "verdict_gate",
                              "verified_peer_verdict_gate_enabled")
                 return ("advance", "verdict_gate",

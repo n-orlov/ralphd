@@ -1585,22 +1585,19 @@ def test_no_new_review_iteration_starts_at_an_already_expired_boundary(
 # conclusion. The gate is therefore reached and never rubber-stamped; it
 # costs one worker and one review iteration of the fresh window to get
 # there, which is what the petition's adjudication should weigh.
+#
+# UPDATE (task 027, PRD requirement H.5, #264): the petition's own
+# adjudication was CONFIRMED -- the contradiction above was real -- and
+# H.5 is the operator's granted way out of it, not a re-litigation. The
+# third and fourth probes this paragraph describes were RETIRED where they
+# used to sit, a few screens below; see the note left in their place for
+# what replaced them and why the old shape can no longer occur.
 # ===========================================================================
 
 
 def _cure0104_worker_completes(sup, prompt):
     r = IterationResult(exit_code=0)
     r.final_text = json.dumps({"verdict": "complete", "task_id": "T1"})
-    r.duration_s = 0.5
-    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
-    return r
-
-
-def _cure0104_review_verified_expires_deadline_mid_flight(sup, prompt):
-    sup.deadline = real_time.monotonic() - 1.0
-    sup._deadline_epoch = real_time.time() - 1.0
-    r = IterationResult(exit_code=0)
-    r.final_text = json.dumps({"verdict": "verified"})
     r.duration_s = 0.5
     r.usage = {"input": 1, "output": 1, "totalTokens": 2}
     return r
@@ -1621,14 +1618,6 @@ def _cure0104_review_rejects_expires_deadline_mid_flight(sup, prompt):
     r = IterationResult(exit_code=0)
     r.final_text = json.dumps({"verdict": "rejected", "reason": "not done yet"})
     r.duration_s = 0.5
-    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
-    return r
-
-
-def _cure0104_gate_verified(sup, prompt):
-    r = IterationResult(exit_code=0)
-    r.final_text = json.dumps({"verdict": "verified"})
-    r.duration_s = 0.1
     r.usage = {"input": 1, "output": 1, "totalTokens": 2}
     return r
 
@@ -1754,172 +1743,34 @@ def test_operator_input_gate_pause_still_parks_normally_in_budget(tmp_path):
     assert status["state"] == "succeeded"
 
 
-def test_peer_verdict_gate_verified_review_after_the_deadline_holds_pending_the_gate(tmp_path):
-    """D.1, peer-verdict gate ENABLED (`peer_verdict_gate=True`, off by
-    default -- Section I's own probe left it off). Review renders
-    `verified` after the deadline (same in-flight-crossing shape as Section
-    I), but the run's REAL success edge sits on `verdict_gate` (task 020),
-    a second, genuinely blind hat call that has not run yet and cannot be
-    dispatched past the deadline (`_step_verdict_gate`'s own pre-existing
-    C.1 guard, task 011). Concluding `succeeded` here without ever running
-    that call would rubber-stamp the peer check; dispatching it anyway
-    would violate the no-new-iteration boundary every other fresh-dispatch
-    site in this wave holds absolute. This task petitions that
-    contradiction (PRD pre-named petition #4) rather than silently
-    choosing -- see this module's own `# Section Jc` docstring above -- and
-    this probe pins the behaviour the petition leaves standing: the SAME
-    shared C.1 hold every other out-of-budget tail takes, never a fabricated
-    `succeeded`, with the peer gate's own handler never called. That peer
-    verification is DEFERRED rather than lost -- and by which route -- is
-    the next probe's job, measured rather than asserted in prose.
-    """
-    sup = make_supervisor(
-        tmp_path, run_id="cure0104-peer-gate-passing-past-deadline",
-        max_approaches=1, approach=1, iterations_used=1, prd=True,
-        peer_verdict_gate=True,
-        tasks=[{"id": "T1", "title": "do the thing", "successCriteria": "done",
-               "status": "pending"}])
-    attach_runner(sup, ScriptedRunner({
-        "worker": [_cure0104_worker_completes],
-        "review": [_cure0104_review_verified_expires_deadline_mid_flight],
-        "verdict_gate": [_cure0104_gate_verified],
-    }))
-
-    assert sup.budget_left() is True, (
-        "precondition: the deadline is still ordinarily in the future "
-        "before review is ever dispatched")
-
-    state = asyncio.run(asyncio.wait_for(sup.run_job(), 5.0))
-
-    assert sup.budget_left() is False
-    assert state == "timed_out", (
-        "a verified review with the peer gate still outstanding must hold "
-        f"the run rather than fabricate a decision, got state={state!r}")
-    assert sup._budget_exhausted_tail is True
-
-    status = sup.run.read_status()
-    assert status["state"] == "timed_out"
-    assert status["verdict"] is None
-    assert status.get("pendingTerminalState") is None
-    assert status.get("endedAt") is None, "a held run has not ended"
-
-    # The peer gate genuinely never ran -- its own scripted handler was
-    # never called -- so nothing here rubber-stamped the check.
-    assert sup.runner.calls.get("verdict_gate", 0) == 0
-
-
-def _cure0104_worker_reports_plan_complete(sup, prompt):
-    r = IterationResult(exit_code=0)
-    r.final_text = ("every task on disk is already completed\n"
-                    + json.dumps({"verdict": "plan_complete"}))
-    r.duration_s = 0.2
-    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
-    return r
-
-
-def _cure0104_review_verified(sup, prompt):
-    r = IterationResult(exit_code=0)
-    r.final_text = json.dumps({"verdict": "verified"})
-    r.duration_s = 0.5
-    r.usage = {"input": 1, "output": 1, "totalTokens": 2}
-    return r
-
-
-def test_peer_verdict_gate_hold_resumes_and_the_peer_gate_still_renders_a_verdict(
-        tmp_path):
-    """D.1's petitioned case, the OTHER half: peer verification survives the
-    hold. The probe above pins episode 1 (the hold, with the gate never
-    called); this one continues that SAME run directory into episode 2 -- a
-    fresh `LoopSupervisor` with a fresh full window, which is exactly what
-    `ralphctl resume` starts (Section K) -- and measures where it lands and
-    what runs, rather than asserting a mechanism.
-
-    What it measures, and why each half matters to the petition:
-
-    1. The hold is NOT resumed at the pending `verdict_gate` step.
-       `_finish_timed_out` writes `phase=None` and no `_resume_point()`
-       bucket claims a held-at-the-gate run, so `_resume_point()` returns
-       its ordinary default -- `(1, skip_planning=True, ENTRY_STATE)`, i.e.
-       `(1, True, "planning")`. This is pinned as the TRUTH about the
-       engine as it stands, not as the behaviour D.1 would prefer.
-    2. No new `planning` iteration is dispatched anyway (`skip_planning`),
-       so resume does not throw the approach away -- it continues the one
-       that was held, over the same `completed` task on disk.
-    3. The peer gate DOES run: the worker is asked once and answers
-       `plan_complete`, review is asked again over the same approach, and
-       `verdict_gate`'s own blind handler is then genuinely called exactly
-       once, its verdict deciding the conclusion (`succeeded`, verdict
-       `verified`). So the hold defers peer verification by one worker plus
-       one review iteration of the fresh window; it never skips it and
-       never rubber-stamps it.
-    """
-    root = tmp_path / "run"
-
-    # Episode 1: the hold, identical in shape to the probe above.
-    sup1 = make_supervisor(
-        root, run_id="cure0104-peer-gate-hold-then-resume",
-        max_approaches=1, approach=1, iterations_used=1, prd=True,
-        peer_verdict_gate=True,
-        tasks=[{"id": "T1", "title": "do the thing", "successCriteria": "done",
-               "status": "pending"}])
-    attach_runner(sup1, ScriptedRunner({
-        "worker": [_cure0104_worker_completes],
-        "review": [_cure0104_review_verified_expires_deadline_mid_flight],
-        "verdict_gate": [_cure0104_gate_verified],
-    }))
-
-    assert asyncio.run(asyncio.wait_for(sup1.run_job(), 10.0)) == "timed_out"
-    assert sup1.run.read_status()["verdict"] is None
-    assert sup1.runner.calls.get("verdict_gate", 0) == 0, (
-        "precondition: the peer gate is still outstanding when the run holds")
-    assert [t["status"] for t in sup1.run.read_tasks()["tasks"]] == ["completed"]
-    iterations_before = len(read_events(root, types=("iteration.start",)))
-
-    # Episode 2: a FRESH supervisor over the SAME run dir, fresh full window
-    # (`job_timeout_s` from THIS start, never the held run's stale
-    # `deadlineAt` -- requirement F.1, Section K), same optional gate on.
-    sup2 = make_supervisor(
-        root, run_id="cure0104-peer-gate-hold-then-resume", job_timeout_s=100,
-        prd=True, peer_verdict_gate=True)
-    assert sup2.budget_left() is True
-
-    # 1. The measured resume point: the ordinary default, NOT the pending
-    # `verdict_gate` step the hold stopped at (`phase` was cleared).
-    assert sup2.run.read_status().get("phase") is None
-    assert sup2._resume_point() == (1, True, "planning")
-
-    attach_runner(sup2, ScriptedRunner({
-        "worker": [_cure0104_worker_reports_plan_complete],
-        "review": [_cure0104_review_verified],
-        "verdict_gate": [_cure0104_gate_verified],
-    }))
-
-    state = asyncio.run(asyncio.wait_for(sup2.run_job(), 30.0))
-
-    # 2. Planning was skipped -- the held approach is continued, not replanned.
-    assert sup2.runner.calls.get("planning", 0) == 0
-    assert not [ev for ev in read_events(root, types=("iteration.start",))
-                if ev.get("phase") == "planning"]
-
-    # 3. The peer gate ran for real, exactly once, and its verdict decided.
-    assert sup2.runner.calls.get("verdict_gate", 0) == 1, (
-        "peer verification must be DEFERRED by the hold, never skipped: the "
-        "resumed episode has to reach `verdict_gate` and render a real peer "
-        f"verdict, got calls={sup2.runner.calls!r}")
-    assert state == "succeeded"
-    status = sup2.run.read_status()
-    assert status["state"] == "succeeded"
-    assert status["verdict"] == "verified"
-
-    # ... reached via one worker iteration (answering `plan_complete` over
-    # the already-completed plan) and one fresh review of the SAME approach,
-    # in that order, after the hold -- the route this petition's own
-    # adjudication should weigh.
-    resumed_phases = [ev.get("phase") for ev
-                      in read_events(root, types=("iteration.start",))][
-                          iterations_before:]
-    assert resumed_phases == ["worker", "review", "verdict_gate"], (
-        f"unexpected resumed route, got {resumed_phases!r}")
+# The two probes that used to sit here (`test_peer_verdict_gate_verified_
+# review_after_the_deadline_holds_pending_the_gate` and its resume sibling
+# `test_peer_verdict_gate_hold_resumes_and_the_peer_gate_still_renders_a_
+# verdict`) pinned the CONFIRMED contradiction petition above as the
+# behaviour it left standing: a peer-gate-on post-deadline PASSING verdict
+# held `timed_out` with a null verdict, and the peer gate itself only ever
+# ran on a resumed episode with a fresh window. PRD requirement H.5 (task
+# 027, #264) grants the way out that did not exist when this task filed
+# that petition -- see this module's own docstring paragraph above, left
+# unedited as the historical record of the CONFIRMED adjudication -- and
+# closes the gap: a NEW declared transition-table edge
+# (`verified_peer_verdict_gate_deferred_past_deadline`,
+# `transitions.PEER_VERDICT_GATE_DELTA["review"]`) now concludes the run
+# `succeeded` directly off review's own verdict, with the gate's
+# non-dispatch disclosed as a `verdictGateResidual` object rather than a
+# null verdict, and the peer gate's own handler genuinely never called --
+# never rubber-stamped, deferred permanently rather than lost. Both
+# scenarios these two probes measured no longer occur (a passing
+# post-deadline verdict no longer holds at all, so there is nothing left
+# to resume into), so they are retired here rather than mutated into
+# something that no longer measures what their own names claim; the
+# surviving coverage for exactly this shape -- one probe per outcome --
+# is `tests/test_h5_peer_gate_deadline.py::
+# test_peer_gate_on_post_deadline_pass_concludes_instead_of_holding` (the
+# inverse of the old parked case) and `::
+# test_peer_gate_on_post_deadline_rejection_still_holds_unchanged` (H.7's
+# other half: a rejecting post-deadline verdict is completely unaffected
+# by the gate, exactly as before).
 
 
 # ===========================================================================

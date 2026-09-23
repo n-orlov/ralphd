@@ -347,6 +347,16 @@ RECORD_SECTIONS: dict[str, str] = {
     "iterationsUsed": "header",
     "engineVersion": "header",
     "provisionalVerdict": "header",
+    # Task 027 (PRD requirement H.5, #264): the SAME shape as
+    # `provisionalVerdict` (task 026) -- `None` for every ordinary
+    # terminal outcome, an explicit object only on the one edge that
+    # concludes on review's own verdict alone because the peer verdict
+    # gate could not be dispatched past the run's own deadline
+    # (`_step_review`'s `verified_peer_verdict_gate_deferred_past_deadline`
+    # edge). Named here rather than left implicit, per H.5's own text:
+    # "the gate's non-dispatch disclosed in the record as a named
+    # residual".
+    "verdictGateResidual": "header",
     "usage": "Usage",
     "approaches": "Approach history",
     "petitions": "Petitions",
@@ -382,6 +392,9 @@ def build_run_record(run: "state.RunDir", *, run_id: str,
         # into the terminal record rather than left implicit -- `None` for
         # every ordinary, fully-refined terminal verdict.
         "provisionalVerdict": status.get("provisionalVerdict"),
+        # Task 027 (PRD requirement H.5, #264): see `RECORD_SECTIONS`'
+        # own comment on this key just above.
+        "verdictGateResidual": status.get("verdictGateResidual"),
         "approaches": build_approach_history(run),
         "petitions": build_petitions_section(run),
         "steersConsumed": build_steers_section(run),
@@ -499,6 +512,15 @@ def render_run_record_markdown(record: dict) -> str:
             + "` recorded at " + str(provisional.get("recordedAt"))
             + " -- review never got to "
             + str(provisional.get("refinementScope") or "refine it"))
+    # Task 027 (PRD requirement H.5, #264): the named residual left behind
+    # when the run concluded on review's own verdict alone because the
+    # peer verdict gate could not be dispatched past the deadline.
+    gate_residual = record.get("verdictGateResidual")
+    if isinstance(gate_residual, dict) and gate_residual.get("gate"):
+        lines.append(
+            "- **verdict gate deferred**: `" + str(gate_residual.get("gate"))
+            + "` never dispatched -- " + str(gate_residual.get("reason"))
+            + " (recorded at " + str(gate_residual.get("recordedAt")) + ")")
     lines += _usage_lines(record.get("usage") or {})
 
     lines += ["", "## Approach history"]

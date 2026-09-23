@@ -714,8 +714,20 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # excluded from both tiers, same as every other browser node. Measured
     # with `.venv/bin/python -m pytest -q -m <tier> --collect-only` at
     # this task's own tip.
-    "fast": {"tests": 6184, "modules": 417},
-    "smoke": {"tests": 4508, "modules": 297},
+    # Task 027 (PRD requirement H.5, #264): fast 6184 unchanged (two
+    # module-417's own tests removed -- the retired v0.24 D.1 probes in
+    # tests/test_deadline.py, `test_peer_verdict_gate_verified_review_
+    # after_the_deadline_holds_pending_the_gate` and its resume sibling,
+    # whose CONFIRMED contradiction petition H.5 closes -- and two added
+    # in one brand-new module, tests/test_h5_peer_gate_deadline.py, so the
+    # test count nets to zero while modules go 417 -> 418), smoke 4508 ->
+    # 4510 (+2 tests, +1 module -- the new module's two nodes are
+    # in-process `LoopSupervisor` probes over a scripted runner, no real
+    # engine/ralphctl process, so both sort into smoke too; the two
+    # retired tests were fast-only). Measured with `.venv/bin/python -m
+    # pytest -q -m <tier> --collect-only` at this task's own tip.
+    "fast": {"tests": 6184, "modules": 418},
+    "smoke": {"tests": 4510, "modules": 298},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
