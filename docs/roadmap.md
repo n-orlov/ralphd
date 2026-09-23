@@ -2437,6 +2437,31 @@ names rather than claims those settled. The v0.19 through v0.23 blocks above are
 commit.
 Shipped sha `af0b57e2`, version 0.24.0, installed host-side by the operator.
 
+## v0.25 — the harness already knows
+
+This wave closes the gap where the harness already holds a fact, a verdict or a bound it needs and
+that fact never reaches the one system, the one clock or the one operator that needed it. Requirement
+**A** waits a short bounded time before `acquire_lock` raises `RunDirLocked`, so a predecessor's exit
+tail is no longer read as a permanently locked run dir, closing **#217**; **B** makes the startup
+watchdog's verdict path escalate exactly as its timeout path does instead of falling through to the
+full iteration timeout, so a guard no longer degenerates into no guard, closing **#215**; **C** gates
+the reflect contract ladder on `_iteration_cut_short_by_engine` the same way every other hat already
+is, so a harness kill is no longer read as an agent fault and a tombstone no longer denies the work
+beside it, closing **#211**; **D** lets `--review-clone-protocol` render a command line verbatim, so a
+field that could not express its argument now can, closing **#265**; **E** adds the bare-id branch the
+obligation anchor test was missing, so a filing is no longer discarded in silence, closing **#212**;
+**F** gives the engine-exit-wait helper a process-tree and pipe-state dump that names which of the two
+known shapes it observed, so a timeout can finally say why, closing **#216**; **G** writes the
+prefix-collapse deciding-setter fact down instead of searching for it at render time, closing **#214**;
+**H** writes review's early verdict to disk the moment it is formed and marks a timeout-truncated one
+provisional, so a verdict that exists is no longer lost, closing **#264** (and v0.24's own D.1); **I**
+bounds the one sink that was still unbounded, redacting a worker's pushed commit the same way the
+engine's own record already is, closing **#210**; and **J** is this version bump, this paragraph and
+the record's own close-out, naming — not yet claiming closed — the nine issues **A** through **I**
+answer: **#210, #211, #212, #214, #215, #216, #217, #264** and **#265**; a later task of this same run
+closes them with evidence, and this paragraph does not shortcut that. The v0.19 through v0.24 blocks
+above are unchanged by this commit.
+
 ## Later / explicitly deferred
 
 - PID-namespace isolation of agent iterations. **No longer load-bearing:** v0.7
