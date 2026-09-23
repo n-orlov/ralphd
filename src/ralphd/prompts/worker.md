@@ -404,16 +404,30 @@ write, in every job:
 
 If this job has credentials configured, a Credentials section above lists
 the available `~/.creds/<name>.env` file names (values withheld). The rule
-applies whether or not that section is present:
+applies whether or not that section is present. This section documents the
+mechanical rule that actually bounds a leak — it is not itself the bound.
+`src/ralphd/engine/runner.py` scrubs a `pi` subprocess's stdout line-by-line
+against known secret values before any of it reaches disk, and this run's
+commit-msg/pre-commit hooks scan a commit's message and its staged diff
+(`git diff --cached`) before the commit is allowed to land. Neither scrub is
+a reason to be careless — both only catch values already known to the
+engine, and a leak is cheaper to never write than to rely on a scrub for.
 
 - **Never print, `cat`, `echo`, or otherwise dump a credential file's
   contents, and never paste a secret value into a command's arguments**
   (a URL query string, a `--token`/`--password` flag, an inline
-  `Authorization: Bearer <value>` header, etc.). Every tool call's arguments
-  *and* stdout are recorded verbatim in this run's iteration transcript
-  (host-visible, permanent) — doing either one permanently persists the
-  secret outside the credential file itself, defeating the whole point of
-  keeping values out of prompts/events/run-dir.
+  `Authorization: Bearer <value>` header, etc.). A tool call's arguments and
+  stdout are one sink; a commit message and a staged diff are two more —
+  a secret that reaches any of them can persist outside the credential file
+  itself, defeating the whole point of keeping values out of
+  prompts/events/run-dir.
+- **An environment dump is never acceptable as committed diagnostic
+  evidence.** `declare -x`, `env`, `printenv`, `docker inspect` and anything
+  else that prints a whole environment or container configuration can
+  surface a secret that has nothing to do with the failure being diagnosed.
+  When a commit, an issue or a notification needs to describe what the
+  environment looked like, name the variable and describe the shape of the
+  failure instead of pasting the dump.
 - Source only what you need, only in the command that needs it:
   `set -a; . ~/.creds/<name>.env; set +a`, then let the tool read `$VARNAME`
   from its own environment. Do not `export` broadly or leave it sourced

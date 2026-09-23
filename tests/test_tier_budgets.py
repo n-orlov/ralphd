@@ -837,8 +837,19 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # scan from 029 still catches the exact same commit. Measured with
     # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
     # task's own tip.
-    "fast": {"tests": 6250, "modules": 423},
-    "smoke": {"tests": 4557, "modules": 302},
+    # task 032 (v0.25 requirement I.4/I.5, #210): fast 6250 -> 6257, smoke
+    # 4557 -> 4564 (+7 tests, +1 module each) for
+    # tests/test_credential_handling_harm_model.py -- the worker.md
+    # `## Credential handling` section rewrite probes (the stale
+    # verbatim-transcript claim's deletion, the commit-message/staged-diff
+    # sink naming, the environment-dump-as-committed-evidence ban, the
+    # documents-the-rule-not-the-bound disclaimer, and the surviving
+    # dump prohibition, 3 parametrized). No `docker`/`browser`/
+    # process-boundary fixture (a plain worker.md regex read), so all
+    # seven sort into both tiers. Measured with `.venv/bin/python -m
+    # pytest -q -m <tier> --collect-only` at this commit's own tip.
+    "fast": {"tests": 6257, "modules": 424},
+    "smoke": {"tests": 4564, "modules": 303},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
