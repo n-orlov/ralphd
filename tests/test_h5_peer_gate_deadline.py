@@ -4,17 +4,27 @@ post-deadline PASSING review verdict must reach a decisive conclusion
 without dispatching a new iteration past the boundary, instead of holding
 `timed_out` with a null verdict the way v0.24 shipped it.
 
-v0.24's own probes -- `tests/test_deadline.py::
+v0.24's own two D.1 probes -- `tests/test_deadline.py::
 test_peer_verdict_gate_verified_review_after_the_deadline_holds_pending_the_gate`
-and its resume sibling -- are LEFT UNCHANGED here: they pin the CONFIRMED
-contradiction as history (the behaviour a petition left standing, not a
-bug this task silently overwrites without a trace). H.5 grants a way out
-of that contradiction that did not exist when those probes were written --
-one new declared transition-table edge (`transitions.py`'s
-`PEER_VERDICT_GATE_DELTA["review"]`, guard
+and its resume sibling `::test_peer_verdict_gate_hold_resumes_and_the_
+peer_gate_still_renders_a_verdict` -- are RETIRED by this task's own
+commit, NOT left in place: each pinned a scenario that can no longer
+occur once this hole closes (a peer-gate-on post-deadline PASSING verdict
+no longer holds at all, so there is nothing left for the resume sibling to
+resume into). They were retired rather than mutated into asserting the
+opposite of their own names; the surviving coverage for exactly that
+shape is this module's own two nodes below, named as such in the comment
+left at their old location in `tests/test_deadline.py`. That module's
+"Section Jc" comment block -- the record of the CONFIRMED contradiction
+petition itself -- keeps its original text verbatim, with one appended
+`UPDATE (task 027 ...)` paragraph pointing here, so the adjudication
+stays readable as history rather than being silently overwritten.
+
+H.5 grants a way out of that contradiction that did not exist when those
+probes were written -- one new declared transition-table edge
+(`transitions.py`'s `PEER_VERDICT_GATE_DELTA["review"]`, guard
 `verified_peer_verdict_gate_deferred_past_deadline`) -- and this module's
-own two probes below exercise THAT edge specifically, never by mutating
-the older probes' fixtures.
+own two probes below exercise THAT edge specifically.
 
 Mechanism chosen: H.5's option (b) -- "the run concludes on the review
 verdict alone, with the gate's non-dispatch disclosed in the record as a

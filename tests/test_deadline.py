@@ -1751,8 +1751,10 @@ def test_operator_input_gate_pause_still_parks_normally_in_budget(tmp_path):
 # held `timed_out` with a null verdict, and the peer gate itself only ever
 # ran on a resumed episode with a fresh window. PRD requirement H.5 (task
 # 027, #264) grants the way out that did not exist when this task filed
-# that petition -- see this module's own docstring paragraph above, left
-# unedited as the historical record of the CONFIRMED adjudication -- and
+# that petition -- see the "Section Jc" comment block above, whose
+# original text is kept verbatim as the historical record of the CONFIRMED
+# adjudication, with one appended `UPDATE (task 027 ...)` paragraph
+# pointing at this note -- and
 # closes the gap: a NEW declared transition-table edge
 # (`verified_peer_verdict_gate_deferred_past_deadline`,
 # `transitions.PEER_VERDICT_GATE_DELTA["review"]`) now concludes the run
