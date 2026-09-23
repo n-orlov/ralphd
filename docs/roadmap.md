@@ -2406,7 +2406,7 @@ three lanes green at the resolved code sha, then the unit-group PRs rebase-merge
 names rather than claims settled the issues this wave answers: **#224**, **#219**, **#220**,
 **#221**, **#222**, **#223** and **#213**. The v0.19 through v0.22 blocks above are unchanged by
 this commit.
-Shipped sha `59afb532`, version 0.23.0, installed host-side by the operator.
+Shipped sha `bd94c695`, version 0.23.0, installed host-side by the operator.
 
 ## v0.24 — a budget is a boundary, not a verdict
 
@@ -2435,6 +2435,7 @@ this contract explicitly defers. A later task of this same run files M's two iss
 verifies the three lanes green at the records-group branch tip and on `main`, so this paragraph
 names rather than claims those settled. The v0.19 through v0.23 blocks above are unchanged by this
 commit.
+Shipped sha `af0b57e2`, version 0.24.0, installed host-side by the operator.
 
 ## Later / explicitly deferred
 
