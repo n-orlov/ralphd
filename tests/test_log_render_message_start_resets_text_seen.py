@@ -29,16 +29,23 @@ The fix: `render_log_line` now resets the three collapse flags on
 event type. This is independent of PRD G's side index (G.1-G.7, G.9,
 G.10): no index code is touched, and this fix does not depend on it.
 
-Erratum (task 019's second commit). Task 019's first commit `76e81f68`,
+Erratum (task 019, third commit). Task 019's first commit `76e81f68`,
 this module's original docstring and `log_render.py`'s own comment all
 said "`git diff af0b57e2 HEAD -- src/ralphd/cli/log_render.py` is
 empty". That was measured at `76e81f68`'s parent `244e1653`, where it is
-indeed empty, but it is FALSE of `76e81f68` and of every later tip: the
-fix itself adds the 36-line `message_start` branch, so `git diff
---numstat af0b57e2 HEAD -- src/ralphd/cli/log_render.py` reports `36 0`
-and `git diff --quiet` exits 1. The claim that survives measurement, and
-the only one made above, is the narrower one: `_render_message_end`'s own
-body is unchanged since `af0b57e2`."""
+indeed empty, but it is FALSE of `76e81f68` and of every later tip,
+because this task's own fix adds a `message_start` branch to that file:
+`git diff --quiet af0b57e2 HEAD -- src/ralphd/cli/log_render.py` exits 1.
+No line count for that whole-file diff is asserted here. The second
+commit's Erratum did assert one (`--numstat` reports `36 0`) and that
+very commit falsified it by adding two more comment lines to the same
+file (`38 0`); any later touch of `log_render.py` falsifies a fresh
+number the same way, so measure it when you need it rather than reading
+it here. The claim that survives measurement, and the only one made
+above, is the narrower one that does not move with the surrounding file:
+`_render_message_end`'s own 13-line body is unchanged since `af0b57e2` --
+extract it from `git show af0b57e2:src/ralphd/cli/log_render.py` and from
+the shipped file and both sha256 to `4e5c010e...`."""
 
 import json
 
