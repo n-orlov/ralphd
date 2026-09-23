@@ -788,8 +788,23 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # own nodes), so all 10 sort into both tiers. Measured with
     # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
     # task's own tip.
-    "fast": {"tests": 6222, "modules": 421},
-    "smoke": {"tests": 4529, "modules": 300},
+    # task 029, second attempt (same requirement, same issue; the first
+    # attempt was rejected because `commit_scan` was never reached from the
+    # engine): fast 6222 -> 6235, smoke 4529 -> 4542 (+13 tests, +1 module
+    # each) for tests/test_commit_scan_engine_boundary.py's 13 nodes, which
+    # drive the scan through `LoopSupervisor` itself -- two through the real
+    # `_step_worker` boundary (a worker iteration whose own commit leaks, and
+    # a clean one), the message/staged-diff hits, the three named corpora
+    # (parametrized, 3 nodes), the no-push-on-a-hit observation with its
+    # clean-push control and the default-no-remote case, the variable-name-
+    # only refusal, the config field's ON default, and the live-map-not-a-
+    # rebuilt-one proof. Plain `git` subprocess calls in a scratch `tmp_path`
+    # repo and an in-process supervisor, so every node sorts into both tiers.
+    # Measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`
+    # and this module's own `collected()`/`_modules()` helpers at this task's
+    # own tip.
+    "fast": {"tests": 6235, "modules": 422},
+    "smoke": {"tests": 4542, "modules": 301},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

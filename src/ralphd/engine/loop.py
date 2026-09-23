@@ -32,6 +32,7 @@ from typing import Callable
 
 from .. import __version__
 from .. import collapse_index
+from . import commit_scan
 from . import contract_enforcement
 from . import contracts
 from . import findings
@@ -39,6 +40,7 @@ from . import hat_tools
 from . import petitions
 from . import plan_ingestion
 from . import privsep
+from . import redact
 from . import router
 from . import run_record
 from . import scheduler
@@ -6564,6 +6566,69 @@ class LoopSupervisor:
         sha = result.stdout.strip()
         return sha or None
 
+    # Task 029 (PRD requirement I.2, #210): the status key the task-boundary
+    # commit scan records a hit under, and the event kind it emits. Task 030
+    # (requirement I.3) reads exactly this key to fault the task and raise
+    # the `operator_input_needed` pause; neither the key's value nor the
+    # event's fields ever carry the MATCHED VALUE itself -- only the
+    # variable NAME, the commit sha and which part matched.
+    COMMIT_SECRET_SCAN_STATUS_KEY = "commitSecretScanHit"
+    COMMIT_SECRET_SCAN_EVENT = "commit_secret_scan"
+
+    def _scan_task_boundary_commits(self, base_sha: str | None,
+                                    head_sha: str | None) -> dict | None:
+        """The task boundary's git sink (task 029, PRD requirement I.2,
+        #210). Called from `_step_worker` the instant a worker iteration
+        returns, over exactly the commits THAT iteration created
+        (`head_before..head_after`, the bracketing the stagnation witness
+        already takes): every commit's MESSAGE and DIFF is scanned for
+        actual redaction-map VALUES (`redact.live_redaction_map()` -- the
+        same set `scrub_text` scrubs against), never for a
+        "looks-like-a-token" shape (requirement I.4).
+
+        On a clean scan this returns `None`, and -- only then, and only
+        when a `workspace_push_remote` is configured -- the commits are
+        pushed through `commit_scan.push_if_clean`, the one place in the
+        engine that may start a `git push` subprocess at all. On a hit NO
+        push subprocess is started (not with a warning, not with a
+        disclosure), the hit is emitted as a `commit_secret_scan` event and
+        recorded in status.json under `commitSecretScanHit`, and the hit
+        dict is returned. The refusal text names the variable NAME only
+        (`commit_scan.refusal_text`) and never contains the matched value,
+        so an operator-visible record of the leak never re-leaks it.
+
+        Advisory-read posture, the same as its `_workspace_head_sha` /
+        `_workspace_diff_paths` siblings: no `git`, no repository, or an
+        unread HEAD on either side degrades to `None` (nothing to scan)
+        rather than raising out of the boundary.
+        """
+        if not getattr(self.cfg, "commit_secret_scan", True):
+            return None
+        if not head_sha or head_sha == base_sha:
+            return None
+        secrets = redact.live_redaction_map()
+        remote = getattr(self.cfg, "workspace_push_remote", None)
+        if remote:
+            _pushed, hit, refusal = commit_scan.push_if_clean(
+                self.workspace, base_sha, head_sha, secrets=secrets,
+                remote=remote,
+                branch=getattr(self.cfg, "workspace_push_branch", "main"))
+        else:
+            hit = commit_scan.scan_commits_for_secrets(
+                self.workspace, base_sha, head_sha, secrets=secrets)
+            refusal = commit_scan.refusal_text(hit) if hit else None
+        if hit is None:
+            return None
+        record = {"sha": hit.get("sha"), "part": hit.get("part"),
+                  "variable": hit.get("variable"), "refusal": refusal,
+                  "pushed": False, "at": utcnow()}
+        self.run.emit(self.COMMIT_SECRET_SCAN_EVENT, **{
+            k: v for k, v in record.items() if k != "at"})
+        self.run.update_status(
+            **{self.COMMIT_SECRET_SCAN_STATUS_KEY: record})
+        log.error("%s", refusal)
+        return hit
+
     def _workspace_diff_paths(self, base_sha: str, head_sha: str) -> list[str] | None:
         """Task 008 (PRD requirement B.4, #221): the file paths `git diff
         --name-only` reports changed between `base_sha` and `head_sha` in
@@ -8803,6 +8868,26 @@ class LoopSupervisor:
             result = await self._run_worker_iteration(extra, worker_tier,
                                                        task_id=assigned_id)
             head_after = self._workspace_head_sha()
+            # Task 029 (PRD requirement I.2, #210): THE task boundary. The
+            # commits this iteration just created (`head_before..head_after`,
+            # the same bracketing the progress witness above takes) are
+            # scanned -- message and diff -- for actual redaction-map values
+            # before anything else happens to them; on a hit nothing is
+            # pushed, the hit is recorded in status.json
+            # (`commitSecretScanHit`) and emitted as a `commit_secret_scan`
+            # event, both naming the VARIABLE only and never the value.
+            # Task 030 (requirement I.3) hangs the refusal's consequences --
+            # fault the task, raise the `operator_input_needed` pause --
+            # off that recorded hit; this task's own deliverable is the
+            # scan, the record, and the push that never starts.
+            boundary_secret_hit = self._scan_task_boundary_commits(
+                head_before, head_after)
+            if boundary_secret_hit is not None:
+                log.warning(
+                    "task-boundary commit scan flagged %s's %s (variable %s) "
+                    "-- nothing pushed", str(boundary_secret_hit.get("sha"))[:12],
+                    boundary_secret_hit.get("part"),
+                    boundary_secret_hit.get("variable"))
             fp_after = self._workspace_fingerprint()
             worker_iter_n = self.iterations_used  # captured after run_iteration increments it
             tasks_after = self.run.read_tasks()

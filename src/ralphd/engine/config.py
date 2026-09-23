@@ -707,6 +707,29 @@ class JobConfig:
     # RALPHD_PRICE_STRATEGY, and settable from an LLM profile / `ralphctl
     # start --price-strategy` (both land in job.yaml on the host side).
     price_strategy: str = DEFAULT_PRICE_STRATEGY
+    # Task 029 (PRD requirement I.2, #210): the task-boundary git sink.
+    # `redact.scrub_text` scrubs known secret VALUES out of everything the
+    # engine persists or serves; a commit the run's own worker writes is
+    # neither, so nothing ever ran a commit's message or diff through the
+    # redaction map. ON by default (a leak-prevention gate that ships off
+    # prevents nothing): at every worker task boundary the engine scans the
+    # commits THIS iteration created -- `head_before..head_after`, the
+    # bracketing `_step_worker` already takes -- message and diff, for
+    # actual redaction-map values, and on a hit refuses the push, emits a
+    # `commit_secret_scan` event and records `commitSecretScanHit` in
+    # status.json (what task 030's fault + `operator_input_needed` pause
+    # reads). Set False only to get the pre-029 behaviour back.
+    commit_secret_scan: bool = True
+    # The push half of that same gate, and the one place in the engine that
+    # may start a `git push` subprocess at all (`commit_scan.push_if_clean`
+    # -- scan first, push only when the scan came back clean). `None` (the
+    # default) keeps today's division of labour exactly as it is: the WORKER
+    # pushes its own commit from its own shell, and the engine's boundary
+    # only scans and records. A job.yaml that names a remote here hands the
+    # push to the engine instead, where the scan can gate it mechanically
+    # rather than by asking the agent nicely.
+    workspace_push_remote: str | None = None
+    workspace_push_branch: str = "main"
     extra: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:

@@ -175,6 +175,22 @@ def refresh_redaction_map(home: Path | None = None) -> None:
         _map.update(new_map)
 
 
+def live_redaction_map() -> dict[str, str]:
+    """A COPY of the live in-memory `value -> label` map (task 029, PRD
+    requirement I.2, #210). `build_redaction_map` recomputes from the
+    environment and the placed creds files; this hands back what
+    `refresh_redaction_map` actually made live in THIS engine process --
+    what `scrub_text` itself scrubs against -- so the task-boundary commit
+    scan (`commit_scan.scan_commits_for_secrets`, reached from
+    `LoopSupervisor._scan_task_boundary_commits`) keys on exactly the same
+    set of values the rest of the engine already treats as secret, rather
+    than a second, independently rebuilt set that could disagree with it.
+    A copy, never the live dict: no caller can mutate the map through it.
+    """
+    with _lock:
+        return dict(_map)
+
+
 def redaction_map_size() -> int:
     """Count only (for logging/diagnostics) -- never the values themselves."""
     with _lock:
