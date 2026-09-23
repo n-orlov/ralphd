@@ -545,8 +545,18 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # in-process, like tests/test_engine_budget_seed.py's), so it sorts
     # into both tiers. Measured with `.venv/bin/python -m pytest -q -m
     # <tier> --collect-only` at this commit's own tip.
-    "fast": {"tests": 6082, "modules": 405},
-    "smoke": {"tests": 4413, "modules": 287},
+    # task 004 (v0.25 requirement B.1, #215): fast 6082 -> 6083, smoke
+    # 4413 -> 4414 (+1 test, +1 module each) for
+    # tests/test_startup_watchdog_verdict_escalation.py -- the deliberately
+    # SIGINT-ignoring-child probe proving the no-traffic verdict path now
+    # escalates to SIGKILL through SHUTDOWN_GRACE_S instead of falling
+    # through to the outer timeout_s wait. No `docker`/`browser`/process-
+    # boundary fixture (it drives `PiRunner.run` directly, like
+    # tests/test_startup_watchdog_cpu_progress.py's own nodes), so it sorts
+    # into both tiers. Measured with `.venv/bin/python -m pytest -q -m
+    # <tier> --collect-only` at this commit's own tip.
+    "fast": {"tests": 6083, "modules": 406},
+    "smoke": {"tests": 4414, "modules": 288},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

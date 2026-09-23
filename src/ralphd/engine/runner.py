@@ -356,6 +356,33 @@ class PiRunner:
                             continue
                         result.no_traffic_timeout = True
                         self.interrupt()
+                        # Task 004 (B.1, #215): escalate exactly like the
+                        # timeout path below instead of just returning. A
+                        # bare return left this verdict's ONLY remaining
+                        # bound as the outer `asyncio.wait({pump_task},
+                        # timeout=timeout_s)` a few lines down -- fine
+                        # whenever pi honours the SIGINT and the pump
+                        # observes EOF promptly, but up to
+                        # `min(iteration_timeout_s, max(60, deadline -
+                        # now))` (7200s in this run's own configuration)
+                        # whenever the child ignores it, degenerating the
+                        # fail-fast guard into no guard at all. So: wait
+                        # SHUTDOWN_GRACE_S for the process to exit (observed
+                        # via the pump hitting EOF on its stdout), and
+                        # cancel the pump ourselves if it hasn't -- the
+                        # outer `finally`'s `killpg(..., SIGKILL)` reaps the
+                        # group regardless of whether the process is still
+                        # alive when we get there. Honest scope (restated
+                        # in the commit): this has never fired in
+                        # production -- all 166 iteration records of the
+                        # v0.22 run carry `noTrafficTimeout: false` -- the
+                        # defect is structural (only a SIGINT-ignoring
+                        # child ever reaches it) and this claims no
+                        # production saving.
+                        done, _ = await asyncio.wait({pump_task},
+                                                     timeout=SHUTDOWN_GRACE_S)
+                        if not done:
+                            pump_task.cancel()
                         return
 
             pump_task = asyncio.ensure_future(pump())
@@ -374,7 +401,25 @@ class PiRunner:
                 # task alone, so the pump survives the timeout and we can
                 # SIGINT pi and still drain what it writes on the way out.
                 done, _ = await asyncio.wait({pump_task}, timeout=timeout_s)
-                if done:
+                if result.no_traffic_timeout:
+                    # Task 004 (B.1): the watchdog's verdict branch above
+                    # already interrupted, waited SHUTDOWN_GRACE_S and
+                    # cancelled the pump itself if the process hadn't
+                    # exited by then -- pump_task is therefore already
+                    # resolved (finished or cancelled) by the time this
+                    # `asyncio.wait` returns, which is why it returns near-
+                    # instantly here rather than actually spending anywhere
+                    # near `timeout_s`. Re-awaiting a task this method
+                    # itself cancelled re-raises CancelledError (the same
+                    # BaseException hazard task 010's comment above
+                    # describes for the sibling timeout path), so it must
+                    # be suppressed rather than surfaced -- the no-traffic
+                    # verdict already stands, and the outer `finally`'s
+                    # SIGKILL still reaps the group if the process never
+                    # exited.
+                    with contextlib.suppress(BaseException):
+                        await pump_task
+                elif done:
                     # Surface an engine-side pump failure (stream/OS error)
                     # exactly as the old wait_for did: the caller turns it
                     # into one failed iteration.
