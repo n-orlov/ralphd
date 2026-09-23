@@ -412,3 +412,220 @@ def test_the_boundary_uses_the_live_redaction_map_not_a_rebuilt_one(
 
     assert hit is not None
     assert hit["variable"] == SYNTHETIC_NAME
+
+
+# ---------------------------------------------------------------------------
+# "On a hit the run does not push" -- of the RUN, not merely of the engine's
+# own push subprocess.
+#
+# Under the shipped division of labour (`workspace_push_remote is None`) the
+# WORKER pushes its own commit from its own shell, DURING the iteration: the
+# task-boundary scan above runs only once `_run_worker_iteration` has already
+# returned, and this sink is irrevocable, so a gate that guarded the engine's
+# own `git push` alone would watch the leak leave over its shoulder. The
+# engine therefore installs git's OWN `pre-push` hook -- engine-owned,
+# outside the workspace -- before the worker is spawned, running the very
+# same scanner. These tests drive the real `_step_worker` against a worker
+# that pushes to a local bare remote THIS TEST owns, and assert the leaking
+# commit never arrives there.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def live_synthetic_map_for_subprocesses(monkeypatch, tmp_path):
+    """`live_synthetic_map`, plus `HOME` pointed at the same empty scratch
+    home -- so the SUBPROCESS the pre-push hook runs in rebuilds a map that
+    holds the synthetic value and reads no real `~/.creds/*.env`,
+    `~/.git-credentials` or `~/.netrc` either (PRD requirement I.9). The
+    hook is a separate process by construction and cannot be handed the
+    engine's live map: a hook file or an argv carrying secret VALUES would
+    itself be a new sink.
+    """
+    fake_home = tmp_path / "hook-home"
+    fake_home.mkdir()
+    monkeypatch.setenv(SYNTHETIC_NAME, SYNTHETIC_VALUE)
+    monkeypatch.setenv("HOME", str(fake_home))
+    redact.refresh_redaction_map(home=fake_home)
+    assert redact.live_redaction_map().get(SYNTHETIC_VALUE) == f"env:{SYNTHETIC_NAME}"
+    try:
+        yield fake_home
+    finally:
+        monkeypatch.delenv(SYNTHETIC_NAME, raising=False)
+        redact.refresh_redaction_map(home=fake_home)
+
+
+def _bare_remote(workspace: Path, path: Path) -> str:
+    """A bare remote THIS TEST owns (a local directory -- no network, no
+    credential), wired as `origin` and already holding the workspace's
+    pre-iteration `main`."""
+    subprocess.run(["git", "init", "-q", "--bare", str(path)],
+                   check=True, capture_output=True)
+    # `git init`'s default branch name varies by git version/config; the
+    # worker below pushes `main`, as this repository's own workers do.
+    _git(workspace, "branch", "-M", "main")
+    _git(workspace, "remote", "add", "origin", str(path))
+    _git(workspace, "push", "-q", "origin", "main")
+    return str(path)
+
+
+def _remote_main(remote: str) -> str:
+    """The sha `main` points at ON THE REMOTE, or `""` when the remote has
+    no such ref at all."""
+    out = subprocess.run(
+        ["git", "-C", remote, "rev-parse", "-q", "--verify", "refs/heads/main"],
+        capture_output=True, text=True).stdout.strip()
+    return out
+
+
+class _CommittingPushingWorker(_CommittingWorker):
+    """The production shape of a worker iteration under the shipped config:
+    it commits AND pushes from its own shell, before it returns -- so the
+    push is attempted strictly inside the iteration, long before the task
+    boundary reads `head_after`."""
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.push_returncode: int | None = None
+        self.push_stderr = ""
+
+    async def run(self, prompt, transcript, **kw) -> IterationResult:
+        if self.calls == 0:
+            self.sha = _commit(self.workspace, self.name, self.content,
+                               self.message)
+            pushed = subprocess.run(
+                ["git", "-C", str(self.workspace), "push", "origin", "main"],
+                capture_output=True, text=True)
+            self.push_returncode = pushed.returncode
+            self.push_stderr = pushed.stderr
+        self.calls += 1
+        return _ok(self.final_text)
+
+
+def test_a_worker_shells_push_of_a_leaking_commit_never_reaches_the_remote(
+        tmp_path, live_synthetic_map_for_subprocesses):
+    sup, run, workspace = _sup(tmp_path, "worker-push-hit")
+    seed = _init_repo(workspace)
+    remote = _bare_remote(workspace, tmp_path / "worker-push-hit" / "remote.git")
+    assert _remote_main(remote) == seed
+    sup.runner = _CommittingPushingWorker(  # type: ignore[assignment]
+        workspace, "diagnostics.log",
+        f"connection ok, token={SYNTHETIC_VALUE}\n",
+        "diagnostics: capture what the retry saw",
+        json.dumps({"verdict": "no_verdict"}))
+
+    asyncio.run(sup._step_worker())
+
+    # THE deliverable: the leaking commit is not on the remote, and the push
+    # the worker attempted from its own shell failed.
+    assert _remote_main(remote) == seed, (
+        "the leaking commit reached the remote before the task boundary ran")
+    assert sup.runner.push_returncode != 0
+    assert SYNTHETIC_NAME in sup.runner.push_stderr
+    assert SYNTHETIC_VALUE not in sup.runner.push_stderr
+    # ...and the authoritative layer recorded it anyway, naming the variable.
+    hits = _events(run, LoopSupervisor.COMMIT_SECRET_SCAN_EVENT)
+    assert len(hits) == 1 and hits[0]["variable"] == SYNTHETIC_NAME
+    assert SYNTHETIC_VALUE not in json.dumps(hits[0])
+
+
+def test_a_worker_shells_push_of_a_clean_commit_does_reach_the_remote(
+        tmp_path, live_synthetic_map_for_subprocesses):
+    """Non-vacuity for the test above: the same worker, the same gate, a
+    commit with no map value in it -- and the push goes through."""
+    sup, run, workspace = _sup(tmp_path, "worker-push-clean")
+    seed = _init_repo(workspace)
+    remote = _bare_remote(workspace, tmp_path / "worker-push-clean" / "remote.git")
+    sup.runner = _CommittingPushingWorker(  # type: ignore[assignment]
+        workspace, "diagnostics.log",
+        f"connection ok, token shaped like {TOKEN_SHAPED_BUT_UNKNOWN}\n",
+        "diagnostics: name the variable, not its value",
+        json.dumps({"verdict": "no_verdict"}))
+
+    asyncio.run(sup._step_worker())
+
+    assert sup.runner.push_returncode == 0, sup.runner.push_stderr
+    assert _remote_main(remote) == sup.runner.sha != seed
+    assert _events(run, LoopSupervisor.COMMIT_SECRET_SCAN_EVENT) == []
+
+
+def test_the_push_gate_is_engine_owned_and_lives_outside_the_workspace(
+        tmp_path, live_synthetic_map):
+    """A hook the worker can edit is not a bound: the hooks path is in the
+    RUN directory, and neither it nor the hook file is group- or
+    world-writable."""
+    sup, run, workspace = _sup(tmp_path, "gate-ownership")
+    _init_repo(workspace)
+
+    hook = sup._install_commit_scan_push_gate(_head(workspace))
+
+    assert hook is not None and hook.is_file()
+    hooks_dir = hook.parent
+    assert hooks_dir == run.root / LoopSupervisor.COMMIT_SCAN_HOOKS_DIRNAME
+    assert workspace not in hooks_dir.parents and hooks_dir != workspace
+    configured = subprocess.run(
+        ["git", "-C", str(workspace), "config", "core.hooksPath"],
+        capture_output=True, text=True, check=True).stdout.strip()
+    assert Path(configured) == hooks_dir
+    assert hook.stat().st_mode & 0o022 == 0, "the hook is writable by others"
+    assert hook.stat().st_mode & 0o111, "the hook is not executable"
+    assert hooks_dir.stat().st_mode & 0o022 == 0, "the hooks dir is writable by others"
+    # The hook file itself never carries a secret VALUE -- it rebuilds the
+    # map in its own process instead.
+    assert SYNTHETIC_VALUE not in hook.read_text()
+
+
+def test_the_push_gates_own_refusal_names_the_variable_only_and_never_the_value(
+        tmp_path, live_synthetic_map_for_subprocesses):
+    sup, _run, workspace = _sup(tmp_path, "gate-refusal")
+    base = _init_repo(workspace)
+    head = _commit(workspace, "leak.txt", f"leaked={SYNTHETIC_VALUE}\n",
+                   "chore: a leak the hook itself must refuse")
+    hook = sup._install_commit_scan_push_gate(base)
+    assert hook is not None
+
+    ran = subprocess.run(
+        [str(hook), "origin", "/dev/null"], cwd=str(workspace),
+        input=f"refs/heads/main {head} refs/heads/main {'0' * 40}\n",
+        capture_output=True, text=True)
+
+    assert ran.returncode == 1, "the hook did not refuse the push"
+    assert SYNTHETIC_NAME in ran.stderr
+    assert SYNTHETIC_VALUE not in ran.stderr
+    assert SYNTHETIC_VALUE not in ran.stdout
+
+
+def test_the_push_gate_follows_the_same_config_field_as_the_scan(
+        tmp_path, live_synthetic_map):
+    sup, _run, workspace = _sup(tmp_path, "gate-off", commit_secret_scan=False)
+    _init_repo(workspace)
+
+    assert sup._install_commit_scan_push_gate(_head(workspace)) is None
+    assert subprocess.run(
+        ["git", "-C", str(workspace), "config", "core.hooksPath"],
+        capture_output=True, text=True).returncode != 0
+
+
+def test_the_push_gate_scans_a_pushed_range_and_skips_a_ref_deletion(
+        tmp_path, live_synthetic_map):
+    """`gate_push_refs` reads git's own pre-push stdin shape. A deletion (an
+    all-zero LOCAL sha) transfers no objects, so there is nothing to scan."""
+    workspace = tmp_path / "gate-refs"
+    base = _init_repo(workspace)
+    head = _commit(workspace, "leak.txt", f"leaked={SYNTHETIC_VALUE}\n",
+                   "chore: a leak in the range being pushed")
+    secrets = redact.live_redaction_map()
+    zero = "0" * 40
+
+    hit = commit_scan.gate_push_refs(
+        workspace, [f"refs/heads/main {head} refs/heads/main {base}"],
+        secrets=secrets)
+    assert hit is not None and hit["variable"] == SYNTHETIC_NAME
+
+    assert commit_scan.gate_push_refs(
+        workspace, [f"(delete) {zero} refs/heads/main {head}"],
+        secrets=secrets) is None
+    # No usable remote sha and no recorded boundary base: the pushed TIP is
+    # still scanned (and history the wave may not touch is not).
+    assert commit_scan.gate_push_refs(
+        workspace, [f"refs/heads/main {head} refs/heads/main {zero}"],
+        secrets=secrets) is not None

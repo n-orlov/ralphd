@@ -6574,6 +6574,45 @@ class LoopSupervisor:
     # variable NAME, the commit sha and which part matched.
     COMMIT_SECRET_SCAN_STATUS_KEY = "commitSecretScanHit"
     COMMIT_SECRET_SCAN_EVENT = "commit_secret_scan"
+    # The engine-owned hooks directory the push gate lives in: in the RUN
+    # directory, never in the workspace, so the agent uid cannot rewrite the
+    # bound it is subject to (PRD requirement I.1's privsep reasoning; task
+    # 031 adds its `commit-msg`/`pre-commit` hooks to this same directory).
+    COMMIT_SCAN_HOOKS_DIRNAME = "commit-scan-hooks"
+
+    def _install_commit_scan_push_gate(self, base_sha: str | None):
+        """Install git's own `pre-push` gate for this workspace before a
+        worker iteration is spawned (task 029, PRD requirement I.2, #210).
+
+        Why this exists in addition to `_scan_task_boundary_commits`: under
+        the shipped division of labour the WORKER pushes its own commit from
+        its own shell, DURING the iteration -- so by the time the boundary
+        reads `head_after` a leaking commit could already be on the remote,
+        irrevocably (the sink's defining property). "On a hit the run does
+        not push" therefore has to be enforced where the push is attempted,
+        which is git's `pre-push` hook, reached through an engine-owned
+        `core.hooksPath` outside the workspace and running the very same
+        `commit_scan` scanner. `git push --no-verify` bypasses it; the task
+        boundary below is the layer that survives that and records the hit.
+
+        Advisory posture, like its siblings: a workspace that is not a git
+        repository, a missing `git`, or an unwritable hooks directory
+        degrades to `None` (no gate installed) rather than raising out of
+        the dispatch path.
+        """
+        if not getattr(self.cfg, "commit_secret_scan", True):
+            return None
+        try:
+            hook = commit_scan.install_push_gate(
+                self.workspace, self.run.root / self.COMMIT_SCAN_HOOKS_DIRNAME,
+                base_sha=base_sha)
+        except OSError as exc:
+            log.warning("could not install the commit-scan push gate: %s", exc)
+            return None
+        if hook is None:
+            log.info("commit-scan push gate not installed (workspace %s is "
+                     "not a git repository)", self.workspace)
+        return hook
 
     def _scan_task_boundary_commits(self, base_sha: str | None,
                                     head_sha: str | None) -> dict | None:
@@ -8865,6 +8904,13 @@ class LoopSupervisor:
             # below reads, and what still works in a workspace with no
             # `.git` (`_workspace_fingerprint`'s own fallback).
             fp_before = self._workspace_fingerprint()
+            # Task 029 (PRD requirement I.2, #210): the push gate goes in
+            # BEFORE the worker is spawned, because the worker pushes from
+            # its own shell while it runs -- the task boundary below cannot
+            # un-push what left during the iteration. git's own `pre-push`
+            # hook, engine-owned and outside the workspace, runs the same
+            # scanner and refuses the transfer on a hit.
+            self._install_commit_scan_push_gate(head_before)
             result = await self._run_worker_iteration(extra, worker_tier,
                                                        task_id=assigned_id)
             head_after = self._workspace_head_sha()

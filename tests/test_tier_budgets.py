@@ -803,8 +803,21 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`
     # and this module's own `collected()`/`_modules()` helpers at this task's
     # own tip.
-    "fast": {"tests": 6235, "modules": 422},
-    "smoke": {"tests": 4542, "modules": 301},
+    # task 029, third attempt (same requirement, same issue; the second was
+    # rejected because "on a hit the run does not push" was only true of the
+    # ENGINE's own push subprocess, while the shipped division of labour has
+    # the WORKER push from its own shell mid-iteration): fast 6235 -> 6241,
+    # smoke 4542 -> 4548 (+6 tests, 0 new modules -- all six land in
+    # tests/test_commit_scan_engine_boundary.py, already counted in both
+    # tiers) for git's own engine-installed `pre-push` gate: a real
+    # `_step_worker` whose worker commits a leak and pushes to a bare remote
+    # the test owns (the leak never arrives) with its clean-push control, the
+    # hooks path's engine-owned/outside-the-workspace/not-agent-writable
+    # observations, the hook's own variable-name-only refusal, the shared
+    # config field, and the pushed-range/ref-deletion reading of git's
+    # pre-push stdin. Measured the same way, at this task's own tip.
+    "fast": {"tests": 6241, "modules": 422},
+    "smoke": {"tests": 4548, "modules": 301},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
