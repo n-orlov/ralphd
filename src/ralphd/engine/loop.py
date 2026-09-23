@@ -414,6 +414,14 @@ class LoopSupervisor:
         # rules/context tools the steer broker above carries, keeping the
         # worker's authority boundary (requirement H) exactly what it was.
         self._worker_tool_broker: hat_tools.SteerToolBroker | None = None
+        # Task 025 (PRD requirement H.1/H.4, #264): the review hat's own,
+        # equally narrow broker -- non-None only while a review iteration
+        # is in flight (`_run_review_iteration`), serving `record-verdict`
+        # alone (see `hat_tools.REVIEW_WIRED_TOOLS`) -- the mechanism that
+        # makes "review emits a verdict as soon as it has one" a write
+        # this process performs, atomically, rather than prompt advice the
+        # hat may or may not follow.
+        self._review_tool_broker: hat_tools.SteerToolBroker | None = None
         # Task 018 (requirement E, #60 pillar 2): sequence number for this
         # process's own router transcripts (`artifacts/router/NNNN.jsonl`) --
         # a plain counter, not an iteration slot: router calls are NEVER
@@ -4748,6 +4756,9 @@ class LoopSupervisor:
         worker_broker = getattr(self, "_worker_tool_broker", None)
         if phase == "worker" and worker_broker is not None:
             return [str(worker_broker.extension_file)]
+        review_broker = getattr(self, "_review_tool_broker", None)
+        if phase == "review" and review_broker is not None:
+            return [str(review_broker.extension_file)]
         return []
 
     async def _run_worker_iteration(self, extra: str, tier: str | None,
@@ -10781,15 +10792,51 @@ class LoopSupervisor:
             # always provisions at verify's top tier, regardless of any
             # task's tier -- `state.run_level_verify_tier()` takes no task
             # argument on purpose.
-            result = await self.run_iteration(
-                "review", extra=self._review_extra_context(),
-                tier=state.run_level_verify_tier())
+            result = await self._run_one_review_dispatch()
             if not self._review_interrupted(result):
                 return await self._review_contract_ladder(result)
             self._advance("review", "review", "review_interrupted")
             if not self.budget_left():
                 return None
             await self._gate()
+
+    async def _run_one_review_dispatch(self):
+        """ONE review invocation, with the `record-verdict` checkpoint
+        tool wired live for exactly its duration -- Task 025 (PRD
+        requirement H.1/H.4, #264), the same seam `_run_hat_iteration`/
+        `_run_worker_iteration` already use for the steer/worker hats' own
+        narrower tool surfaces. A `hat_tools.SteerToolBroker` restricted to
+        `hat_tools.REVIEW_WIRED_TOOLS` (just `record-verdict`) is placed and
+        served by an asyncio task alive in this process for exactly as long
+        as the review subprocess is, plus one final `serve_once()` drain
+        after it returns so a checkpoint call made in the iteration's last
+        moments is still answered and durable before this method returns.
+
+        Extracted out of `_run_review_iteration`'s own `while True` self-
+        loop so EVERY attempt (including a re-ask after `review_
+        interrupted`) gets its own fresh broker -- a broker instance is
+        alive only for the one dispatch it wraps, exactly like the
+        worker/steer brokers.
+        """
+        broker = hat_tools.SteerToolBroker(
+            self.run, vigilant=bool(self.cfg.vigilant),
+            tools=frozenset(hat_tools.REVIEW_WIRED_TOOLS),
+            notifier_url=self.cfg.notifier_url, source="review")
+        broker.place()
+        self._review_tool_broker = broker
+        serving = asyncio.create_task(broker.serve())
+        try:
+            return await self.run_iteration(
+                "review", extra=self._review_extra_context(),
+                tier=state.run_level_verify_tier())
+        finally:
+            serving.cancel()
+            try:
+                await serving
+            except asyncio.CancelledError:
+                pass
+            broker.serve_once()
+            self._review_tool_broker = None
 
     def _review_unjudged_at_budget_end(self, approach: int) -> tuple:
         """Requirement A (#72): budget/wall clock ran out while review

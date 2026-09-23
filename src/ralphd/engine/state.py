@@ -1076,6 +1076,23 @@ FINDINGS_JSON_FILE = "review-findings.json"
 # field the same task adds to `engine.findings.FINDING_SCHEMA`.
 VERDICT_GATE_FINDINGS_FILE = "verdict-gate-findings.md"
 VERDICT_GATE_FINDINGS_JSON_FILE = "verdict-gate-findings.json"
+# Task 025 (PRD requirement H.1/H.4, #264): review's own EARLY verdict
+# checkpoint -- written the instant review forms a verdict (through the
+# `record-verdict` hat tool, `hat_tools.SteerToolBroker._record_verdict`),
+# refined or superseded once the hat's own turn actually completes and
+# `LoopSupervisor._review_verdict` reads the ordinary end-of-iteration
+# contract payload. Deliberately its OWN file, never `FINDINGS_FILE`/
+# `FINDINGS_JSON_FILE` above: those are the judge's full findings channel
+# (unbounded prose plus a structured list, written by the hat's own file
+# tools, no atomicity guaranteed mid-write); this is a small, bounded,
+# engine-written checkpoint meant to survive a kill that lands before the
+# findings channel -- or the hat's own final reply -- is ever written.
+REVIEW_EARLY_VERDICT_FILE = "review-verdict-early.json"
+# The one field on this checkpoint whose length the hat controls (`reason`)
+# is capped hard, independent of whatever length a hat pastes in -- the
+# whole point of a small, atomic checkpoint is that writing it is cheap
+# enough to never itself become the thing a kill catches half-written.
+REVIEW_EARLY_VERDICT_REASON_MAX_CHARS = 4000
 # Task 006 (requirement A.3, #155 engine half): the debt ledger a verifier's
 # structured `notes` (task 005's `verifyNotes`) land in -- `DEBT_JSON_FILE` is
 # the machine-readable list `record_debt_entries` below is the ONE write path
@@ -6462,6 +6479,64 @@ def record_approach_verdict(run_root: Path, approach: int, channel: str, *,
     return entry
 
 
+def review_early_verdict_path(run_root: Path) -> Path:
+    """Where `write_review_early_verdict`/`read_review_early_verdict` below
+    keep review's early-verdict checkpoint -- the run root, exactly like
+    `approach_metadata_path` above, so a single file answers across every
+    approach's own review pass. Each write overwrites the previous
+    checkpoint (there is never more than one review iteration in flight at
+    once), and nothing reads this once that approach's ordinary contract
+    payload has settled -- see `LoopSupervisor._review_verdict`."""
+    return Path(run_root) / REVIEW_EARLY_VERDICT_FILE
+
+
+def write_review_early_verdict(run_root: Path, *, approach: int, verdict: str,
+                               reason: str | None = None,
+                               findings_path: str | None = None) -> dict:
+    """Task 025 (PRD requirement H.1/H.4, #264): the early-verdict
+    checkpoint's ONE writer. Called from `hat_tools.SteerToolBroker`'s
+    `record-verdict` tool handler, in the ENGINE process, the moment the
+    review hat calls that tool -- never from inside the hat's own
+    subprocess, so the write happens (and is durable) regardless of what
+    that subprocess does next, including being SIGKILLed the instant after
+    this call returns.
+
+    Small and bounded by construction: five fixed keys, `reason` capped at
+    `REVIEW_EARLY_VERDICT_REASON_MAX_CHARS`, and `atomic_write_json` below
+    is `atomic_write`'s rename-into-place (`os.replace`, the same primitive
+    every other engine-owned document in this module uses) over a document
+    whose size never grows with anything review has produced so far -- the
+    write this method performs costs the same whether review has written
+    one line or a hundred pages of findings.
+    """
+    reason_text = None
+    if isinstance(reason, str) and reason:
+        reason_text = (reason
+                       if len(reason) <= REVIEW_EARLY_VERDICT_REASON_MAX_CHARS
+                       else reason[:REVIEW_EARLY_VERDICT_REASON_MAX_CHARS - 3]
+                       + "...")
+    payload = {
+        "approach": approach,
+        "verdict": verdict,
+        "reason": reason_text,
+        "findingsPath": findings_path if isinstance(findings_path, str) else None,
+        "recordedAt": utcnow(),
+    }
+    atomic_write_json(review_early_verdict_path(run_root), payload)
+    return payload
+
+
+def read_review_early_verdict(run_root: Path) -> dict | None:
+    """The checkpoint `write_review_early_verdict` last wrote, or `None`
+    when review has never recorded one this run (a run from before task
+    025, or an approach whose review call has not reached the tool yet).
+    Never raises on a malformed/missing file -- a checkpoint is a
+    nice-to-have salvage aid, not a document any caller may treat as
+    required."""
+    doc = read_json(review_early_verdict_path(run_root))
+    return doc if isinstance(doc, dict) else None
+
+
 def archived_approaches_list(run_root: Path) -> dict:
     """Every archived approach's summary, in order -- the payload `ralphctl
     tasks --all` (task 019) prints and the hub's approach-history panel
@@ -8113,6 +8188,14 @@ class RunDir:
     @property
     def findings_json_file(self) -> Path:
         return self.root / FINDINGS_JSON_FILE
+
+    @property
+    def review_early_verdict_file(self) -> Path:
+        """Task 025 (PRD requirement H.1/H.4, #264): review's early-verdict
+        checkpoint -- see `REVIEW_EARLY_VERDICT_FILE`'s own module-level
+        comment for what it holds and why it is a separate file from
+        `findings_file`/`findings_json_file` above."""
+        return self.root / REVIEW_EARLY_VERDICT_FILE
 
     @property
     def debt_file(self) -> Path:

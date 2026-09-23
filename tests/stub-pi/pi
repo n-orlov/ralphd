@@ -305,6 +305,21 @@ from env vars set by the test:
                       id is fixed (`stub-malformed`), so the test can read
                       its answer straight out of
                       `hat-tools/responses/stub-malformed.json` afterwards.
+  STUB_REVIEW_TOOL_CALLS  task 025 (H.1/H.4, #264): the SAME shape and
+                      mechanism as STUB_STEER_TOOL_CALLS above (a JSON
+                      array of `{"tool": ..., "args": {...}}`, each issued
+                      through the real hat-side client as its own
+                      subprocess), but for a `Role: Reviewer` invocation,
+                      and applied BEFORE that invocation's own hold point
+                      (`STUB_HOLD_PHASE=review`) rather than after it --
+                      Reviewer is excluded from the shared top-of-file
+                      `_apply_hold` call for exactly this reason, the same
+                      way Worker already is. This lets a test call the
+                      review hat's `record-verdict` tool, wait for that
+                      write to land, and only THEN release a SIGKILL onto
+                      the held child -- proving the checkpoint survives a
+                      kill without racing the write against it. Responses
+                      collected to `.stub-review-tool-responses.json`.
   STUB_WORKER_STALLS  if set, worker never changes tasks.json (stagnation test)
   STUB_WORKER_STALLS_BY_APPROACH  comma-separated stall texts, one per
                       approach (task 026, #61 -- structural-wall signature)
@@ -1350,9 +1365,12 @@ def _oversized_near_miss_objection():
 
 # Worker applies the hold at its own STUB_SLEEP position below (task
 # 008/B.2) instead of here, so a partial STUB_RICH_EVENTS transcript can
-# still land before the window opens; every other phase applies it here,
-# before touching any file at all.
-if "Role: Worker" not in prompt:
+# still land before the window opens; Reviewer applies it further down too
+# (task 025, H.1/H.4, #264), AFTER its own optional STUB_REVIEW_TOOL_CALLS
+# early-verdict tool call, so a test can SIGKILL the held child once that
+# call's write has already landed rather than racing the two; every other
+# phase applies it here, before touching any file at all.
+if "Role: Worker" not in prompt and "Role: Reviewer" not in prompt:
     _apply_hold(_resolve_phase(prompt))
 
 if "Role: Planner" in prompt:
@@ -1704,6 +1722,33 @@ elif "Role: Steer" in prompt:
               + json.dumps({"settled": True}))
 
 elif "Role: Reviewer" in prompt:
+    # Task 025 (H.1/H.4, #264): STUB_REVIEW_TOOL_CALLS drives the REAL
+    # hat-side client, one subprocess per call, exactly as
+    # STUB_STEER_TOOL_CALLS does above -- but BEFORE this invocation's own
+    # hold point, never after it (see the top-of-file `_apply_hold` call's
+    # own comment for why Reviewer is excluded from it), so a test can
+    # prove the early-verdict tool's write landed on disk before a SIGKILL
+    # that only fires once the hold blocks.
+    _raw_review_calls = os.environ.get("STUB_REVIEW_TOOL_CALLS")
+    if _raw_review_calls:
+        import subprocess as _review_subprocess
+        _review_responses = []
+        for _call in json.loads(_raw_review_calls):
+            _proc = _review_subprocess.run(
+                [sys.executable, "-m", "ralphd.engine.hat_tools", _call["tool"]],
+                input=json.dumps(_call.get("args") or {}),
+                env={**os.environ, "RALPHD_HAT_TOOLS_RUN": run},
+                capture_output=True, text=True)
+            _stdout = _proc.stdout.strip()
+            try:
+                _review_responses.append(json.loads(_stdout))
+            except json.JSONDecodeError:
+                _review_responses.append({"ok": False,
+                                          "error": "stub: unparseable client stdout: "
+                                                   + repr(_stdout) + " / " + repr(_proc.stderr)})
+        with open(os.path.join(run, ".stub-review-tool-responses.json"), "w") as f:
+            f.write(json.dumps(_review_responses))
+    _apply_hold("review")
     fails_wanted = int(os.environ.get("STUB_REVIEW_FAILS", "0"))
     done = 0
     if os.path.exists(marker("review-count")):

@@ -1548,6 +1548,7 @@ strictly append-only.
 ├── standing-rules.md        # harness-pinned copy of notes.md's "## Standing rules" block (§4.3)
 ├── review-findings.md       # the reviewer's unmet-requirement list, when rejected
 ├── review-findings.json     # the same findings, structured: severity/curable/clause/evidence, plus cured_when/invalidates (task 001, #110; task 031, #171)
+├── review-verdict-early.json # review's own early-verdict checkpoint (task 025, requirement H.1/H.4, #264): {approach, verdict, reason (capped), findingsPath, recordedAt}, written atomically by the `record-verdict` tool THE MOMENT review calls it, replaced (never appended) on every refinement, so it survives a SIGKILL of the review iteration that wrote it
 ├── debt.json                # the debt ledger: verifier notes on a form-met-substance-missed clause, appended by `RunDir.record_debt` (task 006, requirement A.3, #155)
 ├── debt.md                  # the same ledger, rendered for a human, open then resolved (task 006, requirement A.3, #155)
 ├── verdict-gate-findings.md # verdict_gate's own free-markdown findings, when it rejects (task 019, requirement D.4, #125)

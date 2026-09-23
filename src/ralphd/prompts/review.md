@@ -420,6 +420,26 @@ verdict at all, which is strictly worse for the operator than a strict verdict
 on the evidence you did gather. Findings you discover after that checkpoint
 amend the file; they never postpone the verdict.
 
+**Call the `record-verdict` tool the MOMENT you can name a verdict -- not
+only at the end of your reply.** Editing `review-findings.md` yourself is
+not enough: the harness cannot trust a file YOU are still in the middle of
+writing to survive a kill of this very iteration, and a `write`/`edit` tool
+call has no atomicity guarantee against being cut off mid-write. `record-
+verdict` is different -- it executes in the ENGINE process, not yours, so
+the write it performs (`{"verdict": "verified"|"rejected", "reason": "...",
+"findingsPath": "review-findings.md"}`) lands on disk, atomically, before
+the tool call even returns to you, and survives this iteration being
+SIGKILLed a moment later. Call it again every time your verdict changes
+while you keep refining -- each call replaces the previous checkpoint, and
+you may call it as many times as you like. It is a CHECKPOINT ONLY: it has
+no effect on the approach by itself, and your final reply's own
+`{"verdict": ...}` contract line (see *Verdict* below) is what actually
+decides the approach whenever this iteration runs to completion -- an
+ordinary, uninterrupted review is unchanged by this tool's existence and
+must still end with a refined, non-provisional verdict there. Skipping this
+tool and only editing the markdown file yourself throws away exactly the
+protection this paragraph exists to give an interrupted review.
+
 **Order the evidence cheapest-decisive-first.** The probes for the specific
 findings, criteria and requirements this approach claims to have settled run
 in seconds and decide the verdict -- run those first. One shipped tier run

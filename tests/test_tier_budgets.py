@@ -691,8 +691,20 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # land in a new module, tests/test_g4_frozen_cap_measurements.py).
     # Measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`
     # at this task's own tip.
-    "fast": {"tests": 6164, "modules": 414},
-    "smoke": {"tests": 4490, "modules": 295},
+    # Task 025 (PRD requirement H.1/H.4, #264): fast 6164 -> 6178, smoke
+    # 4490 -> 4502 (+14 tests, +2 new modules for fast; +12 tests, +1 new
+    # module for smoke -- tests/test_review_early_verdict_tool.py sorts
+    # into both tiers (in-process only), tests/test_review_early_verdict_
+    # survives_sigkill.py sorts fast-only, `engine_factory` spawns a real
+    # engine subprocess) for the review hat's own `record-verdict`
+    # checkpoint tool: its wiring/schema/bounded-payload/rename-into-place
+    # unit tests, the in-process end-to-end proof that an ordinary review
+    # still ends on its own refined non-provisional verdict, and the two
+    # real-subprocess SIGKILL-survival/refusal probes. Measured with
+    # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
+    # task's own tip.
+    "fast": {"tests": 6178, "modules": 416},
+    "smoke": {"tests": 4502, "modules": 296},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

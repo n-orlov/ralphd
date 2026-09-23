@@ -85,6 +85,12 @@ RUN_DIR_ENV = "RALPHD_HAT_TOOLS_RUN"
 # emits, naming the file it wrote and the steering entry that caused it.
 EVENT_TOOL_CALL = "steer.tool_call"
 EVENT_CONTEXT_WRITE = "steer.context_write"
+# Task 025 (PRD requirement H.1/H.4, #264): the third, narrower audit event
+# emitted alongside `EVENT_TOOL_CALL` specifically for a served
+# `record-verdict` call -- naming the approach and the checkpointed verdict
+# so `events.jsonl` shows the moment review committed to one without a
+# reader having to parse `EVENT_TOOL_CALL`'s generic `detail` payload.
+EVENT_EARLY_VERDICT = "review.early_verdict_recorded"
 
 # -- the wired tool set ----------------------------------------------------
 
@@ -98,6 +104,15 @@ CONTEXT_WRITE_TOOL = "context-write"
 # rules tools, which stay steer-only (PRD requirement H, the authority
 # boundary the tool surface itself enforces).
 NOTIFY_TOOL = "notify"
+
+# Task 025 (PRD requirement H.1/H.4, #264): the review hat's own checkpoint
+# tool -- wired ONLY for a review iteration (`LoopSupervisor._run_review_
+# iteration`'s own broker, never the steer/worker brokers above), so
+# calling it is what "emits a verdict as soon as it has one" actually means
+# mechanically: the write happens in THIS process (the engine), atomically,
+# the moment the hat calls the tool -- independent of whatever the hat's
+# own subprocess does afterwards.
+RECORD_VERDICT_TOOL = "record-verdict"
 
 # One usage line per tool, rendered into both the generated extension's tool
 # description and `prompts/steer.md` (the prompt names each tool; this table
@@ -183,6 +198,22 @@ _TOOL_DOCS: dict[str, dict[str, str]] = {
         ),
         "usage": '{"text": "..."}',
     },
+    RECORD_VERDICT_TOOL: {
+        "label": "Checkpoint your verdict",
+        "description": (
+            "Checkpoint your verdict the MOMENT you can name one -- before "
+            "you finish refining, before review-findings.md/.json are even "
+            "complete. Written atomically, in the engine process, so it "
+            "survives this iteration being killed a moment later. It is a "
+            "CHECKPOINT ONLY: your final reply's own {\"verdict\": ...} "
+            "contract line is still what decides the approach when this "
+            "iteration runs to completion. Call it again whenever your "
+            "verdict changes while you keep working -- each call replaces "
+            "the previous checkpoint."
+        ),
+        "usage": '{"verdict": "verified", "reason": "...", '
+                 '"findingsPath": "review-findings.md"}',
+    },
 }
 
 # The parameter SCHEMA of each tool, declared beside its usage line so the
@@ -253,6 +284,16 @@ _TOOL_PARAMS: dict[str, dict[str, tuple[str, bool]]] = {
     NOTIFY_TOOL: {
         "text": (_string("The text to send to the operator."), True),
     },
+    RECORD_VERDICT_TOOL: {
+        "verdict": (_string('"verified" or "rejected" -- exactly the two '
+                            "legal values the final review contract "
+                            "payload accepts."), True),
+        "reason": (_string("Why, so far -- refine it in your final reply; "
+                           "this checkpoint never has the last word."),
+                   False),
+        "findingsPath": (_string("Path to the findings file, when you "
+                                 "have started one."), False),
+    },
 }
 
 # THE declaration. Derived from `state.STEER_HAT_TOOLS` (never re-listed) so
@@ -273,11 +314,29 @@ STEER_WIRED_TOOLS: dict[str, dict] = {
 # extension registering exactly this one tool.
 WORKER_WIRED_TOOLS: dict[str, dict] = {NOTIFY_TOOL: STEER_WIRED_TOOLS[NOTIFY_TOOL]}
 
+# Task 025 (PRD requirement H.1/H.4, #264): the review hat's own, equally
+# narrow tool surface -- just the checkpoint, never a task-table/standing-
+# rules/context/notify tool. Deliberately NOT folded into
+# `STEER_WIRED_TOOLS` (unlike `NOTIFY_TOOL`, which lives in both tables):
+# `record-verdict` only ever makes sense during a review iteration, and
+# widening the steer hat's own surface with it would be exactly the
+# authority-boundary drift `_hat_extensions`'s docstring warns against.
+REVIEW_WIRED_TOOLS: dict[str, dict] = {
+    RECORD_VERDICT_TOOL: {**_TOOL_DOCS[RECORD_VERDICT_TOOL],
+                          "params": _TOOL_PARAMS[RECORD_VERDICT_TOOL]},
+}
+
+# The union every lookup below indexes into -- `STEER_WIRED_TOOLS` plus
+# whatever a narrower, non-steer broker wires that is NOT already in it
+# (today just `REVIEW_WIRED_TOOLS`; `WORKER_WIRED_TOOLS` is already a
+# subset of `STEER_WIRED_TOOLS` and contributes nothing new here).
+_ALL_WIRED_TOOLS: dict[str, dict] = {**STEER_WIRED_TOOLS, **REVIEW_WIRED_TOOLS}
+
 
 def usage_payload(tool: str) -> dict:
     """The tool's documented usage line, parsed. Its top-level keys are
     exactly the tool's parameter fields (`parameters_source`)."""
-    return json.loads(STEER_WIRED_TOOLS[tool]["usage"])
+    return json.loads(_ALL_WIRED_TOOLS[tool]["usage"])
 
 
 def parameters_source(tool: str) -> str:
@@ -289,7 +348,7 @@ def parameters_source(tool: str) -> str:
     against a prompt documenting `{"task": {...}}`: no schema-valid call
     existed for the documented usage)."""
     lines = ["Type.Object({"]
-    for field_name, (typebox, required) in STEER_WIRED_TOOLS[tool][
+    for field_name, (typebox, required) in _ALL_WIRED_TOOLS[tool][
             "params"].items():
         rendered = typebox if required else f"Type.Optional({typebox})"
         lines.append(f"      {field_name}: {rendered},")
@@ -349,10 +408,14 @@ class SteerToolBroker:
 
     def wired_tools(self) -> dict[str, dict]:
         """This broker's own tool set -- `STEER_WIRED_TOOLS` unless `tools`
-        narrows it (the worker hat's broker)."""
+        narrows it (the worker hat's broker, restricted to `notify`; the
+        review hat's broker, restricted to `record-verdict`, which is not
+        even a member of `STEER_WIRED_TOOLS` -- so the narrowed lookup below
+        reads from `_ALL_WIRED_TOOLS`, the union, rather than filtering the
+        steer hat's own table down)."""
         if self.tools is None:
             return STEER_WIRED_TOOLS
-        return {k: v for k, v in STEER_WIRED_TOOLS.items() if k in self.tools}
+        return {k: v for k, v in _ALL_WIRED_TOOLS.items() if k in self.tools}
 
     @property
     def base_dir(self) -> Path:
@@ -476,6 +539,8 @@ class SteerToolBroker:
                         "error": None}
             if tool == CONTEXT_READ_TOOL:
                 return self._context_read(args)
+            if tool == RECORD_VERDICT_TOOL:
+                return self._record_verdict(args)
             return self._context_write(args)
         except OSError as exc:                       # pragma: no cover
             return {"ok": False, "detail": None, "error": f"{type(exc).__name__}: {exc}"}
@@ -541,6 +606,39 @@ class SteerToolBroker:
             return {"ok": False, "detail": None,
                     "error": 'notify needs {"text": "..."}'}
         return send_notification(self.run, text, self.notifier_url)
+
+    def _record_verdict(self, args: dict) -> dict:
+        """Task 025 (PRD requirement H.1/H.4, #264): the review hat's
+        `record-verdict` tool -- writing the early-verdict checkpoint,
+        HERE, in the engine process, so the write (and its rename-into-
+        place) happens and is durable regardless of whatever the hat's own
+        subprocess does next, including being SIGKILLed the instant after
+        this call returns.
+
+        `verdict` must be exactly `"verified"` or `"rejected"` -- the same
+        two legal values the ordinary `review` contract payload accepts
+        (`transitions.HAT_SCHEMAS["review"]`); anything else is refused
+        with an error the hat can read and correct, never silently
+        coerced. `approach` is never taken from the hat's own args -- it is
+        read off `status.json`, the engine's own record, so a checkpoint
+        can never claim an approach number the hat merely asserts.
+        """
+        verdict = args.get("verdict")
+        if verdict not in ("verified", "rejected"):
+            return {"ok": False, "detail": None,
+                    "error": 'record-verdict needs {"verdict": '
+                             '"verified"|"rejected", ...}'}
+        approach = self.run.read_status().get("approach") or 1
+        reason = args.get("reason")
+        findings_path = args.get("findingsPath")
+        payload = state_module.write_review_early_verdict(
+            self.run.root, approach=approach, verdict=verdict,
+            reason=reason if isinstance(reason, str) else None,
+            findings_path=findings_path if isinstance(findings_path, str)
+            else None)
+        self.run.emit(EVENT_EARLY_VERDICT, approach=approach,
+                      verdict=verdict, source=self.source)
+        return {"ok": True, "detail": payload, "error": None}
 
     # -- serving ---------------------------------------------------------
 
