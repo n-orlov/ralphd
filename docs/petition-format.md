@@ -155,6 +155,50 @@ Review adjudicates every open petition as part of its verdict:
 The run never grants itself a severity, a curability, or a petition outcome
 — only review adjudicates.
 
+## Verify's own awareness of an open filing (task 014, requirement E.7, #212)
+
+**Decision: decline.** E.7 asks whether `verify` should itself be made aware
+that the task it is about to reject carries an open, unadjudicated filing,
+rather than re-rejecting it on the same ground -- citing #212's own measured
+cost: a filing that was silently dropped, four re-rejections on the ground it
+named, and a 48-hour run that ended `unverified` because the adjudication it
+needed could never arrive. This wave's E.1-E.5 fixed the actual defect (the
+silent drop on the anchor test and on the parser), and having fixed that, this
+second, optional question resolves to leaving `LoopSupervisor._verify_task`
+and `task-verify.md` untouched.
+
+The reason is that the harm E.7 names is already structurally foreclosed by a
+different, pre-existing seam (v0.24 requirement A.2, #114, before this wave):
+`LoopSupervisor._verify_task` has exactly one call site, the `pending_verify`
+loop inside `_step_worker` (`src/ralphd/engine/loop.py:9447`), and
+`LoopSupervisor._maybe_run_midrun_adjudication_episode` -- scoped to EVERY
+petition `petitions.open_unconfirmed_petitions` finds still open anywhere in
+the run, not just the one task in front of it -- runs unconditionally, strictly
+BEFORE that loop starts, on every single pass (`loop.py:9433`, and the
+symmetric "held" branch at `loop.py:8386`). So a task can never reach a
+SECOND `_verify_task` call while an open, unadjudicated filing on the same
+obligation survives, without a bounded adjudication attempt having already run
+in between -- `tests/test_midrun_adjudication_episode.py`'s own point 1 pins
+exactly this ordering ("the adjudication episode's own 'review' phase call
+happens strictly BEFORE the 'verify' phase call for the task that was
+`awaiting-validation`"). The #212 shape this wave fixed (E.1-E.5) was the
+filing being silently dropped so this episode's own `open_unconfirmed_
+petitions` call never saw it and never fired at all -- the ordering guarantee
+itself was already in place and did not need building.
+
+Teaching `_verify_task` to look at open petitions directly, on top of that
+seam, would either duplicate a decision it already makes correctly --
+REFUTED already routes the task straight to `failed`, bypassing verify
+entirely; CONFIRMED already persists the obligation as a settled residual
+that review, not verify, accounts for -- or it would let an open, still-
+unsettled filing change verify's OWN judgment of whether the criteria are
+met. The second of those is exactly what `task-verify.md`'s "trusting nothing
+the worker wrote about its own work" doctrine and the PRD's standing
+prohibition against a weakened guard both forbid: an open petition is itself
+a claim the worker made about its own obligation, and softening or holding a
+rejection on the strength of that unsettled claim -- before an adjudicator has
+ever ruled on it -- is the guard-weakening both documents already rule out.
+
 ## Where duplicate detection lives, and what pins it
 
 Both duplicate cases above are detected **engine-side**, never in the run's

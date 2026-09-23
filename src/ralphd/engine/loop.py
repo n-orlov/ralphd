@@ -15708,6 +15708,26 @@ class LoopSupervisor:
         "a report is a claim, the file is the fact" discipline
         `_apply_reported_task_status` already uses for review/reflect.
 
+        Task 014 (requirement E.7, #212): this method deliberately carries
+        no petition awareness of its own -- a decision, not an omission; the
+        reasoning and citations live in `docs/petition-format.md`'s "Verify's
+        own awareness of an open filing" section. In short: this method's
+        sole call site (the `pending_verify` loop in `_step_worker`) never
+        runs it without `_maybe_run_midrun_adjudication_episode` having
+        already run, unconditionally, immediately before, scoped to every
+        open petition in the run -- so a task can never reach a second call
+        here while an open, unadjudicated filing on the same obligation
+        survives from the last one (the #212 shape: four re-rejections on
+        the same ground, a 48-hour run ending unverified because the
+        adjudication it needed could never arrive -- the actual defect,
+        E.1-E.5, was that the filing was silently dropped BEFORE this
+        seam ever saw it). Adding petition awareness here on top of that
+        seam would either duplicate what it already decides (REFUTED ->
+        `failed`, bypassing verify; CONFIRMED -> a residual review, not
+        verify, accounts for) or let an unsettled worker claim soften
+        verify's own judgment -- exactly what this method's "trusting
+        nothing the worker wrote about its own work" doctrine forbids.
+
         A reply whose last line is not a well-formed `verify` contract
         payload for THIS task (absent, malformed JSON, a schema violation,
         a `task_id` naming some other task, or a `rejected` verdict with no

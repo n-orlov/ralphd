@@ -623,8 +623,18 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # both tiers, exactly like the module's own pre-existing nodes.
     # Measured with `.venv/bin/python -m pytest -q -m <tier>
     # --collect-only` at this commit's own tip.
-    "fast": {"tests": 6115, "modules": 408},
-    "smoke": {"tests": 4445, "modules": 290},
+    # task 014 (v0.25 requirement E.7, #212): fast 6115 -> 6121, smoke 4445
+    # -> 4451 (+6 tests, +1 module each) for tests/test_verify_petition_
+    # awareness_decision.py -- the decision-record pins (the decline
+    # heading's own decision line, its #212 measured-cost citation, its
+    # ordering-guarantee citation, and the same three echoed off `_verify_
+    # task`'s own docstring). No `docker`/`browser`/process-boundary
+    # fixture (a plain `docs/petition-format.md` grep plus `inspect.
+    # getdoc(LoopSupervisor._verify_task)`), so the new module sorts into
+    # both tiers. Measured with `.venv/bin/python -m pytest -q -m <tier>
+    # --collect-only` at this commit's own tip.
+    "fast": {"tests": 6121, "modules": 409},
+    "smoke": {"tests": 4451, "modules": 291},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
