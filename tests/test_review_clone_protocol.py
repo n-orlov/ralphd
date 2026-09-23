@@ -71,6 +71,31 @@ def _norm(text: str) -> str:
     return " ".join(text.split())
 
 
+# The words the rendered block puts immediately AFTER the value, used to cut
+# the rendered field out of the block.
+_RENDERED_TAIL = " is the command the hat runs"
+
+
+def _rendered_protocol(prompt: str) -> str:
+    """The protocol exactly as the block's own field renders it.
+
+    Task 011 (D.2 audit) found that asserting the value merely appears
+    *somewhere* in the prompt is not a probe for "rendered verbatim": the
+    block's explanatory prose carries the literal worked example
+    ``ci/review.sh --smoke`` a few lines below the field itself, so a
+    mutation that re-quotes or wraps the real value leaves such an
+    assertion green on the static sentence. This reads the field and
+    nothing else -- the run of text between the heading and
+    `_RENDERED_TAIL` -- so re-quoting it, wrapping it in a shell
+    invocation or appending a token to it all show up as an inequality.
+    """
+    assert BLOCK_HEADING in prompt, prompt
+    block = _norm(prompt.split(BLOCK_HEADING, 1)[1])
+    field, sep, _ = block.partition(_RENDERED_TAIL)
+    assert sep, block
+    return field
+
+
 # --------------------------------------------------------------------------
 # JobConfig: the job.yaml key, and the default that keeps every existing run
 # --------------------------------------------------------------------------
@@ -316,9 +341,13 @@ def test_a_value_with_arguments_survives_start_to_job_yaml_to_resume_to_rendered
             Path(td),
             review_clone_protocol=cfg.review_clone_protocol).build_prompt(
                 "review")
-    # verbatim: the exact backtick-quoted command line, argument intact,
-    # with nothing dropped, re-split or re-quoted.
-    assert f"`{GO_PROTOCOL_WITH_ARGS}`" in prompt
+    # verbatim: the block's own field is the exact backtick-quoted command
+    # line, argument intact, with nothing dropped, re-split, re-quoted or
+    # wrapped. Read the FIELD, not the whole prompt -- the block's prose
+    # names `ci/review.sh --smoke` as a worked example, so an `in prompt`
+    # check here would pass on that static sentence no matter how (or
+    # whether) the real value was rendered.
+    assert _rendered_protocol(prompt) == f"`{GO_PROTOCOL_WITH_ARGS}`", prompt
     assert "`ci/review.sh`" not in prompt
 
 
@@ -333,7 +362,7 @@ def test_an_existing_bare_path_value_still_renders_exactly_as_it_does_today(
             Path(td), review_clone_protocol=PROTOCOL).build_prompt("review")
     assert BLOCK_HEADING in prompt
     block = _norm(prompt.split(BLOCK_HEADING, 1)[1])
-    assert f"`{PROTOCOL}`" in block
+    assert _rendered_protocol(prompt) == f"`{PROTOCOL}`", prompt
     assert "is the command the hat runs, verbatim, inside the" in block
     assert "no further authorization, task or amendment" in block
     assert "exit 0" in block
