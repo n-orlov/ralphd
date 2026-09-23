@@ -3780,14 +3780,82 @@ class LoopSupervisor:
                 # returned describes the teardown, not the reflection.
                 self._record_reflect_not_attempted(attempted=True)
             else:
-                # Task 017 (requirement Q, #96): give an unparseable/
-                # malformed reflect payload the same re-ask ladder every
-                # other contract site has, BEFORE `_record_reflect_outcome`
-                # ever reads it as a failure -- see `_reflect_contract_
-                # ladder`'s own docstring for the REFLECT_TAIL_TIMEOUT_S
-                # bound and the v0.12 requirement G guarantee it preserves.
-                result = await self._reflect_contract_ladder(result)
+                # Task 006 (PRD requirement C.1, #211): `_iteration_cut_
+                # short_by_engine` gates the ladder call here exactly as it
+                # already does at every other hat-driving call site
+                # (`_step_generic_hat`'s `:4762`, `_review_interrupted`'s
+                # `:10658`/`:10363`, planning's `:6826`) -- an interrupted,
+                # timed-out or no-traffic reflect attempt never reaches
+                # `enforce_contract` at all, so it can never emit `contract.
+                # agent_fault` (`contract_enforcement.EVENT_AGENT_FAULT`)
+                # over output the harness itself truncated. Before this
+                # task the only guards ahead of `_reflect_contract_ladder`
+                # were `result is None` and a missing report file (both
+                # still live, inside the ladder itself, for the ordinary
+                # success path) -- an engine-side cutoff with a STALE report
+                # already on disk from an earlier attempt fell straight into
+                # `enforce_contract`'s re-ask loop over truncated/empty
+                # output, and its eventual exhaustion emitted `contract.
+                # agent_fault` for a harness kill nobody committed.
+                #
+                # `_record_reflect_engine_cutoff` below only emits the naming
+                # event; the fault-class split itself (REFLECT_FAULT_FATAL,
+                # spelled nothing like "contract.agent_fault") is already
+                # `_reflect_failure`'s job (task 014, #87) and needs no
+                # change -- `_record_reflect_outcome` runs unconditionally
+                # either way, exactly as before this task.
+                if result is not None and self._iteration_cut_short_by_engine(result):
+                    self._record_reflect_engine_cutoff(result)
+                else:
+                    # Task 017 (requirement Q, #96): give an unparseable/
+                    # malformed reflect payload the same re-ask ladder every
+                    # other contract site has, BEFORE `_record_reflect_outcome`
+                    # ever reads it as a failure -- see `_reflect_contract_
+                    # ladder`'s own docstring for the REFLECT_TAIL_TIMEOUT_S
+                    # bound and the v0.12 requirement G guarantee it preserves.
+                    result = await self._reflect_contract_ladder(result)
                 self._record_reflect_outcome(result)
+
+    def _record_reflect_engine_cutoff(self, result: IterationResult) -> None:
+        """Task 006 (PRD requirement C.1/C.2, #211): names, on `events.
+        jsonl`, WHICH of `_iteration_cut_short_by_engine`'s four boolean
+        checks fired for this reflect attempt, and the clock this reflect
+        call was actually dispatched against
+        (`REFLECT_TAIL_TIMEOUT_S`, with its own value) -- so a reader never
+        has to infer, from `contract.agent_fault`'s absence alone, that a
+        harness kill and not a misbehaving agent is what happened here.
+        `attempts 1 and 2 in the v0.22 record were malformed JSON (Expecting
+        value at line 1 column 1) -- the signature of *empty* output, i.e.
+        of a process that was killed, not of a misbehaving agent` (PRD C.2).
+
+        Deliberately does nothing else: no fault-class decision (that is
+        `_reflect_failure`'s job, already correct per task 014/#87 --
+        `REFLECT_FAULT_FATAL`, spelled nothing like `contract.agent_fault`)
+        and no touch of `state`/`verdict`/`reason` (C.7 -- those are already
+        settled by `_finish()`/`_promote_finishing_state()` strictly before
+        `_run_reflection` is ever called). Called only from the branch in
+        `_run_reflection` that skips `_reflect_contract_ladder` entirely;
+        `_record_reflect_outcome` (called unconditionally right after, both
+        here and on the ordinary path) still does the actual status.json/
+        tombstone bookkeeping via `_reflect_failure`, unchanged by this
+        task.
+        """
+        if result.timed_out:
+            reason = "timed_out"
+        elif result.no_traffic_timeout:
+            reason = "no_traffic_timeout"
+        elif result.interrupted:
+            reason = "interrupted"
+        else:
+            reason = "exit_code"
+        log.warning(
+            "reflect iteration cut short by the engine (%s) before the "
+            "contract ladder ever ran -- clock REFLECT_TAIL_TIMEOUT_S=%s",
+            reason, self.REFLECT_TAIL_TIMEOUT_S)
+        self.run.emit("reflect_engine_cutoff", reason=reason,
+                      clock="REFLECT_TAIL_TIMEOUT_S",
+                      clock_value=self.REFLECT_TAIL_TIMEOUT_S,
+                      exit_code=result.exit_code)
 
     def _reflect_skipped_reason(self, attempted: bool) -> str:
         """Why no reflection verdict exists, for a run whose engine was

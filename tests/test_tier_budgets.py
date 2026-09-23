@@ -555,8 +555,18 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # tests/test_startup_watchdog_cpu_progress.py's own nodes), so it sorts
     # into both tiers. Measured with `.venv/bin/python -m pytest -q -m
     # <tier> --collect-only` at this commit's own tip.
-    "fast": {"tests": 6083, "modules": 406},
-    "smoke": {"tests": 4414, "modules": 288},
+    # task 006 (v0.25 requirement C.1/C.2, #211): fast 6083 -> 6085, smoke
+    # 4414 -> 4416 (+2 tests, +1 module each) for
+    # tests/test_reflect_engine_cutoff.py -- the two `_iteration_cut_
+    # short_by_engine` reflect-gate probes (a tail-timeout kill that skips
+    # the ladder/agent_fault path entirely, and the unchanged ordinary
+    # success path). No `docker`/`browser`/process-boundary fixture (pure
+    # `asyncio.run(sup._run_reflection())` against a stubbed runner, like
+    # tests/test_reflect_tail_budget.py's own nodes), so it sorts into
+    # both tiers. Measured with `.venv/bin/python -m pytest -q -m <tier>
+    # --collect-only` at this commit's own tip.
+    "fast": {"tests": 6085, "modules": 407},
+    "smoke": {"tests": 4416, "modules": 289},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
