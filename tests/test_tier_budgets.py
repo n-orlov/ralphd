@@ -686,8 +686,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # index state assertions, so every node sorts into both tiers.
     # Measured with `.venv/bin/python -m pytest -q -m <tier>
     # --collect-only` at this task's own tip.
-    "fast": {"tests": 6159, "modules": 413},
-    "smoke": {"tests": 4485, "modules": 294},
+    # Task 022 (PRD G.4/G.9, #214): fast 6159 -> 6164, smoke 4485 -> 4490
+    # (+5 tests, +1 module each -- the five frozen-cap byte measurements
+    # land in a new module, tests/test_g4_frozen_cap_measurements.py).
+    # Measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`
+    # at this task's own tip.
+    "fast": {"tests": 6164, "modules": 414},
+    "smoke": {"tests": 4490, "modules": 295},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
