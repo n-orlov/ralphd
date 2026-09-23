@@ -848,8 +848,18 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # process-boundary fixture (a plain worker.md regex read), so all
     # seven sort into both tiers. Measured with `.venv/bin/python -m
     # pytest -q -m <tier> --collect-only` at this commit's own tip.
-    "fast": {"tests": 6257, "modules": 424},
-    "smoke": {"tests": 4564, "modules": 303},
+    # Task 033 (PRD requirement I.6, filed under the label I.5, #210): fast
+    # 6257 -> 6262, smoke 4564 -> 4569 (+5 tests, +1 module each) for
+    # tests/test_git_sink_secret_guard.py -- the five regression-coverage
+    # cases I.6 asks for in the tests/*_guard.py idiom (a leaking commit
+    # message refused, the same via --no-verify caught at the task
+    # boundary, a variable-names-only commit accepted, a token-shaped
+    # synthetic fixture accepted, the refusal text never carrying the
+    # value). No `docker`/`browser`/process-boundary fixture, so all five
+    # sort into both tiers. Measured with `.venv/bin/python -m pytest -q -m
+    # <tier> --collect-only` at this commit's own tip.
+    "fast": {"tests": 6262, "modules": 425},
+    "smoke": {"tests": 4569, "modules": 304},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
