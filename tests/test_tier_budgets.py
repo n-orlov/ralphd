@@ -663,8 +663,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # no `docker`/`browser`/process-boundary fixture, so it sorts into
     # both tiers. Measured with `.venv/bin/python -m pytest -q -m <tier>
     # --collect-only` at this task's own tip.
-    "fast": {"tests": 6131, "modules": 412},
-    "smoke": {"tests": 4457, "modules": 293},
+    # task 020 (PRD G.1/G.2/G.4/G.7/G.10, #214): fast 6131 -> 6143, smoke
+    # 4457 -> 4469 (+12 tests, +1 module each) for tests/test_collapse_index.py
+    # (11 nodes) plus one new tests/test_ingestion_lints.py parametrization
+    # for the new src/ralphd/collapse_index.py source file (that lint test's
+    # own module was already counted, so 0 extra modules from it).
+    "fast": {"tests": 6143, "modules": 413},
+    "smoke": {"tests": 4469, "modules": 294},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

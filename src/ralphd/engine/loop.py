@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import __version__
+from .. import collapse_index
 from . import contract_enforcement
 from . import contracts
 from . import findings
@@ -2602,6 +2603,16 @@ class LoopSupervisor:
                     steeringConsumed=consumed_now,
                     usage=result.usage)
         atomic_write_json(itdir / "meta.json", meta)
+        # Task 020 (PRD G.1/G.2/G.7/G.10, #214): the ONE place this
+        # iteration's own `output.jsonl` is known to be fully written --
+        # the runner has already returned, whatever it wrote is final --
+        # so this is the engine's iteration-boundary bookkeeping write for
+        # the new prefix-collapse side index (`collapse_index.py`), never
+        # a render-path write. `write_index` never raises: a failure here
+        # costs nothing more than a missing/stale index for this one
+        # iteration, which every reader already treats as an ordinary
+        # fall-back-to-scan case (G.4), never a lost iteration.
+        collapse_index.write_index(itdir)
         self._accumulate_usage(result.usage, phase=phase, approach=meta.get("approach"),
                                tier=effective_tier)
         self.run.emit("iteration.end", number=n, phase=phase,
