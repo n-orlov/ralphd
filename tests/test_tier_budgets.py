@@ -536,8 +536,17 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # branch, tests/test_cli_status_degraded.py, a module that already
     # sorts into both tiers (no process-boundary fixture), so both
     # ceilings move together.
-    "fast": {"tests": 6077, "modules": 404},
-    "smoke": {"tests": 4408, "modules": 286},
+    # task 001 (v0.25 requirement A.1/A.2/A.3/A.4, #216/#217): fast 6077 ->
+    # 6082, smoke 4408 -> 4413 (+5 tests, +1 module each) for
+    # tests/test_lock_acquire_retry.py -- the bounded-retry `acquire_lock`
+    # probes (named-constant justification, no-sleep happy path, the two
+    # A.4 directions, and an in-process `amain()` end-to-end check). No
+    # `docker`/`browser`/process-boundary fixture (every `amain()` call is
+    # in-process, like tests/test_engine_budget_seed.py's), so it sorts
+    # into both tiers. Measured with `.venv/bin/python -m pytest -q -m
+    # <tier> --collect-only` at this commit's own tip.
+    "fast": {"tests": 6082, "modules": 405},
+    "smoke": {"tests": 4413, "modules": 287},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

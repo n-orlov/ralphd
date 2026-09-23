@@ -41,6 +41,20 @@ class RunDirLocked(Exception):
     """Raised when another live engine already holds the run dir's lock."""
 
 
+# #216 measured a predecessor engine's terminal-state -> process-exit lag at
+# 0.16-0.32 s in every condition tested, including under CPU starvation --
+# the flock is released only on process exit (see acquire_lock's docstring),
+# so a successor starting in that window used to see a false-positive
+# RunDirLocked. 2.0 s covers that measured tail by roughly an order of
+# magnitude while still failing fast (well under a human-noticeable delay)
+# against a genuinely concurrent live engine, whose lock is held for the
+# whole run rather than a brief exit tail.
+ACQUIRE_LOCK_TIMEOUT_S = 2.0
+# Small enough that the worst-case overshoot past the deadline is negligible
+# relative to ACQUIRE_LOCK_TIMEOUT_S, large enough not to busy-spin.
+ACQUIRE_LOCK_POLL_INTERVAL_S = 0.02
+
+
 class SchemaVersionTooNew(Exception):
     """Raised when a run dir's recorded schemaVersion is newer than this
     engine build knows how to run against (PRD req 18)."""
@@ -8226,17 +8240,32 @@ class RunDir:
         releases the flock automatically -- this is relied on for crash
         recovery: a killed engine never leaves a stale false-positive lock).
 
-        Raises RunDirLocked if another live process already holds it.
+        The flock is non-blocking on every individual attempt, but a failed
+        attempt is re-tried on a short sleep interval
+        (ACQUIRE_LOCK_POLL_INTERVAL_S) until ACQUIRE_LOCK_TIMEOUT_S has
+        elapsed -- this rides out a predecessor engine's own measured
+        terminal-state->exit lag (see ACQUIRE_LOCK_TIMEOUT_S's comment)
+        instead of treating that brief overlap as a genuinely locked run
+        dir. A lock that is free on the first attempt is returned
+        immediately with no sleep at all.
+
+        Raises RunDirLocked if the lock is still held once the deadline
+        passes.
         """
         fh = open(self.lock_file, "a+")  # noqa: SIM115 - kept open for process lifetime
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            fh.close()
-            raise RunDirLocked(
-                f"run dir {self.root} is locked by another live engine "
-                f"(exclusive flock held on {self.lock_file})"
-            ) from None
+        deadline = time.monotonic() + ACQUIRE_LOCK_TIMEOUT_S
+        while True:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    fh.close()
+                    raise RunDirLocked(
+                        f"run dir {self.root} is locked by another live engine "
+                        f"(exclusive flock held on {self.lock_file})"
+                    ) from None
+                time.sleep(ACQUIRE_LOCK_POLL_INTERVAL_S)
         fh.seek(0)
         fh.truncate()
         fh.write(f"{os.getpid()}\n")
