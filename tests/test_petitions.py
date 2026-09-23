@@ -83,6 +83,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import subprocess
 from pathlib import Path
 
@@ -99,6 +100,10 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.petitions import (
     PETITION_CLASSIFIED_AS_HISTORY_EVENT,
+    PETITION_FILE_UNPARSEABLE_EVENT,
+    PETITION_TYPE_REFUSED_EVENT,
+    PETITION_TYPES,
+    PETITIONS_PATHS_READ_EVENT,
     read_adjudications,
     read_confirmed_adjudications,
     record_confirmed_adjudications,
@@ -1477,7 +1482,14 @@ def test_a_history_drop_emits_an_event_naming_the_filing(tmp_path):
 def test_a_kept_filing_emits_no_history_event(tmp_path):
     """The no-op contract this module's other event emitters already
     keep: a filing that resolves against an anchor stays open and costs
-    no history event -- `events.jsonl` is never even created."""
+    no history event. Task 013 (requirement E.5, #212) added a SECOND,
+    orthogonal event on this same call -- `PETITIONS_PATHS_READ_EVENT`,
+    recording which paths were read regardless of outcome -- so
+    `events.jsonl` is no longer empty on this path; the claim this test
+    actually makes (no *history* event) is asserted on that event type
+    specifically, exactly as `test_a_history_drop_emits_an_event_naming_
+    the_filing` above already asserts on its own type rather than on the
+    whole file."""
     ws = tmp_path / "ws"
     _write(ws, "v0.19-petitions.md",
            "# v0.19 petitions\n" +
@@ -1489,7 +1501,9 @@ def test_a_kept_filing_emits_no_history_event(tmp_path):
         ws, CURRENT_CONTRACT, tasks=tasks, run=run)
 
     assert len(found) == 1
-    assert not (run.root / "events.jsonl").exists()
+    events = [json.loads(x) for x in
+              (run.root / "events.jsonl").read_text().splitlines() if x.strip()]
+    assert not [e for e in events if e["type"] == PETITION_CLASSIFIED_AS_HISTORY_EVENT]
 
 
 def test_a_history_drop_with_no_run_still_drops_but_emits_nothing(tmp_path):
@@ -1507,6 +1521,188 @@ def test_a_history_drop_with_no_run_still_drops_but_emits_nothing(tmp_path):
         ws, CURRENT_CONTRACT, tasks=tasks, run=None)
 
     assert found == []
+
+
+# ---------------------------------------------------------------------------
+# Task 013 (requirement E.3/E.4/E.5, #212): an out-of-vocabulary Type is
+# refused loudly; a file that plainly looks like a petition but parses to
+# zero entries warns naming the file and the section; every petitions path
+# this module reads is recorded at the adjudication points it reaches.
+# ---------------------------------------------------------------------------
+
+def test_an_out_of_vocabulary_type_is_refused_loudly_by_logger(caplog):
+    """E.3: a section whose `**Type**` names a value outside
+    `PETITION_TYPES` is refused with a WARNING naming the value it
+    carried and the five accepted values -- asserted on the LOGGED TEXT
+    itself, never on a bare `len(...) == 0`."""
+    text = ("# some wave's petitions\n\n"
+            "## Petition: an obligation\n\n"
+            "**Obligation**: something impossible\n"
+            "**Type**: impossibility\n"
+            "**Evidence**: some evidence\n")
+
+    with caplog.at_level(logging.WARNING):
+        found = petitions.parse_petitions(text)
+
+    assert found == []
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "impossibility" in messages
+    for accepted in PETITION_TYPES:
+        assert accepted in messages
+
+
+def test_an_out_of_vocabulary_type_emits_an_event_with_run(tmp_path):
+    """The same refusal, this time with a `run` handle in hand: a
+    `PETITION_TYPE_REFUSED_EVENT` names the invalid value, the accepted
+    vocabulary and the obligation -- read back from `events.jsonl`
+    itself, never inferred from a zero count."""
+    run = RunDir(root=tmp_path / "run")
+    text = ("# some wave's petitions\n\n"
+            "## Petition: an obligation\n\n"
+            "**Obligation**: something impossible\n"
+            "**Type**: not-a-real-type\n"
+            "**Evidence**: some evidence\n")
+
+    found = petitions.parse_petitions(text, run=run, source="a-wave-petitions.md")
+
+    assert found == []
+    events = [json.loads(x) for x in
+              (run.root / "events.jsonl").read_text().splitlines() if x.strip()]
+    refusals = [e for e in events if e["type"] == PETITION_TYPE_REFUSED_EVENT]
+    assert len(refusals) == 1
+    assert refusals[0]["value"] == "not-a-real-type"
+    assert set(refusals[0]["accepted"]) == set(PETITION_TYPES)
+    assert refusals[0]["obligation"] == "something impossible"
+    assert refusals[0]["source"] == "a-wave-petitions.md"
+
+
+def test_a_valid_type_never_triggers_the_refusal_event(tmp_path):
+    """The no-op contract: an ordinary, in-vocabulary petition triggers
+    neither the type-refusal nor the unparseable-file event -- no event
+    at all, so `events.jsonl` is never even created."""
+    run = RunDir(root=tmp_path / "run")
+    text = "# a wave's petitions\n" + _section("an ordinary obligation")
+
+    found = petitions.parse_petitions(text, run=run, source="fine.md")
+
+    assert len(found) == 1
+    assert not (run.root / "events.jsonl").exists()
+
+
+def test_a_zero_entry_parse_that_looks_like_a_petition_warns_naming_the_file(
+        caplog):
+    """E.4: a heading plus at least one recognised field label, but zero
+    parsed entries (here: no `**Type**` field at all, so nothing anchors
+    it as a petition), emits a warning naming the file and the first
+    section it could not parse -- asserted on that text, not on the zero
+    count alone."""
+    text = ("# v0.99 petitions\n\n"
+            "## Petition: an untyped obligation\n\n"
+            "**Obligation**: something\n"
+            "**Evidence**: some evidence\n")
+
+    with caplog.at_level(logging.WARNING):
+        found = petitions.parse_petitions(text, source="v0.99-petitions.md")
+
+    assert found == []
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "v0.99-petitions.md" in messages
+    assert "an untyped obligation" in messages
+
+
+def test_a_genuinely_empty_file_never_warns(caplog):
+    """The no-op contract for E.4: a file with no heading and no field
+    label at all (the ordinary 'no petitions filed yet' case) never
+    warns -- there is nothing that looks like a dropped petition here."""
+    with caplog.at_level(logging.WARNING):
+        found = petitions.parse_petitions("", source="empty.md")
+
+    assert found == []
+    assert not caplog.records
+
+
+def test_a_type_refusal_suppresses_the_redundant_unparseable_warning(caplog):
+    """When the ONLY reason a file parses to zero entries is the
+    out-of-vocabulary `Type` E.3 already refused loudly, E.4's generic
+    'could not parse' warning does not also fire for the same section --
+    one specific, actionable warning, not two competing ones."""
+    text = ("# a wave's petitions\n\n"
+            "## Petition: an obligation\n\n"
+            "**Obligation**: something\n"
+            "**Type**: impossibility\n"
+            "**Evidence**: some evidence\n")
+
+    with caplog.at_level(logging.WARNING):
+        found = petitions.parse_petitions(text, source="dup.md")
+
+    assert found == []
+    assert len(caplog.records) == 1
+    assert "impossibility" in caplog.records[0].getMessage()
+
+
+def test_paths_read_event_names_a_workspace_file_never_opened(tmp_path):
+    """E.5: when the current wave's file does not exist on disk at all,
+    the recorded event says so explicitly (`workspaceOpened=False`) --
+    distinguishable from a file that was opened and found empty."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    run = RunDir(root=tmp_path / "run")
+
+    found = petitions.open_petitions_in_workspace(ws, CURRENT_CONTRACT, run=run)
+
+    assert found == []
+    events = [json.loads(x) for x in
+              (run.root / "events.jsonl").read_text().splitlines() if x.strip()]
+    reads = [e for e in events if e["type"] == PETITIONS_PATHS_READ_EVENT]
+    assert len(reads) == 1
+    assert reads[0]["workspaceOpened"] is False
+    assert reads[0]["workspaceEmpty"] is False
+    assert reads[0]["runOpened"] is False
+
+
+def test_paths_read_event_distinguishes_opened_and_empty_from_never_opened(
+        tmp_path):
+    """The other half of E.5's own claim: a workspace file that EXISTS but
+    is empty is recorded as `workspaceOpened=True, workspaceEmpty=True` --
+    a different, more specific fact than "never opened" above, read back
+    from the SAME event field shape."""
+    ws = tmp_path / "ws"
+    _write(ws, "v0.19-petitions.md", "")
+    run = RunDir(root=tmp_path / "run")
+
+    found = petitions.open_petitions_in_workspace(ws, CURRENT_CONTRACT, run=run)
+
+    assert found == []
+    events = [json.loads(x) for x in
+              (run.root / "events.jsonl").read_text().splitlines() if x.strip()]
+    reads = [e for e in events if e["type"] == PETITIONS_PATHS_READ_EVENT]
+    assert len(reads) == 1
+    assert reads[0]["workspaceOpened"] is True
+    assert reads[0]["workspaceEmpty"] is True
+    assert reads[0]["workspacePath"].endswith("v0.19-petitions.md")
+
+
+def test_paths_read_event_fires_at_the_review_context_adjudication_point(
+        tmp_path):
+    """E.5 names "the adjudication points it reaches" -- `petitions_
+    review_context` (the review-prompt call site) is one of the two real
+    ones in this module, and it reaches `open_petitions_in_workspace`
+    without the caller ever calling that function by name, so the
+    recorded paths must appear here too."""
+    ws = tmp_path / "ws"
+    _write(ws, "v0.19-petitions.md",
+           "# v0.19 petitions\n" + _section("an open obligation"))
+    run = RunDir(root=tmp_path / "run")
+
+    context = petitions.petitions_review_context(ws, run, contract_text=CURRENT_CONTRACT)
+
+    assert "an open obligation" in context
+    events = [json.loads(x) for x in
+              (run.root / "events.jsonl").read_text().splitlines() if x.strip()]
+    reads = [e for e in events if e["type"] == PETITIONS_PATHS_READ_EVENT]
+    assert len(reads) == 1
+    assert reads[0]["workspaceOpened"] is True
+    assert reads[0]["workspaceEmpty"] is False
 
 
 # The requirement-letter anchor (`test_an_obligation_naming_a_requirement_

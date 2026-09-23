@@ -609,8 +609,22 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # history-filter nodes), so all eight sort into both tiers. Measured
     # with `.venv/bin/python -m pytest -q -m <tier> --collect-only` at
     # this commit's own tip.
-    "fast": {"tests": 6106, "modules": 408},
-    "smoke": {"tests": 4436, "modules": 290},
+    # task 013 (v0.25 requirement E.3/E.4/E.5, #212): fast 6106 -> 6115,
+    # smoke 4436 -> 4445 (+9 tests, 0 new modules) for the out-of-
+    # vocabulary Type refusal (logger + event, plus the in-vocabulary
+    # no-op control), the zero-entries-but-looks-like-a-petition warning
+    # (plus its genuinely-empty no-op and its suppression when a Type
+    # refusal already fired for the same section) and the recorded-paths
+    # event (never-opened, opened-and-empty, and the review-context
+    # adjudication-point path), all in tests/test_petitions.py. Every new
+    # node is an in-process RunDir/petitions.parse_petitions/open_
+    # petitions_in_workspace/petitions_review_context call with no
+    # docker/browser/process-boundary fixture, so all nine sort into
+    # both tiers, exactly like the module's own pre-existing nodes.
+    # Measured with `.venv/bin/python -m pytest -q -m <tier>
+    # --collect-only` at this commit's own tip.
+    "fast": {"tests": 6115, "modules": 408},
+    "smoke": {"tests": 4445, "modules": 290},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

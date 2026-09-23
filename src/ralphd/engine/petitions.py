@@ -91,11 +91,21 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
+
+# Task 013 (requirement E.3/E.4, #212): the one logger this module ever
+# gets. Every pre-existing function in this file emits its evidence
+# either through `run.emit` (an opt-in `run` handle) or not at all; the
+# two new refusal/warning paths below are LOUD unconditionally (they run
+# whether or not a caller ever threads a `run` handle through), so they
+# also need a channel that exists with no `run` in hand at all -- the
+# standard library logger, at `WARNING`, is that channel.
+logger = logging.getLogger(__name__)
 
 # The five petition types `docs/petition-format.md` enumerates (task 004,
 # requirement A.1, #114 added `self-referential` to the original four). A
@@ -127,7 +137,53 @@ def _sections(text: str) -> list[str]:
     return sections
 
 
-def parse_petitions(text: str) -> list[dict]:
+# Task 013 (requirement E.3, #212): emitted (when a `run` handle is given)
+# for every section whose `**Type**` field IS present but names a value
+# outside `PETITION_TYPES` -- the loud counterpart to the silent
+# `continue` this module used to take on that exact input
+# (`**Type**: impossibility` used to parse to zero entries with no trace
+# at all). Never emitted for a section with NO `Type` field whatsoever
+# (the file's own title/intro heading, which is not a refused petition,
+# it is not a petition section to begin with).
+PETITION_TYPE_REFUSED_EVENT = "petition_type_refused"
+
+# Task 013 (requirement E.4, #212): emitted (when a `run` handle is given)
+# once per `parse_petitions` call whose result is EMPTY while the text it
+# was given plainly looks like it contains a petition -- a heading plus at
+# least one recognised `**Field**` label -- so a file that fails to parse
+# for some reason OTHER than an out-of-vocabulary `Type` (a typo'd field
+# name, a missing bold marker, ...) is never silently zero either. Not
+# emitted when `PETITION_TYPE_REFUSED_EVENT` already fired for the same
+# call -- that case already has its own, more specific, loud refusal.
+PETITION_FILE_UNPARSEABLE_EVENT = "petition_file_unparseable"
+
+
+def _looks_like_a_petition(text: str) -> bool:
+    """True when `text` contains at least one markdown heading AND at
+    least one recognised `**Field**` label somewhere in it -- E.4's own
+    test for "plainly containing a petition" even though it parsed to
+    zero entries. A file with no heading at all, or no recognised field
+    label anywhere, is not this case -- it is simply not shaped like a
+    petitions file, and warning about it would be noise."""
+    return bool(_HEADING_RE.search(text)) and bool(_FIELD_RE.search(text))
+
+
+def _first_unparsed_section_heading(text: str) -> str:
+    """The heading text of the FIRST section in `text` that carries a
+    recognised field label -- E.4's "the first section it could not
+    parse", named in the warning so a reader knows where to look instead
+    of re-deriving it from the whole file."""
+    for section in _sections(text):
+        if not _FIELD_RE.search(section):
+            continue
+        heading_match = _HEADING_RE.match(section)
+        if heading_match:
+            return heading_match.group(0).lstrip("#").strip()
+        return section.strip().splitlines()[0] if section.strip() else ""
+    return ""
+
+
+def parse_petitions(text: str, *, run=None, source: str | None = None) -> list[dict]:
     """Every petition section in `text` (one `<wave>-petitions.md` file's
     content), each rendered as a dict with `obligation`, `type`,
     `evidence`, `adjudication` (`None`, `"CONFIRMED"` or `"REFUTED"`) and
@@ -136,19 +192,59 @@ def parse_petitions(text: str) -> list[dict]:
     petition only if it declares a recognised `Type` -- this is what
     tells a petition section apart from the file's own title/intro
     heading, which names none of `PETITION_TYPES`.
+
+    Task 013 (requirement E.3/E.4, #212): a section that DOES carry a
+    `**Type**` field, naming a value outside `PETITION_TYPES`, used to
+    take the exact same silent `continue` a title/intro heading takes --
+    indistinguishable from "there was never a petition here" on the
+    outside. That value is refused LOUDLY instead: a `logger.warning` (so
+    this fires with no `run` in hand at all) naming the value it carried
+    and the five accepted values verbatim, plus -- when `run` is given --
+    a `PETITION_TYPE_REFUSED_EVENT`. Separately, when the WHOLE call
+    returns empty while `text` plainly looks like it holds a petition (a
+    heading plus a recognised field label) for some OTHER reason, a
+    second warning/event (`PETITION_FILE_UNPARSEABLE_EVENT`) names
+    `source` (when given) and the first section that would not parse.
+    `source`, optional, is a human-readable label (typically the file
+    path) for both of these messages -- omitted, both still fire, just
+    without naming a file.
+
+    Explicitly OUT OF SCOPE (PRD E.6, #212's own second defect, corrected
+    by the operator's own comment on the issue): making the labelled
+    `**Field**` format itself more parseable. It already is -- `_FIELD_RE`
+    has matched `Obligation`/`Type`/`Evidence`/`Adjudication` since before
+    this wave started, and a hand-written file in that shape parses to 1
+    entry today, unchanged by this task. Nothing below touches `_FIELD_RE`
+    or `_sections`.
     """
     petitions = []
+    type_refused = False
     for section in _sections(text):
         fields: dict[str, str] = {}
         for m in _FIELD_RE.finditer(section):
             name = m.group(1).lower()
             fields.setdefault(name, m.group(2).strip())
-        ptype = fields.get("type", "").strip().lower()
-        if ptype not in PETITION_TYPES:
-            continue
         heading_match = _HEADING_RE.match(section)
         heading_text = (heading_match.group(0).lstrip("#").strip()
                          if heading_match else "")
+        raw_type = fields.get("type")
+        ptype = (raw_type or "").strip().lower()
+        if raw_type is not None and ptype not in PETITION_TYPES:
+            obligation = fields.get("obligation", "").strip() or heading_text
+            where = f" in {source}" if source else ""
+            logger.warning(
+                "petition Type %r%s is not one of the accepted petition "
+                "types %s -- refusing this section rather than silently "
+                "parsing it to zero entries (obligation: %s)",
+                raw_type, where, PETITION_TYPES, obligation or "<untitled>")
+            if run is not None:
+                run.emit(PETITION_TYPE_REFUSED_EVENT,
+                         value=raw_type, accepted=list(PETITION_TYPES),
+                         obligation=obligation, source=source)
+            type_refused = True
+            continue
+        if ptype not in PETITION_TYPES:
+            continue
         obligation = fields.get("obligation", "").strip() or heading_text
         adjudication_raw = fields.get("adjudication", "").strip()
         adjudication = None
@@ -167,13 +263,27 @@ def parse_petitions(text: str) -> list[dict]:
             "adjudication": adjudication,
             "remedy": remedy,
         })
+    if not petitions and not type_refused and _looks_like_a_petition(text):
+        first_section = _first_unparsed_section_heading(text)
+        where = f"{source}" if source else "<text given with no source>"
+        logger.warning(
+            "petitions file %s parsed to zero entries but contains a "
+            "heading and a recognised field label -- first section it "
+            "could not parse: %r", where, first_section)
+        if run is not None:
+            run.emit(PETITION_FILE_UNPARSEABLE_EVENT,
+                     source=source, section=first_section)
     return petitions
 
 
-def open_petitions(text: str) -> list[dict]:
+def open_petitions(text: str, *, run=None, source: str | None = None) -> list[dict]:
     """The subset of `parse_petitions(text)` nobody has adjudicated yet --
-    the ones review must actually rule on this pass."""
-    return [p for p in parse_petitions(text) if p["adjudication"] is None]
+    the ones review must actually rule on this pass. `run`/`source`
+    (task 013, requirement E.3/E.4, #212) pass straight through to
+    `parse_petitions` unchanged; both default to backward-compatible
+    values so every pre-existing caller is unaffected."""
+    return [p for p in parse_petitions(text, run=run, source=source)
+            if p["adjudication"] is None]
 
 
 def discover_petition_files(workspace: Path) -> list[Path]:
@@ -521,6 +631,22 @@ def _obligation_is_history(obligation: str, task_ids: set[str],
     return True
 
 
+# Task 013 (requirement E.5, #212): emitted (when a `run` handle is given)
+# once per `open_petitions_in_workspace` call, naming BOTH paths this
+# function ever reads from -- the workspace's current-wave candidate and
+# the run-dir file -- and, for each, whether it was actually OPENED and,
+# if opened, whether its content was EMPTY. `*Opened=False` means "this
+# path was never opened at all" (no file exists there, or the current-
+# wave lookup never resolved a current file); `*Opened=True, *Empty=True`
+# means "opened, and had nothing to read" -- the exact two facts E.5
+# wants distinguished, as two different fields on one event rather than
+# one collapsed boolean. `open_unconfirmed_petitions`/`petitions_review_
+# context` -- the two real adjudication points this module has, review's
+# own verdict call and the bounded mid-run adjudication episode -- both
+# route through this function, so both get this record for free.
+PETITIONS_PATHS_READ_EVENT = "petitions_paths_read"
+
+
 def open_petitions_in_workspace(
         workspace: Path, contract_text: str = "",
         tasks: list[dict] | None = None, run=None) -> list[dict]:
@@ -573,6 +699,15 @@ def open_petitions_in_workspace(
     as it always was, matching every other optional-`run` caller in this
     module.
 
+    Task 013 (requirement E.3/E.4/E.5, #212): every read this function
+    ever attempts now runs through `open_petitions`/`parse_petitions` with
+    `run`/`source` threaded through -- an out-of-vocabulary `Type`, or a
+    file that plainly looks like a petition but parses to zero entries
+    for some other reason, is never silent any more -- and, when `run` is
+    given, emits ONE `PETITIONS_PATHS_READ_EVENT` naming both paths this
+    function reads from and, for each, whether it was opened and whether
+    it was empty.
+
     A file that cannot be read (permissions, a race with a concurrent
     write) costs nothing more than itself, the same posture
     `_apply_operator_status_rulings` takes for a broken amendments mount:
@@ -580,14 +715,35 @@ def open_petitions_in_workspace(
     _default_path, current_file = _current_wave_petitions_path(
         workspace, contract_text)
     found: list[dict] = []
+    ws_text = ""
+    ws_opened = False
     if current_file is not None:
         try:
-            found.extend(open_petitions(current_file.read_text()))
+            ws_text = current_file.read_text()
+            ws_opened = True
         except OSError:
             pass
-    run_text = _read_run_petitions_text(run)
-    if run_text:
-        found.extend(open_petitions(run_text))
+    if ws_opened:
+        found.extend(open_petitions(ws_text, run=run, source=str(current_file)))
+    run_path = _run_petitions_file(run)
+    run_text = ""
+    run_opened = False
+    if run_path is not None:
+        try:
+            run_text = run_path.read_text()
+            run_opened = True
+        except OSError:
+            pass
+    if run_opened and run_text:
+        found.extend(open_petitions(run_text, run=run, source=str(run_path)))
+    if run is not None:
+        run.emit(PETITIONS_PATHS_READ_EVENT,
+                 workspacePath=str(current_file or _default_path),
+                 workspaceOpened=ws_opened,
+                 workspaceEmpty=ws_opened and not ws_text.strip(),
+                 runPath=str(run_path) if run_path is not None else None,
+                 runOpened=run_opened,
+                 runEmpty=run_opened and not run_text.strip())
     if tasks and found:
         task_ids = {str(t.get("id")) for t in tasks
                     if isinstance(t, dict) and t.get("id") is not None}
