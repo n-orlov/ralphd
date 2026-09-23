@@ -4,10 +4,11 @@
 The PRD's own description of this defect ("`_render_message_end` consumes
 `text_seen` at the first substantive text item, so one `message_end`
 carrying two text blocks prints the second one twice") was written against
-`af0b57e2`. `git diff af0b57e2 HEAD -- src/ralphd/cli/log_render.py` is
-empty -- `_render_message_end` is byte-identical to that commit, and it
-never assigns `state["text_seen"]` anywhere, so nothing in it "consumes"
-the flag, and no combination of streamed/non-streamed text blocks this
+`af0b57e2`. `_render_message_end` is byte-identical to that commit --
+extract the function from `git show af0b57e2:src/ralphd/cli/log_render.py`
+and from the shipped file and the two bodies sha256 the same
+(`4e5c010e...`) -- and it never assigns `state["text_seen"]` anywhere, so
+nothing in it "consumes" the flag, and no combination of streamed/non-streamed text blocks this
 module's own test drove through the full renderer ever produced a literal
 duplicate line.
 
@@ -26,7 +27,18 @@ its text blocks, where it must print each of them exactly once.
 The fix: `render_log_line` now resets the three collapse flags on
 `message_start`, which was previously an unrecognized/silently-skipped
 event type. This is independent of PRD G's side index (G.1-G.7, G.9,
-G.10): no index code is touched, and this fix does not depend on it."""
+G.10): no index code is touched, and this fix does not depend on it.
+
+Erratum (task 019's second commit). Task 019's first commit `76e81f68`,
+this module's original docstring and `log_render.py`'s own comment all
+said "`git diff af0b57e2 HEAD -- src/ralphd/cli/log_render.py` is
+empty". That was measured at `76e81f68`'s parent `244e1653`, where it is
+indeed empty, but it is FALSE of `76e81f68` and of every later tip: the
+fix itself adds the 36-line `message_start` branch, so `git diff
+--numstat af0b57e2 HEAD -- src/ralphd/cli/log_render.py` reports `36 0`
+and `git diff --quiet` exits 1. The claim that survives measurement, and
+the only one made above, is the narrower one: `_render_message_end`'s own
+body is unchanged since `af0b57e2`."""
 
 import json
 

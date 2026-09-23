@@ -551,9 +551,11 @@ def render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) -
         # text this task shipped against, written against `af0b57e2`,
         # describes a DIFFERENT shape -- "consumes text_seen at the first
         # substantive text item, so ... prints the second one twice".
-        # `git diff af0b57e2 HEAD -- src/ralphd/cli/log_render.py` is
-        # empty: this function is byte-identical to that commit, and it
-        # never assigns `state["text_seen"]` at all, so nothing in it
+        # `_render_message_end` itself is byte-identical to `af0b57e2`
+        # (extract the function body from `git show
+        # af0b57e2:src/ralphd/cli/log_render.py` and from this file and
+        # the two sha256 the same, 4e5c010e...), and it never assigns
+        # `state["text_seen"]` at all, so nothing in it
         # ever "consumes" the flag or reprints anything -- a literal
         # double-print could not be reproduced against the shipped code
         # under any event sequence tried. What DOES reproduce, on demand,
