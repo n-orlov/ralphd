@@ -97,12 +97,17 @@ def _head(workspace: Path) -> str:
         capture_output=True, text=True, check=True).stdout.strip()
 
 
-def _commit(workspace: Path, name: str, content: str, message: str) -> str:
+def _commit(workspace: Path, name: str, content: str, message: str,
+           *, no_verify: bool = False) -> str:
     path = workspace / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     _git(workspace, "add", name)
-    _git(workspace, "commit", "-q", "-m", message)
+    args = ["commit", "-q"]
+    if no_verify:
+        args.append("--no-verify")
+    args += ["-m", message]
+    _git(workspace, *args)
     return _head(workspace)
 
 
@@ -147,7 +152,18 @@ def _ok(text: str) -> IterationResult:
 class _CommittingWorker:
     """A worker iteration that makes a REAL commit in the workspace before it
     returns -- the production shape of "the commits this run created", landing
-    strictly between `_step_worker`'s `head_before` and `head_after` reads."""
+    strictly between `_step_worker`'s `head_before` and `head_after` reads.
+
+    Commits `--no-verify` (task 031, PRD requirement I.1): since the very
+    same `_install_commit_scan_push_gate` call this class's own tests drive
+    through `_step_worker` now also installs the `commit-msg`/`pre-commit`
+    LOCAL hooks, a synthetic leak committed the plain way would be refused
+    right here rather than reaching git history at all -- which is a real
+    property (I.1 catches it earlier), but not the one THIS module tests
+    (the task-boundary scan, I.2, which is exactly the layer that survives
+    `--no-verify` and is meant to be exercised on a commit that already
+    exists). `tests/test_commit_hooks.py` is where the local hook's own
+    interception is pinned."""
 
     def __init__(self, workspace: Path, name: str, content: str, message: str,
                  final_text: str):
@@ -164,7 +180,8 @@ class _CommittingWorker:
 
     async def run(self, prompt, transcript, **kw) -> IterationResult:
         if self.calls == 0:
-            self.sha = _commit(self.workspace, self.name, self.content, self.message)
+            self.sha = _commit(self.workspace, self.name, self.content,
+                               self.message, no_verify=True)
         self.calls += 1
         return _ok(self.final_text)
 
@@ -532,7 +549,7 @@ class _CommittingPushingWorker(_CommittingWorker):
     async def run(self, prompt, transcript, **kw) -> IterationResult:
         if self.calls == 0:
             self.sha = _commit(self.workspace, self.name, self.content,
-                               self.message)
+                               self.message, no_verify=True)
             pushed = subprocess.run(
                 ["git", "-C", str(self.workspace), "push", "origin", "main"],
                 capture_output=True, text=True)

@@ -825,8 +825,20 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # exactly one worker iteration (no silent retry). Measured with
     # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
     # task's own tip.
-    "fast": {"tests": 6242, "modules": 422},
-    "smoke": {"tests": 4549, "modules": 301},
+    # task 031 (PRD requirement I.1, #210): fast 6242 -> 6250, smoke 4549 ->
+    # 4557 (+8 tests, +1 new module -- tests/test_commit_hooks.py) for the
+    # `commit-msg`/`pre-commit` LOCAL hooks: their engine-owned/outside-
+    # the-workspace/not-agent-writable ownership and mode, each hook's own
+    # variable-name-only refusal on a message hit and a staged-diff hit, a
+    # real `git commit` refused end-to-end, a clean commit passing both,
+    # the shared `commit_secret_scan` config field's shipped-on default
+    # (read directly and through the same install call the boundary uses),
+    # and `git commit --no-verify` bypassing both while the task-boundary
+    # scan from 029 still catches the exact same commit. Measured with
+    # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
+    # task's own tip.
+    "fast": {"tests": 6250, "modules": 423},
+    "smoke": {"tests": 4557, "modules": 302},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -6581,19 +6581,24 @@ class LoopSupervisor:
     COMMIT_SCAN_HOOKS_DIRNAME = "commit-scan-hooks"
 
     def _install_commit_scan_push_gate(self, base_sha: str | None):
-        """Install git's own `pre-push` gate for this workspace before a
-        worker iteration is spawned (task 029, PRD requirement I.2, #210).
+        """Install git's `pre-push`, `commit-msg` and `pre-commit` gates for
+        this workspace before a worker iteration is spawned (task 029, PRD
+        requirement I.2; task 031, requirement I.1; #210) -- one call, one
+        `core.hooksPath` write, all three hook files.
 
-        Why this exists in addition to `_scan_task_boundary_commits`: under
-        the shipped division of labour the WORKER pushes its own commit from
-        its own shell, DURING the iteration -- so by the time the boundary
-        reads `head_after` a leaking commit could already be on the remote,
-        irrevocably (the sink's defining property). "On a hit the run does
-        not push" therefore has to be enforced where the push is attempted,
-        which is git's `pre-push` hook, reached through an engine-owned
-        `core.hooksPath` outside the workspace and running the very same
-        `commit_scan` scanner. `git push --no-verify` bypasses it; the task
-        boundary below is the layer that survives that and records the hit.
+        Why `pre-push` exists in addition to `_scan_task_boundary_commits`:
+        under the shipped division of labour the WORKER pushes its own
+        commit from its own shell, DURING the iteration -- so by the time
+        the boundary reads `head_after` a leaking commit could already be
+        on the remote, irrevocably (the sink's defining property). "On a
+        hit the run does not push" therefore has to be enforced where the
+        push is attempted, which is git's `pre-push` hook, reached through
+        an engine-owned `core.hooksPath` outside the workspace and running
+        the very same `commit_scan` scanner. `commit-msg`/`pre-commit` catch
+        the same class of hit one step earlier still, before a leaking
+        commit is even created locally. `git commit --no-verify` / `git
+        push --no-verify` bypass all three; the task boundary below is the
+        layer that survives that and records the hit either way.
 
         Advisory posture, like its siblings: a workspace that is not a git
         repository, a missing `git`, or an unwritable hooks directory
