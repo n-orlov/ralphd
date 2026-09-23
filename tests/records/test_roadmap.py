@@ -2135,3 +2135,125 @@ def test_v014_the_deferred_list_is_unchanged_in_kind_by_this_wave():
     section = deferred_section_v014(roadmap_text_v014())
     assert "PID-namespace" in section
     assert "Publishing the Docker image" in section
+
+
+# ==========================================================================
+# v0.25 (task 039, requirement J.3/J.4 pin) -- not a full per-wave coverage
+# block like the v0.6-v0.14 ones above. Those were folded from standalone
+# `test_roadmap_v0N.py` checkers that predate `test_packaging_metadata.py`'s
+# own generic shipped-sha/coverage machinery (`_records_shipped`,
+# `_roadmap_milestones`, the `## v0.22` baseline pin); from v0.15 on, that
+# generic machinery is what checks a wave's roadmap block in general, and
+# this section only pins the handful of v0.25-specific facts task 039's own
+# criteria name: the new `## v0.25` section's naming, and the two
+# shipped-sha corrections task 036 (J.3, #169) made to the v0.23 and v0.24
+# sections.
+# ==========================================================================
+
+
+# The nine issues the `## v0.25` section's own closing sentence names as
+# answered by requirements A through I (J is the version bump/paragraph/
+# close-out itself, task 038, requirement J.2).
+ISSUES_V025 = {"210", "211", "212", "214", "215", "216", "217", "264", "265"}
+
+LETTERS_V025 = set("ABCDEFGHIJ")
+
+# The two shipped-sha corrections task 036 made (commit f0500619):
+# v0.23's line now names the tip main sat on when v0.23.0 actually shipped
+# (not the v0.24 task commit `59afb532` the block wrongly named before),
+# and v0.24's block gained a shipped-sha line it had none of at all.
+SHA_V023 = "bd94c695"
+SHA_V024 = "af0b57e2"
+
+
+def roadmap_text_v025() -> str:
+    return ROADMAP.read_text()
+
+
+def _heading_block_v025(text: str, heading_prefix: str) -> str | None:
+    """The body of the FIRST `## ...` heading whose text starts with
+    `heading_prefix`, up to the next `## ` heading of any kind (or end of
+    file). Used only for the three specific sections this pin reads (v0.23,
+    v0.24, v0.25 themselves) -- not a general per-wave coverage parser like
+    the ones above."""
+    heads = list(re.finditer(r"^## .*$", text, re.MULTILINE))
+    for i, m in enumerate(heads):
+        if m.group(0).startswith(heading_prefix):
+            end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+            return text[m.end():end]
+    return None
+
+
+def milestone_block_v025(text: str) -> str | None:
+    return _heading_block_v025(text, "## v0.25 ")
+
+
+def _v025_naming_problems(block: str) -> list[str]:
+    problems = [f"requirement {letter} is not in the v0.25 block"
+                for letter in sorted(LETTERS_V025)
+                if not re.search(rf"\*\*{letter}\*\*", block)]
+    problems += [f"the v0.25 block does not cite #{n}"
+                 for n in sorted(ISSUES_V025) if f"#{n}" not in block]
+    return problems
+
+
+def test_v025_the_block_names_requirements_a_through_j_and_the_nine_issues():
+    """Task 038 (J.2) added the `## v0.25` section; this pins that it really
+    names every requirement letter A-J and every one of the nine issues the
+    section's own closing sentence lists (#210, #211, #212, #214, #215,
+    #216, #217, #264, #265) -- the same issue -> requirement index property
+    every earlier per-wave block above is checked for."""
+    block = milestone_block_v025(roadmap_text_v025())
+    assert block is not None, "docs/roadmap.md has no `## v0.25` section"
+    assert not _v025_naming_problems(block)
+
+
+def test_v025_the_naming_check_catches_a_dropped_requirement_or_issue():
+    block = milestone_block_v025(roadmap_text_v025())
+    assert block is not None
+    # dropping a requirement letter's bold marker removes it from coverage
+    assert _v025_naming_problems(block.replace("**G** writes", "G writes"))
+    # dropping an issue citation removes it from coverage
+    assert _v025_naming_problems(block.replace("#214", "the prefix-collapse issue"))
+    # ...and the real block is not accidentally satisfying all of this by luck
+    assert not _v025_naming_problems(block)
+
+
+def test_the_v023_shipped_sha_line_names_task_036s_tip():
+    """Task 036 (J.3, #169) corrected the v0.23 block's shipped-sha claim
+    from a v0.24 task commit (`59afb532`, which shipped nothing of v0.23's)
+    to the real tip main sat on when v0.23.0 actually finished shipping
+    (`bd94c695`) -- see commit f0500619's own message for the `git log`/
+    `git merge-base --is-ancestor` evidence. Pinned here so a later edit
+    cannot quietly drift the line back."""
+    block = _heading_block_v025(roadmap_text_v025(), "## v0.23 ")
+    assert block is not None, "docs/roadmap.md has no `## v0.23` section"
+    assert f"Shipped sha `{SHA_V023}`, version 0.23.0" in block
+
+
+def test_the_v023_shipped_sha_check_catches_a_reverted_line():
+    block = _heading_block_v025(roadmap_text_v025(), "## v0.23 ")
+    assert block is not None
+    reverted = block.replace(f"`{SHA_V023}`", "`59afb532`")
+    assert f"Shipped sha `{SHA_V023}`, version 0.23.0" not in reverted
+
+
+def test_the_v024_section_carries_a_shipped_sha_line_for_0_24_0():
+    """v0.24's block had no `Shipped sha` line at all until task 036 added
+    one (`af0b57e2`, the direct parent of this run's own first commit,
+    2916847b) -- without it the block would read as unshipped by
+    `test_packaging_metadata.py`'s own `_records_shipped` parse, which reads
+    a v0.18-and-later block's shipped state off exactly this line when the
+    block carries no ✅ ticks."""
+    block = _heading_block_v025(roadmap_text_v025(), "## v0.24 ")
+    assert block is not None, "docs/roadmap.md has no `## v0.24` section"
+    assert f"Shipped sha `{SHA_V024}`, version 0.24.0" in block
+
+
+def test_the_v024_shipped_sha_check_catches_a_dropped_line():
+    block = _heading_block_v025(roadmap_text_v025(), "## v0.24 ")
+    assert block is not None
+    dropped = block.replace(
+        f"Shipped sha `{SHA_V024}`, version 0.24.0, installed host-side by the operator.",
+        "")
+    assert f"Shipped sha `{SHA_V024}`, version 0.24.0" not in dropped

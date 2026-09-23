@@ -872,8 +872,19 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # test_commit_hooks.py siblings), so all four sort into both tiers.
     # Measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`
     # at this commit's own tip.
-    "fast": {"tests": 6266, "modules": 426},
-    "smoke": {"tests": 4573, "modules": 305},
+    # Task 039 (records: pin the v0.25 roadmap section and the two
+    # shipped-sha claims, requirement J.3/J.4): fast 6266 -> 6272, smoke
+    # 4573 -> 4579 (+6 tests, 0 new modules) for the six new nodes in
+    # tests/records/test_roadmap.py's new v0.25 section (three assertions
+    # -- the new `## v0.25` block names A-J and the nine issues, the v0.23
+    # shipped-sha line names task 036's tip, the v0.24 section carries its
+    # shipped-sha line -- plus one mutation twin per assertion). No
+    # `docker`/`browser`/process-boundary fixture, so all six sort into
+    # both tiers; the module already existed, so no module ceiling moves.
+    # Measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`
+    # at this commit's own tip.
+    "fast": {"tests": 6272, "modules": 426},
+    "smoke": {"tests": 4579, "modules": 305},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
