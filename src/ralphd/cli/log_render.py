@@ -532,6 +532,42 @@ def render_log_line(raw_line: str, tty: bool, state: dict, live: bool = False) -
         state["toolcall_seen"] = True
     elif etype == "message_end":
         _render_message_end(ev.get("message") or {}, state, tty)
+    elif etype == "message_start":
+        # Task 019 (PRD G.8, #214): a real transcript's `message_start`
+        # (docs/json.md's `AgentEvent`) opens a BRAND NEW assistant
+        # message -- nothing of ITS content has been shown yet, live or
+        # otherwise. Before this branch existed, `text_seen`/
+        # `thinking_seen`/`toolcall_seen` were reset ONLY at an
+        # `ralphd.iteration` boundary, never between the several messages
+        # a single iteration commonly has (one per tool-calling round
+        # trip). The confirmable, reproducible defect that leaves: once
+        # ANY earlier message in the iteration streamed so much as one
+        # character of text, `text_seen` stays `True` for the rest of the
+        # iteration, so a LATER message whose text arrives only in its
+        # own `message_end` (no preceding `text_delta` -- e.g. a short
+        # non-streamed reply) is silently swallowed: `_render_message_end`
+        # sees `state["text_seen"]` already `True` and prints nothing at
+        # all for it, for every text block that message carries. (The PRD
+        # text this task shipped against, written against `af0b57e2`,
+        # describes a DIFFERENT shape -- "consumes text_seen at the first
+        # substantive text item, so ... prints the second one twice".
+        # `git diff af0b57e2 HEAD -- src/ralphd/cli/log_render.py` is
+        # empty: this function is byte-identical to that commit, and it
+        # never assigns `state["text_seen"]` at all, so nothing in it
+        # ever "consumes" the flag or reprints anything -- a literal
+        # double-print could not be reproduced against the shipped code
+        # under any event sequence tried. What DOES reproduce, on demand,
+        # through this exact renderer, is the drop above: a `message_end`
+        # with two fresh text blocks after an earlier message's stream
+        # renders NEITHER, where it must render both, each exactly once.)
+        # Resetting the three collapse flags here -- and ONLY here, never
+        # `text_open`/`tool_args`/`tool_pending`, which track state that
+        # is not scoped to "has this message's content been shown" --
+        # fixes exactly that gap. No existing fixture in this tree emits
+        # `message_start` at all (confirmed by grep before this change),
+        # so nothing that already passes could regress from adding a new
+        # branch for a previously-unrecognized type.
+        state.update(text_seen=False, thinking_seen=False, toolcall_seen=False)
     # everything else (unrecognized/future event types) is silently
     # skipped by design.
 

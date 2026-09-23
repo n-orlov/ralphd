@@ -655,8 +655,16 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # smoke -- confirmed directly (`-m smoke --collect-only` on this file
     # alone: 0 collected, 4 deselected). Measured with `.venv/bin/python -m
     # pytest -q -m <tier> --collect-only` at this commit's own tip.
-    "fast": {"tests": 6128, "modules": 411},
-    "smoke": {"tests": 4454, "modules": 292},
+    # task 019 (v0.25 requirement G.8, #214): fast 6128 -> 6131, smoke
+    # 4454 -> 4457 (+3 tests, +1 module each) for
+    # tests/test_log_render_message_start_resets_text_seen.py -- the
+    # `_render_message_end` drop-on-a-later-message probe (plus its two
+    # no-regression controls), all in-process render-state assertions with
+    # no `docker`/`browser`/process-boundary fixture, so it sorts into
+    # both tiers. Measured with `.venv/bin/python -m pytest -q -m <tier>
+    # --collect-only` at this task's own tip.
+    "fast": {"tests": 6131, "modules": 412},
+    "smoke": {"tests": 4457, "modules": 293},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
