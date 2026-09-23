@@ -39,6 +39,7 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
 from tests.conftest import supervisor_factory
+from tests.flows.flowlib import wait_engine_exit
 
 # Task 047 (B.4 cure): this module tests the backoff/retry schedule itself,
 # so it opts out of tests/conftest.py's autouse class-level
@@ -283,7 +284,7 @@ def test_reflect_survives_the_outage_that_killed_the_job(tmp_path):
         # the pre-reflect snapshot has to be taken there, not by waiting for
         # a terminal state that now only appears once reflect is done.
         terminal = e.wait_state(("finishing",), timeout=120)
-        assert e.proc.wait(timeout=120) == 1  # aborted == nonzero exit
+        assert wait_engine_exit(e, timeout=120) == 1  # aborted == nonzero exit
     finally:
         e.stop()
 

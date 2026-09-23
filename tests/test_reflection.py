@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import LiveRun
+from tests.flows.flowlib import wait_engine_exit
 
 
 @pytest.fixture
@@ -110,7 +111,7 @@ def test_reflect_runs_after_terminal_state_leaves_run_state_untouched(engine_fac
     # the engine process (and thus run_job(), including the reflect
     # iteration) has fully finished by the time --on-complete=exit tears
     # the server down
-    assert e.proc.wait(timeout=30) == 0
+    assert wait_engine_exit(e, timeout=30) == 0
 
     # -- run state / workspace untouched by the reflect iteration ----------
     assert _sha(tasks_before) == before_tasks_sha
@@ -134,7 +135,7 @@ def test_reflect_runs_after_terminal_state_leaves_run_state_untouched(engine_fac
 def test_reflect_absent_runs_no_extra_iteration(engine_factory):
     e = engine_factory(job={"iterations": 6, "on_complete": "exit"},
                        stub_env={"STUB_TASKS": "1"})
-    assert e.proc.wait(timeout=30) == 0
+    assert wait_engine_exit(e, timeout=30) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
     iters = sorted((e.run_dir / "iterations").iterdir())
@@ -162,7 +163,7 @@ def test_reflect_model_resolved_per_strategy(engine_factory, tmp_path):
             "model": "strong-model-x", "fast_model": "fast-model-y",
             "model_strategy": "cost-optimized"},
         stub_env={"STUB_TASKS": "1", "HOME": str(fake_home)})
-    assert e.proc.wait(timeout=30) == 0
+    assert wait_engine_exit(e, timeout=30) == 0
     iters = sorted((e.run_dir / "iterations").iterdir())
     metas = [json.loads((d / "meta.json").read_text()) for d in iters]
     reflect_metas = [m for m in metas if m["phase"] == "reflect"]
@@ -207,7 +208,7 @@ def _events(run_dir: Path, type_: str) -> list[dict]:
 def test_successful_reflection_records_ok_and_no_failure_marker(engine_factory):
     e = engine_factory(job={"reflect": True, "iterations": 6, "on_complete": "exit"},
                        stub_env={"STUB_TASKS": "1"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
@@ -226,7 +227,7 @@ def test_reflect_agent_error_is_recorded_as_a_failure(engine_factory):
     e = engine_factory(job={"reflect": True, "iterations": 6, "on_complete": "exit"},
                        stub_env={"STUB_TASKS": "1", "STUB_REFLECT_FAIL": "error",
                                  **FAST_RETRY})
-    assert e.proc.wait(timeout=90) == 0, "a failed reflection is not a failed job"
+    assert wait_engine_exit(e, timeout=90) == 0, "a failed reflection is not a failed job"
 
     status = json.loads((e.run_dir / "status.json").read_text())
     # -- terminal state untouched -----------------------------------------
@@ -257,7 +258,7 @@ def test_reflect_that_writes_no_report_is_recorded_as_a_failure(engine_factory):
     e = engine_factory(job={"reflect": True, "iterations": 6, "on_complete": "exit"},
                        stub_env={"STUB_TASKS": "1", "STUB_REFLECT_FAIL": "silent",
                                  **FAST_RETRY})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"

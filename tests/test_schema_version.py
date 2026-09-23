@@ -15,6 +15,7 @@ import pytest
 from tests.conftest import LiveRun
 
 from ralphd.engine.state import CURRENT_SCHEMA_VERSION
+from tests.flows.flowlib import wait_engine_exit
 
 # Mirrors ralphd.engine.main.EXIT_SCHEMA_TOO_NEW without importing engine
 # internals into the test (this is a black-box suite) -- the value is part
@@ -40,7 +41,7 @@ def engine_factory(tmp_path):
 
 def test_fresh_run_dir_gets_schema_version_recorded(engine_factory):
     e = engine_factory()
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["schemaVersion"] == CURRENT_SCHEMA_VERSION
 
@@ -54,7 +55,7 @@ def test_newer_schema_version_refused_and_touches_nothing(tmp_path, engine_facto
     }))
 
     e = engine_factory()
-    rc = e.proc.wait(timeout=15)
+    rc = wait_engine_exit(e, timeout=15)
     out = e.proc.stdout.read()
 
     assert rc == EXIT_SCHEMA_TOO_NEW, f"rc={rc}, out={out}"
@@ -88,6 +89,6 @@ def test_pre_schema_run_dir_accepted_and_upgraded(tmp_path, engine_factory):
     }))
 
     e = engine_factory()
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     status = json.loads((run_dir / "status.json").read_text())
     assert status["schemaVersion"] == CURRENT_SCHEMA_VERSION

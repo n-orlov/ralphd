@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 
 from tests.conftest import LiveRun
+from tests.flows.flowlib import wait_engine_exit
 
 __all__ = ["engine_factory"]
 
@@ -32,7 +33,7 @@ def test_instant_planning_failures_abort_fast_without_burning_approaches(engine_
     e = engine_factory(
         job={"on_complete": "exit", "max_approaches": 3, "iterations": 30},
         stub_env={"STUB_INSTANT_FAIL_COUNT": "10"})
-    assert e.proc.wait(timeout=60) == 1
+    assert wait_engine_exit(e, timeout=60) == 1
     status = json.loads((e.run_dir / "status.json").read_text())
     # Must fail fast via the instant-failure carve-out (state=aborted, a
     # clear diagnostic reason) -- NOT via the no-progress escalation path
@@ -62,7 +63,7 @@ def test_instant_worker_failures_abort_fast_without_burning_approaches(engine_fa
         job={"on_complete": "exit", "max_approaches": 3, "iterations": 30},
         stub_env={"STUB_INSTANT_FAIL_SKIP": "1",
                   "STUB_INSTANT_FAIL_COUNT": "10"})
-    assert e.proc.wait(timeout=60) == 1
+    assert wait_engine_exit(e, timeout=60) == 1
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "aborted"
     assert "credential" in status["reason"].lower() or "instant" in status["reason"].lower()
@@ -103,7 +104,7 @@ def test_claim_rollback_is_two_directional_by_fault_class(engine_factory, tmp_pa
         job={"on_complete": "exit", "max_approaches": 3, "iterations": 30},
         stub_env={"STUB_INSTANT_FAIL_SKIP": "1",
                   "STUB_INSTANT_FAIL_COUNT": "10"})
-    assert e_infra.proc.wait(timeout=60) == 1
+    assert wait_engine_exit(e_infra, timeout=60) == 1
     infra_tasks = json.loads((e_infra.run_dir / "tasks.json").read_text())["tasks"]
     assert all(t["status"] == "pending" for t in infra_tasks)
 

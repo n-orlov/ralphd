@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import LiveRun
+from tests.flows.flowlib import wait_engine_exit
 
 SECRET_VALUE = "sekret-token-do-not-leak-guidance-xyz789"
 SOURCING_RULE = "set -a; . ~/.creds/<name>.env; set +a"
@@ -63,7 +64,7 @@ def test_creds_note_forbids_dumping_values_and_token_urls(guidance_engine, tmp_p
     fake_home.mkdir()
     _write_creds(tmp_path / "config")
     e = guidance_engine(stub_env={"HOME": str(fake_home)})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     out = e.proc.stdout.read()
 
     all_prompts = (e.run_dir / ".stub-all-prompts").read_text()
@@ -93,7 +94,7 @@ def test_worker_prompt_carries_guidance_even_without_creds(guidance_engine, tmp_
     fake_home.mkdir()
     e = guidance_engine(job={"iterations": 3, "max_approaches": 1},
                          stub_env={"HOME": str(fake_home)})
-    e.proc.wait(timeout=30)
+    wait_engine_exit(e, timeout=30)
     all_prompts = (e.run_dir / ".stub-all-prompts").read_text()
     prompts = [p for p in all_prompts.split("===PROMPT===") if p.strip()]
     assert prompts

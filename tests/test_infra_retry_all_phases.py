@@ -36,6 +36,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.flows.flowlib import wait_engine_exit
 
 __all__ = ["engine_factory"]
 
@@ -207,7 +208,7 @@ def test_infra_shaped_review_is_retried_and_does_not_cost_an_approach(
             "STUB_INBAND_ERROR_COUNT": "1",  # invocation 3 (1st review) errors
             "STUB_INBAND_ERROR_DELAY_S": INBAND_DELAY_S,
         })
-    assert e.proc.wait(timeout=90) == 0
+    assert wait_engine_exit(e, timeout=90) == 0
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"

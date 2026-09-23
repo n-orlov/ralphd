@@ -36,6 +36,7 @@ import time
 import pytest
 
 from tests.conftest import RALPHCTL, LiveRun
+from tests.flows.flowlib import wait_engine_exit
 
 TERMINAL = ("succeeded", "failed", "aborted")
 
@@ -161,7 +162,7 @@ def _dead_first_episode(episodes, run_id: str) -> LiveRun:
     e1 = episodes(run_id, {"iterations": 2, "max_approaches": 1,
                            "on_complete": "exit"},
                   {"STUB_TASKS": "5"})
-    assert e1.proc.wait(timeout=60) == 1
+    assert wait_engine_exit(e1, timeout=60) == 1
     assert _state(e1) == "timed_out"
     assert [ev["state"] for ev in _state_events(e1)] == ["running", "timed_out"]
     assert len(sorted((e1.run_dir / "iterations").iterdir())) == 2

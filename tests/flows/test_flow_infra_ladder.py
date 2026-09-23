@@ -56,7 +56,7 @@ import time
 import pytest
 
 from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
-                                 status)
+                                 status, wait_engine_exit)
 
 # -- recovered: two hangs, then a healthy attempt ---------------------------
 
@@ -93,7 +93,7 @@ def test_two_infra_faults_are_retried_then_recovered(engine_factory):
             "RALPHD_INFRA_RETRY_BACKOFF_S": "0.05,0.1",
             "RALPHD_INFRA_OUTAGE_BUDGET_S": "60",
         })
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow infra ladder (recovered): the engine did not exit 0 once the "
         "third attempt reached the model")
 
@@ -160,7 +160,7 @@ def test_outage_budget_exhaustion_aborts_naming_the_duration(engine_factory):
             "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.2",
             "RALPHD_INFRA_OUTAGE_BUDGET_S": "0.5",
         })
-    assert run.proc.wait(timeout=60) == 1, (
+    assert wait_engine_exit(run, timeout=60) == 1, (
         "flow infra ladder (aborted): the engine must exit non-zero once "
         "the outage budget is spent")
 
@@ -230,7 +230,7 @@ def test_the_startup_watchdog_kills_a_hang_within_its_own_window(engine_factory)
             "RALPHD_INFRA_OUTAGE_BUDGET_S": "60",
         })
     t0 = time.monotonic()
-    assert run.proc.wait(timeout=WATCHDOG_WALL_CLOCK_BOUND_S + 40) == 1, (
+    assert wait_engine_exit(run, timeout=WATCHDOG_WALL_CLOCK_BOUND_S + 40) == 1, (
         "flow infra ladder (watchdog): a permanently hung stub with the "
         "attempt cap spent must end the engine non-zero")
     elapsed = time.monotonic() - t0
@@ -318,7 +318,7 @@ def test_five_consecutive_infra_faults_are_ridden_out_free(engine_factory):
             "RALPHD_INFRA_RETRY_BACKOFF_S": "0.1,0.2,0.4",
             "RALPHD_INFRA_OUTAGE_BUDGET_S": "60",
         })
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     st = status(e)
     assert st["state"] == "succeeded"
@@ -348,7 +348,7 @@ def test_outage_budget_exhaustion_ends_terminal_naming_the_duration(engine_facto
             "RALPHD_INFRA_RETRY_BACKOFF_S": "0.5,1",
             "RALPHD_INFRA_OUTAGE_BUDGET_S": "2",
         })
-    assert e.proc.wait(timeout=60) == 1
+    assert wait_engine_exit(e, timeout=60) == 1
 
     st = status(e)
     assert st["state"] == "aborted"

@@ -60,7 +60,7 @@ from __future__ import annotations
 import json
 
 from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
-                                 status, tasks)
+                                 status, tasks, wait_engine_exit)
 
 
 def test_a_validation_rejection_is_retried_and_then_verifies(engine_factory):
@@ -68,7 +68,7 @@ def test_a_validation_rejection_is_retried_and_then_verifies(engine_factory):
         job={"run_id": "flow-validation-retry", "on_complete": "exit",
              "vigilant": True, "max_approaches": 1},
         stub_env={"STUB_TASKS": "1", "STUB_VERIFY_FAILS": "1"})
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow validation ladder (retry): the engine did not exit 0 after "
         "the retried task verified")
 
@@ -113,7 +113,7 @@ def test_three_strikes_exhausts_validation_and_routes_to_review(engine_factory):
         job={"run_id": "flow-validation-three-strikes", "on_complete": "exit",
              "vigilant": True, "max_approaches": 1},
         stub_env={"STUB_TASKS": "1", "STUB_VERIFY_FAILS": "999"})
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow validation ladder (three strikes): the engine did not exit 0 "
         "once nothing was left actionable and review took over")
 
@@ -195,7 +195,7 @@ def test_a_criteria_tamper_via_the_agent_readable_view_never_reaches_the_record(
              "vigilant": True, "max_approaches": 1},
         stub_env={"STUB_TASKS": "2", "STUB_VERIFY_FAILS": "1",
                   "STUB_REWRITE_CRITERIA": "1"})
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow validation ladder (tamper): a rewrite that never reaches the "
         "protected record must not stop the run from verifying normally")
 

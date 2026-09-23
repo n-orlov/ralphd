@@ -12,6 +12,7 @@ the outside: two real `ralphd-engine` processes over one run dir, then read
 from __future__ import annotations
 
 import json
+from tests.flows.flowlib import wait_engine_exit
 
 
 __all__ = ["engine_factory"]
@@ -33,7 +34,7 @@ def test_fresh_run_opens_with_a_running_state_event(engine_factory):
     """Baseline: even a fresh run's log opens with its own `running` state
     event, flagged as not-a-resume, before the terminal one."""
     e = engine_factory(job={"on_complete": "exit"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     states = _state_events(e.run_dir)
     assert [ev["state"] for ev in states] == ["running", "succeeded"]
@@ -53,7 +54,7 @@ def test_resume_appends_a_running_state_event_after_the_stale_terminal_marker(
     e1 = engine_factory(job={"on_complete": "exit", "iterations": 2,
                              "max_approaches": 1},
                         stub_env={"STUB_TASKS": "5"})
-    assert e1.proc.wait(timeout=60) == 1
+    assert wait_engine_exit(e1, timeout=60) == 1
     assert json.loads((e1.run_dir / "status.json").read_text())["state"] == "timed_out"
 
     first_episode = _state_events(e1.run_dir)
@@ -64,7 +65,7 @@ def test_resume_appends_a_running_state_event_after_the_stale_terminal_marker(
                              "max_approaches": 1},
                         stub_env={"STUB_TASKS": "5"})
     assert e2.run_dir == e1.run_dir  # sanity: genuinely the same run dir
-    assert e2.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e2, timeout=60) == 0
 
     states = _state_events(e2.run_dir)
     assert [ev["state"] for ev in states] == [

@@ -58,7 +58,8 @@ import json
 import time
 
 from tests.flows.flowlib import (assert_step_sequence, assert_steps_include,
-                                 events_of, flow_steps, status, tasks)
+                                 events_of, flow_steps, status, tasks,
+                                 wait_engine_exit)
 
 # -- ordinary exhaustion: iteration count runs out, tasks incomplete -------
 
@@ -79,7 +80,7 @@ def test_ordinary_budget_exhaustion_with_tasks_incomplete_fails_with_no_review(
         job={"run_id": "flow-budget-ordinary", "on_complete": "exit",
              "iterations": 2, "max_approaches": 1},
         stub_env={"STUB_TASKS": "5"})
-    assert run.proc.wait(timeout=60) == 1, (
+    assert wait_engine_exit(run, timeout=60) == 1, (
         "flow budget/deadline/grace (ordinary): the engine must exit "
         "non-zero once the iteration budget is spent with work outstanding")
 
@@ -130,7 +131,7 @@ def test_last_task_exhausting_the_budget_holds_timed_out_with_no_review(
         job={"run_id": "flow-budget-last-task-exhausts", "on_complete": "exit",
              "iterations": 3, "max_approaches": 1},
         stub_env={"STUB_TASKS": "2"})
-    assert run.proc.wait(timeout=60) == 1, (
+    assert wait_engine_exit(run, timeout=60) == 1, (
         "flow budget/deadline/grace (retired grace node): the engine must "
         "exit non-zero once the run holds timed_out with no review")
 
@@ -169,7 +170,7 @@ def test_last_task_exhausting_the_budget_holds_timed_out_regardless_of_a_would_b
         job={"run_id": "flow-budget-last-task-exhausts-review-fails",
              "on_complete": "exit", "iterations": 3, "max_approaches": 1},
         stub_env={"STUB_TASKS": "2", "STUB_REVIEW_FAILS": "1"})
-    assert run.proc.wait(timeout=60) == 1, (
+    assert wait_engine_exit(run, timeout=60) == 1, (
         "flow budget/deadline/grace (retired grace node, would-be rejection): "
         "the engine must exit non-zero once the run holds timed_out with no "
         "review")
@@ -207,7 +208,7 @@ def test_the_wall_clock_deadline_ends_the_cycle_before_the_iteration_count_does(
         job={"run_id": "flow-budget-deadline", "on_complete": "exit",
              "iterations": 50, "max_approaches": 1, "job_timeout_s": 1},
         stub_env={"STUB_TASKS": "50"})
-    assert run.proc.wait(timeout=60) == 1, (
+    assert wait_engine_exit(run, timeout=60) == 1, (
         "flow budget/deadline/grace (deadline): the engine must exit "
         "non-zero once the wall-clock deadline ends the cycle")
 

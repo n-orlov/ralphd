@@ -21,6 +21,7 @@ run gets the shared stub-`pi` launcher's all-zero schedule (task 010, B.4).
 from __future__ import annotations
 
 import json
+from tests.flows.flowlib import wait_engine_exit
 
 
 __all__ = ["engine_factory"]
@@ -59,7 +60,7 @@ def test_inband_exit0_error_is_retried_refunded_and_job_completes(engine_factory
             "STUB_INBAND_ERROR_DELAY_S": INBAND_DELAY_S,
             "RALPHD_INFRA_RETRY_MAX": "3",
         })
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
@@ -103,7 +104,7 @@ def test_inband_errors_exhausting_retries_end_terminal_without_burning_budget(
             "STUB_INBAND_ERROR_DELAY_S": INBAND_DELAY_S,
             "RALPHD_INFRA_RETRY_MAX": "2",
         })
-    assert e.proc.wait(timeout=90) == 1
+    assert wait_engine_exit(e, timeout=90) == 1
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "aborted"

@@ -29,6 +29,7 @@ import json
 import pytest
 
 from tests.conftest import LiveRun
+from tests.flows.flowlib import wait_engine_exit
 
 
 @pytest.fixture
@@ -54,7 +55,7 @@ def test_a_repeated_blocker_signature_ends_the_run_without_a_third_approach(
         stub_env={"STUB_WORKER_STALLS": "1",
                   "STUB_WORKER_STALLS_BY_APPROACH":
                       "the same structural wall,the same structural wall"})
-    assert e.proc.wait(timeout=90) == 1
+    assert wait_engine_exit(e, timeout=90) == 1
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "failed"
     assert status["verdict"] == "unverified"

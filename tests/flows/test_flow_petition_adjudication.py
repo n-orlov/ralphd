@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 
 from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
-                                 status)
+                                 status, wait_engine_exit)
 
 OBLIGATION = "requirement Z.9: mint a token from the sealed vault"
 PETITION = {
@@ -121,7 +121,7 @@ def test_a_declared_petition_is_filed_and_a_refuted_ruling_is_written_back(
         engine_factory):
     run = _petition_run(engine_factory, "flow-petition-refuted", [
         {"obligation": OBLIGATION, "adjudication": "REFUTED", "remedy": REMEDY}])
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow petition REFUTED: the engine did not exit 0")
 
     assert_step_sequence(flow_steps(run), PETITION_PATH_STEPS,
@@ -162,7 +162,7 @@ def test_a_declared_petition_confirmed_becomes_a_run_scope_exemption(
         engine_factory):
     run = _petition_run(engine_factory, "flow-petition-confirmed", [
         {"obligation": OBLIGATION, "adjudication": "CONFIRMED"}])
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow petition CONFIRMED: the engine did not exit 0")
 
     assert_step_sequence(flow_steps(run), PETITION_PATH_STEPS,

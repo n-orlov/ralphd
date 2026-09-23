@@ -38,7 +38,7 @@ from __future__ import annotations
 import json
 
 from tests.flows.flowlib import (assert_step_sequence, events, events_of,
-                                 flow_steps, status, tasks)
+                                 flow_steps, status, tasks, wait_engine_exit)
 
 # Task cure-01-01 (requirement I): the deadline this module gives a real
 # engine subprocess to reach its own terminal state and exit. The nodes below
@@ -73,7 +73,7 @@ def test_a_rejection_with_an_approach_left_replans_and_the_next_approach_verifie
         job={"run_id": "flow-replan", "on_complete": "exit",
              "max_approaches": 2, "iterations": 30},
         stub_env={"STUB_REVIEW_FAILS": "1"})
-    assert run.proc.wait(timeout=ENGINE_EXIT_WAIT_S) == 0, (
+    assert wait_engine_exit(run, timeout=ENGINE_EXIT_WAIT_S) == 0, (
         "flow replan: the engine did not exit 0 after the second approach verified")
 
     assert_step_sequence(flow_steps(run), [
@@ -111,7 +111,7 @@ def test_a_rejection_on_the_last_approach_with_nothing_curable_fails(engine_fact
         job={"run_id": "flow-exhausted", "on_complete": "exit",
              "max_approaches": 1, "iterations": 30},
         stub_env={"STUB_REVIEW_FAILS": "1"})
-    assert run.proc.wait(timeout=ENGINE_EXIT_WAIT_S) == 1, (
+    assert wait_engine_exit(run, timeout=ENGINE_EXIT_WAIT_S) == 1, (
         "flow exhaustion: an unverified run must exit nonzero")
 
     assert_step_sequence(flow_steps(run), [
@@ -166,7 +166,7 @@ def test_the_last_approach_pauses_for_the_operator_and_a_resume_verifies(
         f"flow last-approach pause: POST /resume should release the pause, got "
         f"HTTP {code} / {body}")
 
-    assert run.proc.wait(timeout=ENGINE_EXIT_WAIT_S) == 0, (
+    assert wait_engine_exit(run, timeout=ENGINE_EXIT_WAIT_S) == 0, (
         "flow last-approach pause: the resumed run did not exit 0 after review "
         "verified")
 
@@ -243,7 +243,7 @@ def test_verify_ladder_exhaustion_with_budget_remaining_does_not_end_the_run(liv
     run = live(run_id="g5-verify-ladder-exhaustion",
                job={"vigilant": True, "on_complete": "exit"},
                stub_env={"STUB_TASKS": "1", "STUB_VERIFY_MALFORMED_COUNT": "1"})
-    assert run.proc.wait(timeout=ENGINE_EXIT_WAIT_S) == 0
+    assert wait_engine_exit(run, timeout=ENGINE_EXIT_WAIT_S) == 0
     st = status(run)
     assert st.get("state") == "succeeded", st
     assert st.get("verdict") == "verified", st
@@ -334,7 +334,7 @@ def test_review_ladder_exhaustion_with_budget_remaining_holds_for_the_operator(l
     run.wait_api()
     code, body = run.api("POST", "/resume")
     assert (code, body) == (200, {"resumed": True}), (code, body)
-    assert run.proc.wait(timeout=ENGINE_EXIT_WAIT_S) == 0
+    assert wait_engine_exit(run, timeout=ENGINE_EXIT_WAIT_S) == 0
 
     st = status(run)
     assert st.get("state") == "succeeded", st
@@ -368,7 +368,7 @@ def test_verdict_gate_ladder_exhaustion_with_budget_remaining_does_not_end_the_r
                job={"peer_verdict_gate": True, "on_complete": "exit",
                     "max_approaches": 2},
                stub_env={"STUB_VERDICT_GATE_MALFORMED_COUNT": "1"})
-    assert run.proc.wait(timeout=ENGINE_EXIT_WAIT_S) == 0
+    assert wait_engine_exit(run, timeout=ENGINE_EXIT_WAIT_S) == 0
     st = status(run)
     assert st.get("state") == "succeeded", st
     assert st.get("verdict") == "verified", st
@@ -410,7 +410,7 @@ def test_verify_fenced_payload_rescue_settles_with_no_extra_stub_invocation(live
                job={"vigilant": True, "on_complete": "exit"},
                stub_env={"STUB_TASKS": "1", "STUB_VERIFY_MALFORMED_COUNT": "1",
                          "STUB_VERIFY_MALFORMED_FENCED": "1"})
-    assert run.proc.wait(timeout=ENGINE_EXIT_WAIT_S) == 0
+    assert wait_engine_exit(run, timeout=ENGINE_EXIT_WAIT_S) == 0
     st = status(run)
     assert st.get("state") == "succeeded", st
     assert st.get("verdict") == "verified", st

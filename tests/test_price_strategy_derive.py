@@ -49,6 +49,7 @@ from ralphd.engine.pricing import (
 )
 from ralphd.engine.runner import IterationResult, PiRunner
 from ralphd.engine.state import COST_UNAVAILABLE, RunDir, cost_status, format_cost
+from tests.flows.flowlib import wait_engine_exit
 
 # The verbatim iteration-1 usage of the v0.6 self-development run: a zero money
 # quote next to 505 628 billed tokens (artifacts/reports/pricing-anomaly.md).
@@ -375,7 +376,7 @@ def test_a_zero_quoting_run_over_a_gateway_id_reports_derived_money(price_engine
     tokens -- exactly the v0.6 self-development run's own route."""
     e = price_engine({"price_strategy": "aws"},
                      stub_env={"STUB_ZERO_COST_COUNT": "99"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     metas = [json.loads(p.read_text())
              for p in sorted(e.run_dir.glob("iterations/*/meta.json"))]
@@ -397,7 +398,7 @@ def test_a_zero_quoting_run_over_a_gateway_id_reports_derived_money(price_engine
 
 def test_the_same_run_without_the_strategy_stays_unavailable(price_engine):
     e = price_engine(stub_env={"STUB_ZERO_COST_COUNT": "99"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     usage = json.loads((e.run_dir / "status.json").read_text())["usage"]
     assert usage["costStatus"] == "unknown"
     assert "costDerivedUSD" not in usage

@@ -11,6 +11,7 @@ import json
 
 
 from ralphd.engine.loop import LoopSupervisor
+from tests.flows.flowlib import wait_engine_exit
 
 __all__ = ["engine_factory"]
 
@@ -157,7 +158,7 @@ def test_fully_priced_run_usage_carries_no_cost_status_anywhere(engine_factory):
     """Regression guard for the contract: nothing about a normal, fully priced
     run's usage changes."""
     e = engine_factory(job={"on_complete": "exit", "iterations": 8})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     usage = json.loads((e.run_dir / "status.json").read_text())["usage"]
     assert usage["costUSD"] > 0
     assert "costStatus" not in usage
@@ -168,7 +169,7 @@ def test_fully_priced_run_usage_carries_no_cost_status_anywhere(engine_factory):
 def test_fully_unpriced_run_marks_total_and_buckets_unknown(engine_factory):
     e = engine_factory(job={"on_complete": "exit", "iterations": 8},
                        stub_env={"STUB_UNPRICED_COUNT": "99"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     usage = json.loads((e.run_dir / "status.json").read_text())["usage"]
     assert usage["totalTokens"] > 0
     assert usage["costStatus"] == "unknown"
@@ -185,7 +186,7 @@ def test_mixed_run_marks_the_total_partial(engine_factory):
     e = engine_factory(job={"on_complete": "exit", "iterations": 8},
                        stub_env={"STUB_UNPRICED_SKIP": "1",
                                  "STUB_UNPRICED_COUNT": "1"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     usage = json.loads((e.run_dir / "status.json").read_text())["usage"]
     assert usage["costStatus"] == "partial"
     assert usage["costUSD"] > 0, "the priced subtotal is still reported"

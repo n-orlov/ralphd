@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import LiveRun
+from tests.flows.flowlib import wait_engine_exit
 
 REPO = Path(__file__).parent.parent
 SKILL_DIR = REPO / "examples" / "skills" / "toolchain-sibling"
@@ -71,7 +72,7 @@ def _prompts(e: LiveRun) -> list[str]:
 
 def test_every_prompt_carries_the_sibling_toolchain_recipe(engine):
     e = engine(stub_env=HOST_ENV)
-    e.proc.wait(timeout=60)
+    wait_engine_exit(e, timeout=60)
     prompts = _prompts(e)
     assert prompts
     for p in prompts:
@@ -85,7 +86,7 @@ def test_every_prompt_carries_the_sibling_toolchain_recipe(engine):
 def test_no_sibling_toolchain_recipe_without_docker_access(engine):
     """Capability off (no --allow-docker) -> none of the guidance is spent."""
     e = engine()
-    e.proc.wait(timeout=60)
+    wait_engine_exit(e, timeout=60)
     for p in _prompts(e):
         assert "Docker siblings" not in p
         assert "--user 1000:1000" not in p
@@ -94,7 +95,7 @@ def test_no_sibling_toolchain_recipe_without_docker_access(engine):
 
 def test_prompt_warns_against_run_id_locked_cache_volume(engine):
     e = engine(stub_env=HOST_ENV)
-    e.proc.wait(timeout=60)
+    wait_engine_exit(e, timeout=60)
     for p in _prompts(e):
         low = p.lower()
         assert "conditional on `$ralphd_run_id`" in low or "run label off it" in low

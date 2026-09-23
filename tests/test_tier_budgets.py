@@ -644,7 +644,18 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # flowlib_status_barrier.py's own fake-run nodes), so all three sort
     # into both tiers. Measured with `.venv/bin/python -m pytest -q -m
     # <tier> --collect-only` at this commit's own tip.
-    "fast": {"tests": 6124, "modules": 410},
+    # task 017 (v0.25 requirement F.2, #216): fast 6124 -> 6128, smoke
+    # unchanged at 4454 (+4 tests, +1 module fast-only) for the new
+    # tests/test_engine_exit_wait_wiring.py guard (the real check over
+    # tests/, the F.4 cure-pass-shape pin, and two allow/deny mutation
+    # nodes). This module's OWN source literally spells `engine_factory`
+    # inside its two synthetic mutation fixtures' planted text (task 016's
+    # own gotcha, restated), so `_module_is_in_process` reads it as
+    # crossing a process boundary and sorts every node fast-only, never
+    # smoke -- confirmed directly (`-m smoke --collect-only` on this file
+    # alone: 0 collected, 4 deselected). Measured with `.venv/bin/python -m
+    # pytest -q -m <tier> --collect-only` at this commit's own tip.
+    "fast": {"tests": 6128, "modules": 411},
     "smoke": {"tests": 4454, "modules": 292},
 }
 

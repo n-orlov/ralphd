@@ -15,6 +15,7 @@ import json
 
 import pytest
 from tests.conftest import STUB_PI, LiveRun  # noqa: F401
+from tests.flows.flowlib import wait_engine_exit
 
 
 @pytest.fixture
@@ -53,7 +54,7 @@ def test_priority_preempts_list_order(engine_factory):
     ]
     e = engine_factory(job={"on_complete": "exit"},
                        stub_env={"STUB_TASKS_JSON": json.dumps(tasks)})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded" and status["verdict"] == "verified"
     final_tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
@@ -71,7 +72,7 @@ def test_fieldless_schema_behaves_sequentially(engine_factory):
               "successCriteria": f"c{i}"} for i in range(1, 4)]
     e = engine_factory(job={"on_complete": "exit"},
                        stub_env={"STUB_TASKS_JSON": json.dumps(tasks)})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     order = _completion_order(e.run_dir)
     assert order == ["001", "002", "003"], order
 

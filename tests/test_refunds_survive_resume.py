@@ -50,6 +50,7 @@ from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 from ralphd.log_merge import iteration_attempt_dirs, iteration_numbers
 from tests.conftest import make_supervisor
+from tests.flows.flowlib import wait_engine_exit
 
 __all__ = ["engine_factory"]
 
@@ -361,13 +362,13 @@ def test_a_refund_earned_before_a_crash_is_still_credited_after_the_resume(
     assert len(infra) == 1 and infra[0]["phase"] == "worker"
     _wait_for(lambda: len(_metas(e1.run_dir)) > max(m["number"] for m in infra))
     os.kill(e1.proc.pid, signal.SIGKILL)  # this pid, never a pattern
-    e1.proc.wait(timeout=10)
+    wait_engine_exit(e1, timeout=10)
 
     e2 = engine_factory(  # what `ralphctl resume` does: same run dir
         job={"on_complete": "exit", "iterations": 20, "max_approaches": 1},
         stub_env={"STUB_TASKS": "3", "STUB_SLEEP": "0"})
     assert e2.run_dir == e1.run_dir
-    assert e2.proc.wait(timeout=90) == 0
+    assert wait_engine_exit(e2, timeout=90) == 0
 
     status = json.loads((e2.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"

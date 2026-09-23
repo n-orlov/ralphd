@@ -57,6 +57,7 @@ from pathlib import Path
 
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
+from tests.flows.flowlib import wait_engine_exit
 
 __all__ = ["ctl", "unix_sock", "engine_factory"]
 
@@ -75,7 +76,7 @@ def _kill(e):
     """SIGKILL this specific engine subprocess PID (never pkill/killall)."""
     pid = e.proc.pid
     os.kill(pid, signal.SIGKILL)
-    e.proc.wait(timeout=10)
+    wait_engine_exit(e, timeout=10)
     assert e.proc.returncode is not None
     assert e.proc.returncode != 0
 
@@ -180,7 +181,7 @@ def test_killed_before_planning_ever_produces_tasks_then_resume_replans(
                              "max_approaches": 1},
                         stub_env={"STUB_SLEEP": "0", "STUB_TASKS": "3"})
     assert e2.run_dir == e1.run_dir
-    assert e2.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e2, timeout=60) == 0
     status = json.loads((e2.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
     assert status["verdict"] == "verified"
@@ -244,7 +245,7 @@ def test_killed_mid_review_before_any_verdict_then_resume_reviews_for_real(
                              "max_approaches": 1},
                         stub_env={"STUB_SLEEP": "0", "STUB_TASKS": "1"})
     assert e2.run_dir == e1.run_dir
-    assert e2.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e2, timeout=60) == 0
     status = json.loads((e2.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
     assert status["verdict"] == "verified"
@@ -331,7 +332,7 @@ def test_killed_between_review_rejection_and_the_approach_bump_then_resume_repla
                             "iterations": 20},
                        stub_env={"STUB_TASKS": "2"})
     assert e.run_dir == run_dir
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
@@ -363,7 +364,7 @@ def test_last_approach_rejected_and_crashed_before_finishing_still_fails_termina
                             "iterations": 20},
                        stub_env={"STUB_TASKS": "2"})
     assert e.run_dir == run_dir
-    assert e.proc.wait(timeout=60) == 1
+    assert wait_engine_exit(e, timeout=60) == 1
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "failed"
@@ -411,7 +412,7 @@ def test_killed_mid_reflect_after_finish_wrote_finishing_then_resume_promotes(
                              "max_approaches": 1, "reflect": True},
                         stub_env={"STUB_SLEEP": "0", "STUB_TASKS": "1"})
     assert e2.run_dir == e1.run_dir
-    assert e2.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e2, timeout=60) == 0
 
     status_after = json.loads((e2.run_dir / "status.json").read_text())
     assert status_after["state"] == "succeeded"

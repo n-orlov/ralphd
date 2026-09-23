@@ -14,6 +14,7 @@ verdict and neither can be produced by accident.
 from __future__ import annotations
 
 import json
+from tests.flows.flowlib import wait_engine_exit
 
 
 __all__ = ["engine_factory"]
@@ -41,7 +42,7 @@ def test_fault_class_null_on_clean_and_infra_on_hung_iteration(engine_factory):
             "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
             "RALPHD_INFRA_RETRY_MAX": "3",
         })
-    assert e.proc.wait(timeout=30) == 0
+    assert wait_engine_exit(e, timeout=30) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
 
@@ -76,7 +77,7 @@ def test_fault_class_null_for_a_fully_clean_run(engine_factory):
     e = engine_factory(
         job={"on_complete": "exit", "iterations": 5, "max_approaches": 1},
         stub_env={"STUB_TASKS": "1"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     metas = _metas(e.run_dir)
     assert metas
     assert all(m.get("faultClass", "missing") is None for m in metas), \

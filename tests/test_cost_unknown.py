@@ -11,6 +11,7 @@ import json
 
 
 from ralphd.engine.runner import IterationResult, PiRunner
+from tests.flows.flowlib import wait_engine_exit
 
 __all__ = ["engine_factory"]
 
@@ -118,7 +119,7 @@ def test_message_without_a_usage_block_keeps_zero_cost():
 def test_unpriced_run_records_unknown_cost_in_iteration_meta(engine_factory):
     e = engine_factory(job={"on_complete": "exit", "iterations": 6},
                        stub_env={"STUB_UNPRICED_COUNT": "99"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     metas = [json.loads(p.read_text())
              for p in sorted(e.run_dir.glob("iterations/*/meta.json"))]
@@ -137,7 +138,7 @@ def test_unpriced_run_records_unknown_cost_in_iteration_meta(engine_factory):
 
 def test_priced_run_still_records_cost_in_iteration_meta(engine_factory):
     e = engine_factory(job={"on_complete": "exit", "iterations": 6})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     metas = [json.loads(p.read_text())
              for p in sorted(e.run_dir.glob("iterations/*/meta.json"))]

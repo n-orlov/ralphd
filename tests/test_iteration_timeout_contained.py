@@ -41,6 +41,7 @@ import pytest
 
 from ralphd.engine import runner as runner_mod
 from ralphd.engine.runner import PiRunner
+from tests.flows.flowlib import wait_engine_exit
 
 
 __all__ = ["engine_factory"]
@@ -151,7 +152,7 @@ def timed_out_run(engine_factory):
         stub_env={"STUB_TASKS": "1",
                   "STUB_TIMEOUT_HANG_SKIP": "1",
                   "STUB_TIMEOUT_HANG_COUNT": "1"})
-    exit_code = e.proc.wait(timeout=90)
+    exit_code = wait_engine_exit(e, timeout=90)
     return e, exit_code
 
 

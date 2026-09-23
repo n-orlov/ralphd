@@ -44,7 +44,7 @@ from __future__ import annotations
 import json
 
 from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
-                                 status, tasks)
+                                 status, tasks, wait_engine_exit)
 
 
 def _cure_tasks(run) -> list[dict]:
@@ -60,7 +60,7 @@ def test_a_curable_rejection_takes_one_cure_pass_and_the_same_approach_verifies(
         job={"run_id": "flow-cure-once", "on_complete": "exit",
              "max_approaches": 3, "iterations": 30},
         stub_env={"STUB_REVIEW_CURABLE_REJECT_COUNT": "1"})
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow cure pass: the engine did not exit 0 after the cured approach "
         "verified")
 
@@ -142,6 +142,12 @@ def test_the_second_curable_rejection_finds_the_cure_pass_spent_and_replans(
         job={"run_id": "flow-cure-spent", "on_complete": "exit",
              "max_approaches": 2, "iterations": 30},
         stub_env={"STUB_REVIEW_CURABLE_REJECT_COUNT": "2"})
+    # task 017 (F.2/F.4): this specific `proc.wait(timeout=60)` -- the node
+    # task 002 (A.2) measured -- keeps its bare shape deliberately. No
+    # barrier ahead of it, no bound raised, and not routed through
+    # `wait_engine_exit`: F.4/non-negotiable 2 forbids all three, and the
+    # guard test `test_engine_exit_wait_wiring.py` asserts this exact line
+    # stays this exact shape.
     assert run.proc.wait(timeout=60) == 0, (
         "flow cure pass (spent): the engine did not exit 0 after approach 2 "
         "verified")
@@ -230,7 +236,7 @@ def test_a_curable_rejection_that_invalidates_a_recorded_sweep_reopens_it_and_ve
         stub_env={"STUB_REVIEW_CURABLE_REJECT_COUNT": "1",
                   "STUB_REVIEW_CURABLE_INVALIDATES": json.dumps([SWEEP_RECORD_PATH]),
                   "STUB_TASKS_JSON": json.dumps(_sweep_fixture_tasks())})
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow cure pass (replay v0.19.1 incident): the engine did not exit 0 "
         "after the cured approach verified")
 

@@ -13,6 +13,7 @@ import time
 
 import pytest
 from tests.conftest import LiveRun
+from tests.flows.flowlib import wait_engine_exit
 
 
 @pytest.fixture
@@ -42,7 +43,7 @@ def test_hook_runs_once_with_correct_env_on_success(engine_factory, tmp_path):
         f"open('{marker}', 'a').write(chr(10))\""
     )
     e = engine_factory(job={"on_complete_cmd": cmd, "run_id": "hook-run-1"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
     assert status["verdict"] == "verified"
@@ -75,7 +76,7 @@ def test_hook_nonzero_exit_logged_but_state_verdict_and_exit_code_unaffected(
     marker = tmp_path / "hook-ran-fail"
     cmd = f"touch {marker} && exit 7"
     e = engine_factory(job={"on_complete_cmd": cmd})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
     assert status["verdict"] == "verified"
@@ -115,7 +116,7 @@ def test_hold_does_not_run_completion_hook(engine_factory, tmp_path):
     # `on_complete: idle` would ordinarily keep the process alive waiting on
     # a signal/`/shutdown` -- a hold must exit through the ordinary shutdown
     # funnel regardless, so the process must still end on its own.
-    assert e.proc.wait(timeout=15) == 1
+    assert wait_engine_exit(e, timeout=15) == 1
 
     assert not marker.exists(), (
         "B.3 permits only frozen status/events/run-record on a hold, not "
@@ -128,7 +129,7 @@ def test_hold_does_not_run_completion_hook(engine_factory, tmp_path):
 
 def test_no_hook_configured_runs_nothing(engine_factory):
     e = engine_factory()
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     events = [json.loads(ln) for ln in
              (e.run_dir / "events.jsonl").read_text().splitlines()]
     assert not any("on_complete_cmd" in (ev.get("message") or "") for ev in events)

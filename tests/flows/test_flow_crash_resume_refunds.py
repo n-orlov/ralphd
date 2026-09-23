@@ -76,7 +76,8 @@ import os
 import signal
 import time
 
-from tests.flows.flowlib import assert_step_sequence, flow_steps, status, wait_terminal_recorded
+from tests.flows.flowlib import (assert_step_sequence, flow_steps, status,
+                                 wait_engine_exit, wait_terminal_recorded)
 
 __all__ = ["engine_factory"]
 
@@ -94,7 +95,7 @@ def _wait_for(predicate, timeout=30, interval=0.02):
 def _kill(e):
     pid = e.proc.pid
     os.kill(pid, signal.SIGKILL)
-    e.proc.wait(timeout=10)
+    wait_engine_exit(e, timeout=10)
     assert e.proc.returncode is not None
     assert e.proc.returncode != 0
 
@@ -208,7 +209,7 @@ def test_crash_mid_review_then_resume_preserves_the_infra_refund(engine_factory,
         stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0"})
     assert e2.run_dir == e1.run_dir, (
         "flow crash/resume/refunds: e2 must resume over e1's own run dir")
-    assert e2.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(e2, timeout=60) == 0, (
         "flow crash/resume/refunds: the resumed engine did not exit 0")
 
     # Task 006 (#169): read the terminal state through the barrier, not by
@@ -344,7 +345,7 @@ def test_sigkill_mid_worker_iteration_then_resume_completes(engine_factory, tmp_
              "iterations": 15, "max_approaches": 1},
         stub_env={"STUB_TASKS": "3", "STUB_SLEEP": "0"})
     assert e2.run_dir == e1.run_dir
-    assert e2.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e2, timeout=60) == 0
 
     wait_terminal_recorded(e2)  # task 006 (#169): the barrier, not a raw poll
 
@@ -428,7 +429,7 @@ def test_sigkill_at_iteration_boundary_then_resume_completes(engine_factory, tmp
              "iterations": 15, "max_approaches": 1},
         stub_env={"STUB_TASKS": "2", "STUB_SLEEP": "0"})
     assert e2.run_dir == e1.run_dir
-    assert e2.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e2, timeout=60) == 0
 
     wait_terminal_recorded(e2)  # task 006 (#169): the barrier, not a raw poll
 
@@ -528,7 +529,7 @@ def test_sigkill_after_task_completed_before_verify_finishes_then_resume_verifie
              "vigilant": True, "iterations": 15, "max_approaches": 1},
         stub_env={"STUB_TASKS": "1", "STUB_SLEEP": "0"})
     assert e2.run_dir == e1.run_dir
-    assert e2.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e2, timeout=60) == 0
 
     wait_terminal_recorded(e2)  # task 006 (#169): the barrier, not a raw poll
 

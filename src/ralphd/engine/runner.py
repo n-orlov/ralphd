@@ -350,6 +350,36 @@ class PiRunner:
                                                timeout=startup_timeout_s)
                         return
                     except TimeoutError:
+                        # Task 017 (F.2) records, without fixing, a known
+                        # tick-granularity limit of this exact `now > cpu`
+                        # discriminator: `process_cpu_seconds` reads whole
+                        # clock ticks off /proc/<pid>/stat (`_CLK_TCK`
+                        # above -- 100 Hz on this host, i.e. one tick is
+                        # 10ms), and this comparison only re-arms when the
+                        # counter has advanced by at least one whole tick
+                        # since the window last checked it. A child that is
+                        # starved-but-genuinely-advancing needs to accrue
+                        # one full 10ms tick inside each 200ms
+                        # `STARTUP_WINDOW_S`-sized window
+                        # (`tests/test_startup_watchdog_cpu_progress.py`'s
+                        # own constant) to be re-armed rather than killed as
+                        # a no-traffic infra hang on the very first window
+                        # -- a bare 10ms / 200ms = 5% of a core, and in
+                        # practice this breaks below roughly HALF that,
+                        # ~2.5% of a core: a share that thin can land its
+                        # whole window's worth of scheduled CPU time either
+                        # side of a tick boundary the kernel has already
+                        # rounded down, so the SAME genuinely-advancing
+                        # child can read one tick of progress in one window
+                        # and zero in the next purely from where the window
+                        # happened to fall relative to the last tick
+                        # boundary -- and a single zero-progress window is
+                        # enough to be read as the hang this watchdog exists
+                        # to kill. No fix lands here: nothing below this
+                        # engine's own scheduling of the window (a wider
+                        # window, or averaging across more than one) would
+                        # change that without changing the fail-fast bound
+                        # task 001a exists to guarantee.
                         now = process_cpu_seconds(self._proc.pid)
                         if now is not None and now > cpu:
                             cpu = now          # starved, not stuck: re-arm

@@ -30,6 +30,7 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
 from tests.conftest import supervisor_factory
+from tests.flows.flowlib import wait_engine_exit
 
 __all__ = ["engine_factory"]
 
@@ -359,7 +360,7 @@ def test_instant_refused_connection_recovers_and_the_job_completes(engine_factor
             "STUB_INBAND_ERROR_MESSAGE": REFUSED,
             "RALPHD_INFRA_OUTAGE_BUDGET_S": "60",
         })
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
@@ -388,7 +389,7 @@ def test_broken_credentials_still_fail_fast_not_after_the_outage_budget(
     e = engine_factory(
         job={"on_complete": "exit", "max_approaches": 3, "iterations": 30},
         stub_env={"STUB_INSTANT_FAIL_COUNT": "10"})
-    assert e.proc.wait(timeout=60) == 1
+    assert wait_engine_exit(e, timeout=60) == 1
     elapsed = time.monotonic() - started
     assert elapsed < 30, f"failed fast? took {elapsed:.1f}s (4h outage budget)"
 

@@ -22,12 +22,13 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import RALPHD_ENGINE, wait_hold_entered
+from tests.flows.flowlib import wait_engine_exit
 
 
 # --------------------------------------------------------------------------
 def test_happy_path_exit_mode(engine_factory):
     e = engine_factory(job={"on_complete": "exit"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
     assert status["verdict"] == "verified"
@@ -46,7 +47,7 @@ def test_happy_path_exit_mode(engine_factory):
 def test_review_rejection_starts_new_approach(engine_factory):
     e = engine_factory(job={"on_complete": "exit"},
                        stub_env={"STUB_REVIEW_FAILS": "1"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
     assert status["approach"] == 2
@@ -79,7 +80,7 @@ def test_budget_exhaustion_fails_job(engine_factory):
     e = engine_factory(job={"on_complete": "exit", "iterations": 2,
                             "max_approaches": 1},
                        stub_env={"STUB_TASKS": "5"})
-    assert e.proc.wait(timeout=60) == 1
+    assert wait_engine_exit(e, timeout=60) == 1
     status = json.loads((e.run_dir / "status.json").read_text())
     # Task 011 (v0.24 requirement C.1, #169): a plain out-of-budget ending
     # now holds `timed_out` (verdict null) through the same `_finish_
@@ -115,7 +116,7 @@ def test_budget_exhausted_with_all_tasks_completed_holds_timed_out(engine_factor
         e = engine_factory(job={"on_complete": "exit", "iterations": 3,
                                 "max_approaches": 1},
                            stub_env=stub_env)
-        assert e.proc.wait(timeout=60) == 1
+        assert wait_engine_exit(e, timeout=60) == 1
         status = json.loads((e.run_dir / "status.json").read_text())
         assert status["state"] == "timed_out", stub_review_fails
         assert status["verdict"] is None, stub_review_fails
@@ -206,7 +207,7 @@ def test_api_observation_and_idle_lifecycle(engine_factory):
     assert e.proc.poll() is None
     code, _ = e.api("POST", "/shutdown")
     assert code == 200
-    assert e.proc.wait(timeout=10) == 0
+    assert wait_engine_exit(e, timeout=10) == 0
 
 
 def test_steering_reaches_next_iteration(engine_factory, tmp_path):
@@ -224,7 +225,7 @@ def test_steering_reaches_next_iteration(engine_factory, tmp_path):
                                             "name": "hint"})
     assert code == 202 and res["file"] == "001-hint.md"
     hold_file.touch()  # release: let the held worker iteration proceed
-    assert e.proc.wait(timeout=90) == 0
+    assert wait_engine_exit(e, timeout=90) == 0
     # the stub records steering text it saw in the final worker prompt
     saw = (e.run_dir / ".stub-saw-steering").read_text()
     assert "prefer the shortcut" in saw
@@ -267,7 +268,7 @@ def test_abort_via_api(engine_factory, tmp_path):
     code, s = e.api("GET", "/status")
     assert code == 200 and s["state"] == "aborted"
     e.api("POST", "/shutdown")
-    assert e.proc.wait(timeout=10) == 1
+    assert wait_engine_exit(e, timeout=10) == 1
 
 
 def test_terminal_status_surfaces_unconsumed_steering(engine_factory, tmp_path):
@@ -302,7 +303,7 @@ def test_terminal_status_surfaces_unconsumed_steering(engine_factory, tmp_path):
     assert "001-stranded.md" not in consumed
 
     e.api("POST", "/shutdown")
-    assert e.proc.wait(timeout=10) == 1
+    assert wait_engine_exit(e, timeout=10) == 1
 
 
 def test_steering_during_review_iteration_never_silently_dropped(engine_factory, tmp_path):
@@ -378,7 +379,7 @@ def test_steering_during_review_iteration_never_silently_dropped(engine_factory,
     assert not reported_it
 
     e.api("POST", "/shutdown")
-    e.proc.wait(timeout=10)
+    wait_engine_exit(e, timeout=10)
 
 
 def test_huge_output_line_does_not_kill_job(engine_factory):
@@ -398,7 +399,7 @@ def test_huge_output_line_does_not_kill_job(engine_factory):
     """
     e = engine_factory(job={"on_complete": "exit"},
                        stub_env={"STUB_HUGE_LINE": "1"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
     assert status["verdict"] == "verified"
@@ -905,7 +906,7 @@ def test_vigilant_three_strikes_are_labelled_and_routed_to_review(engine_factory
              "iterations": 20, "max_approaches": 1},
         stub_env={"STUB_VERIFY_FAILS": "999"},
     )
-    assert e.proc.wait(timeout=120) == 0
+    assert wait_engine_exit(e, timeout=120) == 0
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded" and status["verdict"] == "verified"
@@ -952,7 +953,7 @@ def test_non_vigilant_no_verify_iterations(engine_factory):
     """Non-vigilant mode: no verify iterations are produced; the job runs the
     standard planning → worker×n → review sequence and ends succeeded."""
     e = engine_factory(job={"on_complete": "exit"})  # vigilant not set
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
@@ -982,7 +983,7 @@ def test_docker_siblings_guidance_in_prompt(engine_factory):
                        stub_env={"RALPHD_HOST_WORKSPACE": "/host/path/ws",
                                  "RALPHD_HOST_RUN_DIR": "/host/path/run",
                                  "RALPHD_RUN_ID": "e2e"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     prompt = (e.run_dir / "iterations" / "0001" / "prompt.md").read_text()
     assert "## Docker siblings" in prompt
     assert "/host/path/ws" in prompt
@@ -992,7 +993,7 @@ def test_docker_siblings_guidance_in_prompt(engine_factory):
 
 def test_no_docker_siblings_guidance_without_env(engine_factory):
     e = engine_factory(job={"on_complete": "exit"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     prompt = (e.run_dir / "iterations" / "0001" / "prompt.md").read_text()
     assert "Docker siblings" not in prompt
 
@@ -1070,7 +1071,7 @@ def test_second_engine_on_locked_run_dir_refused_first_keeps_serving(
     # engine_factory() reuses the same tmp_path -> same run_dir/config_dir,
     # so e2 points at the exact run dir e1 already holds the flock on.
     e2 = engine_factory(job={"on_complete": "idle"})
-    rc = e2.proc.wait(timeout=15)
+    rc = wait_engine_exit(e2, timeout=15)
     out = e2.proc.stdout.read()
 
     assert rc == 3, f"expected documented lock-refused exit code 3, got {rc}: {out}"
@@ -1090,7 +1091,7 @@ def test_locked_run_dir_available_again_after_sigkill(engine_factory):
     e1.wait_api()
 
     e1.proc.kill()  # SIGKILL, not a pattern-based pkill; we own this PID
-    assert e1.proc.wait(timeout=10) == -9 or e1.proc.returncode is not None
+    assert wait_engine_exit(e1, timeout=10) == -9 or e1.proc.returncode is not None
 
     e2 = engine_factory(job={"on_complete": "idle"})
     e2.wait_api(timeout=15)
@@ -1197,7 +1198,7 @@ def test_get_logs_follow_streams_across_iteration_boundaries(engine_factory):
 
     # engine stays up (idle mode); shut it down cleanly
     e.api("POST", "/shutdown")
-    assert e.proc.wait(timeout=10) == 0
+    assert wait_engine_exit(e, timeout=10) == 0
 
 
 def test_task_in_progress_visible_while_worker_iteration_running(engine_factory, tmp_path):
@@ -1355,4 +1356,4 @@ def test_worker_dispatch_write_records_assigned_task_and_tier(engine_factory, tm
     hold_file.touch()  # release: let the held worker iteration finish
     e.wait_state(("succeeded",))
     e.api("POST", "/shutdown")
-    assert e.proc.wait(timeout=10) == 0
+    assert wait_engine_exit(e, timeout=10) == 0

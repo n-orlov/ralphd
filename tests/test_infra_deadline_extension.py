@@ -32,6 +32,7 @@ from test_infra_retry_schedule import (
 )
 
 from ralphd.engine.state import parse_utc
+from tests.flows.flowlib import wait_engine_exit
 
 __all__ = ["engine_factory"]
 
@@ -146,7 +147,7 @@ def test_status_json_records_infra_wait_total_and_extended_deadline(engine_facto
             "RALPHD_INFRA_STARTUP_TIMEOUT": "1",
             "RALPHD_INFRA_OUTAGE_BUDGET_S": "60",
         })
-    assert e.proc.wait(timeout=90) == 0
+    assert wait_engine_exit(e, timeout=90) == 0
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"

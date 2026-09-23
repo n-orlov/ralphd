@@ -43,6 +43,7 @@ from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir
 from tests.conftest import supervisor_factory
+from tests.flows.flowlib import wait_engine_exit
 
 
 # --------------------------------------------------------------------------
@@ -272,7 +273,7 @@ def test_a_sigtermed_engine_records_reflect_as_not_attempted(engine_factory, tmp
     e.wait_state(("running",), timeout=30)
 
     e.proc.send_signal(signal.SIGTERM)
-    assert e.proc.wait(timeout=60) != 0, "a signalled run is not a success"
+    assert wait_engine_exit(e, timeout=60) != 0, "a signalled run is not a success"
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "aborted"

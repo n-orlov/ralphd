@@ -25,8 +25,8 @@ Everything is read back off the run's own record -- `events.jsonl`,
 from __future__ import annotations
 
 from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
-                                 status, tasks, wait_status_terminal,
-                                 wait_terminal_recorded)
+                                 status, tasks, wait_engine_exit,
+                                 wait_status_terminal, wait_terminal_recorded)
 
 # The reference path, in the step vocabulary `flowlib.flow_steps` defines.
 # Two tasks (the stub planner's default), one worker iteration each, one
@@ -48,7 +48,7 @@ HAPPY_PATH_STEPS = [
 
 def test_the_happy_path_walks_plan_two_workers_review_and_exits(engine_factory):
     run = engine_factory(job={"run_id": "flow-happy-exit", "on_complete": "exit"})
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow happy path: the engine did not exit 0 under `on_complete: exit`")
 
     # The barrier (task 006, #169): read the terminal state through

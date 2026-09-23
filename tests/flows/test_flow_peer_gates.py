@@ -105,7 +105,8 @@ from __future__ import annotations
 import json
 
 from tests.flows.flowlib import (
-    assert_step_sequence, events_of, flow_steps, status, tasks)
+    assert_step_sequence, events_of, flow_steps, status, tasks,
+    wait_engine_exit)
 
 
 def test_a_plan_review_objection_spends_a_revision_then_approves(engine_factory):
@@ -113,7 +114,7 @@ def test_a_plan_review_objection_spends_a_revision_then_approves(engine_factory)
         job={"run_id": "flow-plan-review-objection", "on_complete": "exit",
              "peer_plan_review": True, "max_approaches": 1},
         stub_env={"STUB_TASKS": "1", "STUB_PLAN_REVIEW_OBJECTIONS": "1"})
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow peer gates (plan review objection): the engine did not exit 0 "
         "after the second plan_review invocation approved")
 
@@ -165,7 +166,7 @@ def test_a_verdict_gate_rejection_with_a_non_curable_finding_ends_the_run_even_w
         job={"run_id": "flow-verdict-gate-reject", "on_complete": "exit",
              "peer_verdict_gate": True, "max_approaches": 2},
         stub_env={"STUB_TASKS": "1", "STUB_VERDICT_GATE_REJECT_COUNT": "1"})
-    code = run.proc.wait(timeout=60)
+    code = wait_engine_exit(run, timeout=60)
     assert code != 0, (
         "flow peer gates (verdict gate reject): a run ended by a "
         "non-curable verdict_gate rejection must not exit 0")
@@ -228,7 +229,7 @@ def test_vigilant_mode_and_the_verdict_gate_compose_in_one_run(engine_factory):
         job={"run_id": "flow-vigilant-plus-verdict-gate", "on_complete": "exit",
              "vigilant": True, "peer_verdict_gate": True, "max_approaches": 1},
         stub_env={"STUB_TASKS": "2"})
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow peer gates (vigilant + verdict gate): the engine did not exit 0 "
         "after both per-task verifies and the gate agreed")
 
@@ -318,7 +319,7 @@ def test_both_peer_gates_compose_in_one_run(engine_factory):
              "max_approaches": 2},
         stub_env={"STUB_TASKS": "1", "STUB_PLAN_REVIEW_OBJECTIONS": "1",
                   "STUB_VERDICT_GATE_REJECT_COUNT": "1"})
-    code = run.proc.wait(timeout=60)
+    code = wait_engine_exit(run, timeout=60)
     assert code != 0, (
         "flow peer gates (both gates): a run ended by a non-curable "
         "verdict_gate rejection must not exit 0")
@@ -376,7 +377,7 @@ def test_a_malformed_verdict_gate_reply_defaults_to_rejected_and_fails_open(
         job={"run_id": "flow-verdict-gate-malformed", "on_complete": "exit",
              "peer_verdict_gate": True, "max_approaches": 1},
         stub_env={"STUB_TASKS": "1", "STUB_VERDICT_GATE_MALFORMED_COUNT": "1"})
-    code = run.proc.wait(timeout=60)
+    code = wait_engine_exit(run, timeout=60)
     assert code != 0, (
         "flow peer gates (verdict gate malformed): a run that never got a "
         "verified verdict_gate must not exit 0")
@@ -445,7 +446,7 @@ def test_an_oversized_unstaged_task_is_refused_at_ingestion_then_a_staged_resubm
              "peer_plan_review": True, "max_approaches": 1},
         stub_env={"STUB_TASKS_JSON": oversized_only,
                   "STUB_PLANNING_RETRY_TASKS_JSON": staged})
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow peer gates (oversized task staged): the engine did not exit "
         "0 after the staged resubmission's own plan_review invocation "
         "approved")
@@ -575,7 +576,7 @@ def test_a_near_miss_oversized_task_that_clears_ingestion_is_refused_by_plan_rev
         stub_env={"STUB_TASKS_JSON": near_miss,
                   "STUB_PLANNING_AFTER_OBJECTION_TASKS_JSON": genuinely_staged,
                   "STUB_PLAN_REVIEW_OVERSIZED_OBJECTION": "1"})
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow peer gates (plan review refuses oversized): the engine did not "
         "exit 0 after the staged resubmission was approved")
 

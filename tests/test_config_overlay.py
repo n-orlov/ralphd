@@ -24,6 +24,7 @@ import pytest
 from tests.conftest import STUB_PI, LiveRun, _with_zero_backoff, free_port
 
 from tests.conftest import RALPHD_ENGINE, with_ralphd_importable
+from tests.flows.flowlib import wait_engine_exit
 
 
 def _chmod_tree_ro(root: Path) -> None:
@@ -153,7 +154,7 @@ def test_config_mutation_persists_in_overlay_not_readonly_config(overlay_engine,
     assert stat.S_IMODE(e.config_dir.stat().st_mode) == 0o555
     assert not (e.config_dir / "prompts").exists()
 
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     status_json = json.loads((e.run_dir / "status.json").read_text())
     assert status_json["state"] == "succeeded"
 
@@ -209,4 +210,4 @@ def test_prompt_override_rejects_empty_body(overlay_engine, tmp_path):
         assert exc.code == 422
     assert raised
     release.touch()
-    e.proc.wait(timeout=180)
+    wait_engine_exit(e, timeout=180)

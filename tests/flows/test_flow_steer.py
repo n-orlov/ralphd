@@ -50,7 +50,8 @@ from __future__ import annotations
 import json
 
 from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
-                                 status, tasks, wait_step_recorded)
+                                 status, tasks, wait_engine_exit,
+                                 wait_step_recorded)
 
 INSERTED_TASK = {"id": "steer-inserted", "title": "landed by the steer hat",
                  "successCriteria": "criteria via steer",
@@ -135,7 +136,7 @@ def test_a_steer_message_is_received_consumed_and_settled_with_a_task_insert_and
         f"{code} {res}")
 
     hold_file.touch()  # release: let the held worker iteration finish task 1
-    assert run.proc.wait(timeout=60) == 0, (
+    assert wait_engine_exit(run, timeout=60) == 0, (
         "flow steer: the engine did not exit 0")
 
     assert_step_sequence(flow_steps(run), STEER_PATH_STEPS, flow="flow steer")
@@ -307,7 +308,7 @@ def test_a_real_steer_iteration_applies_a_task_insert_through_the_spool(
                       {"message": "insert a task", "name": "spool"})
     assert code == 202 and res["file"] == "001-spool.md"
     hold_file.touch()  # release: let the held worker iteration proceed
-    assert e.proc.wait(timeout=90) == 0
+    assert wait_engine_exit(e, timeout=90) == 0
 
     responses = _responses(e)
     assert len(responses) == 1
@@ -361,7 +362,7 @@ def test_a_malformed_spool_request_is_refused_without_ending_the_run(
                       {"message": "drop a bad request", "name": "bad"})
     assert code == 202 and res["file"] == "001-bad.md"
     hold_file.touch()  # release: let the held worker iteration proceed
-    assert e.proc.wait(timeout=90) == 0
+    assert wait_engine_exit(e, timeout=90) == 0
 
     st = status(e)
     assert st.get("state") == "succeeded", st
@@ -411,7 +412,7 @@ def test_a_task_update_status_move_still_goes_through_the_transition_validator(
                       {"message": "insert then illegally jump", "name": "jump"})
     assert code == 202 and res["file"] == "001-jump.md"
     hold_file.touch()  # release: let the held worker iteration proceed
-    assert e.proc.wait(timeout=90) == 0
+    assert wait_engine_exit(e, timeout=90) == 0
 
     responses = _responses(e)
     assert len(responses) == 2

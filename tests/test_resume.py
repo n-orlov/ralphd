@@ -12,6 +12,7 @@ needing Docker.
 from __future__ import annotations
 
 import json
+from tests.flows.flowlib import wait_engine_exit
 
 
 __all__ = ["engine_factory"]
@@ -28,7 +29,7 @@ def test_resume_stale_running_status_skips_planning_and_completes(engine_factory
     e1 = engine_factory(job={"on_complete": "exit", "iterations": 2,
                              "max_approaches": 1},
                         stub_env={"STUB_TASKS": "5"})
-    assert e1.proc.wait(timeout=60) == 1
+    assert wait_engine_exit(e1, timeout=60) == 1
     status1 = json.loads((e1.run_dir / "status.json").read_text())
     # Task 011 (v0.24 requirement C.1, #169): a plain out-of-budget ending
     # now holds `timed_out` (verdict null) through the same `_finish_
@@ -57,7 +58,7 @@ def test_resume_stale_running_status_skips_planning_and_completes(engine_factory
                              "max_approaches": 1},
                         stub_env={"STUB_TASKS": "5"})
     assert e2.run_dir == e1.run_dir  # sanity: genuinely the same run dir
-    assert e2.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e2, timeout=60) == 0
 
     status2 = json.loads((e2.run_dir / "status.json").read_text())
     assert status2["state"] == "succeeded"
@@ -99,7 +100,7 @@ def test_fresh_run_dir_still_plans_normally(engine_factory):
     iterations) is completely unaffected -- planning still runs first, and
     iteration numbering still starts at 1."""
     e = engine_factory(job={"on_complete": "exit"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["state"] == "succeeded"
     assert status["verdict"] == "verified"

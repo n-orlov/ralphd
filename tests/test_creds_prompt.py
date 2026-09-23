@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import LiveRun
+from tests.flows.flowlib import wait_engine_exit
 
 SECRET_VALUE = "sekret-token-do-not-leak-prompt-abc123"
 SOURCING_RULE = "set -a; . ~/.creds/<name>.env; set +a"
@@ -45,7 +46,7 @@ def test_every_phase_prompt_lists_creds_inventory_no_values(creds_prompt_engine,
     # creds dir must exist under tmp_path/"config" before construction.
     _write_creds(tmp_path / "config")
     e = creds_prompt_engine(stub_env={"HOME": str(fake_home)})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     out = e.proc.stdout.read()
 
     all_prompts = (e.run_dir / ".stub-all-prompts").read_text()
@@ -81,7 +82,7 @@ def test_no_creds_no_credentials_section(creds_prompt_engine, tmp_path):
     fake_home.mkdir()
     e = creds_prompt_engine(job={"iterations": 3, "max_approaches": 1},
                              stub_env={"HOME": str(fake_home)})
-    e.proc.wait(timeout=30)
+    wait_engine_exit(e, timeout=30)
     all_prompts = (e.run_dir / ".stub-all-prompts").read_text()
     prompts = [p for p in all_prompts.split("===PROMPT===") if p.strip()]
     assert prompts

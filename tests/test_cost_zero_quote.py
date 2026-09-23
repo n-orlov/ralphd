@@ -45,6 +45,7 @@ from ralphd.engine.state import (
     format_cost,
     is_zero_quote,
 )
+from tests.flows.flowlib import wait_engine_exit
 
 __all__ = ["ctl", "engine_factory", "unix_sock"]
 
@@ -393,7 +394,7 @@ def test_the_notice_names_the_pricing_anomaly_report_by_path():
 def test_a_zero_quoting_run_records_unknown_cost_end_to_end(engine_factory):
     e = engine_factory(job={"on_complete": "exit", "iterations": 6},
                        stub_env={"STUB_ZERO_COST_COUNT": "99"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     metas = [json.loads(p.read_text())
              for p in sorted(e.run_dir.glob("iterations/*/meta.json"))]
@@ -430,7 +431,7 @@ def test_a_zero_quoting_run_with_a_free_declaration_stays_zero(engine_factory, t
                             "model": "ollama/llama-4", "pricing": _FREE_MAP},
                        stub_env={"STUB_ZERO_COST_COUNT": "99",
                                  "HOME": str(fake_home)})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     metas = [json.loads(p.read_text())
              for p in sorted(e.run_dir.glob("iterations/*/meta.json"))]
@@ -448,7 +449,7 @@ def test_a_zero_quoting_run_with_a_rate_reports_derived_money(engine_factory):
     e = engine_factory(job={"on_complete": "exit", "iterations": 6,
                             "model": "aigw-openai/gpt-5", "pricing": _FREE_MAP},
                        stub_env={"STUB_ZERO_COST_COUNT": "99"})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     usage = json.loads((e.run_dir / "status.json").read_text())["usage"]
     assert usage["costStatus"] == "derived"

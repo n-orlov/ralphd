@@ -40,6 +40,7 @@ from ralphd.log_merge import (
     iteration_attempt_dirs,
     iteration_numbers,
 )
+from tests.flows.flowlib import wait_engine_exit
 
 __all__ = ["engine_factory"]
 
@@ -281,7 +282,7 @@ def test_a_sigkilled_iterations_three_files_survive_the_resume(engine_factory, t
 
     pid = e1.proc.pid  # this specific pid, never a pattern
     os.kill(pid, signal.SIGKILL)
-    e1.proc.wait(timeout=10)
+    wait_engine_exit(e1, timeout=10)
 
     # Snapshot the pre-crash files only AFTER the process is confirmed dead
     # (not at `victim`'s first non-empty read, above). `crashed_worker()`
@@ -306,7 +307,7 @@ def test_a_sigkilled_iterations_three_files_survive_the_resume(engine_factory, t
         stub_env={"STUB_TASKS": "3", "STUB_SLEEP": "0", "STUB_RICH_EVENTS": "1"},
     )
     assert e2.run_dir == e1.run_dir
-    assert e2.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e2, timeout=60) == 0
 
     # the slot number was reused, as before...
     numbers = iteration_numbers(e2.run_dir)

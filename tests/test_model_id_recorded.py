@@ -36,6 +36,7 @@ from tests.conftest import LiveRun
 
 from ralphd.engine.runner import IterationResult, PiRunner
 from ralphd.engine.state import model_ids
+from tests.flows.flowlib import wait_engine_exit
 
 __all__ = ["ctl", "unix_sock"]
 
@@ -165,7 +166,7 @@ def model_engine(tmp_path):
 
 def test_a_run_over_a_gateway_shaped_id_records_both_ids(model_engine):
     e = model_engine({"model": GATEWAY_MODEL})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["model"] == GATEWAY_MODEL
@@ -185,7 +186,7 @@ def test_an_unpinned_run_records_the_model_pi_chose(model_engine):
     """The exact defect: nothing pinned, so `meta["model"]` is null -- and
     run state must still name the model that answered."""
     e = model_engine()
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     metas = [json.loads(p.read_text())
              for p in sorted(e.run_dir.glob("iterations/*/meta.json"))]
@@ -205,7 +206,7 @@ def test_a_run_whose_provider_reports_a_full_ref_records_no_raw_id(model_engine,
     e = model_engine({"model": "stubby/stub-model-1"},
                      stub_env={"STUB_MODEL": "stubby/stub-model-1",
                                "HOME": str(fake_home)})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     assert status["model"] == "stubby/stub-model-1"
     assert status["modelRaw"] is None

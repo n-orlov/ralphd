@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import LiveRun
+from tests.flows.flowlib import wait_engine_exit
 
 SECRET_VALUE = "sekret-token-do-not-leak-xyz789"
 
@@ -60,7 +61,7 @@ def test_creds_placed_by_engine_not_entrypoint_no_value_leak(creds_engine, tmp_p
     e = creds_engine(stub_env={"HOME": str(fake_home)})
     # entrypoint.sh is not run in this harness (we exec ralphd-engine
     # directly) -- proving placement happens without it.
-    assert e.proc.wait(timeout=30) == 0
+    assert wait_engine_exit(e, timeout=30) == 0
     out = e.proc.stdout.read()
 
     # *.env files placed at $HOME/.creds/<name>.env, mode 0600
@@ -120,5 +121,5 @@ def test_no_creds_dir_is_a_clean_noop(creds_engine, tmp_path):
     fake_home = tmp_path / "fakehome2"
     fake_home.mkdir()
     e = creds_engine(stub_env={"HOME": str(fake_home)})
-    assert e.proc.wait(timeout=30) == 0
+    assert wait_engine_exit(e, timeout=30) == 0
     assert not (fake_home / ".creds").exists()

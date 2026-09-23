@@ -36,6 +36,7 @@ from ralphd.engine.pricing import PricingMap
 from ralphd.engine.runner import IterationResult, PiRunner
 from ralphd.engine.state import COST_UNAVAILABLE, cost_status, format_cost
 from ralphd.log_merge import boundary_line
+from tests.flows.flowlib import wait_engine_exit
 
 __all__ = ["ctl", "engine_factory", "unix_sock"]
 
@@ -374,7 +375,7 @@ def test_unpriced_run_with_a_pricing_map(engine_factory, model, expect_derived, 
                             "model": model, "pricing": MAP},
                        stub_env={"STUB_UNPRICED_COUNT": "99",
                                  "HOME": str(fake_home)})
-    assert e.proc.wait(timeout=ENGINE_EXIT_WAIT_S) == 0
+    assert wait_engine_exit(e, timeout=ENGINE_EXIT_WAIT_S) == 0
 
     metas = [json.loads(p.read_text())
              for p in sorted(e.run_dir.glob("iterations/*/meta.json"))]

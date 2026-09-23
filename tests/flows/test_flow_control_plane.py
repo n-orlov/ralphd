@@ -43,7 +43,7 @@ import json
 import urllib.error
 import urllib.request
 
-from tests.flows.flowlib import assert_step_sequence, flow_steps
+from tests.flows.flowlib import assert_step_sequence, flow_steps, wait_engine_exit
 
 API_TOKEN = "flow-control-plane-api-token"
 CONTROL_TOKEN = "flow-control-plane-control-token"
@@ -144,7 +144,7 @@ def test_control_plane_flow_walks_the_happy_path_then_gates_by_token(engine_fact
 
     # The accepted shutdown call is real: the engine takes it and exits on
     # its own, no `LiveRun.stop()` teardown kill needed.
-    rc = run.proc.wait(timeout=10)
+    rc = wait_engine_exit(run, timeout=10)
     assert rc == 0, (
         f"flow control plane: the engine should exit 0 after an authorized "
         f"/shutdown, got {rc}")

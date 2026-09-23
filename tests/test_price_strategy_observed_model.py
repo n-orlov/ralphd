@@ -45,6 +45,7 @@ from ralphd.engine import pricing_aws as aws
 from ralphd.engine.pricing import resolve_pricing
 from ralphd.engine.runner import IterationResult, PiRunner
 from ralphd.engine.state import COST_UNAVAILABLE, format_cost, model_ids
+from tests.flows.flowlib import wait_engine_exit
 
 # The gateway-shaped pair pi reports for this project's own route: the two
 # halves that `state.model_ids` joins into GATEWAY_MODEL.
@@ -209,7 +210,7 @@ def observed_engine(tmp_path):
 
 def test_an_unpinned_engine_run_reports_derived_money(observed_engine):
     e = observed_engine()
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
 
     metas = [json.loads(p.read_text())
              for p in sorted(e.run_dir.glob("iterations/*/meta.json"))]
@@ -239,7 +240,7 @@ def test_an_engine_run_pinning_an_unknown_ref_stays_unavailable(observed_engine,
     fake_home = tmp_path / "fakehome"
     fake_home.mkdir()
     e = observed_engine({"model": UNKNOWN_REF}, stub_env={"HOME": str(fake_home)})
-    assert e.proc.wait(timeout=60) == 0
+    assert wait_engine_exit(e, timeout=60) == 0
     status = json.loads((e.run_dir / "status.json").read_text())
     # the observed id is recorded (task 012) but deliberately NOT priced
     assert status["model"] == GATEWAY_MODEL

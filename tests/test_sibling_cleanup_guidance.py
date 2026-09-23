@@ -22,6 +22,7 @@ import pytest
 from tests.conftest import LiveRun
 
 from ralphd.engine.loop import LoopSupervisor
+from tests.flows.flowlib import wait_engine_exit
 
 HOST_ENV = {"RALPHD_HOST_WORKSPACE": "/host/path/ws",
             "RALPHD_HOST_RUN_DIR": "/host/path/run",
@@ -64,7 +65,7 @@ def _prompts(e: LiveRun) -> list[str]:
 
 def test_every_prompt_forbids_the_run_label_only_cleanup(engine):
     e = engine(stub_env=HOST_ENV)
-    e.proc.wait(timeout=60)
+    wait_engine_exit(e, timeout=60)
     prompts = _prompts(e)
     assert prompts
     for p in prompts:
@@ -81,7 +82,7 @@ def test_sibling_run_example_carries_both_labels(engine):
     """The copy-pasteable `docker run` recipe must itself set role=sibling,
     otherwise the safe cleanup filter would never match anything."""
     e = engine(stub_env=HOST_ENV)
-    e.proc.wait(timeout=60)
+    wait_engine_exit(e, timeout=60)
     for p in _prompts(e):
         run_lines = [ln for ln in p.splitlines() if "docker run --rm" in ln]
         assert run_lines
@@ -100,7 +101,7 @@ def test_no_cleanup_guidance_without_docker_access(engine):
     # flake (tests/test_reflection.py,
     # tests/flows/test_flow_crash_resume_refunds.py, formerly
     # tests/test_crash_consistency.py, folded by task 021).
-    e.proc.wait(timeout=120)
+    wait_engine_exit(e, timeout=120)
     for p in _prompts(e):
         assert "Docker siblings" not in p
         assert "ralphd.role=sibling" not in p
