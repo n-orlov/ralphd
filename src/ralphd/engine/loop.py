@@ -958,6 +958,44 @@ class LoopSupervisor:
             self._operator_interrupted = True
         return delivered
 
+    def interrupt_or_wake(self) -> dict:
+        """`POST /interrupt`'s real dispatch (v0.25 task 028b, PRD
+        requirement K.3/K.4, #267): tell *a running iteration was signalled*
+        apart from *an idle loop was woken* instead of the pre-028b lie --
+        `409 "no iteration running"` the instant nothing was running, even
+        though `POST /interrupt`'s own `{"message": ...}` body had already
+        landed via `run.add_steering` a few lines earlier (the exact
+        `deck-phase4c` incident K cites).
+
+        Delegates the "is something running" question to `interrupt()`
+        above unchanged -- its bool contract (and the
+        `_operator_interrupted`-shielding rule inside it) is exactly what
+        `test_stale_interrupt_with_nothing_running_does_not_shield` and
+        `test_operator_interrupt_during_the_attempt_is_not_retried` already
+        pin, so this wraps it rather than duplicating or altering it.
+
+        When nothing was running, this rings `self._deferred_wake` -- the
+        SAME bell task 028a's deferred wait already races its timer
+        against (and, task 028c, the infra-backoff wait will too) -- so a
+        loop truly parked in one of those waits wakes immediately instead
+        of sitting out its bound unreachably; a loop that was simply
+        between iterations (nothing waiting on the bell at all) is
+        unaffected by the `set()`, which is exactly the "idle loop was
+        woken" case: there was no live iteration to signal, so waking the
+        one thing that CAN be asleep is the whole of what "interrupt an
+        idle loop" can mean.
+
+        Returns a dict, never a bare bool, so the two outcomes can never be
+        confused for one another by a caller that forgets which sense a
+        bool was in -- `POST /interrupt` (`api.py`) spreads this straight
+        into its JSON body and `ralphctl steer --now`/`ralphctl interrupt`
+        (`cli/main.py`) key off `target` to report which one happened.
+        """
+        if self.interrupt():
+            return {"target": "iteration", "signalled": True, "woken": False}
+        self._deferred_wake.set()
+        return {"target": "idle", "signalled": False, "woken": True}
+
     def pause(self, reason: str = "") -> None:
         """Hold the loop at the next iteration boundary (task 015's
         `pause`/`resume` seam, `POST /pause`).

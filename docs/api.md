@@ -832,11 +832,33 @@ current rejection signature to match, leaves whatever pause is in effect
 exactly as it was.
 
 ### `POST /interrupt`
-SIGINTs the current agent process (the iteration ends as `interrupted`; the loop
-proceeds to the next iteration immediately, picking up any pending steering).
-No-op `409` if no iteration is running. Body optional:
-`{"message": "..."}` — convenience combo, equivalent to `POST /steering` then
-interrupt.
+v0.25 task 028b (PRD requirement K.3/K.4, #267) reworked this: it used to
+lie with a `409 "no iteration running"` the instant nothing was running,
+*after* an accompanying `{"message": ...}` had already been enqueued via
+`POST /steering`'s own path — the caller was told the request failed about
+a message that had, in fact, landed. Now:
+
+- While the loop is alive but idle — between iterations, in a deferred
+  wait, in a backoff wait — this SIGINTs the current agent process if one
+  is running (the iteration ends as `interrupted`; the loop proceeds to
+  the next iteration immediately, picking up any pending steering), OR, if
+  none is running, wakes the idle wait itself (the same bell a deferred
+  wait and an infra-backoff wait already race their own timers against) so
+  the loop re-enters its dispatch pass immediately rather than sitting out
+  its bound unreachably. Both cases answer `200`, with a body that says
+  which one happened: `{"interrupted": true, "target": "iteration",
+  "signalled": true, "woken": false}` when a running iteration was
+  signalled, `{"interrupted": true, "target": "idle", "signalled": false,
+  "woken": true}` when an idle loop was woken.
+- `409` is returned ONLY when the job has already finished (`state` is
+  `succeeded`/`failed`/`aborted`/`timed_out`) — there is nothing left to
+  interrupt, running or idle, and this is checked BEFORE any steering in
+  the request body is enqueued, so a refusal never leaves an enqueued
+  message behind either.
+
+Body optional: `{"message": "..."}` — convenience combo, equivalent to
+`POST /steering` then interrupt; the message is enqueued whenever the
+handler does not refuse, whichever of the two 200 shapes follows.
 
 ### `POST /pause` / `POST /resume`
 Pause finishes the current iteration, then holds before the next one; resume

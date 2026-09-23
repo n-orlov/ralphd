@@ -1565,7 +1565,7 @@ Send steering. Message from arg, `--file <f>`, or stdin.
 
 | Option | Meaning |
 |--------|---------|
-| `--now` | also SIGINT the current iteration so guidance applies immediately |
+| `--now` | also SIGINT the current iteration so guidance applies immediately — or, if the loop is idle (between iterations, in a deferred wait, in a backoff wait), wake it instead (v0.25 task 028b, PRD requirement K.3/K.4, #267); either way this exits `0` and the printed line says which of the two happened |
 | `--name <slug>` | steering file slug |
 | `--list` | **show** this run's steering messages instead of sending one (task 018, #17) |
 
@@ -1861,7 +1861,14 @@ exclusion.
 
 ### `ralphctl interrupt <run-id>`
 
-SIGINT the current iteration without adding steering.
+v0.25 task 028b (PRD requirement K.3/K.4, #267): SIGINTs the current
+iteration if one is running, without adding steering; if none is running
+(the loop is idle between iterations, in a deferred wait, or in a backoff
+wait) it wakes that idle wait instead, so an operator is never told the
+request failed while the loop was simply idle. Exit `0` either way, with the
+printed line naming which happened (`a running iteration was signalled` /
+`an idle loop was woken (nothing was running to signal)`); exit `5` only for
+a job that has already finished.
 
 ### `ralphctl pause <run-id>` / `ralphctl unpause <run-id>`
 

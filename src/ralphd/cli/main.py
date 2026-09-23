@@ -5450,6 +5450,19 @@ def cmd_steer_list(args) -> None:
             print(f"       note: {_steer_preview(notes, width=500)}")
 
 
+def _interrupt_report(res: dict) -> str:
+    """v0.25 task 028b (PRD requirement K.3/K.4, #267): shared wording for
+    `ralphctl interrupt`/`ralphctl steer --now`'s human-readable line,
+    keyed off `POST /interrupt`'s own `target` field (`"iteration"` vs
+    `"idle"`) so the CLI's report matches which of the two 200 shapes the
+    engine actually returned, never a bare "interrupted" that used to be
+    printed even when the engine had lied with a 409.
+    """
+    if res.get("target") == "iteration":
+        return "a running iteration was signalled"
+    return "an idle loop was woken (nothing was running to signal)"
+
+
 def cmd_steer(args):
     if args.list:
         # `--list` is a read: it must not consume stdin, and pairing it with
@@ -5467,10 +5480,11 @@ def cmd_steer(args):
     if args.now:
         res = api(args.run_id, "POST", "/interrupt",
                   {"message": message, "name": args.name})
+        out(args, res, f"steering accepted and {_interrupt_report(res)}: {res}")
     else:
         res = api(args.run_id, "POST", "/steering",
                   {"message": message, "name": args.name})
-    out(args, res, f"steering accepted: {res}")
+        out(args, res, f"steering accepted: {res}")
 
 
 def cmd_rule(args):
@@ -5870,7 +5884,8 @@ def cmd_amend(args):
 
 
 def cmd_interrupt(args):
-    out(args, api(args.run_id, "POST", "/interrupt"), "interrupted")
+    res = api(args.run_id, "POST", "/interrupt")
+    out(args, res, _interrupt_report(res))
 
 
 def cmd_pause(args):

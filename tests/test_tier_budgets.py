@@ -735,7 +735,23 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # --collect-only` at this task's own tip (via `tests.test_tier_
     # budgets.collected`/`_modules`, the same helpers this module's own
     # check calls).
-    "fast": {"tests": 6189, "modules": 419},
+    # task 028b (v0.25 requirement K.3/K.4, #267): fast 6189 -> 6204,
+    # smoke unchanged at 4515 (+15 tests, +1 module, fast-only) for the
+    # new tests/test_interrupt_wake_task028b.py -- `POST /interrupt`'s two
+    # 200 shapes and its 409-enqueues-nothing rule (against a real
+    # `create_app()`), the CLI's matching `steer --now`/`interrupt`
+    # reporting (against a real loopback `ThreadingHTTPServer` stand-in),
+    # and the K.4 guard (a real dispatch pass, real `asyncio.sleep`,
+    # `_run_job_core` driven end to end). The module's own docstring names
+    # "LiveRun" in prose (contrasting this module's approach with one),
+    # which trips `tests/conftest.py`'s smoke-eligibility regex on the
+    # module as a whole -- an accurate sort regardless, since group 2/3
+    # open real sockets/threads and a real timer, not the pure in-process
+    # shape smoke is for. Measured with `.venv/bin/python -m pytest -q -m
+    # <tier> --collect-only` at this task's own tip (via `tests.test_tier_
+    # budgets.collected`/`_modules`, the same helpers this module's own
+    # check calls).
+    "fast": {"tests": 6204, "modules": 420},
     "smoke": {"tests": 4515, "modules": 299},
 }
 

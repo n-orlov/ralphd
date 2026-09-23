@@ -757,11 +757,26 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
 
     @app.post("/interrupt")
     async def interrupt(body: dict | None = None):
+        # v0.25 task 028b (PRD requirement K.3/K.4, #267): `finished()`
+        # gates BEFORE any steering is enqueued -- the measured defect on
+        # `deck-phase4c` was `run.add_steering` landing here and THEN this
+        # handler refusing with a 409 that told the caller the message
+        # never landed. The only refusal left is a genuinely finished run
+        # (`state` already `succeeded`/`failed`/`aborted`/`timed_out`),
+        # which enqueues nothing -- "a refusal leaves no enqueued steering
+        # message behind" is true by construction, not by a second check.
+        # While the loop is alive but idle (between iterations, in a
+        # deferred wait, in a backoff wait) this now answers 200 rather
+        # than lying that no iteration is running: `loop.interrupt_or_wake`
+        # tells a signalled running iteration apart from a woken idle one,
+        # and a message that did land is never reported as a failure
+        # either way.
+        if finished():
+            raise problem(409, "job finished", "no iteration to interrupt")
         if body and body.get("message"):
             run.add_steering(body["message"], body.get("name"))
-        if not loop.interrupt():
-            raise problem(409, "no iteration running")
-        return {"interrupted": True}
+        result = loop.interrupt_or_wake()
+        return {"interrupted": True, **result}
 
     @app.post("/pause")
     async def pause():
