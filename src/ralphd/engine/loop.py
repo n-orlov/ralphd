@@ -307,6 +307,17 @@ class LoopSupervisor:
         # True only while the loop is actually parked in an infra backoff
         # wait: what POST /retry can wake (409 otherwise).
         self._infra_waiting = False
+        # v0.25 task 028a (PRD requirement K.1/K.2, #267): the one bell a
+        # deferred wait (`_sleep_until_earliest_deferred`) races against
+        # its timer via `asyncio.wait(..., return_when=FIRST_COMPLETED)`
+        # -- set by `RunDir.add_steering` (a steer arrived) and by
+        # `_record_abort` below (the operator or a signal ended the run),
+        # never by a poll loop. Registered on `self.run` immediately so
+        # the API's `POST /steering` handler -- which only ever calls
+        # `run.add_steering`, never touches the loop directly -- can ring
+        # it without a new seam of its own.
+        self._deferred_wake = asyncio.Event()
+        self.run.set_wake_event(self._deferred_wake)
         self._abort_reason: str | None = None
         # Task 003 (#11): operator-initiated abort/interrupt bookkeeping,
         # consulted by classify_fault(operator_abort=...) so a SIGINT the
@@ -1222,6 +1233,16 @@ class LoopSupervisor:
             "class": termination_class, "action": "abort", "at": utcnow(),
             "signal": signal, "reason": self._abort_reason,
             "evidence": evidence})
+        # v0.25 task 028a (PRD requirement K.1/K.2, #267): ring the same
+        # bell a deferred wait races its timer against -- an abort ending
+        # the run must wake a loop parked in `_sleep_until_earliest_
+        # deferred` (and, task 028c, the infra-backoff wait) exactly as
+        # promptly as a steer does, rather than sitting out `wait_s`
+        # unreachably. Harmless when nothing is waiting on it: an
+        # `asyncio.Event` with no waiter is just left set, and the next
+        # deferred-wait attempt (if the run somehow had one, which an
+        # ending run never does) clears it before racing its own timer.
+        self._deferred_wake.set()
         self.runner.interrupt()
 
     # -- prompts -----------------------------------------------------------
@@ -5605,44 +5626,67 @@ class LoopSupervisor:
                 and t.get("deferredUntil")]
 
     async def _sleep_until_earliest_deferred(self, tasks_doc: dict) -> bool:
-        """v0.20 task 022 (PRD requirement C.1, #156): nothing is
+        """v0.20 task 022 (PRD requirement C.1, #156), reworked by v0.25
+        task 028a (PRD requirement K.1/K.2, #267 -- the operator-cannot-
+        reach-a-wait incident measured on `deck-phase4c`): nothing is
         runnable this pass (`scheduler.select_next_task` returned `None`)
         and at least one `pending` task is deferred -- sleep until the
         EARLIEST `deferredUntil` among them, bounded by the job's own
         `deadlineAt` (never overshoot the run's own clock chasing a wait
-        that outlives it), and record a `deferred_wait` event naming the
-        bound actually used (`boundedBy`: `"until"` or `"deadlineAt"`).
+        that outlives it) -- but race that ONE timer against
+        `self._deferred_wake` (`asyncio.wait(...,
+        return_when=FIRST_COMPLETED)`, never a poll loop over short sleep
+        slices, which would be a busy wait and would also destroy the
+        exact `waitedS`/`sleptUntil` accounting below). The bell is set by
+        `RunDir.add_steering` (a steer arrived) and by `_record_abort`
+        (the run is ending) -- never by anything that polls.
 
-        Returns `True` iff the task's own `until` was the bound used (and
-        was therefore cleared, ready for the very next dispatch) -- the
-        caller `continue`s the outer dispatch loop only in that case; see
-        the two outcomes below.
+        Exactly one `deferred_wait` event is recorded per call, AFTER the
+        outcome is known, naming which bound the wait was ORIGINALLY
+        aimed at (`until` field, `deadlineAt` field, `sleptUntil` -- the
+        target, unchanged by an early wake) alongside `boundedBy`, which
+        now names which of FOUR things actually ended the wait --
+        `"until"`/`"deadlineAt"` when the timer won exactly as before, or
+        `"steering"`/`"abort"` when the bell won first -- and `waitedS`,
+        which is always the REAL elapsed wall-clock time this call spent
+        waiting (round-tripped through `time.time()`, never the planned
+        duration), so a wake cut short reports a small `waitedS` against
+        the SAME `sleptUntil` target a full wait would have reported.
 
-        Two outcomes, both correct by construction:
+        Returns `True` iff the caller should `continue` the outer dispatch
+        loop immediately rather than falling through to the ordinary
+        "nothing selectable" ladder -- true for three of the four
+        outcomes:
 
-        * the task's own `until` arrives first (`boundedBy == "until"`,
-          returns `True`) -- its record is cleared (`deferredUntil`/
-          `deferredReason` popped) in the SAME write this method makes,
-          so `scheduler.select_next_task`'s very next call sees an
-          ordinary, unblocked candidate again -- the caller's `continue`
-          re-enters the dispatch loop immediately, and THAT pass either
-          picks this task up or (another task now outranks it by
-          priority) offers whatever independent task is next in line
-          instead.
-        * the deadline arrives first (`boundedBy == "deadlineAt"`,
-          returns `False`) -- the task's own wait never actually
-          elapsed, so its record is left untouched; the caller must NOT
-          `continue`, and instead falls through to the ordinary "nothing
-          selectable" worker dispatch exactly as it would have without
-          this method existing, which is what keeps this mechanism from
-          ever spinning: a bound that keeps resolving to `"deadlineAt"`
-          would otherwise repeat this SAME sleep forever under this
-          suite's globally instant `asyncio.sleep` (`tests/conftest.py`),
-          since a mocked sleep never actually advances `time.monotonic()`
-          for `budget_left()` to catch. The ordinary dispatch below
-          spends a real iteration instead, so the run converges on
-          budget exhaustion exactly as any other "nothing selectable"
-          pass already does.
+        * the task's own `until` arrives first (`boundedBy == "until"`)
+          -- its record is cleared (`deferredUntil`/`deferredReason`
+          popped) in the SAME write this method makes, so `scheduler.
+          select_next_task`'s very next call sees an ordinary, unblocked
+          candidate again.
+        * the bell rings (`boundedBy in ("steering", "abort")`) -- K.2:
+          a wake is NOT an elapsed wait, so the deferred task's own
+          record is left completely untouched (no clear, no write at
+          all); `continue` only re-enters the dispatch pass so its
+          existing top-of-pass `pending_steering()` check (or, on an
+          abort, `budget_left()`'s own `self._abort_reason is not None`
+          check) does whatever it already does with an unsettled steer
+          or an ending run -- this method itself never talks to the
+          steer hat or to the runner.
+
+        `False` only for the deadline bound left unwoken
+        (`boundedBy == "deadlineAt"`): the task's own wait never actually
+        elapsed, so its record is left untouched, and the caller must
+        NOT `continue` -- it falls through to the ordinary "nothing
+        selectable" worker dispatch exactly as it would have without this
+        method existing, which is what keeps this mechanism from ever
+        spinning: a bound that keeps resolving to `"deadlineAt"` would
+        otherwise repeat this SAME sleep forever under this suite's
+        globally instant `asyncio.sleep` (`tests/conftest.py`), since a
+        mocked sleep never actually advances `time.monotonic()` for
+        `budget_left()` to catch. The ordinary dispatch below spends a
+        real iteration instead, so the run converges on budget
+        exhaustion exactly as any other "nothing selectable" pass
+        already does.
         """
         deferred = self._pending_deferred_tasks(tasks_doc)
         earliest_task, earliest_epoch = min(
@@ -5654,14 +5698,45 @@ class LoopSupervisor:
         else:
             bound_epoch, bounded_by = deadline_epoch, "deadlineAt"
         wait_s = max(0.0, bound_epoch - time.time())
+        # Cleared right before the race starts (never earlier, never
+        # inside the race): a steer that arrived and was already handled
+        # through the top-of-pass `pending_steering()` check before this
+        # method was ever called must not leave a stale `set()` behind to
+        # fire this method's OWN wait instantly the next time some other
+        # task gets deferred. Any steer/abort that lands in the tiny gap
+        # between that top check and this clear is not lost -- it is
+        # simply caught by the very NEXT dispatch pass's own top check
+        # instead of this one.
+        self._deferred_wake.clear()
+        started = time.time()
+        timer_task = asyncio.ensure_future(asyncio.sleep(wait_s))
+        wake_task = asyncio.ensure_future(self._deferred_wake.wait())
+        done, pending = await asyncio.wait(
+            {timer_task, wake_task}, return_when=asyncio.FIRST_COMPLETED)
+        for leftover in pending:
+            leftover.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        waited_s = time.time() - started
+        woken = wake_task in done
+        if woken:
+            self._deferred_wake.clear()
+            bounded_by = "abort" if self._abort_reason is not None else "steering"
         self.run.emit(
             "deferred_wait", taskId=earliest_task.get("id"),
             until=earliest_task["deferredUntil"],
             deadlineAt=utc_from_epoch(deadline_epoch),
             boundedBy=bounded_by,
             sleptUntil=utc_from_epoch(bound_epoch),
-            waitedS=round(wait_s, 3))
-        await asyncio.sleep(wait_s)
+            waitedS=round(waited_s, 3))
+        if woken:
+            self.run.emit(
+                "log", level="info",
+                message=(f"deferred wait for task {earliest_task.get('id')!r} "
+                          f"woken by {bounded_by} after {waited_s:.3f}s -- "
+                          "its own deferral is left untouched (task 028a, "
+                          "requirement K.1/K.2, #267); re-entering dispatch"))
+            return True
         if bounded_by != "until":
             return False
         tasks_data = self.run.read_tasks()

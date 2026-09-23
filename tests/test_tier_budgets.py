@@ -726,8 +726,17 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # engine/ralphctl process, so both sort into smoke too; the two
     # retired tests were fast-only). Measured with `.venv/bin/python -m
     # pytest -q -m <tier> --collect-only` at this task's own tip.
-    "fast": {"tests": 6184, "modules": 418},
-    "smoke": {"tests": 4510, "modules": 298},
+    # task 028a (v0.25 requirement K.1/K.2, #267): fast 6184 -> 6189,
+    # smoke 4510 -> 4515 (+5 tests, +1 module each) for the new
+    # tests/test_deferred_wait_wake_task028a.py -- five in-process
+    # `LoopSupervisor` probes over a scripted runner (no `LiveRun`/
+    # `engine_factory`/real `ralphctl`), so the whole module sorts into
+    # both tiers. Measured with `.venv/bin/python -m pytest -q -m <tier>
+    # --collect-only` at this task's own tip (via `tests.test_tier_
+    # budgets.collected`/`_modules`, the same helpers this module's own
+    # check calls).
+    "fast": {"tests": 6189, "modules": 419},
+    "smoke": {"tests": 4515, "modules": 299},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

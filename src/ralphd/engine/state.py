@@ -8094,6 +8094,15 @@ class RunDir:
     root: Path
     _events_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _event_id: int = 0
+    # v0.25 task 028a (PRD requirement K.1/K.2, #267): an `asyncio.Event`
+    # the loop registers on itself via `set_wake_event` -- `None` until
+    # then, so every non-loop caller of this same class (the CLI, the API
+    # handler process before the loop attaches, a bare `RunDir(root=...)`
+    # in a test that never runs the dispatch loop) keeps working exactly
+    # as before. Untyped as `asyncio.Event` here on purpose: this module
+    # does not otherwise import `asyncio`, and a bare attribute is enough
+    # for `add_steering` below to ring the bell when one is registered.
+    _wake_event: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for sub in ("steering", "iterations", "approaches", "artifacts"):
@@ -8827,7 +8836,25 @@ class RunDir:
         fname = f"{seq:03d}-{suffix}.md"
         atomic_write(self.steering_dir / fname, message.rstrip() + "\n")
         self.emit("steering.received", file=fname)
+        # v0.25 task 028a (PRD requirement K.1/K.2, #267): ring the loop's
+        # own wake bell, if one is registered (`set_wake_event`, called by
+        # `LoopSupervisor.__init__` in production; never in a bare
+        # `RunDir(root=...)` test that has no loop at all) -- AFTER the
+        # file is on disk, so a waiter this wakes always finds the new
+        # message already in `pending_steering()`'s next read.
+        if self._wake_event is not None:
+            self._wake_event.set()
         return fname
+
+    def set_wake_event(self, event) -> None:
+        """v0.25 task 028a (PRD requirement K.1/K.2, #267): register the
+        one `asyncio.Event` `_sleep_until_earliest_deferred` (and, task
+        028c, `_wait_out_backoff`'s own successor) races against its
+        timer -- set here by `LoopSupervisor.__init__` and by nothing
+        else, so `add_steering` above (and `LoopSupervisor._record_abort`)
+        have a bell to ring without this module importing `asyncio` or
+        knowing the loop exists."""
+        self._wake_event = event
 
     def consumed_marker(self) -> Path:
         return self.steering_dir / STEERING_CONSUMED_FILE
