@@ -314,8 +314,14 @@ def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
     `hooks_dir` belongs to the ENGINE and must not be inside the workspace
     -- a hook the worker can edit is not a bound (the same privsep
     reasoning v0.22's A/B/C states, and PRD requirement I.1's own wording).
-    Every hook file is written 0o755 and the directory 0o755: readable and
-    executable by the agent uid, writable by neither it nor its group.
+    Every hook file is written 0o555 and the `scan-base` note 0o444: readable
+    and executable by the agent uid and carrying NO write bit at all, for the
+    owner no less than for group and other, so a write attempt by the agent
+    uid is refused by the kernel (EACCES) even where -- as in this run's own
+    unprivileged test environment -- engine and agent share one uid and no
+    real privsep boundary separates them. A refresh therefore REPLACES each
+    file (unlink, write, chmod) instead of writing through it; the directory
+    itself stays 0o755 so the engine can do exactly that.
 
     `base_sha` is the boundary base the engine just read (`head_before`);
     it is written next to the hooks as `scan-base` so a first push to a
@@ -338,13 +344,18 @@ def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
     push_hook = None
     for name in _ALL_HOOK_NAMES:
         path = hooks_dir / name
+        # Replace, never write through: the installed file carries no write
+        # bit (0o555 below), so `write_text` on an existing one would be
+        # refused for the engine too -- which is the point.
+        path.unlink(missing_ok=True)
         path.write_text(_hook_script(name, python, pkg_parent))
-        os.chmod(path, 0o755)
+        os.chmod(path, 0o555)
         if name == PUSH_GATE_HOOK_NAME:
             push_hook = path
     base_file = hooks_dir / SCAN_BASE_FILENAME
+    base_file.unlink(missing_ok=True)
     base_file.write_text(f"{base_sha or ''}\n")
-    os.chmod(base_file, 0o644)
+    os.chmod(base_file, 0o444)
     result = _run_git(workspace, "config", "core.hooksPath", str(hooks_dir))
     if result is None or result.returncode != 0:
         return None
