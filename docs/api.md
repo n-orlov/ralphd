@@ -860,6 +860,14 @@ Body optional: `{"message": "..."}` — convenience combo, equivalent to
 `POST /steering` then interrupt; the message is enqueued whenever the
 handler does not refuse, whichever of the two 200 shapes follows.
 
+Waking a loop that was parked in an **infra-backoff** wait ends that wait
+early but deliberately does **not** restart the outage-budget episode clock:
+that is `POST /retry`'s own meaning ("the endpoint is back — try it now", and
+the only thing that emits `infra_retry_now`). An interrupt only gets the
+operator's words in front of a loop that was otherwise unreachable; it
+asserts nothing about the endpoint, so the episode keeps its spent budget and
+its attempt count.
+
 ### `POST /pause` / `POST /resume`
 Pause finishes the current iteration, then holds before the next one; resume
 releases it. `200 {"paused": true}` / `200 {"resumed": true}`.

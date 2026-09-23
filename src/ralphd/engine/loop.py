@@ -975,13 +975,13 @@ class LoopSupervisor:
         pin, so this wraps it rather than duplicating or altering it.
 
         When nothing was running, this rings `self._deferred_wake` -- the
-        SAME bell task 028a's deferred wait already races its timer
-        against (and, task 028c, the infra-backoff wait will too) -- so a
-        loop truly parked in one of those waits wakes immediately instead
-        of sitting out its bound unreachably; a loop that was simply
-        between iterations (nothing waiting on the bell at all) is
-        unaffected by the `set()`, which is exactly the "idle loop was
-        woken" case: there was no live iteration to signal, so waking the
+        SAME bell task 028a's deferred wait races its timer against and
+        `_wait_out_backoff` (this task's own second call site) races its
+        backoff against -- so a loop truly parked in either of those waits
+        wakes immediately instead of sitting out its bound unreachably; a
+        loop that was simply between iterations (nothing waiting on the
+        bell at all) is unaffected by the `set()`, which is exactly the
+        "idle loop was woken" case: there was no live iteration to signal, so waking the
         one thing that CAN be asleep is the whole of what "interrupt an
         idle loop" can mean.
 
@@ -1274,7 +1274,7 @@ class LoopSupervisor:
         # v0.25 task 028a (PRD requirement K.1/K.2, #267): ring the same
         # bell a deferred wait races its timer against -- an abort ending
         # the run must wake a loop parked in `_sleep_until_earliest_
-        # deferred` (and, task 028c, the infra-backoff wait) exactly as
+        # deferred` (and, task 028b, the infra-backoff wait) exactly as
         # promptly as a steer does, rather than sitting out `wait_s`
         # unreachably. Harmless when nothing is waiting on it: an
         # `asyncio.Event` with no waiter is just left set, and the next
@@ -1991,7 +1991,9 @@ class LoopSupervisor:
 
         Task 015 (#5): each backoff wait is interruptible -- POST /retry
         wakes it immediately (_wait_out_backoff / self._retry_now) and
-        restarts the outage-budget clock.
+        restarts the outage-budget clock. v0.25 task 028b (requirement
+        K.3/K.5, #267): a steer or an abort wakes it too, through
+        `self._deferred_wake`, WITHOUT restarting that clock.
         """
         retry_max = self.cfg.infra_retry_max  # None == no explicit attempt cap
         budget = self._outage_budget_for(phase)
@@ -2139,28 +2141,70 @@ class LoopSupervisor:
     async def _wait_out_backoff(self, backoff: float) -> tuple[float, bool]:
         """Waits `backoff` seconds unless the operator rings the retry-now
         doorbell first (task 015, #5). Returns (seconds actually waited,
-        woken-by-operator).
+        woken-by-*retry-now*).
 
-        The wait is `self._retry_now.wait()` under a timeout rather than a
-        plain `asyncio.sleep`, so POST /retry -> Event.set() releases the loop
-        task immediately; the seconds actually spent are what gets booked into
-        the episode clock, `infraWaitTotalS` and the deadline extension, so a
-        cut-short wait is never accounted as a full one.
+        The wait races TWO doorbells against one timer rather than sitting in
+        a plain `asyncio.sleep`, so the seconds actually spent are what gets
+        booked into the episode clock, `infraWaitTotalS` and the deadline
+        extension, and a cut-short wait is never accounted as a full one:
+
+        * `self._retry_now` -- `POST /retry` -> `retry_now()` (task 015, #5):
+          "the endpoint is back, try it now". This is the bell the returned
+          `woken` flag reports, and the ONLY one that restarts the
+          outage-budget episode clock in the caller above: it is the operator
+          asserting new information about the endpoint.
+        * `self._deferred_wake` -- v0.25 task 028b (PRD requirement K.3, and
+          K.5's own call site, #267): the control-plane bell rung by
+          `RunDir.add_steering` (a steer landed) and by `_record_abort` (the
+          run is ending), the SAME one task 028a's deferred wait races. A run
+          parked in the retry ladder used to be unreachable for the whole
+          backoff -- `POST /interrupt`'s `interrupt_or_wake()` answered
+          `{"target": "idle", "woken": true}` while the loop demonstrably
+          slept out its bound -- so the answer was a lie about this state
+          exactly as the pre-028b `409` was a lie about the deferred one.
+          Waking here does NOT reset the episode clock and does not claim the
+          endpoint recovered: it only returns control to the dispatch pass
+          promptly, which is the whole of what reaching an idle loop means.
+
+        Both bells are cleared right before the race (never earlier, never
+        inside it), for task 028a's reason at its own site: a steer that
+        already landed and was already handled must not leave a stale `set()`
+        behind to fire a later wait instantly. Anything landing in that tiny
+        gap is caught by the next dispatch pass's own top-of-pass check.
         """
         self._retry_now.clear()
+        self._deferred_wake.clear()
         self._infra_waiting = True
         started = time.monotonic()
-        woken = True
+        retry_task = asyncio.ensure_future(self._retry_now.wait())
+        wake_task = asyncio.ensure_future(self._deferred_wake.wait())
         try:
-            await asyncio.wait_for(self._retry_now.wait(), timeout=backoff)
-        except TimeoutError:  # asyncio.TimeoutError since 3.11
-            woken = False
+            # `asyncio.wait`'s own timeout is the loop's timer, exactly as
+            # `wait_for`'s was -- deliberately not `asyncio.sleep(backoff)`
+            # raced as a third task, which this suite patches instant.
+            await asyncio.wait({retry_task, wake_task}, timeout=backoff,
+                               return_when=asyncio.FIRST_COMPLETED)
+            woken = retry_task.done()
+            control_woken = wake_task.done() and not woken
         finally:
+            for leftover in (retry_task, wake_task):
+                leftover.cancel()
+            await asyncio.gather(retry_task, wake_task, return_exceptions=True)
             self._infra_waiting = False
             self._retry_now.clear()
+            self._deferred_wake.clear()
+        waited_s = min(time.monotonic() - started, backoff)
+        if control_woken:
+            self.run.emit(
+                "log", level="info",
+                message=(f"infra backoff wait woken by the control plane "
+                         f"after {waited_s:.3f}s of {backoff:.0f}s "
+                         "(steer or abort, task 028b, requirement K.3/K.5, "
+                         "#267); the outage-budget episode clock is NOT "
+                         "reset -- nobody said the endpoint is back"))
         # Clamped: the timeout path can overshoot by a scheduling tick, and
         # the booked wait must never exceed the backoff the budget planned.
-        return min(time.monotonic() - started, backoff), woken
+        return waited_s, woken
 
     def _begin_infra_wait(self, *, phase: str, attempt: int, error: str,
                           waited_s: float, backoff_s: float,

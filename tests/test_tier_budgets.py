@@ -751,7 +751,20 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # <tier> --collect-only` at this task's own tip (via `tests.test_tier_
     # budgets.collected`/`_modules`, the same helpers this module's own
     # check calls).
-    "fast": {"tests": 6204, "modules": 420},
+    # task 028b, second pass (v0.25 requirement K.3/K.4 plus K.5's own call
+    # site, #267): fast 6204 -> 6208, smoke unchanged at 4515 (+4 tests, 0
+    # new modules -- group 4 of the same fast-only
+    # tests/test_interrupt_wake_task028b.py). The first pass's 200 body
+    # claimed `{"target": "idle", "woken": true}` for a loop parked in an
+    # infra-backoff wait while `_wait_out_backoff` waited only on
+    # `self._retry_now`, so that state slept out its whole bound: the four
+    # new nodes drive the REAL `_wait_out_backoff` and pin that an
+    # interrupt and an abort each end a 30s backoff in under 5s, that
+    # `retry_now()` is still the only bell reported as a manual retry (the
+    # outage-budget episode reset), and that an unrung wait still honours
+    # its own bound. Measured with `.venv/bin/python -m pytest -q -m
+    # <tier> --collect-only` at this task's own tip.
+    "fast": {"tests": 6208, "modules": 420},
     "smoke": {"tests": 4515, "modules": 299},
 }
 

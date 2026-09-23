@@ -8849,7 +8849,7 @@ class RunDir:
     def set_wake_event(self, event) -> None:
         """v0.25 task 028a (PRD requirement K.1/K.2, #267): register the
         one `asyncio.Event` `_sleep_until_earliest_deferred` (and, task
-        028c, `_wait_out_backoff`'s own successor) races against its
+        028b, `_wait_out_backoff`) races against its
         timer -- set here by `LoopSupervisor.__init__` and by nothing
         else, so `add_steering` above (and `LoopSupervisor._record_abort`)
         have a bell to ring without this module importing `asyncio` or

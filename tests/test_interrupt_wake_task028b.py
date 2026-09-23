@@ -23,6 +23,17 @@ Three groups here:
    wait winds the whole run down in well under 5s even though the wait's
    own bound is set far larger than that -- proving the wake (task 028a's
    `_deferred_wake`), not the timer, is what ends it.
+4. The third idle state K.3 names by name: an INFRA-BACKOFF wait. The first
+   pass of this task answered `{"target": "idle", "woken": true}` for a
+   loop parked there while `_wait_out_backoff` waited only on
+   `self._retry_now` -- so the loop demonstrably slept out its whole bound
+   and the 200 body was a lie about that state exactly as the pre-028b
+   `409` was a lie about the deferred one. These nodes drive the REAL
+   `_wait_out_backoff` coroutine (rebound from the import-time original,
+   the `tests/test_v05_definition_of_done.py` idiom -- this module is not
+   one of the three PRD-named `real_backoff` modules and must not carry
+   that marker) and assert the wait actually ends early, which bell ended
+   it, and that the timer bound still holds when no bell rings at all.
 
 Mutation cases (recorded in the commit message): reverting `interrupt_or_
 wake` to the old `if not loop.interrupt(): raise problem(409, ...)` shape
@@ -34,7 +45,15 @@ finished run; and reverting the K.4 guard's own site (`_sleep_until_
 earliest_deferred`'s `asyncio.wait(..., return_when=FIRST_COMPLETED)`) back
 to a bare `asyncio.sleep(wait_s)` would make
 `test_an_abort_during_a_deferred_wait_winds_down_in_under_5s` time out
-against its own bound instead of returning promptly.
+against its own bound instead of returning promptly. Group 4's own mutation
+is the first pass of this very task: `_wait_out_backoff` waiting only on
+`self._retry_now` (`asyncio.wait_for(self._retry_now.wait(), ...)`) leaves
+`test_interrupt_wakes_a_loop_parked_in_an_infra_backoff_wait` and
+`test_an_abort_wakes_a_loop_parked_in_an_infra_backoff_wait` timing out at
+`asyncio.wait_for(task, timeout=5.0)` against a 30s bound, while collapsing
+the two bells into one flag fails
+`test_retry_now_is_still_the_bell_that_reports_a_manual_retry` or the
+`retry_woke is False` assertion beside it.
 """
 
 from __future__ import annotations
@@ -52,8 +71,20 @@ from test_cli_docker import Ctl, ctl
 from test_cli_resume import _seed_run
 
 from ralphd.engine.api import create_app
+from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir, utc_from_epoch
 from tests.conftest import ScriptedRunner, make_supervisor
+
+# Captured at IMPORT time, before tests/conftest.py's autouse class-level
+# `_wait_out_backoff` stub can touch the class (the
+# `tests/test_v05_definition_of_done.py` idiom): group 4 below needs the REAL
+# coroutine on its own instance, and this module must NOT carry the
+# `real_backoff` opt-out marker -- `tests/test_stub_pi_harness.py` pins that
+# marker to exactly the PRD's three named modules.
+_REAL_WAIT_OUT_BACKOFF = LoopSupervisor._wait_out_backoff
+# Likewise captured before `make_supervisor()` patches `asyncio.sleep` to an
+# instant yield: group 4 polls for a real state change on a real timer.
+_real_sleep = asyncio.sleep
 
 __all__ = ["ctl"]
 
@@ -104,8 +135,8 @@ async def test_interrupt_wakes_an_idle_loop_between_iterations(tmp_path):
     body = resp.json()
     assert body == {"interrupted": True, "target": "idle",
                     "signalled": False, "woken": True}, body
-    # the bell this rings is the SAME one task 028a's deferred wait (and,
-    # 028c, the backoff wait) race their timer against.
+    # the bell this rings is the SAME one task 028a's deferred wait and
+    # `_wait_out_backoff` (group 4 below) race their timer against.
     assert sup._deferred_wake.is_set()
 
 
@@ -350,3 +381,118 @@ def test_an_abort_during_a_deferred_wait_winds_down_in_under_5s(tmp_path):
         f"abort during a {_ABORT_GUARD_BOUND_S}s deferred wait took "
         f"{elapsed:.3f}s wall clock -- the wake, not the bound, must have "
         "ended it")
+
+
+# ---------------------------------------------------------------------------
+# Group 4: the infra-backoff wait -- the third idle state K.3 names. The
+# 200 body must not claim `woken` for a loop that then sleeps out its bound.
+# ---------------------------------------------------------------------------
+
+
+_BACKOFF_BOUND_S = 30.0    # far larger than the wake this group measures
+
+
+async def _parked_in_a_backoff_wait(sup, bound: float):
+    """Start the REAL `_wait_out_backoff` on `sup` and hand back the task
+    once the loop is genuinely parked in it (`_infra_waiting` is what
+    `retry_now()`'s own 409 gate reads, and it is set inside the wait)."""
+    sup._wait_out_backoff = _REAL_WAIT_OUT_BACKOFF.__get__(  # type: ignore[method-assign]
+        sup, LoopSupervisor)
+    task = asyncio.ensure_future(sup._wait_out_backoff(bound))
+    for _ in range(200):
+        if sup._infra_waiting:
+            break
+        await _real_sleep(0.005)
+    assert sup._infra_waiting, "the supervisor never entered the backoff wait"
+    return task
+
+
+@pytest.mark.asyncio
+async def test_interrupt_wakes_a_loop_parked_in_an_infra_backoff_wait(tmp_path):
+    """K.3's third idle state, end to end through the real handler: while the
+    loop sits in a 30s infra backoff, `POST /interrupt` answers the idle 200
+    shape AND the wait really ends -- in well under the bound, with only the
+    seconds actually spent booked."""
+    sup = _supervisor(tmp_path)
+    sup.runner.running = False        # nothing running: the idle case
+    task = await _parked_in_a_backoff_wait(sup, _BACKOFF_BOUND_S)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    async with _client(sup) as client:
+        resp = await client.post("/interrupt",
+                                 json={"message": "stop waiting, proceed"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"interrupted": True, "target": "idle",
+                          "signalled": False, "woken": True}, resp.text
+
+    waited_s, retry_woke = await asyncio.wait_for(task, timeout=5.0)
+    elapsed = loop.time() - started
+    assert elapsed < 5.0, (
+        f"a {_BACKOFF_BOUND_S}s backoff wait took {elapsed:.3f}s to end "
+        "after the 200 said the idle loop was woken -- the body lied")
+    assert waited_s < 5.0, "only the seconds actually spent are booked"
+    # The retry-now flag is the caller's "restart the outage-budget episode
+    # clock" signal (`if woken:` in `run_iteration`'s ladder). A steer is not
+    # the operator asserting the endpoint is back, so it must stay False.
+    assert retry_woke is False, (
+        "a control-plane wake must not be reported as a manual retry -- "
+        "that would reset the outage-budget episode clock")
+    assert not sup._infra_waiting, "the wait cleared its own flag on the way out"
+
+
+@pytest.mark.asyncio
+async def test_an_abort_wakes_a_loop_parked_in_an_infra_backoff_wait(tmp_path):
+    """The same bell, rung by `_record_abort` instead of `add_steering`: a run
+    ending must not sit out a 30s backoff first."""
+    sup = _supervisor(tmp_path)
+    task = await _parked_in_a_backoff_wait(sup, _BACKOFF_BOUND_S)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    sup.abort("operator asked to stop")
+    waited_s, retry_woke = await asyncio.wait_for(task, timeout=5.0)
+
+    assert loop.time() - started < 5.0, (
+        f"an abort during a {_BACKOFF_BOUND_S}s backoff wait was not woken")
+    assert waited_s < 5.0 and retry_woke is False
+
+
+@pytest.mark.asyncio
+async def test_retry_now_is_still_the_bell_that_reports_a_manual_retry(tmp_path):
+    """Task 015's own bell is untouched by K: `POST /retry` -> `retry_now()`
+    still ends the wait AND still reports `woken=True`, the flag that
+    restarts the outage-budget episode clock. Racing a second event must not
+    have merged the two senses into one."""
+    sup = _supervisor(tmp_path)
+    task = await _parked_in_a_backoff_wait(sup, _BACKOFF_BOUND_S)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    assert sup.retry_now() is True, "parked in a wait -- there IS something to wake"
+    waited_s, retry_woke = await asyncio.wait_for(task, timeout=5.0)
+
+    assert retry_woke is True, "the manual-retry sense of `woken` must survive"
+    assert loop.time() - started < 5.0 and waited_s < 5.0
+    # Narrow by construction, unchanged: nothing waiting -> False (the 409).
+    assert sup.retry_now() is False
+
+
+@pytest.mark.asyncio
+async def test_an_unrung_backoff_wait_still_waits_out_its_own_bound(tmp_path):
+    """The other half of the race, so "it ends early" can never be reached by
+    ending early always: with no bell rung at all the wait spends its bound
+    and reports the timer outcome."""
+    sup = _supervisor(tmp_path)
+    sup._wait_out_backoff = _REAL_WAIT_OUT_BACKOFF.__get__(  # type: ignore[method-assign]
+        sup, LoopSupervisor)
+    bound = 0.25
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    waited_s, retry_woke = await sup._wait_out_backoff(bound)
+    elapsed = loop.time() - started
+
+    assert retry_woke is False
+    assert elapsed >= bound, f"the bound was not honoured ({elapsed:.3f}s)"
+    assert waited_s <= bound, "the booked wait never exceeds the planned backoff"
+    assert waited_s == pytest.approx(bound, abs=0.05)
