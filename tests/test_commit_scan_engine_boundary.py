@@ -201,6 +201,47 @@ def test_a_real_worker_iterations_leaking_commit_is_caught_at_the_task_boundary(
     assert SYNTHETIC_VALUE not in json.dumps(recorded)
 
 
+def test_on_a_hit_the_task_is_faulted_and_the_operator_pause_is_raised(
+        tmp_path, live_synthetic_map):
+    """Task 030 (PRD requirement I.3, #210): the three observables a single
+    synthetic hit must produce TOGETHER -- the commit refused (I.2's own
+    deliverable), the ASSIGNED task faulted straight to `failed`, and the
+    run's `operator_input_needed` pause raised -- with no push and no
+    silent retry: only one worker iteration ever ran, despite the worker's
+    own report on that same iteration claiming the task `"complete"`.
+    """
+    sup, run, workspace = _sup(tmp_path, "fault-and-pause")
+    _init_repo(workspace)
+    sup.runner = _CommittingWorker(  # type: ignore[assignment]
+        workspace, "diagnostics.log",
+        f"connection ok, token={SYNTHETIC_VALUE}\n",
+        "diagnostics: capture what the retry saw",
+        json.dumps({"verdict": "complete", "task_id": "029t"}))
+
+    asyncio.run(sup._step_worker())
+
+    # (a) the commit is refused: the hit is recorded and nothing pushed.
+    hits = _events(run, LoopSupervisor.COMMIT_SECRET_SCAN_EVENT)
+    assert len(hits) == 1
+    assert hits[0]["pushed"] is False
+
+    # (b) the assigned task is faulted to `failed` -- never left
+    # `in-progress` and never moved to `completed` by the worker's own
+    # `"complete"` verdict, reported on this exact same iteration.
+    tasks = run.read_tasks()["tasks"]
+    task = next(t for t in tasks if t["id"] == "029t")
+    assert task["status"] == "failed"
+
+    # (c) the run's operator_input_needed pause is raised.
+    status = run.read_status()
+    assert status.get("state") == "paused"
+    assert status.get("pauseReason") == "operator_input_needed"
+
+    # No push, and no silent retry loop: exactly one worker iteration ran.
+    assert sup.runner.calls == 1
+    assert SYNTHETIC_VALUE not in json.dumps(status)
+
+
 def test_a_real_worker_iterations_clean_commit_leaves_the_boundary_silent(
         tmp_path, live_synthetic_map):
     sup, run, workspace = _sup(tmp_path, "step-worker-clean")

@@ -816,8 +816,17 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # observations, the hook's own variable-name-only refusal, the shared
     # config field, and the pushed-range/ref-deletion reading of git's
     # pre-push stdin. Measured the same way, at this task's own tip.
-    "fast": {"tests": 6241, "modules": 422},
-    "smoke": {"tests": 4548, "modules": 301},
+    # task 030 (PRD requirement I.3, #210): fast 6241 -> 6242, smoke 4548 ->
+    # 4549 (+1 test, 0 new modules -- it lands in
+    # tests/test_commit_scan_engine_boundary.py, already counted in both
+    # tiers) for the single test driving a real `_step_worker` boundary hit
+    # and asserting the refused commit, the faulted (`failed`) task and the
+    # raised `operator_input_needed` pause together, plus no push and
+    # exactly one worker iteration (no silent retry). Measured with
+    # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
+    # task's own tip.
+    "fast": {"tests": 6242, "modules": 422},
+    "smoke": {"tests": 4549, "modules": 301},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

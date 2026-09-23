@@ -6668,6 +6668,82 @@ class LoopSupervisor:
         log.error("%s", refusal)
         return hit
 
+    def _fault_task_for_commit_secret_hit(self, task_id: str | None,
+                                          tasks_doc: dict) -> None:
+        """Task 030 (PRD requirement I.3, #210): a task-boundary commit-scan
+        hit faults the ASSIGNED task itself, directly -- `in-progress ->
+        failed` is a declared legal edge in both variants
+        (`transitions.TASK_STATUS_TRANSITIONS`) -- rather than letting the
+        worker's OWN verdict (produced this same iteration, over a commit
+        the run has just refused to push) decide what happens to it.
+        Called from `_step_worker` the moment `_scan_task_boundary_commits`
+        records a hit, strictly BEFORE that verdict is even parsed, so a
+        `"complete"` report never gets a chance to mark this task done and
+        no retry of the same task is ever dispatched -- the loop's own
+        `continue` back to the top of its `while`, right after this call
+        and `_pause_for_commit_secret_hit` below, is what stops it from
+        picking anything up at all until an operator resumes.
+
+        `failureKind` is deliberately left unset: neither existing kind
+        (`state.TASK_FAILURE_VALIDATION_EXHAUSTED`,
+        `state.TASK_FAILURE_REQUIREMENT_UNMET`) names what happened here,
+        and `state.task_failure_kind`'s own derivation already falls back
+        to `requirement-unmet` for a `failed` task that is not attempts-
+        exhausted -- correct enough for a status this method's own caller
+        never claims is a validation judgement (PRD requirement E),
+        without inventing a third kind every other `failureKind` reader
+        would have to learn about.
+
+        A no-op when `task_id` is falsy (a hit recorded against an
+        iteration that had no task assigned at all -- a non-task dispatch
+        pass still commits and pushes, e.g. a steer/contract-fix round)
+        or when the named task is already `failed`.
+        """
+        if not task_id:
+            return
+        for t in tasks_doc.get("tasks", []):
+            if t.get("id") == task_id:
+                old_status = t.get("status")
+                if old_status == "failed":
+                    return
+                t["status"] = "failed"
+                self.run.write_tasks(tasks_doc)
+                self._emit_task_status(task_id, old_status, "failed",
+                                       cause=self.COMMIT_SECRET_SCAN_EVENT)
+                return
+
+    def _pause_for_commit_secret_hit(self) -> None:
+        """Task 030 (PRD requirement I.3, #210): raise the run's EXISTING
+        `operator_input_needed` pause -- `self.pause()`, task 015's own
+        pause/resume seam; `_persist_pause` is what records
+        `state: "paused"` plus `pauseReason: "operator_input_needed"` on
+        status.json -- rather than any new pause plumbing (the v0.23
+        requirement A machinery this task's criteria ask to reuse).
+
+        Deliberately does NOT emit an `operator_escalation` event carrying
+        an `approach` field the way review's own `operator_input_needed`
+        escalations do (`_pause_and_escalate_operator_input_needed`):
+        `_resume_point`'s `_paused_awaiting_operator_input_needed_ruling`
+        scans exactly that event shape to decide a crashed episode must
+        resume into `review` over a REJECTED approach. This pause has no
+        rejected review verdict behind it -- `worker` may still have its
+        own actionable remainder, or none at all -- and a stray match
+        there would misroute a resumed episode into `review` over
+        nothing it ever reviewed. The `commit_secret_scan` event
+        `_scan_task_boundary_commits` already emitted (sha, part,
+        variable -- never the value) is this escalation's own record;
+        this call's whole job is to hold the loop, not to re-describe the
+        hit.
+        """
+        self.pause(reason="operator_input_needed")
+        if self.notifier is not None:
+            self.notifier(
+                "operator_input_needed: a task-boundary commit scan hit "
+                "refused a push; see the commit_secret_scan event for the "
+                "sha, part and variable name (never the matched value) -- "
+                "the faulted task needs an operator ruling before this run "
+                "pushes again")
+
     def _workspace_diff_paths(self, base_sha: str, head_sha: str) -> list[str] | None:
         """Task 008 (PRD requirement B.4, #221): the file paths `git diff
         --name-only` reports changed between `base_sha` and `head_sha` in
@@ -8938,6 +9014,17 @@ class LoopSupervisor:
             worker_iter_n = self.iterations_used  # captured after run_iteration increments it
             tasks_after = self.run.read_tasks()
             self._warn_if_batched(tasks_before, tasks_after)
+            # Task 030 (PRD requirement I.3, #210): on a hit, fault the
+            # assigned task and raise the pause BEFORE any of the worker's
+            # own verdict is even parsed -- `continue` sends this pass
+            # straight back to `while self.budget_left(): await self._gate()`
+            # at the very top, which blocks on the pause until an operator
+            # resumes, so no retry of the same (now `failed`) task, and no
+            # silent loop, is ever reachable from here.
+            if boundary_secret_hit is not None:
+                self._fault_task_for_commit_secret_hit(assigned_id, tasks_after)
+                self._pause_for_commit_secret_hit()
+                continue
 
             # Task 123 (#60): the pre-spawn `in-progress` claim just above
             # is the harness's OWN bet that this iteration will actually
