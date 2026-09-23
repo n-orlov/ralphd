@@ -4182,9 +4182,28 @@ class LoopSupervisor:
                       if fault_class == self.REFLECT_FAULT_FATAL else
                       "the reflect iteration ran cleanly but left no valid "
                       "deliverable -- issue #87's own shape")
+        # Task 008 (PRD C.3): a DEGRADED failure (an invalid/unparseable
+        # contract payload, #87's own shape) can still leave report.md (and
+        # suggestions.diff) sitting right there on disk -- the flat sentence
+        # this used to open with ("did not produce a report") was simply
+        # false on that path. State what is actually present instead: every
+        # file under artifacts/reflection/ (other than the tombstone itself,
+        # about to be overwritten) with its byte size, or an explicit "none"
+        # when the directory really is empty.
+        listing = sorted(
+            p for p in outdir.iterdir()
+            if p.is_file() and p.name != self.REFLECT_TOMBSTONE)
+        if listing:
+            files_block = "\n".join(
+                f"- {p.name} ({p.stat().st_size} bytes)" for p in listing)
+        else:
+            files_block = "- (none)"
         (outdir / self.REFLECT_TOMBSTONE).write_text(
             "# Reflection failed\n\n"
-            f"The post-terminal `reflect` iteration did not produce a report.\n\n"
+            f"The post-terminal `reflect` iteration ended in a {fault_class} "
+            f"failure and left the outcome below unverified.\n\n"
+            f"Files present under artifacts/reflection/ (excluding this "
+            f"tombstone):\n{files_block}\n\n"
             f"- error: {error}\n"
             f"- class: {fault_class} ({class_note})\n"
             f"- when: {utcnow()}\n"

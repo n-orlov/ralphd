@@ -580,7 +580,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # like tests/test_reflect_tombstone_cleared.py's in-process tier),
     # so all 9 sort into both tiers. Measured with `.venv/bin/python -m
     # pytest -q -m <tier> --collect-only` at this commit's own tip.
-    "fast": {"tests": 6094, "modules": 408},
+    # task 008 (v0.25 PRD C.3): fast 6094 -> 6095, smoke unchanged (+1 test,
+    # 0 new modules) for the new degraded-with-files-on-disk tombstone probe
+    # in tests/test_reflect_tombstone_cleared.py -- that whole module already
+    # has a real process-boundary fixture (`subprocess.run` via `_ctl`), so
+    # `_module_is_in_process()` sorts every node in it fast-only, never
+    # smoke, exactly like its 8 pre-existing nodes. Measured with
+    # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
+    # commit's own tip.
+    "fast": {"tests": 6095, "modules": 408},
     "smoke": {"tests": 4425, "modules": 290},
 }
 

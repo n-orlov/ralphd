@@ -153,6 +153,32 @@ def test_a_failed_reflect_still_writes_the_tombstone(tmp_path):
     assert not _events(sup.run.root, "reflect_tombstone_cleared")
 
 
+def test_a_degraded_failure_with_files_on_disk_lists_them_by_name_and_size(tmp_path):
+    """Task 008 (PRD C.3): a DEGRADED failure (#87's own shape -- a clean
+    exit, an unparseable contract payload) can still leave report.md AND
+    suggestions.diff sitting right there on disk. The tombstone must say
+    what is actually present -- both file names, both byte sizes -- and
+    must never assert the flat negative ("did not produce a report") that
+    used to open it, since that sentence is false whenever a report exists."""
+    sup = _supervisor(tmp_path / "degraded_with_files")
+    outdir = _reflect_dir(sup)
+    report = outdir / "report.md"
+    report.write_text("# stub post-mortem\n\nsomething useful.\n")
+    suggestions = outdir / "suggestions.diff"
+    suggestions.write_text("--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n")
+
+    garbage = IterationResult(exit_code=0)
+    garbage.final_text = "wrote the report, forgot the contract payload"
+    sup._record_reflect_outcome(garbage)
+
+    tombstone = (outdir / "FAILED.md").read_text()
+    assert sup.run.read_status()["reflect"]["ok"] is False
+    assert "did not produce a report" not in tombstone, tombstone
+    assert f"report.md ({report.stat().st_size} bytes)" in tombstone, tombstone
+    assert (f"suggestions.diff ({suggestions.stat().st_size} bytes)"
+            in tombstone), tombstone
+
+
 def test_a_signal_skipped_reflection_leaves_an_earlier_tombstone_alone(tmp_path):
     """Task 016's no-verdict path (#47) writes no tombstone -- and must not
     remove one either: a signal stopping THIS engine does not make an earlier
