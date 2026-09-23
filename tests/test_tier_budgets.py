@@ -858,8 +858,22 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # value). No `docker`/`browser`/process-boundary fixture, so all five
     # sort into both tiers. Measured with `.venv/bin/python -m pytest -q -m
     # <tier> --collect-only` at this commit's own tip.
-    "fast": {"tests": 6262, "modules": 425},
-    "smoke": {"tests": 4569, "modules": 304},
+    # Task 034 (PRD requirement I.6, filed under the label "I.6", #210):
+    # fast 6262 -> 6266, smoke 4569 -> 4573 (+4 tests, +1 module each) for
+    # tests/test_git_sink_gate_default_and_active_hook.py -- the default-ON
+    # assertion read through JobConfig.load itself, the explicit-off value
+    # through that same loader, and the installed hook shown active for a
+    # real (`--no-hardlinks`) clone of this repository: hooksPath resolves
+    # to the engine-owned dir, the hook files are present there and
+    # unwritable by the agent uid, and a poisoned commit message against
+    # that active hook is refused naming the variable, never the value. No
+    # `docker`/`browser`/process-boundary fixture (a `git clone`/`git
+    # commit` subprocess against a scratch dir, like the existing
+    # test_commit_hooks.py siblings), so all four sort into both tiers.
+    # Measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`
+    # at this commit's own tip.
+    "fast": {"tests": 6266, "modules": 426},
+    "smoke": {"tests": 4573, "modules": 305},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
