@@ -764,8 +764,19 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # outage-budget episode reset), and that an unrung wait still honours
     # its own bound. Measured with `.venv/bin/python -m pytest -q -m
     # <tier> --collect-only` at this task's own tip.
-    "fast": {"tests": 6208, "modules": 420},
-    "smoke": {"tests": 4515, "modules": 299},
+    # Task 028c (PRD requirement K.5/K.6/K.7, #267): fast 6208 -> 6212,
+    # smoke 4515 -> 4519 (+4 tests, 0 new modules -- all four land in
+    # tests/test_transitions.py's #161 section, already counted in both
+    # tiers): two prove `--now` against a running `plan_review` iteration
+    # is signalled and costs exactly what #161 already charged (nothing on
+    # a single signal, a revision on two in a row over a fresh plan), one
+    # proves the same for `planning` (in-place retry), one for `review`
+    # (the `review_interrupted` self-loop) -- K adds no new interrupt
+    # semantics for these three judging hats. Measured with
+    # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
+    # task's own tip.
+    "fast": {"tests": 6212, "modules": 420},
+    "smoke": {"tests": 4519, "modules": 299},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

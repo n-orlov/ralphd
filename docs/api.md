@@ -868,6 +868,24 @@ operator's words in front of a loop that was otherwise unreachable; it
 asserts nothing about the endpoint, so the episode keeps its spent budget and
 its attempt count.
 
+**Which states wake, which signal (v0.25 task 028c, PRD requirement K.6/K.7,
+#267).** "A running iteration" above is phase-blind by construction
+(`LoopSupervisor.interrupt()` calls `runner.interrupt()` unconditionally) --
+it covers `planning`, `plan_review` and `review` exactly the same as
+`worker`/`verify`/`reflect`/`steer`/`verdict_gate`, and K adds **no new
+interrupt semantics for these three judging hats**: `--now`/`POST
+/interrupt` against a running one of them is signalled, never routed to the
+idle-wake branch, and the pre-existing cost of an interrupted attempt is
+unchanged -- `plan_review`'s own #161 policy (one interrupted pass is
+re-asked in place for free; a second in a row over a fresh, unworked plan
+still spends a revision and re-ingests every task `pending`, exactly as
+before K), `planning`'s in-place retry (`_one_planning_attempt`), and
+`review`'s `review_interrupted` self-loop (requirement A, #72) are all
+untouched. Only a genuinely IDLE loop -- between iterations, in a deferred
+wait (K.1/K.2), or in an infra-backoff wait (K.5) -- takes the `target:
+"idle"` wake branch. Both branches answer `200`; `409` is reserved for a
+finished run, in every case, regardless of phase.
+
 ### `POST /pause` / `POST /resume`
 Pause finishes the current iteration, then holds before the next one; resume
 releases it. `200 {"paused": true}` / `200 {"resumed": true}`.

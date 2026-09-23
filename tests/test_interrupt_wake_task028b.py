@@ -72,7 +72,7 @@ from test_cli_resume import _seed_run
 
 from ralphd.engine.api import create_app
 from ralphd.engine.loop import LoopSupervisor
-from ralphd.engine.state import RunDir, utc_from_epoch
+from ralphd.engine.state import RunDir, read_events, utc_from_epoch
 from tests.conftest import ScriptedRunner, make_supervisor
 
 # Captured at IMPORT time, before tests/conftest.py's autouse class-level
@@ -439,6 +439,12 @@ async def test_interrupt_wakes_a_loop_parked_in_an_infra_backoff_wait(tmp_path):
         "a control-plane wake must not be reported as a manual retry -- "
         "that would reset the outage-budget episode clock")
     assert not sup._infra_waiting, "the wait cleared its own flag on the way out"
+    # v0.25 task 028c (PRD requirement K.5, #267): the SAME `boundedBy`
+    # vocabulary task 028a's deferred wait introduced ("steering" vs
+    # "abort") is named on the backoff wake's own record too.
+    logs = [e for e in read_events(sup.run.root)
+            if e.get("type") == "log" and e.get("boundedBy")]
+    assert logs and logs[-1]["boundedBy"] == "steering", logs
 
 
 @pytest.mark.asyncio
@@ -456,6 +462,9 @@ async def test_an_abort_wakes_a_loop_parked_in_an_infra_backoff_wait(tmp_path):
     assert loop.time() - started < 5.0, (
         f"an abort during a {_BACKOFF_BOUND_S}s backoff wait was not woken")
     assert waited_s < 5.0 and retry_woke is False
+    logs = [e for e in read_events(sup.run.root)
+            if e.get("type") == "log" and e.get("boundedBy")]
+    assert logs and logs[-1]["boundedBy"] == "abort", logs
 
 
 @pytest.mark.asyncio

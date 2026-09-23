@@ -1569,6 +1569,26 @@ Send steering. Message from arg, `--file <f>`, or stdin.
 | `--name <slug>` | steering file slug |
 | `--list` | **show** this run's steering messages instead of sending one (task 018, #17) |
 
+**Which engine states wake, which signal, and what each answers (v0.25 task
+028c, PRD requirement K.6/K.7, #267).** `--now`'s two outcomes above are
+exhaustive: **every** running iteration is SIGNALLED, whatever phase it is
+in -- `planning`, `plan_review` and `review` included, exactly the same as
+`worker`/`verify`/`reflect`/`steer`/`verdict_gate` always were. K introduces
+**no new interrupt semantics for these three judging hats**: signalling a
+running `plan_review` iteration is re-asked in place with no revision spent
+(a SECOND signal in a row still falls to the pre-existing #161 policy --
+a revision spent, the plan re-ingested); signalling `planning` retries in
+place (`_one_planning_attempt`'s own inner loop); signalling `review`
+self-loops via the pre-existing `review_interrupted` guard (requirement A,
+#72). None of that is new, none of it is widened, and `--now` against one
+of these three costs exactly what an interrupted iteration always cost
+(#161's own accounting, PRD non-negotiable 10) -- it does **not** reach the
+idle-wake path at all. Only a genuinely idle loop -- between iterations, in
+a deferred wait (K.1/K.2), or in a backoff wait (K.5) -- is WOKEN instead.
+Both outcomes answer `200`; `409` is reserved for a run that has already
+finished (`state` terminal), checked before either outcome and before any
+steering in the same request is enqueued.
+
 The on-disk filename is always `NNN-<slug>.md`, where `NNN` is an
 engine-assigned monotonic sequence (never supplied by the caller). If
 `--name` already carries its own `NNN-` prefix (e.g. copy-pasted from a
@@ -1869,6 +1889,15 @@ request failed while the loop was simply idle. Exit `0` either way, with the
 printed line naming which happened (`a running iteration was signalled` /
 `an idle loop was woken (nothing was running to signal)`); exit `5` only for
 a job that has already finished.
+
+"A running iteration" above means any phase at all, `planning`/
+`plan_review`/`review` included -- task 028c (PRD requirement K.6, #267)
+names this explicitly because it is the one thing K does **not** touch: no
+new interrupt semantics reach these three judging hats, and interrupting one
+of them keeps exactly its pre-existing cost (`plan_review`'s own #161 policy:
+one signal is re-asked in place for free, a second in a row over a fresh
+plan spends a revision and re-ingests the plan) -- see docs/api.md's
+`POST /interrupt` for the fuller statement.
 
 ### `ralphctl pause <run-id>` / `ralphctl unpause <run-id>`
 

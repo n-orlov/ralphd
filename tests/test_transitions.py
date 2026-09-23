@@ -1952,6 +1952,130 @@ def test_a_twice_interrupted_plan_review_over_a_fresh_plan_falls_to_the_old_poli
 
 
 # ---------------------------------------------------------------------------
+# 3b. v0.25 task 028c (PRD requirement K.6, #267): `--now` against a RUNNING
+#     judging-hat iteration (planning/plan_review/review) keeps EXACTLY
+#     today's behaviour and today's cost -- K introduces no new interrupt
+#     semantics for these three hats. Driven through the REAL
+#     `LoopSupervisor.interrupt_or_wake()` (not the hand-rolled
+#     `IterationResult.interrupted=True` stand-in `_interrupted()` above
+#     produces on its own -- the `test_steer.py` idiom,
+#     `test_steer_now_forces_the_next_transition_to_steer_not_worker`),
+#     so the claim is proven against the real dispatcher rather than
+#     asserted in prose. `_ScriptedAgent_161.interrupt()` (already defined
+#     above) reports `self.running`, which is True for the whole span of
+#     the handler call below -- exactly the state a real in-flight `pi`
+#     process would be in.
+# ---------------------------------------------------------------------------
+
+
+def _interrupted_by_now_161() -> IterationResult:
+    """Calls the REAL `interrupt_or_wake()` on the supervisor handling this
+    very call -- proving a running planning/plan_review/review iteration is
+    SIGNALLED exactly like any other running iteration, never routed to the
+    idle-wake path K.3/K.5 added for a genuinely idle loop -- then hands
+    back the same interrupted-result shape `_interrupted()` above does, so
+    the rest of the phase's own pre-existing policy runs completely
+    unchanged."""
+    def handler(sup, prompt=""):
+        outcome = sup.interrupt_or_wake()
+        assert outcome == {"target": "iteration", "signalled": True,
+                          "woken": False}, outcome
+        return _interrupted()
+    return handler
+
+
+def test_steer_now_against_a_running_plan_review_iteration_keeps_todays_161_cost(
+        tmp_path):
+    """A single `--now` mid-plan_review is signalled (never the idle-wake
+    shape) and re-asked in place with NO revision spent -- byte-for-byte
+    `test_an_interrupted_plan_review_is_reasked_in_place_and_spends_no_
+    revision` above, with the trigger swapped for the real dispatcher."""
+    root = tmp_path / "run"
+    sup, final_state = _run_fresh(
+        root,
+        {"planning": [_plan_161(TASK_1_161)],
+         "plan_review": [_interrupted_by_now_161(), _plan_review_approves],
+         "worker": [_worker_completes(TASK_1_161)],
+         "review": [_review_verifies]})
+
+    agent = sup.runner
+    assert agent.phases_seen == [
+        "planning", "plan_review", "plan_review", "worker", "review"]
+    assert agent.calls["planning"] == 1, "no revision re-ran planning"
+    assert final_state == "succeeded", sup.run.read_status()
+    status = sup.run.read_status()
+    assert status.get("planReviewRevisions") is None, (
+        "K.6: a single --now signal must not spend a plan_review revision")
+
+
+def test_steer_now_twice_against_a_running_plan_review_still_spends_a_revision(
+        tmp_path):
+    """Two `--now` signals in a row over a fresh, unworked plan still hit
+    the pre-existing undecidable policy: a revision is spent and `planning`
+    re-runs (which re-ingests every task `pending` off the fresh proposal)
+    -- #161's own cost, byte-for-byte unchanged by K, proven through the
+    real dispatcher instead of the synthetic stand-in."""
+    root = tmp_path / "run"
+    sup, final_state = _run_fresh(
+        root,
+        {"planning": [_plan_161(TASK_1_161), _plan_161(TASK_1_161)],
+         "plan_review": [_interrupted_by_now_161(), _interrupted_by_now_161(),
+                         _plan_review_approves],
+         "worker": [_worker_completes(TASK_1_161)],
+         "review": [_review_verifies]})
+
+    agent = sup.runner
+    assert agent.calls["planning"] == 2
+    assert agent.calls["plan_review"] == 3
+    assert final_state == "succeeded", sup.run.read_status()
+    assert sup.run.read_status().get("planReviewRevisions") == {"1": 1}
+
+
+def test_steer_now_against_a_running_planning_iteration_keeps_todays_retry_in_place(
+        tmp_path):
+    """K.6 for `planning` itself: a single `--now` mid-`planning` is
+    signalled (never woken as idle) and retried IN PLACE by
+    `_one_planning_attempt`'s own inner loop -- no state change, no cost
+    -- exactly `test_4_one_planning_attempt_retries_in_place_when_
+    interrupted_with_budget_left` (`tests/test_worker_hat.py`) proves at
+    the unit level, here end to end through the real dispatcher with peer
+    plan review off (irrelevant to this phase's own contract)."""
+    root = tmp_path / "run"
+    sup, final_state = _run_fresh(
+        root,
+        {"planning": [_interrupted_by_now_161(), _plan_161(TASK_1_161)],
+         "worker": [_worker_completes(TASK_1_161)],
+         "review": [_review_verifies]},
+        peer_plan_review=False)
+
+    agent = sup.runner
+    assert agent.calls["planning"] == 2, (
+        "the interrupted attempt must be retried in place, not skipped")
+    assert agent.phases_seen[:2] == ["planning", "planning"], agent.phases_seen
+    assert final_state == "succeeded", sup.run.read_status()
+
+
+def test_steer_now_against_a_running_review_iteration_keeps_todays_self_loop(
+        tmp_path):
+    """K.6 for `review` itself: a single `--now` mid-`review` is signalled
+    (never woken as idle) and self-loops via the pre-existing
+    `review_interrupted` guard (requirement A, #72) -- no new edge, no new
+    cost, unaffected by K."""
+    root = tmp_path / "run"
+    sup, final_state = _run_fresh(
+        root,
+        {"planning": [_plan_161(TASK_1_161)],
+         "worker": [_worker_completes(TASK_1_161)],
+         "review": [_interrupted_by_now_161(), _review_verifies]},
+        peer_plan_review=False)
+
+    agent = sup.runner
+    assert agent.calls["review"] == 2, (
+        "the interrupted review attempt must self-loop back into review")
+    assert final_state == "succeeded", sup.run.read_status()
+
+
+# ---------------------------------------------------------------------------
 # 4. an objection over a worked plan is refused; tasks.json is untouched
 # ---------------------------------------------------------------------------
 

@@ -2165,6 +2165,12 @@ class LoopSupervisor:
           Waking here does NOT reset the episode clock and does not claim the
           endpoint recovered: it only returns control to the dispatch pass
           promptly, which is the whole of what reaching an idle loop means.
+          v0.25 task 028c (PRD requirement K.5, #267): the `log` line this
+          wake emits now carries a `boundedBy` field ("steering" | "abort"),
+          the SAME vocabulary `_sleep_until_earliest_deferred` (task 028a)
+          introduced for the deferred wait's own record -- so a backoff
+          wake's record distinguishes the two exactly as the deferred
+          wait's already did.
 
         Both bells are cleared right before the race (never earlier, never
         inside it), for task 028a's reason at its own site: a steer that
@@ -2195,13 +2201,23 @@ class LoopSupervisor:
             self._deferred_wake.clear()
         waited_s = min(time.monotonic() - started, backoff)
         if control_woken:
+            # v0.25 task 028c (PRD requirement K.5, #267): the SAME
+            # `boundedBy` vocabulary task 028a's `_sleep_until_earliest_
+            # deferred` introduced for the deferred wait -- "steering" vs
+            # "abort" -- named here too, by the same discrimination
+            # (`self._abort_reason is not None` -- `_record_abort` sets it
+            # before ringing this bell, `RunDir.add_steering` never does),
+            # so a backoff wake's own record distinguishes the two exactly
+            # as the deferred wait's already did, rather than collapsing
+            # them into one "steer or abort" phrase.
+            bounded_by = "abort" if self._abort_reason is not None else "steering"
             self.run.emit(
-                "log", level="info",
-                message=(f"infra backoff wait woken by the control plane "
+                "log", level="info", boundedBy=bounded_by,
+                message=(f"infra backoff wait woken by {bounded_by} "
                          f"after {waited_s:.3f}s of {backoff:.0f}s "
-                         "(steer or abort, task 028b, requirement K.3/K.5, "
-                         "#267); the outage-budget episode clock is NOT "
-                         "reset -- nobody said the endpoint is back"))
+                         "(task 028b/028c, requirement K.3/K.5, #267); the "
+                         "outage-budget episode clock is NOT reset -- "
+                         "nobody said the endpoint is back"))
         # Clamped: the timeout path can overshoot by a scheduling tick, and
         # the booked wait must never exceed the backoff the budget planned.
         return waited_s, woken
