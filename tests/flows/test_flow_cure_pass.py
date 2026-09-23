@@ -130,6 +130,14 @@ def test_a_curable_rejection_takes_one_cure_pass_and_the_same_approach_verifies(
 
 def test_the_second_curable_rejection_finds_the_cure_pass_spent_and_replans(
         engine_factory):
+    # Task 002 (A.5, #216/#217): re-measured after task 001 added acquire_lock's
+    # bounded retry (every engine this flow starts now pays that retry's
+    # fast-path check on launch). Fresh wall clock, three runs, this sha:
+    # whole-node ~0.8-0.9s (pytest's own "call" duration), engine-exit wall
+    # clock alone (isolated by timing just this proc.wait() call) ~0.7-0.8s --
+    # roughly 1.2-1.4% of the single 60 s budget below, nowhere near the 75%
+    # (45 s) start of the "within 25% of budget" band. Budget is unchanged and
+    # no barrier is added ahead of the wait (F.4/non-negotiable 2).
     run = engine_factory(
         job={"run_id": "flow-cure-spent", "on_complete": "exit",
              "max_approaches": 2, "iterations": 30},

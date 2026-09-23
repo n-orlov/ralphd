@@ -384,7 +384,18 @@ def test_steering_during_review_iteration_never_silently_dropped(engine_factory,
 def test_huge_output_line_does_not_kill_job(engine_factory):
     """pi emits full message snapshots per NDJSON event; a single line can be
     hundreds of KiB. Regression: this used to raise 'Separator is not found'
-    and fail the entire job instead of at most one iteration."""
+    and fail the entire job instead of at most one iteration.
+
+    Task 002 (A.6, #216/#217): this body makes exactly one `engine_factory()`
+    call, so exactly one engine starts over the run dir it uses -- there is
+    no second, overlapping engine here to name. `tests/conftest.py`'s
+    `LiveRun` derives the registry-less run dir from `tmp_path` alone, not
+    from `run_id` (`self.run_dir = tmp / "run"`), so every `LiveRun` this
+    ONE test's body constructs would land on the same path -- that is the
+    latent collision this class of test can hit, but only across multiple
+    `engine_factory()` calls inside one test body, which this test does not
+    make. No barrier is added here: there is nothing to serialize against.
+    """
     e = engine_factory(job={"on_complete": "exit"},
                        stub_env={"STUB_HUGE_LINE": "1"})
     assert e.proc.wait(timeout=60) == 0
