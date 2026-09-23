@@ -703,8 +703,19 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # real-subprocess SIGKILL-survival/refusal probes. Measured with
     # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
     # task's own tip.
-    "fast": {"tests": 6178, "modules": 416},
-    "smoke": {"tests": 4502, "modules": 296},
+    # Task 026 (PRD requirement H.2/H.3, #264): fast 6178 -> 6184, smoke
+    # 4502 -> 4508 (+6 tests, +1 new module for both tiers --
+    # tests/test_review_provisional_verdict.py is in-process only, so it
+    # sorts into both) for the review-killed-by-`iteration_timeout_s`
+    # concludes-on-its-early-verdict mechanism (verified and rejected
+    # checkpoints both), plus the explicit `provisionalVerdict` marker's
+    # legibility on status.json, the CLI and the terminal record -- the
+    # module's 7th node (the hub's own rendering) is `browser`-marked and
+    # excluded from both tiers, same as every other browser node. Measured
+    # with `.venv/bin/python -m pytest -q -m <tier> --collect-only` at
+    # this task's own tip.
+    "fast": {"tests": 6184, "modules": 417},
+    "smoke": {"tests": 4508, "modules": 297},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

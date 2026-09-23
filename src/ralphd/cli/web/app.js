@@ -1876,6 +1876,7 @@ function renderSummary(el, detail) {
   renderInfraWait(el, s, detail.runId, detail.live !== false);
   renderContainerGone(el, detail);
   renderReflect(el, s);
+  renderProvisionalVerdict(el, s);
   // Task 004: the engine writes a high-quality `reason` into status.json
   // on terminal failed/aborted states (e.g. the no-progress fail-fast
   // explanation) -- surface it prominently on the run-detail card rather
@@ -1944,6 +1945,25 @@ function renderReflect(el, s) {
     "reason not recorded";
   el.appendChild(h("p", { class: "reflect-failed" }, [
     "reflection: failed (" + error + ")",
+  ]));
+}
+
+// Task 026 (PRD requirement H.2/H.3, #264): a run that concluded on
+// review's early-verdict checkpoint (task 025) instead of a fully refined
+// pass carries an explicit `provisionalVerdict` object on status.json --
+// read directly here, never derived by comparing `recordedAt` against
+// `endedAt` by hand. Nothing at all unless `provisional` is true; the same
+// wording `ralphctl status`'s own `provisional:` line prints (main.py's
+// `_format_provisional_verdict_lines`). textContent only (via `h()`'s text
+// nodes) -- never innerHTML.
+function renderProvisionalVerdict(el, s) {
+  const pv = (s.provisionalVerdict && typeof s.provisionalVerdict === "object")
+    ? s.provisionalVerdict : null;
+  if (pv == null || pv.provisional !== true) return;
+  const scope = pv.refinementScope || "further refinement";
+  el.appendChild(h("p", { class: "provisional-verdict" }, [
+    "\u26A0 PROVISIONAL verdict (" + String(pv.verdict) + ", recorded " +
+    String(pv.recordedAt) + "): review never got to " + String(scope) + ".",
   ]));
 }
 

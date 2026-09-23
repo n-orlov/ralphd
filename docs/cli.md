@@ -641,6 +641,35 @@ Human output also renders (task 003):
   and a genuinely rejected last approach that happens to look similar on
   disk (see `LoopSupervisor._deadline_beat_verdict_patch()`'s own docstring
   for why that one is deliberately excluded).
+- `provisional:` (task 026, PRD requirement H.2/H.3, #264) -- shown only
+  when `status.json` carries the `provisionalVerdict` object task 026
+  added, with `provisional: true`: review recorded an early verdict
+  (`record-verdict`, task 025) and was then cut short by
+  `iteration_timeout_s` with no budget or wall clock left to ask it again,
+  so the run concludes decisively on THAT verdict instead of holding with
+  a null verdict. `state`/`verdict` above already read the checkpoint's
+  own outcome (`succeeded`/`verified` or `failed`/`rejected`) -- this line
+  is what tells an operator, reading cold, that the verdict never got its
+  refinement pass, and names what that refinement would have covered:
+
+  ```
+  provisional: the recorded verdict (verified) is PROVISIONAL (#264): review
+               recorded it early (at 2026-09-23T15:00:00Z) and never got to
+               refine it -- review's own refinement pass over its reason and
+               findings before ending the iteration -- neither could run
+               because the engine's iteration budget or wall clock was
+               spent before review could be asked again (requirement H.2,
+               #264).
+  ```
+
+  `--json` carries the same `provisionalVerdict: {verdict, provisional,
+  reason, recordedAt, refinementScope}` object through untouched, and the
+  hub's run-detail card renders the identical wording as a
+  `.provisional-verdict` warning banner; the terminal record
+  (`run-record.json`/`.md`, task 006/B.1) carries the same object under its
+  own `provisionalVerdict` field. Absent entirely for every ordinary,
+  fully-refined terminal verdict (see
+  `LoopSupervisor._conclude_on_provisional_verdict()`'s own docstring).
 - `termination:` (task 015, #46) -- shown only for a run a **signal** ended with
   no operator abort behind it, i.e. `status.json`'s `termination.class` is
   `self-inflicted`:

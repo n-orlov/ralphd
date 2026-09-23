@@ -3389,6 +3389,41 @@ def _format_deadline_beat_verdict_lines(deadline_beat_verdict) -> list[str]:
     return lines
 
 
+def _format_provisional_verdict_lines(provisional_verdict) -> list[str]:
+    """Task 026 (PRD requirement H.2/H.3, #264): the `provisional:` line
+    for status.json's `provisionalVerdict` object -- the run concluded
+    decisively on review's early-verdict checkpoint (task 025) instead of
+    holding with a null verdict, because `iteration_timeout_s` took every
+    remaining chance to ask review again. `state`/`verdict` above already
+    print the checkpoint's own verdict (`succeeded`/`verified` or
+    `failed`/`rejected`) -- this line is what tells an operator apart, on
+    screen, that the verdict never got its refinement pass, and names what
+    that refinement would have covered, reading the explicit
+    `provisional` field directly rather than making them compare
+    `recordedAt` against `ended` by hand.
+
+    Nothing at all unless status.json actually carries the
+    `provisionalVerdict` object with `provisional` true -- absent for
+    every ordinary, fully-refined terminal verdict.
+    """
+    if not provisional_verdict or not isinstance(provisional_verdict, dict):
+        return []
+    if not provisional_verdict.get("provisional"):
+        return []
+    verdict = provisional_verdict.get("verdict")
+    recorded_at = provisional_verdict.get("recordedAt")
+    scope = provisional_verdict.get("refinementScope") or "further refinement"
+    text = (
+        f"the recorded verdict ({verdict}) is PROVISIONAL (#264): review "
+        f"recorded it early (at {recorded_at}) and never got to refine it "
+        f"-- {scope}."
+    )
+    wrapped = textwrap.wrap(text, width=76) or [text]
+    lines = [f"provisional: {wrapped[0]}"]
+    lines.extend(f"             {extra}" for extra in wrapped[1:])
+    return lines
+
+
 _GATE_REJECTION_ENDING_WORDING = {
     GATE_REJECTION_ENDING_MERITS:
         "rejected on the merits (no curable path)",
@@ -4029,6 +4064,12 @@ def cmd_status(args):
     # is indistinguishable on screen from an ordinary failure.
     lines.extend(_format_deadline_beat_verdict_lines(
         status.get("deadlineBeatVerdict")))
+    # Task 026 (PRD requirement H.2/H.3, #264): ... and when the run
+    # concluded on review's early-verdict checkpoint instead of a fully
+    # refined pass, a `provisional:` line names that plainly -- otherwise
+    # this run is indistinguishable on screen from an ordinary verdict.
+    lines.extend(_format_provisional_verdict_lines(
+        status.get("provisionalVerdict")))
     # Task 015 (#46): ... and when a signal nobody claimed ended the run, the
     # class and the evidence, because `reason: signal 15` on its own told an
     # operator nothing they could act on.

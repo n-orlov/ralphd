@@ -481,6 +481,19 @@ class LoopSupervisor:
         # at the shared terminal-write call site the way
         # `_unconsumed_steering_patch()` is. Empty for every other tail exit.
         self._deadline_beat_verdict_extra: dict = {}
+        # Task 026 (PRD requirement H.2/H.3, #264): stashed ONLY by
+        # `_review_unjudged_at_budget_end`/`_conclude_on_provisional_verdict`
+        # when review's own self-loop exhausted budget/wall clock AND an
+        # early-verdict checkpoint (task 025's `record-verdict`) already
+        # exists on disk for THIS approach with a `"rejected"` verdict --
+        # the sibling `"verified"` case concludes on the spot (`("done",
+        # "succeeded")`) and never reaches `_finish_tail_unverified` at
+        # all. Empty for every other tail exit; `_finish_tail_unverified`
+        # reads it to write the run's terminal outcome on the checkpoint's
+        # own rejected verdict, marked `provisional`, instead of the
+        # `"unreviewed"`/`null` hold this same edge used to take when no
+        # checkpoint existed.
+        self._review_provisional_rejected_extra: dict = {}
         # Task 016 (requirement F.3, #146): True iff the terminal `("tail",)`
         # exit this episode is about to write is specifically "the deadline
         # took the last review attempt before it could speak" -- set by
@@ -3497,6 +3510,24 @@ class LoopSupervisor:
         extra check here.
         """
         final_state = "aborted" if self._abort_reason else "failed"
+        # Task 026 (PRD requirement H.2/H.3, #264): checked BEFORE the
+        # deadline-unreviewed branch below -- mutually exclusive with it by
+        # construction (`_review_unjudged_at_budget_end` takes exactly one
+        # of the two: this flag only when an early-verdict checkpoint
+        # existed for this approach, `_review_deadline_unreviewed` only
+        # when it did not) -- never overrides an actual operator abort,
+        # same precedence every sibling branch here already keeps. Writes
+        # the run's terminal outcome on the checkpoint's own `"rejected"`
+        # verdict, with the `provisionalVerdict` field (H.3) carrying the
+        # explicit marker plus what the refinement would have covered --
+        # never something a reader must derive from `recordedAt` versus
+        # `endedAt` timestamp arithmetic.
+        if self._review_provisional_rejected_extra and not self._abort_reason:
+            extra = self._review_provisional_rejected_extra
+            self._finish(final_state, "rejected", reason=extra["reason"],
+                        **self._unconsumed_steering_patch(),
+                        **extra["patch"])
+            return final_state
         # Task 009 (v0.24 requirement B.2, #169): a deadline that lands
         # mid-review (ordinary self-loop exhaustion) carries NO verdict at
         # all -- never overrides an actual operator abort, which keeps its
@@ -10847,6 +10878,22 @@ class LoopSupervisor:
         log line is emitted, and no composite PRD is written for a
         successor approach that will never run.
 
+        Task 026 (PRD requirement H.2/H.3, #264): checked FIRST, before any
+        of the above -- a verdict was NOT "never actually scored" when the
+        review hat already called `record-verdict` (task 025) for this
+        exact approach before the engine ran out of budget/wall clock to
+        ask it again. `state.read_review_early_verdict` is the SAME
+        checkpoint task 025's `hat_tools._record_verdict` writes; matching
+        it against `approach` (never trusting a stale checkpoint from an
+        earlier, already-archived approach) and `not self._abort_reason`
+        (an operator abort still wins, exactly like every other flag this
+        method sets) is the whole gate. When it holds, control goes to
+        `_conclude_on_provisional_verdict` instead of the null-verdict/
+        `"unreviewed"` hold below -- the #264 incident this whole
+        requirement exists for (iteration 0198: 35.3 minutes, the material
+        for a verdict, nothing on disk recording one) is precisely the
+        checkpoint existing but the run still ending up here empty-handed.
+
         Requirement B (#72): this is ALSO the one call site that stashes
         `_deadline_beat_verdict_patch()`'s result for the shared terminal
         write (`_run_job_core`'s tail exit) to include -- see that
@@ -10859,6 +10906,11 @@ class LoopSupervisor:
         COMPLETE signal -- once `_archive_approach` has copied today's
         tasks.json into `approaches/NN/` without resetting it).
         """
+        checkpoint = state.read_review_early_verdict(self.run.root)
+        if (not self._abort_reason and isinstance(checkpoint, dict)
+                and checkpoint.get("approach") == approach
+                and checkpoint.get("verdict") in ("verified", "rejected")):
+            return self._conclude_on_provisional_verdict(approach, checkpoint)
         self._advance("review", "finishing", "review_unjudged_at_budget_end")
         self._terminal_reason_note = (
             f"review (approach {approach}) was repeatedly interrupted with "
@@ -10877,6 +10929,86 @@ class LoopSupervisor:
         self._review_deadline_unreviewed = True
         self.run.emit("review_deadline_unreviewed", approach=approach)
         self._deadline_beat_verdict_extra = self._deadline_beat_verdict_patch()
+        return ("tail",)
+
+    def _conclude_on_provisional_verdict(self, approach: int,
+                                         checkpoint: dict) -> tuple:
+        """Task 026 (PRD requirement H.2/H.3, #264): the run concludes
+        DECISIVELY on the early-verdict checkpoint (task 025, H.1/H.4)
+        instead of holding with a null verdict or `"unreviewed"`, once
+        review's own self-loop has exhausted budget/wall clock with no
+        chance left to ask it again -- called ONLY from `_review_unjudged_
+        at_budget_end`, which is the one place that already knows a
+        checkpoint exists for THIS approach and that no operator abort is
+        in play.
+
+        Deliberately NOT the ordinary acceptance/rejection pipeline
+        (`_review_verdict`'s petition/findings side effects,
+        `_archive_approach`, the cure pass, a composite PRD for a
+        successor approach, `peer_verdict_gate`'s own dispatch): every one
+        of those assumes a FULLY completed, refined review pass, which is
+        exactly what this checkpoint is not -- review was cut short before
+        it could finish speaking. Dispatching anything further, including
+        the verdict gate, would be the same new-iteration-past-the-
+        boundary v0.24's requirement A/B/C forbid absolutely (the identical
+        constraint H.5/#264/task 027 works under at its own, different call
+        site) -- so a `"verified"` checkpoint concludes here directly,
+        disclosing the skipped gate as a named residual in `refinementScope`
+        exactly like H.5's own option (b), never as a null verdict.
+
+        The `provisionalVerdict` field this writes into `status.json`
+        (H.3) is the SAME dict both branches below build, so `_write_run_
+        record` (the terminal record) and every reader of `status.json`
+        (the CLI, the hub) see one consistent shape regardless of which
+        verdict the checkpoint carried: `verdict`, `provisional: True`,
+        `reason` (the checkpoint's own, if the hat gave one),
+        `recordedAt` (the checkpoint's own timestamp, informational only --
+        nothing reads it to DERIVE provisionality; `provisional` itself is
+        the explicit field a caller checks), and `refinementScope` (free
+        text naming what never got to run).
+        """
+        verdict = checkpoint.get("verdict")
+        refinement_scope = (
+            "review's own refinement pass over its reason and findings "
+            "before ending the iteration"
+            + (", and the peer verdict gate's own dispatch"
+               if self.cfg.peer_verdict_gate else "")
+            + " -- neither could run because the engine's iteration budget "
+              "or wall clock was spent before review could be asked again "
+              "(requirement H.2, #264)")
+        provisional_patch = {
+            "provisionalVerdict": {
+                "verdict": verdict,
+                "provisional": True,
+                "reason": checkpoint.get("reason"),
+                "recordedAt": checkpoint.get("recordedAt"),
+                "refinementScope": refinement_scope,
+            }
+        }
+        reason_note = (
+            f"review (approach {approach}) was repeatedly interrupted with "
+            "no budget or wall clock left to ask again, but it had already "
+            f"recorded an early verdict ({verdict!r}) via record-verdict "
+            "(task 025); the run concludes on that verdict, marked "
+            "provisional (requirement H.2, #264)")
+        self._terminal_reason_note = reason_note
+        self.run.emit(
+            "review_provisional_verdict_concluded", approach=approach,
+            verdict=verdict, checkpointRecordedAt=checkpoint.get("recordedAt"))
+        if verdict == "verified":
+            self._advance("review", "finishing",
+                         "review_provisional_verdict_verified")
+            self.run.emit("signal", signal="VERIFIED")
+            self._finish("succeeded", "verified", reason=reason_note,
+                        **self._unconsumed_steering_patch(),
+                        **provisional_patch)
+            return ("done", "succeeded")
+        self._advance("review", "finishing",
+                     "review_provisional_verdict_rejected")
+        self._review_provisional_rejected_extra = {
+            "reason": reason_note,
+            "patch": provisional_patch,
+        }
         return ("tail",)
 
     def _deadline_beat_verdict_patch(self) -> dict:

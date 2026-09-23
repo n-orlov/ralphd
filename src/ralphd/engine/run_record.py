@@ -346,6 +346,7 @@ RECORD_SECTIONS: dict[str, str] = {
     "endedAt": "header",
     "iterationsUsed": "header",
     "engineVersion": "header",
+    "provisionalVerdict": "header",
     "usage": "Usage",
     "approaches": "Approach history",
     "petitions": "Petitions",
@@ -376,6 +377,11 @@ def build_run_record(run: "state.RunDir", *, run_id: str,
         # does not take the answer with it -- `run-record.md`/`.json` on
         # the host still name which engine build produced this run.
         "engineVersion": status.get("engineVersion"),
+        # Task 026 (PRD requirement H.2/H.3, #264): the SAME explicit
+        # `provisionalVerdict` object status.json carries, read directly
+        # into the terminal record rather than left implicit -- `None` for
+        # every ordinary, fully-refined terminal verdict.
+        "provisionalVerdict": status.get("provisionalVerdict"),
         "approaches": build_approach_history(run),
         "petitions": build_petitions_section(run),
         "steersConsumed": build_steers_section(run),
@@ -486,6 +492,13 @@ def render_run_record_markdown(record: dict) -> str:
         f"- iterationsUsed: {record.get('iterationsUsed')}",
         f"- engineVersion: {record.get('engineVersion')}",
     ]
+    provisional = record.get("provisionalVerdict")
+    if isinstance(provisional, dict) and provisional.get("provisional"):
+        lines.append(
+            "- **provisional**: verdict `" + str(provisional.get("verdict"))
+            + "` recorded at " + str(provisional.get("recordedAt"))
+            + " -- review never got to "
+            + str(provisional.get("refinementScope") or "refine it"))
     lines += _usage_lines(record.get("usage") or {})
 
     lines += ["", "## Approach history"]
