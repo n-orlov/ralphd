@@ -403,6 +403,27 @@ _TASK_OBLIGATION_REF_RE = re.compile(
 _REQUIREMENT_OBLIGATION_REF_RE = re.compile(
     r"\brequirement\s+([A-Za-z](?:\.\d+)*)\b", re.IGNORECASE)
 
+# Task 012 (requirement E.1, #212): a BARE task id anchors an obligation
+# exactly as a `task <id>`-prefixed one does -- ids are already unique and
+# already checked against the current plan, so the literal word `task`
+# was never load-bearing. A token stops naturally before a leading
+# apostrophe, so a possessive (`007's`) still yields the bare token `007`
+# without any extra stripping.
+_BARE_ID_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _bare_id_refs(obligation: str) -> set[str]:
+    """Every whitespace/punctuation-delimited token in `obligation` that
+    could name a bare task id -- no literal `task` keyword required."""
+    return set(_BARE_ID_TOKEN_RE.findall(obligation))
+
+
+# Task 012 (requirement E.2, #212): emitted by `open_petitions_in_workspace`
+# for every filing it classifies as history, so a dropped filing is never
+# silent -- naming the filing's own obligation text and stating plainly
+# that it matched none of the anchors this module checks.
+PETITION_CLASSIFIED_AS_HISTORY_EVENT = "petition_classified_as_history"
+
 
 # The shortest normalised obligation text that may anchor itself to a task
 # by QUOTING that task's own criterion clause (anchor 3 in
@@ -429,9 +450,12 @@ def _obligation_is_history(obligation: str, task_ids: set[str],
     only while it still names something this run actually carries. It is
     history unless AT LEAST ONE of the following resolves --
 
-    1. a task reference (`Task <id>` -- `task_petition_obligation`'s own
-       format, the shape an ENGINE-filed exhaustion petition always takes)
-       whose id is in `task_ids`; or
+    1. a task reference -- either `Task <id>` (`task_petition_obligation`'s
+       own format, the shape an ENGINE-filed exhaustion petition always
+       takes) or a BARE id with no literal `task` keyword at all (task 012,
+       requirement E.1, #212: ids are already unique and already checked
+       against the current plan, so the word `task` was never load-bearing)
+       -- either way, whose id is in `task_ids`; or
     2. a `requirement <letter>` reference the contract actually declares --
        a literal `"requirement <letter>"` phrase, or the letter's own PRD
        heading (`## <letter> --`, this PRD's own section shape); or
@@ -475,6 +499,8 @@ def _obligation_is_history(obligation: str, task_ids: set[str],
     """
     task_refs = {m.rstrip(":") for m in _TASK_OBLIGATION_REF_RE.findall(obligation)}
     if any(ref in task_ids for ref in task_refs):
+        return False
+    if any(tok in task_ids for tok in _bare_id_refs(obligation)):
         return False
     clause = _normalize_obligation(obligation)
     if len(clause) >= _MIN_CRITERION_CLAUSE_ANCHOR and any(
@@ -537,6 +563,16 @@ def open_petitions_in_workspace(
     `tasks=None` (every pre-existing caller) applies no history filter
     whatsoever.
 
+    Task 012 (requirement E.2, #212): every filing this history filter
+    drops is no longer silent. When `run` is given (the same optional
+    argument N.6 already threads through), each dropped filing emits one
+    `PETITION_CLASSIFIED_AS_HISTORY_EVENT` naming the filing's own
+    obligation text and stating plainly that it matched none of the
+    anchors this module checks -- `run=None` (any caller that never wants
+    the run-scope event stream touched) keeps the drop exactly as silent
+    as it always was, matching every other optional-`run` caller in this
+    module.
+
     A file that cannot be read (permissions, a race with a concurrent
     write) costs nothing more than itself, the same posture
     `_apply_operator_status_rulings` takes for a broken amendments mount:
@@ -560,9 +596,19 @@ def open_petitions_in_workspace(
             for t in tasks if isinstance(t, dict)
             for field in ("successCriteria", "criteriaOfRecord")
             if t.get(field))
-        found = [p for p in found
-                if not _obligation_is_history(
-                    p["obligation"], task_ids, contract_text, task_criteria)]
+        kept = []
+        for p in found:
+            if _obligation_is_history(
+                    p["obligation"], task_ids, contract_text, task_criteria):
+                if run is not None:
+                    run.emit(PETITION_CLASSIFIED_AS_HISTORY_EVENT,
+                             obligation=p["obligation"],
+                             reason=("matched none of the anchors -- no "
+                                     "task id, no requirement, no criterion "
+                                     "clause of the current plan"))
+                continue
+            kept.append(p)
+        found = kept
     return found
 
 

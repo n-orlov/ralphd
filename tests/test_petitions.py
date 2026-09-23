@@ -86,6 +86,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from ralphd.engine import (
     contracts,
     petitions,
@@ -96,6 +98,7 @@ from ralphd.engine import (
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.petitions import (
+    PETITION_CLASSIFIED_AS_HISTORY_EVENT,
     read_adjudications,
     read_confirmed_adjudications,
     record_confirmed_adjudications,
@@ -1250,13 +1253,18 @@ def test_an_obligation_naming_a_requirement_the_contract_declares_stays_open(
 
 def test_an_obligation_naming_a_requirement_the_contract_never_declares_is_history(
         tmp_path):
+    """`042` (not the bare digit `1` the older version of this test used)
+    is the placeholder task id here on purpose: task 012's new bare-id
+    anchor (requirement E.1, #212) would otherwise match the bare `1` this
+    obligation's own text carries ("predicate 1"), which has nothing to do
+    with the task-anchor question this test is actually about."""
     ws = tmp_path / "ws"
     _write(ws, "v0.19-petitions.md",
            "# v0.19 petitions\n" +
            _section("Requirement Z, DoD predicate 1 cannot be met"))
 
     found = petitions.open_petitions_in_workspace(
-        ws, CURRENT_CONTRACT, tasks=[{"id": "1", "title": "x"}])
+        ws, CURRENT_CONTRACT, tasks=[{"id": "042", "title": "x"}])
 
     assert found == []
 
@@ -1276,7 +1284,7 @@ def test_freeform_obligation_naming_neither_a_task_nor_a_requirement_is_history(
            _section("the criterion can only be verified after it is met"))
 
     found = petitions.open_petitions_in_workspace(
-        ws, CURRENT_CONTRACT, tasks=[{"id": "1", "title": "x"}])
+        ws, CURRENT_CONTRACT, tasks=[{"id": "042", "title": "x"}])
 
     assert found == []
 
@@ -1373,6 +1381,142 @@ def test_tasks_none_keeps_history_filtering_off_for_backward_compat(tmp_path):
     found = petitions.open_petitions_in_workspace(ws, CURRENT_CONTRACT)
 
     assert len(found) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 012 (requirement E.1/E.2, #212): a bare task id anchors an obligation
+# with no literal `task` keyword required, and a filing this module
+# classifies as history is never dropped in silence.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("row_obligation, expected_is_history", [
+    # Row 1 (#212's own table): a bare id with no `task` keyword at all --
+    # used to be `True` (dropped as history); flips to `False`.
+    ("007 must send the telegram at the moment it happens", False),
+    # Row 2: a bare, hyphenated id, same flip.
+    ("cure-01-02 cannot be completed", False),
+    # Row 3: the literal `Task <id>` form already resolved before this
+    # task -- stays `False`, unaffected by the bare-id addition.
+    ("Task 007 must send the telegram at the moment it happens", False),
+], ids=["row1-bare-numeric-id", "row2-bare-hyphenated-id",
+        "row3-literal-task-keyword-unchanged"])
+def test_212_three_row_table_all_resolve_against_task_ids(
+        row_obligation, expected_is_history):
+    """#212's own reproduction table, verified by calling
+    `_obligation_is_history` directly with `task_ids={'007', 'cure-01-02'}`
+    exactly as the PRD's own repro does. Before task 012, rows 1 and 2 came
+    back `True` (dropped as history); this pins all three at `False`."""
+    task_ids = {"007", "cure-01-02"}
+
+    result = petitions._obligation_is_history(
+        row_obligation, task_ids, contract_text="")
+
+    assert result is expected_is_history
+
+
+def test_a_bare_id_absent_from_task_ids_is_still_history(tmp_path):
+    """The bare-id anchor only resolves against ids actually IN
+    `task_ids` -- a bare numeral that names no current task is still
+    history, exactly like the possessive-task-absent-from-the-plan
+    companion test above."""
+    ws = tmp_path / "ws"
+    _write(ws, "v0.19-petitions.md",
+           "# v0.19 petitions\n" +
+           _section("999 must send the telegram at the moment it happens"))
+    tasks = [{"id": "007", "title": "still in the plan"}]
+
+    found = petitions.open_petitions_in_workspace(
+        ws, CURRENT_CONTRACT, tasks=tasks)
+
+    assert found == []
+
+
+def test_a_bare_id_present_in_task_ids_stays_open_end_to_end(tmp_path):
+    """The same bare-id flip, exercised through the public entry point
+    rather than the private helper directly."""
+    ws = tmp_path / "ws"
+    _write(ws, "v0.19-petitions.md",
+           "# v0.19 petitions\n" +
+           _section("007 must send the telegram at the moment it happens"))
+    tasks = [{"id": "007", "title": "send the telegram"}]
+
+    found = petitions.open_petitions_in_workspace(
+        ws, CURRENT_CONTRACT, tasks=tasks)
+
+    assert len(found) == 1
+    assert found[0]["obligation"] == (
+        "007 must send the telegram at the moment it happens")
+
+
+def test_a_history_drop_emits_an_event_naming_the_filing(tmp_path):
+    """E.2: a filing classified as history is never dropped in silence --
+    it emits `PETITION_CLASSIFIED_AS_HISTORY_EVENT`, naming the filing's
+    own obligation text and stating that it matched none of the anchors.
+    Asserted on the emitted event itself (`events.jsonl`), never on any
+    internal call."""
+    ws = tmp_path / "ws"
+    history_obligation = "the criterion can only be verified after it is met"
+    _write(ws, "v0.19-petitions.md",
+           "# v0.19 petitions\n" + _section(history_obligation))
+    run = RunDir(root=tmp_path / "run")
+    tasks = [{"id": "042", "title": "unrelated"}]
+
+    found = petitions.open_petitions_in_workspace(
+        ws, CURRENT_CONTRACT, tasks=tasks, run=run)
+
+    assert found == []
+    events = [json.loads(x) for x in
+              (run.root / "events.jsonl").read_text().splitlines() if x.strip()]
+    history_events = [e for e in events
+                      if e["type"] == PETITION_CLASSIFIED_AS_HISTORY_EVENT]
+    assert len(history_events) == 1
+    assert history_events[0]["obligation"] == history_obligation
+    assert "matched none of the anchors" in history_events[0]["reason"]
+
+
+def test_a_kept_filing_emits_no_history_event(tmp_path):
+    """The no-op contract this module's other event emitters already
+    keep: a filing that resolves against an anchor stays open and costs
+    no history event -- `events.jsonl` is never even created."""
+    ws = tmp_path / "ws"
+    _write(ws, "v0.19-petitions.md",
+           "# v0.19 petitions\n" +
+           _section("Task 018: scope petition discovery"))
+    run = RunDir(root=tmp_path / "run")
+    tasks = [{"id": "018", "title": "scope petition discovery"}]
+
+    found = petitions.open_petitions_in_workspace(
+        ws, CURRENT_CONTRACT, tasks=tasks, run=run)
+
+    assert len(found) == 1
+    assert not (run.root / "events.jsonl").exists()
+
+
+def test_a_history_drop_with_no_run_still_drops_but_emits_nothing(tmp_path):
+    """`run=None` (every pre-existing caller of this function) keeps the
+    drop exactly as silent as it always was -- the event channel is
+    opt-in, not a behaviour change for a caller that never threads `run`
+    through."""
+    ws = tmp_path / "ws"
+    _write(ws, "v0.19-petitions.md",
+           "# v0.19 petitions\n" +
+           _section("the criterion can only be verified after it is met"))
+    tasks = [{"id": "042", "title": "unrelated"}]
+
+    found = petitions.open_petitions_in_workspace(
+        ws, CURRENT_CONTRACT, tasks=tasks, run=None)
+
+    assert found == []
+
+
+# The requirement-letter anchor (`test_an_obligation_naming_a_requirement_
+# the_contract_declares_stays_open` / `..._never_declares_is_history`,
+# both above in this module) and the 24-character-criterion-clause anchor
+# (`test_an_obligation_quoting_a_live_tasks_own_criterion_clause_stays_
+# open` / `test_a_two_word_overlap_with_some_criterion_is_not_an_anchor`,
+# both above) are unchanged by this task -- re-run in this same commit and
+# still green, they are task 012's own evidence that adding the bare-id
+# anchor left the other two exactly as they were.
 
 
 def _wave_task(tid: str = "018", title: str = "scope petition discovery") -> dict:

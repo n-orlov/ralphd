@@ -599,8 +599,18 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # own pre-existing `start`/template nodes), so all three sort into both
     # tiers. Measured with `.venv/bin/python -m pytest -q -m <tier>
     # --collect-only` at this commit's own tip.
-    "fast": {"tests": 6098, "modules": 408},
-    "smoke": {"tests": 4428, "modules": 290},
+    # task 012 (v0.25 requirement E.1/E.2, #212): fast 6098 -> 6106, smoke
+    # 4428 -> 4436 (+8 tests, 0 new modules) for the bare-id anchor's #212
+    # three-row parametrized table (test_212_three_row_table_all_resolve_
+    # against_task_ids, 3 cases) plus five history-event/no-op nodes, all
+    # in tests/test_petitions.py. No `docker`/`browser`/process-boundary
+    # fixture in the new nodes (in-process `RunDir`/`petitions.open_
+    # petitions_in_workspace` calls, like the module's own pre-existing
+    # history-filter nodes), so all eight sort into both tiers. Measured
+    # with `.venv/bin/python -m pytest -q -m <tier> --collect-only` at
+    # this commit's own tip.
+    "fast": {"tests": 6106, "modules": 408},
+    "smoke": {"tests": 4436, "modules": 290},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
