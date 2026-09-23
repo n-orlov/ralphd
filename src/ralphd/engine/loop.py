@@ -1627,31 +1627,43 @@ class LoopSupervisor:
         declare one sees exactly the prompt text it saw before and keeps the
         Python recipe as its protocol.
 
+        #265: the value is a command line, not merely a bare path -- a
+        script that itself requires an argument (`ci/review.sh` exits 2
+        with none) has nowhere else to carry it. `protocol` below is
+        therefore rendered **verbatim**: no shell is introduced, no argv
+        parsing happens, and no quoting convention is invented here, so
+        `ci/review.sh --smoke` (or any bare path with no arguments at all,
+        which is unaffected) reaches the block exactly as the operator
+        wrote it.
+
         Rendered into the shared `## Job context` block for EVERY hat, not
         just the two that measure: the worker is the hat that writes and
-        maintains the script, and a worker that cannot see which path the
-        judge will run is the reason the Go analogue was written somewhere
-        the judge never looked. The engine deliberately neither runs nor
-        validates the script -- "is this a real protocol" is precisely the
-        judgement the reviewing hat is here to make, and an engine-side
-        existence check would turn a typo into a startup failure rather than
-        a finding.
+        maintains the script, and a worker that cannot see which command
+        the judge will run is the reason the Go analogue was written
+        somewhere the judge never looked. The engine deliberately neither
+        runs nor validates the command -- "is this a real protocol" is
+        precisely the judgement the reviewing hat is here to make, and an
+        engine-side existence or argv check would turn a typo into a
+        startup failure rather than a finding.
         """
         protocol = (self.cfg.review_clone_protocol or "").strip()
         if not protocol:
             return ""
         return (
             "\n## Disposable-clone protocol (operator-authorized)\n"
-            f"`{protocol}`, relative to the workspace root, is the sanctioned "
-            "protocol for establishing that a disposable clone is measuring "
-            "itself. Run it inside the clone and require exit 0 before citing "
-            "any measurement from that clone; it stands in place of the "
-            "Python `pip install -e .` recipe named in the judging prompts, "
-            "and needs no further authorization, task or amendment. A "
-            "non-zero exit means identity is NOT established and nothing "
-            "measured there may be cited -- report that as a harness "
-            "condition naming this path, never as a defect in the work under "
-            "review.\n")
+            f"`{protocol}` is the command the hat runs, verbatim, inside the "
+            "clone to establish that the clone is measuring itself -- run it "
+            "exactly as written, with any arguments it carries; the engine "
+            "introduces no shell, performs no argv parsing and invents no "
+            "quoting convention here, so a value like `ci/review.sh --smoke` "
+            "reaches you with its argument intact. Require exit 0 before "
+            "citing any measurement from that clone; it stands in place of "
+            "the Python `pip install -e .` recipe named in the judging "
+            "prompts, and needs no further authorization, task or "
+            "amendment. A non-zero exit means identity is NOT established "
+            "and nothing measured there may be cited -- report that as a "
+            "harness condition naming this command, never as a defect in "
+            "the work under review.\n")
 
     @staticmethod
     def _docker_siblings_note() -> str:

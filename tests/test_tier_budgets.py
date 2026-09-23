@@ -588,8 +588,19 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # smoke, exactly like its 8 pre-existing nodes. Measured with
     # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
     # commit's own tip.
-    "fast": {"tests": 6095, "modules": 408},
-    "smoke": {"tests": 4425, "modules": 290},
+    # task 010 (v0.25 requirement D.1, #265): fast 6095 -> 6098, smoke 4425
+    # -> 4428 (+3 tests, 0 new modules) for the three D.1/D.4 probes in
+    # tests/test_review_clone_protocol.py -- a value with arguments accepted
+    # by the flag/key, that same value surviving start -> job.yaml ->
+    # resume -> rendered prompt unchanged, and an existing bare-path value
+    # still rendering exactly as before. No `docker`/`browser`/process-
+    # boundary fixture in the new nodes (the `ctl` fixture drives
+    # `ralphctl` in-process against a stub docker script, like the module's
+    # own pre-existing `start`/template nodes), so all three sort into both
+    # tiers. Measured with `.venv/bin/python -m pytest -q -m <tier>
+    # --collect-only` at this commit's own tip.
+    "fast": {"tests": 6098, "modules": 408},
+    "smoke": {"tests": 4428, "modules": 290},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -508,11 +508,17 @@ class JobConfig:
     # Naming the script here is that authorization, granted at launch where
     # it is auditable, instead of through a mid-run `amend --wave`. `None`
     # (the default) leaves the prompts' own Python recipe as the protocol,
-    # so every existing job.yaml behaves exactly as before. The engine does
-    # not run, read or validate the script: it only tells the judging hats
-    # that this path is the sanctioned protocol, and the hat runs it and
-    # requires exit 0 before it may cite a measurement. Rendered into every
-    # hat's `## Job context` by `LoopSupervisor._review_clone_protocol_note`.
+    # so every existing job.yaml behaves exactly as before. The value is a
+    # command line, not merely a bare path (#265): a script that itself
+    # requires an argument (e.g. `ci/review.sh --smoke`) is named through
+    # this same field, and the whole value is rendered verbatim -- the
+    # engine never introduces a shell, never parses it into argv, and
+    # invents no quoting convention of its own. The engine does not run,
+    # read or validate it either way: it only tells the judging hats that
+    # this command line is the sanctioned protocol, and the hat runs it, as
+    # written, and requires exit 0 before it may cite a measurement.
+    # Rendered into every hat's `## Job context` by
+    # `LoopSupervisor._review_clone_protocol_note`.
     review_clone_protocol: str | None = None
     # Task 022 (PRD requirement B.3, #140): the endpoint the engine-owned
     # `notify` hat tool (`engine/hat_tools.py`) POSTs to, from the engine

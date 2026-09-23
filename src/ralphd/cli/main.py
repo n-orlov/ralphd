@@ -7995,18 +7995,26 @@ def build_parser() -> argparse.ArgumentParser:
     # across three approaches and rejected `curable: false` each time. This
     # flag names the product's own equivalent, authorizing it at launch where
     # it is auditable instead of through a mid-run `amend --wave`. The engine
-    # neither runs nor validates the path -- it tells the judging hats which
-    # script is sanctioned, and the hat requires exit 0 before citing a
-    # measurement. Unset leaves the prompts' Python recipe in force, so every
-    # existing job.yaml is unaffected.
-    s.add_argument("--review-clone-protocol", default=None, metavar="PATH",
-                   help="workspace-relative executable the review and "
+    # neither runs nor validates the command line -- it tells the judging
+    # hats which one is sanctioned, and the hat requires exit 0 before citing
+    # a measurement. Unset leaves the prompts' Python recipe in force, so
+    # every existing job.yaml is unaffected. #265: the value is a command
+    # line, not merely a bare path -- a script that itself requires an
+    # argument (e.g. `ci/review.sh --smoke`) is named through this same
+    # flag, and is rendered verbatim: no shell, no argv parsing, no invented
+    # quoting convention. A bare path with no arguments still works exactly
+    # as it always has.
+    s.add_argument("--review-clone-protocol", default=None, metavar="COMMAND",
+                   help="command line (a workspace-relative script, plus "
+                        "any arguments it requires) the review and "
                         "verdict-gate hats run inside their disposable clone "
                         "to prove it is measuring itself, in place of the "
                         "prompts' Python `pip install -e .` recipe (required "
-                        "for a non-Python product). Written to the run's "
-                        "job.yaml as `review_clone_protocol` so `resume` "
-                        "replays it [default: the --template's own value, "
+                        "for a non-Python product). Rendered verbatim -- no "
+                        "shell, no argv parsing, no quoting convention "
+                        "invented. Written to the run's job.yaml as "
+                        "`review_clone_protocol` so `resume` replays it "
+                        "[default: the --template's own value, "
                         "else unset, i.e. the Python recipe]")
     s.add_argument("--llm", default=None,
                    help="LLM profile: host|none, or a name from "
