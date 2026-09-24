@@ -894,8 +894,24 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # so it sorts into both tiers; the module already existed, so no module
     # ceiling moves. Measured with `.venv/bin/python -m pytest -q -m <tier>
     # --collect-only` at this commit's own tip.
-    "fast": {"tests": 6273, "modules": 426},
-    "smoke": {"tests": 4580, "modules": 305},
+    # cure-01-02 (v0.25 requirement I.1, DoD 9, #210, review finding R2):
+    # fast 6273 -> 6276, smoke 4580 -> 4583 (+3 tests, 0 new modules) for
+    # three new nodes in tests/test_commit_scan_engine_boundary.py --
+    # `test_the_push_gate_uses_the_protected_hooks_dir_and_root_for_write_
+    # when_separated`, `..._still_uses_the_run_dir_when_not_separated`, and
+    # `test_the_keyed_hash_snapshot_files_are_agent_readable_not_writable`
+    # -- pinning the wiring that moved the git-sink hook directory behind
+    # the uid boundary. No `docker`/`browser`/process-boundary fixture, so
+    # all three sort into both tiers; the module already existed, so no
+    # module ceiling moves. The new module `tests/test_commit_scan_hooks_
+    # docker.py` (the real uid-boundary probe) carries the `docker` marker
+    # (via its imported `pytestmark`), which sorts it OUT of both `fast`
+    # and `smoke` entirely (`tests/conftest.py`'s own
+    # `pytest_collection_modifyitems`) -- it contributes 0 to either tier's
+    # ceiling. Measured with `.venv/bin/python -m pytest -q -m <tier>
+    # --collect-only` at this commit's own tip.
+    "fast": {"tests": 6276, "modules": 426},
+    "smoke": {"tests": 4583, "modules": 305},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -63,9 +63,12 @@ from its own shell while the value is still live in the engine. So
 `install_push_gate` also snapshots `redact.live_redaction_map()`, at
 install time, as KEYED HASHES ONLY (never the raw values -- every run-dir
 file, including this hooks dir, is scanned elsewhere for the literal
-secret and must never contain it) into an engine-owned, 0o600,
-never-printed pair of files next to the hooks (`KNOWN_SECRETS_FILENAME`,
-`KNOWN_SECRETS_PEPPER_FILENAME`), and only the `pre-push` mode of
+secret and must never contain it) into an engine-owned, 0o644 (root-owned
+under task cure-01-02's uid boundary, but agent-READABLE -- the hook
+process that reads it back runs at the agent uid; only WRITE is what the
+boundary denies), never-printed-VALUE pair of files next to the hooks
+(`KNOWN_SECRETS_FILENAME`, `KNOWN_SECRETS_PEPPER_FILENAME`), and only the
+`pre-push` mode of
 `hook_main` reads it back as a fallback once its own fresh
 `build_redaction_map()` finds nothing -- so the push bound stays
 authoritative regardless of the pushing process's own environment, without
@@ -117,7 +120,8 @@ BASE_ENV_VAR = "RALPHD_COMMIT_SCAN_BASE"
 # for the literal secret and must never contain it): what is written to disk
 # is a per-length table of KEYED HASHES (`hmac.new(pepper, value,
 # sha256).hexdigest()`, `pepper` a fresh 32 random bytes generated at the
-# same install and stored next to it, both files 0o600) mapping digest ->
+# same install and stored next to it, both files 0o644, root-owned but
+# agent-readable under task cure-01-02's boundary) mapping digest ->
 # label. The hook process re-derives the same digest over every
 # same-length window of a commit's message/diff and looks it up -- it never
 # recovers or needs the value itself, only whether ITS digest is a member of
@@ -443,6 +447,23 @@ def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
     file (unlink, write, chmod) instead of writing through it; the directory
     itself stays 0o755 so the engine can do exactly that.
 
+    Task cure-01-02 (PRD requirement I.1, DoD 9, #210's R2 finding) closes
+    the gap those file modes alone left open: a directory-entry operation
+    (`unlink`/`rename`/`replace` of a NAME inside `hooks_dir`, or of
+    `hooks_dir`'s own entry in ITS parent) is gated by the parent
+    directory's permissions, never the target's, so an agent-owned
+    `hooks_dir` was rewritable regardless of what mode its files carried.
+    The caller (`LoopSupervisor._install_commit_scan_push_gate`) is
+    responsible for passing a `hooks_dir` that is itself protected --
+    `privsep.commit_scan_hooks_dir()` under the uid boundary, parented by
+    the same root-owned `/var/lib/ralphd` the task record and run-secrets
+    mount already rely on -- and for calling this function inside
+    `privsep.root_for_write()` so every `mkdir`/`write`/`chmod` below
+    actually lands root-owned. This function itself stays agnostic to
+    which uid it runs at, exactly like `write_root_owned_json` does; it is
+    the ELEVATION around the call, not this call, that makes the
+    difference.
+
     `base_sha` is the boundary base the engine just read (`head_before`);
     it is written next to the hooks as `scan-base` so a first push to a
     remote that has no such ref yet still scans exactly "the commits this
@@ -453,7 +474,8 @@ def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
     `secrets` (defaults to `redact.live_redaction_map()`, this ENGINE
     process's own live map, read right now, before the worker is spawned)
     is snapshotted into `KNOWN_SECRETS_FILENAME`/`KNOWN_SECRETS_PEPPER_FILENAME`
-    as KEYED HASHES only, never the raw values, 0o600, so the `pre-push`
+    as KEYED HASHES only, never the raw values, 0o644 (root-owned but
+    agent-readable under the uid boundary), so the `pre-push`
     hook's authoritative bound (task cure-01-01, requirement I.2/DoD 9) does
     not depend on whatever environment the `git push` that triggers it
     happens to run with, and does not put a secret value anywhere on disk
@@ -492,11 +514,19 @@ def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
     pepper_file = hooks_dir / KNOWN_SECRETS_PEPPER_FILENAME
     pepper_file.unlink(missing_ok=True)
     pepper_file.write_bytes(pepper)
-    os.chmod(pepper_file, 0o600)
+    # 0o644, not 0o600: under the uid boundary (task cure-01-02, requirement
+    # I.1/DoD 9) this directory and everything in it is root-owned, but the
+    # `pre-push` hook process that reads this file back runs at the AGENT
+    # uid (git spawns it from the worker's own shell) -- it must still be
+    # able to read the pepper to re-derive the keyed digests. Read access
+    # was never the property being protected (a keyed HMAC digest plus its
+    # own pepper leaks nothing about a secret's VALUE); only write is, and
+    # 0o644 carries no write bit for anyone but the owner.
+    os.chmod(pepper_file, 0o644)
     digests_file = hooks_dir / KNOWN_SECRETS_FILENAME
     digests_file.unlink(missing_ok=True)
     digests_file.write_text(json.dumps(_digest_snapshot(pepper, secrets or {})))
-    os.chmod(digests_file, 0o600)
+    os.chmod(digests_file, 0o644)
     result = _run_git(workspace, "config", "core.hooksPath", str(hooks_dir))
     if result is None or result.returncode != 0:
         return None
@@ -561,8 +591,9 @@ def hook_main(argv: list[str] | None = None, stdin=None) -> int:
     happened to carry, which a worker's own shell can strip a secret's env
     var from before pushing, while the value is still live in the ENGINE's
     process. The fallback never hands the hook a raw value -- only
-    digests, keyed with a random per-install pepper, both 0o600 and never
-    printed -- so a hook file or an argv carrying secret VALUES is still
+    digests, keyed with a random per-install pepper, both 0o644 (agent-
+    readable, never agent-writable) and never printed -- so a hook file
+    or an argv carrying secret VALUES is still
     never how this closes the gap. `commit-msg`/`pre-commit` stay
     rebuild-only (a narrower, earlier catch, task 031/requirement I.1) and
     never consult the snapshot. Exit 1 (git refuses the commit or the

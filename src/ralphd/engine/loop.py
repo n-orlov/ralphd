@@ -6578,13 +6578,26 @@ class LoopSupervisor:
     # directory, never in the workspace, so the agent uid cannot rewrite the
     # bound it is subject to (PRD requirement I.1's privsep reasoning; task
     # 031 adds its `commit-msg`/`pre-commit` hooks to this same directory).
+    #
+    # Task cure-01-02 (requirement I.1, DoD 9, #210's R2 finding): this
+    # run-dir location is now only the DEGRADED fallback (no uid boundary
+    # -- the unprivileged test suite, or `docker run --user 1000`). Under
+    # a real boundary `_install_commit_scan_push_gate` uses
+    # `privsep.commit_scan_hooks_dir()` instead -- outside the run dir
+    # entirely, parented by root-owned `/var/lib/ralphd` -- because the run
+    # dir itself is agent-owned (the engine's EFFECTIVE uid under
+    # `separate_engine_identity()` IS the agent's), so a directory living
+    # inside it can always be renamed/replaced through ITS parent no matter
+    # what mode the directory or its files carry. Review's own probe
+    # measured exactly that hole: `agent_euid=1000 hook_uid=1000`, both
+    # sides of a "boundary" that was never actually root-owned.
     COMMIT_SCAN_HOOKS_DIRNAME = "commit-scan-hooks"
 
     def _install_commit_scan_push_gate(self, base_sha: str | None):
         """Install git's `pre-push`, `commit-msg` and `pre-commit` gates for
         this workspace before a worker iteration is spawned (task 029, PRD
-        requirement I.2; task 031, requirement I.1; #210) -- one call, one
-        `core.hooksPath` write, all three hook files.
+        requirement I.2; task 031, requirement I.1; task cure-01-02, DoD 9;
+        #210) -- one call, one `core.hooksPath` write, all three hook files.
 
         Why `pre-push` exists in addition to `_scan_task_boundary_commits`:
         under the shipped division of labour the WORKER pushes its own
@@ -6600,6 +6613,20 @@ class LoopSupervisor:
         push --no-verify` bypass all three; the task boundary below is the
         layer that survives that and records the hit either way.
 
+        Task cure-01-02 (review finding R2): installing through
+        `privsep.root_for_write()` is what makes the hooks and their
+        directory genuinely root-owned when a real uid boundary is active
+        -- without it, `install_push_gate`'s own `mkdir`/`write`/`chmod`
+        calls run at the engine's EFFECTIVE uid, which is the agent's, and
+        the files it creates are agent-owned regardless of the mode bits
+        it sets on them (a directory-entry rename/replace is gated by the
+        PARENT's permissions, never the target's own mode). Choosing
+        `privsep.commit_scan_hooks_dir()` as the destination only when
+        `privsep.separated()` is true keeps the documented degrade
+        unchanged: no boundary means no directory-entry protection is
+        possible anyway, so the run-dir location is still exactly right
+        for that case, and `root_for_write()` itself is a no-op there too.
+
         Advisory posture, like its siblings: a workspace that is not a git
         repository, a missing `git`, or an unwritable hooks directory
         degrades to `None` (no gate installed) rather than raising out of
@@ -6607,10 +6634,12 @@ class LoopSupervisor:
         """
         if not getattr(self.cfg, "commit_secret_scan", True):
             return None
+        hooks_dir = (privsep.commit_scan_hooks_dir() if privsep.separated()
+                     else self.run.root / self.COMMIT_SCAN_HOOKS_DIRNAME)
         try:
-            hook = commit_scan.install_push_gate(
-                self.workspace, self.run.root / self.COMMIT_SCAN_HOOKS_DIRNAME,
-                base_sha=base_sha)
+            with privsep.root_for_write():
+                hook = commit_scan.install_push_gate(
+                    self.workspace, hooks_dir, base_sha=base_sha)
         except OSError as exc:
             log.warning("could not install the commit-scan push gate: %s", exc)
             return None

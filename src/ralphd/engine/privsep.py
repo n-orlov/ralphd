@@ -825,3 +825,73 @@ def release_run_secrets_dir() -> None:
         except OSError as exc:  # pragma: no cover - best effort at exit
             log.warning("could not release %s back to the agent uid: %r",
                         store, exc)
+
+
+# --------------------------------------------------------------------------
+# Task cure-01-02 (PRD requirement I.1, DoD 9, #210 -- review finding R2):
+# the git-sink hook directory (`commit_scan.install_push_gate`) is where the
+# gate an agent-uid `git push`/`git commit` is SUBJECT to lives -- and until
+# this task it lived at `run.root / "commit-scan-hooks"`, inside the
+# bind-mounted, agent-owned run directory. `install_push_gate` already wrote
+# every hook file 0o555 (no write bit for anyone, owner included) and the
+# scan-base note 0o444, but neither bit protects a DIRECTORY ENTRY: an
+# `os.rename`/`os.unlink`/`os.replace` against a name inside a directory is
+# gated by that directory's OWN permissions, never the target file's, and
+# the hooks directory itself -- like every file the un-elevated engine
+# creates -- was owned by the agent's own uid (the engine's EFFECTIVE uid
+# under `separate_engine_identity()` IS the agent's; only a write performed
+# through `root_for_write()` is ever genuinely root-owned). Review's own
+# probe measured exactly that: `agent_euid=1000 hook_uid=1000`, and a
+# dropped child freely `chmod`-and-wrote or unlinked-and-replaced the
+# installed hook.
+#
+# The fix is the same shape as `CONTROL_CREDENTIALS_DIR` above, not the task
+# record's bind-mounted layout: `commit_scan_hooks_dir()` never needs to
+# survive a container restart -- `LoopSupervisor._install_commit_scan_push_
+# gate` reinstalls it fresh before EVERY worker iteration -- so it lives
+# entirely inside this container's own writable layer, parented by the same
+# root-owned `/var/lib/ralphd` that already parents `CONTROL_CREDENTIALS_DIR`
+# and the run-secrets mount (see `provision_control_credentials`'s own
+# docstring for the proof that every ancestor from the container root down
+# is root-owned and agent-unwritable). `loop.py` writes through this
+# directory only inside `root_for_write()`, so every file `install_push_
+# gate` creates there is genuinely root-owned when the boundary is active --
+# `mkdir`/`chmod` performed at effective uid 0 needs no separate `chown`,
+# unlike a directory a lower-privileged process created first and an
+# elevated caller only re-chmods afterwards.
+#
+# Mode is 0o755, not `CONTROL_CREDENTIALS_DIR`'s 0o700: the agent's own git
+# subprocess (spawned from the WORKER's shell, at the agent uid, when it
+# runs `git push`/`git commit`) must be able to traverse into this directory
+# and read+execute the hook scripts inside it -- `0o755` grants exactly
+# "other" read+execute, no write, which is the one bit that matters here.
+# The keyed-hash snapshot files (`commit_scan.KNOWN_SECRETS_FILENAME`,
+# `commit_scan.KNOWN_SECRETS_PEPPER_FILENAME`) are correspondingly 0o644
+# rather than 0o600 under this boundary: the hook process that reads them
+# back runs at the agent uid too, and a keyed HMAC digest table together
+# with its own pepper leaks nothing about a secret's VALUE (that is the
+# entire point of hashing rather than storing the value, task cure-01-01's
+# own docstring) -- read access was never the property being protected,
+# only write.
+COMMIT_SCAN_HOOKS_DIR_ENV = "RALPHD_COMMIT_SCAN_HOOKS_DIR"
+DEFAULT_COMMIT_SCAN_HOOKS_DIR = Path("/var/lib/ralphd/commit-scan-hooks")
+
+
+def commit_scan_hooks_dir() -> Path:
+    """Where the engine installs the git-sink `pre-push`/`commit-msg`/
+    `pre-commit` hooks under the uid boundary: parented by the same
+    root-owned `/var/lib/ralphd` as `CONTROL_CREDENTIALS_DIR` and the
+    run-secrets mount, so no directory-entry operation from the agent uid
+    can reach the hooks, the directory holding them, or any ancestor above
+    it. `$RALPHD_COMMIT_SCAN_HOOKS_DIR` overrides it, the same escape hatch
+    every other protected path here carries (tests, and an operator's own
+    choice).
+
+    Callers (`LoopSupervisor._install_commit_scan_push_gate`) use this path
+    only when `separated()` is true; the documented degrade -- no boundary,
+    so no directory-entry protection is possible anyway -- keeps installing
+    into the run directory exactly as before this task, with the one-line
+    warning every other degrade here already carries.
+    """
+    override = os.environ.get(COMMIT_SCAN_HOOKS_DIR_ENV)
+    return Path(override) if override else DEFAULT_COMMIT_SCAN_HOOKS_DIR

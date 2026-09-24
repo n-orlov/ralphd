@@ -19,6 +19,7 @@ writes a matched value into an assertion message.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import subprocess
@@ -27,7 +28,7 @@ from unittest import mock
 
 import pytest
 
-from ralphd.engine import commit_scan, redact
+from ralphd.engine import commit_scan, privsep, redact
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
@@ -758,3 +759,91 @@ def test_the_push_gate_scans_a_pushed_range_and_skips_a_ref_deletion(
     assert commit_scan.gate_push_refs(
         workspace, [f"refs/heads/main {head} refs/heads/main {zero}"],
         secrets=secrets) is not None
+
+
+# ---------------------------------------------------------------------------
+# Task cure-01-02 (PRD requirement I.1, DoD 9, #210 -- review finding R2):
+# the hooks directory itself is now behind the uid boundary, not merely
+# inside the run dir with no-write-bit files. The docker-tier proof of the
+# real denial lives in `tests/test_commit_scan_hooks_docker.py`; what is
+# provable here, with no real boundary available, is the WIRING -- that
+# `_install_commit_scan_push_gate` reaches for the protected directory and
+# performs the write inside `privsep.root_for_write()` whenever
+# `privsep.separated()` says there is a boundary to use, and keeps the
+# pre-existing run-dir behaviour byte-for-byte otherwise (already pinned
+# above by `test_the_push_gate_is_engine_owned_and_lives_outside_the_workspace`).
+# ---------------------------------------------------------------------------
+
+def test_the_push_gate_uses_the_protected_hooks_dir_and_root_for_write_when_separated(
+        tmp_path, live_synthetic_map, monkeypatch):
+    sup, _run, workspace = _sup(tmp_path, "gate-separated")
+    _init_repo(workspace)
+    protected = tmp_path / "protected-hooks"
+    monkeypatch.setattr(privsep, "separated", lambda: True)
+    monkeypatch.setattr(privsep, "commit_scan_hooks_dir", lambda: protected)
+    calls: list[int] = []
+
+    @contextlib.contextmanager
+    def spy():
+        # A real elevation needs genuine root (`os.setresuid(0, 0, 0)`),
+        # which this unprivileged test process cannot perform -- that
+        # actual denial/grant is `tests/test_commit_scan_hooks_docker.py`'s
+        # job, against a real container. What is provable here is only
+        # that the CALL happens: the write path reaches for elevation
+        # whenever `separated()` says there is a boundary, rather than
+        # skipping straight to an unelevated write the way the pre-fix
+        # code did.
+        calls.append(1)
+        yield True
+
+    monkeypatch.setattr(privsep, "root_for_write", spy)
+
+    hook = sup._install_commit_scan_push_gate(_head(workspace))
+
+    assert hook is not None, "install failed once wired at the protected path"
+    assert hook.parent == protected, (
+        "the push gate did not use privsep.commit_scan_hooks_dir() even "
+        "though privsep.separated() reported a real boundary")
+    assert calls, (
+        "_install_commit_scan_push_gate never entered privsep.root_for_write() "
+        "-- the write would run at the engine's own effective (agent) uid "
+        "even under a real boundary, exactly review's R2 finding")
+
+
+def test_the_push_gate_still_uses_the_run_dir_when_not_separated(
+        tmp_path, live_synthetic_map, monkeypatch):
+    """The documented degrade, pinned explicitly: with no boundary claimed
+    (`privsep.separated()` False, the ordinary unprivileged test posture),
+    the destination is unchanged from before this task."""
+    sup, run, workspace = _sup(tmp_path, "gate-unseparated")
+    _init_repo(workspace)
+    monkeypatch.setattr(privsep, "separated", lambda: False)
+
+    hook = sup._install_commit_scan_push_gate(_head(workspace))
+
+    assert hook is not None
+    assert hook.parent == run.root / LoopSupervisor.COMMIT_SCAN_HOOKS_DIRNAME
+
+
+def test_the_keyed_hash_snapshot_files_are_agent_readable_not_writable(
+        tmp_path, live_synthetic_map):
+    """Task cure-01-02: under the uid boundary these two files are
+    root-owned, but the `pre-push` hook process that reads them back runs
+    at the AGENT uid -- so they must stay world-readable (0o644), never the
+    pre-task-cure-01-02 0o600 that a root-owned copy would deny the agent
+    entirely. Read access was never the property under threat; only write
+    is, and 0o644 carries no write bit for anyone but the owner."""
+    sup, _run, workspace = _sup(tmp_path, "gate-pepper-mode")
+    _init_repo(workspace)
+
+    hook = sup._install_commit_scan_push_gate(_head(workspace))
+
+    assert hook is not None
+    hooks_dir = hook.parent
+    pepper_file = hooks_dir / commit_scan.KNOWN_SECRETS_PEPPER_FILENAME
+    digests_file = hooks_dir / commit_scan.KNOWN_SECRETS_FILENAME
+    for path in (pepper_file, digests_file):
+        assert path.is_file(), path
+        mode = path.stat().st_mode & 0o777
+        assert mode == 0o644, (path, oct(mode))
+
