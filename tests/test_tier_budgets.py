@@ -949,8 +949,19 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # sorts into both tiers like its four siblings. Measured with
     # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
     # commit's own tip.
-    "fast": {"tests": 6283, "modules": 427},
-    "smoke": {"tests": 4590, "modules": 306},
+    # task 048 (N2) cures a missed ratchet: cure-01-04 (`74da9f51`, R10)
+    # added `tests/records/test_j4_evidence_counts.py` (+2 tests, +1 new
+    # module) without moving these two ceilings, leaving both tiers
+    # measured over budget (fast 6285 > 6283, smoke 4592 > 4590) before this
+    # task touched a single test of its own -- confirmed red at `74da9f51`
+    # by `git stash`+collect-only. No process-boundary/`docker`/`browser`
+    # fixture in that module, so it sorts into both tiers: fast 6283 -> 6285
+    # tests over 427 -> 428 modules, smoke 4590 -> 4592 tests over 306 ->
+    # 307 modules. Measured with `.venv/bin/python -m pytest -q -m <tier>
+    # --collect-only` at this task's own tip (task 048 itself adds no new
+    # test node).
+    "fast": {"tests": 6285, "modules": 428},
+    "smoke": {"tests": 4592, "modules": 307},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
