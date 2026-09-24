@@ -895,6 +895,56 @@ def test_the_installed_layout_grants_a_non_owner_read_and_exec_but_never_write(
         assert path.stat().st_mode & 0o022 == 0, path
 
 
+def test_install_survives_an_elevated_euid_workspace_owner_mismatch(
+        tmp_path, live_synthetic_map, monkeypatch):
+    """Task cure-01-01-2 (review finding R2, upheld cure-01-02, #210): the
+    real uid boundary runs `install_push_gate` at effective uid 0 (root, via
+    `privsep.root_for_write()`) against a workspace the AGENT uid owns --
+    the exact mismatch git's own "detected dubious ownership" safety check
+    (>= 2.35.2) refuses by default, which is why the real container probe
+    (`tests/test_commit_scan_hooks_docker.py`) measured `install_push_gate`
+    returning `None` -- gate not installed -- even though every step up to
+    the `git config core.hooksPath` write had succeeded.
+
+    This sandbox has no real second uid to reproduce the mismatch with a
+    genuinely different file owner, so this pins the DETECTION and its
+    consequences directly: with `os.geteuid()` monkeypatched to a value
+    that differs from the workspace's real owner (exactly the signal
+    `install_push_gate` now reads from the plain filesystem stat, never
+    from `privsep.separated()`), the `git config` call must carry
+    `-c safe.directory=<workspace>` and the install must still succeed --
+    where before this task it would have needed a REAL exception already
+    sitting in `safe.directory` to get this far at all."""
+    sup, _run, workspace = _sup(tmp_path, "gate-euid-mismatch")
+    _init_repo(workspace)
+    ws_uid = workspace.stat().st_uid
+    real_geteuid = os.geteuid
+    monkeypatch.setattr(commit_scan.os, "geteuid", lambda: ws_uid + 1)
+
+    real_run = subprocess.run
+    seen_config_cmds: list[list[str]] = []
+
+    def spy_run(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and "config" in cmd and "core.hooksPath" in cmd:
+            seen_config_cmds.append(cmd)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(commit_scan.subprocess, "run", spy_run)
+
+    hook = sup._install_commit_scan_push_gate(_head(workspace))
+
+    assert real_geteuid() == os.getuid(), "the real process euid must be untouched"
+    assert hook is not None, (
+        "install_push_gate returned None under a detected euid/owner "
+        "mismatch -- the safe.directory exception this task adds did not "
+        "reach the git config call")
+    assert seen_config_cmds, "the config call was never observed by the spy"
+    cmd = seen_config_cmds[0]
+    assert "-c" in cmd and f"safe.directory={workspace}" in cmd, (
+        "the config write did not carry the per-invocation safe.directory "
+        f"exception for the mismatched workspace: {cmd}")
+
+
 def test_a_real_agent_uid_probe_cannot_plant_or_replace_the_protected_hooks_entry():
     """Task cure-01-02, requirement I.1/DoD 9: a real uid-boundary probe of
     the containing path, in THIS process, at the agent uid -- no container

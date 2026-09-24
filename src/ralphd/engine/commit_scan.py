@@ -279,11 +279,30 @@ def scan_commits_for_hashed_secrets(workspace, base_sha: str | None, head_sha: s
     return None
 
 
-def _run_git(workspace, *args: str, timeout: float = _GIT_TIMEOUT_S):
+def _run_git(workspace, *args: str, timeout: float = _GIT_TIMEOUT_S,
+            safe_directory: str | None = None):
+    """`safe_directory`, when given, adds one `-c safe.directory=<value>`
+    ahead of `-C` -- a per-INVOCATION exception (no file written, nothing
+    persisted) to git's own "detected dubious ownership" refusal, which
+    fires whenever the calling process's effective uid differs from the
+    repository directory's owner (git >= 2.35.2). `install_push_gate`
+    passes this only when it detects exactly that mismatch (task
+    cure-01-01-2, review finding R2 upheld): under the real uid boundary
+    this function's own caller runs at effective uid 0 (root, via
+    `privsep.root_for_write()`) against a workspace the AGENT uid owns,
+    which is precisely the case the CI workflow's own "Trust the checked-
+    out workspace (container root != host checkout owner)" step
+    (`.github/workflows/gate.yml`) exists to clear, in the opposite
+    direction. Without it every git call below returns nonzero and
+    `install_push_gate` degrades to `None` -- gate not installed, silently.
+    """
     try:
+        cmd = ["git"]
+        if safe_directory is not None:
+            cmd += ["-c", f"safe.directory={safe_directory}"]
+        cmd += ["-C", str(workspace), *args]
         return subprocess.run(
-            ["git", "-C", str(workspace), *args],
-            capture_output=True, text=True, timeout=timeout)
+            cmd, capture_output=True, text=True, timeout=timeout)
     except OSError:
         return None
 
@@ -625,9 +644,56 @@ def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
     digests_file.unlink(missing_ok=True)
     digests_file.write_text(json.dumps(_digest_snapshot(pepper, secrets or {})))
     os.chmod(digests_file, 0o644)
-    result = _run_git(workspace, "config", "core.hooksPath", str(hooks_dir))
+    # Task cure-01-01-2 (review finding R2, upheld cure-01-02): under the
+    # real uid boundary this whole function runs at effective uid 0 (via
+    # `privsep.root_for_write()`, the caller's own elevation) against a
+    # WORKSPACE the agent uid owns -- a mismatch git's own "detected
+    # dubious ownership" safety check refuses by default (>= 2.35.2)
+    # unless the mismatched path is named in `safe.directory`. Detected
+    # here, from the plain filesystem stat, rather than assumed from
+    # `privsep.separated()`, so this stays true for any caller with a
+    # euid/owner mismatch, boundary or not, and stays a no-op (no
+    # `safe.directory` at all) for the ordinary same-uid case every
+    # non-docker test exercises.
+    try:
+        ws_owner = os.stat(workspace)
+        safe_dir = (str(workspace)
+                   if ws_owner.st_uid != os.geteuid() else None)
+    except OSError:
+        ws_owner = None
+        safe_dir = None
+    result = _run_git(workspace, "config", "core.hooksPath", str(hooks_dir),
+                      safe_directory=safe_dir)
     if result is None or result.returncode != 0:
         return None
+    if safe_dir is not None and ws_owner is not None:
+        # The write above ran at the ELEVATED euid and therefore replaced
+        # `.git/config` outright (git's own lock-file-then-rename write
+        # path) with a file owned by THAT euid, never by the workspace's
+        # own uid -- a directory-entry rename inherits the writer's
+        # identity, not the replaced file's. Left alone, the next call the
+        # WORKSPACE's own uid makes that needs to WRITE local git config
+        # (`git remote add`, a local `credential.helper`, both of which
+        # the workspace-owning uid must still be able to do after this
+        # install, task 031/I.1's own commit/push path depends on it)
+        # would be refused by the very permission bits this task is
+        # protecting elsewhere. Restore the workspace's own ownership on
+        # exactly that one file, still inside the caller's elevated
+        # window, so installing (or refreshing) the gate never narrows
+        # what the workspace's own uid can still do inside its own repo.
+        gitdir_result = _run_git(workspace, "rev-parse", "--git-dir",
+                                 safe_directory=safe_dir)
+        if gitdir_result is not None and gitdir_result.returncode == 0:
+            git_dir_str = gitdir_result.stdout.strip()
+            if git_dir_str:
+                git_dir = Path(git_dir_str)
+                if not git_dir.is_absolute():
+                    git_dir = Path(workspace) / git_dir
+                try:
+                    os.chown(git_dir / "config", ws_owner.st_uid,
+                             ws_owner.st_gid)
+                except OSError:
+                    pass
     return push_hook
 
 

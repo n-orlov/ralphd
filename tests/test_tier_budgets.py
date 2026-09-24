@@ -1009,8 +1009,16 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # resolve_flags_at_offset scan the first attempt published. Measured
     # with `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
     # task's own tip: fast 6298/6435, smoke 4604/6435.
-    "fast": {"tests": 6298, "modules": 430},
-    "smoke": {"tests": 4604, "modules": 309},
+    # cure-01-01-2 (v0.25 requirement I.1, DoD 9, #210 -- review finding R2
+    # upheld cure-01-02): fast 6298 -> 6299, smoke 4604 -> 4605 (+1 test, 0
+    # new modules -- lands in the already-counted
+    # tests/test_commit_scan_engine_boundary.py) for the new
+    # euid/workspace-owner-mismatch regression covering install_push_gate's
+    # `safe.directory` exception (git's "detected dubious ownership" refusal
+    # under a real uid boundary). Measured with `.venv/bin/python -m pytest
+    # -q -m <tier> --collect-only` at this task's own tip.
+    "fast": {"tests": 6299, "modules": 430},
+    "smoke": {"tests": 4605, "modules": 309},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
