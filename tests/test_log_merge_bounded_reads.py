@@ -1248,25 +1248,40 @@ async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
     (`test_silent_prelude_case_renders_correctly_through_the_hub_when_the_
     index_is_truncated_or_mismatched`, below) -- proof an index-write
     attempt genuinely happened is one extra `stat()` away from `load_index`
-    returning `None`. THIS fixture, called with no `collapse_index.json`
-    written for it AT ALL, is the one case that call site still cannot tell
-    apart from a run recorded before `collapse_index` existed, or from
-    every OTHER fixture in this module that never writes one by
-    construction and whose OWN pinned byte bounds this task must not
-    regress (PRD P.1/P.5's own petitioned cost tension) -- routing a
-    genuinely absent index through the SAME scan fallback measures
-    3,388,970 bytes on `_write_iteration_with_older_thinking_marker`'s own
-    100,000-entry fixture (currently 184,700, correct already), 3.39x over
-    the frozen 1,000,000-byte cap, on a fixture this task must not regress.
-    So the shipped renderer still prints from the `False` fallback for a
-    genuinely absent index specifically, and this variant's bounded render
-    still repeats the text once at both prelude depths -- asserted below
-    exactly as it is, the SURVIVING historical-record half of this pin,
-    now disclosed as cure-01-09's own residual (measured byte counts and
-    every ruled-out policy: GitHub #272) rather than an open petition
-    question -- never hidden, so that a ruling which flips the fallback
-    direction, or a later cure that finds a THIRD way past this exact
-    collision, fails this line loudly instead of passing unnoticed."""
+    returning `None`. That cure is asserted POSITIVELY at the end of this
+    very helper, on THIS fixture and through these same two real surfaces:
+    once an index-write attempt is provable, the bounded render stops
+    replaying the streamed text and returns the full render's own last two
+    lines.
+
+    THIS fixture, called with no `collapse_index.json` written for it AT
+    ALL, is the one case that call site still cannot tell apart from a run
+    recorded before `collapse_index` existed, or from every OTHER fixture
+    in this module that never writes one by construction and whose OWN
+    pinned byte bounds this task must not regress (PRD P.1/P.5's own
+    petitioned cost tension). The cost of routing it the same way,
+    measured through the WHOLE client-facing call (`ui_server.
+    rendered_log_lines`, both surfaces -- never the inner scan alone, and
+    never a test-side growth mirror; pinned in `tests/test_hub_real_render_
+    cap_whole_call.py::test_absent_index_residual_costs_measured_through_
+    the_whole_client_facing_call`): 70,993,623 bytes at prelude depth
+    1,000 and 75,475,023 at depth 1,700 -- ~71x and ~75x the frozen
+    1,000,000-byte cap, against the 196,608 bytes the (wrong) shipped
+    answer costs today -- plus 3,454,506 bytes on `_write_iteration_with_
+    older_thinking_marker`'s own 100,000-entry fixture, which costs 65,536
+    through the same whole call today and is already CORRECT, i.e. 3.45x
+    over the frozen cap for no gain at all. So the shipped renderer still
+    prints from the `False` fallback for a genuinely absent index
+    specifically, and this variant's bounded render still repeats the text
+    once at both prelude depths -- asserted below exactly as it is, the
+    SURVIVING historical-record half of this pin, now disclosed as
+    cure-01-09's own residual (those measured whole-call byte counts and
+    every ruled-out policy -- no raised cap, no transcript-format change,
+    no weakened equality, no second side index: GitHub #272) rather than
+    an open petition question -- never hidden, so that a ruling which
+    flips the fallback direction, or a later cure that finds a THIRD way
+    past this exact collision, fails this line loudly instead of passing
+    unnoticed."""
     text = ("silent-prelude streamed text must not replay after a bounded "
             f"look-back (prelude={prelude_count})")
     gap_line = json.dumps(
@@ -1314,9 +1329,14 @@ async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
         assert not any(text in ln for ln in suppressed), (label, suppressed)
         # The shipped fallback direction's CURRENT behavior for a
         # genuinely absent index, pinned exactly as measured -- cure-01-09's
-        # OWN disclosed residual now (GitHub #272), the surviving
-        # historical-record half of this pin, not evidence that the
-        # ADJUDICATED v0.22 petition above is decided either way.
+        # OWN disclosed residual now, published on the measured WHOLE-CALL
+        # byte counts (70,993,623 / 75,475,023 to route it correctly, vs
+        # the 196,608 this wrong answer costs, plus 3,454,506 on a
+        # currently-correct 65,536-byte fixture: GitHub #272) -- the
+        # surviving historical-record half of this pin, not evidence that
+        # the ADJUDICATED v0.22 petition above is decided either way. The
+        # absence of replay this pin now also asserts, for the half that
+        # WAS cured, is at the end of this helper.
         shipped = render_to_lines("".join(raw), tty=False, state=new_render_state())
         assert shipped[-2:] == [text, full[-1]], (label, shipped[-2:])
 
@@ -1343,6 +1363,28 @@ async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
         assert render_tail_lines(
             "".join(_consumer_suppressing_disclosed_unknowns(grown)), tty=False,
             n=2)[-2:] == full[-2:], (label, bound)
+
+    # ABSENCE OF REPLAY, asserted positively on THIS fixture through THESE
+    # same two real surfaces -- the half task cure-01-09 actually cured
+    # (PRD G.4, DoD 7): the moment an index-write attempt is provable (a
+    # `collapse_index.json` that EXISTS, here cut mid-token, so `load_index`
+    # still returns `None`), `merge_entries_tail` routes the same bounded
+    # request through `resolve_flags_at_offset`'s own scan fallback and the
+    # very same tail=2 request stops replaying the streamed text: it
+    # returns the full render's own last two lines, with no spurious blank
+    # line and no error. Only the GENUINELY ABSENT index above keeps the
+    # replay, as this task's disclosed residual (#272, published on the
+    # measured whole-call byte counts named in the docstring).
+    itdir = run_root / "iterations" / "0001"
+    collapse_index.write_index(itdir)
+    idx_path = itdir / collapse_index.INDEX_FILENAME
+    idx_path.write_bytes(idx_path.read_bytes()[: idx_path.stat().st_size // 2])
+    assert idx_path.exists() and collapse_index.load_index(itdir) is None
+    for label, fetch in (("disk", _fetch_merged), ("api", _fetch_api)):
+        cured = await _grown_rendered_tail(fetch, 2)
+        assert cured[-2:] == full[-2:], (label, prelude_count, cured[-2:])
+        assert not any(text in ln for ln in cured), (label, prelude_count, cured)
+        assert all(ln != "" for ln in cured[-2:]), (label, prelude_count, cured[-2:])
 
 
 def test_collapse_index_resolves_the_seed_flag_in_o1_bytes_regardless_of_setter_depth(

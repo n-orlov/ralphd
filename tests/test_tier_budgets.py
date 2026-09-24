@@ -1001,8 +1001,16 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # truncated/mismatched-index-through-the-real-hub/disk/api-paths
     # correctness proof. Measured with `.venv/bin/python -m pytest -q -m
     # <tier> --collect-only` at this task's own tip.
-    "fast": {"tests": 6297, "modules": 430},
-    "smoke": {"tests": 4603, "modules": 309},
+    # cure-01-09, second attempt (v0.25 requirement G.4, DoD 7, #272): fast
+    # 6297 -> 6298, smoke 4603 -> 4604 (+1 test, 0 new modules -- lands in
+    # the already-counted tests/test_hub_real_render_cap_whole_call.py) for
+    # the residual's own COMPLETE-CALL byte counts, measured through
+    # ui_server.rendered_log_lines rather than the inner
+    # resolve_flags_at_offset scan the first attempt published. Measured
+    # with `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
+    # task's own tip: fast 6298/6435, smoke 4604/6435.
+    "fast": {"tests": 6298, "modules": 430},
+    "smoke": {"tests": 4604, "modules": 309},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

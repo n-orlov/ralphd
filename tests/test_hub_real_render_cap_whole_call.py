@@ -63,6 +63,16 @@ never a hand-rolled stand-in), on every fixture PRD G.9 names:
   residual disposition applies to these four fixtures: the corrected
   whole-call byte counts are pinned below, and every policy this task
   ruled out is named in its own commit message alongside the filed issue.
+
+Task cure-01-09 (PRD G.4, DoD 7, #272) publishes ITS disclosed residual on
+this same module's terms, and for the same reason: its first attempt
+published the inner `collapse_index.resolve_flags_at_offset` scan's own
+figures (11,786,746 / 12,533,646 bytes) for a residual whose criterion asks
+for the COMPLETE client-facing call, which costs several times that because
+the outer fetch loop re-asks and each re-ask pays the scan again. The
+corrected whole-call counts are measured and pinned by
+`test_absent_index_residual_costs_measured_through_the_whole_client_facing_
+call` below.
 """
 
 from __future__ import annotations
@@ -79,6 +89,7 @@ from test_log_merge_bounded_reads import (
     _count_transcript_bytes,
     _write_iteration_with_ignored_head,
     _write_iteration_with_interleaved_ignored_suffix,
+    _write_iteration_with_older_thinking_marker,
     _write_iteration_with_recognized_nonrendering_gap,
 )
 
@@ -192,3 +203,123 @@ def test_q_fixture_and_silent_prelude_depths_disclosed_residual_after_the_cure(
             assert measured == expected, (path, gap_count, prelude_count, measured)
             assert measured > _FROZEN_CAP, (
                 "disclosed residual: still over the frozen cap", measured)
+
+
+def _invalidate_index(itdir, how="truncated"):
+    """Write task 020's real index for `itdir`, then leave it PRESENT but
+    invalid -- cut mid-token, or carrying a stale `transcriptBytes`. Both
+    make `load_index` return `None` while `collapse_index.json` still
+    exists, which is exactly the routing `log_merge.merge_entries_tail`
+    sends through `resolve_flags_at_offset`'s own scan fallback (task
+    cure-01-09)."""
+    collapse_index.write_index(itdir)
+    path = itdir / collapse_index.INDEX_FILENAME
+    if how == "truncated":
+        raw = path.read_bytes()
+        path.write_bytes(raw[: len(raw) // 2])
+    else:
+        doc = json.loads(path.read_text())
+        doc["transcriptBytes"] += 1
+        path.write_text(json.dumps(doc))
+    assert path.exists()
+    assert collapse_index.load_index(itdir) is None, how
+
+
+def test_absent_index_residual_costs_measured_through_the_whole_client_facing_call(
+        tmp_path, monkeypatch):
+    """Task cure-01-09 (PRD G.4, DoD 7, #272), the COMPLETE-CALL figures its
+    disclosed residual is published on -- measured here through the real
+    consumer `ui_server.rendered_log_lines` on both its surfaces, never
+    through `collapse_index.resolve_flags_at_offset`'s own inner scan and
+    never through a test-side growth mirror. cure-01-09's first attempt
+    published the inner-scan numbers (11,786,746 / 12,533,646 bytes) for a
+    residual whose criterion asks for the whole client-facing call's own
+    cost, which is several times larger because the outer fetch loop
+    re-asks (`_fetch_live_tail`/`_fetch_dead_tail`), and each re-ask pays
+    the scan again. Corrected and pinned here:
+
+      - GENUINELY ABSENT index, the surviving residual half: 196,608 bytes
+        through the whole call at both silent-prelude depths, UNDER the
+        frozen 1,000,000-byte cap -- and wrong, replaying the streamed
+        text instead of the full render's own `[thinking\u2026]` suffix
+        (`_assert_silent_prelude_publishes_unknown_state_not_empty_state`
+        pins that render itself; this node pins what it COSTS).
+
+      - the SAME fixture with the index present-but-invalid, i.e. the one
+        routing cure-01-09 did cure and the exact cost the absent case
+        would pay if it were routed the same way (same call site, same
+        scan fallback, same bytes -- the only difference is the `stat`
+        that proves an index-write attempt happened): 70,993,623 bytes at
+        prelude depth 1,000 and 75,475,023 at depth 1,700, i.e. ~71x and
+        ~75x the frozen cap, for a render that is then CORRECT.
+
+      - and the collateral the same routing would inflict on an
+        already-shipped, already-pinned fixture that never writes an index
+        by construction: `_write_iteration_with_older_thinking_marker`'s
+        100,000-entry transcript costs 65,536 bytes through the whole call
+        today, correct already, and 3,454,506 bytes -- 3.45x the frozen cap
+        -- once routed through the same scan fallback.
+
+    That is the whole arithmetic behind the residual: curing the absent
+    case by this route would replace a 196,608-byte wrong answer with a
+    70,993,623-byte right one and break a correct 65,536-byte fixture into
+    a 3,454,506-byte one, all three over or far over a cap this wave
+    freezes. The policies that would buy a cheap right answer instead are
+    named in cure-01-09's own commit message and in #272, and every one of
+    them is ruled out here: no raised cap, no transcript-format change, no
+    weakened equality assertion, no second side index."""
+    text = "reviewer synthetic streamed text"
+    gap = json.dumps({"type": "message_end", "message": {"content": []},
+                      "padding": "x" * 1000})
+
+    for path in ("disk", "api"):
+        for prelude_count, absent_bytes, routed_bytes in (
+                (1_000, 196_608, 70_993_623),
+                (1_700, 196_608, 75_475_023)):
+            for index_state in ("absent", "truncated", "size_mismatch"):
+                sub = tmp_path / f"absent-{prelude_count}-{index_state}-{path}"
+                run_root = sub / "registry" / "runs" / "probe"
+                _write_iteration_with_recognized_nonrendering_gap(
+                    run_root, 1, text, gap, 10_000, prelude_count=prelude_count)
+                if index_state != "absent":
+                    _invalidate_index(run_root / "iterations" / "0001",
+                                      how=index_state)
+                full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                                       state=new_render_state())
+                assert full[-2].strip() == "[thinking\u2026]", full[-2:]
+                measured, rendered = _measure(sub, monkeypatch, run_root, 2, path)
+                if index_state == "absent":
+                    # The surviving residual: cheap, under cap, and WRONG --
+                    # the streamed text replayed in place of the full
+                    # render's own suffix (#272).
+                    assert measured == absent_bytes, (path, prelude_count, measured)
+                    assert measured < _FROZEN_CAP, measured
+                    assert rendered == [text, full[-1]], (path, prelude_count, rendered)
+                else:
+                    # Cured, correct -- and this is the measured whole-call
+                    # price of that same routing, the residual's own figure.
+                    assert rendered == full[-2:], (path, prelude_count, rendered)
+                    assert not any(text in ln for ln in rendered), rendered
+                    assert all(ln != "" for ln in rendered), rendered
+                    assert measured == routed_bytes, (
+                        path, prelude_count, index_state, measured)
+                    assert measured > _FROZEN_CAP * 70, measured
+
+    real_lines = [json.dumps({"type": "message_end", "message": {"content": [
+        {"type": "text", "text": f"line {i}"}]}}) for i in range(200)]
+    for path in ("disk", "api"):
+        for index_state, expected in (("absent", 65_536), ("truncated", 3_454_506)):
+            sub = tmp_path / f"marker-{index_state}-{path}"
+            run_root = sub / "registry" / "runs" / "probe"
+            _write_iteration_with_older_thinking_marker(
+                run_root, 1, 100_000, real_lines)
+            if index_state != "absent":
+                _invalidate_index(run_root / "iterations" / "0001")
+            full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                                   state=new_render_state())
+            measured, rendered = _measure(sub, monkeypatch, run_root, 200, path)
+            # Correct either way on THIS fixture -- the difference the
+            # residual turns on is only the price.
+            assert rendered == full[-200:], (path, index_state)
+            assert measured == expected, (path, index_state, measured)
+        assert 65_536 < _FROZEN_CAP < 3_454_506
