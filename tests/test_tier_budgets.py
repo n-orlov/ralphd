@@ -960,8 +960,18 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # 307 modules. Measured with `.venv/bin/python -m pytest -q -m <tier>
     # --collect-only` at this task's own tip (task 048 itself adds no new
     # test node).
-    "fast": {"tests": 6285, "modules": 428},
-    "smoke": {"tests": 4592, "modules": 307},
+    # cure-01-05 (v0.25 requirement H.2/H.3/H.7, R6): fast 6285 -> 6288,
+    # smoke 4592 -> 4595 (+3 tests, 0 new modules) for the timeout-with-
+    # budget-left checkpoint conclusion, its uninterrupted-review contrast
+    # and its budget-exhaustion-wording-unperturbed contrast, all landing
+    # in the already-counted tests/test_review_provisional_verdict.py. No
+    # `docker`/`browser`/process-boundary fixture on these three nodes (the
+    # module's one `@pytest.mark.browser` node is unaffected and already
+    # excluded from both tiers), so all three sort into both tiers.
+    # Measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`
+    # at this commit's own tip.
+    "fast": {"tests": 6288, "modules": 428},
+    "smoke": {"tests": 4595, "modules": 307},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -7,6 +7,16 @@ record (`run-record.json`/`.md`). One test per surface, each reading the
 explicit `provisional` field directly rather than deriving it from
 `recordedAt`/`endedAt` timestamp arithmetic.
 
+Task cure-01-05 (H.2/H.3/H.7, R6): extends the same conclusion to the case
+task 026 never covered -- a review attempt cut off by the FULL
+`iteration_timeout_s` while job time and iteration budget both REMAIN. The
+pre-cure engine dispatched a replacement review iteration in that case
+instead of concluding on the checkpoint already on disk; the tests below
+pin that a replacement is never dispatched once a decisive checkpoint
+exists, while an ordinary (non-timed-out, or checkpoint-less) interrupted
+review keeps refining exactly as before, and the sibling budget-exhaustion
+path's own wording is unperturbed.
+
 Fixture shape mirrors `tests/test_deadline.py` section A / `tests/
 test_review_interrupted_not_rejection.py`: `_rir_supervisor(root, handlers,
 iterations=3)` runs exactly plan -> worker(COMPLETE) -> review(interrupted),
@@ -242,3 +252,122 @@ def test_terminal_record_carries_the_provisional_verdict(tmp_path):
     record_md = (sup.run.artifacts_dir / RUN_RECORD_MD_FILE).read_text()
     assert "provisional" in record_md.lower()
     assert marker["verdict"] in record_md
+
+
+# ---------------------------------------------------------------------------
+# Task cure-01-05 (H.2/H.3/H.7, #264): the SAME conclusion, reached while
+# job time and iteration budget both remain -- the full `iteration_
+# timeout_s` cutting off one attempt, never the sibling budget-exhaustion
+# path exercised above.
+# ---------------------------------------------------------------------------
+
+def _timed_out_after_writing_checkpoint(sup, prompt=""):
+    """A review attempt that records an early verdict (task 025's
+    `record-verdict`) and is THEN cut off by the full `iteration_timeout_s`
+    -- `result.timed_out = True`, distinct from `_rir_interrupted`'s bare
+    SIGINT shape (`interrupted=True`, `timed_out` left False), which is
+    exactly the distinction `_run_review_iteration`'s new early-return
+    checks before concluding on the checkpoint regardless of budget."""
+    state.write_review_early_verdict(
+        sup.run.root, approach=1, verdict="verified",
+        reason="checks complete", findings_path=None)
+    result = _rir_interrupted(sup, prompt)
+    result.timed_out = True
+    return result
+
+
+def test_iteration_timeout_with_budget_left_concludes_on_checkpoint_without_a_replacement_review(
+        tmp_path):
+    """Plenty of budget/wall clock remains (`iterations=8`, one review
+    handler queued behind the timed-out one) -- before this cure, the
+    self-loop would ask review again since `budget_left()` was still
+    True, reaching that second handler. The cure must stop at the
+    checkpoint instead: only 3 dispatches total (plan, worker, the ONE
+    timed-out review), the second review handler never reached."""
+    handlers = {
+        "planning": [_rir_plan],
+        "worker": [_rir_complete_task],
+        "review": [_timed_out_after_writing_checkpoint,
+                  lambda sup, _p="": (_ for _ in ()).throw(
+                      AssertionError(
+                          "a replacement review was dispatched after a "
+                          "timed-out attempt already recorded a "
+                          "checkpoint -- the checkpoint conclusion must "
+                          "not ask review again while budget remains"))],
+    }
+    sup = _rir_supervisor(tmp_path / "run-timeout-budget-left", handlers,
+                          iterations=8)
+    result = _bounded(sup._run_job_core())
+
+    assert result == "succeeded"
+    assert sup.runner.calls == 3, (
+        "iteration timeout redispatched review rather than concluding on "
+        "the checkpoint")
+    assert sup.budget_left() is True, (
+        "the criterion is specifically about job time/iteration budget "
+        "REMAINING -- this must not be the budget-exhaustion path")
+
+    status = sup.run.read_status()
+    assert status["state"] == "succeeded"
+    assert status["verdict"] == "verified"
+    marker = status.get("provisionalVerdict")
+    assert isinstance(marker, dict)
+    assert marker["provisional"] is True
+    assert marker["verdict"] == "verified"
+    assert marker.get("refinementScope"), (
+        "the record must name the unfinished refinement")
+
+    lines = _format_provisional_verdict_lines(marker)
+    assert any("provisional" in line.lower() for line in lines)
+
+    record_json = json.loads(
+        (sup.run.artifacts_dir / RUN_RECORD_JSON_FILE).read_text())
+    assert record_json.get("provisionalVerdict", {}).get("provisional") is True
+
+
+def test_uninterrupted_review_still_refines_normally_when_budget_remains(
+        tmp_path):
+    """Contrast: an ordinary interrupted (non-timed-out) review attempt
+    with budget left still self-loops and asks again exactly as task 003
+    (#72) pinned -- this cure narrows the NEW early return to `timed_out`
+    attempts with a matching checkpoint, and must not touch the sibling
+    bare-SIGINT/no-checkpoint self-loop at all."""
+    handlers = {
+        "planning": [_rir_plan],
+        "worker": [_rir_complete_task],
+        "review": [_rir_interrupted,
+                  lambda sup, _p="": _rir_ok(
+                      json.dumps({"verdict": "verified"}))],
+    }
+    sup = _rir_supervisor(tmp_path / "run-uninterrupted-refines", handlers,
+                          iterations=8)
+    result = _bounded(sup._run_job_core())
+
+    assert result == "succeeded"
+    assert sup.runner.calls == 4  # plan, worker, review(interrupted), review(verified)
+    assert sup.run.read_status().get("provisionalVerdict") is None
+
+
+def test_post_deadline_rejecting_verdict_from_budget_exhaustion_still_holds(
+        tmp_path):
+    """The pre-existing task 026 rejected-checkpoint scenario (genuine
+    budget exhaustion, no timeout-with-budget-left involved at all) must
+    still conclude exactly as before -- this cure adds a new early return,
+    it must not perturb the sibling path's own wording or outcome."""
+    sup = _rir_supervisor(tmp_path / "run-rejected-budget-exhausted",
+                          _fresh_verified_handlers(), iterations=3)
+    state.write_review_early_verdict(
+        sup.run.root, approach=1, verdict="rejected",
+        reason="found a blocking gap in the retry path", findings_path=None)
+    result = _bounded(sup._run_job_core())
+
+    assert result == "failed"
+    status = sup.run.read_status()
+    assert status["state"] == "failed"
+    assert status["verdict"] == "rejected"
+    marker = status.get("provisionalVerdict")
+    assert isinstance(marker, dict)
+    assert marker["provisional"] is True
+    assert marker["verdict"] == "rejected"
+    assert "iteration budget or wall clock was spent" in marker["refinementScope"], (
+        "the budget-exhaustion wording must survive unperturbed")

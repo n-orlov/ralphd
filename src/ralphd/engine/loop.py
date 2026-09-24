@@ -507,6 +507,20 @@ class LoopSupervisor:
         # `"unreviewed"`/`null` hold this same edge used to take when no
         # checkpoint existed.
         self._review_provisional_rejected_extra: dict = {}
+        # Task cure-01-05 (H.2/H.3/H.7, #264): True iff the checkpoint
+        # conclusion `_run_review_iteration` is about to route to
+        # `_review_unjudged_at_budget_end` was reached because a review
+        # attempt was cut off by the full `iteration_timeout_s` while an
+        # early-verdict checkpoint already existed for this approach --
+        # WITH job time and iteration budget still available, never
+        # checked at all before this flag is consulted. Read once by
+        # `_conclude_on_provisional_verdict` to word the terminal reason
+        # accurately ("the timed-out attempt", never the budget-exhausted
+        # wording task 026 wrote for the sibling case where budget/wall
+        # clock had genuinely run out) and reset immediately after, so a
+        # later, real budget-exhaustion conclusion in the same episode
+        # never inherits a stale True.
+        self._review_checkpoint_timeout_not_budget: bool = False
         # Task 016 (requirement F.3, #146): True iff the terminal `("tail",)`
         # exit this episode is about to write is specifically "the deadline
         # took the last review attempt before it could speak" -- set by
@@ -11298,6 +11312,23 @@ class LoopSupervisor:
         `review_unjudged_at_budget_end`, never on an ordinary rejected
         verdict: no approach archive, no `review rejected` event, no
         composite PRD.
+
+        Task cure-01-05 (H.2/H.3/H.7, #264): also returns `None` -- taking
+        the caller onto that same `review_unjudged_at_budget_end` edge --
+        the instant an attempt is cut off by the FULL `iteration_timeout_s`
+        (`result.timed_out`, never the broader `interrupted`/`no_traffic_
+        timeout`/abnormal-exit shapes `_review_interrupted` also covers)
+        while an early-verdict checkpoint (task 025's `record-verdict`)
+        already exists on disk for THIS approach, regardless of whether
+        `budget_left()` is still True: a decisive verdict already sitting
+        on disk is not repaired by asking review the same question again,
+        and every extra ask is budget/wall clock this salvage exists to
+        stop spending. An attempt cut off any other way (a bare SIGINT, the
+        startup-window watchdog, an abnormal exit, or a `timed_out` attempt
+        with NO checkpoint yet recorded) still falls through to the
+        ordinary `budget_left()` self-loop below, unaffected -- an
+        uninterrupted review, or one interrupted with nothing decisive on
+        disk yet, keeps refining exactly as before.
         """
         while True:
             # Task 016 (requirement I/decision 8): the run-ending review
@@ -11308,6 +11339,13 @@ class LoopSupervisor:
             if not self._review_interrupted(result):
                 return await self._review_contract_ladder(result)
             self._advance("review", "review", "review_interrupted")
+            if result.timed_out and not self._abort_reason:
+                checkpoint = state.read_review_early_verdict(self.run.root)
+                if (isinstance(checkpoint, dict)
+                        and checkpoint.get("approach") == approach
+                        and checkpoint.get("verdict") in ("verified", "rejected")):
+                    self._review_checkpoint_timeout_not_budget = True
+                    return None
             if not self.budget_left():
                 return None
             await self._gate()
@@ -11449,13 +11487,28 @@ class LoopSupervisor:
         text naming what never got to run).
         """
         verdict = checkpoint.get("verdict")
+        # Task cure-01-05 (H.2/H.3/H.7, #264): the checkpoint conclusion has
+        # two distinct causes now -- budget/wall clock genuinely spent
+        # (task 026's original case), or the full `iteration_timeout_s`
+        # cutting off ONE attempt while job time and iteration budget both
+        # remain (`_run_review_iteration`'s new early return). The wording
+        # below names whichever actually happened rather than claiming "no
+        # budget or wall clock left" when there plainly was some --
+        # consumed once, immediately, so a later, real budget-exhaustion
+        # conclusion in the same episode never inherits a stale flag.
+        timed_out_not_budget = self._review_checkpoint_timeout_not_budget
+        self._review_checkpoint_timeout_not_budget = False
+        cause = ("the attempt was cut off by the full iteration_timeout_s "
+                  "while job time and iteration budget both remained"
+                  if timed_out_not_budget else
+                  "the engine's iteration budget or wall clock was spent "
+                  "before review could be asked again")
         refinement_scope = (
             "review's own refinement pass over its reason and findings "
             "before ending the iteration"
             + (", and the peer verdict gate's own dispatch"
                if self.cfg.peer_verdict_gate else "")
-            + " -- neither could run because the engine's iteration budget "
-              "or wall clock was spent before review could be asked again "
+            + f" -- neither could run because {cause} "
               "(requirement H.2, #264)")
         provisional_patch = {
             "provisionalVerdict": {
@@ -11466,16 +11519,23 @@ class LoopSupervisor:
                 "refinementScope": refinement_scope,
             }
         }
+        interrupted_clause = (
+            "was cut off by the full iteration_timeout_s while job time "
+            "and iteration budget both remained"
+            if timed_out_not_budget else
+            "was repeatedly interrupted with no budget or wall clock left "
+            "to ask again")
         reason_note = (
-            f"review (approach {approach}) was repeatedly interrupted with "
-            "no budget or wall clock left to ask again, but it had already "
-            f"recorded an early verdict ({verdict!r}) via record-verdict "
-            "(task 025); the run concludes on that verdict, marked "
-            "provisional (requirement H.2, #264)")
+            f"review (approach {approach}) {interrupted_clause}, but it "
+            f"had already recorded an early verdict ({verdict!r}) via "
+            "record-verdict (task 025); the run concludes on that verdict, "
+            "marked provisional (requirement H.2, #264)")
         self._terminal_reason_note = reason_note
         self.run.emit(
             "review_provisional_verdict_concluded", approach=approach,
-            verdict=verdict, checkpointRecordedAt=checkpoint.get("recordedAt"))
+            verdict=verdict, checkpointRecordedAt=checkpoint.get("recordedAt"),
+            causedBy=("iteration_timeout" if timed_out_not_budget
+                       else "budget_exhausted"))
         if verdict == "verified":
             self._advance("review", "finishing",
                          "review_provisional_verdict_verified")
