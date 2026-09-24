@@ -467,6 +467,44 @@ def _proxy_text(reg: Path, run_id: str, path: str, timeout: float = 5.0):
 # either way.
 _ITERATION_BOUNDARY_TOKEN = '"ralphd.iteration"'
 
+# Task cure-01-08 (PRD G.2/G.6/G.9): a run of consecutive RECOGNIZED-but-
+# SILENT raw lines (PRD Q's own shape -- a `message_end` whose content is
+# empty/unrecognized, or renders nothing new) between the retained tail and
+# whatever collapse-guard setter still needs to be SEEN (not merely looked
+# up by the O(1) index -- printing "[thinking\u2026]" happens at the setter
+# line itself, never at a seeded boundary) makes `_fetch_live_tail`/
+# `_fetch_dead_tail`'s own doubling pay for the SUM of every smaller
+# doubling step on top of the one read that actually resolves it --
+# measured at 38,087,918 bytes on PRD Q's own fixture, no prelude at all,
+# where the theoretical floor (one single non-doubling read of the same
+# iteration's whole transcript) is 10,720,887. Past this many doublings a
+# further doubling is treated as proof the render needs most of this
+# iteration's own backlog anyway, so the caller stops paying for the
+# GEOMETRIC SUM of ever-larger partial reads and asks once more for
+# effectively the whole remaining backlog instead -- collapsing however
+# many further doublings would otherwise have run into ONE non-doubling
+# read. `_TAIL_FULL_ASK_BOUND` is far larger than any real transcript's own
+# raw line count; `merge_entries_tail`/the live handler still only ever
+# reads as many actual bytes as the transcript holds (never more), so
+# asking for it costs nothing extra when the backlog is small (a run whose
+# real answer sits within the first few doublings, PRD P's own fixtures,
+# never reaches this threshold at all -- see docs/reports for the measured
+# comparison). This does not, and cannot, bring PRD Q's own fixture (or
+# either silent-prelude depth) under the frozen 1,000,000-byte cap: the
+# 10,000 padded RECOGNIZED-silent lines a real run of this shape floods
+# between the deciding setter and the file's own end are themselves
+# ~10,660,000 bytes, an order of magnitude over the whole cap, with no
+# further reduction available under the frozen cap, the frozen transcript
+# format, an unweakened equality assertion, or without a further side
+# index (Ruling 1 section 2's own disclosed-residual disposition, not a
+# raised ceiling). It DOES remove the doubling ladder's own SUM-of-smaller-
+# reads waste for exactly that pathological shape (roughly halving the
+# measured bytes -- see the cure-01-08 commit message for the corrected
+# figures), and it changes nothing at all for a request that resolves
+# within the first `_TAIL_GROWTH_ROUNDS_BEFORE_FULL_ASK` doublings.
+_TAIL_GROWTH_ROUNDS_BEFORE_FULL_ASK = 5
+_TAIL_FULL_ASK_BOUND = 10_000_000
+
 
 def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, list[str]]:
     """Server-side pretty-render of a run's log tail (task 014), through
@@ -546,6 +584,7 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     """
     def _fetch_live_tail(bound_tail: int) -> tuple[bool, str]:
         bound = bound_tail
+        rounds = 0
         ok, raw_text = _proxy_text(reg, run_id, f"/logs?tail={bound}")
         while ok:
             content_lines = sum(1 for ln in raw_text.splitlines()
@@ -554,7 +593,10 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
                 break
             if content_lines < bound:
                 break
-            bound *= 2
+            rounds += 1
+            bound = (_TAIL_FULL_ASK_BOUND
+                     if rounds >= _TAIL_GROWTH_ROUNDS_BEFORE_FULL_ASK
+                     else bound * 2)
             ok, raw_text = _proxy_text(reg, run_id, f"/logs?tail={bound}")
         return ok, raw_text
 
@@ -570,6 +612,7 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
         `bound_tail` RENDERED lines and there is more history behind it."""
         run_root = reg / "runs" / run_id
         bound = bound_tail
+        rounds = 0
         raw_text = "".join(merged_lines(run_root, tail=bound))
         while True:
             content_lines = sum(1 for ln in raw_text.splitlines()
@@ -578,7 +621,10 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
                 break
             if content_lines < bound:
                 break
-            bound *= 2
+            rounds += 1
+            bound = (_TAIL_FULL_ASK_BOUND
+                     if rounds >= _TAIL_GROWTH_ROUNDS_BEFORE_FULL_ASK
+                     else bound * 2)
             raw_text = "".join(merged_lines(run_root, tail=bound))
         return raw_text
 

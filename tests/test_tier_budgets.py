@@ -989,8 +989,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # this module's other nodes already did. Measured with
     # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
     # commit's own tip.
-    "fast": {"tests": 6294, "modules": 429},
-    "smoke": {"tests": 4600, "modules": 308},
+    # cure-01-08 (v0.24 requirement G.2/G.6/G.9, DoD 7): fast 6294 -> 6296,
+    # smoke 4600 -> 4602 (+2 tests, +1 new module for both -- the new
+    # tests/test_hub_real_render_cap_whole_call.py) measuring the WHOLE
+    # client-facing tail render call (never just its cheapest inner fetch)
+    # on every fixture PRD G.9 names. Measured with `.venv/bin/python -m
+    # pytest -q -m <tier> --collect-only` at this task's own tip.
+    "fast": {"tests": 6296, "modules": 430},
+    "smoke": {"tests": 4602, "modules": 309},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
