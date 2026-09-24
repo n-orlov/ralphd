@@ -42,9 +42,11 @@ of by accident.
 from __future__ import annotations
 
 import json
+import subprocess
 
-from tests.flows.flowlib import (assert_step_sequence, events_of, flow_steps,
-                                 status, tasks, wait_engine_exit)
+from tests.flows.flowlib import (assert_step_sequence, engine_exit_timeout_diagnostic,
+                                 events_of, flow_steps, status, tasks,
+                                 wait_engine_exit)
 
 
 def _cure_tasks(run) -> list[dict]:
@@ -148,9 +150,22 @@ def test_the_second_curable_rejection_finds_the_cure_pass_spent_and_replans(
     # `wait_engine_exit`: F.4/non-negotiable 2 forbids all three, and the
     # guard test `test_engine_exit_wait_wiring.py` asserts this exact line
     # stays this exact shape.
-    assert run.proc.wait(timeout=60) == 0, (
-        "flow cure pass (spent): the engine did not exit 0 after approach 2 "
-        "verified")
+    #
+    # task cure-01-07 (F.3/F.5, DoD 6): a bare `TimeoutExpired` here used to
+    # leave a reader guessing between #216's two shapes with nothing to look
+    # at. The wait itself is unchanged -- still the one bare
+    # `run.proc.wait(timeout=60)` call, nothing ahead of it -- but a timeout
+    # is now caught right here and turned into the SAME reusable
+    # four-section diagnostic `wait_engine_exit` builds
+    # (`engine_exit_timeout_diagnostic`), instead of routing the wait itself
+    # through `wait_engine_exit` (still forbidden by F.4 for this one node).
+    try:
+        assert run.proc.wait(timeout=60) == 0, (
+            "flow cure pass (spent): the engine did not exit 0 after approach 2 "
+            "verified")
+    except subprocess.TimeoutExpired:
+        raise AssertionError(
+            engine_exit_timeout_diagnostic(run, 60)) from None
 
     assert_step_sequence(flow_steps(run), [
         "state:running",

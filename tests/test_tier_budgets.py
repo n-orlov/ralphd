@@ -979,7 +979,17 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `browser`/process-boundary fixture, so it sorts into both tiers.
     # Measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`
     # at this commit's own tip.
-    "fast": {"tests": 6293, "modules": 429},
+    # cure-01-07 (v0.25 requirement F.3/F.5, DoD 6, R8): fast 6293 -> 6294,
+    # smoke unchanged (+1 test, 0 new modules) for
+    # tests/test_engine_exit_wait_wiring.py's new synthetic-timeout proof
+    # that the named cure-pass node's own try/except now builds the
+    # reusable engine_exit_timeout_diagnostic on a TimeoutExpired; one
+    # existing node in that module was renamed, not added. No `docker`/
+    # `browser`/process-boundary fixture, so it sorts fast-only exactly as
+    # this module's other nodes already did. Measured with
+    # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
+    # commit's own tip.
+    "fast": {"tests": 6294, "modules": 429},
     "smoke": {"tests": 4600, "modules": 308},
 }
 

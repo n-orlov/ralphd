@@ -116,7 +116,8 @@ EXEMPT: dict[str, list[tuple[re.Pattern, str]]] = {
          "the comment documenting the exception directly below it"),
         (re.compile(r"^\s*assert run\.proc\.wait\(timeout=60\) == 0, \($"),
          "F.4/non-negotiable 2's single named exception -- verified in "
-         "shape by test_the_cure_pass_exemption_keeps_its_bare_shape below, "
+         "shape by test_the_cure_pass_exemption_requires_the_diagnostic_now "
+         "below, "
          "not merely allow-listed here"),
     ],
 }
@@ -156,13 +157,21 @@ def test_no_unrouted_engine_exit_waits_under_tests():
     assert not violations, "\n".join(violations)
 
 
-def test_the_cure_pass_exemption_keeps_its_bare_shape():
-    """F.4/non-negotiable 2, asserted by THIS guard (task 017's own
+def test_the_cure_pass_exemption_requires_the_diagnostic_now():
+    """Task cure-01-07 (F.3/F.5, DoD 6): this guard used to stop at
+    FORBIDDING the helper -- it now also REQUIRES the reusable four-section
+    diagnostic be wired into the named node's own `except` clause. F.4/
+    non-negotiable 2 still binds exactly as it did (task 017's own
     requirement): the named cure-pass node's single `proc.wait(timeout=60)`
-    is unrouted, unraised, and has no barrier freshly inserted ahead of it
-    -- the statement immediately before the wait, in the function body, is
-    still the bare `run = engine_factory(...)` assignment task 002 measured
-    against, nothing new in between."""
+    stays unrouted (never `wait_engine_exit(...)` itself), unraised, and has
+    no barrier freshly inserted ahead of it -- the statement immediately
+    before the `try:` wrapping it, in the function body, is still the bare
+    `run = engine_factory(...)` assignment task 002 measured against,
+    nothing new in between. What is new: the wait must sit inside a `try:`
+    whose `except subprocess.TimeoutExpired:` handler raises an
+    `AssertionError` built from `engine_exit_timeout_diagnostic` (flowlib's
+    reusable dump builder) -- a bare `TimeoutExpired` escaping unhandled no
+    longer passes."""
     path = TESTS_ROOT / "flows" / "test_flow_cure_pass.py"
     text = path.read_text()
     tree = ast.parse(text, filename=str(path))
@@ -177,24 +186,33 @@ def test_the_cure_pass_exemption_keeps_its_bare_shape():
         f"renamed or removed?")
 
     body = func.body
-    wait_idx = None
-    for i, stmt in enumerate(body):
-        if (isinstance(stmt, ast.Assert)
+
+    def _is_the_wait_assert(stmt) -> bool:
+        if not (isinstance(stmt, ast.Assert)
                 and isinstance(stmt.test, ast.Compare)
                 and isinstance(stmt.test.left, ast.Call)):
-            call = stmt.test.left
-            if (isinstance(call.func, ast.Attribute) and call.func.attr == "wait"
-                    and isinstance(call.func.value, ast.Attribute)
-                    and call.func.value.attr == "proc"):
-                wait_idx = i
-                break
-    assert wait_idx is not None, (
-        f"{CURE_PASS_NODE} no longer contains a bare `<x>.proc.wait(...)` "
-        f"assert at all -- either it was routed through wait_engine_exit "
-        f"(forbidden by F.4) or the shape changed enough that this scan "
-        f"can no longer find it; re-audit by hand.")
+            return False
+        call = stmt.test.left
+        return (isinstance(call.func, ast.Attribute) and call.func.attr == "wait"
+                and isinstance(call.func.value, ast.Attribute)
+                and call.func.value.attr == "proc")
 
-    wait_stmt = body[wait_idx]
+    wait_idx = None
+    try_stmt = None
+    for i, stmt in enumerate(body):
+        if isinstance(stmt, ast.Try) and stmt.body and _is_the_wait_assert(stmt.body[0]):
+            wait_idx = i
+            try_stmt = stmt
+            break
+    assert wait_idx is not None, (
+        f"{CURE_PASS_NODE}: no `try:` wrapping a bare `<x>.proc.wait(...)` "
+        f"assert as its first statement was found -- either the wait is no "
+        f"longer wrapped in the required except-and-diagnose shape, it was "
+        f"routed through wait_engine_exit (forbidden by F.4), or the shape "
+        f"changed enough that this scan can no longer find it; re-audit by "
+        f"hand.")
+
+    wait_stmt = try_stmt.body[0]
     src = ast.get_source_segment(text, wait_stmt)
     assert "wait_engine_exit" not in src, (
         f"{CURE_PASS_NODE}: F.4 forbids routing this exact node's wait "
@@ -210,9 +228,106 @@ def test_the_cure_pass_exemption_keeps_its_bare_shape():
             and prev.targets[0].id == "run"
             and isinstance(prev.value, ast.Call)), (
         f"{CURE_PASS_NODE}: a new statement sits between `run = "
-        f"engine_factory(...)` and the wait -- that is a barrier ahead of "
-        f"the wait, forbidden by F.4/non-negotiable 2. Found instead:\n"
+        f"engine_factory(...)` and the try/wait -- that is a barrier ahead "
+        f"of the wait, forbidden by F.4/non-negotiable 2. Found instead:\n"
         f"{ast.get_source_segment(text, prev)}")
+
+    # New in cure-01-07: exactly one statement inside the try body (the wait
+    # assert itself -- no second wait smuggled in alongside it).
+    assert len(try_stmt.body) == 1, (
+        f"{CURE_PASS_NODE}: the try body must hold only the one wait assert "
+        f"-- a second statement there could be a second wait, forbidden by "
+        f"F.4. Found:\n{ast.get_source_segment(text, try_stmt)}")
+
+    assert len(try_stmt.handlers) == 1, (
+        f"{CURE_PASS_NODE}: the wait must be wrapped in exactly one except "
+        f"clause that turns a TimeoutExpired into the reusable diagnostic "
+        f"(F.3/DoD 6) -- found {len(try_stmt.handlers)} handlers.")
+    handler = try_stmt.handlers[0]
+    handler_type_src = (ast.get_source_segment(text, handler.type)
+                        if handler.type is not None else "")
+    assert "TimeoutExpired" in handler_type_src, (
+        f"{CURE_PASS_NODE}: the except clause must catch TimeoutExpired -- "
+        f"got {handler_type_src!r}")
+
+    handler_src = "\n".join(
+        ast.get_source_segment(text, s) or "" for s in handler.body)
+    assert "engine_exit_timeout_diagnostic" in handler_src, (
+        f"{CURE_PASS_NODE}: the except clause must build its failure "
+        f"message via the reusable flowlib.engine_exit_timeout_diagnostic "
+        f"helper (F.3/DoD 6), not a hand-rolled dump -- got:\n{handler_src}")
+    assert "wait_engine_exit" not in handler_src, (
+        f"{CURE_PASS_NODE}: F.4 forbids routing this wait through "
+        f"wait_engine_exit even from inside the except clause -- got:\n"
+        f"{handler_src}")
+    assert any(isinstance(s, ast.Raise) for s in handler.body), (
+        f"{CURE_PASS_NODE}: a caught TimeoutExpired must still fail the "
+        f"node (re-raise as an AssertionError carrying the diagnostic), "
+        f"not be swallowed -- got:\n{handler_src}")
+
+
+def test_a_synthetic_timeout_through_the_named_node_proves_the_diagnostic():
+    """Task cure-01-07 (F.3/F.5, DoD 6): calls the EXACT named node --
+    imported straight from `test_flow_cure_pass.py`, never re-implemented --
+    with a synthetic `engine_factory` stub whose fake run's `proc.wait(
+    timeout=60)` raises `TimeoutExpired`. No real `ralphd-engine`, no real
+    subprocess: this proves the node's own inline `try`/`except` actually
+    builds and raises the reusable four-section diagnostic on a timeout,
+    the way `test_a_hung_child_is_named_and_dumped_on_timeout` proves it for
+    `wait_engine_exit` itself (task 016) -- the aliased import keeps pytest
+    from also collecting the real node here under a real `engine_factory`."""
+    import json as _json
+    import subprocess as _subprocess
+
+    import pytest
+
+    from tests.flows.test_flow_cure_pass import (
+        test_the_second_curable_rejection_finds_the_cure_pass_spent_and_replans
+        as _cure_pass_spent_node)
+
+    def _make_fake_run(tmp_path):
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        (run_dir / "status.json").write_text(
+            _json.dumps({"state": "running", "approach": 1}))
+        (run_dir / "events.jsonl").write_text(
+            _json.dumps({"type": "phase", "phase": "review", "approach": 1})
+            + "\n")
+
+        class _HangingProc:
+            pid = 999999
+            stdout = None
+
+            def wait(self, timeout=None):
+                raise _subprocess.TimeoutExpired(
+                    cmd="synthetic-engine", timeout=timeout)
+
+        class _FakeRun:
+            def __init__(self):
+                self.proc = _HangingProc()
+                self.run_dir = run_dir
+
+        return _FakeRun()
+
+    def _stub_engine_factory(tmp_path):
+        def _factory(*, job, stub_env=None):
+            return _make_fake_run(tmp_path)
+        return _factory
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        with pytest.raises(AssertionError) as excinfo:
+            _cure_pass_spent_node(_stub_engine_factory(Path(tmp)))
+
+    message = str(excinfo.value)
+    for section in ("process tree", "pending pipe bytes", "status.json",
+                    "events.jsonl tail"):
+        assert section in message, (
+            f"a synthetic timeout through {CURE_PASS_NODE} must still emit "
+            f"the reusable four-section diagnostic; missing {section!r} in:\n"
+            f"{message}")
+    assert "999999" in message, (
+        f"the diagnostic must name the synthetic proc's own pid:\n{message}")
 
 
 def test_mutation_a_new_unwired_engine_wait_is_caught(tmp_path):

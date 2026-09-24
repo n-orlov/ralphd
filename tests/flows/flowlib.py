@@ -191,11 +191,21 @@ def wait_engine_exit(run, timeout: float = 60, *, tail: int = 20) -> int:
     thin wrapper around the SAME single `proc.wait(timeout=timeout)`, and
     the dump is built only in the `except` branch, strictly after that one
     wait already expired.
+
+    `engine_exit_timeout_diagnostic` (below) is the reusable half of this --
+    a public function so the ONE deliberately-bare wait this repo still
+    keeps (task cure-01-07, F.3/F.5, DoD 6:
+    `tests/flows/test_flow_cure_pass.py::
+    test_the_second_curable_rejection_finds_the_cure_pass_spent_and_replans`)
+    can wire the SAME dump into its own inline `except` clause without
+    routing its wait through this wrapper, which F.4 forbids for that one
+    node.
     """
     try:
         return run.proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise AssertionError(_engine_exit_timeout_dump(run, timeout, tail=tail)) from None
+        raise AssertionError(
+            engine_exit_timeout_diagnostic(run, timeout, tail=tail)) from None
 
 
 def _engine_exit_shape(run) -> str:
@@ -305,10 +315,21 @@ def _pending_pipe_bytes(proc) -> tuple[int, str]:
     return len(data), data.decode("utf-8", errors="replace")
 
 
-def _engine_exit_timeout_dump(run, timeout: float, *, tail: int = 20) -> str:
+def engine_exit_timeout_diagnostic(run, timeout: float, *, tail: int = 20) -> str:
     """The four-section dump F.1 asks for, plus the shape name F.2 asks for
     named up front -- a hung child vs. a parked run, never left for the
-    reader to infer."""
+    reader to infer.
+
+    Public (no leading underscore) on purpose (task cure-01-07, F.3/F.5,
+    DoD 6): `wait_engine_exit` above calls this in its own `except` branch,
+    and so does `test_flow_cure_pass.py`'s own
+    `test_the_second_curable_rejection_finds_the_cure_pass_spent_and_replans`
+    -- inline, around its bare `run.proc.wait(timeout=60)` -- because F.4/
+    non-negotiable 2 forbids routing THAT one wait through `wait_engine_exit`
+    itself (a second wrapper call would be a barrier ahead of the wait).
+    Reusing this exact builder is what makes the diagnostic "the reusable
+    four-section diagnostic" rather than a hand-rolled duplicate.
+    """
     shape = _engine_exit_shape(run)
     pid = run.proc.pid
     tree_pids = _process_tree(pid)
