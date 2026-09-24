@@ -938,8 +938,19 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # py's own nodes), so all four sort into both tiers. Measured with
     # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
     # commit's own tip.
-    "fast": {"tests": 6282, "modules": 427},
-    "smoke": {"tests": 4589, "modules": 306},
+    # cure-01-03's retry (same requirement I.3, DoD 9, #210): fast 6282 ->
+    # 6283, smoke 4589 -> 4590 (+1 test, 0 new modules) for the
+    # non-vacuity twin the criterion's no-push clause needs --
+    # test_a_clean_commit_through_the_same_hooks_still_commits_and_pushes,
+    # the same hooks/remote/commit-then-push worker with no map value, whose
+    # commit IS created, whose worker push DOES advance the bare remote's
+    # main and which DOES reach the engine's own push path. It lands in the
+    # already-counted tests/test_commit_scan_hook_hit_fault_pause.py and
+    # sorts into both tiers like its four siblings. Measured with
+    # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
+    # commit's own tip.
+    "fast": {"tests": 6283, "modules": 427},
+    "smoke": {"tests": 4590, "modules": 306},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
