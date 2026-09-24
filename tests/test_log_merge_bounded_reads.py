@@ -1237,21 +1237,36 @@ async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
     direction ...", type `contradictory-clauses`, filed by task cure-01-03-2
     and brought into the PRD-designated tracked file by task cure-01-01-3),
     NOT a residual either task granted itself -- the operator GRANTED it on
-    18 September 2026, so the shipped replay fallback stands as a disclosed
-    residual of v0.22 and the real fix is deferred to v0.23 (GitHub #214).
-    The shipped renderer prints from the `False` fallback, so this variant's
-    bounded render still repeats the text once at both prelude depths --
-    asserted below exactly as it is, never hidden, so that a ruling which
-    flips the fallback direction fails this line loudly instead of passing
-    unnoticed. Flipping it here
-    instead is not available to a bounded reader: the setter's own offset
-    (asserted below, past P.1/P.5's ENTIRE 1,000,000-byte per-call ceiling at
-    either depth) is unreachable within the ceiling, and the only other
-    route -- suppress whenever a material flag is unresolved -- was measured
-    at 7,345,430 / 7,607,609 / 30,248,729 bytes on P's own three fixtures
-    against that same unmoved ceiling (task cure-01-03-2; re-verified, not
-    re-measured, by task cure-01-01-3 -- see the petition for the fresh
-    replay measurement at both depths)."""
+    18 September 2026, so the shipped replay fallback stood as a disclosed
+    residual of v0.22 with the real fix deferred to v0.23 (GitHub #214).
+
+    Task cure-01-09 (PRD G.4, DoD 7, #272) is that deferred real fix's own
+    genuine, bounded attempt, and cured exactly HALF of it: a
+    `collapse_index.json` that exists but fails to validate (truncated,
+    mismatched) is now resolved correctly and cheaply, on the real hub/disk
+    and `/logs`-to-hub paths, via `resolve_flags_at_offset`'s scan fallback
+    (`test_silent_prelude_case_renders_correctly_through_the_hub_when_the_
+    index_is_truncated_or_mismatched`, below) -- proof an index-write
+    attempt genuinely happened is one extra `stat()` away from `load_index`
+    returning `None`. THIS fixture, called with no `collapse_index.json`
+    written for it AT ALL, is the one case that call site still cannot tell
+    apart from a run recorded before `collapse_index` existed, or from
+    every OTHER fixture in this module that never writes one by
+    construction and whose OWN pinned byte bounds this task must not
+    regress (PRD P.1/P.5's own petitioned cost tension) -- routing a
+    genuinely absent index through the SAME scan fallback measures
+    3,388,970 bytes on `_write_iteration_with_older_thinking_marker`'s own
+    100,000-entry fixture (currently 184,700, correct already), 3.39x over
+    the frozen 1,000,000-byte cap, on a fixture this task must not regress.
+    So the shipped renderer still prints from the `False` fallback for a
+    genuinely absent index specifically, and this variant's bounded render
+    still repeats the text once at both prelude depths -- asserted below
+    exactly as it is, the SURVIVING historical-record half of this pin,
+    now disclosed as cure-01-09's own residual (measured byte counts and
+    every ruled-out policy: GitHub #272) rather than an open petition
+    question -- never hidden, so that a ruling which flips the fallback
+    direction, or a later cure that finds a THIRD way past this exact
+    collision, fails this line loudly instead of passing unnoticed."""
     text = ("silent-prelude streamed text must not replay after a bounded "
             f"look-back (prelude={prelude_count})")
     gap_line = json.dumps(
@@ -1297,9 +1312,11 @@ async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
             "".join(_consumer_suppressing_disclosed_unknowns(raw)), tty=False,
             state=new_render_state())
         assert not any(text in ln for ln in suppressed), (label, suppressed)
-        # The shipped fallback direction's CURRENT behavior, pinned exactly
-        # as measured -- not a residual this suite grants itself, and not
-        # evidence that the open petition above is decided either way.
+        # The shipped fallback direction's CURRENT behavior for a
+        # genuinely absent index, pinned exactly as measured -- cure-01-09's
+        # OWN disclosed residual now (GitHub #272), the surviving
+        # historical-record half of this pin, not evidence that the
+        # ADJUDICATED v0.22 petition above is decided either way.
         shipped = render_to_lines("".join(raw), tty=False, state=new_render_state())
         assert shipped[-2:] == [text, full[-1]], (label, shipped[-2:])
 
@@ -1454,3 +1471,136 @@ async def test_silent_prelude_case_renders_the_full_renderers_last_two_lines_on_
             assert rendered[-2:] == full[-2:], (prelude_count, label, rendered[-2:])
             assert not any(text in ln for ln in rendered), (prelude_count, label, rendered)
             assert all(ln != "" for ln in rendered[-2:]), (prelude_count, label, rendered)
+
+
+async def test_silent_prelude_case_renders_correctly_through_the_hub_when_the_index_is_truncated_or_mismatched(
+        tmp_path, monkeypatch):
+    """Task cure-01-09, PRD G.4, DoD 7 (#214's own family, the SECOND of
+    the three `load_index` failure modes it names -- absent, truncated,
+    mismatched -- rather than the standalone `resolve_flags_at_offset`
+    unit `test_collapse_index.py::TestResolveFlagsAtOffsetAcrossIndexShapes`
+    already exercises for all four `scenario` values, never through
+    `merge_entries_tail`/`ui_server.rendered_log_lines` at all).
+
+    Before this task, `merge_entries_tail` treated EVERY `load_index`
+    failure identically -- one `if index is not None:` branch, with no
+    second look at WHY it was `None` -- so a `collapse_index.json` that
+    exists but is truncated mid-write or carries a stale `transcriptBytes`
+    fell back to the SAME growth-based look-back an index-less run always
+    used, on the SAME silent-prelude fixture
+    (`_write_iteration_with_recognized_nonrendering_gap`, prelude_count
+    1,000) `_assert_silent_prelude_publishes_unknown_state_not_empty_state`
+    above already proves that look-back cannot resolve within any payable
+    bound: the seed stays `unresolved`, the shipped `False` fallback
+    prints the ALREADY-STREAMED text a second time, and the hub's own
+    growing-bound retry (`ui_server._fetch_dead_tail`/`_fetch_live_tail`)
+    never notices, because it only re-asks for MORE rendered lines, never
+    for a DIFFERENT answer to the same two.
+
+    A `collapse_index.json` that exists -- however invalid -- is proof an
+    index-write attempt genuinely happened for THIS iteration (task 020's
+    own unconditional call site, `ralphd/engine/loop.py`), unlike a
+    missing file, which this cure's own product change
+    (`log_merge.merge_entries_tail`) cannot tell apart from a run recorded
+    before `collapse_index` existed at all or from every OTHER fixture in
+    this module that never writes one by construction (the materiality
+    fixtures above, `_write_iteration_with_older_thinking_marker` and
+    `_write_iteration_with_interleaved_ignored_suffix` among them) --
+    fixtures whose OWN pinned byte bounds this task must not regress
+    (PRD P.1/P.5's own petitioned, still-open cost tension the standing
+    rules forbid re-litigating: forcing those fixtures to resolve a flag
+    they can safely leave disclosed-but-unresolved costs exactly what that
+    petition already measured as unpayable). So this cure routes a
+    PRESENT-but-invalid index through `resolve_flags_at_offset`'s own scan
+    fallback -- G.4's promised contract for "the index does not
+    validate": never a wrong render, only ever slower -- while a
+    genuinely ABSENT index (no file at all) still takes the unchanged
+    growth-based look-back, exactly as `_assert_silent_prelude_publishes_
+    unknown_state_not_empty_state` above pins it (that scenario is the
+    OPERATOR-GRANTED v0.22 petition's own disclosed residual, deferred to
+    v0.23/#214, unchanged and unregressed by this task -- not a gap this
+    task re-opens).
+
+    Checked through the ACTUAL runtime fallback, not the standalone
+    helper: the on-disk merge directly, the live engine `GET /logs` ASGI
+    handler, and `ui_server.rendered_log_lines` itself -- BOTH its
+    dead-run on-disk fallback (`live=False`) and its live proxy branch
+    (`live=True`, the `/logs`-to-hub path a running container's own hub
+    page takes) -- for BOTH a truncated `collapse_index.json` (cut mid-
+    token) and a mismatched one (a stale `transcriptBytes`, task 020's own
+    consistency check). Every one of the four surfaces returns the SAME
+    last two lines the full, untailed render does -- the collapsed
+    `[thinking\u2026]` marker and the iteration-end boundary -- never the
+    replayed text, and never a spurious blank line.
+    """
+    from ralphd.cli import ui_server
+
+    text = "truncated-or-mismatched index must not replay this text"
+    gap_line = json.dumps(
+        {"type": "message_end", "message": {"content": []}, "padding": "x" * 1000})
+
+    def _corrupt(idx_path: pathlib.Path, scenario: str) -> None:
+        if scenario == "truncated":
+            raw = idx_path.read_bytes()
+            idx_path.write_bytes(raw[: len(raw) // 2])  # cuts the JSON mid-token
+        else:
+            idx = json.loads(idx_path.read_text())
+            idx["transcriptBytes"] += 1  # stale relative to the real file now
+            idx_path.write_text(json.dumps(idx))
+
+    for scenario in ("truncated", "size_mismatch"):
+        reg = tmp_path / scenario
+        run_root = reg / "runs" / "probe"
+        _write_iteration_with_recognized_nonrendering_gap(
+            run_root, 1, text, gap_line, 10_000, prelude_count=1000)
+        itdir = run_root / "iterations" / "0001"
+        collapse_index.write_index(itdir)
+        idx_path = itdir / collapse_index.INDEX_FILENAME
+        _corrupt(idx_path, scenario)
+        assert idx_path.exists()  # present, just invalid -- never deleted
+        assert collapse_index.load_index(itdir) is None, scenario
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        assert full[-2].strip() == "[thinking\u2026]", (scenario, full[-2:])
+        assert sum(1 for ln in full if text in ln) == 1, (scenario, full[-3:])
+
+        # -- 1. on-disk merge, directly ---------------------------------
+        async def _fetch_disk(bound: int) -> str:
+            return "".join(merged_lines(run_root, tail=bound))
+
+        disk_rendered = await _grown_rendered_tail(_fetch_disk, 2)
+        assert disk_rendered[-2:] == full[-2:], (scenario, "disk", disk_rendered)
+        assert not any(text in ln for ln in disk_rendered), (scenario, "disk")
+        assert all(ln != "" for ln in disk_rendered[-2:]), (scenario, "disk")
+
+        # -- 2. the live engine GET /logs ASGI handler -------------------
+        (reg / "workspace").mkdir(parents=True)
+
+        async def _fetch_api(bound: int) -> str:
+            return await _api_logs_text(run_root, reg / "workspace", bound)
+
+        api_text = await _grown_rendered_tail(_fetch_api, 2)
+        assert api_text[-2:] == full[-2:], (scenario, "api", api_text)
+        assert not any(text in ln for ln in api_text), (scenario, "api")
+        assert all(ln != "" for ln in api_text[-2:]), (scenario, "api")
+
+        # -- 3. `ui_server.rendered_log_lines` itself, live AND dead-run -
+        def _wire_hub(mp, live):
+            def _proxy(reg_arg, run_id, path, **kw):
+                if not live:
+                    return False, ""
+                import re
+                m = re.search(r"tail=(\d+)", path)
+                n = int(m.group(1)) if m else 0
+                return True, "".join(merged_lines(run_root, tail=n))
+            mp.setattr(ui_server, "_proxy_text", _proxy)
+
+        for live in (False, True):
+            with monkeypatch.context() as m:
+                _wire_hub(m, live)
+                hub_live, hub_lines = ui_server.rendered_log_lines(reg, "probe", 2)
+            assert hub_live == live, (scenario, live)
+            assert hub_lines[-2:] == full[-2:], (scenario, live, hub_lines)
+            assert not any(text in ln for ln in hub_lines), (scenario, live, hub_lines)
+            assert all(ln != "" for ln in hub_lines[-2:]), (scenario, live, hub_lines)

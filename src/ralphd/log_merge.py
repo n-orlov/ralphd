@@ -1285,20 +1285,50 @@ def merge_entries_tail(run_root: Path, tail: int,
             # `out` at all -- so the bounded look-back growth
             # `_tail_lines_of_file` would otherwise pay for, proportional
             # to how far back the deciding setter sits, is skipped
-            # entirely (`skip_seed_lookback=True` below). Absence,
-            # truncation or a stale index (`load_index` returning `None`)
-            # is not an error (PRD G.4): the growth-based look-back below
-            # still runs exactly as it always has, unaffected. Imported
+            # entirely (`skip_seed_lookback=True` below). A truncated or
+            # mismatched index (task cure-01-09, PRD G.4/DoD 7, below) is
+            # likewise skipped past the growth-based look-back, in favour
+            # of `resolve_flags_at_offset`'s own scan fallback; only a
+            # GENUINELY ABSENT index file still runs the growth-based
+            # look-back exactly as it always has, unaffected -- imported
             # locally, not at module scope, so this module never has to
             # order itself around `collapse_index`'s own module-level
             # `from .log_merge import OUTPUT_FILENAME` -- the two modules
             # would otherwise import each other.
+            from .collapse_index import INDEX_FILENAME as _INDEX_FILENAME
             from .collapse_index import load_index as _load_collapse_index
             from .collapse_index import resolve_flags_at_offset as _resolve_flags_at_offset
             index = _load_collapse_index(d, output_filename=OUTPUT_FILENAME)
+            # Task cure-01-09 (PRD G.4, DoD 7): a validated index resolves
+            # the seed by O(1) lookup exactly as before. An index that
+            # fails to validate (`load_index` returning `None`) splits into
+            # two genuinely different cases `load_index` cannot itself tell
+            # apart, but this call site can, from one extra `stat`: the
+            # index FILE EXISTS (truncated, malformed, a stale/mismatched
+            # `transcriptBytes`, or a version this build does not read) --
+            # proof an index-write attempt genuinely happened for this
+            # iteration -- versus no file at all, which is indistinguishable
+            # from an iteration recorded by an engine build that never had
+            # this side index (`TestNoIndexRendersLikeToday`'s own
+            # contract, `tests/test_collapse_index.py`) and from every
+            # shipped materiality fixture in this module that never writes
+            # one by construction (`_write_iteration_with_older_thinking_
+            # marker` and friends -- PRD P.1/P.5's own petitioned, still-
+            # open cost tension: forcing THOSE fixtures to resolve a flag
+            # they can safely leave disclosed-but-unresolved would cost
+            # exactly what that petition already measured as unpayable).
+            # An index file that exists but fails to validate carries no
+            # such ambiguity and no such petitioned cost history, so it
+            # goes through `resolve_flags_at_offset`'s OWN scan fallback --
+            # G.4's own promised contract for "the index does not
+            # validate": never a wrong render, only ever slower -- instead
+            # of the older growth-based look-back's bounded, sometimes-
+            # wrong guess.
+            index_file_present = (d / _INDEX_FILENAME).exists()
             tail_lines, reached_start, prefix_lines = _tail_lines_of_file(
-                out, remaining, skip_seed_lookback=index is not None)
-            if index is not None:
+                out, remaining,
+                skip_seed_lookback=index is not None or index_file_present)
+            if index is not None or index_file_present:
                 # The cut point is wherever `tail_lines` -- exactly the
                 # tail this call retains, whether or not the growth
                 # loop above ran -- begins in the file: the file's

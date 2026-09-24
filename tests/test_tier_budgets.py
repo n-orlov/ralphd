@@ -995,8 +995,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # client-facing tail render call (never just its cheapest inner fetch)
     # on every fixture PRD G.9 names. Measured with `.venv/bin/python -m
     # pytest -q -m <tier> --collect-only` at this task's own tip.
-    "fast": {"tests": 6296, "modules": 430},
-    "smoke": {"tests": 4602, "modules": 309},
+    # cure-01-09 (v0.25 requirement G.4, DoD 7, #272): fast 6296 -> 6297,
+    # smoke 4602 -> 4603 (+1 test, 0 new modules -- lands in the already-
+    # counted tests/test_log_merge_bounded_reads.py) for the new
+    # truncated/mismatched-index-through-the-real-hub/disk/api-paths
+    # correctness proof. Measured with `.venv/bin/python -m pytest -q -m
+    # <tier> --collect-only` at this task's own tip.
+    "fast": {"tests": 6297, "modules": 430},
+    "smoke": {"tests": 4603, "modules": 309},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
