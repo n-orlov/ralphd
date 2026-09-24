@@ -41,14 +41,34 @@ than the pre-fix 0o600 so the `pre-push` hook process -- which runs at the
 AGENT uid, spawned by the worker's own `git push` -- can still read them
 back; read access was never the property under threat, only write.
 
+## What the boundary actually is (and what it deliberately is NOT)
+
+The protected property is every MUTATION of a hook, of the directory
+holding it, or of any ancestor entry above it: `open(..., "w")`, `chmod`,
+`unlink`, `rename`, `replace`, and creating a new entry inside. READ,
+`listdir` and traverse/exec are deliberately still PERMITTED to the agent
+uid, and that is not a gap: the hook processes themselves run at the AGENT
+uid (git spawns `pre-commit`/`commit-msg`/`pre-push` from the worker's own
+`git commit`/`git push`), so the root-owned hook is installed 0o555 inside
+a root-owned 0o755 directory precisely so the agent can still read and
+execute it. A probe that demanded read be denied too would be demanding
+the gate stop working; what makes the directory safe is that neither the
+hook's mode nor the directory's grants the agent uid a WRITE, and a
+directory-entry operation needs write on the PARENT, which is root's.
+So this module's probe classifies every attempt it makes
+(`_MUST_BE_DENIED` / `_MUST_STILL_SUCCEED` below, checked exhaustively
+against the probe source at import time) and asserts both halves: the
+mutations denied, the reads still working.
+
 Four things, each needing a real container:
 
 1. A fully dropped agent-uid child cannot chmod-and-write, unlink-and-
    replace, or rename-and-plant the installed `pre-push` hook, the
    directory holding it, or any ancestor above it, up to the container
-   root -- with the probe's own negative control (an unprotected scratch
-   directory, same container) proving these attempts genuinely succeed
-   when no boundary is claimed
+   root -- while still being able to read the hook and list its directory,
+   which the gate itself depends on -- with the probe's own negative
+   control (an unprotected scratch directory, same container) proving the
+   mutating attempts genuinely succeed when no boundary is claimed
    (`test_a_dropped_child_cannot_rewrite_the_installed_hook_or_its_directory`).
 2. The exact same probe against an UNPROTECTED scratch directory succeeds,
    proving the probe can see a hole (folded into (1) as the negative
@@ -72,6 +92,7 @@ through `test_tasks_record_docker.py`'s already-proven `_start_idle_job`.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 
 import pytest
@@ -90,6 +111,31 @@ from test_tasks_record_docker import _start_idle_job  # noqa: F401
 _HOOKS_DIR_IN_CONTAINER = "/var/lib/ralphd/commit-scan-hooks"
 _GRANDPARENT_IN_CONTAINER = "/var/lib/ralphd"
 _DENIED = ("EACCES", "EPERM")
+
+# Every MUTATION the probe below attempts against the installed hook, the
+# directory holding it, or any ancestor up to the container root. All of
+# these must be refused with EACCES/EPERM under the real boundary -- this
+# is the deliverable of requirement I.1/DoD 9.
+_MUST_BE_DENIED = (
+    "hook:open-write", "hook:os.chmod", "hook:os.unlink", "hook:os.replace",
+    "dir:os.mkdir-inside", "dir:os.chmod", "dir:os.rename",
+    "dir:os.replace-decoy", "dir:os.rmdir",
+    "grandparent:os.mkdir-sibling", "grandparent:os.rename",
+    "grandparent:os.chmod",
+    "varlib:os.mkdir-inside", "varlib:os.chmod",
+    "var:os.mkdir-inside", "var:os.chmod",
+    "root:os.mkdir-inside", "root:os.chmod",
+)
+
+# The two NON-mutating attempts, which must keep SUCCEEDING at the agent
+# uid: the hook processes run at that uid (git spawns them from the
+# worker's own `git commit`/`git push`), so a boundary that denied reading
+# or listing would break the gate instead of protecting it. Asserting them
+# denied -- as an earlier revision of this module wrongly did -- asserts
+# the opposite of what the shipped, deliberately 0o555-in-0o755 layout
+# provides and of what test_a_clean_agent_commit_and_push_still_succeed_
+# through_the_protected_hooks requires.
+_MUST_STILL_SUCCEED = ("hook:read", "dir:listdir")
 
 # A synthetic-only value (PRD requirement I.9): never a real credential,
 # never matched by anything real -- this module never even needs the
@@ -258,6 +304,20 @@ attempt("root:os.chmod", lambda: os.chmod("/", 0o777))
 sys.stdout.write(json.dumps(out))
 '''
 
+# Nothing may escape classification: a later attempt added to the probe
+# without a verdict in one of the two tuples above would otherwise be
+# asserted about by nobody. Checked at IMPORT time, so it holds wherever
+# this module is merely collected (this sandbox has no docker daemon) and
+# not only where the probe itself can run.
+_PROBE_OPS = tuple(re.findall(r'attempt\(\s*"([^"]+)"', _HOOK_PROBE))
+assert len(set(_PROBE_OPS)) == len(_PROBE_OPS), (
+    "duplicate probe attempt key", _PROBE_OPS)
+assert set(_PROBE_OPS) == set(_MUST_BE_DENIED) | set(_MUST_STILL_SUCCEED), (
+    "every probe attempt must be classified exactly once as a mutation that "
+    "must be denied or a read that must still succeed",
+    sorted(set(_PROBE_OPS) ^ (set(_MUST_BE_DENIED) | set(_MUST_STILL_SUCCEED))))
+assert not set(_MUST_BE_DENIED) & set(_MUST_STILL_SUCCEED)
+
 _HOOK_PROBE_DRIVER = r'''
 import json
 import os
@@ -336,26 +396,42 @@ def _assert_the_probe_can_actually_see_a_hole(container: str) -> None:
     doc = _run_hook_probe(container, hole_dir, hole_hook,
                           "/tmp/cure0102-negative-scratch")
     attempts = doc["attempts"]
-    assert attempts["hook:read"]["ok"] is True, (
-        "the probe could not read an UNPROTECTED hook file -- then its "
-        f"verdict on the real hook proves nothing: {attempts}")
-    assert attempts["dir:os.rename"]["ok"] is True, (
-        "the probe could not rename an UNPROTECTED hooks directory -- "
-        f"then its verdict on the real directory proves nothing: {attempts}")
-    assert attempts["hook:os.replace"]["ok"] is True, (
-        "the probe could not replace an UNPROTECTED hook file even though "
-        f"it carries no write bit -- mode alone was never the property "
-        f"under test, the DIRECTORY's permission is: {attempts}")
+    for op in _MUST_STILL_SUCCEED:
+        assert attempts[op]["ok"] is True, (
+            f"the probe could not {op} an UNPROTECTED hook/directory -- then "
+            f"its verdict on the real ones proves nothing: {attempts}")
+    # Every mutation the real boundary must refuse has to SUCCEED here --
+    # against an agent-owned copy of the same 0o555-hook-in-a-directory
+    # layout -- or the probe is blind. Two exclusions, both principled:
+    # the ancestor attempts (`grandparent:`, `varlib:`, `var:`, `root:`)
+    # address real root-owned container paths in this same container, so
+    # they are legitimately denied even here; and `hook:open-write` is
+    # denied by the 0o555 MODE alone, owner or not, which is precisely why
+    # the pre-fix layout was still broken -- `hook:os.chmod` (then write)
+    # and `hook:os.replace` are the attempts that carried it, and they are
+    # in this control.
+    control_ops = [op for op in _MUST_BE_DENIED
+                   if op.startswith(("hook:", "dir:"))
+                   and op != "hook:open-write"]
+    assert len(control_ops) == 8, control_ops
+    for op in control_ops:
+        assert attempts[op]["ok"] is True, (
+            f"the probe could not {op} against an UNPROTECTED copy of the "
+            "same layout (a 0o555 hook in an agent-owned directory) -- mode "
+            "alone was never the property under test, the DIRECTORY's "
+            f"permission is, and this probe cannot see the difference: {attempts}")
     subprocess.run([REAL_DOCKER, "exec", container, "sh", "-c",
                     f"rm -rf {hole_root} {hole_dir}-moved"],
                    capture_output=True, timeout=30)
 
 
 def test_a_dropped_child_cannot_rewrite_the_installed_hook_or_its_directory(ctl):
-    """Requirement I.1/DoD 9 (review finding R2): not the hook file, not
-    the directory holding it, not the grandparent above it, walked all the
-    way to the container root -- with the probe's own negative control run
-    first, in the same container, so a pass here means something."""
+    """Requirement I.1/DoD 9 (review finding R2): no MUTATION reaches the
+    hook file, the directory holding it, the grandparent above it, or any
+    ancestor up to the container root -- while reading the hook and listing
+    its directory, which the gate's own agent-uid hook processes need, keep
+    working. The probe's own negative control runs first, in the same
+    container, so a pass here means something."""
     run_id, container = _start_idle_job(ctl, "cure0102-hookprobe")
 
     _assert_the_probe_can_actually_see_a_hole(container)
@@ -386,8 +462,20 @@ def test_a_dropped_child_cannot_rewrite_the_installed_hook_or_its_directory(ctl)
     doc = _run_hook_probe(container, setup["hooksDir"], setup["hookPath"],
                           "/tmp/cure0102-probe-scratch")
     attempts = doc["attempts"]
-    for op, got in attempts.items():
-        assert got["ok"] is False and got["errno"] in _DENIED, (op, got)
+    assert set(attempts) == set(_PROBE_OPS), (
+        "the probe reported a different attempt set than it declares",
+        sorted(set(attempts) ^ set(_PROBE_OPS)))
+    for op in _MUST_BE_DENIED:
+        got = attempts[op]
+        assert got["ok"] is False and got["errno"] in _DENIED, (
+            f"{op} was NOT refused at the agent uid -- the hook or its "
+            f"containing path is still mutable from the workspace side: {got}")
+    for op in _MUST_STILL_SUCCEED:
+        got = attempts[op]
+        assert got["ok"] is True, (
+            f"{op} was refused -- the agent uid must keep being able to read "
+            "and list the hooks it EXECUTES (git spawns them at that uid); a "
+            f"boundary that denies this breaks the gate, not an attacker: {got}")
 
     stop_res = ctl.stop(run_id, force=True)
     assert stop_res.returncode == 0, stop_res.stderr

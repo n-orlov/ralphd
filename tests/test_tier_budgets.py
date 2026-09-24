@@ -910,8 +910,22 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `pytest_collection_modifyitems`) -- it contributes 0 to either tier's
     # ceiling. Measured with `.venv/bin/python -m pytest -q -m <tier>
     # --collect-only` at this commit's own tip.
-    "fast": {"tests": 6276, "modules": 426},
-    "smoke": {"tests": 4583, "modules": 305},
+    # cure-01-02 retry (v0.25 requirement I.1, DoD 9, #210, review finding
+    # R2): fast 6276 -> 6278, smoke 4583 -> 4585 (+2 tests, 0 new modules)
+    # for two further nodes in tests/test_commit_scan_engine_boundary.py --
+    # `test_the_installed_layout_grants_a_non_owner_read_and_exec_but_never_
+    # write` (the OTHER-class permission classes the installer actually
+    # produces: r-x and never w on both the hooks dir and the hook, read-only
+    # on the two snapshot files) and `test_a_real_agent_uid_probe_cannot_
+    # plant_or_replace_the_protected_hooks_entry` (a real uid-boundary probe,
+    # in-process at the agent uid, against `privsep.commit_scan_hooks_dir()`'s
+    # own root-owned parent: four mutations refused EACCES/EPERM, listing
+    # still permitted). No `docker`/`browser`/process-boundary fixture, so
+    # both sort into both tiers; the module already existed, so no module
+    # ceiling moves. Measured with `.venv/bin/python -m pytest -q -m <tier>
+    # --collect-only` at this commit's own tip.
+    "fast": {"tests": 6278, "modules": 426},
+    "smoke": {"tests": 4585, "modules": 305},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

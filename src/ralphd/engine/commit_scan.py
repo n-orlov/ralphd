@@ -464,6 +464,23 @@ def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
     the ELEVATION around the call, not this call, that makes the
     difference.
 
+    The property that boundary protects is MUTATION, and only mutation:
+    read, list, traverse and execute stay available to the agent uid on
+    purpose -- git spawns `pre-commit`/`commit-msg`/`pre-push` at the AGENT
+    uid, from the worker's own `git commit`/`git push`, so the root-owned
+    hook is installed 0o555 inside a root-owned 0o755 directory precisely so
+    the agent can still read and run it. A layout that denied reading would
+    disable the gate rather than protect it, which is why the guard tests
+    assert BOTH halves rather than only checking write bits:
+    `tests/test_commit_scan_hooks_docker.py`'s real-container, dropped-uid
+    probe requires every mutation (`open`-for-write, `chmod`, `unlink`,
+    `rename`, `replace`, create-inside, on the hook, the directory and every
+    ancestor to the container root) to be refused EACCES/EPERM *and*
+    `hook:read`/`dir:listdir` to keep succeeding, and
+    `tests/test_commit_scan_engine_boundary.py` pins the other-class
+    permission bits (`r-x`, never `w`) plus a real agent-uid probe of this
+    directory's own root-owned parent.
+
     `base_sha` is the boundary base the engine just read (`head_before`);
     it is written next to the hooks as `scan-base` so a first push to a
     remote that has no such ref yet still scans exactly "the commits this

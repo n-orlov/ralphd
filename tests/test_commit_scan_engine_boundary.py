@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import json
 import os
 import subprocess
@@ -847,3 +848,102 @@ def test_the_keyed_hash_snapshot_files_are_agent_readable_not_writable(
         mode = path.stat().st_mode & 0o777
         assert mode == 0o644, (path, oct(mode))
 
+
+
+def test_the_installed_layout_grants_a_non_owner_read_and_exec_but_never_write(
+        tmp_path, live_synthetic_map):
+    """Task cure-01-02, requirement I.1/DoD 9: the boundary this task ships
+    is *not* "no write bit anywhere" -- the hook has to stay readable and
+    executable by the agent uid, because git spawns the hook processes from
+    the worker's own `git commit`/`git push` at that uid. What protects it
+    is the OTHER-class permission of the root-owned layout: `r-x` on the
+    directory and the hook (traverse, list, read, exec) and no `w` on
+    either -- and since a directory-entry operation (`unlink`, `rename`,
+    `replace`, create) is gated by the PARENT directory's write bit, an
+    agent-uid process has no way to reach any entry in it.
+
+    This states the permission CLASSES the installer actually produces,
+    rather than only checking `mode & 0o022 == 0` the way the pre-R2 node
+    above does; the syscall-level denial at a real second uid is
+    `tests/test_commit_scan_hooks_docker.py`'s job."""
+    sup, _run, workspace = _sup(tmp_path, "gate-permission-classes")
+    _init_repo(workspace)
+
+    hook = sup._install_commit_scan_push_gate(_head(workspace))
+
+    assert hook is not None
+    hooks_dir = hook.parent
+    dir_other = hooks_dir.stat().st_mode & 0o007
+    assert dir_other == 0o5, (
+        "the hooks directory must grant a non-owner exactly r-x: without x "
+        "the agent cannot reach the hook git is about to run, and with w it "
+        f"could unlink or replace every entry in it: {oct(dir_other)}")
+    hook_other = hook.stat().st_mode & 0o007
+    assert hook_other == 0o5, (
+        "the installed hook must grant a non-owner exactly r-x -- read and "
+        "execute (git runs it at the agent uid), never write: "
+        f"{oct(hook_other)}")
+    for name in (commit_scan.KNOWN_SECRETS_PEPPER_FILENAME,
+                 commit_scan.KNOWN_SECRETS_FILENAME):
+        snapshot_other = (hooks_dir / name).stat().st_mode & 0o007
+        assert snapshot_other == 0o4, (
+            f"{name} must grant a non-owner read only -- the agent-uid hook "
+            f"process reads it back, nothing writes it: {oct(snapshot_other)}")
+    # No group-class write either: the agent is not in root's group here, but
+    # a group-writable root-owned file would be one `usermod` from a hole.
+    for path in (hooks_dir, hook):
+        assert path.stat().st_mode & 0o022 == 0, path
+
+
+def test_a_real_agent_uid_probe_cannot_plant_or_replace_the_protected_hooks_entry():
+    """Task cure-01-02, requirement I.1/DoD 9: a real uid-boundary probe of
+    the containing path, in THIS process, at the agent uid -- no container
+    needed, because `privsep.commit_scan_hooks_dir()`'s parent
+    (`/var/lib/ralphd`) is already root-owned wherever the engine's uid
+    boundary exists, including the job container this suite runs in.
+
+    It proves the half of the finding that mode bits cannot: the
+    `commit-scan-hooks` directory ENTRY itself (and any name beside it)
+    cannot be created, written, renamed or chmod-ed from the agent uid,
+    while listing the parent -- which the agent-uid hook process needs in
+    order to reach the hook at all -- still succeeds. The installed hook
+    file's own denial, which needs the hooks directory to have actually been
+    installed by an elevated engine, is
+    `tests/test_commit_scan_hooks_docker.py`'s real-container probe."""
+    hooks_dir = privsep.commit_scan_hooks_dir()
+    parent = hooks_dir.parent
+    if os.getuid() == 0:
+        pytest.skip("running as real root: no unprivileged uid to probe from")
+    if not parent.is_dir() or parent.stat().st_uid != 0:
+        pytest.skip(
+            f"{parent} is not a root-owned directory in this environment: "
+            "there is no privilege boundary here to measure")
+
+    def denied(fn):
+        try:
+            fn()
+        except PermissionError as exc:
+            return errno.errorcode.get(exc.errno, exc.errno)
+        except OSError as exc:  # pragma: no cover - any other errno is a fail
+            return f"UNEXPECTED:{errno.errorcode.get(exc.errno, exc.errno)}"
+        return "SUCCEEDED"
+
+    planted = parent / "commit-scan-hooks-planted-by-the-agent"
+    attempts = {
+        "mkdir-a-sibling-entry": lambda: planted.mkdir(),
+        "create-a-file-beside-the-hooks-dir": lambda: planted.write_text("x"),
+        "rename-the-parent-away": lambda: os.rename(
+            str(parent), str(parent) + "-moved-by-the-agent"),
+        "chmod-the-parent-open": lambda: os.chmod(str(parent), 0o777),
+    }
+    results = {name: denied(fn) for name, fn in attempts.items()}
+
+    for name, got in results.items():
+        assert got in ("EACCES", "EPERM"), (
+            f"{name} was not refused at the agent uid (uid={os.getuid()}): the "
+            "hooks directory entry is reachable from the workspace side, "
+            f"which is exactly review finding R2: {results}")
+    assert not planted.exists(), results
+    # ...and the read side the gate itself depends on still works.
+    os.listdir(str(parent))
+    assert parent.stat().st_mode & 0o007 == 0o5, oct(parent.stat().st_mode)
