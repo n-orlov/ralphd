@@ -155,6 +155,7 @@ import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from ralphd.engine import privsep
@@ -178,10 +179,24 @@ def _git(cwd, *args):
 
 
 workspace.mkdir(parents=True, exist_ok=True)
-_git(workspace, "init", "-q")
-_git(workspace, "config", "user.email", "t@example.com")
-_git(workspace, "config", "user.name", "t")
-(workspace / "seed.txt").write_text("seed\n")
+# Task cure-01-01-2 (review finding R2, upheld cure-01-02): this driver is
+# invoked TWICE against the SAME workspace path by
+# test_an_engine_refresh_still_succeeds_after_the_first_install, to prove a
+# second `_install_commit_scan_push_gate` call (an ordinary engine refresh,
+# every worker iteration) still succeeds. `git init` on an existing repo is
+# already a no-op, but the original seed step wrote the SAME content and
+# then unconditionally ran `git commit`, which fails ("nothing to commit,
+# working tree clean") the second time, before the driver ever reaches the
+# install call it exists to exercise. Writing a fresh, time-varying seed
+# value each call keeps every commit genuinely new -- and gives each call
+# its own real head_sha, exactly the "fresh head_before" every worker
+# iteration passes in production -- without weakening anything the test
+# itself asserts.
+if not (workspace / ".git").exists():
+    _git(workspace, "init", "-q")
+    _git(workspace, "config", "user.email", "t@example.com")
+    _git(workspace, "config", "user.name", "t")
+(workspace / "seed.txt").write_text(f"seed {time.time_ns()}\n")
 _git(workspace, "add", "-A")
 _git(workspace, "commit", "-q", "-m", "seed")
 os.chown(workspace, agent.uid, agent.gid)
