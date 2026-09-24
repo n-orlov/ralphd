@@ -970,8 +970,17 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # excluded from both tiers), so all three sort into both tiers.
     # Measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`
     # at this commit's own tip.
-    "fast": {"tests": 6288, "modules": 428},
-    "smoke": {"tests": 4595, "modules": 307},
+    # cure-01-06 (v0.25 PRD requirement K.5, DoD 15, #267): fast 6288 ->
+    # 6293, smoke 4595 -> 4600 (+5 tests, +1 module each) for
+    # tests/test_infra_backoff_control_wake.py -- two stubbed-attempt unit
+    # nodes plus three real-`_wait_out_backoff` integration nodes proving
+    # an abort/steer landing mid infra-retry-backoff dispatches no second
+    # agent child, while a manual `retry_now()` still does. No `docker`/
+    # `browser`/process-boundary fixture, so it sorts into both tiers.
+    # Measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`
+    # at this commit's own tip.
+    "fast": {"tests": 6293, "modules": 429},
+    "smoke": {"tests": 4600, "modules": 308},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -2135,6 +2135,48 @@ class LoopSupervisor:
                 # instead of hammering a still-broken endpoint.
                 self._infra_episode_waited_s = 0.0
                 self._infra_episode_started_at = time.monotonic()
+            elif elapsed < backoff:
+                # Task cure-01-06 (PRD requirement K.5, DoD 15, #267): the
+                # backoff wait was cut short by a control-plane wake
+                # (steering or abort, task 028b/028c's `_deferred_wake`)
+                # rather than by `retry_now` (`woken` above) or by the
+                # timer actually elapsing (`elapsed == backoff`, the only
+                # other way out of `_wait_out_backoff`) -- so this is
+                # exactly the shape the review-cure finding measured:
+                # `runner_calls=2` because this loop used to fall straight
+                # through to the top and dispatch a fresh
+                # `_run_iteration_once` for the very iteration the wake
+                # was trying to interrupt. Returning `result` here --
+                # still the last attempt's own (infra-classified) outcome,
+                # never re-run -- instead of looping back ends this call
+                # with NO second child ever spawned, and hands control
+                # straight back to the caller's own dispatch pass:
+                #  * an abort already set `self._abort_reason`, so
+                #    `budget_left()` is now False and the run winds down
+                #    through the ordinary tail path instead of waiting for
+                #    a child that was never started;
+                #  * a steer sets no such flag, so `budget_left()` stays
+                #    True and the very next pass's top-of-pass
+                #    `pending_steering()` check (the "ABSOLUTE TOP
+                #    PRIORITY" guard `_step_worker` already runs first,
+                #    every pass) sees the message immediately instead of
+                #    it being silently handed to another attempt of this
+                #    same phase/iteration.
+                # `self._last_fault_class` (set by the `_run_iteration_
+                # once` call that produced `result`) is left exactly as
+                # `"infra"`, so the existing `_step_worker` carve-out
+                # (`self._last_fault_class in ("infra", "signal"): continue`)
+                # already excludes this pass from stagnation bookkeeping
+                # and already rolls the task's `in-progress` claim back to
+                # `claimed_from` -- no new bookkeeping needed here.
+                # `_infra_episode_waited_s`/`_infra_episode_attempts`/
+                # `_infra_episode_started_at` are deliberately left
+                # untouched (unlike the `retry_now` branch above): the
+                # outage episode is not over, only interrupted, so the
+                # NEXT call into this same wrapper (the next actionable
+                # pass's own worker dispatch) resumes the SAME escalating
+                # schedule instead of restarting it.
+                return result
 
     def _outage_budget_for(self, phase: str) -> float:
         """The wall-clock outage budget one episode of `phase` may spend
