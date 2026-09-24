@@ -54,10 +54,29 @@ advisory git read: an unreadable scan is a defect to go fix, never a
 silent reason to block every push forever. It never touches the redaction
 map's own storage or the live in-memory map by itself -- callers pass
 `secrets`, or leave it to default to `redact.build_redaction_map()`.
+
+One authoritative exception (task cure-01-01, PRD requirement I.2, DoD 9):
+the `pre-push` hook process is a NEW process every push, and it inherits
+whatever environment the `git push` that triggered it was given, not the
+engine's -- a worker can push with a secret's env var already stripped
+from its own shell while the value is still live in the engine. So
+`install_push_gate` also snapshots `redact.live_redaction_map()`, at
+install time, as KEYED HASHES ONLY (never the raw values -- every run-dir
+file, including this hooks dir, is scanned elsewhere for the literal
+secret and must never contain it) into an engine-owned, 0o600,
+never-printed pair of files next to the hooks (`KNOWN_SECRETS_FILENAME`,
+`KNOWN_SECRETS_PEPPER_FILENAME`), and only the `pre-push` mode of
+`hook_main` reads it back as a fallback once its own fresh
+`build_redaction_map()` finds nothing -- so the push bound stays
+authoritative regardless of the pushing process's own environment, without
+ever putting a secret value on disk.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import os
 import subprocess
 import sys
@@ -82,8 +101,108 @@ COMMIT_MSG_HOOK_NAME = "commit-msg"
 PRE_COMMIT_HOOK_NAME = "pre-commit"
 SCAN_BASE_FILENAME = "scan-base"
 BASE_ENV_VAR = "RALPHD_COMMIT_SCAN_BASE"
+# Task cure-01-01 (PRD requirement I.2, DoD 9, #210): the pre-push hook is a
+# NEW process every time git invokes it, and it inherits whatever environment
+# the `git push` that triggered it was given -- which, under the shipped
+# division of labour, is the WORKER's own shell, not the engine's. A worker
+# can push with an environment that no longer carries a secret's env var (it
+# was already forwarded, used, and popped, or simply never present in that
+# particular shell) while the value is still perfectly live in the ENGINE's
+# own `redact.live_redaction_map()` -- rebuilding fresh from `os.environ`
+# inside the hook process at push time then finds nothing, and the leak
+# reaches the remote. The authoritative bound cannot depend on the pushing
+# process's own environment, so `install_push_gate` snapshots the engine's
+# live map at install time -- but NEVER as the raw values (every run-dir
+# file, including this hooks dir, is scanned by `tests/test_secret_redaction.py`
+# for the literal secret and must never contain it): what is written to disk
+# is a per-length table of KEYED HASHES (`hmac.new(pepper, value,
+# sha256).hexdigest()`, `pepper` a fresh 32 random bytes generated at the
+# same install and stored next to it, both files 0o600) mapping digest ->
+# label. The hook process re-derives the same digest over every
+# same-length window of a commit's message/diff and looks it up -- it never
+# recovers or needs the value itself, only whether ITS digest is a member of
+# the known set, so the file leaks no more than the SET OF LENGTHS of
+# engine-known secrets, never a value. Read back only by the hook process
+# itself (`_hashed_snapshot_from`), merged with whatever
+# `build_redaction_map()`'s literal match can still see from its own
+# environment, so a value only reachable through the ENGINE's process
+# (creds files, `PUT /config/llm` overrides, an env var the push-time shell
+# no longer carries) is caught exactly as authoritatively as one still
+# visible to the hook's own rebuild -- without ever putting the value on
+# disk.
+KNOWN_SECRETS_FILENAME = "known-secrets"
+KNOWN_SECRETS_PEPPER_FILENAME = "known-secrets-pepper"
+_PEPPER_BYTES = 32
 
 _ZERO_SHA_CHARS = {"0"}
+
+
+def _new_pepper() -> bytes:
+    return os.urandom(_PEPPER_BYTES)
+
+
+def _hmac_hex(pepper: bytes, value: str) -> str:
+    return hmac.new(pepper, value.encode("utf-8", "surrogateescape"),
+                    hashlib.sha256).hexdigest()
+
+
+def _digest_snapshot(pepper: bytes, secrets: dict[str, str]) -> dict[str, dict[str, str]]:
+    """`{str(len(value)): {hexdigest: label}}` for every `value` in
+    `secrets` -- never the value itself, and never the label's value half,
+    only its NAME half is ever surfaced (`_variable_name`, at lookup time).
+    """
+    by_len: dict[str, dict[str, str]] = {}
+    for value, label in secrets.items():
+        if not value:
+            continue
+        by_len.setdefault(str(len(value)), {})[_hmac_hex(pepper, value)] = label
+    return by_len
+
+
+def _scan_text_for_hashed_secrets(text: str, pepper: bytes,
+                                  digests: dict[str, dict[str, str]]) -> str | None:
+    """The label for the first keyed-hash match of any known length's
+    digest set against a sliding window of `text`, or `None`. Brute-force
+    (no rolling hash): the lengths involved and the text sizes this scans
+    (a single commit's message or diff) are both small enough that this
+    never needs to be fast."""
+    if not text or not digests:
+        return None
+    for length_str, digest_map in digests.items():
+        try:
+            length = int(length_str)
+        except ValueError:
+            continue
+        if length <= 0 or length > len(text):
+            continue
+        for i in range(len(text) - length + 1):
+            label = digest_map.get(_hmac_hex(pepper, text[i:i + length]))
+            if label is not None:
+                return label
+    return None
+
+
+def scan_commits_for_hashed_secrets(workspace, base_sha: str | None, head_sha: str,
+                                    pepper: bytes | None,
+                                    digests: dict[str, dict[str, str]] | None) -> dict | None:
+    """`scan_commits_for_secrets`'s keyed-hash counterpart: the same
+    message-then-diff, oldest-commit-first walk over `commits_between`, but
+    matching against a digest table instead of literal values -- the layer
+    that survives a push-time process whose own environment no longer
+    carries the secret (task cure-01-01, PRD requirement I.2, DoD 9).
+    """
+    if not pepper or not digests:
+        return None
+    for sha in commits_between(workspace, base_sha, head_sha):
+        label = _scan_text_for_hashed_secrets(
+            commit_message(workspace, sha), pepper, digests)
+        if label is not None:
+            return {"sha": sha, "part": "message", "variable": _variable_name(label)}
+        label = _scan_text_for_hashed_secrets(
+            commit_diff(workspace, sha), pepper, digests)
+        if label is not None:
+            return {"sha": sha, "part": "diff", "variable": _variable_name(label)}
+    return None
 
 
 def _run_git(workspace, *args: str, timeout: float = _GIT_TIMEOUT_S):
@@ -305,7 +424,8 @@ _ALL_HOOK_NAMES = (PUSH_GATE_HOOK_NAME, COMMIT_MSG_HOOK_NAME, PRE_COMMIT_HOOK_NA
 
 
 def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
-                      python: str | None = None) -> Path | None:
+                      python: str | None = None,
+                      secrets: dict[str, str] | None = None) -> Path | None:
     """Install (or refresh) the `pre-push`, `commit-msg` and `pre-commit`
     gates for `workspace` and point the repository's `core.hooksPath` at
     `hooks_dir` -- one write reaches all three, since git looks up every
@@ -329,6 +449,16 @@ def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
     run created" and not the whole of history. It is a SHA, never a secret.
     `commit-msg`/`pre-commit` never read it -- they scan a single
     not-yet-committed blob of text, not a commit range.
+
+    `secrets` (defaults to `redact.live_redaction_map()`, this ENGINE
+    process's own live map, read right now, before the worker is spawned)
+    is snapshotted into `KNOWN_SECRETS_FILENAME`/`KNOWN_SECRETS_PEPPER_FILENAME`
+    as KEYED HASHES only, never the raw values, 0o600, so the `pre-push`
+    hook's authoritative bound (task cure-01-01, requirement I.2/DoD 9) does
+    not depend on whatever environment the `git push` that triggers it
+    happens to run with, and does not put a secret value anywhere on disk
+    -- see `KNOWN_SECRETS_FILENAME`'s own comment for both the why and the
+    hashed shape.
 
     Returns the `pre-push` hook's path (the historical return value, task
     029's own callers key off it), or `None` when the repository's config
@@ -356,6 +486,17 @@ def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
     base_file.unlink(missing_ok=True)
     base_file.write_text(f"{base_sha or ''}\n")
     os.chmod(base_file, 0o444)
+    if secrets is None:
+        secrets = redact.live_redaction_map()
+    pepper = _new_pepper()
+    pepper_file = hooks_dir / KNOWN_SECRETS_PEPPER_FILENAME
+    pepper_file.unlink(missing_ok=True)
+    pepper_file.write_bytes(pepper)
+    os.chmod(pepper_file, 0o600)
+    digests_file = hooks_dir / KNOWN_SECRETS_FILENAME
+    digests_file.unlink(missing_ok=True)
+    digests_file.write_text(json.dumps(_digest_snapshot(pepper, secrets or {})))
+    os.chmod(digests_file, 0o600)
     result = _run_git(workspace, "config", "core.hooksPath", str(hooks_dir))
     if result is None or result.returncode != 0:
         return None
@@ -374,6 +515,30 @@ def _base_from(hooks_dir: str | None) -> str | None:
         return None
 
 
+def _hashed_snapshot_from(hooks_dir: str | None) -> tuple[bytes | None, dict[str, dict[str, str]]]:
+    """The engine's own keyed-hash snapshot of `redact.live_redaction_map()`
+    (never the raw values -- see `KNOWN_SECRETS_FILENAME`'s comment), taken
+    by `install_push_gate` at install time and read back here regardless of
+    whatever environment the `git push` that triggered this hook process
+    happens to carry. `(None, {})` on any read failure -- missing file,
+    unreadable, malformed JSON -- so a hook process that cannot read its
+    own snapshot still falls back to whatever `build_redaction_map()` can
+    see from its own environment rather than raising out of the hook.
+    """
+    if not hooks_dir:
+        return None, {}
+    try:
+        pepper = (Path(hooks_dir) / KNOWN_SECRETS_PEPPER_FILENAME).read_bytes()
+    except OSError:
+        return None, {}
+    try:
+        raw = (Path(hooks_dir) / KNOWN_SECRETS_FILENAME).read_text()
+        loaded = json.loads(raw)
+    except (OSError, ValueError):
+        loaded = {}
+    return pepper, (loaded if isinstance(loaded, dict) else {})
+
+
 def _toplevel(default: Path) -> Path:
     result = _run_git(default, "rev-parse", "--show-toplevel")
     if result is None or result.returncode != 0:
@@ -388,13 +553,23 @@ def hook_main(argv: list[str] | None = None, stdin=None) -> int:
     of `pre-push`, `commit-msg`, `pre-commit` -- the first positional arg,
     which is also each hook's own filename (`_ALL_HOOK_NAMES`).
 
-    Rebuilds the redaction map in THIS process (`build_redaction_map`)
-    rather than being handed values: a hook file or an argv carrying secret
-    VALUES would itself be a new sink, which is the whole defect being
-    fixed. Exit 1 (git refuses the commit or the push) on a hit, printing a
-    refusal that names the variable NAME only -- never the matched value.
-    Exit 0 on no hit, on an unrecognised mode, and on any read it could not
-    complete (fail open; the task-boundary layer is the authoritative one).
+    Rebuilds the redaction map in THIS process (`build_redaction_map`) for
+    every mode, and for the `pre-push` mode ALSO checks a keyed-hash
+    fallback (`_hashed_snapshot_from`/`KNOWN_SECRETS_FILENAME`) -- the
+    authoritative one (task cure-01-01, PRD requirement I.2, DoD 9): a hook
+    process's own environment is whatever the `git push` that triggered it
+    happened to carry, which a worker's own shell can strip a secret's env
+    var from before pushing, while the value is still live in the ENGINE's
+    process. The fallback never hands the hook a raw value -- only
+    digests, keyed with a random per-install pepper, both 0o600 and never
+    printed -- so a hook file or an argv carrying secret VALUES is still
+    never how this closes the gap. `commit-msg`/`pre-commit` stay
+    rebuild-only (a narrower, earlier catch, task 031/requirement I.1) and
+    never consult the snapshot. Exit 1 (git refuses the commit or the
+    push) on a hit, printing a refusal that names the variable NAME only
+    -- never the matched value. Exit 0 on no hit, on an unrecognised mode,
+    and on any read it could not complete (fail open; the task boundary is
+    still the authoritative record either way).
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
@@ -416,6 +591,22 @@ def hook_main(argv: list[str] | None = None, stdin=None) -> int:
         except (OSError, ValueError):
             return 0
         hit = gate_push_refs(workspace, lines, base_sha=base_sha)
+        if hit is None:
+            pepper, digests = _hashed_snapshot_from(hooks_dir)
+            if pepper is not None and digests:
+                for raw in lines:
+                    parts = str(raw).split()
+                    if len(parts) < 4:
+                        continue
+                    _local_ref, local_sha, _remote_ref, remote_sha = parts[:4]
+                    if not local_sha or set(local_sha) == _ZERO_SHA_CHARS:
+                        continue
+                    hit = scan_commits_for_hashed_secrets(
+                        workspace,
+                        _scan_base(workspace, remote_sha, local_sha, base_sha),
+                        local_sha, pepper, digests)
+                    if hit is not None:
+                        break
         if hit is None:
             return 0
         print(refusal_text(hit), file=sys.stderr)

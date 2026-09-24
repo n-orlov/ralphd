@@ -883,8 +883,19 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # both tiers; the module already existed, so no module ceiling moves.
     # Measured with `.venv/bin/python -m pytest -q -m <tier> --collect-only`
     # at this commit's own tip.
-    "fast": {"tests": 6272, "modules": 426},
-    "smoke": {"tests": 4579, "modules": 305},
+    # cure-01-01 (v0.25 requirement I.2, DoD 9, #210): fast 6272 -> 6273,
+    # smoke 4579 -> 4580 (+1 test, 0 new modules) for
+    # tests/test_commit_scan_engine_boundary.py's new
+    # test_a_worker_shells_push_survives_a_stripped_push_time_environment --
+    # the pre-push hook's authoritative bound now holds even when the
+    # worker's own push-time shell no longer carries the secret's env var.
+    # No `docker`/`browser`/process-boundary fixture (a real git subprocess
+    # against a scratch workspace, like this module's existing siblings),
+    # so it sorts into both tiers; the module already existed, so no module
+    # ceiling moves. Measured with `.venv/bin/python -m pytest -q -m <tier>
+    # --collect-only` at this commit's own tip.
+    "fast": {"tests": 6273, "modules": 426},
+    "smoke": {"tests": 4580, "modules": 305},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

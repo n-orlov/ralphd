@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -604,6 +605,76 @@ def test_a_worker_shells_push_of_a_clean_commit_does_reach_the_remote(
     assert sup.runner.push_returncode == 0, sup.runner.push_stderr
     assert _remote_main(remote) == sup.runner.sha != seed
     assert _events(run, LoopSupervisor.COMMIT_SECRET_SCAN_EVENT) == []
+
+
+class _CommittingPushingWorkerStrippedEnv(_CommittingWorker):
+    """The same production push shape as `_CommittingPushingWorker`, except
+    the `git push` subprocess's own environment no longer carries the
+    secret's env var -- e.g. it was already forwarded/consumed elsewhere in
+    the worker's own shell session, or simply never present in that
+    particular shell -- while the value is still perfectly live in the
+    ENGINE's own process (`redact.live_redaction_map()`). Task cure-01-01
+    (PRD requirement I.2, DoD 9): the authoritative no-push bound must not
+    depend on the pushing process's own environment, only on what the
+    engine itself already knows.
+    """
+
+    def __init__(self, *args, drop_env_name: str, **kw):
+        super().__init__(*args, **kw)
+        self.drop_env_name = drop_env_name
+        self.push_returncode: int | None = None
+        self.push_stderr = ""
+
+    async def run(self, prompt, transcript, **kw) -> IterationResult:
+        if self.calls == 0:
+            self.sha = _commit(self.workspace, self.name, self.content,
+                               self.message, no_verify=True)
+            env = os.environ.copy()
+            env.pop(self.drop_env_name, None)
+            pushed = subprocess.run(
+                ["git", "-C", str(self.workspace), "push", "origin", "main"],
+                env=env, capture_output=True, text=True)
+            self.push_returncode = pushed.returncode
+            self.push_stderr = pushed.stderr
+        self.calls += 1
+        return _ok(self.final_text)
+
+
+def test_a_worker_shells_push_survives_a_stripped_push_time_environment(
+        tmp_path, live_synthetic_map_for_subprocesses):
+    """Task cure-01-01 (PRD requirement I.2, DoD 9): the authoritative
+    no-push bound holds even when the worker's own push-time shell no
+    longer carries the secret's env var -- exactly the gap a hook process
+    that only rebuilds `redact.build_redaction_map()` from ITS OWN
+    (inherited) environment would miss, since that process is a child of
+    whatever environment the triggering `git push` was given, not the
+    engine's. The pre-push hook must still refuse using the engine's own
+    install-time snapshot of its live map.
+    """
+    sup, run, workspace = _sup(tmp_path, "worker-push-stripped-env")
+    seed = _init_repo(workspace)
+    remote = _bare_remote(
+        workspace, tmp_path / "worker-push-stripped-env" / "remote.git")
+    assert _remote_main(remote) == seed
+    sup.runner = _CommittingPushingWorkerStrippedEnv(  # type: ignore[assignment]
+        workspace, "diagnostics.log",
+        f"connection ok, token={SYNTHETIC_VALUE}\n",
+        "diagnostics: capture what the retry saw",
+        json.dumps({"verdict": "no_verdict"}), drop_env_name=SYNTHETIC_NAME)
+
+    asyncio.run(sup._step_worker())
+
+    # THE deliverable: even with the secret's env var stripped from the
+    # push-time environment, the leaking commit never reaches the remote.
+    assert _remote_main(remote) == seed, (
+        "the leaking commit reached the remote despite the push-time "
+        "environment no longer carrying the secret's own env var")
+    assert sup.runner.push_returncode != 0
+    assert SYNTHETIC_NAME in sup.runner.push_stderr
+    assert SYNTHETIC_VALUE not in sup.runner.push_stderr
+    hits = _events(run, LoopSupervisor.COMMIT_SECRET_SCAN_EVENT)
+    assert len(hits) == 1 and hits[0]["variable"] == SYNTHETIC_NAME
+    assert SYNTHETIC_VALUE not in json.dumps(hits[0])
 
 
 def test_the_push_gate_is_engine_owned_and_lives_outside_the_workspace(
