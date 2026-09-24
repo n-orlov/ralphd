@@ -2459,8 +2459,11 @@ bounds the one sink that was still unbounded, redacting a worker's pushed commit
 engine's own record already is, closing **#210**; and **J** is this version bump, this paragraph and
 the record's own close-out, naming — not yet claiming closed — the nine issues **A** through **I**
 answer: **#210, #211, #212, #214, #215, #216, #217, #264** and **#265**; a later task of this same run
-closes them with evidence, and this paragraph does not shortcut that. The v0.19 through v0.24 blocks
-above are unchanged by this commit.
+closes them with evidence, and this paragraph does not shortcut that. **K**, added mid-run by the
+operator on 23 September 2026, races the harness's own deferred wait against a control-plane wake so a
+steer or an abort reaches an idle loop instead of sleeping through whatever is left of it, closing
+**#267** — counted and closed separately from the nine **J** names above, by **K.8** and nothing else.
+The v0.19 through v0.24 blocks above are unchanged by this commit.
 
 ## Later / explicitly deferred
 

@@ -2153,10 +2153,22 @@ def test_v014_the_deferred_list_is_unchanged_in_kind_by_this_wave():
 
 # The nine issues the `## v0.25` section's own closing sentence names as
 # answered by requirements A through I (J is the version bump/paragraph/
-# close-out itself, task 038, requirement J.2).
+# close-out itself, task 038, requirement J.2). Unchanged by task 048 (N2):
+# #267 is K's own issue, counted and cited separately below, never folded
+# into this nine -- J.4 (task 041) and DoD 11's literal count of nine stay
+# exactly nine.
 ISSUES_V025 = {"210", "211", "212", "214", "215", "216", "217", "264", "265"}
 
-LETTERS_V025 = set("ABCDEFGHIJ")
+# A-K: task 048 (N2) added requirement K's own bold marker and its own
+# issue (#267, below) to the existing paragraph -- the full A-K requirement
+# set, not merely the nine A-J the closing sentence's own issue count still
+# names.
+LETTERS_V025 = set("ABCDEFGHIJK")
+
+# Requirement K's own issue (#267, added mid-run by the operator, closed by
+# K.8 and nothing else) -- checked separately from ISSUES_V025 above so the
+# nine-issue count J.4/DoD 11 name stays literally nine (task 048, N2).
+ISSUE_K_V025 = "267"
 
 # The two shipped-sha corrections task 036 made (commit f0500619):
 # v0.23's line now names the tip main sat on when v0.23.0 actually shipped
@@ -2194,15 +2206,21 @@ def _v025_naming_problems(block: str) -> list[str]:
                 if not re.search(rf"\*\*{letter}\*\*", block)]
     problems += [f"the v0.25 block does not cite #{n}"
                  for n in sorted(ISSUES_V025) if f"#{n}" not in block]
+    if f"#{ISSUE_K_V025}" not in block:
+        problems.append(
+            f"the v0.25 block does not cite requirement K's own issue #{ISSUE_K_V025}")
     return problems
 
 
-def test_v025_the_block_names_requirements_a_through_j_and_the_nine_issues():
-    """Task 038 (J.2) added the `## v0.25` section; this pins that it really
-    names every requirement letter A-J and every one of the nine issues the
-    section's own closing sentence lists (#210, #211, #212, #214, #215,
-    #216, #217, #264, #265) -- the same issue -> requirement index property
-    every earlier per-wave block above is checked for."""
+def test_v025_the_block_names_requirements_a_through_k_and_the_nine_issues_plus_k():
+    """Task 038 (J.2) added the `## v0.25` section; task 048 (N2) extended the
+    same existing paragraph to also name requirement K and its own issue.
+    This pins that the paragraph really names every requirement letter A-K
+    and every one of the nine issues the section's own closing sentence
+    lists (#210, #211, #212, #214, #215, #216, #217, #264, #265) -- the same
+    issue -> requirement index property every earlier per-wave block above
+    is checked for -- plus K's own issue (#267), counted and cited
+    separately from that nine (J.4/DoD 11 stay literally nine)."""
     block = milestone_block_v025(roadmap_text_v025())
     assert block is not None, "docs/roadmap.md has no `## v0.25` section"
     assert not _v025_naming_problems(block)
@@ -2215,6 +2233,11 @@ def test_v025_the_naming_check_catches_a_dropped_requirement_or_issue():
     assert _v025_naming_problems(block.replace("**G** writes", "G writes"))
     # dropping an issue citation removes it from coverage
     assert _v025_naming_problems(block.replace("#214", "the prefix-collapse issue"))
+    # dropping requirement K's own bold marker removes it from coverage too
+    assert _v025_naming_problems(block.replace("**K**,", "K,"))
+    # dropping K's own issue citation (#267) is caught separately from the
+    # nine-issue ISSUES_V025 check above
+    assert _v025_naming_problems(block.replace("#267", "the deferred-wait issue"))
     # ...and the real block is not accidentally satisfying all of this by luck
     assert not _v025_naming_problems(block)
 
