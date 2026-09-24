@@ -27,13 +27,35 @@ from tests.conftest import RALPHCTL, call_ralphctl_in_process, free_port
 
 
 class UiServer:
+    # `free_port()`'s own docstring (tests/conftest.py) names the residual
+    # TOCTOU window it cannot close: the port can still lose the
+    # release-then-bind race between this fixture calling it and the
+    # *subprocess* actually binding, under a loaded `-n 8` run (sha
+    # 6064fac3, tests/test_tasks_stale_cli.py::
+    # test_a_forged_label_in_tasks_json_cannot_fake_staleness,
+    # OSError EADDRINUSE). `ralphctl ui` dies fast on that exact error
+    # (main.py's `cmd_ui` lets `make_server`'s bind OSError propagate as an
+    # uncaught traceback), so `wait_ready` below detects that specific
+    # early exit and relaunches on a freshly drawn port instead of handing
+    # a lost race to the caller.
+    _MAX_BIND_RETRIES = 5
+
     def __init__(self, registry: Path, env: dict | None = None,
                  bind: str = "127.0.0.1", extra_args: tuple[str, ...] = ()):
+        self.registry = registry
+        self._env_extra = env
+        self._bind = bind
+        self._extra_args = extra_args
+        self._bind_retries = 0
+        self._launch()
+
+    def _launch(self):
         self.port = free_port()
-        env = {**os.environ, "RALPHD_REGISTRY": str(registry), **(env or {})}
+        env = {**os.environ, "RALPHD_REGISTRY": str(self.registry),
+               **(self._env_extra or {})}
         self.proc = subprocess.Popen(
-            [str(RALPHCTL), "ui", "--port", str(self.port), "--bind", bind,
-             *extra_args],
+            [str(RALPHCTL), "ui", "--port", str(self.port), "--bind",
+             self._bind, *self._extra_args],
             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         # A non-loopback bind (e.g. 0.0.0.0) still accepts loopback
         # connections, so tests always talk to the server over 127.0.0.1
@@ -45,6 +67,14 @@ class UiServer:
         while time.time() < deadline:
             if self.proc.poll() is not None:
                 out = self.proc.stdout.read() if self.proc.stdout else ""
+                if ("Address already in use" in out
+                        and self._bind_retries < self._MAX_BIND_RETRIES):
+                    # Lost the free_port() race after all -- draw a fresh
+                    # port and relaunch rather than fail the test on a
+                    # known, documented residual window.
+                    self._bind_retries += 1
+                    self._launch()
+                    continue
                 raise RuntimeError(f"ralphctl ui exited early: {out}")
             try:
                 with urllib.request.urlopen(f"{self.base}/api/runs", timeout=2):
