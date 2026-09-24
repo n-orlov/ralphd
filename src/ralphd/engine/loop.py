@@ -6639,7 +6639,8 @@ class LoopSupervisor:
         try:
             with privsep.root_for_write():
                 hook = commit_scan.install_push_gate(
-                    self.workspace, hooks_dir, base_sha=base_sha)
+                    self.workspace, hooks_dir, base_sha=base_sha,
+                    hit_marker_dir=self.run.root)
         except OSError as exc:
             log.warning("could not install the commit-scan push gate: %s", exc)
             return None
@@ -6699,6 +6700,47 @@ class LoopSupervisor:
             k: v for k, v in record.items() if k != "at"})
         self.run.update_status(
             **{self.COMMIT_SECRET_SCAN_STATUS_KEY: record})
+        log.error("%s", refusal)
+        return hit
+
+    def _check_hook_hit_marker(self) -> dict | None:
+        """Task cure-01-03 (PRD requirement I.3, DoD 9, #210): the earlier
+        half of the git-sink bound a `commit-msg`/`pre-commit` refusal
+        catches -- the commit is refused BEFORE it is created, so no new
+        commit ever lands between this iteration's `head_before` and
+        `head_after` for `_scan_task_boundary_commits` to find. Without
+        this, I.3's fault-and-pause consequence would only ever fire for
+        the authoritative task-boundary layer, never for the narrower,
+        earlier local hooks that I.1 installs alongside it -- yet a hook
+        refusal is exactly as much a hit as the boundary scan's own, and
+        the same three observables (refuse, fault, pause) apply.
+
+        Read-once, right after the boundary scan, over the SAME
+        `commit-scan-hook-hit.json` marker `commit_scan._write_hook_hit_marker`
+        may have left in the run directory during this iteration --
+        `read_and_clear_hook_hit_marker` removes it either way, so a stale
+        marker from an earlier iteration is never replayed. Returns a hit
+        dict shaped like `_scan_task_boundary_commits`'s own (`sha` is
+        `None` here -- no commit was ever created to name), records the
+        same `commit_secret_scan` event and `commitSecretScanHit` status
+        key, and returns `None` when there is no marker to read -- the
+        ordinary, by-far-most-common case.
+        """
+        if not getattr(self.cfg, "commit_secret_scan", True):
+            return None
+        record = commit_scan.read_and_clear_hook_hit_marker(self.run.root)
+        if record is None:
+            return None
+        hit = {"sha": None, "part": record.get("part"),
+              "variable": record.get("variable")}
+        refusal = commit_scan.commit_refusal_text(hit)
+        status_record = {"sha": None, "part": hit["part"],
+                         "variable": hit["variable"], "refusal": refusal,
+                         "pushed": False, "at": utcnow()}
+        self.run.emit(self.COMMIT_SECRET_SCAN_EVENT, **{
+            k: v for k, v in status_record.items() if k != "at"})
+        self.run.update_status(
+            **{self.COMMIT_SECRET_SCAN_STATUS_KEY: status_record})
         log.error("%s", refusal)
         return hit
 
@@ -9044,6 +9086,20 @@ class LoopSupervisor:
                     "-- nothing pushed", str(boundary_secret_hit.get("sha"))[:12],
                     boundary_secret_hit.get("part"),
                     boundary_secret_hit.get("variable"))
+            else:
+                # Task cure-01-03 (PRD requirement I.3, DoD 9, #210): no
+                # boundary hit -- but a `commit-msg`/`pre-commit` refusal
+                # earlier in THIS iteration leaves no commit for the
+                # boundary scan above to find at all. Check for that
+                # marker so the fault-and-pause consequence below fires
+                # for the hook layer's own hits too, not only the
+                # authoritative task-boundary layer's.
+                boundary_secret_hit = self._check_hook_hit_marker()
+                if boundary_secret_hit is not None:
+                    log.warning(
+                        "a commit-msg/pre-commit hook refused a commit "
+                        "(variable %s) -- nothing committed",
+                        boundary_secret_hit.get("variable"))
             fp_after = self._workspace_fingerprint()
             worker_iter_n = self.iterations_used  # captured after run_iteration increments it
             tasks_after = self.run.read_tasks()

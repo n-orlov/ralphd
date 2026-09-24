@@ -138,6 +138,76 @@ KNOWN_SECRETS_FILENAME = "known-secrets"
 KNOWN_SECRETS_PEPPER_FILENAME = "known-secrets-pepper"
 _PEPPER_BYTES = 32
 
+# Task cure-01-03 (PRD requirement I.3, DoD 9, #210): a `commit-msg`/
+# `pre-commit` hit refuses the commit BEFORE it is ever created, so no new
+# commit lands between a task boundary's `head_before` and `head_after` for
+# `_scan_task_boundary_commits` to find -- I.3's fault-and-pause consequence
+# would otherwise never fire for this earlier, narrower catch, only for the
+# authoritative one. `hook_main` writes this JSON marker (mode, part,
+# variable NAME only -- never the matched value, never a sha, since no
+# commit exists yet) into `hit_marker_dir` on exactly that refusal;
+# `read_and_clear_hook_hit_marker` is the engine's own read-once side of it,
+# called once per worker iteration after the boundary scan. `hit_marker_dir`
+# is deliberately NOT `hooks_dir`: under the real uid boundary (task
+# cure-01-02) `hooks_dir` is root-owned 0o755 with no write bit for the
+# agent uid, so a hook process running at the agent uid could never create a
+# new entry there -- `hit_marker_dir` is the run directory instead, which
+# the agent uid already writes notes.md and artifacts into either way, so
+# writing this marker needs no new permission and no new sink.
+HOOK_HIT_MARKER_FILENAME = "commit-scan-hook-hit.json"
+
+
+def _write_hook_hit_marker(hit_marker_dir, mode: str, hit: dict) -> None:
+    """Best-effort: a marker the hook process could not write is a defect
+    to go fix, never a reason to raise out of the hook and leave the
+    refusal itself undelivered (the same advisory-read posture every other
+    helper in this module takes for a git read it cannot complete).
+    """
+    try:
+        directory = Path(hit_marker_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        record = {"mode": mode, "part": hit.get("part"),
+                 "variable": hit.get("variable")}
+        path = directory / HOOK_HIT_MARKER_FILENAME
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(record))
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def read_and_clear_hook_hit_marker(hit_marker_dir) -> dict | None:
+    """The engine's own side of `_write_hook_hit_marker`: read the marker a
+    `commit-msg`/`pre-commit` refusal may have left in `hit_marker_dir` for
+    THIS iteration, and remove it either way -- read-once, so a stale
+    marker from an earlier iteration (one whose commit later succeeded on
+    a later, clean attempt, or whose task moved on before an operator ever
+    looked) is never replayed against a later iteration that never hit
+    anything at all. Returns `None` on a missing file, an unreadable one,
+    or malformed JSON -- the same fail-open posture as every other read
+    here; a hit that could not be conveyed this way is still a real
+    refusal (git already exited non-zero and nothing was committed), just
+    one this particular channel could not carry.
+    """
+    path = Path(hit_marker_dir) / HOOK_HIT_MARKER_FILENAME
+    try:
+        raw = path.read_text()
+    except OSError:
+        return None
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    try:
+        record = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(record, dict) or not record.get("variable"):
+        return None
+    return record
+
+
 _ZERO_SHA_CHARS = {"0"}
 
 
@@ -405,7 +475,8 @@ def gate_push_refs(workspace, lines, *, secrets: dict[str, str] | None = None,
     return None
 
 
-def _hook_script(mode: str, python: str, pkg_parent: str) -> str:
+def _hook_script(mode: str, python: str, pkg_parent: str,
+                 hit_marker_dir) -> str:
     return (
         "#!/bin/sh\n"
         f"# ralphd's task-boundary git-sink gate ({mode}) "
@@ -416,7 +487,8 @@ def _hook_script(mode: str, python: str, pkg_parent: str) -> str:
         f"PYTHONPATH=\"{pkg_parent}${{PYTHONPATH:+:$PYTHONPATH}}\"\n"
         "export PYTHONPATH\n"
         f"exec \"{python}\" -m ralphd.engine.commit_scan {mode} "
-        "--hooks-dir \"$(dirname \"$0\")\" \"$@\"\n"
+        "--hooks-dir \"$(dirname \"$0\")\" "
+        f"--hit-marker-dir \"{hit_marker_dir}\" \"$@\"\n"
     )
 
 
@@ -429,7 +501,8 @@ _ALL_HOOK_NAMES = (PUSH_GATE_HOOK_NAME, COMMIT_MSG_HOOK_NAME, PRE_COMMIT_HOOK_NA
 
 def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
                       python: str | None = None,
-                      secrets: dict[str, str] | None = None) -> Path | None:
+                      secrets: dict[str, str] | None = None,
+                      hit_marker_dir=None) -> Path | None:
     """Install (or refresh) the `pre-push`, `commit-msg` and `pre-commit`
     gates for `workspace` and point the repository's `core.hooksPath` at
     `hooks_dir` -- one write reaches all three, since git looks up every
@@ -510,6 +583,14 @@ def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
     os.chmod(hooks_dir, 0o755)
     pkg_parent = str(Path(__file__).resolve().parents[2])
     python = python or sys.executable
+    # Task cure-01-03 (PRD requirement I.3, DoD 9, #210): where a
+    # `commit-msg`/`pre-commit` refusal leaves its marker for the engine to
+    # pick up -- defaults to `hooks_dir` for callers that never pass one
+    # (this module's own pre-cure-01-03 tests, none of which exercise the
+    # marker at all), but production always passes the run directory, which
+    # stays agent-writable under the real uid boundary while `hooks_dir`
+    # itself does not.
+    hit_marker_dir = hit_marker_dir if hit_marker_dir is not None else hooks_dir
     push_hook = None
     for name in _ALL_HOOK_NAMES:
         path = hooks_dir / name
@@ -517,7 +598,7 @@ def install_push_gate(workspace, hooks_dir, *, base_sha: str | None = None,
         # bit (0o555 below), so `write_text` on an existing one would be
         # refused for the engine too -- which is the point.
         path.unlink(missing_ok=True)
-        path.write_text(_hook_script(name, python, pkg_parent))
+        path.write_text(_hook_script(name, python, pkg_parent, hit_marker_dir))
         os.chmod(path, 0o555)
         if name == PUSH_GATE_HOOK_NAME:
             push_hook = path
@@ -629,6 +710,12 @@ def hook_main(argv: list[str] | None = None, stdin=None) -> int:
         if i + 1 < len(rest):
             hooks_dir = rest[i + 1]
             del rest[i:i + 2]
+    hit_marker_dir = hooks_dir
+    if "--hit-marker-dir" in rest:
+        i = rest.index("--hit-marker-dir")
+        if i + 1 < len(rest):
+            hit_marker_dir = rest[i + 1]
+            del rest[i:i + 2]
     workspace = _toplevel(Path.cwd())
     base_sha = _base_from(hooks_dir)
 
@@ -672,6 +759,8 @@ def hook_main(argv: list[str] | None = None, stdin=None) -> int:
         hit = scan_text_for_secrets(text, part="message")
         if hit is None:
             return 0
+        if hit_marker_dir:
+            _write_hook_hit_marker(hit_marker_dir, mode, hit)
         print(commit_refusal_text(hit), file=sys.stderr)
         return 1
 
@@ -684,6 +773,8 @@ def hook_main(argv: list[str] | None = None, stdin=None) -> int:
         hit = scan_text_for_secrets(diff, part="diff")
         if hit is None:
             return 0
+        if hit_marker_dir:
+            _write_hook_hit_marker(hit_marker_dir, mode, hit)
         print(commit_refusal_text(hit), file=sys.stderr)
         return 1
 

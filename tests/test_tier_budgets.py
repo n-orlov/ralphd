@@ -924,8 +924,22 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # both sort into both tiers; the module already existed, so no module
     # ceiling moves. Measured with `.venv/bin/python -m pytest -q -m <tier>
     # --collect-only` at this commit's own tip.
-    "fast": {"tests": 6278, "modules": 426},
-    "smoke": {"tests": 4585, "modules": 305},
+    # cure-01-03 (v0.25 requirement I.3, DoD 9, #210): fast 6278 -> 6282,
+    # smoke 4585 -> 4589 (+4 tests, +1 module each) for the new
+    # tests/test_commit_scan_hook_hit_fault_pause.py -- the four nodes
+    # proving a commit-msg hit AND a pre-commit hit each refuse, fault the
+    # assigned task and raise the operator_input_needed pause before any
+    # retry (one worker iteration each), that the hook-hit marker is
+    # read-once and never replayed into a later iteration, and that the
+    # pre-existing task-boundary (I.2) hit behaviour stays green alongside
+    # the new hook-layer channel. No `docker`/`browser`/process-boundary
+    # fixture (asyncio.run(sup._step_worker()) against a real git
+    # workspace, the same shape as tests/test_commit_scan_engine_boundary.
+    # py's own nodes), so all four sort into both tiers. Measured with
+    # `.venv/bin/python -m pytest -q -m <tier> --collect-only` at this
+    # commit's own tip.
+    "fast": {"tests": 6282, "modules": 427},
+    "smoke": {"tests": 4589, "modules": 306},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
