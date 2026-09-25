@@ -139,6 +139,13 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "test_e2e.py", (993,), ("Docker siblings",),
         "the rendered worker prompt", ALL),
     AbsenceAssertion(
+        "test_escalation_undelivered_marker.py", (393, 394, 416, 417),
+        ("escalation-undelivered-marker", "escalation undelivered"),
+        "the hub's app.js row / run-detail state-cell renderers executed in "
+        "node (`runRowStateChildren`, `stateCell`)", None,
+        "not a prompt/Job-context/SPEC-table/diagram render -- a hub DOM "
+        "render fed a `ui_server` payload; no shipped template is involved"),
+    AbsenceAssertion(
         "test_forced_split_budget_task016.py", (140,),
         ("Progress budget exhausted",),
         "the rendered worker prompt (task 041's regression, fixed by 073)",

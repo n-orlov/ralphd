@@ -21,10 +21,11 @@ read straight off `events.jsonl` + `status.json`, no live engine needed):
 * the hub's run-detail page's own status doc (`ui_server.run_detail`,
   `_with_pause_markers`).
 
-`app.js` is checked structurally (it reads/renders the two new fields) --
-the discipline every other "cheap app.js guard" module in this suite
-already uses (`tests/test_steering_origin_marker.py` etc.): a real
-Chromium render is the browser tier's job, not this one's.
+`app.js`'s own row and run-detail state-cell renderers
+(`runRowStateChildren`, `stateCell`) are executed in node against a minimal
+DOM stand-in, fed the payloads `ui_server` produced -- for the runs-list row
+both with and without `containerGone`, since a paused dead run renders
+through the gone branch.
 """
 
 from __future__ import annotations
@@ -190,6 +191,45 @@ def test_ralphctl_status_shows_no_marker_once_the_pause_is_answered(
     assert "escalation undelivered" not in out
 
 
+def _ralphctl_status_json(capsys) -> dict:
+    cli_main.cmd_status(_StatusArgs(RUN_ID, as_json=True))
+    return json.loads(capsys.readouterr().out)
+
+
+def test_ralphctl_status_json_carries_the_marker_fields(
+        tmp_path, monkeypatch, capsys):
+    registry = tmp_path / "registry"
+    monkeypatch.setenv("RALPHD_REGISTRY", str(registry))
+    monkeypatch.setattr(cli_main, "_dangling_run_entry", lambda run_id: None)
+
+    _always_failing(monkeypatch)
+    sup = _supervisor(tmp_path, run_root=f"registry/runs/{RUN_ID}",
+                      notifier_url="http://notifier.example/notify")
+    _trigger_undelivered_escalation(sup)
+
+    doc = _ralphctl_status_json(capsys)
+    assert doc["escalationUndelivered"] is True
+    assert "escalation undelivered" in doc["escalationUndeliveredMarker"]
+    assert "pauseMarker" in doc
+
+
+def test_ralphctl_status_json_drops_the_marker_once_the_pause_is_answered(
+        tmp_path, monkeypatch, capsys):
+    registry = tmp_path / "registry"
+    monkeypatch.setenv("RALPHD_REGISTRY", str(registry))
+    monkeypatch.setattr(cli_main, "_dangling_run_entry", lambda run_id: None)
+
+    _always_failing(monkeypatch)
+    sup = _supervisor(tmp_path, run_root=f"registry/runs/{RUN_ID}",
+                      notifier_url="http://notifier.example/notify")
+    _trigger_undelivered_escalation(sup)
+    sup.resume()
+
+    doc = _ralphctl_status_json(capsys)
+    assert doc["escalationUndelivered"] is False
+    assert doc["escalationUndeliveredMarker"] == ""
+
+
 # --------------------------------------------------------------------------
 # surface 2: the hub's runs-list row
 # --------------------------------------------------------------------------
@@ -266,15 +306,112 @@ def test_hub_run_detail_drops_the_marker_once_answered(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# app.js: structural guard (the browser tier renders it for real)
+# app.js: the REAL row / detail-cell renderers, executed in node against a
+# minimal DOM stand-in, fed the payloads `ui_server` itself produced above
 # --------------------------------------------------------------------------
-def test_app_js_renders_the_marker_on_the_runs_list_row():
-    block = APP_JS.split("function stateMarkerSpans(")[1].split("\n}")[0]
-    assert "escalation-undelivered-marker" in block
-    row_block = APP_JS.split("for (const r of sortRuns(runs))")[1][:2000]
-    assert "stateMarkerSpans(r.pauseMarker, r.escalationUndeliveredMarker)" in row_block
+APP_JS_PATH = Path(ui_server.__file__).parent / "web" / "app.js"
+
+_NODE_RENDER = r"""
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[1], 'utf8');
+function grab(name) {
+  const start = src.indexOf('function ' + name + '(');
+  if (start < 0) throw Error('missing function ' + name);
+  const end = src.indexOf('\n}\n', start);
+  return src.slice(start, end + 3);
+}
+function text(node) {
+  if (typeof node === 'string') return node;
+  return (node.children || []).map(text).join('');
+}
+function classes(node, out) {
+  if (typeof node === 'string') return out;
+  if (node.attrs && node.attrs.class) out.push(node.attrs.class);
+  for (const c of node.children || []) classes(c, out);
+  return out;
+}
+const h = (tag, attrs, children) => ({ tag, attrs: attrs || {}, children: children || [] });
+const FAULT_BADGE_STATES = new Set(["failed", "aborted"]);
+const faultBadge = () => null;
+eval(grab('pill') + grab('stateMarkerSpans') + grab('runRowStateChildren') + grab('stateCell'));
+const input = JSON.parse(process.argv[2]);
+const node = input.surface === 'row'
+  ? h('td', {}, runRowStateChildren(input.doc))
+  : stateCell({ runId: 'x' }, input.doc);
+console.log(JSON.stringify({ text: text(node), classes: classes(node, []) }));
+"""
 
 
-def test_app_js_renders_the_marker_on_the_run_detail_page():
-    block = APP_JS.split("function stateCell(")[1].split("\n}")[0]
-    assert "stateMarkerSpans(s.pauseMarker, s.escalationUndeliveredMarker)" in block
+def _node_render(surface: str, doc: dict) -> dict:
+    import shutil
+    import subprocess
+    if shutil.which("node") is None:
+        pytest.skip("node not installed")
+    result = subprocess.run(
+        ["node", "-e", _NODE_RENDER, str(APP_JS_PATH),
+         json.dumps({"surface": surface, "doc": doc})],
+        capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _mark_answered(run_dir: Path) -> None:
+    status = json.loads((run_dir / "status.json").read_text())
+    status["state"] = "running"
+    status["pauseReason"] = None
+    (run_dir / "status.json").write_text(json.dumps(status))
+
+
+@pytest.mark.parametrize("container_gone", [False, True])
+def test_app_js_renders_the_marker_on_the_runs_list_row(tmp_path, container_gone):
+    registry = tmp_path / "registry"
+    _write_undelivered_run(registry, "js-row")
+    row = next(r for r in ui_server.run_list(registry) if r["runId"] == "js-row")
+    # A dead run (the on-disk fixture has no container) is the case the
+    # gone branch renders; the live branch is the same payload without it.
+    row["containerGone"] = container_gone
+
+    rendered = _node_render("row", row)
+
+    assert "escalation-undelivered-marker" in rendered["classes"]
+    assert row["escalationUndeliveredMarker"] in rendered["text"]
+    assert ("container-gone-marker" in rendered["classes"]) is container_gone
+
+
+@pytest.mark.parametrize("container_gone", [False, True])
+def test_app_js_drops_the_marker_on_the_runs_list_row_once_answered(
+        tmp_path, container_gone):
+    registry = tmp_path / "registry"
+    run_dir = _write_undelivered_run(registry, "js-row-answered")
+    _mark_answered(run_dir)
+    row = next(r for r in ui_server.run_list(registry)
+               if r["runId"] == "js-row-answered")
+    row["containerGone"] = container_gone
+
+    rendered = _node_render("row", row)
+
+    assert "escalation-undelivered-marker" not in rendered["classes"]
+    assert "escalation undelivered" not in rendered["text"]
+
+
+def test_app_js_renders_the_marker_on_the_run_detail_page(tmp_path):
+    registry = tmp_path / "registry"
+    _write_undelivered_run(registry, "js-det")
+    detail = ui_server.run_detail(registry, "js-det")
+
+    rendered = _node_render("detail", detail["status"])
+
+    assert "escalation-undelivered-marker" in rendered["classes"]
+    assert detail["status"]["escalationUndeliveredMarker"] in rendered["text"]
+
+
+def test_app_js_drops_the_marker_on_the_run_detail_page_once_answered(tmp_path):
+    registry = tmp_path / "registry"
+    run_dir = _write_undelivered_run(registry, "js-det-answered")
+    _mark_answered(run_dir)
+    detail = ui_server.run_detail(registry, "js-det-answered")
+
+    rendered = _node_render("detail", detail["status"])
+
+    assert "escalation-undelivered-marker" not in rendered["classes"]
+    assert "escalation undelivered" not in rendered["text"]

@@ -3966,13 +3966,18 @@ def cmd_status(args):
     # escalation marker (added right after it) has a marker to sit next
     # to -- `state.escalation_undelivered` reads `events.jsonl` straight
     # off this run's own dir, live or dead, exactly like the on-disk
-    # fallback above already does for `tasks`/`provisioning`.
+    # fallback above already does for `tasks`/`provisioning`. `--json`
+    # carries the same three facts the hub's run payloads do
+    # (`ui_server._with_pause_markers`), under the same key names.
     state_display = str(status.get('state'))
     _pause_marker = format_pause_marker(status.get("pauseReason"))
     if _pause_marker:
         state_display = f"{state_display} {_pause_marker}"
     _undelivered_marker = format_escalation_undelivered_marker(
         run_root(args.run_id), status)
+    status["pauseMarker"] = _pause_marker
+    status["escalationUndelivered"] = bool(_undelivered_marker)
+    status["escalationUndeliveredMarker"] = _undelivered_marker
     if _undelivered_marker:
         state_display = f"{state_display} {_undelivered_marker}"
     lines = [

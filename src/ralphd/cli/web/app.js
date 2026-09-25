@@ -169,6 +169,25 @@ function stateMarkerSpans(pauseMarker, escalationUndeliveredMarker) {
   return spans;
 }
 
+// The runs-list row's state cell. Task 024 (#8): a run recorded non-terminal
+// whose API no longer answers (`r.containerGone`) carries the gone marker.
+// Task 017 (PRD requirement A.7, #224): `r.pauseMarker` is the SAME marker
+// `ralphctl runs` renders (`state.format_pause_marker`) for the one
+// `pauseReason` a plain unpause cannot answer, `""` for every other run.
+// Task 005 (PRD requirement A.5, #269): `r.escalationUndeliveredMarker`
+// rides alongside it (both, either, or neither, via `stateMarkerSpans`) --
+// on a gone row as well: the container being gone does not answer the
+// pause, so a dead run still sitting on an undelivered escalation keeps
+// both markers next to the gone marker.
+function runRowStateChildren(r) {
+  const children = [pill(r.state)];
+  if (r.containerGone === true) {
+    children.push(h("span", { class: "container-gone-marker" }, [" \u26A0 container gone"]));
+  }
+  children.push(...stateMarkerSpans(r.pauseMarker, r.escalationUndeliveredMarker));
+  return children;
+}
+
 // -- duration formatting (mirrors the compact style used by `ralphctl
 // status`/`logs`: no millisecond noise, largest-two-units only) ----------
 
@@ -1429,18 +1448,7 @@ async function renderRunList(myGen) {
       const gone = r.containerGone === true;
       tbody.appendChild(h("tr", { class: gone ? "row-warning" : "" }, [
         h("td", {}, [h("a", { href: "#/run/" + encodeURIComponent(r.runId) }, [r.runId])]),
-        h("td", {}, gone
-          ? [pill(r.state), h("span", { class: "container-gone-marker" }, [" \u26A0 container gone"])]
-          // Task 017 (PRD requirement A.7, #224): the SAME marker
-          // `ralphctl runs` renders (`state.format_pause_marker`) for a
-          // run parked with `pauseReason: "operator_input_needed"` --
-          // the one `pauseReason` a resume alone cannot answer, it needs
-          // a ruling read in first. `r.pauseMarker` is `""` for every
-          // other run (including every OTHER `paused` reason), so
-          // nothing extra renders for them. Task 005 (PRD requirement
-          // A.5, #269): `r.escalationUndeliveredMarker` rides alongside
-          // it (both, either, or neither, via `stateMarkerSpans`).
-          : [pill(r.state), ...stateMarkerSpans(r.pauseMarker, r.escalationUndeliveredMarker)]),
+        h("td", {}, runRowStateChildren(r)),
         h("td", {}, [pill(r.verdict)]),
         h("td", {}, [String(r.phase || "")]),
         h("td", {}, [approachText(r)]),
