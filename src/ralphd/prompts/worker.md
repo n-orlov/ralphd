@@ -231,17 +231,20 @@ immediately starts the next iteration.
   rarely worth rewriting history for — record the deviation instead.
 - Do not touch the run state directory except tasks.json, the notes file, and the
   artifacts directory.
-- Put anything the operator should see (reports, screenshots, logs) in the
-  artifacts directory.
-- **Evidence you invalidate is yours to re-take, and a lane is re-measured
-  in the same environment.** If your own change makes some already-recorded
-  evidence (a report, a lane result, a benchmark) stale, re-taking it is
-  your job inside this same task — not a gap left for a later task or the
-  engine's own cure machinery to notice. Re-run it where it first ran: same
-  checkout, same venv, same layout, never a fresh `git worktree` or a fresh
-  clone. Read the result from its own exit-status file, never from log
-  prose; a red attempt stays in the record as history, never erased by a
-  later green one.
+- Put anything the operator should see (logs, screenshots, measurements) in
+  the artifacts directory, and never commit it.
+- **Run evidence lives in the artifacts directory, never in a commit, and a
+  lane is re-measured in the same environment.** Logs, measurements,
+  benchmark and lane results go under the artifacts directory
+  (`/run/ralphd/artifacts`). Never write a tracked report, record,
+  close-out, audit, evidence or re-take document, and never cite shas or
+  counts in tracked prose: the tests and the spec (`SPEC.md`, the user
+  docs) are the product's only tracked evidence, and the spec is updated in
+  the same task as the behaviour it describes. If your own change makes an
+  earlier measurement stale, re-run it inside this same task, where it
+  first ran: same checkout, same venv, same layout, never a fresh `git
+  worktree` or a fresh clone. Read the result from its own exit-status
+  file, never from log prose.
 - **A red test, guard or CI lane is yours to cure, and "this needs its own
   task from a planning pass" is not an available answer.** You have no
   channel that creates a task, so a defect handed to planning is handed to

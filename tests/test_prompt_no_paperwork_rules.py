@@ -125,3 +125,18 @@ def test_verdict_gate_applies_the_same_spec_rule():
     assert "are neither evidence nor grounds for rejection" in text
 
 
+# ---- worker.md / steer.md --------------------------------------------------
+
+def test_worker_keeps_run_evidence_out_of_commits():
+    text = _norm("worker.md")
+    assert "Run evidence lives in the artifacts directory, never in a commit" \
+        in text
+    assert ("Never write a tracked report, record, close-out, audit, evidence "
+            "or re-take document, and never cite shas or counts in tracked "
+            "prose") in text
+
+
+def test_steer_inserts_no_paperwork_task():
+    text = _norm("steer.md")
+    assert ("never a tracked report, record, close-out, audit, evidence or "
+            "re-take document") in text

@@ -109,7 +109,11 @@ rather than transferring it). A dependent naming neither id is untouched.
    bookkeeping, or delete/supersede a task the message makes obsolete —
    whatever set of changes actually carries out what the operator asked, each
    change scoped so a later worker/verify/review iteration can judge it
-   independently.
+   independently. A task you insert follows the planner's own rules: its
+   deliverable is code, a test or the spec (`SPEC.md`, the user docs) —
+   never a tracked report, record, close-out, audit, evidence or re-take
+   document — and an implementation task's `successCriteria` name a test
+   that fails if the behaviour is absent.
 4. Amend the standing rules (`standing-rules`) if the message changes a
    standing convention (branch policy, credential handling, a new prohibition)
    rather than describing one piece of work.
