@@ -37,21 +37,20 @@ judge? Look specifically for:
 4. **Scope that contradicts the PRD.** A task that does something the PRD
    explicitly forbids, or a plan that quietly drops a stated constraint
    (a budget, a compatibility requirement, a security rule).
-5. **Over-constrained criteria (#115).** A `successCriteria` clause that
+5. **Over-constrained criteria.** A `successCriteria` clause that
    quantifies over an open set without enumerating it ("every rephrasing of
    X", "each shipped piece" with the pieces left unnamed); a task carrying
    more than roughly 5 checkable clauses; or a clause that is really a
    wave-wide standing obligation (a boundary check, a notification-log
    entry, an operator discipline) copied into this one task instead of
-   living once in the Standing Rules block. This is the shape that
-   exhausted five tasks in v0.16 (004, 008, 012, 013, 023) on a green
-   bounded core with an unadjudicated tail — every one of them a correct
-   verdict on an over-constrained criterion, never a wrong one. Object by
+   living once in the Standing Rules block. This shape exhausts a task's
+   validation attempts on a green, delivered core with an unadjudicated
+   tail — a correct verdict on an over-constrained criterion. Object by
    naming the offending clause and instructing the concrete fix: bound it
    (enumerate the set or name the one command that defines it), split it
    (the task is not atomic), or move it (into the Standing Rules block,
    where it applies once instead of per task).
-6. **Structurally unsatisfiable criteria (#143).** `plan_ingestion.lint_proposal()`
+6. **Structurally unsatisfiable criteria.** `plan_ingestion.lint_proposal()`
    already refuses a `successCriteria` clause carrying one of six banned
    shapes, and rejects the plan before it ever reaches you if one slips
    through; treat this checklist item as the same list, in case a clause
@@ -76,13 +75,12 @@ judge? Look specifically for:
    code sha this task lands" is fine — object only when a clause actually
    matches one of the six shapes above, naming the clause and a
    satisfiable alternative.
-7. **Command-form criteria (#154).** `plan_ingestion.lint_proposal()`
+7. **Command-form criteria.** `plan_ingestion.lint_proposal()`
    already refuses a `successCriteria` clause that pins the literal text
    of a shell command, a wrapper, a polling cadence or a "nothing else"
    clause, and one that both pins a launch form and demands the same
-   process's captured status — the `deck-phase3k` task 205 shape, where
-   the worker measured 10/10 passed three times and verify rejected every
-   attempt on the launch form alone, never the measurement. Refuse the
+   process's captured status — a shape that gets a correct measurement
+   rejected on its launch form alone. Refuse the
    same shape here if it slips past the lint: a criterion names the
    observable, never the literal shell line, its wrapper, its polling
    cadence or a "nothing else" clause — if a result must be captured, the
@@ -91,11 +89,10 @@ judge? Look specifically for:
    exit status without one. The ban is on the SHAPE, not on one phrasing:
    "execute `…` exactly", "run `…` verbatim", "the launch line is `…`",
    "wrapped with/using `…`", "poll every 120 seconds" and "checked every
-   30 seconds" are the same defect as task 205's own wording, and a
-   criterion whose launch form and captured-status demand sit in two
-   different sentences (exactly how task 205 splits them) is still that
+   30 seconds" are all the same defect, and a criterion whose launch form
+   and captured-status demand sit in two different sentences is still that
    defect.
-8. **An oversized estimate with no staging (#157).** `plan_ingestion.
+8. **An oversized estimate with no staging.** `plan_ingestion.
    lint_proposal()` already refuses a task whose `estimatedIterations` is
    above 3 unless THE PROPOSAL decomposes it into at least two stage TASKS:
    separate tasks carrying a `Stage N` marker (digits) in their title or
@@ -118,7 +115,7 @@ judge? Look specifically for:
    never slipped past. Object by naming the offending task and its
    estimate, and instruct either lowering the estimate to 3 or fewer, or
    splitting it into a genuine sequence of stage tasks.
-9. **A numeric target far from its baseline (#157).** `plan_ingestion.
+9. **A numeric target far from its baseline.** `plan_ingestion.
    lint_proposal()` already refuses a `successCriteria` clause of the shape
    `<metric> under <target>` whose OWN text also quotes a baseline more
    than 2x the target, unless a measurement task bound to the offending

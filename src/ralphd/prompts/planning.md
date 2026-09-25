@@ -123,7 +123,7 @@ task's own progress budget from it.
 
 **A task estimated above 3 iterations is refused at ingestion unless THE
 PROPOSAL decomposes it into staged tasks with their own measurable
-criteria** (PRD requirement D.2, #157). The staging is across TASKS, not
+criteria**. The staging is across TASKS, not
 inside one task's prose: writing `Stage 1: ... Stage 2: ...` into the
 oversized task's own criteria decomposes nothing, because the work stays in
 one task of the same size, and it is refused. What the lint looks for:
@@ -150,8 +150,8 @@ mechanically:
   issue number (`#182`, "issue 42"), a task id ("task 026") and a version
   ("v0.20") are all stripped before the check.
 - a **named module group** is a path or a backticked identifier a worker can
-  open: `tests/test_x.py`, `tests/records/`, docs/architecture.md,
-  `plan_ingestion.lint_proposal`. The bare word "module"/"modules" names
+  open: `tests/test_x.py`, `src/pkg/`, docs/architecture.md,
+  `pkg.module.function`. The bare word "module"/"modules" names
   nothing and does NOT count.
 
 A 4-plus estimate with no such staging is rejected at
@@ -160,8 +160,7 @@ is accepted. Prefer sizing the task at 3 or fewer in the first place --
 staging is the escape hatch for genuinely large, sequential work, not a way
 to keep a monolithic task's high estimate.
 
-**A numeric target far from its baseline is a smell** (PRD requirement D.3,
-#157). A `successCriteria` clause of the shape `<metric> under <target>`
+**A numeric target far from its baseline is a smell.** A `successCriteria` clause of the shape `<metric> under <target>`
 (a number right after the word "under") whose OWN text also quotes a
 baseline (a number behind a cue like "currently ~8000", "baseline of
 8000", "measured at 8000") is refused at ingestion when that baseline is
@@ -325,7 +324,7 @@ lawyered:
 - Order tasks by dependency.
 - Do not start implementing. Do not mark anything completed.
 - If operator steering is present, it overrides the PRD where they conflict.
-- **Criteria must be bounded** (#115). A quantifier over an open set — "every",
+- **Criteria must be bounded.** A quantifier over an open set — "every",
   "each", "all", "no ... anywhere" — is legal in a `successCriteria` clause
   ONLY when the clause itself enumerates the members it ranges over, or names
   the single command whose output defines the set (so a verifier checks a
@@ -333,9 +332,8 @@ lawyered:
   for absence). An unenumerable aspiration ("reject every rephrasing of X",
   "documents every shipped piece" with the pieces left unnamed) does not
   become a criterion at all — it goes into the plan's notes as a residual,
-  named as such, for review to weigh later. (v0.16's five validation
-  exhaustions — 004, 008, 012, 013, 023 — were every one of them a green
-  bounded core dying on exactly this shape of unbounded tail; see #115.)
+  named as such, for review to weigh later. An unbounded tail is how a
+  task with a green, delivered core still exhausts its validation attempts.
 - **Criteria budget: at most ~5 checkable clauses per task.** More than that
   is a signal, not a style problem — either the task is not atomic (split it,
   per the ATOMIC rule above) or some of the clauses are wave-wide standing
