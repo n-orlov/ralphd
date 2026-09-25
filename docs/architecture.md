@@ -3571,6 +3571,17 @@ suite never mistakes one for behavioral coverage of the thing it describes.
   those prompts describe (verdict derived from blocking findings only) is
   pinned separately by `tests/test_structured_findings.py` and
   `tests/test_review_verdict_findings.py`.
+- **No-paperwork prompt rules** — `planning.md` must plan no task whose
+  deliverable is a tracked report or record, name a behaviour-failing test
+  in every implementation task, prove a closure by issue comment and commit
+  nothing after the final sweep; `plan_review.md` must object to a paperwork
+  task and to an implementation task with no behaviour-failing test;
+  `review.md`, `verdict_gate.md` and `task-verify.md` must check the spec
+  against live behaviour and never treat other prose as evidence or as a
+  rejection ground; `worker.md` and `steer.md` must keep run evidence out of
+  commits. Pinned by `tests/test_prompt_no_paperwork_rules.py` (and, for
+  verify's substance rubric, `tests/test_verify.py`), asserting phrases in
+  each prompt's raw text; no agent is run.
 - **Revision-history-free prompts** — no prompt file under
   `src/ralphd/prompts/` may contain phrasing that only makes sense relative
   to an earlier revision of itself (`previously`, `no longer`, `used to
