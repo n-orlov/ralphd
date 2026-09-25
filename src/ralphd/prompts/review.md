@@ -259,7 +259,7 @@ though it were a first hearing.
 **Scope of the re-file rule.** The rule
 above concerns a *NEW* filing made against an obligation that already
 carries an adjudication -- a fresh `## Petition: ...` section appearing in
-a `<wave>-petitions.md` file for an obligation this run has already ruled
+a petitions file for an obligation this run has already ruled
 on. It is never triggered by the mere fact that an already-adjudicated
 obligation continues to be visible to you: if this prompt includes an
 "Adjudicated petitions -- history, not open" section below, every

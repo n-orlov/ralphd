@@ -617,14 +617,14 @@ support for the claim, never a bare assertion. A malformed declaration (a
 blank field, an unlisted type) is refused and re-asked through the ordinary
 contract ladder, the same as any other malformed reply.
 
-**You never touch `artifacts/reports/<wave>-petitions.md` yourself, by hand,
-for any reason.** The ENGINE — never the worker — files and validates the
-petition entry: it is the engine's own write path
-(`petitions.file_worker_petition`) that turns your three declared strings
-into a tracked filing in that file, in the petition format's fixed field
-shape, after your declaration passes the same schema and semantic checks
-every other channel in your reply goes through. You declare; the engine
-files.
+**You never edit any petitions file yourself, by hand, for any reason.**
+The ENGINE — never the worker — files and validates the petition entry: it
+is the engine's own write path (`petitions.file_worker_petition`) that turns
+your three declared strings into a filing in the run's own petitions file
+(in the run dir, never the workspace tree), in the petition format's fixed
+field shape, after your declaration passes the same schema and semantic
+checks every other channel in your reply goes through. You declare; the
+engine files.
 
 **A duplicate declaration is refused, not filed.** An obligation may carry
 at most one petition for the life of the run. If the named obligation

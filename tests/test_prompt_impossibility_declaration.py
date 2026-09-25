@@ -89,8 +89,11 @@ def test_worker_md_states_the_engine_files_and_validates_the_entry():
     assert re.search(r"files and validates\s*\n?\s*the\s*\n?\s*petition entry",
                       section, re.IGNORECASE)
     assert re.search(
-        r"never touch `artifacts/reports/<wave>-petitions\.md`\s*\n?\s*"
-        r"yourself, by hand", section, re.IGNORECASE)
+        r"never edit any petitions file\s*\n?\s*yourself, by hand",
+        section, re.IGNORECASE)
+    assert re.search(r"run's own petitions file\s*\n?\s*\(in the run dir",
+                     section, re.IGNORECASE)
+    assert "artifacts/reports/<wave>-petitions.md" not in section
 
 
 def test_worker_md_states_a_duplicate_declaration_is_refused():
