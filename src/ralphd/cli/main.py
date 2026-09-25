@@ -91,8 +91,7 @@ from ..engine.state import (
     format_last_tool_call,
     format_local_time,
     format_provisioning_lines,
-    format_pause_marker,
-    format_escalation_undelivered_marker,
+    escalation_pause_markers,
     format_router_calls_listing,
     format_run_document_listing,
     format_task_counts,
@@ -3271,8 +3270,12 @@ def cmd_runs(args):
                          # `pauseMarker` is `""` for every other reason
                          # (including every OTHER `paused` run).
                          "pauseReason": status.get("pauseReason"),
-                         "pauseMarker": format_pause_marker(
-                             status.get("pauseReason")),
+                         # Task 005 (#269): the in-memory
+                         # `rejected_incurable` hold gets its own marker
+                         # too (`state.escalation_pause_markers`), the same
+                         # spelling the hub row carries.
+                         "pauseMarker": escalation_pause_markers(
+                             d, status)["pauseMarker"],
                          "approach": status.get("approach"),
                          # Task 007 (#16): BOTH numbers in --json (raw, for
                          # sorting and machine consumers) next to the human
@@ -3964,22 +3967,18 @@ def cmd_status(args):
     # previously only rendered by `ralphctl runs`/the hub run list) now
     # renders here too, on the SAME `state:` line, so the undelivered-
     # escalation marker (added right after it) has a marker to sit next
-    # to -- `state.escalation_undelivered` reads `events.jsonl` straight
+    # to -- `state.escalation_pause_markers` reads `events.jsonl` straight
     # off this run's own dir, live or dead, exactly like the on-disk
     # fallback above already does for `tasks`/`provisioning`. `--json`
     # carries the same three facts the hub's run payloads do
     # (`ui_server._with_pause_markers`), under the same key names.
     state_display = str(status.get('state'))
-    _pause_marker = format_pause_marker(status.get("pauseReason"))
-    if _pause_marker:
-        state_display = f"{state_display} {_pause_marker}"
-    _undelivered_marker = format_escalation_undelivered_marker(
-        run_root(args.run_id), status)
-    status["pauseMarker"] = _pause_marker
-    status["escalationUndelivered"] = bool(_undelivered_marker)
-    status["escalationUndeliveredMarker"] = _undelivered_marker
-    if _undelivered_marker:
-        state_display = f"{state_display} {_undelivered_marker}"
+    _markers = escalation_pause_markers(run_root(args.run_id), status)
+    status.update(_markers)
+    for _marker in (_markers["pauseMarker"],
+                    _markers["escalationUndeliveredMarker"]):
+        if _marker:
+            state_display = f"{state_display} {_marker}"
     lines = [
         f"run:       {status.get('runId')}",
         f"state:     {state_display}  (live api: {live})",

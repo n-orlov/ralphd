@@ -89,9 +89,7 @@ from ..engine.state import (
     format_cost,
     format_iteration_log_header,
     format_local_time,
-    format_pause_marker,
-    format_escalation_undelivered_marker,
-    escalation_undelivered,
+    escalation_pause_markers,
     format_provisioning_lines,
     format_run_document_size,
     iteration_detail,
@@ -364,16 +362,15 @@ def run_list(reg: Path) -> list[dict]:
                 # this ONE reason gets a distinct marker and no other
                 # `paused` reason does.
                 "pauseReason": status.get("pauseReason"),
-                "pauseMarker": format_pause_marker(status.get("pauseReason")),
-                # Task 005 (PRD requirement A.5, #269): the same marker
-                # `ralphctl status` now renders next to the pause marker
-                # (see `state.escalation_undelivered`'s own docstring) --
-                # read straight off this row's OWN `events.jsonl`, still
-                # local-only (no proxy call), the same discipline `_row_
-                # tasks` below already follows.
-                "escalationUndelivered": escalation_undelivered(d, status),
-                "escalationUndeliveredMarker": format_escalation_undelivered_marker(
-                    d, status),
+                # Task 005 (PRD requirement A.5, #269): `pauseMarker` plus
+                # `escalationUndelivered`/`escalationUndeliveredMarker`, the
+                # same three facts `ralphctl status` renders (see
+                # `state.escalation_pause_markers`'s own docstring, which also
+                # covers the in-memory `rejected_incurable` hold) -- read
+                # straight off this row's OWN `events.jsonl`, still local-
+                # only (no proxy call), the same discipline `_row_tasks`
+                # below already follows.
+                **escalation_pause_markers(d, status),
                 # Task 008 (#16): the raw counter stays exactly as it was (the
                 # hub sorts the APPROACH column numerically on it) and the
                 # denominator travels alongside it, rendered once here by the
@@ -1258,10 +1255,7 @@ def _with_pause_markers(doc: dict, run_dir: Path) -> dict:
         return doc
     return {
         **doc,
-        "pauseMarker": format_pause_marker(doc.get("pauseReason")),
-        "escalationUndelivered": escalation_undelivered(run_dir, doc),
-        "escalationUndeliveredMarker": format_escalation_undelivered_marker(
-            run_dir, doc),
+        **escalation_pause_markers(run_dir, doc),
     }
 
 

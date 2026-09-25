@@ -1189,7 +1189,7 @@ class LoopSupervisor:
         pause if there is one (task 036, requirement D.1/D.2, #142)."""
         self._pause.set()
         self._clear_persisted_pause()
-        self.run.emit("log", message="resumed")
+        self.run.emit("log", message=state.RESUMED_LOG_MESSAGE)
 
     def _clear_persisted_pause(self) -> None:
         """Undo `_persist_pause`'s status.json write (task 036, requirement

@@ -537,40 +537,112 @@ _NOTIFICATION_ESCALATION_UNDELIVERED_EVENT = "notification.escalation_undelivere
 ESCALATION_UNDELIVERED_MARKER = "\u2757 escalation undelivered"
 
 
-def escalation_undelivered(run_root: Path, status: dict) -> bool:
-    """True iff `status` records a LIVE, persisted pause (`state ==
-    PAUSED_STATE`) whose most recent `operator_escalation` event was
-    followed -- after every delivery retry -- by the distinct
-    `notification.escalation_undelivered` event, with no LATER
-    `operator_escalation` since (a fresh escalation cycle resets the flag
-    until its own retries are exhausted too).
+# The ONE escalation site whose pause is never persisted to status.json:
+# `LoopSupervisor._pause_and_escalate_incurable_rejection` takes the
+# reason-less, in-memory `self.pause()` (SPEC.md 4.6), so `state` keeps
+# reading `running` while the run is in fact held. Its hold is derived from
+# `events.jsonl` instead -- see `escalation_pause_markers` below -- and gets
+# its own marker, since `format_pause_marker` has no `pauseReason` to read.
+IN_MEMORY_ESCALATION_PAUSE_REASON = "rejected_incurable"
+ESCALATION_HOLD_MARKER = "\u23F8 held on rejected_incurable escalation"
+
+# The recorded states an in-memory escalation hold can sit under: the run is
+# still owned by a live (or dead-but-unrestarted) engine and was not moved to
+# a persisted pause, a wind-down or a terminal state since. `None` is a
+# status.json that has not recorded a `state` yet (an engine driven straight
+# into its review step, as the test harness does) -- the hold is just as
+# real there.
+_IN_MEMORY_HOLD_STATES = (None, "starting", "running")
+# The `log` event `LoopSupervisor.resume()` emits -- the one record every
+# answer to a pause leaves on `events.jsonl`, persisted or in-memory.
+RESUMED_LOG_MESSAGE = "resumed"
+
+
+def _escalation_scan(run_root: Path) -> dict:
+    """One pass over `events.jsonl` for the latest `operator_escalation`:
+    its `reason`, whether `notification.escalation_undelivered` followed it
+    (with no later escalation since), and whether the hold it took was
+    answered since -- an `iteration.start` (the loop ran again: an in-process
+    resume got past the gate, or a restarted episode re-entered review) or
+    the `log` event `LoopSupervisor.resume()` emits (`"resumed"`: `ralphctl
+    unpause`, `POST /resume`, a ruling that releases the pause, and the
+    abort wind-down all go through it)."""
+    reason = None
+    undelivered = False
+    answered = False
+    for ev in read_events(run_root, types=(
+            "operator_escalation",
+            _NOTIFICATION_ESCALATION_UNDELIVERED_EVENT,
+            "iteration.start", "log")):
+        kind = ev.get("type")
+        if kind == "operator_escalation":
+            reason = ev.get("reason")
+            undelivered = False
+            answered = False
+        elif kind == _NOTIFICATION_ESCALATION_UNDELIVERED_EVENT:
+            undelivered = True
+        elif kind == "iteration.start" or (
+                kind == "log" and ev.get("message") == RESUMED_LOG_MESSAGE):
+            # An answered hold's undelivered escalation is history: only a
+            # `notification.escalation_undelivered` recorded AFTER this
+            # (a later pause's own exhausted delivery) re-arms the flag.
+            answered = True
+            undelivered = False
+    return {"reason": reason, "undelivered": undelivered, "answered": answered}
+
+
+def escalation_pause_markers(run_root: Path, status: dict) -> dict:
+    """The three facts `ralphctl status`, the hub's runs-list row and the
+    hub's run page carry side by side (task 005, PRD requirement A.5,
+    #269), from ONE read of `events.jsonl`:
+
+    * `pauseMarker` -- `format_pause_marker(pauseReason)` for a persisted
+      pause; for the in-memory `rejected_incurable` hold (state still
+      `running`/`starting`, latest `operator_escalation` has that reason,
+      not answered since -- see `_escalation_scan`) it is
+      `ESCALATION_HOLD_MARKER`, so the hold has a marker at all;
+    * `escalationUndelivered` -- True iff the run is still paused on its
+      latest escalation (a persisted `state == PAUSED_STATE`, or the
+      in-memory hold above) AND that escalation was followed, after every
+      delivery retry, by `notification.escalation_undelivered`, with no
+      later `operator_escalation` since;
+    * `escalationUndeliveredMarker` -- `ESCALATION_UNDELIVERED_MARKER` when
+      the above holds, `""` otherwise.
 
     Read straight off `events.jsonl`/`status` -- no live engine required,
     so a dead run's on-disk snapshot answers this exactly like a live one.
-
-    `state != PAUSED_STATE` answers `False` immediately, the same instant
-    `format_pause_marker` above stops naming a parked reason: `resume()`
-    (`POST /resume`, `ralphctl unpause`, or a ruling that
-    `resume_if_ruling_answers_pause` recognises) clears `state`/
-    `pauseReason` on status.json SYNCHRONOUSLY, before the loop takes
-    another step -- so there is no window where the pause is answered but
-    this still reads `True`.
-
-    A pause recorded with no `reason` at all (the in-memory-only
-    `rejected_incurable` hold, `LoopSupervisor.pause()` called with no
-    argument) never persists `state: "paused"` to status.json in the first
-    place -- see `LoopSupervisor._persist_pause`'s own docstring -- so it
-    is invisible to `state`-based checks by construction, the same gap
-    `format_pause_marker` above already lives with for that one reason.
+    Answering the pause removes the marker at once: `resume()` clears a
+    persisted `state`/`pauseReason` synchronously and emits its `"resumed"`
+    log event, which ends the in-memory hold's derivation too.
     """
-    if status.get("state") != PAUSED_STATE:
-        return False
-    undelivered = False
-    for ev in read_events(run_root, types=(
-            "operator_escalation",
-            _NOTIFICATION_ESCALATION_UNDELIVERED_EVENT)):
-        undelivered = ev.get("type") == _NOTIFICATION_ESCALATION_UNDELIVERED_EVENT
-    return undelivered
+    pause_marker = format_pause_marker(status.get("pauseReason"))
+    state_value = status.get("state")
+    scan = None
+    held = False
+    if state_value == PAUSED_STATE:
+        scan = _escalation_scan(run_root)
+        held = True
+    elif state_value in _IN_MEMORY_HOLD_STATES:
+        scan = _escalation_scan(run_root)
+        held = (scan["reason"] == IN_MEMORY_ESCALATION_PAUSE_REASON
+                and not scan["answered"])
+        if held and not pause_marker:
+            pause_marker = ESCALATION_HOLD_MARKER
+    undelivered = bool(held and scan and scan["undelivered"])
+    return {
+        "pauseMarker": pause_marker,
+        "escalationUndelivered": undelivered,
+        "escalationUndeliveredMarker": (
+            ESCALATION_UNDELIVERED_MARKER if undelivered else ""),
+    }
+
+
+def escalation_undelivered(run_root: Path, status: dict) -> bool:
+    """`escalation_pause_markers(...)["escalationUndelivered"]` -- True iff
+    the run is still paused on its latest `operator_escalation` (persisted,
+    or the in-memory `rejected_incurable` hold) and that escalation went
+    undelivered after every retry."""
+    return escalation_pause_markers(run_root, status)["escalationUndelivered"]
 
 
 def format_escalation_undelivered_marker(run_root: Path, status: dict) -> str:
@@ -578,8 +650,8 @@ def format_escalation_undelivered_marker(run_root: Path, status: dict) -> str:
     `""` otherwise -- the render-ready twin `format_pause_marker` above is,
     for the same reason: callers print/attach a string, never a bool.
     """
-    return (ESCALATION_UNDELIVERED_MARKER
-            if escalation_undelivered(run_root, status) else "")
+    return escalation_pause_markers(run_root, status)[
+        "escalationUndeliveredMarker"]
 
 # Task 030 (#19): its complement -- the recorded `state` values that mean "no
 # engine owns this run any more", i.e. the ONE gate a destructive action may

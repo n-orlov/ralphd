@@ -1433,38 +1433,48 @@ exception.
 
 **An undelivered escalation is visible on three surfaces without reading
 `events.jsonl` (task 005, PRD requirement A.5, #269).**
-`engine.state.escalation_undelivered(run_root, status)` answers `True` for
-exactly as long as three things all hold: the run is still sitting on a
-persisted engine pause (never the `rejected_incurable` in-memory hold
-above, which this predicate cannot see any more than task 017's own marker
-below can); the MOST RECENT `operator_escalation` event on that run's
-`events.jsonl` was followed, once `_notify_escalation_delivery`'s bounded
-retries above were exhausted, by `notification.escalation_undelivered`;
-and no LATER `operator_escalation` has landed since (a fresh escalation
-cycle resets the flag until its own retries are exhausted too).
-`resume()` (`POST /resume`, `ralphctl unpause`, or a ruling
-`resume_if_ruling_answers_pause` recognises) clears the persisted hold --
-and this flag with it -- synchronously, before the loop takes another
-step, so there is no window where the pause is answered but the marker
-still shows. Three surfaces render the string
-`state.format_escalation_undelivered_marker` returns (`❗ escalation
-undelivered`), each beside task 017's own `⏸ parked for input` pause
-marker: `ralphctl status`, on its `state:` line, with `--json` carrying
-the same `pauseMarker`/`escalationUndelivered`/`escalationUndeliveredMarker`
-fields the hub payloads carry, live or on-disk fallback alike; the hub's
-runs-list row (`ui_server.run_list`'s `escalationUndelivered`/
-`escalationUndeliveredMarker` fields, beside its `pauseMarker` field); and
-the hub's run-detail page (`ui_server.run_detail`'s own status doc, via
-`_with_pause_markers`, which attaches all three fields). `app.js`'s shared
+`engine.state.escalation_pause_markers(run_root, status)` derives, from one
+read of `events.jsonl` plus `status`, the three facts every surface carries:
+`pauseMarker`, `escalationUndelivered` and `escalationUndeliveredMarker`.
+The run counts as still paused on its latest escalation in two shapes: a
+persisted engine pause (recorded `state` and `pauseReason`), or the `rejected_incurable`
+in-memory hold above -- recorded `state` still `running`/`starting` (or not
+yet recorded), the MOST RECENT `operator_escalation` carries `reason:
+"rejected_incurable"`, and neither an `iteration.start` nor the `resumed`
+`log` event `resume()` emits (`state.RESUMED_LOG_MESSAGE`) has landed since.
+`escalationUndelivered` is `True` for exactly as long as the run is paused
+in one of those shapes AND that most recent `operator_escalation` was
+followed, once `_notify_escalation_delivery`'s bounded retries above were
+exhausted, by `notification.escalation_undelivered`, with no LATER
+`operator_escalation` since (a fresh escalation cycle resets the flag until
+its own retries are exhausted too). `pauseMarker` is task 017's own `⏸
+parked for input` for `pauseReason: "operator_input_needed"`, `⏸ held on
+rejected_incurable escalation` (`state.ESCALATION_HOLD_MARKER`) for the
+in-memory hold -- which records no `pauseReason` for task 017's marker to
+read -- and `""` otherwise. Answering the pause removes both markers at
+once: `resume()` (`POST /resume`, `ralphctl unpause`, a ruling
+`resume_if_ruling_answers_pause` recognises, the abort wind-down) clears a
+persisted hold on status.json synchronously and emits its `resumed` event,
+which ends the in-memory hold's derivation too; a restarted episode that
+re-enters review over the held approach ends it with its `iteration.start`.
+Three surfaces render `❗ escalation undelivered`
+(`state.ESCALATION_UNDELIVERED_MARKER`) right after the pause marker:
+`ralphctl status`, on its `state:` line, with `--json` carrying the same
+three fields the hub payloads carry, live or on-disk fallback alike; the
+hub's runs-list row (`ui_server.run_list`); and the hub's run-detail page
+(`ui_server.run_detail`'s own status doc, via `_with_pause_markers`).
+`ralphctl runs` carries the same `pauseMarker`. `app.js`'s shared
 `stateMarkerSpans` renders whichever of the two marker fields a payload
 carries, on both the runs-list row (`runRowStateChildren`) and the
 run-detail page's state cell (`stateCell`). A runs-list row whose
 container is gone (`containerGone`) still renders both markers after its
 `⚠ container gone` marker: the container being gone does not answer the
 pause. `tests/test_escalation_undelivered_marker.py` covers presence on
-all three surfaces while parked-and-undelivered, and absence on all three
-the instant the pause is answered, executing `app.js`'s own renderers in
-node for both the live and the gone runs-list row.
+all three surfaces while paused-and-undelivered -- for a persisted
+`rejected_last_approach` pause and the in-memory `rejected_incurable` hold
+alike -- and absence on all three once the pause is answered, executing
+`app.js`'s own renderers in node for both the live and the gone runs-list
+row.
 
 Pause takes effect at iteration boundaries only: `pause()` clears an event that
 `_gate()` awaits before each iteration, so the running agent finishes undisturbed,

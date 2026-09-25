@@ -39,7 +39,15 @@ from test_cli_ui import _write_dead_run
 from ralphd.cli import main as cli_main
 from ralphd.cli import ui_server
 from ralphd.engine import hat_tools, run_record
-from ralphd.engine.state import RunDir, escalation_undelivered, format_escalation_undelivered_marker
+from ralphd.engine.state import (
+    ESCALATION_HOLD_MARKER,
+    ESCALATION_UNDELIVERED_MARKER,
+    RESUMED_LOG_MESSAGE,
+    RunDir,
+    escalation_pause_markers,
+    escalation_undelivered,
+    format_escalation_undelivered_marker,
+)
 from tests.conftest import supervisor_factory
 
 RUN_ID = "task005-escalation-undelivered-marker"
@@ -65,6 +73,25 @@ def _trigger_undelivered_escalation(sup):
     sup._sleep_before_escalation_retry = lambda seconds: None
     sup._approach = 1
     sup._pause_and_escalate_last_approach_rejection(1)
+
+
+def _trigger_undelivered_incurable_escalation(sup):
+    """Drives the real `rejected_incurable` pause + escalation path
+    (`_pause_and_escalate_incurable_rejection`) with a permanently-failing
+    notifier. That site's pause is the reason-less in-memory hold: status.json
+    keeps `pauseReason: null` and never reads `state: "paused"` (SPEC.md
+    4.6), yet the run IS paused on this escalation until it is answered --
+    so every surface must still show the marker."""
+    sup._sleep_before_escalation_retry = lambda seconds: None
+    sup._review_findings = list
+    sup._approach = 1
+    sup._pause_and_escalate_incurable_rejection(1)
+
+
+_TRIGGERS = {
+    "rejected_last_approach": _trigger_undelivered_escalation,
+    "rejected_incurable": _trigger_undelivered_incurable_escalation,
+}
 
 
 # --------------------------------------------------------------------------
@@ -120,26 +147,64 @@ def test_escalation_undelivered_is_false_when_delivery_actually_succeeded(
     assert escalation_undelivered(root, status) is False
 
 
-def test_escalation_undelivered_never_crashes_on_the_in_memory_only_pause(
+def test_escalation_undelivered_is_true_while_held_on_the_in_memory_incurable_pause(
         tmp_path, monkeypatch):
     """`rejected_incurable` pauses in-memory only (`LoopSupervisor.pause()`
-    called with no reason, see `_pause_and_escalate_incurable_rejection`) --
-    `status.json`'s `state` never becomes `"paused"` for it, the same gap
-    `state.format_pause_marker` already lives with for this one reason
-    (docs note: gotcha for task 005). The predicate must read that
-    gracefully (`False`, never an exception), not claim a marker it cannot
-    actually place."""
+    called with no reason) -- `status.json` never reads `state: "paused"`
+    for it, but the engine IS paused on that escalation, and it went
+    undelivered: the predicate must say so, and the hold itself gets a
+    pause marker for the undelivered marker to sit next to."""
     _always_failing(monkeypatch)
     root = tmp_path / "run"
     sup = _supervisor(root, notifier_url="http://notifier.example/notify")
-    sup._sleep_before_escalation_retry = lambda seconds: None
-    sup._review_findings = lambda: []
 
-    sup._pause_and_escalate_incurable_rejection(1)
+    _trigger_undelivered_incurable_escalation(sup)
 
     status = sup.run.read_status()
     assert status.get("pauseReason") is None
+    assert status.get("state") != "paused"
+    assert not sup._pause.is_set()  # the engine really is holding
+    assert escalation_undelivered(root, status) is True
+    assert format_escalation_undelivered_marker(root, status) == (
+        ESCALATION_UNDELIVERED_MARKER)
+    assert escalation_pause_markers(root, status)["pauseMarker"] == (
+        ESCALATION_HOLD_MARKER)
+
+
+def test_escalation_undelivered_is_false_once_the_in_memory_incurable_pause_is_answered(
+        tmp_path, monkeypatch):
+    _always_failing(monkeypatch)
+    root = tmp_path / "run"
+    sup = _supervisor(root, notifier_url="http://notifier.example/notify")
+    _trigger_undelivered_incurable_escalation(sup)
+
+    sup.resume()  # `ralphctl unpause` / POST /resume
+
+    status = sup.run.read_status()
+    assert sup._pause.is_set()
     assert escalation_undelivered(root, status) is False
+    assert escalation_pause_markers(root, status) == {
+        "pauseMarker": "", "escalationUndelivered": False,
+        "escalationUndeliveredMarker": ""}
+
+
+def test_in_memory_incurable_hold_is_answered_by_a_later_iteration_start(tmp_path):
+    """A restarted episode resumes a `rejected_incurable` hold straight into
+    review (`_paused_awaiting_incurable_ruling`), so the run is no longer
+    held once a later iteration has started -- no marker from then on."""
+    root = tmp_path / "run"
+    rd = RunDir(root=root)
+    rd.emit("operator_escalation", approach=1, reason="rejected_incurable",
+            findings=[], escalation="held")
+    rd.emit(run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT,
+            reason="rejected_incurable")
+    status = {"state": "running", "pauseReason": None}
+    assert escalation_undelivered(root, status) is True
+
+    rd.emit("iteration.start", iteration=7, phase="review")
+
+    assert escalation_undelivered(root, status) is False
+    assert escalation_pause_markers(root, status)["pauseMarker"] == ""
 
 
 # --------------------------------------------------------------------------
@@ -156,8 +221,9 @@ def _ralphctl_status(capsys) -> str:
     return capsys.readouterr().out
 
 
+@pytest.mark.parametrize("kind", sorted(_TRIGGERS))
 def test_ralphctl_status_shows_the_marker_next_to_the_pause_marker(
-        tmp_path, monkeypatch, capsys):
+        tmp_path, monkeypatch, capsys, kind):
     registry = tmp_path / "registry"
     monkeypatch.setenv("RALPHD_REGISTRY", str(registry))
     monkeypatch.setattr(cli_main, "_dangling_run_entry", lambda run_id: None)
@@ -165,16 +231,22 @@ def test_ralphctl_status_shows_the_marker_next_to_the_pause_marker(
     _always_failing(monkeypatch)
     sup = _supervisor(tmp_path, run_root=f"registry/runs/{RUN_ID}",
                       notifier_url="http://notifier.example/notify")
-    _trigger_undelivered_escalation(sup)
+    _TRIGGERS[kind](sup)
 
     out = _ralphctl_status(capsys)
     state_line = next(l for l in out.splitlines() if l.startswith("state:"))
-    assert "paused" in state_line
-    assert "escalation undelivered" in state_line
+    if kind == "rejected_incurable":
+        # the in-memory hold's own pause marker, then the undelivered one
+        assert (state_line.index(ESCALATION_HOLD_MARKER)
+                < state_line.index(ESCALATION_UNDELIVERED_MARKER))
+    else:
+        assert "paused" in state_line
+    assert ESCALATION_UNDELIVERED_MARKER in state_line
 
 
+@pytest.mark.parametrize("kind", sorted(_TRIGGERS))
 def test_ralphctl_status_shows_no_marker_once_the_pause_is_answered(
-        tmp_path, monkeypatch, capsys):
+        tmp_path, monkeypatch, capsys, kind):
     registry = tmp_path / "registry"
     monkeypatch.setenv("RALPHD_REGISTRY", str(registry))
     monkeypatch.setattr(cli_main, "_dangling_run_entry", lambda run_id: None)
@@ -182,13 +254,14 @@ def test_ralphctl_status_shows_no_marker_once_the_pause_is_answered(
     _always_failing(monkeypatch)
     sup = _supervisor(tmp_path, run_root=f"registry/runs/{RUN_ID}",
                       notifier_url="http://notifier.example/notify")
-    _trigger_undelivered_escalation(sup)
+    _TRIGGERS[kind](sup)
     sup.resume()
 
     out = _ralphctl_status(capsys)
     state_line = next(l for l in out.splitlines() if l.startswith("state:"))
     assert "escalation undelivered" not in state_line
     assert "escalation undelivered" not in out
+    assert ESCALATION_HOLD_MARKER not in out
 
 
 def _ralphctl_status_json(capsys) -> dict:
@@ -196,8 +269,9 @@ def _ralphctl_status_json(capsys) -> dict:
     return json.loads(capsys.readouterr().out)
 
 
+@pytest.mark.parametrize("kind", sorted(_TRIGGERS))
 def test_ralphctl_status_json_carries_the_marker_fields(
-        tmp_path, monkeypatch, capsys):
+        tmp_path, monkeypatch, capsys, kind):
     registry = tmp_path / "registry"
     monkeypatch.setenv("RALPHD_REGISTRY", str(registry))
     monkeypatch.setattr(cli_main, "_dangling_run_entry", lambda run_id: None)
@@ -205,16 +279,19 @@ def test_ralphctl_status_json_carries_the_marker_fields(
     _always_failing(monkeypatch)
     sup = _supervisor(tmp_path, run_root=f"registry/runs/{RUN_ID}",
                       notifier_url="http://notifier.example/notify")
-    _trigger_undelivered_escalation(sup)
+    _TRIGGERS[kind](sup)
 
     doc = _ralphctl_status_json(capsys)
     assert doc["escalationUndelivered"] is True
     assert "escalation undelivered" in doc["escalationUndeliveredMarker"]
     assert "pauseMarker" in doc
+    if kind == "rejected_incurable":
+        assert doc["pauseMarker"] == ESCALATION_HOLD_MARKER
 
 
+@pytest.mark.parametrize("kind", sorted(_TRIGGERS))
 def test_ralphctl_status_json_drops_the_marker_once_the_pause_is_answered(
-        tmp_path, monkeypatch, capsys):
+        tmp_path, monkeypatch, capsys, kind):
     registry = tmp_path / "registry"
     monkeypatch.setenv("RALPHD_REGISTRY", str(registry))
     monkeypatch.setattr(cli_main, "_dangling_run_entry", lambda run_id: None)
@@ -222,65 +299,90 @@ def test_ralphctl_status_json_drops_the_marker_once_the_pause_is_answered(
     _always_failing(monkeypatch)
     sup = _supervisor(tmp_path, run_root=f"registry/runs/{RUN_ID}",
                       notifier_url="http://notifier.example/notify")
-    _trigger_undelivered_escalation(sup)
+    _TRIGGERS[kind](sup)
     sup.resume()
 
     doc = _ralphctl_status_json(capsys)
     assert doc["escalationUndelivered"] is False
     assert doc["escalationUndeliveredMarker"] == ""
+    assert doc["pauseMarker"] == ""
 
 
 # --------------------------------------------------------------------------
 # surface 2: the hub's runs-list row
 # --------------------------------------------------------------------------
-def _write_undelivered_run(registry: Path, run_id: str, **status_fields) -> Path:
-    run_dir = _write_dead_run(registry, run_id, state="paused",
-                              pauseReason="rejected_last_approach",
-                              **status_fields)
+def _write_undelivered_run(registry: Path, run_id: str,
+                           kind: str = "rejected_last_approach",
+                           **status_fields) -> Path:
+    """On-disk snapshot of a run still paused on an undelivered escalation:
+    `rejected_last_approach` persists `state: "paused"` + its `pauseReason`;
+    `rejected_incurable` is the in-memory hold, so status.json keeps
+    `state: "running"` and a null `pauseReason` (SPEC.md 4.6)."""
+    if kind == "rejected_incurable":
+        fields = {"state": "running", "pauseReason": None}
+    else:
+        fields = {"state": "paused", "pauseReason": kind}
+    run_dir = _write_dead_run(registry, run_id, **{**fields, **status_fields})
     rd = RunDir(root=run_dir)
-    rd.emit("operator_escalation", approach=1, reason="rejected_last_approach",
-           findings=[], escalation="parked")
-    rd.emit(run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT,
-           reason="rejected_last_approach")
+    rd.emit("iteration.start", iteration=3, phase="review")
+    rd.emit("operator_escalation", approach=1, reason=kind,
+            findings=[], escalation="parked")
+    rd.emit(run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT, reason=kind)
     return run_dir
 
 
-def test_hub_run_list_row_carries_the_marker(tmp_path):
+def _mark_answered(run_dir: Path) -> None:
+    """Exactly what `LoopSupervisor.resume()` (`ralphctl unpause`, `POST
+    /resume`, a ruling that releases the pause) leaves on disk: a persisted
+    pause's `state`/`pauseReason` back to `running`/`null`
+    (`_clear_persisted_pause`), and its `"resumed"` log event."""
+    status = json.loads((run_dir / "status.json").read_text())
+    status["state"] = "running"
+    status["pauseReason"] = None
+    (run_dir / "status.json").write_text(json.dumps(status))
+    RunDir(root=run_dir).emit("log", message=RESUMED_LOG_MESSAGE)
+
+
+KINDS = pytest.mark.parametrize("kind", sorted(_TRIGGERS))
+
+
+@KINDS
+def test_hub_run_list_row_carries_the_marker(tmp_path, kind):
     registry = tmp_path / "registry"
-    _write_undelivered_run(registry, "row-undelivered")
+    _write_undelivered_run(registry, "row-undelivered", kind)
     _write_dead_run(registry, "row-ordinary", state="running")
 
     rows = {r["runId"]: r for r in ui_server.run_list(registry)}
 
     assert rows["row-undelivered"]["escalationUndelivered"] is True
-    assert rows["row-undelivered"]["escalationUndeliveredMarker"] != ""
+    assert rows["row-undelivered"]["escalationUndeliveredMarker"] == (
+        ESCALATION_UNDELIVERED_MARKER)
+    if kind == "rejected_incurable":
+        assert rows["row-undelivered"]["pauseMarker"] == ESCALATION_HOLD_MARKER
     assert rows["row-ordinary"]["escalationUndelivered"] is False
     assert rows["row-ordinary"]["escalationUndeliveredMarker"] == ""
 
 
-def test_hub_run_list_row_drops_the_marker_once_answered(tmp_path):
+@KINDS
+def test_hub_run_list_row_drops_the_marker_once_answered(tmp_path, kind):
     registry = tmp_path / "registry"
-    run_dir = _write_undelivered_run(registry, "row-answered")
-    # `ralphctl unpause`/a ruling releasing the pause: state and pauseReason
-    # go back exactly the way `LoopSupervisor._clear_persisted_pause` leaves
-    # them.
-    status = json.loads((run_dir / "status.json").read_text())
-    status["state"] = "running"
-    status["pauseReason"] = None
-    (run_dir / "status.json").write_text(json.dumps(status))
+    run_dir = _write_undelivered_run(registry, "row-answered", kind)
+    _mark_answered(run_dir)
 
     rows = {r["runId"]: r for r in ui_server.run_list(registry)}
 
     assert rows["row-answered"]["escalationUndelivered"] is False
     assert rows["row-answered"]["escalationUndeliveredMarker"] == ""
+    assert rows["row-answered"]["pauseMarker"] == ""
 
 
 # --------------------------------------------------------------------------
 # surface 3: the hub's run-detail page
 # --------------------------------------------------------------------------
-def test_hub_run_detail_carries_the_marker(tmp_path):
+@KINDS
+def test_hub_run_detail_carries_the_marker(tmp_path, kind):
     registry = tmp_path / "registry"
-    _write_undelivered_run(registry, "det-undelivered")
+    _write_undelivered_run(registry, "det-undelivered", kind)
 
     detail = ui_server.run_detail(registry, "det-undelivered")
 
@@ -289,20 +391,21 @@ def test_hub_run_detail_carries_the_marker(tmp_path):
     # the pause marker rides alongside it now too (task 005 adds this to
     # the run-detail page, which never carried it before this task).
     assert "pauseMarker" in detail["status"]
+    if kind == "rejected_incurable":
+        assert detail["status"]["pauseMarker"] == ESCALATION_HOLD_MARKER
 
 
-def test_hub_run_detail_drops_the_marker_once_answered(tmp_path):
+@KINDS
+def test_hub_run_detail_drops_the_marker_once_answered(tmp_path, kind):
     registry = tmp_path / "registry"
-    run_dir = _write_undelivered_run(registry, "det-answered")
-    status = json.loads((run_dir / "status.json").read_text())
-    status["state"] = "running"
-    status["pauseReason"] = None
-    (run_dir / "status.json").write_text(json.dumps(status))
+    run_dir = _write_undelivered_run(registry, "det-answered", kind)
+    _mark_answered(run_dir)
 
     detail = ui_server.run_detail(registry, "det-answered")
 
     assert detail["status"]["escalationUndelivered"] is False
     assert detail["status"]["escalationUndeliveredMarker"] == ""
+    assert detail["status"]["pauseMarker"] == ""
 
 
 # --------------------------------------------------------------------------
@@ -355,17 +458,11 @@ def _node_render(surface: str, doc: dict) -> dict:
     return json.loads(result.stdout)
 
 
-def _mark_answered(run_dir: Path) -> None:
-    status = json.loads((run_dir / "status.json").read_text())
-    status["state"] = "running"
-    status["pauseReason"] = None
-    (run_dir / "status.json").write_text(json.dumps(status))
-
-
+@KINDS
 @pytest.mark.parametrize("container_gone", [False, True])
-def test_app_js_renders_the_marker_on_the_runs_list_row(tmp_path, container_gone):
+def test_app_js_renders_the_marker_on_the_runs_list_row(tmp_path, container_gone, kind):
     registry = tmp_path / "registry"
-    _write_undelivered_run(registry, "js-row")
+    _write_undelivered_run(registry, "js-row", kind)
     row = next(r for r in ui_server.run_list(registry) if r["runId"] == "js-row")
     # A dead run (the on-disk fixture has no container) is the case the
     # gone branch renders; the live branch is the same payload without it.
@@ -375,14 +472,16 @@ def test_app_js_renders_the_marker_on_the_runs_list_row(tmp_path, container_gone
 
     assert "escalation-undelivered-marker" in rendered["classes"]
     assert row["escalationUndeliveredMarker"] in rendered["text"]
+    assert row["pauseMarker"] in rendered["text"]
     assert ("container-gone-marker" in rendered["classes"]) is container_gone
 
 
+@KINDS
 @pytest.mark.parametrize("container_gone", [False, True])
 def test_app_js_drops_the_marker_on_the_runs_list_row_once_answered(
-        tmp_path, container_gone):
+        tmp_path, container_gone, kind):
     registry = tmp_path / "registry"
-    run_dir = _write_undelivered_run(registry, "js-row-answered")
+    run_dir = _write_undelivered_run(registry, "js-row-answered", kind)
     _mark_answered(run_dir)
     row = next(r for r in ui_server.run_list(registry)
                if r["runId"] == "js-row-answered")
@@ -394,20 +493,24 @@ def test_app_js_drops_the_marker_on_the_runs_list_row_once_answered(
     assert "escalation undelivered" not in rendered["text"]
 
 
-def test_app_js_renders_the_marker_on_the_run_detail_page(tmp_path):
+@KINDS
+def test_app_js_renders_the_marker_on_the_run_detail_page(tmp_path, kind):
     registry = tmp_path / "registry"
-    _write_undelivered_run(registry, "js-det")
+    _write_undelivered_run(registry, "js-det", kind)
     detail = ui_server.run_detail(registry, "js-det")
 
     rendered = _node_render("detail", detail["status"])
 
     assert "escalation-undelivered-marker" in rendered["classes"]
     assert detail["status"]["escalationUndeliveredMarker"] in rendered["text"]
+    assert detail["status"]["pauseMarker"] in rendered["text"]
 
 
-def test_app_js_drops_the_marker_on_the_run_detail_page_once_answered(tmp_path):
+@KINDS
+def test_app_js_drops_the_marker_on_the_run_detail_page_once_answered(
+        tmp_path, kind):
     registry = tmp_path / "registry"
-    run_dir = _write_undelivered_run(registry, "js-det-answered")
+    run_dir = _write_undelivered_run(registry, "js-det-answered", kind)
     _mark_answered(run_dir)
     detail = ui_server.run_detail(registry, "js-det-answered")
 

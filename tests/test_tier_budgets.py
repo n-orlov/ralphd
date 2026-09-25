@@ -60,8 +60,8 @@ TIER_MARKERS = ("smoke", "fast")
 # lowered to the measured count freely; raising it needs the tests that
 # earned the room named in the same message.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6178, "modules": 425},
-    "smoke": {"tests": 4499, "modules": 305},
+    "fast": {"tests": 6194, "modules": 425},
+    "smoke": {"tests": 4515, "modules": 305},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

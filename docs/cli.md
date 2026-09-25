@@ -503,18 +503,22 @@ Full status (mirrors `GET /status`; falls back to the run dir's `status.json` wh
 the container is gone — indicated by `"live": false` in `--json` mode).
 
 The `state:` line names up to two markers, space-separated after the raw
-state word, whenever they apply (issue #269). The first, `⏸ parked for
-input` (the same marker `ralphctl runs` and the hub run list render), marks
-the one `pauseReason` (`operator_input_needed`) a plain `ralphctl unpause`
-cannot answer. The second, `❗ escalation undelivered`, names a run whose
-most recently recorded engine escalation never reached the operator at all
-— every bounded delivery retry failed — and which is still paused on that
-exact escalation. It disappears the instant `ralphctl unpause`/`POST
-/resume` (or a ruling that answers the pause) clears the hold. `--json`
-carries the same facts as `pauseMarker` (the pause marker string, `""` when
-none applies), `escalationUndelivered` (boolean) and
-`escalationUndeliveredMarker` (the marker string, `""` when it does not
-apply), on the live and on-disk fallback paths alike.
+state word, whenever they apply (issue #269). The first is the pause
+marker (the same one `ralphctl runs` and the hub run list render): `⏸
+parked for input` marks the one `pauseReason` (`operator_input_needed`) a
+plain `ralphctl unpause` cannot answer, and `⏸ held on rejected_incurable
+escalation` marks a run the engine is holding on a `rejected_incurable`
+escalation — a pause kept in memory only, so its `state` still reads
+`running` and it records no `pauseReason`. The second, `❗ escalation
+undelivered`, names a run whose most recently recorded engine escalation
+never reached the operator at all — every bounded delivery retry failed —
+and which is still paused on that exact escalation, persisted or held in
+memory. Both disappear once `ralphctl unpause`/`POST /resume` (or a ruling
+that answers the pause) releases the hold. `--json` carries the same facts
+as `pauseMarker` (the pause marker string, `""` when none applies),
+`escalationUndelivered` (boolean) and `escalationUndeliveredMarker` (the
+marker string, `""` when it does not apply), on the live and on-disk
+fallback paths alike.
 
 The `phase:` line carries the approach counter against its limit (task 007,
 issue #16): `phase:     worker  approach 2/3`. With no `maxApproaches`
