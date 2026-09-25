@@ -192,10 +192,7 @@ time). Restated here so a later PRD adopting this fragment inherits the list
 without retyping it:
 
 - **No "last commit" rule.** Nothing may require being "the last commit".
-  The final guard subset runs **at the final code sha** — the last commit
-  that touches anything outside `artifacts/reports/`, `docs/roadmap.md` and
-  `docs/prds/README.md` — never "the last commit"; a report-only commit may
-  follow it freely.
+  The final guard subset runs at the last commit that touches code.
 - **No record about its own future.** No report, record or criterion states
   what a later event will be, or must record events after the sha it names
   ("none newly filed", "every petition and its adjudication", "the terminal
@@ -204,10 +201,6 @@ without retyping it:
   no criterion mentions a send, a ledger entry or an HTTP status.
 - **No sha-scoped-count rule.** A count names the sha it was computed at
   when that is cheap; a missing sha is residual, never blocking.
-- **No sweep-sha declaration rule beyond the existing guard.** A record
-  declares `sweep-sha` exactly as `docs/sweep-records.md` already requires;
-  its own rules (report-only gap allowed, discharge pairs) are the whole
-  obligation.
 - **No audit range, no "commit exactly once", no protected-path clause.**
 - **No self-referential criterion** — a task whose criterion names the sha
   of a later commit, or a row that must cite the commit writing it (the
