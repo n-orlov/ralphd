@@ -4362,8 +4362,8 @@ def _existing_retake_task(tasks: list, path: str) -> dict | None:
 
 # Task 033 (PRD requirement E.4, #167): the phrase a plan uses to name its
 # own last code-touching task -- either an explicit override in the
-# standing rules (planning.md practice 9: "the standing rules name the
-# last code-touching task") or a task's own text self-declaring the role
+# standing rules (a line naming "the last code-touching task" and its id)
+# or a task's own text self-declaring the role
 # (the PRD's own K-series convention, "This is the last code-touching
 # task"). Matched case-insensitively with an optional space/hyphen between
 # each word, so "last code touching task" and "last-code-touching task"
@@ -4411,7 +4411,7 @@ def last_code_touching_task_id(run: "RunDir", tasks: list) -> str | None:
     today's append-at-the-end ordering for.
 
     Two sources, an explicit standing-rules override checked before a
-    task's own self-declared default (mirrors planning.md's own practice:
+    task's own self-declared default (the convention it recognises:
     a task says of itself "this is the last code-touching task ... unless
     the plan names a later one explicitly in the standing rules"):
 

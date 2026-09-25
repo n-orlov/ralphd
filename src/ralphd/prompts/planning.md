@@ -269,7 +269,11 @@ lawyered:
    file any task writes. A sweep is true of one tree: if a lane is found red
    and the fix is code, the fix is new work and the sweep is re-run from
    scratch after it lands, never re-run under the same task that found the
-   red lane.
+   red lane. The one thing that lands after the final sweep is a review cure
+   pass: the engine appends its cure tasks after the plan's tail (unless a
+   task declares itself the plan's last code-touching task, in which case
+   cure tasks go just before it), and review re-runs the tests on the cured
+   tree before it can verify.
 6. **Closure tasks `dependsOn` the work they attest to.** List order alone is
    fragile, because a validation-failed task can be reordered ahead of or
    behind the closure task that names it; an explicit `dependsOn` survives
