@@ -5311,10 +5311,9 @@ re-read it and failed when it stopped being true. v0.21's requirement N retired
 that whole live-checking apparatus (`tests/report_claims.py`,
 `tests/records/test_report_claims.py`, `test_issue_traceability.py`, and the
 corpus itself, task 060) rather than keep re-grading a v0.5-v0.9 corpus that
-will never change again: a closed wave keeps its receipts in the roadmap block
-(§4.2) and, where a check still needs the old facts, a frozen literal constant
-(`tests/records/test_roadmap.py`'s closure sets) rather than a report re-parsed
-on every test run. The rest of this section is history: it describes the
+will never change again: where a check still needs the old facts, it reads a
+frozen literal constant (`tests/records/test_roadmap.py`'s closure sets) rather
+than a report re-parsed on every test run. The rest of this section is history: it describes the
 mechanism as it stood through v0.20.2, before requirement N (v0.21) deleted it.
 
 The traceability report was the worked example: `issue-traceability.md` mapped
@@ -5853,7 +5852,7 @@ expensive to rediscover.
 
 | invariant | guarded by |
 | --- | --- |
-| The auto-resume default lives in exactly one literal: `AUTO_RESUME_DEFAULT` in `src/ralphd/cli/main.py`. Every reader — the flag layering, the registry-config default, the pre-existing-run fallback, `doctor --fix` — goes through it, and the tests are parameterised over its value rather than spelling the boolean out, so flipping it is a one-line change that does not rewrite the suite. v0.7 flipped it (§8.8) and that is exactly what it cost: the one literal, the two tests that are *about* the default, and the fixtures that meant "an opted-out run" and now say `--no-auto-resume`. | `tests/test_cli_auto_resume.py` (imports the constant, greps the source line, and asserts the roadmap records the flip as shipped) |
+| The auto-resume default lives in exactly one literal: `AUTO_RESUME_DEFAULT` in `src/ralphd/cli/main.py`. Every reader — the flag layering, the registry-config default, the pre-existing-run fallback, `doctor --fix` — goes through it, and the tests are parameterised over its value rather than spelling the boolean out, so flipping it is a one-line change that does not rewrite the suite. v0.7 flipped it (§8.8) and that is exactly what it cost: the one literal, the two tests that are *about* the default, and the fixtures that meant "an opted-out run" and now say `--no-auto-resume`. | `tests/test_cli_auto_resume.py` (imports the constant and greps the source line) |
 | There is exactly one log-merge implementation. Only `src/ralphd/log_merge.py` may synthesise a `ralphd.iteration` boundary out of a `meta.json`, and only a named allowlist of modules may read `output.jsonl` at all (`log_merge.py`, `engine/api.py`'s single-iteration raw route, `engine/loop.py` which writes it, `engine/redact.py`). | `tests/test_log_merge.py::test_no_duplicate_merge_implementation`, plus `::test_api_and_on_disk_merge_are_identical` asserting the live and on-disk paths agree byte-for-byte |
 | The documented sibling-cleanup command leaves the job container alive. The two-filter form is run for real against a real daemon and the job container must survive; the forbidden one-filter form is *also* run, and must really delete it, so the test fails if the danger it guards ever stops being real. | `tests/test_sibling_cleanup_job_safe.py` (`-m docker`): `::test_documented_cleanup_removes_siblings_and_spares_the_job`, `::test_the_forbidden_form_really_does_delete_the_job_container`, `::test_ralphctl_stop_and_rm_still_reap_everything` |
 | No copy of the docs, prompts or example skills teaches the run-label-only form, and every rendered prompt carries the safe one. | `tests/test_docs_consistency.py::test_docs_and_examples_teach_the_sibling_only_cleanup_filter`, `::test_no_run_label_only_cleanup_command_in_docs_or_examples`, `::test_rendered_prompt_has_no_run_label_only_cleanup_command`, `::test_example_skill_run_sh_labels_siblings_with_the_role_label`; `tests/test_sibling_cleanup_guidance.py` for the per-prompt and self-id cases |

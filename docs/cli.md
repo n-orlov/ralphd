@@ -2083,8 +2083,8 @@ one place), so both commands tell **one story** for the same run:
 1. `ralphctl resume <run-id>` — continue it. Resume-first is the default
    advice because the container died but the run dir (plan, notes,
    artifacts, transcripts) is intact, so the work is still there to finish.
-   Opt-in per-run auto-resume (`ralphctl doctor --fix`, see
-   docs/roadmap.md) automates exactly this step.
+   Per-run auto-resume (`ralphctl doctor --fix`, on unless the run was
+   started with `--no-auto-resume`) automates exactly this step.
 2. `ralphctl repair <run-id> --set-state aborted` — declare it over,
    recording a `reason` naming the vanished container.
 
