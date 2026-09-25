@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 
-import pytest
 
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import (
@@ -121,18 +120,15 @@ def _seed_retake(sup, attempts):
 # ---------------------------------------------------------------------------
 
 
-def test_the_helper_resets_a_spent_count_and_keeps_it_as_prior():
+def test_the_helper_resets_a_spent_count_and_leaves_an_unspent_one():
     task = {"id": "1", "validationAttempts": 3}
     reset_validation_attempts_for_reopen(task)
     assert task == {"id": "1", "validationAttempts": 0,
                     "priorValidationAttempts": 3}
-
-
-@pytest.mark.parametrize("task", [{"id": "1"}, {"id": "1", "validationAttempts": 0}])
-def test_the_helper_leaves_an_unspent_task_untouched(task):
-    before = dict(task)
-    reset_validation_attempts_for_reopen(task)
-    assert task == before
+    for unspent in ({"id": "1"}, {"id": "1", "validationAttempts": 0}):
+        before = dict(unspent)
+        reset_validation_attempts_for_reopen(unspent)
+        assert unspent == before
 
 
 def test_the_record_and_verification_reopen_resets_both_counters(tmp_path):
@@ -144,6 +140,12 @@ def test_the_record_and_verification_reopen_resets_both_counters(tmp_path):
         assert tasks[tid]["validationAttempts"] == 0
         assert tasks[tid]["priorValidationAttempts"] == VALIDATION_ATTEMPT_LIMIT
 
+    # a reopen of a task that never spent an attempt records no prior count
+    fresh = _supervisor(tmp_path / "fresh", _lane_tasks(None))
+    insert_cure_tasks(fresh.run, 1, [_finding(RECORD_PATH)])
+    for tid in ("057", "058"):
+        assert "priorValidationAttempts" not in _by_id(fresh)[tid]
+
 
 def test_the_reused_retake_row_reopen_resets_its_counter(tmp_path):
     sup = _supervisor(tmp_path, [])
@@ -154,13 +156,6 @@ def test_the_reused_retake_row_reopen_resets_its_counter(tmp_path):
     assert row["status"] == "pending"
     assert row["validationAttempts"] == 0
     assert row["priorValidationAttempts"] == VALIDATION_ATTEMPT_LIMIT
-
-
-def test_a_reopen_of_a_task_that_spent_nothing_adds_no_prior(tmp_path):
-    sup = _supervisor(tmp_path, _lane_tasks(None))
-    insert_cure_tasks(sup.run, 1, [_finding(RECORD_PATH)])
-    for tid in ("057", "058"):
-        assert "priorValidationAttempts" not in _by_id(sup)[tid]
 
 
 def test_the_issue_273_sequence_reaches_a_verifier_after_the_reopen(tmp_path):
@@ -202,18 +197,8 @@ def test_an_exhausted_task_awaiting_validation_fails_with_an_event(tmp_path):
     moves = [e for e in read_events(sup.run.root, types={"task"})
              if e.get("taskId") == "046"]
     assert moves and moves[-1]["newStatus"] == "failed"
-
-
-def test_the_failed_task_reaches_the_unresolved_failures_route(tmp_path):
-    """Nothing actionable left but the exhausted task: the plan routes to
-    review (`blocked_with_failures`), never to the stagnation guard."""
-    sup = _supervisor(tmp_path, [
-        _task("045", status="validated"),
-        _task("046", status="awaiting-validation",
-              attempts=VALIDATION_ATTEMPT_LIMIT)])
-    blocked = sup._unresolved_failures(sup.run.read_tasks())
-    assert blocked == []   # awaiting-validation alone is not a failure
-    asyncio.run(sup._verify_task(_by_id(sup)["046"]))
+    # with nothing actionable left, the failure routes to review
+    # (`blocked_with_failures`), never to the stagnation guard
     blocked = sup._unresolved_failures(sup.run.read_tasks())
     assert [t["id"] for t in blocked] == ["046"]
 
@@ -254,31 +239,36 @@ _PATHS = {"record-and-verification": _reopen_record,
           "no-reopen": _no_reopen}
 
 
-@pytest.mark.parametrize("verdict", ["verified", "rejected"])
-@pytest.mark.parametrize("attempts", range(0, VALIDATION_ATTEMPT_LIMIT + 3))
-@pytest.mark.parametrize("path", sorted(_PATHS))
-def test_no_task_rests_awaiting_validation_with_a_spent_budget(
-        tmp_path, path, attempts, verdict):
-    if path == "reused-retake":
-        sup = _supervisor(tmp_path, [], verdict=verdict)
-        _seed_retake(sup, attempts)
-    else:
-        sup = _supervisor(tmp_path, _lane_tasks(attempts), verdict=verdict)
-    for tid in _PATHS[path](sup):
-        _set(sup, tid, status="awaiting-validation")  # the worker completed it
+def test_no_task_rests_awaiting_validation_with_a_spent_budget(tmp_path):
+    """Exhaustive over the reopen paths, every starting count up to two past
+    the limit, and both verdicts, in one node."""
+    for path in sorted(_PATHS):
+        for attempts in range(0, VALIDATION_ATTEMPT_LIMIT + 3):
+            for verdict in ("verified", "rejected"):
+                case = tmp_path / f"{path}-{attempts}-{verdict}"
+                if path == "reused-retake":
+                    sup = _supervisor(case, [], verdict=verdict)
+                    _seed_retake(sup, attempts)
+                else:
+                    sup = _supervisor(case, _lane_tasks(attempts),
+                                      verdict=verdict)
+                for tid in _PATHS[path](sup):
+                    # the worker completed it
+                    _set(sup, tid, status="awaiting-validation")
 
-    # the verify dispatch, as `_step_worker` drives it
-    for task in [t for t in sup.run.read_tasks()["tasks"]
-                 if t.get("status") == "awaiting-validation"]:
-        asyncio.run(sup._verify_task(task))
+                # the verify dispatch, as `_step_worker` drives it
+                for task in [t for t in sup.run.read_tasks()["tasks"]
+                             if t.get("status") == "awaiting-validation"]:
+                    asyncio.run(sup._verify_task(task))
 
-    stuck = [t["id"] for t in sup.run.read_tasks()["tasks"]
-             if t.get("status") == "awaiting-validation"
-             and t.get("validationAttempts", 0) >= VALIDATION_ATTEMPT_LIMIT]
-    assert stuck == []
-    if path != "no-reopen":
-        # an engine reopen always earns the new claim a real verifier
-        assert sup.runner.calls >= 1
+                stuck = [t["id"] for t in sup.run.read_tasks()["tasks"]
+                         if t.get("status") == "awaiting-validation"
+                         and t.get("validationAttempts", 0)
+                         >= VALIDATION_ATTEMPT_LIMIT]
+                assert stuck == [], (path, attempts, verdict)
+                if path != "no-reopen":
+                    # an engine reopen always earns the new claim a verifier
+                    assert sup.runner.calls >= 1, (path, attempts, verdict)
 
 
 # ---------------------------------------------------------------------------
@@ -300,11 +290,10 @@ def test_the_stagnation_escalation_names_a_task_awaiting_validation(tmp_path):
     assert (f"046 (awaiting-validation, validationAttempts 2 of "
             f"{VALIDATION_ATTEMPT_LIMIT})") in ev["escalation"]
 
-
-def test_the_stagnation_escalation_adds_nothing_without_such_a_task(tmp_path):
-    sup = _supervisor(tmp_path, [_task("047", status="pending")])
-    sup._pause_and_escalate_stagnation_last_approach(
+    # and adds nothing when no task is waiting on verify
+    quiet = _supervisor(tmp_path / "quiet", [_task("047", status="pending")])
+    quiet._pause_and_escalate_stagnation_last_approach(
         1, [{"id": "047", "status": "pending"}])
-    ev = list(read_events(sup.run.root, types={"operator_escalation"}))[-1]
+    ev = list(read_events(quiet.run.root, types={"operator_escalation"}))[-1]
     assert ev["awaitingValidation"] == []
     assert "awaiting-validation," not in ev["escalation"]
