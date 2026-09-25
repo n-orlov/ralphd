@@ -150,22 +150,19 @@ judge? Look specifically for:
    remaining, your priced total, and which tail tasks you expect the shortfall
    to leave for a top-up. A plan that records the shortfall honestly and orders
    the must-land requirements first is not grounds for an objection.
-11. **No probe-audit task for a requirement group (#169).** `plan_ingestion.
-   lint_proposal()` already refuses a proposal that names a requirement
-   group -- a task titled in this plan's own `<Letter>[.N]: <description>`
-   convention (`A.1: ...`, `K.2: ...`, `H: ...`; a landing/record task like
-   `Lanes: ...` names no group and is exempt) -- with no task in that group
-   whose own `successCriteria` states both that a probe exists which fails
-   if the behaviour is absent and that the probe is named in the commit
-   message, and rejects the plan before it ever reaches you if one slips
-   through. Catch it here too if the lint's own phrase-match misses a
-   near-miss: a group whose only tasks describe the feature itself, with
-   no separate task committing to a probe that fails on absence and to
-   naming that probe in the commit message, leaves this exact requirement
-   group unaudited until the run-ending review -- precisely the timing gap
-   requirement K exists to front-load. Object by naming the unaudited
-   group and instructing the concrete fix: add one probe-audit task for it
-   carrying both clauses.
+11. **A paperwork task.** A task whose deliverable is a tracked report,
+   record, close-out, audit, evidence or re-take document. The run ships
+   working code proven by tests and a spec that describes it; run evidence
+   (logs, measurements, sweep results) belongs in the run's artifacts
+   directory, never in a commit. Object by naming the task and instructing
+   the concrete fix: drop it, or fold the spec change it stands in for into
+   the task that builds the behaviour.
+12. **An implementation task with no behaviour-failing test.** A task that
+   builds or changes behaviour whose own `successCriteria` name no test that
+   fails if the behaviour is absent — a criterion satisfied by a green suite
+   the behaviour's absence would leave just as green. Object by naming the
+   task and instructing the concrete fix: name, in that task's own criteria,
+   the test that fails without the behaviour.
 
 This is a coarse, one-pass sanity check against the plan's structure — not a
 second full requirements audit. That exhaustive, from-scratch verification is

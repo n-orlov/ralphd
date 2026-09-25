@@ -237,87 +237,59 @@ offending task.
 
 ## Plan-building practices
 
-Recent PRDs have each had to spell out, by hand, the same set of practices this
-role now needs by default. Follow all ten below when drafting tasks; each is
-named together with the incident that taught it, so the reason survives, not
-just the rule — a rule whose reason is stated is followed; one merely asserted
-is lawyered:
+A run ships two things: working code, proven by tests, and a product spec
+(`SPEC.md` and the user docs) that describes that code truthfully.
+Follow all nine below when drafting tasks; each carries its reason, because
+a rule whose reason is stated is followed and one merely asserted is
+lawyered:
 
-1. **A closure is a task with evidence.** Naming an issue is not closing it —
-   a task that claims to close something must carry the commit, the test, or
-   the artifact that proves it, not just the issue number. (v0.10's review
-   rejection: a task claimed a closure on naming alone and was rejected on
-   review for it.)
-2. **A report- or docs-only task still changes the repository**, so its
-   successCriteria must re-verify the guards at the *true final sha*, with
-   `HEAD` and `origin/main` shown to agree — not merely restate that they
-   already passed earlier. (v0.11 shipped a red suite; its own re-verify task
-   had passed, but only for a machine-dependent reason that a true-final-sha
-   re-run would have caught.)
-3. **No task's successCriteria may *require* a full-suite run** unless that
+1. **A closure is a task with evidence.** Naming an issue is not closing it.
+   A task that claims to close an issue proves it with an issue comment
+   naming the commit that fixes it and the test node that fails without that
+   commit — never with a tracked record or report file, which only restates
+   the claim in another place that can drift.
+2. **No task's successCriteria may *require* a full-suite run** unless that
    task itself IS the sweep task — this is a prohibition on how a task's
    criteria may be worded, not sizing advice (sizing is covered separately
-   below, under Rules). (A v0.11 iteration spent 2h and ~$9.30 hitting the
-   120-minute iteration wall-clock cap for zero tasks completed, because a
-   task's own criteria demanded a full-suite run.)
-4. **One sweep task per tier**, bounded (wrapped in a `timeout`) and
+   below, under Rules). A full-suite run inside ordinary work overruns the
+   iteration wall-clock cap and completes nothing.
+3. **One sweep task per tier**, bounded (wrapped in a `timeout`) and
    backgrounded (`nohup ... &`, polled rather than blocked on), with **every
-   skip named** — in its own successCriteria or the report it produces — a
-   sweep that silently skips a marker, a mode or a module is not a sweep.
-5. **Criteria may only cite paths the repository actually contains** — never
+   skip named** in its own successCriteria — a sweep that silently skips a
+   marker, a mode or a module is not a sweep. The sweep's output goes to the
+   run's artifacts directory (`/run/ralphd/artifacts`, the `Artifacts
+   directory` line in Job context) and is never committed.
+4. **Criteria may only cite paths the repository actually contains** — never
    a generated, untracked directory, and never a path that exists only on
-   the machine that produced it. (#86: a report cited a generated, untracked
-   directory, and the guard checking it passed only on the machine that had
-   generated that directory, nowhere else.)
-6. **A fixed tail order:** work → closures → record → sweeps → guard
-   re-verification. There is no closing-report task, for this wave or any
-   future one (requirement N.3) — the run's terminal summary is a `notify`
-   send, not a file any task writes, and it comes only after the sweep and
-   the guard re-verification it reports on, never before either.
-7. **Closure tasks `dependsOn` the work they attest to.** List order alone is
+   the machine that produced it, because a check against such a path passes
+   on that one machine and nowhere else.
+5. **A fixed tail order:** work → closures → sweeps. NOTHING is committed
+   after the final sweep, and there is no record step: the sweep is the last
+   word on the tree it ran against, and a commit after it would ship a tree
+   no sweep has seen. The run's terminal summary is a `notify` send, not a
+   file any task writes. A sweep is true of one tree: if a lane is found red
+   and the fix is code, the fix is new work and the sweep is re-run from
+   scratch after it lands, never re-run under the same task that found the
+   red lane.
+6. **Closure tasks `dependsOn` the work they attest to.** List order alone is
    fragile, because a validation-failed task can be reordered ahead of or
    behind the closure task that names it; an explicit `dependsOn` survives
    that reordering and list order does not.
-8. **A sweep task's successCriteria state its execution shape** — the exact
+7. **A sweep task's successCriteria state its execution shape** — the exact
    command, its `timeout`, and whether/how it backgrounds and polls — using
    the numbers step 2b already measured, rather than leaving each worker to
    rediscover the runtime and guess at a bound.
-9. **The tail is a FREEZE, and the plan names the last code-touching task.**
-   Code is anything outside `artifacts/reports/`, `docs/roadmap.md`,
-   `docs/prds/README.md`; from that named task's own launch onward every
-   commit is record-only, checked with `git show --stat` before it is
-   pushed. Name it explicitly in the plan or the Standing Rules block, not
-   left implicit as "whichever task happens to be last" — a later inserted
-   cure or re-take task has to know where the freeze line sits to land on
-   the correct side of it. A sweep is true of one tree: if a lane is found
-   red and the fix is code, the fix is new work and the sweep is re-run from
-   scratch after it lands, never re-run under the same task that found the
-   red lane.
-10. **One probe-audit task per requirement group** (PRD requirement K.1).
-   Title every task with the group it belongs to, in this plan's own
-   `<Letter>[.N]: <description>` convention (`A.1: ...`, `A.2: ...`,
-   `K.1: ...`) — this is how the lint that enforces this rule, and
-   `plan_review`'s matching objection ground, identify a task's group at
-   all; a task outside the lettered groups (a landing/record task titled
-   e.g. `Lanes: ...`) names no group and is exempt. For every requirement
-   group this plan gives at least one task, emit exactly one ADDITIONAL
-   task — separate from the group's implementation tasks, though it may sit
-   anywhere in the group's own ordering — whose `successCriteria` states
-   BOTH of: **a probe exists which fails if the behaviour is absent**, and
-   **the probe is named in the commit message**. This is the review
-   incident that motivates the rule, told once so the reason survives: the
-   last run's numbers were 37 verify iterations at ~1.4 minutes each and
-   one 35-minute review that overturned eight of the tasks they had
-   passed, twice on the exact same mechanical failure — a shipped, green
-   test node asserting the OPPOSITE of its own criterion. A probe-audit
-   task front-loads, at plan time, exactly the check review would otherwise
-   perform once, at the end, where its findings are expensive and often
-   uncurable. `plan_ingestion.lint_proposal()` refuses a proposal that
-   names a lettered group with no such task in it, naming the missing
-   group; write the probe-audit task's criteria in close to the phrasing
-   above (a probe "exists" that "fails if the behaviour is absent", named
-   "in the commit message") since the lint matches those two clauses, not
-   a paraphrase of their intent.
+8. **Every implementation task names its own behaviour-failing test.** Its
+   successCriteria name a test that fails if the behaviour is absent, so the
+   verifier can check the test's direction and not only that it is green.
+   There are no separate audit tasks: the proof belongs to the task that
+   builds the behaviour.
+9. **Never plan paperwork.** No task's deliverable may be a tracked report,
+   record, close-out, audit, evidence or re-take document. Run evidence
+   (logs, measurements, sweep results) is written under
+   `/run/ralphd/artifacts` and never committed. The spec (`SPEC.md` and the
+   user docs) is updated in the same task as the behaviour it describes, so
+   the two never disagree between tasks.
 
 ## Rules
 
