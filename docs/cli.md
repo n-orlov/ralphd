@@ -3417,8 +3417,11 @@ JSON endpoints served under `/api/`:
   the on-disk structured findings sidecar), never a second live-only path.
   Carries `reason`, `approach`/`maxApproaches`/`approachOfMax`, `parkedAt`,
   `replanAvailable` (present only for `operator_input_needed`),
-  `blockingCount`/`residualCount`, one `findings` entry per blocking finding
-  (`{id: "F<n>", severity, clause, evidence, cured_when, invalidates}`), and
+  `blockingCount`/`residualCount`, one `findings` entry per finding —
+  every blocking finding (`id: "F<n>"`, the escalation's own numbering)
+  followed by every residual finding off the sidecar (`id: "R<n>"`), each
+  `{id, severity, clause, evidence, cured_when, invalidates}` with the whole
+  evidence — and
   `consequence` — `taskIdsValidatedToPending`, `insertCount`,
   `costSpentThisApproach`, `tokensSpentThisApproach`, and
   `nextStepIfUnanswered` (`"cure_pass"` \| `"archive_and_replan"`, docs/api.md

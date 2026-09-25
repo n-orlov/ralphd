@@ -145,6 +145,15 @@ def test_operator_input_needed_cure_pass_next_step(tmp_path):
     assert finding["evidence"] == _CURE_REOPEN_FINDING[0]["evidence"]
     assert finding["cured_when"] == _CURE_REOPEN_FINDING[0]["cured_when"]
     assert finding["invalidates"] == [RECORD_PATH]
+    # The residual finding is itemised too, not merely counted.
+    assert len(pq["findings"]) == 2
+    residual = pq["findings"][1]
+    assert residual["id"] == "R1"
+    assert residual["severity"] == "residual"
+    assert residual["clause"] == _RESIDUAL["clause"]
+    assert residual["evidence"] == _RESIDUAL["evidence"]
+    assert residual["cured_when"] is None
+    assert residual["invalidates"] == []
     assert set(pq["consequence"]["taskIdsValidatedToPending"]) == {"057", "058"}
     assert pq["consequence"]["insertCount"] == 1
     assert pq["consequence"]["costSpentThisApproach"] == "$0.42"
@@ -193,6 +202,55 @@ def test_operator_input_needed_archive_and_replan_next_step(tmp_path):
     assert ev["approachOfMax"] == "approach 1 of 2"
     assert ev["costSpentThisApproach"] == "$0.42"
     assert ev["tokensSpentThisApproach"] == 321
+
+
+def test_every_residual_finding_is_itemised_after_the_blocking_ones(tmp_path):
+    """Criterion (1): EACH finding -- residual as well as blocking -- carries
+    its id, severity, clause, full evidence, cured_when and invalidates. The
+    residual entries come off the on-disk sidecar (the event carries only
+    the blocking set), in the sidecar's own order, after the blocking ones,
+    under their own `R<n>` ids so the `F<n>` ids the escalation text and
+    `ralphctl amend` name are never shifted."""
+    root = tmp_path / "run"
+    long_residual_evidence = "r" * 12000 + " end-of-residual-evidence"
+    residuals = [
+        _finding("residual", True, "residual clause one", long_residual_evidence,
+                 cured_when="the residual is disclosed in docs",
+                 invalidates=["docs/api.md"]),
+        _finding("residual", False, "residual clause two", "second residual"),
+    ]
+    blocking = [_finding("blocking", False, "requirement B (#111)", "incurable")]
+    sup = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
+                      status={"state": "running", "phase": "review",
+                              "approach": 1, "maxApproaches": 2})
+    sup._approach = 1
+    # Residuals interleaved with the blocking finding on disk: order in the
+    # payload is still blocking first, then residuals in sidecar order.
+    findings.write_findings_json(sup.run.findings_json_file,
+                                 [residuals[0]] + blocking + [residuals[1]])
+    sup._pause_and_escalate_operator_input_needed(
+        1, blocking, replan_available=True)
+
+    pq = parked_question(root, sup.run.read_status())
+    assert pq["blockingCount"] == 1
+    assert pq["residualCount"] == 2
+    assert [f["id"] for f in pq["findings"]] == ["F1", "R1", "R2"]
+    assert [f["severity"] for f in pq["findings"]] == [
+        "blocking", "residual", "residual"]
+    r1, r2 = pq["findings"][1], pq["findings"][2]
+    assert r1["clause"] == "residual clause one"
+    assert r1["evidence"] == long_residual_evidence
+    assert r1["cured_when"] == "the residual is disclosed in docs"
+    assert r1["invalidates"] == ["docs/api.md"]
+    assert r2["clause"] == "residual clause two"
+    assert r2["evidence"] == "second residual"
+    assert r2["cured_when"] is None
+    assert r2["invalidates"] == []
+    # The counts agree with the itemised list, severity by severity.
+    assert pq["blockingCount"] == sum(
+        1 for f in pq["findings"] if f["severity"] == "blocking")
+    assert pq["residualCount"] == sum(
+        1 for f in pq["findings"] if f["severity"] == "residual")
 
 
 def test_full_evidence_is_never_truncated(tmp_path):
@@ -344,6 +402,36 @@ def test_run_detail_carries_the_parked_question(tmp_path):
     assert detail["parkedQuestion"] is not None
     assert detail["parkedQuestion"]["reason"] == "operator_input_needed"
     assert detail["parkedQuestion"]["blockingCount"] == 2
+
+
+def test_run_detail_itemises_the_residual_finding_too(tmp_path):
+    """The run-detail payload end to end, one blocking and one residual
+    finding on disk: both counted AND both listed, each with its clause and
+    evidence."""
+    root = tmp_path / "run"
+    blocking = [_finding("blocking", False, "requirement B (#111)", "incurable")]
+    sup = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
+                      status={"state": "running", "phase": "review",
+                              "approach": 1, "maxApproaches": 2})
+    sup._approach = 1
+    findings.write_findings_json(sup.run.findings_json_file,
+                                 blocking + [_RESIDUAL])
+    sup._pause_and_escalate_operator_input_needed(
+        1, blocking, replan_available=True)
+
+    reg = _reg_for(root, sup.cfg.run_id)
+    pq = ui_server.run_detail(reg, sup.cfg.run_id)["parkedQuestion"]
+    assert pq["blockingCount"] == 1
+    assert pq["residualCount"] == 1
+    by_id = {f["id"]: f for f in pq["findings"]}
+    assert set(by_id) == {"F1", "R1"}
+    assert by_id["F1"]["severity"] == "blocking"
+    assert by_id["F1"]["clause"] == "requirement B (#111)"
+    assert by_id["F1"]["evidence"] == "incurable"
+    assert by_id["R1"]["severity"] == "residual"
+    assert by_id["R1"]["clause"] == _RESIDUAL["clause"]
+    assert by_id["R1"]["evidence"] == _RESIDUAL["evidence"]
+    assert "cured_when" in by_id["R1"] and "invalidates" in by_id["R1"]
 
 
 def test_run_detail_parked_question_is_null_while_running(tmp_path):

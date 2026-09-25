@@ -710,20 +710,23 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
     pause was recorded, never re-derived from `status.json`, which carries
     no timestamp of its own for this), `replanAvailable` (the event's own
     field, `None` when absent -- `rejected_repeated_signature` never
-    carries it), `blockingCount`/`residualCount` and `findings` (each
-    blocking finding, in the SAME order the escalation text and its
-    `ralphctl amend` invocations enumerate them, tagged `id: "F<n>"`,
-    1-based -- residual findings are never individually detailed here, on
-    the same precedent `_operator_escalation_digest_text`'s own header
-    already sets: residual findings are COUNTED everywhere in this system,
-    never itemised outside the findings channel itself), and `consequence`
+    carries it), `blockingCount`/`residualCount` and `findings` (EVERY
+    finding, blocking and residual alike: first each blocking finding, in
+    the SAME order the escalation text and its `ralphctl amend`
+    invocations enumerate them, tagged `id: "F<n>"`, 1-based; then each
+    residual finding from the on-disk sidecar, in the sidecar's own order,
+    tagged `id: "R<n>"`, 1-based -- a separate prefix so a residual never
+    shifts or collides with the `F<n>` ids the escalation text and
+    `ralphctl amend` already name; every entry carries `id`, `severity`,
+    `clause`, the whole `evidence`, `cured_when` and `invalidates`), and
+    `consequence`
     (`taskIdsValidatedToPending`, `insertCount`, `costSpentThisApproach`,
     `tokensSpentThisApproach`, `nextStepIfUnanswered`).
 
-    `residualCount` is read straight off the on-disk structured findings
-    sidecar (`FINDINGS_JSON_FILE`) rather than the event (which never
-    carries residual findings at all, only the blocking set review acted
-    on) -- a missing, empty or unreadable sidecar reads as `0`, matching
+    The residual entries and `residualCount` are read straight off the
+    on-disk structured findings sidecar (`FINDINGS_JSON_FILE`) rather than
+    the event (which never carries residual findings at all, only the
+    blocking set review acted on) -- a missing, empty or unreadable sidecar reads as `0`, matching
     `_review_findings_channel`'s own no-channel default of "nothing to
     count instead of raising".
     """
@@ -765,12 +768,22 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
         if bucket:
             cost_text = format_cost(bucket)
             tokens = bucket.get("totalTokens")
-    residual_count = 0
     raw_findings = read_json(Path(run_root) / FINDINGS_JSON_FILE, [])
+    residual = []
     if isinstance(raw_findings, list):
-        residual_count = sum(
-            1 for f in raw_findings
-            if isinstance(f, dict) and f.get("severity") == "residual")
+        residual = [f for f in raw_findings
+                    if isinstance(f, dict) and f.get("severity") == "residual"]
+    blocking_count = len(findings_out)
+    for index, finding in enumerate(residual, start=1):
+        findings_out.append({
+            "id": f"R{index}",
+            "severity": "residual",
+            "clause": finding.get("clause"),
+            "evidence": finding.get("evidence"),
+            "cured_when": finding.get("cured_when"),
+            "invalidates": finding.get("invalidates") or [],
+        })
+    residual_count = len(residual)
     return {
         "reason": reason,
         "approach": approach,
@@ -778,7 +791,7 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
         "approachOfMax": approach_of_max,
         "parkedAt": event.get("ts"),
         "replanAvailable": event.get("replanAvailable"),
-        "blockingCount": len(findings_out),
+        "blockingCount": blocking_count,
         "residualCount": residual_count,
         "findings": findings_out,
         "consequence": {

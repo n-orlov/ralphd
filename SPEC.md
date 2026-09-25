@@ -4989,9 +4989,14 @@ dir themselves and a live proxy would only add a way to disagree.
   for `operator_input_needed`, `null` for `rejected_repeated_signature`,
   which never carries it), `blockingCount`/`residualCount` (the on-disk
   findings sidecar's own severity split, not merely the event's blocking
-  list), `findings` (one entry per blocking finding, `{id: "F<n>",
-  severity, clause, evidence, cured_when, invalidates}` — the same 1-based
-  `F<n>` labelling the escalation text and `ralphctl amend` already share),
+  list; each equals the number of `findings` entries of that severity), `findings` (one entry per finding, blocking AND residual, each
+  `{id, severity, clause, evidence, cured_when, invalidates}`: first every
+  blocking finding in the escalation's own order under the same 1-based
+  `F<n>` labelling the escalation text and `ralphctl amend` already share,
+  then every residual finding off the on-disk sidecar, in the sidecar's
+  order, under its own 1-based `R<n>` labelling so a residual never shifts
+  an `F<n>` id; a residual's `cured_when` is `null` when it has none and
+  `invalidates` is `[]` when absent),
   and `consequence`: `taskIdsValidatedToPending`, `insertCount`,
   `costSpentThisApproach`, `tokensSpentThisApproach` (the same A.7 preview
   numbers the escalation event already carries) plus `nextStepIfUnanswered`
