@@ -47,6 +47,7 @@ in [docs/prds/](prds/README.md).
 
 ## Shipped
 
+- v0.25.2 — the built-in rate table prices Opus 5.5 and the gpt-6 family.
 - v0.25.1 — a run's only deliverables are working code and a true spec — engine prompts no longer ask for or enforce paperwork, and a task re-opened by a cure pass gets fresh validation attempts instead of stalling unverified.
 - v0.25 — the harness already knows — lock waits, watchdog verdicts, early review verdicts, pushed-commit redaction and control-plane wakes now reach the part of the run that needs them, so an idle loop answers a steer or abort promptly.
 - v0.24 — a budget is a boundary, not a verdict — the job deadline and an exhausted iteration budget hold a run in the resumable `timed_out` state instead of interrupting work or failing it.
