@@ -79,7 +79,7 @@ from __future__ import annotations
 
 import json
 
-from ralphd import collapse_index
+from ralphd import collapse_index, render_index
 from ralphd.cli import ui_server
 from ralphd.cli.log_render import new_render_state, render_to_lines
 from ralphd.log_merge import merged_lines
@@ -167,42 +167,51 @@ def test_p_fixtures_and_200_line_tail_cost_no_more_than_their_deciding_fetch(
 
 def test_q_fixture_and_silent_prelude_depths_disclosed_residual_after_the_cure(
         tmp_path, monkeypatch):
-    """PRD Q's own canonical fixture and both silent-prelude depths,
-    through the REAL whole call on both surfaces, AFTER this task's own
-    doubling-ladder cure: the render is still correct (matches a full,
-    unbounded render's own last two lines exactly, no replay, no added
-    blank line), and the measured whole-call byte counts are pinned here
-    -- corrected from this task's own pre-cure measurement (4,398,462 /
-    38,087,918 / 40,221,918 / 41,715,718), and still over the frozen
-    1,000,000-byte cap because each fixture's own theoretical floor (a
-    single non-doubling whole-iteration read: 1,117,887 / 10,720,887 /
-    11,787,887 / 12,534,787 bytes) already is. Ruling 1 section 2's
-    disclosed-residual disposition applies; see this task's own commit
-    message and the filed issue for the policies ruled out."""
+    """Task 013's own cure for the disclosed residual this node used to
+    pin: PRD Q's own canonical fixture and both silent-prelude depths,
+    through the REAL whole call on both surfaces, once the LATEST
+    iteration also carries a `render_index.json` (task 012) -- the side
+    index whose whole point was to let a bounded reader resume rendering
+    from a checkpoint instead of paying for the SILENT flood between the
+    deciding `thinking_start` transition and the transcript's own end.
+
+    `ui_server.rendered_log_lines` (`render_index.bounded_tail`, both its
+    live `/logs` branch and its dead-run on-disk fallback -- neither of
+    `_fetch_live_tail`/`_fetch_dead_tail`'s own outer doubling loop even
+    runs once this index is present) now answers every one of these three
+    fixtures for comfortably UNDER the frozen 1,000,000-byte cap this same
+    node used to measure at 1,445,567 / 12,115,567 / 12,862,467 bytes --
+    and the render is still exactly correct: the full, unbounded render's
+    own last two lines, no replay, no added blank line, regardless of how
+    many silent bytes (1,000 vs. 10,000 padded gap lines, prelude depth
+    1,000 vs. 1,700) sit between the deciding line and the transcript's
+    own end."""
     text = "reviewer synthetic streamed text"
     gap = json.dumps({"type": "message_end", "message": {"content": []},
                       "padding": "x" * 1000})
 
     for path in ("disk", "api"):
-        for gap_count, prelude_count, expected in (
-                (1_000, 0, 1_445_567),
-                (10_000, 1_000, 12_115_567),
-                (10_000, 1_700, 12_862_467)):
+        for gap_count, prelude_count in (
+                (1_000, 0),
+                (10_000, 1_000),
+                (10_000, 1_700)):
             run_root = (tmp_path / f"q-{gap_count}-{prelude_count}-{path}"
                        / "registry" / "runs" / "probe")
             _write_iteration_with_recognized_nonrendering_gap(
                 run_root, 1, text, gap, gap_count, prelude_count=prelude_count)
-            collapse_index.write_index(run_root / "iterations" / "0001")
+            itdir = run_root / "iterations" / "0001"
+            collapse_index.write_index(itdir)
+            render_index.write_index(itdir)
             full = render_to_lines("".join(merged_lines(run_root)), tty=False,
                                    state=new_render_state())
             measured, rendered = _measure(
                 tmp_path / f"q-{gap_count}-{prelude_count}-{path}",
                 monkeypatch, run_root, 2, path)
-            assert rendered == full[-2:]
+            assert rendered == full[-2:], (path, gap_count, prelude_count, rendered)
             assert all(ln != "" for ln in rendered)
-            assert measured == expected, (path, gap_count, prelude_count, measured)
-            assert measured > _FROZEN_CAP, (
-                "disclosed residual: still over the frozen cap", measured)
+            assert measured <= _FROZEN_CAP, (
+                "task 013: bounded read off the render index",
+                path, gap_count, prelude_count, measured)
 
 
 def _invalidate_index(itdir, how="truncated"):

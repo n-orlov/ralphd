@@ -64,11 +64,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .. import __version__
+from .. import __version__, render_index
 from ..engine.config import MUTATING_METHODS, JobConfig
-from . import llm_profiles
 from ..engine.state import (
     NO_ARTIFACTS,
+    NO_ROUTER_CALLS,
     NONTERMINAL_STATES,
     STEERING_APPLIED,
     STEERING_PENDING,
@@ -85,6 +85,7 @@ from ..engine.state import (
     artifact_text,
     cost_breakdown,
     cost_breakdown_text,
+    escalation_pause_markers,
     fault_explanation,
     fault_text,
     format_approach,
@@ -92,13 +93,11 @@ from ..engine.state import (
     format_cost,
     format_iteration_log_header,
     format_local_time,
-    escalation_pause_markers,
     format_provisioning_lines,
     format_run_document_size,
     iteration_detail,
     iteration_detail_text,
     iteration_summary_lines,
-    NO_ROUTER_CALLS,
     parked_question,
     prd_path,
     read_iteration_prompt,
@@ -125,6 +124,7 @@ from ..log_merge import (
     iteration_output_path,
     merged_lines,
 )
+from . import llm_profiles
 from .log_render import new_render_state, render_tail_lines, render_to_lines
 
 STATIC_DIR = Path(__file__).parent / "web"
@@ -593,6 +593,19 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     (`log_merge.merge_entries_tail`), and the same growing-bound re-ask loop
     keeps it correct across a many-delta thinking block that collapses raw
     lines into far fewer rendered ones.
+
+    Task 013: a `tail` request tries `render_index.bounded_tail` FIRST, on
+    both surfaces below alike -- it reads the latest iteration's own
+    `render_index.json` (task 012) straight off disk either way, so a tail
+    of `N` rendered lines costs bytes proportional to `N` plus a fixed
+    allowance regardless of how much silent transcript sits between the
+    deciding line and the transcript's own end, instead of paying for
+    `_fetch_live_tail`/`_fetch_dead_tail`'s SUM-of-doublings against that
+    silence. Only when it answers `None` (no iteration yet, no valid index,
+    or this one iteration's own index promising fewer lines than asked)
+    does the growth loop below run at all, exactly as before this task. A
+    cheap `GET /logs?tail=1` probe still happens whenever the fast path
+    answers, purely to learn the `live` flag this function still returns.
     """
     def _fetch_live_tail(bound_tail: int) -> tuple[bool, str]:
         bound = bound_tail
@@ -641,10 +654,26 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
         return raw_text
 
     if tail:
-        ok, raw_text = _fetch_live_tail(tail)
-        if not ok:
-            raw_text = _fetch_dead_tail(tail)
-        lines = render_tail_lines(raw_text, tty=False, n=tail)
+        # Task 013: the render index (task 012) lets the LATEST iteration's
+        # own bounded tail be read straight off disk, at a cost proportional
+        # to `tail` plus a fixed allowance, however much silent transcript
+        # sits between the deciding line and the transcript's own end --
+        # bypassing `_fetch_live_tail`/`_fetch_dead_tail`'s growth loop
+        # entirely on BOTH surfaces below, since `render_index.bounded_tail`
+        # reads the run's own directory directly either way. `None` means
+        # this one iteration's own index could not promise `tail` lines by
+        # itself (no index yet, or too few of its own lines) -- the growth
+        # loop, on whichever surface answers, is still the fallback for
+        # that case, unchanged from before this task.
+        bounded = render_index.bounded_tail(reg / "runs" / run_id, tail)
+        if bounded is not None:
+            ok, _ = _proxy_text(reg, run_id, "/logs?tail=1")
+            lines = bounded
+        else:
+            ok, raw_text = _fetch_live_tail(tail)
+            if not ok:
+                raw_text = _fetch_dead_tail(tail)
+            lines = render_tail_lines(raw_text, tty=False, n=tail)
     else:
         ok, raw_text = _proxy_text(reg, run_id, "/logs")
         if not ok:

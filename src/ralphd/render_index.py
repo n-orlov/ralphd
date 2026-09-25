@@ -83,12 +83,17 @@ facing call is task 013's job.
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 
 from . import collapse_index as _collapse_index
 from .cli.log_render import new_render_state, render_to_lines
 from .log_merge import OUTPUT_FILENAME as _OUTPUT_FILENAME
+from .log_merge import boundary_line as _boundary_line
+from .log_merge import iteration_dir as _iteration_dir
+from .log_merge import iteration_numbers as _iteration_numbers
+from .log_merge import iteration_output_path as _iteration_output_path
 
 INDEX_FILENAME = "render_index.json"
 INDEX_VERSION = 1
@@ -311,3 +316,150 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     if transcript_bytes > actual_size:
         return None
     return index
+
+
+# Task 013: how far short of "enough" the index's OWN covered prefix can
+# see the RENDER growing, without walking any of the SILENT bytes in
+# between -- the whole point of writing `checkpoints` at all (see this
+# module's own top-of-file rationale). One entry per raw transcript line
+# (never coarser), so a binary search over `renderedLines` finds the
+# LATEST line whose cumulative count still falls `content_needed` or more
+# short of the index's own covered total in O(log checkpoints) -- no disk
+# read at all, since `checkpoints` is already the parsed JSON in hand.
+_FORWARD_READ_CHUNK = 1 << 12  # 4096 -- see `_render_forward_from_seed`.
+
+
+def _seed_checkpoint_for_tail(index: dict, content_needed: int) -> tuple[int, dict] | None:
+    """`(byte_offset, deserialized_state)` to resume rendering FROM so that
+    continuing forward reproduces exactly the last `content_needed`
+    RENDERED lines the index's own covered prefix would render -- the
+    LATEST checkpoint whose own cumulative `renderedLines` still falls
+    `content_needed` or more short of the covered total. `None` when the
+    covered prefix cannot promise `content_needed` lines at all (fewer
+    lines exist in the whole prefix it covers): the caller falls back to
+    an older iteration, or the growth-based outer fetch."""
+    checkpoints = index.get("checkpoints") or []
+    if not checkpoints:
+        return None
+    total = checkpoints[-1]["renderedLines"]
+    if total < content_needed:
+        return None
+    threshold = total - content_needed
+    lo, hi = 0, len(checkpoints)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if checkpoints[mid]["renderedLines"] <= threshold:
+            lo = mid + 1
+        else:
+            hi = mid
+    idx = lo - 1
+    if idx < 0:
+        return 0, new_render_state()
+    cp = checkpoints[idx]
+    return cp["byteOffset"], _state_from_json(cp["state"])
+
+
+def _render_forward_from_seed(output_path: Path, seed_offset: int, seed_state: dict,
+                              content_needed: int, size_cap: int) -> list[str]:
+    """The forward, SEEDED sibling of `log_render.render_tail_lines`'s own
+    backward growth (task 013): read `output_path` from `seed_offset`
+    onward, in growing chunks (`_FORWARD_READ_CHUNK`, doubling), re-
+    rendering a FRESH copy of `seed_state` each time, until the render has
+    produced at least `content_needed` new lines or `size_cap` (the
+    transcript's own current size) is exhausted. Bytes read stay
+    proportional to `content_needed` plus a fixed allowance -- never to how
+    far `seed_offset` sits from `size_cap` -- because `seed_offset` is
+    itself already the LATEST checkpoint the index's own per-line
+    granularity could offer short of the answer
+    (`_seed_checkpoint_for_tail`), so the very next few raw lines are
+    always exactly where the missing render happens, however much silent
+    transcript follows them all the way to `size_cap`."""
+    if content_needed <= 0 or seed_offset >= size_cap:
+        return []
+    chunk = _FORWARD_READ_CHUNK
+    lines: list[str] = []
+    with output_path.open("rb") as f:
+        f.seek(seed_offset)
+        data = b""
+        while True:
+            target = min(seed_offset + chunk, size_cap)
+            to_read = target - (seed_offset + len(data))
+            if to_read > 0:
+                data += f.read(to_read)
+            at_cap = seed_offset + len(data) >= size_cap
+            # A chunk that has not yet reached `size_cap` may stop mid-line
+            # -- render only whatever WHOLE lines it holds so far (never a
+            # truncated trailing line, which `render_log_line` would report
+            # as malformed) and let the next, larger chunk pick that partial
+            # line back up from its own start (never re-reading bytes this
+            # one already has: `data` keeps growing, never resets).
+            usable = data if at_cap else data[:data.rfind(b"\n") + 1]
+            text = usable.decode("utf-8", errors="replace")
+            lines = render_to_lines(text, tty=False, state=copy.deepcopy(seed_state))
+            if len(lines) >= content_needed or at_cap:
+                return lines
+            chunk *= 2
+
+
+def bounded_tail(run_root: Path, n: int) -> list[str] | None:
+    """The exact tail of the last `n` rendered lines for `run_root`'s MOST
+    RECENT iteration alone, served entirely through its own render index
+    (task 013) -- bytes read off the transcript stay proportional to `n`
+    plus a fixed allowance, regardless of however much silent transcript
+    sits between the deciding line and the transcript's own end (exactly
+    the gap `tests/test_hub_real_render_cap_whole_call.py`'s PRD Q fixture
+    -- and its silent-prelude variants -- exposed against the outer
+    doubling fetch this bypasses).
+
+    `None` -- never a wrong-but-plausible answer -- whenever this one
+    iteration's own render index cannot promise `n` lines by itself: no
+    iteration at all, no validated index for the latest one, or its own
+    covered prefix falling short. The caller (`ui_server.rendered_log_lines`,
+    on both its live and dead-run surfaces) falls back to the older,
+    growth-based outer fetch in every such case -- an OLDER iteration
+    supplying the remainder is a later task's job, not this one's.
+
+    A finished iteration's own trailing `ralphd.iteration` "end" line is
+    never part of the transcript file itself -- `log_merge.boundary_line`
+    synthesizes it -- so it is rendered separately, through the very same
+    `log_render.render_to_lines` every other reader uses (never hand-
+    rolled here), and counted against `n` before any transcript content is
+    even looked at, since it is unconditionally the newest line whenever
+    it exists."""
+    numbers = _iteration_numbers(run_root)
+    if not numbers:
+        return None
+    last = numbers[-1]
+    itdir = _iteration_dir(run_root, last)
+    index = load_index(itdir)
+    if index is None:
+        return None
+    meta_path = itdir / "meta.json"
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    boundary_rendered: list[str] = []
+    if meta.get("endedAt"):
+        boundary_rendered = render_to_lines(_boundary_line(meta, "end"), tty=False,
+                                            state=new_render_state())
+    content_needed = max(n - len(boundary_rendered), 0)
+    content_lines: list[str] = []
+    if content_needed > 0:
+        seed = _seed_checkpoint_for_tail(index, content_needed)
+        if seed is None:
+            return None
+        seed_offset, seed_state = seed
+        out_path = _iteration_output_path(run_root, last)
+        try:
+            size = out_path.stat().st_size
+        except OSError:
+            return None
+        content_lines = _render_forward_from_seed(out_path, seed_offset, seed_state,
+                                                   content_needed, size)
+        if len(content_lines) < content_needed:
+            return None
+    combined = content_lines + boundary_rendered
+    if len(combined) < n:
+        return None
+    return combined[-n:]

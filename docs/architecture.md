@@ -1799,6 +1799,38 @@ current size -- that is the ordinary, expected shape of a live iteration's
 index, and the caller's job (not this module's) is to serve the covered
 prefix from the index and the uncovered suffix by a direct, bounded scan.
 
+**Consuming the index (task 013, #271 follow-on).**
+`render_index.bounded_tail(run_root, n)` is that caller: given the last *N*
+rendered lines a tail request wants, it binary-searches the latest
+iteration's own `checkpoints` for the LATEST one whose cumulative
+`renderedLines` still falls `n` (minus the trailing `ralphd.iteration` "end"
+line, when the iteration has finished) short of the covered total --
+O(log checkpoints), no disk read at all, since `checkpoints` is already the
+parsed JSON in hand -- then reads `output.jsonl` forward from that single
+checkpoint's own byte offset, in small growing chunks, re-seeding
+`log_render`'s render state from the checkpoint each time, until the render
+has produced enough new lines or the transcript's current size is reached.
+Bytes read stay proportional to `n` plus a fixed allowance, never to how
+much silent (fully-recognized-but-nothing-rendered) transcript sits between
+the deciding line and the transcript's own end -- the exact gap PRD Q's own
+fixture (a `thinking_start` transition sitting behind a long flood of
+recognized, non-rendering `message_end` padding) exposed against the outer
+doubling fetch below. `None` -- never a wrong-but-plausible answer -- when
+this one iteration's own index cannot promise `n` lines by itself (no
+iteration, no valid index, or its own covered prefix falling short); the
+caller then falls back to the ordinary growth-based fetch.
+
+`ui_server.rendered_log_lines` calls `bounded_tail` first, on BOTH its live
+`/logs` branch and its dead-run on-disk fallback -- reading the run
+directory directly serves either surface identically, since the index and
+the transcript live on the same host-mounted disk either way. Only when it
+answers `None` do `_fetch_live_tail`/`_fetch_dead_tail`'s own outer
+doubling loop (below) run at all, exactly as before this task. A cheap
+`GET /logs?tail=1` probe against the run's own container still happens
+whenever `bounded_tail` succeeds, purely to learn whether the container is
+still reachable (the `live` flag callers/the hub display, unrelated to
+where the tail's own content came from).
+
 ### Container lifecycle
 
 ```
