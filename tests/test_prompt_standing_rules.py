@@ -113,7 +113,7 @@ def test_planning_says_the_block_must_survive_the_workers_rewrites():
 
 def test_worker_preserves_the_block_verbatim_across_notes_rewrites():
     _assert_all("worker", "harness re-injects it verbatim across rewrites", [
-        r"harness-pinned \(task 107\)",
+        r"harness-pinned:",
         r"re-injects it verbatim after every iteration",
     ])
 

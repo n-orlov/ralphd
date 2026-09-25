@@ -97,9 +97,9 @@ def test_documents_the_mechanical_rule_rather_than_being_the_bound():
         "rule rather than being the bound itself")
     assert "not itself the bound" in low or "not the bound" in low, (
         "Credential handling section must disclaim being the bound itself")
-    assert "runner.py" in section, (
-        "Credential handling section must cite runner.py's scrub as the "
-        "actual (mechanical) bound")
+    assert "the harness scrubs" in low, (
+        "Credential handling section must name the harness's own stdout "
+        "scrub as the actual (mechanical) bound")
 
 
 @pytest.mark.parametrize("marker", ["print", "cat", "echo"])
