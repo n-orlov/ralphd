@@ -13625,6 +13625,7 @@ class LoopSupervisor:
             for task in outstanding_tasks:
                 lines.append(
                     f"  {task.get('id')} ({task.get('status', 'pending')})")
+            lines += self._awaiting_validation_escalation_lines()
             return "\n".join(lines).rstrip() + "\n"
         if is_last_approach:
             reason_clause = "this is the LAST available approach"
@@ -13648,15 +13649,23 @@ class LoopSupervisor:
         for task in outstanding_tasks:
             lines.append(
                 f"  {task.get('id')} ({task.get('status', 'pending')})")
-        stuck = self._tasks_stuck_awaiting_validation()
-        if stuck:
-            lines += ["", "Waiting on verify, which has not moved them:"]
-            for entry in stuck:
-                lines.append(
-                    f"  {entry['id']} (awaiting-validation, "
-                    f"validationAttempts {entry['validationAttempts']} of "
-                    f"{VALIDATION_ATTEMPT_LIMIT})")
+        lines += self._awaiting_validation_escalation_lines()
         return "\n".join(lines).rstrip() + "\n"
+
+    def _awaiting_validation_escalation_lines(self) -> list[str]:
+        """#273: the "Waiting on verify" section every stagnation
+        escalation text carries (both variants), one line per task resting
+        in `awaiting-validation`; `[]` when there is none."""
+        stuck = self._tasks_stuck_awaiting_validation()
+        if not stuck:
+            return []
+        lines = ["", "Waiting on verify, which has not moved them:"]
+        for entry in stuck:
+            lines.append(
+                f"  {entry['id']} (awaiting-validation, "
+                f"validationAttempts {entry['validationAttempts']} of "
+                f"{VALIDATION_ATTEMPT_LIMIT})")
+        return lines
 
     def _tasks_stuck_awaiting_validation(self) -> list[dict]:
         """#273: every task the stagnation guard found resting in
