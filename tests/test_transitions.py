@@ -1106,15 +1106,16 @@ def test_all_incurable_blocking_findings_pause_and_escalate(tmp_path):
     # `loop._amend_invocation_for_finding`, which would make this test a
     # tautology): `ralphctl amend <run_id> <clause-slug> --waive <reason>`,
     # where the slug lowercases the clause and collapses every run of
-    # non-alphanumerics to a single `-`, and the reason is the shell-quoted
-    # `"<clause>: <evidence>"` pair.
+    # non-alphanumerics to a single `-`, and the reason (task 002, #269
+    # follow-on) is the shell-quoted `"F<index>: <clause>"` pair -- the
+    # finding's own id (matching the `Finding <index> (...)` header above
+    # it) plus its clause, never the evidence (already shown once on the
+    # finding's own `evidence:` line, not repeated here).
     expected_commands = [
         "ralphctl amend task006-rejected-incurable requirement-b-111 "
-        "--waive 'requirement B (#111): the endpoint has no docker.sock "
-        "in this container'",
+        "--waive 'F1: requirement B (#111)'",
         "ralphctl amend task006-rejected-incurable requirement-d-99 "
-        "--waive 'requirement D (#99): the deadline already passed before "
-        "this approach started'",
+        "--waive 'F2: requirement D (#99)'",
     ]
     # Each command appears verbatim, exactly once, on its own
     # `resolve with:` line -- and the set of such lines is EXACTLY these
@@ -1130,15 +1131,17 @@ def test_all_incurable_blocking_findings_pause_and_escalate(tmp_path):
 
     # Argument-by-argument, as a shell would parse it: subcommand, run id,
     # clause slug, the `--waive` flag, then ONE reason argument carrying
-    # both the clause and its evidence unquoted.
-    for command, finding in zip(expected_commands, all_incurable):
+    # the finding's id and its clause, unquoted -- and NEVER its evidence.
+    for index, (command, finding) in enumerate(
+            zip(expected_commands, all_incurable), start=1):
         argv = shlex.split(command)
         assert argv[:2] == ["ralphctl", "amend"]
         assert argv[2] == "task006-rejected-incurable"
         assert argv[3] == finding["clause"].lower().replace(
             " ", "-").replace("(#", "").replace(")", "").replace("#", "")
         assert argv[4] == "--waive"
-        assert argv[5] == f"{finding['clause']}: {finding['evidence']}"
+        assert argv[5] == f"F{index}: {finding['clause']}"
+        assert finding["evidence"] not in argv[5]
         assert len(argv) == 6
 
     # never archived, never composited into a fresh approach's PRD -- the

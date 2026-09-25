@@ -286,3 +286,63 @@ def test_last_approach_rejection_notification_is_bounded_too(tmp_path):
 def test_max_notify_chars_is_a_small_int_constant():
     assert isinstance(MAX_NOTIFY_CHARS, int)
     assert 0 < MAX_NOTIFY_CHARS < 16000
+
+
+# ===========================================================================
+# 6. Task 002 (#269 follow-on): the FULL escalation text (event side, never
+#    digested) already prints every blocking finding's evidence once on its
+#    own `evidence:` line -- the `resolve with:` line right below it used to
+#    repeat that same evidence verbatim inside the `--waive` argument
+#    (`_amend_invocation_for_finding`). It now names the finding by id
+#    (`F<n>`, matching the `Finding <n> (...)` header above it) instead, so
+#    no finding's evidence string appears more than once anywhere in the
+#    text any of the four escalation-text builders produce.
+# ===========================================================================
+
+
+def _distinct_evidence_findings(n: int) -> list[dict]:
+    return [
+        {
+            "severity": "blocking",
+            "curable": True,
+            "clause": f"clause {i}",
+            "evidence": f"distinct evidence text number {i}",
+            "cured_when": f"clause {i} is discharged",
+        }
+        for i in range(n)
+    ]
+
+
+def test_no_builder_repeats_a_findings_evidence_in_its_own_text(tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=3)
+    sup._approach = 2
+
+    blocking = _distinct_evidence_findings(3)
+
+    texts = {
+        "last_approach": sup._last_approach_rejection_escalation_text(
+            2, blocking),
+        "repeated_signature": sup._repeated_rejection_signature_escalation_text(
+            2, blocking, "sig-1"),
+        "operator_input_needed": sup._operator_input_needed_escalation_text(
+            2, blocking, replan_available=True),
+        "incurable": sup._incurable_rejection_escalation_text(2, blocking),
+    }
+
+    for name, text in texts.items():
+        for f in blocking:
+            assert text.count(f["evidence"]) <= 1, (
+                f"{name} builder repeated finding evidence "
+                f"{f['evidence']!r} -- it should appear at most once "
+                "(on the finding's own `evidence:` line), never again "
+                "inside the `resolve with:` line")
+        resolve_lines = [line for line in text.splitlines()
+                        if line.strip().startswith("resolve with:")]
+        assert len(resolve_lines) == len(blocking), name
+        for index, (line, finding) in enumerate(
+                zip(resolve_lines, blocking), start=1):
+            assert finding["evidence"] not in line, name
+            # named by id -- the same `F<index>` the `Finding <index>`
+            # header above it uses.
+            assert f"F{index}" in line, name

@@ -12794,7 +12794,7 @@ class LoopSupervisor:
             lines.append(f"Finding {index} (blocking, curable):")
             lines.append(f"  clause: {finding.get('clause', '')}")
             lines.append(f"  evidence: {finding.get('evidence', '')}")
-            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding)}")
+            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
@@ -12989,7 +12989,7 @@ class LoopSupervisor:
             # driven gate's delivered body even though `findings` on the
             # event already carried it unedited.
             lines.append(f"  cured_when: {finding.get('cured_when', '')}")
-            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding)}")
+            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
             lines.append("")
         if cure_preview is not None:
             lines.append(
@@ -13307,7 +13307,7 @@ class LoopSupervisor:
             # operator what "resolved" would look like, and it belongs
             # beside `clause`/`evidence`, not only inside the raw event.
             lines.append(f"  cured_when: {finding.get('cured_when', '')}")
-            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding)}")
+            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
             lines.append("")
         if cure_preview is not None:
             lines.append(
@@ -13948,7 +13948,7 @@ class LoopSupervisor:
             return False
         return findings.all_blocking_findings_incurable(findings_list)
 
-    def _amend_invocation_for_finding(self, finding: dict) -> str:
+    def _amend_invocation_for_finding(self, finding: dict, index: int) -> str:
         """The exact `ralphctl amend` invocation an operator would run to
         waive the obligation `finding` says is violated (PRD requirement
         B.2: "the exact `ralphctl amend` invocations that would resolve
@@ -13962,14 +13962,24 @@ class LoopSupervisor:
         argument against `tasks.json` at all (it is host-only and cannot
         read the run dir), so a clause-derived slug is a fully valid,
         already-instantiated ruling target, not a placeholder the operator
-        has to fill in themselves. The ruling text is the finding's own
-        `clause`/`evidence`, so the file `ralphctl amend` writes records
-        exactly what this escalation showed the operator, verbatim.
+        has to fill in themselves.
+
+        Task 002 (#269 follow-on): the ruling TEXT this used to carry was
+        `"{clause}: {evidence}"`, verbatim -- fine for the raw event's own
+        `escalation` field, but every caller here already prints the
+        SAME evidence one line above on this same finding's own `evidence:`
+        line, so the full escalation body carried it twice for no reason
+        (once as the finding's own record, once again inside the resolve
+        command). `index` is the same 1-based position the caller's
+        `f"Finding {index} (...)"` header already uses for this finding --
+        the reason here names the finding by that SAME id (`F<index>`) plus
+        its clause, so an operator reading the resolve line can look the
+        finding back up by id without the evidence text being repeated a
+        second time.
         """
         clause = str(finding.get("clause") or "finding")
-        evidence = str(finding.get("evidence") or "")
         slug = re.sub(r"[^a-z0-9]+", "-", clause.lower()).strip("-") or "finding"
-        reason = f"{clause}: {evidence}" if evidence else clause
+        reason = f"F{index}: {clause}"
         return (f"ralphctl amend {self.cfg.run_id} {slug} --waive "
                f"{shlex.quote(reason)}")
 
@@ -13995,7 +14005,7 @@ class LoopSupervisor:
             lines.append(f"Finding {index} (blocking, incurable):")
             lines.append(f"  clause: {finding.get('clause', '')}")
             lines.append(f"  evidence: {finding.get('evidence', '')}")
-            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding)}")
+            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
