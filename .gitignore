@@ -10,3 +10,9 @@ build/
 
 # scratch dirs left by docker e2e test fixtures if teardown is interrupted
 .docker-e2e-tmp-*
+
+# run evidence a ralphd job writes into its workspace (logs, reports,
+# petitions, screenshots). It belongs to the run, not the repository: the
+# engine reads a workspace petitions file from disk, so nothing here needs
+# to be tracked.
+/artifacts/

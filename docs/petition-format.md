@@ -21,13 +21,14 @@ glob-discovery bug read whichever `*-petitions.md` file it found last
 under the workspace tree; N.6 removes that tree-side file for a run built
 on this code rather than fixing the glob again, and #150 stays CLOSED.
 
-The historical shape — one file per wave, `artifacts/reports/<wave>-
-petitions.md`, tracked alongside the wave's other evidence reports — is
-why `artifacts/reports/v0.21-petitions.md` still exists in this repo: N.1
-deletes every other file under `artifacts/reports/` but leaves that one
-behind, since the engine *running this wave's own work* is an older build
-and still appends to it. A future wave, built on this code, never creates
-a workspace file for its own petitions at all.
+A workspace file at `artifacts/reports/<wave>-petitions.md` is still read
+if one exists on disk (an operator can write one by hand), but the engine
+never creates one, and nothing requires it to be tracked. Review never
+reads petitions from a clone: the engine reads the workspace file and the
+run-dir file from disk and hands the open petitions to review in its
+prompt context (`_petitions_review_context`). This repository ignores
+`/artifacts/` entirely, so run evidence, petitions included, stays out of
+its history.
 
 **Task 008 (requirement H): no workspace-tree fallback at all.** Calling
 any of the four functions above with a run handle writes only inside that
@@ -41,9 +42,8 @@ run handle, `file_worker_petition`/`file_exhaustion_petition` refuse (an
 error string, nothing written) and `write_back_petition_adjudication`
 performs a documented no-op (`None`, nothing written) — `artifacts/
 reports/` is left byte-identical either way. `open_petitions_in_workspace`
-(a pure reader) is unaffected: it still reads the historical workspace
-file when one exists, which is how `v0.21-petitions.md` above keeps
-surfacing to review at all.
+(a pure reader) is unaffected: it still reads a workspace file when one
+exists.
 
 **This cure (requirement H.2, #200): the same posture for the one helper
 the four functions above never named.** `engine.petitions.ensure_
