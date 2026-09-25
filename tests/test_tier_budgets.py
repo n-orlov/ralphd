@@ -60,8 +60,11 @@ TIER_MARKERS = ("smoke", "fast")
 # lowered to the measured count freely; raising it needs the tests that
 # earned the room named in the same message.
 TIER_CEILINGS: dict[str, dict[str, int]] = {
-    "fast": {"tests": 6199, "modules": 426},
-    "smoke": {"tests": 4520, "modules": 306},
+    # Task 007: +10 tests / +1 module (tests/test_hub_parked_payload.py),
+    # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
+    # 6209/6345, `-m smoke` -> 4530/6345.
+    "fast": {"tests": 6209, "modules": 427},
+    "smoke": {"tests": 4530, "modules": 307},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

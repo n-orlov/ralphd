@@ -99,6 +99,7 @@ from ..engine.state import (
     iteration_detail_text,
     iteration_summary_lines,
     NO_ROUTER_CALLS,
+    parked_question,
     prd_path,
     read_iteration_prompt,
     read_tasks_doc,
@@ -1824,6 +1825,18 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         # of the status doc -- and a live payload must not be able to claim it.
         **deletion_fields(recorded_status),
         "status": shaped_status,
+        # Task 007 (v0.26, #269): the ruling-answerable parked-question
+        # payload -- `None` for a running run and for every pause reason a
+        # ruling cannot answer. Derived from `shaped_status` (never
+        # `recorded_status`), the same doc `_with_pause_markers` just
+        # attached its own two fields to, so a LIVE `pauseReason` (a fresh
+        # escalation this process's own live proxy already sees, ahead of
+        # this run dir's next on-disk poll) is reflected here exactly like
+        # every other field `shaped_status` carries -- but the escalation
+        # EVENT itself, and the findings sidecar `residualCount` reads, are
+        # always the local, on-disk `run_dir` read every other derived field
+        # on this page uses.
+        "parkedQuestion": parked_question(run_dir, shaped_status),
         "tasks": tasks,
         "iterations": iterations,
     }

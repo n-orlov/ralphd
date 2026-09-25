@@ -13139,10 +13139,23 @@ class LoopSupervisor:
         extra_fields = (
             self._discretionary_gate_escalation_fields(approach, cure_preview)
             if cure_preview is not None else {})
+        # Task 007 (v0.26, #269): the hub's parked-question payload needs to
+        # know whether, absent this pause, the run would have taken a cure
+        # pass over this approach's own blocking findings (curable, cure
+        # pass unspent -- the ordinary route this early gate pre-empted) or
+        # fallen straight to the archive/replan-or-end tail -- computed
+        # fresh here off the SAME pure predicate `_step_review`'s own
+        # cure-pass branch reads, never guessed from `cure_preview`'s
+        # reopen/insert counts alone (a curable-but-nothing-reopened
+        # rejection would misreport as "archive" under that guess).
+        next_step = (state.NEXT_STEP_CURE_PASS
+                    if self._review_cure_pass_available(approach)
+                    else state.NEXT_STEP_ARCHIVE_AND_REPLAN)
         self.run.emit("operator_escalation", approach=approach,
                       reason="rejected_repeated_signature", findings=blocking,
                       channelErrors=channel_errors, signature=signature,
-                      escalation=text, **extra_fields)
+                      escalation=text, nextStepIfUnanswered=next_step,
+                      **extra_fields)
         self.pause(reason="rejected_repeated_signature")
         if self.notifier is not None:
             self._notify_escalation_delivery(self._operator_escalation_digest_text(
@@ -13456,10 +13469,21 @@ class LoopSupervisor:
         extra_fields = (
             self._discretionary_gate_escalation_fields(approach, cure_preview)
             if cure_preview is not None else {})
+        # Task 007 (v0.26, #269): same `nextStepIfUnanswered` derivation as
+        # `_pause_and_escalate_repeated_rejection_signature`'s own -- see
+        # that method's comment for why this is recomputed fresh off
+        # `_review_cure_pass_available(approach)` rather than read off
+        # `cure_preview`'s reopen/insert counts (a reviewer-requested gate
+        # or a ruled re-park over an otherwise-curable rejection that would
+        # reopen/insert nothing still resumes straight into `_take_cure_
+        # pass`, never the archive/replan tail).
+        next_step = (state.NEXT_STEP_CURE_PASS
+                    if self._review_cure_pass_available(approach)
+                    else state.NEXT_STEP_ARCHIVE_AND_REPLAN)
         self.run.emit("operator_escalation", approach=approach,
                       reason="operator_input_needed", findings=blocking,
                       replanAvailable=replan_available, escalation=text,
-                      **extra_fields)
+                      nextStepIfUnanswered=next_step, **extra_fields)
         self.pause(reason="operator_input_needed")
         if self.notifier is not None:
             self._notify_escalation_delivery(self._operator_escalation_digest_text(

@@ -653,6 +653,127 @@ def format_escalation_undelivered_marker(run_root: Path, status: dict) -> str:
     return escalation_pause_markers(run_root, status)[
         "escalationUndeliveredMarker"]
 
+
+# Task 007 (v0.26, #269): the two `pauseReason` values an operator RULING can
+# actually answer -- `ralphctl rule <run> --file <ruling.md> --name <slug>`
+# or a plain `ralphctl unpause <run>` -- as opposed to a plain operator pause
+# (no `pauseReason` at all) or a pause a ruling has no vocabulary for
+# (`stagnation`, `rejected_last_approach`, and the other five reasons the
+# `operator_escalation` docs list). `parked_question` below returns `None`
+# for every OTHER pause reason, this pair being the only two it shapes.
+PARKED_QUESTION_REASONS = ("operator_input_needed", "rejected_repeated_signature")
+
+# The two answers `parked_question`'s own `consequence.nextStepIfUnanswered`
+# can report -- "if this pause is resumed with no ruling at all, does the
+# run take a cure pass over the SAME approach's blocking findings, or does
+# it fall to the ordinary archive/replan-or-end tail?" Derived, per pause,
+# from `LoopSupervisor._review_cure_pass_available(approach)` at the moment
+# the pause is raised (never guessed here from the findings list alone,
+# since curability, the run's own cure-pass ceiling and this approach's
+# already-taken passes all feed that decision) -- see
+# `_pause_and_escalate_operator_input_needed`/`_pause_and_escalate_
+# repeated_rejection_signature` in `engine/loop.py`, the only two writers of
+# `nextStepIfUnanswered` on the `operator_escalation` event.
+NEXT_STEP_CURE_PASS = "cure_pass"
+NEXT_STEP_ARCHIVE_AND_REPLAN = "archive_and_replan"
+
+
+def parked_question(run_root: Path, status: dict) -> dict | None:
+    """Task 007 (v0.26, #269): the hub run-detail payload's `parkedQuestion`
+    object -- a ruling-answerable pause shaped from the latest matching
+    `operator_escalation` event, or `None` when there is nothing a ruling
+    could answer right now.
+
+    `None` for:
+      * a running run (`status["pauseReason"]` absent/`null` -- the ordinary
+        case, including a run never paused at all and a plain operator
+        `POST /pause`, which persists no `pauseReason`);
+      * every pause reason outside `PARKED_QUESTION_REASONS` above
+        (`stagnation`, `rejected_last_approach`, `review_contract_
+        unrepaired`, `review_findings_unusable`, `rejected_incurable`'s
+        in-memory hold, the two dependency-edge reasons) -- a plain
+        operator pause and these seven all hold the run for a reason a
+        ruling has no vocabulary to answer, so the panel this feeds must
+        not render for them either;
+      * a `pauseReason` in that set with no matching `operator_escalation`
+        event on record at all (defensive only -- should not happen for a
+        persisted pause, which is always preceded by the event that
+        caused it).
+
+    Otherwise, built from the LATEST `operator_escalation` event whose own
+    `reason` equals `status["pauseReason"]` (read oldest-first off
+    `events.jsonl`, keeping the last match -- the same one-pass-and-keep-
+    last discipline `_escalation_scan` above already uses): `reason`,
+    `approach`, `maxApproaches` (`status["maxApproaches"]`, `None` when
+    absent), `approachOfMax` (the event's own pre-rendered `"approach <n>
+    of <N>"` text), `parkedAt` (the event's own `ts` -- the moment the
+    pause was recorded, never re-derived from `status.json`, which carries
+    no timestamp of its own for this), `replanAvailable` (the event's own
+    field, `None` when absent -- `rejected_repeated_signature` never
+    carries it), `blockingCount`/`residualCount` and `findings` (each
+    blocking finding, in the SAME order the escalation text and its
+    `ralphctl amend` invocations enumerate them, tagged `id: "F<n>"`,
+    1-based -- residual findings are never individually detailed here, on
+    the same precedent `_operator_escalation_digest_text`'s own header
+    already sets: residual findings are COUNTED everywhere in this system,
+    never itemised outside the findings channel itself), and `consequence`
+    (`taskIdsValidatedToPending`, `insertCount`, `costSpentThisApproach`,
+    `tokensSpentThisApproach`, `nextStepIfUnanswered`).
+
+    `residualCount` is read straight off the on-disk structured findings
+    sidecar (`FINDINGS_JSON_FILE`) rather than the event (which never
+    carries residual findings at all, only the blocking set review acted
+    on) -- a missing, empty or unreadable sidecar reads as `0`, matching
+    `_review_findings_channel`'s own no-channel default of "nothing to
+    count instead of raising".
+    """
+    reason = status.get("pauseReason")
+    if reason not in PARKED_QUESTION_REASONS:
+        return None
+    event = None
+    for ev in read_events(run_root, types=("operator_escalation",)):
+        if ev.get("reason") == reason:
+            event = ev
+    if event is None:
+        return None
+    blocking = [f for f in (event.get("findings") or []) if isinstance(f, dict)]
+    findings_out = []
+    for index, finding in enumerate(blocking, start=1):
+        findings_out.append({
+            "id": f"F{index}",
+            "severity": finding.get("severity", "blocking"),
+            "clause": finding.get("clause"),
+            "evidence": finding.get("evidence"),
+            "cured_when": finding.get("cured_when"),
+            "invalidates": finding.get("invalidates") or [],
+        })
+    residual_count = 0
+    raw_findings = read_json(Path(run_root) / FINDINGS_JSON_FILE, [])
+    if isinstance(raw_findings, list):
+        residual_count = sum(
+            1 for f in raw_findings
+            if isinstance(f, dict) and f.get("severity") == "residual")
+    return {
+        "reason": reason,
+        "approach": event.get("approach"),
+        "maxApproaches": status.get("maxApproaches"),
+        "approachOfMax": event.get("approachOfMax"),
+        "parkedAt": event.get("ts"),
+        "replanAvailable": event.get("replanAvailable"),
+        "blockingCount": len(findings_out),
+        "residualCount": residual_count,
+        "findings": findings_out,
+        "consequence": {
+            "taskIdsValidatedToPending": list(
+                event.get("taskIdsValidatedToPending") or []),
+            "insertCount": event.get("insertCount", 0),
+            "costSpentThisApproach": event.get("costSpentThisApproach"),
+            "tokensSpentThisApproach": event.get("tokensSpentThisApproach"),
+            "nextStepIfUnanswered": event.get("nextStepIfUnanswered"),
+        },
+    }
+
+
 # Task 030 (#19): its complement -- the recorded `state` values that mean "no
 # engine owns this run any more", i.e. the ONE gate a destructive action may
 # open on. Lives here beside `NONTERMINAL_STATES` for the same reason: three

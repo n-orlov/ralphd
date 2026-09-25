@@ -3401,14 +3401,31 @@ JSON endpoints served under `/api/`:
   is `true`; a forged `deletable` in somebody's `status.json` is ignored (the
   row is built from the gate, like `approachDisplay`).
 - `GET /api/runs/<id>` — run detail: `{runId, live, containerGone, deletable,
-  deleteRefusal, status, tasks, iterations}`. `status`/`tasks` are proxied live from the run's
+  deleteRefusal, status, tasks, iterations, parkedQuestion}`. `status`/`tasks` are proxied live from the run's
   container API (`GET /status`/`GET /tasks`) when its `apiUrl` (recorded in
   `host.json`) answers; otherwise falls back to the on-disk
   `status.json`/`tasks.json` snapshot with `live: false` — a dead run never
   produces an error, just stale-but-valid data. `containerGone` is the same
   condition as in the run list, decided here by the real proxy call rather
   than a port probe. `iterations` is always read from disk
-  (`iterations/*/meta.json`). `404` for an unknown run id. Task 048 (issue
+  (`iterations/*/meta.json`). `404` for an unknown run id. Task 007 (v0.26,
+  #269) adds `parkedQuestion` — `null`/absent unless the (possibly live-
+  proxied) `status.pauseReason` is `operator_input_needed` or
+  `rejected_repeated_signature`, the two pause reasons a ruling can actually
+  answer; built entirely on disk (`ralphd.engine.state.parked_question`, off
+  the most recent matching `operator_escalation` event in `events.jsonl` plus
+  the on-disk structured findings sidecar), never a second live-only path.
+  Carries `reason`, `approach`/`maxApproaches`/`approachOfMax`, `parkedAt`,
+  `replanAvailable` (present only for `operator_input_needed`),
+  `blockingCount`/`residualCount`, one `findings` entry per blocking finding
+  (`{id: "F<n>", severity, clause, evidence, cured_when, invalidates}`), and
+  `consequence` — `taskIdsValidatedToPending`, `insertCount`,
+  `costSpentThisApproach`, `tokensSpentThisApproach`, and
+  `nextStepIfUnanswered` (`"cure_pass"` \| `"archive_and_replan"`, docs/api.md
+  §`operator_escalation`) naming which of the two the pause is about to take
+  if it is never answered. The run-detail `ETag` below moves whenever
+  `events.jsonl` gains a new escalation, so a fresh one is never served under
+  an unchanged tag. See SPEC.md §11.3 for the full shape. Task 048 (issue
   #4) adds `startedAtLocal`/`endedAtLocal`/`updatedAtLocal` strings next to
   (never replacing) the ISO `startedAt`/`endedAt`/`updatedAt` fields of both
   `status` and each iteration: absolute local-time renderings produced by the
