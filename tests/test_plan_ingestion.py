@@ -266,6 +266,23 @@ def test_a_real_criterion_is_not_flagged():
     assert pi.lint_proposal(payload) == []
 
 
+def test_lettered_requirement_groups_without_a_probe_audit_task_are_accepted():
+    # Titles in the `<Letter>[.N]: ...` convention, and no task anywhere
+    # whose successCriteria describes a probe-audit: plan ingestion does
+    # not require one per group.
+    payload = {"tasks": [
+        _basic_task("001", title="A.1: implement the widget",
+                    successCriteria="The widget exists and unit tests cover it."),
+        _basic_task("002", title="A.2: wire the widget into the CLI",
+                    successCriteria="The CLI invokes the widget and a test passes.",
+                    dependsOn=["001"]),
+        _basic_task("003", title="B: document the widget",
+                    successCriteria="docs/cli.md describes the widget command."),
+    ]}
+    assert pi.validate_proposal_shape(payload) == []
+    assert pi.lint_proposal(payload) == []
+
+
 def test_a_status_field_is_rejected_not_honoured():
     """Requirement C: a proposal carrying a status field is rejected, not
     honoured -- the enforcement point for the property tested end to end
