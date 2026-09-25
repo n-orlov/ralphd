@@ -74,8 +74,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 009 retry: +7 tests in tests/test_hub_parked_actions.py (byte-
     # for-byte submit body, blank-line-preserving waive compose, Enter in
     # #rule-text), measured the same way -> fast 6262, smoke 4581.
-    "fast": {"tests": 6262, "modules": 432},
-    "smoke": {"tests": 4581, "modules": 310},
+    # Task 012: +5 tests / +1 module (tests/test_render_index.py) plus the
+    # ingestion-lint suite's own automatic +1 parametrization for the new
+    # src/ralphd/render_index.py source file, measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
+    # 6268/433, `-m smoke` -> smoke 4587/311.
+    "fast": {"tests": 6268, "modules": 433},
+    "smoke": {"tests": 4587, "modules": 311},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

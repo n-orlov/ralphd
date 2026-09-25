@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import __version__
-from .. import collapse_index
+from .. import collapse_index, render_index
 from . import commit_scan
 from . import contract_enforcement
 from . import contracts
@@ -2923,6 +2923,16 @@ class LoopSupervisor:
         # iteration, which every reader already treats as an ordinary
         # fall-back-to-scan case (G.4), never a lost iteration.
         collapse_index.write_index(itdir)
+        # Task 012 (PRD C.1, #271): the render index's own belt-and-braces
+        # final rebuild -- `runner.py`'s `pump()` already extended it
+        # incrementally while the iteration ran and flushed its own last
+        # partial batch on the way out, so this is normally a no-op
+        # rewrite of already-current bytes; it exists so a transcript that
+        # somehow ends between two live flushes (e.g. the last
+        # `LIVE_FLUSH_EVERY_LINES` boundary) still ends up with an index
+        # that covers it exactly, same failure contract as
+        # `collapse_index.write_index` above.
+        render_index.write_index(itdir)
         self._accumulate_usage(result.usage, phase=phase, approach=meta.get("approach"),
                                tier=effective_tier)
         self.run.emit("iteration.end", number=n, phase=phase,

@@ -12,6 +12,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import (
+    render_index,
+)
 from . import state
 from .config import CONTROL_PLANE_ENV_VARS
 from .pricing import PricingSource
@@ -293,6 +296,15 @@ class PiRunner:
             first_traffic = asyncio.Event()
 
             async def pump() -> None:
+                # Task 012 (PRD C.1, #271): the render index is extended
+                # incrementally HERE -- the one place the transcript is
+                # written while the iteration is still running -- never
+                # only at the iteration-boundary rebuild in `loop.py`
+                # (`render_index.write_index`, kept as a belt-and-braces
+                # final rewrite). `live_index` is fed the exact SCRUBBED
+                # bytes just written to disk, so the index never describes
+                # content a reader of the same file could not also see.
+                live_index = render_index.LiveRenderIndex()
                 with open(transcript, "a") as out:
                     while True:
                         line = await self._proc.stdout.readline()
@@ -307,8 +319,20 @@ class PiRunner:
                         # known secret value before it ever touches disk --
                         # scanning above uses the raw bytes so sentinel/usage
                         # extraction is unaffected either way.
-                        out.write(scrub_text(line.decode(errors="replace")))
+                        scrubbed = scrub_text(line.decode(errors="replace"))
+                        out.write(scrubbed)
                         out.flush()
+                        live_index.feed(scrubbed.encode())
+                        live_index.flush(transcript.parent)
+                # The stream ended (clean EOF, a timeout/interrupt further
+                # down, or the process just dying) -- flush whatever the
+                # last partial batch left unwritten so a reader stopped
+                # mid-iteration (task 012's own
+                # `tests/test_render_index.py`) still finds an index that
+                # covers everything `pump()` itself ever saw, not just
+                # everything up to the last `LIVE_FLUSH_EVERY_LINES`
+                # boundary.
+                live_index.flush(transcript.parent, force=True)
 
             async def startup_watchdog() -> None:
                 # Task 001a: fail fast on a hang with zero LLM traffic --

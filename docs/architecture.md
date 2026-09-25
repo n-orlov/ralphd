@@ -1736,8 +1736,68 @@ pretty is the CLI's job:
 - The syntax follows `tail`: `logs -100` (last 100 rendered lines), `-150f`
   (last 150, then follow), `logsf` (follow from now). See [cli.md](cli.md).
 
-The renderer is pure presentation over the same events — nothing is stored
+The renderer is pure presentation over the same events -- nothing is stored
 pretty; the run dir stays raw and replayable.
+
+### The render index (v0.26 requirement C.1, #271)
+
+A bounded log tail (the last *N* rendered lines) must not cost re-reading the
+whole transcript -- and the case an operator watches most, a **live**
+iteration, is exactly when the v0.25 side index (`collapse_index.json`, task
+020/021) was never written at all: that index is a once-per-iteration write
+from `engine/loop.py`'s own end-of-iteration bookkeeping, after the runner
+has already returned.
+
+`render_index.py` extends that same idea while an iteration is still
+running. One file per iteration, `iterations/NNNN/render_index.json`, beside
+`collapse_index.json` (a successor, not a replacement -- nothing about
+`collapse_index.json`'s own file, version or read side changes):
+
+- `transcriptBytes` -- how many bytes of `output.jsonl`, from its own start,
+  this index actually covers *right now*. For a live iteration this is
+  normally **less** than the transcript's current size on disk: the index
+  lags by design (see write timing below), and a reader holding a
+  transcript longer than the index covers treats the uncovered suffix as
+  unindexed, scanning only that suffix directly rather than the whole file.
+- `segments` -- byte-for-byte the same shape `collapse_index.json` records
+  (`startByte`, `textSeenAtByte`, `thinkingSeenAtByte`, `toolcallSeenAtByte`),
+  built by reusing `collapse_index.py`'s own `_transitions`/
+  `apply_transition` mirror of the renderer's dispatch, so the two indexes'
+  collapse segments can never drift apart from each other.
+- `checkpoints` -- one entry per raw NDJSON line consumed so far:
+  `byteOffset` (the transcript offset immediately after that line),
+  `renderedLines` (the cumulative count of pretty lines `log_render.
+  render_to_lines` has produced up to and including that line), and `state`
+  (`log_render.new_render_state()`'s own dict, as of that same point, JSON-
+  round-tripped). A bounded reader can pick any checkpoint at or before the
+  byte it wants to resume from, seed a fresh render with its `state`, and
+  continue rendering forward -- never from byte 0.
+
+**Write timing.** `engine/runner.py`'s `pump()` -- the one place
+`output.jsonl` is written *while the iteration is still running* -- feeds
+`LiveRenderIndex` every raw line the moment it is written to disk, and
+periodically flushes the running snapshot to `render_index.json`
+(`LIVE_FLUSH_EVERY_LINES`, batched so a long iteration's own logging cost
+does not grow quadratically in its own line count). `engine/loop.py`'s
+end-of-iteration bookkeeping then calls `render_index.write_index` once
+more, exactly like it does for `collapse_index.json` -- a full, from-scratch
+rebuild that is normally a no-op rewrite of already-current bytes, existing
+so a transcript that ends between two live flushes still ends up with an
+index that covers it exactly. Like `collapse_index.py`, nothing here is
+ever written by a render path (`cli/log_render.py`, `log_merge.py`,
+`cli/ui_server.py`) -- rendering never writes an index, so a read-only
+consumer (a finished run's directory opened cold) works with whatever it
+finds, including none.
+
+**Read side.** `render_index.load_index` refuses a file that is absent,
+malformed, wrong-version, internally inconsistent, or that claims to cover
+*more* bytes than the transcript's actual current size (the one
+disagreement that can only mean a stale index left over from before a
+truncation/rewrite -- `collapse_index.load_index`'s own equivalent case).
+It does **not** refuse `transcriptBytes` sitting behind the transcript's
+current size -- that is the ordinary, expected shape of a live iteration's
+index, and the caller's job (not this module's) is to serve the covered
+prefix from the index and the uncovered suffix by a direct, bounded scan.
 
 ### Container lifecycle
 

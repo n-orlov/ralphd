@@ -182,33 +182,57 @@ def compute_collapse_index(output_path: Path) -> dict:
         raw = output_path.read_bytes()
     except FileNotFoundError:
         raw = b""
-    segments = [{"startByte": 0, "textSeenAtByte": None,
-                 "thinkingSeenAtByte": None, "toolcallSeenAtByte": None}]
+    segments = new_segments()
     for offset, action in _transitions(raw):
-        if action[0] == "reset":
-            seed = action[1]
-            # A reset line at the very first byte (a transcript that opens
-            # with `message_start`, the common live shape) resets a segment
-            # that spans no cut point at all -- `resolve_flags_at_offset`
-            # only ever selects a segment whose `startByte` is strictly
-            # below the cut. Replace it rather than appending a second
-            # segment at the same offset, so `startByte`s stay strictly
-            # ascending and `load_index` can check that as an invariant.
-            if segments[-1]["startByte"] == offset:
-                segments.pop()
-            segments.append({
-                "startByte": offset,
-                "textSeenAtByte": offset if seed.get("textSeen") else None,
-                "thinkingSeenAtByte": (offset if seed.get("thinkingSeen")
-                                       else None),
-                "toolcallSeenAtByte": (offset if seed.get("toolcallSeen")
-                                       else None)})
-        else:
-            key = _FLAG_KEY[action[1]]
-            if segments[-1][key] is None:
-                segments[-1][key] = offset
+        apply_transition(segments, offset, action)
     return {"version": INDEX_VERSION, "transcriptBytes": len(raw),
             "segments": segments}
+
+
+def new_segments() -> list[dict]:
+    """A fresh, single-segment `segments` list -- the state
+    `compute_collapse_index` and any incremental caller (task 012's
+    `render_index.LiveRenderIndex`, fed one raw transcript line at a time
+    rather than a whole blob) both start from before consuming byte 0."""
+    return [{"startByte": 0, "textSeenAtByte": None,
+            "thinkingSeenAtByte": None, "toolcallSeenAtByte": None}]
+
+
+def apply_transition(segments: list[dict], offset: int, action) -> None:
+    """Apply ONE `_transitions` yield (`(offset, action)`) to a running
+    `segments` list, mutating it in place -- the whole body of
+    `compute_collapse_index`'s own loop, pulled out so an incremental
+    caller that feeds `_transitions` one raw line at a time (rather than
+    the whole transcript blob at once) can build the identical `segments`
+    shape without a second, drifting copy of this bookkeeping. Calling
+    this once per `_transitions` yield, in file order, over the WHOLE
+    transcript is exactly what `compute_collapse_index` does; calling it
+    incrementally as each new line's own transitions arrive produces the
+    same `segments` list at every prefix, because neither this function
+    nor `_transitions` looks past the one line/offset it is given.
+    """
+    if action[0] == "reset":
+        seed = action[1]
+        # A reset line at the very first byte (a transcript that opens
+        # with `message_start`, the common live shape) resets a segment
+        # that spans no cut point at all -- `resolve_flags_at_offset`
+        # only ever selects a segment whose `startByte` is strictly
+        # below the cut. Replace it rather than appending a second
+        # segment at the same offset, so `startByte`s stay strictly
+        # ascending and `load_index` can check that as an invariant.
+        if segments[-1]["startByte"] == offset:
+            segments.pop()
+        segments.append({
+            "startByte": offset,
+            "textSeenAtByte": offset if seed.get("textSeen") else None,
+            "thinkingSeenAtByte": (offset if seed.get("thinkingSeen")
+                                   else None),
+            "toolcallSeenAtByte": (offset if seed.get("toolcallSeen")
+                                   else None)})
+    else:
+        key = _FLAG_KEY[action[1]]
+        if segments[-1][key] is None:
+            segments[-1][key] = offset
 
 
 def write_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> None:
