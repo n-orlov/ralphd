@@ -1428,8 +1428,8 @@ def test_the_observables_the_derived_lower_bound_passage_names_are_real():
     # 2. `rate_for` DOES answer per model id: None for an uncovered id (the
     #    doc's own example), a rate for a covered one, through the alias hop
     priced = pricing_aws.pricing_map()
-    assert priced.rate_for("openai/gpt-6-astra") is None
-    assert priced.rate_for("aigw-openai/openai.gpt-6-astra") is None
+    assert priced.rate_for("openai/gpt-6-astra-pro") is None
+    assert priced.rate_for("aigw-openai/openai.gpt-6-astra-pro") is None
     assert priced.rate_for("aigw-openai/openai.gpt-5.6-sol") is not None
 
     # 3. the bucket-level observable: an uncovered hat's own bucket ends up

@@ -284,17 +284,17 @@ resolved id (`GET /iterations/<n>`'s `modelResolved`, the pinned `model`/`models
 entry, or `model_for(hat)`) and look it up in each table. `GET /config`'s
 `pricing.models` answers directly — it is the operator map's real id→rate
 object. `priceTables.tables[*].models` **cannot** answer it: that field is an
-integer *count* of priced ids (`len(RATES)`, `121` for the built-in table in
+integer *count* of priced ids (`len(RATES)`, `165` for the built-in table in
 this build), not a list, so the built-in table's per-model coverage is checked
 against the table itself — `pricing_aws.pricing_map().rate_for("<id>")`, `None`
-for an id no exact key, alias hop or wildcard covers (`openai/gpt-6-astra` →
+for an id no exact key, alias hop or wildcard covers (`openai/gpt-6-astra-pro` →
 `None`; `aigw-openai/openai.gpt-5.6-sol` → a `ModelRate`). A model no table
 prices means every `~$… derived` total that includes that hat's traffic
 undercounts it. Real example, as read live and recorded at
 `docs/prds/README.md`'s `selfdev-v020-a-commit-is-progress` row: `~$648.75
 derived` understates that run because `aigw-openai/openai.gpt-6-astra`, the
-model behind its `plan_review`/`verdict_gate` hats, has no rate entry in
-either table — and that reading was taken with the run total's own
+model behind its `plan_review`/`verdict_gate` hats, had no rate entry in
+either table at the time — and that reading was taken with the run total's own
 `costStatus` reading `derived`, the clean-looking case the two steps above
 exist to catch.
 

@@ -62,7 +62,7 @@ def _tool():
 GATEWAY_FORMS = [
     # this run's own route, exactly as `iterations/*/meta.json` records it
     ("amazon-bedrock/eu.anthropic.claude-opus-5", 5.5),
-    ("amazon-bedrock/us.anthropic.claude-sonnet-5", 2.0),
+    ("amazon-bedrock/us.anthropic.claude-sonnet-5", 2.2),
     ("amazon-bedrock/amazon.nova-pro-v1:0", 0.8),
     # the AIGW spellings from the pricing-anomaly report: same model, two
     # provider prefixes, one price
@@ -70,14 +70,22 @@ GATEWAY_FORMS = [
     ("bedrock-mantle/openai.gpt-5.6-sol", 4.4),
     # bare region-prefixed Bedrock ids (no provider segment at all)
     ("eu.anthropic.claude-sonnet-5", 2.2),
-    ("us.anthropic.claude-opus-5", 5.0),
+    ("us.anthropic.claude-opus-5", 5.5),
     ("global.anthropic.claude-opus-5", 5.0),
-    ("jp.anthropic.claude-sonnet-5", 2.0),
-    ("au.anthropic.claude-opus-4-6-v1", 16.5),
+    ("jp.anthropic.claude-sonnet-5", 2.2),
+    ("au.anthropic.claude-opus-4-6-v1", 5.5),
     # the slash spelling docs/api.md uses for alias targets
     ("anthropic/claude-sonnet-5", 2.0),
     ("openai/gpt-5.6-sol", 4.4),
     ("amazon-bedrock/anthropic/claude-sonnet-5", 2.0),
+    # the 25 Sep 2026 hat lineup: Opus 5.5 (generated) and the gpt-6 family
+    # (astra generated; sol and luna from GATEWAY_RATES)
+    ("amazon-bedrock/eu.anthropic.claude-opus-5-5", 4.4),
+    ("global.anthropic.claude-opus-5-5", 4.0),
+    ("aigw-openai/openai.gpt-6-astra", 11.0),
+    ("aigw-openai/openai.gpt-6-sol", 2.2),
+    ("aigw-openai/openai.gpt-6-luna", 0.11),
+    ("bedrock-mantle/openai.gpt-6-sol", 2.2),
 ]
 
 
@@ -146,13 +154,14 @@ def test_a_hand_computed_bill_matches_the_refreshed_gpt_5_6_sol_rate():
 
 
 def test_region_prefixes_keep_their_own_rate():
-    """EU is ~10% above us-east; `au.` opus-4-6 is >3x it. Collapsing lies."""
+    """A regional endpoint is ~10% above `global.`. Collapsing lies."""
     eu = aws.rate_for("eu.anthropic.claude-opus-5")
-    us = aws.rate_for("us.anthropic.claude-opus-5")
-    assert eu.input > us.input
-    assert eu.input == pytest.approx(us.input * 1.1)
+    glob = aws.rate_for("global.anthropic.claude-opus-5")
+    assert eu.input > glob.input
+    assert eu.input == pytest.approx(glob.input * 1.1)
     assert eu.output == pytest.approx(27.5)
-    assert aws.rate_for("au.anthropic.claude-opus-4-6-v1").input > 3 * us.input
+    assert aws.rate_for("global.anthropic.claude-opus-5-5").input < \
+        aws.rate_for("eu.anthropic.claude-opus-5-5").input
 
 
 @pytest.mark.parametrize("model", [
@@ -179,6 +188,25 @@ def test_the_table_never_prices_a_cache_counter_at_zero():
     rate = aws.rate_for("amazon.nova-pro-v1:0")
     assert rate.per_mtok("cacheWrite") == pytest.approx(rate.input)
     assert rate.per_mtok("cacheRead") == pytest.approx(0.2)
+
+
+def test_gateway_rates_sit_outside_the_generated_region_and_yield_to_it(monkeypatch):
+    """Hand-kept ids never enter the generated table, and a refresh that
+    starts listing one takes over its rate."""
+    tool = _tool()
+    shipped = tool.generated_region(Path(inspect.getfile(aws)).read_text())
+    for model in aws.GATEWAY_RATES:
+        assert f'"{model}"' not in shipped, model
+        assert model not in aws.RATES, model
+    monkeypatch.setitem(aws.RATES, "openai.gpt-6-sol",
+                        {"input": 9.0, "output": 90.0})
+    aws.pricing_map.cache_clear()
+    try:
+        assert aws.rate_for("aigw-openai/openai.gpt-6-sol").input == pytest.approx(9.0)
+    finally:
+        monkeypatch.undo()
+        aws.pricing_map.cache_clear()
+    assert aws.rate_for("aigw-openai/openai.gpt-6-sol").input == pytest.approx(2.2)
 
 
 def test_table_keys_are_bedrock_ids_not_gateway_ids():

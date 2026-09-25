@@ -59,6 +59,10 @@ is what pi itself prices a request with, cross-checkable against
 
 `SOURCE_VERSION` records which pi-ai the numbers came from, `AS_OF` when they
 were mirrored.
+
+`GATEWAY_RATES`, below the generated region, is the one hand-kept exception:
+ids a gateway routes that the mirror does not list yet. A generated entry for
+the same id shadows it.
 """
 
 from __future__ import annotations
@@ -78,7 +82,7 @@ TABLE_NAME = "builtin-aws-bedrock"
 
 # Machine-readable, ISO-8601, and parsed by `as_of_date()` -- a missing or
 # malformed value is a hard error, not a shrug (tests/test_pricing_aws.py).
-AS_OF = "2026-09-12"
+AS_OF = "2026-09-25"
 # How long a mirror of somebody else's price list stays credible.
 STALE_AFTER_DAYS = 180
 
@@ -87,7 +91,7 @@ SOURCE = (
     "data/amazon-bedrock.json, bedrock-converse-stream cost blocks), mirroring "
     "AWS Bedrock on-demand list price"
 )
-SOURCE_VERSION = "@earendil-works/pi-ai@0.85.1"
+SOURCE_VERSION = "@earendil-works/pi-ai@0.87.1"
 SOURCE_URL = "https://aws.amazon.com/bedrock/pricing/"
 REFRESH_CMD = "python tools/refresh_bedrock_rates.py"
 
@@ -155,10 +159,13 @@ ALIASES = _build_aliases()
 # region prefix included where the rate differs by region.
 RATES: dict[str, dict[str, float]] = {
     # BEGIN GENERATED RATES
-    "amazon.nova-2-lite-v1:0": {"input": 0.33, "output": 2.75},
-    "amazon.nova-lite-v1:0": {"input": 0.06, "output": 0.24, "cacheRead": 0.015},
-    "amazon.nova-micro-v1:0": {"input": 0.035, "output": 0.14, "cacheRead": 0.00875},
-    "amazon.nova-pro-v1:0": {"input": 0.8, "output": 3.2, "cacheRead": 0.2},
+    "amazon.nova-2-lite-v1:0":
+        {"input": 0.33, "output": 2.75, "cacheRead": 0.0825, "cacheWrite": 0.33},
+    "amazon.nova-lite-v1:0":
+        {"input": 0.06, "output": 0.24, "cacheRead": 0.015, "cacheWrite": 0.06},
+    "amazon.nova-micro-v1:0":
+        {"input": 0.035, "output": 0.14, "cacheRead": 0.00875, "cacheWrite": 0.035},
+    "amazon.nova-pro-v1:0": {"input": 0.8, "output": 3.2, "cacheRead": 0.2, "cacheWrite": 0.8},
     "anthropic.claude-fable-5":
         {"input": 10.0, "output": 50.0, "cacheRead": 1.0, "cacheWrite": 12.5},
     "anthropic.claude-fable-5-1":
@@ -170,34 +177,57 @@ RATES: dict[str, dict[str, float]] = {
     "anthropic.claude-opus-4-5-20251101-v1:0":
         {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
     "anthropic.claude-opus-4-6-v1":
-        {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
     "anthropic.claude-opus-4-7":
         {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
     "anthropic.claude-opus-4-8":
         {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
+    "anthropic.claude-opus-5-5":
+        {"input": 4.0, "output": 20.0, "cacheRead": 0.2, "cacheWrite": 5.0},
     "anthropic.claude-sonnet-4-5-20250929-v1:0":
         {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
     "anthropic.claude-sonnet-4-6":
-        {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
+        {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 4.125},
     "anthropic.claude-sonnet-5":
         {"input": 2.0, "output": 10.0, "cacheRead": 0.2, "cacheWrite": 2.5},
-    "au.anthropic.claude-haiku-4-5-20251001-v1:0":
-        {"input": 1.0, "output": 5.0, "cacheRead": 0.1, "cacheWrite": 1.25},
-    "au.anthropic.claude-opus-4-6-v1":
-        {"input": 16.5, "output": 82.5, "cacheRead": 1.65, "cacheWrite": 20.625},
-    "au.anthropic.claude-opus-4-8":
-        {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
-    "au.anthropic.claude-opus-5":
-        {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
-    "au.anthropic.claude-sonnet-4-5-20250929-v1:0":
+    "apac.amazon.nova-lite-v1:0":
+        {"input": 0.063, "output": 0.252, "cacheRead": 0.01575, "cacheWrite": 0.063},
+    "apac.amazon.nova-micro-v1:0":
+        {"input": 0.037, "output": 0.148, "cacheRead": 0.00925, "cacheWrite": 0.037},
+    "apac.amazon.nova-pro-v1:0":
+        {"input": 0.84, "output": 3.36, "cacheRead": 0.21, "cacheWrite": 0.84},
+    "apac.anthropic.claude-sonnet-4-20250514-v1:0":
         {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
+    "au.anthropic.claude-haiku-4-5-20251001-v1:0":
+        {"input": 1.1, "output": 5.5, "cacheRead": 0.11, "cacheWrite": 1.375},
+    "au.anthropic.claude-opus-4-6-v1":
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
+    "au.anthropic.claude-opus-4-7":
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
+    "au.anthropic.claude-opus-4-8":
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
+    "au.anthropic.claude-opus-5":
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
+    "au.anthropic.claude-opus-5-5":
+        {"input": 4.4, "output": 22.0, "cacheRead": 0.22, "cacheWrite": 5.5},
+    "au.anthropic.claude-sonnet-4-5-20250929-v1:0":
+        {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 4.125},
     "au.anthropic.claude-sonnet-4-6":
         {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 4.125},
     "au.anthropic.claude-sonnet-5":
-        {"input": 2.0, "output": 10.0, "cacheRead": 0.2, "cacheWrite": 2.5},
-    "deepseek.r1-v1:0": {"input": 1.35, "output": 5.4},
+        {"input": 2.2, "output": 11.0, "cacheRead": 0.22, "cacheWrite": 2.75},
+    "ca.amazon.nova-lite-v1:0":
+        {"input": 0.064, "output": 0.256, "cacheRead": 0.016, "cacheWrite": 0.064},
     "deepseek.v3-v1:0": {"input": 0.58, "output": 1.68},
     "deepseek.v3.2": {"input": 0.62, "output": 1.85},
+    "eu.amazon.nova-2-lite-v1:0":
+        {"input": 0.374, "output": 3.157, "cacheRead": 0.0935, "cacheWrite": 0.374},
+    "eu.amazon.nova-lite-v1:0":
+        {"input": 0.069, "output": 0.276, "cacheRead": 0.01725, "cacheWrite": 0.069},
+    "eu.amazon.nova-micro-v1:0":
+        {"input": 0.04, "output": 0.16, "cacheRead": 0.01, "cacheWrite": 0.04},
+    "eu.amazon.nova-pro-v1:0":
+        {"input": 0.92, "output": 3.68, "cacheRead": 0.23, "cacheWrite": 0.92},
     "eu.anthropic.claude-fable-5":
         {"input": 11.0, "output": 55.0, "cacheRead": 1.1, "cacheWrite": 13.75},
     "eu.anthropic.claude-haiku-4-5-20251001-v1:0":
@@ -212,12 +242,19 @@ RATES: dict[str, dict[str, float]] = {
         {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
     "eu.anthropic.claude-opus-5":
         {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
+    "eu.anthropic.claude-opus-5-5":
+        {"input": 4.4, "output": 22.0, "cacheRead": 0.22, "cacheWrite": 5.5},
+    "eu.anthropic.claude-sonnet-4-20250514-v1:0":
+        {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
     "eu.anthropic.claude-sonnet-4-5-20250929-v1:0":
         {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 4.125},
     "eu.anthropic.claude-sonnet-4-6":
         {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 4.125},
     "eu.anthropic.claude-sonnet-5":
         {"input": 2.2, "output": 11.0, "cacheRead": 0.22, "cacheWrite": 2.75},
+    "eu.mistral.pixtral-large-2502-v1:0": {"input": 2.0, "output": 6.0},
+    "global.amazon.nova-2-lite-v1:0":
+        {"input": 0.3, "output": 2.5, "cacheRead": 0.075, "cacheWrite": 0.3},
     "global.anthropic.claude-fable-5":
         {"input": 10.0, "output": 50.0, "cacheRead": 1.0, "cacheWrite": 12.5},
     "global.anthropic.claude-fable-5-1":
@@ -234,6 +271,10 @@ RATES: dict[str, dict[str, float]] = {
         {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
     "global.anthropic.claude-opus-5":
         {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
+    "global.anthropic.claude-opus-5-5":
+        {"input": 4.0, "output": 20.0, "cacheRead": 0.2, "cacheWrite": 5.0},
+    "global.anthropic.claude-sonnet-4-20250514-v1:0":
+        {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
     "global.anthropic.claude-sonnet-4-5-20250929-v1:0":
         {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
     "global.anthropic.claude-sonnet-4-6":
@@ -246,22 +287,34 @@ RATES: dict[str, dict[str, float]] = {
         {"input": 4.0, "output": 20.0, "cacheRead": 0.4, "cacheWrite": 5.0},
     "global.openai.gpt-5.6-terra":
         {"input": 2.0, "output": 12.0, "cacheRead": 0.2, "cacheWrite": 2.5},
-    "google.gemma-3-27b-it": {"input": 0.12, "output": 0.2},
-    "google.gemma-3-4b-it": {"input": 0.04, "output": 0.08},
+    "global.openai.gpt-6-astra":
+        {"input": 10.0, "output": 50.0, "cacheRead": 1.0, "cacheWrite": 12.5},
+    "global.xai.grok-4.6": {"input": 2.0, "output": 6.0, "cacheRead": 0.5},
+    "google.gemma-4-26b-a4b": {"input": 0.13, "output": 0.4},
+    "google.gemma-4-31b": {"input": 0.14, "output": 0.4},
+    "google.gemma-4-e2b": {"input": 0.04, "output": 0.08},
+    "in.openai.gpt-5.6-luna":
+        {"input": 0.22, "output": 1.32, "cacheRead": 0.022, "cacheWrite": 0.275},
+    "in.openai.gpt-5.6-terra":
+        {"input": 2.2, "output": 13.2, "cacheRead": 0.22, "cacheWrite": 2.75},
+    "jp.amazon.nova-2-lite-v1:0":
+        {"input": 0.396, "output": 3.311, "cacheRead": 0.099, "cacheWrite": 0.396},
     "jp.anthropic.claude-haiku-4-5-20251001-v1:0":
-        {"input": 1.0, "output": 5.0, "cacheRead": 0.1, "cacheWrite": 1.25},
+        {"input": 1.1, "output": 5.5, "cacheRead": 0.11, "cacheWrite": 1.375},
     "jp.anthropic.claude-opus-4-7":
-        {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
     "jp.anthropic.claude-opus-4-8":
-        {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
     "jp.anthropic.claude-opus-5":
-        {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
+    "jp.anthropic.claude-opus-5-5":
+        {"input": 4.4, "output": 22.0, "cacheRead": 0.22, "cacheWrite": 5.5},
     "jp.anthropic.claude-sonnet-4-5-20250929-v1:0":
-        {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
+        {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 4.125},
     "jp.anthropic.claude-sonnet-4-6":
-        {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
+        {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 4.125},
     "jp.anthropic.claude-sonnet-5":
-        {"input": 2.0, "output": 10.0, "cacheRead": 0.2, "cacheWrite": 2.5},
+        {"input": 2.2, "output": 11.0, "cacheRead": 0.22, "cacheWrite": 2.75},
     "meta.llama3-1-70b-instruct-v1:0": {"input": 0.72, "output": 0.72},
     "meta.llama3-1-8b-instruct-v1:0": {"input": 0.22, "output": 0.22},
     "meta.llama3-3-70b-instruct-v1:0": {"input": 0.72, "output": 0.72},
@@ -278,7 +331,7 @@ RATES: dict[str, dict[str, float]] = {
     "mistral.mistral-large-3-675b-instruct": {"input": 0.5, "output": 1.5},
     "mistral.pixtral-large-2502-v1:0": {"input": 2.0, "output": 6.0},
     "mistral.voxtral-mini-3b-2507": {"input": 0.04, "output": 0.04},
-    "mistral.voxtral-small-24b-2507": {"input": 0.15, "output": 0.35},
+    "mistral.voxtral-small-24b-2507": {"input": 0.1, "output": 0.3},
     "moonshot.kimi-k2-thinking": {"input": 0.6, "output": 2.5},
     "moonshotai.kimi-k2.5": {"input": 0.6, "output": 3.0},
     "nvidia.nemotron-nano-12b-v2": {"input": 0.2, "output": 0.6},
@@ -291,6 +344,7 @@ RATES: dict[str, dict[str, float]] = {
         {"input": 0.22, "output": 1.32, "cacheRead": 0.022, "cacheWrite": 0.275},
     "openai.gpt-5.6-sol": {"input": 4.4, "output": 22.0, "cacheRead": 0.44, "cacheWrite": 5.5},
     "openai.gpt-5.6-terra": {"input": 2.2, "output": 13.2, "cacheRead": 0.22, "cacheWrite": 2.75},
+    "openai.gpt-6-astra": {"input": 11.0, "output": 55.0, "cacheRead": 1.1, "cacheWrite": 13.75},
     "openai.gpt-oss-120b": {"input": 0.15, "output": 0.6},
     "openai.gpt-oss-120b-1:0": {"input": 0.15, "output": 0.6},
     "openai.gpt-oss-20b": {"input": 0.07, "output": 0.3},
@@ -300,37 +354,65 @@ RATES: dict[str, dict[str, float]] = {
     "qwen.qwen3-235b-a22b-2507-v1:0": {"input": 0.22, "output": 0.88},
     "qwen.qwen3-32b-v1:0": {"input": 0.15, "output": 0.6},
     "qwen.qwen3-coder-30b-a3b-v1:0": {"input": 0.15, "output": 0.6},
-    "qwen.qwen3-coder-480b-a35b-v1:0": {"input": 0.22, "output": 1.8},
-    "qwen.qwen3-coder-next": {"input": 0.22, "output": 1.8},
-    "qwen.qwen3-next-80b-a3b": {"input": 0.14, "output": 1.4},
-    "qwen.qwen3-vl-235b-a22b": {"input": 0.3, "output": 1.5},
+    "qwen.qwen3-coder-480b-a35b-v1:0": {"input": 0.45, "output": 1.8},
+    "qwen.qwen3-coder-next": {"input": 0.5, "output": 1.2},
+    "qwen.qwen3-next-80b-a3b": {"input": 0.15, "output": 1.2},
+    "qwen.qwen3-vl-235b-a22b": {"input": 0.53, "output": 2.66},
+    "us-gov.openai.gpt-oss-120b-1:0": {"input": 0.18, "output": 0.72},
+    "us-gov.openai.gpt-oss-20b-1:0": {"input": 0.084, "output": 0.36},
+    "us.amazon.nova-2-lite-v1:0":
+        {"input": 0.33, "output": 2.75, "cacheRead": 0.0825, "cacheWrite": 0.33},
+    "us.amazon.nova-lite-v1:0":
+        {"input": 0.06, "output": 0.24, "cacheRead": 0.015, "cacheWrite": 0.06},
+    "us.amazon.nova-micro-v1:0":
+        {"input": 0.035, "output": 0.14, "cacheRead": 0.00875, "cacheWrite": 0.035},
+    "us.amazon.nova-premier-v1:0":
+        {"input": 2.5, "output": 12.5, "cacheRead": 0.625, "cacheWrite": 2.5},
+    "us.amazon.nova-pro-v1:0": {"input": 0.8, "output": 3.2, "cacheRead": 0.2, "cacheWrite": 0.8},
     "us.anthropic.claude-fable-5":
-        {"input": 10.0, "output": 50.0, "cacheRead": 1.0, "cacheWrite": 12.5},
+        {"input": 11.0, "output": 55.0, "cacheRead": 1.1, "cacheWrite": 13.75},
     "us.anthropic.claude-fable-5-1":
         {"input": 11.0, "output": 55.0, "cacheRead": 0.275, "cacheWrite": 13.75},
     "us.anthropic.claude-haiku-4-5-20251001-v1:0":
-        {"input": 1.0, "output": 5.0, "cacheRead": 0.1, "cacheWrite": 1.25},
+        {"input": 1.1, "output": 5.5, "cacheRead": 0.11, "cacheWrite": 1.375},
     "us.anthropic.claude-opus-4-1-20250805-v1:0":
         {"input": 15.0, "output": 75.0, "cacheRead": 1.5, "cacheWrite": 18.75},
     "us.anthropic.claude-opus-4-5-20251101-v1:0":
-        {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
     "us.anthropic.claude-opus-4-6-v1":
-        {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
     "us.anthropic.claude-opus-4-7":
-        {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
     "us.anthropic.claude-opus-4-8":
-        {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
     "us.anthropic.claude-opus-5":
-        {"input": 5.0, "output": 25.0, "cacheRead": 0.5, "cacheWrite": 6.25},
+        {"input": 5.5, "output": 27.5, "cacheRead": 0.55, "cacheWrite": 6.875},
+    "us.anthropic.claude-opus-5-5":
+        {"input": 4.4, "output": 22.0, "cacheRead": 0.22, "cacheWrite": 5.5},
+    "us.anthropic.claude-sonnet-4-20250514-v1:0":
+        {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
     "us.anthropic.claude-sonnet-4-5-20250929-v1:0":
-        {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
+        {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 4.125},
     "us.anthropic.claude-sonnet-4-6":
-        {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
+        {"input": 3.3, "output": 16.5, "cacheRead": 0.33, "cacheWrite": 4.125},
     "us.anthropic.claude-sonnet-5":
-        {"input": 2.0, "output": 10.0, "cacheRead": 0.2, "cacheWrite": 2.5},
-    "us.deepseek.r1-v1:0": {"input": 1.35, "output": 5.4},
+        {"input": 2.2, "output": 11.0, "cacheRead": 0.22, "cacheWrite": 2.75},
+    "us.meta.llama3-1-70b-instruct-v1:0": {"input": 0.72, "output": 0.72},
+    "us.meta.llama3-1-8b-instruct-v1:0": {"input": 0.22, "output": 0.22},
+    "us.meta.llama3-3-70b-instruct-v1:0": {"input": 0.72, "output": 0.72},
     "us.meta.llama4-maverick-17b-instruct-v1:0": {"input": 0.24, "output": 0.97},
     "us.meta.llama4-scout-17b-instruct-v1:0": {"input": 0.17, "output": 0.66},
+    "us.mistral.pixtral-large-2502-v1:0": {"input": 2.0, "output": 6.0},
+    "us.openai.gpt-5.6-luna":
+        {"input": 0.22, "output": 1.32, "cacheRead": 0.022, "cacheWrite": 0.275},
+    "us.openai.gpt-5.6-sol": {"input": 4.4, "output": 22.0, "cacheRead": 0.44, "cacheWrite": 5.5},
+    "us.openai.gpt-5.6-terra":
+        {"input": 2.2, "output": 13.2, "cacheRead": 0.22, "cacheWrite": 2.75},
+    "us.openai.gpt-6-astra":
+        {"input": 11.0, "output": 55.0, "cacheRead": 1.1, "cacheWrite": 13.75},
+    "us.writer.palmyra-x4-v1:0": {"input": 2.5, "output": 10.0},
+    "us.writer.palmyra-x5-v1:0": {"input": 0.6, "output": 6.0},
+    "us.xai.grok-4.6": {"input": 2.2, "output": 6.6, "cacheRead": 0.55},
     "writer.palmyra-x4-v1:0": {"input": 2.5, "output": 10.0},
     "writer.palmyra-x5-v1:0": {"input": 0.6, "output": 6.0},
     "xai.grok-4.3": {"input": 1.25, "output": 2.5, "cacheRead": 0.2},
@@ -339,6 +421,18 @@ RATES: dict[str, dict[str, float]] = {
     "zai.glm-4.7-flash": {"input": 0.07, "output": 0.4},
     "zai.glm-5": {"input": 1.0, "output": 3.2},
     # END GENERATED RATES
+}
+
+# Hand-kept: ids the AIGW gateway routes under Bedrock's `openai.` spelling
+# that pi-ai's Bedrock data does not list yet. Priced at OpenAI list x 1.1,
+# the markup the generated table carries for `openai.gpt-6-astra` (10 -> 11).
+# A generated entry for the same id wins, so a refresh that picks these up
+# retires them without an edit here.
+GATEWAY_RATES: dict[str, dict[str, float]] = {
+    "openai.gpt-6-sol":
+        {"input": 2.2, "output": 11.0, "cacheRead": 0.22, "cacheWrite": 2.75},
+    "openai.gpt-6-luna":
+        {"input": 0.11, "output": 0.55, "cacheRead": 0.011, "cacheWrite": 0.1375},
 }
 
 
@@ -414,8 +508,9 @@ def pricing_map() -> PricingMap:
     alias/exact/longest-wildcard rules as an operator map, and `derive()` is
     the same arithmetic, so "which rules applied" has one answer.
     """
-    built = PricingMap.from_config({"aliases": ALIASES, "models": RATES},
-                                   name=TABLE_NAME)
+    built = PricingMap.from_config(
+        {"aliases": ALIASES, "models": {**GATEWAY_RATES, **RATES}},
+        name=TABLE_NAME)
     if built is None:  # pragma: no cover - only reachable if RATES is emptied
         raise RuntimeError("built-in AWS Bedrock rate table is empty")
     if is_stale():

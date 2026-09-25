@@ -2904,6 +2904,11 @@ What the table does, and deliberately does not, resolve:
   rate falls back to the `input` rate rather than to a silent `$0`.
 - Lookups go through the same `PricingMap` rules as an operator map (one alias
   hop, exact key beats wildcard, longest wildcard prefix wins).
+- A few gateway-routed ids that pi-ai's Bedrock data does not list yet
+  (`openai.gpt-6-sol`, `openai.gpt-6-luna`) are priced from a short hand-kept
+  `GATEWAY_RATES` table beside the generated one, at OpenAI list price × 1.1
+  (the markup the generated `openai.gpt-6-astra` rate carries). A generated
+  entry for the same id wins, so a refresh that starts listing one retires it.
 
 **Which table produced a rate (v0.6, #14).** With `price_strategy: aws` the two
 tables are *layered*, never merged: the operator's `pricing:` map is consulted
