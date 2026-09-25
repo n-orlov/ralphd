@@ -747,6 +747,24 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
             "cured_when": finding.get("cured_when"),
             "invalidates": finding.get("invalidates") or [],
         })
+    # An `operator_escalation` event written before every ruling-answerable
+    # pause carried the A.7 fields unconditionally lacks `approachOfMax` and
+    # the spend pair; derive them from the event's approach and
+    # `status.json`'s own `usage.byApproach` bucket (a parked run spends
+    # nothing while parked, so the bucket still reads the at-park figure).
+    approach = event.get("approach")
+    max_approaches = status.get("maxApproaches")
+    approach_of_max = event.get("approachOfMax")
+    if approach_of_max is None and approach is not None and max_approaches:
+        approach_of_max = f"approach {approach} of {max_approaches}"
+    cost_text = event.get("costSpentThisApproach")
+    tokens = event.get("tokensSpentThisApproach")
+    if "costSpentThisApproach" not in event and approach is not None:
+        by_approach = (status.get("usage") or {}).get("byApproach") or {}
+        bucket = by_approach.get(str(approach)) or {}
+        if bucket:
+            cost_text = format_cost(bucket)
+            tokens = bucket.get("totalTokens")
     residual_count = 0
     raw_findings = read_json(Path(run_root) / FINDINGS_JSON_FILE, [])
     if isinstance(raw_findings, list):
@@ -755,9 +773,9 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
             if isinstance(f, dict) and f.get("severity") == "residual")
     return {
         "reason": reason,
-        "approach": event.get("approach"),
-        "maxApproaches": status.get("maxApproaches"),
-        "approachOfMax": event.get("approachOfMax"),
+        "approach": approach,
+        "maxApproaches": max_approaches,
+        "approachOfMax": approach_of_max,
         "parkedAt": event.get("ts"),
         "replanAvailable": event.get("replanAvailable"),
         "blockingCount": len(findings_out),
@@ -767,8 +785,8 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
             "taskIdsValidatedToPending": list(
                 event.get("taskIdsValidatedToPending") or []),
             "insertCount": event.get("insertCount", 0),
-            "costSpentThisApproach": event.get("costSpentThisApproach"),
-            "tokensSpentThisApproach": event.get("tokensSpentThisApproach"),
+            "costSpentThisApproach": cost_text,
+            "tokensSpentThisApproach": tokens,
             "nextStepIfUnanswered": event.get("nextStepIfUnanswered"),
         },
     }

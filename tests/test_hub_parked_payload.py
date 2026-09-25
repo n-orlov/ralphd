@@ -28,6 +28,7 @@ from ralphd.engine.state import (
     PARKED_QUESTION_REASONS,
     cure_pass_preview,
     parked_question,
+    read_events,
 )
 from tests.conftest import supervisor_factory
 
@@ -155,20 +156,80 @@ def test_operator_input_needed_archive_and_replan_next_step(tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
                       status={"state": "running", "phase": "review",
-                              "approach": 1, "maxApproaches": 2})
+                              "approach": 1, "maxApproaches": 2,
+                              "usage": {"byApproach": {"1": {
+                                  "costUSD": 0.42, "totalTokens": 321}}}})
     sup._approach = 1
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
+    # No `cure_preview` passed: the ordinary (non-driven) pause still has to
+    # carry approach n of m and this approach's spend.
     sup._pause_and_escalate_operator_input_needed(
         1, _MIXED_FINDINGS, replan_available=True)
 
     status = sup.run.read_status()
     pq = parked_question(root, status)
+    assert pq["reason"] == "operator_input_needed"
+    assert pq["approach"] == 1
+    assert pq["maxApproaches"] == 2
+    assert pq["approachOfMax"] == "approach 1 of 2"
+    assert pq["parkedAt"]
+    assert pq["replanAvailable"] is True
     assert pq["blockingCount"] == 2
     assert pq["residualCount"] == 0
-    assert {f["id"] for f in pq["findings"]} == {"F1", "F2"}
+    assert [f["id"] for f in pq["findings"]] == ["F1", "F2"]
+    for got, want in zip(pq["findings"], _MIXED_FINDINGS):
+        assert got["severity"] == "blocking"
+        assert got["clause"] == want["clause"]
+        assert got["evidence"] == want["evidence"]
+        assert got["cured_when"] == want.get("cured_when")
+        assert got["invalidates"] == []
     assert pq["consequence"]["taskIdsValidatedToPending"] == []
-    assert pq["consequence"]["insertCount"] == 0
+    assert pq["consequence"]["insertCount"] == 2
+    assert pq["consequence"]["costSpentThisApproach"] == "$0.42"
+    assert pq["consequence"]["tokensSpentThisApproach"] == 321
     assert pq["consequence"]["nextStepIfUnanswered"] == NEXT_STEP_ARCHIVE_AND_REPLAN
+    # The event itself carries the A.7 fields -- the hub reads them off it.
+    ev = read_events(root, types=("operator_escalation",))[-1]
+    assert ev["approachOfMax"] == "approach 1 of 2"
+    assert ev["costSpentThisApproach"] == "$0.42"
+    assert ev["tokensSpentThisApproach"] == 321
+
+
+def test_full_evidence_is_never_truncated(tmp_path):
+    root = tmp_path / "run"
+    long_evidence = "x" * 20000 + " end-of-evidence"
+    finding = [_finding("blocking", False, "requirement L", long_evidence)]
+    sup = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
+                      status={"state": "running", "phase": "review",
+                              "approach": 1, "maxApproaches": 2})
+    sup._approach = 1
+    findings.write_findings_json(sup.run.findings_json_file, finding)
+    sup._pause_and_escalate_operator_input_needed(
+        1, finding, replan_available=True)
+    pq = parked_question(root, sup.run.read_status())
+    assert pq["findings"][0]["evidence"] == long_evidence
+
+
+def test_an_event_without_a7_fields_still_reports_approach_and_spend(tmp_path):
+    """An `operator_escalation` event lacking `approachOfMax` and the spend
+    pair (written by an engine that emitted them only for a driven gate)
+    still yields approach n of m and the approach's spend, from the event's
+    own approach and `status.json`'s `usage.byApproach` bucket."""
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=2,
+                      status={"state": "running", "phase": "review",
+                              "approach": 1, "maxApproaches": 2,
+                              "usage": {"byApproach": {"1": {
+                                  "costUSD": 1.5, "totalTokens": 900}}}})
+    sup.run.emit("operator_escalation", approach=1,
+                 reason="operator_input_needed", findings=_MIXED_FINDINGS,
+                 replanAvailable=True, escalation="text",
+                 nextStepIfUnanswered=NEXT_STEP_ARCHIVE_AND_REPLAN)
+    sup.pause(reason="operator_input_needed")
+    pq = parked_question(root, sup.run.read_status())
+    assert pq["approachOfMax"] == "approach 1 of 2"
+    assert pq["consequence"]["costSpentThisApproach"] == "$1.50"
+    assert pq["consequence"]["tokensSpentThisApproach"] == 900
 
 
 # ===========================================================================
@@ -180,7 +241,9 @@ def test_repeated_signature_payload_has_no_replan_available(tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=3,
                       status={"state": "running", "phase": "review",
-                              "approach": 2, "maxApproaches": 3})
+                              "approach": 2, "maxApproaches": 3,
+                              "usage": {"byApproach": {"2": {
+                                  "costUSD": 0.1, "totalTokens": 77}}}})
     sup._approach = 2
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     sup._pause_and_escalate_repeated_rejection_signature(2, "sig-abc")
@@ -189,8 +252,12 @@ def test_repeated_signature_payload_has_no_replan_available(tmp_path):
     assert status["pauseReason"] == "rejected_repeated_signature"
     pq = parked_question(root, status)
     assert pq["reason"] == "rejected_repeated_signature"
+    assert pq["approachOfMax"] == "approach 2 of 3"
+    assert pq["parkedAt"]
     assert pq["replanAvailable"] is None
     assert pq["blockingCount"] == 2
+    assert pq["consequence"]["costSpentThisApproach"] == "$0.10"
+    assert pq["consequence"]["tokensSpentThisApproach"] == 77
     assert pq["consequence"]["nextStepIfUnanswered"] == NEXT_STEP_ARCHIVE_AND_REPLAN
 
 
@@ -233,6 +300,17 @@ def test_pause_reasons_a_ruling_cannot_answer_are_all_excluded(tmp_path):
     status = sup.run.read_status()
     assert status["pauseReason"] == "rejected_last_approach"
     assert status["pauseReason"] not in PARKED_QUESTION_REASONS
+    assert parked_question(root, status) is None
+
+
+def test_stagnation_pause_has_no_parked_question(tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(root, status={"state": "running", "approach": 1})
+    sup.run.emit("operator_escalation", approach=1, reason="stagnation",
+                 escalation="stalled")
+    sup.pause(reason="stagnation")
+    status = sup.run.read_status()
+    assert status["pauseReason"] == "stagnation"
     assert parked_question(root, status) is None
 
 

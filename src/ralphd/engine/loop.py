@@ -13136,9 +13136,8 @@ class LoopSupervisor:
                    if f.get("severity") == "blocking"]
         text = self._repeated_rejection_signature_escalation_text(
             approach, blocking, signature, channel_errors, cure_preview)
-        extra_fields = (
-            self._discretionary_gate_escalation_fields(approach, cure_preview)
-            if cure_preview is not None else {})
+        extra_fields = self._discretionary_gate_escalation_fields(
+            approach, self._effective_cure_preview(blocking, cure_preview))
         # Task 007 (v0.26, #269): the hub's parked-question payload needs to
         # know whether, absent this pause, the run would have taken a cure
         # pass over this approach's own blocking findings (curable, cure
@@ -13237,6 +13236,26 @@ class LoopSupervisor:
             "approachOfMax": f"approach {approach} of {self.cfg.max_approaches}",
             "hubLink": self._hub_deep_link(),
         }
+
+    def _effective_cure_preview(
+        self, blocking: list[dict], cure_preview: dict | None
+    ) -> dict:
+        """Task 007 (v0.26, #269): the `cure_preview` an `operator_
+        escalation` event's A.7 fields are built from. The caller's own
+        preview when it passed one (every `_step_review` call site does,
+        computed once per rejection); otherwise the SAME pure
+        `state.cure_pass_preview` walk over the current task list and
+        this pause's own blocking findings, so every ruling-answerable
+        escalation event carries `approachOfMax`, the approach's spend
+        and the predicted reopen/insert counts the hub's `parkedQuestion`
+        shapes -- never a `null` for a pause that simply was not handed a
+        preview. The escalation TEXT still renders from the caller's own
+        argument, unchanged.
+        """
+        if cure_preview is not None:
+            return cure_preview
+        return state.cure_pass_preview(
+            self.run.read_tasks().get("tasks") or [], blocking)
 
     @staticmethod
     def _discretionary_gate_escalation_text_lines(fields: dict) -> list[str]:
@@ -13452,10 +13471,11 @@ class LoopSupervisor:
         rejection be found again by its own signature once review is
         re-asked -- `_ruling_honoured_for_approach` is the reader.
 
-        Task 017 (PRD requirement A.7, #224): `cure_preview` not `None`
-        means this call is trigger condition 2's own driven gate -- the
-        event gains the same six `_discretionary_gate_escalation_fields`
-        the escalation text already appended, camelCase to match every
+        Task 017 (PRD requirement A.7, #224): the event carries the same
+        six `_discretionary_gate_escalation_fields` the escalation text
+        appends for a passed `cure_preview` -- always, since task 007
+        (v0.26, #269): with no `cure_preview` passed they are built off
+        `_effective_cure_preview`'s own fresh walk -- camelCase to match every
         other event field on this line (`taskIdsValidatedToPending`,
         `insertCount`, `costSpentThisApproach`, `tokensSpentThisApproach`,
         `approachOfMax`, `hubLink`), so a reader of `events.jsonl` alone
@@ -13466,9 +13486,8 @@ class LoopSupervisor:
         text = self._operator_input_needed_escalation_text(
             approach, blocking, replan_available, cure_preview=cure_preview)
         self._record_rejection_signature(approach, signature)
-        extra_fields = (
-            self._discretionary_gate_escalation_fields(approach, cure_preview)
-            if cure_preview is not None else {})
+        extra_fields = self._discretionary_gate_escalation_fields(
+            approach, self._effective_cure_preview(blocking, cure_preview))
         # Task 007 (v0.26, #269): same `nextStepIfUnanswered` derivation as
         # `_pause_and_escalate_repeated_rejection_signature`'s own -- see
         # that method's comment for why this is recomputed fresh off
