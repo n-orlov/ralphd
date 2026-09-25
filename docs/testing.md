@@ -7,7 +7,7 @@ budgets are checked by `tests/test_tier_budgets.py`, which reads this file.
 
 | tier | marker | who runs it | what it covers |
 |---|---|---|---|
-| smoke | `smoke` | the per-task verify pass, and `scripts/final_sha_guards.sh` over the records-guard modules it discovers | in-process engine flows (a supervisor plus scripted attempts, backoffs stubbed), in-process CLI, records lint, in-process hub |
+| smoke | `smoke` | the per-task verify pass, and `scripts/final_sha_guards.sh` over the docs-reading modules it discovers | in-process engine flows (a supervisor plus scripted attempts, backoffs stubbed), in-process CLI, in-process hub, and the in-process checks of the docs and SPEC.md against the code |
 | fast | `fast` | the final sha of a wave, and any pull request | smoke plus the stub-pi flow modules and the process-boundary CLI tests -- everything outside the nightly lanes |
 | nightly | `docker`, `browser`, and the dev-layout module | a sweep, never a per-task check | the docker-sibling tier, the browser tier, and `nightly.yml`'s six-cell dev-layout container matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset, `max-parallel: 2` across the VPS's two registered runner slots) -- each cell's `pytest` invocation itself now runs the `fast` tier by default (task 076, `scripts/host_like_dev_layout.sh`'s `HOST_LIKE_DEV_LAYOUT_TIER`), not the whole suite unfiltered; see the dev-layout rows below |
 
@@ -25,8 +25,9 @@ budgets are checked by `tests/test_tier_budgets.py`, which reads this file.
     # a single module or node id, while working on it -- seconds
     .venv/bin/python -m pytest -q tests/test_tier_budgets.py
 
-    # the records-guard subset a docs- or report-only commit can break: the
-    # script discovers its own module list, then selects the smoke tier
+    # the subset a docs-only commit can break: the script discovers every
+    # test module that reads docs/, README or SPEC.md, then selects the
+    # smoke tier
     scripts/final_sha_guards.sh
 
 `-n 8 --dist loadfile` is the parallel recipe: `loadfile` keeps a module's tests
@@ -59,8 +60,8 @@ Rule 3 is where the two tiers differ, and it is chosen from measurement rather
 than taste: a real engine, real sleep or subprocess spawn accounts for most of
 the serial wall clock, so excluding the spawning modules is what makes a
 per-task tier affordable at all.
-Nested `pytest --collect-only` children are deliberately *not* in that list: the
-records lint is built that way and the tier table puts records lint in smoke.
+Nested `pytest --collect-only` children are deliberately *not* in that list, so
+a module that only collects (never runs) a nested suite stays in smoke.
 
 ## Running the suite inside a ralphd job container
 
@@ -140,13 +141,11 @@ Two different things are checked under this name, by `tests/test_tier_budgets.py
 * **Collected count (live, in code).** How many tests and modules `smoke`/
   `fast` collect right now is asked of pytest itself at check time and
   compared against a ratcheting ceiling, `TIER_CEILINGS` in
-  `tests/test_tier_budgets.py` (v0.21 task 062, requirement N.4) -- a code
-  constant, not a cell in the table below, so it cannot go stale silently
-  when this file is edited. A tier that grows past its ceiling is raised
-  there, with the measurement that earned the raise named in the commit
-  message that raises it, never recorded in this doc (v0.21 task 063,
-  requirement N.4 -- a committed test-count or module-count disclosure is
-  the class of record this PRD prohibits outright).
+  `tests/test_tier_budgets.py` -- a code constant, not a cell in the table
+  below, so it cannot go stale silently when this file is edited. A ceiling
+  moves only with the measured count named in the commit message that moves
+  it; neither the count nor its history is written into this doc or into a
+  code comment.
 
 | lane | marker | recipe | wall clock | budget wall clock | PRD target | target met? |
 |---|---|---|---|---|---|---|
@@ -154,7 +153,6 @@ Two different things are checked under this name, by `tests/test_tier_budgets.py
 | smoke, serial | `smoke` | `-m smoke` | 147.68 s | 200 s | < 120 s | MISSED -- 147.68 s measured against the 120 s target |
 | fast, parallel | `fast` | `-m fast -n 8 --dist loadfile` | 80.12 s | 150 s | < 120 s | met -- 80.12 s inside the 120 s target |
 | fast, serial | `fast` | `-m fast` | 540.44 s (stale wall clock, not retaken since -- the standing rule caps one full fast-tier run per iteration and it is spent on the parallel recipe above) | 1100 s | < 300 s | MISSED -- 540.44 s measured against the 300 s target |
-| records, serial | n/a (selected by directory, not marker) | `.venv/bin/python -m pytest -q tests/records/` | 11.35 s | 30 s | < 15 s | met -- 11.35 s inside the 15 s target |
 | dev-layout, `PYTHONUSERBASE` unset (retired unfiltered measurement, superseded by task 076) | n/a (no marker; the whole suite, unfiltered -- this recipe no longer runs; see below) | `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset scripts/host_like_dev_layout.sh` | 2047.32 s | 3600 s | < 900 s (15 min) | MISSED -- 2047.32 s measured against the 900 s target |
 | dev-layout, `PYTHONUSERBASE` exported (retired unfiltered measurement, superseded by task 076) | n/a (no marker; the whole suite, unfiltered -- this recipe no longer runs; see below) | `scripts/host_like_dev_layout.sh` (default mode, no `HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE` override) | 2146.54 s | 3600 s | < 900 s (15 min) | MISSED -- 2146.54 s measured against the 900 s target |
 
@@ -232,22 +230,3 @@ That table is prose, not the budget table `tests/test_tier_budgets.py` parses
 (the one under "## Budgets" above): this one carries no `wall clock`/`budget
 wall clock` header pair, so the guard leaves it alone. The 10.81 s the
 directory adds is inside the fast lane's own recorded measurement above.
-
-### The records-lint family (`tests/records/`)
-
-Measured serially (`.venv/bin/python -m pytest -q tests/records/`): well
-inside the family's own **15 s** PRD target's neighbourhood at last
-measurement, against a collected-count ceiling that lives as a code constant
-(`COLLECTED_BUDGET` in `tests/records/test_records_family_budget.py`) rather
-than as a row here, for the same reason `TIER_CEILINGS` moved out of this doc
-above.
-
-**The subprocess rule.** `tests/records/test_the_records_family_spawns_no_subprocess`
-pins a real run of the whole family (minus its own one deliberate exemption)
-at spawning no real subprocess at all -- see that module's own docstring for
-the mechanism and the one exemption, `test_records_family_fresh_clone.py`,
-whose single node deliberately clones this repository for real and runs the
-family again inside the clone, to prove it passes against a genuine fresh
-clone and not merely this checkout's own working tree. That node is marked
-`@pytest.mark.nightly` directly, so it stays out of `smoke`/`fast`, but still
-runs whenever this directory is selected by path.
