@@ -1856,20 +1856,26 @@ function parkedWaiveLineText(f) {
 }
 
 // Task 009 (v0.26, #269): a pure text transform -- checking a waive box
-// appends `line` to `text` (unless already present); unchecking removes
-// only that ONE line, leaving every other line untouched. No DOM, no
-// request: this is the whole of a waive checkbox's effect, and the piece
-// `tests/test_hub_parked_actions.py` exercises directly so the
-// compose-then-submit rule is pinned independent of any event wiring.
+// appends `line` to `text` (unless already present) as its own line, after
+// a newline if `text` does not already end in one; unchecking removes only
+// that ONE line (and the newline ending it). Every other byte the operator
+// typed -- blank lines, paragraphs, leading/trailing whitespace -- is left
+// exactly as it was. No DOM, no request: this is the whole of a waive
+// checkbox's effect, and the piece `tests/test_hub_parked_actions.py`
+// exercises directly so the compose-then-submit rule is pinned independent
+// of any event wiring.
 function applyWaiveLine(text, line, checked) {
-  const lines = String(text || "").split("\n").filter((l) => l.length > 0);
+  const src = String(text || "");
+  const lines = src.split("\n");
   const idx = lines.indexOf(line);
   if (checked) {
-    if (idx < 0) lines.push(line);
-  } else if (idx >= 0) {
-    lines.splice(idx, 1);
+    if (idx >= 0) return src;
+    const sep = src.length && !src.endsWith("\n") ? "\n" : "";
+    return src + sep + line + "\n";
   }
-  return lines.length ? lines.join("\n") + "\n" : "";
+  if (idx < 0) return src;
+  lines.splice(idx, 1);
+  return lines.join("\n");
 }
 
 // Task 009 (v0.26, #269): `onWaive(f, checked)` is called on toggle, never
@@ -1973,8 +1979,12 @@ function renderParkedPanel(box, runId, pq) {
     type: "button", id: "parked-submit-ruling",
     onclick: async () => {
       const ta = document.getElementById("rule-text");
-      const text = ta ? ta.value.trim() : "";
-      if (!text) { actionStatus.textContent = "failed: ruling text required"; return; }
+      // The body is posted byte-for-byte as the textarea holds it (the
+      // Rule form's own contract) -- never trimmed or reflowed. Only a
+      // body with nothing but whitespace is refused, client-side, before
+      // any request is sent.
+      const text = ta ? ta.value : "";
+      if (!text.trim()) { actionStatus.textContent = "failed: ruling text required"; return; }
       actionStatus.textContent = "sending\u2026";
       try {
         const resp = await fetch(hubURL(`/api/runs/${encodeURIComponent(runId)}/rule`), {

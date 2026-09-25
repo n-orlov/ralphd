@@ -71,8 +71,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 009: +18 tests / +1 module (tests/test_hub_parked_actions.py),
     # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
     # 6255/432, `-m smoke` -> 4574/310.
-    "fast": {"tests": 6255, "modules": 432},
-    "smoke": {"tests": 4574, "modules": 310},
+    # Task 009 retry: +7 tests in tests/test_hub_parked_actions.py (byte-
+    # for-byte submit body, blank-line-preserving waive compose, Enter in
+    # #rule-text), measured the same way -> fast 6262, smoke 4581.
+    "fast": {"tests": 6262, "modules": 432},
+    "smoke": {"tests": 4581, "modules": 310},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

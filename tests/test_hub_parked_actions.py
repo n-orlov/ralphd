@@ -219,6 +219,39 @@ def test_waived_text_stays_editable_hand_typed_text_survives_a_toggle():
     assert out["textareaValue"] == "already typed by hand\nwaive F1 (clause one (#111))\n"
 
 
+def test_checking_a_waive_box_keeps_hand_typed_blank_lines():
+    out = _run(_PQ, textareaValue="first paragraph\n\nsecond paragraph\n",
+               waive=[{"id": "F1", "checked": True}])
+    assert out["textareaValue"] == (
+        "first paragraph\n\nsecond paragraph\nwaive F1 (clause one (#111))\n")
+
+
+def test_checking_a_waive_box_starts_a_new_line_after_unterminated_text():
+    out = _run(_PQ, textareaValue="no trailing newline",
+               waive=[{"id": "F1", "checked": True}])
+    assert out["textareaValue"] == "no trailing newline\nwaive F1 (clause one (#111))\n"
+
+
+def test_waive_toggle_round_trip_leaves_hand_typed_text_byte_identical():
+    """Check then uncheck, for every finding in `_PQ`: the textarea returns
+    to exactly what was typed -- blank lines, indentation and trailing
+    whitespace included -- never a normalised copy of it."""
+    typed = "\n  indented line  \n\n\nafter two blank lines\n\n"
+    for f in _PQ["findings"]:
+        out = _run(_PQ, textareaValue=typed,
+                   waive=[{"id": f["id"], "checked": True},
+                          {"id": f["id"], "checked": False}])
+        assert out["textareaValue"] == typed, f["id"]
+
+
+def test_unchecking_keeps_blank_lines_around_the_removed_line():
+    out = _run(_PQ, textareaValue="para one\n\npara two\n",
+               waive=[{"id": "F1", "checked": True},
+                      {"id": "F2", "checked": True},
+                      {"id": "F1", "checked": False}])
+    assert out["textareaValue"] == "para one\n\npara two\nwaive F2 (clause two (#112))\n"
+
+
 def test_checking_a_waive_box_never_sends_any_request_by_itself():
     """The whole point of criterion (1): one click never waives a finding
     on its own -- it only edits the textarea. Exercised for every finding
@@ -254,6 +287,28 @@ def test_rule_text_stays_a_12_row_resizable_textarea():
     assert "resize: vertical" in block
 
 
+def test_enter_in_rule_text_inserts_a_newline_and_never_submits():
+    """`Enter` in a `<textarea>` inserts a newline natively and never
+    triggers implicit form submission (HTML's implicit submission applies
+    to single-line inputs only). So the requirement holds exactly when
+    nothing in app.js overrides it: no key handler on `#rule-text` itself,
+    no key listener anywhere in the bundle that could intercept `Enter` to
+    submit, and the Rule form submits only on its own `submit` event."""
+    import re
+    src = APP_JS.read_text()
+    m = re.search(r'h\("textarea", \{ id: "rule-text"([^}]*)\}', src)
+    assert m, "rule-text is not an h(\"textarea\") element"
+    attrs = m.group(1)
+    assert 'rows: "12"' in attrs
+    assert "onkey" not in attrs and "onsubmit" not in attrs
+    assert not re.search(r'addEventListener\(\s*["\']key', src)
+    # every inline key handler in the bundle is a dialog opener bound to a
+    # clickable cell, never a submitter
+    for handler in re.finditer(r'onkeydown\s*[:=]\s*\(ev\)\s*=>\s*\{([^}]*)\}', src):
+        assert "submit" not in handler.group(1)
+    assert 'getElementById("rule-form").addEventListener("submit"' in src
+
+
 # ---------------------------------------------------------------------------
 # criterion (3): the two stated-effect actions
 # ---------------------------------------------------------------------------
@@ -267,7 +322,24 @@ def test_submit_ruling_and_resume_posts_the_textarea_body_unchanged_to_rule():
     assert call["url"] == "/api/runs/run-x/rule"
     assert call["opts"]["method"] == "POST"
     posted = json.loads(call["opts"]["body"])
-    assert posted == {"text": "a hand-typed ruling"}  # unchanged but for .trim()
+    # byte-for-byte: no trim, no reflow -- leading/trailing whitespace and
+    # the final newline all reach `/rule` exactly as typed.
+    assert posted == {"text": "  a hand-typed ruling  \n"}
+
+
+def test_submit_posts_a_multi_paragraph_body_with_its_blank_lines_intact():
+    body = "\n  first paragraph\n\n\nsecond paragraph\t\n\n"
+    out = _run(_PQ, textareaValue=body, click="submit",
+               responses=[{"ok": True, "body": {"file": "r1"}}])
+    assert json.loads(out["calls"][0]["opts"]["body"]) == {"text": body}
+
+
+def test_submit_after_waiving_posts_exactly_the_composed_textarea_body():
+    out = _run(_PQ, textareaValue="first paragraph\n\nsecond paragraph\n",
+               waive=[{"id": "F1", "checked": True}], click="submit",
+               responses=[{"ok": True, "body": {"file": "r1"}}])
+    assert json.loads(out["calls"][0]["opts"]["body"]) == {
+        "text": "first paragraph\n\nsecond paragraph\nwaive F1 (clause one (#111))\n"}
 
 
 def test_submit_ruling_and_resume_never_calls_unpause():

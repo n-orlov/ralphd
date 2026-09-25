@@ -5032,17 +5032,23 @@ dir themselves and a live proxy would only add a way to disagree.
   `#waive-<id>` input) whose ONLY effect is composing one editable line
   (`parkedWaiveLineText`: `waive <id> (<clause>)`) into the ruling
   textarea -- checking it sends no request, so no finding is ever waived
-  by that click alone; unchecking removes only that finding's own line
-  (`applyWaiveLine`, a pure text transform), leaving any hand-typed text
-  or another finding's waived line untouched. The panel writes into the
+  by that click alone. Checking appends that line on a line of its own
+  (after a newline if the text does not already end in one); unchecking
+  removes only that finding's own line (`applyWaiveLine`, a pure text
+  transform). Every other byte in the textarea -- hand-typed prose, blank
+  lines between paragraphs, indentation, trailing whitespace, another
+  finding's waived line -- is left exactly as it was, so a check-then-uncheck
+  returns the text byte-identical. The panel writes into the
   SAME `#rule-text` textarea the Rule section below already owns (task
   010's 12-row resizable box, where `Enter` inserts a newline and never
   submits) -- never a second, panel-own textarea -- so a ruling assembled
   from waived findings and prose typed by hand share one box and one
   submit path. Two buttons follow, each naming its own effect in visible
   text right beside it (never only a hover title): **`Submit ruling &
-  resume`** posts the textarea body, trimmed but otherwise unchanged, to
-  `POST /api/runs/<id>/rule` -- the SAME route the Rule form below already
+  resume`** posts the textarea body unchanged -- byte-for-byte, never
+  trimmed or reflowed, as the Rule form's own submit does -- to
+  `POST /api/runs/<id>/rule` (a body of nothing but whitespace is refused
+  client-side with no request sent) -- the SAME route the Rule form below already
   posts to, which resumes the run itself when the ruling answers the
   current pause (`LoopSupervisor.resume_if_ruling_answers_pause`); it
   never calls `/unpause` separately. **`Resume without a ruling`** instead
