@@ -1323,6 +1323,35 @@ def _stub_wait_out_backoff_at_class_level(request):
         LoopSupervisor._wait_out_backoff = original             # type: ignore[assignment]
 
 
+# --- task 004 (PRD requirement A.4, #269): a class-level stub for the
+# escalation-delivery backoff wait, same shape as the `_wait_out_backoff`
+# stub just above -- every test in the whole session gets a `LoopSupervisor.
+# _sleep_before_escalation_retry` that returns instantly, so a fixture that
+# happens to drive an always-failing configured notifier through a real
+# `_pause_and_escalate_*`/`_pause_for_commit_secret_hit` site (e.g.
+# `tests/test_last_approach.py`'s failing/raising-poster nodes) never pays
+# the real 60s/120s backoff. `tests/test_escalation_delivery.py` -- the
+# module whose own SUBJECT is this retry/backoff schedule -- overrides the
+# instance attribute directly to observe it, which shadows this class-level
+# stub exactly the way an instance override already shadows `_wait_out_
+# backoff`'s own class-level stub above.
+
+
+def _class_level_no_escalation_backoff(self, seconds):
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _stub_escalation_backoff_at_class_level():
+    from ralphd.engine.loop import LoopSupervisor
+    original = LoopSupervisor._sleep_before_escalation_retry
+    LoopSupervisor._sleep_before_escalation_retry = _class_level_no_escalation_backoff   # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        LoopSupervisor._sleep_before_escalation_retry = original             # type: ignore[assignment]
+
+
 class ScriptedRunner:
     """The scripted stand-in for `sup.runner`: a script per phase, the last
     step of each repeating forever, dispatched on the phase the engine itself

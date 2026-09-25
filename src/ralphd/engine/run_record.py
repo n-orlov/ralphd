@@ -290,6 +290,17 @@ NOTIFIER_UNCONFIGURED_EVENT = "notifier.unconfigured"
 # status.json and never scans events.jsonl.
 ENGINE_STARTED_EVENT = "engine.started"
 
+# Task 004 (PRD requirement A.4, #269): emitted once per escalation delivery
+# that never succeeded after `LoopSupervisor._ESCALATION_DELIVERY_MAX_
+# ATTEMPTS` attempts, each already recorded, individually, as its own
+# honest `notification.sent`/`notification.failed` event (#197's dichotomy
+# is unchanged -- every attempt still gets exactly one of those two names).
+# This is the DISTINCT signal that the operator-facing escalation itself
+# never reached the notifier at all, not merely that one attempt failed --
+# a reader watching only `notification.failed` cannot tell a transient
+# blip from a pause nobody was ever told about.
+NOTIFICATION_ESCALATION_UNDELIVERED_EVENT = "notification.escalation_undelivered"
+
 
 def build_notifications_section(run: "state.RunDir") -> list[dict]:
     return state.read_events(run.root, types=[NOTIFICATION_SENT_EVENT])

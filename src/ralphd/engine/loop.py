@@ -837,7 +837,7 @@ class LoopSupervisor:
             return
         self.run.update_status(workspaceVersion=workspace_version)
 
-    def _notify_via_configured_notifier(self, text: str) -> None:
+    def _notify_via_configured_notifier(self, text: str) -> dict:
         """Task 007 (PRD requirement D.1, finding 5): the production
         `self.notifier` callable, wired only when `self.cfg.notifier_url`
         is set. Reaches it through `hat_tools.send_notification`, B.3's own
@@ -858,10 +858,12 @@ class LoopSupervisor:
         notifier attempt must never turn that into a crashed iteration.
         """
         try:
-            hat_tools.send_notification(self.run, text, self.cfg.notifier_url)
+            return hat_tools.send_notification(self.run, text, self.cfg.notifier_url)
         except Exception:                             # pragma: no cover
             log.exception("notifier dispatch failed for run %s",
                           self.cfg.run_id)
+            return {"ok": False, "detail": None,
+                    "error": "notifier dispatch raised"}
 
     def _notify(self, text: str) -> None:
         """Task 001 (PRD requirement A, #269): the ONE bounding path every
@@ -888,11 +890,88 @@ class LoopSupervisor:
         existing.
         """
         if self.notifier is None:
-            return
+            return None
         if len(text) > MAX_NOTIFY_CHARS:
             marker = "\n...[truncated to fit MAX_NOTIFY_CHARS]"
             text = text[: MAX_NOTIFY_CHARS - len(marker)] + marker
-        self.notifier(text)
+        return self.notifier(text)
+
+    # Task 004 (PRD requirement A.4, #269): the bounded-backoff schedule an
+    # escalation delivery retries through -- exactly two waits (after a
+    # first and a second failed attempt, none after the third and last),
+    # summing to 180s, comfortably inside the PRD's "a few minutes in
+    # total" and its own explicit ceiling of 300s. `_ESCALATION_DELIVERY_
+    # MAX_ATTEMPTS` (3) is the OUTER bound this schedule serves -- never
+    # confused with `hat_tools.send_notification`'s own, separate, task
+    # 017/requirement A.7 retry-once-immediately-no-backoff, which still
+    # runs INSIDE each of these three attempts and is unchanged by this.
+    _ESCALATION_DELIVERY_MAX_ATTEMPTS = 3
+    _ESCALATION_DELIVERY_BACKOFF_S: tuple[float, ...] = (60.0, 120.0)
+
+    def _sleep_before_escalation_retry(self, seconds: float) -> None:
+        """Task 004: the ONE seam a test stubs to skip a real backoff wait
+        before an escalation delivery retry -- the same post-construction/
+        class-level stubbing shape `_wait_out_backoff` already uses
+        elsewhere in this module. `tests/conftest.py` stubs this at the
+        class level for the whole suite (mirroring `_wait_out_backoff`'s
+        own class-level stub), so no other test pays a real wait for this
+        either.
+        """
+        time.sleep(seconds)
+
+    @staticmethod
+    def _escalation_delivery_ok(result) -> bool:
+        """Task 004: was a single `self._notify(text)` call in `_notify_
+        escalation_delivery` below an actual delivery? The production
+        notifier (`_notify_via_configured_notifier`) now always answers a
+        dict shaped like `hat_tools.send_notification`'s own return value
+        (`{"ok": bool, ...}`) -- read that flag when it is present.
+
+        A non-dict result (`None`, or anything else) is treated as
+        delivered: every pre-existing test double assigned straight onto
+        `sup.notifier` throughout this suite (a bare `list.append`, a
+        `_StubNotifier.__call__` returning `None`) never simulated a
+        failure this way, and none of them is this task's to rewrite --
+        this fallback is what keeps every one of them calling the notifier
+        exactly once, exactly as before this task.
+        """
+        if isinstance(result, dict):
+            return bool(result.get("ok"))
+        return True
+
+    def _notify_escalation_delivery(self, text: str, reason: str) -> None:
+        """Task 004 (PRD requirement A.4, #269): the retrying delivery path
+        for an operator escalation, called ONLY from a site that has
+        already `self.pause()`d and already `self.run.emit()`ed the
+        `operator_escalation` event -- both landed on disk, and readable
+        from `status.json`/`events.jsonl`, before this method is ever
+        entered, so a slow or failing delivery never delays the pause
+        taking effect.
+
+        Reads back each attempt's own result (`_escalation_delivery_ok`)
+        through the SAME `self._notify`/`self.notifier` seam every other
+        call site already uses -- never a second HTTP client. A failed
+        attempt is retried, after a bounded backoff
+        (`_ESCALATION_DELIVERY_BACKOFF_S`, stubbed via `_sleep_before_
+        escalation_retry`), up to `_ESCALATION_DELIVERY_MAX_ATTEMPTS`
+        attempts in total. Each attempt still goes through `hat_tools.
+        send_notification`'s own honest `notification.sent`/`notification.
+        failed` split (#197) unchanged -- a failing-then-succeeding
+        sequence leaves that trail exactly as it happened, one event per
+        attempt. Only when the LAST attempt still failed does this emit
+        the one, additional, distinct `notification.escalation_
+        undelivered` event -- the signal that this escalation never
+        reached the operator at all, not merely that one attempt did not.
+        """
+        for attempt in range(1, self._ESCALATION_DELIVERY_MAX_ATTEMPTS + 1):
+            result = self._notify(text)
+            if self._escalation_delivery_ok(result):
+                return
+            if attempt < self._ESCALATION_DELIVERY_MAX_ATTEMPTS:
+                self._sleep_before_escalation_retry(
+                    self._ESCALATION_DELIVERY_BACKOFF_S[attempt - 1])
+        self.run.emit(run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT,
+                      reason=reason)
 
     # -- refund bookkeeping (task 023, #32) --------------------------------
     # Task 014 (requirement J, #98): "steer" joins "infra" here. A steer
@@ -6902,12 +6981,12 @@ class LoopSupervisor:
         """
         self.pause(reason="operator_input_needed")
         if self.notifier is not None:
-            self._notify(
+            self._notify_escalation_delivery(
                 "operator_input_needed: a task-boundary commit scan hit "
                 "refused a push; see the commit_secret_scan event for the "
                 "sha, part and variable name (never the matched value) -- "
                 "the faulted task needs an operator ruling before this run "
-                "pushes again")
+                "pushes again", reason="operator_input_needed")
 
     def _workspace_diff_paths(self, base_sha: str, head_sha: str) -> list[str] | None:
         """Task 008 (PRD requirement B.4, #221): the file paths `git diff
@@ -12823,7 +12902,7 @@ class LoopSupervisor:
         # without a second vocabulary to map between.
         self.pause(reason="rejected_last_approach")
         if self.notifier is not None:
-            self._notify(text)
+            self._notify_escalation_delivery(text, reason="rejected_last_approach")
 
     def _review_rejection_signature(
         self, findings_list: list[dict] | None,
@@ -13066,9 +13145,9 @@ class LoopSupervisor:
                       escalation=text, **extra_fields)
         self.pause(reason="rejected_repeated_signature")
         if self.notifier is not None:
-            self._notify(self._operator_escalation_digest_text(
+            self._notify_escalation_delivery(self._operator_escalation_digest_text(
                 "rejected_repeated_signature", approach, findings_list,
-                cure_preview))
+                cure_preview), reason="rejected_repeated_signature")
 
     def _approach_spend_text(self, approach: int) -> tuple[str | None, int | None]:
         """Task 017 (PRD requirement A.7, #224): the "dollars and tokens
@@ -13383,9 +13462,9 @@ class LoopSupervisor:
                       **extra_fields)
         self.pause(reason="operator_input_needed")
         if self.notifier is not None:
-            self._notify(self._operator_escalation_digest_text(
+            self._notify_escalation_delivery(self._operator_escalation_digest_text(
                 "operator_input_needed", approach, findings_list,
-                cure_preview))
+                cure_preview), reason="operator_input_needed")
 
     def _ruling_honoured_for_approach(self, approach: int) -> dict | None:
         """Task 015 (PRD requirement A.4, #224): does a recorded operator
@@ -13613,7 +13692,7 @@ class LoopSupervisor:
                       contractErrors=list(contract_errors), escalation=text)
         self.pause(reason="review_contract_unrepaired")
         if self.notifier is not None:
-            self._notify(text)
+            self._notify_escalation_delivery(text, reason="review_contract_unrepaired")
 
     def _review_findings_unusable_escalation_text(
         self, approach: int, contract_errors: list[str]
@@ -13691,7 +13770,7 @@ class LoopSupervisor:
                       contractErrors=list(contract_errors), escalation=text)
         self.pause(reason="review_findings_unusable")
         if self.notifier is not None:
-            self._notify(text)
+            self._notify_escalation_delivery(text, reason="review_findings_unusable")
 
     def _stagnation_last_approach_escalation_text(
         self, approach: int, outstanding_tasks: list[dict],
@@ -13945,7 +14024,7 @@ class LoopSupervisor:
                       escalation=text, **extra_payload)
         self.pause(reason="stagnation")
         if self.notifier is not None:
-            self._notify(text)
+            self._notify_escalation_delivery(text, reason="stagnation")
 
     def _review_incurable_rejection(self) -> bool:
         """Task 006 (requirement B.2, #111): does the review just run
@@ -14049,7 +14128,7 @@ class LoopSupervisor:
                       escalation=text)
         self.pause()
         if self.notifier is not None:
-            self._notify(text)
+            self._notify_escalation_delivery(text, reason="rejected_incurable")
 
     def _terminal_success_blockers(self) -> list[str]:
         """Task 013 (requirement I, #98): the ONE predicate the exit-gate
@@ -14536,7 +14615,7 @@ class LoopSupervisor:
                       escalation=text, **cycle_fault)
         self.pause(reason="unschedulable_dependency_cycle")
         if self.notifier is not None:
-            self._notify(text)
+            self._notify_escalation_delivery(text, reason="unschedulable_dependency_cycle")
 
     def _unresolvable_edge_escalation_text(self, edge_fault: dict) -> str:
         """The operator-facing escalation body for an `unresolvable_
@@ -14583,7 +14662,7 @@ class LoopSupervisor:
                       escalation=text, **edge_fault)
         self.pause(reason="unresolvable_dependency_edge")
         if self.notifier is not None:
-            self._notify(text)
+            self._notify_escalation_delivery(text, reason="unresolvable_dependency_edge")
 
     def _unresolved_failures(self, tasks_doc: dict) -> list[dict]:
         """The `failed` tasks of a plan that has nothing actionable left in it.

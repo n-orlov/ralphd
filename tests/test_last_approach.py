@@ -1549,7 +1549,21 @@ def test_a_non_2xx_status_still_leaves_the_pause_outcome_unchanged(
     # silently lose the escalation. Task 009 (requirement B.1) means this
     # is the distinct `notification.failed` event, never `notification.
     # sent` -- the send never actually succeeded.
+    #
+    # Task 004 (PRD requirement A.4, #269) rewrites this pin's own COUNT:
+    # a permanently-failing notifier is now retried up to 3 times with
+    # bounded backoff (`LoopSupervisor._notify_escalation_delivery`) before
+    # the run gives up on this escalation, so 3 attempts each honestly
+    # record their own `notification.failed` event (#197's sent/failed
+    # split is unchanged PER ATTEMPT) -- never 1 -- and the exhausted
+    # retries additionally leave exactly one `notification.
+    # escalation_undelivered` event, covered in full by `tests/
+    # test_escalation_delivery.py::test_always_failing_notifier_is_
+    # recorded_undelivered_after_three_attempts`.
     events = _events(root, run_record.NOTIFICATION_FAILED_EVENT)
-    assert len(events) == 1
-    assert events[0]["httpStatus"] == 500
+    assert len(events) == 3
+    assert all(e["httpStatus"] == 500 for e in events)
     assert _events(root, hat_tools.NOTIFICATION_SENT_EVENT) == []
+    undelivered = _events(root, run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT)
+    assert len(undelivered) == 1
+    assert undelivered[0]["reason"] == "rejected_last_approach"
