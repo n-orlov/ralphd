@@ -102,12 +102,9 @@ def test_a_contract_with_no_rubric_yields_the_engine_default_rubric():
     assert findings.DEFAULT_RUBRIC in context
     assert "no rubric supplied; the engine default applies" in context
     assert "Blocking" in context and "Residual" in context
-
-
-def test_the_default_rubric_blocks_on_spec_code_contradiction_not_paperwork():
-    """The default boundary is product-only: a spec/code contradiction is
-    blocking, while tracked-artifact prose and sweep-sha declarations are
-    not blocking grounds at all (a record miscount is residual)."""
+    # The default boundary is product-only: a spec/code contradiction is
+    # blocking; tracked-artifact prose and sweep-sha declarations are not
+    # blocking grounds at all (a record miscount is residual).
     blocking, _, residual = findings.DEFAULT_RUBRIC.partition("**Residual**")
     assert "`SPEC.md` or the user docs contradict the" in blocking
     assert "tracked artifact" not in findings.DEFAULT_RUBRIC

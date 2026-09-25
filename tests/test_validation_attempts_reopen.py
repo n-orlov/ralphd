@@ -289,6 +289,14 @@ def test_the_stagnation_escalation_names_a_task_awaiting_validation(tmp_path):
     assert (f"046 (awaiting-validation, validationAttempts 2 of "
             f"{VALIDATION_ATTEMPT_LIMIT})") in ev["escalation"]
 
+    # the exhausted-split-child variant of the text carries it too
+    text = sup._stagnation_last_approach_escalation_text(
+        1, outstanding, exhausted_split_child={
+            "id": "047", "splitFrom": "040", "used": 3, "budget": 3})
+    assert "itself a split of task 040" in text
+    assert (f"046 (awaiting-validation, validationAttempts 2 of "
+            f"{VALIDATION_ATTEMPT_LIMIT})") in text
+
     # and adds nothing when no task is waiting on verify
     quiet = _supervisor(tmp_path / "quiet", [_task("047", status="pending")])
     quiet._pause_and_escalate_stagnation_last_approach(
@@ -297,16 +305,3 @@ def test_the_stagnation_escalation_names_a_task_awaiting_validation(tmp_path):
     assert ev["awaitingValidation"] == []
     assert "awaiting-validation," not in ev["escalation"]
 
-
-def test_the_split_child_stagnation_escalation_also_names_it(tmp_path):
-    """The exhausted-split-child variant of the stagnation text carries the
-    same "Waiting on verify" section as the ordinary one."""
-    sup = _supervisor(tmp_path, [
-        _task("046", status="awaiting-validation", attempts=1)])
-    text = sup._stagnation_last_approach_escalation_text(
-        1, [{"id": "046", "status": "awaiting-validation"}],
-        exhausted_split_child={"id": "046", "splitFrom": "040",
-                               "used": 3, "budget": 3})
-    assert "itself a split of task 040" in text
-    assert (f"046 (awaiting-validation, validationAttempts 1 of "
-            f"{VALIDATION_ATTEMPT_LIMIT})") in text
