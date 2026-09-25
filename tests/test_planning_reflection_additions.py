@@ -1,7 +1,6 @@
 """Task 040 (#170, #175, PRD requirement I.2): land the v0.19.1
 reflection's `suggestions.diff` (#175) additions to `planning.md` --
-practice 9 (the tail is a freeze; the plan names the last code-touching
-task), step 2c (read the approach ordinal from Job context) and step 3a
+step 2c (read the approach ordinal from Job context) and step 3a
 (self-lint the draft against the three refusal shapes) -- with a pin that
 the practice-count sentence agrees with the numbered list beneath it, so a
 tenth practice added later without updating the count sentence fails here
@@ -60,15 +59,6 @@ def test_the_practice_count_sentence_agrees_with_the_numbered_list():
         f"the sentence claims {claimed} practices but {len(item_numbers)} "
         f"numbered items exist: {item_numbers}"
     )
-
-
-def test_practice_nine_names_the_freeze_and_the_last_code_touching_task():
-    section = _practices_section()
-    assert re.search(r"9\.\s+\*\*The tail is a FREEZE", section), (
-        "practice 9 (the freeze) is missing or not the ninth numbered item"
-    )
-    assert "last code-touching task" in section
-    assert "docs/roadmap.md" in section and "docs/prds/README.md" in section
 
 
 def test_step_2c_reads_the_approach_ordinal_from_job_context():

@@ -1,7 +1,7 @@
 """Task 041 (#170, #175, PRD requirement I.3): land the v0.19.1
 reflection's `suggestions.diff` (#175) additions to `worker.md` -- four
-statements the prompt did not previously make: evidence you invalidate is
-yours to re-take, a lane is re-measured in the same environment, the two
+statements the prompt did not previously make: a stale measurement is
+re-run inside the same task, a lane is re-measured in the same environment, the two
 refused split shapes (forced vs voluntary), and a refused `plan_complete`
 is work, not formatting.
 """
@@ -14,21 +14,23 @@ REPO = Path(__file__).resolve().parents[1]
 WORKER_MD = (REPO / "src" / "ralphd" / "prompts" / "worker.md").read_text()
 
 
-def test_evidence_you_invalidate_is_yours_to_retake():
-    assert "Evidence you invalidate is yours to re-take" in WORKER_MD
-    idx = WORKER_MD.index("Evidence you invalidate is yours to re-take")
-    para = " ".join(WORKER_MD[idx:idx + 700].split())
-    assert "re-taking it is" in para
-    assert "your job" in para
+def _run_evidence_bullet() -> str:
+    idx = WORKER_MD.index("Run evidence lives in the artifacts directory")
+    end = WORKER_MD.index("\n- ", idx)
+    return " ".join(WORKER_MD[idx:end].split())
+
+
+def test_a_stale_measurement_is_re_run_inside_the_same_task():
+    para = _run_evidence_bullet()
+    assert "never in a commit" in para
+    assert "`/run/ralphd/artifacts`" in para
+    assert "re-run it inside this same task" in para
     assert "exit-status file" in para
-    assert "never erased by" in para
 
 
 def test_a_lane_is_re_measured_in_the_same_environment():
-    assert "re-measured\nin the same environment" in WORKER_MD or \
-        "re-measured in the same environment" in " ".join(WORKER_MD.split())
-    idx = WORKER_MD.index("re-measured")
-    para = " ".join(WORKER_MD[idx:idx + 400].split())
+    para = _run_evidence_bullet()
+    assert "re-measured in the same environment" in para
     assert "same checkout, same venv, same layout" in para
     assert "git worktree" in para
 

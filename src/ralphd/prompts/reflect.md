@@ -40,8 +40,7 @@ outside that directory.
    (currently `planning`, `plan_review`, `worker`, `review`, `task-verify`,
    `verdict_gate`, `steer`, `reflect`) -- or skills used by future runs of
    this loop. This scope is the whole prompt surface, not a fixed subset: a
-   ninth hat added to that directory is in scope too, and this list must be
-   kept in sync with the directory (a lexical test pins that it is).
+   hat added to that directory later is in scope too.
 4. If you have a specific, concrete textual improvement to propose for a prompt
    or skill file, write it as a unified diff to
    `artifacts/reflection/suggestions.diff`. This is a proposal for a human or

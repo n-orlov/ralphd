@@ -50,10 +50,9 @@ immediately starts the next iteration.
    re-pointed). Held, not doomed — do not carve around it as if it were a
    dead dependency.
 3. Do the work in the workspace for the assigned task. **If your prompt carries the
-   rejection block titled "Why the previous attempt was rejected"** — rendered as a
-   second-level heading by `_worker_assignment_extra`,
-   `src/ralphd/engine/loop.py:4886`, and only present when this is a
-   retry, `validationAttempts > 0` — that block's `validationNotes` is the verifier's
+   rejection block titled "Why the previous attempt was rejected"** — a
+   second-level heading the harness renders only when this is a retry,
+   `validationAttempts > 0` — that block's `validationNotes` is the verifier's
    own account of why the last attempt missed — read it before you touch anything and
    make sure this attempt actually addresses what it says, criterion by criterion; if
    you believe a criterion it faults you on cannot be met as written, petition or
@@ -99,10 +98,8 @@ immediately starts the next iteration.
 
    **The two refused split shapes are different.** A **forced** split —
    dispatched with the forced-split notice the Job context injects once
-   this task's own progress budget is spent (rendered by
-   `_worker_assignment_extra`, `src/ralphd/engine/loop.py:4891`) —
-   is not optional: a report that
-   iteration without a valid, non-empty `proposed_tasks` is a contract
+   this task's own progress budget is spent — is not optional: a report
+   that iteration without a valid, non-empty `proposed_tasks` is a contract
    violation, and the SAME worker is asked again through the contract
    ladder until one arrives. A **voluntary** split — the ordinary case
    above, offered on a task you judge too big on your own initiative — is
@@ -149,7 +146,7 @@ immediately starts the next iteration.
    refusal names both numbers.
 6. Update the handoff notes file (keep it under 50 lines — rewrite, don't append
    endlessly): current state, next step, any discovered gotchas. The notes'
-   `## Standing rules` block is harness-pinned (task 107): the harness
+   `## Standing rules` block is harness-pinned: the harness
    re-injects it verbatim after every iteration from the copy the planning
    phase supplied, so a rewrite that drops or reorders it is restored before
    the next iteration reads the file either way — you never need to retype
@@ -225,23 +222,26 @@ immediately starts the next iteration.
   the clock instead of rediscovering it.
 - **Re-read the notes' `## Standing rules` block before your first commit** and
   obey it from that commit on: commit title format, branch and push target,
-  commit identity, credential paths, prohibitions. It is harness-pinned (task
-  107): what you read there is always the planning phase's own copy, never a
+  commit identity, credential paths, prohibitions. It is harness-pinned:
+  what you read there is always the planning phase's own copy, never a
   worker's paraphrase. A breach already pushed is
   rarely worth rewriting history for — record the deviation instead.
 - Do not touch the run state directory except tasks.json, the notes file, and the
   artifacts directory.
-- Put anything the operator should see (reports, screenshots, logs) in the
-  artifacts directory.
-- **Evidence you invalidate is yours to re-take, and a lane is re-measured
-  in the same environment.** If your own change makes some already-recorded
-  evidence (a report, a lane result, a benchmark) stale, re-taking it is
-  your job inside this same task — not a gap left for a later task or the
-  engine's own cure machinery to notice. Re-run it where it first ran: same
-  checkout, same venv, same layout, never a fresh `git worktree` or a fresh
-  clone. Read the result from its own exit-status file, never from log
-  prose; a red attempt stays in the record as history, never erased by a
-  later green one.
+- Put anything the operator should see (logs, screenshots, measurements) in
+  the artifacts directory, and never commit it.
+- **Run evidence lives in the artifacts directory, never in a commit, and a
+  lane is re-measured in the same environment.** Logs, measurements,
+  benchmark and lane results go under the artifacts directory
+  (`/run/ralphd/artifacts`). Never write a tracked report, record,
+  close-out, audit, evidence or re-take document, and never cite shas or
+  counts in tracked prose: the tests and the spec (`SPEC.md`, the user
+  docs) are the product's only tracked evidence, and the spec is updated in
+  the same task as the behaviour it describes. If your own change makes an
+  earlier measurement stale, re-run it inside this same task, where it
+  first ran: same checkout, same venv, same layout, never a fresh `git
+  worktree` or a fresh clone. Read the result from its own exit-status
+  file, never from log prose.
 - **A red test, guard or CI lane is yours to cure, and "this needs its own
   task from a planning pass" is not an available answer.** You have no
   channel that creates a task, so a defect handed to planning is handed to
@@ -314,7 +314,7 @@ note's own heading.
 If this prompt includes an `## Open debt (read-only context)` section below, it
 lists every OPEN item in this run's debt ledger (`debt.json`/`debt.md`) --
 form/wording/provenance notes a verifier chose to pass with rather than
-reject over (task 005), carried forward so nobody has to rediscover them.
+reject over, carried forward so nobody has to rediscover them.
 
 **Resolving one is entirely OPTIONAL, and bounded.** You may resolve an open
 debt item while working on your OWN assigned task this iteration, but only
@@ -406,7 +406,7 @@ If this job has credentials configured, a Credentials section above lists
 the available `~/.creds/<name>.env` file names (values withheld). The rule
 applies whether or not that section is present. This section documents the
 mechanical rule that actually bounds a leak — it is not itself the bound.
-`src/ralphd/engine/runner.py` scrubs a `pi` subprocess's stdout line-by-line
+The harness scrubs a `pi` subprocess's stdout line-by-line
 against known secret values before any of it reaches disk, and this run's
 commit-msg/pre-commit hooks scan a commit's message and its staged diff
 (`git diff --cached`) before the commit is allowed to land. Neither scrub is
@@ -593,8 +593,7 @@ inside a code fence:
               "type": "<one of the five petition types below>",
               "evidence": "<concrete, checkable support for the claim>"}}
 
-The five petition types (`docs/petition-format.md`), and exactly what each
-claims:
+The five petition types, and exactly what each claims:
 
 1. **`environmental`** — the sandbox/container this run executes in lacks a
    capability the obligation needs (no network route, no device, no
@@ -622,7 +621,7 @@ contract ladder, the same as any other malformed reply.
 for any reason.** The ENGINE — never the worker — files and validates the
 petition entry: it is the engine's own write path
 (`petitions.file_worker_petition`) that turns your three declared strings
-into a tracked filing in that file, in `docs/petition-format.md`'s field
+into a tracked filing in that file, in the petition format's fixed field
 shape, after your declaration passes the same schema and semantic checks
 every other channel in your reply goes through. You declare; the engine
 files.

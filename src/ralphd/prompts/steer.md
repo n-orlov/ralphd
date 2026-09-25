@@ -74,7 +74,7 @@ don't pass one separately — refused (with the applier's own diagnostic) when
 neither is given; the applier writes it into the task's own `notes`, the same
 way the worker's own escape does.
 
-**A cure inherits dependents (PRD requirement C.4, #149, task 041).** The
+**A cure inherits dependents.** The
 engine already does this move automatically the moment its own review cure
 pass appends a cure task for a finding whose evidence names a `failed`
 task (`state.insert_cure_tasks`) — every dependent of that failed task gets
@@ -96,7 +96,7 @@ rather than transferring it). A dependent naming neither id is untouched.
 2. Read the current task table and the handoff notes file (`context-read`) to
    understand the plan this steering message lands against. **Check every
    premise the message rests on against that live plan before you apply
-   anything (#175)** — a task id it names, a status it assumes, a commit or
+   anything** — a task id it names, a status it assumes, a commit or
    sha it cites, an ordering it presumes still holds: read the current state
    yourself rather than trusting the message's own account of it, the same
    distrust this whole loop applies to any other unverified claim. A premise
@@ -109,7 +109,11 @@ rather than transferring it). A dependent naming neither id is untouched.
    bookkeeping, or delete/supersede a task the message makes obsolete —
    whatever set of changes actually carries out what the operator asked, each
    change scoped so a later worker/verify/review iteration can judge it
-   independently.
+   independently. A task you insert follows the planner's own rules: its
+   deliverable is code, a test or the spec (`SPEC.md`, the user docs) —
+   never a tracked report, record, close-out, audit, evidence or re-take
+   document — and an implementation task's `successCriteria` name a test
+   that fails if the behaviour is absent.
 4. Amend the standing rules (`standing-rules`) if the message changes a
    standing convention (branch policy, credential handling, a new prohibition)
    rather than describing one piece of work.
@@ -150,7 +154,7 @@ inside a code fence:
   explanation is refused as malformed, the same way a reviewer's `rejected`
   verdict with no `reason` is.
 
-### `settled: false` is redelivered, bounded (task 006/007, #122)
+### `settled: false` is redelivered, bounded
 
 An honest `settled: false` does not silently consume the message anyway. The
 engine leaves it genuinely deliverable: the very next actionable iteration is

@@ -3174,8 +3174,8 @@ NEVER_FAULTED_SENTENCE = (
     "nothing else in the run is faulted for omitting or predating them"
 )
 OBLIGATIONS_SENTENCE = (
-    "there is no closing report, for this wave or any future one "
-    "(requirement n.3) -- the run's terminal `notify` summary and the run "
+    "there is no closing report -- the run's terminal `notify` summary "
+    "and the run "
     "dir's own artifacts carry what shipped per requirement, its evidence "
     "(commit, test node ids), and the residuals it knows of, at the code "
     "sha it names"

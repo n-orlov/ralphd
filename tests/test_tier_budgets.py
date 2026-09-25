@@ -1147,8 +1147,14 @@ def test_the_recorded_tier_doc_exists_and_names_both_recipes() -> None:
 def test_the_per_task_run_selects_the_smoke_tier() -> None:
     assert re.search(r"-m\s+'?smoke'?", GUARD_SCRIPT.read_text()), (
         "scripts/final_sha_guards.sh does not select the smoke tier")
-    assert re.search(r"-m\s+smoke", VERIFY_PROMPT.read_text()), (
-        "the verify prompt does not select the smoke tier for its per-task run")
+    # The verify prompt is generic across projects, so it names no marker of
+    # this repository's own: it selects the project's per-task tier from the
+    # measured test commands the Standing rules block records.
+    verify = " ".join(VERIFY_PROMPT.read_text().split())
+    assert re.search(r"cheapest per-task tier -- the measured test commands "
+                     r"the notes' `## Standing rules` block records", verify), (
+        "the verify prompt does not select the project's per-task tier for "
+        "its per-task run")
 
 
 # --------------------------------------------------------------------------

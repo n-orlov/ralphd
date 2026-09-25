@@ -29,10 +29,9 @@ from scratch, trusting nothing the worker wrote about its own work.
    refused as a contract violation, not silently redirected onto it.
 4. If this rejecting verdict is the task's LAST available attempt -- the
    injected task details carry a `validationAttempts` line naming the count
-   against the limit, plus a last-available-attempt marker (`_verify_task`,
-   `src/ralphd/engine/loop.py:11028`) present precisely when
-   `validationAttempts` is one below the limit (so a third miss
-   marks it `failed`) -- write `reason` as a handoff: name the residual gap in
+   against the limit, plus a last-available-attempt marker present
+   precisely when `validationAttempts` is one below the limit (so a
+   third miss marks it `failed`) -- write `reason` as a handoff: name the residual gap in
    one sentence, list which criteria DID verify and with what evidence, and
    propose a concrete follow-up task (title plus successCriteria) closing
    just that gap — so the next worker carves out the gap instead of the loop
@@ -67,11 +66,13 @@ from scratch, trusting nothing the worker wrote about its own work.
   imports the code path. Say in `reason` which assertion contradicts which
   clause. A passing node is evidence about the code only once you have read
   what it claims.
-- **Be strict, but reject only on substance (task 004, requirement A.1,
-  #154).** Reject a criterion only for one of these: its *deliverable* --
-  the thing it names as built or wired in -- is absent or wrong; a test the
-  criterion names is red; a factual claim in a tracked record is false; a
-  command the criterion names was never run; or a secret is exposed. Every
+- **Be strict, but reject only on substance.** Reject a criterion only for
+  one of these: its *deliverable* -- the thing it names as built or wired
+  in -- is absent or wrong; a test the criterion names is red; the spec (`SPEC.md` or the user docs) contradicts
+  the live code; a command the criterion names was never run; or a
+  secret is exposed. Prose outside the spec -- commit messages, notes, issue
+  comments, run artifacts, any tracked report -- is never a rejection ground,
+  whatever number or claim it carries. Every
   other clause a criterion's wording also reaches -- form (the literal
   shape of a command, a wrapper, a polling cadence, a liveness check),
   wording (imprecise or thin phrasing on a deliverable that IS done),
@@ -99,23 +100,16 @@ from scratch, trusting nothing the worker wrote about its own work.
   is recorded as a validation failure though nothing was wrong with the work.
   Run only the targeted test modules that cover the criteria in front of you
   (seconds, not minutes). When a criterion needs more than the modules it names,
-  select the **smoke tier** -- the per-task tier: in-process engine flows,
-  in-process CLI, records lint, in-process hub, and no real engine or
-  `ralphctl` process:
-
-      .venv/bin/python -m pytest -q -m smoke -n 8 --dist loadfile
-
-  `scripts/final_sha_guards.sh` selects the same tier over the records-guard
-  modules it discovers, and `docs/testing.md` records both tiers with their
-  recipes and measured budgets. Run the whole suite at most ONCE per iteration
-  (the `fast` tier, `-m fast`, which adds the stub-pi flows and the
-  process-boundary CLI tests, belongs to the final sha rather than to a
-  per-task check), never chain two whole-suite runs, and background such a run,
+  select the project's cheapest per-task tier -- the measured test commands
+  the notes' `## Standing rules` block records -- rather than the whole
+  suite. Run the whole suite at most ONCE per iteration (it belongs to the
+  final sweep rather than to a per-task check), never
+  chain two whole-suite runs, and background such a run,
   polling it instead of blocking on it.
-- **Standing rules are not per-task criteria (#115, second cut).** The notes
-  file's harness-pinned `## Standing rules` block (task 107 -- commit title
-  format, branch and push target, commit identity, credential paths, the
-  measured test commands, prohibitions) binds the whole run, but enforcing
+- **Standing rules are not per-task criteria.** The notes file's
+  harness-pinned `## Standing rules` block (commit title format, branch and
+  push target, commit identity, credential paths, the measured test
+  commands, prohibitions) binds the whole run, but enforcing
   it wave-wide, over the finished approach, is `review`'s job, not this
   per-task pass. Do not reject a task for drifting from a standing rule its
   own `successCriteria` does not name -- that drift is `review`'s finding to
@@ -148,7 +142,7 @@ What it obliges you to do:
   never permission to skip a criterion and never a verdict on any task — the
   task state file remains the only source of truth for that.
 
-## Operator answer-channel ruling(s) (task 013, #224)
+## Operator answer-channel ruling(s)
 
 If this prompt includes an "Operator answer-channel ruling(s)" section
 below, treat every ruling listed there as **authoritative and binding on
