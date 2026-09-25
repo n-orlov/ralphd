@@ -1813,13 +1813,21 @@ function parkedReasonText(reason) {
 // Task 008 (v0.26, #269): the plain-language reading of task 007's
 // `consequence` object -- what happens if this pause is resumed with no
 // ruling at all.
-function parkedConsequenceLines(c) {
-  const next = c.nextStepIfUnanswered;
-  const nextText = next === "cure_pass"
+// Task 009 (v0.26, #269): the plain-language reading of a single
+// `nextStepIfUnanswered` value, factored out of `parkedConsequenceLines` so
+// the "Resume without a ruling" button below can label itself with the
+// EXACT same predicted outcome the consequence list already renders,
+// never a second, independently-worded copy of the same fact.
+function parkedNextStepOutcomeText(next) {
+  return next === "cure_pass"
     ? "a cure pass over this approach's blocking findings"
     : next === "archive_and_replan"
       ? "this approach is archived and the run replans"
       : "unknown (" + String(next) + ")";
+}
+
+function parkedConsequenceLines(c) {
+  const nextText = parkedNextStepOutcomeText(c.nextStepIfUnanswered);
   const reopened = c.taskIdsValidatedToPending || [];
   const cost = c.costSpentThisApproach;
   const tokens = c.tokensSpentThisApproach;
@@ -1838,13 +1846,57 @@ function parkedConsequenceLines(c) {
 // block scrolls (CSS `max-height`/`overflow`, see `.parked-finding-evidence`
 // in style.css) rather than truncating -- SPEC.md 11.3/task 007 both promise
 // the WHOLE evidence, never a clipped preview.
-function parkedFindingItem(f) {
+// Task 009 (v0.26, #269): the exact ruling-text line a finding's waive
+// checkbox composes -- one line, `id` + `clause`, byte-stable so
+// `applyWaiveLine` below can find and remove that SAME line again on
+// uncheck without touching anything else the operator typed into the
+// ruling textarea by hand, or any other finding's own waived line.
+function parkedWaiveLineText(f) {
+  return "waive " + f.id + " (" + (f.clause || "no clause") + ")";
+}
+
+// Task 009 (v0.26, #269): a pure text transform -- checking a waive box
+// appends `line` to `text` (unless already present); unchecking removes
+// only that ONE line, leaving every other line untouched. No DOM, no
+// request: this is the whole of a waive checkbox's effect, and the piece
+// `tests/test_hub_parked_actions.py` exercises directly so the
+// compose-then-submit rule is pinned independent of any event wiring.
+function applyWaiveLine(text, line, checked) {
+  const lines = String(text || "").split("\n").filter((l) => l.length > 0);
+  const idx = lines.indexOf(line);
+  if (checked) {
+    if (idx < 0) lines.push(line);
+  } else if (idx >= 0) {
+    lines.splice(idx, 1);
+  }
+  return lines.length ? lines.join("\n") + "\n" : "";
+}
+
+// Task 009 (v0.26, #269): `onWaive(f, checked)` is called on toggle, never
+// invoked here -- the checkbox's ONLY effect is composing editable ruling
+// text (via `onWaive`, wired by `renderParkedPanel` below to
+// `applyWaiveLine`/`parkedWaiveLineText`); it sends no request of its own,
+// so checking it never waives anything by itself -- only a later
+// `Submit ruling & resume` click does that.
+function parkedFindingItem(f, onWaive) {
   const invalidates = f.invalidates || [];
+  const waiveId = "waive-" + f.id;
   return h("details", { class: "parked-finding" }, [
     h("summary", {}, [
       `${f.id} \u00b7 ${f.severity} \u00b7 ${f.clause || "(no clause)"}`,
     ]),
     h("div", { class: "parked-finding-body" }, [
+      h("div", { class: "parked-finding-row" }, [
+        h("label", { class: "parked-waive-label", for: waiveId }, [
+          h("input", {
+            type: "checkbox", id: waiveId, class: "waive-checkbox",
+            onchange: (ev) => {
+              if (onWaive) onWaive(f, !!(ev.target && ev.target.checked));
+            },
+          }, []),
+          " waive " + f.id,
+        ]),
+      ]),
       h("div", { class: "parked-finding-row" }, [
         h("b", {}, ["evidence: "]),
         h("pre", { class: "parked-finding-evidence" }, [String(f.evidence ?? "")]),
@@ -1892,6 +1944,75 @@ function renderParkedPanel(box, runId, pq) {
     ["blocking findings", String(pq.blockingCount ?? 0)],
     ["residual findings", String(pq.residualCount ?? 0)],
   ];
+  // Task 009 (v0.26, #269): a waive checkbox composes into the SAME
+  // ruling textarea the Rule section further down already owns
+  // (`#rule-text`, task 010's 12-row textarea) -- never a second,
+  // panel-own textarea -- so a ruling built from waived findings and one
+  // typed by hand share one box and one submit path.
+  const onWaive = (f, checked) => {
+    const ta = document.getElementById("rule-text");
+    if (!ta) return;
+    ta.value = applyWaiveLine(ta.value, parkedWaiveLineText(f), checked);
+  };
+  const outcomeText = parkedNextStepOutcomeText(c.nextStepIfUnanswered);
+  const actionStatus = h("div", { id: "parked-action-status", class: "muted" }, []);
+  // Task 009 (v0.26, #269): the two stated-effect actions -- each shows
+  // its own effect in visible text BEFORE it is clicked, never only in a
+  // hover title (#161's own rule for `steer --now`). `Submit ruling &
+  // resume` posts the textarea body UNCHANGED to `POST /rule` -- the SAME
+  // route the Rule section's own form already posts to, and the SAME
+  // route that resumes the run itself when the ruling answers the
+  // current pause (`LoopSupervisor.resume_if_ruling_answers_pause`) --
+  // never a second, separate `/unpause` call from here. `Resume without a
+  // ruling` instead posts straight to `POST /unpause` (task 006) with no
+  // ruling recorded at all, so it is labelled with the SAME predicted
+  // outcome (`nextStepIfUnanswered`) the consequence list above already
+  // shows -- an operator taking this action is deliberately choosing to
+  // let that outcome happen now rather than review a waived finding first.
+  const submitRulingBtn = h("button", {
+    type: "button", id: "parked-submit-ruling",
+    onclick: async () => {
+      const ta = document.getElementById("rule-text");
+      const text = ta ? ta.value.trim() : "";
+      if (!text) { actionStatus.textContent = "failed: ruling text required"; return; }
+      actionStatus.textContent = "sending\u2026";
+      try {
+        const resp = await fetch(hubURL(`/api/runs/${encodeURIComponent(runId)}/rule`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: text }),
+        });
+        const j = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+          actionStatus.textContent = "ruling recorded, run resumed if it answered this pause";
+          if (ta) ta.value = "";
+        } else {
+          actionStatus.textContent = "failed: " + String(innermostReason(j, resp.status));
+        }
+      } catch (e) {
+        actionStatus.textContent = "failed: " + e;
+      }
+    },
+  }, ["Submit ruling & resume"]);
+  const resumeNoRulingBtn = h("button", {
+    type: "button", id: "parked-resume-no-ruling",
+    onclick: async () => {
+      actionStatus.textContent = "sending\u2026";
+      try {
+        const resp = await fetch(hubURL(`/api/runs/${encodeURIComponent(runId)}/unpause`), {
+          method: "POST",
+        });
+        const j = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+          actionStatus.textContent = "resumed with no ruling";
+        } else {
+          actionStatus.textContent = "failed: " + String(innermostReason(j, resp.status));
+        }
+      } catch (e) {
+        actionStatus.textContent = "failed: " + e;
+      }
+    },
+  }, ["Resume without a ruling"]);
   box.appendChild(h("div", { class: "card parked-panel-card", id: "parked-panel" }, [
     h("h2", {}, ["\u23F8 Parked for an operator answer"]),
     ...rows.map(([k, v]) => h("div", {}, [h("b", {}, [k + ": "]), v])),
@@ -1900,7 +2021,27 @@ function renderParkedPanel(box, runId, pq) {
       h("ul", {}, parkedConsequenceLines(c).map((line) => h("li", {}, [line]))),
     ]),
     h("h3", {}, ["Findings"]),
-    h("div", { class: "parked-findings" }, (pq.findings || []).map(parkedFindingItem)),
+    h("div", { class: "parked-findings" },
+      (pq.findings || []).map((f) => parkedFindingItem(f, onWaive))),
+    h("h3", {}, ["Answer"]),
+    h("div", { class: "parked-actions" }, [
+      h("div", { class: "parked-action" }, [
+        submitRulingBtn,
+        h("p", { class: "muted parked-action-effect" }, [
+          "effect: posts the ruling text above, unchanged, to this run's " +
+          "own ruling route -- which resumes the run itself if the ruling " +
+          "answers this pause.",
+        ]),
+      ]),
+      h("div", { class: "parked-action" }, [
+        resumeNoRulingBtn,
+        h("p", { class: "muted parked-action-effect" }, [
+          "effect: resumes with no ruling recorded -- predicted outcome: " +
+          outcomeText,
+        ]),
+      ]),
+      actionStatus,
+    ]),
   ]));
 }
 

@@ -85,7 +85,10 @@ function findAll(node, tag, out) {
 }
 const h = (tag, attrs, children) => ({ tag, attrs: attrs || {}, children: children || [] });
 eval(grab('parkedReasonText'));
+eval(grab('parkedNextStepOutcomeText'));
 eval(grab('parkedConsequenceLines'));
+eval(grab('parkedWaiveLineText'));
+eval(grab('applyWaiveLine'));
 eval(grab('parkedFindingItem'));
 eval(grab('fmtDuration'));
 eval(grab('isoToEpoch'));

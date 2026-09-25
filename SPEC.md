@@ -5025,7 +5025,36 @@ dir themselves and a live proxy would only add a way to disagree.
   and the run-detail page's own state cell; the escalation-hold and
   undelivered markers stay plain text, since neither answers to a panel of
   its own. No new frontend dependency: the panel is built with the same
-  `h()` helper every other view already uses.
+  `h()` helper every other view already uses. Task 009 (v0.26, #269) adds
+  the panel's own answer controls, directly below the findings list, ahead
+  of the Steer/Rule sections further down (which stay exactly as they
+  were): a **waive checkbox** on every finding (`parkedFindingItem`'s own
+  `#waive-<id>` input) whose ONLY effect is composing one editable line
+  (`parkedWaiveLineText`: `waive <id> (<clause>)`) into the ruling
+  textarea -- checking it sends no request, so no finding is ever waived
+  by that click alone; unchecking removes only that finding's own line
+  (`applyWaiveLine`, a pure text transform), leaving any hand-typed text
+  or another finding's waived line untouched. The panel writes into the
+  SAME `#rule-text` textarea the Rule section below already owns (task
+  010's 12-row resizable box, where `Enter` inserts a newline and never
+  submits) -- never a second, panel-own textarea -- so a ruling assembled
+  from waived findings and prose typed by hand share one box and one
+  submit path. Two buttons follow, each naming its own effect in visible
+  text right beside it (never only a hover title): **`Submit ruling &
+  resume`** posts the textarea body, trimmed but otherwise unchanged, to
+  `POST /api/runs/<id>/rule` -- the SAME route the Rule form below already
+  posts to, which resumes the run itself when the ruling answers the
+  current pause (`LoopSupervisor.resume_if_ruling_answers_pause`); it
+  never calls `/unpause` separately. **`Resume without a ruling`** instead
+  posts straight to `POST /api/runs/<id>/unpause` (task 006) with no
+  ruling recorded at all, and is labelled with the exact predicted outcome
+  `consequence.nextStepIfUnanswered` already names (`parkedNextStepOutcomeText`,
+  the same wording the consequence list above renders) -- "a cure pass over
+  this approach's blocking findings" or "this approach is archived and the
+  run replans" -- so an operator taking this action sees, before clicking,
+  exactly what letting the pause go unanswered is about to do. Both
+  actions report their own result (or the engine's own failure reason,
+  `innermostReason`) in a shared status line beneath them.
 - **Summary card** — state, verdict, phase, approach as `2/3`, iterations,
   duration, and an explicit provenance row: `live: yes (proxied from container)`
   or `no (on-disk snapshot)`.

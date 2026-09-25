@@ -610,6 +610,21 @@ th.actions-col { cursor: default; }
 .parked-finding-body { margin-top: 0.4rem; }
 .parked-finding-row { margin-top: 0.25rem; }
 
+/* Task 009 (v0.26, #269): the panel's own answer controls -- a waive
+   checkbox per finding and the two stated-effect actions further below. */
+.parked-waive-label { font-size: 0.85rem; cursor: pointer; }
+
+.parked-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.parked-action { display: flex; flex-direction: column; gap: 0.15rem; }
+
+.parked-action-effect { margin: 0; font-size: 0.8rem; }
+
 /* Never truncated -- scrolls in place instead, however long the evidence is. */
 .parked-finding-evidence {
   max-height: 220px;
