@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 
-
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import (
     TASK_FAILURE_VALIDATION_EXHAUSTED,
@@ -243,7 +242,7 @@ def test_no_task_rests_awaiting_validation_with_a_spent_budget(tmp_path):
     """Exhaustive over the reopen paths, every starting count up to two past
     the limit, and both verdicts, in one node."""
     for path in sorted(_PATHS):
-        for attempts in range(0, VALIDATION_ATTEMPT_LIMIT + 3):
+        for attempts in range(VALIDATION_ATTEMPT_LIMIT + 3):
             for verdict in ("verified", "rejected"):
                 case = tmp_path / f"{path}-{attempts}-{verdict}"
                 if path == "reused-retake":

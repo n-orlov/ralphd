@@ -13650,8 +13650,7 @@ class LoopSupervisor:
                 f"  {task.get('id')} ({task.get('status', 'pending')})")
         stuck = self._tasks_stuck_awaiting_validation()
         if stuck:
-            lines += ["", "Waiting on verify, which has not moved them "
-                      "(#273):"]
+            lines += ["", "Waiting on verify, which has not moved them:"]
             for entry in stuck:
                 lines.append(
                     f"  {entry['id']} (awaiting-validation, "
