@@ -82,8 +82,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 013 retry: +2 tests in tests/test_hub_real_render_cap_whole_call.py
     # (lagging live index, streamed text/tool calls at every index lag) ->
     # fast 6270, smoke 4589.
-    "fast": {"tests": 6270, "modules": 433},
-    "smoke": {"tests": 4589, "modules": 311},
+    # Task 014: -1 test (tests/test_hub_real_render_cap_whole_call.py::
+    # test_absent_index_residual_costs_measured_through_the_whole_client_
+    # facing_call retired outright -- its own premise, a cheap-but-wrong
+    # absent-index render, is cured; the rewritten tests/test_log_merge_
+    # bounded_reads.py::test_silent_prelude_case_renders_the_full_
+    # renderers_last_two_lines_on_both_real_paths covers the cure without
+    # adding a node) -> fast 6269, smoke 4588.
+    "fast": {"tests": 6269, "modules": 433},
+    "smoke": {"tests": 4588, "modules": 311},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

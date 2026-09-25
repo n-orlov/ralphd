@@ -479,6 +479,39 @@ def _proxy_text(reg: Path, run_id: str, path: str, timeout: float = 5.0):
 # either way.
 _ITERATION_BOUNDARY_TOKEN = '"ralphd.iteration"'
 
+
+def _raw_text_has_unresolved_seed(raw_text: str) -> bool:
+    """Task 014: whether any `ralphd.iteration` boundary line inside
+    `raw_text` carries a `collapseSeed["unresolved"]` -- `log_merge.
+    _unresolved_seed_flags`'s own disclosure (PRD Q.1) that a `textSeen`/
+    `thinkingSeen`/`toolcallSeen` boolean on that seed is a bounded
+    reader's FALLBACK rather than a measurement: the look-back stopped on
+    a bound, not on evidence, so the boolean is merely what a renderer has
+    to draw from, never a certified answer.
+
+    `_fetch_live_tail`/`_fetch_dead_tail` below used to treat a fetch as
+    settled the moment its render already held `bound_tail` lines --
+    including a render built entirely from a guessed-`False` seed, which
+    is exactly how the shipped absent-index residual replayed already-
+    streamed text instead of printing the full render's own
+    `[thinking...]` suffix (`test_absent_index_residual_costs_measured_
+    through_the_whole_client_facing_call`, now cured). Checking this
+    lets the growth loops below refuse that answer and keep paying for
+    more of the transcript instead of guessing."""
+    for ln in raw_text.splitlines():
+        if _ITERATION_BOUNDARY_TOKEN not in ln:
+            continue
+        try:
+            ev = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        seed = ev.get("collapseSeed")
+        if isinstance(seed, dict) and seed.get("unresolved"):
+            return True
+    return False
+
 # Task cure-01-08 (PRD G.2/G.6/G.9): a run of consecutive RECOGNIZED-but-
 # SILENT raw lines (PRD Q's own shape -- a `message_end` whose content is
 # empty/unrecognized, or renders nothing new) between the retained tail and
@@ -614,7 +647,13 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
         while ok:
             content_lines = sum(1 for ln in raw_text.splitlines()
                                  if _ITERATION_BOUNDARY_TOKEN not in ln)
-            if len(render_tail_lines(raw_text, tty=False, n=bound_tail)) >= bound_tail:
+            # Task 014: enough RENDERED lines is not enough BY ITSELF when
+            # the seed that produced them is a disclosed guess -- see
+            # `_raw_text_has_unresolved_seed`. Only `content_lines < bound`
+            # (nothing more to read) may settle for that guess; while more
+            # history is still fetchable, keep growing instead of replaying.
+            if (len(render_tail_lines(raw_text, tty=False, n=bound_tail)) >= bound_tail
+                    and not _raw_text_has_unresolved_seed(raw_text)):
                 break
             if content_lines < bound:
                 break
@@ -634,7 +673,9 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
         lines (`log_merge.merge_entries_tail`), so this grows `bound` the
         exact same way `_fetch_live_tail` grows its live fetch -- doubling
         whenever the render of what came back still falls short of
-        `bound_tail` RENDERED lines and there is more history behind it."""
+        `bound_tail` RENDERED lines and there is more history behind it,
+        or (task 014) whenever what came back is enough lines but a
+        guessed, still-`unresolved` seed produced them."""
         run_root = reg / "runs" / run_id
         bound = bound_tail
         rounds = 0
@@ -642,7 +683,8 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
         while True:
             content_lines = sum(1 for ln in raw_text.splitlines()
                                  if _ITERATION_BOUNDARY_TOKEN not in ln)
-            if len(render_tail_lines(raw_text, tty=False, n=bound_tail)) >= bound_tail:
+            if (len(render_tail_lines(raw_text, tty=False, n=bound_tail)) >= bound_tail
+                    and not _raw_text_has_unresolved_seed(raw_text)):
                 break
             if content_lines < bound:
                 break

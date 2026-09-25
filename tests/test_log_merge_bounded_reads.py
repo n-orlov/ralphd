@@ -1447,72 +1447,73 @@ def test_collapse_index_resolves_the_seed_flag_in_o1_bytes_regardless_of_setter_
         assert seed["thinkingSeen"] is True, seed
 
 
-async def test_silent_prelude_case_renders_the_full_renderers_last_two_lines_on_both_real_paths(
+def test_silent_prelude_case_renders_the_full_renderers_last_two_lines_on_both_real_paths(
         tmp_path, monkeypatch):
-    """Task 021, PRD G.5: review3's own setter-depth variants of the
-    silent-prelude scenario -- `prelude_count` 1,000 and 1,700 padded
-    silent `message_end` events before the streamed text, 500 thinking
-    deltas, 10,000 padded silent events after, then a `message_end` that
-    replays the text (`_write_iteration_with_recognized_nonrendering_gap`,
-    the exact fixture `_assert_silent_prelude_publishes_unknown_state_
-    not_empty_state` above already builds at both depths) -- checked on
-    BOTH real paths this module already proves every other cure through:
-    the on-disk fallback (`merged_lines`, direct) and the live engine
-    `GET /logs` ASGI handler feeding the hub's own growing-bound renderer
-    (`_grown_render`/`render_tail_lines`, the exact shape `ui_server.
-    rendered_log_lines` uses). 2 depths x 2 paths = the four checks this
-    task's own commit records 4/4 failing before `collapse_index` was
-    wired into `merge_entries_tail`'s seed resolution, and 4/4 passing
-    after: each one's growing request starts at the SAME small `tail=2`
-    bound the shipped fallback already answers wrong (PRD's own
-    "shipped" row: renders from `False`, replays the text) -- with the
-    index resolving the seed correctly at that same first, small bound,
-    the collapsed text is never printed at all, so the growing consumer
-    correctly keeps growing (rather than stopping early on a spurious
-    match) until it reaches this iteration's own last genuinely visible
-    line, which is the SAME collapsed `[thinking\u2026]` marker line (plus
-    the iteration-end boundary) the full, untailed render prints last --
-    never the replayed text, and never an extra blank line."""
-    boundary_token = ui_server._ITERATION_BOUNDARY_TOKEN
+    """Task 014: the GENUINELY ABSENT index case -- no `render_index.json`
+    and no `collapse_index.json` at all for this iteration -- through
+    `ui_server.rendered_log_lines` itself, on both its surfaces
+    (`live=False`, the dead-run on-disk fallback, and `live=True`, the
+    live proxy branch). This used to be `ui_server`'s own disclosed
+    residual (`test_absent_index_residual_costs_measured_through_the_
+    whole_client_facing_call`, task cure-01-09/#272, now cured by this
+    task): its outer growth loop (`_fetch_live_tail`/`_fetch_dead_tail`)
+    stopped the moment a fetch's render already held `bound_tail` lines,
+    even when those lines came from a collapse-state seed `log_merge`
+    itself discloses as UNRESOLVED rather than measured (PRD Q.1) -- a
+    guessed `False` for `textSeen` that made the already-streamed text
+    replay in place of the real `[thinking...]` suffix.
 
-    async def _grown_render(fetch, bound_tail: int) -> list[str]:
-        bound = bound_tail
-        raw_text = await fetch(bound)
-        while True:
-            content_lines = sum(1 for ln in raw_text.splitlines()
-                                if boundary_token not in ln)
-            rendered = render_tail_lines(raw_text, tty=False, n=bound_tail)
-            if len(rendered) >= bound_tail or content_lines < bound:
-                return rendered
-            bound *= 2
-            raw_text = await fetch(bound)
-
-    (tmp_path / "workspace").mkdir()
+    This task's cure never touches `log_merge`'s own generic bounded-read
+    contract -- that residual stays exactly as it was for a caller that
+    reads `merge_entries_tail`/`merged_lines` directly (`ralphctl logs
+    --tail`), which is why this test checks ONLY `ui_server.
+    rendered_log_lines`, not the on-disk merge or the ASGI `GET /logs`
+    handler by themselves. `ui_server`'s own outer loop now refuses to
+    settle for a fetch whose seed still carries `unresolved`
+    (`_raw_text_has_unresolved_seed`) purely because it already has
+    enough rendered lines, and keeps growing -- the same doubling/full-ask
+    machinery the ordinary case already uses -- until either the flag
+    resolves or the fetch has read this iteration's entire transcript (at
+    which point there is no omitted prefix left to guess about at all).
+    Checked at both silent-prelude depths (1,000/1,700 padded silent
+    `message_end` events before the streamed text; the exact fixture
+    `_assert_silent_prelude_publishes_unknown_state_not_empty_state`
+    above already builds at both depths, minus the index write)"""
     for prelude_count in (1000, 1700):
         text = f"silent-prelude streamed text must not replay (depth={prelude_count})"
         gap_line = json.dumps(
             {"type": "message_end", "message": {"content": []}, "padding": "x" * 1000})
-        run_root = tmp_path / f"prelude-{prelude_count}" / "runs" / "probe"
+        reg = tmp_path / f"prelude-{prelude_count}"
+        run_root = reg / "runs" / "probe"
         _write_iteration_with_recognized_nonrendering_gap(
             run_root, 1, text, gap_line, 10_000, prelude_count=prelude_count)
-        collapse_index.write_index(run_root / "iterations" / "0001")
+        itdir = run_root / "iterations" / "0001"
+        assert not (itdir / collapse_index.INDEX_FILENAME).exists()
+        assert not (itdir / "render_index.json").exists()
 
         full = render_to_lines("".join(merged_lines(run_root)), tty=False,
                                state=new_render_state())
         assert full[-2].strip() == "[thinking\u2026]", (prelude_count, full[-2:])
         assert sum(1 for ln in full if text in ln) == 1, (prelude_count, full[-3:])
 
-        async def _fetch_disk(bound: int) -> str:
-            return "".join(merged_lines(run_root, tail=bound))
+        def _wire(mp, live):
+            def _proxy(reg_arg, run_id, path, **kw):
+                if not live:
+                    return False, ""
+                import re
+                m = re.search(r"tail=(\d+)", path)
+                n = int(m.group(1)) if m else 0
+                return True, "".join(merged_lines(run_root, tail=n))
+            mp.setattr(ui_server, "_proxy_text", _proxy)
 
-        async def _fetch_api(bound: int) -> str:
-            return await _api_logs_text(run_root, tmp_path / "workspace", bound)
-
-        for label, fetch in (("disk", _fetch_disk), ("api", _fetch_api)):
-            rendered = await _grown_render(fetch, 2)
-            assert rendered[-2:] == full[-2:], (prelude_count, label, rendered[-2:])
-            assert not any(text in ln for ln in rendered), (prelude_count, label, rendered)
-            assert all(ln != "" for ln in rendered[-2:]), (prelude_count, label, rendered)
+        for live in (False, True):
+            with monkeypatch.context() as m:
+                _wire(m, live)
+                hub_live, hub_lines = ui_server.rendered_log_lines(reg, "probe", 2)
+            assert hub_live == live, (prelude_count, live)
+            assert hub_lines[-2:] == full[-2:], (prelude_count, live, hub_lines)
+            assert not any(text in ln for ln in hub_lines), (prelude_count, live, hub_lines)
+            assert all(ln != "" for ln in hub_lines[-2:]), (prelude_count, live, hub_lines)
 
 
 async def test_silent_prelude_case_renders_correctly_through_the_hub_when_the_index_is_truncated_or_mismatched(
