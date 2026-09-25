@@ -230,6 +230,30 @@ form.steer input[type=text] {
 
 form.steer input[type=checkbox] { margin-right: 0.25rem; }
 
+/* v0.26 task 010 (PRD requirement 4, #270): the steer message and the
+   ruling text are both multi-line prose now -- resizable textareas, not
+   single-line inputs, so an operator's own drag-resize sticks around
+   rather than fighting a fixed box. */
+form.steer textarea {
+  flex: 1;
+  min-width: 12rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  resize: vertical;
+}
+
+form.rule textarea {
+  width: 100%;
+  max-width: 40rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  resize: vertical;
+}
+
 button {
   padding: 0.35rem 0.8rem;
   border: 1px solid var(--accent);

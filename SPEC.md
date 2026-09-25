@@ -5093,7 +5093,21 @@ dir themselves and a live proxy would only add a way to disagree.
   arrival time and a `pending`/`applied` pill, each opening its full body in a
   dialog. A message queued from the form appears immediately rather than after
   the next poll, and flips to `applied` at the iteration boundary that consumed
-  it.
+  it. `#steer-message` (v0.26 task 010, #270) is a resizable `textarea` of
+  about 8 rows, not a single-line `<input>` -- operator prose that can run
+  to several paragraphs -- so `Enter` inserts a newline instead of
+  submitting; only the form's own button submits. `#steer-name` (the
+  message's optional `--name`) and the `apply now` checkbox (labelled with
+  its cost, #161) are unchanged.
+- **Ruling form** — `#rule-text` (v0.26 task 010, #270) is a resizable
+  `textarea` of about 12 rows (grown from 4), for the same reason and with
+  the same `Enter`-inserts-a-newline/button-submits behaviour as the steer
+  textarea above; `#rule-name` is unchanged. The form posts to the hub's
+  `POST /api/runs/<id>/rule`, which forwards to the run's live `POST
+  /rule` verbatim -- both routes are pure JSON proxies, so a multi-line
+  message submitted through either textarea reaches the engine
+  byte-identical to the same text sent with `ralphctl steer --file`/
+  `ralphctl rule --file`.
 - **Unpause proxy** — `POST /api/runs/<id>/unpause` (task 006) forwards
   (empty body) to the run's live `POST /resume`, the SAME engine route
   `ralphctl unpause <run-id>` calls, so there is no second unpause

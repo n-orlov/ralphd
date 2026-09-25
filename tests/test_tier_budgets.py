@@ -63,8 +63,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 008: +18 tests / +1 module (tests/test_hub_parked_panel.py),
     # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
     # 6232/428, `-m smoke` -> 4553/308.
-    "fast": {"tests": 6232, "modules": 428},
-    "smoke": {"tests": 4553, "modules": 308},
+    # Task 010: +4 tests / +3 modules (tests/test_hub_steer_roundtrip.py,
+    # tests/test_hub_rule_roundtrip.py, tests/test_hub_steer_textarea_and_
+    # rule_rows.py), measured the same way -> fast 6236/431, smoke 4555/309.
+    "fast": {"tests": 6236, "modules": 431},
+    "smoke": {"tests": 4555, "modules": 309},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

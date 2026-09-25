@@ -1558,7 +1558,14 @@ async function renderRunDetail(runId, myGen) {
     h("h2", {}, ["Steer"]),
     h("form", { class: "steer", id: "steer-form" }, [
       h("input", { type: "text", id: "steer-name", placeholder: "name (optional)", size: "10" }),
-      h("input", { type: "text", id: "steer-message", placeholder: "steering message", required: "required" }),
+      // v0.26 task 010 (PRD requirement 4, #270): a resizable `textarea`
+      // (about 8 rows), not the old one-line `<input type="text">` -- the
+      // steer message is operator prose that can run to several
+      // paragraphs, and `Enter` inserting a newline (a textarea's native
+      // behaviour, unlike an `<input>` where it submits the form) matters
+      // more than a single-line message ever did. The submit button is
+      // still the only way to send.
+      h("textarea", { id: "steer-message", placeholder: "steering message", required: "required", rows: "8" }),
       h("label", {}, [h("input", { type: "checkbox", id: "steer-now" }), "apply now"]),
       h("button", { type: "submit" }, ["send"]),
     ]),
@@ -1582,7 +1589,9 @@ async function renderRunDetail(runId, myGen) {
     ]),
     h("form", { class: "rule", id: "rule-form" }, [
       h("input", { type: "text", id: "rule-name", placeholder: "name (optional)", size: "10" }),
-      h("textarea", { id: "rule-text", placeholder: "ruling text", required: "required", rows: "4" }),
+      // v0.26 task 010 (PRD requirement 4, #270): 12 rows, up from 4 --
+      // still resizable, so a longer ruling never has to fight a fixed box.
+      h("textarea", { id: "rule-text", placeholder: "ruling text", required: "required", rows: "12" }),
       h("button", { type: "submit" }, ["submit ruling"]),
     ]),
     h("div", { id: "rule-status", class: "muted" }, []),
