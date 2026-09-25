@@ -9,9 +9,6 @@ in [docs/prds/](prds/README.md).
 
 ### Open issues
 
-- **Cure passes and verification (#273).** A task re-opened by a cure pass keeps
-  its exhausted validation attempts, so the re-completed task is never verified
-  and the approach stagnates.
 - **Answering a parked run from the hub (#270).** A run paused for operator input
   should show its question in the hub and take a multi-line answer there.
 - **Oversized escalation notifications (#269).** An escalation payload larger than
@@ -50,7 +47,7 @@ in [docs/prds/](prds/README.md).
 
 ## Shipped
 
-- v0.25.1 — a run's only deliverables are working code and a true spec — engine prompts no longer ask for or enforce paperwork.
+- v0.25.1 — a run's only deliverables are working code and a true spec — engine prompts no longer ask for or enforce paperwork, and a task re-opened by a cure pass gets fresh validation attempts instead of stalling unverified.
 - v0.25 — the harness already knows — lock waits, watchdog verdicts, early review verdicts, pushed-commit redaction and control-plane wakes now reach the part of the run that needs them, so an idle loop answers a steer or abort promptly.
 - v0.24 — a budget is a boundary, not a verdict — the job deadline and an exhausted iteration budget hold a run in the resumable `timed_out` state instead of interrupting work or failing it.
 - v0.23 — a decision must reach the work — `ralphctl rule` and the `operator_input_needed` pause let an operator answer a run's question before it spends an approach, and cures and petitions act on the decisions they reach.
