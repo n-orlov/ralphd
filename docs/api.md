@@ -663,7 +663,7 @@ unpriced iterations is the `costStatus` contract under `GET /status` above.
 A quoted cost of **exactly 0 alongside non-zero billable tokens** is not a
 price: pi zero-fills its `cost` block when the resolved model definition
 carries no rates, so a gateway can report `costUSD: 0` for half a million
-tokens (`artifacts/reports/pricing-anomaly.md` §7 has the live payload). Such a
+tokens. Such a
 zero is classified `unknown` on every surface — never `costPriced: true`, never
 rendered `$0.00` — and is derivable from the host-side pricing map exactly like
 an absent price.

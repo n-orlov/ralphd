@@ -1382,8 +1382,8 @@ much of this figure is actually known" meant reading JSON by hand.
   would read like a phase that ran for free.
 - **`!!` notices** name the anomaly behind a wall of `unavailable`: a provider
   that quoted `$0` for billable tokens (task 049) is reported as unpriced, and
-  the notice points at `artifacts/reports/pricing-anomaly.md` — the same
-  sentence every other cost surface uses.
+  the notice names the `pricing:` map as the remedy — the same sentence every
+  other cost surface uses.
 - **`legend:`** is printed only when `derived`/`partial`/`unavailable` actually
   occur, so a fully priced run's breakdown is not padded with an explanation of
   vocabulary it never uses.
@@ -1845,9 +1845,7 @@ container gets no elevated docker capabilities that could defeat it. So a
 ruling's *authenticity* is a fact about where the file physically lives, never
 about its wording or about a signature review would have to verify — the same property
 `job.yaml`/`prd.md` already lean on for "the operator configured this, the run
-didn't." See `artifacts/reports/task-027-operator-ruling-design.md` for the
-full design (including the mechanisms considered and rejected) and
-`src/ralphd/prompts/review.md`'s "Operator rulings" section for the rule review
+didn't." See `src/ralphd/prompts/review.md`'s "Operator rulings" section for the rule review
 is told to follow.
 
 On-disk shape: `config_root(run_id)/amendments/NNN-<task-id>.md`, `NNN`
@@ -2839,8 +2837,7 @@ wildcard one, and the longest wildcard prefix wins.
 matched with the same rules after aliasing. It exists because a provider
 quoting exactly `$0` for billable tokens is not evidence of a free route --
 some gateways quote zero when their model definition carries no rates, so an
-undeclared zero is treated as *unknown* (`costZeroQuoted`, see `docs/api.md`
-and `artifacts/reports/pricing-anomaly.md`). A declared-free route keeps
+undeclared zero is treated as *unknown* (`costZeroQuoted`, see `docs/api.md`). A declared-free route keeps
 printing `$0.00`. A `pricing:` map may consist of `free:` alone.
 
 - `ralphctl start` **inlines** the map into the run's `job.yaml` (`pricing`),
@@ -2924,8 +2921,7 @@ identity stays visible. `GET /config` reports it as `priceTables`:
 `answers` reads `neither` when nothing can price the run's routes -- which is
 precisely why such a cost renders `unavailable` rather than `$0.00`. Both
 triggers reach the derivation: a provider that quotes **no** cost block, and
-one that quotes an implausible `$0` beside billable tokens (the live AIGW case,
-`artifacts/reports/pricing-anomaly.md`). A route declared free in `pricing:`
+one that quotes an implausible `$0` beside billable tokens (the live AIGW case). A route declared free in `pricing:`
 `free:` is still free: a declaration outranks every rate table, built-in ones
 included.
 

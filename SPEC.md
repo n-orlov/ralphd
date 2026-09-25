@@ -875,10 +875,7 @@ set for stranded steering. Computed from exactly one call site
 tail exit (`_finish_tail_unverified()`) the way `_unconsumed_steering_patch`
 is: a genuinely REJECTED last approach leaves the identical trace on disk
 (completed tasks, a past COMPLETE signal, since `_archive_approach` copies
-rather than resets) and must not be reported as an un-rendered verdict. Two
-rejected designs (a distinct `verdict` value; a distinct terminal `state`)
-are recorded, with reasoning, in
-`artifacts/reports/task-006-deadline-beat-verdict-design.md`.
+rather than resets) and must not be reported as an un-rendered verdict.
 
 ### 4.3 Sentinels and completion
 
@@ -1191,10 +1188,7 @@ process, so the worst-case extra wall time this adds to a run, ever, is
 `min(cfg.iteration_timeout_s, 600)` seconds. `job_timeout_s`'s own meaning
 ("wall-clock limit for the whole job") and `self.deadline`/`deadlineAt` are
 unchanged by this -- only the one floor reflect's attempt is measured
-against moved. See `artifacts/reports/task-008-finishing-tail-budget.md`
-for the two rejected designs (a reserved tail budget carved out of
-`job_timeout_s` up front; extending `self.deadline` itself the way
-`_account_infra_wait` does for infra waits).
+against moved.
 
 The startup watchdog exists because a hang with *nothing* coming back — a DNS or
 gateway glitch the agent process blocks on internally — otherwise consumes the
@@ -3547,9 +3541,8 @@ reports a whole run as `$0.0000` with no way to tell "free" from "unknown".
 
 **An implausible zero is not a price either.** `pi` zero-fills its cost block
 when the resolved model definition carries no rates, so a gateway can quote
-`costUSD: 0` with `costPriced: true` over half a million billable tokens — which
-is exactly what happened to the run that produced this section
-(`artifacts/reports/pricing-anomaly.md`). `state.is_zero_quote()` recognises the
+`costUSD: 0` with `costPriced: true` over half a million billable tokens.
+`state.is_zero_quote()` recognises the
 shape — a quoted zero alongside non-zero `billable_tokens()`, with the
 no-traffic sentinel and a declared-free route exempted — and `cost_status()`
 applies it **on read as well as on write**, so a run dir written by an older
@@ -5057,7 +5050,7 @@ logs) in the artifacts directory". The engine-written files under
 | `artifacts/reflection/FAILED.md` | engine | written only when the reflect phase produced no report, and removed again as soon as an attempt produces one (§12.2) |
 | `artifacts/run-record.json` | engine | the run's own terminal record, machine-readable (below) |
 | `artifacts/run-record.md` | engine | the SAME record, rendered for a human (below) |
-| `artifacts/reports/*.md` | agent | evidence the PRD asked for, ideally machine-checked (§12.3) |
+| `artifacts/reports/*.md` | agent | a report the PRD asked for; only a `*-petitions.md` file is read back (§12.3) |
 | `artifacts/screenshots/**` | agent | browser-driven verification of a UI change |
 | anything else | agent | logs, samples, gate records — free-form by design |
 
@@ -5307,52 +5300,14 @@ the engine down) neither writes nor removes one.
 
 ### 12.3 Reports
 
-`artifacts/reports/` was a convention, not a mechanism: a PRD asked for a report,
-the agent wrote it, and — while the corpus was still live — a test in the repo
-re-read it and failed when it stopped being true. v0.21's requirement N retired
-that whole live-checking apparatus (`tests/report_claims.py`,
-`tests/records/test_report_claims.py`, `test_issue_traceability.py`, and the
-corpus itself, task 060) rather than keep re-grading a v0.5-v0.9 corpus that
-will never change again: where a check still needs the old facts, it reads a
-frozen literal constant (`tests/records/test_roadmap.py`'s closure sets) rather
-than a report re-parsed on every test run. The rest of this section is history: it describes the
-mechanism as it stood through v0.20.2, before requirement N (v0.21) deleted it.
-
-The traceability report was the worked example: `issue-traceability.md` mapped
-each backlog issue to a requirement, a commit and the tests that covered it, and
-`test_issue_traceability.py` asserted, against the real repo, that every
-issue in `ISSUES_IN_SCOPE` had its own section; that it still quoted a floor of
-shas, paths and node ids so a gutted report would fail too; and that neither the
-tree nor the commit history contained a `gh issue close`, which was the process
-claim the report made about itself.
-
-The *generic* half of that was: every 7-to-40-hex sha resolved to a **commit**
-object in this repo (read straight out of `.git` in-process, not with a
-`git cat-file` subprocess: requirement E.4 pinned the records family at one
-subprocess for a whole run), every repo-relative path was **tracked by git**
-(membership in one `git
-ls-files` snapshot, not merely present on disk — a directory the browser tier
-generates but never commits used to pass just by existing), every `::node_id`
-after such a path was a real `def`/`async def` in that file (until requirement
-A.3, v0.20.2, retired that one direction ahead of the rest) — not one
-report's privilege: it lived in `tests/report_claims.py`, and
-`tests/records/test_report_claims.py` applied it to every `*.md` the reports
-directory held, discovered by glob, so a report added later was re-read from
-the day it landed. An untracked-but-present path and a genuinely missing one
-failed with two different, distinguishable messages — "generated, not
-committed" versus "deleted or renamed" — so the fix was obvious from the
-failure text alone. Two further conventions kept that parser honest about what
-it could not check: a path that belongs to somebody else's tree (the
-sibling-toolchain recipe's `ci/Dockerfile`) was left outside the repo's own
-top-level directories, and a run-dir artifact was written
-`<run-dir>/artifacts/…` rather than as a checkout-relative path.
-
-So the failure modes that made a report actively harmful — a commit that never
-landed, a test that was renamed away, a module renamed out from under a report, a
-process claim nobody kept — were all build failures while the mechanism lived.
-The distinction is still worth carrying into a PRD — "write a report" is weak,
-"write a report and a test that keeps it honest" is a deliverable, for as long
-as the report's subject can still change.
+`artifacts/reports/` is a convention, not a mechanism: a PRD may ask for a
+report and the agent writes it under the workspace's `artifacts/reports/`.
+Apart from a `*-petitions.md` file there, which review reads from disk as
+petition context ([docs/petition-format.md](docs/petition-format.md)), the
+engine never reads a report, and no test in this repository checks one. What a run must deliver is working code proven by tests the CI
+collects and a spec that does not contradict it; a report is at most a
+pointer to that evidence. This repository ignores `/artifacts/` at its root,
+so no run record, log or report is tracked here.
 
 Screenshots follow the same rule from the other direction: the browser tier
 writes its frames into the job's own artifacts dir (`RALPHD_ARTIFACTS_DIR`,
@@ -5749,10 +5704,7 @@ at every later worker/review step boundary
 against `transitions.TASK_STATUS_TABLE`/`TASK_STATUS_VIGILANT_DELTA`, refuses
 an illegal one, leaves `validationAttempts`/`tierLadderExhausted`/
 `successCriteria` byte-identical, and emits `amendment_status_applied` with
-`source: operator`). See
-`artifacts/reports/task-027-operator-ruling-design.md` for the mechanisms
-considered and rejected (a signed amendment, a run-dir marker, a GitHub
-comment authenticated with the same token the agent already holds).
+`source: operator`).
 
 **The operator answer channel (task 013, v0.23 requirement A.2, #224) is
 deliberately NOT built on this unforgeability property.** `ralphctl rule
@@ -5868,7 +5820,6 @@ expensive to rediscover.
 | Every `ralphctl` verb the tutorial uses really exists in `--help`, and the tutorial's steps stay in the order an operator would follow them. | `tests/test_docs_consistency.py::test_every_ralphctl_command_in_tutorial_exists_in_help`, `::test_tutorial_exists_and_covers_required_steps_in_order` |
 | Every flag, subcommand invocation, route and response field the reference docs document really exists in the code — a documented-but-nonexistent `--flag`, `ralphctl <verb> <action>`, route or JSON field fails the suite. | `tests/test_docs_consistency.py::test_every_flag_documented_in_cli_md_exists_in_the_parser`, `::test_every_option_table_row_names_a_flag_of_its_own_command`, `::test_every_documented_subcommand_invocation_exists`, `::test_every_route_documented_in_api_md_is_served`, `::test_every_field_documented_in_api_md_exists_in_the_code`, plus `::test_a_fake_cli_flag_in_the_docs_is_reported` / `::test_a_fake_api_route_or_field_in_the_docs_is_reported` keeping the demonstration |
 | No prompt file narrates its own revision history. | `tests/test_prompt_lint.py::test_no_revision_history_phrases_in_prompts` |
-| Every report under `artifacts/reports/` named only commits that landed, paths that exist and tests that exist, while the corpus-wide checking apparatus lived (§12.3; retired for v0.21, requirement N, tasks 059/060). | history only — `tests/report_claims.py`, `tests/records/test_report_claims.py` and `test_issue_traceability.py` are all deleted |
 | The hub ships with no build step: the static bundle contains no npm/node build artifacts. | `tests/test_cli_ui.py::test_static_bundle_js_has_no_npm_or_node_build_artifacts` |
 | The shipped default retry schedule really rides out a 30-minute outage. | `tests/test_v05_definition_of_done.py::test_defaults_can_ride_out_a_thirty_minute_outage` |
 

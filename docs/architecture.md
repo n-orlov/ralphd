@@ -117,10 +117,9 @@ Design invariants:
   run is still alive and doing something, not stalled — is what
   `GET /logs?follow` (tailing `output.jsonl` as the agent subprocess
   writes it) already provided independently of the poller, and continues
-  to provide with no change. See `artifacts/reports/poll-retirement.md`
-  for the itemised before/after and the test proving the hub's run-detail
-  view keeps updating (never blank) for the length of a long worker
-  iteration purely from the log stream.
+  to provide with no change: the hub's run-detail view keeps updating
+  (never blank) for the length of a long worker iteration purely from the
+  log stream.
 
   **Task 116 update:** the picture above still holds for the harness's
   OWN pre-spawn claim — the pending -> in-progress move `_step_worker`
@@ -1025,10 +1024,6 @@ the job deadline by the seconds waited (§10.2), and publishes
 `health: "degraded"` + `infraWait` (§10.3); an operator-initiated abort is
 never an infra fault (§10.1's `aborted` carve-out).
 
-A traceability row for this requirement belongs alongside task 013's
-requirement→test table (see `artifacts/reports/traceability.md`, built by
-that task) once it exists.
-
 ### Grace review at budget exhaustion (task 002)
 
 Live incident this closes: a job exhausted its 8-iteration budget with
@@ -1299,8 +1294,7 @@ root `_persist_key` already used, needing no privilege the engine does not
 already hold (real and saved uid are 0 exactly when `separated()` is true).
 Without that retry the store was write-only in the one configuration that
 populates it by default: episode 2 read episode 1's own CONFIRMED record as
-unauthenticated and fell back to empty. `artifacts/reports/v0.19-e4-privsep-key-read.md`
-records the reproduction under a real root engine, before and after.
+unauthenticated and fell back to empty.
 
 **The documented fallback.** With no uid boundary (or an operator override
 via `$RALPHD_RUN_SECRETS_DIR` naming nowhere readable), `key_store_dir()`

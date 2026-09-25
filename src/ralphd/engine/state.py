@@ -298,7 +298,7 @@ COST_TOKEN_KEYS = ("input", "output", "cacheRead", "cacheWrite", "totalTokens")
 # The one sentence every surface/log uses for that anomaly.
 COST_ZERO_QUOTE_NOTICE = (
     "provider quoted $0 for billable tokens; treated as an unpriced route "
-    "(see artifacts/reports/pricing-anomaly.md)")
+    "(declare its rates, or declare it free, in `pricing:` to settle it)")
 
 
 def billable_tokens(usage: dict | None) -> int:
