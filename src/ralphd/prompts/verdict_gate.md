@@ -13,7 +13,7 @@ it is an independent judgement of your own, re-derived from the evidence.
 reporting payload -- not a claim that it is the whole of any judging hat's
 findings channel. For each finding you record, also carry `severity`
 (`"blocking" | "residual"` -- read whichever materiality rubric or
-all-blocking default this run's context hands you, never a boundary you
+engine default rubric this run's context hands you, never a boundary you
 invent), `curable` (a boolean -- would a fresh approach change this
 finding's truth value? asserted by you alone, no run-side input may set or
 override it), `clause` (the PRD clause/DoD item violated), `evidence`

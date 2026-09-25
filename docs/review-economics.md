@@ -37,28 +37,24 @@ engine's `findings.DEFAULT_RUBRIC` (task 004, requirement A.2, #139) — never
 to *every finding blocking*; the rubric never weakens a contract, it only
 lets one narrow the boundary explicitly (never widen it past all-blocking).
 
-**Blocking** — any of: a red test at the shipped sha; an unmet requirement of
-the contract; a false claim in a tracked artifact that changes what a reader
-believes landed or its result (a wrong commit attributed for a change that
-shipped differently than described, a test result misstated, an issue state
-misreported, an invented notification); a missing required declaration (e.g.
-a sweep's `sweep-sha`); an issue closed without evidence; a secret exposed; a
-stated Definition-of-done predicate evaluating false.
+**Blocking** — any of: a deliverable the contract requires is absent or
+wrong; a test the contract names is missing, red or inverted (asserts the
+opposite of the behaviour it names); a red test at the shipped sha;
+`SPEC.md` or the user docs contradict the live code; an unmet requirement of
+the contract; a secret exposed.
 
-**Residual** — everything else, including: imprecision or infelicity in
-prose; a stale snapshot that is labelled as a snapshot; a missing
-cross-reference; formatting; an inaccuracy in a record *about another
-record* whose correction would not change what a reader believes shipped; a
-notification gap that has been cured under the late-cure rule below.
-Residual findings are recorded, must be listed in the closing report, and do
-not reject.
+**Residual** — everything else, including: an inaccuracy in a record,
+report, commit message, note or any other prose that is not the spec or the
+user docs (a miscount, a stale sha, a wrong commit cited); imprecision or
+infelicity in prose; a stale snapshot; a missing cross-reference;
+formatting; a notification gap that has been cured under the late-cure rule
+below. Residual findings are recorded and surfaced, and do not reject.
 
 The boundary above is this fragment's own default text and the **engine's**
-own fallback: a citing PRD may restate or narrow it (never widen it past
-all-blocking), but the recomputed verdict is always over blocking findings
-only, and a contract that states no rubric at all — inline or by reference —
-still gets this boundary, never "every finding blocking"; all-blocking is
-no longer the fallback for any contract (task 004, requirement A.2, #139).
+own fallback: a citing PRD may restate or narrow it, but the recomputed
+verdict is always over blocking findings only, and a contract that states no
+rubric at all — inline or by reference — still gets this boundary, never
+"every finding blocking".
 
 ## Petition protocol
 
