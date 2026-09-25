@@ -199,8 +199,7 @@ without retyping it:
   The final guard subset runs **at the final code sha** — the last commit
   that touches anything outside `artifacts/reports/`, `docs/roadmap.md` and
   `docs/prds/README.md` — never "the last commit"; a report-only commit may
-  follow it freely, and the guard's own report-only-gap allowance
-  (`docs/sweep-records.md`) covers exactly that gap.
+  follow it freely.
 - **No record about its own future.** No report, record or criterion states
   what a later event will be, or must record events after the sha it names
   ("none newly filed", "every petition and its adjudication", "the terminal

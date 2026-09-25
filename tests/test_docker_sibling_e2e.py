@@ -117,13 +117,10 @@ OVERLAY_DOCKERFILE = REPO / "tests" / "docker-hostpath-wrapper" / "Dockerfile.st
 
 
 def _docker_available() -> bool:
-    # `tests/records/test_conformance_ledger.py`'s in-process node-id
-    # collection (task 033, E.2) imports this module -- transitively, via
-    # `tests/test_worker_hat.py` -> `tests/test_steer.py` -- purely to check
-    # a cited node exists, never to run it; the module-level skipif below
-    # would otherwise spend a real `docker version` subprocess call on a
-    # collect-only pass that never looks at its result (task 035, E.4: the
-    # records family's own subprocess budget is `git ls-files` alone).
+    # An in-process collect-only pass can import this module transitively
+    # (via `tests/test_worker_hat.py` -> `tests/test_steer.py`) without
+    # running it; RALPHD_SKIP_DOCKER_PROBE spares that pass the real
+    # `docker version` subprocess the module-level skipif would spend.
     if os.environ.get("RALPHD_SKIP_DOCKER_PROBE"):
         return False
     if not REAL_DOCKER or not Path(DOCKER_SOCK).is_socket():

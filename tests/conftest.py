@@ -383,7 +383,7 @@ def pytest_configure(config):
 # by module list:
 #
 #   smoke   in-process engine flows (LoopSupervisor + scripted attempts,
-#           backoffs stubbed), CLI in-process, records lint, hub in-process
+#           backoffs stubbed), CLI in-process, hub in-process, docs checks
 #   fast    smoke + the stub-pi flows + process-boundary CLI tests
 #   nightly the docker tier, the browser tier, the two dev-layout modes
 #
@@ -409,9 +409,8 @@ def pytest_configure(config):
 #     are the whole difference between the two tiers in the audit's table
 #     ("smoke + the stub-pi flows + process-boundary CLI tests"), and they
 #     are what the 981 s serial fast tier spends ~75 % of its wall clock on
-#     (audit § 2). Nested `pytest --collect-only` (the records lint's own
-#     shape, tests/test_conformance_ledger.py) is deliberately NOT in this
-#     list: the tier table puts records lint in `smoke`.
+#     (audit § 2). A nested `pytest --collect-only` is deliberately NOT in
+#     this list: it spawns no engine, so it stays in `smoke`.
 _PROCESS_BOUNDARY_RE = re.compile(
     r"""
       \bLiveRun\b          # the shared real-engine harness (task 021 folded EngineProc in)

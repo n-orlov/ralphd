@@ -73,7 +73,7 @@ within a day of being written twice now. Read the live shape from
 The interpreter is pinned: `python3.12` explicitly, not `heavy.yml`'s
 `python3 -m venv` idiom, because that idiom follows the host default (3.14.5 on
 this host). Measured at `d37733c` on the VPS, throwaway full-history clone:
-records lint 117 passed in 67 s, `-m fast -n 2` 5681 passed / 4 skipped in
+`-m fast -n 2` 5681 passed / 4 skipped in
 710 s. On the workstation the same recipe is **592 s at `-n 2` and 378 s at
 `-n 4`**. The worker count was raised to 4 with the move (`9899016`) and put
 back to 2 immediately after (`f122e9c`), because `-n 4` failed both of its
@@ -291,9 +291,8 @@ Requirement A.1 (v0.20.2) finishes the job: `tests/sweep_sha_guard.py`, its
 test module (`test_sweep_sha_guard.py`, under `tests/`) and
 `docs/sweep-records.md` are deleted outright. A GitHub-signed check run
 keyed to the sha is the attestation review reads now; no record owes any
-sha declaration of its own any more. Existing `sweep-sha`/`archived-sha`
-blocks under `artifacts/reports/` are untouched, inert history -- no report
-is to carry a new one, ever again. No lane deselects anything from that
+sha declaration of its own any more, and this repository tracks no
+`artifacts/` at all. No lane deselects anything from that
 module any more: a recursive grep of `.github/workflows` and this file for
 the two-dash pytest deselect flag followed by that now-deleted node id
 finds nothing.
