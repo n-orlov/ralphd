@@ -711,10 +711,17 @@ def _missing_cited_tests(text: str) -> list[str]:
                    if not (REPO_ROOT / "tests" / name).is_file()})
 
 
+# docs/roadmap.md is the release history, not a description of the product:
+# an entry naming a test that a later release retired is still true history,
+# so it is not a broken pointer.
+_CITED_TEST_HISTORY_DOCS = {"roadmap.md"}
+
+
 def test_every_test_file_cited_by_the_docs_exists():
     offenders = {}
     for path in [REPO_ROOT / "README.md", REPO_ROOT / "SPEC.md",
-                 *sorted((REPO_ROOT / "docs").glob("*.md"))]:
+                 *sorted(p for p in (REPO_ROOT / "docs").glob("*.md")
+                         if p.name not in _CITED_TEST_HISTORY_DOCS)]:
         missing = _missing_cited_tests(path.read_text())
         if missing:
             offenders[str(path.relative_to(REPO_ROOT))] = missing
