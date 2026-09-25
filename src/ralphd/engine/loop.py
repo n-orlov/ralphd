@@ -15273,11 +15273,11 @@ class LoopSupervisor:
         criteriaEditedAfterValidationFailure (task 008) as extra review-
         prompt context, instructing the reviewer to independently re-verify
         each such task's CURRENT successCriteria text against the PRD and
-        state a conclusion per task. This exists because _verify_task's own
-        validationAttempts >= 3 skip would otherwise let a worker dodge
-        every future automated check simply by rewriting the bar after a
-        failure -- the review phase is the one place left that still sees
-        every flagged task, every time, regardless of validationAttempts.
+        state a conclusion per task. This exists because a task that has
+        spent its verify attempts fails without a fresh verify, so no
+        automated check re-reads criteria a worker rewrote after a failure
+        -- the review phase is the one place that still sees every flagged
+        task, every time, regardless of validationAttempts.
         Returns '' when no task is flagged (the common case), so review
         prompts are unaffected until this ever actually triggers.
         """
