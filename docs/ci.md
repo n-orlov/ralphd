@@ -15,7 +15,7 @@ The tiers themselves — what they cover and what they cost — are
 
 | workflow | lanes | runner | trigger | budget |
 |---|---|---|---|---|
-| `gate.yml` | records lint, `-m fast` (which is a superset of `-m smoke`) | self-hosted `fast-lane` (`int21h-ws-5`/`-6`, exclusively) | every pull request, every push to `main` | 45 min |
+| `gate.yml` | `-m fast` (which is a superset of `-m smoke`) | self-hosted `fast-lane` (`int21h-ws-5`/`-6`, exclusively) | every pull request, every push to `main` | 45 min |
 | `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs, plus a third `browser-image` job that publishes the browser tier's pinned image and runs on nothing but an explicit dispatch with `publish_browser_image: true`, which in turn skips the two tiers (task 011) | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min (40 for the dispatch-only publisher) |
 | `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running the `fast` tier under `scripts/host_like_dev_layout.sh` inside a plain upstream container (task 077, steer 008) | self-hosted `ralphd-vps` + `docker-host` (`int21h-ws-1`..`-4`, four eligible slots; `max-parallel: 2` caps how many cells run at once, which is a documented ceiling, not the slot count -- see below) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis) |
 
@@ -228,7 +228,7 @@ both keyed on one of two fixed, greppable, mutually exclusive prefixes —
 
 - **`scripts/run_bounded.sh <seconds> <label> -- <command...>`** wraps every
   step that can consume real wall clock (each tier invocation, each venv
-  build, the records lint, each dev-layout cell) in its own bound, set below
+  build, each dev-layout cell) in its own bound, set below
   the job's own, and clamps that bound down further to the job's own
   remaining `timeout-minutes` budget (from `RALPHD_JOB_STARTED_AT` and
   `RALPHD_JOB_BOUND_MINUTES`, less a 120 s tail). It runs the wrapped command

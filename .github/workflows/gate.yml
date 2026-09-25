@@ -56,17 +56,12 @@
 # to `python:3.12.3` by digest, so `python3.12` in every step of this
 # job is 3.12.3 regardless of which of the six slots answers the dispatch,
 # and `tests/test_gate_pinned_worker_count_guard.py` asserts that patch
-# level from this file. The venv goes on `$GITHUB_PATH` so that both
-# pytest steps below stay literally unchanged:
-# `tests/test_gate_pinned_worker_count_guard.py` pins the records-lint step's
-# `run` string exactly, and a `.venv/bin/python` prefix would break it.
+# level from this file. The venv goes on `$GITHUB_PATH` so that the pytest
+# step below calls plain `python`.
 #
-# `-m fast` is a superset of `-m smoke` and of `tests/records/` (5329 of 5409
-# collected at 3bd7199; records is 199 of them), so this one selection
-# covers the records lint and both per-task tiers. The records step runs
-# first anyway -- it is ~10 s and a docs- or report-only commit that breaks
-# a claim checker should say so in seconds rather than after the whole
-# tier.
+# `-m fast` is a superset of `-m smoke`, so this one selection covers both
+# per-task tiers. There is no separate records-lint step: the repository
+# tracks no run records, so there is nothing for such a step to check.
 #
 # What this lane deliberately does NOT cover: the docker tier, the browser
 # tier and the dev-layout matrix. Those are heavy.yml and nightly.yml, on the
@@ -139,9 +134,9 @@ jobs:
     # the starvation those two slots exist to prevent.
     runs-on: [self-hosted, linux, x64, fast-lane]
     # 45, unchanged, and now carrying far more headroom than when it was set.
-    # It was sized for the VPS: 67 s records lint + 710 s (11:50) `-n 2` fast
-    # tier + venv build, ~16 min, at d37733c. On this host the same `-n 2`
-    # recipe is 592 s, and a whole job measured 7:45 and 8:51 on slots 5 and 6.
+    # It was sized for the VPS: 710 s (11:50) `-n 2` fast tier + venv build
+    # + a since-removed ~1 min records-lint step, ~16 min, at d37733c. On
+    # this host the same `-n 2` recipe is 592 s, and a whole job measured 7:45 and 8:51 on slots 5 and 6.
     #
     # The headroom is deliberately NOT trimmed to match, and the reasons got
     # stronger rather than weaker with this move. All six slots share 12 cores,
@@ -215,9 +210,10 @@ jobs:
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The records lint reads real git history (tests/report_claims.py
-          # resolves declared shas against the object store), so a depth-1
-          # checkout would fail it for the wrong reason.
+          # Some fast-tier nodes read real git history (for example
+          # tests/test_host_like_pytest_script.py shows a pre-fix revision
+          # of that script), so a depth-1 checkout would fail them for the
+          # wrong reason.
           fetch-depth: 0
 
       # F.1 fallout (task 009): the checked-out workspace is owned by the
@@ -301,12 +297,6 @@ jobs:
       # surviving lint too ("every record names some sha"). A GitHub-signed
       # check run keyed to the sha is the attestation review reads now; a
       # markdown file declaring a sha inside a fenced block is not.
-      # Also bounded (task 054, K.3): a records-lint node that parks on an
-      # await would otherwise burn this job's whole `timeout-minutes` and
-      # report `cancelled`, which is not a verdict.
-      - name: Records lint
-        run: |
-          scripts/run_bounded.sh 300 "records lint" -- python -m pytest -q tests/records/
 
       # F.1 fallout (task 009): give the fast tier a real, non-root process
       # uid before it runs -- see the `container:` comment above for why.
@@ -361,9 +351,9 @@ jobs:
       # delay, or the contention removed, measured rather than assumed (#205,
       # #179). Raising this again without that is re-running an experiment whose
       # answer is recorded here.
-      # Wrapped in scripts/run_bounded.sh (task 054, K.3). The three inner
-      # bounds in this job (venv build 300 + records lint 300 + this one)
-      # sum to 40 of its 45 `timeout-minutes`, leaving 5 for the two steps
+      # Wrapped in scripts/run_bounded.sh (task 054, K.3). The two inner
+      # bounds in this job (venv build 300 + this one) sum to 35 of its 45
+      # `timeout-minutes`, leaving 10 for the two steps
       # no wrapper owns -- `actions/checkout` and the environment report --
       # which is the reserve tests/test_run_bounded_timeout_marker.py holds
       # every job in every lane to. This bound is many times the duration
