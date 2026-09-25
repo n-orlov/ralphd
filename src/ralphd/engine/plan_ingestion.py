@@ -2567,79 +2567,6 @@ def _quoted_baseline_target_gap(task: dict, tasks: list) -> str | None:
     )
 
 
-# Task 021 (PRD requirement K.1, #169): a probe-audit task per requirement
-# group, front-loading at plan time exactly what a from-scratch review does
-# once, at the end, over the whole approach (the incident K's own PRD prose
-# names: 37 cheap verify iterations and one 35-minute review that overturned
-# eight of them, twice on the same mechanical failure -- a shipped green
-# test node asserting the OPPOSITE of its own criterion). A "requirement
-# group" here is read off the SAME convention this very plan's own task
-# titles already follow ("A.1: ...", "K.2: ...", "H: ...") -- a leading
-# capital letter, optionally `.N`, then a colon -- never invented fresh: a
-# task whose title carries no such prefix (a landing/record task like
-# "Lanes: ...") names no group and is exempt.
-_REQUIREMENT_GROUP_TITLE_RE = re.compile(r"^([A-Z])(?:\.[0-9]+)?:\s")
-
-# The two clauses `planning.md` instructs the planner to write into a
-# probe-audit task's own `successCriteria` (PRD K.1's own wording, quoted
-# there almost verbatim): a probe that FAILS IF THE BEHAVIOUR IS ABSENT, and
-# that probe NAMED IN THE COMMIT MESSAGE. Matched loosely enough to survive
-# minor rewording (a few words of slack between "probe exists" and "fails",
-# "behavior"/"behaviour") but never so loose that an unrelated criterion
-# trips it.
-_PROBE_FAILS_IF_ABSENT_RE = re.compile(
-    r"probe\s+(?:that\s+)?exists?\b.{0,80}?fails?\s+if\s+the\s+behaviou?r"
-    r"\s+is\s+absent",
-    re.IGNORECASE | re.DOTALL,
-)
-_PROBE_NAMED_IN_COMMIT_RE = re.compile(
-    r"probe\s+is\s+named\s+in\s+the\s+commit\s+message", re.IGNORECASE,
-)
-
-
-def _requirement_group(task: dict) -> str | None:
-    """The requirement-group letter this task's own `title` declares (the
-    plan's own `<Letter>[.N]: ...` convention), or `None` if the title
-    declares none -- a task outside the lettered groups (a landing/record
-    task) names no group and is never counted toward the check below."""
-    title = task.get("title")
-    if not isinstance(title, str):
-        return None
-    match = _REQUIREMENT_GROUP_TITLE_RE.match(title.strip())
-    return match.group(1) if match else None
-
-
-def _is_probe_audit_task(task: dict) -> bool:
-    """`True` if this task's own `successCriteria` states BOTH halves K.1
-    requires of a probe-audit task: a probe that fails if the behaviour is
-    absent, and that probe named in the commit message. Either clause alone
-    (a probe with no absence-triggered failure named, or one never tied to
-    a commit message) does not count -- both are what makes the audit
-    self-verifying rather than merely aspirational."""
-    criteria = task.get("successCriteria")
-    if not isinstance(criteria, str):
-        return False
-    return bool(_PROBE_FAILS_IF_ABSENT_RE.search(criteria)) and bool(
-        _PROBE_NAMED_IN_COMMIT_RE.search(criteria)
-    )
-
-
-def _requirement_groups_missing_probe_audit(tasks: list) -> list[str]:
-    """The sorted list of requirement-group letters this PROPOSAL names (via
-    `_requirement_group`) that carry no probe-audit task (`_is_probe_audit_task`)
-    anywhere among their own tasks -- empty when every group referenced is
-    covered, or when the proposal declares no lettered group at all."""
-    covered: dict[str, bool] = {}
-    for t in tasks:
-        group = _requirement_group(t)
-        if group is None:
-            continue
-        covered.setdefault(group, False)
-        if _is_probe_audit_task(t):
-            covered[group] = True
-    return sorted(group for group, has_one in covered.items() if not has_one)
-
-
 def lint_proposal(
     payload: dict,
     *,
@@ -2669,12 +2596,7 @@ def lint_proposal(
     027, requirement D.3, #157): a `<metric> under <target>` clause whose
     plan-quoted baseline is more than 2x the target with no linked
     measurement task that re-measures the baseline at the launch sha and
-    stages the descent -- and the ELEVENTH (task 021, requirement K.1,
-    #169): a proposal that names a requirement group (the plan's own
-    `<Letter>[.N]: ...` title convention) with no task in that group whose
-    own `successCriteria` states both that a probe exists which fails if
-    the behaviour is absent and that the probe is named in the commit
-    message -- see the block comments immediately above.
+    stages the descent -- see the block comments immediately above.
 
     `extra_known_ids` (task 017, PRD requirement B.2, #162): the ordinary
     planner call site never passes this -- a planner's file-borne proposal
@@ -2959,15 +2881,6 @@ def lint_proposal(
                     "declared pure ordering, so a cure pass over this task "
                     "will re-take no upstream evidence at all; confirm that "
                     "is intended")
-
-    for group in _requirement_groups_missing_probe_audit(tasks):
-        errors.append(
-            f"requirement group {group!r}: no task's successCriteria "
-            "states that a probe exists which fails if the behaviour is "
-            "absent AND that the probe is named in the commit message -- "
-            f"add one probe-audit task for group {group!r} whose own "
-            "successCriteria carries both clauses"
-        )
 
     errors.extend(_detect_cycles(tasks))
     return errors
