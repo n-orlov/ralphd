@@ -103,7 +103,8 @@ causes (a human cancel, a `cancel-in-progress` supersession, or the job's own
 about the commit at all.
 
 Tell a timeout kill from an ordinary cancel by the `RALPHD_TIMEOUT_KILL:`
-marker line and its `*.expired` evidence file (`docs/ci.md`, K.3): a
+marker line and its `*.expired` evidence file, where the project's CI emits
+them: a
 `cancelled` run whose log or step summary carries the `RALPHD_TIMEOUT_KILL:`
 marker, backed by an `*.expired` evidence file, ran out of wall clock inside
 one of its own bounded steps — read that as the closest thing to a `failure`
@@ -166,7 +167,7 @@ shape, any more than a verifier's own contract enforcement replaces yours over
 a worker's claim -- schema validation and independent verification are two
 different questions, and only this review answers the second one.
 
-## Operator answer-channel ruling(s) (task 013, #224)
+## Operator answer-channel ruling(s)
 
 If this prompt includes an "Operator answer-channel ruling(s)" section
 below, treat every ruling listed there as **authoritative and binding on
@@ -205,15 +206,14 @@ What it obliges you to do:
   the steer hat did with a message; it is never a verdict on the tasks that
   message produced, which the task state file alone carries.
 
-## Open debt ledger (task 007, requirement A.3, #155)
+## Open debt ledger
 
 If this prompt includes an `## Open debt (read-only context)` section below,
 every item listed there arrives PRE-CLASSIFIED as a residual: a verifier
 already decided, under this run's materiality rubric, that the underlying
-form/wording/provenance gap was worth noting rather than rejecting over
-(task 005), and the engine already recorded it as such in the run's debt
-ledger (task 006). Your job with each one is narrow -- **confirm the
-classification, or, with concrete evidence, promote it to blocking** -- and
+form/wording/provenance gap was worth noting rather than rejecting over,
+and the engine already recorded it as such in the run's debt ledger. Your
+job with each one is narrow -- **confirm the classification, or, with concrete evidence, promote it to blocking** -- and
 never to rediscover it from scratch as though it were a fresh finding: an
 entry here is not itself grounds for a new residual finding, and re-deriving
 the same observation the ledger already states is redundant, not additional
@@ -256,7 +256,7 @@ earlier REFUTED against the same obligation, is itself a BLOCKING finding,
 not a second hearing -- do not adjudicate a duplicate/re-filed petition as
 though it were a first hearing.
 
-**Scope of the re-file rule (task 014, requirement F.1, #144).** The rule
+**Scope of the re-file rule.** The rule
 above concerns a *NEW* filing made against an obligation that already
 carries an adjudication -- a fresh `## Petition: ...` section appearing in
 a `<wave>-petitions.md` file for an obligation this run has already ruled
@@ -269,7 +269,7 @@ in your `petition_adjudications` field, and its appearance there is not
 itself a duplicate/re-filed petition -- only a genuinely NEW filing against
 one of those obligations is.
 
-### Criteria amendment authority (task 006, requirement B.1, #114)
+### Criteria amendment authority
 
 When you adjudicate a petition CONFIRMED and its `Type` is `contradictory-
 clauses` or `self-referential` AND its obligation is the affected task's OWN
@@ -290,7 +290,7 @@ own criteria) is never amended -- it converts to a disclosed residual,
 with no text rewritten anywhere. Omit both fields on any
 CONFIRMED entry you are not re-scoping (the overwhelming common case).
 
-### Closing a petitioned task (task 015, requirement C.3, #149)
+### Closing a petitioned task
 
 When the obligation you are adjudicating is a task's OWN engine-filed
 petition -- the one a task's validation ladder exhausted into (its status
@@ -313,7 +313,7 @@ changes what CONFIRMED does.
 
 ## Structured findings (severity, curability, clause, evidence)
 
-(#110) Every finding you record — blocking or residual, whether the overall
+Every finding you record — blocking or residual, whether the overall
 verdict ends up `verified` or `rejected` — carries at minimum four fields,
 machine-checked before your verdict is trusted:
 
@@ -344,7 +344,7 @@ machine-checked before your verdict is trusted:
   cure pass runs them in order; a dozen unordered findings filed into a run
   with hours left spends what is left on whichever one happens to sort first.
 
-**A curable finding is a specification, not a description (#175).** Whenever
+**A curable finding is a specification, not a description.** Whenever
 you mark `curable: true`, the finding also carries `cured_when` (required in
 that case) — the text `insert_cure_tasks` uses as the cure task's own
 `successCriteria` (verbatim, unless its clause count overruns the plan's
@@ -374,7 +374,7 @@ and nothing here reduces what steps 1-7 above already require you to check
 or weakens the distrust this prompt's Operator rulings section and the
 terminal-record section below already demand.
 
-## The engine owns the terminal record (task 008/064, requirement B.2/N.3, #140)
+## The engine owns the terminal record
 
 Petition/adjudication accounting, steer and ruling history, approach history,
 terminal tallies and notification accounting are the engine's record --
@@ -382,10 +382,10 @@ written into `run-record.md`/`run-record.json` at `finishing`, never a
 task's job to reconstruct. Nothing else in the run is faulted for omitting
 or predating them.
 
-There is no closing report, for this wave or any future one (requirement
-N.3) -- the run's terminal `notify` summary and the run dir's own artifacts
-carry what shipped per requirement, its evidence (commit, test node ids),
-and the residuals it knows of, at the code sha it names.
+There is no closing report -- the run's terminal `notify` summary and the
+run dir's own artifacts carry what shipped per requirement, its evidence
+(commit, test node ids), and the residuals it knows of, at the code sha it
+names.
 
 ## Budget the review against your own iteration cap
 
@@ -513,7 +513,7 @@ exactly one JSON object:
   dependents should inherit a different task instead of losing the
   dependency outright; omit it on every other entry.
 
-**Mid-run adjudication episodes (task 014, requirement F.1, #144).** If this
+**Mid-run adjudication episodes.** If this
 prompt tells you this iteration is a bounded, off-budget mid-run petition
 adjudication episode (`midRunAdjudication: true`), your `verdict` field has
 NO terminal effect on the approach -- your ONLY job is the

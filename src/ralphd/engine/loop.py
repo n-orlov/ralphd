@@ -16269,18 +16269,16 @@ class LoopSupervisor:
         text is always present in `_review_extra_context`'s output.
         """
         return (
-            "\n## The engine owns the terminal record (task 008/064, "
-            "requirement B.2/N.3, #140)\n\n"
+            "\n## The engine owns the terminal record\n\n"
             "Petition/adjudication accounting, steer and ruling history, "
             "approach history, terminal tallies and notification "
             "accounting are the engine's record -- written into "
-            "`run-record.md`/`run-record.json` at `finishing` (task "
-            "006/007, requirement B.1), never a task's job to reconstruct. "
+            "`run-record.md`/`run-record.json` at `finishing`, never a "
+            "task's job to reconstruct. "
             "Nothing else in the run is faulted for omitting or predating "
             "them.\n\n"
-            "There is no closing report, for this wave or any future one "
-            "(requirement N.3) -- the run's terminal `notify` summary and "
-            "the run dir's own artifacts carry what shipped per "
+            "There is no closing report -- the run's terminal `notify` "
+            "summary and the run dir's own artifacts carry what shipped per "
             "requirement, its evidence (commit, test node ids), and the "
             "residuals it knows of, at the code sha it names.\n"
         )
