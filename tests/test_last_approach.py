@@ -249,7 +249,7 @@ def test_last_approach_all_curable_with_cure_spent_pauses_and_escalates(
     text = notifier.messages[0]
     assert "requirement C.1 (#141)" in text
     assert "the notify tool still doesn't record the event" in text
-    assert "ralphctl resume task011-last-approach-pause" in text
+    assert "ralphctl unpause task011-last-approach-pause" in text
     assert "resolve with: ralphctl amend" in text
 
 
@@ -902,7 +902,7 @@ def test_stagnant_last_approach_pauses_and_escalates_instead_of_failing(tmp_path
     assert len(notifier.messages) == 1
     text = notifier.messages[0]
     assert "LAST" in text
-    assert "ralphctl resume task012-stagnation-last-approach" in text
+    assert "ralphctl unpause task012-stagnation-last-approach" in text
     assert TASK_ID in text
 
 
@@ -1100,7 +1100,7 @@ def test_a_progressing_approach_1_of_3_with_commits_present_pauses(tmp_path):
     # this is NOT the last-approach wording -- approach 1 of 3 has 2 left.
     assert "LAST" not in text
     assert "approach 1" in text
-    assert "ralphctl resume task018-progressing-approach" in text
+    assert "ralphctl unpause task018-progressing-approach" in text
 
 
 def test_in_process_resume_re_enters_worker_over_the_same_progressing_approach(
@@ -1240,7 +1240,7 @@ def test_a_superseded_parents_child_exhausting_its_budget_pauses(tmp_path):
     text = notifier.messages[0]
     assert "018c" in text and "018p" in text and "3/3" in text
     assert "LAST" not in text  # approach 1 of 3 has two left
-    assert "ralphctl resume task018-second-exhaustion" in text
+    assert "ralphctl unpause task018-second-exhaustion" in text
 
 
 def test_resume_after_a_second_exhaustion_pause_re_enters_the_same_approach(

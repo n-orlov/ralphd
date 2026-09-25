@@ -1101,7 +1101,7 @@ class LoopSupervisor:
         self.run.update_status(state=PAUSED_STATE, pauseReason=reason)
         self.run.emit("log", message=(
             f"run state recorded `{PAUSED_STATE}` on status.json "
-            f"(pauseReason: {reason}); `ralphctl resume {self.cfg.run_id}` "
+            f"(pauseReason: {reason}); `ralphctl unpause {self.cfg.run_id}` "
             "clears it"))
 
     def resume(self) -> None:
@@ -12787,7 +12787,7 @@ class LoopSupervisor:
             "has been paused (existing pause machinery) rather than ended "
             "`failed` on paperwork; it will not proceed until an operator "
             "ruling is recorded and the run is resumed "
-            f"(`ralphctl resume {self.cfg.run_id}`).",
+            f"(`ralphctl unpause {self.cfg.run_id}`).",
             "",
         ]
         for index, finding in enumerate(blocking, start=1):
@@ -12964,7 +12964,7 @@ class LoopSupervisor:
             "(existing pause machinery) instead of consuming a fresh "
             "approach on it; it will not proceed until an operator ruling "
             "is recorded and the run is resumed "
-            f"(`ralphctl resume {self.cfg.run_id}`).",
+            f"(`ralphctl unpause {self.cfg.run_id}`).",
             f"signature: {signature}",
             "",
         ]
@@ -13200,10 +13200,10 @@ class LoopSupervisor:
             approach, cure_preview or {})
         answer_cmd = (
             f"ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
-            f"<slug>, or ralphctl resume {self.cfg.run_id} to accept the "
+            f"<slug>, or ralphctl unpause {self.cfg.run_id} to accept the "
             "default"
             if reason == "operator_input_needed"
-            else f"ralphctl resume {self.cfg.run_id}")
+            else f"ralphctl unpause {self.cfg.run_id}")
         header_lines = [
             f"run {self.cfg.run_id} escalation: {reason}",
             f"pauseReason: {reason}",
@@ -13289,7 +13289,7 @@ class LoopSupervisor:
             "before that spend happens: record a ruling "
             f"(`ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
             "<slug>`) and resume, or resume with none to let the archive "
-            f"proceed (`ralphctl resume {self.cfg.run_id}`). The approach "
+            f"proceed (`ralphctl unpause {self.cfg.run_id}`). The approach "
             "was NOT archived, no composite PRD was written, and the "
             "approach counter did not move.",
             "",
@@ -13573,7 +13573,7 @@ class LoopSupervisor:
             "operator-actionable -- a wrong model reference, prompt drift, "
             "or a schema the hat has not seen. Once the reviewer is "
             "working, resume the run and review is asked again over the "
-            f"SAME approach (`ralphctl resume {self.cfg.run_id}`).",
+            f"SAME approach (`ralphctl unpause {self.cfg.run_id}`).",
             "",
         ]
         if contract_errors:
@@ -13652,7 +13652,7 @@ class LoopSupervisor:
             "cannot emit its own contract shape or reconcile its own "
             "verdict with its own findings. Once "
             "the channel is fixed, resume the run and review is "
-            f"asked again over the SAME approach (`ralphctl resume "
+            f"asked again over the SAME approach (`ralphctl unpause "
             f"{self.cfg.run_id}`).",
             "",
         ]
@@ -13730,7 +13730,7 @@ class LoopSupervisor:
                 "forcing a second split, and instead of replanning over "
                 "work already done; it will not proceed until an operator "
                 "ruling is recorded and the run is resumed "
-                f"(`ralphctl resume {self.cfg.run_id}`), which re-enters "
+                f"(`ralphctl unpause {self.cfg.run_id}`), which re-enters "
                 f"approach {approach} rather than starting a fresh one.",
                 "",
                 "Outstanding tasks:",
@@ -13755,7 +13755,7 @@ class LoopSupervisor:
             "than ended `failed` on stagnation alone, or replanned over "
             "work already in progress; it will not proceed until an "
             "operator ruling is recorded and the run is resumed "
-            f"(`ralphctl resume {self.cfg.run_id}`).",
+            f"(`ralphctl unpause {self.cfg.run_id}`).",
             "",
             "Outstanding tasks:",
         ]
@@ -13998,7 +13998,7 @@ class LoopSupervisor:
             "fresh approach would not change any of them. The run has "
             "been paused (existing pause machinery); it will not proceed "
             "until an operator ruling is recorded and the run is resumed "
-            f"(`ralphctl resume {self.cfg.run_id}`).",
+            f"(`ralphctl unpause {self.cfg.run_id}`).",
             "",
         ]
         for index, finding in enumerate(blocking, start=1):
@@ -14475,7 +14475,7 @@ class LoopSupervisor:
         TRANSITIVE dependent task id (review cure cure-01-04: a self-loop
         that blocks downstream tasks previously escalated naming only the
         cycle itself, leaving a reader to rediscover the dependents by
-        hand) plus the exact `ralphctl resume` invocation, so a reader
+        hand) plus the exact `ralphctl unpause` invocation, so a reader
         never has to open `tasks.json` by hand to find any of it.
         """
         ids = ", ".join(cycle_fault.get("cycleTaskIds", [])) or "(none)"
@@ -14494,7 +14494,7 @@ class LoopSupervisor:
             f"{dependents_clause} "
             "The run has been paused (existing pause machinery); fix the "
             "cycle in tasks.json (an operator edit, outside every one of "
-            "the engine's own writers) and resume with `ralphctl resume "
+            "the engine's own writers) and resume with `ralphctl unpause "
             f"{self.cfg.run_id}`.\n"
         )
 
@@ -14522,7 +14522,7 @@ class LoopSupervisor:
         E.1-E.3): names the blocked task ids, the offending edge(s) (the
         absent id each one names) and every direct/transitive dependent
         task id, the same shape `_unschedulable_cycle_escalation_text`
-        already gives the cycle fault, plus the exact `ralphctl resume`
+        already gives the cycle fault, plus the exact `ralphctl unpause`
         invocation.
         """
         ids = ", ".join(edge_fault.get("unresolvedTaskIds", [])) or "(none)"
@@ -14543,7 +14543,7 @@ class LoopSupervisor:
             "The run has been paused (existing pause machinery); fix the "
             "dependsOn edge in tasks.json (an operator edit, outside "
             "every one of the engine's own writers) and resume with "
-            f"`ralphctl resume {self.cfg.run_id}`.\n"
+            f"`ralphctl unpause {self.cfg.run_id}`.\n"
         )
 
     def _pause_and_escalate_unresolvable_edge(self, edge_fault: dict) -> None:

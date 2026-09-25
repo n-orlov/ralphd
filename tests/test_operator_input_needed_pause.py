@@ -184,7 +184,7 @@ def test_an_ordinary_rejection_with_a_replan_available_pauses_instead(
     # prose (that stays event-side only).
     assert "operator_input_needed" in text
     assert "ralphctl rule task014-operator-input-needed" in text
-    assert "ralphctl resume task014-operator-input-needed" in text
+    assert "ralphctl unpause task014-operator-input-needed" in text
 
 
 def test_an_ordinary_rejection_on_the_last_approach_pauses_instead_of_ending(

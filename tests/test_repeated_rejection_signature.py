@@ -178,7 +178,7 @@ def test_a_second_identical_rejection_signature_pauses_instead_of_replanning(
     assert len(notifier.messages) == 1
     text = notifier.messages[0]
     assert same_clause in text
-    assert "ralphctl resume task016-repeated-rejection-signature" in text
+    assert "ralphctl unpause task016-repeated-rejection-signature" in text
 
     # Cure cure-01-01-3 (PRD A.3/A.4, #224): trigger condition 3's own
     # pause -- `rejected_repeated_signature` -- releases through the SAME
@@ -427,7 +427,7 @@ def test_an_unreadable_channel_rejection_pauses_on_findings_unusable(tmp_path):
     assert len(notifier.messages) == 1
     text = notifier.messages[0]
     assert channel_errors[0] in text
-    assert "ralphctl resume task016-repeated-rejection-signature" in text
+    assert "ralphctl unpause task016-repeated-rejection-signature" in text
 
 
 def test_a_different_channel_error_still_pauses_on_findings_unusable(tmp_path):
