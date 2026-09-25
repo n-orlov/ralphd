@@ -170,6 +170,13 @@ class StubEngineApi:
                  resume_status: int = 200, resume_body: dict | None = None):
         self.requests: list[tuple[str, str, str | None]] = []
         self.control_tokens: list[str | None] = []
+        # Task 011 (v0.26, #269): the raw request body, one entry per
+        # request recorded above (aligned index-for-index with `requests`/
+        # `control_tokens`, `b""` for a GET or a body-less POST) -- so a
+        # test can assert what actually arrived at this stand-in engine's
+        # own HTTP endpoint byte-for-byte, not merely which route/method
+        # was hit.
+        self.bodies: list[bytes] = []
         self.status_body = status if status is not None else {"state": "running"}
         self.tasks_body = tasks if tasks is not None else {"tasks": []}
         self.retry_status = retry_status
@@ -208,12 +215,12 @@ class StubEngineApi:
 
             def _record(self):
                 length = int(self.headers.get("Content-Length") or 0)
-                if length:
-                    self.rfile.read(length)
+                body = self.rfile.read(length) if length else b""
                 outer.requests.append(
                     (self.command, self.path, self.headers.get("Authorization")))
                 outer.control_tokens.append(
                     self.headers.get("X-Ralphd-Control-Token"))
+                outer.bodies.append(body)
 
             def do_GET(self):  # BaseHTTPRequestHandler API name
                 self._record()
