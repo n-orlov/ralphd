@@ -3415,6 +3415,23 @@ TASK_FAILURE_REQUIREMENT_UNMET = "requirement-unmet"
 TASK_FAILURE_KINDS = (TASK_FAILURE_VALIDATION_EXHAUSTED,
                       TASK_FAILURE_REQUIREMENT_UNMET)
 
+
+def reset_validation_attempts_for_reopen(task: dict) -> None:
+    """Give a task the engine itself reopens to `pending` for new work a
+    fresh verify budget (#273), in the caller's own write.
+
+    A reopen is a new obligation, like a judge-authored criteria amendment:
+    the attempts spent on the old claim say nothing about the new one, and a
+    counter left at `VALIDATION_ATTEMPT_LIMIT` would make the next verify
+    dispatch refuse the task outright. The spent count is kept on the record
+    as `priorValidationAttempts` for the audit trail; a task that never
+    spent an attempt is left untouched.
+    """
+    attempts = task.get("validationAttempts")
+    if isinstance(attempts, int) and attempts > 0:
+        task["priorValidationAttempts"] = attempts
+        task["validationAttempts"] = 0
+
 # Task 019 (requirement F, #60 pillar 3): the two harness-advanced statuses
 # that replace an agent's own claim of `completed` in VIGILANT mode --
 # `awaiting-validation` is the worker's claim state (the harness sets it
@@ -5094,6 +5111,7 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
                 record_task, verification_tasks = reopened
                 for verification_task in verification_tasks:
                     verification_task["status"] = "pending"
+                    reset_validation_attempts_for_reopen(verification_task)
                     _append_validated_dependency_edge(
                         run, tasks, verification_task, cure_task_id,
                         "cure-insertion")
@@ -5136,6 +5154,7 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
                 else:
                     prior_status = current_record_status
                 record_task["status"] = "pending"
+                reset_validation_attempts_for_reopen(record_task)
                 pre_cure_statuses[rid_for_head] = prior_status
                 run.update_status(preCureHeads=pre_cure_heads,
                                   preCureStatuses=pre_cure_statuses)
@@ -5209,6 +5228,7 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
                     # this module and would make the import circular -- the
                     # same reason given at fix #132 in `steer_task_update`.
                     existing_retake["status"] = "pending"
+                    reset_validation_attempts_for_reopen(existing_retake)
                     restated = _retake_task_from_path(
                         approach, index, path_index, path,
                         cure_task_id)["successCriteria"]

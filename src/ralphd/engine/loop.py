@@ -13648,7 +13648,28 @@ class LoopSupervisor:
         for task in outstanding_tasks:
             lines.append(
                 f"  {task.get('id')} ({task.get('status', 'pending')})")
+        stuck = self._tasks_stuck_awaiting_validation()
+        if stuck:
+            lines += ["", "Waiting on verify, which has not moved them "
+                      "(#273):"]
+            for entry in stuck:
+                lines.append(
+                    f"  {entry['id']} (awaiting-validation, "
+                    f"validationAttempts {entry['validationAttempts']} of "
+                    f"{VALIDATION_ATTEMPT_LIMIT})")
         return "\n".join(lines).rstrip() + "\n"
+
+    def _tasks_stuck_awaiting_validation(self) -> list[dict]:
+        """#273: every task the stagnation guard found resting in
+        `awaiting-validation` -- the one status no worker iteration can act
+        on -- with its spent verify count, so a stagnation escalation names
+        the task and the reason without anyone reading the container log."""
+        return [
+            {"id": t.get("id"),
+             "validationAttempts": t.get("validationAttempts", 0)}
+            for t in self.run.read_tasks().get("tasks", [])
+            if isinstance(t, dict)
+            and t.get("status") == state.TASK_STATUS_AWAITING_VALIDATION]
 
     def _exhausted_split_child_of_superseded_parent(
         self, tasks_doc: dict, task, budget: dict | None,
@@ -13778,6 +13799,7 @@ class LoopSupervisor:
         self.run.emit("operator_escalation", approach=approach,
                       reason="stagnation", outstandingTasks=outstanding_tasks,
                       approachProgressed=approach_progressed,
+                      awaitingValidation=self._tasks_stuck_awaiting_validation(),
                       escalation=text, **extra_payload)
         self.pause(reason="stagnation")
         if self.notifier is not None:
@@ -16518,6 +16540,37 @@ class LoopSupervisor:
                 result, final_text=json.dumps(enforcement.payload))
         return result
 
+    def _fail_verify_skipped_exhausted(self, tid) -> bool:
+        """#273: the exhausted-attempts skip of `_verify_task`, made
+        visible and state-changing. When the on-disk task is still
+        `awaiting-validation`, emits `task.verify_skipped_exhausted`
+        (`taskId`, `validationAttempts`, `limit`) and moves it to `failed`
+        with `failureKind: validation-exhausted` in one write; a task
+        already resolved on disk is left alone. Always returns False (no
+        verdict was granted)."""
+        tasks_data = self.run.read_tasks()
+        record = next((t for t in tasks_data.get("tasks", [])
+                       if t.get("id") == tid), None)
+        if (record is None or record.get("status")
+                != state.TASK_STATUS_AWAITING_VALIDATION):
+            # Already resolved on disk (`failed`/`petitioned`/...): nothing
+            # is waiting on verify, so there is nothing to move or announce.
+            return False
+        attempts = record.get("validationAttempts", 0)
+        record["status"] = "failed"
+        record["failureKind"] = TASK_FAILURE_VALIDATION_EXHAUSTED
+        log.warning(
+            "task %s already exhausted verification attempts (%s of %d); "
+            "not dispatching verify, failing it as %s",
+            tid, attempts, VALIDATION_ATTEMPT_LIMIT,
+            TASK_FAILURE_VALIDATION_EXHAUSTED)
+        self.run.emit("task.verify_skipped_exhausted", taskId=tid,
+                      validationAttempts=attempts,
+                      limit=VALIDATION_ATTEMPT_LIMIT)
+        self.run.write_tasks(tasks_data)
+        self._emit_task_changes()
+        return False
+
     async def _verify_task(self, task: dict) -> bool:
         """Run one verify iteration (with bounded retry on transient agent/
         provider errors) for a newly-completed task.
@@ -16571,10 +16624,17 @@ class LoopSupervisor:
         _verify_no_verdict).
         """
         tid = task["id"]
-        # Skip tasks that have already exhausted their verification budget
+        # #273: a task that reaches `awaiting-validation` with its verify
+        # budget already spent (a steer, a resume across a crash, a reopen
+        # path that did not reset the counter) is never dispatched, and is
+        # never left resting in `awaiting-validation` either -- nothing
+        # would ever move it out, its dependents would block, and the
+        # stagnation guard would pause the run with no event naming the
+        # cause. It fails as validation-exhausted, the same label the
+        # ordinary exhaustion branch below writes, so `_unresolved_
+        # failures` routes it to review.
         if task.get("validationAttempts", 0) >= VALIDATION_ATTEMPT_LIMIT:
-            log.warning("task %s already exhausted verification attempts; skipping", tid)
-            return False
+            return self._fail_verify_skipped_exhausted(tid)
         title = task.get("title", "")
         criteria = task.get("successCriteria", "")
         attempts = task.get("validationAttempts", 0)

@@ -1017,8 +1017,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `safe.directory` exception (git's "detected dubious ownership" refusal
     # under a real uid boundary). Measured with `.venv/bin/python -m pytest
     # -q -m <tier> --collect-only` at this task's own tip.
-    "fast": {"tests": 6299, "modules": 430},
-    "smoke": {"tests": 4605, "modules": 309},
+    # #273 (0.25.1): fast 6299 -> 6307, smoke 4605 -> 4613 (+8 tests, +1
+    # module each) for tests/test_validation_attempts_reopen.py.
+    "fast": {"tests": 6307, "modules": 431},
+    "smoke": {"tests": 4613, "modules": 310},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

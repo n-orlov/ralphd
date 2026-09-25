@@ -661,7 +661,8 @@ unauthorized rewrites: a judge-authored amendment on a CONFIRMED petition
 naming `successCriteria` (`steer_task_update`, #132). Task 009 feeds the
 list of flagged tasks to the review prompt so at least one independent
 re-verification of the new text happens before a `VERIFIED` verdict,
-closing the gap where `_verify_task`'s `validationAttempts >= 3` skip would
+closing the gap where a task whose verify budget is spent (`_verify_task`
+fails it as `validation-exhausted` without dispatching a verifier) would
 otherwise let repeatedly-rewritten criteria dodge every check.
 
 ### Feeding flagged tasks into the review prompt (task 009)
@@ -678,8 +679,8 @@ a standing instruction (present regardless of whether the section is
 present this iteration) that when that section IS present, the reviewer
 MUST independently re-verify each listed task id against its current
 criteria text and state an explicit pass/fail conclusion per id before
-emitting `VERIFIED` -- a task's own exhausted `validationAttempts` (the
-`_verify_task` `>= 3` skip) never substitutes for this manual check.
+emitting `VERIFIED` -- a task's own exhausted `validationAttempts` never
+substitutes for this manual check.
 
 ### The two meanings of `failed`, and why a `failed` task no longer strands a run (task 024, #33)
 
@@ -691,6 +692,18 @@ the status, and an agent's own `failed` reads as `requirement-unmet`.
 `state.task_failure_kind()` is the single reader and *derives* the kind for a
 `tasks.json` written before the label existed (at or past the limit ⇒
 exhausted), so an old plan still reads correctly.
+
+A task that reaches the verify dispatch in `awaiting-validation` with its budget
+already spent (a steer, a crash-resume, any path that did not reset the counter)
+is never dispatched and never left resting there: `_verify_task` emits
+`task.verify_skipped_exhausted` and fails it as `validation-exhausted` in one
+write. The engine's own reopens give the new obligation a fresh budget instead:
+every task a cure pass's `invalidates` walk puts back to `pending` (a
+lane-evidence record, its verification steps, a reused re-take row) has
+`validationAttempts` reset to 0 in the same write, with the spent count kept as
+`priorValidationAttempts` (`state.reset_validation_attempts_for_reopen`). A
+stagnation escalation lists every task still `awaiting-validation`, with its
+attempt count, in its text and on the event's `awaitingValidation` field.
 
 The vocabulary matters because of what a `failed` task used to do to a run:
 `worker.md`'s completion signal recognises only `completed` and `skipped`, so no
