@@ -92,11 +92,10 @@
 # `fetch-depth: 0` meant "no image needs git installed" -- the operator
 # states in steer 011 that that premise was theirs, from steer 008, and was
 # wrong. `fetch-depth: 0` on the HOST checkout supplies the `.git` DIRECTORY
-# (so the records lint sees real commit history once it is copied in), but
+# (so tests that read real commit history see it once it is copied in), but
 # the suite itself EXECS the `git` BINARY at run time, inside the CELL,
-# against that directory: `tests/records/*`, `test_report_claims_git_objects`,
-# `test_issue_traceability`, `test_commit_closing_keyword_scope` and
-# `test_petitions` all shell out to `git`. Every cell image below therefore
+# against that directory: `test_host_like_pytest_script` (a `git show` of a
+# pre-fix revision) and `test_petitions`, among others, shell out to `git`. Every cell image below therefore
 # gets `git` installed (see the container command) -- the outer job's own
 # container never runs this suite itself, so its own git is irrelevant to
 # this requirement.

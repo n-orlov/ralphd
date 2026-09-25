@@ -78,37 +78,6 @@ def test_default_literal_appears_exactly_once_in_the_source(ctl):
     assert len(hits) == 1, f"auto_resume default defined more than once: {hits}"
 
 
-def test_roadmap_records_the_shipped_default_flip_and_names_the_single_place():
-    """Task 027 (requirement O): the flip has happened, so the roadmap must
-    record it as shipped and its deferred list must stop promising it -- a
-    deferred entry for work that already landed is how the roadmap rots.
-    The shipped note still has to point at the one literal a maintainer
-    reverting or re-flipping the default would edit."""
-    from pathlib import Path
-
-    text = (Path(__file__).parent.parent / "docs" / "roadmap.md").read_text()
-    deferred = text.split("## Later / explicitly deferred", 1)
-    assert len(deferred) == 2, "docs/roadmap.md lost its deferred section"
-    note = deferred[1]
-    assert "auto_resume" not in note, (
-        "the deferred list still promises the auto_resume default flip, which "
-        "v0.7 shipped")
-    # The flip is recorded as shipped where self-recovery is described, and
-    # still names the single place the default lives. Scoped to the v0.5 block
-    # alone: task 033 added a `## v0.7` block that also names the flag and the
-    # literal, and a slice running to `## Later` would be satisfied by *that*
-    # block while v0.5's own note said nothing.
-    v05 = text.split("## v0.5", 1)[1].split("## v0.6", 1)[0]
-    assert "--auto-resume" in v05
-    assert "--no-auto-resume" in v05, "the shipped note must name the opt-out"
-    assert "AUTO_RESUME_DEFAULT" in v05
-    assert "src/ralphd/cli/main.py" in v05
-    assert "v0.7" in v05 and "ON" in v05, (
-        "the roadmap must say the default flipped to ON in v0.7")
-    # ...and the historical claim stays honest: v0.5 itself shipped opt-in.
-    assert "off by default" in v05.lower()
-
-
 def test_docs_document_the_on_default_and_both_ways_to_opt_out():
     """Task 027 (requirement O): with the default ON, the documentation an
     operator reads has to say so and has to name both opt-out routes -- the

@@ -63,7 +63,7 @@ import glob
 import os
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 TESTS_DIR = REPO_ROOT / "tests"
 
 # The four members ruled legitimate boundary modules by operator ruling

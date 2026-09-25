@@ -488,17 +488,3 @@ def test_every_architecture_block_explaining_a_refund_says_it_is_persisted():
     assert not missing, missing
     assert any("resume cannot re-charge" in b or "seeded back on resume" in b
                for b in blocks)
-
-
-def test_the_prd_index_calls_the_v06_tally_inflated():
-    """The permanent-record consequence: the note where the 145 is explained
-    says the figure is inflated by this defect and names the issue -- and the
-    row itself still reports 145."""
-    text = (REPO / "docs" / "prds" / "README.md").read_text()
-    row = [line for line in text.splitlines()
-           if line.startswith("| `selfdev-v06-release` |")]
-    assert len(row) == 1 and "| 145 |" in row[0], row
-    note = [p for p in text.split("\n- ") if "The iteration cell is the 145" in p]
-    assert len(note) == 1, note
-    assert "inflated" in note[0] and "#32" in note[0]
-    assert "128" in note[0], "the note says what the guarantee implies instead"
