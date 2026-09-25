@@ -79,8 +79,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # src/ralphd/render_index.py source file, measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
     # 6268/433, `-m smoke` -> smoke 4587/311.
-    "fast": {"tests": 6268, "modules": 433},
-    "smoke": {"tests": 4587, "modules": 311},
+    # Task 013 retry: +2 tests in tests/test_hub_real_render_cap_whole_call.py
+    # (lagging live index, streamed text/tool calls at every index lag) ->
+    # fast 6270, smoke 4589.
+    "fast": {"tests": 6270, "modules": 433},
+    "smoke": {"tests": 4589, "modules": 311},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

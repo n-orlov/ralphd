@@ -332,3 +332,96 @@ def test_absent_index_residual_costs_measured_through_the_whole_client_facing_ca
             assert rendered == full[-200:], (path, index_state)
             assert measured == expected, (path, index_state, measured)
         assert 65_536 < _FROZEN_CAP < 3_454_506
+
+
+def _write_live_iteration(run_root, lines, *, ended, indexed_lines):
+    """One iteration whose `render_index.json` covers only its first
+    `indexed_lines` raw lines -- exactly what `engine/runner.py`'s `pump()`
+    leaves on disk between two `LiveRenderIndex.flush` batches, i.e. the
+    ordinary lag of a LIVE iteration's index behind its transcript."""
+    itdir = run_root / "iterations" / "0001"
+    itdir.mkdir(parents=True)
+    meta = {"number": 1, "phase": "worker", "model": "stub-model", "approach": 1,
+            "startedAt": "2025-01-01T00:00:00Z", "exitCode": 0, "error": None,
+            "usage": {"totalTokens": 1}}
+    if ended:
+        meta["endedAt"] = "2025-01-01T00:00:01Z"
+    (itdir / "meta.json").write_text(json.dumps(meta))
+    raw = [(ln + "\n").encode() for ln in lines]
+    (itdir / "output.jsonl").write_bytes(b"".join(raw))
+    live = render_index.LiveRenderIndex()
+    for chunk in raw[:indexed_lines]:
+        live.feed(chunk)
+    assert live.flush(itdir, force=True)
+    index = render_index.load_index(itdir)
+    assert index is not None
+    return index, sum(len(c) for c in raw)
+
+
+def _said(text):
+    return json.dumps({"type": "message_end", "message": {"content": [
+        {"type": "text", "text": text}]}})
+
+
+def test_lagging_live_index_tail_includes_the_unindexed_suffix(tmp_path, monkeypatch):
+    """Task 013 retry: a valid render index that lags the transcript (the
+    normal state of a live one) must not cut the tail off at what it
+    covers -- the unindexed suffix's own newest line ('gamma', behind
+    ~9 KB of silent events) is the full render's last line, on both
+    surfaces, live and finished alike."""
+    silent = json.dumps({"type": "message_end", "message": {"content": []},
+                         "padding": "x" * 900})
+    lines = [_said("alpha"), _said("beta")] + [silent] * 10 + [_said("gamma")]
+    for ended in (False, True):
+        for path in ("disk", "api"):
+            sub = tmp_path / f"lag-{ended}-{path}"
+            run_root = sub / "registry" / "runs" / "probe"
+            index, size = _write_live_iteration(run_root, lines, ended=ended,
+                                                indexed_lines=2)
+            assert size - index["transcriptBytes"] > 9_000
+            full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                                   state=new_render_state())
+            for tail in (1, 2, 3):
+                measured, rendered = _measure(sub, monkeypatch, run_root, tail, path)
+                assert rendered == full[-tail:], (ended, path, tail, rendered)
+                assert measured <= _FROZEN_CAP, measured
+            if not ended:
+                assert full[-1] == "gamma", full
+
+
+def test_streamed_text_and_tool_calls_tail_equals_full_render_at_every_index_lag(
+        tmp_path, monkeypatch):
+    """Task 013 retry: the bounded tail is exact for content whose rendered
+    lines do not line up with raw lines -- a streamed text line spanning
+    several `text_delta` events, a tool call whose invocation line needs
+    the arguments its start event recorded several lines earlier -- at
+    every point a live index could have been flushed, through the whole
+    client-facing call on both surfaces."""
+    def delta(text):
+        return json.dumps({"type": "message_update",
+                           "assistantMessageEvent": {"type": "text_delta", "delta": text}})
+    text_end = json.dumps({"type": "message_update",
+                           "assistantMessageEvent": {"type": "text_end"}})
+    silent = json.dumps({"type": "message_end", "message": {"content": []},
+                         "padding": "x" * 300})
+    tool_start = json.dumps({"type": "tool_execution_start", "toolCallId": "t1",
+                             "toolName": "bash", "args": {"command": "ls -la"}})
+    tool_end = json.dumps({"type": "tool_execution_end", "toolCallId": "t1",
+                           "toolName": "bash", "isError": False,
+                           "result": {"content": [{"type": "text", "text": "ok"}]}})
+    lines = ([delta("one "), silent, delta("streamed\nline "), delta("two"), text_end,
+              tool_start, silent, silent, tool_end, _said("said"), delta("tail "),
+              silent, delta("open")])
+    for ended in (False, True):
+        full = None
+        for cut in range(len(lines) + 1):
+            for path in ("disk", "api") if cut in (0, 6, len(lines)) else ("disk",):
+                sub = tmp_path / f"mix-{ended}-{cut}-{path}"
+                run_root = sub / "registry" / "runs" / "probe"
+                _write_live_iteration(run_root, lines, ended=ended, indexed_lines=cut)
+                full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                                       state=new_render_state())
+                for tail in (1, 2, 3, 4, 5):
+                    _, rendered = _measure(sub, monkeypatch, run_root, tail, path)
+                    assert rendered == full[-tail:], (ended, cut, path, tail, rendered)
+        assert any("$ ls -la" in ln for ln in full), full

@@ -586,11 +586,27 @@ def render_to_lines(raw_text: str, tty: bool, state: dict) -> list[str]:
     main.py). This is the exact function the hub UI server (task 014)
     calls server-side for `GET /api/runs/<id>/logs` so the browser never
     reimplements event-to-text rendering."""
+    return split_rendered_text(render_to_text(raw_text, tty, state))
+
+
+def render_to_text(raw_text: str, tty: bool, state: dict) -> str:
+    """`render_to_lines`'s own capture, before it is split into lines: the
+    exact characters the renderer prints for `raw_text`, `state` mutated in
+    place. Rendering a transcript one raw line at a time and concatenating
+    these strings is byte-identical to rendering it whole -- the property a
+    bounded reader resuming from a saved render state relies on
+    (`render_index.bounded_tail`), since a streamed text line spans many
+    raw lines and only the concatenation says where its newline falls."""
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         for raw_line in raw_text.splitlines():
             render_log_line(raw_line, tty, state)
-    text = buf.getvalue()
+    return buf.getvalue()
+
+
+def split_rendered_text(text: str) -> list[str]:
+    """Split captured renderer output into the lines an operator sees --
+    one trailing newline dropped, never an added blank line."""
     if not text:
         return []
     return text.removesuffix("\n").split("\n")

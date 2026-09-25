@@ -1800,25 +1800,31 @@ index, and the caller's job (not this module's) is to serve the covered
 prefix from the index and the uncovered suffix by a direct, bounded scan.
 
 **Consuming the index (task 013, #271 follow-on).**
-`render_index.bounded_tail(run_root, n)` is that caller: given the last *N*
-rendered lines a tail request wants, it binary-searches the latest
-iteration's own `checkpoints` for the LATEST one whose cumulative
-`renderedLines` still falls `n` (minus the trailing `ralphd.iteration` "end"
-line, when the iteration has finished) short of the covered total --
-O(log checkpoints), no disk read at all, since `checkpoints` is already the
-parsed JSON in hand -- then reads `output.jsonl` forward from that single
-checkpoint's own byte offset, in small growing chunks, re-seeding
-`log_render`'s render state from the checkpoint each time, until the render
-has produced enough new lines or the transcript's current size is reached.
-Bytes read stay proportional to `n` plus a fixed allowance, never to how
-much silent (fully-recognized-but-nothing-rendered) transcript sits between
-the deciding line and the transcript's own end -- the exact gap PRD Q's own
-fixture (a `thinking_start` transition sitting behind a long flood of
-recognized, non-rendering `message_end` padding) exposed against the outer
-doubling fetch below. `None` -- never a wrong-but-plausible answer -- when
-this one iteration's own index cannot promise `n` lines by itself (no
-iteration, no valid index, or its own covered prefix falling short); the
-caller then falls back to the ordinary growth-based fetch.
+`render_index.bounded_tail(run_root, n)` is that caller. A checkpoint's
+`renderedLines` counts the per-raw-line fragments the renderer printed while
+the index was fed one raw line at a time -- not the whole render's line
+count, since a streamed text line spans many `text_delta` raw lines -- but
+it rises on exactly the raw lines that print anything and stays flat across
+every silent one. `bounded_tail` builds the latest iteration's rendered
+output from its END backward: first the unindexed suffix (`transcriptBytes`
+to the transcript's current size -- a live index normally lags by up to one
+flush batch, and every byte of that suffix is read, seeded from the last
+checkpoint's `state`), then the synthesized `ralphd.iteration` "end" line
+once the iteration has finished (rendered in the state the transcript left
+behind), then the covered prefix's printing raw lines newest first, each
+found by a binary search over `renderedLines` and re-rendered from its
+predecessor checkpoint's `state` -- stopping as soon as the captured text
+holds `n` newlines besides its trailing one, which fixes the whole render's
+last `n` lines. Bytes read are the printing lines that produced those lines
+plus the unindexed suffix, never the silent (fully-recognized-but-nothing-
+rendered) transcript between them -- the exact gap PRD Q's own fixture (a
+`thinking_start` transition behind a long flood of recognized, non-rendering
+`message_end` padding) exposed against the outer doubling fetch below.
+`None` -- never a wrong-but-plausible answer -- when this one iteration
+cannot answer by itself (no iteration, no valid index, a transcript that
+re-renders differently from what its index recorded, or fewer than `n`
+lines in the whole iteration); the caller then falls back to the ordinary
+growth-based fetch.
 
 `ui_server.rendered_log_lines` calls `bounded_tail` first, on BOTH its live
 `/logs` branch and its dead-run on-disk fallback -- reading the run

@@ -30,8 +30,12 @@ Shape (`INDEX_FILENAME`, version `INDEX_VERSION`):
     `apply_transition` mirror of the renderer's own dispatch.
   - `checkpoints`: one entry per raw NDJSON line consumed so far --
     `byteOffset` (the transcript offset immediately after that line),
-    `renderedLines` (how many PRETTY lines `log_render.render_to_lines`
-    has produced for the whole prefix up to and including that line), and
+    `renderedLines` (the cumulative count of fragments
+    `log_render.render_to_lines` returned for each raw line of the prefix
+    rendered one raw line at a time -- it rises on exactly the raw lines
+    that print anything; a streamed text line spanning several raw lines
+    counts once per raw line, so this is not the whole render's line
+    count), and
     `state` (`log_render.new_render_state()`'s own dict, JSON-round-
     tripped by `_state_to_json`/`_state_from_json`, as of that same
     point). A bounded reader can therefore pick any checkpoint at or
@@ -83,12 +87,18 @@ facing call is task 013's job.
 
 from __future__ import annotations
 
+import bisect
 import copy
 import json
 from pathlib import Path
 
 from . import collapse_index as _collapse_index
-from .cli.log_render import new_render_state, render_to_lines
+from .cli.log_render import (
+    new_render_state,
+    render_to_lines,
+    render_to_text,
+    split_rendered_text,
+)
 from .log_merge import OUTPUT_FILENAME as _OUTPUT_FILENAME
 from .log_merge import boundary_line as _boundary_line
 from .log_merge import iteration_dir as _iteration_dir
@@ -119,8 +129,10 @@ def _state_to_json(state: dict) -> dict:
     non-JSON member (`collapse_unresolved`, a `set`) becomes a sorted
     list; everything else (`tool_pending`'s tuples included -- `json.dumps`
     already serializes a tuple as a JSON array) survives `json.dumps`
-    unchanged."""
-    out = dict(state)
+    unchanged. A DEEP copy: `tool_args`/`tool_pending` are dicts the live
+    render state keeps mutating, and a checkpoint sharing them would
+    silently describe a later line's state instead of its own."""
+    out = copy.deepcopy(state)
     out["collapse_unresolved"] = sorted(state.get("collapse_unresolved") or ())
     return out
 
@@ -318,114 +330,139 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     return index
 
 
-# Task 013: how far short of "enough" the index's OWN covered prefix can
-# see the RENDER growing, without walking any of the SILENT bytes in
-# between -- the whole point of writing `checkpoints` at all (see this
-# module's own top-of-file rationale). One entry per raw transcript line
-# (never coarser), so a binary search over `renderedLines` finds the
-# LATEST line whose cumulative count still falls `content_needed` or more
-# short of the index's own covered total in O(log checkpoints) -- no disk
-# read at all, since `checkpoints` is already the parsed JSON in hand.
-_FORWARD_READ_CHUNK = 1 << 12  # 4096 -- see `_render_forward_from_seed`.
+# Task 013: the read side. `checkpoints[i]["renderedLines"]` counts the
+# per-raw-line fragments `render_to_lines` returned while the index was fed
+# one raw line at a time -- NOT the whole render's line count (a streamed
+# text line spans many `text_delta` raw lines, each its own fragment) -- but
+# it rises by at least one on exactly the raw lines that print anything and
+# stays flat across every silent one. That is all the reader needs: a
+# binary search over it lands on the PRINTING raw lines, newest first,
+# without walking a single silent byte in between, and each one is then
+# re-rendered from its predecessor's saved `state`, so the exact characters
+# it printed -- newlines included -- are recovered and concatenated the way
+# a whole render would have printed them.
+_SUFFIX_READ_CHUNK = 1 << 16  # the unindexed suffix is streamed in these.
 
 
-def _seed_checkpoint_for_tail(index: dict, content_needed: int) -> tuple[int, dict] | None:
-    """`(byte_offset, deserialized_state)` to resume rendering FROM so that
-    continuing forward reproduces exactly the last `content_needed`
-    RENDERED lines the index's own covered prefix would render -- the
-    LATEST checkpoint whose own cumulative `renderedLines` still falls
-    `content_needed` or more short of the covered total. `None` when the
-    covered prefix cannot promise `content_needed` lines at all (fewer
-    lines exist in the whole prefix it covers): the caller falls back to
-    an older iteration, or the growth-based outer fetch."""
-    checkpoints = index.get("checkpoints") or []
+def _enough(text: str, n: int) -> bool:
+    """True when `text` -- a suffix of the whole render's own output, not
+    necessarily starting at a line start -- already fixes the whole
+    render's last `n` lines: it holds `n` newlines besides a trailing one,
+    so even a partial first line leaves `n` complete lines after it."""
+    return text.removesuffix("\n").count("\n") >= n
+
+
+def _keep_tail(text: str, n: int) -> str:
+    """Drop whole leading lines of `text` it no longer needs, keeping it
+    `_enough` for `n` -- bounds memory while the unindexed suffix streams."""
+    body = text.removesuffix("\n")
+    extra = body.count("\n") - (n + 1)
+    if extra <= 0:
+        return text
+    cut = -1
+    for _ in range(extra):
+        cut = text.index("\n", cut + 1)
+    return text[cut + 1:]
+
+
+def _render_unindexed_suffix(output_path: Path, start: int, size: int,
+                             state: dict, n: int) -> str | None:
+    """Render `[start, size)` of the transcript -- the part a lagging live
+    index does not cover yet -- continuing `state` in place, and return
+    the captured output (trimmed to what the last `n` lines need). Every
+    byte of it is read: nothing records what it prints but itself. `None`
+    on a read error."""
+    if start >= size:
+        return ""
+    out = ""
+    pending = b""
+    try:
+        with output_path.open("rb") as f:
+            f.seek(start)
+            remaining = size - start
+            while remaining > 0:
+                data = f.read(min(_SUFFIX_READ_CHUNK, remaining))
+                if not data:
+                    break
+                remaining -= len(data)
+                pending += data
+                cut = pending.rfind(b"\n") + 1
+                if cut:
+                    out += render_to_text(pending[:cut].decode("utf-8", errors="replace"),
+                                          tty=False, state=state)
+                    pending = pending[cut:]
+                    out = _keep_tail(out, n)
+    except OSError:
+        return None
+    if pending:
+        out += render_to_text(pending.decode("utf-8", errors="replace"),
+                              tty=False, state=state)
+    return _keep_tail(out, n)
+
+
+def _prepend_covered(output_path: Path, checkpoints: list[dict], acc: str,
+                     n: int) -> tuple[str, bool] | None:
+    """Walk the index's covered prefix backward over its PRINTING raw lines
+    only (binary search on `renderedLines`), re-rendering each from its
+    predecessor checkpoint's saved `state` and prepending what it printed
+    to `acc`, until `acc` is `_enough` for `n` or the prefix is exhausted.
+    Returns `(acc, exhausted)`; `None` when the transcript disagrees with
+    the index (a printing line re-renders silent, or to a different
+    fragment count) -- never a wrong-but-plausible render."""
     if not checkpoints:
+        return acc, True
+    k = checkpoints[-1]["renderedLines"]
+    try:
+        with output_path.open("rb") as f:
+            while not _enough(acc, n):
+                if k <= 0:
+                    return acc, True
+                j = bisect.bisect_left(checkpoints, k,
+                                       key=lambda cp: cp["renderedLines"])
+                prev = checkpoints[j - 1] if j > 0 else None
+                start = prev["byteOffset"] if prev else 0
+                prev_lines = prev["renderedLines"] if prev else 0
+                state = (_state_from_json(copy.deepcopy(prev["state"])) if prev
+                         else new_render_state())
+                f.seek(start)
+                raw = f.read(checkpoints[j]["byteOffset"] - start)
+                text = render_to_text(raw.decode("utf-8", errors="replace"),
+                                      tty=False, state=state)
+                if len(split_rendered_text(text)) != checkpoints[j]["renderedLines"] - prev_lines:
+                    return None
+                acc = text + acc
+                k = prev_lines
+    except OSError:
         return None
-    total = checkpoints[-1]["renderedLines"]
-    if total < content_needed:
-        return None
-    threshold = total - content_needed
-    lo, hi = 0, len(checkpoints)
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if checkpoints[mid]["renderedLines"] <= threshold:
-            lo = mid + 1
-        else:
-            hi = mid
-    idx = lo - 1
-    if idx < 0:
-        return 0, new_render_state()
-    cp = checkpoints[idx]
-    return cp["byteOffset"], _state_from_json(cp["state"])
-
-
-def _render_forward_from_seed(output_path: Path, seed_offset: int, seed_state: dict,
-                              content_needed: int, size_cap: int) -> list[str]:
-    """The forward, SEEDED sibling of `log_render.render_tail_lines`'s own
-    backward growth (task 013): read `output_path` from `seed_offset`
-    onward, in growing chunks (`_FORWARD_READ_CHUNK`, doubling), re-
-    rendering a FRESH copy of `seed_state` each time, until the render has
-    produced at least `content_needed` new lines or `size_cap` (the
-    transcript's own current size) is exhausted. Bytes read stay
-    proportional to `content_needed` plus a fixed allowance -- never to how
-    far `seed_offset` sits from `size_cap` -- because `seed_offset` is
-    itself already the LATEST checkpoint the index's own per-line
-    granularity could offer short of the answer
-    (`_seed_checkpoint_for_tail`), so the very next few raw lines are
-    always exactly where the missing render happens, however much silent
-    transcript follows them all the way to `size_cap`."""
-    if content_needed <= 0 or seed_offset >= size_cap:
-        return []
-    chunk = _FORWARD_READ_CHUNK
-    lines: list[str] = []
-    with output_path.open("rb") as f:
-        f.seek(seed_offset)
-        data = b""
-        while True:
-            target = min(seed_offset + chunk, size_cap)
-            to_read = target - (seed_offset + len(data))
-            if to_read > 0:
-                data += f.read(to_read)
-            at_cap = seed_offset + len(data) >= size_cap
-            # A chunk that has not yet reached `size_cap` may stop mid-line
-            # -- render only whatever WHOLE lines it holds so far (never a
-            # truncated trailing line, which `render_log_line` would report
-            # as malformed) and let the next, larger chunk pick that partial
-            # line back up from its own start (never re-reading bytes this
-            # one already has: `data` keeps growing, never resets).
-            usable = data if at_cap else data[:data.rfind(b"\n") + 1]
-            text = usable.decode("utf-8", errors="replace")
-            lines = render_to_lines(text, tty=False, state=copy.deepcopy(seed_state))
-            if len(lines) >= content_needed or at_cap:
-                return lines
-            chunk *= 2
+    return acc, False
 
 
 def bounded_tail(run_root: Path, n: int) -> list[str] | None:
-    """The exact tail of the last `n` rendered lines for `run_root`'s MOST
-    RECENT iteration alone, served entirely through its own render index
-    (task 013) -- bytes read off the transcript stay proportional to `n`
-    plus a fixed allowance, regardless of however much silent transcript
-    sits between the deciding line and the transcript's own end (exactly
-    the gap `tests/test_hub_real_render_cap_whole_call.py`'s PRD Q fixture
-    -- and its silent-prelude variants -- exposed against the outer
-    doubling fetch this bypasses).
+    """The exact last `n` rendered lines of `run_root`'s merged render,
+    served from its MOST RECENT iteration's own render index alone (task
+    013) -- bytes read off the transcript stay proportional to those lines
+    (the printing raw lines that produced them) plus the index's own
+    unindexed suffix, regardless of however many silent bytes sit between
+    them and the transcript's end.
 
-    `None` -- never a wrong-but-plausible answer -- whenever this one
-    iteration's own render index cannot promise `n` lines by itself: no
-    iteration at all, no validated index for the latest one, or its own
-    covered prefix falling short. The caller (`ui_server.rendered_log_lines`,
-    on both its live and dead-run surfaces) falls back to the older,
-    growth-based outer fetch in every such case -- an OLDER iteration
-    supplying the remainder is a later task's job, not this one's.
+    The whole render's output for this iteration is, in order: whatever
+    the covered prefix prints, then whatever the unindexed suffix prints
+    (`transcriptBytes` to the transcript's current size -- a live index
+    normally lags a little, and those bytes are always read in full,
+    seeded from the last checkpoint's `state`), then the `ralphd.iteration`
+    "end" line `log_merge.boundary_line` synthesizes once the iteration
+    has finished, rendered in the state the transcript left behind. This
+    builds that output from its END backward -- end line, suffix, then the
+    covered prefix's printing lines newest first -- and stops as soon as
+    it fixes the last `n` lines.
 
-    A finished iteration's own trailing `ralphd.iteration` "end" line is
-    never part of the transcript file itself -- `log_merge.boundary_line`
-    synthesizes it -- so it is rendered separately, through the very same
-    `log_render.render_to_lines` every other reader uses (never hand-
-    rolled here), and counted against `n` before any transcript content is
-    even looked at, since it is unconditionally the newest line whenever
-    it exists."""
+    `None` -- never a wrong-but-plausible answer -- when this one iteration
+    cannot answer by itself: no iteration, no valid index, a transcript
+    that disagrees with its index, or fewer than `n` lines in the whole
+    iteration. The caller (`ui_server.rendered_log_lines`, on both its
+    live and dead-run surfaces) then falls back to the growth-based fetch."""
+    if n <= 0:
+        return None
     numbers = _iteration_numbers(run_root)
     if not numbers:
         return None
@@ -434,32 +471,31 @@ def bounded_tail(run_root: Path, n: int) -> list[str] | None:
     index = load_index(itdir)
     if index is None:
         return None
-    meta_path = itdir / "meta.json"
     try:
-        meta = json.loads(meta_path.read_text())
+        meta = json.loads((itdir / "meta.json").read_text())
     except (OSError, json.JSONDecodeError):
         return None
-    boundary_rendered: list[str] = []
-    if meta.get("endedAt"):
-        boundary_rendered = render_to_lines(_boundary_line(meta, "end"), tty=False,
-                                            state=new_render_state())
-    content_needed = max(n - len(boundary_rendered), 0)
-    content_lines: list[str] = []
-    if content_needed > 0:
-        seed = _seed_checkpoint_for_tail(index, content_needed)
-        if seed is None:
-            return None
-        seed_offset, seed_state = seed
-        out_path = _iteration_output_path(run_root, last)
-        try:
-            size = out_path.stat().st_size
-        except OSError:
-            return None
-        content_lines = _render_forward_from_seed(out_path, seed_offset, seed_state,
-                                                   content_needed, size)
-        if len(content_lines) < content_needed:
-            return None
-    combined = content_lines + boundary_rendered
-    if len(combined) < n:
+    if not isinstance(meta, dict):
         return None
-    return combined[-n:]
+    out_path = _iteration_output_path(run_root, last)
+    try:
+        size = out_path.stat().st_size
+    except OSError:
+        size = 0
+    checkpoints = index["checkpoints"]
+    covered = index["transcriptBytes"]
+    state = (_state_from_json(copy.deepcopy(checkpoints[-1]["state"])) if checkpoints
+             else new_render_state())
+    acc = _render_unindexed_suffix(out_path, covered, size, state, n)
+    if acc is None:
+        return None
+    if meta.get("endedAt"):
+        acc += render_to_text(_boundary_line(meta, "end"), tty=False, state=state)
+    walked = _prepend_covered(out_path, checkpoints, acc, n)
+    if walked is None:
+        return None
+    acc, exhausted = walked
+    lines = split_rendered_text(acc)
+    if exhausted and len(lines) < n:
+        return None
+    return lines[-n:]
