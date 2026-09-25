@@ -2182,7 +2182,9 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   fields (`engine/findings.py`'s `FINDING_SCHEMA`): `cured_when` (a
   string; required, as a business rule rather than a schema constraint,
   whenever `curable` is `true`) and `invalidates` (an optional list of
-  in-checkout paths, wired by a later task). A curable blocking finding
+  in-checkout paths holding a measurement of the code -- a test or lane
+  result -- that the cure makes stale; review is told never to name a
+  report, record or other prose file there). A curable blocking finding
   missing `cured_when` -- or carrying one whose own text overruns the
   plan's bounded-checkable-clause lint, `plan_ingestion.clause_count_
   overrun` (the same public function `lint_proposal` itself now calls,

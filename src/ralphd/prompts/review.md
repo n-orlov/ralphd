@@ -353,6 +353,10 @@ lands and is recorded), so it must already read like a criterion rather
 than like a complaint, and stay inside that bound — and, optionally,
 `invalidates`: the list of paths whose prior evidence that cure supersedes,
 so the engine can re-take exactly those paths rather than the whole approach.
+Name only paths that hold a measurement of the code (a test or lane result
+the cure makes stale) — never a report, record or other prose file, which
+is not evidence and is never re-taken. Leave it empty when the cure makes no
+such measurement stale.
 A curable blocking finding you file without `cured_when` is a review contract
 violation on the ladder, not a finding the engine can act on.
 
