@@ -1,5 +1,5 @@
 """Task 003 (requirement B, #103): `scripts/final_sha_guards.sh` selects the
-docs-/report-/README-reading guard subset by grepping `tests/` at run time,
+docs-/README-/SPEC-reading guard subset by grepping `tests/` at run time,
 never from a list typed into the script. v0.13 approach 3 task 012 hand-typed
 a module list for the same job, omitted one, and the task exhausted its
 validation ladder ("failed") -- this module exists so that failure mode can
@@ -8,12 +8,11 @@ never come back silently.
 Three things are checked:
 
 * the script's own source contains no hand-maintained module list -- no
-  literal `test_<name>.py` filename anywhere in it, only the wildcard glob
-  (`tests/test_*.py`) the discovery grep uses to scan the directory fresh
-  each run;
+  literal `test_<name>.py` filename anywhere in it, only the wildcard
+  (`test_*.py`) the discovery grep uses to scan the tree fresh each run;
 * the selection equals what an *independent* reimplementation of the rule
-  ("a module that mentions `docs`, `artifacts` or `README` as a word") finds
-  by scanning `tests/` here in Python -- a rule comparison, so this module
+  ("a test module anywhere under `tests/` that mentions `docs`, `README` or
+  `SPEC` as a word") finds by scanning `tests/` here in Python -- a rule comparison, so this module
   does not type a module name either;
 * discovery genuinely runs at invocation time: two brand-new test modules,
   planted here, are picked up by `--list` with *no* edit to the script --
@@ -68,30 +67,15 @@ def _list_selected() -> list[str]:
 def test_known_docs_reading_modules_are_already_selected() -> None:
     """The selection equals an independent scan of `tests/` for the same rule.
 
-    Stronger than the assertion this replaced, which named
-    two module filenames and checked they were in the selection: that
-    version passed while the script's `docs/|artifacts/|README` pattern was
-    still missing every module which builds its path from split components
-    (`REPO_ROOT / "docs" / "architecture.md"`), because the two it named
-    happened to use the slash form. Comparing against the whole rule,
-    recomputed here, cannot pass with an incomplete selection -- and it
-    still types no module name.
-
-    Task 032 (requirement E.1) moved the records family under
-    `tests/records/`, one directory down from every other test module, and
-    the script's own glob widened to `tests/records/test_*.py` alongside
-    `tests/test_*.py` to keep discovering it -- so the independent scan
-    widens the same way, over both directories, rather than narrowing back
-    to a selection the script itself no longer produces.
+    Comparing against the whole rule, recomputed here, cannot pass with an
+    incomplete selection -- and it still types no module name. The scan is
+    recursive, like the script's own grep, so a docs-reading module in a
+    subdirectory (`tests/flows/`, for example) is a guard too.
     """
-    rule = re.compile(r"\b(docs|artifacts|README)\b")
+    rule = re.compile(r"\b(docs|README|SPEC)\b")
     expected = {
-        f"tests/{path.name}"
-        for path in sorted((REPO_ROOT / "tests").glob("test_*.py"))
-        if rule.search(path.read_text())
-    } | {
-        f"tests/records/{path.name}"
-        for path in sorted((REPO_ROOT / "tests" / "records").glob("test_*.py"))
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in sorted((REPO_ROOT / "tests").rglob("test_*.py"))
         if rule.search(path.read_text())
     }
     assert expected, "the independent scan found nothing -- the rule is broken"
