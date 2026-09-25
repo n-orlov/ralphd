@@ -117,6 +117,11 @@ never as a red.
 
 Read the PRD. Read `tasks.json`. Run the tests. Run the code. Check the files.
 Reproduce claimed behavior. Account for every task that is not `completed`.
+Where the PRD's changes are described in the product spec (`SPEC.md`) or the
+user docs, check that text against the live behaviour: a contradiction is
+blocking. Numbers and claims in any other prose — commit messages, notes, issue
+comments, run artifacts, any tracked report — are neither evidence nor grounds
+for rejection; the evidence is the tests you run in your identity-proven clone.
 Then reach your OWN verdict from that evidence alone. Be strict: "probably
 fine" is not verification, and something you cannot check is a finding, not a
 pass.

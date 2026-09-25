@@ -11,12 +11,10 @@ Two halves of the same failure mode:
   `tasks.json` in that same iteration, and require recording how to recompute
   it instead.
 
-  The reviewer is the only role that reads the deliverables against the run
-  state, so it is the last place such a number can be caught. So review.md must
-  require cross-checking the numbers, shas and paths in evidence artifacts
-  against `tasks.json`, `git log` and `status.json`, and must require accounting
-  per task id for every task that did not reach `completed` -- a status tally
-  alone hides a dropped requirement.
+  The reviewer must account per task id for every task that did not reach
+  `completed` -- a status tally alone hides a dropped requirement. (Numbers in
+  prose outside the spec are not evidence for review at all; that rule is
+  pinned in tests/test_prompt_no_paperwork_rules.py.)
 
 Each element gets its own named test, so dropping any one of them fails a test
 that says which rule went missing.
@@ -70,44 +68,6 @@ def test_worker_says_why_a_stale_tally_is_dangerous():
     _assert_all("worker", "why a stale tally is dangerous", [
         r"copies it forward",
         r"prints it in a deliverable as\s*\n?\s*fact",
-    ])
-
-
-# ---- review.md: cross-check the evidence against the run state -------------
-
-def test_review_cross_checks_evidence_artifacts_against_the_run_state():
-    _assert_all("review", "cross-check evidence artifacts", [
-        r"Cross-check every evidence artifact",
-    ])
-
-
-def test_review_checks_counts_against_tasks_json():
-    _assert_all("review", "counts against tasks.json", [
-        r"counts\s*\n?\s*against `tasks\.json`",
-    ])
-
-
-def test_review_checks_shas_against_git_log():
-    _assert_all("review", "shas against git log", [
-        r"shas against `git log`",
-    ])
-
-
-def test_review_checks_cost_figures_against_status_json():
-    _assert_all("review", "cost/tokens against status.json", [
-        r"token figures against\s*\n?\s*`status\.json`",
-    ])
-
-
-def test_review_checks_paths_and_test_ids_against_the_tree():
-    _assert_all("review", "paths and test ids against the tree", [
-        r"paths and test ids against the tree",
-    ])
-
-
-def test_review_says_why_an_underived_number_is_worth_checking():
-    _assert_all("review", "why re-deriving numbers pays", [
-        r"un-derived number is\s*\n?\s*the likeliest untrue claim",
     ])
 
 

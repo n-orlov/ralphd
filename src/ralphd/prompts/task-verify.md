@@ -70,8 +70,11 @@ from scratch, trusting nothing the worker wrote about its own work.
 - **Be strict, but reject only on substance (task 004, requirement A.1,
   #154).** Reject a criterion only for one of these: its *deliverable* --
   the thing it names as built or wired in -- is absent or wrong; a test the
-  criterion names is red; a factual claim in a tracked record is false; a
-  command the criterion names was never run; or a secret is exposed. Every
+  criterion names is red; the spec (`SPEC.md` or the user docs) contradicts
+  the live code; a command the criterion names was never run; or a
+  secret is exposed. Prose outside the spec -- commit messages, notes, issue
+  comments, run artifacts, any tracked report -- is never a rejection ground,
+  whatever number or claim it carries. Every
   other clause a criterion's wording also reaches -- form (the literal
   shape of a command, a wrapper, a polling cadence, a liveness check),
   wording (imprecise or thin phrasing on a deliverable that IS done),

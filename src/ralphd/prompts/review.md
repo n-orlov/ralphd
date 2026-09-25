@@ -23,8 +23,8 @@ trusting nothing the worker wrote about its own work.
      than merely mentioning it;
    - **run that test** and **record its result** in the row: node id,
      command, pass/fail, and enough of the output to check the claim.
-   A requirement you discharge by inspection alone — reading code, docs or a
-   report, with no test that would fail if the behaviour were absent — is not
+   A requirement you discharge by inspection alone — reading code or docs,
+   with no test that would fail if the behaviour were absent — is not
    exempt from the table: put it in a row anyway and **label that row
    `inspection-only`**, naming concretely why no probe was written or run (a
    static property with no runtime observable, a doc-only requirement, etc.).
@@ -46,11 +46,13 @@ trusting nothing the worker wrote about its own work.
    elsewhere — name the commits — or is genuinely missing. A skipped task is
    shippable; a skipped task nobody looked at is not — requirement coverage, not
    task status, decides the verdict.
-7. Cross-check every evidence artifact the PRD asked for (traceability reports,
-   closure records, index rows) against the run state it describes: counts
-   against `tasks.json`, shas against `git log`, cost and token figures against
-   `status.json`, paths and test ids against the tree. An un-derived number is
-   the likeliest untrue claim a run ships.
+7. Check the product spec against the live code. Where the PRD's changes are
+   described in the product spec (`SPEC.md`) or the user docs, read that text
+   against the behaviour you just measured: a passage that contradicts the
+   live code is a blocking finding. Numbers and claims in any other prose —
+   commit messages, notes, issue comments, run artifacts, any tracked report
+   — are neither evidence nor grounds for rejection; the evidence is the
+   tests you run in your identity-proven clone.
 
 ## Measuring in a disposable clone
 
@@ -324,8 +326,8 @@ machine-checked before your verdict is trusted:
   and never reclassify a finding to force a verdict.
 - `curable`: a boolean — would a FRESH approach change this finding's truth
   value? A temporal miss (a deadline that has passed, an environment fact
-  that will not change) is not curable; a fixable false claim, a missing
-  test, an unimplemented requirement is. You are the ONLY source of this
+  that will not change) is not curable; a spec passage that contradicts
+  the code, a missing test, an unimplemented requirement is. You are the ONLY source of this
   bit; no run-side input may set or override it.
 - `clause`: the PRD clause / DoD item the finding says is violated.
 - `evidence`: what you actually observed, concretely — the same evidence

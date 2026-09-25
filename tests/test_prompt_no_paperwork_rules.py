@@ -100,3 +100,28 @@ def test_plan_review_objects_to_an_implementation_task_with_no_failing_test():
     assert "probe-audit" not in text
 
 
+# ---- review.md / verdict_gate.md -------------------------------------------
+
+def test_review_checks_the_spec_against_live_behaviour_as_blocking():
+    text = _norm("review.md")
+    assert "7. Check the product spec against the live code." in text
+    assert ("a passage that contradicts the live code is a blocking finding"
+            in text)
+
+
+def test_review_other_prose_is_neither_evidence_nor_a_rejection_ground():
+    text = _norm("review.md")
+    assert ("Numbers and claims in any other prose — commit messages, notes, "
+            "issue comments, run artifacts, any tracked report — are neither "
+            "evidence nor grounds for rejection") in text
+    assert "the tests you run in your identity-proven clone" in text
+    assert "Cross-check every evidence artifact" not in text
+    assert "un-derived number" not in text
+
+
+def test_verdict_gate_applies_the_same_spec_rule():
+    text = _norm("verdict_gate.md")
+    assert "a contradiction is blocking" in text
+    assert "are neither evidence nor grounds for rejection" in text
+
+

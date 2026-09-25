@@ -308,7 +308,11 @@ def test_the_rewritten_be_strict_paragraph_is_lexically_pinned():
     # The five reject-worthy substance grounds, named explicitly.
     assert "deliverable" in para
     assert re.search(r"test.{0,30}is red", para, re.DOTALL)
-    assert "factual claim" in para
+    assert re.search(r"spec \(`SPEC\.md` or the user docs\) contradicts\s+the live code",
+                     para)
+    # Prose outside the spec is never a rejection ground.
+    assert re.search(r"Prose outside the spec.{0,120}is never a rejection\s+ground",
+                     para, re.DOTALL)
     assert "command the criterion names was never run" in para
     assert "secret is exposed" in para
 
