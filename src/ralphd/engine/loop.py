@@ -50,6 +50,7 @@ from . import transitions
 from .config import (
     CONFIG_DIR,
     DEFAULT_INFRA_RETRY_BACKOFF_S,
+    MAX_NOTIFY_CHARS,
     PROMPTS_BUILTIN,
     JobConfig,
     overlay_or_config,
@@ -784,7 +785,7 @@ class LoopSupervisor:
                       workspaceVersion=workspace_version,
                       engineVersion=__version__)
         if self.notifier is not None:
-            self.notifier(
+            self._notify(
                 f"workspace version ({workspace_version}) differs from the "
                 f"running engine version ({__version__})")
 
@@ -861,6 +862,37 @@ class LoopSupervisor:
         except Exception:                             # pragma: no cover
             log.exception("notifier dispatch failed for run %s",
                           self.cfg.run_id)
+
+    def _notify(self, text: str) -> None:
+        """Task 001 (PRD requirement A, #269): the ONE bounding path every
+        `self.notifier(...)` call in this module goes through, so no text
+        this engine hands its own notifier can ever again repeat the #269
+        incident -- an `operator_input_needed` escalation body that reached
+        45,876 characters and was refused `422` by the notifier's own
+        16,000-character cap, silently, with the operator never seeing it.
+
+        `MAX_NOTIFY_CHARS` (below) is the cap; a `text` already under it
+        passes through unedited. The two `operator_escalation` reasons
+        whose body scales with an unbounded finding/evidence count
+        (`operator_input_needed`, `rejected_repeated_signature`) never
+        reach this method with an oversized `text` in the first place --
+        `_operator_escalation_digest_text` builds a proper digest for
+        those before either call site gets here. This truncation is the
+        safety net for every other, ordinarily-short site, and for
+        anything that still overruns despite that.
+
+        A no-op when `self.notifier` is unset, exactly like every call
+        site's own pre-existing `if self.notifier is not None:` guard --
+        kept at each call site too (skips building `text` at all when
+        nothing is configured to receive it), not removed by this method
+        existing.
+        """
+        if self.notifier is None:
+            return
+        if len(text) > MAX_NOTIFY_CHARS:
+            marker = "\n...[truncated to fit MAX_NOTIFY_CHARS]"
+            text = text[: MAX_NOTIFY_CHARS - len(marker)] + marker
+        self.notifier(text)
 
     # -- refund bookkeeping (task 023, #32) --------------------------------
     # Task 014 (requirement J, #98): "steer" joins "infra" here. A steer
@@ -6869,7 +6901,7 @@ class LoopSupervisor:
         """
         self.pause(reason="operator_input_needed")
         if self.notifier is not None:
-            self.notifier(
+            self._notify(
                 "operator_input_needed: a task-boundary commit scan hit "
                 "refused a push; see the commit_secret_scan event for the "
                 "sha, part and variable name (never the matched value) -- "
@@ -7056,7 +7088,7 @@ class LoopSupervisor:
         if restored and self.notifier is not None:
             named = ", ".join(f"{rid} (restored to {status})"
                               for rid, status in restored)
-            self.notifier(
+            self._notify(
                 f"Run {self.cfg.run_id}: cure task {cure_task_id} landed and "
                 f"every cure that re-opened {named} left its "
                 "cited path(s) untouched -- each record is back at the exact "
@@ -8920,7 +8952,7 @@ class LoopSupervisor:
                             dependentTaskIds=dependent_ids,
                             escalation=hold_text)
                         if self.notifier is not None:
-                            self.notifier(hold_text)
+                            self._notify(hold_text)
                     await self._maybe_run_midrun_adjudication_episode()
                 # v0.20 task 022 (PRD requirement C.1, #156): the sleep-
                 # and-wake mechanism task 021's own scheduler docstring
@@ -12789,7 +12821,7 @@ class LoopSupervisor:
         # without a second vocabulary to map between.
         self.pause(reason="rejected_last_approach")
         if self.notifier is not None:
-            self.notifier(text)
+            self._notify(text)
 
     def _review_rejection_signature(
         self, findings_list: list[dict] | None,
@@ -13031,7 +13063,9 @@ class LoopSupervisor:
                       escalation=text, **extra_fields)
         self.pause(reason="rejected_repeated_signature")
         if self.notifier is not None:
-            self.notifier(text)
+            self._notify(self._operator_escalation_digest_text(
+                "rejected_repeated_signature", approach, findings_list,
+                cure_preview))
 
     def _approach_spend_text(self, approach: int) -> tuple[str | None, int | None]:
         """Task 017 (PRD requirement A.7, #224): the "dollars and tokens
@@ -13131,6 +13165,83 @@ class LoopSupervisor:
             f"hub: {fields['hubLink']}",
             "",
         ]
+
+    def _operator_escalation_digest_text(
+        self, reason: str, approach: int, findings_list: list[dict] | None,
+        cure_preview: dict | None = None,
+    ) -> str:
+        """Task 001 (PRD requirement A, #269): the notification body an
+        `operator_input_needed`/`rejected_repeated_signature` escalation
+        actually POSTS -- unlike the sibling `_operator_input_needed_
+        escalation_text`/`_repeated_rejection_signature_escalation_text`
+        (unchanged: still every finding's full clause/evidence/cured_when,
+        still what `events.jsonl`'s own `escalation` field carries), this
+        digest names each blocking finding by id and `clause` ONLY, and is
+        bounded at `MAX_NOTIFY_CHARS` by construction -- the #269 incident
+        was exactly the full text above, un-digested, at 45,876 characters,
+        refused `422` by the notifier's own cap and never seen.
+
+        `findings_list` is the caller's own full findings read (blocking
+        AND residual severities both present -- `_review_findings_channel`'s
+        first return value, the same one every caller here already holds),
+        never re-read. `cure_preview`, `None` for an undriven pause, reads
+        back as all-zero/`unavailable` counts through `_discretionary_
+        gate_escalation_fields` (which tolerates an empty dict) rather than
+        omitting the A.7 preview line entirely -- the digest's shape does
+        not change with whether this pause happened to be a driven gate.
+
+        The finding-id assigned here (`F<n>`, 1-based in `blocking`'s own
+        order) is local to this digest; nothing else reads it back.
+        """
+        findings_list = findings_list or []
+        blocking = [f for f in findings_list if f.get("severity") == "blocking"]
+        residual = [f for f in findings_list if f.get("severity") == "residual"]
+        fields = self._discretionary_gate_escalation_fields(
+            approach, cure_preview or {})
+        answer_cmd = (
+            f"ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
+            f"<slug>, or ralphctl resume {self.cfg.run_id} to accept the "
+            "default"
+            if reason == "operator_input_needed"
+            else f"ralphctl resume {self.cfg.run_id}")
+        header_lines = [
+            f"run {self.cfg.run_id} escalation: {reason}",
+            f"pauseReason: {reason}",
+            fields["approachOfMax"],
+            f"blocking: {len(blocking)}  residual: {len(residual)}",
+            "tasks reopened: "
+            f"{len(fields['taskIdsValidatedToPending'])}  "
+            f"tasks inserted: {fields['insertCount']}",
+            "spent this approach: "
+            f"{fields['costSpentThisApproach'] if fields['costSpentThisApproach'] is not None else 'unavailable'} "
+            f"({fields['tokensSpentThisApproach'] if fields['tokensSpentThisApproach'] is not None else 'unavailable'} tokens)",
+        ]
+        if self.cfg.hub_base_url:
+            header_lines.append(f"hub: {fields['hubLink']}")
+        header_lines.append(f"answer: {answer_cmd}")
+        header = "\n".join(header_lines)
+
+        finding_lines = [f"F{i}: {f.get('clause', '')}"
+                        for i, f in enumerate(blocking, start=1)]
+        budget = MAX_NOTIFY_CHARS - len(header) - 2
+        kept: list[str] = []
+        used = 0
+        for i, line in enumerate(finding_lines):
+            remaining_after = len(finding_lines) - (i + 1)
+            reserve = (len(f"{remaining_after} more findings in the hub") + 1
+                      if remaining_after else 0)
+            if used + len(line) + 1 + reserve > budget:
+                break
+            kept.append(line)
+            used += len(line) + 1
+        remaining = len(finding_lines) - len(kept)
+        body_lines = list(kept)
+        if remaining:
+            body_lines.append(f"{remaining} more findings in the hub")
+        text = header + ("\n\n" + "\n".join(body_lines) if body_lines else "")
+        if len(text) > MAX_NOTIFY_CHARS:
+            text = text[:MAX_NOTIFY_CHARS]
+        return text
 
     def _operator_input_needed_escalation_text(
         self, approach: int, blocking: list[dict], replan_available: bool,
@@ -13269,7 +13380,9 @@ class LoopSupervisor:
                       **extra_fields)
         self.pause(reason="operator_input_needed")
         if self.notifier is not None:
-            self.notifier(text)
+            self._notify(self._operator_escalation_digest_text(
+                "operator_input_needed", approach, findings_list,
+                cure_preview))
 
     def _ruling_honoured_for_approach(self, approach: int) -> dict | None:
         """Task 015 (PRD requirement A.4, #224): does a recorded operator
@@ -13497,7 +13610,7 @@ class LoopSupervisor:
                       contractErrors=list(contract_errors), escalation=text)
         self.pause(reason="review_contract_unrepaired")
         if self.notifier is not None:
-            self.notifier(text)
+            self._notify(text)
 
     def _review_findings_unusable_escalation_text(
         self, approach: int, contract_errors: list[str]
@@ -13575,7 +13688,7 @@ class LoopSupervisor:
                       contractErrors=list(contract_errors), escalation=text)
         self.pause(reason="review_findings_unusable")
         if self.notifier is not None:
-            self.notifier(text)
+            self._notify(text)
 
     def _stagnation_last_approach_escalation_text(
         self, approach: int, outstanding_tasks: list[dict],
@@ -13811,7 +13924,7 @@ class LoopSupervisor:
                       escalation=text, **extra_payload)
         self.pause(reason="stagnation")
         if self.notifier is not None:
-            self.notifier(text)
+            self._notify(text)
 
     def _review_incurable_rejection(self) -> bool:
         """Task 006 (requirement B.2, #111): does the review just run
@@ -13904,7 +14017,7 @@ class LoopSupervisor:
                       escalation=text)
         self.pause()
         if self.notifier is not None:
-            self.notifier(text)
+            self._notify(text)
 
     def _terminal_success_blockers(self) -> list[str]:
         """Task 013 (requirement I, #98): the ONE predicate the exit-gate
@@ -14391,7 +14504,7 @@ class LoopSupervisor:
                       escalation=text, **cycle_fault)
         self.pause(reason="unschedulable_dependency_cycle")
         if self.notifier is not None:
-            self.notifier(text)
+            self._notify(text)
 
     def _unresolvable_edge_escalation_text(self, edge_fault: dict) -> str:
         """The operator-facing escalation body for an `unresolvable_
@@ -14438,7 +14551,7 @@ class LoopSupervisor:
                       escalation=text, **edge_fault)
         self.pause(reason="unresolvable_dependency_edge")
         if self.notifier is not None:
-            self.notifier(text)
+            self._notify(text)
 
     def _unresolved_failures(self, tasks_doc: dict) -> list[dict]:
         """The `failed` tasks of a plan that has nothing actionable left in it.
@@ -15712,7 +15825,7 @@ class LoopSupervisor:
                     f"ruling for task {e.get('taskId')} (recorded "
                     f"{e.get('ts')})"
                     for e in orphaned)
-                self.notifier(
+                self._notify(
                     "operator ruling orphaned by a replan: " + subjects +
                     " -- the old target task id is no longer in this "
                     f"run's current plan at approach {current_approach}. "

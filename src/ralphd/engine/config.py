@@ -103,6 +103,16 @@ def overlay_write_path(rel: str) -> Path:
     return dest
 
 
+# Task 001 (PRD requirement A, #269): the hard cap on any text this engine
+# hands its own notifier, everywhere -- the #269 incident was a 45,876-
+# character `operator_input_needed` escalation body the notifier's own
+# 16,000-character cap silently refused (422) and dropped, never seen by
+# the operator. Set well below that 16,000-character notifier cap so this
+# engine-side bound is always the one that fires first, with headroom for
+# whatever transport wrapping (chat client quoting, etc.) sits between this
+# engine and the notifier.
+MAX_NOTIFY_CHARS = 3500
+
 # Task 006 (#5): the default infra-fault backoff schedule, in seconds, with
 # the LAST value repeating for every further attempt (capped at
 # infra_retry_backoff_max_s). Fast at the start on purpose: a 30-second

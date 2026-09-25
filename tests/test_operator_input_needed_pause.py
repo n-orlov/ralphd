@@ -171,13 +171,20 @@ def test_an_ordinary_rejection_with_a_replan_available_pauses_instead(
     assert escalations[0]["replanAvailable"] is True
     clauses = {f["clause"] for f in escalations[0]["findings"]}
     assert clauses == {"requirement B (#111)", "requirement A.1 (#224)"}
+    # Task 001 (PRD requirement A, #269): the full escalation body -- the
+    # sentence naming the archive/replan outcome this pause held off --
+    # still lives on the event's own `escalation` field, unedited.
+    assert "replan a fresh approach" in escalations[0]["escalation"]
 
     assert len(notifier.messages) == 1
     text = notifier.messages[0]
-    assert "replan a fresh approach" in text
+    # Task 001 (PRD requirement A, #269): the POSTED notification is now
+    # the bounded digest, not the full text above -- it names the pause
+    # reason and the exact answering commands, never the archive/replan
+    # prose (that stays event-side only).
+    assert "operator_input_needed" in text
     assert "ralphctl rule task014-operator-input-needed" in text
     assert "ralphctl resume task014-operator-input-needed" in text
-    assert "NOT archived" in text
 
 
 def test_an_ordinary_rejection_on_the_last_approach_pauses_instead_of_ending(
@@ -201,7 +208,10 @@ def test_an_ordinary_rejection_on_the_last_approach_pauses_instead_of_ending(
 
     escalations = _events(root, "operator_escalation")
     assert escalations[0]["replanAvailable"] is False
-    assert "end the run with no approach left" in notifier.messages[0]
+    # Task 001 (PRD requirement A, #269): the archive/replan sentence is
+    # event-side only now; the notification is the bounded digest.
+    assert "end the run with no approach left" in escalations[0]["escalation"]
+    assert "operator_input_needed" in notifier.messages[0]
 
 
 def test_the_escalation_is_emitted_to_events_jsonl_with_no_notifier(tmp_path):
