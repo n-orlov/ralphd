@@ -1101,8 +1101,9 @@ class LoopSupervisor:
         self.run.update_status(state=PAUSED_STATE, pauseReason=reason)
         self.run.emit("log", message=(
             f"run state recorded `{PAUSED_STATE}` on status.json "
-            f"(pauseReason: {reason}); `ralphctl unpause {self.cfg.run_id}` "
-            "clears it"))
+            f"(pauseReason: {reason}); `ralphctl rule {self.cfg.run_id} "
+            "--file <ruling.md> --name <slug>` answers it and "
+            f"`ralphctl unpause {self.cfg.run_id}` clears it"))
 
     def resume(self) -> None:
         """Release the loop (`POST /resume`), and clear an engine-recorded
@@ -12786,8 +12787,9 @@ class LoopSupervisor:
             "spent and there is no fresh approach left to grant. The run "
             "has been paused (existing pause machinery) rather than ended "
             "`failed` on paperwork; it will not proceed until an operator "
-            "ruling is recorded and the run is resumed "
-            f"(`ralphctl unpause {self.cfg.run_id}`).",
+            "ruling is recorded (`ralphctl rule "
+            f"{self.cfg.run_id} --file <ruling.md> --name <slug>`) and "
+            f"the run is unpaused (`ralphctl unpause {self.cfg.run_id}`).",
             "",
         ]
         for index, finding in enumerate(blocking, start=1):
@@ -12963,8 +12965,9 @@ class LoopSupervisor:
             "rather than make progress on it. The run has been paused "
             "(existing pause machinery) instead of consuming a fresh "
             "approach on it; it will not proceed until an operator ruling "
-            "is recorded and the run is resumed "
-            f"(`ralphctl unpause {self.cfg.run_id}`).",
+            "is recorded (`ralphctl rule "
+            f"{self.cfg.run_id} --file <ruling.md> --name <slug>`) and "
+            f"the run is unpaused (`ralphctl unpause {self.cfg.run_id}`).",
             f"signature: {signature}",
             "",
         ]
@@ -13729,7 +13732,9 @@ class LoopSupervisor:
                 "run has been paused (existing pause machinery) instead of "
                 "forcing a second split, and instead of replanning over "
                 "work already done; it will not proceed until an operator "
-                "ruling is recorded and the run is resumed "
+                "ruling is recorded (`ralphctl rule "
+                f"{self.cfg.run_id} --file <ruling.md> --name <slug>`) and "
+                "the run is unpaused "
                 f"(`ralphctl unpause {self.cfg.run_id}`), which re-enters "
                 f"approach {approach} rather than starting a fresh one.",
                 "",
@@ -13754,8 +13759,9 @@ class LoopSupervisor:
             "the run has been paused (existing pause machinery) rather "
             "than ended `failed` on stagnation alone, or replanned over "
             "work already in progress; it will not proceed until an "
-            "operator ruling is recorded and the run is resumed "
-            f"(`ralphctl unpause {self.cfg.run_id}`).",
+            "operator ruling is recorded (`ralphctl rule "
+            f"{self.cfg.run_id} --file <ruling.md> --name <slug>`) and "
+            f"the run is unpaused (`ralphctl unpause {self.cfg.run_id}`).",
             "",
             "Outstanding tasks:",
         ]
@@ -13861,6 +13867,14 @@ class LoopSupervisor:
         petitioned=True)`'s own causes (the petitioned task(s) blocking
         the plan); `dependent_ids` is the actionable remainder those
         causes cover.
+
+        Task 003: it also names the operator's two levers the same way
+        every pause text does -- `ralphctl rule <run> --file ... --name
+        ...` to answer (every recorded ruling is rendered into review's
+        and verify's prompt, `_operator_ruling_review_context`, so it
+        reaches the review the hold routes to) and `ralphctl unpause
+        <run>` to proceed once paused -- never `ralphctl resume`, which
+        restarts a fresh container over the run dir instead.
         """
         held = ", ".join(held_task_ids) or "(none)"
         deps = ", ".join(dependent_ids) or "(none)"
@@ -13870,6 +13884,13 @@ class LoopSupervisor:
             "until an adjudication resolves it.\n\n"
             f"Held (petitioned) task(s): {held}\n"
             f"Dependent task(s) reaching the hold through dependsOn: {deps}\n\n"
+            "This is not a pause: worker iterations continue while the "
+            "hold stands. To answer the petition yourself, record a "
+            f"ruling (`ralphctl rule {self.cfg.run_id} --file <ruling.md> "
+            "--name <slug>`) -- review reads every recorded ruling when "
+            "it adjudicates. If you pause the run to do so (`ralphctl "
+            f"pause {self.cfg.run_id}`), proceed with `ralphctl unpause "
+            f"{self.cfg.run_id}`.\n\n"
             "This is reported once; the hold persisting across further "
             "iterations does not repeat this notice.\n"
         )
@@ -13997,8 +14018,9 @@ class LoopSupervisor:
             "this approach and every blocking finding is incurable -- a "
             "fresh approach would not change any of them. The run has "
             "been paused (existing pause machinery); it will not proceed "
-            "until an operator ruling is recorded and the run is resumed "
-            f"(`ralphctl unpause {self.cfg.run_id}`).",
+            "until an operator ruling is recorded (`ralphctl rule "
+            f"{self.cfg.run_id} --file <ruling.md> --name <slug>`) and "
+            f"the run is unpaused (`ralphctl unpause {self.cfg.run_id}`).",
             "",
         ]
         for index, finding in enumerate(blocking, start=1):

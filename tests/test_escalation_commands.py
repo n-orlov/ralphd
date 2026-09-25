@@ -11,7 +11,13 @@ so telling an operator sitting on a live, running process to run `ralphctl
 resume` names the wrong tool. This module drives every `_*_escalation_text`
 builder `grep -n "def _.*escalation_text" src/ralphd/engine/loop.py` finds,
 plus the petition-hold text and the `pause()`/`_persist_pause` message, and
-asserts none of them still says `ralphctl resume`.
+asserts none of them still says `ralphctl resume` and every one names
+`ralphctl unpause <run>`. Every text whose pause waits on an operator
+ruling (the rejection, stagnation and incurable texts, the
+operator-input-needed text, the petition-hold notice and the `pause()`
+message) also names `ralphctl rule <run> --file ... --name ...`; the
+dependency-cycle/unresolvable-edge and broken-review-channel texts name a
+different remedy (a tasks.json edit, a working reviewer) and `unpause`.
 """
 
 from __future__ import annotations
@@ -41,7 +47,8 @@ def _assert_names_unpause_not_resume(text: str) -> None:
 
 def _assert_names_rule_and_unpause(text: str) -> None:
     assert "ralphctl resume" not in text
-    assert f"ralphctl rule {SUP.cfg.run_id}" in text
+    assert (f"ralphctl rule {SUP.cfg.run_id} --file <ruling.md> "
+            "--name <slug>") in text
     assert f"ralphctl unpause {SUP.cfg.run_id}" in text
 
 
@@ -65,20 +72,22 @@ def test_persist_pause_message_names_unpause(tmp_path):
     messages = [e.get("message", "") for e in lines if e.get("type") == "log"]
     assert any("ralphctl unpause task003-escalation-commands" in m
                for m in messages)
+    assert any("ralphctl rule task003-escalation-commands --file" in m
+               and "--name" in m for m in messages)
     assert not any("ralphctl resume" in m for m in messages)
 
 
-def test_last_approach_rejection_escalation_text_names_unpause(tmp_path):
+def test_last_approach_rejection_escalation_text_names_rule_and_unpause(tmp_path):
     sup = _sup(tmp_path)
     text = sup._last_approach_rejection_escalation_text(1, [_finding()])
-    _assert_names_unpause_not_resume(text)
+    _assert_names_rule_and_unpause(text)
 
 
-def test_repeated_rejection_signature_escalation_text_names_unpause(tmp_path):
+def test_repeated_rejection_signature_escalation_text_names_rule_and_unpause(tmp_path):
     sup = _sup(tmp_path)
     text = sup._repeated_rejection_signature_escalation_text(
         2, [_finding()], "sig-1")
-    _assert_names_unpause_not_resume(text)
+    _assert_names_rule_and_unpause(text)
 
 
 def test_operator_input_needed_escalation_text_names_rule_and_unpause(tmp_path):
@@ -102,35 +111,37 @@ def test_review_findings_unusable_escalation_text_names_unpause(tmp_path):
     _assert_names_unpause_not_resume(text)
 
 
-def test_stagnation_last_approach_escalation_text_names_unpause(tmp_path):
+def test_stagnation_last_approach_escalation_text_names_rule_and_unpause(tmp_path):
     sup = _sup(tmp_path)
     text = sup._stagnation_last_approach_escalation_text(
         1, [{"id": "001", "status": "pending"}], is_last_approach=True)
-    _assert_names_unpause_not_resume(text)
+    _assert_names_rule_and_unpause(text)
 
 
-def test_stagnation_second_exhaustion_escalation_text_names_unpause(tmp_path):
+def test_stagnation_second_exhaustion_escalation_text_names_rule_and_unpause(tmp_path):
     sup = _sup(tmp_path)
     text = sup._stagnation_last_approach_escalation_text(
         1, [{"id": "001c", "status": "pending"}], is_last_approach=False,
         approach_progressed=True,
         exhausted_split_child={"id": "001c", "splitFrom": "001p",
                                "used": 3, "budget": 3})
-    _assert_names_unpause_not_resume(text)
+    _assert_names_rule_and_unpause(text)
 
 
-def test_petition_held_escalation_text_names_no_resume(tmp_path):
+def test_petition_held_escalation_text_names_rule_and_unpause(tmp_path):
     sup = _sup(tmp_path)
     text = sup._petition_held_escalation_text(["001"], ["002", "003"])
-    # This text never named a resume command at all -- it just must not
-    # regress into naming the wrong one.
-    assert "ralphctl resume" not in text
+    # The petition-hold notice names the operator's answer lever
+    # (`ralphctl rule ... --file ... --name ...`) and the proceed lever
+    # (`ralphctl unpause`), and never the wrong command `ralphctl resume`.
+    _assert_names_rule_and_unpause(text)
+    assert "--file <ruling.md> --name <slug>" in text
 
 
-def test_incurable_rejection_escalation_text_names_unpause(tmp_path):
+def test_incurable_rejection_escalation_text_names_rule_and_unpause(tmp_path):
     sup = _sup(tmp_path)
     text = sup._incurable_rejection_escalation_text(1, [_finding(curable=False)])
-    _assert_names_unpause_not_resume(text)
+    _assert_names_rule_and_unpause(text)
 
 
 def test_unschedulable_cycle_escalation_text_names_unpause(tmp_path):
