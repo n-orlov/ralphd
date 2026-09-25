@@ -3428,7 +3428,13 @@ JSON endpoints served under `/api/`:
   §`operator_escalation`) naming which of the two the pause is about to take
   if it is never answered. The run-detail `ETag` below moves whenever
   `events.jsonl` gains a new escalation, so a fresh one is never served under
-  an unchanged tag. See SPEC.md §11.3 for the full shape. Task 048 (issue
+  an unchanged tag. Task 008 (v0.26, #269) renders this field as a full-width
+  **parked panel** at the top of `#/run/<id>` -- every field above, plus each
+  finding expandable to its evidence/`cured_when`/`invalidates` (the evidence
+  scrolls rather than truncating) -- absent when `parkedQuestion` is
+  `null`/absent, with the Steer/Rule sections staying their own sections
+  below it; the runs list's `\u23F8 parked for input` marker links straight
+  to it. See SPEC.md §11.3 for the full shape. Task 048 (issue
   #4) adds `startedAtLocal`/`endedAtLocal`/`updatedAtLocal` strings next to
   (never replacing) the ISO `startedAt`/`endedAt`/`updatedAt` fields of both
   `status` and each iteration: absolute local-time renderings produced by the

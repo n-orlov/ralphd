@@ -549,3 +549,55 @@ th.actions-col { cursor: default; }
 .approach-body { margin-top: 0.5rem; }
 .approach-doc-list { margin-top: 0.4rem; }
 
+/* Task 008 (v0.26, #269): the parked-question panel -- a full-width card at
+   the top of the run page (task 007's `parkedQuestion` payload). Each finding
+   is a native `<details>`/`<summary>` disclosure, same chrome as
+   `.approach-entry`/`.timeline-details`; its evidence block SCROLLS rather
+   than truncating (SPEC.md 11.3/task 007 both promise the whole evidence). */
+.parked-panel-card {
+  border-color: var(--accent);
+}
+
+.parked-panel-card h2 { margin-top: 0; border-bottom: none; }
+
+.parked-consequence ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+
+.parked-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.parked-finding {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35rem 0.6rem;
+}
+
+.parked-finding summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.parked-finding summary:focus-visible { outline: 2px solid var(--accent); }
+
+.parked-finding-body { margin-top: 0.4rem; }
+.parked-finding-row { margin-top: 0.25rem; }
+
+/* Never truncated -- scrolls in place instead, however long the evidence is. */
+.parked-finding-evidence {
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 0.2rem 0 0;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fafbfc;
+  font-size: 0.85rem;
+}
+
+/* Task 008 (v0.26, #269): the runs-list `⏸ parked for input` marker becomes
+   a link straight to the run's own parked panel above. */
+a.parked-panel-link { color: inherit; text-decoration: underline; }

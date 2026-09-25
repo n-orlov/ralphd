@@ -157,10 +157,25 @@ function pill(text) {
 // delivery retry) -- shared between the runs-list row and the run-detail
 // page's own state cell, so the two surfaces render the same two facts the
 // same way rather than each inventing its own markup.
-function stateMarkerSpans(pauseMarker, escalationUndeliveredMarker) {
+//
+// Task 008 (v0.26, #269): when `pauseMarker` is exactly the literal
+// `"\u23F8 parked for input"` text (mirrors `state.PARKED_FOR_INPUT_MARKER`
+// -- inlined here, rather than a shared top-level const, so this function
+// stays self-contained for the node-eval harnesses that grab it alone,
+// e.g. tests/test_escalation_undelivered_marker.py) and a `runId` is
+// available, the marker becomes a link to that run's own parked panel
+// (`#/run/<id>`, the panel task 008 renders at the top of the page) --
+// every OTHER marker text (the escalation-hold marker, the undelivered
+// marker) stays plain text, since neither answers to a panel of its own.
+function stateMarkerSpans(pauseMarker, escalationUndeliveredMarker, runId) {
   const spans = [];
   if (pauseMarker) {
-    spans.push(h("span", { class: "operator-input-marker" }, [" " + pauseMarker]));
+    const linkable = runId != null && pauseMarker === "\u23F8 parked for input";
+    const body = linkable
+      ? h("a", { href: "#/run/" + encodeURIComponent(runId), class: "parked-panel-link" },
+          [pauseMarker])
+      : pauseMarker;
+    spans.push(h("span", { class: "operator-input-marker" }, [" ", body]));
   }
   if (escalationUndeliveredMarker) {
     spans.push(h("span", { class: "escalation-undelivered-marker" },
@@ -179,12 +194,14 @@ function stateMarkerSpans(pauseMarker, escalationUndeliveredMarker) {
 // on a gone row as well: the container being gone does not answer the
 // pause, so a dead run still sitting on an undelivered escalation keeps
 // both markers next to the gone marker.
+// Task 008 (v0.26, #269): `r.runId` rides along too, so the parked-for-
+// input marker on THIS row can link straight to that run's own panel.
 function runRowStateChildren(r) {
   const children = [pill(r.state)];
   if (r.containerGone === true) {
     children.push(h("span", { class: "container-gone-marker" }, [" \u26A0 container gone"]));
   }
-  children.push(...stateMarkerSpans(r.pauseMarker, r.escalationUndeliveredMarker));
+  children.push(...stateMarkerSpans(r.pauseMarker, r.escalationUndeliveredMarker, r.runId));
   return children;
 }
 
@@ -1479,6 +1496,13 @@ async function renderRunList(myGen) {
 async function renderRunDetail(runId, myGen) {
   const app = document.getElementById("app");
   app.innerHTML = "";
+  // Task 008 (v0.26, #269): the parked-question panel, installed FIRST so
+  // it sits at the very top of the page -- content-managed entirely by
+  // `renderParkedPanel` inside `load()` below (empty/hidden until a
+  // `parkedQuestion` payload arrives), never rebuilt on every poll tick the
+  // way the rest of this function's one-shot scaffolding below is.
+  const parkedBox = h("div", { id: "parked-panel-box", style: "display:none" }, []);
+  app.appendChild(parkedBox);
   app.appendChild(h("p", {}, [h("a", { href: "#/" }, ["← runs"])]));
   app.appendChild(h("h2", {}, ["Run " + runId]));
   // Task 056 (#1): the run's PRD, one click away from its detail page.
@@ -1697,6 +1721,8 @@ async function renderRunDetail(runId, myGen) {
       lastEtag = etag || lastEtag;
       unchangedStreak = 0;
       lastKnownState = body.status && body.status.state;
+      renderParkedPanel(document.getElementById("parked-panel-box"), runId,
+                        body.parkedQuestion);
       renderSummary(summary, body);
       renderDelete(document.getElementById("delete-box"), runId, body);
       renderUsage(document.getElementById("usage-box"),
@@ -1750,6 +1776,117 @@ async function renderRunDetail(runId, myGen) {
   if (myGen === renderGeneration) refreshTimer = scheduleRefresh(load, pollIntervalMs);
 }
 
+// Task 008 (v0.26, #269): human labels for `parkedQuestion.reason` -- the
+// two `pauseReason` values a ruling can actually answer (task 007's own
+// `PARKED_QUESTION_REASONS`). An if/else, deliberately never an object
+// literal keyed by the reason string -- an object key spelled from
+// `"rejected_repeated_signature"` would land the word naming what
+// repeated right against the object literal's own colon, and
+// `test_hub_fault_dialog.py::test_app_js_words_no_fault_fact_of_its_own`
+// forbids that exact adjacency ANYWHERE in the bundle (the fault dialog's
+// own field label is worded server-side, never respelled here) -- an
+// unrelated collision this function avoids by construction rather than by
+// carving an exception into that guard.
+function parkedReasonText(reason) {
+  if (reason === "operator_input_needed") return "operator input needed";
+  if (reason === "rejected_repeated_signature") return "rejected \u2014 repeated rejection signature";
+  return String(reason || "unknown");
+}
+
+// Task 008 (v0.26, #269): the plain-language reading of task 007's
+// `consequence` object -- what happens if this pause is resumed with no
+// ruling at all.
+function parkedConsequenceLines(c) {
+  const next = c.nextStepIfUnanswered;
+  const nextText = next === "cure_pass"
+    ? "a cure pass over this approach's blocking findings"
+    : next === "archive_and_replan"
+      ? "this approach is archived and the run replans"
+      : "unknown (" + String(next) + ")";
+  const reopened = c.taskIdsValidatedToPending || [];
+  const cost = c.costSpentThisApproach;
+  const tokens = c.tokensSpentThisApproach;
+  return [
+    "if left unanswered: " + nextText,
+    "tasks reopened to pending: " + (reopened.length ? reopened.join(", ") : "none"),
+    "tasks inserted: " + String(c.insertCount ?? 0),
+    "spent this approach: " + (cost != null ? String(cost) : "unknown") +
+      (tokens != null ? " (" + String(tokens) + " tokens)" : ""),
+  ];
+}
+
+// Task 008 (v0.26, #269): one finding row -- id/severity/clause up front (the
+// escalation text's own vocabulary, `F<n>` blocking then `R<n>` residual),
+// expandable to its full evidence/`cured_when`/`invalidates`. The evidence
+// block scrolls (CSS `max-height`/`overflow`, see `.parked-finding-evidence`
+// in style.css) rather than truncating -- SPEC.md 11.3/task 007 both promise
+// the WHOLE evidence, never a clipped preview.
+function parkedFindingItem(f) {
+  const invalidates = f.invalidates || [];
+  return h("details", { class: "parked-finding" }, [
+    h("summary", {}, [
+      `${f.id} \u00b7 ${f.severity} \u00b7 ${f.clause || "(no clause)"}`,
+    ]),
+    h("div", { class: "parked-finding-body" }, [
+      h("div", { class: "parked-finding-row" }, [
+        h("b", {}, ["evidence: "]),
+        h("pre", { class: "parked-finding-evidence" }, [String(f.evidence ?? "")]),
+      ]),
+      h("div", { class: "parked-finding-row" }, [
+        h("b", {}, ["cured_when: "]),
+        String(f.cured_when ?? "(none)"),
+      ]),
+      h("div", { class: "parked-finding-row" }, [
+        h("b", {}, ["invalidates: "]),
+        invalidates.length ? invalidates.join(", ") : "(none)",
+      ]),
+    ]),
+  ]);
+}
+
+// Task 008 (v0.26, #269): the parked-question panel -- a full-width card
+// rendered from task 007's `parkedQuestion` payload into a persistent `box`
+// `renderRunDetail` installs once at the TOP of the page (ahead of the
+// Steer/Rule sections, which stay their own, separate sections below it --
+// criterion 2). Absent/`null` `pq` (a running run, or a pause reason no
+// ruling answers) empties the box and hides it -- the panel is simply not
+// rendered, never a lingering stale one. Every finding is listed (blocking
+// AND residual, task 007's own `F<n>`/`R<n>` order), never only the
+// blocking subset.
+function renderParkedPanel(box, runId, pq) {
+  if (!box) return;
+  box.innerHTML = "";
+  if (!pq) {
+    box.style.display = "none";
+    return;
+  }
+  box.style.display = "";
+  const c = pq.consequence || {};
+  const approachOfMax = pq.approachOfMax ||
+    (pq.approach != null ? "approach " + pq.approach : "unknown");
+  const parkedFor = pq.parkedAt
+    ? fmtDuration(durationBetween(pq.parkedAt, new Date().toISOString())) + " ago"
+    : "unknown";
+  const rows = [
+    ["reason", parkedReasonText(pq.reason)],
+    ["approach", approachOfMax],
+    ["parked", parkedFor + (pq.parkedAt ? ` (${pq.parkedAt})` : "")],
+    ["replan available", pq.replanAvailable == null ? "n/a" : (pq.replanAvailable ? "yes" : "no")],
+    ["blocking findings", String(pq.blockingCount ?? 0)],
+    ["residual findings", String(pq.residualCount ?? 0)],
+  ];
+  box.appendChild(h("div", { class: "card parked-panel-card", id: "parked-panel" }, [
+    h("h2", {}, ["\u23F8 Parked for an operator answer"]),
+    ...rows.map(([k, v]) => h("div", {}, [h("b", {}, [k + ": "]), v])),
+    h("div", { class: "parked-consequence" }, [
+      h("b", {}, ["consequence of not answering:"]),
+      h("ul", {}, parkedConsequenceLines(c).map((line) => h("li", {}, [line]))),
+    ]),
+    h("h3", {}, ["Findings"]),
+    h("div", { class: "parked-findings" }, (pq.findings || []).map(parkedFindingItem)),
+  ]));
+}
+
 // Task 031 (#19): the run-detail page's delete control -- the same affordance
 // the run list's rows carry (`deleteControl`), reading the same server-decided
 // `deletable`/`deleteRefusal` from the detail payload. On success there is no
@@ -1781,7 +1918,7 @@ function stateCell(detail, s) {
   if (FAULT_BADGE_STATES.has(String(s.state || ""))) {
     return faultBadge(detail.runId, "state", pillEl) || pillEl;
   }
-  const spans = stateMarkerSpans(s.pauseMarker, s.escalationUndeliveredMarker);
+  const spans = stateMarkerSpans(s.pauseMarker, s.escalationUndeliveredMarker, detail.runId);
   if (spans.length === 0) return pillEl;
   return h("span", {}, [pillEl, ...spans]);
 }

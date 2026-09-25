@@ -160,6 +160,14 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "not a prompt/Job-context/SPEC-table/diagram render, and 'delete' is "
         "legitimately in steer.md:32, :53 and :109"),
     AbsenceAssertion(
+        "test_hub_parked_panel.py", (265, 266), ("text-overflow", "ellipsis"),
+        "a slice of style.css (`.parked-finding-evidence`'s own declaration "
+        "block, read as CSS text and bound by name via `css.index(...)`)",
+        None,
+        "not a prompt/Job-context/SPEC-table/diagram render at all -- a CSS "
+        "rule read as plain text; the search matches only because the local "
+        "variable holding it is named `block`"),
+    AbsenceAssertion(
         "test_hub_features.py", (451,), ("innerHTML", "html:",
                                         "insertAdjacentHTML"),
         "a slice of the hub's app.js bundle (`taskDialogText`)", None,

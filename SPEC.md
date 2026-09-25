@@ -5007,7 +5007,25 @@ dir themselves and a live proxy would only add a way to disagree.
   and `status.maxApproaches`, the spend from `status.usage.byApproach[
   str(approach)]` (a parked run spends nothing while parked). The run-detail `ETag` (§ below)
   already moves whenever `events.jsonl` gains a new entry, so a fresh
-  escalation is never served stale under an unchanged tag.
+  escalation is never served stale under an unchanged tag. Task 008 (v0.26,
+  #269) renders this payload: `app.js`'s `renderParkedPanel` builds a
+  full-width **parked panel** at the very TOP of the run page (ahead of the
+  summary card, and ahead of the Steer/Rule sections further down, which
+  stay their own separate sections) whenever `parkedQuestion` is present --
+  reason, approach n of m, how long the run has been parked, `replan
+  available`, the blocking/residual counts, the consequence of not
+  answering (spelled out in prose from `consequence`), and every finding by
+  `id`/`severity`/`clause`, each a native `<details>` disclosure expandable
+  to its own `evidence`/`cured_when`/`invalidates` -- the evidence block
+  scrolls (CSS `max-height`/`overflow`) rather than truncating, matching the
+  payload's own "never truncated" promise. `null`/absent `parkedQuestion`
+  renders no panel at all. The runs list's own `\u23F8 parked for input`
+  marker (task 017, A.7) becomes a link straight to `#/run/<id>` -- landing
+  on the parked panel at the top of that page -- on both the runs-list row
+  and the run-detail page's own state cell; the escalation-hold and
+  undelivered markers stay plain text, since neither answers to a panel of
+  its own. No new frontend dependency: the panel is built with the same
+  `h()` helper every other view already uses.
 - **Summary card** — state, verdict, phase, approach as `2/3`, iterations,
   duration, and an explicit provenance row: `live: yes (proxied from container)`
   or `no (on-disk snapshot)`.
