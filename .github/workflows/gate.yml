@@ -224,8 +224,8 @@ jobs:
       # tolerates this for its own internal git calls, but every OTHER git
       # invocation in this job does not: the fast tier's own suite shells
       # out to `git show`/`git log` in several nodes
-      # (tests/test_plan_ingestion.py, tests/test_commit_closing_keyword_
-      # scope.py and others), and the first real dispatch of this container
+      # (tests/test_plan_ingestion.py, tests/test_host_like_pytest_script.py
+      # and others), and the first real dispatch of this container
       # (workflow run 35140908910) reddened 11 of them on exactly this --
       # "fatal: detected dubious ownership in repository at
       # '/__w/ralphd/ralphd'" -- before this step existed. One config write,
