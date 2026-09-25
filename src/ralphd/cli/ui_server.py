@@ -31,7 +31,10 @@ Serves two things:
     `/rule`, behind the run page's operator-ruling textarea -- a distinct
     proxy from `steer`'s, landing in a distinct on-disk record
     (`engine.state.write_ruling`/`ruling_entries`), never a variant of
-    steering. `DELETE /api/runs/<id>`
+    steering, and (task 006) `POST /api/runs/<id>/unpause` -> the run's
+    `/resume` -- the SAME engine route `ralphctl unpause`/`cmd_unpause`
+    (cli/main.py) calls, so there is no second unpause mechanism.
+    `DELETE /api/runs/<id>`
     (task 030) is the one route that is neither a read nor a proxy: it
     performs `ralphctl rm --force`'s removal through the CLI's own
     `remove_run_state`, for a run whose recorded state is terminal and for
@@ -2299,6 +2302,27 @@ class Handler(BaseHTTPRequestHandler):
                 if not ok and not code:
                     self._send_json(
                         {"error": "run's API is unreachable — cannot retry now"}, 503)
+                    return
+                self._send_json(resp if isinstance(resp, dict) else {"detail": str(resp)},
+                                code)
+                return
+            if len(segs) == 4 and segs[:2] == ["api", "runs"] and segs[3] == "unpause":
+                # Task 006: the hub's "unpause" button -- the SAME engine
+                # verb `ralphctl unpause`/`cmd_unpause` (cli/main.py) calls,
+                # `POST /resume` (docs/api.md). No second unpause mechanism:
+                # this is a pure proxy, same shape as the "retry" branch
+                # above -- an unreachable run collapses to 503, and the
+                # engine's own status code (its 200 `{"resumed": true}`,
+                # or anything else it happens to answer with) is passed
+                # straight through rather than flattened.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                ok, code, resp = _proxy_json(reg, run_id, "POST", "/resume", body=b"")
+                if not ok and not code:
+                    self._send_json(
+                        {"error": "run's API is unreachable — cannot unpause"}, 503)
                     return
                 self._send_json(resp if isinstance(resp, dict) else {"detail": str(resp)},
                                 code)

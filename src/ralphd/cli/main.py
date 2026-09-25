@@ -7042,11 +7042,14 @@ def _bind_is_loopback(bind: str) -> bool:
 # PRD requirement H: the hub's own mutating routes (task 002), named here
 # once so the startup line and the refusal message can never drift apart.
 # `POST /rule` joins this tuple at task 013 (see docs/cli.md).
+# `POST /unpause` joins it at task 006 (see docs/cli.md) -- the hub's
+# `/resume` proxy, the SAME engine route `ralphctl unpause` calls.
 _HUB_MUTATING_ROUTES = (
     "DELETE /api/runs/<id> (delete a run)",
     "POST /api/runs/<id>/steer (steer a run)",
     "POST /api/runs/<id>/retry (retry a degraded run now)",
     "POST /api/runs/<id>/rule (record an operator ruling)",
+    "POST /api/runs/<id>/unpause (unpause a run)",
 )
 
 _HUB_NON_LOOPBACK_BIND_FLAG = "--allow-non-loopback-bind"

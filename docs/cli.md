@@ -3269,11 +3269,14 @@ container API when reachable. `--port` defaults to a free ephemeral port;
 `--bind` defaults to `127.0.0.1`. Ctrl-C to stop.
 
 **The hub has no authentication of its own** (PRD requirement H, operator
-ruling 4 -- no hub-level auth token, no new secret) and it publishes four
+ruling 4 -- no hub-level auth token, no new secret) and it publishes five
 mutating routes: `DELETE /api/runs/<id>` (deletes a run), `POST
 /api/runs/<id>/steer` (steers a run), `POST /api/runs/<id>/retry` (retries
-a degraded run now) and (task 013, v0.23 requirement A.2, #224) `POST
-/api/runs/<id>/rule` (records an operator ruling). `--bind` accepting any
+a degraded run now), (task 013, v0.23 requirement A.2, #224) `POST
+/api/runs/<id>/rule` (records an operator ruling) and (task 006) `POST
+/api/runs/<id>/unpause` (unpauses a run -- the SAME `/resume` route
+`ralphctl unpause` calls, so there is no second unpause mechanism).
+`--bind` accepting any
 address with no warning would let `--bind 0.0.0.0` publish all of those to
 the LAN silently, so **`ralphctl ui` refuses a non-loopback `--bind`**
 (anything outside `127.0.0.0/8`/`::1`/`localhost`) **unless
@@ -3288,7 +3291,8 @@ of its own**, e.g.:
 ralphctl: serving hub at http://127.0.0.1:PORT (registry: ~/.ralphd) --
 mutating routes published: DELETE /api/runs/<id> (delete a run), POST
 /api/runs/<id>/steer (steer a run), POST /api/runs/<id>/retry (retry a
-degraded run now), POST /api/runs/<id>/rule (record an operator ruling) --
+degraded run now), POST /api/runs/<id>/rule (record an operator ruling),
+POST /api/runs/<id>/unpause (unpause a run) --
 the hub has no authentication of its own
 ```
 
@@ -3708,6 +3712,13 @@ JSON endpoints served under `/api/`:
   run's API is unreachable or rejects it; `404` for an unknown run id. A
   distinct proxy from `/steer` above, landing in a distinct on-disk record
   (`rulings/`, never `steering/`) — never a variant of steering.
+- `POST /api/runs/<id>/unpause` — the run page's "unpause" button (task
+  006): forwarded (empty body) to the run's live `POST /resume` — the SAME
+  engine route `ralphctl unpause <run-id>` calls, so there is no second
+  unpause mechanism. Returns the API's own response (`200 {"resumed":
+  true}` in the ordinary case) with its status code passed through
+  unedited; `503` (with an `error`) only when the run's API is
+  unreachable; `404` for an unknown run id.
 - `DELETE /api/runs/<id>` — delete a **finished** run's state (task 030, issue
   #19): exactly what `ralphctl rm <id> --force --yes` does, in one HTTP call —
   the leftover job container is stopped and removed, the run's labeled

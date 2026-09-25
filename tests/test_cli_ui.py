@@ -166,7 +166,8 @@ class StubEngineApi:
                  retry_body: dict | None = None, tasks: dict | None = None,
                  prd: str | None = None, steering: list | None = None,
                  steer_status: int = 202, steer_body: dict | None = None,
-                 rule_status: int = 202, rule_body: dict | None = None):
+                 rule_status: int = 202, rule_body: dict | None = None,
+                 resume_status: int = 200, resume_body: dict | None = None):
         self.requests: list[tuple[str, str, str | None]] = []
         self.control_tokens: list[str | None] = []
         self.status_body = status if status is not None else {"state": "running"}
@@ -187,6 +188,12 @@ class StubEngineApi:
         # never a variant of it.
         self.rule_status = rule_status
         self.rule_body = rule_body if rule_body is not None else {"file": "001-r.md"}
+        # Task 006: the run's own `POST /resume` -- the hub's `unpause`
+        # proxy target. Default 200 mirrors the real engine's `POST
+        # /resume` (`engine/api.py`), which always answers `{"resumed":
+        # true}` whether or not the run was actually paused.
+        self.resume_status = resume_status
+        self.resume_body = resume_body if resume_body is not None else {"resumed": True}
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -239,6 +246,8 @@ class StubEngineApi:
                     self._reply(outer.steer_status, outer.steer_body)
                 elif path == "/rule":
                     self._reply(outer.rule_status, outer.rule_body)
+                elif path == "/resume":
+                    self._reply(outer.resume_status, outer.resume_body)
                 else:
                     self._reply(404, {"detail": "no such route"})
 

@@ -586,7 +586,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/cli/log_render.py` | The shared NDJSON→lines pretty renderer: iteration/phase headers, streamed assistant text, tool calls as one-liners, thinking collapsed to a single marker per block, per-iteration usage/cost footers, errors highlighted. `tty=False` yields plain text with no ANSI and no `\r`. Lives here, not in `main.py`, because the hub must import it without a cycle. |
 | `src/ralphd/cli/image.py` | The job image, declaratively and docker-free: which files are inputs (`IMAGE_INPUTS`), how they hash to a tag, the packaged-inputs fallback for an install with no checkout (`PACKAGED_FILES`), and the text of the generated derived recipe (§3.2). Runs no builds — `cli/main.py` does that. |
 | `src/ralphd/cli/patch.py` | Reading a reflect phase's `suggestions.diff` (§16): parse a unified diff, select a subset of its files up front (`select_patches`, §17 entry 2), plan it against a target tree (which paths it would touch, the new content, one structured rejection per hunk that does not fit — naming the file and the `@@` header), and write only under a separate `apply_plan()` call, all-or-nothing. No `git`/`patch` subprocess, no fuzzy matching, no renames: a diff this cannot apply is refused, never guessed at. Prints nothing and reads no run directory — `cli/main.py` owns the verb. |
-| `src/ralphd/cli/ui_server.py` | The hub server: `/api/runs` and `/api/runs/<id>[/logs,/prd,/steering,/documents,/artifacts,/fault,/cost,/iterations/<n>,/steer,/retry]` over the registry (`DELETE /api/runs/<id>` for a terminal run), proxying a run's live API with a short timeout and falling back to the run dir (`"live": false`) rather than 500-ing on the four views that have a live answer at all; renders log tails, cost breakdowns, fault explanations and iteration detail through the same modules `ralphctl` prints, server-side, so the browser only displays strings; serves the static bundle with `index.html` fallback. |
+| `src/ralphd/cli/ui_server.py` | The hub server: `/api/runs` and `/api/runs/<id>[/logs,/prd,/steering,/documents,/artifacts,/fault,/cost,/iterations/<n>,/steer,/retry,/unpause]` over the registry (`DELETE /api/runs/<id>` for a terminal run), proxying a run's live API with a short timeout and falling back to the run dir (`"live": false`) rather than 500-ing on the four views that have a live answer at all; renders log tails, cost breakdowns, fault explanations and iteration detail through the same modules `ralphctl` prints, server-side, so the browser only displays strings; serves the static bundle with `index.html` fallback. |
 | `src/ralphd/cli/llm_profiles.py` | Named-profile loading and host-side resolution: `${env:}`/`${file:}`/`${cmd:}` references evaluated exactly once, before the container starts, into `env`/`mounts`/`pi`. The `host` and `none` built-ins never reach this module. `MASK` is what `llm show` prints instead of a value. |
 | `src/ralphd/cli/web/index.html` | The hub shell — one page, no framework, no build step. |
 | `src/ralphd/cli/web/app.js` | Hub behaviour: run list with client-side sorting whose state lives outside the DOM (the table is rebuilt every few seconds), run detail with task table, iteration timeline, log tail, steering form and history, state-document/artifact/fault/cost/iteration dialogs, the delete affordance, degraded card with countdown and retry-now. Agent-authored text is rendered with `textContent` only, never `innerHTML`. |
@@ -1452,7 +1452,9 @@ parked for input` for `pauseReason: "operator_input_needed"`, `⏸ held on
 rejected_incurable escalation` (`state.ESCALATION_HOLD_MARKER`) for the
 in-memory hold -- which records no `pauseReason` for task 017's marker to
 read -- and `""` otherwise. Answering the pause removes both markers at
-once: `resume()` (`POST /resume`, `ralphctl unpause`, a ruling
+once: `resume()` (`POST /resume`, `ralphctl unpause`, the hub's `POST
+/api/runs/<id>/unpause` proxy (task 006) -- the SAME `/resume` route, no
+second unpause mechanism, a ruling
 `resume_if_ruling_answers_pause` recognises, the abort wind-down) clears a
 persisted hold on status.json synchronously and emits its `resumed` event,
 which ends the in-memory hold's derivation too; a restarted episode that
@@ -5040,6 +5042,14 @@ dir themselves and a live proxy would only add a way to disagree.
   dialog. A message queued from the form appears immediately rather than after
   the next poll, and flips to `applied` at the iteration boundary that consumed
   it.
+- **Unpause proxy** — `POST /api/runs/<id>/unpause` (task 006) forwards
+  (empty body) to the run's live `POST /resume`, the SAME engine route
+  `ralphctl unpause <run-id>` calls, so there is no second unpause
+  mechanism: an `operator_input_needed`/`rejected_last_approach`/etc.
+  pause the run page shows is released through this one route, never a
+  hub-owned copy of the pause/resume logic. `404` for an unknown run,
+  `503` for an unreachable one, the engine's own status code passed
+  through otherwise.
 - **Degraded card** — `health: degraded`/`infraWait` set produces a distinct
   `.card.degraded` carrying the attempt number, phase, error, the episode's
   wait against the outage budget, and a countdown to `nextAttemptAt` ticking

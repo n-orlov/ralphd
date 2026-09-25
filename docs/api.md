@@ -913,7 +913,13 @@ engine still owns the run, so no destructive action opens on it and a killed
 engine leaves it dangling like any other non-terminal run. `POST /resume`
 clears both fields (`state` back to `running`, `pauseReason` back to `null`)
 and leaves `approach` and `phase` alone, so the run re-enters `review` over the
-same, still-unarchived approach.
+same, still-unarchived approach. CLI: `ralphctl unpause <run-id>` (deliberately
+named `unpause`, never `resume` — `ralphctl resume` is a different command
+entirely, docs/cli.md). Hub (task 006): the run page's "unpause" button, via
+the hub's `POST /api/runs/<id>/unpause` proxy to this SAME `/resume` route —
+no second unpause mechanism — 404 for an unknown run, 503 for an unreachable
+one, the engine's own status code passed straight through otherwise
+(docs/cli.md's `ralphctl ui` section).
 
 ### `POST /retry`
 Wakes an infra backoff wait immediately instead of waiting for
