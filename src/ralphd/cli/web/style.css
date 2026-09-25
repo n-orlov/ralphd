@@ -152,6 +152,9 @@ h2 {
    "operator_input_needed"` -- the one pause reason an operator cannot
    resolve without reading a ruling in first. */
 .operator-input-marker { color: var(--warn); font-weight: 600; }
+/* task 005 (PRD requirement A.5, #269): a run's latest operator escalation
+   never reached the operator at all -- every delivery retry failed. */
+.escalation-undelivered-marker { color: var(--err); font-weight: 600; }
 tr.row-warning td { background: #fffaf0; }
 .steering-warning { color: var(--err); font-weight: 600; }
 .infra-retry-note { color: var(--warn); font-weight: 600; }

@@ -502,6 +502,21 @@ An unrecognised `--sort` key is a usage error (exit `2`).
 Full status (mirrors `GET /status`; falls back to the run dir's `status.json` when
 the container is gone — indicated by `"live": false` in `--json` mode).
 
+Task 005 (PRD requirement A.5, issue #269): the `state:` line now also
+names two markers, space-separated after the raw state word, whenever they
+apply. The first, task 017's own `⏸ parked for input`, was previously
+only rendered by `ralphctl runs`/the hub run list; it now rides here too,
+for the one `pauseReason` (`operator_input_needed`) a plain `ralphctl
+unpause` cannot answer. The second, new here, is `❗ escalation
+undelivered`: it names a run whose most recently recorded engine escalation
+never reached the operator at all — every bounded retry in
+`LoopSupervisor._notify_escalation_delivery` failed and the run is still
+sitting, unanswered, on that exact escalation. It disappears the instant
+`ralphctl unpause`/`POST /resume` (or a ruling that answers the pause)
+clears the hold — there is no window where the marker still shows after
+the operator has acted. `--json` carries the same fact as `pauseMarker`
+and the new `escalationUndelivered`/`escalationUndeliveredMarker` fields.
+
 The `phase:` line carries the approach counter against its limit (task 007,
 issue #16): `phase:     worker  approach 2/3`. With no `maxApproaches`
 recorded (a pre-v0.6 run dir, where `GET /status` publishes an explicit

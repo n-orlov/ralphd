@@ -1431,6 +1431,37 @@ covers the retry, the bounded attempts and backoff, the undelivered event,
 that the pause takes effect regardless, and the `rejected_incurable`
 exception.
 
+**An undelivered escalation is visible on three surfaces without reading
+`events.jsonl` (task 005, PRD requirement A.5, #269).**
+`engine.state.escalation_undelivered(run_root, status)` answers `True` for
+exactly as long as three things all hold: the run is still sitting on a
+persisted engine pause (never the `rejected_incurable` in-memory hold
+above, which this predicate cannot see any more than task 017's own marker
+below can); the MOST RECENT `operator_escalation` event on that run's
+`events.jsonl` was followed, once `_notify_escalation_delivery`'s bounded
+retries above were exhausted, by `notification.escalation_undelivered`;
+and no LATER `operator_escalation` has landed since (a fresh escalation
+cycle resets the flag until its own retries are exhausted too).
+`resume()` (`POST /resume`, `ralphctl unpause`, or a ruling
+`resume_if_ruling_answers_pause` recognises) clears the persisted hold --
+and this flag with it -- synchronously, before the loop takes another
+step, so there is no window where the pause is answered but the marker
+still shows. Three surfaces render the string
+`state.format_escalation_undelivered_marker` returns (`❗ escalation
+undelivered`): `ralphctl status`, which now also carries task 017's own
+`⏸ parked for input` pause marker for the first time (previously only
+`ralphctl runs`/the hub run list carried it); the hub's runs-list row
+(`ui_server.run_list`'s `escalationUndelivered`/`escalationUndeliveredMarker`
+fields, beside the `pauseMarker` field task 017 already put there); and the
+hub's run-detail page (`ui_server.run_detail`'s own status doc, via the new
+`_with_pause_markers`, which is also where that page's `pauseMarker` field
+is attached for the first time -- it never carried one before this task).
+`app.js`'s shared `stateMarkerSpans` renders whichever of the two marker
+fields a payload carries, on both the runs-list row and the run-detail
+page's state cell. `tests/test_escalation_undelivered_marker.py` covers
+presence on all three surfaces while parked-and-undelivered, and absence
+on all three the instant the pause is answered.
+
 Pause takes effect at iteration boundaries only: `pause()` clears an event that
 `_gate()` awaits before each iteration, so the running agent finishes undisturbed,
 and `resume()` releases it. An operator pause changes no status field; an

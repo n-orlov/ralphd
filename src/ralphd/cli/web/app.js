@@ -150,6 +150,25 @@ function pill(text) {
   return h("span", { class: cls }, [String(text == null ? "unknown" : text)]);
 }
 
+// Task 005 (PRD requirement A.5, #269): the two markers that can ride
+// alongside a state pill -- `pauseMarker` (task 017, the ONE `pauseReason`
+// a plain unpause cannot answer) and the new `escalationUndeliveredMarker`
+// (the run's latest escalation never reached the operator, after every
+// delivery retry) -- shared between the runs-list row and the run-detail
+// page's own state cell, so the two surfaces render the same two facts the
+// same way rather than each inventing its own markup.
+function stateMarkerSpans(pauseMarker, escalationUndeliveredMarker) {
+  const spans = [];
+  if (pauseMarker) {
+    spans.push(h("span", { class: "operator-input-marker" }, [" " + pauseMarker]));
+  }
+  if (escalationUndeliveredMarker) {
+    spans.push(h("span", { class: "escalation-undelivered-marker" },
+      [" " + escalationUndeliveredMarker]));
+  }
+  return spans;
+}
+
 // -- duration formatting (mirrors the compact style used by `ralphctl
 // status`/`logs`: no millisecond noise, largest-two-units only) ----------
 
@@ -1418,10 +1437,10 @@ async function renderRunList(myGen) {
           // the one `pauseReason` a resume alone cannot answer, it needs
           // a ruling read in first. `r.pauseMarker` is `""` for every
           // other run (including every OTHER `paused` reason), so
-          // nothing extra renders for them.
-          : (r.pauseMarker
-              ? [pill(r.state), h("span", { class: "operator-input-marker" }, [" " + r.pauseMarker])]
-              : [pill(r.state)])),
+          // nothing extra renders for them. Task 005 (PRD requirement
+          // A.5, #269): `r.escalationUndeliveredMarker` rides alongside
+          // it (both, either, or neither, via `stateMarkerSpans`).
+          : [pill(r.state), ...stateMarkerSpans(r.pauseMarker, r.escalationUndeliveredMarker)]),
         h("td", {}, [pill(r.verdict)]),
         h("td", {}, [String(r.phase || "")]),
         h("td", {}, [approachText(r)]),
@@ -1742,11 +1761,21 @@ const FAULT_BADGE_STATES = new Set(["failed", "aborted"]);
 
 // The summary card's `state:` cell: the pill, wrapped in the fault badge when
 // this run ended in a way that has an explanation to give (task 026). The
-// pill's own look is untouched -- the badge only makes it clickable.
+// pill's own look is untouched -- the badge only makes it clickable. Task
+// 005 (PRD requirement A.5, #269): for every non-fault state, the SAME
+// `pauseMarker`/`escalationUndeliveredMarker` spans the runs-list row
+// already renders now ride alongside the pill here too (`s.pauseMarker`/
+// `s.escalationUndeliveredMarker`, attached server-side by `ui_server.
+// _with_pause_markers`) -- both empty strings for the ordinary case, so
+// nothing changes for a run that is neither.
 function stateCell(detail, s) {
   const pillEl = pill(s.state);
-  if (!FAULT_BADGE_STATES.has(String(s.state || ""))) return pillEl;
-  return faultBadge(detail.runId, "state", pillEl) || pillEl;
+  if (FAULT_BADGE_STATES.has(String(s.state || ""))) {
+    return faultBadge(detail.runId, "state", pillEl) || pillEl;
+  }
+  const spans = stateMarkerSpans(s.pauseMarker, s.escalationUndeliveredMarker);
+  if (spans.length === 0) return pillEl;
+  return h("span", {}, [pillEl, ...spans]);
 }
 
 function renderSummary(el, detail) {

@@ -92,6 +92,7 @@ from ..engine.state import (
     format_local_time,
     format_provisioning_lines,
     format_pause_marker,
+    format_escalation_undelivered_marker,
     format_router_calls_listing,
     format_run_document_listing,
     format_task_counts,
@@ -3959,9 +3960,24 @@ def cmd_status(args):
         shown_s = duration_s
         duration_label = "total" if ended_at_for_display else "elapsed"
     tty = sys.stdout.isatty()
+    # Task 005 (PRD requirement A.5, #269): the pause marker (task 017,
+    # previously only rendered by `ralphctl runs`/the hub run list) now
+    # renders here too, on the SAME `state:` line, so the undelivered-
+    # escalation marker (added right after it) has a marker to sit next
+    # to -- `state.escalation_undelivered` reads `events.jsonl` straight
+    # off this run's own dir, live or dead, exactly like the on-disk
+    # fallback above already does for `tasks`/`provisioning`.
+    state_display = str(status.get('state'))
+    _pause_marker = format_pause_marker(status.get("pauseReason"))
+    if _pause_marker:
+        state_display = f"{state_display} {_pause_marker}"
+    _undelivered_marker = format_escalation_undelivered_marker(
+        run_root(args.run_id), status)
+    if _undelivered_marker:
+        state_display = f"{state_display} {_undelivered_marker}"
     lines = [
         f"run:       {status.get('runId')}",
-        f"state:     {status.get('state')}  (live api: {live})",
+        f"state:     {state_display}  (live api: {live})",
     ]
     if container_gone is not None:
         lines.extend(_format_container_gone_lines(

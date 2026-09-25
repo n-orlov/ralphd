@@ -90,6 +90,8 @@ from ..engine.state import (
     format_iteration_log_header,
     format_local_time,
     format_pause_marker,
+    format_escalation_undelivered_marker,
+    escalation_undelivered,
     format_provisioning_lines,
     format_run_document_size,
     iteration_detail,
@@ -363,6 +365,15 @@ def run_list(reg: Path) -> list[dict]:
                 # `paused` reason does.
                 "pauseReason": status.get("pauseReason"),
                 "pauseMarker": format_pause_marker(status.get("pauseReason")),
+                # Task 005 (PRD requirement A.5, #269): the same marker
+                # `ralphctl status` now renders next to the pause marker
+                # (see `state.escalation_undelivered`'s own docstring) --
+                # read straight off this row's OWN `events.jsonl`, still
+                # local-only (no proxy call), the same discipline `_row_
+                # tasks` below already follows.
+                "escalationUndelivered": escalation_undelivered(d, status),
+                "escalationUndeliveredMarker": format_escalation_undelivered_marker(
+                    d, status),
                 # Task 008 (#16): the raw counter stays exactly as it was (the
                 # hub sorts the APPROACH column numerically on it) and the
                 # denominator travels alongside it, rendered once here by the
@@ -1232,6 +1243,28 @@ def _with_approach_display(doc: dict) -> dict:
                                                      doc.get("maxApproaches"))}
 
 
+def _with_pause_markers(doc: dict, run_dir: Path) -> dict:
+    """Task 005 (PRD requirement A.5, #269): attach `pauseMarker` (task
+    017, previously only carried by `run_list`'s flat rows) and the new
+    `escalationUndeliveredMarker`/`escalationUndelivered` to the run-detail
+    page's own status doc, so `app.js`'s `stateCell` has the same two
+    fields the runs-list row already reads, whether `doc` came from a live
+    proxied `GET /status` or the on-disk snapshot.
+
+    `run_dir` (never the live proxy) is the events.jsonl read -- local-only,
+    same discipline `_with_task_transitions` already follows.
+    """
+    if not isinstance(doc, dict):
+        return doc
+    return {
+        **doc,
+        "pauseMarker": format_pause_marker(doc.get("pauseReason")),
+        "escalationUndelivered": escalation_undelivered(run_dir, doc),
+        "escalationUndeliveredMarker": format_escalation_undelivered_marker(
+            run_dir, doc),
+    }
+
+
 def _with_task_failure_kinds(tasks: dict) -> dict:
     """Task 025 (#33): the `taskFailureKinds` map -- `{task id: kind}` for every
     failed task -- DERIVED from the task list in a LIVE `GET /tasks` payload.
@@ -1709,6 +1742,12 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
             _cfg_path), _cfg_path)
     else:
         shaped_status = _cached_disk_status_block(reg, run_dir, run_id, recorded_status)
+
+    # Task 005 (PRD requirement A.5, #269): both markers, on the SAME doc
+    # whichever branch produced it -- see `_with_pause_markers`'s own
+    # docstring for why the read is always local (`run_dir`) even on the
+    # live-proxied branch.
+    shaped_status = _with_pause_markers(shaped_status, run_dir)
 
     # Task 004 (#15): the on-disk path goes through the engine's hardened
     # reader, so a poll that lands inside an agent's rewrite of tasks.json
