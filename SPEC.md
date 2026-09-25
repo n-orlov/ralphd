@@ -5097,8 +5097,10 @@ dir themselves and a live proxy would only add a way to disagree.
   about 8 rows, not a single-line `<input>` -- operator prose that can run
   to several paragraphs -- so `Enter` inserts a newline instead of
   submitting; only the form's own button submits. `#steer-name` (the
-  message's optional `--name`) and the `apply now` checkbox (labelled with
-  its cost, #161) are unchanged.
+  message's optional `--name`) is unchanged, and the `apply now` checkbox
+  (`ralphctl steer --now`) is labelled with its cost (#161): the label
+  reads `apply now (cost: interrupts the running iteration -- its
+  uncommitted work is lost; an idle loop is only woken)`.
 - **Ruling form** — `#rule-text` (v0.26 task 010, #270) is a resizable
   `textarea` of about 12 rows (grown from 4), for the same reason and with
   the same `Enter`-inserts-a-newline/button-submits behaviour as the steer

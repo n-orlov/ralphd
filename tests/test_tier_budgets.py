@@ -66,8 +66,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 010: +4 tests / +3 modules (tests/test_hub_steer_roundtrip.py,
     # tests/test_hub_rule_roundtrip.py, tests/test_hub_steer_textarea_and_
     # rule_rows.py), measured the same way -> fast 6236/431, smoke 4555/309.
-    "fast": {"tests": 6236, "modules": 431},
-    "smoke": {"tests": 4555, "modules": 309},
+    # Task 010 retry: +1 test (test_hub_steer_textarea_and_rule_rows.py::
+    # test_steer_apply_now_is_labelled_with_its_cost) -> fast 6237, smoke 4556.
+    "fast": {"tests": 6237, "modules": 431},
+    "smoke": {"tests": 4556, "modules": 309},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -60,3 +60,20 @@ def test_rule_text_is_a_textarea_with_at_least_12_rows(tmp_path, ui):
     rows = int(rows_m.group(1))
     assert rows >= 12, f"#rule-text rows={rows}, expected at least 12"
     assert 'id: "rule-name"' in app_js
+
+
+def test_steer_apply_now_is_labelled_with_its_cost(tmp_path, ui):
+    """PRD requirement 4 (#161): the steer keeps `apply now`, labelled with
+    its cost. At 9b72b700 the label was the bare text `apply now`."""
+    app_js = _served_app_js(tmp_path, ui)
+    start = app_js.index('id: "steer-now"')
+    label_open = app_js.rindex('h("label"', 0, start)
+    # the label's children end at the `send` submit button that follows it
+    label_src = app_js[label_open:app_js.index('h("button"', start)]
+    assert '"apply now"' in label_src, label_src
+    # the cost itself: `--now` SIGINTs the running iteration, whose
+    # uncommitted work is lost; an idle loop is only woken.
+    assert "cost:" in label_src, label_src
+    assert "interrupts the running iteration" in label_src, label_src
+    assert "uncommitted work is lost" in label_src, label_src
+    assert "idle loop is only woken" in label_src, label_src

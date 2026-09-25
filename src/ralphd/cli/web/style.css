@@ -229,6 +229,7 @@ form.steer input[type=text] {
 }
 
 form.steer input[type=checkbox] { margin-right: 0.25rem; }
+form.steer .steer-now-cost { font-size: 0.8rem; }
 
 /* v0.26 task 010 (PRD requirement 4, #270): the steer message and the
    ruling text are both multi-line prose now -- resizable textareas, not

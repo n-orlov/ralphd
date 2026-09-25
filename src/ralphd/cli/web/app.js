@@ -1566,7 +1566,15 @@ async function renderRunDetail(runId, myGen) {
       // more than a single-line message ever did. The submit button is
       // still the only way to send.
       h("textarea", { id: "steer-message", placeholder: "steering message", required: "required", rows: "8" }),
-      h("label", {}, [h("input", { type: "checkbox", id: "steer-now" }), "apply now"]),
+      // #161: `apply now` is `ralphctl steer --now` -- labelled with what it
+      // costs, so the checkbox is never ticked as if it were free.
+      h("label", { class: "steer-now-label", title: "steer --now: SIGINTs the running iteration; its uncommitted work is lost" }, [
+        h("input", { type: "checkbox", id: "steer-now" }),
+        "apply now",
+        h("span", { class: "muted steer-now-cost" }, [
+          " (cost: interrupts the running iteration -- its uncommitted work is lost; an idle loop is only woken)",
+        ]),
+      ]),
       h("button", { type: "submit" }, ["send"]),
     ]),
     h("div", { id: "steer-status", class: "muted" }, []),
