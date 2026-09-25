@@ -1392,12 +1392,14 @@ is capped and digested.
 
 **A failed escalation delivery is retried with bounded backoff, and an
 exhausted retry is recorded distinctly (task 004, PRD requirement A.4,
-#269).** Every `self.pause(reason=...)` + `self.notifier` escalation site
-in `engine/loop.py` -- `rejected_last_approach`, `rejected_incurable`,
+#269).** Every `self.pause()` + `self.notifier` escalation site in
+`engine/loop.py` -- the nine sites that pause with a reason (`rejected_last_approach`,
 `rejected_repeated_signature`, `operator_input_needed` (both the review
 ladder's own and the task-boundary commit-secret-scan pause), `stagnation`,
 `review_contract_unrepaired`, `review_findings_unusable`,
-`unschedulable_dependency_cycle` and `unresolvable_dependency_edge` -- calls
+`unschedulable_dependency_cycle` and `unresolvable_dependency_edge`) and
+`rejected_incurable`, whose `_pause_and_escalate_incurable_rejection` takes
+the reason-less `self.pause()` -- calls
 `LoopSupervisor._notify_escalation_delivery(text, reason)` instead of
 `_notify()` directly. It reads back each attempt's own result through the
 SAME `self._notify`/`self.notifier` seam (never a second HTTP client, and
@@ -1414,12 +1416,20 @@ failed, the engine emits one additional, distinct event,
 `notification.escalation_undelivered` (`reason` names the pause reason that
 went undelivered) -- the signal that this escalation never reached the
 operator at all, not merely that one attempt did not. Neither a failing nor
-an always-failing notifier ever delays the pause itself: `self.pause()` and
-the `operator_escalation` event both land on disk before delivery is ever
-attempted, so `status.json` already reads `state: "paused"` with its `pauseReason` before the first delivery attempt returns.
-`tests/test_escalation_delivery.py` covers the retry, the bounded attempts
-and backoff, the undelivered event, and that the pause takes effect
-regardless.
+an always-failing notifier ever delays the pause itself: every site calls
+`self.pause()` -- and every site but the commit-secret-scan pause, whose own
+record is its `commit_secret_scan` event, emits its `operator_escalation`
+event -- before delivery is ever attempted, so the in-memory hold is in
+force first. For the nine
+reasoned sites that also means `status.json` already reads `state: "paused"` with its `pauseReason` before the first delivery attempt returns.
+`rejected_incurable` is the exception: its reason-less pause is the same
+in-memory hold `POST /pause` takes and is never persisted (it is not one of
+`pauseReason`'s values, §5.2), so status.json keeps its prior `state` and a
+null `pauseReason` throughout; its delivery is still retried and still
+recorded undelivered the same way. `tests/test_escalation_delivery.py`
+covers the retry, the bounded attempts and backoff, the undelivered event,
+that the pause takes effect regardless, and the `rejected_incurable`
+exception.
 
 Pause takes effect at iteration boundaries only: `pause()` clears an event that
 `_gate()` awaits before each iteration, so the running agent finishes undisturbed,

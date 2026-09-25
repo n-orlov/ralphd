@@ -22,7 +22,7 @@ which shadows that class-level stub).
 At 9b72b700 there is no `_notify_escalation_delivery`, no
 `_ESCALATION_DELIVERY_MAX_ATTEMPTS`/`_ESCALATION_DELIVERY_BACKOFF_S`, and no
 `notification.escalation_undelivered` event -- every one of this module's
-three nodes fails against that checkout (`AttributeError` on the missing
+nodes fails against that checkout (`AttributeError` on the missing
 method/constants, or the undelivered event simply never appears).
 """
 
@@ -192,3 +192,48 @@ def test_pause_takes_effect_regardless_of_delivery_retries(tmp_path, monkeypatch
 
         undelivered = _events(root, run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT)
         assert (len(undelivered) == 1) == expect_undelivered
+
+
+def test_incurable_rejection_pause_is_in_memory_and_escalated_before_delivery(
+        tmp_path, monkeypatch):
+    """`rejected_incurable` is the ONE escalation site whose pause carries no
+    reason (`_pause_and_escalate_incurable_rejection` calls the bare
+    `self.pause()`, the same in-memory hold `POST /pause` takes), so SPEC
+    §4.6 promises it exactly this, and no more: the in-memory pause is
+    already in force and the `operator_escalation` event is already on
+    disk when the first delivery attempt runs, while status.json is not
+    rewritten to `paused` (`pauseReason` stays null). Its delivery is still
+    retried and still recorded undelivered, like every other site."""
+    from ralphd.engine import findings
+
+    root = tmp_path / "run"
+    sup = _supervisor(root, notifier_url="http://notifier.example/notify")
+    sup._sleep_before_escalation_retry = lambda seconds: None
+    sup._approach = 1
+    findings.write_findings_json(sup.run.findings_json_file, [
+        {"severity": "blocking", "curable": False, "clause": "C.1",
+         "evidence": "needs hardware this sandbox lacks"}])
+
+    seen: list[dict] = []
+
+    def failing_poster(url, text, timeout_s):
+        if not seen:
+            seen.append({
+                "gate_open": sup._pause.is_set(),
+                "escalations": _events(root, "operator_escalation"),
+                "status": dict(_status(root))})
+        return 500, None
+
+    monkeypatch.setattr(hat_tools, "_http_post_text", failing_poster)
+
+    sup._pause_and_escalate_incurable_rejection(1)
+
+    assert seen, "the notifier was never called"
+    first = seen[0]
+    assert first["gate_open"] is False  # the in-memory pause is already held
+    assert [e["reason"] for e in first["escalations"]] == ["rejected_incurable"]
+    assert first["status"].get("state") != "paused"
+    assert first["status"].get("pauseReason") is None
+
+    undelivered = _events(root, run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT)
+    assert [e["reason"] for e in undelivered] == ["rejected_incurable"]
