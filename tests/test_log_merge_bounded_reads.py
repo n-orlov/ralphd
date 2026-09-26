@@ -1290,29 +1290,33 @@ async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
     recorded before `collapse_index` existed, or from every OTHER fixture
     in this module that never writes one by construction and whose OWN
     pinned byte bounds this task must not regress (PRD P.1/P.5's own
-    petitioned cost tension). The cost of routing it the same way,
-    measured through the WHOLE client-facing call (`ui_server.
-    rendered_log_lines`, both surfaces -- never the inner scan alone, and
-    never a test-side growth mirror; pinned in `tests/test_hub_real_render_
-    cap_whole_call.py::test_absent_index_residual_costs_measured_through_
-    the_whole_client_facing_call`): 70,993,623 bytes at prelude depth
-    1,000 and 75,475,023 at depth 1,700 -- ~71x and ~75x the frozen
-    1,000,000-byte cap, against the 196,608 bytes the (wrong) shipped
-    answer costs today -- plus 3,454,506 bytes on `_write_iteration_with_
-    older_thinking_marker`'s own 100,000-entry fixture, which costs 65,536
-    through the same whole call today and is already CORRECT, i.e. 3.45x
-    over the frozen cap for no gain at all. So the shipped renderer still
-    prints from the `False` fallback for a genuinely absent index
-    specifically, and this variant's bounded render still repeats the text
-    once at both prelude depths -- asserted below exactly as it is, the
-    SURVIVING historical-record half of this pin, now disclosed as
-    cure-01-09's own residual (those measured whole-call byte counts and
-    every ruled-out policy -- no raised cap, no transcript-format change,
-    no weakened equality, no second side index: GitHub #272) rather than
-    an open petition question -- never hidden, so that a ruling which
-    flips the fallback direction, or a later cure that finds a THIRD way
-    past this exact collision, fails this line loudly instead of passing
-    unnoticed."""
+    petitioned cost tension).
+
+    (Task cure-01-06, PRD C.6/non-negotiable 1.) This helper used to go on
+    to pin the shipped renderer's WRONG genuinely-absent-index answer here
+    (`log_merge`'s raw `merged_lines`/the raw engine `GET /logs` route,
+    read directly rather than through the hub) as a deliberate "surviving
+    historical record" -- disclosed once as cure-01-09's own residual
+    against a whole-call byte measurement pinned in a
+    `tests/test_hub_real_render_cap_whole_call.py` node that no longer
+    exists (retired once the genuinely-absent case was actually cured at
+    the real client-facing surface). That replay assertion is retired
+    here rather than kept as a now-stale pin: the requirement it stood in
+    for -- PRD C.3's "the fallback never replays", through the real
+    client-facing call, `ui_server.rendered_log_lines` -- is covered
+    instead, POSITIVELY and at both named prelude depths (1,000 and
+    1,700) on both its real surfaces (the dead-run on-disk fallback and
+    the live proxy branch), by
+    `test_silent_prelude_case_renders_the_full_renderers_last_two_lines_
+    on_both_real_paths` below. `log_merge`'s own generic bounded-read
+    contract (`merge_entries_tail`/`merged_lines`, and the raw engine
+    `/logs` route this helper's "disk"/"api" fetches exercise directly,
+    never through the hub) is unchanged and still legitimately replays
+    for a genuinely absent index -- that residual is real, just no longer
+    pinned by this helper; every OTHER assertion below (the fixture, the
+    UNKNOWN-not-measured-empty disclosure, the suppressed-consumer check,
+    the growing-bound resolution, and the truncated-index cure at the end
+    of this helper) is unchanged."""
     text = ("silent-prelude streamed text must not replay after a bounded "
             f"look-back (prelude={prelude_count})")
     gap_line = json.dumps(
@@ -1358,18 +1362,16 @@ async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
             "".join(_consumer_suppressing_disclosed_unknowns(raw)), tty=False,
             state=new_render_state())
         assert not any(text in ln for ln in suppressed), (label, suppressed)
-        # The shipped fallback direction's CURRENT behavior for a
-        # genuinely absent index, pinned exactly as measured -- cure-01-09's
-        # OWN disclosed residual now, published on the measured WHOLE-CALL
-        # byte counts (70,993,623 / 75,475,023 to route it correctly, vs
-        # the 196,608 this wrong answer costs, plus 3,454,506 on a
-        # currently-correct 65,536-byte fixture: GitHub #272) -- the
-        # surviving historical-record half of this pin, not evidence that
-        # the ADJUDICATED v0.22 petition above is decided either way. The
-        # absence of replay this pin now also asserts, for the half that
-        # WAS cured, is at the end of this helper.
-        shipped = render_to_lines("".join(raw), tty=False, state=new_render_state())
-        assert shipped[-2:] == [text, full[-1]], (label, shipped[-2:])
+        # Task cure-01-06 (PRD C.6/non-negotiable 1) retires the replay
+        # pin that used to sit here (`shipped[-2:] == [text, full[-1]]`,
+        # the raw `disk`/`api` routes' genuinely-absent-index answer,
+        # frozen as a deliberate "surviving historical record"): the
+        # requirement it stood in for is covered instead, positively, at
+        # the real client-facing call
+        # (`test_silent_prelude_case_renders_the_full_renderers_last_two_
+        # lines_on_both_real_paths`, below, both depths, both surfaces).
+        # `log_merge`'s own raw contract still replays here, unchanged and
+        # undisputed -- it is simply no longer pinned by this helper.
 
         # And the property really is about WHICH BYTES WERE READ, not about
         # the filler's kind or the budget running out: grow the same request
@@ -1403,9 +1405,11 @@ async def _assert_silent_prelude_publishes_unknown_state_not_empty_state(
     # request through `resolve_flags_at_offset`'s own scan fallback and the
     # very same tail=2 request stops replaying the streamed text: it
     # returns the full render's own last two lines, with no spurious blank
-    # line and no error. Only the GENUINELY ABSENT index above keeps the
-    # replay, as this task's disclosed residual (#272, published on the
-    # measured whole-call byte counts named in the docstring).
+    # line and no error. `log_merge`'s raw disk/api routes still replay for
+    # a GENUINELY ABSENT index (unchanged by this task); the real
+    # client-facing surface's own no-replay proof lives in
+    # `test_silent_prelude_case_renders_the_full_renderers_last_two_lines_
+    # on_both_real_paths`, below.
     itdir = run_root / "iterations" / "0001"
     collapse_index.write_index(itdir)
     idx_path = itdir / collapse_index.INDEX_FILENAME
