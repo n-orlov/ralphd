@@ -1855,6 +1855,32 @@ the two apart: byte-bound scenarios carry an engine-written
 `render_index.json`, and separate no-index controls assert only the exact
 full-render tail.
 
+**The absent-index cost is paid once per iteration (task 015, requirement
+C.4).** The scan above is expensive but the SAME scan, against the SAME
+iteration's SAME transcript bytes, is never worth paying twice. Once
+`_fetch_live_tail`/`_fetch_dead_tail` resolves, `cli/ui_server` builds that
+same iteration's own render index straight off its on-disk transcript --
+`render_index.compute_render_index`, the identical from-scratch builder
+`render_index.write_index` uses, just never written back to disk -- and
+keeps it in a HUB-owned, in-memory cache (`_ABSENT_INDEX_CACHE`), keyed by
+`(run id, iteration number, transcript byte size)`. Nothing here ever
+writes into a run dir the hub only reads and does not own: the index lives
+only in the hub process's own memory, with the same per-run-id LRU
+discipline (`_bound_run_cache`, dropped by `_drop_run_detail_caches` on
+delete) every other hub-side derivation cache already uses. The NEXT tail
+request against the identical iteration number and transcript byte size is
+then served through `render_index.bounded_tail(run_root, n,
+index=cached_index)` -- task 013's own bounded walk, just fed a
+hub-built index instead of an on-disk one -- at the same C.2 bound an
+engine-written index would give. Any growth of the transcript at all (a
+new byte appended, a new iteration begun) changes the cache key, so the
+next request scans -- and rebuilds the cache -- again: staleness here only
+ever costs a repeat of the scan, never a wrong render. The build is
+skipped when this iteration's own `collapse_index.json` is present and
+valid, since that shape already resolves cheaply through the ordinary
+per-call fetch (the P-fixture byte-count pins, requirement C.5) and would
+gain nothing from a second, differently-shaped index built on top of it.
+
 ### Container lifecycle
 
 ```

@@ -64,7 +64,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .. import __version__, render_index
+from .. import __version__, collapse_index, render_index
 from ..engine.config import MUTATING_METHODS, JobConfig
 from ..engine.state import (
     NO_ARTIFACTS,
@@ -707,7 +707,16 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
         # itself (no index yet, or too few of its own lines) -- the growth
         # loop, on whichever surface answers, is still the fallback for
         # that case, unchanged from before this task.
-        bounded = render_index.bounded_tail(reg / "runs" / run_id, tail)
+        run_root = reg / "runs" / run_id
+        bounded = render_index.bounded_tail(run_root, tail)
+        if bounded is None:
+            # Task 015 (PRD C.4): no usable on-disk index -- try the
+            # hub's own cache of an index a PREVIOUS scan on this exact
+            # iteration/transcript size already built, before paying the
+            # growth-based scan again.
+            cached_index = _absent_index_cache_lookup(run_root, run_id)
+            if cached_index is not None:
+                bounded = render_index.bounded_tail(run_root, tail, index=cached_index)
         if bounded is not None:
             ok, _ = _proxy_text(reg, run_id, "/logs?tail=1")
             lines = bounded
@@ -716,6 +725,12 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
             if not ok:
                 raw_text = _fetch_dead_tail(tail)
             lines = render_tail_lines(raw_text, tty=False, n=tail)
+            # This call just paid the absent-index scan cost -- build the
+            # index straight off the on-disk transcript (never into the
+            # run dir) and cache it so the NEXT tail request against this
+            # same iteration and transcript size is bounded, not scanned
+            # again (PRD C.4's "paid once per iteration").
+            _absent_index_cache_store(run_root, run_id)
     else:
         ok, raw_text = _proxy_text(reg, run_id, "/logs")
         if not ok:
@@ -1531,6 +1546,16 @@ _STATUS_BLOCK_CACHE: dict[str, tuple[float, dict]] = {}
 # Task 045 (H.3): the rendered-tail cache for `GET /api/runs/<id>/logs`.
 # `{run_id: (key, (live, lines))}` -- see `_cached_rendered_log_lines` below.
 _LOG_TAIL_CACHE: dict[str, tuple[tuple, tuple[bool, list[str]]]] = {}
+# Task 015 (PRD C.4): the hub-owned ABSENT-INDEX cache. `{run_id: ((number,
+# transcriptBytes), index)}` -- see `_absent_index_cache_lookup`/
+# `_absent_index_cache_store` below. Deliberately keyed the same shape as
+# the other per-run caches above (one slot per run id, replaced whole),
+# and deliberately never written into any run dir: `render_index.write_index`
+# is the engine's own call, from `engine/loop.py`, into a directory the
+# engine owns; the hub only READS a run dir it does not own, so an index a
+# hub-side scan builds lives here, in this process's own memory, and
+# nowhere on disk.
+_ABSENT_INDEX_CACHE: dict[str, tuple[tuple[int, int], dict]] = {}
 
 # Task 047 (H.5): the cap each of the three module-scope derivation caches
 # above (`_ITERATION_ROW_CACHE`, `_TASKS_BLOCK_CACHE`, `_STATUS_BLOCK_CACHE`)
@@ -1564,6 +1589,67 @@ def _bound_run_cache(cache: dict, run_id: str) -> None:
     while len(cache) > _RUN_CACHE_CAP:
         oldest = next(iter(cache))
         cache.pop(oldest)
+
+
+def _absent_index_cache_lookup(run_root: Path, run_id: str) -> dict | None:
+    """Task 015 (PRD C.4): the hub cache's read side. `key` is
+    `render_index.latest_iteration_cache_key(run_root)` -- the latest
+    iteration's own number and current transcript byte size -- so a cache
+    entry built for an EARLIER transcript size (this same iteration, but
+    fewer bytes written since) or an OLDER/NEWER iteration number is a
+    miss, never a stale hit: any growth at all (a live iteration still
+    streaming, or a new iteration having started) falls through to the
+    growth-based scan again, exactly as an absent cache would. Returns
+    `None` on a miss; never raises."""
+    key = render_index.latest_iteration_cache_key(run_root)
+    if key is None:
+        return None
+    cached = _ABSENT_INDEX_CACHE.get(run_id)
+    if cached is None or cached[0] != key:
+        return None
+    _bound_run_cache(_ABSENT_INDEX_CACHE, run_id)
+    return cached[1]
+
+
+def _absent_index_cache_store(run_root: Path, run_id: str) -> None:
+    """Task 015 (PRD C.4): the hub cache's write side, called once a
+    growth-based scan has already paid the absent-index cost for this
+    run's latest iteration -- builds that SAME iteration's own render
+    index straight from its on-disk transcript
+    (`render_index.compute_render_index`, the identical from-scratch
+    builder the engine's own `render_index.write_index` uses, just never
+    written back to the run dir) and stores it under the key the next
+    call will look for (`_absent_index_cache_lookup`). A run with no
+    iterations yet, or whose latest transcript cannot be stat'd right
+    now, is a silent no-op -- this cache is a pure speed optimisation, so
+    a failed store here costs nothing beyond the scan that already ran.
+
+    Skips the build (also a silent no-op) when this same iteration's own
+    `collapse_index.json` IS present and valid: task 014's ordinary
+    per-call fetch already resolves that shape cheaply (its own collapse
+    flags let `log_merge.merge_entries_tail` answer without ever setting
+    `_raw_text_has_unresolved_seed`, so the growth loop above stopped
+    after its first or second round, not a full-backlog scan) -- PRD
+    C.5's own no-regression fixtures (`_write_iteration_with_ignored_head`/
+    `_write_iteration_with_interleaved_ignored_suffix`, both written WITH
+    a `collapse_index.json`) are exactly this shape, and paying an extra
+    full-transcript read here to build a cache neither of them will ever
+    need to hit again at the SAME size would push their own pinned,
+    already-cheap byte counts over budget for nothing. A genuinely
+    ABSENT or invalid `collapse_index.json` -- PRD C.3's own no-usable-
+    index fixtures, and any run recorded before either index existed --
+    is precisely the shape whose scan is worth caching, so it is the only
+    shape this function ever builds for."""
+    key = render_index.latest_iteration_cache_key(run_root)
+    if key is None:
+        return
+    number, _size = key
+    itdir = iteration_dir(run_root, number)
+    if collapse_index.load_index(itdir) is not None:
+        return
+    index = render_index.compute_render_index(iteration_output_path(run_root, number))
+    _ABSENT_INDEX_CACHE[run_id] = (key, index)
+    _bound_run_cache(_ABSENT_INDEX_CACHE, run_id)
 
 
 def _cached_iteration_row(run_dir: Path, run_id: str, number: int) -> dict | None:
@@ -1718,6 +1804,7 @@ def _drop_run_detail_caches(run_id: str) -> None:
     _TASKS_BLOCK_CACHE.pop(run_id, None)
     _STATUS_BLOCK_CACHE.pop(run_id, None)
     _LOG_TAIL_CACHE.pop(run_id, None)
+    _ABSENT_INDEX_CACHE.pop(run_id, None)
 
 
 def run_detail_etag(reg: Path, run_id: str) -> str:

@@ -437,7 +437,7 @@ def _prepend_covered(output_path: Path, checkpoints: list[dict], acc: str,
     return acc, False
 
 
-def bounded_tail(run_root: Path, n: int) -> list[str] | None:
+def bounded_tail(run_root: Path, n: int, *, index: dict | None = None) -> list[str] | None:
     """The exact last `n` rendered lines of `run_root`'s merged render,
     served from its MOST RECENT iteration's own render index alone (task
     013) -- bytes read off the transcript stay proportional to those lines
@@ -456,11 +456,22 @@ def bounded_tail(run_root: Path, n: int) -> list[str] | None:
     covered prefix's printing lines newest first -- and stops as soon as
     it fixes the last `n` lines.
 
+    `index`, when given, is used INSTEAD OF loading `INDEX_FILENAME` from
+    the latest iteration's own directory -- task 015's hub-owned cache
+    (`cli/ui_server._absent_index_cache_lookup`) passes in an index it
+    built itself, off the on-disk transcript, for a run whose own
+    directory carries no such file (or an invalid one) at all; `load_index`
+    on that same directory would just answer `None` again. The caller
+    (never this function) is responsible for knowing the cached index
+    still describes the transcript's CURRENT size -- see the cache's own
+    key, `(iteration number, transcript size)`.
+
     `None` -- never a wrong-but-plausible answer -- when this one iteration
-    cannot answer by itself: no iteration, no valid index, a transcript
-    that disagrees with its index, or fewer than `n` lines in the whole
-    iteration. The caller (`ui_server.rendered_log_lines`, on both its
-    live and dead-run surfaces) then falls back to the growth-based fetch."""
+    cannot answer by itself: no iteration, no valid index (on disk or
+    passed in), a transcript that disagrees with its index, or fewer than
+    `n` lines in the whole iteration. The caller (`ui_server.
+    rendered_log_lines`, on both its live and dead-run surfaces) then
+    falls back to the growth-based fetch."""
     if n <= 0:
         return None
     numbers = _iteration_numbers(run_root)
@@ -468,9 +479,10 @@ def bounded_tail(run_root: Path, n: int) -> list[str] | None:
         return None
     last = numbers[-1]
     itdir = _iteration_dir(run_root, last)
-    index = load_index(itdir)
     if index is None:
-        return None
+        index = load_index(itdir)
+        if index is None:
+            return None
     try:
         meta = json.loads((itdir / "meta.json").read_text())
     except (OSError, json.JSONDecodeError):
@@ -499,3 +511,21 @@ def bounded_tail(run_root: Path, n: int) -> list[str] | None:
     if exhausted and len(lines) < n:
         return None
     return lines[-n:]
+
+
+def latest_iteration_cache_key(run_root: Path) -> tuple[int, int] | None:
+    """`(iteration number, transcript byte size)` for `run_root`'s latest
+    iteration -- the two components, beyond a run id, of task 015's
+    hub-owned absent-index cache key (PRD C.4). `None` when the run has no
+    iterations yet, or its latest one's transcript cannot be stat'd (a
+    pure cache-miss signal, never an error the caller need handle
+    specially: both cases just fall back to the growth-based scan)."""
+    numbers = _iteration_numbers(run_root)
+    if not numbers:
+        return None
+    last = numbers[-1]
+    try:
+        size = _iteration_output_path(run_root, last).stat().st_size
+    except OSError:
+        return None
+    return last, size

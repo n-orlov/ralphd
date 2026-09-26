@@ -94,8 +94,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # hub_surfaces, 3 shapes x 2 hidden-setter variants), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast 6275,
     # `-m smoke` -> smoke 4594.
-    "fast": {"tests": 6275, "modules": 433},
-    "smoke": {"tests": 4594, "modules": 311},
+    # Task 015: +3 tests / +1 module (tests/test_hub_render_index_cache.py:
+    # run-dir-untouched control, the absent-index cache's own C.4 bound at
+    # both silent-prelude depths, and the cache-key-changes-on-append
+    # control), measured `.venv/bin/python -m pytest -q -m fast
+    # --collect-only` -> fast 6278/434, `-m smoke` -> smoke 4597/312.
+    "fast": {"tests": 6278, "modules": 434},
+    "smoke": {"tests": 4597, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
