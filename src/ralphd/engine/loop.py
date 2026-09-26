@@ -13459,6 +13459,79 @@ class LoopSupervisor:
             text = text[:MAX_NOTIFY_CHARS]
         return text
 
+    def _pause_escalation_digest_text(
+        self, reason: str, approach: int, answer_cmd: str,
+        fault_lines: list[str] | None = None,
+    ) -> str:
+        """Cure task cure-01-05-2 (PRD requirement A.1, D.1; DoD 1;
+        cure-01-02 criterion 1): the SAME bounded-digest contract
+        `_operator_escalation_digest_text` gives the four finding-bearing
+        rejection reasons, extended to every OTHER real operator-
+        escalation pause this engine ever takes
+        (`review_contract_unrepaired`, `review_findings_unusable`,
+        `stagnation`, `unschedulable_dependency_cycle`,
+        `unresolvable_dependency_edge`). None of these five carries a
+        review findings channel or a cure-pass preview at all, so
+        `blocking`/`residual`/`tasks reopened`/`tasks inserted` read
+        `unavailable` here rather than inventing a `0` a reader could
+        mistake for "checked and empty" (cure-01-05-2 criterion 2) --
+        the review probe's own finding for this task: even with
+        `hub_base_url` configured, every one of these five real pause
+        paths omitted the hub URL, `pauseReason`, blocking/residual and
+        reopen/insert fields outright, and the contract/findings-
+        channel variants still posted the raw diagnostic sentinel and
+        reached the 3500-character truncation cap.
+
+        `fault_lines` is the reason's OWN short, already-actionable
+        summary (outstanding task ids for stagnation, cycle/edge ids and
+        dependents for the two dependency faults, a bounded per-error
+        preview -- never the raw validation-error text UNTRUNCATED -- for
+        the two review-contract faults); bounded the exact same way
+        `_operator_escalation_digest_text` bounds its own per-finding
+        lines (drop to a trailing count once the remaining lines would
+        overflow `MAX_NOTIFY_CHARS`), so the whole digest never exceeds
+        the cap however large the fault. The full diagnostic text
+        (`contractErrors`, every raw finding, every task) stays intact on
+        the `operator_escalation` EVENT and in `events.jsonl`/`status.
+        json` -- never sent here (criterion 2).
+        """
+        fields = self._discretionary_gate_escalation_fields(approach, {})
+        header_lines = [
+            f"run {self.cfg.run_id} escalation: {reason}",
+            f"pauseReason: {reason}",
+            fields["approachOfMax"],
+            "blocking: unavailable  residual: unavailable",
+            "tasks reopened: unavailable  tasks inserted: unavailable",
+            "spent this approach: "
+            f"{fields['costSpentThisApproach'] if fields['costSpentThisApproach'] is not None else 'unavailable'} "
+            f"({fields['tokensSpentThisApproach'] if fields['tokensSpentThisApproach'] is not None else 'unavailable'} tokens)",
+        ]
+        if self.cfg.hub_base_url:
+            header_lines.append(f"hub: {fields['hubLink']}")
+        header_lines.append(f"answer: {answer_cmd}")
+        header = "\n".join(header_lines)
+
+        fault_lines = fault_lines or []
+        budget = MAX_NOTIFY_CHARS - len(header) - 2
+        kept: list[str] = []
+        used = 0
+        for i, line in enumerate(fault_lines):
+            remaining_after = len(fault_lines) - (i + 1)
+            reserve = (len(f"{remaining_after} more in the hub/events.jsonl") + 1
+                      if remaining_after else 0)
+            if used + len(line) + 1 + reserve > budget:
+                break
+            kept.append(line)
+            used += len(line) + 1
+        remaining = len(fault_lines) - len(kept)
+        body_lines = list(kept)
+        if remaining:
+            body_lines.append(f"{remaining} more in the hub/events.jsonl")
+        text = header + ("\n\n" + "\n".join(body_lines) if body_lines else "")
+        if len(text) > MAX_NOTIFY_CHARS:
+            text = text[:MAX_NOTIFY_CHARS]
+        return text
+
     def _operator_input_needed_escalation_text(
         self, approach: int, blocking: list[dict], replan_available: bool,
         cure_preview: dict | None = None,
@@ -13841,7 +13914,19 @@ class LoopSupervisor:
                       contractErrors=list(contract_errors), escalation=text)
         self.pause(reason="review_contract_unrepaired")
         if self.notifier is not None:
-            self._notify_escalation_delivery(text, reason="review_contract_unrepaired")
+            # Cure task cure-01-05-2 (PRD requirement A.1/D.1, DoD 1): the
+            # event above keeps every contract error verbatim; the
+            # notifier gets the same bounded digest every other real
+            # escalation path now posts, never the raw diagnostic text.
+            fault_lines = [f"error {i}: {err[:160]}"
+                          for i, err in enumerate(contract_errors, start=1)]
+            digest = self._pause_escalation_digest_text(
+                "review_contract_unrepaired", approach,
+                "get review producing a valid contract payload, then "
+                f"ralphctl unpause {self.cfg.run_id}",
+                fault_lines)
+            self._notify_escalation_delivery(
+                digest, reason="review_contract_unrepaired")
 
     def _review_findings_unusable_escalation_text(
         self, approach: int, contract_errors: list[str]
@@ -13919,7 +14004,17 @@ class LoopSupervisor:
                       contractErrors=list(contract_errors), escalation=text)
         self.pause(reason="review_findings_unusable")
         if self.notifier is not None:
-            self._notify_escalation_delivery(text, reason="review_findings_unusable")
+            # Cure task cure-01-05-2: same bounded-digest treatment as
+            # `_pause_and_escalate_review_contract_unrepaired` just above.
+            fault_lines = [f"error {i}: {err[:160]}"
+                          for i, err in enumerate(contract_errors, start=1)]
+            digest = self._pause_escalation_digest_text(
+                "review_findings_unusable", approach,
+                "fix the review findings channel (sidecar/schema), then "
+                f"ralphctl unpause {self.cfg.run_id}",
+                fault_lines)
+            self._notify_escalation_delivery(
+                digest, reason="review_findings_unusable")
 
     def _stagnation_last_approach_escalation_text(
         self, approach: int, outstanding_tasks: list[dict],
@@ -14173,7 +14268,47 @@ class LoopSupervisor:
                       escalation=text, **extra_payload)
         self.pause(reason="stagnation")
         if self.notifier is not None:
-            self._notify_escalation_delivery(text, reason="stagnation")
+            # Cure task cure-01-05-2: stagnation is ruling-answerable
+            # (SPEC.md §4.6), so its digest names both live-run levers,
+            # the same phrasing `_operator_escalation_digest_text` uses.
+            # `fault_lines` opens with whichever of the two stagnation-
+            # guard reasons applies (matching `_stagnation_last_approach_
+            # escalation_text`'s own opening sentence) and, on a second
+            # exhaustion, the exhausted split child's own spend -- the
+            # same short facts the full text already names, kept short
+            # enough that they are never the line the overflow count
+            # below drops.
+            fault_lines: list[str] = []
+            if exhausted_split_child is not None:
+                used = exhausted_split_child.get("used")
+                budget = exhausted_split_child.get("budget")
+                spent = (f"{used}/{budget}" if used is not None
+                        and budget is not None else "unavailable")
+                fault_lines.append(
+                    f"{exhausted_split_child.get('id')} -- split of "
+                    f"{exhausted_split_child.get('splitFrom')} -- spent "
+                    f"{spent}, splitting further would only recurse")
+            elif is_last_approach:
+                fault_lines.append("this is the LAST available approach")
+            elif approach_progressed:
+                fault_lines.append(
+                    "this approach progressed (a commit or a forced "
+                    "split) before stalling")
+            fault_lines += [
+                f"{task.get('id')} ({task.get('status', 'pending')})"
+                for task in outstanding_tasks]
+            for entry in self._tasks_stuck_awaiting_validation():
+                fault_lines.append(
+                    f"{entry['id']} awaiting-validation, attempts "
+                    f"{entry['validationAttempts']} of "
+                    f"{VALIDATION_ATTEMPT_LIMIT}")
+            digest = self._pause_escalation_digest_text(
+                "stagnation", approach,
+                f"ralphctl rule {self.cfg.run_id} --file <ruling.md> "
+                f"--name <slug>, or ralphctl unpause {self.cfg.run_id} "
+                "to accept the default",
+                fault_lines)
+            self._notify_escalation_delivery(digest, reason="stagnation")
 
     def _review_incurable_rejection(self) -> bool:
         """Task 006 (requirement B.2, #111): does the review just run
@@ -14782,7 +14917,29 @@ class LoopSupervisor:
                       escalation=text, **cycle_fault)
         self.pause(reason="unschedulable_dependency_cycle")
         if self.notifier is not None:
-            self._notify_escalation_delivery(text, reason="unschedulable_dependency_cycle")
+            # Cure task cure-01-05-2: same bounded digest every other real
+            # escalation path now posts, naming the cycle's own ids/edges/
+            # dependents (already short) rather than 0/unavailable review
+            # findings that never applied to this pause in the first place.
+            ids = cycle_fault.get("cycleTaskIds", [])
+            edges = cycle_fault.get("cycleEdges", [])
+            dependents = cycle_fault.get("dependentTaskIds") or []
+            fault_lines = [
+                "cycle task ids: " + (", ".join(ids) or "(none)"),
+                "edges: " + (", ".join(
+                    f"{e.get('from')} -> {e.get('to')}" for e in edges)
+                    or "(none)"),
+            ]
+            if dependents:
+                fault_lines.append(
+                    "dependent task(s): " + ", ".join(dependents))
+            digest = self._pause_escalation_digest_text(
+                "unschedulable_dependency_cycle", self._approach,
+                "fix the cycle in tasks.json (an operator edit), then "
+                f"ralphctl unpause {self.cfg.run_id}",
+                fault_lines)
+            self._notify_escalation_delivery(
+                digest, reason="unschedulable_dependency_cycle")
 
     def _unresolvable_edge_escalation_text(self, edge_fault: dict) -> str:
         """The operator-facing escalation body for an `unresolvable_
@@ -14829,7 +14986,27 @@ class LoopSupervisor:
                       escalation=text, **edge_fault)
         self.pause(reason="unresolvable_dependency_edge")
         if self.notifier is not None:
-            self._notify_escalation_delivery(text, reason="unresolvable_dependency_edge")
+            # Cure task cure-01-05-2: same bounded-digest treatment as
+            # `_pause_and_escalate_unschedulable_cycle` just above.
+            ids = edge_fault.get("unresolvedTaskIds", [])
+            edges = edge_fault.get("unresolvedEdges", [])
+            dependents = edge_fault.get("dependentTaskIds") or []
+            fault_lines = [
+                "task ids: " + (", ".join(ids) or "(none)"),
+                "edges: " + (", ".join(
+                    f"{e.get('from')} -> {e.get('to')}" for e in edges)
+                    or "(none)"),
+            ]
+            if dependents:
+                fault_lines.append(
+                    "dependent task(s): " + ", ".join(dependents))
+            digest = self._pause_escalation_digest_text(
+                "unresolvable_dependency_edge", self._approach,
+                "fix the dependsOn edge in tasks.json (an operator "
+                f"edit), then ralphctl unpause {self.cfg.run_id}",
+                fault_lines)
+            self._notify_escalation_delivery(
+                digest, reason="unresolvable_dependency_edge")
 
     def _unresolved_failures(self, tasks_doc: dict) -> list[dict]:
         """The `failed` tasks of a plan that has nothing actionable left in it.

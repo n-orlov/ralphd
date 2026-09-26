@@ -426,7 +426,10 @@ def test_an_unreadable_channel_rejection_pauses_on_findings_unusable(tmp_path):
 
     assert len(notifier.messages) == 1
     text = notifier.messages[0]
-    assert channel_errors[0] in text
+    # cure-01-05-2: the digest never carries the raw diagnostic body
+    # unbounded -- a bounded, id-prefixed preview of it does, still
+    # naming the same fault, while the FULL text stays on the event.
+    assert channel_errors[0][:120] in text
     assert "ralphctl unpause task016-repeated-rejection-signature" in text
 
 

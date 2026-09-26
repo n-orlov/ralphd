@@ -1407,6 +1407,35 @@ is unaffected and still lands on the `operator_escalation` event's own
 digested, and it carries neither a finding's `evidence` nor its
 `cured_when`.
 
+**Cure task cure-01-05-2 (PRD requirement A.1/D.1, DoD 1; widens cure-01-02's
+own digest contract): every OTHER real operator-escalation pause posts a
+bounded digest too, never the raw diagnostic text.** `LoopSupervisor.
+_pause_escalation_digest_text` gives `review_contract_unrepaired`, `review_
+findings_unusable`, `stagnation`, `unschedulable_dependency_cycle` and
+`unresolvable_dependency_edge` the same header shape
+`_operator_escalation_digest_text` gives the four finding-bearing reasons --
+run id, `pauseReason`, `approach n of m`, spend this approach, the hub URL
+(only when `hub_base_url` is configured) and the exact command(s) that
+answer the pause -- but honestly, since none of these five ever carries a
+review findings channel or a cure-pass preview at all: `blocking`/
+`residual`/`tasks reopened`/`tasks inserted` read the literal string
+`unavailable`, never an invented `0` a reader could mistake for "checked
+and empty." Each reason's own short, already-actionable fault summary
+follows the header -- outstanding task ids for `stagnation`, cycle/edge
+ids and dependents for the two dependency faults, a bounded per-error
+preview (never the raw validation-error text unbounded) for the two
+review-contract faults -- bounded the same way the four-reason digest
+bounds its own per-finding lines: once the remaining fault lines would
+overflow `MAX_NOTIFY_CHARS`, the digest drops to a trailing count instead
+("*k* more in the hub/events.jsonl"). The dependency-cycle/unresolvable-
+edge and broken-review-channel digests name their own remedy (a
+`tasks.json` edit, a working reviewer) plus `ralphctl unpause <run>`, never
+a rule command; `stagnation`'s digest is ruling-answerable and names both
+levers, exactly like the four-reason digest. The full diagnostic text --
+every `contractErrors` entry, every outstanding task, every cycle/edge id --
+is unaffected and still lands on the `operator_escalation` event itself
+(§5.4); only the POSTED notification is capped and digested.
+
 **A failed escalation delivery is retried with bounded backoff, and an
 exhausted retry is recorded distinctly (task 004, PRD requirement A.4,
 #269).** Every `self.pause()` + `self.notifier` escalation site in

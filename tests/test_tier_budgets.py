@@ -185,8 +185,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # positive tail on both surfaces), measured `.venv/bin/python -m
     # pytest -q -m fast --collect-only` -> fast 6364/435, `-m smoke
     # --collect-only` -> smoke 4672/312.
-    "fast": {"tests": 6364, "modules": 435},
-    "smoke": {"tests": 4672, "modules": 312},
+    # Cure task cure-01-05-2 (PRD requirement A.1/D.1, DoD 1): +8 tests /
+    # +1 module (tests/test_other_escalations_digest.py), measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 6372/436,
+    # `-m smoke` -> 4680/313.
+    "fast": {"tests": 6372, "modules": 436},
+    "smoke": {"tests": 4680, "modules": 313},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
