@@ -165,9 +165,8 @@ def test_appending_to_the_transcript_between_calls_changes_the_cache_key_and_the
                             state=new_render_state())
     _live1, lines1 = ui_server.rendered_log_lines(reg, "probe", 2)
     assert lines1 == full1[-2:]
-    key1 = ui_server._ABSENT_INDEX_CACHE["probe"][0]
-    assert key1[0] == 1  # this iteration's own number
-    assert key1[1] == output.stat().st_size
+    identity1, _index1 = ui_server._ABSENT_INDEX_CACHE["probe"][1]
+    assert identity1[1] == output.stat().st_size  # (inode, size, mtime_ns)
 
     # Append more transcript directly to the SAME iteration's own
     # `output.jsonl` -- a tool call the render must show regardless of
@@ -191,6 +190,6 @@ def test_appending_to_the_transcript_between_calls_changes_the_cache_key_and_the
 
     _live2, lines2 = ui_server.rendered_log_lines(reg, "probe", 2)
     assert lines2 == full2[-2:], lines2
-    key2 = ui_server._ABSENT_INDEX_CACHE["probe"][0]
-    assert key2 != key1
-    assert key2[1] == output.stat().st_size
+    identity2, _index2 = ui_server._ABSENT_INDEX_CACHE["probe"][1]
+    assert identity2 != identity1
+    assert identity2[1] == output.stat().st_size

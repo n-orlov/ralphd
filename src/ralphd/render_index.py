@@ -125,6 +125,7 @@ import json
 import os
 import time
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 
 from . import collapse_index as _collapse_index
@@ -964,7 +965,8 @@ def _one_iteration_tail_text(run_root: Path, number: int, n: int,
     return acc, exhausted
 
 
-def bounded_tail(run_root: Path, n: int, *, index: dict | None = None) -> list[str] | None:
+def bounded_tail(run_root: Path, n: int, *, index: dict | None = None,
+                 on_missing: Callable[[int], dict | None] | None = None) -> list[str] | None:
     """The exact last `n` rendered lines of `run_root`'s merged render,
     served from its iterations' own render indexes alone (task 013,
     extended across iteration boundaries by task cure-01-04, PRD C.2) --
@@ -1005,12 +1007,32 @@ def bounded_tail(run_root: Path, n: int, *, index: dict | None = None) -> list[s
     transcript's CURRENT size -- see the cache's own key, `(iteration
     number, transcript size)`.
 
+    `on_missing` (task cure-01-02-2, PRD C.4, D.1; DoD 3): called with an
+    iteration NUMBER, at most once per number per call, exactly when that
+    one iteration's own attempt above -- the passed-in `index` for the
+    latest one, its own on-disk `render_index.json` for every earlier one
+    -- could not answer by itself (missing, refused, or disagreeing with
+    the transcript). Lets a caller (`ui_server.
+    _absent_index_cache_lookup_or_rebuild_refused` and `ui_server.
+    _absent_index_cache_fill`, its own two callback-builders) build and
+    cache that ONE iteration's own index, off its own on-disk transcript,
+    and hand it straight back for an immediate retry
+    -- so a tail whose backward walk needs several COLD iterations pays
+    each of their scan costs at most once per call, and never again once
+    cached, instead of this function simply giving up on the first cold
+    one it meets and forcing the caller back to an unbounded, un-cached,
+    whole-transcript growth scan. Returning `None` from `on_missing` means
+    that iteration genuinely cannot be resolved right now (e.g. its
+    transcript could not be read) -- the walk still ends in `None`
+    exactly as it would with no callback at all.
+
     `None` -- never a wrong-but-plausible answer -- when some iteration in
-    the backward walk cannot answer by itself: no iteration at all, no
-    valid index (on disk or passed in) for an iteration the walk actually
-    needs, or a transcript that disagrees with its index. The caller
-    (`ui_server.rendered_log_lines`, on both its live and dead-run
-    surfaces) then falls back to the growth-based fetch."""
+    the backward walk cannot answer by itself even after `on_missing`: no
+    iteration at all, no valid index (on disk, passed in, or freshly
+    built) for an iteration the walk actually needs, or a transcript that
+    disagrees with its index. The caller (`ui_server.rendered_log_lines`,
+    on both its live and dead-run surfaces) then falls back to the
+    growth-based fetch."""
     if n <= 0:
         return None
     numbers = _iteration_numbers(run_root)
@@ -1022,6 +1044,10 @@ def bounded_tail(run_root: Path, n: int, *, index: dict | None = None) -> list[s
         result = _one_iteration_tail_text(
             run_root, number, n,
             index=index if pos == len(numbers) - 1 else None)
+        if result is None and on_missing is not None:
+            fresh = on_missing(number)
+            if fresh is not None:
+                result = _one_iteration_tail_text(run_root, number, n, index=fresh)
         if result is None:
             return None
         text, exhausted = result

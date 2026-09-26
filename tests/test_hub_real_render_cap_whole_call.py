@@ -821,6 +821,54 @@ def test_absent_index_cache_still_builds_when_a_valid_legacy_index_scan_stays_ex
         assert second <= _FROZEN_CAP, (path, first, second)
 
 
+def test_second_cold_tail_across_two_iterations_is_bounded(
+        tmp_path, monkeypatch):
+    """Task cure-01-02-2 (PRD C.4, D.1; DoD 3): task 015's own absent-index
+    cache only ever remembered the LATEST iteration's own scan -- a tail
+    spanning TWO absent-index (no `render_index.json`, no legacy
+    `collapse_index.json` either) silent-prelude iterations paid the
+    growth-based scan's full, unbounded cost on the SECOND call exactly
+    as on the first, because the earlier iteration's own coverage was
+    never cached at all. Two such iterations (silent-prelude depths 1,000
+    and 1,700, PRD Q's own falsifying shape), a 200-line request -- the
+    FIRST call pays the scan (no byte cap: PRD C.3's own disclosed
+    residual, unaffected by this task); the SECOND call must be exact and
+    stay within the frozen 1,000,000-byte C.2 bound, on both the live and
+    dead-run surfaces, because this task's own cache now covers BOTH
+    iterations, not merely the newest one."""
+    gap = json.dumps({"type": "message_end", "message": {"content": []},
+                      "padding": "x" * 1000})
+    for path in ("disk", "api"):
+        sub = tmp_path / f"cold-span-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        for number, (text, prelude_count) in enumerate(
+                (("cold span first iteration streamed text", 1_000),
+                 ("cold span second iteration streamed text", 1_700)), start=1):
+            _write_iteration_with_recognized_nonrendering_gap(
+                run_root, number, text, gap, 10_000, prelude_count=prelude_count)
+            itdir = run_root / "iterations" / f"{number:04d}"
+            assert not (itdir / render_index.INDEX_FILENAME).exists()
+            assert not (itdir / collapse_index.INDEX_FILENAME).exists()
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        assert len(full) < 200, full
+        assert sum(1 for ln in full if "iteration 1" in ln) >= 1, full
+        assert sum(1 for ln in full if "iteration 2" in ln) >= 1, full
+        ui_server._ABSENT_INDEX_CACHE.clear()
+
+        # Call 1: pays the scan across both cold iterations -- no byte
+        # cap (PRD C.3).
+        first, rendered1 = _measure(sub, monkeypatch, run_root, 200, path)
+        assert rendered1 == full, (path, rendered1)
+
+        # Call 2: served from this task's own per-iteration cache,
+        # covering BOTH iterations, not merely the latest one.
+        second, rendered2 = _measure(sub, monkeypatch, run_root, 200, path)
+        assert rendered2 == full, (path, rendered2)
+        assert second <= _FROZEN_CAP, (path, first, second)
+
+
 def test_spec_and_cli_docs_describe_the_indexed_bounded_tail_read():
     """Task cure-01-04 (criterion 3): SPEC.md §11.4 and docs/cli.md must
     describe the log tail `rendered_log_lines` actually serves -- the
@@ -1008,12 +1056,14 @@ def test_a_hub_cached_index_is_refused_after_an_out_of_window_rewrite(
         tmp_path, monkeypatch):
     """Task cure-01-01-4 criterion (2), cached indexes: an iteration with
     NO on-disk render index has its index built and cached by the hub
-    (`ui_server._ABSENT_INDEX_CACHE`, keyed by iteration number and
-    transcript size). A same-size rewrite of a non-leading, out-of-window
-    covered line leaves that key unchanged, yet the cached index's own
-    witness no longer holds: `bounded_tail(..., index=cached)` refuses
-    it, and the next call on both surfaces answers the exact full-render
-    'alpha' instead of the cached, stale 'kept'."""
+    (`ui_server._ABSENT_INDEX_CACHE`, keyed by iteration number and the
+    transcript's own identity witness). A same-size rewrite of a
+    non-leading, out-of-window covered line leaves the size unchanged
+    (still visible through `latest_iteration_cache_key`) yet moves the
+    mtime, so the cached index's own witness no longer holds:
+    `bounded_tail(..., index=cached)` refuses it, and the next call on
+    both surfaces answers the exact full-render 'alpha' instead of the
+    cached, stale 'kept'."""
     for path in ("disk", "api"):
         sub = tmp_path / path
         run_root = sub / "registry" / "runs" / "probe"
@@ -1025,11 +1075,11 @@ def test_a_hub_cached_index_is_refused_after_an_out_of_window_rewrite(
         ui_server._ABSENT_INDEX_CACHE.clear()
         _, rendered = _measure(sub, monkeypatch, run_root, 1, path)
         assert rendered == ["kept"]
-        key, cached = ui_server._ABSENT_INDEX_CACHE["probe"]
+        identity, cached = ui_server._ABSENT_INDEX_CACHE["probe"][1]
         assert render_index.bounded_tail(run_root, 1, index=cached) == ["kept"]
 
         _victim_to_streamed_alpha(transcript, replace=False)
-        assert render_index.latest_iteration_cache_key(run_root) == key
+        assert render_index.latest_iteration_cache_key(run_root) == (1, identity[1])
         assert render_index.bounded_tail(run_root, 1, index=cached) is None
         full = render_to_lines("".join(merged_lines(run_root)), tty=False,
                                state=new_render_state())

@@ -166,8 +166,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # right column), measured `.venv/bin/python -m pytest -q -m fast
     # --collect-only` -> fast 6358/435, `-m smoke --collect-only` -> smoke
     # 4666/312.
-    "fast": {"tests": 6358, "modules": 435},
-    "smoke": {"tests": 4666, "modules": 312},
+    # cure-01-02-2: +1 test, no new module (tests/test_hub_real_render_cap_
+    # whole_call.py: a 200-line tail spanning two absent-index silent-
+    # prelude iterations at depths 1,000/1,700 stays bounded on the
+    # SECOND call), measured `.venv/bin/python -m pytest -q -m fast
+    # --collect-only` -> fast 6359/435, `-m smoke --collect-only` -> smoke
+    # 4667/312.
+    "fast": {"tests": 6359, "modules": 435},
+    "smoke": {"tests": 4667, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

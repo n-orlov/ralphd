@@ -1971,32 +1971,45 @@ the two apart: byte-bound scenarios carry an engine-written
 full-render tail.
 
 **The absent-index cost is paid once per iteration (task 015, requirement
-C.4).** The scan above is expensive but the SAME scan, against the SAME
-iteration's SAME transcript bytes, is never worth paying twice. Once
-`_fetch_live_tail`/`_fetch_dead_tail` resolves, `cli/ui_server` builds that
-same iteration's own render index straight off its on-disk transcript --
-`render_index.compute_render_index`, the identical from-scratch builder
-`render_index.write_index` uses, just never written back to disk -- and
-keeps it in a HUB-owned, in-memory cache (`_ABSENT_INDEX_CACHE`), keyed by
-`(run id, iteration number, transcript byte size)`. Nothing here ever
-writes into a run dir the hub only reads and does not own: the index lives
-only in the hub process's own memory, with the same per-run-id LRU
+C.4; extended by task cure-01-02-2 to every iteration a tail needs, not
+merely the latest one).** The scan above is expensive but the SAME scan,
+against the SAME iteration's SAME transcript bytes, is never worth paying
+twice -- and a tail that must walk back across SEVERAL cold iterations
+must not keep re-paying an EARLIER one's scan just because the newest
+iteration's own cache slot is the only one that ever got remembered.
+Once `_fetch_live_tail`/`_fetch_dead_tail` resolves, `cli/ui_server`
+builds each iteration's own render index straight off its on-disk
+transcript -- `render_index.compute_render_index`, the identical
+from-scratch builder `render_index.write_index` uses, just never written
+back to disk -- and keeps it in a HUB-owned, in-memory cache
+(`_ABSENT_INDEX_CACHE`), one entry PER ITERATION NUMBER under each run id,
+each keyed by that iteration's own current transcript identity witness
+-- `(inode, size, mtime_ns)`, the same triple `render_index` itself uses,
+rather than a size-only key that could let two different runs' same-
+numbered iterations collide on a shared byte count. Nothing here ever
+writes into a run dir the hub only reads and does not own: the index
+lives only in the hub process's own memory, with the same per-run-id LRU
 discipline (`_bound_run_cache`, dropped by `_drop_run_detail_caches` on
-delete) every other hub-side derivation cache already uses. The NEXT tail
-request against the identical iteration number and transcript byte size is
-then served through `render_index.bounded_tail(run_root, n,
-index=cached_index)` -- task 013's own bounded walk, just fed a
-hub-built index instead of an on-disk one -- at the same C.2 bound an
-engine-written index would give. Any growth of the transcript at all (a
-new byte appended, a new iteration begun) changes the cache key, so the
-next request scans -- and rebuilds the cache -- again: staleness here only
-ever costs a repeat of the scan, never a wrong render. A cached index is also
-held to its own identity witness, so a same-size rewrite or replacement
-(which leaves the key unchanged) makes `bounded_tail` refuse it; whenever
-an index that exists -- the latest iteration's on-disk `render_index.json`
-or a cached one for the current key -- is refused, `_refused_index_rebuild`
-rebuilds it from the transcript's current bytes and serves the exact walk
-from that instead of the growth-based scan. The build is
+delete) every other hub-side derivation cache already uses. The NEXT
+tail request against any of those iterations, unchanged, is then served
+through `render_index.bounded_tail(run_root, n, on_missing=...)` -- task
+013's own bounded walk, fed a callback that answers a hub-cached index
+for whichever iteration the walk needs instead of `load_index`'s on-disk
+read -- at the same C.2 bound an engine-written index would give, for
+EVERY cold iteration the tail spans, not merely the newest. Any growth,
+in-place rewrite or replacement of one iteration's transcript changes
+ONLY that iteration's own identity, so the next request against it scans
+-- and rebuilds only that one entry -- again, while every OTHER already-
+cached iteration this tail also needs stays served from cache: staleness
+here only ever costs a repeat of the ONE affected iteration's own scan,
+never a wrong render and never every other iteration's coverage along
+with it. A cached index is also held to its own identity witness, so a
+same-size rewrite or replacement (which leaves the size half of the key
+unchanged, but moves the mtime) makes `bounded_tail` refuse it; whenever
+an index that exists on disk (`render_index.json`) is refused, the SAME
+`on_missing` callback rebuilds it from the transcript's current bytes
+right there and serves the exact walk from that instead of falling back
+to the growth-based scan. The build is
 skipped when this iteration's own `collapse_index.json` is present and
 valid AND the fetch above did not need to grow all the way to its own
 FULL-ask bound to resolve (task cure-01-04, requirement C.4, DoD 3): a

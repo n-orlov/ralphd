@@ -712,47 +712,40 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
         # itself (no index yet, or too few of its own lines) -- the growth
         # loop, on whichever surface answers, is still the fallback for
         # that case, unchanged from before this task.
+        # Task cure-01-02-2 (PRD C.4, D.1; DoD 3): `on_missing` extends
+        # task 015's single-latest-iteration absent-index cache to EVERY
+        # iteration this walk needs -- not just the latest one -- so a
+        # tail spanning several unindexed/unusably-indexed COLD iterations
+        # pays each of their scan costs at most once across this process's
+        # life (until that exact iteration's own transcript size next
+        # changes), never once per request and never only for the newest
+        # iteration in the run.
         run_root = reg / "runs" / run_id
-        bounded = render_index.bounded_tail(run_root, tail)
-        if bounded is None:
-            # Task 015 (PRD C.4): no usable on-disk index -- try the
-            # hub's own cache of an index a PREVIOUS scan on this exact
-            # iteration/transcript size already built, before paying the
-            # growth-based scan again.
-            cached_index = _absent_index_cache_lookup(run_root, run_id)
-            if cached_index is not None:
-                bounded = render_index.bounded_tail(run_root, tail, index=cached_index)
-            if bounded is None:
-                # Task cure-01-01-4: an index that EXISTS (on disk, or in
-                # the cache above) but was just refused -- a transcript
-                # rewritten, replaced or modified mid-read since it was
-                # built -- is rebuilt from the transcript's current bytes
-                # and served through the same exact walk, instead of the
-                # growth loop below, whose cut windows cannot see a text
-                # line still open across the cut.
-                rebuilt = _refused_index_rebuild(run_root, run_id,
-                                                 cached=cached_index is not None)
-                if rebuilt is not None:
-                    bounded = render_index.bounded_tail(run_root, tail, index=rebuilt)
+        bounded = render_index.bounded_tail(
+            run_root, tail,
+            on_missing=_absent_index_cache_lookup_or_rebuild_refused(run_root, run_id))
         if bounded is not None:
             ok, _ = _proxy_text(reg, run_id, "/logs?tail=1")
             lines = bounded
         else:
+            # The attempt above -- reusing a previous scan's own cache, or
+            # rebuilding a refused one right here -- could not answer this
+            # tail; the growth-
+            # based loop below is the unbounded, always-correct fallback
+            # (unchanged from before this task), and its own `grew`
+            # signals whether it actually needed its full-ask bound to
+            # resolve. `_absent_index_cache_fill` (task cure-01-02-2,
+            # PRD C.4, D.1; DoD 3) then extends task 015's own
+            # single-latest-iteration cache-after-the-fact to EVERY
+            # iteration this exact tail's own backward walk needs, so a
+            # LATER repeated tail spanning these same cold iterations
+            # resolves entirely through the cheap attempt above, never
+            # paying any of their scan costs a second time.
             ok, raw_text, grew = _fetch_live_tail(tail)
             if not ok:
                 raw_text, grew = _fetch_dead_tail(tail)
             lines = render_tail_lines(raw_text, tty=False, n=tail)
-            # This call just paid the absent-index scan cost -- build the
-            # index straight off the on-disk transcript (never into the
-            # run dir) and cache it so the NEXT tail request against this
-            # same iteration and transcript size is bounded, not scanned
-            # again (PRD C.4's "paid once per iteration"). `grew` (task
-            # cure-01-04): whether the fetch above actually had to resort
-            # to the FULL-ask bound to resolve -- see `_absent_index_
-            # cache_store`'s own doc for why this, not a legacy
-            # `collapse_index.json`'s mere presence, is the signal that
-            # decides whether building this cache is worth its own cost.
-            _absent_index_cache_store(run_root, run_id, force=grew)
+            _absent_index_cache_fill(run_root, run_id, tail, force=grew)
     else:
         ok, raw_text = _proxy_text(reg, run_id, "/logs")
         if not ok:
@@ -1568,16 +1561,27 @@ _STATUS_BLOCK_CACHE: dict[str, tuple[float, dict]] = {}
 # Task 045 (H.3): the rendered-tail cache for `GET /api/runs/<id>/logs`.
 # `{run_id: (key, (live, lines))}` -- see `_cached_rendered_log_lines` below.
 _LOG_TAIL_CACHE: dict[str, tuple[tuple, tuple[bool, list[str]]]] = {}
-# Task 015 (PRD C.4): the hub-owned ABSENT-INDEX cache. `{run_id: ((number,
-# transcriptBytes), index)}` -- see `_absent_index_cache_lookup`/
-# `_absent_index_cache_store` below. Deliberately keyed the same shape as
-# the other per-run caches above (one slot per run id, replaced whole),
-# and deliberately never written into any run dir: `render_index.write_index`
-# is the engine's own call, from `engine/loop.py`, into a directory the
-# engine owns; the hub only READS a run dir it does not own, so an index a
-# hub-side scan builds lives here, in this process's own memory, and
-# nowhere on disk.
-_ABSENT_INDEX_CACHE: dict[str, tuple[tuple[int, int], dict]] = {}
+# Task 015 (PRD C.4), extended to every needed iteration by task
+# cure-01-02-2 (PRD C.4, D.1; DoD 3): the hub-owned ABSENT-INDEX cache.
+# `{run_id: {iteration_number: ((inode, size, mtime_ns), index)}}` -- one
+# sub-key PER ITERATION a tail's backward walk has ever needed to scan
+# from scratch for this run, not merely the latest one -- see
+# `_absent_index_cache_get`/`_absent_index_cache_put`/`_absent_index_
+# cache_lookup_only`/`_absent_index_cache_fill` below. The per-iteration
+# value's own key is the transcript's full identity witness (inode, size,
+# mtime_ns) at the moment the scan was taken -- not merely its byte size
+# -- so a DIFFERENT run's iteration 1 (a different inode, same size by
+# coincidence) never satisfies a lookup for THIS run's iteration 1; any
+# growth, in-place rewrite or replacement changes at least one of the
+# three and forces a fresh scan, never a stale hit. Deliberately keyed
+# the same shape as the other per-run caches above at its OUTER level
+# (one slot per run id, replaced whole for `_bound_run_cache`'s own LRU
+# discipline), and deliberately never written into any run dir:
+# `render_index.write_index` is the engine's own call, from
+# `engine/loop.py`, into a directory the engine owns; the hub only READS
+# a run dir it does not own, so an index a hub-side scan builds lives
+# here, in this process's own memory, and nowhere on disk.
+_ABSENT_INDEX_CACHE: dict[str, dict[int, tuple[tuple[int, int, int], dict]]] = {}
 
 # Task 047 (H.5): the cap each of the three module-scope derivation caches
 # above (`_ITERATION_ROW_CACHE`, `_TASKS_BLOCK_CACHE`, `_STATUS_BLOCK_CACHE`)
@@ -1613,106 +1617,159 @@ def _bound_run_cache(cache: dict, run_id: str) -> None:
         cache.pop(oldest)
 
 
-def _absent_index_cache_lookup(run_root: Path, run_id: str) -> dict | None:
-    """Task 015 (PRD C.4): the hub cache's read side. `key` is
-    `render_index.latest_iteration_cache_key(run_root)` -- the latest
-    iteration's own number and current transcript byte size -- so a cache
-    entry built for an EARLIER transcript size (this same iteration, but
-    fewer bytes written since) or an OLDER/NEWER iteration number is a
-    miss, never a stale hit: any growth at all (a live iteration still
-    streaming, or a new iteration having started) falls through to the
-    growth-based scan again, exactly as an absent cache would. Returns
-    `None` on a miss; never raises."""
-    key = render_index.latest_iteration_cache_key(run_root)
-    if key is None:
+def _absent_index_cache_get(run_root: Path, run_id: str, number: int) -> dict | None:
+    """Task cure-01-02-2 (PRD C.4, D.1; DoD 3): the per-iteration cache's
+    read side. A miss whenever iteration `number`'s CURRENT transcript
+    identity -- `(inode, size, mtime_ns)`, the same triple `render_index`
+    itself uses as a witness -- does not match whatever this run's cache
+    last built it at: any growth (a live iteration still streaming), an
+    in-place same-size rewrite (the mtime moves even when the size does
+    not) or a replacement (a new inode) changes at least one of the
+    three and forces a fresh scan for exactly that iteration, never a
+    stale hit -- and, unlike a size-only key, two DIFFERENT runs' same-
+    numbered iterations happening to share a byte count never collide,
+    because their inodes never do. Every OTHER iteration's own cached
+    entry for this run is untouched either way, so a request that only
+    needed the latest one never invalidates an earlier, unrelated,
+    already-finished iteration's cache. Returns `None` on a miss; never
+    raises."""
+    try:
+        st = iteration_output_path(run_root, number).stat()
+    except OSError:
         return None
-    cached = _ABSENT_INDEX_CACHE.get(run_id)
-    if cached is None or cached[0] != key:
+    run_cache = _ABSENT_INDEX_CACHE.get(run_id)
+    if not run_cache or number not in run_cache:
         return None
-    _bound_run_cache(_ABSENT_INDEX_CACHE, run_id)
-    return cached[1]
-
-
-def _absent_index_cache_store(run_root: Path, run_id: str, *,
-                              force: bool = False) -> None:
-    """Task 015 (PRD C.4): the hub cache's write side, called once a
-    growth-based scan has already paid the absent-index cost for this
-    run's latest iteration -- builds that SAME iteration's own render
-    index straight from its on-disk transcript
-    (`render_index.compute_render_index`, the identical from-scratch
-    builder the engine's own `render_index.write_index` uses, just never
-    written back to the run dir) and stores it under the key the next
-    call will look for (`_absent_index_cache_lookup`). A run with no
-    iterations yet, or whose latest transcript cannot be stat'd right
-    now, is a silent no-op -- this cache is a pure speed optimisation, so
-    a failed store here costs nothing beyond the scan that already ran.
-
-    `force` (task cure-01-04, PRD C.2/C.4; before this task, the skip
-    below was keyed on this same iteration's `collapse_index.json` being
-    present and valid, which is NOT the same claim as "the scan that just
-    ran was cheap": PRD Q's own silent-prelude fixture, written WITH a
-    valid `collapse_index.json`, still needs the outer growth loop to
-    grow all the way to its FULL-ask bound to resolve -- reading close to
-    the whole transcript regardless -- so skipping the cache build for it
-    left a second identical call paying that same near-full-transcript
-    cost again, every time, which the review that opened this task caught
-    directly: two calls at ~12.1M bytes each, not one. `force` is instead
-    the caller's own report of whether ITS scan actually needed that
-    full-ask bound (`ui_server.rendered_log_lines`'s `_fetch_live_tail`/
-    `_fetch_dead_tail`, both now returning that as their own third value)
-    -- true expense, not a proxy for it. Skip the build (a silent no-op)
-    only when `force` is false AND this same iteration's own
-    `collapse_index.json` is present and valid: PRD C.5's own no-
-    regression fixtures (`_write_iteration_with_ignored_head`/
-    `_write_iteration_with_interleaved_ignored_suffix`, both written WITH
-    a `collapse_index.json`) resolve within the very first or second
-    growth round -- `force` is always false for them -- so this still
-    skips paying an extra full-transcript read to build a cache neither of
-    them will ever need to hit again at the SAME size, keeping their own
-    pinned, already-cheap byte counts exactly as measured. A genuinely
-    ABSENT or invalid `collapse_index.json`, or a scan that DID need the
-    full-ask bound despite a valid one, always builds and caches the
-    index -- both are precisely the shape whose repeat scan is worth
-    caching."""
-    key = render_index.latest_iteration_cache_key(run_root)
-    if key is None:
-        return
-    number, _size = key
-    itdir = iteration_dir(run_root, number)
-    if not force and collapse_index.load_index(itdir) is not None:
-        return
-    index = render_index.compute_render_index(iteration_output_path(run_root, number))
-    _ABSENT_INDEX_CACHE[run_id] = (key, index)
-    _bound_run_cache(_ABSENT_INDEX_CACHE, run_id)
-
-
-def _refused_index_rebuild(run_root: Path, run_id: str, *,
-                           cached: bool) -> dict | None:
-    """Task cure-01-01-4 (PRD C.1/C.3, D.1): the exact fallback for a
-    render index that exists but was refused -- the latest iteration's own
-    `render_index.json` is present yet `render_index.load_index` refuses it
-    (tampered, replaced, poisoned, malformed), or `cached` says a hub-cached
-    index for this very key was just refused by `bounded_tail`'s own
-    witness check. Rebuilds the index from the transcript's current bytes
-    (`render_index.compute_render_index`, never written into the run dir),
-    caches it under the current key exactly as `_absent_index_cache_store`
-    would, and returns it; `None` when there is nothing refused to replace
-    (no iteration, or no index at all -- the ordinary absent-index case
-    keeps its growth-scan fallback and its own pinned costs)."""
-    key = render_index.latest_iteration_cache_key(run_root)
-    if key is None:
+    identity, index = run_cache[number]
+    if identity != (st.st_ino, st.st_size, st.st_mtime_ns):
         return None
-    number, _size = key
-    itdir = iteration_dir(run_root, number)
-    if not cached:
-        if not (itdir / render_index.INDEX_FILENAME).exists():
-            return None
-        if render_index.load_index(itdir) is not None:
-            return None
-    index = render_index.compute_render_index(iteration_output_path(run_root, number))
-    _ABSENT_INDEX_CACHE[run_id] = (key, index)
     _bound_run_cache(_ABSENT_INDEX_CACHE, run_id)
     return index
+
+
+def _absent_index_cache_put(run_root: Path, run_id: str, number: int) -> dict | None:
+    """Task cure-01-02-2 (PRD C.4, D.1; DoD 3): the per-iteration cache's
+    write side -- scans iteration `number`'s own on-disk transcript from
+    scratch (`render_index.compute_render_index`, the identical
+    from-scratch builder the engine's own `render_index.write_index`
+    uses, just never written back to the run dir, which the hub only
+    reads and does not own) and stores the result under THIS iteration's
+    own sub-key, keyed by the identity witness `compute_render_index`
+    itself vouches for (its own `transcriptInode`/`transcriptWitnessBytes`/
+    `transcriptMtimeNs`, never a separate, racy `stat()` of our own),
+    leaving every other cached iteration for this run untouched. A read
+    that raced a concurrent modification (`transcriptInode` left 0, the
+    same signal `render_index.write_index` itself treats as unsafe to
+    publish) still hands the caller its one-shot answer but is never
+    cached -- there is nothing safe to key it by. Returns the freshly
+    scanned index (whether or not it got cached) so the caller can use it
+    immediately; `None` only when the transcript cannot be read at all
+    (a pure cache-miss signal; this cache is a pure speed optimisation,
+    so a failed build costs nothing beyond the scan the caller already
+    has to fall back to)."""
+    out_path = iteration_output_path(run_root, number)
+    if not out_path.exists():
+        return None
+    index = render_index.compute_render_index(out_path)
+    inode = index.get("transcriptInode")
+    if inode:
+        identity = (inode, index["transcriptWitnessBytes"], index["transcriptMtimeNs"])
+        _ABSENT_INDEX_CACHE.setdefault(run_id, {})[number] = (identity, index)
+        _bound_run_cache(_ABSENT_INDEX_CACHE, run_id)
+    return index
+
+
+def _absent_index_cache_lookup_or_rebuild_refused(run_root: Path, run_id: str):
+    """Task cure-01-02-2 (PRD C.4, D.1; DoD 3), folding in task
+    cure-01-01-4's own single-iteration `_refused_index_rebuild`: the
+    `render_index.bounded_tail(..., on_missing=)` callback for the FIRST,
+    always-attempted pass. For an iteration this walk needs:
+
+      1. A previous call's own cached scan, still valid for this exact
+         transcript identity (`_absent_index_cache_get`) -- reused as is,
+         no fresh scan.
+      2. Otherwise, an index that EXISTS on disk (`render_index.json`,
+         present but refused: tampered, replaced, poisoned, malformed) is
+         rebuilt right here, from the transcript's current bytes, and
+         cached: the caller (task cure-01-01-4's own contract) always
+         gets the fresh answer through the SAME bounded, exact walk
+         `bounded_tail` already does, never the growth loop's cut
+         windows, which cannot see a text line still open across the
+         cut.
+      3. Otherwise -- no on-disk index, and no hub-cache entry still
+         valid for this exact identity -- declines (`None`), leaving
+         `rendered_log_lines`'s own growth-based fallback (cheap for PRD
+         P's collapse-index-bounded fixtures, unbounded but correct for
+         a genuinely absent one) as the answer for THIS call;
+         `_absent_index_cache_fill` gives this same iteration its own
+         cached scan afterward, gated exactly as task cure-01-04 already
+         gated the single-iteration case, so a LATER repeated tail
+         against it is served by case 1 above instead. Deliberately
+         never keyed off the mere PRESENCE of a hub-cache entry for this
+         iteration number regardless of whether it still matches --
+         this cache is shared, by run id and iteration number alone,
+         across every run this hub process ever serves, so treating a
+         bare stale entry as "this run once had one" would force an
+         eager rebuild for a run that has never actually needed one,
+         merely because some UNRELATED run reused the same run id and
+         iteration number earlier in this process's life.
+
+    So a tail spanning several unindexed/unusably-indexed COLD iterations
+    pays each of their scan costs at most once across this process's life
+    (until that exact iteration's own transcript identity next changes),
+    never once per request and never only for the newest iteration in
+    the run -- without ever forcing a fresh, possibly wasted, scan for an
+    iteration that has never needed one before."""
+    def on_missing(number: int) -> dict | None:
+        cached = _absent_index_cache_get(run_root, run_id, number)
+        if cached is not None:
+            return cached
+        itdir = iteration_dir(run_root, number)
+        if not (itdir / render_index.INDEX_FILENAME).exists():
+            return None
+        return _absent_index_cache_put(run_root, run_id, number)
+    return on_missing
+
+
+def _absent_index_cache_fill(run_root: Path, run_id: str, n: int, *, force: bool) -> None:
+    """Task cure-01-02-2 (PRD C.4, D.1; DoD 3): called once the growth-
+    based fetch has already resolved a tail the cheap lookup-only attempt
+    above could not -- walks `render_index.bounded_tail`'s own backward
+    walk again, this time building and caching (`_absent_index_cache_
+    put`) a fresh correctness scan for every iteration that walk still
+    finds missing or unusable, not merely the latest one (task 015's own
+    original scope). A later repeated tail spanning the SAME cold
+    iterations then resolves entirely from cache, through the lookup-only
+    attempt alone, never rescanning any of them again.
+
+    Whether a given iteration is actually worth scanning here is gated
+    exactly as task cure-01-04's single-iteration cache already decided
+    for the latest one alone: skip it when this run's growth-based fetch
+    did NOT need its own full-ask bound to resolve (`force`, the fetch's
+    own `grew` return) AND that iteration still carries a valid legacy
+    `collapse_index.json` -- PRD P's own cheap, collapse-index-bounded
+    fixtures resolve within a couple of growth rounds without ever
+    reading their iteration's own transcript in full, so forcing a
+    from-scratch `compute_render_index` scan for them here would be a
+    NEW cost this task must not add, never a reuse of one already paid.
+    Every other case -- no on-disk index ever existed and no valid
+    legacy collapse index either, or the fetch's own growth genuinely
+    needed its full-ask bound -- scans and caches, because that scan's
+    cost is the same order of magnitude the growth-based fetch that just
+    ran already paid.
+
+    Pure caching side effect -- its own return value is unused by every
+    caller, which already has its answer from the growth-based fetch
+    that ran just before it."""
+    def on_missing(number: int) -> dict | None:
+        cached = _absent_index_cache_get(run_root, run_id, number)
+        if cached is not None:
+            return cached
+        itdir = iteration_dir(run_root, number)
+        if not force and collapse_index.load_index(itdir) is not None:
+            return None
+        return _absent_index_cache_put(run_root, run_id, number)
+    render_index.bounded_tail(run_root, n, on_missing=on_missing)
 
 
 def _cached_iteration_row(run_dir: Path, run_id: str, number: int) -> dict | None:
