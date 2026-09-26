@@ -55,14 +55,16 @@ def _wire_disk_only(monkeypatch):
     monkeypatch.setattr(ui_server, "_proxy_text", lambda *a, **k: (False, ""))
 
 
-def _snapshot_run_dir(run_root) -> dict[str, int]:
-    """Every file under `run_root`'s parent run directory, by relative
-    path, mapped to its byte size -- used to prove a scan never writes
-    into (or removes from) a run dir the hub only reads."""
+def _snapshot_run_dir(run_root) -> dict[str, bytes]:
+    """Every file under the run directory `run_root`, by relative path,
+    mapped to its full byte content -- used to prove a scan never writes
+    into, removes from, or rewrites (even at the same size) any file in a
+    run dir the hub only reads. Directories are listed too (mapped to
+    None), so a created empty directory also counts as a write."""
     run_dir = run_root
     return {
-        str(p.relative_to(run_dir)): p.stat().st_size
-        for p in sorted(run_dir.rglob("*")) if p.is_file()
+        str(p.relative_to(run_dir)): (p.read_bytes() if p.is_file() else None)
+        for p in sorted(run_dir.rglob("*"))
     }
 
 
@@ -91,6 +93,14 @@ def test_a_scan_of_an_absent_index_iteration_never_writes_into_the_run_dir(
     # the "never writes into the run dir" assertion above would be true
     # for a trivial reason.
     assert "probe" in ui_server._ABSENT_INDEX_CACHE
+    # And the snapshot really compares bytes, not just sizes: a same-size
+    # rewrite of the transcript must make it differ.
+    transcript = itdir / "output.jsonl"
+    data = transcript.read_bytes()
+    flipped = bytes([data[0] ^ 0x01]) + data[1:]
+    transcript.write_bytes(flipped)
+    assert len(flipped) == len(data)
+    assert _snapshot_run_dir(run_root) != before
 
 
 def test_second_call_on_an_absent_index_iteration_is_bounded_and_both_calls_render_exactly(
