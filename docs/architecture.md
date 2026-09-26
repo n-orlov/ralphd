@@ -1809,7 +1809,18 @@ partial, silently-wrong render) when they fire:
   was missing a key (an empty `{}`, say) passed `load_index` and only
   failed later, downstream, inside `log_render.render_to_text` itself
   (`KeyError: 'text_seen'`) -- an exception reaching the caller instead of
-  an ordinary fallback.
+  an ordinary fallback. The check reaches inside the containers and runs
+  on every checkpoint, not only the leading one: the four collapse flags
+  are booleans; `tool_args` is an object; `tool_pending` is an object
+  whose every value is a two-element `[name, args]` array with a string
+  `name`; `open_tool_line` is a string or `null`; and
+  `collapse_unresolved` is an array of strings. A later checkpoint
+  carrying, say, `tool_pending = {"call-id": 42}` is refused by
+  `load_index` rather than raising `TypeError` when `bounded_tail`
+  hydrates it. As defence in depth (an `index=` passed straight to
+  `bounded_tail` never goes through `load_index`), `bounded_tail` itself
+  answers `None` -- the caller's full-render fallback -- when hydrating or
+  rendering a stored state raises.
 - **`checkpoints[0]` -- the transcript's own first fed raw line -- is
   re-rendered from a fresh `new_render_state()` and checked against its
   own stored `renderedLines`/`state`.** This is the one root-of-trust

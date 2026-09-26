@@ -409,6 +409,75 @@ def test_missing_or_wrong_typed_checkpoint_state_falls_back_on_both_surfaces(
         assert rendered == full[-1:] == ["beta"], (path, damage, rendered)
 
 
+@pytest.mark.parametrize("damage", [
+    "tool-pending-int", "tool-pending-short-list", "tool-pending-non-str-name",
+    "tool-pending-list", "unresolved-nested-list", "unresolved-int-member",
+    "open-tool-line-int"])
+def test_malformed_nested_state_in_a_later_checkpoint_falls_back_on_both_surfaces(
+        tmp_path, monkeypatch, damage):
+    """Task cure-01-03 retry (PRD C.1/C.3, D.1, DoD 3-4): the checkpoint-
+    state shape check reaches INSIDE the containers, and applies to every
+    checkpoint, not just the leading one. A LATER checkpoint (here the
+    last, which seeds the unindexed suffix's render) whose nested value
+    cannot hydrate -- `tool_pending = {"call-id": 42}` raised
+    `TypeError: 'int' object is not iterable` out of
+    `ui_server.rendered_log_lines` on both surfaces before this retry --
+    makes `render_index.load_index` refuse the index, and both surfaces
+    answer the exact full-render tail ('gamma', from the appended suffix)
+    instead of raising."""
+    silent = json.dumps({"type": "ignored", "padding": "x" * 220})
+    lines = [silent, _said("alpha"), _said("beta"), silent, _said("gamma")]
+    for path in ("disk", "api"):
+        sub = tmp_path / f"nested-{damage}-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        _write_live_iteration(run_root, lines, ended=False, indexed_lines=3)
+        itdir = run_root / "iterations" / "0001"
+        index_path = itdir / render_index.INDEX_FILENAME
+        doc = json.loads(index_path.read_text())
+        assert len(doc["checkpoints"]) == 3
+        state = doc["checkpoints"][-1]["state"]
+        if damage == "tool-pending-int":
+            state["tool_pending"] = {"call-id": 42}
+        elif damage == "tool-pending-short-list":
+            state["tool_pending"] = {"call-id": ["bash"]}
+        elif damage == "tool-pending-non-str-name":
+            state["tool_pending"] = {"call-id": [7, {}]}
+        elif damage == "tool-pending-list":
+            state["tool_pending"] = [["bash", {}]]
+        elif damage == "unresolved-nested-list":
+            state["collapse_unresolved"] = [["textSeen"]]
+        elif damage == "unresolved-int-member":
+            state["collapse_unresolved"] = [1]
+        else:
+            state["open_tool_line"] = 5
+        index_path.write_text(json.dumps(doc))
+
+        assert render_index.load_index(itdir) is None
+        assert render_index.bounded_tail(run_root, 1) is None
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        assert full[-1:] == ["gamma"], full
+        _, rendered = _measure(sub, monkeypatch, run_root, 1, path)
+        assert rendered == full[-1:] == ["gamma"], (path, damage, rendered)
+
+
+def test_bounded_tail_refuses_a_passed_in_index_whose_state_cannot_hydrate(tmp_path):
+    """Defence in depth behind `load_index`: an `index=` handed straight to
+    `render_index.bounded_tail` (the hub's absent-index cache path, which
+    never re-runs `load_index`) whose last checkpoint state cannot be
+    hydrated or rendered yields `None` -- the caller's full-render
+    fallback -- never an exception."""
+    silent = json.dumps({"type": "ignored", "padding": "x" * 220})
+    lines = [silent, _said("alpha"), _said("gamma")]
+    run_root = tmp_path / "registry" / "runs" / "probe"
+    index, _ = _write_live_iteration(run_root, lines, ended=False, indexed_lines=2)
+    index["checkpoints"][-1]["state"]["tool_pending"] = {"call-id": 42}
+    assert render_index.bounded_tail(run_root, 1, index=index) is None
+    del index["checkpoints"][-1]["state"]["text_seen"]
+    assert render_index.bounded_tail(run_root, 1, index=index) is None
+
+
 def test_a_genuine_append_only_lagging_index_still_validates_and_stays_bounded(
         tmp_path, monkeypatch):
     """Regression guard alongside the two rejection tests above: neither

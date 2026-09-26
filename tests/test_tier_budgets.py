@@ -126,8 +126,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # typed checkpoint state x4, one append-only-lagging regression guard),
     # measured `-m fast --collect-only` -> fast 6308/435, `-m smoke` ->
     # smoke 4616/312.
-    "fast": {"tests": 6308, "modules": 435},
-    "smoke": {"tests": 4616, "modules": 312},
+    # cure-01-03 retry: +8 tests, no new module (same module: malformed
+    # NESTED state in a later checkpoint x7, a passed-in index whose state
+    # cannot hydrate), measured `-m fast --collect-only` -> fast 6316/435,
+    # `-m smoke` -> smoke 4624/312.
+    "fast": {"tests": 6316, "modules": 435},
+    "smoke": {"tests": 4624, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

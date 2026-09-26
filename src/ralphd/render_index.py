@@ -139,9 +139,22 @@ def _valid_checkpoint_state_shape(state: object) -> bool:
         return False
     if not all(isinstance(state[k], dict) for k in _STATE_DICT_KEYS):
         return False
+    # The NESTED values are checked too, not just their containers: each
+    # `tool_pending` entry is hydrated back into a `(name, args)` tuple by
+    # `_state_from_json` and later unpacked as exactly that pair, and each
+    # `collapse_unresolved` member goes into a `set` -- so a checkpoint
+    # like `{"tool_pending": {"call-id": 42}}` or
+    # `{"collapse_unresolved": [[1]]}` is structurally malformed and is
+    # refused here rather than raising `TypeError` downstream.
+    for entry in state["tool_pending"].values():
+        if not (isinstance(entry, list) and len(entry) == 2
+                and isinstance(entry[0], str)):
+            return False
     if state["open_tool_line"] is not None and not isinstance(state["open_tool_line"], str):
         return False
-    return isinstance(state["collapse_unresolved"], list)
+    unresolved = state["collapse_unresolved"]
+    return (isinstance(unresolved, list)
+            and all(isinstance(flag, str) for flag in unresolved))
 
 
 def _leading_checkpoint_matches(output_path: Path, checkpoints: list[dict]) -> bool:
@@ -568,14 +581,23 @@ def bounded_tail(run_root: Path, n: int, *, index: dict | None = None) -> list[s
         size = 0
     checkpoints = index["checkpoints"]
     covered = index["transcriptBytes"]
-    state = (_state_from_json(copy.deepcopy(checkpoints[-1]["state"])) if checkpoints
-             else new_render_state())
-    acc = _render_unindexed_suffix(out_path, covered, size, state, n)
-    if acc is None:
+    # Defence in depth behind `load_index`'s own shape check: a stored
+    # checkpoint state that still makes hydration or rendering raise (a
+    # passed-in `index` that never went through `load_index`, or a shape
+    # this module's validator does not anticipate) makes the index
+    # unusable -- `None`, so the caller falls back to the full render --
+    # never an exception escaping to `ui_server.rendered_log_lines`.
+    try:
+        state = (_state_from_json(copy.deepcopy(checkpoints[-1]["state"]))
+                 if checkpoints else new_render_state())
+        acc = _render_unindexed_suffix(out_path, covered, size, state, n)
+        if acc is None:
+            return None
+        if meta.get("endedAt"):
+            acc += render_to_text(_boundary_line(meta, "end"), tty=False, state=state)
+        walked = _prepend_covered(out_path, checkpoints, acc, n)
+    except (TypeError, KeyError, ValueError, AttributeError, IndexError):
         return None
-    if meta.get("endedAt"):
-        acc += render_to_text(_boundary_line(meta, "end"), tty=False, state=state)
-    walked = _prepend_covered(out_path, checkpoints, acc, n)
     if walked is None:
         return None
     acc, exhausted = walked
