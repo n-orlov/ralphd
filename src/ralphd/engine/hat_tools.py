@@ -705,7 +705,8 @@ def _http_post_text(url: str, text: str,
 
 
 def send_notification(run: RunDir, text: str, url: str | None, *,
-                      poster=None, timeout_s: float = 15.0) -> dict:
+                      poster=None, timeout_s: float = 15.0,
+                      max_attempts: int = 2) -> dict:
     """POST `text` to `url` (the engine's own configured notifier -- PRD
     requirement B.3) and record an event carrying EXACTLY the field set
     the requirement names: `ts` (the event's own, from `RunDir.emit`),
@@ -735,15 +736,25 @@ def send_notification(run: RunDir, text: str, url: str | None, *,
 
     Task 017 (PRD requirement A.7, #224): a first attempt that fails (a
     connection error, or a non-2xx status -- the SAME `ok` test the event
-    split above already uses) is retried EXACTLY ONCE, immediately, no
-    backoff, before either event is written -- an escalation notifier is
-    the one send this run may never get a second chance to raise through
-    any other channel, so a single transient failure (a notifier warming
-    up, one dropped connection) must not silently lose it. Still exactly
-    ONE event per call: only the FINAL attempt's outcome is recorded, so a
-    reader of `notification.sent`/`notification.failed` never sees two
-    rows for one logical send. A first attempt that already succeeds
-    never retries at all -- the common case costs nothing extra.
+    split above already uses) is retried up to `max_attempts` (default
+    2 -- exactly one retry, immediately, no backoff), before either event
+    is written -- an escalation notifier is the one send this run may
+    never get a second chance to raise through any other channel, so a
+    single transient failure (a notifier warming up, one dropped
+    connection) must not silently lose it. Still exactly ONE event per
+    call, whatever `max_attempts` is: only the FINAL attempt's outcome is
+    recorded, so a reader of `notification.sent`/`notification.failed`
+    never sees two rows for one logical send. A first attempt that
+    already succeeds never retries at all -- the common case costs
+    nothing extra.
+
+    Task cure-01-01-3 (PRD requirement A.4): `max_attempts=1` (passed by
+    `LoopSupervisor._notify_escalation_delivery`'s own OUTER retry loop,
+    `engine/loop.py`) disables this retry-once entirely, so a caller that
+    already retries with backoff at a higher level can bound the TOTAL
+    number of real POSTs across both layers instead of paying for both:
+    the outer loop's own attempt count is exactly the number of real
+    POSTs made, with none hidden inside this call.
     """
     poster = poster or _http_post_text
     text_sha256 = hashlib.sha256(text.encode()).hexdigest()
@@ -755,9 +766,11 @@ def send_notification(run: RunDir, text: str, url: str | None, *,
                 "error": "no notifier URL configured"}
     status, error = poster(url, text, timeout_s)
     ok = status is not None and 200 <= status < 300
-    if not ok:
+    attempt = 1
+    while not ok and attempt < max_attempts:
         status, error = poster(url, text, timeout_s)
         ok = status is not None and 200 <= status < 300
+        attempt += 1
     record = {"endpoint": url, "textSha256": text_sha256,
               "httpStatus": status}
     run.emit(NOTIFICATION_SENT_EVENT if ok else NOTIFICATION_FAILED_EVENT,

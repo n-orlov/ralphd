@@ -1409,11 +1409,16 @@ never a second `notification.sent`/`notification.failed` split -- task
 of those two names) and retries a failed attempt, after a bounded backoff
 (`_ESCALATION_DELIVERY_BACKOFF_S`: 60s, then 120s -- 180s total, inside the
 PRD's "a few minutes" and its own 300s ceiling), up to
-`_ESCALATION_DELIVERY_MAX_ATTEMPTS` (3) attempts in total -- distinct from,
-and layered on top of, `hat_tools.send_notification`'s own separate task
-017/requirement A.7 retry-once-immediately-no-backoff, which still runs
-INSIDE each of these three attempts unchanged. If the LAST attempt still
-failed, the engine emits one additional, distinct event,
+`_ESCALATION_DELIVERY_MAX_ATTEMPTS` (3) attempts in total -- and that
+number (3) is also the TOTAL count of real notifier HTTP POSTs an
+escalation ever makes (task cure-01-01-3, PRD requirement A.4's own DoD 1),
+never a second, independent three-attempt budget stacked underneath it:
+each of the 3 outer attempts calls `_notify(text, max_attempts=1)`, which
+disables `hat_tools.send_notification`'s own separate task 017/requirement
+A.7 retry-once-immediately-no-backoff for this path only -- every other,
+non-escalation `self._notify(...)` call site keeps that retry unchanged.
+If the LAST attempt still failed, the engine emits one additional, distinct
+event,
 `notification.escalation_undelivered` (`reason` names the pause reason that
 went undelivered) -- the signal that this escalation never reached the
 operator at all, not merely that one attempt did not. Neither a failing nor

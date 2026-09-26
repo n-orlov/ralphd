@@ -837,7 +837,8 @@ class LoopSupervisor:
             return
         self.run.update_status(workspaceVersion=workspace_version)
 
-    def _notify_via_configured_notifier(self, text: str) -> dict:
+    def _notify_via_configured_notifier(self, text: str,
+                                        max_attempts: int = 2) -> dict:
         """Task 007 (PRD requirement D.1, finding 5): the production
         `self.notifier` callable, wired only when `self.cfg.notifier_url`
         is set. Reaches it through `hat_tools.send_notification`, B.3's own
@@ -847,6 +848,14 @@ class LoopSupervisor:
         (`textSha256`, `endpoint`, `httpStatus`) on `events.jsonl` and in
         the run record's notifications section, the same as any hat's
         `notify` tool call.
+
+        `max_attempts` (default 2, `send_notification`'s own default --
+        task 017/A.7's retry-once) is forwarded unchanged; task cure-
+        01-01-3 (PRD requirement A.4) has `_notify_escalation_delivery`
+        below call this with `max_attempts=1` through `_notify`'s own
+        forwarding seam, so its OUTER retry loop is the only layer that
+        retries an escalation send, keeping the TOTAL real POSTs across
+        both layers bounded instead of compounding them.
 
         `send_notification` itself never raises for a connection error or
         a non-2xx status -- both just answer `ok=False` and are recorded.
@@ -858,14 +867,16 @@ class LoopSupervisor:
         notifier attempt must never turn that into a crashed iteration.
         """
         try:
-            return hat_tools.send_notification(self.run, text, self.cfg.notifier_url)
+            return hat_tools.send_notification(
+                self.run, text, self.cfg.notifier_url,
+                max_attempts=max_attempts)
         except Exception:                             # pragma: no cover
             log.exception("notifier dispatch failed for run %s",
                           self.cfg.run_id)
             return {"ok": False, "detail": None,
                     "error": "notifier dispatch raised"}
 
-    def _notify(self, text: str) -> None:
+    def _notify(self, text: str, max_attempts: int = 2) -> None:
         """Task 001 (PRD requirement A, #269): the ONE bounding path every
         `self.notifier(...)` call in this module goes through, so no text
         this engine hands its own notifier can ever again repeat the #269
@@ -888,23 +899,43 @@ class LoopSupervisor:
         kept at each call site too (skips building `text` at all when
         nothing is configured to receive it), not removed by this method
         existing.
+
+        `max_attempts` (task cure-01-01-3, PRD requirement A.4) is
+        forwarded to the production notifier ONLY -- `self.notifier` is a
+        single-argument `Callable[[str], None]` for every pre-existing
+        test double this suite assigns onto it directly (a bare
+        `list.append`, a one-argument lambda, a `_StubNotifier.__call__`),
+        and none of those is this task's to rewrite. Calling with the
+        keyword and falling back to the one-argument call on `TypeError`
+        keeps every one of them working unchanged while still letting the
+        real `_notify_via_configured_notifier` (above) receive it.
         """
         if self.notifier is None:
             return None
         if len(text) > MAX_NOTIFY_CHARS:
             marker = "\n...[truncated to fit MAX_NOTIFY_CHARS]"
             text = text[: MAX_NOTIFY_CHARS - len(marker)] + marker
-        return self.notifier(text)
+        try:
+            return self.notifier(text, max_attempts=max_attempts)
+        except TypeError:
+            return self.notifier(text)
 
     # Task 004 (PRD requirement A.4, #269): the bounded-backoff schedule an
     # escalation delivery retries through -- exactly two waits (after a
     # first and a second failed attempt, none after the third and last),
     # summing to 180s, comfortably inside the PRD's "a few minutes in
     # total" and its own explicit ceiling of 300s. `_ESCALATION_DELIVERY_
-    # MAX_ATTEMPTS` (3) is the OUTER bound this schedule serves -- never
-    # confused with `hat_tools.send_notification`'s own, separate, task
-    # 017/requirement A.7 retry-once-immediately-no-backoff, which still
-    # runs INSIDE each of these three attempts and is unchanged by this.
+    # MAX_ATTEMPTS` (3) is the OUTER bound this schedule serves. Task
+    # cure-01-01-3 (PRD requirement A.4's own DoD 1, "at most 3 escalation
+    # delivery attempts") calls each outer attempt through `_notify` with
+    # `max_attempts=1`, which disables `hat_tools.send_notification`'s own,
+    # separate, task 017/requirement A.7 retry-once-immediately-no-backoff
+    # for THIS path only (every other, non-escalation `self._notify(...)`
+    # call site keeps that retry, via `_notify`'s own default of 2) -- so
+    # these three outer attempts are the ONLY retrying that happens, and
+    # the total number of real notifier POSTs an escalation ever makes is
+    # exactly this bound, never `_ESCALATION_DELIVERY_MAX_ATTEMPTS` times
+    # `send_notification`'s own internal retry count.
     _ESCALATION_DELIVERY_MAX_ATTEMPTS = 3
     _ESCALATION_DELIVERY_BACKOFF_S: tuple[float, ...] = (60.0, 120.0)
 
@@ -940,31 +971,40 @@ class LoopSupervisor:
         return True
 
     def _notify_escalation_delivery(self, text: str, reason: str) -> None:
-        """Task 004 (PRD requirement A.4, #269): the retrying delivery path
-        for an operator escalation, called ONLY from a site that has
-        already `self.pause()`d and already `self.run.emit()`ed the
-        `operator_escalation` event -- both landed on disk, and readable
-        from `status.json`/`events.jsonl`, before this method is ever
-        entered, so a slow or failing delivery never delays the pause
-        taking effect.
+        """Task 004 (PRD requirement A.4, #269), tightened by task
+        cure-01-01-3 (the same requirement's DoD 1, "at most 3 escalation
+        delivery attempts"): the retrying delivery path for an operator
+        escalation, called ONLY from a site that has already `self.
+        pause()`d and already `self.run.emit()`ed the `operator_
+        escalation` event -- both landed on disk, and readable from
+        `status.json`/`events.jsonl`, before this method is ever entered,
+        so a slow or failing delivery never delays the pause taking
+        effect.
 
         Reads back each attempt's own result (`_escalation_delivery_ok`)
         through the SAME `self._notify`/`self.notifier` seam every other
-        call site already uses -- never a second HTTP client. A failed
-        attempt is retried, after a bounded backoff
-        (`_ESCALATION_DELIVERY_BACKOFF_S`, stubbed via `_sleep_before_
-        escalation_retry`), up to `_ESCALATION_DELIVERY_MAX_ATTEMPTS`
-        attempts in total. Each attempt still goes through `hat_tools.
-        send_notification`'s own honest `notification.sent`/`notification.
-        failed` split (#197) unchanged -- a failing-then-succeeding
-        sequence leaves that trail exactly as it happened, one event per
-        attempt. Only when the LAST attempt still failed does this emit
-        the one, additional, distinct `notification.escalation_
-        undelivered` event -- the signal that this escalation never
-        reached the operator at all, not merely that one attempt did not.
+        call site already uses -- never a second HTTP client -- but with
+        `max_attempts=1`, so `hat_tools.send_notification`'s own task
+        017/A.7 retry-once is switched off for this path: this loop's own
+        `_ESCALATION_DELIVERY_MAX_ATTEMPTS` (3) OUTER attempts are then
+        the ONLY retries an escalation send ever makes, so the total
+        number of real notifier POSTs across the whole delivery, worst
+        case, is exactly 3 -- never 3 outer attempts each silently paying
+        for a second internal POST. A failed attempt is retried, after a
+        bounded backoff (`_ESCALATION_DELIVERY_BACKOFF_S`, stubbed via
+        `_sleep_before_escalation_retry`), up to `_ESCALATION_DELIVERY_
+        MAX_ATTEMPTS` attempts in total. Each attempt still goes through
+        `hat_tools.send_notification`'s own honest `notification.sent`/
+        `notification.failed` split (#197) unchanged -- a failing-then-
+        succeeding sequence leaves that trail exactly as it happened, one
+        event per attempt, one real POST per event. Only when the LAST
+        attempt still failed does this emit the one, additional, distinct
+        `notification.escalation_undelivered` event -- the signal that
+        this escalation never reached the operator at all, not merely
+        that one attempt did not.
         """
         for attempt in range(1, self._ESCALATION_DELIVERY_MAX_ATTEMPTS + 1):
-            result = self._notify(text)
+            result = self._notify(text, max_attempts=1)
             if self._escalation_delivery_ok(result):
                 return
             if attempt < self._ESCALATION_DELIVERY_MAX_ATTEMPTS:

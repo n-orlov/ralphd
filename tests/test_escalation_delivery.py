@@ -8,16 +8,24 @@ a distinct event, `notification.escalation_undelivered`. The honest
 seam: every existing `self.pause(reason=...)` + `self.notifier` escalation
 site now calls it instead of `self._notify(text)` directly. It retries the
 SAME `self._notify`/`self.notifier` path -- never a second HTTP client --
-up to `_ESCALATION_DELIVERY_MAX_ATTEMPTS` (3) OUTER attempts (each still a
-whole call to `hat_tools.send_notification`, which itself already retries
-ONCE, immediately, with no backoff -- task 017/requirement A.7, unchanged
-by this task and orthogonal to it), waiting `_ESCALATION_DELIVERY_BACKOFF_S`
-(60s, then 120s -- 180s total, inside the PRD's "a few minutes" and its own
-300s ceiling) between a failed OUTER attempt and the next, through
-`_sleep_before_escalation_retry` (stubbed at the class level for the whole
-suite, `tests/conftest.py`, so no other test pays this wait either -- this
-module's own nodes below stub the INSTANCE attribute to observe the calls,
-which shadows that class-level stub).
+up to `_ESCALATION_DELIVERY_MAX_ATTEMPTS` (3) OUTER attempts, waiting
+`_ESCALATION_DELIVERY_BACKOFF_S` (60s, then 120s -- 180s total, inside the
+PRD's "a few minutes" and its own 300s ceiling) between a failed OUTER
+attempt and the next, through `_sleep_before_escalation_retry` (stubbed at
+the class level for the whole suite, `tests/conftest.py`, so no other test
+pays this wait either -- this module's own nodes below stub the INSTANCE
+attribute to observe the calls, which shadows that class-level stub).
+
+Task cure-01-01-3 (PRD requirement A.4's own DoD 1, "at most 3 escalation
+delivery attempts"): each of those 3 outer attempts calls `self._notify`
+with `max_attempts=1`, which disables `hat_tools.send_notification`'s own,
+separate, task 017/requirement A.7 retry-once-immediately-no-backoff for
+this path -- so the outer loop is the ONLY layer that retries an
+escalation send, and the TOTAL number of real notifier HTTP POSTs an
+escalation ever makes -- counted at the `poster`/`_http_post_text` seam
+itself, never at the `send_notification`-call boundary a wrapped-doubling
+bug could hide behind -- is bounded by `_ESCALATION_DELIVERY_MAX_ATTEMPTS`
+(3), not by that number times `send_notification`'s own separate retry.
 
 At 9b72b700 there is no `_notify_escalation_delivery`, no
 `_ESCALATION_DELIVERY_MAX_ATTEMPTS`/`_ESCALATION_DELIVERY_BACKOFF_S`, and no
@@ -65,9 +73,12 @@ def _trigger(sup):
 
 def _count_send_notification_calls(monkeypatch) -> list[int]:
     """Wraps the REAL `hat_tools.send_notification` to count OUTER
-    attempts -- one per call, whatever it does internally (including its
-    own task 017/A.7 retry-once) -- without changing its behaviour at
-    all."""
+    attempts -- one per call -- without changing its behaviour at all.
+    Kept alongside the POSTER-level count below so a regression that
+    reintroduces a hidden per-attempt doubling (the bug this task cures:
+    `send_notification`'s own task 017/A.7 retry-once still firing INSIDE
+    each outer attempt) shows up as outer_calls < poster_calls instead of
+    passing unnoticed."""
     calls: list[int] = []
     real_send = hat_tools.send_notification
 
@@ -81,16 +92,19 @@ def _count_send_notification_calls(monkeypatch) -> list[int]:
 
 def test_notifier_failing_twice_then_succeeding_delivers_once(
         tmp_path, monkeypatch):
+    """Task cure-01-01-3 (PRD requirement A.4's DoD 1): the ACTUAL notifier
+    HTTP attempts -- counted at the `poster`/`_http_post_text` seam, the
+    one place a real POST would leave this process -- total at most 3 for
+    the whole escalation, whether it ultimately delivers or not. This node
+    drives the fail-twice/succeed shape: the first two real POSTs fail,
+    the third succeeds, and delivery is recorded exactly once."""
     outer_calls = _count_send_notification_calls(monkeypatch)
     sleeps = []
     poster_calls = []
 
     def stub_poster(url, text, timeout_s):
         poster_calls.append(1)
-        # The first two OUTER attempts must each fail (each may itself
-        # retry once internally, task 017/A.7); the third succeeds on its
-        # very first poster call.
-        if len(poster_calls) <= 4:
+        if len(poster_calls) <= 2:
             return 500, None
         return 200, None
 
@@ -102,8 +116,12 @@ def test_notifier_failing_twice_then_succeeding_delivers_once(
 
     _trigger(sup)
 
-    # Exactly 3 OUTER attempts: 2 failures, then the third delivers.
+    # Exactly 3 OUTER attempts, and -- the DoD this task cures -- exactly
+    # 3 REAL POSTs: send_notification's own internal retry-once (task
+    # 017/A.7) never fires here, because each outer attempt calls it with
+    # max_attempts=1. 2 failures, then the third real POST delivers.
     assert len(outer_calls) == 3
+    assert len(poster_calls) == 3
     assert sleeps == [60.0, 120.0]
 
     sent = _events(root, run_record.NOTIFICATION_SENT_EVENT)
@@ -122,10 +140,17 @@ def test_notifier_failing_twice_then_succeeding_delivers_once(
 
 def test_always_failing_notifier_is_recorded_undelivered_after_three_attempts(
         tmp_path, monkeypatch):
+    """Task cure-01-01-3 (PRD requirement A.4's DoD 1): an always-failing
+    notifier still costs at most 3 REAL POSTs total (not 3 outer attempts
+    each silently paying for a second internal one, which is what left
+    the pre-cure tree making up to 6 actual HTTP attempts for this exact
+    scenario) before the escalation is recorded undelivered."""
     outer_calls = _count_send_notification_calls(monkeypatch)
     sleeps = []
+    poster_calls = []
 
     def failing_poster(url, text, timeout_s):
+        poster_calls.append(1)
         return 500, None
 
     monkeypatch.setattr(hat_tools, "_http_post_text", failing_poster)
@@ -136,8 +161,12 @@ def test_always_failing_notifier_is_recorded_undelivered_after_three_attempts(
 
     _trigger(sup)
 
-    # At most 3 OUTER attempts, at most 300s of total backoff.
+    # At most 3 OUTER attempts, at most 3 REAL POSTs (the DoD this task
+    # cures -- previously up to 6 for this exact always-failing shape),
+    # and at most 300s of total backoff.
     assert len(outer_calls) <= 3
+    assert len(poster_calls) <= 3
+    assert len(poster_calls) == len(outer_calls)
     assert sum(sleeps) <= 300.0
 
     failed = _events(root, run_record.NOTIFICATION_FAILED_EVENT)
