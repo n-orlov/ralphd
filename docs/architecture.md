@@ -1882,9 +1882,12 @@ rendered) transcript between them -- the exact gap PRD Q's own fixture (a
 `message_end` padding) exposed against the outer doubling fetch below.
 `None` -- never a wrong-but-plausible answer -- when this one iteration
 cannot answer by itself (no iteration, no valid index, a transcript that
-re-renders differently from what its index recorded, or fewer than `n`
-lines in the whole iteration); the caller then falls back to the ordinary
-growth-based fetch.
+re-renders differently from what its index recorded); the caller then
+falls back to the ordinary growth-based fetch, UNLESS this iteration's own
+covered prefix, walked all the way back to its own byte 0, still falls
+short of `n` lines AND there is a preceding iteration to try (task
+cure-01-04, requirement C.2, DoD 3: see "Tails spanning indexed
+iterations" below).
 
 `ui_server.rendered_log_lines` calls `bounded_tail` first, on BOTH its live
 `/logs` branch and its dead-run on-disk fallback -- reading the run
@@ -1896,6 +1899,28 @@ doubling loop (below) run at all, exactly as before this task. A cheap
 whenever `bounded_tail` succeeds, purely to learn whether the container is
 still reachable (the `live` flag callers/the hub display, unrelated to
 where the tail's own content came from).
+
+**Tails spanning indexed iterations (task cure-01-04, requirement C.2,
+DoD 3).** A tail request for more lines than the LATEST iteration ever
+rendered used to answer `None` the moment its own covered prefix was
+walked all the way back to byte 0 without reaching `n` lines -- discarding
+an answer it had already, cheaply, proven complete for that iteration and
+falling into the unbounded growth-based scan for a result that scan could
+only ever re-derive identically, at unbounded cost (a review-caught
+finding: 200 lines requested of a four-line iteration read 19.8M bytes to
+answer). `bounded_tail` now instead prepends that iteration's own genuine
+`ralphd.iteration` "start" boundary line and tries the PRECEDING
+iteration the same way -- purely off ITS OWN `render_index.json`, never
+rescanning either iteration's silent flood -- and keeps walking backward
+through however many iterations the run has. Reaching the run's very
+FIRST iteration's own byte 0 with the total still short of `n` lines means
+there is genuinely no more history anywhere, indexed or not, so
+`bounded_tail` returns every line the run ever rendered rather than
+falling back for an answer already in hand. Any iteration in that walk
+without a valid index (or one that disagrees with its transcript) still
+answers `None`, exactly as a lone absent index always has -- only the
+LATEST iteration may be served by a hub-owned cached index passed through
+`index=`; every earlier one is always read from its own on-disk file.
 
 **No usable index: exact, not bounded (task 014).** The byte bound above
 is a property of the INDEXED read only. When the latest iteration's render
@@ -1937,9 +1962,21 @@ new byte appended, a new iteration begun) changes the cache key, so the
 next request scans -- and rebuilds the cache -- again: staleness here only
 ever costs a repeat of the scan, never a wrong render. The build is
 skipped when this iteration's own `collapse_index.json` is present and
-valid, since that shape already resolves cheaply through the ordinary
-per-call fetch (the P-fixture byte-count pins, requirement C.5) and would
-gain nothing from a second, differently-shaped index built on top of it.
+valid AND the fetch above did not need to grow all the way to its own
+FULL-ask bound to resolve (task cure-01-04, requirement C.4, DoD 3): a
+valid `collapse_index.json` does not, by itself, mean the fetch was cheap
+-- PRD Q's own silent-prelude fixture is written WITH one and still needs
+the full-ask bound, reading close to the whole transcript regardless, so
+gating purely on the legacy index's presence left a SECOND identical call
+paying that same near-full-transcript cost again (a review-caught
+finding: ~12.1M bytes on both the first AND the second call). The gate is
+now the caller's own report of whether its scan actually needed the
+full-ask bound (`_fetch_live_tail`/`_fetch_dead_tail`'s own third return
+value) -- the P-fixture byte-count pins (requirement C.5) still skip the
+build, since their own fetch resolves within the first or second growth
+round and never reaches the full-ask bound, but a legacy-indexed fixture
+whose fetch DOES need it now builds and caches the index too, so its own
+second call is bounded.
 
 ### Container lifecycle
 

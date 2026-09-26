@@ -135,8 +135,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # inconsistent checkpoint fields x7, a checksum-free version-1 index,
     # the bounded verification window on a large prefix), measured `-m fast
     # --collect-only` -> fast 6329/435, `-m smoke` -> smoke 4637/312.
-    "fast": {"tests": 6329, "modules": 435},
-    "smoke": {"tests": 4637, "modules": 312},
+    "fast": {"tests": 6332, "modules": 435},
+    "smoke": {"tests": 4640, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

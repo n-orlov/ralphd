@@ -605,48 +605,27 @@ def _prepend_covered(output_path: Path, checkpoints: list[dict], acc: str,
     return acc, False
 
 
-def bounded_tail(run_root: Path, n: int, *, index: dict | None = None) -> list[str] | None:
-    """The exact last `n` rendered lines of `run_root`'s merged render,
-    served from its MOST RECENT iteration's own render index alone (task
-    013) -- bytes read off the transcript stay proportional to those lines
-    (the printing raw lines that produced them) plus the index's own
-    unindexed suffix, regardless of however many silent bytes sit between
-    them and the transcript's end.
+def _one_iteration_tail_text(run_root: Path, number: int, n: int,
+                             *, index: dict | None = None) -> tuple[str, bool] | None:
+    """One iteration's own contribution to a merged bounded tail: its
+    covered prefix's printing lines (walked backward, newest first) plus
+    its unindexed suffix and, once it has ended, its own `ralphd.iteration`
+    "end" boundary line -- exactly what `bounded_tail` used to compute
+    for the LATEST iteration alone, factored out so `bounded_tail` (task
+    cure-01-04, PRD C.2) can call it for however many EARLIER iterations a
+    tail spanning indexed iterations needs too.
 
-    The whole render's output for this iteration is, in order: whatever
-    the covered prefix prints, then whatever the unindexed suffix prints
-    (`transcriptBytes` to the transcript's current size -- a live index
-    normally lags a little, and those bytes are always read in full,
-    seeded from the last checkpoint's `state`), then the `ralphd.iteration`
-    "end" line `log_merge.boundary_line` synthesizes once the iteration
-    has finished, rendered in the state the transcript left behind. This
-    builds that output from its END backward -- end line, suffix, then the
-    covered prefix's printing lines newest first -- and stops as soon as
-    it fixes the last `n` lines.
-
-    `index`, when given, is used INSTEAD OF loading `INDEX_FILENAME` from
-    the latest iteration's own directory -- task 015's hub-owned cache
-    (`cli/ui_server._absent_index_cache_lookup`) passes in an index it
-    built itself, off the on-disk transcript, for a run whose own
-    directory carries no such file (or an invalid one) at all; `load_index`
-    on that same directory would just answer `None` again. The caller
-    (never this function) is responsible for knowing the cached index
-    still describes the transcript's CURRENT size -- see the cache's own
-    key, `(iteration number, transcript size)`.
-
-    `None` -- never a wrong-but-plausible answer -- when this one iteration
-    cannot answer by itself: no iteration, no valid index (on disk or
-    passed in), a transcript that disagrees with its index, or fewer than
-    `n` lines in the whole iteration. The caller (`ui_server.
-    rendered_log_lines`, on both its live and dead-run surfaces) then
-    falls back to the growth-based fetch."""
-    if n <= 0:
-        return None
-    numbers = _iteration_numbers(run_root)
-    if not numbers:
-        return None
-    last = numbers[-1]
-    itdir = _iteration_dir(run_root, last)
+    Returns `(text, exhausted)`. `exhausted` is True exactly when the
+    backward walk reached this iteration's own byte 0 -- i.e. `text`
+    already starts at the true beginning of this iteration's own render,
+    so a caller that still needs more lines may prepend this iteration's
+    own `ralphd.iteration` "start" boundary line and move on to the
+    PRECEDING iteration, never re-reading anything already covered here.
+    `None` -- never a wrong-but-plausible answer -- when this one
+    iteration cannot answer by itself: no valid index (on disk or
+    passed in), a transcript that disagrees with it, or any other reason
+    to fall back."""
+    itdir = _iteration_dir(run_root, number)
     if index is None:
         index = load_index(itdir)
         if index is None:
@@ -657,7 +636,7 @@ def bounded_tail(run_root: Path, n: int, *, index: dict | None = None) -> list[s
         return None
     if not isinstance(meta, dict):
         return None
-    out_path = _iteration_output_path(run_root, last)
+    out_path = _iteration_output_path(run_root, number)
     try:
         size = out_path.stat().st_size
     except OSError:
@@ -684,10 +663,92 @@ def bounded_tail(run_root: Path, n: int, *, index: dict | None = None) -> list[s
     if walked is None:
         return None
     acc, exhausted = walked
-    lines = split_rendered_text(acc)
-    if exhausted and len(lines) < n:
+    if exhausted:
+        # A genuine iteration start always renders its header line
+        # (`log_render.render_log_line`'s `ralphd.iteration` branch, no
+        # `collapseSeed`) -- this walk reached byte 0 of THIS iteration's
+        # own transcript, so that header belongs immediately before `acc`.
+        # Every field the boundary line prints comes from `meta` alone, so
+        # rendering it from a fresh state is exactly what a full render's
+        # own pass over this iteration's start would do (the boundary
+        # branch resets every collapse flag regardless of what came in).
+        acc = render_to_text(_boundary_line(meta, "start"), tty=False,
+                             state=new_render_state()) + acc
+    return acc, exhausted
+
+
+def bounded_tail(run_root: Path, n: int, *, index: dict | None = None) -> list[str] | None:
+    """The exact last `n` rendered lines of `run_root`'s merged render,
+    served from its iterations' own render indexes alone (task 013,
+    extended across iteration boundaries by task cure-01-04, PRD C.2) --
+    bytes read off any one transcript stay proportional to the lines it
+    actually contributes (the printing raw lines that produced them) plus
+    that iteration's own unindexed suffix, regardless of however many
+    silent bytes sit between them and that transcript's end.
+
+    Tries the MOST RECENT iteration first (`_one_iteration_tail_text`):
+    whatever its covered prefix prints, then its unindexed suffix, then
+    its own "end" boundary line once it has ended. When that iteration's
+    OWN render, walked all the way back to its own byte 0, still falls
+    short of `n` lines, this no longer gives up the way task 013 did --
+    it prepends that iteration's own "start" boundary line and tries the
+    PRECEDING iteration the exact same way, and keeps walking backward
+    through however many iterations this run has, each purely off its own
+    render index, never rescanning a byte of silent history any of them
+    already answered from. Reaching the run's very first iteration's own
+    byte 0 with still fewer than `n` lines total means there is genuinely
+    no more history anywhere, indexed or not -- PRD C.2's own "N exceeds
+    the latest iteration's rendered output" case, extended across however
+    many earlier iterations this run has -- so this returns every line
+    the run ever rendered instead of falling back to a scan that could
+    only ever reach the same, already-known answer at unbounded cost.
+
+    `index`, when given, is used INSTEAD OF loading `INDEX_FILENAME` from
+    the LATEST iteration's own directory only -- task 015's hub-owned
+    cache (`cli/ui_server._absent_index_cache_lookup`) passes in an index
+    it built itself, off the on-disk transcript, for a run whose own
+    latest-iteration directory carries no such file (or an invalid one) at
+    all; `load_index` on that same directory would just answer `None`
+    again. Every EARLIER iteration this function may still need to consult
+    is always read from its own on-disk `render_index.json`: the absent-
+    index cache's own key (`render_index.latest_iteration_cache_key`) only
+    ever describes the latest iteration, so a cached stand-in has nothing
+    to offer any iteration before it. The caller (never this function) is
+    responsible for knowing the cached index still describes the latest
+    transcript's CURRENT size -- see the cache's own key, `(iteration
+    number, transcript size)`.
+
+    `None` -- never a wrong-but-plausible answer -- when some iteration in
+    the backward walk cannot answer by itself: no iteration at all, no
+    valid index (on disk or passed in) for an iteration the walk actually
+    needs, or a transcript that disagrees with its index. The caller
+    (`ui_server.rendered_log_lines`, on both its live and dead-run
+    surfaces) then falls back to the growth-based fetch."""
+    if n <= 0:
         return None
-    return lines[-n:]
+    numbers = _iteration_numbers(run_root)
+    if not numbers:
+        return None
+    acc = ""
+    for pos in range(len(numbers) - 1, -1, -1):
+        number = numbers[pos]
+        result = _one_iteration_tail_text(
+            run_root, number, n,
+            index=index if pos == len(numbers) - 1 else None)
+        if result is None:
+            return None
+        text, exhausted = result
+        acc = text + acc
+        if _enough(acc, n):
+            return split_rendered_text(acc)[-n:]
+        if not exhausted:
+            return None
+    # Walked every iteration this run has, from the latest back to the
+    # very first one's own byte 0, purely off each one's own render index
+    # -- and the run's WHOLE rendered output still has fewer than `n`
+    # lines. There is no more history left to consult anywhere, so this
+    # genuinely is the answer.
+    return split_rendered_text(acc)
 
 
 def latest_iteration_cache_key(run_root: Path) -> tuple[int, int] | None:

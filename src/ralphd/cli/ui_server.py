@@ -634,13 +634,18 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
     allowance regardless of how much silent transcript sits between the
     deciding line and the transcript's own end, instead of paying for
     `_fetch_live_tail`/`_fetch_dead_tail`'s SUM-of-doublings against that
-    silence. Only when it answers `None` (no iteration yet, no valid index,
-    or this one iteration's own index promising fewer lines than asked)
-    does the growth loop below run at all, exactly as before this task. A
-    cheap `GET /logs?tail=1` probe still happens whenever the fast path
-    answers, purely to learn the `live` flag this function still returns.
+    silence. `bounded_tail` (task cure-01-04, PRD C.2) walks backward
+    across however many EARLIER iterations still-usable indexes cover when
+    `N` exceeds the latest one's own rendered output, so a large `N`
+    (including the hub's own 200-line default) never falls into the
+    growth loop below merely because one iteration's own render is short.
+    Only when it answers `None` (no iteration yet, no valid index anywhere
+    the walk still needs one) does the growth loop below run at all,
+    exactly as before this task. A cheap `GET /logs?tail=1` probe still
+    happens whenever the fast path answers, purely to learn the `live`
+    flag this function still returns.
     """
-    def _fetch_live_tail(bound_tail: int) -> tuple[bool, str]:
+    def _fetch_live_tail(bound_tail: int) -> tuple[bool, str, bool]:
         bound = bound_tail
         rounds = 0
         ok, raw_text = _proxy_text(reg, run_id, f"/logs?tail={bound}")
@@ -662,9 +667,9 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
                      if rounds >= _TAIL_GROWTH_ROUNDS_BEFORE_FULL_ASK
                      else bound * 2)
             ok, raw_text = _proxy_text(reg, run_id, f"/logs?tail={bound}")
-        return ok, raw_text
+        return ok, raw_text, rounds >= _TAIL_GROWTH_ROUNDS_BEFORE_FULL_ASK
 
-    def _fetch_dead_tail(bound_tail: int) -> str:
+    def _fetch_dead_tail(bound_tail: int) -> tuple[str, bool]:
         """The on-disk-merge twin of `_fetch_live_tail` (task 048, PRD H.6):
         a dead run's fallback used to call `merged_lines` with NO tail at
         all, reading every iteration transcript the run ever recorded to
@@ -693,7 +698,7 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
                      if rounds >= _TAIL_GROWTH_ROUNDS_BEFORE_FULL_ASK
                      else bound * 2)
             raw_text = "".join(merged_lines(run_root, tail=bound))
-        return raw_text
+        return raw_text, rounds >= _TAIL_GROWTH_ROUNDS_BEFORE_FULL_ASK
 
     if tail:
         # Task 013: the render index (task 012) lets the LATEST iteration's
@@ -721,16 +726,21 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
             ok, _ = _proxy_text(reg, run_id, "/logs?tail=1")
             lines = bounded
         else:
-            ok, raw_text = _fetch_live_tail(tail)
+            ok, raw_text, grew = _fetch_live_tail(tail)
             if not ok:
-                raw_text = _fetch_dead_tail(tail)
+                raw_text, grew = _fetch_dead_tail(tail)
             lines = render_tail_lines(raw_text, tty=False, n=tail)
             # This call just paid the absent-index scan cost -- build the
             # index straight off the on-disk transcript (never into the
             # run dir) and cache it so the NEXT tail request against this
             # same iteration and transcript size is bounded, not scanned
-            # again (PRD C.4's "paid once per iteration").
-            _absent_index_cache_store(run_root, run_id)
+            # again (PRD C.4's "paid once per iteration"). `grew` (task
+            # cure-01-04): whether the fetch above actually had to resort
+            # to the FULL-ask bound to resolve -- see `_absent_index_
+            # cache_store`'s own doc for why this, not a legacy
+            # `collapse_index.json`'s mere presence, is the signal that
+            # decides whether building this cache is worth its own cost.
+            _absent_index_cache_store(run_root, run_id, force=grew)
     else:
         ok, raw_text = _proxy_text(reg, run_id, "/logs")
         if not ok:
@@ -1611,7 +1621,8 @@ def _absent_index_cache_lookup(run_root: Path, run_id: str) -> dict | None:
     return cached[1]
 
 
-def _absent_index_cache_store(run_root: Path, run_id: str) -> None:
+def _absent_index_cache_store(run_root: Path, run_id: str, *,
+                              force: bool = False) -> None:
     """Task 015 (PRD C.4): the hub cache's write side, called once a
     growth-based scan has already paid the absent-index cost for this
     run's latest iteration -- builds that SAME iteration's own render
@@ -1624,28 +1635,39 @@ def _absent_index_cache_store(run_root: Path, run_id: str) -> None:
     now, is a silent no-op -- this cache is a pure speed optimisation, so
     a failed store here costs nothing beyond the scan that already ran.
 
-    Skips the build (also a silent no-op) when this same iteration's own
-    `collapse_index.json` IS present and valid: task 014's ordinary
-    per-call fetch already resolves that shape cheaply (its own collapse
-    flags let `log_merge.merge_entries_tail` answer without ever setting
-    `_raw_text_has_unresolved_seed`, so the growth loop above stopped
-    after its first or second round, not a full-backlog scan) -- PRD
-    C.5's own no-regression fixtures (`_write_iteration_with_ignored_head`/
+    `force` (task cure-01-04, PRD C.2/C.4; before this task, the skip
+    below was keyed on this same iteration's `collapse_index.json` being
+    present and valid, which is NOT the same claim as "the scan that just
+    ran was cheap": PRD Q's own silent-prelude fixture, written WITH a
+    valid `collapse_index.json`, still needs the outer growth loop to
+    grow all the way to its FULL-ask bound to resolve -- reading close to
+    the whole transcript regardless -- so skipping the cache build for it
+    left a second identical call paying that same near-full-transcript
+    cost again, every time, which the review that opened this task caught
+    directly: two calls at ~12.1M bytes each, not one. `force` is instead
+    the caller's own report of whether ITS scan actually needed that
+    full-ask bound (`ui_server.rendered_log_lines`'s `_fetch_live_tail`/
+    `_fetch_dead_tail`, both now returning that as their own third value)
+    -- true expense, not a proxy for it. Skip the build (a silent no-op)
+    only when `force` is false AND this same iteration's own
+    `collapse_index.json` is present and valid: PRD C.5's own no-
+    regression fixtures (`_write_iteration_with_ignored_head`/
     `_write_iteration_with_interleaved_ignored_suffix`, both written WITH
-    a `collapse_index.json`) are exactly this shape, and paying an extra
-    full-transcript read here to build a cache neither of them will ever
-    need to hit again at the SAME size would push their own pinned,
-    already-cheap byte counts over budget for nothing. A genuinely
-    ABSENT or invalid `collapse_index.json` -- PRD C.3's own no-usable-
-    index fixtures, and any run recorded before either index existed --
-    is precisely the shape whose scan is worth caching, so it is the only
-    shape this function ever builds for."""
+    a `collapse_index.json`) resolve within the very first or second
+    growth round -- `force` is always false for them -- so this still
+    skips paying an extra full-transcript read to build a cache neither of
+    them will ever need to hit again at the SAME size, keeping their own
+    pinned, already-cheap byte counts exactly as measured. A genuinely
+    ABSENT or invalid `collapse_index.json`, or a scan that DID need the
+    full-ask bound despite a valid one, always builds and caches the
+    index -- both are precisely the shape whose repeat scan is worth
+    caching."""
     key = render_index.latest_iteration_cache_key(run_root)
     if key is None:
         return
     number, _size = key
     itdir = iteration_dir(run_root, number)
-    if collapse_index.load_index(itdir) is not None:
+    if not force and collapse_index.load_index(itdir) is not None:
         return
     index = render_index.compute_render_index(iteration_output_path(run_root, number))
     _ABSENT_INDEX_CACHE[run_id] = (key, index)

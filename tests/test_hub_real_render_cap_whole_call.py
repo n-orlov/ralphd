@@ -701,3 +701,121 @@ def test_a_genuine_append_only_lagging_index_still_validates_and_stays_bounded(
         measured, rendered = _measure(sub, monkeypatch, run_root, 1, path)
         assert rendered == full[-1:], (path, rendered)
         assert measured <= _FROZEN_CAP, measured
+
+
+def test_tail_exceeding_the_latest_indexed_iterations_own_output_stays_bounded(
+        tmp_path, monkeypatch):
+    """Task cure-01-04 (PRD C.2, DoD 3): a review finding at
+    22280f71-and-earlier -- `test_indexed_and_second_tails_are_bounded
+    [large-tail-*]` in the final review's own `probes-c.log` -- requested
+    200 lines (the hub's own default tail) of a fully-indexed silent-
+    prelude iteration whose WHOLE rendered output is only four lines, and
+    read 19,849,033 transcript bytes to answer it: `render_index.
+    bounded_tail` walked its ONE iteration's covered prefix all the way
+    back to byte 0 (there being nowhere else short for those four lines
+    to come from), found the four lines and no more, and gave up with
+    `None` purely because four is less than 200 -- discarding everything
+    it had already, cheaply, proven and falling all the way back to the
+    unbounded growth-based scan for an answer it already had. Fails at
+    22280f71 (measured over 19.8M bytes on both surfaces); this task's
+    cure makes `bounded_tail` return what it already walked, fully
+    exhausted, instead of re-deriving the identical answer at that cost."""
+    text = "large-tail streamed text must not trigger an unbounded rescan"
+    gap = json.dumps({"type": "message_end", "message": {"content": []},
+                      "padding": "x" * 1000})
+    for path in ("disk", "api"):
+        sub = tmp_path / f"large-tail-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        _write_iteration_with_recognized_nonrendering_gap(
+            run_root, 1, text, gap, 10_000, prelude_count=1_000)
+        itdir = run_root / "iterations" / "0001"
+        collapse_index.write_index(itdir)
+        render_index.write_index(itdir)
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        assert len(full) < 200, full  # the whole point: fewer lines exist than asked
+
+        measured, rendered = _measure(sub, monkeypatch, run_root, 200, path)
+        assert rendered == full, (path, rendered, full)
+        assert measured <= _FROZEN_CAP, (path, measured)
+
+
+def test_tail_spanning_two_indexed_iterations_never_rescans_either_ones_silence(
+        tmp_path, monkeypatch):
+    """Task cure-01-04 (PRD C.2, DoD 3): the same fix, but the extra lines
+    a tail needs sit in a PRECEDING iteration, not just further back in
+    the latest one -- `render_index.bounded_tail` must walk backward
+    across an iteration boundary, purely off each iteration's own
+    `render_index.json`, prepending the earlier one's own genuine
+    `ralphd.iteration` "start" boundary line once its own covered prefix
+    is fully exhausted, never rescanning either iteration's own silent
+    flood to get there."""
+    gap = json.dumps({"type": "message_end", "message": {"content": []},
+                      "padding": "x" * 1000})
+    for path in ("disk", "api"):
+        sub = tmp_path / f"span-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        for number, text in ((1, "span first iteration streamed text"),
+                             (2, "span second iteration streamed text")):
+            _write_iteration_with_recognized_nonrendering_gap(
+                run_root, number, text, gap, 5_000, prelude_count=500)
+            itdir = run_root / "iterations" / f"{number:04d}"
+            collapse_index.write_index(itdir)
+            render_index.write_index(itdir)
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        assert len(full) < 200, full
+        assert sum(1 for ln in full if "iteration 1" in ln) >= 1, full
+        assert sum(1 for ln in full if "iteration 2" in ln) >= 1, full
+
+        measured, rendered = _measure(sub, monkeypatch, run_root, 200, path)
+        assert rendered == full, (path, rendered, full)
+        assert measured <= _FROZEN_CAP, (path, measured)
+
+
+def test_absent_index_cache_still_builds_when_a_valid_legacy_index_scan_stays_expensive(
+        tmp_path, monkeypatch):
+    """Task cure-01-04 (PRD C.4, DoD 3): a review finding at
+    22280f71-and-earlier -- the `legacy-collapse-only-second` cases of
+    `test_indexed_and_second_tails_are_bounded` read 12,115,529 transcript
+    bytes on BOTH the first AND the second same-iteration/same-size call,
+    because `ui_server._absent_index_cache_store` skipped building its
+    cache purely because this iteration's own `collapse_index.json` was
+    valid -- a proxy for "the scan was cheap" that PRD Q's own silent-
+    prelude fixture (also written WITH a valid `collapse_index.json`)
+    falsifies: its outer growth loop still has to grow all the way to the
+    FULL-ask bound to resolve, reading nearly the whole transcript
+    regardless. Fails at 22280f71 (second call measured over 12.1M
+    bytes); this task's cure keys the skip on whether THIS scan actually
+    needed that full-ask bound (`_fetch_live_tail`/`_fetch_dead_tail`'s
+    own new third return value), not on the legacy index's mere
+    presence, so the cache still gets built and the second call is
+    bounded."""
+    text = "legacy-collapse-only second call must not rescan"
+    gap = json.dumps({"type": "message_end", "message": {"content": []},
+                      "padding": "x" * 1000})
+    for path in ("disk", "api"):
+        sub = tmp_path / f"legacy-second-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        _write_iteration_with_recognized_nonrendering_gap(
+            run_root, 1, text, gap, 10_000, prelude_count=1_000)
+        itdir = run_root / "iterations" / "0001"
+        collapse_index.write_index(itdir)
+        assert not (itdir / render_index.INDEX_FILENAME).exists()
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        ui_server._ABSENT_INDEX_CACHE.clear()
+
+        # Call 1: pays the scan -- no byte cap (PRD C.3's own disclosed
+        # residual, unaffected by this task).
+        first, rendered1 = _measure(sub, monkeypatch, run_root, 2, path)
+        assert rendered1 == full[-2:], (path, rendered1)
+        assert "probe" in ui_server._ABSENT_INDEX_CACHE, (
+            "the cache must actually build even though collapse_index.json is valid", path)
+
+        # Call 2: served from the cache this task's fix now actually builds.
+        second, rendered2 = _measure(sub, monkeypatch, run_root, 2, path)
+        assert rendered2 == full[-2:], (path, rendered2)
+        assert second <= _FROZEN_CAP, (path, first, second)
