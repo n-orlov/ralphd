@@ -9,13 +9,6 @@ in [docs/prds/](prds/README.md).
 
 ### Open issues
 
-- **Answering a parked run from the hub (#270).** A run paused for operator input
-  should show its question in the hub and take a multi-line answer there.
-- **Oversized escalation notifications (#269).** An escalation payload larger than
-  the notifier accepts is rejected and the hold goes unseen; the engine should
-  chunk or summarise it.
-- **Transcript collapse under the byte cap (#271, #272).** The silent-prelude
-  fixtures still render past the frozen 1,000,000-byte cap.
 - **CI lane reliability (#189, #193).** A `timeout-minutes` kill reports as
   `cancelled`, two runner slots on one box let the heavy and nightly lanes starve
   each other, and the browser tier sees intermittent Chrome session drops.
@@ -47,6 +40,10 @@ in [docs/prds/](prds/README.md).
 
 ## Shipped
 
+- v0.26 — the operator can see and answer — an oversized escalation is digested and
+  retried instead of vanishing, the hub shows and answers a parked run's question
+  in place, and the transcript tail stays exact under the byte cap by reading an
+  incrementally maintained render index (#269, #270, #271, #272).
 - v0.25.2 — the built-in rate table prices Opus 5.5 and the gpt-6 family.
 - v0.25.1 — a run's only deliverables are working code and a true spec — engine prompts no longer ask for or enforce paperwork, and a task re-opened by a cure pass gets fresh validation attempts instead of stalling unverified.
 - v0.25 — the harness already knows — lock waits, watchdog verdicts, early review verdicts, pushed-commit redaction and control-plane wakes now reach the part of the run that needs them, so an idle loop answers a steer or abort promptly.
