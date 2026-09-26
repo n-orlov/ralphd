@@ -86,6 +86,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from ralphd import collapse_index, render_index
 from ralphd.cli import ui_server
 from ralphd.cli.log_render import new_render_state, render_to_lines
@@ -312,3 +314,122 @@ def test_streamed_text_and_tool_calls_tail_equals_full_render_at_every_index_lag
                     _, rendered = _measure(sub, monkeypatch, run_root, tail, path)
                     assert rendered == full[-tail:], (ended, cut, path, tail, rendered)
         assert any("$ ls -la" in ln for ln in full), full
+
+
+def test_same_size_rewrite_of_the_leading_indexed_line_falls_back_exactly(
+        tmp_path, monkeypatch):
+    """Task cure-01-03 (PRD C.1/C.3, D.1, DoD 3-4): a checkpoint's own
+    STATE can be silently wrong even when the transcript's total byte
+    count never changes -- an in-place, same-length rewrite of exactly the
+    render index's own leading (`checkpoints[0]`) raw line changes what a
+    fresh render of it would produce, but nothing downstream of
+    `render_index.load_index` ever re-reads those particular bytes on its
+    own (`_prepend_covered`'s backward walk always seeds a segment's
+    render from the PRECEDING checkpoint's STORED state, and simply stops
+    once it reaches the very first one, never validating it against
+    anything). Before this task's cure, `ui_server.rendered_log_lines`
+    returned the stale 'beta' (the ORIGINAL, pre-rewrite content) on both
+    surfaces instead of 'alpha' (what the ACTUAL current bytes render) --
+    a wrong-but-plausible answer, never an exception, so nothing forced a
+    fallback. This pins the cured contract: the index is refused outright
+    (`render_index.load_index`/`bounded_tail` -> `None`) and both surfaces
+    fall back to the exact full-render tail instead."""
+    silent = json.dumps({"type": "ignored", "padding": "x" * 220})
+    for path in ("disk", "api"):
+        sub = tmp_path / f"rewrite-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        _write_live_iteration(run_root, [silent, _said("beta")], ended=False,
+                             indexed_lines=2)
+        itdir = run_root / "iterations" / "0001"
+        transcript = itdir / "output.jsonl"
+        before = render_index.load_index(itdir)
+        assert before is not None, "the unmodified index must validate"
+
+        changed = json.dumps({"type": "message_update", "assistantMessageEvent": {
+            "type": "text_delta", "delta": "alpha"}})
+        changed += " " * (len(silent) - len(changed))
+        old = transcript.read_text()
+        new = changed + old[len(silent):]
+        assert len(new) == len(old), "the rewrite must not change the file's size"
+        transcript.write_text(new)
+
+        # The indexed byte bounds this task must PRESERVE for a valid,
+        # unmodified index (task 013's own contract) hold no differently
+        # for the rejection path: `load_index` refuses this rewritten
+        # index without ever reading past `checkpoints[0]`'s own tiny
+        # leading segment -- the same one raw line it always reads.
+        assert render_index.load_index(itdir) is None
+        assert render_index.bounded_tail(run_root, 1) is None
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        assert full[-1:] == ["alpha"], full
+        _, rendered = _measure(sub, monkeypatch, run_root, 1, path)
+        assert rendered == full[-1:] == ["alpha"], (path, rendered)
+
+
+@pytest.mark.parametrize("damage", [
+    "empty-dict", "missing-one-key", "wrong-typed-bool", "extra-unknown-key"])
+def test_missing_or_wrong_typed_checkpoint_state_falls_back_on_both_surfaces(
+        tmp_path, monkeypatch, damage):
+    """Task cure-01-03 (PRD C.1/C.3, D.1, DoD 3-4): a checkpoint whose own
+    `state` value does not carry `log_render.new_render_state`'s exact
+    shape -- missing a key entirely, an extra one, or a wrong-typed value
+    for one -- is refused by `render_index.load_index` itself, on both
+    surfaces, INSTEAD of reaching `log_render.render_to_text` and raising
+    (`KeyError: 'text_seen'` before this task's cure) or silently
+    replaying stale content."""
+    silent = json.dumps({"type": "ignored", "padding": "x" * 220})
+    for path in ("disk", "api"):
+        sub = tmp_path / f"malformed-{damage}-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        _write_live_iteration(run_root, [silent, _said("beta")], ended=False,
+                             indexed_lines=2)
+        itdir = run_root / "iterations" / "0001"
+        index_path = itdir / render_index.INDEX_FILENAME
+        doc = json.loads(index_path.read_text())
+        state = doc["checkpoints"][0]["state"]
+        if damage == "empty-dict":
+            doc["checkpoints"][0]["state"] = {}
+        elif damage == "missing-one-key":
+            del state["text_seen"]
+        elif damage == "wrong-typed-bool":
+            state["text_seen"] = "nope"
+        else:
+            state["an_unknown_extra_key"] = 1
+        index_path.write_text(json.dumps(doc))
+
+        assert render_index.load_index(itdir) is None
+        assert render_index.bounded_tail(run_root, 1) is None
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        assert full[-1:] == ["beta"], full
+        _, rendered = _measure(sub, monkeypatch, run_root, 1, path)
+        assert rendered == full[-1:] == ["beta"], (path, damage, rendered)
+
+
+def test_a_genuine_append_only_lagging_index_still_validates_and_stays_bounded(
+        tmp_path, monkeypatch):
+    """Regression guard alongside the two rejection tests above: neither
+    the new leading-checkpoint content check nor the stricter checkpoint-
+    state shape check makes a genuinely untouched, append-only, lagging-
+    behind-the-transcript index unusable -- `render_index.load_index`
+    still validates it, and the whole client-facing call still costs no
+    more than the small indexed-plus-suffix bound task 013 already
+    measured (never a full rescan just because THIS task added a
+    correctness check)."""
+    silent = json.dumps({"type": "ignored", "padding": "x" * 900})
+    lines = [silent, _said("alpha")] + [silent] * 10 + [_said("gamma")]
+    for path in ("disk", "api"):
+        sub = tmp_path / f"grown-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        _write_live_iteration(run_root, lines, ended=False, indexed_lines=2)
+        itdir = run_root / "iterations" / "0001"
+        assert render_index.load_index(itdir) is not None
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        measured, rendered = _measure(sub, monkeypatch, run_root, 1, path)
+        assert rendered == full[-1:], (path, rendered)
+        assert measured <= _FROZEN_CAP, measured

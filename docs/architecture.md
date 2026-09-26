@@ -1799,6 +1799,43 @@ current size -- that is the ordinary, expected shape of a live iteration's
 index, and the caller's job (not this module's) is to serve the covered
 prefix from the index and the uncovered suffix by a direct, bounded scan.
 
+Task cure-01-03 (v0.26 requirements C.1/C.3, D.1) closes two gaps a
+byte-size-only check cannot see, both refusing the whole index (never a
+partial, silently-wrong render) when they fire:
+
+- **A checkpoint's `state` must carry EXACTLY `log_render.
+  new_render_state()`'s own key set, correctly typed** -- never merely
+  `isinstance(state, dict)`. Before this task, a checkpoint whose `state`
+  was missing a key (an empty `{}`, say) passed `load_index` and only
+  failed later, downstream, inside `log_render.render_to_text` itself
+  (`KeyError: 'text_seen'`) -- an exception reaching the caller instead of
+  an ordinary fallback.
+- **`checkpoints[0]` -- the transcript's own first fed raw line -- is
+  re-rendered from a fresh `new_render_state()` and checked against its
+  own stored `renderedLines`/`state`.** This is the one root-of-trust
+  check nothing downstream ever performs on its own: `bounded_tail`'s
+  backward walk always seeds a segment's render from the PRECEDING
+  checkpoint's *stored* state and simply stops once it reaches the very
+  first checkpoint, trusting it unconditionally -- so an in-place,
+  same-size rewrite of exactly the transcript's own leading raw line (its
+  total byte count unchanged, so the pre-existing size check alone never
+  sees it) used to make `bounded_tail` return the STALE, pre-rewrite
+  render forever, never an error, never a fallback. This check is cheap
+  regardless of how much the covered prefix behind it holds: `checkpoints
+  [0]` is always exactly the first raw line `LiveRenderIndex.feed` was
+  ever called with, never a later one.
+
+Every OTHER covered segment `bounded_tail` actually re-renders is already
+checked against the transcript's REAL current bytes (the backward walk
+reads them fresh every time, seeding from the nearest EARLIER checkpoint
+it trusts) and its own recorded `renderedLines` delta, so a rewrite
+anywhere else in the covered prefix that changes how many lines a segment
+renders to is already caught the same way; a same-size, same-line-count
+rewrite strictly INSIDE some later segment (never the transcript's own
+first line) is the one theoretical residual this task's two checks do not
+close, since the rendered text for that segment is still built from the
+real, current bytes either way.
+
 **Consuming the index (task 013, #271 follow-on).**
 `render_index.bounded_tail(run_root, n)` is that caller. A checkpoint's
 `renderedLines` counts the per-raw-line fragments the renderer printed while

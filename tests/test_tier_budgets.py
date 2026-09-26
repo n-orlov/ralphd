@@ -121,8 +121,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # escalation_digest.py: the last-approach/incurable full escalation
     # text names each finding's cured_when), measured `-m fast
     # --collect-only` -> fast 6302/435, `-m smoke` -> smoke 4610/312.
-    "fast": {"tests": 6302, "modules": 435},
-    "smoke": {"tests": 4610, "modules": 312},
+    # cure-01-03: +6 tests, no new module (tests/test_hub_real_render_cap_
+    # whole_call.py: same-size leading-checkpoint rewrite, missing/wrong-
+    # typed checkpoint state x4, one append-only-lagging regression guard),
+    # measured `-m fast --collect-only` -> fast 6308/435, `-m smoke` ->
+    # smoke 4616/312.
+    "fast": {"tests": 6308, "modules": 435},
+    "smoke": {"tests": 4616, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

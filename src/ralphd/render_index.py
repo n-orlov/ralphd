@@ -112,6 +112,75 @@ _REQUIRED_KEYS = ("version", "transcriptBytes", "segments", "checkpoints")
 _SEGMENT_KEYS = _collapse_index._SEGMENT_KEYS
 _CHECKPOINT_KEYS = ("byteOffset", "renderedLines", "state")
 
+# Task cure-01-03 (PRD C.1/C.3, D.1): the exact key set `new_render_state`
+# produces, JSON-round-tripped (`_state_to_json`) -- what a checkpoint's own
+# `state` must carry for `_state_from_json` to hydrate it back into
+# something `log_render.render_to_text` can actually run against.
+# `load_index` rejects a checkpoint whose `state` is missing any of these,
+# carries an extra one, or holds a wrong-typed value for one, INSTEAD of
+# letting a downstream renderer crash on a missing key the way a bare
+# `isinstance(state, dict)` check let a checkpoint like `{}` through
+# before this task's cure.
+_STATE_SHAPE_KEYS = frozenset(new_render_state())
+_STATE_BOOL_KEYS = ("text_open", "text_seen", "thinking_seen", "toolcall_seen")
+_STATE_DICT_KEYS = ("tool_args", "tool_pending")
+
+
+def _valid_checkpoint_state_shape(state: object) -> bool:
+    """Structural validity of one checkpoint's `state` value -- cheap
+    (no rendering, just key/type checks), and independent of whatever the
+    transcript itself says: a checkpoint missing a required key, carrying
+    an unknown extra one, or holding a wrong-typed value for one (the
+    `malformed-state` case: `state["text_seen"]` absent entirely) is
+    refused here, before anything tries to `render_to_text` with it."""
+    if not isinstance(state, dict) or set(state) != _STATE_SHAPE_KEYS:
+        return False
+    if not all(isinstance(state[k], bool) for k in _STATE_BOOL_KEYS):
+        return False
+    if not all(isinstance(state[k], dict) for k in _STATE_DICT_KEYS):
+        return False
+    if state["open_tool_line"] is not None and not isinstance(state["open_tool_line"], str):
+        return False
+    return isinstance(state["collapse_unresolved"], list)
+
+
+def _leading_checkpoint_matches(output_path: Path, checkpoints: list[dict]) -> bool:
+    """Whether `checkpoints[0]` -- the one checkpoint a bounded reader's
+    backward walk (`_prepend_covered` below) ends up trusting WITHOUT ever
+    re-deriving it from an earlier checkpoint's own validated state (there
+    is no earlier one to chain from) -- actually matches a from-scratch
+    render of the transcript's own first `checkpoints[0]['byteOffset']`
+    bytes, seeded from a genuinely fresh `new_render_state()`.
+
+    This is the one root-of-trust check nothing else in this module ever
+    performs: `_prepend_covered`'s own walk always seeds a segment's
+    render from the PRECEDING checkpoint's STORED state, and stops once it
+    reaches this one rather than validating it against anything -- so an
+    in-place, same-size rewrite of exactly the transcript's own leading
+    raw line(s) (this checkpoint's own segment) would otherwise never be
+    caught: nothing downstream ever re-reads those particular bytes.
+
+    Cheap regardless of transcript size: `checkpoints[0]` is always the
+    very first raw line `LiveRenderIndex.feed` was ever called with (one
+    checkpoint per fed line, from byte 0), never a later one -- so this
+    never reads more than that one line, however large the covered prefix
+    behind it is."""
+    first = checkpoints[0]
+    offset = first["byteOffset"]
+    try:
+        with output_path.open("rb") as f:
+            raw = f.read(offset)
+    except OSError:
+        return False
+    if len(raw) != offset:
+        return False
+    state = new_render_state()
+    text = render_to_text(raw.decode("utf-8", errors="replace"), tty=False,
+                          state=state)
+    if len(split_rendered_text(text)) != first["renderedLines"]:
+        return False
+    return _state_to_json(state) == first["state"]
+
 # How many freshly-fed raw lines a live iteration accumulates before
 # `LiveRenderIndex.flush` actually rewrites `render_index.json` on disk --
 # the write itself is O(total checkpoints so far), so paying it on every
@@ -315,7 +384,7 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
             return None
         if not isinstance(lines, int) or lines < prev_lines:
             return None
-        if not isinstance(state, dict):
+        if not _valid_checkpoint_state_shape(state):
             return None
         prev_offset, prev_lines = offset, lines
     last_offset = checkpoints[-1]["byteOffset"] if checkpoints else 0
@@ -326,6 +395,9 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     except OSError:
         actual_size = 0
     if transcript_bytes > actual_size:
+        return None
+    if checkpoints and not _leading_checkpoint_matches(
+            itdir / output_filename, checkpoints):
         return None
     return index
 
