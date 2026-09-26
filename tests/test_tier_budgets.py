@@ -117,8 +117,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # digest.py: posted digests' A.7 preview numbers agree with their
     # event, and the incurable digest is bounded), measured `-m fast
     # --collect-only` -> fast 6299/435, `-m smoke` -> smoke 4607/312.
-    "fast": {"tests": 6299, "modules": 435},
-    "smoke": {"tests": 4607, "modules": 312},
+    # cure-01-02 second retry: +3 tests, no new module (tests/test_
+    # escalation_digest.py: the last-approach/incurable full escalation
+    # text names each finding's cured_when), measured `-m fast
+    # --collect-only` -> fast 6302/435, `-m smoke` -> smoke 4610/312.
+    "fast": {"tests": 6302, "modules": 435},
+    "smoke": {"tests": 4610, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

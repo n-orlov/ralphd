@@ -573,3 +573,65 @@ def test_incurable_rejection_notification_is_bounded_too(tmp_path):
     assert "blocking: 200  residual: 1" in text
     assert " more findings in the hub" in text
     assert f"ralphctl unpause {sup.cfg.run_id}" in text
+
+
+# ===========================================================================
+# 9. SPEC.md 4.6: the FULL `operator_escalation.escalation` text for the
+#    last-approach and incurable reasons carries each blocking finding's
+#    own `cured_when` verbatim (beside clause/evidence), like the other two
+#    digested reasons -- while the POSTED digest carries neither the
+#    evidence nor the cured_when. Fails at b7fb4dec, whose two builders
+#    rendered clause/evidence/resolve-with only.
+# ===========================================================================
+
+
+@pytest.mark.parametrize("reason", ["last_approach", "incurable"])
+def test_full_escalation_text_names_each_findings_cured_when(tmp_path, reason):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=2)
+    sup._approach = 1
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    cured = f"CURED-WHEN-SENTINEL-{reason}: the probe passes on a clean tree"
+    data = [{
+        "severity": "blocking", "curable": reason == "last_approach",
+        "clause": "requirement Z.9 (#999)",
+        "evidence": f"EVIDENCE-SENTINEL-{reason}",
+        "cured_when": cured,
+    }]
+    findings.write_findings_json(sup.run.findings_json_file, data)
+
+    if reason == "last_approach":
+        sup._pause_and_escalate_last_approach_rejection(1)
+    else:
+        sup._pause_and_escalate_incurable_rejection(1)
+
+    ev = _events(root, "operator_escalation")[-1]
+    assert f"  cured_when: {cured}" in ev["escalation"]
+    assert data[0]["evidence"] in ev["escalation"]
+
+    assert len(notifier.messages) == 1
+    text = notifier.messages[0]
+    assert cured not in text
+    assert data[0]["evidence"] not in text
+    assert "requirement Z.9 (#999)" in text
+
+
+def test_incurable_full_text_omits_cured_when_line_when_finding_has_none(
+        tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=2)
+    sup._approach = 1
+    data = [{
+        "severity": "blocking", "curable": False,
+        "clause": "requirement B (#111)",
+        "evidence": "no docker.sock in this container",
+    }]
+    findings.write_findings_json(sup.run.findings_json_file, data)
+
+    sup._pause_and_escalate_incurable_rejection(1)
+
+    ev = _events(root, "operator_escalation")[-1]
+    assert "cured_when:" not in ev["escalation"]
+    assert data[0]["evidence"] in ev["escalation"]

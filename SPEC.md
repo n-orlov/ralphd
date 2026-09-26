@@ -1399,9 +1399,13 @@ unpause <run>`, since every reason this digest renders for waits on an
 operator ruling. When even the per-finding lines would overflow the cap,
 the digest drops to a bare count -- "*k* more findings in the hub" -- but
 never drops the counts themselves. The full, un-digested text -- every
-finding's full `clause`/`evidence`/`cured_when` -- is unaffected and still
-lands on the `operator_escalation` event's own `escalation` field (§5.4)
-exactly as before; only the POSTED notification is capped and digested.
+blocking finding's full `clause`, `evidence` and, whenever the finding
+carries one, its own `cured_when` verbatim (a `cured_when:` line, for all
+four reasons; an incurable finding without one simply has no such line) --
+is unaffected and still lands on the `operator_escalation` event's own
+`escalation` field (§5.4); only the POSTED notification is capped and
+digested, and it carries neither a finding's `evidence` nor its
+`cured_when`.
 
 **A failed escalation delivery is retried with bounded backoff, and an
 exhausted retry is recorded distinctly (task 004, PRD requirement A.4,

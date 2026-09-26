@@ -12925,6 +12925,15 @@ class LoopSupervisor:
             lines.append(f"Finding {index} (blocking, curable):")
             lines.append(f"  clause: {finding.get('clause', '')}")
             lines.append(f"  evidence: {finding.get('evidence', '')}")
+            # Cure task cure-01-02 (PRD requirement A.1, #269): the full
+            # text keeps each finding's own `cured_when` verbatim beside
+            # `clause`/`evidence`, the same as the operator_input_needed/
+            # repeated-signature builders -- SPEC.md 4.6 names it for all
+            # four digested reasons. Rendered only when the finding
+            # carries one (an incurable finding may have none).
+            cured_when = finding.get("cured_when")
+            if isinstance(cured_when, str) and cured_when.strip():
+                lines.append(f"  cured_when: {cured_when}")
             lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
@@ -14246,6 +14255,15 @@ class LoopSupervisor:
             lines.append(f"Finding {index} (blocking, incurable):")
             lines.append(f"  clause: {finding.get('clause', '')}")
             lines.append(f"  evidence: {finding.get('evidence', '')}")
+            # Cure task cure-01-02 (PRD requirement A.1, #269): the full
+            # text keeps each finding's own `cured_when` verbatim beside
+            # `clause`/`evidence`, the same as the operator_input_needed/
+            # repeated-signature builders -- SPEC.md 4.6 names it for all
+            # four digested reasons. Rendered only when the finding
+            # carries one (an incurable finding may have none).
+            cured_when = finding.get("cured_when")
+            if isinstance(cured_when, str) and cured_when.strip():
+                lines.append(f"  cured_when: {cured_when}")
             lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
