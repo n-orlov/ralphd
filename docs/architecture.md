@@ -1769,7 +1769,8 @@ running. One file per iteration, `iterations/NNNN/render_index.json`, beside
   `renderedLines` (the cumulative count of pretty lines `log_render.
   render_to_lines` has produced up to and including that line), and `state`
   (`log_render.new_render_state()`'s own dict, as of that same point, JSON-
-  round-tripped). A bounded reader can pick any checkpoint at or before the
+  round-tripped), and `lineCrc32` (`zlib.crc32` of that raw line's own
+  bytes). A bounded reader can pick any checkpoint at or before the
   byte it wants to resume from, seed a fresh render with its `state`, and
   continue rendering forward -- never from byte 0.
 
@@ -1793,13 +1794,14 @@ finds, including none.
 malformed, wrong-version, internally inconsistent, or that claims to cover
 *more* bytes than the transcript's actual current size (the one
 disagreement that can only mean a stale index left over from before a
-truncation/rewrite -- `collapse_index.load_index`'s own equivalent case).
+truncation/rewrite -- `collapse_index.load_index`'s own equivalent case),
+or whose covered bytes fail the bounded verification described below.
 It does **not** refuse `transcriptBytes` sitting behind the transcript's
 current size -- that is the ordinary, expected shape of a live iteration's
 index, and the caller's job (not this module's) is to serve the covered
 prefix from the index and the uncovered suffix by a direct, bounded scan.
 
-Task cure-01-03 (v0.26 requirements C.1/C.3, D.1) closes two gaps a
+Two further checks (v0.26 requirements C.1/C.3, D.1) catch what a
 byte-size-only check cannot see, both refusing the whole index (never a
 partial, silently-wrong render) when they fire:
 
@@ -1821,31 +1823,41 @@ partial, silently-wrong render) when they fire:
   `bounded_tail` never goes through `load_index`), `bounded_tail` itself
   answers `None` -- the caller's full-render fallback -- when hydrating or
   rendering a stored state raises.
-- **`checkpoints[0]` -- the transcript's own first fed raw line -- is
-  re-rendered from a fresh `new_render_state()` and checked against its
-  own stored `renderedLines`/`state`.** This is the one root-of-trust
-  check nothing downstream ever performs on its own: `bounded_tail`'s
-  backward walk always seeds a segment's render from the PRECEDING
-  checkpoint's *stored* state and simply stops once it reaches the very
-  first checkpoint, trusting it unconditionally -- so an in-place,
-  same-size rewrite of exactly the transcript's own leading raw line (its
-  total byte count unchanged, so the pre-existing size check alone never
-  sees it) used to make `bounded_tail` return the STALE, pre-rewrite
-  render forever, never an error, never a fallback. This check is cheap
-  regardless of how much the covered prefix behind it holds: `checkpoints
-  [0]` is always exactly the first raw line `LiveRenderIndex.feed` was
-  ever called with, never a later one.
+- **The covered bytes must still be the bytes the index describes.**
+  Every checkpoint carries its raw line's CRC-32 (`lineCrc32`, an unsigned
+  32-bit integer; an index without it -- `version` 1 -- is refused), and
+  `load_index` re-reads and verifies a bounded set of covered segments:
+  `checkpoints[0]` (the transcript's first raw line, rendered from a fresh
+  `new_render_state()` -- the root of trust nothing earlier can vouch for)
+  and every segment lying wholly inside the covered prefix's last
+  `VERIFY_WINDOW_BYTES` (128 KiB), rendered in order from the stored state
+  of the checkpoint just before that window. A segment matches only when
+  its bytes' CRC-32, its rendered fragment count and the render state it
+  leaves behind all equal what its checkpoint recorded -- so a checkpoint's
+  stored `state` or `renderedLines` is re-derived from its predecessor's,
+  never trusted blind. `bounded_tail`'s backward walk applies the same
+  three-way check to every segment it reads. Any mismatch refuses the
+  whole index and the caller falls back to the exact full render.
 
-Every OTHER covered segment `bounded_tail` actually re-renders is already
-checked against the transcript's REAL current bytes (the backward walk
-reads them fresh every time, seeding from the nearest EARLIER checkpoint
-it trusts) and its own recorded `renderedLines` delta, so a rewrite
-anywhere else in the covered prefix that changes how many lines a segment
-renders to is already caught the same way; a same-size, same-line-count
-rewrite strictly INSIDE some later segment (never the transcript's own
-first line) is the one theoretical residual this task's two checks do not
-close, since the rendered text for that segment is still built from the
-real, current bytes either way.
+The validity contract this gives is exact for what is read, and bounded:
+
+- A same-size rewrite or a same-size replacement of the transcript is
+  refused whenever it touches the first line, a line lying wholly inside
+  the last `VERIFY_WINDOW_BYTES` of the covered prefix, or a line the
+  tail itself reads -- which
+  is EVERY covered line when the covered prefix is no larger than the
+  window. It is refused even when the rewritten bytes would render
+  identically.
+- A valid, append-only index whose covered prefix is a prefix of the
+  current transcript is accepted, and the bytes past `transcriptBytes`
+  are scanned as the unindexed suffix; verification adds at most the
+  first line plus `VERIFY_WINDOW_BYTES` to the tail's own reads.
+- Beyond the window, a same-size rewrite of a covered line the tail does
+  not read is NOT detected, and such an index can serve a stale tail:
+  detecting it means reading it, and reading every covered byte would cost
+  the whole silent prefix the C.2 byte bound exists to skip. The engine
+  writes `output.jsonl` append-only, so this arises only when something
+  else rewrites a transcript in place.
 
 **Consuming the index (task 013, #271 follow-on).**
 `render_index.bounded_tail(run_root, n)` is that caller. A checkpoint's

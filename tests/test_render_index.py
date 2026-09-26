@@ -37,6 +37,7 @@ import asyncio
 import contextlib
 import json
 import stat
+import zlib
 
 import pytest
 
@@ -55,7 +56,9 @@ def _independent_checkpoints(raw: bytes) -> list[dict]:
     `render_to_lines`) -- never `render_index.LiveRenderIndex` -- so
     comparing its output against a written index proves that index's own
     checkpoints really do describe a full render of every prefix they
-    claim to cover, not merely that `render_index.py` agrees with itself."""
+    claim to cover, not merely that `render_index.py` agrees with itself.
+    Each entry's `lineCrc32` is `zlib.crc32` of that one raw line's own
+    bytes, computed here directly off the transcript."""
     state = new_render_state()
     rendered_lines = 0
     offset = 0
@@ -66,7 +69,8 @@ def _independent_checkpoints(raw: bytes) -> list[dict]:
         rendered_lines += len(produced)
         offset += len(raw_line)
         out.append({"byteOffset": offset, "renderedLines": rendered_lines,
-                    "state": render_index._state_to_json(state)})
+                    "state": render_index._state_to_json(state),
+                    "lineCrc32": zlib.crc32(raw_line)})
     return out
 
 

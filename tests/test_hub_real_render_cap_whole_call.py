@@ -353,11 +353,9 @@ def test_same_size_rewrite_of_the_leading_indexed_line_falls_back_exactly(
         assert len(new) == len(old), "the rewrite must not change the file's size"
         transcript.write_text(new)
 
-        # The indexed byte bounds this task must PRESERVE for a valid,
-        # unmodified index (task 013's own contract) hold no differently
-        # for the rejection path: `load_index` refuses this rewritten
-        # index without ever reading past `checkpoints[0]`'s own tiny
-        # leading segment -- the same one raw line it always reads.
+        # `load_index` refuses this rewritten index off its bounded
+        # verification alone (`checkpoints[0]` plus the covered prefix's
+        # last `VERIFY_WINDOW_BYTES`), never a whole-prefix scan.
         assert render_index.load_index(itdir) is None
         assert render_index.bounded_tail(run_root, 1) is None
 
@@ -476,6 +474,207 @@ def test_bounded_tail_refuses_a_passed_in_index_whose_state_cannot_hydrate(tmp_p
     assert render_index.bounded_tail(run_root, 1, index=index) is None
     del index["checkpoints"][-1]["state"]["text_seen"]
     assert render_index.bounded_tail(run_root, 1, index=index) is None
+
+
+def _rewrite_line_same_size(transcript, number, replacement):
+    """Replace raw line `number` (0-based) of `transcript` in place with
+    `replacement`, space-padded to the original line's exact length, so
+    the file's total byte count never changes."""
+    lines = transcript.read_bytes().split(b"\n")
+    original = lines[number]
+    new = replacement.encode()
+    assert len(new) <= len(original), (len(new), len(original))
+    lines[number] = new + b" " * (len(original) - len(new))
+    data = b"\n".join(lines)
+    assert len(data) == transcript.stat().st_size
+    transcript.write_bytes(data)
+
+
+def _text_delta(text):
+    return json.dumps({"type": "message_update", "assistantMessageEvent": {
+        "type": "text_delta", "delta": text}})
+
+
+@pytest.mark.parametrize("variant", [
+    "silent-to-streamed-text", "silent-renders-identically", "said-text-changed",
+    "replaced-by-rename"])
+def test_same_size_rewrite_of_a_later_covered_line_falls_back_exactly(
+        tmp_path, monkeypatch, variant):
+    """Task cure-01-03 second retry (PRD C.1/C.3, D.1, DoD 3-4): a same-size
+    rewrite of a covered raw line that is NOT the leading one -- here the
+    SECOND of three, a silent line the backward walk never reads for a
+    one-line tail -- made the index lie: turning it into a `text_delta`
+    'alpha' makes the full render suppress the later `message_end`
+    'beta' (already-streamed text), yet `ui_server.rendered_log_lines`
+    returned the stale 'beta' on both surfaces. Every checkpoint now
+    carries its raw line's CRC-32, and `render_index.load_index` verifies
+    the covered prefix's last `VERIFY_WINDOW_BYTES` (all of it here)
+    segment by segment -- bytes, fragment count, resulting state -- so the
+    index is refused and both surfaces answer the exact full-render tail.
+    The variants cover a rewrite that changes the render, one that
+    renders identically (a stale index is refused even when harmless),
+    a changed text on a line the walk DOES read, and the whole transcript
+    replaced by a same-size file through a rename."""
+    silent = json.dumps({"type": "ignored", "padding": "x" * 220})
+    for ended in (False, True):
+        for path in ("disk", "api"):
+            sub = tmp_path / f"later-{variant}-{ended}-{path}"
+            run_root = sub / "registry" / "runs" / "probe"
+            _write_live_iteration(run_root, [silent, silent, _said("beta")],
+                                  ended=ended, indexed_lines=3)
+            itdir = run_root / "iterations" / "0001"
+            transcript = itdir / "output.jsonl"
+            assert render_index.load_index(itdir) is not None
+            size = transcript.stat().st_size
+            if variant == "silent-to-streamed-text":
+                _rewrite_line_same_size(transcript, 1, _text_delta("alpha"))
+            elif variant == "silent-renders-identically":
+                _rewrite_line_same_size(transcript, 1, json.dumps(
+                    {"type": "ignored", "padding": "y" * 220}))
+            elif variant == "said-text-changed":
+                _rewrite_line_same_size(transcript, 2, _said("gama"))
+            else:
+                data = transcript.read_bytes().replace(b'"x', b'"z', 1)
+                lines = data.split(b"\n")
+                lines[1] = _text_delta("alpha").encode().ljust(len(lines[1]))
+                replacement = itdir / "output.jsonl.new"
+                replacement.write_bytes(b"\n".join(lines))
+                replacement.replace(transcript)
+            assert transcript.stat().st_size == size
+
+            assert render_index.load_index(itdir) is None, (variant, ended, path)
+            assert render_index.bounded_tail(run_root, 1) is None
+
+            full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                                   state=new_render_state())
+            if variant in ("silent-to-streamed-text", "replaced-by-rename") and not ended:
+                assert full[-1:] == ["alpha"], full
+            for tail in (1, 2):
+                _, rendered = _measure(sub, monkeypatch, run_root, tail, path)
+                assert rendered == full[-tail:], (variant, ended, path, tail, rendered)
+
+
+@pytest.mark.parametrize("damage", [
+    "missing-crc", "string-crc", "bool-crc", "negative-crc", "wrong-crc",
+    "flipped-flag-in-a-middle-state", "wrong-rendered-lines"])
+def test_missing_wrong_typed_or_inconsistent_checkpoint_fields_fall_back_on_both_surfaces(
+        tmp_path, monkeypatch, damage):
+    """Task cure-01-03 second retry: a checkpoint whose `lineCrc32` is
+    missing, wrong-typed or wrong, or whose well-formed `state` /
+    `renderedLines` no longer follows from its predecessor's (a flipped
+    `text_seen` in a MIDDLE checkpoint that no shape check can see), is
+    refused by `render_index.load_index`, and both surfaces fall back to
+    the exact full-render tail instead of a stale or raising render."""
+    silent = json.dumps({"type": "ignored", "padding": "x" * 220})
+    lines = [silent, _said("alpha"), silent, _said("beta"), silent]
+    for path in ("disk", "api"):
+        sub = tmp_path / f"fields-{damage}-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        _write_live_iteration(run_root, lines, ended=False, indexed_lines=4)
+        itdir = run_root / "iterations" / "0001"
+        index_path = itdir / render_index.INDEX_FILENAME
+        doc = json.loads(index_path.read_text())
+        middle = doc["checkpoints"][2]
+        if damage == "missing-crc":
+            del middle["lineCrc32"]
+        elif damage == "string-crc":
+            middle["lineCrc32"] = str(middle["lineCrc32"])
+        elif damage == "bool-crc":
+            middle["lineCrc32"] = True
+        elif damage == "negative-crc":
+            middle["lineCrc32"] = -1
+        elif damage == "wrong-crc":
+            middle["lineCrc32"] ^= 1
+        elif damage == "flipped-flag-in-a-middle-state":
+            middle["state"]["text_seen"] = not middle["state"]["text_seen"]
+        else:
+            doc["checkpoints"][3]["renderedLines"] += 1
+        index_path.write_text(json.dumps(doc))
+
+        assert render_index.load_index(itdir) is None, damage
+        assert render_index.bounded_tail(run_root, 1) is None
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        assert full[-2:] == ["alpha", "beta"], full
+        for tail in (1, 2):
+            _, rendered = _measure(sub, monkeypatch, run_root, tail, path)
+            assert rendered == full[-tail:], (damage, path, tail, rendered)
+
+
+def test_a_version_1_index_without_line_checksums_falls_back_exactly(
+        tmp_path, monkeypatch):
+    """An index in the earlier, checksum-free shape (`version` 1, no
+    `lineCrc32`) cannot be verified against the transcript, so it is
+    refused and both surfaces render the exact full tail."""
+    silent = json.dumps({"type": "ignored", "padding": "x" * 220})
+    for path in ("disk", "api"):
+        sub = tmp_path / f"v1-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        _write_live_iteration(run_root, [silent, _said("beta")], ended=True,
+                              indexed_lines=2)
+        itdir = run_root / "iterations" / "0001"
+        index_path = itdir / render_index.INDEX_FILENAME
+        doc = json.loads(index_path.read_text())
+        doc["version"] = 1
+        for cp in doc["checkpoints"]:
+            del cp["lineCrc32"]
+        index_path.write_text(json.dumps(doc))
+        assert render_index.load_index(itdir) is None
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        _, rendered = _measure(sub, monkeypatch, run_root, 2, path)
+        assert rendered == full[-2:], (path, rendered)
+
+
+def test_prefix_verification_reads_a_bounded_window_on_a_large_covered_prefix(
+        tmp_path, monkeypatch):
+    """The verification that catches a rewrite costs a FIXED allowance
+    (PRD C.2), not the covered prefix's size: on PRD Q's canonical fixture
+    (a covered prefix over 1,000,000 bytes, almost all of it silent) a
+    valid index loads, and a same-size rewrite of a silent line near the
+    end is refused, each reading at most `checkpoints[0]`'s own line plus
+    `render_index.VERIFY_WINDOW_BYTES` off the transcript; the whole
+    client-facing call on the valid index stays under the frozen cap and
+    exact on both surfaces."""
+    from test_log_merge_bounded_reads import _count_transcript_bytes
+
+    text = "reviewer synthetic streamed text"
+    gap = json.dumps({"type": "message_end", "message": {"content": []},
+                      "padding": "x" * 1000})
+    for path in ("disk", "api"):
+        sub = tmp_path / f"window-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        _write_iteration_with_recognized_nonrendering_gap(run_root, 1, text, gap, 1_000)
+        itdir = run_root / "iterations" / "0001"
+        render_index.write_index(itdir)
+        transcript = itdir / "output.jsonl"
+        size = transcript.stat().st_size
+        assert size > _FROZEN_CAP
+        first_line = len(transcript.read_bytes().split(b"\n", 1)[0]) + 1
+        allowance = first_line + render_index.VERIFY_WINDOW_BYTES
+
+        counts = _count_transcript_bytes(monkeypatch)
+        assert render_index.load_index(itdir) is not None
+        assert counts[0] <= allowance, counts[0]
+        monkeypatch.undo()
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        measured, rendered = _measure(sub, monkeypatch, run_root, 2, path)
+        assert rendered == full[-2:], (path, rendered)
+        assert measured <= _FROZEN_CAP, measured
+
+        lines = transcript.read_bytes().split(b"\n")
+        victim = next(i for i in range(len(lines) - 10, 0, -1)
+                      if b'"padding"' in lines[i])
+        _rewrite_line_same_size(transcript, victim, json.dumps(
+            {"type": "message_end", "message": {"content": []},
+             "padding": "y" * 1000}))
+        counts = _count_transcript_bytes(monkeypatch)
+        assert render_index.load_index(itdir) is None
+        assert counts[0] <= allowance, counts[0]
+        monkeypatch.undo()
 
 
 def test_a_genuine_append_only_lagging_index_still_validates_and_stays_bounded(

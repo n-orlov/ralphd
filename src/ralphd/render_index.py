@@ -38,7 +38,9 @@ Shape (`INDEX_FILENAME`, version `INDEX_VERSION`):
     count), and
     `state` (`log_render.new_render_state()`'s own dict, JSON-round-
     tripped by `_state_to_json`/`_state_from_json`, as of that same
-    point). A bounded reader can therefore pick any checkpoint at or
+    point), and `lineCrc32` (`zlib.crc32` of that raw line's own bytes,
+    so a reader can tell whether the bytes on disk are still the ones the
+    checkpoint describes). A bounded reader can therefore pick any checkpoint at or
     before the byte it wants to resume from, seed a fresh render with its
     `state`, and continue rendering forward -- never from byte 0 -- and
     get output identical to a full render's (task 013's job; this module
@@ -78,10 +80,13 @@ every byte). A reader holding a transcript longer than what the index
 covers treats the uncovered suffix as unindexed (falls back to scanning
 just that suffix, never the whole file) -- `load_index` itself only
 refuses a index that is otherwise malformed, wrong-version, internally
-inconsistent, or that claims to cover MORE than the transcript's actual
+inconsistent, that claims to cover MORE than the transcript's actual
 current size (which can only mean a stale index left over from before a
 truncation/rewrite, `collapse_index.load_index`'s own one real disagreement
-case). Consuming that "uncovered suffix" bound through the real client-
+case), or whose bounded verification (`_covered_prefix_matches`: the
+leading line plus the covered prefix's last `VERIFY_WINDOW_BYTES`, each
+segment's CRC-32, fragment count and resulting state) finds bytes the
+index no longer describes. Consuming that "uncovered suffix" bound through the real client-
 facing call is task 013's job.
 """
 
@@ -90,6 +95,7 @@ from __future__ import annotations
 import bisect
 import copy
 import json
+import zlib
 from pathlib import Path
 
 from . import collapse_index as _collapse_index
@@ -106,11 +112,11 @@ from .log_merge import iteration_numbers as _iteration_numbers
 from .log_merge import iteration_output_path as _iteration_output_path
 
 INDEX_FILENAME = "render_index.json"
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 
 _REQUIRED_KEYS = ("version", "transcriptBytes", "segments", "checkpoints")
 _SEGMENT_KEYS = _collapse_index._SEGMENT_KEYS
-_CHECKPOINT_KEYS = ("byteOffset", "renderedLines", "state")
+_CHECKPOINT_KEYS = ("byteOffset", "renderedLines", "state", "lineCrc32")
 
 # Task cure-01-03 (PRD C.1/C.3, D.1): the exact key set `new_render_state`
 # produces, JSON-round-tripped (`_state_to_json`) -- what a checkpoint's own
@@ -157,42 +163,105 @@ def _valid_checkpoint_state_shape(state: object) -> bool:
             and all(isinstance(flag, str) for flag in unresolved))
 
 
-def _leading_checkpoint_matches(output_path: Path, checkpoints: list[dict]) -> bool:
-    """Whether `checkpoints[0]` -- the one checkpoint a bounded reader's
-    backward walk (`_prepend_covered` below) ends up trusting WITHOUT ever
-    re-deriving it from an earlier checkpoint's own validated state (there
-    is no earlier one to chain from) -- actually matches a from-scratch
-    render of the transcript's own first `checkpoints[0]['byteOffset']`
-    bytes, seeded from a genuinely fresh `new_render_state()`.
+def _state_matches(state: dict, stored: dict) -> bool:
+    """Whether a live render `state` equals a checkpoint's stored (JSON-
+    round-tripped) `state` -- compared through the same JSON round trip
+    the stored copy went through, so `tool_pending`'s tuples and
+    `collapse_unresolved`'s set compare equal to their JSON arrays."""
+    return json.loads(json.dumps(_state_to_json(state))) == stored
 
-    This is the one root-of-trust check nothing else in this module ever
-    performs: `_prepend_covered`'s own walk always seeds a segment's
-    render from the PRECEDING checkpoint's STORED state, and stops once it
-    reaches this one rather than validating it against anything -- so an
-    in-place, same-size rewrite of exactly the transcript's own leading
-    raw line(s) (this checkpoint's own segment) would otherwise never be
-    caught: nothing downstream ever re-reads those particular bytes.
 
-    Cheap regardless of transcript size: `checkpoints[0]` is always the
-    very first raw line `LiveRenderIndex.feed` was ever called with (one
-    checkpoint per fed line, from byte 0), never a later one -- so this
-    never reads more than that one line, however large the covered prefix
-    behind it is."""
-    first = checkpoints[0]
-    offset = first["byteOffset"]
-    try:
-        with output_path.open("rb") as f:
-            raw = f.read(offset)
-    except OSError:
-        return False
-    if len(raw) != offset:
-        return False
-    state = new_render_state()
+def _render_segment(raw: bytes, cp: dict, state: dict,
+                    prev_lines: int) -> str | None:
+    """Verify ONE covered segment -- the raw line(s) between the preceding
+    checkpoint and `cp` -- against the transcript bytes actually on disk,
+    and return what it renders. `state` is the preceding checkpoint's
+    state (already hydrated; advanced in place) and `prev_lines` its
+    `renderedLines`. `None` -- the index no longer describes these bytes
+    -- unless all three hold: the bytes' CRC-32 equals `cp["lineCrc32"]`
+    (catches a same-size rewrite even when it renders identically), the
+    render's fragment count equals `cp`'s `renderedLines` delta, and the
+    state it leaves behind equals `cp["state"]` (so a checkpoint's stored
+    state is re-derived from its predecessor's, never trusted blind)."""
+    if zlib.crc32(raw) != cp["lineCrc32"]:
+        return None
     text = render_to_text(raw.decode("utf-8", errors="replace"), tty=False,
                           state=state)
-    if len(split_rendered_text(text)) != first["renderedLines"]:
+    if len(split_rendered_text(text)) != cp["renderedLines"] - prev_lines:
+        return None
+    if not _state_matches(state, cp["state"]):
+        return None
+    return text
+
+
+def _covered_prefix_matches(output_path: Path, checkpoints: list[dict],
+                            window: int | None = None) -> bool:
+    """Whether the covered prefix's bytes on disk still match what the
+    index recorded, checked over a BOUNDED set of segments (never the
+    whole covered prefix, whose silent bytes a tail must not pay for --
+    PRD C.2):
+
+      - `checkpoints[0]`'s own segment (the transcript's first raw line),
+        rendered from a genuinely fresh `new_render_state()` -- the root
+        of trust the backward walk (`_prepend_covered`) never re-derives
+        from anything earlier;
+      - every segment lying wholly inside the LAST `window` bytes of the
+        covered prefix (`VERIFY_WINDOW_BYTES`), rendered in order from the
+        stored state of the checkpoint just before that window. When the
+        whole covered prefix fits in the window, every covered byte is
+        verified.
+
+    Each segment goes through `_render_segment` (CRC-32, fragment count,
+    resulting state). A read error or short read is a mismatch."""
+    if window is None:
+        window = VERIFY_WINDOW_BYTES
+    covered = checkpoints[-1]["byteOffset"]
+    window_start = max(0, covered - window)
+    if window_start == 0:
+        first = 0
+    else:
+        i = bisect.bisect_left(checkpoints, window_start,
+                               key=lambda cp: cp["byteOffset"])
+        first = i + 1
+    try:
+        with output_path.open("rb") as f:
+            if first > 0:
+                lead = checkpoints[0]
+                raw = f.read(lead["byteOffset"])
+                if (len(raw) != lead["byteOffset"]
+                        or _render_segment(raw, lead, new_render_state(), 0) is None):
+                    return False
+            if first >= len(checkpoints):
+                return True
+            prev = checkpoints[first - 1] if first > 0 else None
+            start = prev["byteOffset"] if prev else 0
+            f.seek(start)
+            data = f.read(covered - start)
+    except OSError:
         return False
-    return _state_to_json(state) == first["state"]
+    if len(data) != covered - start:
+        return False
+    state = (_state_from_json(copy.deepcopy(prev["state"])) if prev
+             else new_render_state())
+    prev_lines = prev["renderedLines"] if prev else 0
+    for cp in checkpoints[first:]:
+        end = cp["byteOffset"] - start
+        seg_start = (prev["byteOffset"] - start) if prev else 0
+        if _render_segment(data[seg_start:end], cp, state, prev_lines) is None:
+            return False
+        prev, prev_lines = cp, cp["renderedLines"]
+    return True
+
+
+# How many bytes, at the END of the covered prefix, `load_index` re-reads
+# and verifies segment by segment on every load (`_covered_prefix_
+# matches`) -- the fixed allowance PRD C.2 permits on top of the tail's
+# own lines. A covered prefix no larger than this is verified in full.
+# Beyond it, a same-size rewrite is caught only in the leading line, the
+# window, and the lines the tail itself reads (`_prepend_covered`): a
+# rewrite anywhere else means bytes nobody reads, and reading them all
+# would cost the whole silent prefix the C.2 bound exists to skip.
+VERIFY_WINDOW_BYTES = 1 << 17
 
 # How many freshly-fed raw lines a live iteration accumulates before
 # `LiveRenderIndex.flush` actually rewrites `render_index.json` on disk --
@@ -269,7 +338,8 @@ class LiveRenderIndex:
         self._checkpoints.append({
             "byteOffset": self._offset,
             "renderedLines": self._rendered_lines,
-            "state": _state_to_json(self._state)})
+            "state": _state_to_json(self._state),
+            "lineCrc32": zlib.crc32(raw_line)})
         self._lines_since_flush += 1
 
     def snapshot(self) -> dict:
@@ -342,7 +412,13 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     `transcriptBytes` is no GREATER than the transcript's actual current
     size (never stale in the direction of overclaiming coverage -- the one
     disagreement that can only mean a truncated/rewritten transcript, the
-    exact case `collapse_index.load_index` also refuses).
+    exact case `collapse_index.load_index` also refuses); every checkpoint
+    carries an unsigned 32-bit integer `lineCrc32`; and
+    `_covered_prefix_matches` finds the leading segment and every segment
+    inside the covered prefix's last `VERIFY_WINDOW_BYTES` still matching
+    the transcript's current bytes (so any same-size rewrite or
+    replacement inside that window, or of the first line, is refused;
+    a covered prefix no larger than the window is verified in full).
 
     Deliberately NOT required: `transcriptBytes == actual size`. A live
     iteration's index is normally behind the transcript's current size
@@ -399,6 +475,10 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
             return None
         if not _valid_checkpoint_state_shape(state):
             return None
+        crc = cp.get("lineCrc32")
+        if (not isinstance(crc, int) or isinstance(crc, bool)
+                or not 0 <= crc <= 0xFFFFFFFF):
+            return None
         prev_offset, prev_lines = offset, lines
     last_offset = checkpoints[-1]["byteOffset"] if checkpoints else 0
     if transcript_bytes != last_offset:
@@ -409,7 +489,7 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
         actual_size = 0
     if transcript_bytes > actual_size:
         return None
-    if checkpoints and not _leading_checkpoint_matches(
+    if checkpoints and not _covered_prefix_matches(
             itdir / output_filename, checkpoints):
         return None
     return index
@@ -492,8 +572,10 @@ def _prepend_covered(output_path: Path, checkpoints: list[dict], acc: str,
     predecessor checkpoint's saved `state` and prepending what it printed
     to `acc`, until `acc` is `_enough` for `n` or the prefix is exhausted.
     Returns `(acc, exhausted)`; `None` when the transcript disagrees with
-    the index (a printing line re-renders silent, or to a different
-    fragment count) -- never a wrong-but-plausible render."""
+    the index for any segment it reads (`_render_segment`: a CRC-32
+    mismatch, a different fragment count, or a resulting state that is
+    not the checkpoint's stored one) -- never a wrong-but-plausible
+    render."""
     if not checkpoints:
         return acc, True
     k = checkpoints[-1]["renderedLines"]
@@ -511,9 +593,10 @@ def _prepend_covered(output_path: Path, checkpoints: list[dict], acc: str,
                          else new_render_state())
                 f.seek(start)
                 raw = f.read(checkpoints[j]["byteOffset"] - start)
-                text = render_to_text(raw.decode("utf-8", errors="replace"),
-                                      tty=False, state=state)
-                if len(split_rendered_text(text)) != checkpoints[j]["renderedLines"] - prev_lines:
+                if len(raw) != checkpoints[j]["byteOffset"] - start:
+                    return None
+                text = _render_segment(raw, checkpoints[j], state, prev_lines)
+                if text is None:
                     return None
                 acc = text + acc
                 k = prev_lines

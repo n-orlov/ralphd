@@ -130,8 +130,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # NESTED state in a later checkpoint x7, a passed-in index whose state
     # cannot hydrate), measured `-m fast --collect-only` -> fast 6316/435,
     # `-m smoke` -> smoke 4624/312.
-    "fast": {"tests": 6316, "modules": 435},
-    "smoke": {"tests": 4624, "modules": 312},
+    # cure-01-03 second retry: +13 tests, no new module (same module: a
+    # same-size rewrite of a later covered line x4, missing/wrong-typed/
+    # inconsistent checkpoint fields x7, a checksum-free version-1 index,
+    # the bounded verification window on a large prefix), measured `-m fast
+    # --collect-only` -> fast 6329/435, `-m smoke` -> smoke 4637/312.
+    "fast": {"tests": 6329, "modules": 435},
+    "smoke": {"tests": 4637, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
