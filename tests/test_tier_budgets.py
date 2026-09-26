@@ -148,8 +148,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # cure-01-05 retry: +1 test, no new module (tests/test_hub_parked_
     # actions.py: the named multi-line parked submission), measured
     # `-m fast --collect-only` -> fast 6342/435, `-m smoke` -> smoke 4650/312.
-    "fast": {"tests": 6342, "modules": 435},
-    "smoke": {"tests": 4650, "modules": 312},
+    # Task cure-01-01-4 (petition remedy for cure-01-03 criterion (1)):
+    # +6 tests in tests/test_hub_real_render_cap_whole_call.py (out-of-
+    # window same-size rewrite/replacement, complete and lagging coverage,
+    # preservation across a later append, safe append/index publication),
+    # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
+    # 6348/435, `-m smoke` -> 4656/312.
+    "fast": {"tests": 6348, "modules": 435},
+    "smoke": {"tests": 4656, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

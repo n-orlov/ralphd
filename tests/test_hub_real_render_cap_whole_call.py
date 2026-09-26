@@ -842,3 +842,197 @@ def test_spec_and_cli_docs_describe_the_indexed_bounded_tail_read():
         assert "never fetches the" in flat and "whole" in flat, name
         assert "full** raw NDJSON backlog" not in flat, name
         assert "full raw NDJSON backlog" not in flat, name
+
+
+def _write_live_iteration_with_padding(run_root, victim_line, pad_count,
+                                       final_line, *, ended, indexed_lines,
+                                       pad_bytes=1000):
+    """Like `_write_live_iteration`, but shaped for the witness tests
+    below: `victim_line` (a short recognized-but-silent event) sits first,
+    followed by `pad_count` copies of a recognized-but-silent padded event
+    (`pad_bytes` each) and then `final_line` -- enough total bytes that
+    `victim_line`'s own byte range sits well outside
+    `render_index.VERIFY_WINDOW_BYTES` of whatever `indexed_lines` prefix
+    ends up covered, so a same-size change to it can never be caught by
+    `_covered_prefix_matches`'s own bounded window alone."""
+    lines = [victim_line] + [json.dumps(
+        {"type": "ignored", "padding": "x" * pad_bytes})
+        for _ in range(pad_count)] + [final_line]
+    return _write_live_iteration(run_root, lines, ended=ended,
+                                 indexed_lines=indexed_lines) + (lines,)
+
+
+@pytest.mark.parametrize("tamper", ["rewrite", "replace"])
+@pytest.mark.parametrize("coverage", ["complete", "lagging"])
+def test_same_size_rewrite_or_replacement_outside_the_window_falls_back_on_both_surfaces(
+        tmp_path, monkeypatch, tamper, coverage):
+    """Task cure-01-01-4 (petition remedy for cure-01-03 criterion (1)):
+    the covered prefix's engine-published `transcriptInode`/
+    `transcriptMtimeNs` witness -- not merely `_covered_prefix_matches`'s
+    own bounded window -- is what refuses a same-size REWRITE or
+    REPLACEMENT of a covered line lying outside that window and never
+    read by a short tail's own backward walk, for a FULLY covered index
+    (`coverage='complete'`) as well as a genuinely LAGGING one
+    (`coverage='lagging'`, the live iteration's own ordinary state) --
+    through `render_index.load_index`/`bounded_tail` and both real
+    `ui_server.rendered_log_lines` surfaces alike, never an exception."""
+    victim = json.dumps({"type": "ignored", "padding": "v" * 50})
+    final = json.dumps({"type": "message_end", "message": {"content": [
+        {"type": "text", "text": "kept"}]}})
+    for ended in (False, True):
+        for path in ("disk", "api"):
+            sub = tmp_path / f"{tamper}-{coverage}-{ended}-{path}"
+            run_root = sub / "registry" / "runs" / "probe"
+            n_total = 182
+            index, size, lines = _write_live_iteration_with_padding(
+                run_root, victim, n_total, final, ended=ended,
+                indexed_lines=(n_total + 2) if coverage == "complete" else n_total - 18)
+            itdir = run_root / "iterations" / "0001"
+            transcript = itdir / "output.jsonl"
+            covered = index["transcriptBytes"]
+            assert covered - len(victim) - 1 > render_index.VERIFY_WINDOW_BYTES, (
+                "the victim must sit outside the covered window", covered)
+            assert render_index.load_index(itdir) is not None
+
+            if tamper == "rewrite":
+                _rewrite_line_same_size(transcript, 0, json.dumps(
+                    {"type": "ignored", "padding": "w" * 50}))
+            else:
+                data = transcript.read_bytes().split(b"\n")
+                data[0] = json.dumps(
+                    {"type": "ignored", "padding": "w" * 50}).encode().ljust(len(data[0]))
+                new_path = itdir / "output.jsonl.new"
+                new_path.write_bytes(b"\n".join(data))
+                new_path.replace(transcript)
+            assert transcript.stat().st_size == size
+
+            assert render_index.load_index(itdir) is None, (tamper, coverage, ended, path)
+            assert render_index.bounded_tail(run_root, 1) is None
+
+            full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                                   state=new_render_state())
+            last_content = full[-2] if ended else full[-1]
+            assert last_content == "kept", full
+            tail_n = 2 if ended else 1
+            _, rendered = _measure(sub, monkeypatch, run_root, tail_n, path)
+            assert rendered == full[-tail_n:], (tamper, coverage, ended, path, rendered)
+
+
+def test_a_rewrite_outside_the_window_stays_refused_across_a_later_legitimate_append(
+        tmp_path, monkeypatch):
+    """Task cure-01-01-4 criterion (2): a same-size rewrite caught by
+    `LiveRenderIndex.flush`'s own bounded self-check, WHILE the tampered
+    line was still inside that self-check's own window, must stay refused
+    once a LATER legitimate append (fed and flushed by the exact same
+    writer object -- never a from-scratch rebuild) has since pushed the
+    tampered line outside the window relative to the NEW, larger covered
+    prefix. Never blessing a previously modified prefix just because
+    coverage grew: the persisted `poisoned` witness carries the
+    invalidation forward, at no extra read cost beyond the bounded
+    self-check `flush` already pays on every publish."""
+    silent = json.dumps({"type": "ignored", "padding": "x" * 220})
+    said_beta = _said("beta")
+    for path in ("disk", "api"):
+        sub = tmp_path / f"persist-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        itdir = run_root / "iterations" / "0001"
+        itdir.mkdir(parents=True)
+        meta = {"number": 1, "phase": "worker", "model": "stub-model",
+                "approach": 1, "startedAt": "2025-01-01T00:00:00Z",
+                "exitCode": 0, "error": None, "usage": {"totalTokens": 1}}
+        (itdir / "meta.json").write_text(json.dumps(meta))
+        transcript = itdir / "output.jsonl"
+
+        live = render_index.LiveRenderIndex()
+        with transcript.open("ab") as out:
+            for line in (silent, said_beta, silent):
+                raw = (line + "\n").encode()
+                out.write(raw)
+                out.flush()
+                live.feed(raw)
+        assert live.flush(itdir, force=True)
+        assert render_index.load_index(itdir) is not None
+
+        # A same-size rewrite of the leading (already-published) line --
+        # still comfortably inside `flush`'s own next self-check window.
+        _rewrite_line_same_size(transcript, 0, json.dumps(
+            {"type": "ignored", "padding": "y" * 220}))
+        doc_before_growth = json.loads((itdir / render_index.INDEX_FILENAME).read_text())
+        assert doc_before_growth["poisoned"] is False, (
+            "tampering the disk file alone must not retroactively poison "
+            "an index nothing has re-published yet")
+
+        # The SAME writer object grows the transcript well past the
+        # verification window, in several small flush batches -- exactly
+        # `pump()`'s own live cadence, never one `force=True` rebuild.
+        big_pad = json.dumps({"type": "ignored", "padding": "z" * 2000})
+        with transcript.open("ab") as out:
+            for _ in range(120):
+                raw = (big_pad + "\n").encode()
+                out.write(raw)
+                out.flush()
+                live.feed(raw)
+                live.flush(itdir)
+        assert live.flush(itdir, force=True)
+
+        doc = json.loads((itdir / render_index.INDEX_FILENAME).read_text())
+        assert doc["poisoned"] is True, "the growth must not wash away the earlier tamper"
+        covered = doc["transcriptBytes"]
+        assert covered - len(silent) - 1 > render_index.VERIFY_WINDOW_BYTES, (
+            "the tampered line must now sit outside the CURRENT window", covered)
+
+        assert render_index.load_index(itdir) is None
+        assert render_index.bounded_tail(run_root, 1) is None
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        _, rendered = _measure(sub, monkeypatch, run_root, 1, path)
+        assert rendered == full[-1:], (path, rendered)
+
+
+def test_genuine_append_only_growth_across_many_flushes_never_poisons_the_index(
+        tmp_path, monkeypatch):
+    """Regression guard alongside the two rejection tests above: ordinary,
+    untouched, append-only growth -- fed and flushed by the SAME
+    `LiveRenderIndex` object across many small batches, exactly `flush`'s
+    own new self-check cadence -- never trips `poisoned`, and the index
+    keeps validating and staying bounded through both real
+    `ui_server.rendered_log_lines` surfaces, exactly as it did before this
+    task's cure."""
+    silent = json.dumps({"type": "ignored", "padding": "x" * 900})
+    said_gamma = _said("gamma")
+    for path in ("disk", "api"):
+        sub = tmp_path / f"safe-growth-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        itdir = run_root / "iterations" / "0001"
+        itdir.mkdir(parents=True)
+        meta = {"number": 1, "phase": "worker", "model": "stub-model",
+                "approach": 1, "startedAt": "2025-01-01T00:00:00Z",
+                "exitCode": 0, "error": None, "usage": {"totalTokens": 1}}
+        (itdir / "meta.json").write_text(json.dumps(meta))
+        transcript = itdir / "output.jsonl"
+
+        live = render_index.LiveRenderIndex()
+        with transcript.open("ab") as out:
+            for _ in range(150):
+                raw = (silent + "\n").encode()
+                out.write(raw)
+                out.flush()
+                live.feed(raw)
+                live.flush(itdir)
+            raw = (said_gamma + "\n").encode()
+            out.write(raw)
+            out.flush()
+            live.feed(raw)
+        assert live.flush(itdir, force=True)
+
+        doc = json.loads((itdir / render_index.INDEX_FILENAME).read_text())
+        assert doc["poisoned"] is False
+        assert doc["transcriptBytes"] > render_index.VERIFY_WINDOW_BYTES
+        assert render_index.load_index(itdir) is not None
+
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        measured, rendered = _measure(sub, monkeypatch, run_root, 1, path)
+        assert rendered == full[-1:] == ["gamma"], (path, rendered)
+        assert measured <= _FROZEN_CAP, measured

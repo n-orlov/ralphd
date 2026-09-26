@@ -88,6 +88,29 @@ leading line plus the covered prefix's last `VERIFY_WINDOW_BYTES`, each
 segment's CRC-32, fragment count and resulting state) finds bytes the
 index no longer describes. Consuming that "uncovered suffix" bound through the real client-
 facing call is task 013's job.
+
+Task cure-01-01-4 (petition remedy for cure-01-03 criterion (1)): the
+bounded window above still cannot see a same-size rewrite of a covered
+line it never reads. Every published index now also carries
+`transcriptInode`/`transcriptMtimeNs` (the transcript's own identity as of
+the moment this coverage was published) and `poisoned`. `load_index`
+refuses a `poisoned` index outright; refuses one whose `transcriptInode`
+no longer matches the transcript's current inode (a same-size
+replacement, e.g. a rename over the same path); and, whenever the
+transcript has not grown past `transcriptBytes` since, refuses one whose
+`transcriptMtimeNs` no longer matches the transcript's current mtime -- an
+O(1) `stat()`-only check that catches a same-size in-place rewrite
+HOWEVER far outside the window it sits. `LiveRenderIndex.flush` maintains
+the SAME guarantee across legitimate appends: before publishing new
+coverage, it re-runs `_covered_prefix_matches` over exactly what it
+previously published, and sets `poisoned` (sticky, never cleared by this
+object) the moment that no longer matches -- so a rewrite caught while
+still inside an earlier flush's own window stays refused even once later
+growth has pushed it outside the CURRENT one. `compute_render_index`'s
+one-shot, from-scratch rebuild has no earlier witness to check against
+and is never `poisoned`; it publishes a fresh identity witness matching
+whatever bytes are actually on disk right now, by design (task 013's own
+"never a second, drifting implementation" contract, unchanged).
 """
 
 from __future__ import annotations
@@ -112,9 +135,30 @@ from .log_merge import iteration_numbers as _iteration_numbers
 from .log_merge import iteration_output_path as _iteration_output_path
 
 INDEX_FILENAME = "render_index.json"
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 
-_REQUIRED_KEYS = ("version", "transcriptBytes", "segments", "checkpoints")
+# Task cure-01-01-4 (PRD C.1/C.3, D.1; petition remedy for cure-01-03
+# criterion (1)): the two fields that bind a checkpoint's coverage to the
+# transcript's own verifiable identity/revision -- `transcriptInode`
+# (`os.stat().st_ino`, so a same-size REPLACEMENT of the whole file, e.g. a
+# rename over the same path, is refused even when `_covered_prefix_matches`
+# never reads a byte of it) and `transcriptMtimeNs` (`os.stat().st_mtime_ns`
+# as of the moment the writer last published this coverage -- checked
+# against the transcript's CURRENT mtime whenever the transcript has not
+# grown past `transcriptBytes` since, so an in-place same-size REWRITE of a
+# covered line is refused by this O(1) stat-only check alone, with no
+# window and no read, however far outside `VERIFY_WINDOW_BYTES` the
+# rewritten line sits) -- plus `poisoned`, a sticky flag only
+# `LiveRenderIndex.flush` ever sets (never `compute_render_index`'s
+# one-shot rebuild), once ITS OWN bounded self-check
+# (`_covered_prefix_matches` over whatever it had already published as of
+# its OWN last flush) finds the previously-published prefix no longer
+# matches disk -- so a rewrite discovered while it was still inside an
+# earlier flush's own window stays refused even once a LATER legitimate
+# append has pushed it outside the CURRENT window (never blessing a
+# previously modified prefix just because the covered prefix grew).
+_REQUIRED_KEYS = ("version", "transcriptBytes", "segments", "checkpoints",
+                 "transcriptInode", "transcriptMtimeNs", "poisoned")
 _SEGMENT_KEYS = _collapse_index._SEGMENT_KEYS
 _CHECKPOINT_KEYS = ("byteOffset", "renderedLines", "state", "lineCrc32")
 
@@ -319,6 +363,17 @@ class LiveRenderIndex:
         self._rendered_lines = 0
         self._offset = 0
         self._lines_since_flush = 0
+        # Task cure-01-01-4: `poisoned`, once True, never clears itself --
+        # only a fresh `LiveRenderIndex`/a from-scratch `compute_render_index`
+        # rebuild starts clean. `_witness_checkpoints` is exactly the
+        # `checkpoints` prefix this object last PUBLISHED (via `flush`),
+        # never the full current `_checkpoints` -- so the NEXT flush's own
+        # self-check verifies precisely the coverage a reader could already
+        # have trusted, before blessing anything new on top of it.
+        self._poisoned = False
+        self._witness_checkpoints: list[dict] = []
+        self._witness_ino: int | None = None
+        self._witness_mtime_ns: int | None = None
 
     @property
     def transcript_bytes(self) -> int:
@@ -342,14 +397,32 @@ class LiveRenderIndex:
             "lineCrc32": zlib.crc32(raw_line)})
         self._lines_since_flush += 1
 
-    def snapshot(self) -> dict:
-        """The index payload as of every line fed so far."""
+    def snapshot(self, output_path: Path | None = None) -> dict:
+        """The index payload as of every line fed so far, plus this
+        object's current identity witness (`transcriptInode`/
+        `transcriptMtimeNs`, re-observed off `output_path` when given --
+        `flush` always passes it; `compute_render_index`'s one-shot rebuild
+        passes it too, so a from-scratch index still carries a witness a
+        reader can check) and `poisoned`. When `output_path` is omitted or
+        cannot be stat'd, the object's OWN last-known witness is kept
+        rather than overwritten with nothing."""
+        ino, mtime_ns = self._witness_ino, self._witness_mtime_ns
+        if output_path is not None:
+            try:
+                st = output_path.stat()
+                ino, mtime_ns = st.st_ino, st.st_mtime_ns
+            except OSError:
+                pass
         return {"version": INDEX_VERSION, "transcriptBytes": self._offset,
                 "segments": [dict(s) for s in self._segments],
-                "checkpoints": [dict(c) for c in self._checkpoints]}
+                "checkpoints": [dict(c) for c in self._checkpoints],
+                "transcriptInode": ino if ino is not None else 0,
+                "transcriptMtimeNs": mtime_ns if mtime_ns is not None else 0,
+                "poisoned": self._poisoned}
 
     def flush(self, itdir: Path, *, force: bool = False,
-              every: int = LIVE_FLUSH_EVERY_LINES) -> bool:
+              every: int = LIVE_FLUSH_EVERY_LINES,
+              output_filename: str = _OUTPUT_FILENAME) -> bool:
         """Persist the current snapshot to `itdir / INDEX_FILENAME` when at
         least `every` new lines were fed since the last flush, or always
         when `force` (the pump loop's own end-of-stream call, so the last
@@ -357,15 +430,34 @@ class LiveRenderIndex:
         `collapse_index.write_index`'s own failure contract -- a write
         that fails costs nothing more than a missing/stale index, which
         every reader already treats as an ordinary fall-back case.
-        Returns whether it actually wrote."""
+
+        Task cure-01-01-4: BEFORE publishing anything new, self-checks
+        whatever this object last published (`_witness_checkpoints`) against
+        the transcript's CURRENT bytes, bounded to `VERIFY_WINDOW_BYTES`
+        exactly like a reader's own `load_index` call -- so a same-size
+        rewrite of an already-published line is caught the moment it is
+        still inside that bound, and `poisoned` (once set) is carried into
+        every later published snapshot, including ones whose OWN covered
+        prefix has since grown past that same window. Returns whether it
+        actually wrote."""
         if not force and self._lines_since_flush < every:
             return False
+        output_path = itdir / output_filename
+        if not self._poisoned and self._witness_checkpoints:
+            if not _covered_prefix_matches(output_path, self._witness_checkpoints):
+                self._poisoned = True
         try:
             tmp = itdir / (INDEX_FILENAME + ".tmp")
-            tmp.write_text(json.dumps(self.snapshot()))
+            tmp.write_text(json.dumps(self.snapshot(output_path)))
             tmp.replace(itdir / INDEX_FILENAME)
         except OSError:
             return False
+        try:
+            st = output_path.stat()
+            self._witness_ino, self._witness_mtime_ns = st.st_ino, st.st_mtime_ns
+        except OSError:
+            pass
+        self._witness_checkpoints = list(self._checkpoints)
         self._lines_since_flush = 0
         return True
 
@@ -383,7 +475,7 @@ def compute_render_index(output_path: Path) -> dict:
     live = LiveRenderIndex()
     for raw_line in raw.splitlines(keepends=True):
         live.feed(raw_line)
-    return live.snapshot()
+    return live.snapshot(output_path)
 
 
 def write_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> None:
@@ -418,7 +510,19 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     inside the covered prefix's last `VERIFY_WINDOW_BYTES` still matching
     the transcript's current bytes (so any same-size rewrite or
     replacement inside that window, or of the first line, is refused;
-    a covered prefix no larger than the window is verified in full).
+    a covered prefix no larger than the window is verified in full);
+    the index's own `poisoned` witness is not set; its `transcriptInode`
+    still matches the transcript's current inode; and, when the transcript
+    has not grown past `transcriptBytes` since the witness was published,
+    its `transcriptMtimeNs` still matches the transcript's current mtime
+    (task cure-01-01-4, the petition remedy for cure-01-03 criterion (1)):
+    a same-size rewrite or replacement of a covered line is refused even
+    OUTSIDE the window and the tail walk, at the O(1) cost of a `stat()`
+    call, as long as nothing has grown the transcript since; once
+    `LiveRenderIndex.flush`'s own bounded self-check finds a rewrite
+    inside ITS window, `poisoned` stays set through every later legitimate
+    append too, so growth alone never blesses a previously modified
+    prefix.
 
     Deliberately NOT required: `transcriptBytes == actual size`. A live
     iteration's index is normally behind the transcript's current size
@@ -483,12 +587,44 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     last_offset = checkpoints[-1]["byteOffset"] if checkpoints else 0
     if transcript_bytes != last_offset:
         return None
+    # Task cure-01-01-4 (petition remedy for cure-01-03 criterion (1)):
+    # `poisoned` is checked before anything else costs a byte -- once the
+    # WRITER's own bounded self-check (`LiveRenderIndex.flush`) has found
+    # its previously-published prefix no longer matches disk, this index
+    # never validates again, no matter how far a later append has since
+    # pushed the tampered line outside `VERIFY_WINDOW_BYTES`.
+    if index.get("poisoned"):
+        return None
+    inode = index.get("transcriptInode")
+    mtime_ns = index.get("transcriptMtimeNs")
+    if not isinstance(inode, int) or isinstance(inode, bool):
+        return None
+    if not isinstance(mtime_ns, int) or isinstance(mtime_ns, bool):
+        return None
     try:
-        actual_size = (itdir / output_filename).stat().st_size
+        actual_stat = (itdir / output_filename).stat()
+        actual_size = actual_stat.st_size
     except OSError:
+        actual_stat = None
         actual_size = 0
     if transcript_bytes > actual_size:
         return None
+    if checkpoints and actual_stat is not None:
+        # A same-size REPLACEMENT of the whole transcript (a rename over
+        # the same path) changes the inode a fresh `stat()` reports at
+        # this path -- refused here, cheaply, whether or not the
+        # replacement's own bytes happen to fall inside the window below.
+        if actual_stat.st_ino != inode:
+            return None
+        # A same-size, in-place REWRITE of any covered line -- including
+        # one `_covered_prefix_matches`'s own bounded window never reads --
+        # still touches the transcript's single `mtime`. Checked only when
+        # nothing has grown past `transcriptBytes` since this witness was
+        # published (a growing transcript's mtime moves forward on every
+        # legitimate append too, so equality is not expected there; that
+        # case relies on `poisoned` plus the window check below instead).
+        if actual_size == transcript_bytes and actual_stat.st_mtime_ns != mtime_ns:
+            return None
     if checkpoints and not _covered_prefix_matches(
             itdir / output_filename, checkpoints):
         return None
