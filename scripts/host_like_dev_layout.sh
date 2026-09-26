@@ -103,7 +103,36 @@
 # that is not even marker-expression SHAPED -- blank, unbalanced
 # parentheses, or a character no marker expression uses; see that entry
 # below for what this script does and does not judge) or 3 (import did not
-# actually move with $HOME -- the setup did not take).
+# actually move with $HOME -- the setup did not take). When the supplemental
+# default run described next also executes, the exit code is nonzero if
+# EITHER pytest invocation is nonzero (the primary's own code, unless the
+# primary succeeded and the supplemental did not, in which case the
+# supplemental's).
+#
+# Task cure-01-01-2 (Task 018 criterion 3): nightly calls this script with no
+# HOST_LIKE_DEV_LAYOUT_TIER override and no pytest args of its own -- the
+# exact shape task 018 found leaving the `nightly`-marked nodes and the 27
+# dev-layout nodes in `tests/test_host_like_dev_layout_script.py` (both
+# outside `fast`/`smoke`, and neither `docker` nor `browser`, so neither one
+# is covered by `.github/workflows/heavy.yml` either) uncovered by every CI
+# lane. THIS EXACT invocation shape -- no HOST_LIKE_DEV_LAYOUT_TIER override
+# AND no pytest args of its own ($# -eq 0) -- now also runs a SECOND pytest
+# invocation, in the same already-built $HOME/user base, selecting every
+# collected node the primary `-m fast` run left out AND that is not `docker`
+# or `browser` either: `-m "not fast and not smoke and not docker and not
+# browser"`. Since every collected node is stamped with exactly one of
+# fast/smoke(subset of fast)/docker/browser/nightly-lane-with-none-of-those
+# by `tests/conftest.py`'s `pytest_collection_modifyitems`, that expression's
+# complement of `fast`/`docker`/`browser` is precisely the `nightly`-marked
+# nodes and the dev-layout module's own nodes -- nothing more, nothing less
+# -- so this one supplemental pass is what makes nightly's own dev-layout
+# cells the sole remaining coverage for that set, alongside heavy.yml's
+# `-m docker` and `-m browser` jobs for the other two tiers. A caller that
+# supplies EITHER an explicit HOST_LIKE_DEV_LAYOUT_TIER OR any pytest
+# argument of its own (a node id, a path, `--collect-only`, ...) gets its
+# requested selection alone, with no second pass added -- the addition is
+# for the one default, no-argument shape nightly actually calls, never a
+# recursive whole-suite expansion bolted onto a caller's own narrower ask.
 #
 # Env overrides:
 #   PYTHON              interpreter to use instead of the bare `python3` on
@@ -196,6 +225,32 @@
 #                        starting `host_like_dev_layout.sh: pytest tier
 #                        selection:` -- the same greppable-report convention
 #                        as the PYTHONUSERBASE_MODE line above.
+#
+#                        Task cure-01-01-2: when this variable is left
+#                        UNSET entirely (not even set to the literal value
+#                        `fast`) AND this invocation carries no pytest
+#                        argument of its own -- the exact shape
+#                        `.github/workflows/nightly.yml`'s dev-layout cell
+#                        calls this script with -- a SECOND pytest
+#                        invocation runs afterwards, in the same already-
+#                        built $HOME/user base, selecting
+#                        `-m "not fast and not smoke and not docker and not
+#                        browser"`: every collected node the primary run
+#                        left out that `.github/workflows/heavy.yml`'s
+#                        `docker`/`browser` jobs do not cover either (the
+#                        `nightly`-marked nodes and
+#                        `tests/test_host_like_dev_layout_script.py`'s own
+#                        nodes). It is echoed the same way, on a line
+#                        starting `host_like_dev_layout.sh: default
+#                        invocation -- also running every collected node
+#                        outside fast/smoke/docker/browser (supplemental
+#                        pass):`. Naming an explicit tier -- including the
+#                        literal value `fast` -- or passing any pytest
+#                        argument of this script's own (a node id, a path,
+#                        `--collect-only`, `unfiltered`) disables the
+#                        supplemental pass: the caller's own narrower
+#                        request is never expanded back out to the whole
+#                        suite behind its back.
 
 set -euo pipefail
 
@@ -235,6 +290,15 @@ fi
 # Defaults to `fast`; the literal value `unfiltered` is the explicit
 # "no filter" form. See the header's Usage section and
 # HOST_LIKE_DEV_LAYOUT_TIER entry for the rationale.
+#
+# Task cure-01-01-2: recorded BEFORE the `:-fast` substitution below, since
+# that substitution is exactly what erases the difference between "caller
+# left this unset" and "caller explicitly asked for fast" -- only the former
+# is the default shape the supplemental pass (see the header) is for.
+DEV_LAYOUT_TIER_WAS_UNSET=0
+if [ -z "${HOST_LIKE_DEV_LAYOUT_TIER+x}" ]; then
+  DEV_LAYOUT_TIER_WAS_UNSET=1
+fi
 DEV_LAYOUT_TIER="${HOST_LIKE_DEV_LAYOUT_TIER:-fast}"
 
 # Shape check only, and only what this shell can honestly judge (the header's
@@ -282,6 +346,19 @@ if [ "$DEV_LAYOUT_TIER" = "unfiltered" ]; then
 else
   PYTEST_TIER_ARGS=(-m "$DEV_LAYOUT_TIER")
   echo "host_like_dev_layout.sh: pytest tier selection: -m $DEV_LAYOUT_TIER"
+fi
+
+# --- supplemental default run (task cure-01-01-2, task 018 criterion 3) ----
+# Fires ONLY for the exact shape nightly.yml calls this script with: no
+# HOST_LIKE_DEV_LAYOUT_TIER override at all AND no pytest args of its own
+# ($# -eq 0 -- a targeted node id, a path, or a flag like --collect-only all
+# count as "args of its own" and disable it, per the header). An explicit
+# tier (even the literal value `fast`) also disables it: this is a default,
+# not a property of the word `fast`.
+SUPPLEMENTAL_TIER_MARKER="not fast and not smoke and not docker and not browser"
+RUN_SUPPLEMENTAL_TIER=0
+if [ "$DEV_LAYOUT_TIER_WAS_UNSET" -eq 1 ] && [ "$#" -eq 0 ]; then
+  RUN_SUPPLEMENTAL_TIER=1
 fi
 
 # --- (b) populate the hostile $HOME BEFORE the install ----------------------
@@ -408,26 +485,53 @@ esac
 # Mode decides whether the pytest *invocation itself* sees PYTHONUSERBASE.
 # The install above always needed it explicit; this is deliberately a
 # separate decision (see HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE above).
+#
+# Task cure-01-01-2: factored into a function so the supplemental pass below
+# reuses the EXACT same $HOME/$DEV_USERBASE/PATH wiring and MODE branching as
+# the primary run, rather than a second, driftable copy of it -- both calls
+# below share the same two branches this function's own text carries once.
+_run_pytest_tier() {
+  if [ "$PYTHONUSERBASE_MODE" = "unset" ]; then
+    # `unset` mode is ONLY about which env var decides the pytest
+    # subprocess's own IMPORT path ($HOME alone, via env -u PYTHONUSERBASE,
+    # per the header above) -- it says nothing about where `pip install
+    # --user` put the console scripts this suite shells out to. Those
+    # landed in the SAME $DEV_USERBASE/bin in both modes (the install step
+    # above always exports PYTHONUSERBASE explicitly), so both modes need
+    # that directory on PATH; putting it on PATH here does not re-introduce
+    # PYTHONUSERBASE into the subprocess's environment and does not weaken
+    # this mode's own claim.
+    HOME="$DEV_HOME" PIP_CACHE_DIR="$PIP_CACHE_DIR" PATH="$DEV_USERBASE_BIN_PATH" \
+      env -u PYTHONUSERBASE "$PY" -m pytest -q "$@"
+  else
+    HOME="$DEV_HOME" PYTHONUSERBASE="$DEV_USERBASE" PIP_CACHE_DIR="$PIP_CACHE_DIR" \
+      PATH="$DEV_USERBASE_BIN_PATH" "$PY" -m pytest -q "$@"
+  fi
+}
+
 cd "$REPO_ROOT"
 set +e
 if [ "$PYTHONUSERBASE_MODE" = "unset" ]; then
   echo "host_like_dev_layout.sh: PYTHONUSERBASE_MODE=unset -- running pytest" \
        "with PYTHONUSERBASE unset; \$HOME alone decides the import path"
-  # `unset` mode is ONLY about which env var decides the pytest subprocess's
-  # own IMPORT path ($HOME alone, via env -u PYTHONUSERBASE, per the header
-  # above) -- it says nothing about where `pip install --user` put the
-  # console scripts this suite shells out to. Those landed in the SAME
-  # $DEV_USERBASE/bin in both modes (the install step above always exports
-  # PYTHONUSERBASE explicitly), so both modes need that directory on PATH;
-  # putting it on PATH here does not re-introduce PYTHONUSERBASE into the
-  # subprocess's environment and does not weaken this mode's own claim.
-  HOME="$DEV_HOME" PIP_CACHE_DIR="$PIP_CACHE_DIR" PATH="$DEV_USERBASE_BIN_PATH" \
-    env -u PYTHONUSERBASE "$PY" -m pytest -q "${PYTEST_TIER_ARGS[@]}" "$@"
-else
-  HOME="$DEV_HOME" PYTHONUSERBASE="$DEV_USERBASE" PIP_CACHE_DIR="$PIP_CACHE_DIR" \
-    PATH="$DEV_USERBASE_BIN_PATH" "$PY" -m pytest -q "${PYTEST_TIER_ARGS[@]}" "$@"
 fi
+_run_pytest_tier "${PYTEST_TIER_ARGS[@]}" "$@"
 STATUS=$?
+
+# Task cure-01-01-2: the supplemental default run (see the header's exit-code
+# paragraph and its own entry above). Same $HOME/user base/PATH as the
+# primary run above -- no re-install, no re-derivation -- just a second
+# selection over the same already-built environment.
+if [ "$RUN_SUPPLEMENTAL_TIER" -eq 1 ]; then
+  echo "host_like_dev_layout.sh: default invocation -- also running every" \
+       "collected node outside fast/smoke/docker/browser (supplemental" \
+       "pass): -m $SUPPLEMENTAL_TIER_MARKER"
+  _run_pytest_tier -m "$SUPPLEMENTAL_TIER_MARKER"
+  SUPPLEMENTAL_STATUS=$?
+  if [ "$STATUS" -eq 0 ] && [ "$SUPPLEMENTAL_STATUS" -ne 0 ]; then
+    STATUS="$SUPPLEMENTAL_STATUS"
+  fi
+fi
 set -e
 
 # --- (c) re-check the placed skill's survival, and report it ----------------

@@ -9,7 +9,7 @@ budgets are checked by `tests/test_tier_budgets.py`, which reads this file.
 |---|---|---|---|
 | smoke | `smoke` | the per-task verify pass of a run on this repository (the run's Standing rules name this recipe; the verify prompt itself names no project tier), and `scripts/final_sha_guards.sh` over the docs-reading modules it discovers | in-process engine flows (a supervisor plus scripted attempts, backoffs stubbed), in-process CLI, in-process hub, and the in-process checks of the docs and SPEC.md against the code |
 | fast | `fast` | the final sha of a wave, and any pull request | smoke plus the stub-pi flow modules and the process-boundary CLI tests -- everything outside the nightly lanes |
-| nightly | `docker`, `browser`, and the dev-layout module | a sweep, never a per-task check | the docker-sibling tier, the browser tier, and `nightly.yml`'s six-cell dev-layout container matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset, `max-parallel: 2` across the VPS's two registered runner slots) -- each cell's `pytest` invocation itself now runs the `fast` tier by default (task 076, `scripts/host_like_dev_layout.sh`'s `HOST_LIKE_DEV_LAYOUT_TIER`), not the whole suite unfiltered; see the dev-layout rows below |
+| nightly | `docker`, `browser`, and the dev-layout module | a sweep, never a per-task check | the docker-sibling tier, the browser tier, and `nightly.yml`'s six-cell dev-layout container matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset, `max-parallel: 2` across the VPS's two registered runner slots) -- each cell's `pytest` invocation itself now runs the `fast` tier by default (task 076, `scripts/host_like_dev_layout.sh`'s `HOST_LIKE_DEV_LAYOUT_TIER`), not the whole suite unfiltered, PLUS (task cure-01-01-2) a supplemental pass over every node that default leaves outside `fast`/`smoke`/`docker`/`browser` -- the `nightly`-marked nodes and the dev-layout module's own nodes -- so nothing collected goes uncovered by every lane; see the dev-layout rows below |
 
 ## Recipes
 
@@ -188,6 +188,30 @@ the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip`
 step -- not to the 3600 s ceiling the two retired rows above were measured
 against, which was sized to the unfiltered whole suite this lane no longer
 runs.
+
+**Task cure-01-01-2 (task 018 criterion 3) adds one more pass on top of that
+`-m fast` default, for the exact no-override, no-extra-argument shape
+`nightly.yml`'s cell calls the script with.** `-m fast` alone left the
+`nightly`-marked nodes and `tests/test_host_like_dev_layout_script.py`'s own
+nodes -- neither `fast` nor `smoke` nor `docker` nor `browser` -- uncovered
+by any CI lane: not this cell (it never selected them), not
+`.github/workflows/heavy.yml` (its `docker`/`browser` jobs do not select
+them either). The script now runs a second pytest invocation afterwards, in
+the same already-built `$HOME`/user base (no re-install), selecting `-m
+"not fast and not smoke and not docker and not browser"` -- exactly that
+leftover set, since `tests/conftest.py`'s derivation stamps every collected
+node with exactly one of `fast`/`docker`/`browser`/that leftover. Passing an
+explicit `HOST_LIKE_DEV_LAYOUT_TIER` (even the literal value `fast`) or any
+pytest argument of the caller's own (a node id, a path, `--collect-only`)
+disables the addition, so a targeted or `--collect-only` invocation still
+runs exactly what it asked for. The script's own exit code is nonzero if
+either pass is, so a regression in the previously-uncovered set now fails
+the nightly cell instead of passing silently. This adds real wall time to
+the cell (the leftover set includes real editable-install-driven tests in
+its own module) but no new bound: the cell's existing 120-minute
+`timeout-minutes` is unchanged, and neither this table nor `docs/ci.md`'s
+matching row is edited for it, per the standing prohibition on raising a
+bound to make a requirement pass.
 
 ## When a tier goes over budget
 
