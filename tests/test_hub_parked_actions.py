@@ -129,7 +129,16 @@ async function main() {
   const textInputs = card ? findAll(card, 'input').filter((n) => n.attrs.type === 'text') : [];
   const textareas = card ? findAll(card, 'textarea') : [];
 
+  // cure-01-01-6: an `append` action writes straight to the textarea's
+  // own value, exactly as a hand-typed keystroke would -- never through
+  // `onWaive`/`applyWaiveLine` -- so a test can put the panel back into
+  // an unterminated state BETWEEN two checkbox toggles, the exact
+  // interleaving that exposed the separator-tracking bug.
   for (const w of (input.waive || [])) {
+    if (w.append !== undefined) {
+      document.__els['parked-rule-text'].value += w.append;
+      continue;
+    }
     const cb = checkboxes.find((c) => c.attrs.id === 'waive-' + w.id);
     if (!cb) throw Error('no such waive checkbox: ' + w.id);
     cb.attrs.onchange({ target: { checked: w.checked } });
@@ -331,6 +340,46 @@ def test_unchecking_keeps_blank_lines_around_the_removed_line():
                       {"id": "F2", "checked": True},
                       {"id": "F1", "checked": False}])
     assert out["textareaValue"] == "para one\n\npara two\nwaive F2 (clause two (#112))\n"
+
+
+def test_uncheck_removes_own_line_not_a_matching_substring_in_prose():
+    """cure-01-01-6 (B.3-B.4, D.1, DoD 2): the review's own probe found
+    that unchecking fell back to a bare `indexOf(line + "\\n")` for a
+    line that is NOT the textarea's last line -- a plain substring
+    search with no line-boundary requirement, so a waive line's own text
+    embedded inside an unrelated operator sentence ('Do not waive F1
+    (clause one (#111))\\n' contains 'waive F1 (clause one (#111))\\n' as
+    a bare substring, but never as its own line) got spliced out of that
+    prose instead of the real composed line further down. Checking F1
+    then F2, then unchecking F1, must remove only the LINE `applyWaiveLine`
+    itself appended -- the operator's own sentence stays byte-identical."""
+    body = "Do not waive F1 (clause one (#111))\nKeep this paragraph\n"
+    out = _run(_PQ, textareaValue=body,
+               waive=[{"id": "F1", "checked": True},
+                      {"id": "F2", "checked": True},
+                      {"id": "F1", "checked": False}])
+    assert out["textareaValue"] == body + "waive F2 (clause two (#112))\n"
+    assert out["calls"] == []
+
+
+def test_second_waiver_after_an_operator_edit_is_separate_and_removable():
+    """cure-01-01-6 (B.3-B.4, D.1, DoD 2): the companion bug -- separator
+    insertion was tracked only at the instant the composed region grew
+    from zero active lines to one, so a hand edit appended directly to
+    the textarea BETWEEN two checks (leaving it unterminated again with
+    one waive line already active) never got its own leading separator
+    recorded, and a later check ran its composed line straight into the
+    operator's own last word. Checking F1, appending an unterminated
+    further explanation, then checking and unchecking F2 must leave the
+    edited prose exactly as typed."""
+    out = _run(_PQ, textareaValue="original\n",
+               waive=[{"id": "F1", "checked": True},
+                      {"append": "My further explanation"},
+                      {"id": "F2", "checked": True},
+                      {"id": "F2", "checked": False}])
+    assert out["textareaValue"] == (
+        "original\nwaive F1 (clause one (#111))\nMy further explanation")
+    assert out["calls"] == []
 
 
 def test_checking_a_waive_box_never_sends_any_request_by_itself():

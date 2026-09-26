@@ -1889,61 +1889,62 @@ function parkedWaiveLineText(f) {
 // exercises directly so the compose-then-submit rule is pinned independent
 // of any event wiring.
 //
-// cure-01-01-5: the previous fix guessed whether a trailing single "\n"
+// cure-01-01-5: an earlier fix guessed whether a trailing single "\n"
 // was check()'s OWN inserted separator or the operator's own real byte by
-// inspecting only the resulting string -- genuinely ambiguous whenever no
-// OTHER composed line follows it, and it guessed wrong for a plain
-// newline-terminated body ("operator note\n"): a check-then-uncheck of F1
-// silently dropped the operator's own trailing newline with zero waive
-// requests (review finding B.3-B.5). The two histories
-// ("already ended in \n" vs. "check() added the \n as a separator")
-// produce byte-IDENTICAL strings, so no amount of string inspection alone
-// can tell them apart; the fix instead carries the one bit of real
-// history through `sepState` (an object OWNED by the caller, mutated in
-// place -- `renderParkedPanel` below hands it one shared instance across
-// every toggle of a single parked question) -- set only at the instant
-// the composed region grows from zero active lines to one, and consulted
-// only at the mirror instant it shrinks back to zero, so an intermediate
-// toggle (a second finding already active, or another one still active
-// afterwards) never touches it. `composedLines` (every finding's own
-// `parkedWaiveLineText`) is still what tells an already-active line from
-// a not-yet-active one -- `activeBefore` below counts how many of them
-// are present in `text` BEFORE this toggle, independent of the order any
-// of them were checked in.
+// inspecting only the resulting string AFTER the fact -- genuinely
+// ambiguous once other composed/edited text sits nearby.
+//
+// cure-01-01-6: two bugs remained. (1) the last-line-only removal branch
+// fell back to a bare `indexOf(line + "\n")` for a line that is NOT the
+// last line -- a plain substring search with no requirement that it start
+// at a line boundary, so a waive line's own text embedded inside an
+// unrelated operator sentence ("Do not waive F1 (clause one (#111))\n")
+// matched and got spliced out of THAT prose instead of the real composed
+// line further down. (2) the separator-tracking bit (`state.inserted`)
+// was recorded only at the instant the composed region grew from zero
+// active lines to one, so a hand edit appended directly to the textarea
+// between two checks (leaving it unterminated again) with one composed
+// line already active never got its own leading separator recorded --
+// checking a SECOND finding right after such an edit silently ran its
+// composed line into the operator's own last word.
+//
+// The fix removes the ambiguity at its root instead of guessing around
+// it: `state` (an object OWNED by the caller, mutated in place --
+// `renderParkedPanel` below hands it one shared instance across every
+// toggle of a single parked question) records, PER COMPOSED LINE, the
+// one fact that matters -- whether THAT line's own insertion had to add
+// a leading separator, decided at the moment it was inserted (text ended
+// without "\n" at that instant) rather than inferred later from shape.
+// Removal always locates the line by a boundary-anchored search ("\n" or
+// start-of-string before it, "\n" after it), so a coincidental substring
+// elsewhere in hand-typed prose is never touched, and only strips the
+// synthetic leading separator when this line's own record says it added
+// one -- never a byte the operator (or another composed line) put there.
 function applyWaiveLine(text, line, checked, composedLines, sepState) {
   const src = String(text || "");
-  const known = composedLines || [];
   const state = sepState || {};
-  const present = (l) => ("\n" + src + "\n").indexOf("\n" + l + "\n") >= 0;
-  const already = present(line);
-  const activeBefore = known.filter(present).length;
+  const boundaryIndex = (s, l) => {
+    if (s === l || s.startsWith(l + "\n")) return 0;
+    const at = s.indexOf("\n" + l + "\n");
+    return at < 0 ? -1 : at + 1;
+  };
+  const already = boundaryIndex(src, line) >= 0;
   if (checked) {
     if (already) return src;
-    if (activeBefore === 0) state.inserted = src.length > 0 && !src.endsWith("\n");
-    const sep = activeBefore === 0 && state.inserted ? "\n" : "";
-    return src + sep + line + "\n";
+    const addSep = src.length > 0 && !src.endsWith("\n");
+    state[line] = addSep;
+    return src + (addSep ? "\n" : "") + line + "\n";
   }
   if (!already) return src;
-  const suffix = line + "\n";
-  if (src.endsWith(suffix)) {
-    // The line being removed is the LAST line in the text -- exactly the
-    // position `checked` above always appends at.
-    let base = src.slice(0, src.length - suffix.length);
-    // Only the mirror instant of the 0->1 insertion above (this was the
-    // ONE remaining active line) ever strips a byte that isn't this
-    // line's own -- and only when that insertion actually added one.
-    if (activeBefore === 1 && state.inserted && base.endsWith("\n")) {
-      base = base.slice(0, -1);
-    }
-    return base;
+  const idx = boundaryIndex(src, line);
+  const before = src.slice(0, idx);
+  const after = src.slice(idx + line.length + 1);
+  const insertedSep = !!state[line];
+  delete state[line];
+  if (insertedSep && before.endsWith("\n")) {
+    return before.slice(0, -1) + after;
   }
-  // Not the last line: remove exactly this line's own text, wherever it
-  // sits -- every other byte, including the newlines around it, stays
-  // exactly as it was (never a split/join, which would renumber blank
-  // lines it never touched).
-  const idx = src.indexOf(line + "\n");
-  if (idx < 0) return src;
-  return src.slice(0, idx) + src.slice(idx + suffix.length);
+  return before + after;
 }
 
 // Task 009 (v0.26, #269): `onWaive(f, checked)` is called on toggle, never
@@ -2033,21 +2034,18 @@ function renderParkedPanel(box, runId, pq) {
   // PANEL'S OWN `#parked-rule-text` -- never `#rule-text`, the SEPARATE
   // Rule section's own control further down the page -- so the operator
   // never has to leave the panel to see, or edit, the ruling a waive
-  // built. `composedLines` (every finding's own `parkedWaiveLineText`)
-  // lets `applyWaiveLine` tell an operator's own unterminated last line
-  // apart from another finding's already-composed one when the checkbox
-  // being toggled is the last line in the box (see that function's own
-  // comment).
-  const composedLines = (pq.findings || []).map(parkedWaiveLineText);
+  // built.
   // One `sepState` instance shared across every waive toggle for THIS
-  // rendering of the panel (cure-01-01-5) -- `applyWaiveLine` mutates it
-  // in place to remember whether ITS OWN separator newline was inserted,
-  // never guessing that fact back out of the text alone.
-  const sepState = { inserted: false };
+  // rendering of the panel (cure-01-01-5, refined cure-01-01-6) --
+  // `applyWaiveLine` mutates it in place, keyed by each composed line's
+  // OWN text, to remember whether THAT line's own insertion had to add a
+  // leading separator newline, decided once at insertion time rather
+  // than guessed back out of the text's shape on removal.
+  const sepState = {};
   const onWaive = (f, checked) => {
     const ta = document.getElementById("parked-rule-text");
     if (!ta) return;
-    ta.value = applyWaiveLine(ta.value, parkedWaiveLineText(f), checked, composedLines, sepState);
+    ta.value = applyWaiveLine(ta.value, parkedWaiveLineText(f), checked, null, sepState);
   };
   const outcomeText = parkedNextStepOutcomeText(c.nextStepIfUnanswered);
   const actionStatus = h("div", { id: "parked-action-status", class: "muted" }, []);

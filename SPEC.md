@@ -5132,7 +5132,22 @@ dir themselves and a live proxy would only add a way to disagree.
   still active afterwards) never touches it; a check-then-uncheck round
   trip, repeated any number of times, returns the text byte-identical
   whether it started empty, unterminated, ending in exactly one newline, or
-  ending in a blank line. cure-01-05
+  ending in a blank line. cure-01-01-6 (B.3-B.4, D.1, DoD 2) replaces
+  that activeBefore-counted scheme with a simpler, exact one: sepState is
+  now keyed by each composed line's OWN text, recording -- at the instant
+  THAT line is inserted, never inferred later from shape -- whether ITS
+  OWN insertion had to add a leading separator (the text did not already
+  end in a newline right then), so a hand edit typed directly into the
+  textarea between two checks (leaving it unterminated again with one
+  waive line already active) is tracked correctly instead of being missed
+  by a rule that only fired on the very first 0-to-1 transition. Removal
+  now always locates a composed line with a boundary-anchored search (a
+  real newline, or the start of the text, immediately before it, and a
+  real newline immediately after) instead of a bare substring search --
+  so a waive line's own text embedded inside an unrelated operator
+  sentence ('Do not waive F1 (clause one (#111))' followed by its own
+  line's newline and unrelated prose) is never mistaken for that composed
+  line and spliced out of the operator's own prose. cure-01-05
   (adopted #270 D.14) gives the panel its OWN answer box -- a name field
   (`#parked-rule-name`) and a resizable 12-row ruling textarea
   (`#parked-rule-text`, `Enter` inserts a newline and never submits) --

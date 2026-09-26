@@ -3445,8 +3445,11 @@ JSON endpoints served under `/api/`:
   own answer box beside the findings: an
   editable ruling textarea (`#parked-rule-text`, where `Enter` is a
   newline and each finding's waive checkbox adds or removes only its own
-  line, sending nothing, byte-identical on a check-then-uncheck round trip
-  whatever the prose's own trailing-newline shape), a name field (`#parked-rule-name`) and both
+  line -- located by its own line boundaries, so a waive line's text
+  embedded inside an unrelated operator sentence is never mistaken for
+  it -- sending nothing, byte-identical on a check-then-uncheck round trip
+  whatever the prose's own trailing-newline shape, including a hand edit
+  typed directly into the textarea between two toggles (cure-01-01-6)), a name field (`#parked-rule-name`) and both
   actions -- *Submit ruling and resume* posts the name and the textarea
   body byte-identical to `POST /api/runs/<id>/rule`, *Resume without a
   ruling* posts `unpause`; the runs list's `\u23F8 parked for input` marker links straight

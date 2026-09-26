@@ -501,6 +501,89 @@ def test_waive_toggle_round_trip_preserves_a_single_trailing_newline_in_browser(
         engine.close()
 
 
+def test_uncheck_does_not_remove_a_substring_from_operator_sentence_in_browser(
+        tmp_path, pw):
+    """cure-01-01-6 (B.3-B.4, D.1, DoD 2): the review's own live probe
+    found that unchecking a waive box removed a bare `indexOf(line +
+    "\n")` substring match wherever it happened to occur -- including
+    INSIDE an unrelated operator sentence that merely happens to contain
+    the waive line's own text ('Do not waive F1 (clause one (#111))\n'
+    contains 'waive F1 (clause one (#111))\n' as a substring, but not as
+    its own line). Checking F1 then F2, then unchecking F1, must remove
+    only the LINE `applyWaiveLine` itself composed and appended, never
+    the matching text embedded in the operator's own prose above it --
+    pinned here through the real DOM checkbox and a real click."""
+    registry = tmp_path / "registry"
+    _run_dir, engine = _write_live_parked_run(registry, "run-waive-substring")
+    try:
+        server = UiServer(registry)
+        server.wait_ready()
+        try:
+            pw.open(f"{server.base}/#/run/run-waive-substring")
+            _wait_for_count_ge(pw, "document.querySelectorAll('.waive-checkbox').length", 2)
+            pw.click(".parked-finding summary >> nth=0")
+            pw.click(".parked-finding summary >> nth=1")
+
+            body = "Do not waive F1 (clause one (#111))\nKeep this paragraph\n"
+            pw.fill("#parked-rule-text", body)
+
+            pw.check("#waive-F1")
+            pw.check("#waive-F2")
+            _uncheck(pw, "#waive-F1")
+
+            actual = _val(pw, "document.getElementById('parked-rule-text').value")
+            expected = body + "waive F2 (clause two (#112))\n"
+            assert actual == expected
+            assert _posts(engine) == []
+            pw.screenshot(SCREENSHOTS_DIR / "parked-11-waive-substring.png")
+        finally:
+            server.stop()
+    finally:
+        engine.close()
+
+
+def test_edit_then_check_and_uncheck_second_finding_preserves_body_in_browser(
+        tmp_path, pw):
+    """cure-01-01-6 (B.3-B.4, D.1, DoD 2): the companion bug -- separator
+    insertion was tracked only at the instant the composed region grew
+    from zero active lines to one, so a hand edit typed directly into the
+    textarea BETWEEN two checks (leaving it unterminated again with one
+    waive line already active) never got its own leading separator
+    recorded. Checking F1, typing an unterminated further explanation,
+    then checking and unchecking F2 must leave the edited prose exactly
+    as typed, with F2's own composed line and its own separator fully
+    removed -- pinned through real keystrokes and real checkbox clicks."""
+    registry = tmp_path / "registry"
+    _run_dir, engine = _write_live_parked_run(registry, "run-waive-edit-between")
+    try:
+        server = UiServer(registry)
+        server.wait_ready()
+        try:
+            pw.open(f"{server.base}/#/run/run-waive-edit-between")
+            _wait_for_count_ge(pw, "document.querySelectorAll('.waive-checkbox').length", 2)
+            pw.click(".parked-finding summary >> nth=0")
+            pw.click(".parked-finding summary >> nth=1")
+
+            pw.fill("#parked-rule-text", "original\n")
+            pw.check("#waive-F1")
+
+            after_f1 = _val(pw, "document.getElementById('parked-rule-text').value")
+            before = after_f1 + "My further explanation"
+            pw.fill("#parked-rule-text", before)
+
+            pw.check("#waive-F2")
+            _uncheck(pw, "#waive-F2")
+
+            actual = _val(pw, "document.getElementById('parked-rule-text').value")
+            assert actual == before
+            assert _posts(engine) == []
+            pw.screenshot(SCREENSHOTS_DIR / "parked-12-waive-edit-between.png")
+        finally:
+            server.stop()
+    finally:
+        engine.close()
+
+
 # ---------------------------------------------------------------------------
 # criterion (1): findings occupy the LEFT column, the answer box and its
 # two actions occupy the RIGHT column, at desktop widths.

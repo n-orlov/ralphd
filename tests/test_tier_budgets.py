@@ -189,8 +189,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # +1 module (tests/test_other_escalations_digest.py), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 6372/436,
     # `-m smoke` -> 4680/313.
-    "fast": {"tests": 6372, "modules": 436},
-    "smoke": {"tests": 4680, "modules": 313},
+    # cure-01-01-6 (B.3-B.4, D.1, DoD 2): +2 tests, no new module (tests/
+    # test_hub_parked_actions.py: unchecking removes only the composed
+    # line, never a matching substring in an unrelated operator sentence;
+    # a second waiver checked after a hand edit between two toggles is
+    # separate and removable), measured `.venv/bin/python -m pytest -q -m
+    # fast --collect-only` -> 6374/436, `-m smoke` -> 4682/313.
+    "fast": {"tests": 6374, "modules": 436},
+    "smoke": {"tests": 4682, "modules": 313},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
