@@ -1837,6 +1837,24 @@ whenever `bounded_tail` succeeds, purely to learn whether the container is
 still reachable (the `live` flag callers/the hub display, unrelated to
 where the tail's own content came from).
 
+**No usable index: exact, not bounded (task 014).** The byte bound above
+is a property of the INDEXED read only. When the latest iteration's render
+index is unusable -- genuinely absent (a run recorded before the index
+existed, or a directory with no engine bookkeeping), truncated, or
+version/size-mismatched -- the outer doubling fetch answers, and it pays
+whatever scan correctness costs: `log_merge`'s bounded look-back can only
+*guess* a collapse flag it has not seen the setter of (disclosed as
+`collapseSeed["unresolved"]`), and one `text_delta` far back in older
+history decides whether a later `message_end` text is an already-streamed
+replay or visible text. So `_fetch_live_tail`/`_fetch_dead_tail` keep
+growing past "enough lines" while the fetched text still discloses an
+unresolved flag, until it resolves or the whole iteration has been read.
+A cold, unindexed first read of a large iteration can therefore read the
+whole transcript; it is never answered with a guessed flag. The tests keep
+the two apart: byte-bound scenarios carry an engine-written
+`render_index.json`, and separate no-index controls assert only the exact
+full-render tail.
+
 ### Container lifecycle
 
 ```

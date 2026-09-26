@@ -89,8 +89,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # bounded_reads.py::test_silent_prelude_case_renders_the_full_
     # renderers_last_two_lines_on_both_real_paths covers the cure without
     # adding a node) -> fast 6269, smoke 4588.
-    "fast": {"tests": 6269, "modules": 433},
-    "smoke": {"tests": 4588, "modules": 311},
+    # Task 014 retry: +6 tests (tests/test_log_merge_bounded_reads.py::
+    # test_cold_no_index_legacy_shapes_render_the_exact_full_tail_on_both_
+    # hub_surfaces, 3 shapes x 2 hidden-setter variants), measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast 6275,
+    # `-m smoke` -> smoke 4594.
+    "fast": {"tests": 6275, "modules": 433},
+    "smoke": {"tests": 4594, "modules": 311},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

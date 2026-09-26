@@ -871,6 +871,21 @@ def _assert_interleaved_ignored_suffix_stays_bounded_and_matches_full_render(
     _write_interleaved_ignored_suffix_iteration(
         large_root, 100_000, trailing_ignored=trailing_ignored,
         older_padding=older_padding)
+    # Task 014 (PRD C.2 vs C.3): this measures the INDEXED read, so both
+    # fixtures carry the render index the engine writes for a finished
+    # iteration (`engine/loop.py`'s `render_index.write_index`; the hub
+    # reads it alone, so `collapse_index.json` stays absent as before);
+    # the cold no-index scan on this shape is a correctness-only control
+    # with no byte cap
+    # (`test_log_merge_bounded_reads.py::test_cold_no_index_legacy_shapes_
+    # render_the_exact_full_tail_on_both_hub_surfaces`).
+    from ralphd import render_index
+    for run_root in (small_root, large_root):
+        itdir = run_root / "iterations" / "0001"
+        before = (itdir / OUTPUT_FILENAME).read_bytes()
+        render_index.write_index(itdir)
+        assert render_index.load_index(itdir) is not None
+        assert (itdir / OUTPUT_FILENAME).read_bytes() == before
     small_size = (small_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
     large_size = (large_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
 

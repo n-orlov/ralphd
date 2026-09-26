@@ -43,6 +43,7 @@ import json
 import pathlib
 
 import httpx
+import pytest
 
 from ralphd.cli import ui_server
 from ralphd.cli.log_render import new_render_state, render_tail_lines, render_to_lines
@@ -50,7 +51,7 @@ from ralphd.engine.api import create_app
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.state import RunDir
-from ralphd import collapse_index, log_merge
+from ralphd import collapse_index, log_merge, render_index
 from ralphd.log_merge import OUTPUT_FILENAME, merged_lines
 
 
@@ -407,6 +408,32 @@ def _write_iteration_with_older_thinking_marker(run_root: pathlib.Path, n: int,
     _write_iteration_with_ignored_head(run_root, n, ignored_count, [marker] + real_lines)
 
 
+def _write_engine_indexes(run_root: pathlib.Path, n: int = 1) -> None:
+    """Build the render index the engine itself writes for a finished
+    iteration (`engine/loop.py`'s `render_index.write_index`, right after
+    the iteration's `output.jsonl` is final; the same writer `runner.py`'s
+    live `LiveRenderIndex` feeds) for one already-written fixture
+    iteration. `collapse_index.json` is deliberately left absent: these
+    scenarios' own unchanged merge-layer assertions pin what
+    `log_merge.merged_lines` discloses WITHOUT a collapse index
+    (`_assert_bounded_and_fully_read_tails_agree`'s `unresolved` seed), and
+    the hub reads the render index alone.
+
+    Task 014 (PRD C.2 vs C.3): the byte-bound performance scenarios below
+    measure the INDEXED read -- the one C.2 bounds -- so their fixtures
+    carry the index a real engine-recorded iteration has. The cold,
+    no-index read is a correctness scan with no byte cap (C.3), covered
+    separately by `test_cold_no_index_legacy_shapes_render_the_exact_full_tail_on_both_hub_surfaces`
+    on these same transcript shapes. The transcript bytes are asserted
+    untouched, so the fixture's own sizes and contents are unchanged."""
+    itdir = run_root / "iterations" / f"{n:04d}"
+    before = (itdir / OUTPUT_FILENAME).read_bytes()
+    render_index.write_index(itdir)
+    assert render_index.load_index(itdir) is not None
+    assert not (itdir / collapse_index.INDEX_FILENAME).exists()
+    assert (itdir / OUTPUT_FILENAME).read_bytes() == before
+
+
 def _write_iteration_with_gap_after_thinking(run_root: pathlib.Path, n: int, text: str,
                                              deltas: int, ignored_count: int,
                                              ignored_line_bytes: int) -> None:
@@ -604,6 +631,8 @@ async def _assert_older_thinking_marker_stays_bounded_across_every_surface(
     small_root, large_root = small_reg / "runs" / "probe", large_reg / "runs" / "probe"
     _write_iteration_with_older_thinking_marker(small_root, 1, 10, real_lines)
     _write_iteration_with_older_thinking_marker(large_root, 1, 100_000, real_lines)
+    _write_engine_indexes(small_root)
+    _write_engine_indexes(large_root)
     small_size = (small_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
     large_size = (large_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
 
@@ -842,6 +871,8 @@ async def _assert_interleaved_ignored_suffix_is_bounded_across_every_surface(
     _write_iteration_with_interleaved_ignored_suffix(
         large_root, 1, 100_000, trailing_ignored=trailing_ignored,
         older_padding=older_padding)
+    _write_engine_indexes(small_root)
+    _write_engine_indexes(large_root)
     small_size = (small_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
     large_size = (large_root / "iterations" / "0001" / OUTPUT_FILENAME).stat().st_size
 
@@ -1516,6 +1547,82 @@ def test_silent_prelude_case_renders_the_full_renderers_last_two_lines_on_both_r
             assert all(ln != "" for ln in hub_lines[-2:]), (prelude_count, live, hub_lines)
 
 
+
+@pytest.mark.parametrize("hidden_setter", [False, True],
+                         ids=["no-earlier-text-delta", "earlier-hidden-text-delta"])
+@pytest.mark.parametrize("shape", ["older-thinking-marker", "interleaved",
+                                   "interleaved-shifted"])
+def test_cold_no_index_legacy_shapes_render_the_exact_full_tail_on_both_hub_surfaces(
+        tmp_path, monkeypatch, shape, hidden_setter):
+    """Task 014 (PRD C.3): the cold, NO-index read on the transcript
+    shapes the indexed performance scenarios above measure
+    (`_write_iteration_with_older_thinking_marker`, and
+    `_write_iteration_with_interleaved_ignored_suffix` at both
+    alignments, 100,000 older `ignored` events each) -- with neither
+    `render_index.json` nor `collapse_index.json` present, before or
+    after -- renders exactly the full renderer's last 200 lines through
+    `ui_server.rendered_log_lines` on both surfaces: the dead-run on-disk
+    fallback and the live branch proxied through the real engine
+    `GET /logs` ASGI handler.
+
+    This is a correctness control only, with no byte cap: without an
+    index the hub cannot know a disclosed-unresolved collapse flag's
+    right value without scanning back for it, and pays that scan. The
+    `earlier-hidden-text-delta` variant is why no cheaper guess is
+    allowed: one `text_delta` halfway through the older history (far
+    outside any bounded read) sets `textSeen`, so every visible
+    `message_end` text below it is an already-streamed replay the full
+    renderer suppresses -- the same transcript without it must print
+    that text. A guessed flag gets exactly one of the two variants
+    wrong."""
+    root = tmp_path / "registry" / "runs" / "probe"
+    if shape == "older-thinking-marker":
+        real_lines = [json.dumps({"type": "message_end", "message": {"content": [
+            {"type": "text", "text": f"visible {i}"}]}}) for i in range(200)]
+        _write_iteration_with_older_thinking_marker(root, 1, 100_000, real_lines)
+    else:
+        _write_iteration_with_interleaved_ignored_suffix(
+            root, 1, 100_000,
+            trailing_ignored=1 if shape == "interleaved-shifted" else 0)
+    itdir = root / "iterations" / "0001"
+    output = itdir / OUTPUT_FILENAME
+    if hidden_setter:
+        raw = output.read_text().splitlines()
+        assert json.loads(raw[50_000])["type"] == "ignored"
+        raw[50_000] = json.dumps({"type": "message_update", "assistantMessageEvent": {
+            "type": "text_delta", "delta": "hidden earlier streamed text"}})
+        output.write_text("\n".join(raw) + "\n")
+    assert not (itdir / "render_index.json").exists()
+    assert not (itdir / collapse_index.INDEX_FILENAME).exists()
+
+    full = render_to_lines("".join(merged_lines(root)), tty=False,
+                           state=new_render_state())
+    expected = full[-200:]
+    # The two variants genuinely differ, so this control can tell a
+    # guessed flag from a resolved one.
+    assert any("visible 199" in ln for ln in full) is (not hidden_setter)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    for live in (False, True):
+        def _proxy(reg, run_id, url, **kw):
+            if not live:
+                return False, ""
+            import asyncio
+            import re
+            n = int(re.search(r"tail=(\d+)", url).group(1))
+            return True, asyncio.run(_api_logs_text(root, workspace, n))
+
+        with monkeypatch.context() as m:
+            m.setattr(ui_server, "_proxy_text", _proxy)
+            hub_live, hub_lines = ui_server.rendered_log_lines(
+                tmp_path / "registry", "probe", 200)
+        assert hub_live == live, (shape, hidden_setter, live)
+        assert hub_lines == expected, (shape, hidden_setter, live, hub_lines[-3:])
+        assert not (itdir / "render_index.json").exists()
+        assert not (itdir / collapse_index.INDEX_FILENAME).exists()
+
+
 async def test_silent_prelude_case_renders_correctly_through_the_hub_when_the_index_is_truncated_or_mismatched(
         tmp_path, monkeypatch):
     """Task cure-01-09, PRD G.4, DoD 7 (#214's own family, the SECOND of
@@ -1548,8 +1655,10 @@ async def test_silent_prelude_case_renders_correctly_through_the_hub_when_the_in
     before `collapse_index` existed at all or from every OTHER fixture in
     this module that never writes one by construction (the materiality
     fixtures above, `_write_iteration_with_older_thinking_marker` and
-    `_write_iteration_with_interleaved_ignored_suffix` among them) --
-    fixtures whose OWN pinned byte bounds this task must not regress
+    `_write_iteration_with_interleaved_ignored_suffix` among them; their
+    hub-level byte bounds are measured with a render index since task
+    014, `_write_engine_indexes`) -- fixtures whose OWN pinned merge-level
+    byte bounds this task must not regress
     (PRD P.1/P.5's own petitioned, still-open cost tension the standing
     rules forbid re-litigating: forcing those fixtures to resolve a flag
     they can safely leave disclosed-but-unresolved costs exactly what that
