@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from ralphd.engine import findings
 from ralphd.engine.loop import MAX_NOTIFY_CHARS
 from tests.conftest import supervisor_factory
@@ -429,4 +431,145 @@ def test_repeated_signature_digest_names_the_ruling_command_too(tmp_path):
         "rejected_repeated_signature", 1, [_finding("clause Z", 50)])
     assert (f"ralphctl rule {sup.cfg.run_id} --file <ruling.md> "
             "--name <slug>") in text
+    assert f"ralphctl unpause {sup.cfg.run_id}" in text
+
+
+# ===========================================================================
+# 8. Cure task cure-01-02, retry (PRD requirement A.1/A.7, #269): the A.7
+#    preview numbers a POSTED digest carries agree with the `operator_
+#    escalation` event it announces -- for a caller-passed `cure_preview`
+#    AND for a pause handed none (the event then builds its A.7 fields off
+#    `_effective_cure_preview`'s own walk, and so must the digest) -- and
+#    the incurable path's digest is bounded at `MAX_NOTIFY_CHARS` too.
+# ===========================================================================
+
+
+def _preview_line(event: dict) -> str:
+    return (f"tasks reopened: {len(event['taskIdsValidatedToPending'])}  "
+            f"tasks inserted: {event['insertCount']}")
+
+
+def test_operator_input_needed_digest_carries_the_passed_preview_numbers(
+        tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=3)
+    sup._approach = 1
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    preview = {"reopenedTaskIds": ["t-a", "t-b"], "insertCount": 3}
+    sup._pause_and_escalate_operator_input_needed(
+        1, [_finding("clause P", 100)], replan_available=True,
+        cure_preview=preview)
+
+    ev = _events(root, "operator_escalation")[-1]
+    assert ev["taskIdsValidatedToPending"] == ["t-a", "t-b"]
+    assert ev["insertCount"] == 3
+    text = notifier.messages[0]
+    assert "tasks reopened: 2  tasks inserted: 3" in text
+    assert _preview_line(ev) in text
+
+
+def test_repeated_signature_digest_carries_the_passed_preview_numbers(
+        tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=3)
+    sup._approach = 2
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    findings.write_findings_json(
+        sup.run.findings_json_file, [_finding("clause Q", 100)])
+    preview = {"reopenedTaskIds": ["t-x"], "insertCount": 4}
+    sup._pause_and_escalate_repeated_rejection_signature(
+        2, "sig-preview", cure_preview=preview)
+
+    ev = _events(root, "operator_escalation")[-1]
+    assert ev["taskIdsValidatedToPending"] == ["t-x"]
+    assert ev["insertCount"] == 4
+    text = notifier.messages[0]
+    assert "tasks reopened: 1  tasks inserted: 4" in text
+    assert _preview_line(ev) in text
+
+
+@pytest.mark.parametrize(
+    "reason", ["operator_input_needed", "rejected_repeated_signature"])
+def test_digest_preview_agrees_with_event_when_no_preview_is_passed(
+        tmp_path, reason):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=3)
+    sup._approach = 1
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    data = [_finding("clause R", 100)]
+    findings.write_findings_json(sup.run.findings_json_file, data)
+    if reason == "operator_input_needed":
+        sup._pause_and_escalate_operator_input_needed(
+            1, data, replan_available=True)
+    else:
+        sup._pause_and_escalate_repeated_rejection_signature(1, "sig-none")
+
+    ev = _events(root, "operator_escalation")[-1]
+    # one curable blocking finding and no task in the plan: the event's own
+    # effective preview predicts one inserted cure task.
+    assert ev["insertCount"] == 1
+    text = notifier.messages[0]
+    assert "tasks inserted: 1" in text
+    assert _preview_line(ev) in text
+
+
+@pytest.mark.parametrize("kind", ["last_approach", "incurable"])
+def test_non_cure_pause_digest_previews_no_cure_pass(tmp_path, kind):
+    """Neither `rejected_last_approach` nor `rejected_incurable` previews a
+    cure pass that will run, so the digest's A.7 numbers read zero."""
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=2)
+    sup._approach = 1
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    data = [_finding("clause S", 100)]
+    if kind == "incurable":
+        data[0]["curable"] = False
+    findings.write_findings_json(sup.run.findings_json_file, data)
+    if kind == "last_approach":
+        sup._pause_and_escalate_last_approach_rejection(1)
+    else:
+        sup._pause_and_escalate_incurable_rejection(1)
+
+    text = notifier.messages[0]
+    assert "tasks reopened: 0  tasks inserted: 0" in text
+    assert "spent this approach: unavailable (unavailable tokens)" in text
+
+
+def test_incurable_rejection_notification_is_bounded_too(tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=2)
+    sup._approach = 1
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    huge = [{
+        "severity": "blocking", "curable": False,
+        "clause": f"incurable clause {i}",
+        "evidence": f"INCURABLE-EVIDENCE-{i}-" + "E" * 5000,
+    } for i in range(200)]
+    huge.append(_residual("a disclosed residual"))
+    findings.write_findings_json(sup.run.findings_json_file, huge)
+
+    sup._pause_and_escalate_incurable_rejection(1)
+
+    ev = _events(root, "operator_escalation")[-1]
+    assert ev["reason"] == "rejected_incurable"
+    # the event keeps every finding's full evidence.
+    assert huge[0]["evidence"] in ev["escalation"]
+    assert len(ev["escalation"]) > MAX_NOTIFY_CHARS
+
+    assert len(notifier.messages) == 1
+    text = notifier.messages[0]
+    assert len(text) <= MAX_NOTIFY_CHARS
+    assert "INCURABLE-EVIDENCE-" not in text
+    assert "blocking: 200  residual: 1" in text
+    assert " more findings in the hub" in text
     assert f"ralphctl unpause {sup.cfg.run_id}" in text

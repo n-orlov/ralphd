@@ -1386,8 +1386,11 @@ per blocking finding -- so `LoopSupervisor._operator_escalation_digest_
 text` builds the SAME DIGEST for all four reasons instead of posting the
 full text: run id, `pauseReason`, `approach n of m`, blocking and residual
 counts, the A.7 preview numbers (tasks reopened, tasks inserted, spend
-this approach -- all-zero/`unavailable` for the two reasons that pass no
-`cure_preview`, since neither previews a cure pass that will run), one
+this approach -- for `operator_input_needed`/`rejected_repeated_signature`
+read off the same effective preview the `operator_escalation` event's own
+A.7 fields carry, so the two always agree; all-zero/`unavailable` for
+`rejected_last_approach`/`rejected_incurable`, since neither previews a
+cure pass that will run), one
 line per blocking finding naming only its digest-local id and `clause`
 (never its evidence), the hub URL (only when `hub_base_url` is
 configured), and the exact commands that answer the pause -- ALWAYS both

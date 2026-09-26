@@ -13201,8 +13201,14 @@ class LoopSupervisor:
                    if f.get("severity") == "blocking"]
         text = self._repeated_rejection_signature_escalation_text(
             approach, blocking, signature, channel_errors, cure_preview)
+        # Cure task cure-01-02 (PRD requirement A.1/A.7): the event's A.7
+        # fields and the POSTED digest's preview line are built off the
+        # SAME effective preview, so the notification's "tasks reopened"/
+        # "tasks inserted" numbers always agree with the escalation event
+        # it announces -- including a pause handed no `cure_preview`.
+        effective_preview = self._effective_cure_preview(blocking, cure_preview)
         extra_fields = self._discretionary_gate_escalation_fields(
-            approach, self._effective_cure_preview(blocking, cure_preview))
+            approach, effective_preview)
         # Task 007 (v0.26, #269): the hub's parked-question payload needs to
         # know whether, absent this pause, the run would have taken a cure
         # pass over this approach's own blocking findings (curable, cure
@@ -13224,7 +13230,7 @@ class LoopSupervisor:
         if self.notifier is not None:
             self._notify_escalation_delivery(self._operator_escalation_digest_text(
                 "rejected_repeated_signature", approach, findings_list,
-                cure_preview), reason="rejected_repeated_signature")
+                effective_preview), reason="rejected_repeated_signature")
 
     def _approach_spend_text(self, approach: int) -> tuple[str | None, int | None]:
         """Task 017 (PRD requirement A.7, #224): the "dollars and tokens
@@ -13373,11 +13379,13 @@ class LoopSupervisor:
         `findings_list` is the caller's own full findings read (blocking
         AND residual severities both present -- `_review_findings_channel`'s
         first return value, the same one every caller here already holds),
-        never re-read. `cure_preview`, `None` for an undriven pause, reads
-        back as all-zero/`unavailable` counts through `_discretionary_
-        gate_escalation_fields` (which tolerates an empty dict) rather than
-        omitting the A.7 preview line entirely -- the digest's shape does
-        not change with whether this pause happened to be a driven gate.
+        never re-read. `cure_preview` is the SAME effective preview the
+        caller's own `operator_escalation` event built its A.7 fields from
+        (`_effective_cure_preview`), so the digest's reopen/insert numbers
+        agree with the event it announces; `None` reads back as all-zero/
+        `unavailable` counts through `_discretionary_gate_escalation_fields`
+        (which tolerates an empty dict) rather than omitting the A.7
+        preview line entirely.
         `rejected_last_approach`/`rejected_incurable` never pass a
         `cure_preview` (neither pause is a discretionary-gate trigger), so
         their own digests read the same all-zero/`unavailable` defaults --
@@ -13571,8 +13579,12 @@ class LoopSupervisor:
         text = self._operator_input_needed_escalation_text(
             approach, blocking, replan_available, cure_preview=cure_preview)
         self._record_rejection_signature(approach, signature)
+        # Cure task cure-01-02 (PRD requirement A.1/A.7): one effective
+        # preview feeds both the event's A.7 fields and the POSTED digest,
+        # so their reopen/insert numbers agree.
+        effective_preview = self._effective_cure_preview(blocking, cure_preview)
         extra_fields = self._discretionary_gate_escalation_fields(
-            approach, self._effective_cure_preview(blocking, cure_preview))
+            approach, effective_preview)
         # Task 007 (v0.26, #269): same `nextStepIfUnanswered` derivation as
         # `_pause_and_escalate_repeated_rejection_signature`'s own -- see
         # that method's comment for why this is recomputed fresh off
@@ -13592,7 +13604,7 @@ class LoopSupervisor:
         if self.notifier is not None:
             self._notify_escalation_delivery(self._operator_escalation_digest_text(
                 "operator_input_needed", approach, findings_list,
-                cure_preview), reason="operator_input_needed")
+                effective_preview), reason="operator_input_needed")
 
     def _ruling_honoured_for_approach(self, approach: int) -> dict | None:
         """Task 015 (PRD requirement A.4, #224): does a recorded operator
