@@ -5215,12 +5215,25 @@ browser displays exactly what the terminal shows.
 
 ### 11.4 Live transcript
 
-The detail view carries a transcript tail, requested with `?tail=200`. The
-server fetches the run's **full** raw NDJSON backlog from the container, runs
-it through the exact same `ralphd.cli.log_render.render_to_lines` that
-`ralphctl logs` uses (with `tty=False`, so no ANSI and no carriage returns),
-and only then trims to the last `tail` *rendered* lines — the same contract as
-`logs -N`. The response, `{"live": bool, "lines": [...]}`, is never an error.
+The detail view carries a transcript tail, requested with `?tail=200`: the
+last `tail` *rendered* lines — the same contract as `logs -N` — rendered by
+the exact same `ralphd.cli.log_render` renderer `ralphctl logs` uses (with
+`tty=False`, so no ANSI and no carriage returns). The server never fetches the
+run's whole raw NDJSON backlog to serve a tail. It first reads the run's own
+per-iteration render indexes (`render_index.json`, via
+`ralphd.render_index.bounded_tail`) straight off disk, walking backward across
+as many earlier indexed iterations as `tail` needs, so the cost is
+proportional to `tail`, not to the run's history or to silent transcript; a
+`GET /logs?tail=1` probe of the container's API then only decides the `live`
+flag. When no usable index covers the request, it asks the container for a
+bounded `GET /logs?tail=<bound>` (the on-disk merge with the same bound when
+the API is unreachable), re-asking with a growing bound until enough rendered
+lines exist, then trims to the last `tail` rendered lines; when that scan was
+expensive it caches an index built off the on-disk transcript in the hub's own
+memory (never in the run dir), so a second request against the same iteration
+and transcript size takes the bounded indexed read. Only `tail=0` fetches and
+renders the whole transcript (`GET /logs`). The response,
+`{"live": bool, "lines": [...]}`, is never an error.
 
 **Rendering is server-side, and there is exactly one renderer.** `app.js`
 receives finished lines and displays one per element; it implements no

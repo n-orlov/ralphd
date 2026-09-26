@@ -135,8 +135,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # inconsistent checkpoint fields x7, a checksum-free version-1 index,
     # the bounded verification window on a large prefix), measured `-m fast
     # --collect-only` -> fast 6329/435, `-m smoke` -> smoke 4637/312.
-    "fast": {"tests": 6332, "modules": 435},
-    "smoke": {"tests": 4640, "modules": 312},
+    # cure-01-04 second retry: +1 test, no new module (tests/test_hub_real_
+    # render_cap_whole_call.py: SPEC.md §11.4 and docs/cli.md describe the
+    # indexed bounded tail read), measured `-m fast --collect-only` -> fast
+    # 6333/435, `-m smoke` -> smoke 4641/312.
+    "fast": {"tests": 6333, "modules": 435},
+    "smoke": {"tests": 4641, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

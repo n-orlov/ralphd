@@ -819,3 +819,26 @@ def test_absent_index_cache_still_builds_when_a_valid_legacy_index_scan_stays_ex
         second, rendered2 = _measure(sub, monkeypatch, run_root, 2, path)
         assert rendered2 == full[-2:], (path, rendered2)
         assert second <= _FROZEN_CAP, (path, first, second)
+
+
+def test_spec_and_cli_docs_describe_the_indexed_bounded_tail_read():
+    """Task cure-01-04 (criterion 3): SPEC.md §11.4 and docs/cli.md must
+    describe the log tail `rendered_log_lines` actually serves -- the
+    `render_index.bounded_tail` read first, a `/logs?tail=1` probe only
+    for the `live` flag, and a bounded `/logs?tail=<bound>` fallback --
+    never the retired "fetch the full raw backlog, then trim" shape."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    spec = (root / "SPEC.md").read_text(encoding="utf-8")
+    section = spec.split("### 11.4 Live transcript", 1)[1].split("### 11.5", 1)[0]
+    cli = (root / "docs" / "cli.md").read_text(encoding="utf-8")
+    route = cli.split("`GET /api/runs/<id>/logs?tail=N`", 1)[1][:3000]
+    for name, text in (("SPEC.md §11.4", section), ("docs/cli.md", route)):
+        flat = " ".join(text.split())
+        assert "bounded_tail" in flat, name
+        assert "GET /logs?tail=1" in flat, name
+        assert "GET /logs?tail=<bound>" in flat, name
+        assert "never fetches the" in flat and "whole" in flat, name
+        assert "full** raw NDJSON backlog" not in flat, name
+        assert "full raw NDJSON backlog" not in flat, name
