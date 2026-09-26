@@ -159,8 +159,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # across 20 later appends through both writer protocols, a refused
     # hub-cached index, and the two read-snapshot consistency cases),
     # measured -> fast 6353/435, smoke 4661/312.
-    "fast": {"tests": 6353, "modules": 435},
-    "smoke": {"tests": 4661, "modules": 312},
+    # cure-01-01-5: +5 tests, no new module (tests/test_hub_parked_actions.py:
+    # the single-trailing-newline waive round trip across 3 prose shapes plus
+    # an editable-prose-after-the-fix control; tests/test_hub_parked_panel.py:
+    # findings live in the left column, the answer box and actions in the
+    # right column), measured `.venv/bin/python -m pytest -q -m fast
+    # --collect-only` -> fast 6358/435, `-m smoke --collect-only` -> smoke
+    # 4666/312.
+    "fast": {"tests": 6358, "modules": 435},
+    "smoke": {"tests": 4666, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

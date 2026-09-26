@@ -83,6 +83,15 @@ function findAll(node, tag, out) {
   for (const c of node.children || []) findAll(c, tag, out);
   return out;
 }
+function findByClass(node, cls) {
+  if (node == null || typeof node === 'string') return null;
+  if (node.attrs && node.attrs.class === cls) return node;
+  for (const c of node.children || []) {
+    const f = findByClass(c, cls);
+    if (f) return f;
+  }
+  return null;
+}
 const h = (tag, attrs, children) => ({ tag, attrs: attrs || {}, children: children || [] });
 eval(grab('parkedReasonText'));
 eval(grab('parkedNextStepOutcomeText'));
@@ -105,6 +114,12 @@ renderParkedPanel(box, input.runId, input.pq);
 const wholeText = box.children.map(text).join('');
 const evidencePres = box.children
   .map((c) => findAll(c, 'pre', [])).flat();
+// cure-01-01-5 (B.3-B.5): the left/right column split -- `findByClass`
+// locates each column's own wrapper div among the panel's children so a
+// test can assert findings live in `.parked-panel-left` and the answer
+// box/actions live in `.parked-panel-right`, never the other way round.
+const leftNode = box.children.map((c) => findByClass(c, 'parked-panel-left')).find(Boolean);
+const rightNode = box.children.map((c) => findByClass(c, 'parked-panel-right')).find(Boolean);
 console.log(JSON.stringify({
   displayNone: box.style.display === 'none',
   childCount: box.children.length,
@@ -112,6 +127,8 @@ console.log(JSON.stringify({
   classes: box.children.map((c) => classes(c, [])).flat(),
   detailsCount: box.children.map((c) => findAll(c, 'details', [])).flat().length,
   evidenceTexts: evidencePres.map(text),
+  leftClasses: leftNode ? classes(leftNode, []) : null,
+  rightClasses: rightNode ? classes(rightNode, []) : null,
 }));
 """
 
@@ -231,6 +248,24 @@ def test_replan_available_renders_na_when_absent_for_repeated_signature():
     out = _render_panel(pq)
     assert "rejected" in out["text"] and "repeated" in out["text"]
     assert "n/a" in out["text"]
+
+
+def test_findings_live_in_the_left_column_and_answer_in_the_right_column():
+    """cure-01-01-5 (B.3-B.5, adopted #270 D.14): the review's own live
+    browser probe at viewport width 1280 found the findings list and the
+    answer box both full-width and STACKED (answer below findings), never
+    side by side -- the layout D.14 actually asked for. Pinned here at the
+    DOM-structure level (browser tier below pins the visual geometry):
+    `.parked-panel-left` carries the `Findings` heading/list, and
+    `.parked-panel-right` carries the `Answer` heading, the answer box and
+    the two actions -- never the reverse, and never both in one column."""
+    out = _render_panel(_PQ)
+    assert out["leftClasses"] is not None and out["rightClasses"] is not None
+    assert "parked-findings" in out["leftClasses"]
+    assert "parked-answer" in out["rightClasses"]
+    assert "parked-actions" in out["rightClasses"]
+    assert "parked-answer" not in out["leftClasses"]
+    assert "parked-findings" not in out["rightClasses"]
 
 
 def test_every_finding_blocking_and_residual_is_listed_by_id_severity_clause():

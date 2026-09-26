@@ -463,3 +463,233 @@ def test_waive_toggle_round_trip_preserves_an_unterminated_operator_line(tmp_pat
             server.stop()
     finally:
         engine.close()
+
+
+def test_waive_toggle_round_trip_preserves_a_single_trailing_newline_in_browser(
+        tmp_path, pw):
+    """cure-01-01-5 (B.3-B.5): the review's own live browser probe found
+    that checking then unchecking a waive box on operator prose already
+    ending in exactly one real newline silently dropped that byte -- the
+    node-eval regression above (`test_hub_parked_actions.py`) pins the same
+    contract without a browser; this pins it through the real DOM checkbox
+    and a real click, never a hand-built event."""
+    registry = tmp_path / "registry"
+    _run_dir, engine = _write_live_parked_run(registry, "run-waive-one-newline")
+    try:
+        server = UiServer(registry)
+        server.wait_ready()
+        try:
+            pw.open(f"{server.base}/#/run/run-waive-one-newline")
+            _wait_for_count_ge(pw, "document.querySelectorAll('.waive-checkbox').length", 2)
+            pw.click(".parked-finding summary >> nth=0")
+
+            typed = "Keep this exact paragraph.\n"
+            pw.fill("#parked-rule-text", typed)
+
+            pw.check("#waive-F1")
+            composed = _val(pw, "document.getElementById('parked-rule-text').value")
+            assert composed == typed + "waive F1 (clause one (#111))\n"
+
+            _uncheck(pw, "#waive-F1")
+            actual = _val(pw, "document.getElementById('parked-rule-text').value")
+            assert actual == typed
+            assert _posts(engine) == []
+            pw.screenshot(SCREENSHOTS_DIR / "parked-09-waive-roundtrip-one-newline.png")
+        finally:
+            server.stop()
+    finally:
+        engine.close()
+
+
+# ---------------------------------------------------------------------------
+# criterion (1): findings occupy the LEFT column, the answer box and its
+# two actions occupy the RIGHT column, at desktop widths.
+# ---------------------------------------------------------------------------
+
+
+def test_wide_parked_panel_places_answer_to_right_of_findings(tmp_path, pw):
+    """cure-01-01-5 (B.3-B.5, adopted #270 D.14): the review's own live
+    probe at viewport width 1280 found both `.parked-findings` and
+    `.parked-answer` full-width and STACKED, the answer strictly below
+    the findings rather than beside them. Pinned here on the real
+    rendered geometry -- `.parked-panel-columns`'s own `min-width: 900px`
+    breakpoint (`style.css`) -- never only on the source-level DOM
+    structure the fast-tier regression above already pins."""
+    registry = tmp_path / "registry"
+    _run_dir, engine = _write_live_parked_run(registry, "run-wide-columns")
+    try:
+        server = UiServer(registry)
+        server.wait_ready()
+        try:
+            pw.open(f"{server.base}/#/run/run-wide-columns")
+            _wait_for(pw, "document.body.innerText", "Submit ruling")
+            got = json.loads(pw.eval_js(
+                "(() => { const rect = s => { const r = "
+                "document.querySelector(s).getBoundingClientRect(); "
+                "return {left: r.left, right: r.right, top: r.top, "
+                "bottom: r.bottom}; }; return {width: innerWidth, "
+                "findings: rect('.parked-findings'), "
+                "answer: rect('.parked-answer')}; })()"))
+            assert got["width"] >= 900, "probe needs a desktop viewport"
+            pw.screenshot(SCREENSHOTS_DIR / "parked-10-wide-columns.png")
+            # the answer box begins at or after the findings column ends
+            # (side by side, never one strictly below the other).
+            assert got["answer"]["left"] >= got["findings"]["right"] - 1
+            assert got["answer"]["top"] < got["findings"]["bottom"]
+        finally:
+            server.stop()
+    finally:
+        engine.close()
+
+
+# ---------------------------------------------------------------------------
+# criterion (3): an unrelated detail refresh preserves an in-progress
+# draft; a genuinely CHANGED question and an ANSWERED pause each get
+# deliberate, different handling.
+# ---------------------------------------------------------------------------
+
+
+def test_an_unrelated_detail_refresh_preserves_the_in_progress_draft(tmp_path, pw):
+    """cure-01-01-5 (B.3-B.5, adopted #270 D.14): the review's own live
+    probe found that ANY fresh `events.jsonl` entry -- even one with
+    nothing to do with the parked question, `notification.failed` here --
+    moved the run-detail `ETag` and re-rendered the panel from scratch,
+    silently wiping the operator's own in-progress draft name/text. Pinned
+    through the REAL background poll (never a synthetic `renderParkedPanel`
+    call): the draft is typed, an unrelated event is appended on disk, and
+    the poll is given real time to observe the moved `ETag` before the
+    draft is asserted still exactly what was typed."""
+    registry = tmp_path / "registry"
+    run_dir, engine = _write_live_parked_run(registry, "run-unrelated-refresh")
+    try:
+        server = UiServer(registry)
+        server.wait_ready()
+        try:
+            pw.open(f"{server.base}/#/run/run-unrelated-refresh")
+            _wait_for(pw, "document.body.innerText", "Submit ruling")
+
+            typed = "Draft answer\n\nNot submitted yet.\n"
+            pw.fill("#parked-rule-text", typed)
+            pw.fill("#parked-rule-name", "draft-name")
+            assert _val(pw, "(() => { window.__cureOldAnswer = "
+                       "document.getElementById('parked-rule-text'); "
+                       "return !!window.__cureOldAnswer; })()") is True
+
+            gets_before = sum(1 for m, p, _t in engine.requests
+                              if m == "GET" and p == "/status")
+            RunDir(root=run_dir).emit(
+                "notification.failed", endpoint="http://notifier.example",
+                textSha256="no-secret-here", httpStatus=503)
+
+            # confirm the real background poll actually observed the moved
+            # ETag and re-fetched (never assumed from a fixed sleep): the
+            # paused run's own back-off condition (`lastKnownState !==
+            # "running"`) widens the poll to `BACKOFF_POLL_MS` (20s) after
+            # the very first load, so the wait below spans well over one
+            # full backed-off interval rather than the plain `REFRESH_MS`
+            # (4s) a running run would use.
+            import time
+            deadline = time.monotonic() + 50
+            while time.monotonic() < deadline:
+                gets_now = sum(1 for m, p, _t in engine.requests
+                               if m == "GET" and p == "/status")
+                if gets_now >= gets_before + 1:
+                    break
+                time.sleep(0.5)
+            else:
+                raise AssertionError("no poll cycle observed after the unrelated event")
+
+            actual = _val(pw, "({text: document.getElementById('parked-rule-text').value, "
+                         "name: document.getElementById('parked-rule-name').value})")
+            assert actual == {"text": typed, "name": "draft-name"}
+            pw.screenshot(SCREENSHOTS_DIR / "parked-11-unrelated-refresh-preserved.png")
+        finally:
+            server.stop()
+    finally:
+        engine.close()
+
+
+def test_a_genuinely_changed_question_replaces_the_panel_with_a_fresh_draft(
+        tmp_path, pw):
+    """The companion case to the preservation above: a fresh escalation
+    over DIFFERENT findings (a re-park, never merely an unrelated event)
+    is a genuinely new question, so the panel rebuilds with its OWN new
+    findings and an EMPTY draft -- the old, unsubmitted text does not
+    leak into a question it was never written for."""
+    registry = tmp_path / "registry"
+    run_dir, engine = _write_live_parked_run(registry, "run-changed-question")
+    try:
+        server = UiServer(registry)
+        server.wait_ready()
+        try:
+            pw.open(f"{server.base}/#/run/run-changed-question")
+            _wait_for(pw, "document.body.innerText", "Submit ruling")
+
+            pw.fill("#parked-rule-text", "stale draft for the old question")
+            pw.fill("#parked-rule-name", "stale-name")
+
+            _emit_parked_escalation(
+                run_dir, "operator_input_needed",
+                findings=[{"severity": "blocking", "clause": "a brand new clause",
+                          "evidence": "fresh evidence", "cured_when": None,
+                          "invalidates": []}])
+
+            import time
+            deadline = time.monotonic() + 50
+            seen_fresh = False
+            while time.monotonic() < deadline:
+                text = pw.eval_js("document.body.innerText")
+                if "a brand new clause" in text:
+                    seen_fresh = True
+                    break
+                time.sleep(0.5)
+            assert seen_fresh, "the changed question was never observed"
+
+            actual = _val(pw, "document.getElementById('parked-rule-text').value")
+            assert actual == ""
+            name = _val(pw, "document.getElementById('parked-rule-name').value")
+            assert name == ""
+            pw.screenshot(SCREENSHOTS_DIR / "parked-12-changed-question-fresh-draft.png")
+        finally:
+            server.stop()
+    finally:
+        engine.close()
+
+
+def test_an_answered_pause_hides_the_panel_on_the_next_refresh(tmp_path, pw):
+    """The panel disappears once the pause it answers is actually resolved
+    -- a live `pauseReason`/`state` transition, never only the initial
+    fixture-based absence `test_panel_appears_for_ruling_answerable_
+    reasons_and_absent_otherwise` already pins."""
+    registry = tmp_path / "registry"
+    run_dir, engine = _write_live_parked_run(registry, "run-answered-pause")
+    try:
+        server = UiServer(registry)
+        server.wait_ready()
+        try:
+            pw.open(f"{server.base}/#/run/run-answered-pause")
+            _wait_for(pw, "document.body.innerText", "Submit ruling")
+
+            status = json.loads((run_dir / "status.json").read_text())
+            status["pauseReason"] = None
+            status["state"] = "running"
+            (run_dir / "status.json").write_text(json.dumps(status))
+            engine.status_body["pauseReason"] = None
+            engine.status_body["state"] = "running"
+
+            import time
+            deadline = time.monotonic() + 50
+            hidden = False
+            while time.monotonic() < deadline:
+                display = pw.eval_js(
+                    "document.getElementById('parked-panel-box').style.display")
+                if display.strip('"') == "none":
+                    hidden = True
+                    break
+                time.sleep(0.5)
+            assert hidden, "the panel never hid after the pause was answered"
+            pw.screenshot(SCREENSHOTS_DIR / "parked-13-answered-pause-hidden.png")
+        finally:
+            server.stop()
+    finally:
+        engine.close()

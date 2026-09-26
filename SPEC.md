@@ -5029,7 +5029,19 @@ dir themselves and a live proxy would only add a way to disagree.
   and `status.maxApproaches`, the spend from `status.usage.byApproach[
   str(approach)]` (a parked run spends nothing while parked). The run-detail `ETag` (§ below)
   already moves whenever `events.jsonl` gains a new entry, so a fresh
-  escalation is never served stale under an unchanged tag. Task 008 (v0.26,
+  escalation is never served stale under an unchanged tag -- but `app.js`'s
+  poll loop (cure-01-01-5, B.3-B.5) never rebuilds the panel over an
+  UNRELATED move of that tag: it keeps the last rendered `parkedQuestion`
+  as JSON (`lastParkedQuestionJSON`) and only calls `renderParkedPanel`
+  again when the freshly-fetched `parkedQuestion` differs from it, so an
+  unrelated event (a `notification.failed`, a fresh iteration's `meta.json`
+  write, anything that moves the tag without changing which question is
+  parked) leaves the operator's own in-progress draft name/ruling text
+  exactly as typed. A genuinely different question -- a fresh re-park over
+  new findings, or the pause getting answered/resumed (`parkedQuestion`
+  turns `null`) -- always differs there and rebuilds: the panel disappears
+  for an answered pause, and a re-park gets its own fresh, EMPTY answer box
+  rather than the previous, unrelated question's stale draft. Task 008 (v0.26,
   #269) renders this payload: `app.js`'s `renderParkedPanel` builds a
   full-width **parked panel** at the very TOP of the run page (ahead of the
   summary card, and ahead of the Steer/Rule sections further down, which
@@ -5041,7 +5053,15 @@ dir themselves and a live proxy would only add a way to disagree.
   to its own `evidence`/`cured_when`/`invalidates` -- the evidence block
   scrolls (CSS `max-height`/`overflow`) rather than truncating, matching the
   payload's own "never truncated" promise. `null`/absent `parkedQuestion`
-  renders no panel at all. The runs list's own `\u23F8 parked for input`
+  renders no panel at all. cure-01-01-5 (B.3-B.5, adopted #270 D.14) places
+  the findings list in a LEFT column and the answer box plus its two
+  actions in a RIGHT column at desktop widths (`.parked-panel-columns`,
+  `min-width: 900px` in `style.css`) -- a live browser probe on an earlier
+  checkout found both spanning the panel's full width and STACKED, the
+  answer strictly below the findings rather than beside them. Narrower than
+  that breakpoint the two columns stack vertically in the same order
+  (findings, then the answer box, then the two actions) the panel already
+  used before this fix. The runs list's own `\u23F8 parked for input`
   marker (task 017, A.7) becomes a link straight to `#/run/<id>` -- landing
   on the parked panel at the top of that page -- on both the runs-list row
   and the run-detail page's own state cell; the escalation-hold and
@@ -5064,7 +5084,26 @@ dir themselves and a live proxy would only add a way to disagree.
   (cure-01-05: `applyWaiveLine` takes an optional 4th argument, every
   finding's own composed line text, letting it tell an operator's own
   unterminated last line apart from another finding's already-composed
-  one -- the only case a plain suffix-strip is ambiguous about). cure-01-05
+  one -- the only case a plain suffix-strip is ambiguous about). cure-01-01-5
+  (B.3-B.5) widens that same fix to the companion case `applyWaiveLine`'s
+  4th argument alone cannot resolve: operator prose that ALREADY ends in
+  exactly one real newline is byte-IDENTICAL, after `check()` composes a
+  line onto it, to prose that had no trailing newline at all before
+  `check()` inserted its own separator -- no amount of inspecting the
+  resulting string can tell those two histories apart, so a fix that
+  always strips one lone trailing newline on `uncheck()` silently ate the
+  operator's own byte whenever the text already ended cleanly. The fix
+  carries the one bit of real history through a 5th, caller-owned argument
+  (`sepState`, an object `renderParkedPanel` allocates ONCE per rendering of
+  a question and shares across every waive toggle) that `applyWaiveLine`
+  mutates in place -- set only at the instant the composed region grows
+  from zero active waive lines to one (recording whether IT inserted a
+  separator), and consulted only at the mirror instant it shrinks back to
+  zero, so an intermediate toggle (another finding already active, or
+  still active afterwards) never touches it; a check-then-uncheck round
+  trip, repeated any number of times, returns the text byte-identical
+  whether it started empty, unterminated, ending in exactly one newline, or
+  ending in a blank line. cure-01-05
   (adopted #270 D.14) gives the panel its OWN answer box -- a name field
   (`#parked-rule-name`) and a resizable 12-row ruling textarea
   (`#parked-rule-text`, `Enter` inserts a newline and never submits) --

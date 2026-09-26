@@ -1715,6 +1715,15 @@ async function renderRunDetail(runId, myGen) {
   let unchangedStreak = 0;
   let lastKnownState;
   let pollIntervalMs = REFRESH_MS;
+  // cure-01-01-5 (adopted #270 D.14): the LAST `parkedQuestion` this view
+  // actually rendered, as JSON, so an unrelated refresh (a fresh, unrelated
+  // event appended to `events.jsonl` moves the run-detail `ETag` even
+  // while the SAME question stays parked -- SPEC.md §11.3) never rebuilds
+  // `renderParkedPanel`'s box and wipes the operator's in-progress draft
+  // name/ruling text. A genuinely DIFFERENT question (a new escalation, or
+  // the pause getting answered/resumed to `null`) always differs here and
+  // rebuilds -- fresh findings need a fresh, empty answer box.
+  let lastParkedQuestionJSON;
   // Test-only instrumentation (never read by the app itself): lets a
   // browser test observe the back-off without waiting out the full
   // 15-30s band it targets.
@@ -1749,8 +1758,12 @@ async function renderRunDetail(runId, myGen) {
       lastEtag = etag || lastEtag;
       unchangedStreak = 0;
       lastKnownState = body.status && body.status.state;
-      renderParkedPanel(document.getElementById("parked-panel-box"), runId,
-                        body.parkedQuestion);
+      const pqJSON = JSON.stringify(body.parkedQuestion || null);
+      if (pqJSON !== lastParkedQuestionJSON) {
+        lastParkedQuestionJSON = pqJSON;
+        renderParkedPanel(document.getElementById("parked-panel-box"), runId,
+                          body.parkedQuestion);
+      }
       renderSummary(summary, body);
       renderDelete(document.getElementById("delete-box"), runId, body);
       renderUsage(document.getElementById("usage-box"),
@@ -1876,55 +1889,61 @@ function parkedWaiveLineText(f) {
 // exercises directly so the compose-then-submit rule is pinned independent
 // of any event wiring.
 //
-// cure-01-05 (adopted #270 D.14): checking always terminates the composed
-// line with its own trailing "\n" (pinned above, unchanged), which makes
-// the append irreversible from the resulting string ALONE whenever the
-// text right before it already ended in exactly one "\n" -- that single
-// newline is indistinguishable, after the fact, between "the operator's
-// own prose already ended there" and "check() inserted it as a
-// separator for unterminated prose". The optional 4th argument
-// (`composedLines`, every finding's own `parkedWaiveLineText`) resolves
-// that one ambiguous case: if what is left after removing the finding's
-// own line still ends with ANOTHER finding's composed line, that
-// trailing newline is real (kept); otherwise it is treated as the
-// separator an unterminated last line earned, and dropped -- restoring
-// hand-typed prose with no trailing newline byte-identically on a
-// check-then-uncheck round trip (`test_waive_toggle_round_trip_preserves_an_unterminated_last_line`).
-// A blank-line-terminated original (>=2 trailing newlines) is never
-// ambiguous -- check() never inserts a separator there -- so it is always
-// left untouched.
-function applyWaiveLine(text, line, checked, composedLines) {
+// cure-01-01-5: the previous fix guessed whether a trailing single "\n"
+// was check()'s OWN inserted separator or the operator's own real byte by
+// inspecting only the resulting string -- genuinely ambiguous whenever no
+// OTHER composed line follows it, and it guessed wrong for a plain
+// newline-terminated body ("operator note\n"): a check-then-uncheck of F1
+// silently dropped the operator's own trailing newline with zero waive
+// requests (review finding B.3-B.5). The two histories
+// ("already ended in \n" vs. "check() added the \n as a separator")
+// produce byte-IDENTICAL strings, so no amount of string inspection alone
+// can tell them apart; the fix instead carries the one bit of real
+// history through `sepState` (an object OWNED by the caller, mutated in
+// place -- `renderParkedPanel` below hands it one shared instance across
+// every toggle of a single parked question) -- set only at the instant
+// the composed region grows from zero active lines to one, and consulted
+// only at the mirror instant it shrinks back to zero, so an intermediate
+// toggle (a second finding already active, or another one still active
+// afterwards) never touches it. `composedLines` (every finding's own
+// `parkedWaiveLineText`) is still what tells an already-active line from
+// a not-yet-active one -- `activeBefore` below counts how many of them
+// are present in `text` BEFORE this toggle, independent of the order any
+// of them were checked in.
+function applyWaiveLine(text, line, checked, composedLines, sepState) {
   const src = String(text || "");
   const known = composedLines || [];
-  const already = ("\n" + src + "\n").indexOf("\n" + line + "\n") >= 0;
+  const state = sepState || {};
+  const present = (l) => ("\n" + src + "\n").indexOf("\n" + l + "\n") >= 0;
+  const already = present(line);
+  const activeBefore = known.filter(present).length;
   if (checked) {
     if (already) return src;
-    const sep = src.length && !src.endsWith("\n") ? "\n" : "";
+    if (activeBefore === 0) state.inserted = src.length > 0 && !src.endsWith("\n");
+    const sep = activeBefore === 0 && state.inserted ? "\n" : "";
     return src + sep + line + "\n";
   }
   if (!already) return src;
   const suffix = line + "\n";
   if (src.endsWith(suffix)) {
     // The line being removed is the LAST line in the text -- exactly the
-    // position `checked` above always appends at -- so undo that append
-    // string-wise rather than reconstructing through split/join (which
-    // would lose exactly the bit of information this fix needs).
-    const base = src.slice(0, src.length - suffix.length);
-    if (base === "" || base.endsWith("\n\n")) return base;
-    if (base.endsWith("\n")) {
-      const lastLine = base.slice(0, -1).split("\n").pop();
-      if (known.indexOf(lastLine) >= 0) return base;
-      return base.slice(0, -1);
+    // position `checked` above always appends at.
+    let base = src.slice(0, src.length - suffix.length);
+    // Only the mirror instant of the 0->1 insertion above (this was the
+    // ONE remaining active line) ever strips a byte that isn't this
+    // line's own -- and only when that insertion actually added one.
+    if (activeBefore === 1 && state.inserted && base.endsWith("\n")) {
+      base = base.slice(0, -1);
     }
     return base;
   }
-  // Not the last line: every other line, and the newlines between them,
-  // stay exactly as they were.
-  const lines = src.split("\n");
-  const idx = lines.indexOf(line);
+  // Not the last line: remove exactly this line's own text, wherever it
+  // sits -- every other byte, including the newlines around it, stays
+  // exactly as it was (never a split/join, which would renumber blank
+  // lines it never touched).
+  const idx = src.indexOf(line + "\n");
   if (idx < 0) return src;
-  lines.splice(idx, 1);
-  return lines.join("\n");
+  return src.slice(0, idx) + src.slice(idx + suffix.length);
 }
 
 // Task 009 (v0.26, #269): `onWaive(f, checked)` is called on toggle, never
@@ -2020,10 +2039,15 @@ function renderParkedPanel(box, runId, pq) {
   // being toggled is the last line in the box (see that function's own
   // comment).
   const composedLines = (pq.findings || []).map(parkedWaiveLineText);
+  // One `sepState` instance shared across every waive toggle for THIS
+  // rendering of the panel (cure-01-01-5) -- `applyWaiveLine` mutates it
+  // in place to remember whether ITS OWN separator newline was inserted,
+  // never guessing that fact back out of the text alone.
+  const sepState = { inserted: false };
   const onWaive = (f, checked) => {
     const ta = document.getElementById("parked-rule-text");
     if (!ta) return;
-    ta.value = applyWaiveLine(ta.value, parkedWaiveLineText(f), checked, composedLines);
+    ta.value = applyWaiveLine(ta.value, parkedWaiveLineText(f), checked, composedLines, sepState);
   };
   const outcomeText = parkedNextStepOutcomeText(c.nextStepIfUnanswered);
   const actionStatus = h("div", { id: "parked-action-status", class: "muted" }, []);
@@ -2114,32 +2138,48 @@ function renderParkedPanel(box, runId, pq) {
       h("b", {}, ["consequence of not answering:"]),
       h("ul", {}, parkedConsequenceLines(c).map((line) => h("li", {}, [line]))),
     ]),
-    h("h3", {}, ["Findings"]),
-    h("div", { class: "parked-findings" },
-      (pq.findings || []).map((f) => parkedFindingItem(f, onWaive))),
-    h("h3", {}, ["Answer"]),
-    // cure-01-05 (adopted #270 D.14): the visible, editable answer box
-    // lives HERE, inside the panel, alongside the findings above and the
-    // two actions below -- never only in the separate Rule section
-    // further down the page.
-    h("div", { class: "parked-answer" }, [nameInput, rulingTextarea]),
-    h("div", { class: "parked-actions" }, [
-      h("div", { class: "parked-action" }, [
-        submitRulingBtn,
-        h("p", { class: "muted parked-action-effect" }, [
-          "effect: posts the ruling text above, unchanged, to this run's " +
-          "own ruling route -- which resumes the run itself if the ruling " +
-          "answers this pause.",
+    // cure-01-01-5 (B.3-B.5, adopted #270 D.14): findings occupy the LEFT
+    // column and the answer box plus its two actions occupy the RIGHT
+    // column at desktop widths (`.parked-panel-columns`/style.css's own
+    // `min-width: 900px` rule) -- a live browser probe at 1280px found
+    // both stacked full-width instead, the answer below rather than
+    // beside the findings. Narrower than that, `.parked-panel-columns`
+    // stacks them exactly as before (findings, then the answer box, then
+    // the actions), so nothing regresses on a narrow viewport. The
+    // ordinary Steer/Rule sections further down the page are OUTSIDE this
+    // card entirely and stay their own, separate full-width sections.
+    h("div", { class: "parked-panel-columns" }, [
+      h("div", { class: "parked-panel-left" }, [
+        h("h3", {}, ["Findings"]),
+        h("div", { class: "parked-findings" },
+          (pq.findings || []).map((f) => parkedFindingItem(f, onWaive))),
+      ]),
+      h("div", { class: "parked-panel-right" }, [
+        h("h3", {}, ["Answer"]),
+        // cure-01-05 (adopted #270 D.14): the visible, editable answer box
+        // lives HERE, inside the panel, alongside the findings to its left
+        // and the two actions below it -- never only in the separate Rule
+        // section further down the page.
+        h("div", { class: "parked-answer" }, [nameInput, rulingTextarea]),
+        h("div", { class: "parked-actions" }, [
+          h("div", { class: "parked-action" }, [
+            submitRulingBtn,
+            h("p", { class: "muted parked-action-effect" }, [
+              "effect: posts the ruling text above, unchanged, to this run's " +
+              "own ruling route -- which resumes the run itself if the ruling " +
+              "answers this pause.",
+            ]),
+          ]),
+          h("div", { class: "parked-action" }, [
+            resumeNoRulingBtn,
+            h("p", { class: "muted parked-action-effect" }, [
+              "effect: resumes with no ruling recorded -- predicted outcome: " +
+              outcomeText,
+            ]),
+          ]),
+          actionStatus,
         ]),
       ]),
-      h("div", { class: "parked-action" }, [
-        resumeNoRulingBtn,
-        h("p", { class: "muted parked-action-effect" }, [
-          "effect: resumes with no ruling recorded -- predicted outcome: " +
-          outcomeText,
-        ]),
-      ]),
-      actionStatus,
     ]),
   ]));
 }

@@ -3433,10 +3433,20 @@ JSON endpoints served under `/api/`:
   finding expandable to its evidence/`cured_when`/`invalidates` (the evidence
   scrolls rather than truncating) -- absent when `parkedQuestion` is
   `null`/absent, with the Steer/Rule sections staying their own sections
-  below it. The panel carries its own answer box beside the findings: an
+  below it. cure-01-01-5 places the findings list in a LEFT column and the
+  answer box/actions in a RIGHT column at desktop widths (stacked
+  vertically, findings first, on a narrower viewport), and the poll loop
+  never rebuilds the panel over an UNRELATED move of the run-detail `ETag`
+  (an unrelated event, another iteration's write) -- only when
+  `parkedQuestion` itself actually differs, so an operator's in-progress
+  draft name/ruling text survives an unrelated refresh untouched, while a
+  genuinely new question (a re-park, or the pause getting
+  answered/resumed) always gets a fresh, empty box. The panel carries its
+  own answer box beside the findings: an
   editable ruling textarea (`#parked-rule-text`, where `Enter` is a
   newline and each finding's waive checkbox adds or removes only its own
-  line, sending nothing), a name field (`#parked-rule-name`) and both
+  line, sending nothing, byte-identical on a check-then-uncheck round trip
+  whatever the prose's own trailing-newline shape), a name field (`#parked-rule-name`) and both
   actions -- *Submit ruling and resume* posts the name and the textarea
   body byte-identical to `POST /api/runs/<id>/rule`, *Resume without a
   ruling* posts `unpause`; the runs list's `\u23F8 parked for input` marker links straight

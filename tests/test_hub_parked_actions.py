@@ -275,6 +275,44 @@ def test_waive_toggle_round_trip_preserves_an_unterminated_last_line():
     assert out["textareaValue"] == typed
 
 
+@pytest.mark.parametrize("typed", [
+    "operator note\n",
+    "\n",
+    "first paragraph\n\nsecond paragraph\n",
+], ids=["single-line", "newline-only", "multi-paragraph"])
+def test_waive_toggle_round_trip_preserves_a_single_trailing_newline(typed):
+    """cure-01-01-5 (B.3-B.5): the companion bug to the unterminated-line
+    fix above -- operator prose that ALREADY ends in exactly one real
+    newline is byte-identical to what `applyWaiveLine` produces right
+    after inserting its own separator for UNTERMINATED prose, so a naive
+    fix that always strips a lone trailing newline on uncheck instead
+    silently eats the operator's own byte. The review's own probe found
+    exactly this: checking then unchecking F1 turned "operator note\n"
+    into "operator note" with zero requests. Exercised with multiple
+    toggles (check, uncheck, check, uncheck again) since a stateful fix
+    could get the FIRST round trip right and a later one wrong."""
+    out = _run(_PQ, textareaValue=typed,
+               waive=[{"id": "F1", "checked": True},
+                      {"id": "F1", "checked": False},
+                      {"id": "F1", "checked": True},
+                      {"id": "F1", "checked": False}])
+    assert out["textareaValue"] == typed
+
+
+def test_editable_prose_still_supported_after_the_single_newline_fix():
+    """The fix above must not turn the textarea read-only or otherwise
+    special-case its content beyond the waive-line compose/remove
+    contract: hand-typed prose typed AFTER a waive line is still exactly
+    what `_run`'s stand-in wrote, and a second finding still composes
+    correctly on top of it."""
+    out = _run(_PQ, textareaValue="operator note\n",
+               waive=[{"id": "F1", "checked": True},
+                      {"id": "F2", "checked": True}])
+    assert out["textareaValue"] == (
+        "operator note\nwaive F1 (clause one (#111))\n"
+        "waive F2 (clause two (#112))\n")
+
+
 def test_unchecking_the_last_of_two_composed_lines_keeps_the_others_own_newline():
     """The companion case to the unterminated fix above: when the line
     removed is the LAST one but ANOTHER finding's own composed line

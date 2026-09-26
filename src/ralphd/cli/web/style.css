@@ -587,6 +587,34 @@ th.actions-col { cursor: default; }
 
 .parked-consequence ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
 
+/* cure-01-01-5 (B.3-B.5, adopted #270 D.14): findings on the left, the
+   answer box and its two actions on the right, at desktop widths -- a
+   live browser probe at 1280px found both columns full-width and
+   stacked, the answer BELOW the findings rather than beside them.
+   Narrower than `min-width: 900px` the two columns stack vertically
+   (findings, then the answer box, then the actions), exactly the single-
+   column order this panel already used. */
+.parked-panel-columns {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 0.4rem;
+}
+
+.parked-panel-left, .parked-panel-right {
+  min-width: 0;
+}
+
+@media (min-width: 900px) {
+  .parked-panel-columns {
+    flex-direction: row;
+  }
+
+  .parked-panel-left, .parked-panel-right {
+    flex: 1 1 50%;
+  }
+}
+
 .parked-findings {
   display: flex;
   flex-direction: column;
