@@ -3520,7 +3520,14 @@ JSON endpoints served under `/api/`:
   count; the render is still exact either way. It caches an index it builds
   in the hub's own memory (never in the run dir) whenever that scan was
   expensive, so a second request against the same iteration and transcript
-  size takes the bounded indexed read instead of repeating the scan. `tail=0`
+  size takes the bounded indexed read instead of repeating the scan. This
+  cache is kept per iteration, not just for the newest one: when a tail
+  spans several such cold iterations and only one of them later grows, is
+  rewritten in place, or is replaced, only THAT iteration's own cache entry
+  is invalidated and rescanned -- every other iteration the same tail needs,
+  unchanged since its own last scan, is served from cache untouched, never
+  rescanned merely because a different iteration in the same tail changed.
+  `tail=0`
   is an explicit request for the *whole* transcript (`GET /logs`,
   unconditionally) — it is not the only path that can read all of it, since
   the cold-scan fallback above can reach the same result for a positive

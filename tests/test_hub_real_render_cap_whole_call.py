@@ -86,6 +86,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -868,6 +869,94 @@ def test_second_cold_tail_across_two_iterations_is_bounded(
         second, rendered2 = _measure(sub, monkeypatch, run_root, 200, path)
         assert rendered2 == full, (path, rendered2)
         assert second <= _FROZEN_CAP, (path, first, second)
+
+
+def test_unchanged_cached_iteration_is_not_rescanned_after_another_changes(
+        tmp_path, monkeypatch):
+    """Task cure-01-02-3 (PRD C.4, D.1; DoD 3, review-135): cure-01-02-2's
+    own per-iteration cache covered every iteration a tail's backward walk
+    needed, but the FIRST-pass lookup (`ui_server.
+    _absent_index_cache_lookup_or_rebuild_refused`) declined outright the
+    moment ANY iteration in that walk -- typically the newest, most
+    recently changed one -- had no valid cache and no on-disk index,
+    abandoning the whole `bounded_tail` attempt before it ever reached an
+    EARLIER, genuinely unchanged iteration whose own cache was still
+    perfectly valid. `rendered_log_lines`'s growth-based fallback then
+    re-read every iteration the tail needed straight off disk, rescanning
+    that unchanged earlier iteration's full bytes all over again purely
+    because a LATER one had changed. Two absent-index (no
+    `render_index.json`, no legacy `collapse_index.json`) silent-prelude
+    cold iterations, a bounded warm 200-line tail across both -- then
+    only iteration 2's transcript is appended to or rewritten at the same
+    size -- must still answer exactly, reading at most 1,000,000 bytes off
+    iteration 1's UNCHANGED transcript, on both the live and dead-run
+    surfaces; fails at 1ff085d8 (over 11.7M bytes read off iteration 1)."""
+    gap = json.dumps({"type": "message_end", "message": {"content": []},
+                      "padding": "x" * 1000})
+    for path in ("disk", "api"):
+        for change in ("append", "rewrite"):
+            sub = tmp_path / f"unaffected-{change}-{path}"
+            run_root = sub / "registry" / "runs" / "probe"
+            for number in (1, 2):
+                _write_iteration_with_recognized_nonrendering_gap(
+                    run_root, number, f"exact text {number}", gap, 10_000,
+                    prelude_count=1_000)
+            ui_server._ABSENT_INDEX_CACHE.clear()
+
+            # Warm the cache for BOTH cold iterations first (cure-01-02-2's
+            # own contract): the first call pays the scan, the second is
+            # bounded and both get cached.
+            _measure(sub, monkeypatch, run_root, 200, path)
+            warm, _ = _measure(sub, monkeypatch, run_root, 200, path)
+            assert warm <= _FROZEN_CAP, (path, change, warm)
+            assert {1, 2} <= ui_server._ABSENT_INDEX_CACHE["probe"].keys()
+            old_cached = ui_server._ABSENT_INDEX_CACHE["probe"][1]
+            old_output = run_root / "iterations" / "0001" / "output.jsonl"
+            old_stat = old_output.stat()
+            new_output = run_root / "iterations" / "0002" / "output.jsonl"
+
+            if change == "append":
+                with new_output.open("a") as f:
+                    f.write(json.dumps({"type": "ignored", "note": "new bytes"}) + "\n")
+            else:
+                new_output.write_bytes(
+                    new_output.read_bytes().replace(b"exact text 2", b"other text 2"))
+
+            expected = render_to_lines(
+                "".join(merged_lines(run_root)), tty=False,
+                state=new_render_state())[-200:]
+
+            # Per-ITERATION byte tally (unlike `_count_transcript_bytes`,
+            # which only tallies the whole-call total) -- the whole point
+            # of this node is to tell iteration 1's own reads apart from
+            # iteration 2's.
+            counts = {1: 0, 2: 0}
+            real_open = Path.open
+
+            def opened(self, mode="r", *a, **kw):
+                f = real_open(self, mode, *a, **kw)
+                if self.name == "output.jsonl":
+                    number = int(self.parent.name)
+                    real_read = f.read
+
+                    def read(*args, **kwargs):
+                        data = real_read(*args, **kwargs)
+                        counts[number] += (
+                            len(data) if isinstance(data, bytes) else len(data.encode()))
+                        return data
+
+                    f.read = read
+                return f
+
+            _wire_path(monkeypatch, sub, run_root, path)
+            monkeypatch.setattr(Path, "open", opened)
+            _, actual = ui_server.rendered_log_lines(sub / "registry", "probe", 200)
+            monkeypatch.undo()
+
+            assert old_output.stat().st_mtime_ns == old_stat.st_mtime_ns
+            assert ui_server._ABSENT_INDEX_CACHE["probe"][1] is old_cached
+            assert actual == expected, (path, change, actual, expected)
+            assert counts[1] <= 1_000_000, (path, change, counts)
 
 
 def test_spec_and_cli_docs_describe_the_indexed_bounded_tail_read():

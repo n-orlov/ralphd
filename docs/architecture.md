@@ -2040,6 +2040,37 @@ round and never reaches the full-ask bound, but a legacy-indexed fixture
 whose fetch DOES need it now builds and caches the index too, so its own
 second call is bounded.
 
+**One changed iteration must not drag every unaffected one back into an
+unbounded rescan (task cure-01-02-3, requirement C.4, D.1; DoD 3,
+review-135).** The FIRST-pass `on_missing` above (`ui_server.
+_absent_index_cache_lookup_or_rebuild_refused`) used to decline outright
+the instant ANY iteration `bounded_tail`'s backward walk needed had
+neither a valid cache entry nor an on-disk index -- typically the newest
+iteration, the one most likely to have just grown, been rewritten in
+place, or been replaced. That decline abandoned the WHOLE walk, including
+every EARLIER iteration it had not even reached yet, and sent the whole
+tail request into the growth-based fetch below, which reads every
+iteration it needs straight off disk with no cache of its own -- so a
+tail spanning a changed newer iteration and an unchanged, already-cached
+older one paid the older one's full scan cost all over again purely
+because the newer one changed (a review-caught finding: a two-cold-
+iteration tail, only the newer iteration appended to or rewritten at the
+same size, still read the older, byte-for-byte-unchanged iteration's
+~11.8M bytes). `on_missing` now checks whether this SAME run already has
+at least one OTHER iteration number cached and still valid for its
+current on-disk identity before it declines; when one does, it rebuilds
+the missing iteration eagerly (`_absent_index_cache_put`, the same
+from-scratch `compute_render_index` scan the growth-based fetch's own
+after-the-fact fill would eventually have paid for it anyway) so the
+backward walk keeps resolving entirely through the cache and every OTHER
+cached iteration is reused untouched, never rescanned. A run with no
+other iteration cached and valid yet -- the ordinary lone-iteration or
+still-growing-live case task 015 and cure-01-02-2 already covered -- still
+declines exactly as before, so a currently-streaming absent-index
+iteration with nothing else of its run worth protecting is not forced to
+pay a from-scratch rescan on every single poll merely because its own
+size changed again.
+
 ### Container lifecycle
 
 ```

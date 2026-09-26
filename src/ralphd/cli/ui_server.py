@@ -1690,7 +1690,10 @@ def _absent_index_cache_put(run_root: Path, run_id: str, number: int) -> dict | 
 
 def _absent_index_cache_lookup_or_rebuild_refused(run_root: Path, run_id: str):
     """Task cure-01-02-2 (PRD C.4, D.1; DoD 3), folding in task
-    cure-01-01-4's own single-iteration `_refused_index_rebuild`: the
+    cure-01-01-4's own single-iteration `_refused_index_rebuild`, and
+    extended by task cure-01-02-3 (PRD C.4, D.1; DoD 3; review-135) to
+    stop one changed iteration from dragging every OTHER, unaffected
+    cached iteration back into an unbounded rescan: the
     `render_index.bounded_tail(..., on_missing=)` callback for the FIRST,
     always-attempted pass. For an iteration this walk needs:
 
@@ -1705,38 +1708,58 @@ def _absent_index_cache_lookup_or_rebuild_refused(run_root: Path, run_id: str):
          `bounded_tail` already does, never the growth loop's cut
          windows, which cannot see a text line still open across the
          cut.
-      3. Otherwise -- no on-disk index, and no hub-cache entry still
-         valid for this exact identity -- declines (`None`), leaving
+      3. Otherwise, when this SAME run already has at least one OTHER
+         iteration number cached and still valid for its own current
+         on-disk identity -- this run is demonstrably in the warm-cache
+         regime cure-01-02-2 built, and `bounded_tail` returning `None`
+         here would fall the WHOLE walk back to the growth-based fetch,
+         which reads every iteration it needs straight off disk with no
+         cache of its own, rescanning that OTHER, genuinely unchanged
+         iteration's full bytes all over again purely because THIS one
+         changed. Rebuilding just this one missing iteration right here
+         (review-135's own falsifying case: append or in-place rewrite of
+         one iteration in a two-cold-iteration tail) lets the backward
+         walk keep resolving entirely through the cache, so every OTHER
+         cached iteration is reused untouched instead of rescanned.
+      4. Otherwise -- no on-disk index, no hub-cache entry still valid
+         for this exact identity, and no OTHER iteration of this run
+         cached and valid either -- declines (`None`), leaving
          `rendered_log_lines`'s own growth-based fallback (cheap for PRD
          P's collapse-index-bounded fixtures, unbounded but correct for
          a genuinely absent one) as the answer for THIS call;
          `_absent_index_cache_fill` gives this same iteration its own
          cached scan afterward, gated exactly as task cure-01-04 already
          gated the single-iteration case, so a LATER repeated tail
-         against it is served by case 1 above instead. Deliberately
-         never keyed off the mere PRESENCE of a hub-cache entry for this
-         iteration number regardless of whether it still matches --
-         this cache is shared, by run id and iteration number alone,
-         across every run this hub process ever serves, so treating a
-         bare stale entry as "this run once had one" would force an
-         eager rebuild for a run that has never actually needed one,
-         merely because some UNRELATED run reused the same run id and
-         iteration number earlier in this process's life.
+         against it is served by case 1 above instead. This keeps a lone
+         or still-growing absent-index iteration -- nothing else of this
+         run cached yet -- from paying a from-scratch
+         `compute_render_index` scan on every single poll merely because
+         its own size just changed again; only a run that ALREADY has
+         another settled iteration's cache to protect pays the eager
+         rebuild instead.
 
     So a tail spanning several unindexed/unusably-indexed COLD iterations
     pays each of their scan costs at most once across this process's life
     (until that exact iteration's own transcript identity next changes),
     never once per request and never only for the newest iteration in
     the run -- without ever forcing a fresh, possibly wasted, scan for an
-    iteration that has never needed one before."""
+    iteration that has never needed one before, and without ever forcing
+    one for a run that has no OTHER cached iteration to lose."""
     def on_missing(number: int) -> dict | None:
         cached = _absent_index_cache_get(run_root, run_id, number)
         if cached is not None:
             return cached
         itdir = iteration_dir(run_root, number)
-        if not (itdir / render_index.INDEX_FILENAME).exists():
-            return None
-        return _absent_index_cache_put(run_root, run_id, number)
+        if (itdir / render_index.INDEX_FILENAME).exists():
+            return _absent_index_cache_put(run_root, run_id, number)
+        run_cache = _ABSENT_INDEX_CACHE.get(run_id) or {}
+        has_other_valid = any(
+            other != number
+            and _absent_index_cache_get(run_root, run_id, other) is not None
+            for other in list(run_cache))
+        if has_other_valid:
+            return _absent_index_cache_put(run_root, run_id, number)
+        return None
     return on_missing
 
 

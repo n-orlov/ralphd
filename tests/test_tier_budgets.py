@@ -195,8 +195,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # a second waiver checked after a hand edit between two toggles is
     # separate and removable), measured `.venv/bin/python -m pytest -q -m
     # fast --collect-only` -> 6374/436, `-m smoke` -> 4682/313.
-    "fast": {"tests": 6374, "modules": 436},
-    "smoke": {"tests": 4682, "modules": 313},
+    # cure-01-02-3 (C.4, D.1, DoD 3): +1 test, no new module (tests/
+    # test_hub_real_render_cap_whole_call.py: test_unchanged_cached_
+    # iteration_is_not_rescanned_after_another_changes, a two-cold-
+    # iteration tail across the append/rewrite x disk/api matrix,
+    # asserting the unchanged earlier iteration's own cache is reused
+    # untouched), measured `.venv/bin/python -m pytest -q -m fast
+    # --collect-only` -> 6375/436, `-m smoke --collect-only` -> 4683/313.
+    "fast": {"tests": 6375, "modules": 436},
+    "smoke": {"tests": 4683, "modules": 313},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
