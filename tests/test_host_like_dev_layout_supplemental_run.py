@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -252,13 +253,20 @@ def test_the_supplemental_expression_selects_exactly_what_fast_docker_and_browse
     `-m fast` plus its new supplemental pass leaves nothing uncovered, with
     no double-count either."""
 
+    # Task 019's CI sweep (nightly.yml run 36217143565, dev-layout cells,
+    # sha 90925bcb): this module carries no docker/browser/nightly marker,
+    # so it runs for real inside every dev-layout container too -- and those
+    # containers deliberately have NO `.venv` (that absence is the whole
+    # point of the PYTHONUSERBASE-mode axis; see this repo's own dev-layout
+    # docs). A hardcoded `.venv/bin/python` therefore does not exist there
+    # (`bash: line 1: .venv/bin/python: No such file or directory`, exit
+    # 127) even though it happens to exist in a normal developer checkout.
+    # Use `sys.executable` instead, exactly like `test_tier_budgets.py`'s
+    # own recursive `--collect-only` child does -- the interpreter already
+    # running this test process is always the right one to recurse with.
     def _collected_count(marker_expr):
         proc = subprocess.run(
-            [
-                "bash",
-                "-c",
-                f'.venv/bin/python -m pytest -q --collect-only -m "{marker_expr}"',
-            ],
+            [sys.executable, "-m", "pytest", "-q", "--collect-only", "-m", marker_expr],
             cwd=str(REPO),
             capture_output=True,
             text=True,
@@ -273,7 +281,7 @@ def test_the_supplemental_expression_selects_exactly_what_fast_docker_and_browse
 
     def _total_count():
         proc = subprocess.run(
-            ["bash", "-c", ".venv/bin/python -m pytest -q --collect-only"],
+            [sys.executable, "-m", "pytest", "-q", "--collect-only"],
             cwd=str(REPO),
             capture_output=True,
             text=True,
