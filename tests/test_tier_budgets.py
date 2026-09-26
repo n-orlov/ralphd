@@ -99,8 +99,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # both silent-prelude depths, and the cache-key-changes-on-append
     # control), measured `.venv/bin/python -m pytest -q -m fast
     # --collect-only` -> fast 6278/434, `-m smoke` -> smoke 4597/312.
-    # cure-01-01-2: +10 tests / +1 module (tests/test_host_like_dev_layout_
-    # supplemental_run.py: the default no-argument invocation's primary +
+    # cure-01-01-2: +10 tests / +1 module (the new dev-layout supplemental-
+    # run test module: the default no-argument invocation's primary +
     # supplemental pass, its explicit-tier/targeted/collect-only opt-outs,
     # either-run-nonzero, the SUPPLEMENTAL_TIER_MARKER/header pins, and the
     # fast+docker+browser+leftover collection partition), measured
