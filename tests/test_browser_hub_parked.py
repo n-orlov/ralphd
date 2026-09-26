@@ -1,8 +1,14 @@
 """Task 011 (v0.26, #269): browser-tier coverage for the parked panel
 (tasks 008/009/010) and the two answer-textarea Enter-key contracts
-(`#steer-message`, `#rule-text` -- the panel's OWN ruling control, task
-009's `test_the_panel_writes_into_rule_text_not_a_second_textarea` already
-pins that it is never a second, panel-own textarea).
+(`#steer-message`, `#parked-rule-text`).
+
+cure-01-05 (adopted #270 C.12/D.14): a live browser probe on the shipped
+tree found the panel had ZERO textarea/name inputs of its own and reached
+into the separate Rule section's `#rule-text` instead -- a chosen ruling
+name was silently dropped on submit as a result. This module now drives
+the panel's OWN `#parked-rule-text`/`#parked-rule-name` throughout, and
+adds coverage for a named, multi-line ruling actually reaching `/rule`
+byte-identical, name included.
 
 Same harness as `tests/test_browser_hub.py` (playwright-cli, real Chromium,
 skips the whole module cleanly when the binary is absent) -- reuses that
@@ -267,18 +273,18 @@ def test_checking_and_unchecking_waive_boxes_composes_text_with_no_request(tmp_p
             pw.click(".parked-finding summary >> nth=1")
 
             pw.check("#waive-F1")
-            value = _val(pw, "document.getElementById('rule-text').value")
+            value = _val(pw, "document.getElementById('parked-rule-text').value")
             assert value == "waive F1 (clause one (#111))\n"
             assert _posts(engine) == []
 
             pw.check("#waive-F2")
-            value = _val(pw, "document.getElementById('rule-text').value")
+            value = _val(pw, "document.getElementById('parked-rule-text').value")
             assert value == ("waive F1 (clause one (#111))\n"
                              "waive F2 (clause two (#112))\n")
             assert _posts(engine) == []
 
             _uncheck(pw, "#waive-F1")
-            value = _val(pw, "document.getElementById('rule-text').value")
+            value = _val(pw, "document.getElementById('parked-rule-text').value")
             assert value == "waive F2 (clause two (#112))\n"
             assert _posts(engine) == []
             pw.screenshot(SCREENSHOTS_DIR / "parked-03-waive-checkboxes.png")
@@ -297,13 +303,19 @@ def test_submit_ruling_and_resume_reaches_the_engines_rule_route(tmp_path, pw):
         try:
             pw.open(f"{server.base}/#/run/run-submit-ruling")
             _wait_for(pw, "document.body.innerText", "Submit ruling")
-            pw.fill("#rule-text", "an operator ruling")
+            # cure-01-05 (adopted #270 D.14): the panel's OWN name field and
+            # ruling textarea -- an operator-chosen name rides along on the
+            # request the engine actually receives, never dropped.
+            pw.fill("#parked-rule-name", "operator-chosen-name")
+            pw.fill("#parked-rule-text", "an operator ruling")
 
             pw.click("#parked-submit-ruling")
             _wait_for(pw, "document.getElementById('parked-action-status').textContent",
                      "ruling recorded")
 
             assert _posts(engine) == [("POST", "/rule")], engine.requests
+            body = json.loads(_last_body_for(engine, "POST", "/rule"))
+            assert body == {"text": "an operator ruling", "name": "operator-chosen-name"}
             pw.screenshot(SCREENSHOTS_DIR / "parked-04-submit-ruling.png")
         finally:
             server.stop()
@@ -335,14 +347,9 @@ def test_resume_without_a_ruling_reaches_the_engines_unpause_route(tmp_path, pw)
 
 # ---------------------------------------------------------------------------
 # criterion (3): Enter inserts a newline (never a submit) in
-# `#steer-message`, and in `#rule-text` -- which is also "the panel's
-# ruling textarea", not a separate control (task 009 already pins there
-# is no second, panel-own textarea) -- and each control's own submit then
-# delivers the composed multi-line text byte-identical at the request the
-# engine actually receives. `#rule-text` is driven through the panel's OWN
-# submit button rather than the Rule form's (see that test's own
-# docstring for why: the Rule form's button predates this task and would
-# pass unchanged at the 9b72b700 baseline).
+# `#steer-message`, and in the panel's OWN `#parked-rule-text` -- and each
+# control's own submit then delivers the composed multi-line text
+# byte-identical at the request the engine actually receives.
 # ---------------------------------------------------------------------------
 
 
@@ -381,20 +388,13 @@ def test_enter_in_steer_message_inserts_a_newline_and_submits_it_byte_identical(
         engine.close()
 
 
-def test_enter_in_the_panels_shared_rule_text_submits_via_the_panel_byte_identical(
+def test_enter_in_the_panels_own_rule_text_submits_via_the_panel_byte_identical(
         tmp_path, pw):
-    """'#rule-text' and 'the panel's ruling textarea' name the SAME
-    control (task 009's own pin,
-    test_the_panel_writes_into_rule_text_not_a_second_textarea) -- it was
-    already a plain textarea before this v0.26 track (Enter-inserts-a-
-    newline is a browser default no app code has ever overridden there),
-    so a node that only drove it through the Rule form's OWN submit button
-    would pass unchanged against the 9b72b700 baseline and could not
-    satisfy criterion (5). Driving it through #parked-submit-ruling
-    instead -- the panel's own action, which does not exist at all at that
-    baseline -- covers the same Enter/newline/byte-identical contract for
-    both names while still failing there, as every node in this module
-    must."""
+    """cure-01-05 (adopted #270 D.14): `#parked-rule-text` is the panel's
+    OWN control, separate from the Rule section's own `#rule-text` -- a
+    plain `<textarea>`, so Enter-inserts-a-newline is a browser default no
+    app code overrides there either. Driven through `#parked-submit-
+    ruling`, the panel's own action."""
     registry = tmp_path / "registry"
     _run_dir, engine = _write_live_parked_run(registry, "run-panel-rule-enter")
     try:
@@ -404,12 +404,12 @@ def test_enter_in_the_panels_shared_rule_text_submits_via_the_panel_byte_identic
             pw.open(f"{server.base}/#/run/run-panel-rule-enter")
             _wait_for(pw, "document.body.innerText", "Submit ruling")
 
-            pw.click("#rule-text")
+            pw.click("#parked-rule-text")
             _type(pw, "first panel ruling line")
             _press(pw, "Enter")
             _type(pw, "second panel ruling line")
 
-            value = _val(pw, "document.getElementById('rule-text').value")
+            value = _val(pw, "document.getElementById('parked-rule-text').value")
             assert value == "first panel ruling line\nsecond panel ruling line"
             assert _posts(engine) == []
 
@@ -421,6 +421,40 @@ def test_enter_in_the_panels_shared_rule_text_submits_via_the_panel_byte_identic
             body = json.loads(_last_body_for(engine, "POST", "/rule"))
             assert body["text"] == "first panel ruling line\nsecond panel ruling line"
             pw.screenshot(SCREENSHOTS_DIR / "parked-07-panel-rule-enter-multiline.png")
+        finally:
+            server.stop()
+    finally:
+        engine.close()
+
+# ---------------------------------------------------------------------------
+# criterion (4): a waive toggle round trip preserves unrelated operator
+# prose exactly, an unterminated last line included -- the exact defect a
+# prior review probe found in a real browser
+# (`test_waive_roundtrip_preserves_unterminated_operator_prose`).
+# ---------------------------------------------------------------------------
+
+
+def test_waive_toggle_round_trip_preserves_an_unterminated_operator_line(tmp_path, pw):
+    registry = tmp_path / "registry"
+    _run_dir, engine = _write_live_parked_run(registry, "run-waive-unterminated")
+    try:
+        server = UiServer(registry)
+        server.wait_ready()
+        try:
+            pw.open(f"{server.base}/#/run/run-waive-unterminated")
+            _wait_for_count_ge(pw, "document.querySelectorAll('.waive-checkbox').length", 2)
+            pw.click(".parked-finding summary >> nth=0")
+
+            pw.click("#parked-rule-text")
+            _type(pw, "Keep this exact unterminated line")
+
+            pw.check("#waive-F1")
+            _uncheck(pw, "#waive-F1")
+
+            value = _val(pw, "document.getElementById('parked-rule-text').value")
+            assert value == "Keep this exact unterminated line"
+            assert _posts(engine) == []
+            pw.screenshot(SCREENSHOTS_DIR / "parked-08-waive-roundtrip-unterminated.png")
         finally:
             server.stop()
     finally:

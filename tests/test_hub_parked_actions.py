@@ -2,19 +2,27 @@
 checkbox per finding that only composes editable ruling text, and the two
 stated-effect actions (`Submit ruling & resume`, `Resume without a ruling`).
 
+cure-01-05 (adopted #270 C.12/D.14): the panel now carries its OWN visible
+`#parked-rule-name`/`#parked-rule-text` answer box, right alongside its
+findings, instead of reaching into the SEPARATE Rule section's `#rule-text`
+further down the page -- a live browser probe found zero textarea/name
+inputs inside `#parked-panel`, and a chosen name was silently dropped on
+submit. This module now drives the panel's OWN fields throughout.
+
 At 9b72b700 `app.js` has no `renderParkedPanel`/`parkedFindingItem` at all
-(task 008 adds those), and even once task 008 lands there is still no
+(task 008 adds those), and even once task 008/010 land there is still no
 waive checkbox, no `parkedWaiveLineText`/`applyWaiveLine`, no
+`#parked-rule-name`/`#parked-rule-text`, no
 `#parked-submit-ruling`/`#parked-resume-no-ruling` button and no
 `#parked-action-status` -- every node below fails against both checkouts.
 
 Browser-free, the same node-eval technique `tests/test_hub_parked_panel.py`
 already uses (the REAL functions are extracted verbatim out of the served
 `app.js` and evaluated under Node), extended with a `document` stub that
-carries just `getElementById` (backing `#rule-text`) and a recording
-`fetch` stand-in -- so the REAL onchange/onclick closures app.js builds are
-invoked directly and their effect (or absence of one) observed, never a
-Python reimplementation of what they do.
+carries just `getElementById` (backing the panel's own answer fields) and a
+recording `fetch` stand-in -- so the REAL onchange/onclick closures app.js
+builds are invoked directly and their effect (or absence of one) observed,
+never a Python reimplementation of what they do.
 """
 
 from __future__ import annotations
@@ -104,7 +112,10 @@ function makeBox() {
 
 async function main() {
   const input = JSON.parse(process.argv[2]);
-  document.__els['rule-text'] = { value: input.textareaValue || '' };
+  // The panel's OWN answer box -- never `#rule-text`/`#rule-name`, the
+  // separate Rule section's own fields.
+  document.__els['parked-rule-text'] = { value: input.textareaValue || '' };
+  document.__els['parked-rule-name'] = { value: input.nameValue || '' };
   globalThis.__nextResponses = (input.responses || []).map((r) => ({
     ok: r.ok !== false,
     status: r.status || (r.ok === false ? 400 : 200),
@@ -115,6 +126,8 @@ async function main() {
   renderParkedPanel(box, input.runId, input.pq);
   const card = box.children[0];
   const checkboxes = card ? findAll(card, 'input').filter((n) => n.attrs.type === 'checkbox') : [];
+  const textInputs = card ? findAll(card, 'input').filter((n) => n.attrs.type === 'text') : [];
+  const textareas = card ? findAll(card, 'textarea') : [];
 
   for (const w of (input.waive || [])) {
     const cb = checkboxes.find((c) => c.attrs.id === 'waive-' + w.id);
@@ -131,13 +144,16 @@ async function main() {
   const statusEl = card ? find(card, (n) => n.attrs && n.attrs.id === 'parked-action-status') : null;
 
   console.log(JSON.stringify({
-    textareaValue: document.__els['rule-text'].value,
+    textareaValue: document.__els['parked-rule-text'].value,
+    nameValue: document.__els['parked-rule-name'].value,
     calls,
     statusText: statusEl ? statusEl.textContent || null : null,
     cardText: card ? text(card) : '',
     submitButtonPresent: !!submitBtn,
     resumeButtonPresent: !!resumeBtn,
     checkboxIds: checkboxes.map((c) => c.attrs.id),
+    panelTextareaIds: textareas.map((t) => t.attrs.id),
+    panelTextInputIds: textInputs.map((t) => t.attrs.id),
   }));
 }
 main();
@@ -190,7 +206,7 @@ def test_every_finding_carries_its_own_waive_checkbox():
     assert out["checkboxIds"] == ["waive-F1", "waive-F2"]
 
 
-def test_checking_a_waive_box_composes_its_findings_line_into_rule_text():
+def test_checking_a_waive_box_composes_its_findings_line_into_parked_rule_text():
     out = _run(_PQ, waive=[{"id": "F1", "checked": True}])
     assert out["textareaValue"] == "waive F1 (clause one (#111))\n"
     assert out["calls"] == []  # no request sent
@@ -244,6 +260,33 @@ def test_waive_toggle_round_trip_leaves_hand_typed_text_byte_identical():
         assert out["textareaValue"] == typed, f["id"]
 
 
+def test_waive_toggle_round_trip_preserves_an_unterminated_last_line():
+    """cure-01-05 (adopted #270 D.14, F04): a check-then-uncheck round trip
+    over operator prose whose LAST line carries no trailing newline at all
+    must restore that prose byte-identically -- SPEC.md 11.3's own
+    byte-identical toggle promise, not a copy that gained a trailing
+    newline the operator never typed. The smallest reproducer from the
+    review's own probe (`test_waive_roundtrip_preserves_unterminated_
+    operator_prose`)."""
+    typed = "Keep this exact paragraph."
+    out = _run(_PQ, textareaValue=typed,
+               waive=[{"id": "F1", "checked": True},
+                      {"id": "F1", "checked": False}])
+    assert out["textareaValue"] == typed
+
+
+def test_unchecking_the_last_of_two_composed_lines_keeps_the_others_own_newline():
+    """The companion case to the unterminated fix above: when the line
+    removed is the LAST one but ANOTHER finding's own composed line
+    remains right before it, that other line's own trailing newline is
+    real (added when IT was composed) and must never be eaten too."""
+    out = _run(_PQ, textareaValue="operator note\n",
+               waive=[{"id": "F1", "checked": True},
+                      {"id": "F2", "checked": True},
+                      {"id": "F2", "checked": False}])
+    assert out["textareaValue"] == "operator note\nwaive F1 (clause one (#111))\n"
+
+
 def test_unchecking_keeps_blank_lines_around_the_removed_line():
     out = _run(_PQ, textareaValue="para one\n\npara two\n",
                waive=[{"id": "F1", "checked": True},
@@ -264,20 +307,45 @@ def test_checking_a_waive_box_never_sends_any_request_by_itself():
 
 
 # ---------------------------------------------------------------------------
-# criterion (2): reuses `#rule-text`, never a second panel-own textarea
+# criterion (2)/(1): the panel carries its OWN visible answer box -- a
+# ruling textarea and a name field -- alongside its findings (adopted #270
+# D.14). A live browser probe on the shipped tree found neither inside
+# `#parked-panel`; this replaces the retired
+# `test_the_panel_writes_into_rule_text_not_a_second_textarea` pin, which
+# asserted exactly the OPPOSITE of this now-required layout.
 # ---------------------------------------------------------------------------
 
 
-def test_the_panel_writes_into_rule_text_not_a_second_textarea():
+def test_the_panel_carries_its_own_visible_ruling_textarea_and_name_field():
+    out = _run(_PQ)
+    assert "parked-rule-text" in out["panelTextareaIds"]
+    assert "parked-rule-name" in out["panelTextInputIds"]
+    # never reaching into the separate Rule section's own fields
     src = APP_JS.read_text()
     start = src.index("function renderParkedPanel(")
     end = src.index("\n}\n", start) + 3
     body = src[start:end]
-    assert 'getElementById("rule-text")' in body
-    assert 'h("textarea"' not in body  # no panel-own textarea introduced
+    assert 'getElementById("rule-text")' not in body
+    assert 'getElementById("rule-name")' not in body
+
+
+def test_parked_rule_text_is_a_12_row_resizable_textarea():
+    src = APP_JS.read_text()
+    assert 'h("textarea", {\n    id: "parked-rule-text"' in src \
+        or 'id: "parked-rule-text"' in src
+    m_start = src.index('id: "parked-rule-text"')
+    block_start = src.rindex('h("textarea"', 0, m_start)
+    block = src[block_start:src.index("}", m_start) + 1]
+    assert 'rows: "12"' in block
+    css = (APP_JS.parent / "style.css").read_text()
+    start = css.index(".parked-answer textarea {")
+    block = css[start:css.index("}", start) + 1]
+    assert "resize: vertical" in block
 
 
 def test_rule_text_stays_a_12_row_resizable_textarea():
+    """The separate Rule section's own textarea (task 010) is unaffected
+    by the panel gaining its own answer box."""
     src = APP_JS.read_text()
     assert 'h("textarea", { id: "rule-text"' in src
     assert 'rows: "12"' in src
@@ -293,7 +361,9 @@ def test_enter_in_rule_text_inserts_a_newline_and_never_submits():
     to single-line inputs only). So the requirement holds exactly when
     nothing in app.js overrides it: no key handler on `#rule-text` itself,
     no key listener anywhere in the bundle that could intercept `Enter` to
-    submit, and the Rule form submits only on its own `submit` event."""
+    submit, and the Rule form submits only on its own `submit` event. The
+    panel's own `#parked-rule-text` is likewise a bare `<textarea>` with no
+    key handler at all -- its own submit is only ever the button click."""
     import re
     src = APP_JS.read_text()
     m = re.search(r'h\("textarea", \{ id: "rule-text"([^}]*)\}', src)
@@ -307,6 +377,14 @@ def test_enter_in_rule_text_inserts_a_newline_and_never_submits():
     for handler in re.finditer(r'onkeydown\s*[:=]\s*\(ev\)\s*=>\s*\{([^}]*)\}', src):
         assert "submit" not in handler.group(1)
     assert 'getElementById("rule-form").addEventListener("submit"' in src
+
+
+def test_parked_rule_text_has_no_key_handler_either():
+    src = APP_JS.read_text()
+    start = src.index("function renderParkedPanel(")
+    end = src.index("\n}\n", start) + 3
+    body = src[start:end]
+    assert "onkey" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +424,29 @@ def test_submit_ruling_and_resume_never_calls_unpause():
     out = _run(_PQ, textareaValue="a ruling\n", click="submit",
                responses=[{"ok": True, "body": {"file": "r1"}}])
     assert all("/unpause" not in c["url"] for c in out["calls"])
+
+
+def test_submit_includes_the_entered_name():
+    """cure-01-05 (adopted #270 D.14): a name typed into the panel's own
+    `#parked-rule-name` rides along on `POST /rule` exactly the way the
+    Rule form's own `#rule-name` already does -- never dropped."""
+    out = _run(_PQ, textareaValue="chosen ruling", nameValue="operator-chosen-name",
+               click="submit", responses=[{"ok": True, "body": {"file": "r1"}}])
+    posted = json.loads(out["calls"][0]["opts"]["body"])
+    assert posted == {"text": "chosen ruling", "name": "operator-chosen-name"}
+
+
+def test_submit_omits_name_when_the_panels_name_field_is_blank():
+    out = _run(_PQ, textareaValue="chosen ruling", click="submit",
+               responses=[{"ok": True, "body": {"file": "r1"}}])
+    posted = json.loads(out["calls"][0]["opts"]["body"])
+    assert "name" not in posted
+
+
+def test_submit_clears_the_panels_own_name_field_on_success():
+    out = _run(_PQ, textareaValue="chosen ruling", nameValue="a-name",
+               click="submit", responses=[{"ok": True, "body": {"file": "r1"}}])
+    assert out["nameValue"] == ""
 
 
 def test_resume_without_a_ruling_posts_to_unpause():

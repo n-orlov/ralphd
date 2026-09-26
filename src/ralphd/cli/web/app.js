@@ -1567,12 +1567,23 @@ async function renderRunDetail(runId, myGen) {
       // still the only way to send.
       h("textarea", { id: "steer-message", placeholder: "steering message", required: "required", rows: "8" }),
       // #161: `apply now` is `ralphctl steer --now` -- labelled with what it
-      // costs, so the checkbox is never ticked as if it were free.
-      h("label", { class: "steer-now-label", title: "steer --now: SIGINTs the running iteration; its uncommitted work is lost" }, [
+      // costs, so the checkbox is never ticked as if it were free. cure-01-05
+      // (adopted #270 C.12): the label also discloses the OTHER cost #161
+      // already carries -- interrupting a running PLAN-REVIEW iteration
+      // (never `worker`/`review`/a single `planning` interrupt, which just
+      // retries in place with no extra spend, `test_steer_now_against_a_
+      // running_planning_iteration_keeps_todays_retry_in_place`) spends a
+      // revision and re-runs `planning`, which re-ingests every task
+      // `pending` off the fresh proposal
+      // (`test_steer_now_twice_against_a_running_plan_review_still_spends_a_
+      // revision`). Disclosure only -- this changes no interrupt or
+      // rejection semantics.
+      h("label", { class: "steer-now-label", title: "steer --now: SIGINTs the running iteration; its uncommitted work is lost; interrupting a running plan-review iteration also spends a revision and re-ingests every task pending" }, [
         h("input", { type: "checkbox", id: "steer-now" }),
         "apply now",
         h("span", { class: "muted steer-now-cost" }, [
-          " (cost: interrupts the running iteration -- its uncommitted work is lost; an idle loop is only woken)",
+          " (cost: interrupts the running iteration -- its uncommitted work is lost; an idle loop is only woken; " +
+          "if the running iteration is a plan review, interrupting it also spends a revision and re-ingests every task pending)",
         ]),
       ]),
       h("button", { type: "submit" }, ["send"]),
@@ -1864,15 +1875,53 @@ function parkedWaiveLineText(f) {
 // checkbox's effect, and the piece `tests/test_hub_parked_actions.py`
 // exercises directly so the compose-then-submit rule is pinned independent
 // of any event wiring.
-function applyWaiveLine(text, line, checked) {
+//
+// cure-01-05 (adopted #270 D.14): checking always terminates the composed
+// line with its own trailing "\n" (pinned above, unchanged), which makes
+// the append irreversible from the resulting string ALONE whenever the
+// text right before it already ended in exactly one "\n" -- that single
+// newline is indistinguishable, after the fact, between "the operator's
+// own prose already ended there" and "check() inserted it as a
+// separator for unterminated prose". The optional 4th argument
+// (`composedLines`, every finding's own `parkedWaiveLineText`) resolves
+// that one ambiguous case: if what is left after removing the finding's
+// own line still ends with ANOTHER finding's composed line, that
+// trailing newline is real (kept); otherwise it is treated as the
+// separator an unterminated last line earned, and dropped -- restoring
+// hand-typed prose with no trailing newline byte-identically on a
+// check-then-uncheck round trip (`test_waive_toggle_round_trip_preserves_an_unterminated_last_line`).
+// A blank-line-terminated original (>=2 trailing newlines) is never
+// ambiguous -- check() never inserts a separator there -- so it is always
+// left untouched.
+function applyWaiveLine(text, line, checked, composedLines) {
   const src = String(text || "");
-  const lines = src.split("\n");
-  const idx = lines.indexOf(line);
+  const known = composedLines || [];
+  const already = ("\n" + src + "\n").indexOf("\n" + line + "\n") >= 0;
   if (checked) {
-    if (idx >= 0) return src;
+    if (already) return src;
     const sep = src.length && !src.endsWith("\n") ? "\n" : "";
     return src + sep + line + "\n";
   }
+  if (!already) return src;
+  const suffix = line + "\n";
+  if (src.endsWith(suffix)) {
+    // The line being removed is the LAST line in the text -- exactly the
+    // position `checked` above always appends at -- so undo that append
+    // string-wise rather than reconstructing through split/join (which
+    // would lose exactly the bit of information this fix needs).
+    const base = src.slice(0, src.length - suffix.length);
+    if (base === "" || base.endsWith("\n\n")) return base;
+    if (base.endsWith("\n")) {
+      const lastLine = base.slice(0, -1).split("\n").pop();
+      if (known.indexOf(lastLine) >= 0) return base;
+      return base.slice(0, -1);
+    }
+    return base;
+  }
+  // Not the last line: every other line, and the newlines between them,
+  // stay exactly as they were.
+  const lines = src.split("\n");
+  const idx = lines.indexOf(line);
   if (idx < 0) return src;
   lines.splice(idx, 1);
   return lines.join("\n");
@@ -1928,6 +1977,17 @@ function parkedFindingItem(f, onWaive) {
 // rendered, never a lingering stale one. Every finding is listed (blocking
 // AND residual, task 007's own `F<n>`/`R<n>` order), never only the
 // blocking subset.
+//
+// cure-01-05 (adopted #270 C.12/D.14): the panel now carries its OWN
+// visible, editable answer box -- `#parked-rule-name` and
+// `#parked-rule-text` -- right alongside its findings, so an operator
+// answering THIS pause never has to scroll past it down to the separate
+// Rule section to find a name field or a textarea at all (a live browser
+// probe found zero of either inside `#parked-panel`, and a chosen
+// `#rule-name` silently dropped on parked submit). The ordinary Steer and
+// Rule sections further down the page are untouched and stay their own,
+// independent sections -- this is a SECOND, panel-own box, not a move of
+// the existing one.
 function renderParkedPanel(box, runId, pq) {
   if (!box) return;
   box.innerHTML = "";
@@ -1950,18 +2010,35 @@ function renderParkedPanel(box, runId, pq) {
     ["blocking findings", String(pq.blockingCount ?? 0)],
     ["residual findings", String(pq.residualCount ?? 0)],
   ];
-  // Task 009 (v0.26, #269): a waive checkbox composes into the SAME
-  // ruling textarea the Rule section further down already owns
-  // (`#rule-text`, task 010's 12-row textarea) -- never a second,
-  // panel-own textarea -- so a ruling built from waived findings and one
-  // typed by hand share one box and one submit path.
+  // cure-01-05 (adopted #270 D.14): the waive checkbox composes into the
+  // PANEL'S OWN `#parked-rule-text` -- never `#rule-text`, the SEPARATE
+  // Rule section's own control further down the page -- so the operator
+  // never has to leave the panel to see, or edit, the ruling a waive
+  // built. `composedLines` (every finding's own `parkedWaiveLineText`)
+  // lets `applyWaiveLine` tell an operator's own unterminated last line
+  // apart from another finding's already-composed one when the checkbox
+  // being toggled is the last line in the box (see that function's own
+  // comment).
+  const composedLines = (pq.findings || []).map(parkedWaiveLineText);
   const onWaive = (f, checked) => {
-    const ta = document.getElementById("rule-text");
+    const ta = document.getElementById("parked-rule-text");
     if (!ta) return;
-    ta.value = applyWaiveLine(ta.value, parkedWaiveLineText(f), checked);
+    ta.value = applyWaiveLine(ta.value, parkedWaiveLineText(f), checked, composedLines);
   };
   const outcomeText = parkedNextStepOutcomeText(c.nextStepIfUnanswered);
   const actionStatus = h("div", { id: "parked-action-status", class: "muted" }, []);
+  // cure-01-05 (adopted #270 D.14): the panel's own answer box -- a name
+  // field and a resizable 12-row ruling textarea, matching the Rule
+  // section's own box in shape (task 010) but living INSIDE the panel,
+  // right alongside the findings a waive checkbox reads from. `Enter`
+  // inserts a newline (a `<textarea>`'s native behaviour) and never
+  // submits; only the button below does.
+  const nameInput = h("input", {
+    type: "text", id: "parked-rule-name", placeholder: "name (optional)", size: "10",
+  });
+  const rulingTextarea = h("textarea", {
+    id: "parked-rule-text", placeholder: "ruling text", rows: "12",
+  });
   // Task 009 (v0.26, #269): the two stated-effect actions -- each shows
   // its own effect in visible text BEFORE it is clicked, never only in a
   // hover title (#161's own rule for `steer --now`). `Submit ruling &
@@ -1978,24 +2055,31 @@ function renderParkedPanel(box, runId, pq) {
   const submitRulingBtn = h("button", {
     type: "button", id: "parked-submit-ruling",
     onclick: async () => {
-      const ta = document.getElementById("rule-text");
+      const ta = document.getElementById("parked-rule-text");
+      const nameEl = document.getElementById("parked-rule-name");
       // The body is posted byte-for-byte as the textarea holds it (the
       // Rule form's own contract) -- never trimmed or reflowed. Only a
       // body with nothing but whitespace is refused, client-side, before
-      // any request is sent.
+      // any request is sent. A name the operator typed into the panel's
+      // own name field rides along exactly the way the Rule form's own
+      // `#rule-name` does -- never silently dropped.
       const text = ta ? ta.value : "";
       if (!text.trim()) { actionStatus.textContent = "failed: ruling text required"; return; }
+      const name = nameEl ? nameEl.value : "";
+      const body = { text: text };
+      if (name) body.name = name;
       actionStatus.textContent = "sending\u2026";
       try {
         const resp = await fetch(hubURL(`/api/runs/${encodeURIComponent(runId)}/rule`), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: text }),
+          body: JSON.stringify(body),
         });
         const j = await resp.json().catch(() => ({}));
         if (resp.ok) {
           actionStatus.textContent = "ruling recorded, run resumed if it answered this pause";
           if (ta) ta.value = "";
+          if (nameEl) nameEl.value = "";
         } else {
           actionStatus.textContent = "failed: " + String(innermostReason(j, resp.status));
         }
@@ -2034,6 +2118,11 @@ function renderParkedPanel(box, runId, pq) {
     h("div", { class: "parked-findings" },
       (pq.findings || []).map((f) => parkedFindingItem(f, onWaive))),
     h("h3", {}, ["Answer"]),
+    // cure-01-05 (adopted #270 D.14): the visible, editable answer box
+    // lives HERE, inside the panel, alongside the findings above and the
+    // two actions below -- never only in the separate Rule section
+    // further down the page.
+    h("div", { class: "parked-answer" }, [nameInput, rulingTextarea]),
     h("div", { class: "parked-actions" }, [
       h("div", { class: "parked-action" }, [
         submitRulingBtn,

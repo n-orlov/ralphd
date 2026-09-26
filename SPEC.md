@@ -5060,17 +5060,26 @@ dir themselves and a live proxy would only add a way to disagree.
   transform). Every other byte in the textarea -- hand-typed prose, blank
   lines between paragraphs, indentation, trailing whitespace, another
   finding's waived line -- is left exactly as it was, so a check-then-uncheck
-  returns the text byte-identical. The panel writes into the
-  SAME `#rule-text` textarea the Rule section below already owns (task
-  010's 12-row resizable box, where `Enter` inserts a newline and never
-  submits) -- never a second, panel-own textarea -- so a ruling assembled
-  from waived findings and prose typed by hand share one box and one
-  submit path. Two buttons follow, each naming its own effect in visible
-  text right beside it (never only a hover title): **`Submit ruling &
-  resume`** posts the textarea body unchanged -- byte-for-byte, never
-  trimmed or reflowed, as the Rule form's own submit does -- to
+  returns the text byte-identical, an UNTERMINATED last line included
+  (cure-01-05: `applyWaiveLine` takes an optional 4th argument, every
+  finding's own composed line text, letting it tell an operator's own
+  unterminated last line apart from another finding's already-composed
+  one -- the only case a plain suffix-strip is ambiguous about). cure-01-05
+  (adopted #270 D.14) gives the panel its OWN answer box -- a name field
+  (`#parked-rule-name`) and a resizable 12-row ruling textarea
+  (`#parked-rule-text`, `Enter` inserts a newline and never submits) --
+  INSIDE the panel, right alongside the findings above and the two
+  actions below, rather than reaching into the separate Rule section's
+  own `#rule-text`/`#rule-name` further down the page; the waive checkbox
+  now composes into this panel-own textarea. Two buttons follow, each
+  naming its own effect in visible text right beside it (never only a
+  hover title): **`Submit ruling &
+  resume`** posts the panel's own textarea body unchanged -- byte-for-byte,
+  never trimmed or reflowed -- together with the panel's own name field
+  when it is non-blank, to
   `POST /api/runs/<id>/rule` (a body of nothing but whitespace is refused
-  client-side with no request sent) -- the SAME route the Rule form below already
+  client-side with no request sent) -- the SAME route the separate Rule
+  form below
   posts to, which resumes the run itself when the ruling answers the
   current pause (`LoopSupervisor.resume_if_ruling_answers_pause`); it
   never calls `/unpause` separately. **`Resume without a ruling`** instead
@@ -5082,7 +5091,8 @@ dir themselves and a live proxy would only add a way to disagree.
   run replans" -- so an operator taking this action sees, before clicking,
   exactly what letting the pause go unanswered is about to do. Both
   actions report their own result (or the engine's own failure reason,
-  `innermostReason`) in a shared status line beneath them.
+  `innermostReason`) in a shared status line beneath them, and the
+  panel's own name/text fields are cleared on a successful ruling submit.
 - **Summary card** — state, verdict, phase, approach as `2/3`, iterations,
   duration, and an explicit provenance row: `live: yes (proxied from container)`
   or `no (on-disk snapshot)`.
@@ -5157,7 +5167,19 @@ dir themselves and a live proxy would only add a way to disagree.
   message's optional `--name`) is unchanged, and the `apply now` checkbox
   (`ralphctl steer --now`) is labelled with its cost (#161): the label
   reads `apply now (cost: interrupts the running iteration -- its
-  uncommitted work is lost; an idle loop is only woken)`.
+  uncommitted work is lost; an idle loop is only woken; if the running
+  iteration is a plan review, interrupting it also spends a revision and
+  re-ingests every task pending)`. cure-01-05 (adopted #270 C.12): that
+  last clause is the disclosure -- interrupting a running PLAN-REVIEW
+  iteration specifically (never a single interrupt of
+  `planning`/`worker`/`review`, which just retries in place with no extra
+  spend, `test_steer_now_against_a_running_planning_iteration_keeps_
+  todays_retry_in_place`) spends a revision and re-runs `planning`, which
+  re-ingests every task `pending` off the fresh proposal
+  (`test_steer_now_twice_against_a_running_plan_review_still_spends_a_
+  revision`, `tests/test_transitions.py`) -- an existing #161 cost this
+  label now names rather than changes; interrupt/rejection semantics
+  themselves are untouched.
 - **Ruling form** — `#rule-text` (v0.26 task 010, #270) is a resizable
   `textarea` of about 12 rows (grown from 4), for the same reason and with
   the same `Enter`-inserts-a-newline/button-submits behaviour as the steer
@@ -5166,7 +5188,10 @@ dir themselves and a live proxy would only add a way to disagree.
   /rule` verbatim -- both routes are pure JSON proxies, so a multi-line
   message submitted through either textarea reaches the engine
   byte-identical to the same text sent with `ralphctl steer --file`/
-  `ralphctl rule --file`.
+  `ralphctl rule --file`. This section is separate from, and unaffected
+  by, the parked panel's OWN `#parked-rule-name`/`#parked-rule-text`
+  answer box above (§11.3's parked-panel paragraph) -- posting through
+  either one reaches the SAME `POST /api/runs/<id>/rule` route.
 - **Unpause proxy** — `POST /api/runs/<id>/unpause` (task 006) forwards
   (empty body) to the run's live `POST /resume`, the SAME engine route
   `ralphctl unpause <run-id>` calls, so there is no second unpause

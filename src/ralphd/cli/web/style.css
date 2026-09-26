@@ -614,6 +614,34 @@ th.actions-col { cursor: default; }
    checkbox per finding and the two stated-effect actions further below. */
 .parked-waive-label { font-size: 0.85rem; cursor: pointer; }
 
+/* cure-01-05 (adopted #270 D.14): the panel's OWN name field and ruling
+   textarea -- same shape as the Rule section's own box (task 010), but
+   living inside the panel itself, right alongside its findings. */
+.parked-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+}
+
+.parked-answer input[type=text] {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  max-width: 12rem;
+}
+
+.parked-answer textarea {
+  width: 100%;
+  max-width: 40rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  resize: vertical;
+}
+
 .parked-actions {
   display: flex;
   flex-direction: column;

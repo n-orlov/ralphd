@@ -139,8 +139,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # render_cap_whole_call.py: SPEC.md §11.4 and docs/cli.md describe the
     # indexed bounded tail read), measured `-m fast --collect-only` -> fast
     # 6333/435, `-m smoke` -> smoke 4641/312.
-    "fast": {"tests": 6333, "modules": 435},
-    "smoke": {"tests": 4641, "modules": 312},
+    # cure-01-05: +8 tests, no new module (tests/test_hub_parked_actions.py:
+    # the panel's own name-field-preservation/no-request-toggle tests replace
+    # the retired opposite pin plus 4 more; tests/test_hub_steer_textarea_
+    # and_rule_rows.py: the apply-now plan-review-revision disclosure),
+    # measured `-m fast --collect-only` -> fast 6341/435, `-m smoke` ->
+    # smoke 4649/312.
+    "fast": {"tests": 6341, "modules": 435},
+    "smoke": {"tests": 4649, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
