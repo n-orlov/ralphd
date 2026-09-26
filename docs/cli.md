@@ -3478,13 +3478,25 @@ JSON endpoints served under `/api/`:
   that is what `DELETE /api/runs/<id>` gates on: a live answer claiming the
   job finished cannot unlock a button the endpoint would refuse.
 - `GET /api/runs/<id>/logs?tail=N` — server-rendered log tail (task 014):
-  fetches the run's FULL raw NDJSON backlog from the live container API
-  (`GET /logs`, no `tail` param there), renders it through the exact same
-  `ralphd.cli.log_render.render_to_lines` function `ralphctl logs` uses
-  (plain text, no ANSI — `tty=False`), THEN trims to the last `tail`
-  *rendered* lines (matching the `ralphctl logs` non-follow tail contract:
-  `N` means N rendered lines, not N raw events, same as the `-N`/`--tail N`
-  syntax below). Returns `{"live": bool, "lines": ["<rendered line>", ...]}`
+  the last `N` *rendered* lines (matching the `ralphctl logs` non-follow
+  tail contract: `N` means N rendered lines, not N raw events, same as the
+  `-N`/`--tail N` syntax below), rendered by the exact same
+  `ralphd.cli.log_render` renderer `ralphctl logs` uses (plain text, no
+  ANSI — `tty=False`). The hub never fetches the whole backlog to serve a
+  tail. It first reads the run's own per-iteration render indexes
+  (`render_index.json`, via `ralphd.render_index.bounded_tail`) straight
+  off disk, walking backward across as many earlier indexed iterations as
+  `N` needs, so the cost is proportional to `N`, not to the run's history
+  or to silent transcript; a cheap `GET /logs?tail=1` probe of the live
+  container API then only decides the `live` flag. When no usable index
+  covers the request, it asks the live API for a bounded
+  `GET /logs?tail=<bound>` (the on-disk merge with the same bound when
+  the API is unreachable), re-asking with a growing bound until enough
+  rendered lines exist, and caches an index it builds in the hub's own
+  memory (never in the run dir) whenever that scan was expensive, so a
+  second request against the same iteration and transcript size is
+  bounded. Without `tail` (`tail=0`) the whole transcript is fetched
+  (`GET /logs`) and rendered. Returns `{"live": bool, "lines": ["<rendered line>", ...]}`
   — never an error. When the run's API isn't reachable (task 039: its
   container died, or the run finished long ago) `live` is `false` and the
   lines come from the **on-disk transcript merge** instead

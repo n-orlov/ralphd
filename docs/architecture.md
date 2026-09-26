@@ -3136,12 +3136,12 @@ See [SPEC.md §11.1](../SPEC.md#111-serving-it) for the full walkthrough.
 
 **Shared server-side log renderer (task 014).** `GET /api/runs/<id>/logs`
 does not proxy the run's raw NDJSON `/logs` transcript verbatim to the
-browser: it fetches the FULL raw backlog from the run's live API, then
-renders it through `ralphd.cli.log_render.render_to_lines` -- the exact
-same function `ralphctl logs` uses -- with `tty=False` (plain text, no
-ANSI), and only THEN trims to the requested `tail` count of *rendered*
-lines (mirroring the `ralphctl logs` non-follow tail contract, task 057:
-`N` means N rendered lines, not N raw events). The response is
+browser: it renders it server-side through `ralphd.cli.log_render` -- the
+exact same renderer `ralphctl logs` uses -- with `tty=False` (plain text,
+no ANSI), answering the requested `tail` count of *rendered* lines
+(mirroring the `ralphctl logs` non-follow tail contract, task 057: `N`
+means N rendered lines, not N raw events); how a tail is served without
+fetching the whole backlog is described in the next paragraphs. The response is
 `{"live": bool, "lines": [str, ...]}`. `log_render` was pulled out of
 `main.py` into its own module specifically so both `main.py` (the CLI)
 and `ui_server.py` (the hub) can import it without a circular import
@@ -3156,9 +3156,9 @@ guard (already exercised by the CLI) collapses each thinking block to
 exactly one `[thinking…]` line.
 
 **The log tail's work is bounded by the tail, not by the run's history
-(tasks 043-048, PRD H).** The paragraph above describes this route's
-ORIGINAL shape (v0.3-era, task 014): fetch everything, render everything,
-trim afterwards. PRD H's own measurement (2026-09-12, a 176 MB run) found
+(tasks 043-048, PRD H).** Fetching everything, rendering everything and
+trimming afterwards costs work proportional to the run's whole history:
+PRD H's own measurement (2026-09-12, a 176 MB run) found
 that a repeated identical request to this route cost MORE the second time
 (2.259 s then 4.506 s, 1.72 s and 2.49 s of CPU, RSS ranging 352 868 kB to
 1 153 316 kB over one minute) -- proportional to the run's whole history,
