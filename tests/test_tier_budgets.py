@@ -202,8 +202,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # asserting the unchanged earlier iteration's own cache is reused
     # untouched), measured `.venv/bin/python -m pytest -q -m fast
     # --collect-only` -> 6375/436, `-m smoke --collect-only` -> 4683/313.
-    "fast": {"tests": 6375, "modules": 436},
-    "smoke": {"tests": 4683, "modules": 313},
+    # cure-01-02-3 retry: +1 test, no new module (same module: test_spec_
+    # and_cli_docs_key_cache_reuse_on_transcript_identity_not_size, the
+    # docs name identity, not size, as the cache-reuse key), measured the
+    # same way -> fast 6376/436, smoke 4684/313.
+    "fast": {"tests": 6376, "modules": 436},
+    "smoke": {"tests": 4684, "modules": 313},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

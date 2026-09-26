@@ -1005,6 +1005,30 @@ def test_spec_and_cli_docs_describe_the_indexed_bounded_tail_read():
         assert "full raw NDJSON backlog" not in flat, name
 
 
+def test_spec_and_cli_docs_key_cache_reuse_on_transcript_identity_not_size():
+    """Task cure-01-02-3 retry (C.4, D.1; DoD 3): the hub's absent-index
+    cache is keyed on each iteration's full transcript identity
+    `(inode, size, mtime_ns, ctime_ns)` (`_absent_index_cache_get`), so a
+    same-size rewrite or replacement invalidates that iteration's entry and
+    is rescanned. SPEC.md §11.4 and docs/cli.md must say reuse needs an
+    unchanged transcript identity, never merely the same transcript size,
+    and must scope invalidation to the one changed iteration."""
+    root = Path(__file__).resolve().parent.parent
+    spec = (root / "SPEC.md").read_text(encoding="utf-8")
+    section = spec.split("### 11.4 Live transcript", 1)[1].split("### 11.5", 1)[0]
+    cli = (root / "docs" / "cli.md").read_text(encoding="utf-8")
+    route = cli.split("`GET /api/runs/<id>/logs?tail=N`", 1)[1][:4000]
+    for name, text in (("SPEC.md §11.4", section), ("docs/cli.md", route)):
+        flat = " ".join(text.split())
+        assert "same iteration and transcript size" not in flat, name
+        assert "unchanged transcript identity" in flat, name
+        for part in ("inode", "size", "`mtime`", "`ctime`"):
+            assert part in flat, (name, part)
+        assert "same-size rewrite or replacement" in flat, name
+        assert "per iteration" in flat, name
+        assert "never rescanned merely because a different iteration" in flat, name
+
+
 def test_a_cold_positive_tail_fallback_can_render_the_entire_backlog_exactly(
         tmp_path, monkeypatch):
     """Task cure-01-04-2 (D.1; DoD 4, criterion 3): the falsifying case the

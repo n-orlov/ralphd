@@ -5350,8 +5350,14 @@ silent or unindexable that no smaller bound yields the requested rendered-line
 count; the render itself is still exact either way. When that scan was
 expensive it caches an index built off the on-disk transcript in the hub's own
 memory (never in the run dir), so a second request against the same iteration
-and transcript size takes the bounded indexed read instead of repeating the
-scan. `tail=0` is the one request that is EXPLICITLY for the whole transcript
+with an unchanged transcript identity -- the same inode, size, `mtime` and
+`ctime` -- takes the bounded indexed read instead of repeating the scan. A
+same-size rewrite or replacement keeps the size but changes that identity, so
+it invalidates that one iteration's entry and is rescanned. The cache is kept
+per iteration: when a tail spans several cold iterations and only one of them
+grows, is rewritten or is replaced, only that iteration's own entry is rebuilt,
+and every unchanged iteration the same tail needs is served from cache, never
+rescanned merely because a different iteration changed. `tail=0` is the one request that is EXPLICITLY for the whole transcript
 (`GET /logs`, unconditionally) — it is not the only path capable of reading
 all of it, since the cold-scan fallback above can reach the same result for a
 positive `tail` too. The response, `{"live": bool, "lines": [...]}`, is never

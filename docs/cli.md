@@ -3519,8 +3519,11 @@ JSON endpoints served under `/api/`:
   or unindexable that no smaller bound yields the requested rendered-line
   count; the render is still exact either way. It caches an index it builds
   in the hub's own memory (never in the run dir) whenever that scan was
-  expensive, so a second request against the same iteration and transcript
-  size takes the bounded indexed read instead of repeating the scan. This
+  expensive, so a second request against the same iteration with an
+  unchanged transcript identity (the same inode, size, `mtime` and `ctime`)
+  takes the bounded indexed read instead of repeating the scan; a same-size
+  rewrite or replacement keeps the size but changes that identity, so it
+  invalidates that iteration's entry and is rescanned. This
   cache is kept per iteration, not just for the newest one: when a tail
   spans several such cold iterations and only one of them later grows, is
   rewritten in place, or is replaced, only THAT iteration's own cache entry
