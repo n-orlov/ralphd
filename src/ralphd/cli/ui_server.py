@@ -722,6 +722,18 @@ def rendered_log_lines(reg: Path, run_id: str, tail: int | None) -> tuple[bool, 
             cached_index = _absent_index_cache_lookup(run_root, run_id)
             if cached_index is not None:
                 bounded = render_index.bounded_tail(run_root, tail, index=cached_index)
+            if bounded is None:
+                # Task cure-01-01-4: an index that EXISTS (on disk, or in
+                # the cache above) but was just refused -- a transcript
+                # rewritten, replaced or modified mid-read since it was
+                # built -- is rebuilt from the transcript's current bytes
+                # and served through the same exact walk, instead of the
+                # growth loop below, whose cut windows cannot see a text
+                # line still open across the cut.
+                rebuilt = _refused_index_rebuild(run_root, run_id,
+                                                 cached=cached_index is not None)
+                if rebuilt is not None:
+                    bounded = render_index.bounded_tail(run_root, tail, index=rebuilt)
         if bounded is not None:
             ok, _ = _proxy_text(reg, run_id, "/logs?tail=1")
             lines = bounded
@@ -1672,6 +1684,35 @@ def _absent_index_cache_store(run_root: Path, run_id: str, *,
     index = render_index.compute_render_index(iteration_output_path(run_root, number))
     _ABSENT_INDEX_CACHE[run_id] = (key, index)
     _bound_run_cache(_ABSENT_INDEX_CACHE, run_id)
+
+
+def _refused_index_rebuild(run_root: Path, run_id: str, *,
+                           cached: bool) -> dict | None:
+    """Task cure-01-01-4 (PRD C.1/C.3, D.1): the exact fallback for a
+    render index that exists but was refused -- the latest iteration's own
+    `render_index.json` is present yet `render_index.load_index` refuses it
+    (tampered, replaced, poisoned, malformed), or `cached` says a hub-cached
+    index for this very key was just refused by `bounded_tail`'s own
+    witness check. Rebuilds the index from the transcript's current bytes
+    (`render_index.compute_render_index`, never written into the run dir),
+    caches it under the current key exactly as `_absent_index_cache_store`
+    would, and returns it; `None` when there is nothing refused to replace
+    (no iteration, or no index at all -- the ordinary absent-index case
+    keeps its growth-scan fallback and its own pinned costs)."""
+    key = render_index.latest_iteration_cache_key(run_root)
+    if key is None:
+        return None
+    number, _size = key
+    itdir = iteration_dir(run_root, number)
+    if not cached:
+        if not (itdir / render_index.INDEX_FILENAME).exists():
+            return None
+        if render_index.load_index(itdir) is not None:
+            return None
+    index = render_index.compute_render_index(iteration_output_path(run_root, number))
+    _ABSENT_INDEX_CACHE[run_id] = (key, index)
+    _bound_run_cache(_ABSENT_INDEX_CACHE, run_id)
+    return index
 
 
 def _cached_iteration_row(run_dir: Path, run_id: str, number: int) -> dict | None:

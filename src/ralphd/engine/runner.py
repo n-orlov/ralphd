@@ -320,9 +320,11 @@ class PiRunner:
                         # scanning above uses the raw bytes so sentinel/usage
                         # extraction is unaffected either way.
                         scrubbed = scrub_text(line.decode(errors="replace"))
-                        out.write(scrubbed)
-                        out.flush()
-                        live_index.feed(scrubbed.encode())
+                        # Writes, flushes, feeds and provenance-stamps the
+                        # line, checking first that nothing but this very
+                        # writer has touched the transcript since its own
+                        # last write (task cure-01-01-4).
+                        live_index.append(out, scrubbed, transcript)
                         live_index.flush(transcript.parent)
                 # The stream ended (clean EOF, a timeout/interrupt further
                 # down, or the process just dying) -- flush whatever the

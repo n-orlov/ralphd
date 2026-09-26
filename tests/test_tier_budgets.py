@@ -154,8 +154,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # preservation across a later append, safe append/index publication),
     # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
     # 6348/435, `-m smoke` -> 4656/312.
-    "fast": {"tests": 6348, "modules": 435},
-    "smoke": {"tests": 4656, "modules": 312},
+    # Task cure-01-01-4 retry: +5 tests, no new module (tests/test_hub_real_
+    # render_cap_whole_call.py: a non-leading out-of-window rewrite refused
+    # across 20 later appends through both writer protocols, a refused
+    # hub-cached index, and the two read-snapshot consistency cases),
+    # measured -> fast 6353/435, smoke 4661/312.
+    "fast": {"tests": 6353, "modules": 435},
+    "smoke": {"tests": 4661, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

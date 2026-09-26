@@ -91,26 +91,30 @@ facing call is task 013's job.
 
 Task cure-01-01-4 (petition remedy for cure-01-03 criterion (1)): the
 bounded window above still cannot see a same-size rewrite of a covered
-line it never reads. Every published index now also carries
-`transcriptInode`/`transcriptMtimeNs` (the transcript's own identity as of
-the moment this coverage was published) and `poisoned`. `load_index`
-refuses a `poisoned` index outright; refuses one whose `transcriptInode`
-no longer matches the transcript's current inode (a same-size
-replacement, e.g. a rename over the same path); and, whenever the
-transcript has not grown past `transcriptBytes` since, refuses one whose
-`transcriptMtimeNs` no longer matches the transcript's current mtime -- an
-O(1) `stat()`-only check that catches a same-size in-place rewrite
-HOWEVER far outside the window it sits. `LiveRenderIndex.flush` maintains
-the SAME guarantee across legitimate appends: before publishing new
-coverage, it re-runs `_covered_prefix_matches` over exactly what it
-previously published, and sets `poisoned` (sticky, never cleared by this
-object) the moment that no longer matches -- so a rewrite caught while
-still inside an earlier flush's own window stays refused even once later
-growth has pushed it outside the CURRENT one. `compute_render_index`'s
-one-shot, from-scratch rebuild has no earlier witness to check against
-and is never `poisoned`; it publishes a fresh identity witness matching
-whatever bytes are actually on disk right now, by design (task 013's own
-"never a second, drifting implementation" contract, unchanged).
+line it never reads. Every published index therefore also carries an
+identity/provenance witness -- `transcriptInode`, `transcriptWitnessBytes`
+and `transcriptMtimeNs`, the transcript's (inode, size, mtime) as of the
+moment the writer vouched for it -- and `poisoned`. The engine's writer
+provenance-STAMPS the transcript's mtime after every write it makes
+(`LiveRenderIndex.append`, `write_index`: `_stamp`, a marker derived from
+the transcript's own inode and size), so `load_index` can decide with one
+`stat()` and no read (`_witness_holds`): refused when `poisoned`, when the
+inode changed (a replacement), when the transcript is shorter than the
+witness, when it is exactly the witness's size but its mtime moved (an
+in-place rewrite, however far outside the window), and when it has grown
+past the witness but its current mtime does not carry the engine's stamp
+for its current (inode, size) (the last modification was not the engine's
+own append). The writer keeps custody across legitimate appends: before
+each write it checks the transcript still looks exactly as its own last
+write left it, and the first time it does not, it poisons and republishes
+the index at once and never stamps again -- so no later growth, however
+long, can bless a previously modified prefix. A reader also re-checks the
+witness after its own reads (`_one_iteration_tail_text`), so a transcript
+modified while it was being read is refused rather than half-seen, and a
+hub-cached index passed in through `bounded_tail(..., index=)` is held to
+the same witness. `compute_render_index`'s from-scratch rebuild vouches
+only for the exact bytes it read (a `stat()` before and after the read
+must agree) and never writes anything.
 """
 
 from __future__ import annotations
@@ -118,6 +122,8 @@ from __future__ import annotations
 import bisect
 import copy
 import json
+import os
+import time
 import zlib
 from pathlib import Path
 
@@ -135,30 +141,94 @@ from .log_merge import iteration_numbers as _iteration_numbers
 from .log_merge import iteration_output_path as _iteration_output_path
 
 INDEX_FILENAME = "render_index.json"
-INDEX_VERSION = 3
+INDEX_VERSION = 4
 
 # Task cure-01-01-4 (PRD C.1/C.3, D.1; petition remedy for cure-01-03
-# criterion (1)): the two fields that bind a checkpoint's coverage to the
-# transcript's own verifiable identity/revision -- `transcriptInode`
-# (`os.stat().st_ino`, so a same-size REPLACEMENT of the whole file, e.g. a
-# rename over the same path, is refused even when `_covered_prefix_matches`
-# never reads a byte of it) and `transcriptMtimeNs` (`os.stat().st_mtime_ns`
-# as of the moment the writer last published this coverage -- checked
-# against the transcript's CURRENT mtime whenever the transcript has not
-# grown past `transcriptBytes` since, so an in-place same-size REWRITE of a
-# covered line is refused by this O(1) stat-only check alone, with no
-# window and no read, however far outside `VERIFY_WINDOW_BYTES` the
-# rewritten line sits) -- plus `poisoned`, a sticky flag only
-# `LiveRenderIndex.flush` ever sets (never `compute_render_index`'s
-# one-shot rebuild), once ITS OWN bounded self-check
-# (`_covered_prefix_matches` over whatever it had already published as of
-# its OWN last flush) finds the previously-published prefix no longer
-# matches disk -- so a rewrite discovered while it was still inside an
-# earlier flush's own window stays refused even once a LATER legitimate
-# append has pushed it outside the CURRENT window (never blessing a
-# previously modified prefix just because the covered prefix grew).
+# criterion (1)): the identity/provenance witness -- `transcriptInode`
+# (`st_ino`, so a same-size REPLACEMENT, e.g. a rename over the path, is
+# refused), `transcriptWitnessBytes` and `transcriptMtimeNs` (the size and
+# mtime the writer vouched for) -- plus `poisoned`, a sticky flag only
+# `LiveRenderIndex` ever sets, once it finds the transcript modified by
+# anything but itself. See `_witness_holds` for the whole read-side check.
 _REQUIRED_KEYS = ("version", "transcriptBytes", "segments", "checkpoints",
-                 "transcriptInode", "transcriptMtimeNs", "poisoned")
+                 "transcriptInode", "transcriptMtimeNs",
+                 "transcriptWitnessBytes", "poisoned")
+
+# Task cure-01-01-4 retry (append provenance): the witness above only says
+# what the transcript looked like at ONE moment. Coverage lags, so a reader
+# routinely finds a transcript LONGER than `transcriptWitnessBytes`, whose
+# mtime has moved on -- and on its own that cannot tell a legitimate engine
+# append from a same-size rewrite of a covered line followed by more growth.
+# The engine's writer (`LiveRenderIndex.append`, `write_index`) therefore
+# STAMPS the transcript's mtime after every write it makes: it sets
+# `st_mtime_ns` to a value whose residue modulo `_STAMP_MODULUS` is
+# `_stamp_residue(inode, size)` -- a marker that the transcript's LAST
+# modification was the engine's own, at exactly this size. Any other write
+# (a rewrite, a truncate, a foreign append) sets the kernel's own current
+# time instead, which carries that marker only by a ~1-in-4-million
+# coincidence. A reader seeing growth past the witness accepts it only
+# when the current mtime carries the marker for the current (inode, size),
+# and the writer never stamps again once it has itself seen a modification
+# it did not make (`poisoned`), so growth cannot launder an earlier
+# rewrite. O(1): a `stat()`, never a read of the covered prefix. This is a
+# witness against accidental or foreign modification, not against a
+# writer that deliberately forges the marker.
+_STAMP_MODULUS = 1 << 22
+
+
+def _stamp_residue(inode: int, size: int) -> int:
+    return zlib.crc32(f"{inode}:{size}".encode()) % _STAMP_MODULUS
+
+
+def _carries_stamp(st: os.stat_result) -> bool:
+    """Whether `st`'s mtime is the engine writer's provenance stamp for
+    exactly `st`'s own (inode, size)."""
+    return st.st_mtime_ns % _STAMP_MODULUS == _stamp_residue(st.st_ino, st.st_size)
+
+
+def _stamp(path: Path) -> os.stat_result | None:
+    """Set `path`'s mtime to the provenance stamp for its current (inode,
+    size) -- the most recent such value not after the current time, so the
+    mtime moves back by less than `_STAMP_MODULUS` ns -- and return its
+    `stat()` afterwards (`None` on any OS error). A filesystem whose
+    timestamps cannot hold nanoseconds simply returns an unstamped stat;
+    readers then refuse growth past the witness, which costs a fallback,
+    never a wrong answer."""
+    try:
+        st = path.stat()
+        now = time.time_ns()
+        target = now - (now % _STAMP_MODULUS) + _stamp_residue(st.st_ino, st.st_size)
+        if target > now:
+            target -= _STAMP_MODULUS
+        os.utime(path, ns=(st.st_atime_ns, target))
+        return path.stat()
+    except OSError:
+        return None
+
+
+def _stat_key(st: os.stat_result) -> tuple[int, int, int]:
+    return st.st_ino, st.st_size, st.st_mtime_ns
+
+
+def _witness_holds(index: dict, st: os.stat_result | None) -> bool:
+    """The O(1) identity/provenance check, against the transcript's
+    CURRENT `stat()` `st`: not `poisoned`; the same inode (a replacement,
+    e.g. a rename over the path, is refused); never shorter than
+    `transcriptWitnessBytes`; at exactly that size, the very mtime the
+    witness recorded (any in-place rewrite moves it); longer than that,
+    an mtime carrying the engine writer's provenance stamp for the
+    current (inode, size) -- the last modification was the engine's own
+    append."""
+    if st is None or index.get("poisoned"):
+        return False
+    if st.st_ino != index["transcriptInode"]:
+        return False
+    witness_bytes = index["transcriptWitnessBytes"]
+    if st.st_size < witness_bytes:
+        return False
+    if st.st_size == witness_bytes:
+        return st.st_mtime_ns == index["transcriptMtimeNs"]
+    return _carries_stamp(st)
 _SEGMENT_KEYS = _collapse_index._SEGMENT_KEYS
 _CHECKPOINT_KEYS = ("byteOffset", "renderedLines", "state", "lineCrc32")
 
@@ -368,12 +438,15 @@ class LiveRenderIndex:
         # rebuild starts clean. `_witness_checkpoints` is exactly the
         # `checkpoints` prefix this object last PUBLISHED (via `flush`),
         # never the full current `_checkpoints` -- so the NEXT flush's own
-        # self-check verifies precisely the coverage a reader could already
-        # have trusted, before blessing anything new on top of it.
+        # bounded self-check verifies precisely the coverage a reader could
+        # already have trusted. `_custody` is the transcript's
+        # (inode, size, mtime) exactly as this object's own last write +
+        # provenance stamp (`append`), or its first publish, left it: any
+        # difference found before the next write or publish is a
+        # modification this writer did not make.
         self._poisoned = False
         self._witness_checkpoints: list[dict] = []
-        self._witness_ino: int | None = None
-        self._witness_mtime_ns: int | None = None
+        self._custody: tuple[int, int, int] | None = None
 
     @property
     def transcript_bytes(self) -> int:
@@ -397,28 +470,64 @@ class LiveRenderIndex:
             "lineCrc32": zlib.crc32(raw_line)})
         self._lines_since_flush += 1
 
-    def snapshot(self, output_path: Path | None = None) -> dict:
-        """The index payload as of every line fed so far, plus this
-        object's current identity witness (`transcriptInode`/
-        `transcriptMtimeNs`, re-observed off `output_path` when given --
-        `flush` always passes it; `compute_render_index`'s one-shot rebuild
-        passes it too, so a from-scratch index still carries a witness a
-        reader can check) and `poisoned`. When `output_path` is omitted or
-        cannot be stat'd, the object's OWN last-known witness is kept
-        rather than overwritten with nothing."""
-        ino, mtime_ns = self._witness_ino, self._witness_mtime_ns
-        if output_path is not None:
-            try:
-                st = output_path.stat()
-                ino, mtime_ns = st.st_ino, st.st_mtime_ns
-            except OSError:
-                pass
+    def snapshot(self, witness: tuple[int, int, int] | None = None) -> dict:
+        """The index payload as of every line fed so far, plus the given
+        identity witness -- `(inode, size, mtime_ns)` of the transcript as
+        of the moment the coverage is vouched for (`transcriptInode`/
+        `transcriptWitnessBytes`/`transcriptMtimeNs`; all zero, which no
+        real transcript matches, when none is given) -- and `poisoned`."""
+        ino, size, mtime_ns = witness if witness is not None else (0, 0, 0)
         return {"version": INDEX_VERSION, "transcriptBytes": self._offset,
                 "segments": [dict(s) for s in self._segments],
                 "checkpoints": [dict(c) for c in self._checkpoints],
-                "transcriptInode": ino if ino is not None else 0,
-                "transcriptMtimeNs": mtime_ns if mtime_ns is not None else 0,
+                "transcriptInode": ino,
+                "transcriptMtimeNs": mtime_ns,
+                "transcriptWitnessBytes": size,
                 "poisoned": self._poisoned}
+
+    def _check_custody(self, output_path: Path) -> None:
+        """Poison this writer when the transcript no longer looks exactly
+        as its own last write/publish left it (`_custody`) -- a rewrite,
+        a replacement, a truncation or a foreign append in between."""
+        if self._poisoned or self._custody is None:
+            return
+        try:
+            key = _stat_key(output_path.stat())
+        except OSError:
+            key = None
+        if key != self._custody:
+            self._poisoned = True
+
+    def append(self, out, data: str | bytes, output_path: Path) -> None:
+        """The engine's own live write path (`engine/runner.py`'s
+        `pump()`): check custody, write `data` (one raw transcript line)
+        to the already-open append handle `out` and flush it, `feed` it,
+        then stamp the transcript's mtime with the provenance marker for
+        its new (inode, size) (`_stamp`) and take custody of that state.
+
+        Custody is checked BEFORE the write, because the write itself
+        moves the mtime and would erase the evidence: the moment it finds
+        a modification this writer did not make, the index is poisoned
+        AND republished at once (so no reader trusts it even for a
+        moment), and this writer never stamps again -- every later append
+        leaves the kernel's own unstamped mtime, so a reader holding an
+        older, unpoisoned copy of the index refuses it too."""
+        itdir, name = output_path.parent, output_path.name
+        was_poisoned = self._poisoned
+        self._check_custody(output_path)
+        if self._poisoned and not was_poisoned:
+            self.flush(itdir, force=True, output_filename=name)
+        out.write(data)
+        out.flush()
+        self.feed(data.encode() if isinstance(data, str) else data)
+        if self._poisoned:
+            return
+        st = _stamp(output_path)
+        self._custody = _stat_key(st) if st is not None else None
+        if st is None or st.st_size != self._offset:
+            # Either unstatable, or the file does not hold exactly what
+            # this writer has fed: nothing here can vouch for it.
+            self._poisoned = True
 
     def flush(self, itdir: Path, *, force: bool = False,
               every: int = LIVE_FLUSH_EVERY_LINES,
@@ -431,32 +540,37 @@ class LiveRenderIndex:
         that fails costs nothing more than a missing/stale index, which
         every reader already treats as an ordinary fall-back case.
 
-        Task cure-01-01-4: BEFORE publishing anything new, self-checks
-        whatever this object last published (`_witness_checkpoints`) against
-        the transcript's CURRENT bytes, bounded to `VERIFY_WINDOW_BYTES`
-        exactly like a reader's own `load_index` call -- so a same-size
-        rewrite of an already-published line is caught the moment it is
-        still inside that bound, and `poisoned` (once set) is carried into
-        every later published snapshot, including ones whose OWN covered
-        prefix has since grown past that same window. Returns whether it
-        actually wrote."""
+        Task cure-01-01-4: BEFORE publishing anything new, checks custody
+        (the transcript must still look exactly as this writer's own last
+        `append`/publish left it -- a caller that grew it without going
+        through `append` has broken the chain of custody too, so this
+        writer can no longer vouch for the covered prefix and poisons
+        itself), and self-checks whatever it last published
+        (`_witness_checkpoints`) against the transcript's current bytes,
+        bounded to `VERIFY_WINDOW_BYTES` exactly like a reader's own
+        `load_index`. The very first publish of a writer that has never
+        appended takes custody of the transcript as it stands (stamping
+        it), the way a from-scratch build vouches for what it read.
+        `poisoned`, once set, is carried into every later snapshot.
+        Returns whether it actually wrote."""
         if not force and self._lines_since_flush < every:
             return False
         output_path = itdir / output_filename
+        if self._custody is None and not self._poisoned:
+            st = _stamp(output_path)
+            if st is not None:
+                self._custody = _stat_key(st)
+        else:
+            self._check_custody(output_path)
         if not self._poisoned and self._witness_checkpoints:
             if not _covered_prefix_matches(output_path, self._witness_checkpoints):
                 self._poisoned = True
         try:
             tmp = itdir / (INDEX_FILENAME + ".tmp")
-            tmp.write_text(json.dumps(self.snapshot(output_path)))
+            tmp.write_text(json.dumps(self.snapshot(self._custody)))
             tmp.replace(itdir / INDEX_FILENAME)
         except OSError:
             return False
-        try:
-            st = output_path.stat()
-            self._witness_ino, self._witness_mtime_ns = st.st_ino, st.st_mtime_ns
-        except OSError:
-            pass
         self._witness_checkpoints = list(self._checkpoints)
         self._lines_since_flush = 0
         return True
@@ -467,24 +581,59 @@ def compute_render_index(output_path: Path) -> dict:
     through a fresh `LiveRenderIndex`, exactly as `pump()` would have, and
     return its final snapshot. A file that does not exist yet reads as
     empty (matching a freshly begun, not-yet-run iteration, same as
-    `collapse_index.compute_collapse_index`)."""
+    `collapse_index.compute_collapse_index`).
+
+    Its identity witness is the transcript's `stat()` taken BEFORE the
+    read, kept only when a second `stat()` after the read still agrees
+    with it and with the byte count actually read; otherwise (the file
+    changed underneath the read) the witness is left all-zero, which no
+    real transcript matches, so the result is never trusted by a reader.
+    Pure: it never writes anything, the transcript's own metadata
+    included (`cli/ui_server`'s hub cache builds with it)."""
+    try:
+        before = output_path.stat()
+    except OSError:
+        before = None
     try:
         raw = output_path.read_bytes()
     except FileNotFoundError:
         raw = b""
+    try:
+        after = output_path.stat()
+    except OSError:
+        after = None
     live = LiveRenderIndex()
     for raw_line in raw.splitlines(keepends=True):
         live.feed(raw_line)
-    return live.snapshot(output_path)
+    witness = None
+    if (before is not None and after is not None
+            and _stat_key(before) == _stat_key(after) and before.st_size == len(raw)):
+        witness = _stat_key(before)
+    return live.snapshot(witness)
 
 
 def write_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> None:
     """Full rebuild + atomic write for one iteration's transcript --
     `engine/loop.py`'s own end-of-iteration bookkeeping call, mirroring
-    `collapse_index.write_index`'s call at the same call site. Never
-    raises."""
+    `collapse_index.write_index`'s call at the same call site. The engine
+    owns this transcript, so -- unlike a hub-side `compute_render_index`
+    -- it also stamps the transcript's mtime with the provenance marker
+    (`_stamp`) once the rebuild's own witness is known to describe exactly
+    the bytes it read, and publishes that stamped witness. Never raises."""
     try:
-        index = compute_render_index(itdir / output_filename)
+        output_path = itdir / output_filename
+        index = compute_render_index(output_path)
+        key = (index["transcriptInode"], index["transcriptWitnessBytes"],
+               index["transcriptMtimeNs"])
+        if index["transcriptInode"]:
+            try:
+                current = _stat_key(output_path.stat())
+            except OSError:
+                current = None
+            if current == key:
+                st = _stamp(output_path)
+                if st is not None and (st.st_ino, st.st_size) == key[:2]:
+                    index["transcriptMtimeNs"] = st.st_mtime_ns
         tmp = itdir / (INDEX_FILENAME + ".tmp")
         tmp.write_text(json.dumps(index))
         tmp.replace(itdir / INDEX_FILENAME)
@@ -511,18 +660,14 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     the transcript's current bytes (so any same-size rewrite or
     replacement inside that window, or of the first line, is refused;
     a covered prefix no larger than the window is verified in full);
-    the index's own `poisoned` witness is not set; its `transcriptInode`
-    still matches the transcript's current inode; and, when the transcript
-    has not grown past `transcriptBytes` since the witness was published,
-    its `transcriptMtimeNs` still matches the transcript's current mtime
-    (task cure-01-01-4, the petition remedy for cure-01-03 criterion (1)):
-    a same-size rewrite or replacement of a covered line is refused even
-    OUTSIDE the window and the tail walk, at the O(1) cost of a `stat()`
-    call, as long as nothing has grown the transcript since; once
-    `LiveRenderIndex.flush`'s own bounded self-check finds a rewrite
-    inside ITS window, `poisoned` stays set through every later legitimate
-    append too, so growth alone never blesses a previously modified
-    prefix.
+    and the identity/provenance witness holds (`_witness_holds`, task
+    cure-01-01-4, the petition remedy for cure-01-03 criterion (1)): not
+    `poisoned`, the same inode, and either the witnessed size with the
+    witnessed mtime or a longer transcript whose mtime carries the engine
+    writer's provenance stamp for its current (inode, size) -- so a
+    same-size rewrite or replacement of a covered line is refused even
+    OUTSIDE the window and the tail walk, whether or not the transcript
+    has grown since, at the O(1) cost of one `stat()`.
 
     Deliberately NOT required: `transcriptBytes == actual size`. A live
     iteration's index is normally behind the transcript's current size
@@ -588,18 +733,18 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     if transcript_bytes != last_offset:
         return None
     # Task cure-01-01-4 (petition remedy for cure-01-03 criterion (1)):
-    # `poisoned` is checked before anything else costs a byte -- once the
-    # WRITER's own bounded self-check (`LiveRenderIndex.flush`) has found
-    # its previously-published prefix no longer matches disk, this index
-    # never validates again, no matter how far a later append has since
-    # pushed the tampered line outside `VERIFY_WINDOW_BYTES`.
-    if index.get("poisoned"):
+    # the identity/provenance witness is checked before anything else
+    # costs a byte (`_witness_holds`, a single `stat()`) -- a same-size
+    # rewrite or replacement of ANY covered line, however far outside
+    # `VERIFY_WINDOW_BYTES` and the tail walk it sits, and whether or not
+    # the transcript has grown since, is refused here.
+    for key in ("transcriptInode", "transcriptMtimeNs", "transcriptWitnessBytes"):
+        value = index.get(key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            return None
+    if not isinstance(index.get("poisoned"), bool) or index["poisoned"]:
         return None
-    inode = index.get("transcriptInode")
-    mtime_ns = index.get("transcriptMtimeNs")
-    if not isinstance(inode, int) or isinstance(inode, bool):
-        return None
-    if not isinstance(mtime_ns, int) or isinstance(mtime_ns, bool):
+    if index["transcriptWitnessBytes"] < transcript_bytes:
         return None
     try:
         actual_stat = (itdir / output_filename).stat()
@@ -609,22 +754,8 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
         actual_size = 0
     if transcript_bytes > actual_size:
         return None
-    if checkpoints and actual_stat is not None:
-        # A same-size REPLACEMENT of the whole transcript (a rename over
-        # the same path) changes the inode a fresh `stat()` reports at
-        # this path -- refused here, cheaply, whether or not the
-        # replacement's own bytes happen to fall inside the window below.
-        if actual_stat.st_ino != inode:
-            return None
-        # A same-size, in-place REWRITE of any covered line -- including
-        # one `_covered_prefix_matches`'s own bounded window never reads --
-        # still touches the transcript's single `mtime`. Checked only when
-        # nothing has grown past `transcriptBytes` since this witness was
-        # published (a growing transcript's mtime moves forward on every
-        # legitimate append too, so equality is not expected there; that
-        # case relies on `poisoned` plus the window check below instead).
-        if actual_size == transcript_bytes and actual_stat.st_mtime_ns != mtime_ns:
-            return None
+    if checkpoints and not _witness_holds(index, actual_stat):
+        return None
     if checkpoints and not _covered_prefix_matches(
             itdir / output_filename, checkpoints):
         return None
@@ -773,12 +904,24 @@ def _one_iteration_tail_text(run_root: Path, number: int, n: int,
     if not isinstance(meta, dict):
         return None
     out_path = _iteration_output_path(run_root, number)
-    try:
-        size = out_path.stat().st_size
-    except OSError:
-        size = 0
     checkpoints = index["checkpoints"]
     covered = index["transcriptBytes"]
+    # Task cure-01-01-4: ONE consistent transcript/index snapshot. The
+    # witness is (re)checked against this very `stat()` -- a passed-in
+    # (hub-cached) index never went through `load_index`, and an on-disk
+    # one may have been loaded a moment ago -- everything below reads only
+    # up to this `stat()`'s size, and the witness is checked once more
+    # after the reads: a modification that landed while this call was
+    # reading is refused rather than half-seen, while the engine's own
+    # stamped appends in the meantime (bytes past `size`, never read here)
+    # are not.
+    try:
+        before = out_path.stat()
+    except OSError:
+        before = None
+    if checkpoints and not _witness_holds(index, before):
+        return None
+    size = before.st_size if before is not None else 0
     # Defence in depth behind `load_index`'s own shape check: a stored
     # checkpoint state that still makes hydration or rendering raise (a
     # passed-in `index` that never went through `load_index`, or a shape
@@ -798,6 +941,14 @@ def _one_iteration_tail_text(run_root: Path, number: int, n: int,
         return None
     if walked is None:
         return None
+    if checkpoints:
+        try:
+            after = out_path.stat()
+        except OSError:
+            return None
+        if (after.st_ino != before.st_ino or after.st_size < before.st_size
+                or not _witness_holds(index, after)):
+            return None
     acc, exhausted = walked
     if exhausted:
         # A genuine iteration start always renders its header line

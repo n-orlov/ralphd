@@ -113,8 +113,11 @@ class TestEntriesEqualAFullRenderOfTheirOwnPrefix:
         _write_iteration_with_recognized_nonrendering_gap(
             run_root, 1, "hi", gap, 50)
         itdir = run_root / "iterations" / "0001"
-        in_memory = render_index.compute_render_index(itdir / OUTPUT_FILENAME)
+        # `write_index` first: it provenance-stamps the transcript's mtime
+        # (task cure-01-01-4), so a rebuild computed AFTER it sees the very
+        # witness it published.
         render_index.write_index(itdir)
+        in_memory = render_index.compute_render_index(itdir / OUTPUT_FILENAME)
         on_disk = json.loads((itdir / render_index.INDEX_FILENAME).read_text())
         assert on_disk == in_memory
 

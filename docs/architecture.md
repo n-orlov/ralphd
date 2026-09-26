@@ -1773,10 +1773,11 @@ running. One file per iteration, `iterations/NNNN/render_index.json`, beside
   bytes). A bounded reader can pick any checkpoint at or before the
   byte it wants to resume from, seed a fresh render with its `state`, and
   continue rendering forward -- never from byte 0.
-- `transcriptInode`/`transcriptMtimeNs` -- the transcript's own
-  `os.stat().st_ino`/`st_mtime_ns` as of the moment this coverage was
-  published, and `poisoned` (a boolean) -- task cure-01-01-4's engine-
-  published identity/provenance witness, described under Read side below.
+- `transcriptInode`/`transcriptWitnessBytes`/`transcriptMtimeNs` -- the
+  transcript's own inode, size and mtime as of the moment the writer
+  vouched for this coverage, and `poisoned` (a boolean) -- task
+  cure-01-01-4's engine-published identity/provenance witness, described
+  under Read side below.
 
 **Write timing.** `engine/runner.py`'s `pump()` -- the one place
 `output.jsonl` is written *while the iteration is still running* -- feeds
@@ -1860,26 +1861,33 @@ The validity contract this gives is exact for what is read, and bounded:
   cure-01-03 criterion (1)):** a same-size rewrite or replacement of a
   covered line the tail never reads is still refused, at no extra byte
   cost, by an engine-published identity/provenance witness rather than by
-  reading it. Every published index carries `transcriptInode`/
-  `transcriptMtimeNs` (the transcript's own `stat()` as of the moment this
-  coverage was published) and `poisoned`. `load_index` refuses a
-  `poisoned` index outright; refuses one whose `transcriptInode` no
-  longer matches the transcript's current inode (a same-size replacement,
-  e.g. a rename over the same path); and, whenever the transcript has not
-  grown past `transcriptBytes` since, refuses one whose
-  `transcriptMtimeNs` no longer matches the transcript's current mtime --
-  an O(1) `stat()`-only check that needs no window at all. `LiveRenderIndex.
-  flush` maintains the same guarantee across legitimate appends: before
-  publishing new coverage, it re-runs the bounded window check against
-  exactly what it previously published, and sets `poisoned` (sticky, never
-  cleared by that object) the instant that no longer matches -- so a
-  rewrite caught while still inside an earlier flush's own window stays
-  refused even once a later append has pushed it outside the CURRENT one.
-  Genuine, untouched append-only growth trips neither check.
-  `compute_render_index`'s one-shot, from-scratch rebuild has no earlier
-  witness to check against and is never `poisoned`; it publishes a fresh
-  witness matching whatever bytes are actually on disk right now, exactly
-  as it always has for every other field.
+  reading it. The engine's writer -- `LiveRenderIndex.append`, the call
+  `pump()` makes for every line, and `write_index` -- sets the
+  transcript's mtime after each of its own writes to a provenance stamp
+  derived from the transcript's inode and size. `load_index` then decides
+  off one `stat()`: it refuses a `poisoned` index, a changed inode (a
+  replacement), a transcript shorter than `transcriptWitnessBytes`, one at
+  exactly that size whose mtime is no longer `transcriptMtimeNs` (an
+  in-place rewrite), and one that has grown past it but whose mtime is not
+  the engine's stamp for its current inode and size (the last modification
+  was not the engine's own append).
+- **Custody across appends.** Before each write, `append` checks that the
+  transcript is exactly as its own last write left it; the first time it
+  is not, the writer poisons and republishes the index at once and never
+  stamps again, so no amount of later legitimate growth blesses a
+  previously modified prefix. A writer that grows the transcript without
+  `append` (writing and merely `feed`-ing) has broken the same chain of
+  custody and poisons itself at its next publish; its first publish takes
+  custody of the transcript as it stands. `flush` also re-runs the bounded
+  window check over what it last published. Genuine append-only growth
+  through `append` trips none of this.
+- **One snapshot per read.** `bounded_tail` checks the witness against a
+  single `stat()`, reads only up to that snapshot's size, and re-checks
+  the witness afterwards: a transcript modified while it was being read is
+  refused, the engine's own stamped appends in the meantime are not. A
+  hub-cached index passed in through `index=` is held to the same witness.
+  `compute_render_index` vouches only for bytes it read between two
+  agreeing `stat()`s and never writes anything.
 
 **Consuming the index (task 013, #271 follow-on).**
 `render_index.bounded_tail(run_root, n)` is that caller. A checkpoint's
@@ -1982,7 +1990,13 @@ hub-built index instead of an on-disk one -- at the same C.2 bound an
 engine-written index would give. Any growth of the transcript at all (a
 new byte appended, a new iteration begun) changes the cache key, so the
 next request scans -- and rebuilds the cache -- again: staleness here only
-ever costs a repeat of the scan, never a wrong render. The build is
+ever costs a repeat of the scan, never a wrong render. A cached index is also
+held to its own identity witness, so a same-size rewrite or replacement
+(which leaves the key unchanged) makes `bounded_tail` refuse it; whenever
+an index that exists -- the latest iteration's on-disk `render_index.json`
+or a cached one for the current key -- is refused, `_refused_index_rebuild`
+rebuilds it from the transcript's current bytes and serves the exact walk
+from that instead of the growth-based scan. The build is
 skipped when this iteration's own `collapse_index.json` is present and
 valid AND the fetch above did not need to grow all the way to its own
 FULL-ask bound to resolve (task cure-01-04, requirement C.4, DoD 3): a
