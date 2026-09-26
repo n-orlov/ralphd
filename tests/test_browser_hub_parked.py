@@ -388,7 +388,7 @@ def test_enter_in_steer_message_inserts_a_newline_and_submits_it_byte_identical(
         engine.close()
 
 
-def test_enter_in_the_panels_own_rule_text_submits_via_the_panel_byte_identical(
+def test_enter_in_the_panels_own_rule_text_submits_named_multiline_byte_identical(
         tmp_path, pw):
     """cure-01-05 (adopted #270 D.14): `#parked-rule-text` is the panel's
     OWN control, separate from the Rule section's own `#rule-text` -- a
@@ -404,6 +404,9 @@ def test_enter_in_the_panels_own_rule_text_submits_via_the_panel_byte_identical(
             pw.open(f"{server.base}/#/run/run-panel-rule-enter")
             _wait_for(pw, "document.body.innerText", "Submit ruling")
 
+            # criterion (2): a NAMED multi-line ruling -- the panel's own
+            # name field and the Enter-composed body travel together.
+            pw.fill("#parked-rule-name", "named-multiline-ruling")
             pw.click("#parked-rule-text")
             _type(pw, "first panel ruling line")
             _press(pw, "Enter")
@@ -419,7 +422,8 @@ def test_enter_in_the_panels_own_rule_text_submits_via_the_panel_byte_identical(
 
             assert _posts(engine) == [("POST", "/rule")], engine.requests
             body = json.loads(_last_body_for(engine, "POST", "/rule"))
-            assert body["text"] == "first panel ruling line\nsecond panel ruling line"
+            assert body == {"text": "first panel ruling line\nsecond panel ruling line",
+                            "name": "named-multiline-ruling"}
             pw.screenshot(SCREENSHOTS_DIR / "parked-07-panel-rule-enter-multiline.png")
         finally:
             server.stop()

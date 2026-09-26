@@ -436,6 +436,20 @@ def test_submit_includes_the_entered_name():
     assert posted == {"text": "chosen ruling", "name": "operator-chosen-name"}
 
 
+def test_submit_posts_a_named_multiline_body_byte_identical():
+    """cure-01-05 (#270 D.14, criterion 2): name AND a multi-line body with
+    blank lines, an indented line and an unterminated last line together --
+    both reach `POST /rule` exactly as entered, neither dropped nor
+    rewritten."""
+    body = "first line\n\n  indented second paragraph\t\nunterminated last"
+    out = _run(_PQ, textareaValue=body, nameValue="named-multiline-ruling",
+               click="submit", responses=[{"ok": True, "body": {"file": "r1"}}])
+    assert len(out["calls"]) == 1
+    assert out["calls"][0]["url"] == "/api/runs/run-x/rule"
+    posted = json.loads(out["calls"][0]["opts"]["body"])
+    assert posted == {"text": body, "name": "named-multiline-ruling"}
+
+
 def test_submit_omits_name_when_the_panels_name_field_is_blank():
     out = _run(_PQ, textareaValue="chosen ruling", click="submit",
                responses=[{"ok": True, "body": {"file": "r1"}}])

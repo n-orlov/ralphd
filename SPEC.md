@@ -5167,19 +5167,23 @@ dir themselves and a live proxy would only add a way to disagree.
   message's optional `--name`) is unchanged, and the `apply now` checkbox
   (`ralphctl steer --now`) is labelled with its cost (#161): the label
   reads `apply now (cost: interrupts the running iteration -- its
-  uncommitted work is lost; an idle loop is only woken; if the running
-  iteration is a plan review, interrupting it also spends a revision and
+  uncommitted work is lost; an idle loop is only woken; a running plan
+  review is re-asked in place for free the first time, but a second
+  interrupt in a row over a fresh, unworked plan spends a revision and
   re-ingests every task pending)`. cure-01-05 (adopted #270 C.12): that
-  last clause is the disclosure -- interrupting a running PLAN-REVIEW
-  iteration specifically (never a single interrupt of
-  `planning`/`worker`/`review`, which just retries in place with no extra
-  spend, `test_steer_now_against_a_running_planning_iteration_keeps_
-  todays_retry_in_place`) spends a revision and re-runs `planning`, which
+  last clause discloses #161's existing plan-review cost with its real
+  conditions -- a single interrupt of a running `plan_review` iteration is
+  re-asked in place with no revision spent
+  (`test_steer_now_against_a_running_plan_review_iteration_keeps_todays_
+  161_cost`), exactly as a single `planning` interrupt retries in place
+  (`test_steer_now_against_a_running_planning_iteration_keeps_todays_
+  retry_in_place`); only a SECOND interrupt in a row over a fresh,
+  not-yet-worked plan spends a revision and re-runs `planning`, which
   re-ingests every task `pending` off the fresh proposal
   (`test_steer_now_twice_against_a_running_plan_review_still_spends_a_
-  revision`, `tests/test_transitions.py`) -- an existing #161 cost this
-  label now names rather than changes; interrupt/rejection semantics
-  themselves are untouched.
+  revision`, all in `tests/test_transitions.py`). The label names that
+  cost rather than changes it; interrupt/rejection semantics themselves
+  are untouched.
 - **Ruling form** — `#rule-text` (v0.26 task 010, #270) is a resizable
   `textarea` of about 12 rows (grown from 4), for the same reason and with
   the same `Enter`-inserts-a-newline/button-submits behaviour as the steer

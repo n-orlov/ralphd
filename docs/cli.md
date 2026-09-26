@@ -3433,7 +3433,13 @@ JSON endpoints served under `/api/`:
   finding expandable to its evidence/`cured_when`/`invalidates` (the evidence
   scrolls rather than truncating) -- absent when `parkedQuestion` is
   `null`/absent, with the Steer/Rule sections staying their own sections
-  below it; the runs list's `\u23F8 parked for input` marker links straight
+  below it. The panel carries its own answer box beside the findings: an
+  editable ruling textarea (`#parked-rule-text`, where `Enter` is a
+  newline and each finding's waive checkbox adds or removes only its own
+  line, sending nothing), a name field (`#parked-rule-name`) and both
+  actions -- *Submit ruling and resume* posts the name and the textarea
+  body byte-identical to `POST /api/runs/<id>/rule`, *Resume without a
+  ruling* posts `unpause`; the runs list's `\u23F8 parked for input` marker links straight
   to it. See SPEC.md §11.3 for the full shape. Task 048 (issue
   #4) adds `startedAtLocal`/`endedAtLocal`/`updatedAtLocal` strings next to
   (never replacing) the ISO `startedAt`/`endedAt`/`updatedAt` fields of both

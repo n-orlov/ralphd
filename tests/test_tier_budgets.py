@@ -145,8 +145,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # and_rule_rows.py: the apply-now plan-review-revision disclosure),
     # measured `-m fast --collect-only` -> fast 6341/435, `-m smoke` ->
     # smoke 4649/312.
-    "fast": {"tests": 6341, "modules": 435},
-    "smoke": {"tests": 4649, "modules": 312},
+    # cure-01-05 retry: +1 test, no new module (tests/test_hub_parked_
+    # actions.py: the named multi-line parked submission), measured
+    # `-m fast --collect-only` -> fast 6342/435, `-m smoke` -> smoke 4650/312.
+    "fast": {"tests": 6342, "modules": 435},
+    "smoke": {"tests": 4650, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

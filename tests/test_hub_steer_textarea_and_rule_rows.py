@@ -81,21 +81,31 @@ def test_steer_apply_now_is_labelled_with_its_cost(tmp_path, ui):
 
 def test_steer_apply_now_discloses_the_plan_review_revision_risk(tmp_path, ui):
     """cure-01-05 (adopted #270 C.12): the label also discloses #161's
-    OTHER cost -- interrupting a running PLAN-REVIEW iteration spends a
-    revision and re-ingests every task `pending`
-    (`test_steer_now_twice_against_a_running_plan_review_still_spends_a_
-    revision`, `tests/test_transitions.py`) -- unlike a single interrupt of
-    `planning`/`worker`/`review`, which just retries in place with no extra
-    spend (`test_steer_now_against_a_running_planning_iteration_keeps_
-    todays_retry_in_place`, same module). Disclosure only: interrupt and
-    rejection semantics are unchanged by this label."""
+    OTHER cost with its real conditions -- a FIRST interrupt of a running
+    plan-review iteration is re-asked in place with no revision spent
+    (`test_steer_now_against_a_running_plan_review_iteration_keeps_todays_
+    161_cost`, `tests/test_transitions.py`), and only a SECOND interrupt in
+    a row over a fresh, unworked plan spends a revision and re-ingests
+    every task `pending` (`test_steer_now_twice_against_a_running_plan_
+    review_still_spends_a_revision`, same module). Disclosure only:
+    interrupt and rejection semantics are unchanged by this label."""
     app_js = _served_app_js(tmp_path, ui)
     start = app_js.index('id: "steer-now"')
     label_open = app_js.rindex('h("label"', 0, start)
     label_src = app_js[label_open:app_js.index('h("button"', start)]
-    assert "revision" in label_src, label_src
-    assert "re-ingest" in label_src, label_src
-    # the disclosed risk is conditional on the phase actually interrupted
-    # (plan review), never phrased as an unconditional cost of every
-    # `--now` click.
-    assert "plan review" in label_src or "plan-review" in label_src, label_src
+    # the visible cost span, not just the hover title
+    span_open = label_src.index('"muted steer-now-cost"')
+    visible = label_src[span_open:]
+    visible = re.sub(r'"\s*\+\s*"', "", visible)  # join the "..." + "..." pieces
+    assert "plan review" in visible, visible
+    # the free first interrupt is disclosed as free ...
+    assert "re-asked in place for free the first time" in visible, visible
+    # ... and the revision/re-ingestion cost is bound to its real trigger:
+    # a SECOND interrupt in a row over a fresh, unworked plan.
+    assert ("a second interrupt in a row over a fresh, unworked plan spends "
+            "a revision and re-ingests every task pending") in visible, visible
+    # never the old, wrong phrasing that any single plan-review interrupt
+    # spends a revision.
+    assert "interrupting it also spends a revision" not in label_src, label_src
+    for text in (visible, label_src):
+        assert not re.search(r"plan[- ]review[^;)]*,? interrupting it also spends", text)

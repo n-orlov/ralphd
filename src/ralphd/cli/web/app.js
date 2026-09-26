@@ -1569,21 +1569,21 @@ async function renderRunDetail(runId, myGen) {
       // #161: `apply now` is `ralphctl steer --now` -- labelled with what it
       // costs, so the checkbox is never ticked as if it were free. cure-01-05
       // (adopted #270 C.12): the label also discloses the OTHER cost #161
-      // already carries -- interrupting a running PLAN-REVIEW iteration
-      // (never `worker`/`review`/a single `planning` interrupt, which just
-      // retries in place with no extra spend, `test_steer_now_against_a_
-      // running_planning_iteration_keeps_todays_retry_in_place`) spends a
-      // revision and re-runs `planning`, which re-ingests every task
-      // `pending` off the fresh proposal
+      // already carries, with its real conditions. A FIRST interrupt of a
+      // running plan-review iteration is re-asked in place with no revision
+      // spent (`test_steer_now_against_a_running_plan_review_iteration_
+      // keeps_todays_161_cost`); only a SECOND interrupt in a row over a
+      // fresh, not-yet-worked plan spends a revision and re-runs `planning`,
+      // which re-ingests every task `pending` off the fresh proposal
       // (`test_steer_now_twice_against_a_running_plan_review_still_spends_a_
       // revision`). Disclosure only -- this changes no interrupt or
       // rejection semantics.
-      h("label", { class: "steer-now-label", title: "steer --now: SIGINTs the running iteration; its uncommitted work is lost; interrupting a running plan-review iteration also spends a revision and re-ingests every task pending" }, [
+      h("label", { class: "steer-now-label", title: "steer --now: SIGINTs the running iteration; its uncommitted work is lost; a first interrupt of a running plan review is re-asked in place for free, but a second interrupt in a row over a fresh, unworked plan spends a revision and re-ingests every task pending" }, [
         h("input", { type: "checkbox", id: "steer-now" }),
         "apply now",
         h("span", { class: "muted steer-now-cost" }, [
           " (cost: interrupts the running iteration -- its uncommitted work is lost; an idle loop is only woken; " +
-          "if the running iteration is a plan review, interrupting it also spends a revision and re-ingests every task pending)",
+          "a running plan review is re-asked in place for free the first time, but a second interrupt in a row over a fresh, unworked plan spends a revision and re-ingests every task pending)",
         ]),
       ]),
       h("button", { type: "submit" }, ["send"]),
