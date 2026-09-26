@@ -5286,22 +5286,32 @@ browser displays exactly what the terminal shows.
 The detail view carries a transcript tail, requested with `?tail=200`: the
 last `tail` *rendered* lines — the same contract as `logs -N` — rendered by
 the exact same `ralphd.cli.log_render` renderer `ralphctl logs` uses (with
-`tty=False`, so no ANSI and no carriage returns). The server never fetches the
-run's whole raw NDJSON backlog to serve a tail. It first reads the run's own
+`tty=False`, so no ANSI and no carriage returns). This is a **bounded indexed
+read** whenever a usable index covers it: the server first reads the run's own
 per-iteration render indexes (`render_index.json`, via
 `ralphd.render_index.bounded_tail`) straight off disk, walking backward across
 as many earlier indexed iterations as `tail` needs, so the cost is
 proportional to `tail`, not to the run's history or to silent transcript; a
 `GET /logs?tail=1` probe of the container's API then only decides the `live`
-flag. When no usable index covers the request, it asks the container for a
+flag. When no usable index covers the request — a cold run with no index yet,
+or an index the witness refuses — the fast path answers `None` and an
+uncapped **correctness scan** takes over instead: it asks the container for a
 bounded `GET /logs?tail=<bound>` (the on-disk merge with the same bound when
 the API is unreachable), re-asking with a growing bound until enough rendered
-lines exist, then trims to the last `tail` rendered lines; when that scan was
+lines exist, then trims to the last `tail` rendered lines. This growing-bound
+fallback has no byte cap, and — unlike the indexed path — it can end up
+asking for and rendering the *entire* available transcript even for a small
+positive `tail`, exactly as `tail=0` does, when enough of the transcript is
+silent or unindexable that no smaller bound yields the requested rendered-line
+count; the render itself is still exact either way. When that scan was
 expensive it caches an index built off the on-disk transcript in the hub's own
 memory (never in the run dir), so a second request against the same iteration
-and transcript size takes the bounded indexed read. Only `tail=0` fetches and
-renders the whole transcript (`GET /logs`). The response,
-`{"live": bool, "lines": [...]}`, is never an error.
+and transcript size takes the bounded indexed read instead of repeating the
+scan. `tail=0` is the one request that is EXPLICITLY for the whole transcript
+(`GET /logs`, unconditionally) — it is not the only path capable of reading
+all of it, since the cold-scan fallback above can reach the same result for a
+positive `tail` too. The response, `{"live": bool, "lines": [...]}`, is never
+an error.
 
 **Rendering is server-side, and there is exactly one renderer.** `app.js`
 receives finished lines and displays one per element; it implements no

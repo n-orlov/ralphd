@@ -871,11 +871,22 @@ def test_second_cold_tail_across_two_iterations_is_bounded(
 
 
 def test_spec_and_cli_docs_describe_the_indexed_bounded_tail_read():
-    """Task cure-01-04 (criterion 3): SPEC.md §11.4 and docs/cli.md must
-    describe the log tail `rendered_log_lines` actually serves -- the
-    `render_index.bounded_tail` read first, a `/logs?tail=1` probe only
-    for the `live` flag, and a bounded `/logs?tail=<bound>` fallback --
-    never the retired "fetch the full raw backlog, then trim" shape."""
+    """Task cure-01-04-2 (D.1; DoD 4, cure-01-04 retry): SPEC.md §11.4 and
+    docs/cli.md must describe the log tail `rendered_log_lines` actually
+    serves -- the `render_index.bounded_tail` read first, a `/logs?tail=1`
+    probe only for the `live` flag, and a bounded `/logs?tail=<bound>`
+    fallback -- but the fallback's own growing-bound re-ask loop has no
+    byte cap and, on a cold or unusable-index run, CAN end up fetching and
+    rendering the entire available transcript for a small POSITIVE `tail`
+    too, not only for `tail=0`. The docs must no longer pin the false
+    'never fetches the whole backlog' claim the review found falsified by
+    the real cold-tail fallback (see
+    `test_a_cold_positive_tail_fallback_can_render_the_entire_backlog_exactly`
+    below); they must instead distinguish the bounded indexed read (cost
+    proportional to `tail`) from the uncapped cold/unusable-index scan
+    (positive-tail fallback may fetch everything), and describe `tail=0`
+    as an explicit whole-transcript request, not the only path that can
+    read the whole thing."""
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
@@ -888,9 +899,100 @@ def test_spec_and_cli_docs_describe_the_indexed_bounded_tail_read():
         assert "bounded_tail" in flat, name
         assert "GET /logs?tail=1" in flat, name
         assert "GET /logs?tail=<bound>" in flat, name
-        assert "never fetches the" in flat and "whole" in flat, name
+        # Distinguishes the bounded indexed read from the uncapped
+        # cold/unusable-index correctness scan.
+        assert "bounded indexed read" in flat, name
+        assert "correctness scan" in flat, name
+        assert "no byte cap" in flat, name
+        # The false never-fetches-the-whole-backlog claim is retired: a
+        # positive-tail fallback may fetch/render the entire transcript.
+        assert "positive `tail`" in flat, name
+        assert "entire" in flat and "transcript" in flat, name
+        # tail=0 is described as an explicit whole-transcript request,
+        # not the only path capable of reading the whole thing.
+        assert "tail=0" in flat, name
+        assert "not the only path" in flat, name
         assert "full** raw NDJSON backlog" not in flat, name
         assert "full raw NDJSON backlog" not in flat, name
+
+
+def test_a_cold_positive_tail_fallback_can_render_the_entire_backlog_exactly(
+        tmp_path, monkeypatch):
+    """Task cure-01-04-2 (D.1; DoD 4, criterion 3): the falsifying case the
+    review found at e5cf72a2 -- a COLD run (no `render_index.json`, no
+    legacy `collapse_index.json` either) with 1,000 non-rendering
+    `message_end` padding lines between the streamed text and the run's
+    end, asked for a small POSITIVE tail (2). The fast indexed path
+    answers `None` (nothing to walk), so the growing-bound fallback runs;
+    each round doubles the bound (2, 4, 8, 16, 32) because there is always
+    more raw history to read and the doubled request never yields 2
+    rendered lines, and once `_TAIL_GROWTH_ROUNDS_BEFORE_FULL_ASK` rounds
+    are spent it jumps straight to `_TAIL_FULL_ASK_BOUND` -- which, for
+    this fixture's raw content-line count, is the round that finally
+    reads (and, on the live surface, is asked to serve) the ENTIRE raw
+    backlog, not a bounded slice of it. Both real `ui_server.
+    rendered_log_lines` surfaces (the live API proxy and the dead-run
+    on-disk merge) still render the exact same last-2-lines tail a full,
+    uncapped render of the whole transcript would, proving the fallback's
+    correctness even when it reads everything -- and `_TAIL_FULL_ASK_BOUND`
+    itself is read from production, never a raised or re-declared literal
+    in this test."""
+    import re
+
+    gap = json.dumps({"type": "message_end", "message": {"content": []},
+                      "padding": "x" * 1000})
+    for path in ("disk", "api"):
+        sub = tmp_path / f"cold-full-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        _write_iteration_with_recognized_nonrendering_gap(
+            run_root, 1, "cold full tail text", gap, 1_000)
+        itdir = run_root / "iterations" / "0001"
+        assert not (itdir / render_index.INDEX_FILENAME).exists()
+        assert not (itdir / collapse_index.INDEX_FILENAME).exists()
+
+        full_raw = "".join(merged_lines(run_root))
+        full = render_to_lines(full_raw, tty=False, state=new_render_state())
+        ui_server._ABSENT_INDEX_CACHE.clear()
+        _wire_path(monkeypatch, sub, run_root, path)
+
+        bounds_asked = []
+        if path == "api":
+            real_proxy = ui_server._proxy_text
+
+            def observe_proxy(reg, run_id, url, **kw):
+                ok, raw = real_proxy(reg, run_id, url, **kw)
+                m = re.search(r"tail=(\d+)", url)
+                if m:
+                    bounds_asked.append((int(m.group(1)), len(raw.encode())))
+                return ok, raw
+
+            monkeypatch.setattr(ui_server, "_proxy_text", observe_proxy)
+        else:
+            real_merged = ui_server.merged_lines
+
+            def observe_merged(root, *a, tail=None, **kw):
+                raw = "".join(real_merged(root, *a, tail=tail, **kw))
+                if tail is not None:
+                    bounds_asked.append((tail, len(raw.encode())))
+                return raw.splitlines(keepends=True)
+
+            monkeypatch.setattr(ui_server, "merged_lines", observe_merged)
+
+        live, rendered = ui_server.rendered_log_lines(
+            sub / "registry", "probe", 2)
+        monkeypatch.undo()
+
+        assert rendered == full[-2:], (path, rendered, full[-2:])
+        # The growth loop actually reached the full-ask bound production
+        # declares -- never a bound this test raised or re-picked.
+        assert bounds_asked, path
+        last_bound, last_bytes = bounds_asked[-1]
+        assert last_bound == ui_server._TAIL_FULL_ASK_BOUND, (path, bounds_asked)
+        # That last, full-ask round's own response is the ENTIRE raw
+        # backlog -- the very fetch SPEC.md §11.4 used to claim never
+        # happens for a positive tail.
+        assert last_bytes == len(full_raw.encode()), (path, bounds_asked,
+                                                        len(full_raw.encode()))
 
 
 def _write_live_iteration_with_padding(run_root, pad_count, final_line, *,

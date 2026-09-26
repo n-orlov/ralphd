@@ -178,8 +178,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # cached index and a later legitimate append), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
     # 6363/435, `-m smoke --collect-only` -> smoke 4671/312.
-    "fast": {"tests": 6363, "modules": 435},
-    "smoke": {"tests": 4671, "modules": 312},
+    # cure-01-04-2: +1 test, no new module (tests/test_hub_real_render_cap_
+    # whole_call.py: test_a_cold_positive_tail_fallback_can_render_the_
+    # entire_backlog_exactly, a cold-run growth-loop fallback that reaches
+    # `_TAIL_FULL_ASK_BOUND` and reads the entire backlog for a small
+    # positive tail on both surfaces), measured `.venv/bin/python -m
+    # pytest -q -m fast --collect-only` -> fast 6364/435, `-m smoke
+    # --collect-only` -> smoke 4672/312.
+    "fast": {"tests": 6364, "modules": 435},
+    "smoke": {"tests": 4672, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
