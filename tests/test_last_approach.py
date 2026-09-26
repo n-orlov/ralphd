@@ -244,13 +244,26 @@ def test_last_approach_all_curable_with_cure_spent_pauses_and_escalates(
     assert escalations[0]["reason"] == "rejected_last_approach"
     assert escalations[0]["approach"] == 1
     assert escalations[0]["findings"][0]["clause"] == "requirement C.1 (#141)"
+    # the event's own `escalation` field keeps the FULL, un-digested text --
+    # evidence and the exact `ralphctl amend` invocation both present.
+    full_text = escalations[0]["escalation"]
+    assert "requirement C.1 (#141)" in full_text
+    assert "the notify tool still doesn't record the event" in full_text
+    assert "resolve with: ralphctl amend" in full_text
 
+    # Cure task cure-01-02 (PRD requirement A.1/A.2, #269): the notifier
+    # itself gets the bounded, EVIDENCE-FREE digest -- the finding's
+    # clause, never its evidence, and neither a `resolve with:` line (the
+    # digest never carries one) -- plus both live-run levers, since this
+    # pause waits on an operator ruling.
     assert len(notifier.messages) == 1
     text = notifier.messages[0]
     assert "requirement C.1 (#141)" in text
-    assert "the notify tool still doesn't record the event" in text
+    assert "the notify tool still doesn't record the event" not in text
+    assert "resolve with: ralphctl amend" not in text
     assert "ralphctl unpause task011-last-approach-pause" in text
-    assert "resolve with: ralphctl amend" in text
+    assert ("ralphctl rule task011-last-approach-pause --file <ruling.md> "
+            "--name <slug>") in text
 
 
 def test_the_review_escalation_is_emitted_to_events_jsonl_with_no_notifier(

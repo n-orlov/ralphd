@@ -12936,6 +12936,19 @@ class LoopSupervisor:
         (`self.pause()`, `self.notifier`, an `operator_escalation` event
         always emitted to `events.jsonl` regardless of whether a notifier
         is wired in), just a different `reason` and escalation body.
+
+        Cure task cure-01-02 (PRD requirement A.1/A.2, #269, review probe
+        `test_all_finding_escalations_are_evidence_free_digests[last_
+        approach]`): the `operator_escalation` EVENT's own `escalation`
+        field keeps this FULL text -- every blocking finding's `clause`/
+        `evidence`/`resolve with:` invocation, unedited -- but the
+        notification actually POSTED goes through the SAME evidence-free
+        `_operator_escalation_digest_text` digest `operator_input_needed`/
+        `rejected_repeated_signature` already use, never the full text
+        directly: this edge's own blocking findings still carry a real
+        `evidence` clause (the finding IS curable -- only the cure pass is
+        spent), so posting `text` unbounded/un-digested is exactly the
+        #269 incident this digest exists to prevent, reason or no reason.
         """
         findings_list = self._review_findings() or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
@@ -12952,7 +12965,9 @@ class LoopSupervisor:
         # without a second vocabulary to map between.
         self.pause(reason="rejected_last_approach")
         if self.notifier is not None:
-            self._notify_escalation_delivery(text, reason="rejected_last_approach")
+            digest = self._operator_escalation_digest_text(
+                "rejected_last_approach", approach, findings_list)
+            self._notify_escalation_delivery(digest, reason="rejected_last_approach")
 
     def _review_rejection_signature(
         self, findings_list: list[dict] | None,
@@ -13345,6 +13360,16 @@ class LoopSupervisor:
         was exactly the full text above, un-digested, at 45,876 characters,
         refused `422` by the notifier's own cap and never seen.
 
+        Cure task cure-01-02 (PRD requirement A.1/A.2/A.6, #269): also the
+        notification body `_pause_and_escalate_last_approach_rejection`/
+        `_pause_and_escalate_incurable_rejection` POST for `reason ==
+        "rejected_last_approach"`/`"rejected_incurable"` -- those two
+        pauses' own blocking findings carry a real `evidence` clause just
+        as often as the two reasons above (a curable finding with its cure
+        pass spent, or an incurable one with a real environmental/temporal
+        fact behind it), so the same un-digested-text-overrun risk applies
+        and the same digest fixes it.
+
         `findings_list` is the caller's own full findings read (blocking
         AND residual severities both present -- `_review_findings_channel`'s
         first return value, the same one every caller here already holds),
@@ -13353,9 +13378,21 @@ class LoopSupervisor:
         gate_escalation_fields` (which tolerates an empty dict) rather than
         omitting the A.7 preview line entirely -- the digest's shape does
         not change with whether this pause happened to be a driven gate.
+        `rejected_last_approach`/`rejected_incurable` never pass a
+        `cure_preview` (neither pause is a discretionary-gate trigger), so
+        their own digests read the same all-zero/`unavailable` defaults --
+        truthful, since neither pause previews a cure pass that will run.
 
         The finding-id assigned here (`F<n>`, 1-based in `blocking`'s own
         order) is local to this digest; nothing else reads it back.
+
+        Every reason this digest renders for is ruling-answerable (D.1's
+        own `rejected_last_approach`/`rejected_incurable` included, exactly
+        like `operator_input_needed`/`rejected_repeated_signature`) --
+        SPEC.md's own rule ("every live-run pause and escalation text
+        names the two live-run levers") -- so `answer_cmd` always names
+        BOTH `ralphctl rule ... --file <ruling.md> --name <slug>` and
+        `ralphctl unpause <run>`, never unpause alone.
         """
         findings_list = findings_list or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
@@ -13365,9 +13402,7 @@ class LoopSupervisor:
         answer_cmd = (
             f"ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
             f"<slug>, or ralphctl unpause {self.cfg.run_id} to accept the "
-            "default"
-            if reason == "operator_input_needed"
-            else f"ralphctl unpause {self.cfg.run_id}")
+            "default")
         header_lines = [
             f"run {self.cfg.run_id} escalation: {reason}",
             f"pauseReason: {reason}",
@@ -14221,7 +14256,16 @@ class LoopSupervisor:
                       escalation=text)
         self.pause()
         if self.notifier is not None:
-            self._notify_escalation_delivery(text, reason="rejected_incurable")
+            # Cure task cure-01-02 (PRD requirement A.1/A.2, #269, review
+            # probe `test_all_finding_escalations_are_evidence_free_
+            # digests[incurable]`): the event above keeps the FULL text
+            # (every finding's `clause`/`evidence`/`resolve with:`
+            # invocation, unedited); the notifier gets the SAME
+            # evidence-free digest `operator_input_needed`/`rejected_
+            # repeated_signature` already post, never `text` itself.
+            digest = self._operator_escalation_digest_text(
+                "rejected_incurable", approach, findings_list)
+            self._notify_escalation_delivery(digest, reason="rejected_incurable")
 
     def _terminal_success_blockers(self) -> list[str]:
         """Task 013 (requirement I, #98): the ONE predicate the exit-gate

@@ -133,13 +133,25 @@ def test_confirmed_obligation_removed_then_unrelated_incurable_remainder_pauses(
     # disclosed residual, not part of the incurable set that caused the
     # edge (the operator ruling on task 006/DoD predicate 4: "each
     # finding" means the incurable BLOCKING set, /config/amendments/
-    # 001-006.md).
+    # 001-006.md). The FULL text lives on the event's own `escalation`
+    # field; the notifier only ever gets the evidence-free digest (cure
+    # task cure-01-02, PRD requirement A.1/A.2, #269).
+    events_log = json.loads("[" + ",".join(
+        (root / "events.jsonl").read_text().splitlines()) + "]")
+    escalations = [e for e in events_log if e.get("type") == "operator_escalation"]
+    assert len(escalations) == 1
+    full_text = escalations[0]["escalation"]
+    assert unrelated_incurable["clause"] in full_text
+    assert unrelated_incurable["evidence"] in full_text
+    assert full_text.count("ralphctl amend") == 1
+    assert confirmed_finding["evidence"] not in full_text
+
     assert len(notifier.messages) == 1
     text = notifier.messages[0]
     assert unrelated_incurable["clause"] in text
-    assert unrelated_incurable["evidence"] in text
-    assert text.count("ralphctl amend") == 1
+    assert unrelated_incurable["evidence"] not in text
     assert confirmed_finding["evidence"] not in text
+    assert "ralphctl amend" not in text
 
 
 def test_without_the_confirmation_the_same_pair_would_still_be_all_incurable(
@@ -188,7 +200,17 @@ def test_without_the_confirmation_the_same_pair_would_still_be_all_incurable(
     outcome = asyncio.run(sup._step_review())
     assert outcome == ("advance", "review", "rejected_incurable")
     assert sup._pause.is_set() is False
+
+    events_log = json.loads("[" + ",".join(
+        (root / "events.jsonl").read_text().splitlines()) + "]")
+    escalations = [e for e in events_log if e.get("type") == "operator_escalation"]
+    assert len(escalations) == 1
+    full_text = escalations[0]["escalation"]
+    assert confirmed_finding["clause"] in full_text
+    assert unrelated_incurable["clause"] in full_text
+    assert full_text.count("ralphctl amend") == 2
+
     text = sup.notifier.messages[0]
     assert confirmed_finding["clause"] in text
     assert unrelated_incurable["clause"] in text
-    assert text.count("ralphctl amend") == 2
+    assert "ralphctl amend" not in text

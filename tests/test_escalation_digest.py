@@ -346,3 +346,87 @@ def test_no_builder_repeats_a_findings_evidence_in_its_own_text(tmp_path):
             # named by id -- the same `F<index>` the `Finding <index>`
             # header above it uses.
             assert f"F{index}" in line, name
+
+
+# ===========================================================================
+# 7. Cure task cure-01-02 (PRD requirement A.1/A.2/A.6, D.1, #269, review
+#    findings F(last_approach)/F(incurable)/F(repeated-signature-command)):
+#    `rejected_last_approach` and `rejected_incurable` are ruling-answerable
+#    escalations whose blocking findings carry a real `evidence` clause --
+#    exactly the same shape of risk `operator_input_needed`/`rejected_
+#    repeated_signature` already digest -- so they now go through the SAME
+#    evidence-free digest, never the full per-finding text. And every
+#    digest this helper renders -- `rejected_repeated_signature` included --
+#    names BOTH live-run levers (`ralphctl rule ...`/`ralphctl unpause
+#    ...`), since every reason it covers waits on an operator ruling
+#    (SPEC.md \u00a74.6).
+# ===========================================================================
+
+
+def test_last_approach_notification_is_an_evidence_free_digest(tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=2)
+    sup._approach = 1
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    data = [_finding("requirement C.1 (#141)", evidence_len=200)]
+    findings.write_findings_json(sup.run.findings_json_file, data)
+
+    sup._pause_and_escalate_last_approach_rejection(1)
+
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 1
+    # the event's own `escalation` field keeps the FULL text, evidence
+    # included -- only the POSTED notification is digested.
+    assert data[0]["evidence"] in escalations[0]["escalation"]
+
+    assert len(notifier.messages) == 1
+    text = notifier.messages[0]
+    assert data[0]["evidence"] not in text
+    assert "requirement C.1 (#141)" in text
+    assert "blocking: 1" in text and "residual: 0" in text
+    assert "resolve with:" not in text
+    assert (f"ralphctl rule {sup.cfg.run_id} --file <ruling.md> "
+            "--name <slug>") in text
+    assert f"ralphctl unpause {sup.cfg.run_id}" in text
+
+
+def test_incurable_notification_is_an_evidence_free_digest(tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=2)
+    sup._approach = 1
+    notifier = _StubNotifier()
+    sup.notifier = notifier
+
+    data = [{
+        "severity": "blocking", "curable": False,
+        "clause": "requirement B (#111)",
+        "evidence": "the endpoint has no docker.sock in this container",
+    }]
+    findings.write_findings_json(sup.run.findings_json_file, data)
+
+    sup._pause_and_escalate_incurable_rejection(1)
+
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 1
+    assert data[0]["evidence"] in escalations[0]["escalation"]
+
+    assert len(notifier.messages) == 1
+    text = notifier.messages[0]
+    assert data[0]["evidence"] not in text
+    assert "requirement B (#111)" in text
+    assert "blocking: 1" in text and "residual: 0" in text
+    assert (f"ralphctl rule {sup.cfg.run_id} --file <ruling.md> "
+            "--name <slug>") in text
+    assert f"ralphctl unpause {sup.cfg.run_id}" in text
+
+
+def test_repeated_signature_digest_names_the_ruling_command_too(tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=2)
+    text = sup._operator_escalation_digest_text(
+        "rejected_repeated_signature", 1, [_finding("clause Z", 50)])
+    assert (f"ralphctl rule {sup.cfg.run_id} --file <ruling.md> "
+            "--name <slug>") in text
+    assert f"ralphctl unpause {sup.cfg.run_id}" in text

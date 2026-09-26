@@ -107,8 +107,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
     # 6288/435, `-m smoke` -> smoke 4597/312 (unchanged: every new test
     # shells out to a subprocess, so none is `smoke`).
-    "fast": {"tests": 6289, "modules": 435},
-    "smoke": {"tests": 4597, "modules": 312},
+    # cure-01-02: +3 tests, no new module (tests/test_escalation_digest.py:
+    # last_approach/incurable digests are evidence-free, repeated-signature
+    # digest names the ruling command too), measured `.venv/bin/python -m
+    # pytest -q -m fast --collect-only` -> fast 6292/435, `-m smoke` ->
+    # smoke 4600/312 (every new node runs in-process, so all three count
+    # in both tiers).
+    "fast": {"tests": 6292, "modules": 435},
+    "smoke": {"tests": 4600, "modules": 312},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

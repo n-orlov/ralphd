@@ -1368,28 +1368,37 @@ their own remedy (a `tasks.json` edit, a working reviewer) plus `ralphctl
 unpause <run>`. `tests/test_escalation_commands.py` covers every one.
 
 **Every notification this engine posts is bounded by construction (task 001,
-PRD requirement A, #269).** `MAX_NOTIFY_CHARS` (`engine/config.py`, an int
-below the notifier's own 16,000-character cap) is the one ceiling every
-`self.notifier(...)` call site in `engine/loop.py` passes through --
-`LoopSupervisor._notify()`, which truncates with a trailing marker on the
-rare call whose text still overruns despite that. `operator_input_needed`
-and `rejected_repeated_signature` are the two escalation reasons whose body
-scales with an unbounded finding count × evidence length -- the #269
-incident itself: a real escalation body reached 45,876 characters and was
-refused `422` by the notifier's own cap, silently, and the operator never
-saw it. `LoopSupervisor._operator_escalation_digest_text` builds a DIGEST
-for those two reasons instead of posting the full text: run id,
-`pauseReason`, `approach n of m`, blocking and residual counts, the A.7
-preview numbers (tasks reopened, tasks inserted, spend this approach), one
+PRD requirement A, #269; widened to two more reasons by cure task
+cure-01-02, PRD requirement A.1/A.2/A.6, #269).** `MAX_NOTIFY_CHARS`
+(`engine/config.py`, an int below the notifier's own 16,000-character cap)
+is the one ceiling every `self.notifier(...)` call site in `engine/loop.py`
+passes through -- `LoopSupervisor._notify()`, which truncates with a
+trailing marker on the rare call whose text still overruns despite that.
+`operator_input_needed` and `rejected_repeated_signature` are the two
+escalation reasons whose body scales with an unbounded finding count ×
+evidence length -- the #269 incident itself: a real escalation body
+reached 45,876 characters and was refused `422` by the notifier's own cap,
+silently, and the operator never saw it. `rejected_last_approach` (D.1)
+and `rejected_incurable` (B.2) carry the exact same shape of risk -- a
+curable finding with its cure pass spent, or an incurable one with a real
+environmental/temporal fact behind it, either way a full `evidence` clause
+per blocking finding -- so `LoopSupervisor._operator_escalation_digest_
+text` builds the SAME DIGEST for all four reasons instead of posting the
+full text: run id, `pauseReason`, `approach n of m`, blocking and residual
+counts, the A.7 preview numbers (tasks reopened, tasks inserted, spend
+this approach -- all-zero/`unavailable` for the two reasons that pass no
+`cure_preview`, since neither previews a cure pass that will run), one
 line per blocking finding naming only its digest-local id and `clause`
-(never its evidence), the hub URL (only when `hub_base_url` is configured),
-and the exact command that answers the pause. When even the per-finding
-lines would overflow the cap, the digest drops to a bare count -- "*k* more
-findings in the hub" -- but never drops the counts themselves. The full,
-un-digested text -- every finding's full `clause`/`evidence`/`cured_when` --
-is unaffected and still lands on the `operator_escalation` event's own
-`escalation` field (§5.4) exactly as before; only the POSTED notification
-is capped and digested.
+(never its evidence), the hub URL (only when `hub_base_url` is
+configured), and the exact commands that answer the pause -- ALWAYS both
+`ralphctl rule <run> --file <ruling.md> --name <slug>` and `ralphctl
+unpause <run>`, since every reason this digest renders for waits on an
+operator ruling. When even the per-finding lines would overflow the cap,
+the digest drops to a bare count -- "*k* more findings in the hub" -- but
+never drops the counts themselves. The full, un-digested text -- every
+finding's full `clause`/`evidence`/`cured_when` -- is unaffected and still
+lands on the `operator_escalation` event's own `escalation` field (§5.4)
+exactly as before; only the POSTED notification is capped and digested.
 
 **A failed escalation delivery is retried with bounded backoff, and an
 exhausted retry is recorded distinctly (task 004, PRD requirement A.4,

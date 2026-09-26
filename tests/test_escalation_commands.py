@@ -169,6 +169,18 @@ def test_operator_escalation_digest_text_names_rule_and_unpause(tmp_path):
     text = sup._operator_escalation_digest_text(
         "operator_input_needed", 1, [_finding()])
     _assert_names_rule_and_unpause(text)
+    # Cure task cure-01-02 (PRD requirement A.6, #269): repeated-signature
+    # is a rejection pause too, and every rejection pause waits on an
+    # operator ruling -- its own digest names BOTH live-run levers, not
+    # unpause alone.
     text2 = sup._operator_escalation_digest_text(
         "rejected_repeated_signature", 2, [_finding()])
-    _assert_names_unpause_not_resume(text2)
+    _assert_names_rule_and_unpause(text2)
+    # And so does an incurable/last-approach digest -- widened to this
+    # same helper by cure-01-02.
+    text3 = sup._operator_escalation_digest_text(
+        "rejected_incurable", 1, [_finding()])
+    _assert_names_rule_and_unpause(text3)
+    text4 = sup._operator_escalation_digest_text(
+        "rejected_last_approach", 1, [_finding()])
+    _assert_names_rule_and_unpause(text4)

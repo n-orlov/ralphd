@@ -1094,13 +1094,16 @@ def test_all_incurable_blocking_findings_pause_and_escalate(tmp_path):
     # asyncio.Event POST /pause's loop.pause() clears.
     assert sup._pause.is_set() is False
 
-    # the stub notifier received exactly one escalation, and it names both
-    # findings plus the exact ralphctl amend invocation for each.
-    assert len(notifier.messages) == 1
-    text = notifier.messages[0]
+    # the operator_escalation event's own `escalation` field keeps the
+    # FULL, un-digested text -- every finding's clause AND evidence, plus
+    # the exact ralphctl amend invocation for each.
+    escalations = [e for e in _events(root)
+                  if e.get("type") == "operator_escalation"]
+    assert len(escalations) == 1
+    full_text = escalations[0]["escalation"]
     for f in all_incurable:
-        assert f["clause"] in text
-        assert f["evidence"] in text
+        assert f["clause"] in full_text
+        assert f["evidence"] in full_text
 
     # The exact invocations, spelled out here as literals (NOT derived from
     # `loop._amend_invocation_for_finding`, which would make this test a
@@ -1121,13 +1124,13 @@ def test_all_incurable_blocking_findings_pause_and_escalate(tmp_path):
     # `resolve with:` line -- and the set of such lines is EXACTLY these
     # two, in finding order, so an extra/misordered/malformed invocation
     # fails here too.
-    resolve_lines = [line for line in text.splitlines()
+    resolve_lines = [line for line in full_text.splitlines()
                     if line.strip().startswith("resolve with:")]
     assert resolve_lines == [f"  resolve with: {c}" for c in expected_commands]
     for command in expected_commands:
-        assert text.count(command) == 1
+        assert full_text.count(command) == 1
     # No other `ralphctl amend` invocation hides anywhere in the body.
-    assert text.count("ralphctl amend") == len(expected_commands)
+    assert full_text.count("ralphctl amend") == len(expected_commands)
 
     # Argument-by-argument, as a shell would parse it: subcommand, run id,
     # clause slug, the `--waive` flag, then ONE reason argument carrying
@@ -1148,6 +1151,23 @@ def test_all_incurable_blocking_findings_pause_and_escalate(tmp_path):
     # SAME approach is what review is asked about again on resume.
     assert not (root / "approaches" / "01").exists()
     assert sup._approach == 1
+
+    # Cure task cure-01-02 (PRD requirement A.1/A.2, #269): the notifier
+    # itself only ever gets the bounded, EVIDENCE-FREE digest -- each
+    # finding's clause and id, never its evidence, and no `resolve with:`
+    # line at all (the digest never carries one) -- plus both live-run
+    # levers, since this pause waits on an operator ruling.
+    assert len(notifier.messages) == 1
+    digest_text = notifier.messages[0]
+    assert "blocking: 2" in digest_text and "residual: 0" in digest_text
+    for f in all_incurable:
+        assert f["clause"] in digest_text
+        assert f["evidence"] not in digest_text
+    assert "resolve with:" not in digest_text
+    assert "ralphctl amend" not in digest_text
+    assert "ralphctl unpause task006-rejected-incurable" in digest_text
+    assert ("ralphctl rule task006-rejected-incurable --file <ruling.md> "
+            "--name <slug>") in digest_text
 
 
 def test_the_escalation_is_also_emitted_to_events_jsonl_with_no_notifier(tmp_path):
