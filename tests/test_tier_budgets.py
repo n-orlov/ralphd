@@ -107,7 +107,7 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
     # 6288/435, `-m smoke` -> smoke 4597/312 (unchanged: every new test
     # shells out to a subprocess, so none is `smoke`).
-    "fast": {"tests": 6288, "modules": 435},
+    "fast": {"tests": 6289, "modules": 435},
     "smoke": {"tests": 4597, "modules": 312},
 }
 

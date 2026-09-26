@@ -38,6 +38,18 @@ _SUPPLEMENTAL_MARKER_EXPR = "not fast and not smoke and not docker and not brows
 def _run(args, extra_env=None, timeout=60):
     env = dict(os.environ)
     env.update(_PIP_CACHE_ENV)
+    # Regression fix: this test process runs *inside*
+    # `scripts/host_like_dev_layout.sh` itself when nightly.yml's own
+    # "unset"-mode dev-layout matrix cells set
+    # HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset for the WHOLE
+    # container before invoking that script's `-m fast` primary pass --
+    # this module is part of that same `-m fast` selection, so `os.environ`
+    # above already carries that ambient value. Every nested invocation of
+    # the script THIS module tests must default to a clean slate on that
+    # var regardless of what the OUTER, already-running invocation was
+    # started with -- a caller that wants a specific mode says so
+    # explicitly via `extra_env`, which re-applies below and always wins.
+    env.pop("HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE", None)
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -150,6 +162,37 @@ def test_the_true_default_invocation_runs_a_primary_and_a_supplemental_pass(
             supplemental,
         )
         assert primary["PYTHONUSERBASE"] not in ("", "<unset>"), primary
+
+
+def test_the_default_mode_case_ignores_an_ambient_pythonuserbase_mode_override(
+    tmp_path, monkeypatch
+):
+    """Regression pin for the nightly `unset`-mode dev-layout matrix cells
+    (`docker run -e HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset`): that
+    env var is set for the WHOLE container, so it is already present in
+    `os.environ` when this module's own `-m fast` run executes inside it --
+    including for this exact test process. Before `_run`'s fix (popping
+    that var before applying any caller-supplied `extra_env`), a caller
+    that supplied no override of its own (like the sibling parametrized
+    test's "exported-default-mode" case) silently inherited that ambient
+    value instead of exercising the script's own true default, because
+    `_run` built the child's environment from `dict(os.environ)` with
+    nothing stripped. This test reproduces exactly that ambient condition
+    (`monkeypatch.setenv`, no override supplied) and asserts the nested
+    script invocation still resolves to "exported" mode regardless -- it
+    fails at 9b72b700 (where `_run` copied `os.environ` unstripped) and
+    passes once `_run` pops the var first."""
+    monkeypatch.setenv("HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE", "unset")
+    stub, log = _stub_interpreter(tmp_path)
+    extra_env = {"PYTHON": str(stub)}
+
+    result = _run([], extra_env=extra_env, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    calls = _pytest_invocations(log)
+    primary = [c for c in calls if "-q -m fast" in c["ARGS"]]
+    assert len(primary) == 1, calls
+    assert primary[0]["PYTHONUSERBASE"] not in ("", "<unset>"), primary[0]
 
 
 @pytest.mark.parametrize(
