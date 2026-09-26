@@ -92,19 +92,22 @@ facing call is task 013's job.
 Task cure-01-01-4 (petition remedy for cure-01-03 criterion (1)): the
 bounded window above still cannot see a same-size rewrite of a covered
 line it never reads. Every published index therefore also carries an
-identity/provenance witness -- `transcriptInode`, `transcriptWitnessBytes`
-and `transcriptMtimeNs`, the transcript's (inode, size, mtime) as of the
-moment the writer vouched for it -- and `poisoned`. The engine's writer
-provenance-STAMPS the transcript's mtime after every write it makes
-(`LiveRenderIndex.append`, `write_index`: `_stamp`, a marker derived from
-the transcript's own inode and size), so `load_index` can decide with one
-`stat()` and no read (`_witness_holds`): refused when `poisoned`, when the
-inode changed (a replacement), when the transcript is shorter than the
-witness, when it is exactly the witness's size but its mtime moved (an
-in-place rewrite, however far outside the window), and when it has grown
-past the witness but its current mtime does not carry the engine's stamp
-for its current (inode, size) (the last modification was not the engine's
-own append). The writer keeps custody across legitimate appends: before
+identity/provenance witness -- `transcriptInode`, `transcriptWitnessBytes`,
+`transcriptMtimeNs` and (task cure-01-03-2) `transcriptCtimeNs`, the
+transcript's (inode, size, mtime, ctime) as of the moment the writer
+vouched for it -- and `poisoned`. The engine's writer provenance-STAMPS
+the transcript's mtime after every write it makes (`LiveRenderIndex.
+append`, `write_index`: `_stamp`, a marker derived from the transcript's
+own inode and size), so `load_index` can decide with one `stat()` and no
+read (`_witness_holds`): refused when `poisoned`, when the inode changed
+(a replacement), when the transcript is shorter than the witness, when it
+is exactly the witness's size but its mtime OR ctime moved (an in-place
+rewrite, however far outside the window -- ctime alone catches the case
+an ordinary write restores the original mtime via `os.utime` afterwards,
+since a normal write cannot restore ctime the same way), and when it has
+grown past the witness but its current mtime does not carry the engine's
+stamp for its current (inode, size) (the last modification was not the
+engine's own append). The writer keeps custody across legitimate appends: before
 each write it checks the transcript still looks exactly as its own last
 write left it, and the first time it does not, it poisons and republishes
 the index at once and never stamps again -- so no later growth, however
@@ -151,8 +154,17 @@ INDEX_VERSION = 4
 # mtime the writer vouched for) -- plus `poisoned`, a sticky flag only
 # `LiveRenderIndex` ever sets, once it finds the transcript modified by
 # anything but itself. See `_witness_holds` for the whole read-side check.
+#
+# Task cure-01-03-2 (PRD C.1/C.3, D.1; DoD 3; cure-01-03 and cure-01-01-4
+# retry): `transcriptCtimeNs` -- the transcript's `st_ctime_ns` at the same
+# moment -- joins the witness as an INDEPENDENT revision signal alongside
+# `transcriptMtimeNs`. An ordinary same-size in-place rewrite of a covered
+# line, followed by `os.utime` restoring the original mtime, leaves mtime
+# alone but always bumps ctime (a normal write cannot set ctime to an
+# arbitrary value the way it can mtime): checking mtime alone let such a
+# rewrite through at exactly the witnessed size; ctime does not.
 _REQUIRED_KEYS = ("version", "transcriptBytes", "segments", "checkpoints",
-                 "transcriptInode", "transcriptMtimeNs",
+                 "transcriptInode", "transcriptMtimeNs", "transcriptCtimeNs",
                  "transcriptWitnessBytes", "poisoned")
 
 # Task cure-01-01-4 retry (append provenance): the witness above only says
@@ -207,19 +219,22 @@ def _stamp(path: Path) -> os.stat_result | None:
         return None
 
 
-def _stat_key(st: os.stat_result) -> tuple[int, int, int]:
-    return st.st_ino, st.st_size, st.st_mtime_ns
+def _stat_key(st: os.stat_result) -> tuple[int, int, int, int]:
+    return st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
 
 
 def _witness_holds(index: dict, st: os.stat_result | None) -> bool:
     """The O(1) identity/provenance check, against the transcript's
     CURRENT `stat()` `st`: not `poisoned`; the same inode (a replacement,
     e.g. a rename over the path, is refused); never shorter than
-    `transcriptWitnessBytes`; at exactly that size, the very mtime the
-    witness recorded (any in-place rewrite moves it); longer than that,
-    an mtime carrying the engine writer's provenance stamp for the
-    current (inode, size) -- the last modification was the engine's own
-    append."""
+    `transcriptWitnessBytes`; at exactly that size, the very mtime AND
+    ctime the witness recorded (task cure-01-03-2: an in-place rewrite
+    that restores the original mtime via `os.utime` still moves ctime,
+    which a normal write can never set back to an arbitrary value the way
+    it can mtime -- checking mtime alone let that rewrite through); longer
+    than that, an mtime carrying the engine writer's provenance stamp for
+    the current (inode, size) -- the last modification was the engine's
+    own append."""
     if st is None or index.get("poisoned"):
         return False
     if st.st_ino != index["transcriptInode"]:
@@ -228,7 +243,8 @@ def _witness_holds(index: dict, st: os.stat_result | None) -> bool:
     if st.st_size < witness_bytes:
         return False
     if st.st_size == witness_bytes:
-        return st.st_mtime_ns == index["transcriptMtimeNs"]
+        return (st.st_mtime_ns == index["transcriptMtimeNs"]
+                and st.st_ctime_ns == index["transcriptCtimeNs"])
     return _carries_stamp(st)
 _SEGMENT_KEYS = _collapse_index._SEGMENT_KEYS
 _CHECKPOINT_KEYS = ("byteOffset", "renderedLines", "state", "lineCrc32")
@@ -441,7 +457,7 @@ class LiveRenderIndex:
         # never the full current `_checkpoints` -- so the NEXT flush's own
         # bounded self-check verifies precisely the coverage a reader could
         # already have trusted. `_custody` is the transcript's
-        # (inode, size, mtime) exactly as this object's own last write +
+        # (inode, size, mtime, ctime) exactly as this object's own last write +
         # provenance stamp (`append`), or its first publish, left it: any
         # difference found before the next write or publish is a
         # modification this writer did not make.
@@ -471,18 +487,20 @@ class LiveRenderIndex:
             "lineCrc32": zlib.crc32(raw_line)})
         self._lines_since_flush += 1
 
-    def snapshot(self, witness: tuple[int, int, int] | None = None) -> dict:
+    def snapshot(self, witness: tuple[int, int, int, int] | None = None) -> dict:
         """The index payload as of every line fed so far, plus the given
-        identity witness -- `(inode, size, mtime_ns)` of the transcript as
-        of the moment the coverage is vouched for (`transcriptInode`/
-        `transcriptWitnessBytes`/`transcriptMtimeNs`; all zero, which no
-        real transcript matches, when none is given) -- and `poisoned`."""
-        ino, size, mtime_ns = witness if witness is not None else (0, 0, 0)
+        identity witness -- `(inode, size, mtime_ns, ctime_ns)` of the
+        transcript as of the moment the coverage is vouched for
+        (`transcriptInode`/`transcriptWitnessBytes`/`transcriptMtimeNs`/
+        `transcriptCtimeNs`; all zero, which no real transcript matches,
+        when none is given) -- and `poisoned`."""
+        ino, size, mtime_ns, ctime_ns = witness if witness is not None else (0, 0, 0, 0)
         return {"version": INDEX_VERSION, "transcriptBytes": self._offset,
                 "segments": [dict(s) for s in self._segments],
                 "checkpoints": [dict(c) for c in self._checkpoints],
                 "transcriptInode": ino,
                 "transcriptMtimeNs": mtime_ns,
+                "transcriptCtimeNs": ctime_ns,
                 "transcriptWitnessBytes": size,
                 "poisoned": self._poisoned}
 
@@ -620,12 +638,13 @@ def write_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> None:
     owns this transcript, so -- unlike a hub-side `compute_render_index`
     -- it also stamps the transcript's mtime with the provenance marker
     (`_stamp`) once the rebuild's own witness is known to describe exactly
-    the bytes it read, and publishes that stamped witness. Never raises."""
+    the bytes it read, and publishes that stamped witness (mtime AND
+    ctime, task cure-01-03-2). Never raises."""
     try:
         output_path = itdir / output_filename
         index = compute_render_index(output_path)
         key = (index["transcriptInode"], index["transcriptWitnessBytes"],
-               index["transcriptMtimeNs"])
+               index["transcriptMtimeNs"], index["transcriptCtimeNs"])
         if index["transcriptInode"]:
             try:
                 current = _stat_key(output_path.stat())
@@ -635,6 +654,7 @@ def write_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> None:
                 st = _stamp(output_path)
                 if st is not None and (st.st_ino, st.st_size) == key[:2]:
                     index["transcriptMtimeNs"] = st.st_mtime_ns
+                    index["transcriptCtimeNs"] = st.st_ctime_ns
         tmp = itdir / (INDEX_FILENAME + ".tmp")
         tmp.write_text(json.dumps(index))
         tmp.replace(itdir / INDEX_FILENAME)
@@ -664,11 +684,16 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     and the identity/provenance witness holds (`_witness_holds`, task
     cure-01-01-4, the petition remedy for cure-01-03 criterion (1)): not
     `poisoned`, the same inode, and either the witnessed size with the
-    witnessed mtime or a longer transcript whose mtime carries the engine
-    writer's provenance stamp for its current (inode, size) -- so a
-    same-size rewrite or replacement of a covered line is refused even
-    OUTSIDE the window and the tail walk, whether or not the transcript
-    has grown since, at the O(1) cost of one `stat()`.
+    witnessed mtime AND ctime, or a longer transcript whose mtime carries
+    the engine writer's provenance stamp for its current (inode, size) --
+    so a same-size rewrite or replacement of a covered line is refused
+    even OUTSIDE the window and the tail walk, whether or not the
+    transcript has grown since, at the O(1) cost of one `stat()`. Task
+    cure-01-03-2 (the petition remedy for cure-01-03 and cure-01-01-4
+    alike): the witnessed-size case checks ctime alongside mtime, so an
+    ordinary write that restores the original mtime via `os.utime` after
+    an in-place rewrite -- which cannot restore ctime the same way -- is
+    refused too, not only a rewrite that leaves mtime moved.
 
     Deliberately NOT required: `transcriptBytes == actual size`. A live
     iteration's index is normally behind the transcript's current size
@@ -739,7 +764,8 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     # rewrite or replacement of ANY covered line, however far outside
     # `VERIFY_WINDOW_BYTES` and the tail walk it sits, and whether or not
     # the transcript has grown since, is refused here.
-    for key in ("transcriptInode", "transcriptMtimeNs", "transcriptWitnessBytes"):
+    for key in ("transcriptInode", "transcriptMtimeNs", "transcriptCtimeNs",
+                "transcriptWitnessBytes"):
         value = index.get(key)
         if not isinstance(value, int) or isinstance(value, bool):
             return None

@@ -85,6 +85,7 @@ residual exactly as cure-01-09 disclosed it.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -1268,3 +1269,131 @@ def test_genuine_append_only_growth_across_many_flushes_never_poisons_the_index(
         measured, rendered = _measure(sub, monkeypatch, run_root, 1, path)
         assert rendered == full[-1:] == ["gamma"], (path, rendered)
         assert measured <= _FROZEN_CAP, measured
+
+
+@pytest.mark.parametrize("coverage", ["complete", "lagging"])
+def test_same_size_rewrite_with_preserved_mtime_falls_back_exactly(
+        tmp_path, monkeypatch, coverage):
+    """Task cure-01-03-2 (PRD C.1/C.3, D.1; DoD 3; cure-01-03 and
+    cure-01-01-4 retry): the exact gap cure-01-01-4's mtime-only witness
+    missed -- a same-size, out-of-window rewrite of a covered line,
+    followed by an ORDINARY `os.utime` call that restores the
+    transcript's original mtime (no forged provenance stamp, just an
+    everyday tool that preserves timestamps across a rewrite). Mtime
+    alone therefore still agrees with the published witness; only ctime
+    moved, since a normal write can never restore ctime the way it can
+    mtime. `load_index`'s witness check now covers ctime too, refuses the
+    tampered index for both fully covered and lagging coverage, and both
+    real `ui_server.rendered_log_lines` surfaces fall back to the exact
+    full-render tail ('alpha') rather than the stale 'kept'."""
+    final = _said("kept")
+    for ended in (False, True):
+        sub = tmp_path / f"preserved-mtime-{coverage}-{ended}"
+        run_root = sub / "registry" / "runs" / "probe"
+        n_pad = 180
+        index, size, lines = _write_live_iteration_with_padding(
+            run_root, n_pad, final, ended=ended,
+            indexed_lines=len([0] * (n_pad + 3)) if coverage == "complete" else n_pad - 18)
+        itdir = run_root / "iterations" / "0001"
+        transcript = itdir / "output.jsonl"
+        victim_end = len(lines[0]) + len(lines[1]) + 2
+        assert index["transcriptBytes"] - victim_end > render_index.VERIFY_WINDOW_BYTES
+        if coverage == "lagging":
+            assert index["transcriptBytes"] < size
+        assert render_index.load_index(itdir) is not None
+        assert render_index.bounded_tail(run_root, 1)[-1].startswith(
+            "kept" if not ended else "  iteration 1 done")
+
+        st_before = transcript.stat()
+        _victim_to_streamed_alpha(transcript, replace=False)
+        os.utime(transcript, ns=(st_before.st_atime_ns, st_before.st_mtime_ns))
+        st_after = transcript.stat()
+        assert st_after.st_mtime_ns == st_before.st_mtime_ns, "mtime must stay preserved"
+        assert st_after.st_ctime_ns != st_before.st_ctime_ns, "ctime always moves on a write"
+
+        assert render_index.load_index(itdir) is None, (coverage, ended)
+        _assert_exact_fallback(sub, monkeypatch, run_root, "alpha")
+
+
+def test_a_hub_cached_index_is_refused_after_a_preserved_mtime_rewrite(
+        tmp_path, monkeypatch):
+    """Task cure-01-03-2, cached indexes: the hub's own absent-index
+    cache key (`(inode, size, mtime_ns, ctime_ns)`) also catches a
+    preserved-mtime rewrite -- mtime alone would still match the cached
+    identity, but ctime does not, so both a fresh cache lookup misses and
+    a previously cached index handed straight to `bounded_tail(index=)`
+    is refused, and both real `ui_server.rendered_log_lines` surfaces
+    answer the exact full-render 'alpha' instead of the cached, stale
+    'kept'."""
+    for path in ("disk", "api"):
+        sub = tmp_path / f"cached-preserved-{path}"
+        run_root = sub / "registry" / "runs" / "probe"
+        _write_live_iteration_with_padding(run_root, 180, _said("kept"),
+                                           ended=False, indexed_lines=1)
+        itdir = run_root / "iterations" / "0001"
+        (itdir / render_index.INDEX_FILENAME).unlink()
+        transcript = itdir / "output.jsonl"
+        ui_server._ABSENT_INDEX_CACHE.clear()
+        _, rendered = _measure(sub, monkeypatch, run_root, 1, path)
+        assert rendered == ["kept"]
+        identity, cached = ui_server._ABSENT_INDEX_CACHE["probe"][1]
+
+        st_before = transcript.stat()
+        _victim_to_streamed_alpha(transcript, replace=False)
+        os.utime(transcript, ns=(st_before.st_atime_ns, st_before.st_mtime_ns))
+        st_after = transcript.stat()
+        assert st_after.st_mtime_ns == st_before.st_mtime_ns
+        assert st_after.st_ctime_ns != st_before.st_ctime_ns
+
+        assert render_index.bounded_tail(run_root, 1, index=cached) is None
+        full = render_to_lines("".join(merged_lines(run_root)), tty=False,
+                               state=new_render_state())
+        assert full[-1] == "alpha"
+        for tail in (1, 2):
+            _, rendered = _measure(sub, monkeypatch, run_root, tail, path)
+            assert rendered == full[-tail:], (path, tail, rendered)
+
+
+def test_a_preserved_mtime_rewrite_poisons_a_later_legitimate_append(
+        tmp_path, monkeypatch):
+    """Task cure-01-03-2 criterion (2): a same-size, out-of-window rewrite
+    that restores the transcript's original mtime via `os.utime` -- ctime
+    moved, mtime did not -- still poisons the SAME writer's custody check
+    (`LiveRenderIndex._check_custody`, whose own stat key now carries
+    ctime too) on its very next legitimate append, so growth can never
+    bless the tampered prefix: both surfaces answer the full render
+    ('alpha'), never the stale 'beta'."""
+    pad = json.dumps({"type": "ignored", "padding": "x" * 1000})
+    sub = tmp_path / "preserved-mtime-append"
+    run_root = sub / "registry" / "runs" / "probe"
+    itdir = run_root / "iterations" / "0001"
+    itdir.mkdir(parents=True)
+    (itdir / "meta.json").write_text(json.dumps({
+        "number": 1, "phase": "worker", "model": "stub-model", "approach": 1,
+        "startedAt": "2025-01-01T00:00:00Z", "exitCode": 0, "error": None,
+        "usage": {"totalTokens": 1}}))
+    transcript = itdir / "output.jsonl"
+    live = render_index.LiveRenderIndex()
+    lead = json.dumps({"type": "ignored", "lead": True})
+    with transcript.open("ab") as out:
+        for line in [lead, pad] + [pad] * 150 + [_said("beta")]:
+            live.append(out, (line + "\n").encode(), transcript)
+    assert live.flush(itdir, force=True)
+    assert render_index.load_index(itdir) is not None
+    assert render_index.bounded_tail(run_root, 1) == ["beta"]
+
+    st_before = transcript.stat()
+    _victim_to_streamed_alpha(transcript, replace=False)
+    os.utime(transcript, ns=(st_before.st_atime_ns, st_before.st_mtime_ns))
+    st_after = transcript.stat()
+    assert st_after.st_mtime_ns == st_before.st_mtime_ns
+    assert st_after.st_ctime_ns != st_before.st_ctime_ns
+    assert render_index.load_index(itdir) is None
+
+    with transcript.open("ab") as out:
+        for _ in range(20):
+            live.append(out, (pad + "\n").encode(), transcript)
+    assert live.flush(itdir, force=True)
+    doc = json.loads((itdir / render_index.INDEX_FILENAME).read_text())
+    assert doc["poisoned"] is True, "20 legitimate appends must not bless the preserved-mtime rewrite"
+    _assert_exact_fallback(sub, monkeypatch, run_root, "alpha")

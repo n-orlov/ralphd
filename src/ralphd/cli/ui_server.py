@@ -1562,18 +1562,22 @@ _STATUS_BLOCK_CACHE: dict[str, tuple[float, dict]] = {}
 # `{run_id: (key, (live, lines))}` -- see `_cached_rendered_log_lines` below.
 _LOG_TAIL_CACHE: dict[str, tuple[tuple, tuple[bool, list[str]]]] = {}
 # Task 015 (PRD C.4), extended to every needed iteration by task
-# cure-01-02-2 (PRD C.4, D.1; DoD 3): the hub-owned ABSENT-INDEX cache.
-# `{run_id: {iteration_number: ((inode, size, mtime_ns), index)}}` -- one
+# cure-01-02-2 (PRD C.4, D.1; DoD 3) and to a fourth identity signal by
+# task cure-01-03-2 (PRD C.1/C.3, D.1; DoD 3): the hub-owned ABSENT-INDEX
+# cache. `{run_id: {iteration_number: ((inode, size, mtime_ns, ctime_ns),
+# index)}}` -- one
 # sub-key PER ITERATION a tail's backward walk has ever needed to scan
 # from scratch for this run, not merely the latest one -- see
 # `_absent_index_cache_get`/`_absent_index_cache_put`/`_absent_index_
 # cache_lookup_only`/`_absent_index_cache_fill` below. The per-iteration
 # value's own key is the transcript's full identity witness (inode, size,
-# mtime_ns) at the moment the scan was taken -- not merely its byte size
+# mtime_ns, ctime_ns) at the moment the scan was taken -- not merely its
+# byte size
 # -- so a DIFFERENT run's iteration 1 (a different inode, same size by
 # coincidence) never satisfies a lookup for THIS run's iteration 1; any
-# growth, in-place rewrite or replacement changes at least one of the
-# three and forces a fresh scan, never a stale hit. Deliberately keyed
+# growth, in-place rewrite (including one that restores the original
+# mtime afterwards -- ctime still moves) or replacement changes at least
+# one of the four and forces a fresh scan, never a stale hit. Deliberately keyed
 # the same shape as the other per-run caches above at its OUTER level
 # (one slot per run id, replaced whole for `_bound_run_cache`'s own LRU
 # discipline), and deliberately never written into any run dir:
@@ -1581,7 +1585,7 @@ _LOG_TAIL_CACHE: dict[str, tuple[tuple, tuple[bool, list[str]]]] = {}
 # `engine/loop.py`, into a directory the engine owns; the hub only READS
 # a run dir it does not own, so an index a hub-side scan builds lives
 # here, in this process's own memory, and nowhere on disk.
-_ABSENT_INDEX_CACHE: dict[str, dict[int, tuple[tuple[int, int, int], dict]]] = {}
+_ABSENT_INDEX_CACHE: dict[str, dict[int, tuple[tuple[int, int, int, int], dict]]] = {}
 
 # Task 047 (H.5): the cap each of the three module-scope derivation caches
 # above (`_ITERATION_ROW_CACHE`, `_TASKS_BLOCK_CACHE`, `_STATUS_BLOCK_CACHE`)
@@ -1618,17 +1622,20 @@ def _bound_run_cache(cache: dict, run_id: str) -> None:
 
 
 def _absent_index_cache_get(run_root: Path, run_id: str, number: int) -> dict | None:
-    """Task cure-01-02-2 (PRD C.4, D.1; DoD 3): the per-iteration cache's
-    read side. A miss whenever iteration `number`'s CURRENT transcript
-    identity -- `(inode, size, mtime_ns)`, the same triple `render_index`
-    itself uses as a witness -- does not match whatever this run's cache
-    last built it at: any growth (a live iteration still streaming), an
-    in-place same-size rewrite (the mtime moves even when the size does
-    not) or a replacement (a new inode) changes at least one of the
-    three and forces a fresh scan for exactly that iteration, never a
-    stale hit -- and, unlike a size-only key, two DIFFERENT runs' same-
-    numbered iterations happening to share a byte count never collide,
-    because their inodes never do. Every OTHER iteration's own cached
+    """Task cure-01-02-2 (PRD C.4, D.1; DoD 3), extended by task
+    cure-01-03-2 (PRD C.1/C.3, D.1; DoD 3) to a fourth signal: the
+    per-iteration cache's read side. A miss whenever iteration `number`'s
+    CURRENT transcript identity -- `(inode, size, mtime_ns, ctime_ns)`,
+    the same quadruple `render_index` itself uses as a witness -- does not
+    match whatever this run's cache last built it at: any growth (a live
+    iteration still streaming), an in-place same-size rewrite (the mtime
+    moves even when the size does not, and ctime moves even when an
+    ordinary write restores the original mtime afterwards via `os.utime`)
+    or a replacement (a new inode) changes at least one of the four and
+    forces a fresh scan for exactly that iteration, never a stale hit --
+    and, unlike a size-only key, two DIFFERENT runs' same-numbered
+    iterations happening to share a byte count never collide, because
+    their inodes never do. Every OTHER iteration's own cached
     entry for this run is untouched either way, so a request that only
     needed the latest one never invalidates an earlier, unrelated,
     already-finished iteration's cache. Returns `None` on a miss; never
@@ -1641,7 +1648,7 @@ def _absent_index_cache_get(run_root: Path, run_id: str, number: int) -> dict | 
     if not run_cache or number not in run_cache:
         return None
     identity, index = run_cache[number]
-    if identity != (st.st_ino, st.st_size, st.st_mtime_ns):
+    if identity != (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns):
         return None
     _bound_run_cache(_ABSENT_INDEX_CACHE, run_id)
     return index
@@ -1656,7 +1663,8 @@ def _absent_index_cache_put(run_root: Path, run_id: str, number: int) -> dict | 
     reads and does not own) and stores the result under THIS iteration's
     own sub-key, keyed by the identity witness `compute_render_index`
     itself vouches for (its own `transcriptInode`/`transcriptWitnessBytes`/
-    `transcriptMtimeNs`, never a separate, racy `stat()` of our own),
+    `transcriptMtimeNs`/`transcriptCtimeNs` -- task cure-01-03-2 adds the
+    last of those -- never a separate, racy `stat()` of our own),
     leaving every other cached iteration for this run untouched. A read
     that raced a concurrent modification (`transcriptInode` left 0, the
     same signal `render_index.write_index` itself treats as unsafe to
@@ -1673,7 +1681,8 @@ def _absent_index_cache_put(run_root: Path, run_id: str, number: int) -> dict | 
     index = render_index.compute_render_index(out_path)
     inode = index.get("transcriptInode")
     if inode:
-        identity = (inode, index["transcriptWitnessBytes"], index["transcriptMtimeNs"])
+        identity = (inode, index["transcriptWitnessBytes"],
+                   index["transcriptMtimeNs"], index["transcriptCtimeNs"])
         _ABSENT_INDEX_CACHE.setdefault(run_id, {})[number] = (identity, index)
         _bound_run_cache(_ABSENT_INDEX_CACHE, run_id)
     return index

@@ -1773,10 +1773,11 @@ running. One file per iteration, `iterations/NNNN/render_index.json`, beside
   bytes). A bounded reader can pick any checkpoint at or before the
   byte it wants to resume from, seed a fresh render with its `state`, and
   continue rendering forward -- never from byte 0.
-- `transcriptInode`/`transcriptWitnessBytes`/`transcriptMtimeNs` -- the
-  transcript's own inode, size and mtime as of the moment the writer
-  vouched for this coverage, and `poisoned` (a boolean) -- task
-  cure-01-01-4's engine-published identity/provenance witness, described
+- `transcriptInode`/`transcriptWitnessBytes`/`transcriptMtimeNs`/
+  `transcriptCtimeNs` -- the transcript's own inode, size, mtime and ctime
+  as of the moment the writer vouched for this coverage, and `poisoned`
+  (a boolean) -- task cure-01-01-4's engine-published identity/provenance
+  witness, extended by task cure-01-03-2's own ctime signal, described
   under Read side below.
 
 **Write timing.** `engine/runner.py`'s `pump()` -- the one place
@@ -1867,10 +1868,18 @@ The validity contract this gives is exact for what is read, and bounded:
   derived from the transcript's inode and size. `load_index` then decides
   off one `stat()`: it refuses a `poisoned` index, a changed inode (a
   replacement), a transcript shorter than `transcriptWitnessBytes`, one at
-  exactly that size whose mtime is no longer `transcriptMtimeNs` (an
-  in-place rewrite), and one that has grown past it but whose mtime is not
-  the engine's stamp for its current inode and size (the last modification
-  was not the engine's own append).
+  exactly that size whose mtime OR ctime is no longer `transcriptMtimeNs`/
+  `transcriptCtimeNs` (an in-place rewrite), and one that has grown past
+  it but whose mtime is not the engine's stamp for its current inode and
+  size (the last modification was not the engine's own append).
+  **Task cure-01-03-2 (the petition remedy for cure-01-03 and cure-01-01-4
+  alike):** checking mtime alone at the witnessed size missed an ORDINARY
+  same-size in-place rewrite followed by an `os.utime` call that restores
+  the transcript's original mtime -- a routine timestamp-preserving write,
+  not a forged provenance stamp. Such a write always moves ctime, which a
+  normal write can never restore to an arbitrary value the way it can
+  mtime, so `load_index`'s witnessed-size check now requires BOTH mtime
+  and ctime to still equal what the writer vouched for.
 - **Custody across appends.** Before each write, `append` checks that the
   transcript is exactly as its own last write left it; the first time it
   is not, the writer poisons and republishes the index at once and never
@@ -1984,9 +1993,11 @@ from-scratch builder `render_index.write_index` uses, just never written
 back to disk -- and keeps it in a HUB-owned, in-memory cache
 (`_ABSENT_INDEX_CACHE`), one entry PER ITERATION NUMBER under each run id,
 each keyed by that iteration's own current transcript identity witness
--- `(inode, size, mtime_ns)`, the same triple `render_index` itself uses,
-rather than a size-only key that could let two different runs' same-
-numbered iterations collide on a shared byte count. Nothing here ever
+-- `(inode, size, mtime_ns, ctime_ns)`, the same quadruple `render_index`
+itself uses (task cure-01-03-2 adds ctime to the triple task cure-01-02-2
+first re-keyed this cache to), rather than a size-only key that could let
+two different runs' same-numbered iterations collide on a shared byte
+count. Nothing here ever
 writes into a run dir the hub only reads and does not own: the index
 lives only in the hub process's own memory, with the same per-run-id LRU
 discipline (`_bound_run_cache`, dropped by `_drop_run_detail_caches` on
@@ -2005,7 +2016,9 @@ here only ever costs a repeat of the ONE affected iteration's own scan,
 never a wrong render and never every other iteration's coverage along
 with it. A cached index is also held to its own identity witness, so a
 same-size rewrite or replacement (which leaves the size half of the key
-unchanged, but moves the mtime) makes `bounded_tail` refuse it; whenever
+unchanged, but moves the mtime -- or, task cure-01-03-2, moves ONLY the
+ctime, when an ordinary write restores the original mtime via `os.utime`
+afterwards) makes `bounded_tail` refuse it; whenever
 an index that exists on disk (`render_index.json`) is refused, the SAME
 `on_missing` callback rebuilds it from the transcript's current bytes
 right there and serves the exact walk from that instead of falling back
