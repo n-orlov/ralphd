@@ -248,8 +248,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # names the unpause-alone alternative and the rule-then-unpause
     # sequence, each advertised route executed; repeated-signature control)
     # -> fast 6411/438, smoke 4719/315.
-    "fast": {"tests": 6413, "modules": 438},
-    "smoke": {"tests": 4721, "modules": 315},
+    # cure-01-01-10 (D.1, DoD 4): +1 test / +1 module -- tests/
+    # test_render_index_live_write_cost.py (a real PiRunner probe pinning
+    # LiveRenderIndex.flush's own total write cost across an iteration as
+    # quadratic in the transcript's line count, not the non-quadratic
+    # shape the old architecture doc claimed), measured `.venv/bin/python
+    # -m pytest -q -m fast --collect-only` -> 6414/439, `-m smoke
+    # --collect-only` -> 4722/316.
+    "fast": {"tests": 6414, "modules": 439},
+    "smoke": {"tests": 4722, "modules": 316},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

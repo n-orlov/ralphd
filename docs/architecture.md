@@ -1783,10 +1783,15 @@ running. One file per iteration, `iterations/NNNN/render_index.json`, beside
 **Write timing.** `engine/runner.py`'s `pump()` -- the one place
 `output.jsonl` is written *while the iteration is still running* -- feeds
 `LiveRenderIndex` every raw line the moment it is written to disk, and
-periodically flushes the running snapshot to `render_index.json`
-(`LIVE_FLUSH_EVERY_LINES`, batched so a long iteration's own logging cost
-does not grow quadratically in its own line count). `engine/loop.py`'s
-end-of-iteration bookkeeping then calls `render_index.write_index` once
+every `LIVE_FLUSH_EVERY_LINES` fed lines rewrites `render_index.json` from
+scratch with the WHOLE accumulated snapshot (every checkpoint fed so far,
+not just the newly fed batch). That batching bounds how stale the
+uncovered suffix a reader falls back to scanning can be, and how often the
+rewrite happens, but not its own total cost: each rewrite still costs
+O(total checkpoints so far), so the sum of every flush's cost across a
+whole iteration is quadratic in the transcript's own line count, the same
+as rewriting on every single line would be, just with a smaller constant.
+`engine/loop.py`'s end-of-iteration bookkeeping then calls `render_index.write_index` once
 more, exactly like it does for `collapse_index.json` -- a full, from-scratch
 rebuild that is normally a no-op rewrite of already-current bytes, existing
 so a transcript that ends between two live flushes still ends up with an
