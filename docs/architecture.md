@@ -2775,17 +2775,38 @@ never its evidence. `_pause_escalation_digest_text` serves every other
 pause -- `stagnation`, the two review-contract faults, the two dependency
 faults and the task-boundary commit-secret-scan hold
 (`_pause_for_commit_secret_hit`) -- and reads `unavailable` for the
-findings and preview fields those pauses have no channel for. The
-commit-scan hold's fault lines are the `sha`, `part` and variable NAME read
+findings and preview fields those pauses have no channel for. Every
+answer line for a reason that waits on a ruling names both live-run
+levers, but the phrasing differs with what `resume_if_ruling_answers_
+pause` actually does (cure task cure-01-01-9, PRD A.1/A.6, D.1; DoD 1/4):
+`operator_input_needed`/`rejected_repeated_signature` release the instant
+the ruling is filed, so their line reads `rule ..., or unpause ... to
+accept the default`, two interchangeable single-step alternatives;
+`rejected_last_approach`/`rejected_incurable`/`stagnation` are excluded
+from that check's own reason allow-list, so their line instead spells out
+an explicit two-step sequence (`rule ... then unpause ...`) beside the
+working unpause-alone alternative, never an `or` that would falsely claim
+`rule` alone resolves them.
+The commit-scan hold's fault lines are the `sha`, `part` and variable NAME read
 back off its own `commit_secret_scan` event, never the matched value, and
 it deliberately emits no `operator_escalation` event, so a crashed episode's
 resume routing (`_paused_awaiting_operator_input_needed_ruling`) never
 mistakes it for a parked review rejection and it resumes into `worker`.
-Its answer line names only `ralphctl unpause` (`POST /resume`): with no
-rejection signature on its approach, `resume_if_ruling_answers_pause`
-never lets a ruling release it.
+Its own answer line depends on whether ITS approach already carries a
+rejection signature: with none (the common case -- a fresh approach, or
+one with no earlier reasoned hold), `resume_if_ruling_answers_pause` never
+lets a ruling release it, so the line names only `ralphctl unpause`
+(`POST /resume`); but this hold shares the `operator_input_needed` reason
+STRING with review's own pause, and that check reads only the pause
+reason and the approach's own signature, never which pause raised it --
+so an EARLIER `operator_input_needed`/`rejected_repeated_signature` pause
+on the SAME approach, already answered by a ruling before this hold ever
+landed, leaves a signature behind that a LATER commit-scan hold inherits,
+and then a `ralphctl rule` filed against it releases it too, so the line
+names both levers as interchangeable alternatives instead.
 Tests: `tests/test_commit_scan_escalation_digest.py`,
-`tests/test_escalation_delivery.py`. SPEC.md §4.6.
+`tests/test_escalation_delivery.py`, `tests/test_pause_ruling_release_
+sequence.py`. SPEC.md §4.6.
 
 ## 5. Configuration & injection
 

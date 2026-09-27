@@ -1300,13 +1300,66 @@ class LoopSupervisor:
         if status.get("pauseReason") not in (
                 "operator_input_needed", "rejected_repeated_signature"):
             return False
-        approach = status.get("approach")
-        signatures = status.get("rejectionSignatures") or {}
-        signature = signatures.get(str(approach)) if approach is not None else None
-        if signature is None:
+        if not self._approach_has_rejection_signature(status.get("approach")):
             return False
         self.resume()
         return True
+
+    def _approach_has_rejection_signature(self, approach: int | None) -> bool:
+        """Whether `approach`'s own entry in status.json's `rejectionSignatures`
+        map is a real, non-`None` signature -- the exact fact `resume_if_
+        ruling_answers_pause` (just above) checks before letting a freshly
+        filed ruling release an `operator_input_needed`/`rejected_repeated_
+        signature` pause. Factored out here (cure task cure-01-01-9, PRD
+        A.1/A.6, D.1) so a caller that must DESCRIBE, ahead of time, whether
+        filing a ruling right now would release a LIVE pause reads the
+        identical fact `resume_if_ruling_answers_pause` will apply once a
+        ruling is actually filed, rather than assuming its own approach
+        never carries one. `None` (no approach recorded yet) reads as no
+        signature, matching the caller above's own `approach is not None`
+        guard.
+
+        The one real caller today (`_pause_for_commit_secret_hit`): its
+        commit-scan hold shares the `operator_input_needed` reason STRING
+        with review's own pause but is raised from `worker` with no
+        rejection of its own behind it -- so it never records a signature
+        itself, but an EARLIER `operator_input_needed`/`rejected_repeated_
+        signature` pause answered by a ruling on the SAME approach leaves
+        that approach's own entry on status.json, and a commit-scan hold
+        raised later in that same approach inherits it -- a ruling filed
+        against THIS hold then releases it too, exactly like the earlier
+        one did, however unrelated the hold itself is to that rejection.
+        """
+        if approach is None:
+            return False
+        status = self.run.read_status()
+        signatures = status.get("rejectionSignatures") or {}
+        return signatures.get(str(approach)) is not None
+
+    def _ruling_then_unpause_answer_cmd(self) -> str:
+        """The answer-command text for a pause whose `pauseReason` is NOT
+        one `resume_if_ruling_answers_pause` ever releases on its own
+        (`rejected_last_approach`, `rejected_incurable`, `stagnation`):
+        filing a ruling here (`ralphctl rule`/`POST /rule`) only records
+        it -- `RunDir.add_ruling`, with no matching release check for any
+        of these three reasons -- so releasing the pause always still
+        needs a SEPARATE `ralphctl unpause`/`POST /resume` afterward,
+        whether or not a ruling was filed first (cure task cure-01-01-9,
+        PRD A.1/A.6, D.1; review found the PRIOR wording -- "ralphctl rule
+        ..., or ralphctl unpause ... to accept the default" -- read as two
+        interchangeable single-step alternatives, and executing `rule`
+        alone through the real CLI/engine route left the run paused).
+        Phrased as an explicit two-step sequence (`then`), with the
+        working unpause-ALONE alternative named right after it, never the
+        `operator_input_needed`/`rejected_repeated_signature` reasons' own
+        `or ... to accept the default` phrasing, which stays correct only
+        for those two (`_operator_escalation_digest_text` keeps it there).
+        """
+        return (
+            f"ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
+            f"<slug> then ralphctl unpause {self.cfg.run_id} to record a "
+            f"ruling before resuming, or ralphctl unpause {self.cfg.run_id} "
+            "alone to resume with none recorded")
 
     def retry_now(self) -> bool:
         """Operator-requested "try the endpoint again right now" (task 015,
@@ -7045,14 +7098,28 @@ class LoopSupervisor:
         never the matched value), read back from the `commit_secret_scan`
         event just emitted rather than threaded through as a parameter,
         so this method's own call sites (`_step_worker`, and this test's
-        own direct call) need no signature change. NOT ruling-answerable:
-        `POST /rule` releases only an `operator_input_needed` pause whose
-        approach carries a recorded `rejectionSignatures` entry
-        (`resume_if_ruling_answers_pause`), and this hold, raised from
-        `worker` with no review rejection behind it, never has one -- a
-        ruling filed here is stored unscoped and the run stays paused. So
-        `answer_cmd` names only the lever that actually releases it,
-        `ralphctl unpause` (`POST /resume`), and says a ruling does not.
+        own direct call) need no signature change.
+
+        Cure task cure-01-01-9 (PRD A.1/A.6, D.1; DoD 1/4): review found
+        the PRIOR claim here -- "NOT ruling-answerable ... this hold, raised
+        from `worker` with no review rejection behind it, never has one"
+        -- false whenever this hold lands on an approach that ALREADY
+        carries a `rejectionSignatures` entry: an earlier `operator_input_
+        needed`/`rejected_repeated_signature` pause on the SAME approach,
+        answered by a ruling, leaves that approach's own signature on
+        status.json, and this hold -- raised later in that same approach,
+        sharing the `operator_input_needed` reason STRING with review's
+        own pause -- inherits it; a ruling filed against THIS hold then
+        releases it too (`resume_if_ruling_answers_pause` reads only the
+        pause reason and the approach's own signature, never whether the
+        CURRENT pause is the one that recorded it). `answer_cmd` is chosen
+        below off `_approach_has_rejection_signature`, the exact fact that
+        check applies, so it is accurate whether or not this approach
+        already carries one: with no signature, only `ralphctl unpause`
+        (`POST /resume`) releases it and a ruling is stored unscoped; with
+        one, `ralphctl rule`/`ralphctl unpause` are interchangeable single-
+        step alternatives, the same pair `operator_input_needed`'s own
+        review-side digest already advertises.
         """
         self.pause(reason="operator_input_needed")
         if self.notifier is not None:
@@ -7066,11 +7133,19 @@ class LoopSupervisor:
                 f"variable: {hit.get('variable') or 'unknown'}",
             ]
             approach = self._approach or 1
+            if self._approach_has_rejection_signature(approach):
+                answer_cmd = (
+                    f"ralphctl rule {self.cfg.run_id} --file <ruling.md> "
+                    f"--name <slug>, or ralphctl unpause {self.cfg.run_id} "
+                    "to accept the default (this approach already carries "
+                    "an earlier rejection signature, so a ruling filed "
+                    "now releases this hold too)")
+            else:
+                answer_cmd = (
+                    f"ralphctl unpause {self.cfg.run_id} to resume the "
+                    "worker (a ruling does not release this hold)")
             digest = self._pause_escalation_digest_text(
-                "operator_input_needed", approach,
-                f"ralphctl unpause {self.cfg.run_id} to resume the worker "
-                "(a ruling does not release this hold)",
-                fault_lines)
+                "operator_input_needed", approach, answer_cmd, fault_lines)
             self._notify_escalation_delivery(
                 digest, reason="operator_input_needed")
 
@@ -13439,23 +13514,42 @@ class LoopSupervisor:
         The finding-id assigned here (`F<n>`, 1-based in `blocking`'s own
         order) is local to this digest; nothing else reads it back.
 
-        Every reason this digest renders for is ruling-answerable (D.1's
-        own `rejected_last_approach`/`rejected_incurable` included, exactly
-        like `operator_input_needed`/`rejected_repeated_signature`) --
-        SPEC.md's own rule ("every live-run pause and escalation text
+        Every reason this digest renders for waits on an operator ruling
+        (D.1's own `rejected_last_approach`/`rejected_incurable` included,
+        exactly like `operator_input_needed`/`rejected_repeated_signature`)
+        -- SPEC.md's own rule ("every live-run pause and escalation text
         names the two live-run levers") -- so `answer_cmd` always names
         BOTH `ralphctl rule ... --file <ruling.md> --name <slug>` and
-        `ralphctl unpause <run>`, never unpause alone.
+        `ralphctl unpause <run>`, never unpause alone. But the two pairs
+        differ in what filing the ruling actually DOES before that unpause
+        (cure task cure-01-01-9, PRD A.1/A.6, D.1; DoD 1/4 -- review ran
+        every one of the four through the real `/rule` route and found the
+        prior, single shared phrasing false for half of them): for
+        `operator_input_needed`/`rejected_repeated_signature`,
+        `resume_if_ruling_answers_pause` releases the pause the instant
+        the ruling is filed, so `rule`/`unpause` are genuinely two
+        INTERCHANGEABLE single-step alternatives ("or ... to accept the
+        default"); for `rejected_last_approach`/`rejected_incurable`, that
+        same check never applies (its own reason allow-list excludes both),
+        so filing `rule` alone leaves the run paused -- releasing it always
+        needs a SEPARATE `unpause` afterward, whether or not a ruling was
+        filed first, and `_ruling_then_unpause_answer_cmd` phrases that as
+        an explicit two-step sequence plus the working unpause-alone
+        alternative, never as an `or` between two things that each resolve
+        it on their own.
         """
         findings_list = findings_list or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         residual = [f for f in findings_list if f.get("severity") == "residual"]
         fields = self._discretionary_gate_escalation_fields(
             approach, cure_preview or {})
-        answer_cmd = (
-            f"ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
-            f"<slug>, or ralphctl unpause {self.cfg.run_id} to accept the "
-            "default")
+        if reason in ("operator_input_needed", "rejected_repeated_signature"):
+            answer_cmd = (
+                f"ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
+                f"<slug>, or ralphctl unpause {self.cfg.run_id} to accept "
+                "the default")
+        else:
+            answer_cmd = self._ruling_then_unpause_answer_cmd()
         header_lines = [
             f"run {self.cfg.run_id} escalation: {reason}",
             f"pauseReason: {reason}",
@@ -14338,11 +14432,17 @@ class LoopSupervisor:
                     f"{entry['id']} awaiting-validation, attempts "
                     f"{entry['validationAttempts']} of "
                     f"{VALIDATION_ATTEMPT_LIMIT}")
+            # Cure task cure-01-01-9 (PRD A.1/A.6, D.1; DoD 1/4): a
+            # `stagnation` pause resumes into `worker`, never `review`
+            # (`_step_paused` above), and `resume_if_ruling_answers_pause`
+            # never releases it -- the prior "rule ..., or unpause ... to
+            # accept the default" phrasing read as two interchangeable
+            # single-step alternatives, but executing `rule` alone through
+            # the real CLI/engine route left the run paused; the shared
+            # helper phrases the actual two-step sequence instead.
             digest = self._pause_escalation_digest_text(
                 "stagnation", approach,
-                f"ralphctl rule {self.cfg.run_id} --file <ruling.md> "
-                f"--name <slug>, or ralphctl unpause {self.cfg.run_id} "
-                "to accept the default",
+                self._ruling_then_unpause_answer_cmd(),
                 fault_lines)
             self._notify_escalation_delivery(digest, reason="stagnation")
 

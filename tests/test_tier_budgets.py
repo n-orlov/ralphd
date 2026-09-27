@@ -229,8 +229,17 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # CLI handler and engine route and must release the pause), measured
     # `-m fast --collect-only` -> 6385/437, `-m smoke --collect-only`
     # -> 4693/314.
-    "fast": {"tests": 6385, "modules": 437},
-    "smoke": {"tests": 4693, "modules": 314},
+    # cure-01-01-9 (A.1/A.6, D.1, DoD 1/4): +12 tests / +1 module -- 11 in
+    # the new tests/test_pause_ruling_release_sequence.py (every advertised
+    # rule/unpause command driven through the real CLI parser + engine
+    # route over the ACTUAL pause it answers, for all five ruling-facing
+    # reasons) plus 1 in tests/test_commit_scan_escalation_digest.py (the
+    # commit-scan hold inherits an earlier rejection signature and becomes
+    # rule-releasable too) -- measured `.venv/bin/python -m pytest -q -m
+    # fast --collect-only` -> 6397/438, `-m smoke --collect-only` ->
+    # 4705/315.
+    "fast": {"tests": 6397, "modules": 438},
+    "smoke": {"tests": 4705, "modules": 315},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

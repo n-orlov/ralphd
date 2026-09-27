@@ -505,16 +505,25 @@ the container is gone — indicated by `"live": false` in `--json` mode).
 The `state:` line names up to two markers, space-separated after the raw
 state word, whenever they apply (issue #269). The first is the pause
 marker (the same one `ralphctl runs` and the hub run list render): `⏸
-parked for input` marks the one `pauseReason` (`operator_input_needed`) a
-plain `ralphctl unpause` cannot answer, and `⏸ held on rejected_incurable
+parked for input` marks the one `pauseReason` (`operator_input_needed`)
+whose bare `ralphctl unpause`, with no ruling ever filed, releases the
+run straight back into `review` over the EXACT SAME approach with
+nothing new to go on — likely to re-raise the identical rejection rather
+than progress (a plain unpause DOES release this pause; it just does not
+change the underlying determination). `⏸ held on rejected_incurable
 escalation` marks a run the engine is holding on a `rejected_incurable`
 escalation — a pause kept in memory only, so its `state` still reads
-`running` and it records no `pauseReason`. The second, `❗ escalation
+`running` and it records no `pauseReason`; a ruling filed against this
+hold is recorded but never releases it on its own (cure task cure-01-01-9)
+— only `ralphctl unpause`/`POST /resume` does. The second, `❗ escalation
 undelivered`, names a run whose most recently recorded engine escalation
 never reached the operator at all — every bounded delivery retry failed —
 and which is still paused on that exact escalation, persisted or held in
-memory. Both disappear once `ralphctl unpause`/`POST /resume` (or a ruling
-that answers the pause) releases the hold. `--json` carries the same facts
+memory. Both disappear once `ralphctl unpause`/`POST /resume` releases the
+hold — for `operator_input_needed`/`rejected_repeated_signature` a `ralphctl
+rule` alone does too, but for every other reason that waits on a ruling
+(`rejected_last_approach`, `rejected_incurable`, `stagnation`) a rule
+alone leaves the hold in place; it takes a separate unpause afterward. `--json` carries the same facts
 as `pauseMarker` (the pause marker string, `""` when none applies),
 `escalationUndelivered` (boolean) and `escalationUndeliveredMarker` (the
 marker string, `""` when it does not apply), on the live and on-disk
@@ -1921,25 +1930,41 @@ Hold/release the loop at the next iteration boundary.
 
 `unpause` is also how you proceed past an engine-recorded pause
 (`pauseReason` in `status.json`): it POSTs `/resume` to the live engine and
-clears the reason. To answer a parked run first, record a ruling with
-`ralphctl rule <run-id> --file <ruling.md> --name <slug>`, then `ralphctl
-unpause <run-id>`. Every pause and escalation text the engine produces names
-these two commands, never `ralphctl resume` -- `resume` starts a fresh
-container over an existing run dir (crash recovery, budget top-up) and is
-not for a run that is still alive.
+clears the reason, and it ALWAYS releases the pause on its own, whichever
+reason set it. Whether a ruling should come first depends on the reason:
+for `operator_input_needed`/`rejected_repeated_signature`, `ralphctl rule
+<run-id> --file <ruling.md> --name <slug>` ALONE already releases the run
+(the two commands are interchangeable single-step alternatives); for every
+other reason that waits on a ruling (`rejected_last_approach`, `rejected_
+incurable`, `stagnation`), a `rule` alone records the ruling but leaves the
+run paused -- it takes the explicit sequence, `ralphctl rule <run-id>
+--file <ruling.md> --name <slug>` then `ralphctl unpause <run-id>`, to
+record a ruling before resuming; `ralphctl unpause <run-id>` alone still
+works too, resuming with no ruling recorded. Every pause and escalation
+text the engine produces names both live-run levers, never `ralphctl
+resume` -- `resume` starts a fresh container over an existing run dir
+(crash recovery, budget top-up) and is not for a run that is still alive.
 
 With a notifier configured (`--notifier-url`), every engine-recorded pause
 also POSTs the operator a bounded digest (at most `MAX_NOTIFY_CHARS`) instead
 of the raw diagnostic text: run id, `pauseReason`, `approach n of m`,
 blocking/residual counts, tasks reopened/inserted, spend this approach, the
-hub URL when `hub_base_url` is configured, and the exact answer commands
-above. That covers every pause reason, including the task-boundary
-commit-secret-scan hold (`pauseReason: operator_input_needed` raised from
-`worker`, which resumes into `worker`, not `review`): its digest names the
-offending commit's `sha`, the `part` and the variable NAME, never the
-matched value, reads `unavailable` for the findings and reopen/insert
-fields it has no channel for, and names `ralphctl unpause <run>` as its only
-answer -- a `ralphctl rule` filed against it does not release it. docs/api.md's `POST /pause` section lists the
+hub URL when `hub_base_url` is configured, and the exact answer command(s)
+for that reason, phrased the way the paragraph above describes. That covers
+every pause reason, including the task-boundary commit-secret-scan hold
+(`pauseReason: operator_input_needed` raised from `worker`, which resumes
+into `worker`, not `review`): its digest names the offending commit's
+`sha`, the `part` and the variable NAME, never the matched value, reads
+`unavailable` for the findings and reopen/insert fields it has no channel
+for, and its own answer command depends on whether the CURRENT approach
+already carries a recorded rejection signature from an EARLIER `operator_
+input_needed`/`rejected_repeated_signature` pause on that same approach,
+already answered by a ruling before this hold ever landed: with none (the
+common case), a `ralphctl rule` filed against it does not release it, so it
+names only `ralphctl unpause <run>`; with one, `resume_if_ruling_answers_
+pause` releases this hold too, so it names both levers as interchangeable
+alternatives, exactly like `operator_input_needed`'s own review-side
+pause. docs/api.md's `POST /pause` section lists the
 full coverage.
 
 ### `ralphctl retry <run-id>`

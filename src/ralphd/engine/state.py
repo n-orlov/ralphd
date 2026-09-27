@@ -502,10 +502,18 @@ NONTERMINAL_STATES = ("starting", "running", PAUSED_STATE, "finishing",
 
 # v0.23 requirement A.7, resolved tension 3 (task 017, #224): the ONE shared
 # marker text `ralphctl runs` and the hub run list both render for a run
-# parked with `pauseReason: "operator_input_needed"` -- a run an operator
-# can unblock only by reading a ruling in and resuming, which every OTHER
-# `paused` reason resolves on its own (a `tasks.json` edit, a fresh
-# approach) or needs no ruling to answer. One spelling here so the two
+# parked with `pauseReason: "operator_input_needed"` -- the ONE reason
+# whose own bare `ralphctl unpause`, with no ruling ever filed, re-enters
+# `review` over the EXACT SAME approach with nothing new to go on, so it
+# is likely to re-raise the identical rejection rather than progress
+# (cure task cure-01-01-9, PRD A.1/A.6, D.1). Every OTHER `paused` reason
+# that also waits on a ruling (`rejected_last_approach`, `rejected_
+# incurable`, `stagnation`) still has a real, distinct default disposition
+# a bare unpause resolves into (accept the rejection as final, finish the
+# run, or simply continue past the stagnation) -- their own escalation
+# text names it -- while the dependency/review-contract reasons resolve
+# entirely on their own (a `tasks.json` edit) and need no ruling at all.
+# One spelling here so the two
 # surfaces (`cmd_runs`, `ui_server.run_list` -> `app.js`) can never drift.
 OPERATOR_INPUT_NEEDED_PAUSE_REASON = "operator_input_needed"
 PARKED_FOR_INPUT_MARKER = "\u23F8 parked for input"
@@ -526,9 +534,9 @@ def format_pause_marker(pause_reason) -> str:
 # render for a run whose most recent operator escalation NEVER reached the
 # operator at all (every retry in `LoopSupervisor._notify_escalation_
 # delivery` failed) and which is still sitting on that exact escalation --
-# `format_pause_marker` above is the sibling for the ONE reason a plain
-# `unpause` cannot answer; this is the sibling for the delivery FAILING,
-# orthogonal to which reason paused the run.
+# `format_pause_marker` above is the sibling for the ONE reason a bare
+# `unpause` re-raises rather than actually answering; this is the sibling
+# for the delivery FAILING, orthogonal to which reason paused the run.
 #
 # The literal string mirrors `engine.run_record.NOTIFICATION_ESCALATION_
 # UNDELIVERED_EVENT` -- never imported here, since `run_record` imports

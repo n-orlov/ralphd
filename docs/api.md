@@ -192,14 +192,23 @@ keys with no section of their own below:
 | `rulingReparked` | v0.23 requirement A.5 (#224, task 016) — the list of operator ruling `seq` numbers (`state.ruling_entries`) that have already spent their ONE re-park: when a re-run `review` re-rejects on the SAME finding signature a recorded ruling addressed (`LoopSupervisor._ruling_honoured_for_approach`), the `operator_input_needed` pause fires once for that ruling and appends its `seq` here (`_record_ruling_reparked`); a LATER rejection matching that same ruling's own signature (`_ruling_already_reparked`) is bounded — it proceeds to the ordinary archive/replan tail instead of re-parking a second time. A fresh ruling filed later (a new `seq`), even against the identical signature, is a DIFFERENT ruling and is not covered by an earlier entry. Additive and disk-backed for the life of the RUN, never reset per approach. Absent for a run that has never re-parked on a ruled signature |
 | `discretionaryGateSpent` | v0.23 requirement A.3 (#224, task 017) — the ONE shared discretionary gate trigger conditions 2 and 3 draw from, `{"<approach>": true}`: trigger condition 2 (`state.cure_pass_preview` shows a cure pass would re-open task(s) already `validated`) and trigger condition 3 (`LoopSupervisor._repeated_rejection_signature`, a rejection whose blocking-clause signature repeats the immediately preceding approach's) each check `_discretionary_gate_available` before pausing and `_spend_discretionary_gate` the moment they do — whichever of the two fires FIRST in an approach spends the entry for that approach's own string key; the other, should it also fire later in the SAME approach, falls through to its ordinary edge instead (the cure pass is taken silently; the repeated signature is recorded and the approach archived/replanned exactly as if it had never repeated). Condition 1's own `operator_input_needed` gate (task 014) is a SEPARATE, unbudgeted pause and never reads this map — an ordinary rejection (one whose blocking-clause signature does NOT repeat the preceding approach's) later in the same approach still raises it even after this budget is spent. The one rejection that does not raise it is the condition-3 match this budget just refused: the same rejection cannot be both a spent discretionary trigger and an unbudgeted condition-1 gate, or the shared budget would be a no-op whenever the flag is on, so that rejection goes to the archive/replan tail. A reviewer-raised gate (`raise_operator_gate`, requirement A.6) is a fresh per-verdict decision and overrides that, exactly as it overrides the flag itself. Disk-backed and survives a resume; a fresh approach (a replan, or the run's very first) always reads its own key back unset. Absent for a run that has never spent this gate |
 
-`state` reaches the value `paused` for exactly one reason, and it is never an
-operator pause: the engine pausing ITSELF on the `rejected_last_approach`
+`state` reaches the value `paused` for any of several reasons, and it is
+never an operator pause: the engine pausing ITSELF on a reasoned
 escalation edge (v0.18 requirement D.1/D.2, task 036) records `state:
-"paused"` plus `pauseReason` so a host can see that the run is parked waiting
-for a human ruling rather than working. `POST /pause` records nothing at all —
-it holds the loop at the next iteration boundary without changing `state` or
-`phase` (see `POST /pause` below). There is no `paused` **phase** in either
-case: `phase` keeps naming the phase that ran last. The full `status.json`
+"paused"` plus `pauseReason` (SPEC.md §5.2's own `pauseReason` field
+table) so a host can see that the run is parked waiting for a human
+before that reason's own answer command releases it, rather than
+working. The one exception is `rejected_incurable` (task 006): its own
+`_pause_and_escalate_incurable_rejection` takes the reason-less,
+in-memory `self.pause()` (cure task cure-01-01-9), so `state` keeps
+reading whatever it already was -- the hold is derived from
+`events.jsonl` instead (`ralphctl status`'s own
+`⏸ held on rejected_incurable escalation` marker,
+`state.escalation_pause_markers`). `POST /pause` also records nothing at
+all — it holds the loop at the next iteration boundary without changing
+`state` or `phase` (see `POST /pause` below). There is no `paused`
+**phase** in either case: `phase` keeps naming the phase that ran last.
+The full `status.json`
 field table is SPEC §5.
 
 `usage.byPhase` breaks the same running totals down by iteration phase
@@ -940,14 +949,28 @@ task-boundary commit-secret-scan hold (`pauseReason:
 `variable` NAME, never the matched value. A pause with no review findings
 channel or cure-pass preview (every reason but the four finding-bearing
 ones) reads `unavailable` for blocking, residual, tasks reopened and tasks
-inserted, never an invented `0`. Ruling-answerable pauses (the four
-finding-bearing reasons and `stagnation`) name both
+inserted, never an invented `0`. Every pause that waits on an operator
+ruling (the four finding-bearing reasons and `stagnation`) names both
 `ralphctl rule <run> --file <ruling.md> --name <slug>` and `ralphctl
-unpause <run>`; the dependency and review-contract pauses name their own
-remedy plus `ralphctl unpause <run>`. The commit-scan hold names only
-`ralphctl unpause <run>` and says a ruling does not release it: `POST /rule`
-releases an `operator_input_needed` pause only when its approach has a
-recorded rejection signature, which this worker-side hold never has. Delivery is retried up to 3 times
+unpause <run>`, but the two live-run levers are not always interchangeable
+single-step alternatives (cure task cure-01-01-9): for `operator_input_
+needed`/`rejected_repeated_signature`, filing the ruling alone releases
+the pause (`resume_if_ruling_answers_pause`), so the answer line reads
+`rule ..., or unpause ... to accept the default`; for `rejected_last_
+approach`/`rejected_incurable`/`stagnation`, that check never applies, so
+`rule` alone leaves the run paused and the answer line instead reads an
+explicit `rule ... then unpause ...` sequence beside the working
+unpause-alone alternative. The dependency and review-contract pauses name
+their own remedy plus `ralphctl unpause <run>`, never a rule command. The
+commit-scan hold's own answer command depends on whether its approach
+ALREADY carries a recorded rejection signature (an earlier `operator_
+input_needed`/`rejected_repeated_signature` pause on the SAME approach,
+answered by a ruling, before this hold ever landed): with none (the
+common case), it names only `ralphctl unpause <run>` and says a ruling
+does not release it; with one, `POST /rule` releases this hold too
+(`resume_if_ruling_answers_pause` reads only the pause reason and the
+approach's own signature, never which pause raised it), so it names both
+levers as interchangeable alternatives instead. Delivery is retried up to 3 times
 with bounded backoff and an exhausted retry records
 `notification.escalation_undelivered` (below). The full text still lands
 on the `operator_escalation` event's own `escalation` field -- except for
