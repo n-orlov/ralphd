@@ -295,11 +295,10 @@ def _valid_checkpoint_state_shape(state: object) -> bool:
 
 
 def _state_matches(state: dict, stored: dict) -> bool:
-    """Whether a live render `state` equals a checkpoint's stored (JSON-
-    round-tripped) `state` -- compared through the same JSON round trip
-    the stored copy went through, so `tool_pending`'s tuples and
-    `collapse_unresolved`'s set compare equal to their JSON arrays."""
-    return json.loads(json.dumps(_state_to_json(state))) == stored
+    """Whether a live render `state` equals a checkpoint's stored `state`
+    -- both in `_state_to_json`'s one canonical JSON shape, whether the
+    stored copy was read back from disk or is still in memory."""
+    return _state_to_json(state) == stored
 
 
 def _render_segment(raw: bytes, cp: dict, state: dict,
@@ -407,16 +406,16 @@ LIVE_FLUSH_EVERY_LINES = 20
 
 
 def _state_to_json(state: dict) -> dict:
-    """`log_render`'s render-state dict, JSON-round-trippable: its one
-    non-JSON member (`collapse_unresolved`, a `set`) becomes a sorted
-    list; everything else (`tool_pending`'s tuples included -- `json.dumps`
-    already serializes a tuple as a JSON array) survives `json.dumps`
-    unchanged. A DEEP copy: `tool_args`/`tool_pending` are dicts the live
-    render state keeps mutating, and a checkpoint sharing them would
+    """`log_render`'s render-state dict in exactly the shape a JSON round
+    trip gives back: `collapse_unresolved`'s `set` becomes a sorted list
+    and `tool_pending`'s `(name, args)` tuples become lists, so an
+    in-memory checkpoint and the same checkpoint read back from disk
+    compare equal. A DEEP copy: `tool_args`/`tool_pending` are dicts the
+    live render state keeps mutating, and a checkpoint sharing them would
     silently describe a later line's state instead of its own."""
-    out = copy.deepcopy(state)
+    out = dict(state)
     out["collapse_unresolved"] = sorted(state.get("collapse_unresolved") or ())
-    return out
+    return json.loads(json.dumps(out))
 
 
 def _state_from_json(d: dict) -> dict:

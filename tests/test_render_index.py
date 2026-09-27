@@ -37,15 +37,19 @@ import asyncio
 import contextlib
 import json
 import stat
+import sys
+import time
 import zlib
 
 import pytest
 
 from ralphd import render_index
+from ralphd.cli import ui_server
 from ralphd.cli.log_render import new_render_state, render_to_lines
 from ralphd.engine.runner import PiRunner
-from ralphd.log_merge import OUTPUT_FILENAME
+from ralphd.log_merge import OUTPUT_FILENAME, merged_lines
 from test_log_merge_bounded_reads import (
+    _count_transcript_bytes,
     _write_iteration_with_recognized_nonrendering_gap,
 )
 
@@ -233,3 +237,124 @@ class TestWrittenWhileLive:
         doc["transcriptBytes"] = actual_size + 1
         (itdir / render_index.INDEX_FILENAME).write_text(json.dumps(doc))
         assert render_index.load_index(itdir) is None
+
+
+def _said(text):
+    return {"type": "message_end", "message": {"content": [
+        {"type": "text", "text": text}]}}
+
+
+def _fake_pi_calls_a_tool_then_waits(tmp_path, pad: int, go):
+    """A `pi` stand-in that starts a tool call, streams `pad` silent ~1 KB
+    lines while that call is still pending -- many live flushes, and well
+    over a megabyte of transcript -- says 'during', then waits for `go` to
+    exist before ending the call, saying 'after' and exiting."""
+    script = tmp_path / "fake-pi-tool-call"
+    events = {
+        "before": _said("before"),
+        "start": {"type": "tool_execution_start", "toolCallId": "call-1",
+                  "toolName": "bash", "args": {"command": "sleep 1"}},
+        "pad": {"type": "message_end", "message": {"content": []},
+                "padding": "x" * 1000},
+        "during": _said("during"),
+        "end": {"type": "tool_execution_end", "toolCallId": "call-1",
+                "toolName": "bash", "isError": False,
+                "result": {"content": [{"type": "text", "text": "ok"}]}},
+        "after": _said("after"),
+    }
+    script.write_text(f"""#!{sys.executable}
+import json, os, sys, time
+E = {events!r}
+sys.stdin.read()
+def emit(ev):
+    sys.stdout.write(json.dumps(ev) + "\\n")
+    sys.stdout.flush()
+emit(E["before"])
+emit(E["start"])
+for _ in range({pad}):
+    emit(E["pad"])
+emit(E["during"])
+while not os.path.exists({str(go)!r}):
+    time.sleep(0.01)
+emit(E["end"])
+emit(E["after"])
+""")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return script
+
+
+class TestPendingToolCallAcrossFlushes:
+    """A live index stays valid across every flush made while a tool call
+    is pending: `tool_pending` holds a `(name, args)` pair, and the flush's
+    own self-check of what it last published must compare that state in
+    the same (JSON) shape it was stored in, or the writer poisons itself
+    and every live tail falls back to reading the whole transcript."""
+
+    PAD = 1500
+
+    def test_index_stays_valid_and_the_hub_tail_bounded(self, tmp_path,
+                                                         monkeypatch):
+        reg = tmp_path / "registry"
+        run_root = reg / "runs" / "probe"
+        itdir = run_root / "iterations" / "0001"
+        itdir.mkdir(parents=True)
+        (itdir / "meta.json").write_text(json.dumps({
+            "number": 1, "phase": "worker", "model": "stub-model",
+            "approach": 1, "startedAt": "2025-01-01T00:00:00Z",
+            "exitCode": None, "error": None, "usage": {"totalTokens": 1}}))
+        transcript = itdir / OUTPUT_FILENAME
+        go = tmp_path / "go"
+        script = _fake_pi_calls_a_tool_then_waits(tmp_path, self.PAD, go)
+        (tmp_path / "workspace").mkdir()
+        runner = PiRunner(workspace=tmp_path / "workspace", pi_bin=str(script))
+        # The dead-run on-disk surface; both surfaces try the same
+        # `render_index.bounded_tail` first.
+        monkeypatch.setattr(ui_server, "_proxy_text",
+                            lambda *a, **kw: (False, ""))
+
+        def tail_two():
+            full = render_to_lines("".join(merged_lines(run_root)),
+                                   tty=False, state=new_render_state())
+            with monkeypatch.context() as mp:
+                counts = _count_transcript_bytes(mp)
+                _, rendered = ui_server.rendered_log_lines(reg, "probe", 2)
+            return counts[0], rendered, full[-2:]
+
+        def assert_index_valid():
+            index = render_index.load_index(itdir)
+            assert index is not None, "the live index must validate"
+            assert index["poisoned"] is False
+            return index
+
+        async def go_run():
+            task = asyncio.ensure_future(
+                runner.run("prompt", transcript, timeout_s=120))
+            deadline = time.monotonic() + 60
+            while b"during" not in (transcript.read_bytes()[-200:]
+                                    if transcript.exists() else b""):
+                assert not task.done(), "the fake pi ended early"
+                assert time.monotonic() < deadline, "the fake pi never said 'during'"
+                await asyncio.sleep(0.01)
+            # Mid-iteration, the tool call still pending: the writer has
+            # flushed many times since `tool_execution_start`.
+            mid = assert_index_valid()
+            assert mid["checkpoints"][-1]["state"]["tool_pending"] == {
+                "call-1": ["bash", {"command": "sleep 1"}]}
+            size = transcript.stat().st_size
+            assert size > 1_000_000
+            mid_tail = tail_two()
+            go.touch()
+            await asyncio.wait_for(task, 60)
+            return mid_tail, size
+
+        (mid_bytes, mid_rendered, mid_full), mid_size = asyncio.run(go_run())
+        assert mid_rendered == mid_full
+        assert mid_full[-1].endswith("during")
+        assert mid_bytes < 1_000_000, (mid_bytes, mid_size)
+
+        final = assert_index_valid()
+        assert final["transcriptBytes"] == transcript.stat().st_size
+        end_bytes, end_rendered, end_full = tail_two()
+        assert end_rendered == end_full
+        assert end_full[-1].endswith("after")
+        assert end_bytes < 1_000_000, end_bytes

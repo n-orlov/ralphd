@@ -255,8 +255,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # shape the old architecture doc claimed), measured `.venv/bin/python
     # -m pytest -q -m fast --collect-only` -> 6414/439, `-m smoke
     # --collect-only` -> 4722/316.
-    "fast": {"tests": 6414, "modules": 439},
-    "smoke": {"tests": 4722, "modules": 316},
+    # Render index pending-tool fix: +1 test, no new module (tests/test_
+    # render_index.py::TestPendingToolCallAcrossFlushes: a live index stays
+    # valid across flushes while a tool call is pending, and the hub's
+    # 2-line tail stays bounded), measured `.venv/bin/python -m pytest -q
+    # -m fast --collect-only` -> 6415/439, `-m smoke --collect-only` ->
+    # 4723/316.
+    "fast": {"tests": 6415, "modules": 439},
+    "smoke": {"tests": 4723, "modules": 316},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
