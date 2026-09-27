@@ -5147,7 +5147,23 @@ dir themselves and a live proxy would only add a way to disagree.
   so a waive line's own text embedded inside an unrelated operator
   sentence ('Do not waive F1 (clause one (#111))' followed by its own
   line's newline and unrelated prose) is never mistaken for that composed
-  line and spliced out of the operator's own prose. cure-01-05
+  line and spliced out of the operator's own prose. cure-01-01-7
+  (B.3-B.4, D.1, DoD 2) fixes the one case that per-line scheme still
+  got wrong: checking two findings, then unchecking the EARLIER one
+  first, always stripped that line's own recorded separator even when
+  the LATER finding's still-active line now sits immediately after it
+  and still needs that exact byte to stay off whatever precedes it --
+  merging, say, an unterminated `orig` straight into `waive F2 (...)`
+  with no separating byte at all. Removal now strips a line's own
+  recorded separator only when nothing composed follows it; when
+  something does, the still-active composed line immediately after it
+  inherits that debt (`sepState[thatLine] = true`) instead of losing it,
+  so THAT line's own later removal -- once nothing follows at all --
+  strips the byte this removal correctly left alone. Checking any number
+  of findings and unchecking them in any order now always restores the
+  exact original bytes once every composed waiver is gone, and every
+  remaining composed waiver stays on its own removable line throughout.
+  cure-01-05
   (adopted #270 D.14) gives the panel its OWN answer box -- a name field
   (`#parked-rule-name`) and a resizable 12-row ruling textarea
   (`#parked-rule-text`, `Enter` inserts a newline and never submits) --

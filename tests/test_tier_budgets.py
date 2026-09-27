@@ -206,8 +206,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # and_cli_docs_key_cache_reuse_on_transcript_identity_not_size, the
     # docs name identity, not size, as the cache-reuse key), measured the
     # same way -> fast 6376/436, smoke 4684/313.
-    "fast": {"tests": 6376, "modules": 436},
-    "smoke": {"tests": 4684, "modules": 313},
+    # cure-01-01-7 (B.3-B.4, D.1, DoD 2): +3 tests, no new module (tests/
+    # test_hub_parked_actions.py: unchecking the EARLIER of two composed
+    # waivers keeps the later one's own separator intact, and removing
+    # every composed waiver in either order restores the exact original
+    # bytes), measured `.venv/bin/python -m pytest -q -m fast
+    # --collect-only` -> 6379/436, `-m smoke --collect-only` -> 4687/313.
+    "fast": {"tests": 6379, "modules": 436},
+    "smoke": {"tests": 4687, "modules": 313},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

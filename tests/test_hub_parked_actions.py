@@ -382,6 +382,44 @@ def test_second_waiver_after_an_operator_edit_is_separate_and_removable():
     assert out["calls"] == []
 
 
+def test_unchecking_the_earlier_of_two_composed_lines_keeps_the_later_removable():
+    """cure-01-01-7 (B.3-B.4, D.1, DoD 2; cure-01-01-6): checking F1 (into
+    unterminated prose, so F1's own insertion adds a leading separator)
+    then F2, then unchecking F1 -- the EARLIER of the two -- must strip
+    only F1's own composed line, never the separator its insertion added,
+    because F2's still-active line now sits right where F1's used to and
+    still needs that exact byte to stay off the operator's own prose. The
+    old fix always stripped it, merging 'orig' straight into 'waive F2
+    ...' with no separating byte at all."""
+    out = _run(_PQ, textareaValue="orig",
+               waive=[{"id": "F1", "checked": True},
+                      {"id": "F2", "checked": True},
+                      {"id": "F1", "checked": False}])
+    assert out["textareaValue"] == "orig\nwaive F2 (clause two (#112))\n"
+    assert out["calls"] == []
+
+
+@pytest.mark.parametrize("order", [
+    ["F1", "F2"],
+    ["F2", "F1"],
+], ids=["remove-earlier-first", "remove-later-first"])
+def test_removing_every_composed_waiver_in_either_order_restores_the_original_bytes(order):
+    """cure-01-01-7 (B.3-B.4, D.1, DoD 2; cure-01-01-6): the whole point
+    of the fix above -- a separator a removed line correctly declines to
+    strip (because another composed line still needs it) is not lost, it
+    is inherited by that remaining line, so removing EVERY composed
+    waiver -- in EITHER order -- always ends up back at the exact
+    original, unterminated bytes, never a leftover synthetic newline and
+    never a merged byte."""
+    out = _run(_PQ, textareaValue="orig",
+               waive=[{"id": "F1", "checked": True},
+                      {"id": "F2", "checked": True},
+                      {"id": order[0], "checked": False},
+                      {"id": order[1], "checked": False}])
+    assert out["textareaValue"] == "orig"
+    assert out["calls"] == []
+
+
 def test_checking_a_waive_box_never_sends_any_request_by_itself():
     """The whole point of criterion (1): one click never waives a finding
     on its own -- it only edits the textarea. Exercised for every finding

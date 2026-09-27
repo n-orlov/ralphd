@@ -3449,7 +3449,11 @@ JSON endpoints served under `/api/`:
   embedded inside an unrelated operator sentence is never mistaken for
   it -- sending nothing, byte-identical on a check-then-uncheck round trip
   whatever the prose's own trailing-newline shape, including a hand edit
-  typed directly into the textarea between two toggles (cure-01-01-6)), a name field (`#parked-rule-name`) and both
+  typed directly into the textarea between two toggles (cure-01-01-6),
+  and checking several findings then unchecking them in either order,
+  which always restores the exact original bytes once every composed
+  waiver is gone and keeps every still-active one on its own removable
+  line throughout (cure-01-01-7)), a name field (`#parked-rule-name`) and both
   actions -- *Submit ruling and resume* posts the name and the textarea
   body byte-identical to `POST /api/runs/<id>/rule`, *Resume without a
   ruling* posts `unpause`; the runs list's `\u23F8 parked for input` marker links straight

@@ -584,6 +584,81 @@ def test_edit_then_check_and_uncheck_second_finding_preserves_body_in_browser(
         engine.close()
 
 
+def test_unchecking_the_earlier_of_two_composed_waivers_keeps_the_later_in_browser(
+        tmp_path, pw):
+    """cure-01-01-7 (B.3-B.4, D.1, DoD 2; cure-01-01-6): checking F1 into
+    unterminated prose (so F1's own insertion adds a leading separator)
+    then F2, then unchecking F1 -- the EARLIER of the two, not the last
+    line -- must strip only F1's own composed line, never the separator
+    its insertion added: F2's still-active line now sits right where
+    F1's used to and still needs that exact byte to stay off the
+    operator's own prose. Pinned through real checkbox clicks."""
+    registry = tmp_path / "registry"
+    _run_dir, engine = _write_live_parked_run(registry, "run-waive-earlier-first")
+    try:
+        server = UiServer(registry)
+        server.wait_ready()
+        try:
+            pw.open(f"{server.base}/#/run/run-waive-earlier-first")
+            _wait_for_count_ge(pw, "document.querySelectorAll('.waive-checkbox').length", 2)
+            pw.click(".parked-finding summary >> nth=0")
+            pw.click(".parked-finding summary >> nth=1")
+
+            pw.fill("#parked-rule-text", "orig")
+            pw.check("#waive-F1")
+            pw.check("#waive-F2")
+            _uncheck(pw, "#waive-F1")
+
+            actual = _val(pw, "document.getElementById('parked-rule-text').value")
+            assert actual == "orig\nwaive F2 (clause two (#112))\n"
+            assert _posts(engine) == []
+            pw.screenshot(SCREENSHOTS_DIR / "parked-13-waive-earlier-first.png")
+        finally:
+            server.stop()
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("order", [
+    ["#waive-F1", "#waive-F2"],
+    ["#waive-F2", "#waive-F1"],
+], ids=["remove-earlier-first", "remove-later-first"])
+def test_removing_every_composed_waiver_in_either_order_restores_the_original_in_browser(
+        tmp_path, pw, order):
+    """cure-01-01-7 (B.3-B.4, D.1, DoD 2; cure-01-01-6): a separator a
+    removed line correctly declines to strip -- because another composed
+    line still needs it -- is not lost, it is inherited by that
+    remaining line, so removing EVERY composed waiver, in EITHER order,
+    always ends back at the exact original, unterminated bytes, never a
+    leftover synthetic newline and never a merged byte. Pinned through
+    real checkbox clicks in both removal orders."""
+    registry = tmp_path / "registry"
+    _run_dir, engine = _write_live_parked_run(registry, "run-waive-remove-all")
+    try:
+        server = UiServer(registry)
+        server.wait_ready()
+        try:
+            pw.open(f"{server.base}/#/run/run-waive-remove-all")
+            _wait_for_count_ge(pw, "document.querySelectorAll('.waive-checkbox').length", 2)
+            pw.click(".parked-finding summary >> nth=0")
+            pw.click(".parked-finding summary >> nth=1")
+
+            pw.fill("#parked-rule-text", "orig")
+            pw.check("#waive-F1")
+            pw.check("#waive-F2")
+            _uncheck(pw, order[0])
+            _uncheck(pw, order[1])
+
+            actual = _val(pw, "document.getElementById('parked-rule-text').value")
+            assert actual == "orig"
+            assert _posts(engine) == []
+            pw.screenshot(SCREENSHOTS_DIR / "parked-14-waive-remove-all.png")
+        finally:
+            server.stop()
+    finally:
+        engine.close()
+
+
 # ---------------------------------------------------------------------------
 # criterion (1): findings occupy the LEFT column, the answer box and its
 # two actions occupy the RIGHT column, at desktop widths.

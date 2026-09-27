@@ -1920,6 +1920,20 @@ function parkedWaiveLineText(f) {
 // elsewhere in hand-typed prose is never touched, and only strips the
 // synthetic leading separator when this line's own record says it added
 // one -- never a byte the operator (or another composed line) put there.
+//
+// cure-01-01-7: checking TWO findings then unchecking the earlier one
+// (F1 checked, then F2, then F1 unchecked) still lost a byte -- F1's own
+// record correctly said ITS insertion added a leading separator, and the
+// old code always stripped that separator whenever it removed F1, even
+// though F2's own composed line still sits right after it and still
+// needs that exact separator to stay off `before`. The fix never strips
+// a still-needed separator: when the line being removed owned one AND
+// another composed line remains immediately after it (no gap), that
+// remaining line inherits the debt (`state[other] = true`) instead --
+// so ITS OWN later removal, once nothing follows it at all, strips the
+// byte this removal correctly left alone. Only a removal that leaves
+// nothing following ever strips a separator, which is exactly what
+// restores the original bytes once every composed waiver is gone.
 function applyWaiveLine(text, line, checked, composedLines, sepState) {
   const src = String(text || "");
   const state = sepState || {};
@@ -1941,8 +1955,15 @@ function applyWaiveLine(text, line, checked, composedLines, sepState) {
   const after = src.slice(idx + line.length + 1);
   const insertedSep = !!state[line];
   delete state[line];
-  if (insertedSep && before.endsWith("\n")) {
-    return before.slice(0, -1) + after;
+  if (!insertedSep) return before + after;
+  if (after.length === 0) {
+    return before.endsWith("\n") ? before.slice(0, -1) + after : before + after;
+  }
+  for (const other of Object.keys(state)) {
+    if (after === other || after.startsWith(other + "\n")) {
+      state[other] = true;
+      break;
+    }
   }
   return before + after;
 }
