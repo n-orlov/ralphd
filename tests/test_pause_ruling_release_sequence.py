@@ -34,6 +34,8 @@ its "needs a separate unpause" claim to these two.
 
 from __future__ import annotations
 
+import json
+import re
 import shlex
 
 import pytest
@@ -218,3 +220,122 @@ def test_rule_alone_releases_the_genuinely_ruling_answerable_pause(
     assert sup._pause.is_set() is True, reason
     status = sup.run.read_status()
     assert status.get("pauseReason") is None, reason
+
+
+# --- the FULL pause instructions (`operator_escalation.escalation`) ---------
+#
+# Cure-01-01-9 retry (validationAttempts 2): the digest above was fixed, but
+# the FULL escalation text each pause method emits on its own
+# `operator_escalation` event still said the run "will not proceed until" a
+# ruling is recorded AND it is unpaused, with no unpause-only alternative --
+# false, since `ralphctl unpause` alone opens each of these gates. These
+# nodes read that emitted event text after the ACTUAL pause, pull every
+# advertised command out of it, and execute each advertised route through
+# the real CLI + engine, asserting the gate result the text claims.
+
+_BACKTICKED = re.compile(r"`(ralphctl [^`]+)`")
+
+
+def _raise_full_text_pause(sup, variant: str):
+    if variant == "stagnation_split_child":
+        sup._pause_and_escalate_stagnation_last_approach(
+            1, [{"id": "t1c", "status": "pending"}], is_last_approach=False,
+            approach_progressed=True,
+            exhausted_split_child={"id": "t1c", "splitFrom": "t1",
+                                   "used": 3, "budget": 3})
+        assert sup._pause.is_set() is False
+    else:
+        _raise_pause(sup, variant)
+
+
+def _escalation_event_text(sup) -> str:
+    events = [json.loads(line) for line in
+              (sup.run.root / "events.jsonl").read_text().splitlines()]
+    texts = [e.get("escalation") for e in events
+             if e.get("type") == "operator_escalation"]
+    assert len(texts) == 1, texts
+    return texts[0]
+
+
+def _advertised(text: str) -> list[str]:
+    return _BACKTICKED.findall(text)
+
+
+FULL_TEXT_NOT_RULING_RELEASED = NOT_RULING_RELEASED_REASONS + [
+    "stagnation_split_child"]
+
+
+@pytest.mark.parametrize("variant", FULL_TEXT_NOT_RULING_RELEASED)
+def test_full_pause_instructions_name_unpause_alone_and_rule_then_unpause(
+        variant, tmp_path, monkeypatch):
+    sup = _sup(tmp_path, monkeypatch)
+    _raise_full_text_pause(sup, variant)
+    text = _escalation_event_text(sup)
+    # The old instructions made BOTH a ruling and an unpause preconditions
+    # of proceeding -- the criterion requires the unpause-only alternative.
+    assert "will not proceed until" not in text, variant
+    assert "to accept the default" not in text, variant
+    assert f"only `{_unpause_cmd(sup)}` releases it" in text, variant
+    assert "filing a ruling records it but leaves the run paused" in text
+    assert (f"`{_rule_cmd(sup)}` then `{_unpause_cmd(sup)}`") in text
+    assert f"or run `{_unpause_cmd(sup)}` alone to resume with no ruling " \
+        "recorded" in text, variant
+    assert _advertised(text) == [
+        _unpause_cmd(sup), _rule_cmd(sup), _unpause_cmd(sup),
+        _unpause_cmd(sup)], variant
+
+
+@pytest.mark.parametrize("variant", FULL_TEXT_NOT_RULING_RELEASED)
+def test_full_pause_instructions_unpause_alone_route_opens_the_gate(
+        variant, tmp_path, monkeypatch):
+    sup = _sup(tmp_path, monkeypatch)
+    _raise_full_text_pause(sup, variant)
+    commands = _advertised(_escalation_event_text(sup))
+    unpause_alone = commands[-1]
+    assert unpause_alone.startswith("ralphctl unpause "), commands
+
+    with TestClient(create_app(sup.cfg, sup.run, sup)) as client:
+        _run_command(unpause_alone, tmp_path, monkeypatch, client)
+    assert sup._pause.is_set() is True, variant
+    assert sup.run.read_status().get("pauseReason") is None, variant
+    assert sup.run.ruling_entries() == [], variant  # none recorded
+
+
+@pytest.mark.parametrize("variant", FULL_TEXT_NOT_RULING_RELEASED)
+def test_full_pause_instructions_rule_then_unpause_route_holds_then_opens(
+        variant, tmp_path, monkeypatch):
+    sup = _sup(tmp_path, monkeypatch)
+    _raise_full_text_pause(sup, variant)
+    commands = _advertised(_escalation_event_text(sup))
+    rule_cmd, then_unpause = commands[1], commands[2]
+    assert rule_cmd.startswith("ralphctl rule "), commands
+    assert then_unpause.startswith("ralphctl unpause "), commands
+
+    with TestClient(create_app(sup.cfg, sup.run, sup)) as client:
+        _run_command(rule_cmd, tmp_path, monkeypatch, client)
+        # the text's own claim: the ruling is recorded, the run stays paused
+        assert sup._pause.is_set() is False, variant
+        assert len(sup.run.ruling_entries()) == 1, variant
+        _run_command(then_unpause, tmp_path, monkeypatch, client)
+    assert sup._pause.is_set() is True, variant
+
+
+def test_repeated_signature_full_instructions_rule_alone_opens_the_gate(
+        tmp_path, monkeypatch):
+    """Preserved control on the full text: `rejected_repeated_signature`
+    genuinely is ruling-answerable, so its full instructions say a ruling
+    releases it on its own -- executing that advertised `rule` command
+    ALONE must open the gate."""
+    sup = _sup(tmp_path, monkeypatch)
+    _raise_pause(sup, "rejected_repeated_signature")
+    text = _escalation_event_text(sup)
+    assert "will not proceed until" not in text
+    assert "releases it on its own" in text
+    rule_cmd = next(c for c in _advertised(text)
+                    if c.startswith("ralphctl rule "))
+    assert f"`{_unpause_cmd(sup)}` resumes with none recorded" in text
+
+    with TestClient(create_app(sup.cfg, sup.run, sup)) as client:
+        _run_command(rule_cmd, tmp_path, monkeypatch, client)
+    assert sup._pause.is_set() is True
+    assert sup.run.read_status().get("pauseReason") is None

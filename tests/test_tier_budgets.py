@@ -242,8 +242,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # digest.py (test_user_docs_state_the_conditional_commit_scan_ruling_
     # release: no user doc calls the commit-scan hold universally
     # ruling-proof) -> fast 6398/438, smoke 4706/315.
-    "fast": {"tests": 6398, "modules": 438},
-    "smoke": {"tests": 4706, "modules": 315},
+    # cure-01-01-9 second retry: +13 tests in tests/test_pause_ruling_
+    # release_sequence.py (the FULL operator_escalation.escalation text of
+    # rejected_last_approach/rejected_incurable/stagnation, both variants,
+    # names the unpause-alone alternative and the rule-then-unpause
+    # sequence, each advertised route executed; repeated-signature control)
+    # -> fast 6411/438, smoke 4719/315.
+    "fast": {"tests": 6411, "modules": 438},
+    "smoke": {"tests": 4719, "modules": 315},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

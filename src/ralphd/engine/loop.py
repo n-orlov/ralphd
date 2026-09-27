@@ -1361,6 +1361,29 @@ class LoopSupervisor:
             f"ruling before resuming, or ralphctl unpause {self.cfg.run_id} "
             "alone to resume with none recorded")
 
+    def _ruling_then_unpause_escalation_sentences(self) -> str:
+        """The full `operator_escalation.escalation` text's own answer
+        sentences for the same three reasons `_ruling_then_unpause_answer_
+        cmd` serves (`rejected_last_approach`, `rejected_incurable`,
+        `stagnation`): the full-text counterpart of that digest answer line
+        (cure task cure-01-01-9 retry, PRD A.1/A.6, D.1; DoD 1/4 -- review
+        read the emitted event text and found it still claiming the run
+        "will not proceed until" a ruling is recorded AND it is unpaused,
+        with no unpause-only alternative, although `ralphctl unpause` alone
+        opens each of these gates). States what releases the pause
+        (`ralphctl unpause`, never a ruling on its own), the executable
+        rule-then-unpause sequence for an operator who wants a ruling on
+        record first, and the working unpause-alone alternative.
+        """
+        run_id = self.cfg.run_id
+        return (
+            f"only `ralphctl unpause {run_id}` releases it -- filing a "
+            "ruling records it but leaves the run paused. To record a "
+            f"ruling before resuming, run `ralphctl rule {run_id} --file "
+            "<ruling.md> --name <slug>` then `ralphctl unpause "
+            f"{run_id}`, or run `ralphctl unpause {run_id}` alone to "
+            "resume with no ruling recorded.")
+
     def retry_now(self) -> bool:
         """Operator-requested "try the endpoint again right now" (task 015,
         #5). Returns False when the run is not sitting in an infra backoff
@@ -13026,10 +13049,8 @@ class LoopSupervisor:
             "is curable -- but this approach's own cure pass is already "
             "spent and there is no fresh approach left to grant. The run "
             "has been paused (existing pause machinery) rather than ended "
-            "`failed` on paperwork; it will not proceed until an operator "
-            "ruling is recorded (`ralphctl rule "
-            f"{self.cfg.run_id} --file <ruling.md> --name <slug>`) and "
-            f"the run is unpaused (`ralphctl unpause {self.cfg.run_id}`).",
+            "`failed` on paperwork; "
+            + self._ruling_then_unpause_escalation_sentences(),
             "",
         ]
         for index, finding in enumerate(blocking, start=1):
@@ -13228,10 +13249,11 @@ class LoopSupervisor:
             "fresh approach would most likely repeat the identical wall "
             "rather than make progress on it. The run has been paused "
             "(existing pause machinery) instead of consuming a fresh "
-            "approach on it; it will not proceed until an operator ruling "
-            "is recorded (`ralphctl rule "
-            f"{self.cfg.run_id} --file <ruling.md> --name <slug>`) and "
-            f"the run is unpaused (`ralphctl unpause {self.cfg.run_id}`).",
+            "approach on it. Filing a ruling (`ralphctl rule "
+            f"{self.cfg.run_id} --file <ruling.md> --name <slug>`) "
+            "releases it on its own, or `ralphctl unpause "
+            f"{self.cfg.run_id}` resumes with none recorded to accept the "
+            "default.",
             f"signature: {signature}",
             "",
         ]
@@ -14184,12 +14206,10 @@ class LoopSupervisor:
                 "again would only recurse one generation smaller, so the "
                 "run has been paused (existing pause machinery) instead of "
                 "forcing a second split, and instead of replanning over "
-                "work already done; it will not proceed until an operator "
-                "ruling is recorded (`ralphctl rule "
-                f"{self.cfg.run_id} --file <ruling.md> --name <slug>`) and "
-                "the run is unpaused "
-                f"(`ralphctl unpause {self.cfg.run_id}`), which re-enters "
-                f"approach {approach} rather than starting a fresh one.",
+                "work already done; "
+                + self._ruling_then_unpause_escalation_sentences()
+                + f" Unpausing re-enters approach {approach} rather than "
+                "starting a fresh one.",
                 "",
                 "Outstanding tasks:",
             ]
@@ -14211,10 +14231,8 @@ class LoopSupervisor:
             f"worker iterations made no progress and {reason_clause} -- "
             "the run has been paused (existing pause machinery) rather "
             "than ended `failed` on stagnation alone, or replanned over "
-            "work already in progress; it will not proceed until an "
-            "operator ruling is recorded (`ralphctl rule "
-            f"{self.cfg.run_id} --file <ruling.md> --name <slug>`) and "
-            f"the run is unpaused (`ralphctl unpause {self.cfg.run_id}`).",
+            "work already in progress; "
+            + self._ruling_then_unpause_escalation_sentences(),
             "",
             "Outstanding tasks:",
         ]
@@ -14516,10 +14534,8 @@ class LoopSupervisor:
             f"Run {self.cfg.run_id} approach {approach}: review rejected "
             "this approach and every blocking finding is incurable -- a "
             "fresh approach would not change any of them. The run has "
-            "been paused (existing pause machinery); it will not proceed "
-            "until an operator ruling is recorded (`ralphctl rule "
-            f"{self.cfg.run_id} --file <ruling.md> --name <slug>`) and "
-            f"the run is unpaused (`ralphctl unpause {self.cfg.run_id}`).",
+            "been paused (existing pause machinery); "
+            + self._ruling_then_unpause_escalation_sentences(),
             "",
         ]
         for index, finding in enumerate(blocking, start=1):

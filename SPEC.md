@@ -1366,6 +1366,14 @@ existing run dir and is the wrong tool for a run that is still alive. The
 dependency-cycle, unresolvable-edge and broken-review-channel pauses name
 their own remedy (a `tasks.json` edit, a working reviewer) plus `ralphctl
 unpause <run>`. `tests/test_escalation_commands.py` covers every one.
+The full `operator_escalation.escalation` text follows the same rule (cure
+task cure-01-01-9): for `rejected_last_approach`, `rejected_incurable` and
+`stagnation` (both variants) it says only `ralphctl unpause <run>` releases
+the pause, that filing a ruling records it but leaves the run paused, and
+gives the `ralphctl rule ... then ralphctl unpause ...` sequence beside the
+unpause-alone alternative, and for `rejected_repeated_signature` it says a
+ruling releases the pause on its own, or `ralphctl unpause <run>` resumes
+with none recorded to accept the default.
 
 **Every notification this engine posts is bounded by construction (task 001,
 PRD requirement A, #269; widened to two more reasons by cure task

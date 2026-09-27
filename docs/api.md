@@ -966,7 +966,7 @@ the pause (`resume_if_ruling_answers_pause`), so the answer line reads
 approach`/`rejected_incurable`/`stagnation`, that check never applies, so
 `rule` alone leaves the run paused and the answer line instead reads an
 explicit `rule ... then unpause ...` sequence beside the working
-unpause-alone alternative. The dependency and review-contract pauses name
+unpause-alone alternative. The full `operator_escalation.escalation` text follows the same rule (cure task cure-01-01-9): for `rejected_last_approach`, `rejected_incurable` and `stagnation` (both variants) it says only `ralphctl unpause <run>` releases the pause, that filing a ruling records it but leaves the run paused, and gives the `ralphctl rule ... then ralphctl unpause ...` sequence beside the unpause-alone alternative, and for `rejected_repeated_signature` it says a ruling releases the pause on its own, or `ralphctl unpause <run>` resumes with none recorded to accept the default. The dependency and review-contract pauses name
 their own remedy plus `ralphctl unpause <run>`, never a rule command. The
 commit-scan hold's own answer command depends on whether its approach
 ALREADY carries a recorded rejection signature (an earlier `operator_

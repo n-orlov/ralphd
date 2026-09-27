@@ -2786,7 +2786,7 @@ accept the default`, two interchangeable single-step alternatives;
 from that check's own reason allow-list, so their line instead spells out
 an explicit two-step sequence (`rule ... then unpause ...`) beside the
 working unpause-alone alternative, never an `or` that would falsely claim
-`rule` alone resolves them.
+`rule` alone resolves them. The full `operator_escalation.escalation` text follows the same rule (cure task cure-01-01-9): for `rejected_last_approach`, `rejected_incurable` and `stagnation` (both variants) it says only `ralphctl unpause <run>` releases the pause, that filing a ruling records it but leaves the run paused, and gives the `ralphctl rule ... then ralphctl unpause ...` sequence beside the unpause-alone alternative, and for `rejected_repeated_signature` it says a ruling releases the pause on its own, or `ralphctl unpause <run>` resumes with none recorded to accept the default.
 The commit-scan hold's fault lines are the `sha`, `part` and variable NAME read
 back off its own `commit_secret_scan` event, never the matched value, and
 it deliberately emits no `operator_escalation` event, so a crashed episode's

@@ -1940,7 +1940,7 @@ incurable`, `stagnation`), a `rule` alone records the ruling but leaves the
 run paused -- it takes the explicit sequence, `ralphctl rule <run-id>
 --file <ruling.md> --name <slug>` then `ralphctl unpause <run-id>`, to
 record a ruling before resuming; `ralphctl unpause <run-id>` alone still
-works too, resuming with no ruling recorded. Every pause and escalation
+works too, resuming with no ruling recorded. The full `operator_escalation.escalation` text follows the same rule (cure task cure-01-01-9): for `rejected_last_approach`, `rejected_incurable` and `stagnation` (both variants) it says only `ralphctl unpause <run>` releases the pause, that filing a ruling records it but leaves the run paused, and gives the `ralphctl rule ... then ralphctl unpause ...` sequence beside the unpause-alone alternative, and for `rejected_repeated_signature` it says a ruling releases the pause on its own, or `ralphctl unpause <run>` resumes with none recorded to accept the default. Every pause and escalation
 text the engine produces names both live-run levers, never `ralphctl
 resume` -- `resume` starts a fresh container over an existing run dir
 (crash recovery, budget top-up) and is not for a run that is still alive.
