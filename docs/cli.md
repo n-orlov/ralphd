@@ -1928,6 +1928,19 @@ these two commands, never `ralphctl resume` -- `resume` starts a fresh
 container over an existing run dir (crash recovery, budget top-up) and is
 not for a run that is still alive.
 
+With a notifier configured (`--notifier-url`), every engine-recorded pause
+also POSTs the operator a bounded digest (at most `MAX_NOTIFY_CHARS`) instead
+of the raw diagnostic text: run id, `pauseReason`, `approach n of m`,
+blocking/residual counts, tasks reopened/inserted, spend this approach, the
+hub URL when `hub_base_url` is configured, and the exact answer commands
+above. That covers every pause reason, including the task-boundary
+commit-secret-scan hold (`pauseReason: operator_input_needed` raised from
+`worker`, which resumes into `worker`, not `review`): its digest names the
+offending commit's `sha`, the `part` and the variable NAME, never the
+matched value, and reads `unavailable` for the findings and reopen/insert
+fields it has no channel for. docs/api.md's `POST /pause` section lists the
+full coverage.
+
 ### `ralphctl retry <run-id>`
 
 Wake a **degraded** run (one whose `status` shows `health: degraded` with a

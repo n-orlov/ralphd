@@ -219,8 +219,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # coverage copied over unchanged), measured `.venv/bin/python -m
     # pytest -q -m fast --collect-only` -> 6383/437, `-m smoke
     # --collect-only` -> 4691/314.
-    "fast": {"tests": 6383, "modules": 437},
-    "smoke": {"tests": 4691, "modules": 314},
+    # cure-01-01-8 retry: +1 test (the same module: a real synthetic-
+    # secret hit through _scan_task_boundary_commits never reaches the
+    # POSTed digest, and the pause keeps its worker resume routing),
+    # measured `.venv/bin/python -m pytest -q -m fast --collect-only`
+    # -> 6384/437, `-m smoke --collect-only` -> 4692/314.
+    "fast": {"tests": 6384, "modules": 437},
+    "smoke": {"tests": 4692, "modules": 314},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

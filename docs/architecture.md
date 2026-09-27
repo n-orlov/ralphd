@@ -2758,6 +2758,32 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   task eventually appear; formerly `test_vigilant_crash_resume.py`,
   folded by task 021, requirement C.10).
 
+### Operator-escalation notifications: one bounded digest for every pause (v0.26 requirement A, #269)
+
+Every engine-initiated pause holds the loop first (`self.pause()`) and only
+then notifies, through `LoopSupervisor._notify_escalation_delivery` (up to 3
+attempts with bounded backoff, then `notification.escalation_undelivered`).
+The POSTed text is never the full diagnostic: two builders produce the same
+bounded header -- run id, `pauseReason`, `approach n of m`, blocking and
+residual counts, tasks reopened/inserted, spend this approach, the hub URL
+when `hub_base_url` is configured, and the answer commands -- capped at
+`MAX_NOTIFY_CHARS`. `_operator_escalation_digest_text` serves the four
+finding-bearing reasons (`operator_input_needed` from review,
+`rejected_repeated_signature`, `rejected_last_approach`,
+`rejected_incurable`) and lists each blocking finding by id and `clause`,
+never its evidence. `_pause_escalation_digest_text` serves every other
+pause -- `stagnation`, the two review-contract faults, the two dependency
+faults and the task-boundary commit-secret-scan hold
+(`_pause_for_commit_secret_hit`) -- and reads `unavailable` for the
+findings and preview fields those pauses have no channel for. The
+commit-scan hold's fault lines are the `sha`, `part` and variable NAME read
+back off its own `commit_secret_scan` event, never the matched value, and
+it deliberately emits no `operator_escalation` event, so a crashed episode's
+resume routing (`_paused_awaiting_operator_input_needed_ruling`) never
+mistakes it for a parked review rejection and it resumes into `worker`.
+Tests: `tests/test_commit_scan_escalation_digest.py`,
+`tests/test_escalation_delivery.py`. SPEC.md §4.6.
+
 ## 5. Configuration & injection
 
 Everything the job needs is mapped in by the CLI. Three mount points:
