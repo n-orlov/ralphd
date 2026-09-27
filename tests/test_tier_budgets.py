@@ -212,8 +212,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # every composed waiver in either order restores the exact original
     # bytes), measured `.venv/bin/python -m pytest -q -m fast
     # --collect-only` -> 6379/436, `-m smoke --collect-only` -> 4687/313.
-    "fast": {"tests": 6379, "modules": 436},
-    "smoke": {"tests": 4687, "modules": 313},
+    # cure-01-01-8 (A.1/D.1, DoD 1): +4 tests / +1 module (tests/
+    # test_commit_scan_escalation_digest.py: the task-boundary commit-
+    # secret-scan pause's digest carries the run id/pauseReason/approach/
+    # spend/hub/answer fields, plus the pre-existing retry/marker
+    # coverage copied over unchanged), measured `.venv/bin/python -m
+    # pytest -q -m fast --collect-only` -> 6383/437, `-m smoke
+    # --collect-only` -> 4691/314.
+    "fast": {"tests": 6383, "modules": 437},
+    "smoke": {"tests": 4691, "modules": 314},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

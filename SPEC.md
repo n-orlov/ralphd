@@ -1436,6 +1436,33 @@ every `contractErrors` entry, every outstanding task, every cycle/edge id --
 is unaffected and still lands on the `operator_escalation` event itself
 (§5.4); only the POSTED notification is capped and digested.
 
+**Cure task cure-01-01-8 (PRD requirement A.1/D.1, DoD 1; folds the
+task-boundary commit-secret-scan pause into the same digest contract):**
+the task-boundary commit-secret-scan hold (task 030, PRD requirement I.3,
+#210, `LoopSupervisor._pause_for_commit_secret_hit`) predates both digest
+contracts above and was still posting a single fixed sentence -- no run
+id, `approach n of m`, spend, hub URL or working answer command -- even
+after cure-01-05-2 folded in every other non-finding pause. It now posts
+the SAME `_pause_escalation_digest_text` shape those five reasons get:
+run id, `pauseReason: operator_input_needed`, `approach n of m`, spend
+this approach, the hub URL (only when `hub_base_url` is configured), and
+`blocking`/`residual`/`tasks reopened`/`tasks inserted` reading the
+literal `unavailable` (this pause carries no review findings channel or
+cure-pass preview either). The fault summary opens with the hit's own
+`sha`/`part`/`variable` (read back off the `commit_secret_scan` event just
+emitted -- never the matched value). This pause IS ruling-answerable --
+an operator's `ralphctl rule <run> --file <ruling.md> --name <slug>`
+still binds to a future rejection's finding signature through the same
+ruling channel every other ruling-answerable pause's answer command
+offers -- so its answer command names both `ralphctl rule` and `ralphctl
+unpause <run>`, exactly like `stagnation`'s own digest, never `ralphctl
+unpause` alone. It still deliberately emits no `operator_escalation`
+event (only the pre-existing `commit_secret_scan` event) so a crashed/
+resumed episode's own resume-into-`review` routing (`_paused_awaiting_
+operator_input_needed_ruling`) is never mistakenly triggered by this
+pause -- only the notified TEXT changed, never the event shape or the
+resume routing it drives.
+
 **A failed escalation delivery is retried with bounded backoff, and an
 exhausted retry is recorded distinctly (task 004, PRD requirement A.4,
 #269).** Every `self.pause()` + `self.notifier` escalation site in

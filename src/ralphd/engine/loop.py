@@ -7024,19 +7024,54 @@ class LoopSupervisor:
         own actionable remainder, or none at all -- and a stray match
         there would misroute a resumed episode into `review` over
         nothing it ever reviewed. The `commit_secret_scan` event
-        `_scan_task_boundary_commits` already emitted (sha, part,
-        variable -- never the value) is this escalation's own record;
-        this call's whole job is to hold the loop, not to re-describe the
-        hit.
+        `_scan_task_boundary_commits`/`_check_hook_hit_marker` already
+        emitted (sha, part, variable -- never the value) is this
+        escalation's own record; this call's whole job is to hold the
+        loop, not to re-describe the hit.
+
+        Cure task cure-01-01-8 (PRD requirement A.1/D.1, DoD 1, #269):
+        review found this pause was the one real operator-escalation
+        left posting raw, un-digested text after cure-01-05-2 widened
+        every OTHER pause to the same bounded contract -- no run id,
+        approach/max, spend, hub URL or exact answer command, because
+        this pause was added (task 030) before that digest contract
+        existed and was never folded into it. `_pause_escalation_digest_
+        text` gives it the exact same shape those five siblings already
+        carry: `blocking`/`residual`/`tasks reopened`/`tasks inserted`
+        read `unavailable` here, honestly -- this pause carries no
+        review findings channel and no cure-pass preview, so a `0` would
+        read as "checked and empty" rather than "never computed".
+        `fault_lines` opens with the hit's own sha/part/variable (still
+        never the matched value), read back from the `commit_secret_scan`
+        event just emitted rather than threaded through as a parameter,
+        so this method's own call sites (`_step_worker`, and this test's
+        own direct call) need no signature change. Ruling-answerable, the
+        same as `stagnation`'s own digest: an operator's `ralphctl rule`
+        still binds to a future finding signature through the same
+        ruling channel every other pause's answer command already
+        offers, so `answer_cmd` names both live-run levers rather than
+        `ralphctl unpause` alone.
         """
         self.pause(reason="operator_input_needed")
         if self.notifier is not None:
+            hits = state.read_events(
+                self.run.root, types=(self.COMMIT_SECRET_SCAN_EVENT,))
+            hit = hits[-1] if hits else {}
+            sha = hit.get("sha")
+            fault_lines = [
+                f"sha: {sha[:12] if sha else 'unknown'}",
+                f"part: {hit.get('part') or 'unknown'}",
+                f"variable: {hit.get('variable') or 'unknown'}",
+            ]
+            approach = self._approach or 1
+            digest = self._pause_escalation_digest_text(
+                "operator_input_needed", approach,
+                f"ralphctl rule {self.cfg.run_id} --file <ruling.md> "
+                f"--name <slug>, or ralphctl unpause {self.cfg.run_id} "
+                "to accept the default",
+                fault_lines)
             self._notify_escalation_delivery(
-                "operator_input_needed: a task-boundary commit scan hit "
-                "refused a push; see the commit_secret_scan event for the "
-                "sha, part and variable name (never the matched value) -- "
-                "the faulted task needs an operator ruling before this run "
-                "pushes again", reason="operator_input_needed")
+                digest, reason="operator_input_needed")
 
     def _workspace_diff_paths(self, base_sha: str, head_sha: str) -> list[str] | None:
         """Task 008 (PRD requirement B.4, #221): the file paths `git diff
