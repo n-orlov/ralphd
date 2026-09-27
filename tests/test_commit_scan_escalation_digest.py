@@ -17,6 +17,8 @@ post-answer removal) are unchanged from the pre-existing coverage they
 are copied from (`test_escalation_undelivered_marker.py`).
 """
 import json
+import re
+import shlex
 import subprocess
 import pytest
 from ralphd.engine import hat_tools, redact
@@ -53,13 +55,64 @@ def test_task_boundary_operator_escalation_has_digest_and_answer_command(tmp_pat
     required=[RUN_ID,'pauseReason: operator_input_needed','approach 1 of 2',
               'blocking:','residual:','tasks reopened:','tasks inserted:','spent this approach:',
               'https://hub.example/#/run/'+RUN_ID,
-              'ralphctl unpause '+RUN_ID,'ralphctl rule '+RUN_ID]
+              'answer: ralphctl unpause '+RUN_ID]
     missing=[s for s in required if s not in text]
     print('COMMIT_SCAN_DIGEST',repr(text),'MISSING',missing)
     assert sup.run.read_status()['pauseReason']=='operator_input_needed'
     assert len(sent)==1
     assert len(text)<=MAX_NOTIFY_CHARS
     assert not missing
+
+
+def _advertised_commands(text):
+    """Every `ralphctl ...` command the digest's `answer:` line offers, with
+    its placeholder arguments kept verbatim (`<ruling.md>`, `<slug>`)."""
+    line=next(l for l in text.splitlines() if l.startswith('answer: '))
+    return re.findall(r'ralphctl [a-z-]+ '+re.escape(RUN_ID)+r'(?: --[a-z-]+ <[^>]+>)*',line)
+
+
+def _run_ralphctl(cmd,tmp_path,monkeypatch,client):
+    """Run one advertised command through the REAL `ralphctl` parser and
+    `cmd_*` handler, with `cli_main.api` delivering its request to the REAL
+    engine app (`create_app` over the paused supervisor) instead of a TCP
+    socket -- the same route a live `ralphctl` reaches."""
+    ruling=tmp_path/'ruling.md'
+    ruling.write_text('the flagged commit is a false positive; proceed\n')
+    argv=shlex.split(cmd.replace('<ruling.md>',str(ruling)).replace('<slug>','answer'))[1:]
+    def api(run_id,method,path,body=None,**kw):
+        assert run_id==RUN_ID
+        resp=client.request(method,path,json=body)
+        assert resp.status_code<400,(path,resp.status_code,resp.text)
+        return resp.json()
+    monkeypatch.setattr(cli_main,'api',api)
+    args=cli_main.build_parser().parse_args(argv)
+    args.func(args)
+
+
+def test_every_advertised_answer_command_releases_the_commit_scan_pause(tmp_path,monkeypatch,capsys):
+    """"Working answer commands": each command the digest names is run end to
+    end -- real CLI handler, real engine `POST` route, real supervisor -- over
+    a fresh commit-scan pause, and must leave the run `running` with no
+    `pauseReason`. A command that merely looks right (a ruling this hold's
+    unsigned approach never lets release it) fails here."""
+    from fastapi.testclient import TestClient
+    from ralphd.engine.api import create_app
+    registry,sup,sent=trigger(tmp_path/'probe',monkeypatch)
+    commands=_advertised_commands(sent[0])
+    print('COMMIT_SCAN_ANSWER_COMMANDS',commands)
+    assert commands
+    for i,cmd in enumerate(commands):
+        root=tmp_path/f'cmd{i}'
+        root.mkdir()
+        registry,sup,sent=trigger(root,monkeypatch)
+        status=sup.run.read_status()
+        assert (status['state'],status['pauseReason'])==('paused','operator_input_needed')
+        with TestClient(create_app(sup.cfg,sup.run,sup)) as client:
+            _run_ralphctl(cmd,root,monkeypatch,client)
+        status=sup.run.read_status()
+        print('COMMIT_SCAN_ANSWER',cmd,status['state'],status.get('pauseReason'))
+        assert status['state']=='running',cmd
+        assert status.get('pauseReason') is None,cmd
 
 
 @pytest.mark.parametrize('surface',['cli','row','page'])
@@ -168,7 +221,7 @@ def test_task_boundary_digest_excludes_the_matched_secret_value_and_keeps_worker
     assert f'variable: {hit["variable"]}' in text
     assert f'part: {hit["part"]}' in text
     assert 'pauseReason: operator_input_needed' in text
-    assert 'ralphctl rule '+RUN_ID in text and 'ralphctl unpause '+RUN_ID in text
+    assert 'ralphctl unpause '+RUN_ID in text
 
     raw_events=(sup.run.root/'events.jsonl').read_text()
     assert SYNTHETIC_VALUE not in raw_events

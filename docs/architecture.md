@@ -2781,6 +2781,9 @@ back off its own `commit_secret_scan` event, never the matched value, and
 it deliberately emits no `operator_escalation` event, so a crashed episode's
 resume routing (`_paused_awaiting_operator_input_needed_ruling`) never
 mistakes it for a parked review rejection and it resumes into `worker`.
+Its answer line names only `ralphctl unpause` (`POST /resume`): with no
+rejection signature on its approach, `resume_if_ruling_answers_pause`
+never lets a ruling release it.
 Tests: `tests/test_commit_scan_escalation_digest.py`,
 `tests/test_escalation_delivery.py`. SPEC.md §4.6.
 

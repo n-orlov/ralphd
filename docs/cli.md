@@ -1937,8 +1937,9 @@ above. That covers every pause reason, including the task-boundary
 commit-secret-scan hold (`pauseReason: operator_input_needed` raised from
 `worker`, which resumes into `worker`, not `review`): its digest names the
 offending commit's `sha`, the `part` and the variable NAME, never the
-matched value, and reads `unavailable` for the findings and reopen/insert
-fields it has no channel for. docs/api.md's `POST /pause` section lists the
+matched value, reads `unavailable` for the findings and reopen/insert
+fields it has no channel for, and names `ralphctl unpause <run>` as its only
+answer -- a `ralphctl rule` filed against it does not release it. docs/api.md's `POST /pause` section lists the
 full coverage.
 
 ### `ralphctl retry <run-id>`

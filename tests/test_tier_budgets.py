@@ -224,8 +224,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # POSTed digest, and the pause keeps its worker resume routing),
     # measured `.venv/bin/python -m pytest -q -m fast --collect-only`
     # -> 6384/437, `-m smoke --collect-only` -> 4692/314.
-    "fast": {"tests": 6384, "modules": 437},
-    "smoke": {"tests": 4692, "modules": 314},
+    # cure-01-01-8 second retry: +1 test (the same module: every answer
+    # command the commit-scan digest advertises is run through the real
+    # CLI handler and engine route and must release the pause), measured
+    # `-m fast --collect-only` -> 6385/437, `-m smoke --collect-only`
+    # -> 4693/314.
+    "fast": {"tests": 6385, "modules": 437},
+    "smoke": {"tests": 4693, "modules": 314},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

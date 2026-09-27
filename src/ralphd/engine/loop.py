@@ -7045,12 +7045,14 @@ class LoopSupervisor:
         never the matched value), read back from the `commit_secret_scan`
         event just emitted rather than threaded through as a parameter,
         so this method's own call sites (`_step_worker`, and this test's
-        own direct call) need no signature change. Ruling-answerable, the
-        same as `stagnation`'s own digest: an operator's `ralphctl rule`
-        still binds to a future finding signature through the same
-        ruling channel every other pause's answer command already
-        offers, so `answer_cmd` names both live-run levers rather than
-        `ralphctl unpause` alone.
+        own direct call) need no signature change. NOT ruling-answerable:
+        `POST /rule` releases only an `operator_input_needed` pause whose
+        approach carries a recorded `rejectionSignatures` entry
+        (`resume_if_ruling_answers_pause`), and this hold, raised from
+        `worker` with no review rejection behind it, never has one -- a
+        ruling filed here is stored unscoped and the run stays paused. So
+        `answer_cmd` names only the lever that actually releases it,
+        `ralphctl unpause` (`POST /resume`), and says a ruling does not.
         """
         self.pause(reason="operator_input_needed")
         if self.notifier is not None:
@@ -7066,9 +7068,8 @@ class LoopSupervisor:
             approach = self._approach or 1
             digest = self._pause_escalation_digest_text(
                 "operator_input_needed", approach,
-                f"ralphctl rule {self.cfg.run_id} --file <ruling.md> "
-                f"--name <slug>, or ralphctl unpause {self.cfg.run_id} "
-                "to accept the default",
+                f"ralphctl unpause {self.cfg.run_id} to resume the worker "
+                "(a ruling does not release this hold)",
                 fault_lines)
             self._notify_escalation_delivery(
                 digest, reason="operator_input_needed")
