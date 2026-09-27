@@ -220,7 +220,9 @@ def test_no_stale_parked_panel_after_a_commit_scan_hold_following_an_answered_ga
     string an already-answered review gate left behind, but emits no fresh
     `operator_escalation` event of its own
     (`LoopSupervisor._pause_for_commit_secret_hit`). The panel must not
-    resurrect that answered gate's own stale question/finding list."""
+    resurrect that answered gate's own stale question/finding list -- and a
+    genuinely new review escalation raised once that hold is answered still
+    appears, with its OWN findings and consequences, not the stale ones."""
     registry = tmp_path / "registry"
     run_dir = _write_dead_run(
         registry, "run-stale-commit-scan", state="paused",
@@ -229,7 +231,8 @@ def test_no_stale_parked_panel_after_a_commit_scan_hold_following_an_answered_ga
     # The review gate's own escalation -- later answered by a resume.
     rd.emit("operator_escalation", reason="operator_input_needed", approach=1,
             findings=_BLOCKING_FINDINGS, escalation="escalation text\n",
-            replanAvailable=True, nextStepIfUnanswered="cure_pass")
+            replanAvailable=True, nextStepIfUnanswered="cure_pass",
+            taskIdsValidatedToPending=["stale-reopened-task"], insertCount=0)
     rd.emit("log", message="resumed")
     # A cure worker runs, then a task-boundary commit-secret-scan hit raises
     # the SAME reason string with no fresh `operator_escalation` behind it.
@@ -247,6 +250,42 @@ def test_no_stale_parked_panel_after_a_commit_scan_hold_following_an_answered_ga
             "document.getElementById('parked-panel-box').style.display")
         assert box_hidden.strip('"') == "none"
         pw.screenshot(SCREENSHOTS_DIR / "parked-00-no-stale-after-commit-scan.png")
+
+        # The operator answers the commit-scan hold; a later review then
+        # raises a genuinely new escalation (same reason string) over a
+        # DIFFERENT finding with its own cure-pass preview.
+        rd.emit("log", message="resumed")
+        rd.emit("operator_escalation", reason="operator_input_needed", approach=1,
+                findings=[{"severity": "blocking",
+                           "clause": "fresh review clause (#321)",
+                           "evidence": "fresh evidence", "cured_when": None,
+                           "invalidates": ["fresh-reopened-task"]}],
+                escalation="fresh escalation text\n", replanAvailable=True,
+                nextStepIfUnanswered="cure_pass",
+                taskIdsValidatedToPending=["fresh-reopened-task"], insertCount=1)
+        pw.open(f"{server.base}/#/run/run-stale-commit-scan")
+        _wait_for(pw, "document.body.innerText", "fresh review clause (#321)")
+        n_panel = int(pw.eval_js("document.querySelectorAll('#parked-panel').length"))
+        assert n_panel == 1
+        box_hidden = pw.eval_js(
+            "document.getElementById('parked-panel-box').style.display")
+        assert box_hidden.strip('"') != "none"
+        panel_text = _val(
+            pw, "document.getElementById('parked-panel').innerText")
+        # Its own consequences, read off the rendered consequence list.
+        consequence_text = _val(
+            pw, "document.querySelector('#parked-panel .parked-consequence').innerText")
+        assert "if left unanswered: a cure pass over this approach's blocking findings" \
+            in consequence_text
+        assert "tasks reopened to pending: fresh-reopened-task" in consequence_text
+        assert "tasks inserted: 1" in consequence_text
+        assert "blocking findings: 1" in panel_text
+        # None of the answered gate's stale question or preview leaks in.
+        assert "clause one (#111)" not in panel_text
+        assert "clause two (#112)" not in panel_text
+        assert "stale-reopened-task" not in panel_text
+        assert "tasks inserted: 0" not in consequence_text
+        pw.screenshot(SCREENSHOTS_DIR / "parked-00b-fresh-escalation-after-commit-scan.png")
     finally:
         server.stop()
 
