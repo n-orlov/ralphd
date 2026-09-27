@@ -238,8 +238,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # rule-releasable too) -- measured `.venv/bin/python -m pytest -q -m
     # fast --collect-only` -> 6397/438, `-m smoke --collect-only` ->
     # 4705/315.
-    "fast": {"tests": 6397, "modules": 438},
-    "smoke": {"tests": 4705, "modules": 315},
+    # cure-01-01-9 retry: +1 test in tests/test_commit_scan_escalation_
+    # digest.py (test_user_docs_state_the_conditional_commit_scan_ruling_
+    # release: no user doc calls the commit-scan hold universally
+    # ruling-proof) -> fast 6398/438, smoke 4706/315.
+    "fast": {"tests": 6398, "modules": 438},
+    "smoke": {"tests": 4706, "modules": 315},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -328,3 +328,35 @@ def test_commit_scan_hold_answer_command_matches_actual_release_capability(
     status=sup.run.read_status()
     assert status['state']=='running',rule_cmd
     assert status.get('pauseReason') is None,rule_cmd
+
+
+def test_user_docs_state_the_conditional_commit_scan_ruling_release():
+    """Cure task cure-01-01-9 retry (PRD A.1/A.6, D.1; DoD 4): the
+    signed-approach history above proves `POST /rule` DOES release a
+    commit-scan hold whose approach already carries a rejection signature,
+    so no user doc or SPEC passage may describe that hold as universally
+    unanswerable by a ruling. docs/api.md's `pauseReason` row once said a
+    ruling's release never applies to it and only `ralphctl unpause`
+    answers it -- the opposite of the measured behaviour. Every surface
+    that describes the hold's answer must name the conditional rule
+    (the approach's own rejection signature) alongside the unpause lever.
+    """
+    import pathlib
+    root=pathlib.Path(__file__).resolve().parent.parent
+    forbidden=("nor a ruling's release applies to it",
+               "(only `ralphctl unpause <run>` answers it)")
+    for rel in ('SPEC.md','docs/api.md','docs/cli.md','docs/architecture.md'):
+        text=(root/rel).read_text()
+        for phrase in forbidden:
+            assert phrase not in text,(rel,phrase)
+    api=(root/'docs/api.md').read_text()
+    row=next(l for l in api.splitlines() if l.startswith('| `pauseReason` |'))
+    hold=row[row.index('commit-secret-scan hold'):]
+    hold=hold[:hold.index('Either way the approach')]
+    assert '`rejectionSignatures`' in hold
+    assert 'ralphctl unpause <run>' in hold
+    assert 'ralphctl rule <run>' in hold and 'releases it too' in hold
+    spec=(root/'SPEC.md').read_text()
+    row=next(l for l in spec.splitlines() if l.startswith('| `pauseReason` |'))
+    hold=row[row.index('commit-secret-scan hold'):]
+    assert '`rejectionSignatures`' in hold and 'releases it too' in hold
