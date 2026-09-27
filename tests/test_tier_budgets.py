@@ -248,8 +248,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # names the unpause-alone alternative and the rule-then-unpause
     # sequence, each advertised route executed; repeated-signature control)
     # -> fast 6411/438, smoke 4719/315.
-    "fast": {"tests": 6411, "modules": 438},
-    "smoke": {"tests": 4719, "modules": 315},
+    "fast": {"tests": 6413, "modules": 438},
+    "smoke": {"tests": 4721, "modules": 315},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

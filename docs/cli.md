@@ -3452,8 +3452,13 @@ JSON endpoints served under `/api/`:
   proxied) `status.pauseReason` is `operator_input_needed` or
   `rejected_repeated_signature`, the two pause reasons a ruling can actually
   answer; built entirely on disk (`ralphd.engine.state.parked_question`, off
-  the most recent matching `operator_escalation` event in `events.jsonl` plus
-  the on-disk structured findings sidecar), never a second live-only path.
+  the most recent matching `operator_escalation` event NOT YET ANSWERED by a
+  later resume with no fresher matching escalation since, in `events.jsonl`
+  plus the on-disk structured findings sidecar), never a second live-only
+  path -- that answered-since check (cure task cure-01-02-4) is what keeps
+  a later task-boundary commit-secret-scan hold, which persists the SAME
+  `operator_input_needed` reason string with no fresh `operator_escalation`
+  of its own, from resurrecting an already-answered gate's stale question.
   Carries `reason`, `approach`/`maxApproaches`/`approachOfMax`, `parkedAt`,
   `replanAvailable` (present only for `operator_input_needed`),
   `blockingCount`/`residualCount`, one `findings` entry per finding —

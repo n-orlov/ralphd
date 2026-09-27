@@ -382,6 +382,87 @@ def test_a_plain_operator_pause_has_no_parked_question(tmp_path):
 
 
 # ===========================================================================
+# 3b. Cure task cure-01-02-4 (PRD B.1, D.1; DoD 2/4): a later task-boundary
+#     commit-secret-scan hold, sharing the `operator_input_needed` reason
+#     string with an already-answered review gate, must not resurrect that
+#     answered gate's own question or its obsolete cure preview.
+# ===========================================================================
+
+
+def test_commit_scan_hold_after_answered_review_gate_has_no_stale_parked_question(tmp_path):
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
+                      tasks=_LANE_TASKS,
+                      status={"state": "running", "phase": "review",
+                              "approach": 1, "maxApproaches": 2})
+    sup._approach = 1
+    findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
+    sup._pause_and_escalate_operator_input_needed(
+        1, _MIXED_FINDINGS, replan_available=True)
+
+    status = sup.run.read_status()
+    assert status["pauseReason"] == "operator_input_needed"
+    # Sanity: the review gate's own question shows while it stands unanswered.
+    assert parked_question(root, status) is not None
+
+    # The operator answers the review gate -- a cure worker then runs.
+    sup.resume()
+    status = sup.run.read_status()
+    assert status.get("pauseReason") is None
+    assert parked_question(root, status) is None
+
+    # A task-boundary commit-secret-scan hold now raises, sharing the SAME
+    # `operator_input_needed` reason string but emitting NO fresh
+    # `operator_escalation` event -- its record is the value-free
+    # `commit_secret_scan` event alone (`_pause_for_commit_secret_hit`).
+    sup.run.emit(sup.COMMIT_SECRET_SCAN_EVENT, sha="0" * 40, part="blob",
+                 variable="REVIEW_TEST_VARIABLE", pushed=False)
+    sup._pause_for_commit_secret_hit()
+    status = sup.run.read_status()
+    assert status["pauseReason"] == "operator_input_needed"
+    # The stale, already-answered review question -- and its obsolete
+    # `_MIXED_FINDINGS` preview -- must NOT resurface for this unrelated
+    # commit-scan hold.
+    assert parked_question(root, status) is None
+
+    # A genuinely new review escalation, raised after this hold is
+    # answered, still appears with its own consequences.
+    sup.resume()
+    findings.write_findings_json(sup.run.findings_json_file, _CURE_REOPEN_FINDING)
+    preview = cure_pass_preview(_LANE_TASKS, _CURE_REOPEN_FINDING)
+    sup._pause_and_escalate_operator_input_needed(
+        1, _CURE_REOPEN_FINDING, replan_available=True, cure_preview=preview)
+    status = sup.run.read_status()
+    pq = parked_question(root, status)
+    assert pq is not None
+    assert pq["reason"] == "operator_input_needed"
+    assert pq["findings"][0]["clause"] == _CURE_REOPEN_FINDING[0]["clause"]
+    assert pq["consequence"]["insertCount"] == 1
+
+
+def test_run_detail_has_no_stale_parked_question_after_a_commit_scan_hold(tmp_path):
+    """Same scenario end to end through `ui_server.run_detail`, the exact
+    surface the hub panel reads."""
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
+                      status={"state": "running", "phase": "review",
+                              "approach": 1, "maxApproaches": 2})
+    sup._approach = 1
+    findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
+    sup._pause_and_escalate_operator_input_needed(
+        1, _MIXED_FINDINGS, replan_available=True)
+    sup.resume()
+    sup.run.emit(sup.COMMIT_SECRET_SCAN_EVENT, sha="0" * 40, part="blob",
+                 variable="REVIEW_TEST_VARIABLE", pushed=False)
+    sup._pause_for_commit_secret_hit()
+
+    reg = _reg_for(root, sup.cfg.run_id)
+    detail = ui_server.run_detail(reg, sup.cfg.run_id)
+    assert detail["status"]["pauseReason"] == "operator_input_needed"
+    assert detail["parkedQuestion"] is None
+
+
+# ===========================================================================
 # 4. `ui_server.run_detail` splices it in end to end, and the run-detail
 #    ETag moves when a fresh escalation lands.
 # ===========================================================================

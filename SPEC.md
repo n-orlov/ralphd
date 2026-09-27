@@ -5092,8 +5092,18 @@ dir themselves and a live proxy would only add a way to disagree.
   `rejected_last_approach`, the dependency-edge pair, the two review-channel
   pauses). Read entirely on disk (`state.parked_question`, the same on-disk-
   first discipline `escalation_pause_markers` already uses) off the MOST
-  RECENT matching `operator_escalation` event plus the on-disk structured
-  findings sidecar — never a second live-only path. Carries: `reason`,
+  RECENT matching `operator_escalation` event NOT YET ANSWERED by a later
+  resume with no fresher matching escalation since, plus the on-disk
+  structured findings sidecar — never a second live-only path. That
+  answered-since check (cure task cure-01-02-4, PRD B.1, D.1; DoD 2/4) is
+  what keeps a later task-boundary commit-secret-scan hold
+  (`LoopSupervisor._pause_for_commit_secret_hit`, §4.6 `pauseReason` row),
+  which persists the SAME `operator_input_needed` reason string with no
+  fresh `operator_escalation` event of its own, from resurrecting an
+  already-answered review gate's own question and its now-obsolete cure
+  preview: once a resume follows that gate's escalation with no fresher
+  matching one after it, `parked_question` returns `null` for the
+  commit-scan hold instead. Carries: `reason`,
   `approach`/`maxApproaches`/`approachOfMax` (`"approach n of m"`),
   `parkedAt` (that event's own timestamp), `replanAvailable` (present only
   for `operator_input_needed`, `null` for `rejected_repeated_signature`,

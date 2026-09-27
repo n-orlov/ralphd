@@ -708,10 +708,34 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
         persisted pause, which is always preceded by the event that
         caused it).
 
+    Cure task cure-01-02-4 (PRD B.1, D.1; DoD 2/4): the LATEST matching-
+    reason event is not enough on its own -- the task-boundary commit-
+    secret-scan hold (`_pause_for_commit_secret_hit`, task 030) persists
+    `pauseReason: "operator_input_needed"` on status.json WITHOUT ever
+    emitting a fresh `operator_escalation` event (see that method's own
+    docstring: its record is the value-free `commit_secret_scan` event,
+    deliberately not this one, so a crashed-episode resume never misroutes
+    into `review` over nothing it reviewed). If review had earlier raised
+    and ANSWERED a same-reason `operator_input_needed` pause (a ruling or a
+    plain `POST /resume`) on this same run, that earlier event is still the
+    latest one carrying this reason -- and, unpatched, it would be handed
+    back out as if it were the CURRENT commit-scan hold's own question,
+    resurrecting an already-answered finding list and cure preview the
+    operator has no reason to see again. So the scan below tracks, for the
+    matching-reason event only, whether an `iteration.start` or a `resume()`
+    `"resumed"` log line (the same answered signal `_escalation_scan` above
+    uses) followed it with no LATER matching-reason escalation to re-arm the
+    question: if so, that event is stale -- answered, then re-paused for an
+    unrelated reason that merely reuses the same reason string -- and this
+    returns `None` rather than the old event. A genuinely fresh escalation
+    (any pause, including a repeat of the SAME reason, raised after the
+    last resume) resets the tracking and is reported normally.
+
     Otherwise, built from the LATEST `operator_escalation` event whose own
-    `reason` equals `status["pauseReason"]` (read oldest-first off
-    `events.jsonl`, keeping the last match -- the same one-pass-and-keep-
-    last discipline `_escalation_scan` above already uses): `reason`,
+    `reason` equals `status["pauseReason"]`, not yet answered by a later
+    resume with no fresher matching escalation since (read oldest-first off
+    `events.jsonl`, keeping the last unanswered match -- the same one-pass-
+    and-keep-last discipline `_escalation_scan` above already uses): `reason`,
     `approach`, `maxApproaches` (`status["maxApproaches"]`, `None` when
     absent), `approachOfMax` (the event's own pre-rendered `"approach <n>
     of <N>"` text), `parkedAt` (the event's own `ts` -- the moment the
@@ -742,10 +766,18 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
     if reason not in PARKED_QUESTION_REASONS:
         return None
     event = None
-    for ev in read_events(run_root, types=("operator_escalation",)):
-        if ev.get("reason") == reason:
-            event = ev
-    if event is None:
+    answered_since = False
+    for ev in read_events(run_root, types=(
+            "operator_escalation", "iteration.start", "log")):
+        kind = ev.get("type")
+        if kind == "operator_escalation":
+            if ev.get("reason") == reason:
+                event = ev
+                answered_since = False
+        elif kind == "iteration.start" or (
+                kind == "log" and ev.get("message") == RESUMED_LOG_MESSAGE):
+            answered_since = True
+    if event is None or answered_since:
         return None
     blocking = [f for f in (event.get("findings") or []) if isinstance(f, dict)]
     findings_out = []

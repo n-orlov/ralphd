@@ -214,6 +214,43 @@ def test_panel_appears_for_ruling_answerable_reasons_and_absent_otherwise(tmp_pa
         server.stop()
 
 
+def test_no_stale_parked_panel_after_a_commit_scan_hold_following_an_answered_gate(tmp_path, pw):
+    """Cure task cure-01-02-4 (PRD B.1, D.1; DoD 2/4): a task-boundary
+    commit-secret-scan hold reuses the SAME `operator_input_needed` reason
+    string an already-answered review gate left behind, but emits no fresh
+    `operator_escalation` event of its own
+    (`LoopSupervisor._pause_for_commit_secret_hit`). The panel must not
+    resurrect that answered gate's own stale question/finding list."""
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(
+        registry, "run-stale-commit-scan", state="paused",
+        pauseReason="operator_input_needed", approach=1, maxApproaches=2)
+    rd = RunDir(root=run_dir)
+    # The review gate's own escalation -- later answered by a resume.
+    rd.emit("operator_escalation", reason="operator_input_needed", approach=1,
+            findings=_BLOCKING_FINDINGS, escalation="escalation text\n",
+            replanAvailable=True, nextStepIfUnanswered="cure_pass")
+    rd.emit("log", message="resumed")
+    # A cure worker runs, then a task-boundary commit-secret-scan hit raises
+    # the SAME reason string with no fresh `operator_escalation` behind it.
+    rd.emit("commit_secret_scan", sha="0" * 40, part="blob",
+            variable="REVIEW_TEST_VARIABLE", pushed=False)
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-stale-commit-scan")
+        _wait_for(pw, "document.body.innerText", "paused")
+        n_panel = int(pw.eval_js("document.querySelectorAll('#parked-panel').length"))
+        assert n_panel == 0
+        box_hidden = pw.eval_js(
+            "document.getElementById('parked-panel-box').style.display")
+        assert box_hidden.strip('"') == "none"
+        pw.screenshot(SCREENSHOTS_DIR / "parked-00-no-stale-after-commit-scan.png")
+    finally:
+        server.stop()
+
+
 def test_a_finding_expands_and_collapses_via_its_own_summary(tmp_path, pw):
     """`.parked-finding` is a native `<details>` -- clicking its `<summary>`
     toggles `.open`, and (the real behavioural proof, not just the
