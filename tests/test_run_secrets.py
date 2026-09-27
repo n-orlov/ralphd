@@ -394,7 +394,10 @@ REAL_PRIVSEP_SCRIPT = textwrap.dedent(
     out["resuid"] = list(os.getresuid())
     minted = petitions._authority(run, create=True).key
     kp = petitions._stored_key_path(run)
-    st = kp.stat()
+    # The store dir is root-owned 0700 (`_persist_key` chowns it on every
+    # write), so even a stat needs the same elevation the engine reads with.
+    with privsep.root_for_write():
+        st = kp.stat()
     out["keyFile"] = {"uid": st.st_uid, "mode": oct(st.st_mode & 0o777)}
     probe = subprocess.run(
         [sys.executable, "-c",
