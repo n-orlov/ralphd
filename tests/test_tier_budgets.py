@@ -296,9 +296,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # finding_downgraded` event, and the `reopens`/`regression`/exempt
     # findings staying blocking), measured `.venv/bin/python -m pytest
     # -q -m fast --collect-only` -> 6447/445, `-m smoke --collect-only`
-    # -> 4755/322.
-    "fast": {"tests": 6447, "modules": 445},
-    "smoke": {"tests": 4755, "modules": 322},
+    # -> 4755/322. Task 006 retry: +5 tests (the same module: the
+    # contract-ladder path a `verified` claim takes over a downgraded
+    # finding, its two controls, mid-run exclusion, once-per-pass event),
+    # measured `-m fast --collect-only` -> 6452/445, `-m smoke
+    # --collect-only` -> 4760/322.
+    "fast": {"tests": 6452, "modules": 445},
+    "smoke": {"tests": 4760, "modules": 322},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

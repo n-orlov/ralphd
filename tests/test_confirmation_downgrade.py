@@ -12,7 +12,8 @@ stay blocking:
 
 A blocking finding carrying NEITHER field is downgraded to `"residual"`
 before the verdict is computed (`findings.apply_confirmation_review_
-downgrade`, wired into `LoopSupervisor._review_verdict`), with a
+downgrade`, wired into `LoopSupervisor._review_findings_channel`, so the
+contract ladder that runs BEFORE `_review_verdict` already sees it), with a
 `review.finding_downgraded` event naming it. Two things always stay
 blocking with neither field: an exposed secret, and a requirement whose
 behaviour is absent altogether (`findings.confirmation_review_exempt`).
@@ -25,6 +26,7 @@ and no `review.finding_downgraded` event is ever emitted.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 from pathlib import Path
@@ -89,6 +91,23 @@ def _make_confirmation_review(tmp_path, prior_finding_clause="prior C.1"):
     assert len(inserted) == 1
     assert sup._is_confirmation_review() is True
     return sup, inserted[0]
+
+
+def _verified() -> IterationResult:
+    return _result(json.dumps({"verdict": "verified"}))
+
+
+def _stub_contract_fix(sup) -> list:
+    """Replace `_ask_contract_fix` with a recorder that keeps repeating
+    the same `verified` claim, so any re-ask the ladder makes is counted."""
+    calls: list = []
+
+    async def fake_ask_contract_fix(hat, errors, **_kw):
+        calls.append((hat, list(errors)))
+        return json.dumps({"verdict": "verified"}), {}
+
+    sup._ask_contract_fix = fake_ask_contract_fix  # type: ignore[method-assign]
+    return calls
 
 
 def _events(root: Path) -> list[dict]:
@@ -214,3 +233,119 @@ def test_confirmation_review_downgrade_candidates_is_a_pure_unit(tmp_path):
     assert downgraded == [new_list[0]]
     # the input list and its dicts are never mutated.
     assert unlinked["severity"] == "blocking"
+
+
+def test_a_verified_claim_over_an_unlinked_finding_passes_the_ladder(
+        tmp_path):
+    """The live review path: `_review_contract_ladder` runs strictly BEFORE
+    `_review_verdict`. On a confirmation review, a `{"verdict": "verified"}`
+    reply beside an unlinked blocking finding is NOT a contradiction --
+    the rule downgrades the finding before the ladder checks it -- so the
+    ladder makes no re-ask, flags nothing unusable, and `_review_verdict`
+    computes `verified` with exactly one `review.finding_downgraded`."""
+    sup, _cure_task_id = _make_confirmation_review(tmp_path)
+    sup.cfg.contract_retry_max = 1
+    unlinked = _finding("requirement D.9 (unlinked)", "still observed")
+    findings.write_findings_json(sup.run.findings_json_file, [unlinked])
+    calls = _stub_contract_fix(sup)
+    result = _verified()
+
+    laddered = asyncio.run(sup._review_contract_ladder(result))
+
+    assert calls == []
+    assert laddered is result
+    assert sup._review_findings_unusable is False
+    assert sup._review_contract_unrepaired is False
+    verified, payload, errors = sup._review_verdict(laddered)
+    assert errors == []
+    assert verified is True
+    assert sup._review_success_verdict_label() == "verified-with-residuals"
+    downgraded_events = [e for e in _events(sup.run.root)
+                         if e["type"] == "review.finding_downgraded"]
+    assert len(downgraded_events) == 1
+    assert downgraded_events[0]["clause"] == "requirement D.9 (unlinked)"
+
+
+def test_a_verified_claim_over_a_reopens_finding_is_still_a_contradiction(
+        tmp_path):
+    """Control for the node above: a `reopens` finding stays blocking, so
+    the same `verified` reply IS a contradiction the ladder re-asks over
+    and, unrepaired, never earns `verified`."""
+    sup, cure_task_id = _make_confirmation_review(tmp_path)
+    sup.cfg.contract_retry_max = 1
+    reopened = _finding("prior C.1", "a new example of the same rule",
+                         reopens=cure_task_id)
+    findings.write_findings_json(sup.run.findings_json_file, [reopened])
+    calls = _stub_contract_fix(sup)
+
+    laddered = asyncio.run(sup._review_contract_ladder(_verified()))
+
+    assert len(calls) == 1
+    assert sup._review_findings_unusable is True
+    verified, _payload, errors = sup._review_verdict(laddered)
+    assert verified is False
+    assert errors
+    assert [e for e in _events(sup.run.root)
+            if e["type"] == "review.finding_downgraded"] == []
+
+
+def test_a_verified_claim_over_an_unlinked_finding_on_a_first_review_is_refused(
+        tmp_path):
+    """Control: with no granted cure pass the identical reply over the
+    identical unlinked finding stays a contradiction on the ladder."""
+    root = tmp_path / "run"
+    sup = _supervisor(root, approach=1)
+    sup.cfg.contract_retry_max = 1
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": []})
+    _init_git_repo(sup.workspace)
+    findings.write_findings_json(
+        sup.run.findings_json_file,
+        [_finding("requirement D.9 (unlinked)", "still observed")])
+    calls = _stub_contract_fix(sup)
+
+    laddered = asyncio.run(sup._review_contract_ladder(_verified()))
+
+    assert len(calls) == 1
+    verified, _payload, _errors = sup._review_verdict(laddered)
+    assert verified is False
+
+
+def test_a_mid_run_pass_never_downgrades(tmp_path):
+    """The mid-run adjudication episode / mid-plan review (`mid_run=True`)
+    is not a confirmation review: its findings keep their severities even
+    once the approach has taken a cure pass."""
+    sup, _cure_task_id = _make_confirmation_review(tmp_path)
+    findings.write_findings_json(
+        sup.run.findings_json_file,
+        [_finding("requirement D.9 (unlinked)", "still observed")])
+
+    listed, errors = sup._review_findings_channel(mid_run=True)
+
+    assert errors == []
+    assert [f["severity"] for f in listed] == ["blocking"]
+    assert sup._review_findings(mid_run=True)[0]["severity"] == "blocking"
+    assert [e for e in _events(sup.run.root)
+            if e["type"] == "review.finding_downgraded"] == []
+
+
+def test_the_event_is_emitted_once_per_review_pass_across_rereads(tmp_path):
+    """Every reader re-reads the channel; the event names each downgraded
+    finding once per pass, and a new pass (a fresh ladder entry) may
+    announce it again."""
+    sup, _cure_task_id = _make_confirmation_review(tmp_path)
+    findings.write_findings_json(
+        sup.run.findings_json_file,
+        [_finding("requirement D.9 (unlinked)", "still observed")])
+
+    asyncio.run(sup._review_contract_ladder(_verified()))
+    sup._review_verdict(_verified())
+    sup._review_findings_channel()
+    sup._review_findings()
+
+    def count():
+        return len([e for e in _events(sup.run.root)
+                    if e["type"] == "review.finding_downgraded"])
+
+    assert count() == 1
+    asyncio.run(sup._review_contract_ladder(_verified()))
+    assert count() == 2

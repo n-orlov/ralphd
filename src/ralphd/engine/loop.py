@@ -602,6 +602,14 @@ class LoopSupervisor:
         # takes the `review_findings_unusable` pause edge on it
         # (requirement C.2) instead of spending the approach.
         self._review_findings_unusable: bool = False
+        # Task 006 (PRD requirement B.3, v0.27, #274): the (approach,
+        # clause, evidence) keys `_review_findings_channel` has already
+        # announced as `review.finding_downgraded` during THIS review pass
+        # -- the channel is re-read by the contract ladder, by
+        # `_review_verdict` and by every post-verdict reader, and the
+        # event must be emitted once per downgraded finding, not once per
+        # read. Reset at every ordinary `_review_contract_ladder` entry.
+        self._confirmation_downgrades_announced: set[tuple] = set()
         self._last_task_snapshot: dict = {}
         self.deadline = time.monotonic() + cfg.job_timeout_s
         # Task 011 (#5): wall-clock twin of self.deadline (published as
@@ -10763,7 +10771,9 @@ class LoopSupervisor:
             update["blockerDetails"] = details
         self.run.update_status(**update)
 
-    def _review_findings_channel(self) -> tuple[list[dict] | None, list[str]]:
+    def _review_findings_channel(
+        self, mid_run: bool = False
+    ) -> tuple[list[dict] | None, list[str]]:
         """Task 002 (requirement A.2, #110): read the structured findings
         sidecar (`engine/findings.py`, task 001) for the review just run and
         report BOTH halves of its state, because they mean opposite things:
@@ -10835,7 +10845,44 @@ class LoopSupervisor:
         return value), and reports it EVEN IN the no-channel-at-all first
         case above: a missing review sidecar must not be a way to get a
         `verified` claim over a criteria rewrite trusted.
+
+        Task 006 (PRD requirement B.3, v0.27, #274): LAST, on a settled
+        (`mid_run` False) CONFIRMATION review (`_is_confirmation_review`),
+        every blocking finding carrying neither `reopens` nor `regression:
+        true` (and not exempt -- an exposed secret, an absent behaviour) is
+        downgraded to residual (`findings.apply_confirmation_review_
+        downgrade`), announcing each one as `review.finding_downgraded`
+        once per review pass. Done HERE, in the one place every reader
+        gets its list from, so `_review_contract_ladder`'s entry check and
+        re-ask validation, `_review_verdict` and every post-verdict reader
+        judge the SAME post-downgrade severities -- an unlinked blocking
+        finding beside a `verified` claim is therefore not a contradiction
+        the ladder re-asks over (or exhausts on) at all. The mid-run
+        adjudication episode and the mid-plan review pass `mid_run=True`
+        and are never subject to the rule.
         """
+        findings_list, errors = self._review_findings_channel_raw()
+        if (not mid_run and findings_list
+                and self._is_confirmation_review()):
+            findings_list, downgraded = (
+                findings.apply_confirmation_review_downgrade(findings_list))
+            for f in downgraded:
+                key = (self._approach, f.get("clause"), f.get("evidence"))
+                if key in self._confirmation_downgrades_announced:
+                    continue
+                self._confirmation_downgrades_announced.add(key)
+                self.run.emit(
+                    "review.finding_downgraded", approach=self._approach,
+                    clause=f.get("clause"), evidence=f.get("evidence"))
+        return findings_list, errors
+
+    def _review_findings_channel_raw(
+        self,
+    ) -> tuple[list[dict] | None, list[str]]:
+        """`_review_findings_channel` before the confirmation-review
+        downgrade (task 006): the sidecar read, the petition-confirmed
+        downgrade and the engine-appended findings, exactly as documented
+        on that method."""
         path = self.run.findings_json_file
         # Task 024 (requirement E.3, #116 section 2): the engine-forced
         # blocking finding for a criteria-tamper marker is derived BEFORE
@@ -10924,7 +10971,7 @@ class LoopSupervisor:
                 clause=f.get("clause"), evidence=f.get("evidence"),
                 curable=f.get("curable"))
 
-    def _review_findings(self) -> list[dict] | None:
+    def _review_findings(self, mid_run: bool = False) -> list[dict] | None:
         """The valid findings list for the review just run, or `None` when
         there is none. Thin caller of `_review_findings_channel` above for
         the sites that only need the list; anything that decides whether a
@@ -10932,7 +10979,7 @@ class LoopSupervisor:
         so that a present-but-invalid channel is refused rather than read as
         an absent one (see that method's docstring).
         """
-        return self._review_findings_channel()[0]
+        return self._review_findings_channel(mid_run=mid_run)[0]
 
     def _record_approach_verdict(self, approach: int, channel: str, *,
                                  verdict: str, reason: str | None,
@@ -11150,30 +11197,11 @@ class LoopSupervisor:
                 parsed.get("petition_adjudications"))
             self._write_back_petition_adjudications(
                 parsed.get("petition_adjudications"))
-        findings_list, channel_errors = self._review_findings_channel()
-        # Task 006 (PRD requirement B.3, v0.27, #274): on a settled
-        # (non-mid-run) CONFIRMATION review, downgrade every blocking
-        # finding carrying neither `reopens` nor `regression: true` to
-        # residual BEFORE anything below computes a verdict off
-        # `findings_list` -- schema/contract checks, the residual-
-        # recomputation branch further down, and every later reader of
-        # this same list (`_review_success_verdict_label`, `_review_
-        # rejection_signature`, ...) all see the post-downgrade severities,
-        # exactly the same "one place, every caller sees the same list"
-        # discipline `_review_findings_channel`'s own petition-confirmed
-        # downgrade already keeps for itself. Guarded on `findings_list`
-        # being present -- an unreadable/absent channel has nothing to
-        # downgrade -- and on `not mid_run`, since the confirmation-review
-        # section is never folded into a mid-run adjudication episode's
-        # own prompt (`_review_extra_context` is not part of that path),
-        # so a mid-run reply's findings are never subject to this rule.
-        if not mid_run and findings_list and self._is_confirmation_review():
-            findings_list, downgraded = (
-                findings.apply_confirmation_review_downgrade(findings_list))
-            for f in downgraded:
-                self.run.emit(
-                    "review.finding_downgraded", approach=self._approach,
-                    clause=f.get("clause"), evidence=f.get("evidence"))
+        # Task 006 (PRD requirement B.3, v0.27, #274): `mid_run` threads
+        # through so a settled confirmation review reads the post-downgrade
+        # list (`_review_findings_channel`), and a mid-run episode never.
+        findings_list, channel_errors = self._review_findings_channel(
+            mid_run=mid_run)
         if isinstance(parsed, dict):
             payload = parsed
             schema_errors = (
@@ -11423,9 +11451,14 @@ class LoopSupervisor:
         if not mid_run:
             self._review_contract_unrepaired = False
             self._review_findings_unusable = False
+            self._confirmation_downgrades_announced = set()
         if result is None or self._review_interrupted(result):
             return result
-        findings_list, channel_errors = self._review_findings_channel()
+        # Task 006 (PRD requirement B.3): the post-downgrade list on a
+        # settled confirmation review, so an unlinked blocking finding the
+        # rule downgrades never enters (or exhausts) this ladder.
+        findings_list, channel_errors = self._review_findings_channel(
+            mid_run=mid_run)
         try:
             parsed = json.loads(last_nonblank_line(result.final_text))
         except (json.JSONDecodeError, TypeError):
@@ -11571,7 +11604,8 @@ class LoopSupervisor:
             # may have repaired the sidecar, and a stale in-memory copy
             # would either refuse a now-consistent payload or accept a
             # newly-broken one.
-            fresh, fresh_channel_errors = self._review_findings_channel()
+            fresh, fresh_channel_errors = self._review_findings_channel(
+                mid_run=mid_run)
             return (transitions.review_report_errors(payload)
                     or fresh_channel_errors
                     or transitions.review_verdict_findings_errors(
@@ -16923,7 +16957,7 @@ class LoopSupervisor:
             return
         result = await self._review_contract_ladder(result, mid_run=True)
         self._review_verdict(result, mid_run=True)
-        findings_list = self._review_findings() or []
+        findings_list = self._review_findings(mid_run=True) or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         if not blocking:
             return
