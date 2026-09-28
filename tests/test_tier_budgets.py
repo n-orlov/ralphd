@@ -280,8 +280,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # steering-origin task), measured `.venv/bin/python -m pytest -q -m
     # fast --collect-only` -> 6429/442, `-m smoke --collect-only` ->
     # 4737/319.
-    "fast": {"tests": 6429, "modules": 442},
-    "smoke": {"tests": 4737, "modules": 319},
+    # Task 004 (B.5 foundation, #274): +6 tests / +1 module (tests/
+    # test_cure_lineage.py: the per-cure-pass findings/pre_cure_head
+    # lineage record and a reopen's ancestor field), measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 6435/443,
+    # `-m smoke --collect-only` -> 4743/320.
+    "fast": {"tests": 6435, "modules": 443},
+    "smoke": {"tests": 4743, "modules": 320},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

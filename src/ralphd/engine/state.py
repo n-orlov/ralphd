@@ -4440,6 +4440,20 @@ def cure_task_from_finding(approach: int, index: int, finding: dict) -> dict:
     remedy_for = finding.get("remedy_for")
     if isinstance(remedy_for, str) and remedy_for.strip():
         task["remedyFor"] = remedy_for.strip()
+    # Task 004 (v0.27, B.5 foundation, #274): a finding carrying `reopens`
+    # -- the cure task id of a listed finding a confirmation review found
+    # still open (B.1/B.3) -- means THIS finding is a new example of that
+    # same broken rule, not a fresh one. The new cure task built from it
+    # records the ancestor it descends from here, on its own `tasks.json`
+    # entry, so B.4's identity-based no-progress comparison can follow the
+    # link back to the root finding without ever reading a finding id's
+    # spelling (PRD B.5: "the new task records the cure task it descends
+    # from"). Absent on every finding written before `reopens` existed, and
+    # on every ordinary first-review finding, exactly as `remedyFor` above
+    # is absent on every finding with no `remedy_for`.
+    reopens = finding.get("reopens")
+    if isinstance(reopens, str) and reopens.strip():
+        task["reopensCureTaskId"] = reopens.strip()
     return task
 
 
@@ -5361,10 +5375,24 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
         None) if freeze_id is not None else None
     retake_anchor_id = freeze_id
     inserted: list = []
+    # Task 004 (v0.27, B.5 foundation, #274): this pass's own findings,
+    # keyed by the cure task id built for each -- the map `record_cure_
+    # pass_lineage` below persists once the whole pass is inserted. Built
+    # from the finding's RAW `clause`/`cured_when`, before `_repair_cure_
+    # task_criteria` may fold an overrun `cured_when` -- a confirmation
+    # review reading this record back wants the same text review itself
+    # wrote, not a later engine-side repair of it.
+    pass_findings: dict = {}
     for index, finding in enumerate(blocking, start=1):
         new_task = cure_task_from_finding(approach, index, finding)
         new_task["id"] = _unique_task_id(new_task["id"], existing_ids)
         cure_task_id = new_task["id"]
+        pass_findings[cure_task_id] = {
+            "clause": str(finding.get("clause") or ""),
+            "curedWhen": (finding.get("cured_when")
+                         if isinstance(finding.get("cured_when"), str)
+                         else None),
+        }
         # #209 defect 1: repair an over-long `cured_when` here, after the
         # id is final (so the event names the collision-resolved id) and
         # before the task is spliced in. This placement -- rather than
@@ -5585,6 +5613,20 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
                 inserted.append(retake_task["id"])
     if inserted:
         run.write_tasks(data)
+    if pass_findings:
+        # Task 004 (v0.27, B.5 foundation, #274): persisted AFTER the
+        # `tasks.json` write above, never before it -- a caller reading
+        # the lineage record back must never see a pass recorded whose
+        # cure task(s) never actually landed on disk. Every pass that
+        # reaches this line inserted at least one blocking finding's cure
+        # task (`pass_findings` is non-empty iff `blocking` was), so this
+        # is unconditional on any granted pass, never skipped for lack of
+        # a `pre_cure_head` (a non-git workspace still gets a record, with
+        # `preCureHead: null` -- the identical optionality `preCureHeads`
+        # already gives that same caller-supplied value).
+        record_cure_pass_lineage(run.root, approach=approach,
+                                 pre_cure_head=pre_cure_head,
+                                 findings_by_cure_task_id=pass_findings)
     return inserted
 
 
@@ -6821,6 +6863,95 @@ def record_approach_verdict(run_root: Path, approach: int, channel: str, *,
     approaches[str(approach)] = merged
     atomic_write_json(approach_metadata_path(run_root),
                       {**doc, "approaches": approaches})
+    return entry
+
+
+# Task 004 (v0.27, B.5 foundation, #274/#275 PRD): the RUN-scope, disk-backed
+# record of every granted cure pass's own findings-to-cure-task-id map and
+# the `pre_cure_head` it was handed -- the foundation B.4/B.5 build on:
+# B.5's own words are "when a reopen becomes a new cure task, the new task
+# records the cure task it descends from" and "the B.4 comparison reads
+# that link from `tasks.json`, never from the id's spelling" -- this file is
+# the OTHER half, the pass-level ledger a later confirmation review
+# (`## Confirmation review`, B.1) reads to list "every blocking finding of
+# the previous granted pass, named by the id of the cure task `insert_
+# cure_tasks` built for each ... with its clause and `cured_when`" and "the
+# diff range ... the `pre_cure_head` handed to `insert_cure_tasks`,
+# persisted per pass if it is not already". Same run-root placement as
+# `approach-metadata.json` beside it -- one file answers for every approach
+# and every pass this run ever takes, never archived per-approach by
+# `_archive_approach` (a later confirmation review needs the PREVIOUS
+# approach's own passes exactly as much as the live one's).
+#
+# `insert_cure_tasks` below is the ONE writer, called from both granted-
+# cure-pass call sites (`LoopSupervisor._take_cure_pass` for review's own
+# edge, `_take_gate_cure_pass` for the peer verdict gate's) -- neither of
+# those methods needs its own new call: both already pass `pre_cure_head`
+# into `insert_cure_tasks`, so wiring the record there covers both without
+# a second writer to keep in sync.
+CURE_LINEAGE_FILE = "cure-lineage.json"
+
+
+def cure_lineage_path(run_root: Path) -> Path:
+    """Where the engine persists `CURE_LINEAGE_FILE` -- the run root,
+    exactly like `approach_metadata_path` above."""
+    return Path(run_root) / CURE_LINEAGE_FILE
+
+
+def read_cure_lineage(run_root: Path) -> dict:
+    """The whole lineage document, `{"passes": [...]}` -- an empty shell
+    when the file was never written (a run from before this task, or one
+    whose cure pass never touched a blocking finding) or is unreadable, so
+    every caller can index `["passes"]` without a guard.
+
+    Deliberately re-read from disk on every call, never cached on the
+    `LoopSupervisor`/`RunDir` instance -- the same discipline `read_status`/
+    `read_approach_metadata` already hold to, and what lets a fresh process
+    over the same run dir (a resume, or a second `LoopSupervisor` in a test)
+    see byte-for-byte the same record a live one wrote, with no shared
+    Python state between them.
+    """
+    doc = read_json(cure_lineage_path(run_root), {})
+    if not isinstance(doc, dict):
+        return {"passes": []}
+    passes = doc.get("passes")
+    if not isinstance(passes, list):
+        passes = []
+    return {**doc, "passes": passes}
+
+
+def record_cure_pass_lineage(run_root: Path, *, approach: int,
+                             pre_cure_head: str | None,
+                             findings_by_cure_task_id: dict) -> dict:
+    """Append one pass entry -- `{"approach", "preCureHead", "findings",
+    "recordedAt"}` -- to the lineage document and persist it. `findings`
+    is `findings_by_cure_task_id` verbatim: one `{"clause", "curedWhen"}`
+    per cure task `insert_cure_tasks` built for a blocking finding on THIS
+    pass, keyed by that cure task's own (collision-resolved) id.
+
+    Called once per granted cure pass, from `insert_cure_tasks` itself
+    (never from its two callers directly) -- so a THIRD caller of `insert_
+    cure_tasks` (`LoopSupervisor._insert_refuted_remedy_tasks`, #209 defect
+    4) also gets a lineage entry for its own remedy-derived cure task, with
+    no special case needed here: a remedy finding carries `clause`/`cured_
+    when` exactly like a rejection finding does.
+
+    Appends rather than overwrites -- a run's later cure pass (a fresh
+    approach, or a second granted pass over the same one) grows the list;
+    nothing already recorded is ever replaced or dropped, which is what
+    lets a confirmation review's own diff range span every pass the
+    approach has taken, not only its most recent one.
+    """
+    doc = read_cure_lineage(run_root)
+    passes = list(doc["passes"])
+    entry = {
+        "approach": approach,
+        "preCureHead": pre_cure_head,
+        "findings": findings_by_cure_task_id,
+        "recordedAt": utcnow(),
+    }
+    passes.append(entry)
+    atomic_write_json(cure_lineage_path(run_root), {**doc, "passes": passes})
     return entry
 
 
