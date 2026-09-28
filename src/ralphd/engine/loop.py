@@ -11193,8 +11193,10 @@ class LoopSupervisor:
         findings_list, errors = self._review_findings_channel_raw()
         if (not mid_run and findings_list
                 and self._is_confirmation_review()):
+            listed_ids = self._confirmation_review_listed_cure_task_ids()
             findings_list, downgraded = (
-                findings.apply_confirmation_review_downgrade(findings_list))
+                findings.apply_confirmation_review_downgrade(
+                    findings_list, listed_ids))
             for f in downgraded:
                 key = (self._approach, f.get("clause"), f.get("evidence"))
                 if key in self._confirmation_downgrades_announced:
@@ -17766,6 +17768,33 @@ class LoopSupervisor:
             return False
         lineage = state.read_cure_lineage(self.run.root)
         return any(p.get("approach") == approach for p in lineage["passes"])
+
+    def _confirmation_review_listed_cure_task_ids(self) -> frozenset[str]:
+        """cure-01-02-2 (PRD B.3/B.5, DoD 2): the set of cure task ids the
+        CURRENT confirmation section actually lists -- the keys of the
+        most recent GRANTED cure pass's own `findings` map for `self.
+        _approach` (`cure-lineage.json`, task 004), the exact same set
+        `_confirmation_review_context` renders as `### Every blocking
+        finding of the previous granted pass` and `_cure_pass_targeted_
+        roots` walks to its own roots. This is the one bound a `reopens`
+        value must resolve to in order to retain blocking severity
+        through the reopen branch (`findings.apply_confirmation_review_
+        downgrade`, wired below) -- an unrelated or unresolved id is not
+        a member of this set, however it is spelled. Empty when `self.
+        _approach` is `None` or no pass has been granted for it yet, the
+        same absence `_is_confirmation_review` reports as `False` for.
+        """
+        approach = self._approach
+        if approach is None:
+            return frozenset()
+        lineage = state.read_cure_lineage(self.run.root)
+        passes = [p for p in lineage["passes"] if p.get("approach") == approach]
+        if not passes:
+            return frozenset()
+        findings_by_id = passes[-1].get("findings") or {}
+        if not isinstance(findings_by_id, dict):
+            return frozenset()
+        return frozenset(cid for cid in findings_by_id if isinstance(cid, str))
 
     def _confirmation_review_context(self) -> str:
         """PRD requirement B.1/B.2/B.3 (v0.27, #274, task 005): once the

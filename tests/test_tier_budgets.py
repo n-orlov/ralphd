@@ -354,8 +354,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # new module's nodes count in `smoke` too), measured `.venv/bin/python
     # -m pytest -q -m fast --collect-only` -> fast 6502/453, `-m smoke
     # --collect-only` -> smoke 4810/330.
-    "fast": {"tests": 6502, "modules": 453},
-    "smoke": {"tests": 4810, "modules": 330},
+    # cure-01-02-2 (PRD B.3/B.5, DoD 2): +3 tests, no new module (tests/
+    # test_confirmation_downgrade.py: a caller that omits listed_cure_
+    # task_ids resolves nothing, an unrelated/unresolved reopens id must
+    # not bypass the confirmation scope, and _confirmation_review_listed_
+    # cure_task_ids reads the lineage), measured `.venv/bin/python -m
+    # pytest -q -m fast --collect-only` -> fast 6505/453, `-m smoke
+    # --collect-only` -> smoke 4813/330.
+    "fast": {"tests": 6505, "modules": 453},
+    "smoke": {"tests": 4813, "modules": 330},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

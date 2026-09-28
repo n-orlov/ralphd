@@ -227,12 +227,73 @@ def test_confirmation_review_downgrade_candidates_is_a_pure_unit(tmp_path):
     unlinked = _finding("requirement Z", "observed")
     linked = _finding("requirement Y", "observed", reopens="cure-01-01")
     new_list, downgraded = findings.apply_confirmation_review_downgrade(
-        [unlinked, linked])
+        [unlinked, linked], listed_cure_task_ids={"cure-01-01"})
     assert new_list[0]["severity"] == "residual"
     assert new_list[1]["severity"] == "blocking"
     assert downgraded == [new_list[0]]
     # the input list and its dicts are never mutated.
     assert unlinked["severity"] == "blocking"
+
+
+def test_confirmation_review_downgrade_candidates_default_resolves_nothing(
+        tmp_path):
+    """cure-01-02-2 (PRD B.3/B.5, DoD 2): a caller that omits
+    `listed_cure_task_ids` gets the SAFE default -- every `reopens`
+    value is unresolved, so a finding naming one is a downgrade
+    candidate exactly like an unlinked finding, never the old
+    any-nonblank-string exemption."""
+    linked = _finding("requirement Y", "observed", reopens="cure-01-01")
+    new_list, downgraded = findings.apply_confirmation_review_downgrade(
+        [linked])
+    assert new_list[0]["severity"] == "residual"
+    assert downgraded == [new_list[0]]
+
+
+def test_b3_reopens_must_name_a_listed_cure_task(tmp_path):
+    """cure-01-02-2 (PRD B.3/B.5, DoD 2): the previous granted pass lists
+    only `cure_task_id` (the id `_make_confirmation_review` inserted).
+    Otherwise-unlinked, non-regression findings whose `reopens` names an
+    unrelated string or an unresolved cure task id must NOT bypass the
+    confirmation scope by retaining blocking severity -- both are
+    downgraded to residual and the event fires, exactly as an unlinked
+    finding is, through the live `_review_verdict` path."""
+    sup, cure_task_id = _make_confirmation_review(tmp_path)
+    assert cure_task_id != "not-a-cure-task"
+    assert cure_task_id != "cure-99-99"
+    unrelated = _finding("requirement D.11", "looks similar",
+                          reopens="not-a-cure-task")
+    unresolved = _finding("requirement D.12", "looks similar too",
+                           reopens="cure-99-99")
+    findings.write_findings_json(
+        sup.run.findings_json_file, [unrelated, unresolved])
+
+    verified, payload, errors = sup._review_verdict(_rejected())
+
+    assert errors == []
+    # both blocking findings downgraded to residual -- verdict recomputed
+    # to verified even though the raw payload claimed "rejected".
+    assert verified is True
+    assert payload["verdict"] == "rejected"
+
+    downgraded_clauses = {
+        e["clause"] for e in _events(sup.run.root)
+        if e["type"] == "review.finding_downgraded"}
+    assert downgraded_clauses == {"requirement D.11", "requirement D.12"}
+
+
+def test_b3_confirmation_review_listed_cure_task_ids_reads_the_lineage(
+        tmp_path):
+    """cure-01-02-2 (PRD B.3/B.5, DoD 2): `LoopSupervisor._confirmation_
+    review_listed_cure_task_ids` reports exactly the cure task ids the
+    current confirmation section lists -- the previous granted pass's own
+    inserted cure task id -- and nothing else, matching what `_cure_pass_
+    targeted_roots` and `_confirmation_review_context` already key on."""
+    sup, cure_task_id = _make_confirmation_review(tmp_path)
+    assert sup._confirmation_review_listed_cure_task_ids() == {cure_task_id}
+
+    root = tmp_path / "run-no-approach"
+    sup2 = _supervisor(root, approach=None)
+    assert sup2._confirmation_review_listed_cure_task_ids() == frozenset()
 
 
 def test_a_verified_claim_over_an_unlinked_finding_passes_the_ladder(

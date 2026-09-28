@@ -650,23 +650,43 @@ def confirmation_review_exempt(finding: dict) -> bool:
 
 
 def confirmation_review_downgrade_candidates(
-        findings_list: list[dict]) -> list[dict]:
-    """Task 006 (PRD requirement B.3): every entry of `findings_list`
-    that a confirmation review's downgrade rule applies to -- `severity:
-    "blocking"`, carrying neither a non-blank `reopens` string nor
+        findings_list: list[dict],
+        listed_cure_task_ids) -> list[dict]:
+    """Task 006 (PRD requirement B.3); cure-01-02-2 (PRD B.3/B.5, DoD 2):
+    every entry of `findings_list` that a confirmation review's downgrade
+    rule applies to -- `severity: "blocking"`, carrying neither a
+    `reopens` string that RESOLVES to one of `listed_cure_task_ids` (the
+    current confirmation section's own listed cure task ids -- the keys
+    of the most recent granted pass's `findings` map, see
+    `LoopSupervisor._confirmation_review_listed_cure_task_ids`) nor
     `regression: true`, and not exempt (`confirmation_review_exempt`).
-    Residual findings, linked findings and the two always-blocking
-    exceptions never enter the returned list. The identical entries
-    (not copies) from `findings_list`, so a caller can compare by
-    identity (`apply_confirmation_review_downgrade` below does exactly
-    that).
+    Residual findings, genuinely linked findings and the two
+    always-blocking exceptions never enter the returned list. The
+    identical entries (not copies) from `findings_list`, so a caller can
+    compare by identity (`apply_confirmation_review_downgrade` below does
+    exactly that).
+
+    A `reopens` value that is non-blank but does NOT name one of
+    `listed_cure_task_ids` -- an unrelated string, a stale/unresolved id
+    from a different approach or pass, a typo -- is NOT a link: it is
+    treated exactly like no `reopens` at all, and the finding IS a
+    downgrade candidate (unless `regression`/exempt saves it on its own
+    terms). This is the whole point: the confirmation-review reopen
+    branch is a bounded exemption naming one of THIS pass's own listed
+    findings, never an arbitrary escape hatch any nonblank string can
+    open, and an unresolved id must not go on to masquerade as a fresh
+    finding identity elsewhere (`reopened_root_finding_ids` only ever
+    sees blocking findings, so one downgraded here never reaches that
+    no-progress comparison as a fabricated root either).
     """
+    listed = frozenset(listed_cure_task_ids or ())
     out = []
     for f in findings_list:
         if not isinstance(f, dict) or f.get("severity") != "blocking":
             continue
         reopens = f.get("reopens")
-        if isinstance(reopens, str) and reopens.strip():
+        if (isinstance(reopens, str) and reopens.strip()
+                and reopens.strip() in listed):
             continue
         if f.get("regression") is True:
             continue
@@ -677,21 +697,31 @@ def confirmation_review_downgrade_candidates(
 
 
 def apply_confirmation_review_downgrade(
-        findings_list: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Task 006 (PRD requirement B.3): return `(new_list, downgraded)`,
-    where `new_list` is a COPY of `findings_list` with every entry
-    `confirmation_review_downgrade_candidates` names replaced by a copy
+        findings_list: list[dict],
+        listed_cure_task_ids=()) -> tuple[list[dict], list[dict]]:
+    """Task 006 (PRD requirement B.3); cure-01-02-2 (PRD B.3/B.5, DoD 2):
+    return `(new_list, downgraded)`, where `new_list` is a COPY of
+    `findings_list` with every entry `confirmation_review_downgrade_
+    candidates` names (given `listed_cure_task_ids`, the current
+    confirmation section's own listed cure task ids) replaced by a copy
     carrying `severity: "residual"` instead of `"blocking"` -- every
-    other entry (including a residual one, a linked one, or an exempt
-    one) passed through unchanged, in its original position -- and
+    other entry (including a residual one, a genuinely linked one, or an
+    exempt one) passed through unchanged, in its original position -- and
     `downgraded` is the list of those replacement copies, in the same
     order they appear in `findings_list`, for a caller
     (`LoopSupervisor._review_verdict`) to `emit()` one `review.
     finding_downgraded` event per entry. Never mutates `findings_list`
     or any of its dicts; an input with no candidates returns `([...],
     [])` -- a shallow copy of the list, no downgraded entries.
+
+    `listed_cure_task_ids` defaults to `()` (no id resolves) rather than
+    to "accept anything" -- a caller that forgets to pass the current
+    section's ids gets the SAFE default (every `reopens` value is
+    unresolved, so nothing improperly stays blocking), never the old
+    any-nonblank-string behaviour this task closes.
     """
-    candidates = confirmation_review_downgrade_candidates(findings_list)
+    candidates = confirmation_review_downgrade_candidates(
+        findings_list, listed_cure_task_ids)
     candidate_ids = {id(f) for f in candidates}
     if not candidate_ids:
         return list(findings_list), []
