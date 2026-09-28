@@ -267,8 +267,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # findings.py's FINDING_SCHEMA field set unchanged), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 6421/440,
     # `-m smoke --collect-only` -> 4729/317.
-    "fast": {"tests": 6421, "modules": 440},
-    "smoke": {"tests": 4729, "modules": 317},
+    # Task 002 (A.2, #274): +4 tests / +1 module (tests/
+    # test_cure_worker_prompt.py: `_worker_assignment_extra`'s "Fixing a
+    # review finding" section, present for a review-cure-origin task,
+    # absent for a planner-origin task and for no task selected at all),
+    # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
+    # 6425/441, `-m smoke --collect-only` -> 4733/318.
+    "fast": {"tests": 6425, "modules": 441},
+    "smoke": {"tests": 4733, "modules": 318},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

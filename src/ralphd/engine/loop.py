@@ -6416,6 +6416,42 @@ class LoopSupervisor:
                 "\n## Why the previous attempt was rejected\n\n"
                 f"- **validationAttempts**: {attempts}\n"
                 f"- **validationNotes**: {notes}\n")
+        # Task 002 (PRD requirement A.2): a `review-cure`-origin task
+        # (`state.is_review_cure_origin`) is engine-inserted output from a
+        # REFUTED review finding, not an ordinary planner task -- its
+        # `successCriteria` above IS the finding's own `cured_when`
+        # VERBATIM whenever the finding carried one (`state.
+        # cure_task_from_finding`), i.e. the broken RULE review named, not
+        # a checklist of the finding's own probe cases. A worker that only
+        # makes the finding's own listed examples pass has patched the
+        # symptom, not the cause -- so this section is the one place that
+        # tells the worker, explicitly, what "cure" means here: fix the
+        # cause `cured_when` names, add regression coverage the finding
+        # itself did not think to list, and petition (never narrow the fix)
+        # when `cured_when` turns out to conflict with something else.
+        # Absent entirely for a planner/steering-origin task, same
+        # "presence is the signal" discipline every other conditional block
+        # in this method already uses.
+        if state.is_review_cure_origin(task):
+            block += (
+                "\n## Fixing a review finding\n\n"
+                "This task is engine-inserted output from a REFUTED review "
+                "finding (`state.is_review_cure_origin`): its "
+                "**successCriteria** above IS the finding's own "
+                "`cured_when` -- the broken RULE review named, not a "
+                "checklist of the finding's own probe cases. Fix the CAUSE "
+                "`cured_when` names, not just whatever narrow symptom the "
+                "finding's own examples happened to hit.\n\n"
+                "Before you report complete: write and pass at least two "
+                "cases of the SAME rule that the finding did not list, "
+                "beside (not instead of) the finding's own examples -- a "
+                "fix that only covers the cases the finding already named "
+                "is a narrower fix, not a cure.\n\n"
+                "If satisfying `cured_when` as written turns out to "
+                "conflict with something else, petition (see 'Declaring a "
+                "structured impossibility petition on a single obligation' "
+                "above) rather than shipping a narrower fix that quietly "
+                "dodges the conflict.\n")
         if isinstance(spent_budget, dict):
             block += (
                 "\n## Progress budget exhausted (PRD requirement B.1, #156)\n\n"
