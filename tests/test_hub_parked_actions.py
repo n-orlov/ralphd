@@ -627,6 +627,21 @@ def test_resume_without_a_ruling_is_labelled_with_the_archive_and_replan_outcome
         in out["cardText"]
 
 
+def test_resume_without_a_ruling_is_labelled_with_the_finishing_outcome():
+    """Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): the THIRD
+    `nextStepIfUnanswered` value -- a last-approach pause where an
+    unanswered resume archives this approach and ENDS THE RUN, never a
+    fresh replan -- is labelled with its own outcome, not the
+    `archive_and_replan` wording (which claims a replan this edge never
+    takes) and not the panel's own generic `unknown (...)` fallback."""
+    pq = json.loads(json.dumps(_PQ))
+    pq["consequence"]["nextStepIfUnanswered"] = "finishing"
+    out = _run(pq)
+    assert ("predicted outcome: this approach is archived and the run ends "
+            "(no approach left)") in out["cardText"]
+    assert "unknown (" not in out["cardText"]
+
+
 def test_a_failed_submit_reports_the_engines_own_reason_and_keeps_the_text():
     out = _run(_PQ, textareaValue="a ruling\n", click="submit",
                responses=[{"ok": False, "status": 409,

@@ -8926,18 +8926,28 @@ class LoopSupervisor:
         have earned the cure-pass edge if the ceiling were not already
         spent, so `insertCount: 0`/`taskIdsValidatedToPending: []` is the
         truthful preview (a cure pass is never taken by this edge, ceiling
-        or not) and `nextStepIfUnanswered` always names `NEXT_STEP_
-        ARCHIVE_AND_REPLAN`, never a cure pass this edge cannot predict.
+        or not).
+
+        Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3):
+        `nextStepIfUnanswered` no longer names `NEXT_STEP_ARCHIVE_AND_
+        REPLAN` unconditionally -- on this approach's last try
+        (`not replan_available`), the actual edge an unanswered pause
+        takes is `_step_verdict_gate`'s own `verdict_gate_rejected_no_
+        approach_left` tail (`("tail",)`, ending the run), never a fresh
+        replan: `_step_verdict_gate` archives this approach either way,
+        but only starts a NEW one when `approach < cfg.max_approaches`.
         """
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         text = self._gate_operator_input_needed_escalation_text(
             approach, blocking, replan_available)
         extra_fields = self._discretionary_gate_escalation_fields(approach, {})
+        next_step = (state.NEXT_STEP_ARCHIVE_AND_REPLAN if replan_available
+                    else state.NEXT_STEP_FINISH)
         self.run.emit(
             "operator_escalation", approach=approach,
             reason="verdict_gate_operator_input_needed", findings=blocking,
             replanAvailable=replan_available, escalation=text,
-            nextStepIfUnanswered=state.NEXT_STEP_ARCHIVE_AND_REPLAN,
+            nextStepIfUnanswered=next_step,
             **extra_fields)
         self.pause(reason="verdict_gate_operator_input_needed")
         if self.notifier is not None:
@@ -12798,8 +12808,14 @@ class LoopSupervisor:
         if (not mechanical_ruled_park_due and repeated_signature
                 and self._discretionary_gate_available(approach)):
             self._spend_discretionary_gate(approach)
+            # Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): the
+            # same `approach < cfg.max_approaches` every other pause site
+            # in this method already computes, so this pause's own
+            # `next_step` can tell an archive that replans apart from one
+            # that ends the run on this approach's last try.
             self._pause_and_escalate_repeated_rejection_signature(
-                approach, signature, cure_preview)
+                approach, signature, cure_preview,
+                replan_available=approach < self.cfg.max_approaches)
             self._advance("review", "paused", "rejected_repeated_signature")
             return ("advance", "paused", "rejected_repeated_signature")
         # Task 009 (PRD requirement C.1, #141): a rejection whose blocking
@@ -13428,6 +13444,45 @@ class LoopSupervisor:
         """
         return self._cure_passes_for_run() >= self.cfg.cure_pass_ceiling
 
+    def _review_rejection_curable_findings(self, approach: int) -> bool:
+        """Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): the
+        STRUCTURAL half of `_review_rejection_curable_ignoring_ceiling` --
+        a findings channel present, computing to `"rejected"`, carrying no
+        criteria-tamper finding, with every blocking finding individually
+        `curable: True` -- but NEVER the no-progress comparison that
+        follows it there (a confirmation review's reopened-root superset
+        check, or an ordinary review's blocking-clause superset check).
+
+        `approach` is accepted (unused) only so this reads as the direct
+        structural sibling of `_review_rejection_curable_ignoring_ceiling`
+        at every call site -- both are `LoopSupervisor` methods consulted
+        for the SAME rejection, and a caller holding one already holds the
+        other's argument.
+
+        The distinction matters because "curable ignoring ceiling" bundles
+        TWO independent reasons a rejection with fully curable findings
+        still earns no cure pass: the run-wide ceiling being spent, and
+        this approach's own progress bookkeeping finding no progress (the
+        SAME wall restated). A rejection that fails HERE (mixed/incurable
+        findings, a tamper finding) was never curable at all -- no cure
+        pass could ever apply to it, ceiling or progress notwithstanding
+        -- and its own honest partial `cure_pass_preview` stays real. A
+        rejection that passes here but still fails `_review_cure_pass_
+        available` was curable in principle, refused only by ceiling or
+        progress bookkeeping -- and `_pause_and_escalate_operator_input_
+        needed`/`_pause_and_escalate_repeated_rejection_signature` zero
+        THAT rejection's preview, since neither edge ever takes a cure
+        pass over it, whatever the reopen/insert numbers would have read.
+        """
+        findings_list = self._review_findings()
+        if findings_list is None:
+            return False
+        if findings.compute_verdict(findings_list) != "rejected":
+            return False
+        if findings.any_criteria_tamper_finding(findings_list):
+            return False
+        return findings.all_blocking_findings_curable(findings_list)
+
     def _review_rejection_curable_ignoring_ceiling(self, approach: int) -> bool:
         """Task 011 (v0.27 requirement C.4, #275): every check `_review_
         cure_pass_available` makes EXCEPT the run-wide ceiling comparison --
@@ -13440,16 +13495,17 @@ class LoopSupervisor:
         `_review_cure_pass_available` is exactly this AND `not self._cure_
         pass_ceiling_spent()` -- same checks, same order, no behaviour
         change to that method.
+
+        Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): the
+        structural findings checks below are now `_review_rejection_
+        curable_findings(approach)`, extracted so a caller can tell a
+        rejection that fails there (never curable at all) apart from one
+        that passes it but still fails the no-progress comparison further
+        down (curable in principle, refused only by ceiling or progress).
         """
+        if not self._review_rejection_curable_findings(approach):
+            return False
         findings_list = self._review_findings()
-        if findings_list is None:
-            return False
-        if findings.compute_verdict(findings_list) != "rejected":
-            return False
-        if findings.any_criteria_tamper_finding(findings_list):
-            return False
-        if not findings.all_blocking_findings_curable(findings_list):
-            return False
         # cure-01-04 (PRD v0.27 requirement B.4/B.5, DoD 2): a CONFIRMATION
         # review compares reopened root cure-task identities against the
         # previous granted pass's own targeted set irrespective of WHICH
@@ -13867,7 +13923,7 @@ class LoopSupervisor:
 
     def _pause_and_escalate_repeated_rejection_signature(
         self, approach: int, signature: str | None,
-        cure_preview: dict | None = None,
+        cure_preview: dict | None = None, replan_available: bool = True,
     ) -> None:
         """Task 016 (PRD requirement E.5, #190): pause the run through the
         EXISTING pause machinery -- the same seam `_pause_and_escalate_
@@ -13914,19 +13970,36 @@ class LoopSupervisor:
         Task 011 (v0.27 requirement C.4, #275): when this rejection's own
         findings WERE curable ignoring the ceiling (`_review_rejection_
         curable_ignoring_ceiling`) but the run-wide ceiling is what is
-        actually spent, the preview fed to both the event's A.7 fields and
-        the delivered digest is zeroed (`{}`, never the real nonzero
-        `cure_preview`/`_effective_cure_preview` the caller computed) --
+        actually spent, the escalation TEXT still names `ralphctl budget
+        ... --cure-passes` as the lever that would change that outcome.
+
+        Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): the
+        preview fed to both the event's A.7 fields and the delivered
+        digest is zeroed (`{}`, never the real nonzero `cure_preview`/
+        `_effective_cure_preview` the caller computed) whenever this
+        rejection was structurally curable (`_review_rejection_curable_
+        findings`, ignoring both ceiling and progress) but `_review_cure_
+        pass_available` still says no -- ceiling spent, exactly as before,
+        OR this approach's own no-progress/superset comparison finding
+        nothing new to reopen (a repeated confirmation-review re-file of
+        the SAME previously-targeted finding, never a fresh problem) --
         `insertCount`/`taskIdsValidatedToPending` must name the edge that
-        will ACTUALLY be taken (archive-and-replan, `next_step` already
-        computed below off the SAME ceiling-aware `_review_cure_pass_
-        available`), never a cure pass's own prediction for an edge this
-        rejection will not take. A rejection that was never curable at all
-        (mixed/incurable findings, tamper, superset) is untouched -- that
-        preview already reads its own honest zero/partial reopen count
-        from `state.cure_pass_preview` on the findings themselves, and
-        `budget --cure-passes` would not change its outcome, so no note
-        is appended for it either.
+        will ACTUALLY be taken (archive-and-replan or finish, `next_step`
+        already computed below off the SAME `_review_cure_pass_available`
+        plus `replan_available`), never a cure pass's own prediction for
+        an edge this rejection will not take. A rejection that was never
+        curable at all (mixed/incurable findings, tamper) is untouched --
+        that preview already reads its own honest zero/partial reopen
+        count from `state.cure_pass_preview` on the findings themselves,
+        and `budget --cure-passes` would not change its outcome, so no
+        note is appended for it either.
+
+        `replan_available` mirrors the caller's own `approach < cfg.max_
+        approaches` (default `True` -- the ordinary case, and what every
+        existing direct caller/test not yet passing it means): whether
+        this rejection's approach still has budget for a fresh replan, so
+        `next_step` below can tell an archive that replans apart from one
+        that ends the run.
         """
         self._record_rejection_signature(approach, signature)
         findings_list, channel_errors = self._review_findings_channel()
@@ -13935,8 +14008,11 @@ class LoopSupervisor:
         cure_pass_ceiling_spent = (
             self._review_rejection_curable_ignoring_ceiling(approach)
             and self._cure_pass_ceiling_spent())
+        zero_preview = (
+            self._review_rejection_curable_findings(approach)
+            and not self._review_cure_pass_available(approach))
         effective_preview = (
-            {} if cure_pass_ceiling_spent
+            {} if zero_preview
             else self._effective_cure_preview(blocking, cure_preview))
         text = self._repeated_rejection_signature_escalation_text(
             approach, blocking, signature, channel_errors, effective_preview,
@@ -13956,10 +14032,13 @@ class LoopSupervisor:
         # fresh here off the SAME pure predicate `_step_review`'s own
         # cure-pass branch reads, never guessed from `cure_preview`'s
         # reopen/insert counts alone (a curable-but-nothing-reopened
-        # rejection would misreport as "archive" under that guess).
+        # rejection would misreport as "archive" under that guess). Cure
+        # task cure-01-05: on this approach's own last try, the actual
+        # fallback edge is `NEXT_STEP_FINISH`, never `ARCHIVE_AND_REPLAN`.
         next_step = (state.NEXT_STEP_CURE_PASS
                     if self._review_cure_pass_available(approach)
-                    else state.NEXT_STEP_ARCHIVE_AND_REPLAN)
+                    else (state.NEXT_STEP_ARCHIVE_AND_REPLAN
+                          if replan_available else state.NEXT_STEP_FINISH))
         self.run.emit("operator_escalation", approach=approach,
                       reason="rejected_repeated_signature", findings=blocking,
                       channelErrors=channel_errors, signature=signature,
@@ -14461,17 +14540,35 @@ class LoopSupervisor:
         # so their reopen/insert numbers agree.
         # Task 011 (v0.27 requirement C.4, #275): when this rejection was
         # curable ignoring the ceiling but the run-wide ceiling is what is
-        # actually spent, the preview both the text and the event/digest
-        # read is zeroed -- the same reasoning as `_pause_and_escalate_
-        # repeated_rejection_signature`'s own identical fix; see that
-        # method's comment. A rejection that was never curable at all
-        # keeps its own real preview and appends no `budget --cure-passes`
-        # note.
+        # actually spent, the escalation TEXT still names `ralphctl budget
+        # ... --cure-passes` as the lever that would change the outcome --
+        # `cure_pass_ceiling_spent` stays narrowly true ONLY for that exact
+        # cause, never for a rejection curing would never reach regardless
+        # of the ceiling.
         cure_pass_ceiling_spent = (
             self._review_rejection_curable_ignoring_ceiling(approach)
             and self._cure_pass_ceiling_spent())
+        # Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): the
+        # PREVIEW itself is zeroed whenever no cure pass will actually run
+        # over this rejection's findings -- structurally curable
+        # (`_review_rejection_curable_findings`, ignoring both ceiling and
+        # progress) AND `_review_cure_pass_available` is False, whatever
+        # the reason (ceiling spent, exactly like above, OR this approach's
+        # own no-progress/superset comparison finding nothing new to
+        # reopen). Before this task only the ceiling-spent cause zeroed the
+        # preview, so a confirmation review re-filing the SAME previously-
+        # targeted finding (a genuine no-progress refusal, `next_step`
+        # below already reads `ARCHIVE_AND_REPLAN`/`FINISH` for it) still
+        # previewed a real, non-zero reopen/insert count no cure pass will
+        # ever produce. A rejection that was never curable at all (mixed/
+        # incurable findings, tamper) fails the structural check and keeps
+        # its own honest partial preview, unchanged, and appends no
+        # `budget --cure-passes` note either (that lever cannot fix it).
+        zero_preview = (
+            self._review_rejection_curable_findings(approach)
+            and not self._review_cure_pass_available(approach))
         effective_preview = (
-            {} if cure_pass_ceiling_spent
+            {} if zero_preview
             else self._effective_cure_preview(blocking, cure_preview))
         text = self._operator_input_needed_escalation_text(
             approach, blocking, replan_available,
@@ -14487,9 +14584,17 @@ class LoopSupervisor:
         # or a ruled re-park over an otherwise-curable rejection that would
         # reopen/insert nothing still resumes straight into `_take_cure_
         # pass`, never the archive/replan tail).
+        # Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): a cure
+        # pass unavailable no longer collapses to `ARCHIVE_AND_REPLAN`
+        # unconditionally -- `replan_available` (the caller's own
+        # `approach < cfg.max_approaches`) tells apart the archive edge
+        # that actually replans from the one that ends the run on this
+        # approach's last try (`_step_review`'s own `rejected_approach_
+        # left`/`rejected_no_approach_left` tail).
         next_step = (state.NEXT_STEP_CURE_PASS
                     if self._review_cure_pass_available(approach)
-                    else state.NEXT_STEP_ARCHIVE_AND_REPLAN)
+                    else (state.NEXT_STEP_ARCHIVE_AND_REPLAN
+                          if replan_available else state.NEXT_STEP_FINISH))
         self.run.emit("operator_escalation", approach=approach,
                       reason="operator_input_needed", findings=blocking,
                       replanAvailable=replan_available, escalation=text,

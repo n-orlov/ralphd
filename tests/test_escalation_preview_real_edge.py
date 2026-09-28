@@ -41,6 +41,7 @@ from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import (
     NEXT_STEP_ARCHIVE_AND_REPLAN,
     NEXT_STEP_CURE_PASS,
+    NEXT_STEP_FINISH,
     RunDir,
     atomic_write_json,
 )
@@ -61,7 +62,8 @@ def _result(text: str) -> IterationResult:
 
 
 def _finding(severity: str, curable: bool, clause: str, evidence: str,
-             cured_when: str | None = None, invalidates=None) -> dict:
+             cured_when: str | None = None, invalidates=None,
+             reopens: str | None = None) -> dict:
     payload = {"severity": severity, "curable": curable, "clause": clause,
                "evidence": evidence}
     if cured_when is None and severity == "blocking" and curable is True:
@@ -70,6 +72,8 @@ def _finding(severity: str, curable: bool, clause: str, evidence: str,
         payload["cured_when"] = cured_when
     if invalidates is not None:
         payload["invalidates"] = invalidates
+    if reopens is not None:
+        payload["reopens"] = reopens
     return payload
 
 
@@ -301,3 +305,134 @@ def test_gate_escalation_never_fires_with_a_pass_left(tmp_path):
     assert outcome == ("advance", "cure",
                        "verdict_gate_rejected_curable_pass_available")
     assert _events(root, "operator_escalation") == []
+
+
+# ===========================================================================
+# 5. Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3), example 1: a
+#    CONFIRMATION review's own no-progress refusal -- the SAME finding
+#    reopened a second time, worded differently, is a superset of the
+#    previous granted pass's own targeted set (`_review_rejection_curable_
+#    ignoring_ceiling` already refuses it, `_review_cure_pass_available`
+#    already refuses it) -- must ALSO zero the preview, whether or not the
+#    run-wide ceiling happens to be spent too: raising it would not make
+#    this rejection curable, since the no-progress comparison, not the
+#    ceiling, is what refuses it.
+# ===========================================================================
+
+
+def _no_progress_confirmation_rejection(tmp_path, *, cure_pass_ceiling: int):
+    """Pass 1 targets ONE finding over a fresh approach; pass 2 is a
+    CONFIRMATION review reopening that EXACT SAME finding (by `reopens`
+    identity), worded differently -- the no-progress superset case. Both
+    passes drive a REAL `_step_review()`, never a hand-built lineage
+    fixture, so `_is_confirmation_review()` reads the identical on-disk
+    record production code writes. Returns `(sup, root)` parked on the
+    second rejection.
+    """
+    root = tmp_path / "run"
+    sup = _supervisor(
+        root, max_approaches=3, operator_input_needed_pause=True,
+        cure_pass_ceiling=cure_pass_ceiling, tasks=[],
+        status={"state": "running", "phase": "review", "approach": 1})
+    sup._approach = 1
+
+    first = [_finding("blocking", True, "requirement C.1 (#141)",
+                      "first counterexample")]
+    findings.write_findings_json(sup.run.findings_json_file, first)
+    sup.runner.run = _rejecting_runner("first pass")  # type: ignore[method-assign]
+    outcome1 = _bounded(sup._step_review())
+    assert outcome1 == ("advance", "cure", "rejected_curable_pass_available")
+    cure_task = next(t for t in sup.run.read_tasks()["tasks"]
+                     if t.get("origin") == "review-cure")
+
+    second = [_finding("blocking", True, "the counterexample persists",
+                       "still not fixed, worded differently",
+                       reopens=cure_task["id"])]
+    findings.write_findings_json(sup.run.findings_json_file, second)
+    sup.runner.run = _rejecting_runner("still broken")  # type: ignore[method-assign]
+    outcome2 = _bounded(sup._step_review())
+    assert outcome2 == ("advance", "paused", "operator_input_needed")
+    return sup, root
+
+
+def test_c4_no_progress_rejection_does_not_preview_a_cure_ceiling_unspent(
+        tmp_path):
+    # cure_pass_ceiling=3, only 1 pass taken -- the ceiling is NOT what
+    # refuses pass 2; the no-progress comparison alone does.
+    sup, root = _no_progress_confirmation_rejection(
+        tmp_path, cure_pass_ceiling=3)
+    assert not sup._cure_pass_ceiling_spent()
+
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 1
+    ev = escalations[0]
+    assert ev["reason"] == "operator_input_needed"
+    # never a cure pass preview: review correctly refuses another pass
+    # over the identical wall it already cured once -- the preview must
+    # read the archive-and-replan edge that will ACTUALLY be taken, never
+    # a real-looking reopen/insert count no cure pass will ever produce.
+    assert ev["taskIdsValidatedToPending"] == []
+    assert ev["insertCount"] == 0
+    assert ev["nextStepIfUnanswered"] == NEXT_STEP_ARCHIVE_AND_REPLAN
+    # raising the ceiling would not change this refusal, so no such note.
+    assert "--cure-passes" not in ev["escalation"]
+
+
+def test_c4_no_progress_rejection_does_not_preview_a_cure_ceiling_spent(
+        tmp_path):
+    # cure_pass_ceiling=1, already spent by pass 1 -- BOTH the ceiling
+    # AND the no-progress comparison would refuse pass 2 here; the
+    # preview must still read zero (never a ceiling-only note either,
+    # since the no-progress comparison refuses it independently of the
+    # ceiling).
+    sup, root = _no_progress_confirmation_rejection(
+        tmp_path, cure_pass_ceiling=1)
+    assert sup._cure_pass_ceiling_spent()
+
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 1
+    ev = escalations[0]
+    assert ev["taskIdsValidatedToPending"] == []
+    assert ev["insertCount"] == 0
+    assert ev["nextStepIfUnanswered"] == NEXT_STEP_ARCHIVE_AND_REPLAN
+    assert "--cure-passes" not in ev["escalation"]
+
+
+# ===========================================================================
+# 6. Cure task cure-01-05, example 2: the peer verdict gate's own C.1
+#    mirror, parked on a spent ceiling with NO approach left at all
+#    (`max_approaches=1`) -- the actual edge an unanswered resume takes is
+#    `_step_verdict_gate`'s own `verdict_gate_rejected_no_approach_left`
+#    tail (ending the run), never a fresh replan, so `nextStepIfUnanswered`
+#    must name `NEXT_STEP_FINISH`, never `NEXT_STEP_ARCHIVE_AND_REPLAN`.
+# ===========================================================================
+
+
+def test_c4_last_approach_gate_preview_names_finishing(tmp_path):
+    sup = _gate_fixture(tmp_path, cure_pass_ceiling=0, max_approaches=1)
+    root = sup.run.root
+
+    orig = LoopSupervisor.run_iteration
+    LoopSupervisor.run_iteration = _gate_rejects(
+        "the one blocking finding is curable")
+    try:
+        outcome = _bounded(sup._step_verdict_gate())
+    finally:
+        LoopSupervisor.run_iteration = orig
+
+    assert outcome == ("advance", "paused", "verdict_gate_operator_input_needed")
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 1
+    ev = escalations[0]
+    assert ev["replanAvailable"] is False
+    assert ev["taskIdsValidatedToPending"] == []
+    assert ev["insertCount"] == 0
+    # the run's last approach: an unanswered resume archives and ENDS the
+    # run (`_step_verdict_gate`'s own no-approach-left tail), never a
+    # fresh replan.
+    assert ev["nextStepIfUnanswered"] == NEXT_STEP_FINISH
+
+    text = ev["escalation"]
+    assert "end the run with no approach left" in text
+    assert "ralphctl budget" in text
+    assert "--cure-passes" in text

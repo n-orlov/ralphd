@@ -671,19 +671,33 @@ def format_escalation_undelivered_marker(run_root: Path, status: dict) -> str:
 # for every OTHER pause reason, this pair being the only two it shapes.
 PARKED_QUESTION_REASONS = ("operator_input_needed", "rejected_repeated_signature")
 
-# The two answers `parked_question`'s own `consequence.nextStepIfUnanswered`
-# can report -- "if this pause is resumed with no ruling at all, does the
-# run take a cure pass over the SAME approach's blocking findings, or does
-# it fall to the ordinary archive/replan-or-end tail?" Derived, per pause,
-# from `LoopSupervisor._review_cure_pass_available(approach)` at the moment
-# the pause is raised (never guessed here from the findings list alone,
-# since curability, the run's own cure-pass ceiling and this approach's
-# already-taken passes all feed that decision) -- see
-# `_pause_and_escalate_operator_input_needed`/`_pause_and_escalate_
-# repeated_rejection_signature` in `engine/loop.py`, the only two writers of
-# `nextStepIfUnanswered` on the `operator_escalation` event.
+# The three answers `parked_question`'s own `consequence.
+# nextStepIfUnanswered` can report -- "if this pause is resumed with no
+# ruling at all, does the run take a cure pass over the SAME approach's
+# blocking findings, archive this approach and replan a fresh one, or
+# archive this approach and END THE RUN because no approach budget is
+# left?" Derived, per pause, from `LoopSupervisor._review_cure_pass_
+# available(approach)` (cure pass vs. the other two) and `replan_
+# available`/`approach < cfg.max_approaches` (replan vs. finish) at the
+# moment the pause is raised (never guessed here from the findings list
+# alone, since curability, the run's own cure-pass ceiling, this
+# approach's already-taken passes and the approach budget all feed that
+# decision) -- see `_pause_and_escalate_operator_input_needed`/
+# `_pause_and_escalate_repeated_rejection_signature`/`_pause_and_escalate_
+# gate_operator_input_needed` in `engine/loop.py`, the only three writers
+# of `nextStepIfUnanswered` on the `operator_escalation` event.
+#
+# Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): before this
+# task every pause that could not take a cure pass named `"archive_and_
+# replan"` unconditionally, even on a run's LAST approach, where the
+# actual edge an unanswered pause takes is `_step_review`/`_step_verdict_
+# gate`'s own `rejected_no_approach_left`/`verdict_gate_rejected_no_
+# approach_left` tail (`("tail",)`, ending the run) -- archiving the
+# approach without ever replanning a fresh one. `NEXT_STEP_FINISH` is
+# that third, distinct outcome.
 NEXT_STEP_CURE_PASS = "cure_pass"
 NEXT_STEP_ARCHIVE_AND_REPLAN = "archive_and_replan"
+NEXT_STEP_FINISH = "finishing"
 
 
 def parked_question(run_root: Path, status: dict) -> dict | None:

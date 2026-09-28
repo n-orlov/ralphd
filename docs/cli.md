@@ -3506,12 +3506,23 @@ JSON endpoints served under `/api/`:
   evidence — and
   `consequence` — `taskIdsValidatedToPending`, `insertCount`,
   `costSpentThisApproach`, `tokensSpentThisApproach`, and
-  `nextStepIfUnanswered` (`"cure_pass"` \| `"archive_and_replan"`, docs/api.md
-  §`operator_escalation`) naming which of the two the pause is about to take
-  if it is never answered -- task 011 (v0.27 requirement C.4, #275): the
-  preview itself always names that SAME edge, `insertCount: 0`/
-  `taskIdsValidatedToPending: []` whenever a cure pass would otherwise show
-  but the run-wide `cure_pass_ceiling` is what is actually spent. The run-detail `ETag` below moves whenever
+  `nextStepIfUnanswered` (`"cure_pass"` \| `"archive_and_replan"` \|
+  `"finishing"`, docs/api.md §`operator_escalation`) naming which of the
+  three the pause is about to take if it is never answered — `"finishing"`
+  (cure task cure-01-05, PRD v0.27 requirement C.4, DoD 3) only when this
+  approach is also the run's last (`replanAvailable: false`): the pause
+  archives this approach either way, but ends the run instead of
+  replanning a fresh one. Task 011 (v0.27 requirement C.4, #275), extended
+  by cure task cure-01-05: the preview itself always names that SAME edge,
+  `insertCount: 0`/`taskIdsValidatedToPending: []` whenever a cure pass
+  would otherwise show but no cure pass will actually run — the run-wide
+  `cure_pass_ceiling` is spent, OR (cure-01-05) this approach's own
+  no-progress comparison finds the rejection re-files a previously
+  targeted finding with nothing new to reopen. A rejection that was never
+  curable at all (mixed/incurable findings, a criteria-tamper finding)
+  keeps its own honest, real preview — the zeroing applies only to a
+  rejection that WOULD be curable if not for the ceiling or the lack of
+  progress. The run-detail `ETag` below moves whenever
   `events.jsonl` gains a new escalation, so a fresh one is never served under
   an unchanged tag. Task 008 (v0.26, #269) renders this field as a full-width
   **parked panel** at the top of `#/run/<id>` -- every field above, plus each

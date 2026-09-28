@@ -1842,12 +1842,18 @@ function parkedReasonText(reason) {
 // the "Resume without a ruling" button below can label itself with the
 // EXACT same predicted outcome the consequence list already renders,
 // never a second, independently-worded copy of the same fact.
+// Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): a third value,
+// `"finishing"` -- this approach is archived but the run ENDS instead of
+// replanning, because no approach budget is left (`replanAvailable: false`
+// on the SAME `parkedQuestion`).
 function parkedNextStepOutcomeText(next) {
   return next === "cure_pass"
     ? "a cure pass over this approach's blocking findings"
     : next === "archive_and_replan"
       ? "this approach is archived and the run replans"
-      : "unknown (" + String(next) + ")";
+      : next === "finishing"
+        ? "this approach is archived and the run ends (no approach left)"
+        : "unknown (" + String(next) + ")";
 }
 
 function parkedConsequenceLines(c) {

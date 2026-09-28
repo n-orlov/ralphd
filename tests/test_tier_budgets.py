@@ -375,8 +375,17 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # the same gate pass is still granted), measured `.venv/bin/python -m
     # pytest -q -m fast --collect-only` -> fast 6509/454, `-m smoke
     # --collect-only` -> smoke 4817/331.
-    "fast": {"tests": 6509, "modules": 454},
-    "smoke": {"tests": 4817, "modules": 331},
+    # cure-01-05 (PRD v0.27 requirement C.4, DoD 3): +4 tests, no new
+    # module (tests/test_escalation_preview_real_edge.py: a confirmation
+    # review's no-progress refusal zeroes the preview with the ceiling
+    # unspent and spent; the gate's own last-approach pause names
+    # `"finishing"`, never `"archive_and_replan"`; tests/test_hub_
+    # parked_actions.py: the panel labels the new `"finishing"`
+    # `nextStepIfUnanswered` value with its own outcome text), measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
+    # 6513/454, `-m smoke --collect-only` -> smoke 4821/331.
+    "fast": {"tests": 6513, "modules": 454},
+    "smoke": {"tests": 4821, "modules": 331},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
