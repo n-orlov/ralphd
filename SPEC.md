@@ -5503,7 +5503,18 @@ Q's canonical fixture (`gap_count=1,000`, no prelude) and both of its
 silent-prelude depths (`gap_count=10,000`, prelude 1,000/1,700), staying at
 or under 1,000,000 bytes for exactly those fixtures, with the lines returned
 equal to the full renderer's last *N* lines exactly; the bound is not stated
-for transcripts or histories beyond what that test measures. The file
+for transcripts or histories beyond what that test measures. `tests/test_live_logs_prefix_read_bound.py`
+(task 005, this cure round) measures the identical bound at an arbitrary
+PREFIX of either named fixture, not only at the exact byte a real subprocess
+happens to publish at: PRD Q's canonical fixture and both silent-prelude
+depths, each truncated one line short of its own full transcript and to 35%,
+60%, 83% and 97% of its own raw line count, on both surfaces, first and a
+repeated request, once against the live writer's own published index for
+that exact prefix (`LiveRenderIndex.append`/`.flush` fed one raw line at a
+time, no final forced flush, exactly `pump()`'s own cadence) and once
+against `write_index`'s from-scratch rebuild of the identical bytes — every
+one of those reads also stays at or under 1,000,000 bytes and renders the
+full renderer's own last *N* lines of that exact prefix exactly. The file
 therefore uses a compact encoding (`version` 5,
 `render_index.encode_index`/`decode_index`): every distinct checkpoint render
 state is stored once, in `states`, and `checkpoints` is an object of four
