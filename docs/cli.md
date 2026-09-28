@@ -3624,7 +3624,18 @@ JSON endpoints served under `/api/`:
   unconditionally) — it is not the only path that can read all of it, since
   the cold-scan fallback above can reach the same result for a positive
   `tail` too. Returns `{"live": bool, "lines": ["<rendered line>", ...]}`
-  — never an error. When the run's API isn't reachable (task 039: its
+  — never an error. **The whole call's byte cost, index reads included, is
+  bounded to the same 1,000,000-byte cap (task 013, v0.27 requirement D.1,
+  #275) whenever the fixture's own index stays small enough to read whole**
+  -- the bounded indexed read above still pays for `render_index.json`'s
+  FULL content on every call (there is no partial/bounded read of that
+  single monolithic JSON document), so an iteration whose index is
+  dominated by tens of thousands of one-checkpoint-per-raw-line records can
+  still cost several times the cap even though its own resolved tail never
+  touches most of the transcript behind it -- a disclosed residual
+  (`tests/test_tail_whole_call_read_bound.py` pins the exact measured
+  figures for PRD Q's own silent-prelude fixtures), not something this wave
+  closes. When the run's API isn't reachable (task 039: its
   container died, or the run finished long ago) `live` is `false` and the
   lines come from the **on-disk transcript merge** instead
   (`ralphd.log_merge.merged_lines` — the very same merge the engine serves

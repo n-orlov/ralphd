@@ -334,8 +334,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # unchanged, measured `.venv/bin/python -m pytest -q -m fast
     # --collect-only` -> fast 6476/450, `-m smoke --collect-only` -> smoke
     # 4784/327.
-    "fast": {"tests": 6476, "modules": 450},
-    "smoke": {"tests": 4784, "modules": 327},
+    # Task 013 (D.1, #275): +2 tests / +1 module (tests/test_tail_whole_
+    # call_read_bound.py: PRD Q's canonical fixture bounded on every
+    # surface, and the two silent-prelude depths' disclosed residual
+    # measured and pinned exactly), measured `.venv/bin/python -m pytest
+    # -q -m fast --collect-only` -> fast 6478/451, `-m smoke
+    # --collect-only` -> smoke 4786/328.
+    "fast": {"tests": 6478, "modules": 451},
+    "smoke": {"tests": 4786, "modules": 328},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

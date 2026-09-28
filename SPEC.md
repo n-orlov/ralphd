@@ -5481,6 +5481,28 @@ all of it, since the cold-scan fallback above can reach the same result for a
 positive `tail` too. The response, `{"live": bool, "lines": [...]}`, is never
 an error.
 
+**The read side's whole-call byte cost, index reads included, is bounded too
+(task 013, v0.27 requirement D.1, #275).** The frozen 1,000,000-byte cap
+(requirement C.2/G.2) covers every byte a call actually reads to answer, not
+just the transcript: `render_index.bounded_tail`'s own `load_index` reads
+`render_index.json` in FULL (there is no partial or bounded read of that
+single monolithic JSON document — it must be parsed whole to validate its
+ascending checkpoint order, per-checkpoint CRC/state shape and its identity
+witness), so a call whose iteration carries a large index pays for that whole
+file every time, whether or not the resolved tail ever touches most of the
+transcript behind it. PRD Q's own canonical fixture (`gap_count=1,000`, no
+prelude) stays comfortably under the cap this way. Both of its silent-prelude
+depths (`gap_count=10,000`, prelude 1,000/1,700) do not: their own index is
+dominated by 10,500+ one-checkpoint-per-raw-line records, and reading it whole
+costs roughly three times the frozen cap, identically on a first call and a
+repeated one, live or dead-run alike — a disclosed residual
+(`tests/test_tail_whole_call_read_bound.py`, which pins the exact measured
+figures), not a bound this wave closes: doing so would need `render_index.
+json`'s own on-disk shape to become seekable/partial-readable without
+weakening the write side's own one-checkpoint-per-raw-line density that
+`tests/test_render_index_linear_writer.py` and `tests/test_render_index.py`
+already pin as deliberate, shipped behaviour.
+
 **The write side of that index is bounded too (task 012, v0.27 requirement
 D.2, #275).** The engine's own live writer (`render_index.LiveRenderIndex`,
 fed one raw line at a time by `engine/runner.py`'s `pump()` while an

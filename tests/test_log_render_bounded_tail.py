@@ -787,6 +787,45 @@ def _write_interleaved_ignored_suffix_iteration(run_root, older_count: int,
     _write_dead_run_iteration(run_root, 1, older + suffix)
 
 
+def _count_transcript_bytes(monkeypatch) -> list[int]:
+    """Task 013 (D.1): the WHOLE-CALL byte counter, honest about every
+    file a tail call actually reads to answer -- the transcript
+    (`output.jsonl`), the render index (`render_index.INDEX_FILENAME`,
+    `render_index.json` or its successor) and the legacy collapse index
+    (`collapse_index.INDEX_FILENAME`, `collapse_index.json`) alike, not
+    merely `output.jsonl` the way this module's own `_count_output_bytes`
+    (above, task 006, kept unchanged so its own already-pinned PRD P
+    fixtures are untouched) and `test_log_merge_bounded_reads.py`'s own
+    `_count_transcript_bytes` (task 005, PRD E) both did before this
+    task. `render_index.bounded_tail` reads `render_index.json` in FULL
+    (`load_index`'s own `path.read_text()`) to validate and consume it on
+    every call, whether or not the tail it resolves ever touches most of
+    the transcript behind it -- a cost neither of those two narrower
+    counters could ever see, since both filter to `OUTPUT_FILENAME` by
+    name. Every byte read off ANY file under an iteration directory is
+    counted here, wrapping `pathlib.Path.open`'s returned file object's
+    own `.read`, in either text or binary mode, by BYTES actually
+    returned -- not the number of times a file was opened.
+    """
+    counts = [0]
+    real_open = pathlib.Path.open
+
+    def counted(self, mode="r", *args, **kwargs):
+        f = real_open(self, mode, *args, **kwargs)
+        real_read = f.read
+
+        def read(*a, **k):
+            data = real_read(*a, **k)
+            counts[0] += len(data) if isinstance(data, bytes) else len(data.encode())
+            return data
+
+        f.read = read
+        return f
+
+    monkeypatch.setattr(pathlib.Path, "open", counted)
+    return counts
+
+
 def _count_output_bytes(monkeypatch) -> list[int]:
     """This module's own copy of `test_log_merge_bounded_reads.py`'s
     `_count_transcript_bytes` (task 005, PRD E): every byte actually READ
