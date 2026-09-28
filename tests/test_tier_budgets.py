@@ -285,8 +285,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # lineage record and a reopen's ancestor field), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 6435/443,
     # `-m smoke --collect-only` -> 4743/320.
-    "fast": {"tests": 6435, "modules": 443},
-    "smoke": {"tests": 4743, "modules": 320},
+    # Task 005 (B.1/B.2/B.3 prompt side, #274): +5 tests / +1 module
+    # (tests/test_confirmation_review_section.py: the `## Confirmation
+    # review` section built from `cure-lineage.json`), measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 6440/444,
+    # `-m smoke --collect-only` -> 4748/321.
+    "fast": {"tests": 6440, "modules": 444},
+    "smoke": {"tests": 4748, "modules": 321},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

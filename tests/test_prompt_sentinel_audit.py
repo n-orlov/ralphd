@@ -90,6 +90,21 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "module object is named `log_render`, and the forbidden name is an "
         "import symbol, not a literal any prompt template could contain"),
     AbsenceAssertion(
+        "test_confirmation_review_section.py", (157, 189),
+        ("## Confirmation review",),
+        "the review prompt: `LoopSupervisor._confirmation_review_context` "
+        "folds a per-cure-pass '## Confirmation review' section into it "
+        "once the approach under review has taken at least one granted "
+        "cure pass (task 005, PRD B.1/B.2/B.3, #274)", ("review.md",)),
+    AbsenceAssertion(
+        "test_confirmation_review_section.py", (158,), ("`reopens`",),
+        "the same confirmation-review section as the row above",
+        ("review.md",)),
+    AbsenceAssertion(
+        "test_confirmation_review_section.py", (159,), ("regression: true",),
+        "the same confirmation-review section as the row above",
+        ("review.md",)),
+    AbsenceAssertion(
         "test_contract_events.py", (1194,),
         ("THE ONE RULE: exactly one task, then stop",),
         "`_ask_contract_fix`'s re-ask prompt (WORKER_PROMPT_FRAGMENT)", None,
@@ -125,6 +140,26 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "not a template-fed artifact, and '$' is legitimately in shell "
         "examples at planning.md:223, task-verify.md:137, worker.md:261 "
         "and worker.md:308"),
+    AbsenceAssertion(
+        "test_cure_verify_prompt.py", (97, 108, 123),
+        ("## Checking the rule, not just the listed cases",),
+        "the verify prompt: `LoopSupervisor._verify_task_extra` folds a "
+        "review-cure-origin task's own rule-check step into it (task 003, "
+        "PRD A.3)", ("task-verify.md",)),
+    AbsenceAssertion(
+        "test_cure_verify_prompt.py", (98, 109), ("cured_when",),
+        "the same verify-prompt rule-check step as the row above",
+        ("task-verify.md",)),
+    AbsenceAssertion(
+        "test_cure_worker_prompt.py", (93, 105, 119),
+        ("## Fixing a review finding",),
+        "the worker prompt: `LoopSupervisor._worker_assignment_extra` folds "
+        "a review-cure-origin task's own 'Fixing a review finding' section "
+        "into it (task 002, PRD A.2)", ("worker.md",)),
+    AbsenceAssertion(
+        "test_cure_worker_prompt.py", (94,), ("cured_when",),
+        "the same worker-prompt fixing-a-review-finding section as the row "
+        "above", ("worker.md",)),
     AbsenceAssertion(
         "test_dead_dependency_blocking.py", (344,),
         ("append a line to the handoff notes file naming the blocked",),

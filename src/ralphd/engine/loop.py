@@ -17145,6 +17145,96 @@ class LoopSupervisor:
         except OSError:
             return ""
 
+    def _confirmation_review_context(self) -> str:
+        """PRD requirement B.1/B.2/B.3 (v0.27, #274, task 005): once the
+        approach under review has taken at least one GRANTED cure pass,
+        review's own prompt gains a `## Confirmation review` section --
+        built entirely from disk (`state.read_cure_lineage`, task 004's
+        `cure-lineage.json`), never from anything held only in memory, so
+        a resumed process (a fresh `LoopSupervisor` over the same run dir)
+        builds byte-for-byte the identical section a live one would.
+
+        Absent ('') for a first review of an approach that has taken no
+        cure pass yet -- the lineage's own `passes` list has no entry
+        naming `self._approach`, the same "presence is the signal"
+        discipline every other conditional `_review_extra_context` source
+        already uses (`_operator_ruling_review_context`, the petition
+        contexts, ...). `self._approach` itself being `None` (a call site
+        that never seeded it, e.g. before the very first approach exists)
+        degrades the same way.
+
+        Keyed on the MOST RECENT granted pass for the CURRENT approach
+        only (`passes[-1]` among entries naming `approach`): an earlier
+        pass on this same approach was already the subject of an earlier
+        confirmation review, whose own diff range and finding list have
+        already been checked. This section is about what changed since
+        THIS reviewer's own last look -- the pass just taken, and the
+        diff from the HEAD it was taken at (`preCureHead`) to the
+        workspace's CURRENT HEAD (`self._workspace_head_sha()`), not the
+        approach's whole cure history.
+
+        The three checks and their order, the "do not re-audit" rule, and
+        the `reopens`/`regression`/downgrade/two-exception instructions
+        are all PRD B.2/B.3's own wording, rendered here so review reads
+        the bound and the two engine-enforced exceptions (an exposed
+        secret, an absent requirement's behaviour) in the very prompt that
+        asks it to file findings -- the actual downgrade enforcement is a
+        later task (006); this section only tells review the rule the
+        engine will apply.
+        """
+        approach = self._approach
+        if approach is None:
+            return ""
+        lineage = state.read_cure_lineage(self.run.root)
+        passes = [p for p in lineage["passes"] if p.get("approach") == approach]
+        if not passes:
+            return ""
+        latest = passes[-1]
+        findings_by_id = latest.get("findings") or {}
+        pre_cure_head = latest.get("preCureHead")
+        current_head = self._workspace_head_sha()
+        lines = [
+            "\n## Confirmation review\n\n",
+            "This approach has taken at least one granted cure pass. This "
+            "is a CONFIRMATION review, not a fresh audit: check the "
+            "listed findings and the diff range below, then stop -- **do "
+            "not re-audit a requirement the diff range did not touch.**\n\n",
+            "### Every blocking finding of the previous granted pass\n\n",
+        ]
+        for cure_task_id, payload in findings_by_id.items():
+            clause = payload.get("clause", "")
+            cured_when = payload.get("curedWhen", "")
+            lines.append(
+                f"- `{cure_task_id}` -- clause: {clause!r}, "
+                f"`cured_when`: {cured_when!r}\n")
+        lines.append(
+            f"\n### Diff range\n\n`{pre_cure_head}..{current_head}`\n\n")
+        lines.append(
+            "### Check these three things, in this order\n\n"
+            "1. each finding listed above is closed at the level of its "
+            "rule (not merely the finding's own listed examples).\n"
+            "2. the diff range above breaks no requirement it touches.\n"
+            "3. the tier suite named by the PRD is green at HEAD, run "
+            "once.\n\n"
+            "Do not re-audit a requirement the diff range did not "
+            "touch.\n\n")
+        lines.append(
+            "### Linking a blocking finding on this confirmation review\n"
+            "\n"
+            "Every blocking finding you file here must carry one of two "
+            "optional fields:\n\n"
+            "- `reopens`: the cure task id of one of the findings listed "
+            "above that is still open -- a new example of that finding's "
+            "own rule, because the rule was not actually closed;\n"
+            "- `regression: true`: the failure is caused by a change "
+            "inside the diff range above.\n\n"
+            "A blocking finding that carries NEITHER field is downgraded "
+            "to residual before the verdict is computed (event `review."
+            "finding_downgraded`, naming the finding). Two things always "
+            "stay blocking with NEITHER field: an exposed secret, and a "
+            "requirement whose behaviour is absent altogether.\n")
+        return "".join(lines)
+
     def _review_extra_context(self) -> str:
         """Everything appended to a review-phase prompt beyond the PRD and
         tasks.json themselves: flagged-criteria re-verification (task 009),
@@ -17159,7 +17249,12 @@ class LoopSupervisor:
         ALREADY-CONFIRMED petition rendered as settled history (task 014,
         requirement F.1, #144), then any duplicate/re-filed petition
         already detected and turned into a blocking finding engine-side
-        (task 012, requirement C.1, #112).
+        (task 012, requirement C.1, #112), then, when the approach under
+        review has taken at least one granted cure pass, the `## Confirmation
+        review` section built from `cure-lineage.json` (task 005, PRD
+        requirement B.1/B.2/B.3, #274) -- last, since it names a diff range
+        and a bounded checklist the reviewer should read right before it
+        starts, not buried above the petition/ruling history.
         All but the rubric and terminal-record contexts return '' in the
         common case, so review prompts are unaffected beyond those two
         fixed hand-offs until one of the other mechanisms actually fires.
@@ -17173,7 +17268,8 @@ class LoopSupervisor:
                 self._petitions_review_context() +
                 self._adjudicated_petitions_review_context() +
                 self._duplicate_petitions_review_context() +
-                self._petition_adjudications_tamper_context())
+                self._petition_adjudications_tamper_context() +
+                self._confirmation_review_context())
 
     @staticmethod
     def _verify_no_verdict(result: IterationResult) -> str:
