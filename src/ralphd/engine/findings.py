@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ralphd.engine import contracts
+from ralphd.engine import contracts, state
 from ralphd.engine.state import atomic_write_json, read_json
 
 
@@ -506,6 +506,36 @@ def blocking_finding_clauses(findings: list[dict]) -> set[str]:
     """
     blocking = [f for f in findings if f.get("severity") == "blocking"]
     return {f["clause"] for f in blocking if isinstance(f.get("clause"), str)}
+
+
+def reopened_root_finding_ids(findings: list[dict], tasks: list) -> set[str]:
+    """Task 007 (PRD v0.27 requirement B.4, #274): on a CONFIRMATION
+    review, `LoopSupervisor._review_cure_pass_available` compares by
+    FINDING IDENTITY rather than by `clause` text -- this is the identity
+    side of that comparison. For every BLOCKING entry carrying a
+    non-blank `reopens` (the cure task id of a listed finding of the
+    previous granted pass this finding claims is still open), follows
+    that id back through `tasks[].reopensCureTaskId`
+    (`state.root_cure_task_id`) to the root cure task the whole chain
+    descends from, and returns the set of those roots.
+
+    A blocking finding with no `reopens` (an exempt secret/absent-
+    behaviour finding, or a `regression: true` finding reporting a fresh
+    defect the diff range introduced) never enters the set -- it is not a
+    claim that a PREVIOUSLY targeted finding is still open, so it has no
+    identity to resolve here. A residual finding never enters either,
+    same restriction every other function in this module already holds
+    to. Reworded `clause` text on a re-filed finding changes nothing:
+    the identity this returns is the cure task id chain, never the
+    finding's own words.
+    """
+    blocking = [f for f in findings if f.get("severity") == "blocking"]
+    roots = set()
+    for f in blocking:
+        reopens = f.get("reopens")
+        if isinstance(reopens, str) and reopens.strip():
+            roots.add(state.root_cure_task_id(tasks, reopens.strip()))
+    return roots
 
 
 def curable_findings_missing_cured_when(findings: list[dict]) -> list[dict]:

@@ -301,8 +301,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # finding, its two controls, mid-run exclusion, once-per-pass event),
     # measured `-m fast --collect-only` -> 6452/445, `-m smoke
     # --collect-only` -> 4760/322.
-    "fast": {"tests": 6452, "modules": 445},
-    "smoke": {"tests": 4760, "modules": 322},
+    # Task 007 (B.4, #274): +3 tests / +1 module (tests/test_cure_
+    # progress_identity.py: the identity-based no-progress comparison on
+    # a confirmation review), measured `.venv/bin/python -m pytest -q
+    # --collect-only -m fast` -> 6455/446, `-m smoke` -> 4763/323.
+    "fast": {"tests": 6455, "modules": 446},
+    "smoke": {"tests": 4763, "modules": 323},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

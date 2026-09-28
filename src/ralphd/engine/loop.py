@@ -13012,6 +13012,38 @@ class LoopSupervisor:
         cycle: once the run's ceiling is spent, neither a narrower
         rejection over this approach nor a first rejection over a freshly
         replanned one earns another pass.
+
+        Task 007 (PRD v0.27 requirement B.4, #274): the SECOND-or-later
+        rejection comparison above is by `clause` text -- fine for an
+        ordinary (non-confirmation) review, where the two rejections are
+        two independent reads of the same worker output and a genuinely
+        narrower/different clause set really is progress. On a
+        CONFIRMATION review (`_is_confirmation_review()`), review is
+        instead re-filing findings against the SAME listed set from the
+        previous granted pass (B.1/B.3), each one either `reopens` (a
+        claim that a listed finding is still open) or `regression`/exempt
+        (a fresh problem) -- and review is free to reword a `clause`
+        between passes without changing which finding it is about. A
+        clause-text comparison a reworded reopen walks straight past (the
+        rewording changes the text without changing anything else) has no
+        such freedom to grant a cure pass. So on a confirmation review
+        this compares by IDENTITY instead: the set of `reopens` cure task
+        ids this rejection's own blocking findings carry, each followed
+        back through `tasks[].reopensCureTaskId`
+        (`state.root_cure_task_id`, `findings.reopened_root_finding_ids`)
+        to the root finding it descends from, against the identical
+        resolution of the previous granted pass's own targeted set
+        (`_cure_pass_targeted_roots`, read from `cure-lineage.json`, never
+        from a finding id's spelling). A rejection whose reopened roots
+        are a superset of the previous pass's targeted roots -- every
+        previously targeted finding reopened, however the clauses are
+        worded -- is refused exactly like a clause superset is on an
+        ordinary review; a strict subset earns another pass. A blocking
+        finding with no `reopens` (an exempt secret/absent-behaviour
+        finding, or a `regression: true` fresh defect) contributes no
+        root at all, so a confirmation review whose ENTIRE blocking set is
+        fresh problems is never refused as "the identical wall restated"
+        -- there is nothing restated.
         """
         findings_list = self._review_findings()
         if findings_list is None:
@@ -13027,9 +13059,43 @@ class LoopSupervisor:
             return False
         if passes_taken == 0:
             return True
+        if self._is_confirmation_review():
+            tasks = self.run.read_tasks().get("tasks") or []
+            current_roots = findings.reopened_root_finding_ids(
+                findings_list, tasks)
+            previous_roots = self._cure_pass_targeted_roots(approach)
+            return not current_roots.issuperset(previous_roots)
         current_blocking = findings.blocking_finding_clauses(findings_list)
         previous_blocking = self._cure_pass_blocking_clauses(approach)
         return not current_blocking.issuperset(previous_blocking)
+
+    def _cure_pass_targeted_roots(self, approach: int) -> set[str]:
+        """Task 007 (PRD v0.27 requirement B.4, #274): the set of ROOT
+        finding ids (`state.root_cure_task_id`) the immediately preceding
+        GRANTED cure pass for `approach` targeted -- read from `cure-
+        lineage.json` (`state.read_cure_lineage`, task 004's own B.5
+        foundation record), never from `cureBlocking`'s clause text. The
+        most recent lineage entry naming this `approach` carries
+        `findings` keyed by the cure task id `insert_cure_tasks` built for
+        each blocking finding of THAT pass; each of those ids is itself
+        followed back through `tasks[].reopensCureTaskId` to ITS OWN root
+        (a pass's fresh cure task is its own root exactly when it carries
+        no `reopensCureTaskId`, i.e. review's first-ever finding about
+        that rule). Absence (no granted pass yet for this approach) reads
+        as the empty set, mirroring `_cure_pass_blocking_clauses`'s own
+        absence handling for the text-based comparison.
+        """
+        lineage = state.read_cure_lineage(self.run.root)
+        passes = [p for p in lineage["passes"] if p.get("approach") == approach]
+        if not passes:
+            return set()
+        latest = passes[-1]
+        cure_task_ids = latest.get("findings") or {}
+        if not isinstance(cure_task_ids, dict):
+            return set()
+        tasks = self.run.read_tasks().get("tasks") or []
+        return {state.root_cure_task_id(tasks, cid)
+                for cid in cure_task_ids if isinstance(cid, str)}
 
     def _cure_pass_blocking_clauses(self, approach: int) -> set[str]:
         """Task 030 (PRD requirement E.1, #167): the blocking clause set

@@ -1806,15 +1806,31 @@ elif "Role: Reviewer" in prompt:
         # test-supplied JSON array of paths onto THIS finding's own
         # `invalidates` field, unset (no key at all) by default -- see the
         # knob's own doc comment above.
-        # Task 006 (v0.27 PRD requirement B.3, #274): every rejection
-        # after the first may be a CONFIRMATION review (the approach took a
-        # granted cure pass), where a blocking finding carrying neither
-        # `reopens` nor `regression: true` is downgraded to residual -- so
-        # the second-and-later rejections link theirs with `regression:
-        # true`, keeping the multi-rejection flows on the edges they test.
-        # Harmless on a first review, where both fields are simply ignored.
+        # Task 007 (v0.27 PRD requirement B.4, #274): every rejection
+        # after the first is a CONFIRMATION review (the approach already
+        # took a granted cure pass) claiming the SAME defect this stub
+        # keeps re-filing is still open -- that is `reopens` (the ancestor
+        # cure task's own id, the most recently inserted `review-cure`
+        # task in `tasks.json`), never `regression: true` (a NEW defect
+        # the diff introduced, which this stub's own literal, unchanging
+        # clause text never actually models). Naming the SAME ancestor
+        # every time is deliberate: `_review_cure_pass_available`'s own
+        # identity comparison (B.4) must see this as the identical,
+        # unmoved wall the cure-pass-bound flows below exist to prove,
+        # exactly like the pre-B.4 clause-text comparison already refused
+        # it for the identical reason.
         if curable_seen >= 1:
-            _curable_finding["regression"] = True
+            try:
+                with open(tasks_file) as f:
+                    _plan_tasks = (json.load(f) or {}).get("tasks") or []
+            except (OSError, ValueError):
+                _plan_tasks = []
+            _cure_task_ids = [t.get("id") for t in _plan_tasks
+                             if isinstance(t, dict)
+                             and t.get("origin") == "review-cure"
+                             and isinstance(t.get("id"), str)]
+            if _cure_task_ids:
+                _curable_finding["reopens"] = _cure_task_ids[-1]
         _invalidates_raw = os.environ.get("STUB_REVIEW_CURABLE_INVALIDATES")
         if _invalidates_raw:
             _curable_finding["invalidates"] = json.loads(_invalidates_raw)

@@ -6955,6 +6955,43 @@ def record_cure_pass_lineage(run_root: Path, *, approach: int,
     return entry
 
 
+def root_cure_task_id(tasks: list, task_id: str) -> str:
+    """Task 007 (PRD v0.27 requirement B.4/B.5, #274): follow `task_id`
+    back through `tasks[].reopensCureTaskId` to its ultimate ancestor --
+    the root cure task the whole reopen chain descends from (`cure-01-
+    01-3` descends from `cure-01-01-2`, which may itself descend from
+    `cure-01-01-1`; this returns `cure-01-01-1` for any of the three).
+    `_review_cure_pass_available`'s identity-based comparison
+    (`LoopSupervisor`, task 007) uses this to compare a confirmation
+    review's own `reopens` targets by WHICH FINDING they are, never by a
+    cure task id's spelling or its finding's `clause` text.
+
+    `task_id` need not itself be present in `tasks` at all (a `reopens`
+    value naming a task id this walk cannot resolve) -- such an id
+    degrades to being its own root, the same posture a task genuinely
+    carrying no `reopensCureTaskId` already gets. The walk is capped at
+    `len(tasks) + 1` hops so a malformed/cyclic document (should never
+    happen -- only `cure_task_from_finding` ever writes this field, and
+    only backward to an EARLIER pass's own task) can never spin forever;
+    it stops the moment an id repeats.
+    """
+    by_id = {t.get("id"): t for t in tasks if isinstance(t, dict)}
+    seen: set = set()
+    current = task_id
+    for _ in range(len(tasks) + 1):
+        if current in seen:
+            break
+        seen.add(current)
+        task = by_id.get(current)
+        if not isinstance(task, dict):
+            break
+        parent = task.get("reopensCureTaskId")
+        if not isinstance(parent, str) or not parent.strip():
+            break
+        current = parent.strip()
+    return current
+
+
 def review_early_verdict_path(run_root: Path) -> Path:
     """Where `write_review_early_verdict`/`read_review_early_verdict` below
     keep review's early-verdict checkpoint -- the run root, exactly like
