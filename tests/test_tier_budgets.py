@@ -317,8 +317,17 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # archives-and-replans once while a different rejection still parks),
     # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
     # fast 6461/448, `-m smoke` -> smoke 4769/325.
-    "fast": {"tests": 6472, "modules": 449},
-    "smoke": {"tests": 4780, "modules": 326},
+    # Task 010 (v0.27 requirement C.3): +11 tests / +1 module (tests/test_
+    # budget_cure_passes.py), measured `-m fast --collect-only` -> fast
+    # 6472/449, `-m smoke` -> smoke 4780/326.
+    # Task 011 (v0.27 requirement C.4, #275): +4 tests / +1 module (tests/
+    # test_escalation_preview_real_edge.py: review's and the gate's own
+    # A.7 preview zeroed and naming `--cure-passes` with the ceiling
+    # spent, unchanged with a pass left), measured `.venv/bin/python -m
+    # pytest -q -m fast --collect-only` -> fast 6476/450, `-m smoke` ->
+    # smoke 4784/327.
+    "fast": {"tests": 6476, "modules": 450},
+    "smoke": {"tests": 4784, "modules": 327},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

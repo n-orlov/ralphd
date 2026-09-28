@@ -3508,7 +3508,10 @@ JSON endpoints served under `/api/`:
   `costSpentThisApproach`, `tokensSpentThisApproach`, and
   `nextStepIfUnanswered` (`"cure_pass"` \| `"archive_and_replan"`, docs/api.md
   §`operator_escalation`) naming which of the two the pause is about to take
-  if it is never answered. The run-detail `ETag` below moves whenever
+  if it is never answered -- task 011 (v0.27 requirement C.4, #275): the
+  preview itself always names that SAME edge, `insertCount: 0`/
+  `taskIdsValidatedToPending: []` whenever a cure pass would otherwise show
+  but the run-wide `cure_pass_ceiling` is what is actually spent. The run-detail `ETag` below moves whenever
   `events.jsonl` gains a new escalation, so a fresh one is never served under
   an unchanged tag. Task 008 (v0.26, #269) renders this field as a full-width
   **parked panel** at the top of `#/run/<id>` -- every field above, plus each
