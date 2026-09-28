@@ -207,6 +207,34 @@ def test_a_fresh_supervisor_over_the_same_run_dir_reads_it_identically(
     assert sup2._confirmation_review_context() == before_context
     assert sup2._is_confirmation_review() == before_is_confirmation
 
+    # The review prompt the reloaded supervisor builds carries the same
+    # section: both granted targets listed, the range starting at the
+    # granted pass's own `preCureHead`.
+    prompt = sup2.build_prompt(
+        "review", extra=sup2._confirmation_review_context())
+    assert SECTION_HEADING in prompt
+    assert "cure-01-01" in prompt and "cure-01-02" in prompt
+    assert f"{pre_cure_head}..{sup2._workspace_head_sha()}" in prompt
+
+    # Non-downgrade from the reloaded supervisor: a reworded finding
+    # reopening `cure-01-02` (the granted pass's OTHER target, which the
+    # remedy never named) stays blocking, while an unlinked blocking
+    # finding beside it is downgraded -- proving the confirmation rule
+    # really runs on this reload rather than being skipped.
+    findings.write_findings_json(sup2.run.findings_json_file, [
+        _finding("the second gap is still present",
+                 "reworded, but the same underlying gap", "",
+                 reopens="cure-01-02"),
+        _finding("an unrelated nit outside the cure pass's targets",
+                 "not linked to any listed cure task", ""),
+    ])
+    severities = {f["clause"]: f["severity"]
+                  for f in sup2._review_findings()}
+    assert severities == {
+        "the second gap is still present": "blocking",
+        "an unrelated nit outside the cure pass's targets": "residual",
+    }
+
 
 def test_two_successive_remedy_insertions_never_narrow_the_section(
         tmp_path):

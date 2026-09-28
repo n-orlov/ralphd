@@ -2571,7 +2571,9 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   `findings.reopened_root_finding_ids`) to the root finding it descends
   from, must NOT be a superset of the identical resolution of the
   preceding pass's own targeted set (`_cure_pass_targeted_roots`, read
-  from `cure-lineage.json`). A rejection that reopens every previously
+  from the MOST RECENT `kind: "granted"` `cure-lineage.json` entry,
+  `_latest_granted_cure_pass` -- a remedy insertion appended after it
+  never replaces or narrows it). A rejection that reopens every previously
   targeted finding is refused however its clauses are reworded; one that
   reopens a strict subset earns another pass; a blocking finding with no
   `reopens` (a `regression: true` fresh defect, or an exempt
@@ -2582,8 +2584,8 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   `gateCurePasses`, never `curePasses`, so
   `_review_rejection_curable_ignoring_ceiling` checks
   `_is_confirmation_review()` BEFORE its `curePasses[approach] == 0`
-  first-pass shortcut, which only an actual first review (no lineage
-  entry for the approach) reaches. Tests: `tests/test_cure_progress_identity.py`. Every granted pass
+  first-pass shortcut, which only an actual first review (no `kind: "granted"`
+  lineage entry for the approach) reaches. Tests: `tests/test_cure_progress_identity.py`. Every granted pass
   persists its own blocking clause set to `status.json`'s `cureBlocking
   [approach]` (`_take_cure_pass`, alongside the existing `curePasses`
   increment) so the comparison survives a resume with no shared Python
