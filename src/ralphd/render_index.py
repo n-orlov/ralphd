@@ -925,6 +925,17 @@ class LiveRenderIndex:
         if not self._poisoned and self._witness_checkpoints:
             if not _covered_prefix_matches(output_path, self._witness_checkpoints):
                 self._poisoned = True
+        if not self._poisoned:
+            # Task 004 (PRD D.2/D.3): the tail keeps its own fixed
+            # `every` cadence whether or not a MAIN publish falls due at
+            # the same call -- the batch is appended FIRST, so every
+            # checkpoint reaches the tail exactly once at a fixed cadence
+            # independent of MAIN's geometric schedule (the tail's total
+            # write cost is then exactly one unit per checkpoint, with no
+            # per-publish gap that grows with the publish count), and a
+            # MAIN publish that fails below still leaves that batch
+            # covered on disk.
+            self._flush_tail(itdir, total, every)
         try:
             tmp = itdir / (INDEX_FILENAME + ".tmp")
             tmp.write_text(json.dumps(encode_index(self.snapshot(self._custody))))

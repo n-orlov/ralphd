@@ -416,8 +416,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # writer.py rewritten from one text_delta-only case to three sequence
     # classes -- text_delta_control, matched_tool_pairs, unended_tool_
     # starts), measured the same way -> fast 6535/455, smoke 4843/332.
-    "fast": {"tests": 6535, "modules": 455},
-    "smoke": {"tests": 4843, "modules": 332},
+    # Task 004 retry: +2 tests, no new module (tests/test_render_index_
+    # linear_writer.py's TestTailKeepsItsOwnCadenceOnPublishDueCalls),
+    # measured the same way -> fast 6537/455, smoke 4845/332.
+    "fast": {"tests": 6537, "modules": 455},
+    "smoke": {"tests": 4845, "modules": 332},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

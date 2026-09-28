@@ -1844,7 +1844,8 @@ interval would). Publishing at `LIVE_FLUSH_EVERY_LINES, 2x, 4x, ...` sums
 to a geometric series bounded by `2 * N`, so the total checkpoint records
 and total bytes a whole iteration's MAIN publishes write together grow
 LINEARLY (a small ~2x constant) in the transcript's own line count --
-doubling the line count at most doubles either measure -- rather than the
+doubling the line count at most doubles either measure, plus the series'
+own first term (`LIVE_FLUSH_EVERY_LINES` records) -- rather than the
 quadratic sum a fixed-interval schedule's own O(total checkpoints so far)
 per-rewrite cost would otherwise leave (`tests/test_render_index_linear_
 writer.py`). Batching, geometric or fixed, still bounds only how stale
@@ -1864,7 +1865,16 @@ LINES` checkpoints fed since the last MAIN publish or tail append -- each
 append a compact, self-contained shard of just that batch (never the
 whole snapshot, so its own cost is O(batch), not O(total)); a MAIN
 publish, geometric or the end-of-iteration `write_index` rebuild, covers
-everything any shard described and deletes the file at the same time.
+everything any shard described and deletes the file at the same time. A
+`flush()` call on which a MAIN publish falls due appends its pending batch
+to the tail FIRST and only then publishes, so every checkpoint reaches the
+tail exactly once at that fixed cadence, independent of MAIN's geometric
+schedule, and a MAIN write that fails still leaves the batch covered.
+Summed across both files, doubling the transcript's line count therefore
+at most doubles the checkpoint records written plus `LIVE_FLUSH_EVERY_
+LINES` (the geometric series' own first term) -- the tail never loses a
+batch per MAIN publish, a gap that would otherwise grow with the publish
+count and so with the logarithm of the line count.
 `load_index` decodes and appends every shard present, in order, to
 EXTEND MAIN's own `checkpoints`/`transcriptBytes` before falling back to
 any raw suffix scan, re-verifying the extended prefix's own tail exactly

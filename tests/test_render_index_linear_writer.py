@@ -45,6 +45,15 @@ sequence is the "nothing regressed" witness); and N/2 `tool_execution_
 start` events that are NEVER matched (tool state grows monotonically --
 the sequence that fails at `32352c15`).
 
+The record bound is tight on purpose (criterion (1)'s own `+ 20`):
+it also pins that `render_index.tail.ndjson` receives every checkpoint
+exactly once at its fixed `LIVE_FLUSH_EVERY_LINES` cadence, including on a
+`flush()` call where a MAIN publish is also due. Removing the
+`self._flush_tail(...)` call from `LiveRenderIndex.flush`'s publish path
+makes every sequence's record assertions fail again (the tail then loses
+one batch per MAIN publish, so records(2N) - 2*records(N) grows with the
+publish count: +80/+100 on the text_delta control).
+
 Mutation pin: reverting `_encode_checkpoint_columns`'s `_encode_states(
 states)` call to a bare `states` (storing each distinct state in full
 again) makes the never-ended sequence's own doubling assertions below
@@ -67,11 +76,17 @@ from ralphd.cli.log_render import new_render_state, render_to_lines
 from ralphd.engine.runner import PiRunner
 from ralphd.log_merge import OUTPUT_FILENAME, merged_lines
 
-# Fixed additive slack on top of "at most doubles" -- comfortably bigger
-# than the real per-doubling noise every sequence's own geometric publish
-# schedule and diff encoding leaves, but far smaller than what a quadratic
-# writer's ~4x (or worse) growth would need to slip under.
-_RECORD_ALLOWANCE = 400
+# Fixed additive slack on top of "at most doubles", exactly as task 004's
+# criterion (1) states it: records(2N) <= 2*records(N) + 20 and
+# bytes(2N) <= 2*bytes(N) + 20000. The record allowance is exactly the
+# geometric MAIN schedule's own first term (`LIVE_FLUSH_EVERY_LINES`
+# records): MAIN publishes at 20, 40, 80, ... so one doubling adds one
+# more term, 2*sum + 20. It leaves no room for a tail that drops a batch
+# per MAIN publish -- a gap growing with the publish count, i.e. with
+# log(N), which is what the writer did before the tail kept its own fixed
+# cadence on publish-due calls (`LiveRenderIndex.flush` appends the batch
+# first): 620 -> 1320 records at 200 -> 400 text_delta lines, +80.
+_RECORD_ALLOWANCE = 20
 _BYTE_ALLOWANCE = 20_000
 
 
@@ -241,3 +256,85 @@ class TestRenderStateEncodingIsByteLinear:
 
     def test_unended_tool_starts(self, tmp_path):
         self._assert_linear("unended_tool_starts", tmp_path)
+
+
+def _drive_live_writer(itdir: Path, lines: list[str], on_tail_write=None):
+    """Feed `lines` through `LiveRenderIndex.append`/`.flush` exactly as
+    `engine/runner.py`'s `pump()` does, then the end-of-stream forced
+    flush, returning the writer. `on_tail_write(n_records)` is called
+    once per tail shard appended."""
+    live = render_index.LiveRenderIndex()
+    transcript = itdir / OUTPUT_FILENAME
+    original_flush_tail = render_index.LiveRenderIndex._flush_tail
+
+    def counting_flush_tail(self, d, total, every):
+        before = self._tail_synced_count
+        wrote = original_flush_tail(self, d, total, every)
+        if wrote and on_tail_write is not None:
+            on_tail_write(total - before)
+        return wrote
+
+    render_index.LiveRenderIndex._flush_tail = counting_flush_tail
+    try:
+        with open(transcript, "a") as out:
+            for line in lines:
+                live.append(out, line + "\n", transcript)
+                live.flush(itdir)
+        live.flush(itdir, force=True)
+    finally:
+        render_index.LiveRenderIndex._flush_tail = original_flush_tail
+    return live
+
+
+class TestTailKeepsItsOwnCadenceOnPublishDueCalls:
+    """Sibling cases of the same rule: the tail's own write cost is exactly
+    one record per checkpoint, at the fixed `LIVE_FLUSH_EVERY_LINES`
+    cadence, whether or not a MAIN publish falls due on the same call."""
+
+    def test_every_checkpoint_reaches_the_tail_exactly_once(self, tmp_path):
+        every = render_index.LIVE_FLUSH_EVERY_LINES
+        for n in (every * 7, every * 13 + 5):
+            itdir = tmp_path / f"it-{n}"
+            itdir.mkdir()
+            shards: list[int] = []
+            _drive_live_writer(itdir, _matched_tool_lines(n), shards.append)
+            assert all(size == every for size in shards), shards
+            # Every full batch is appended once, including the ones whose
+            # flush() call also published MAIN (20, 40, 80, ...); only the
+            # final partial batch (< every) is left to the forced publish.
+            assert sum(shards) == (n // every) * every, (n, shards)
+
+    def test_failed_main_publish_still_leaves_the_batch_covered(self, tmp_path):
+        """A MAIN publish that fails (OSError on the tmp write) must not
+        cost the tail its batch: a reader still sees every checkpoint up
+        to the failed publish through `load_index`'s tail extension."""
+        every = render_index.LIVE_FLUSH_EVERY_LINES
+        itdir = tmp_path / "it"
+        itdir.mkdir()
+        transcript = itdir / OUTPUT_FILENAME
+        tmp_name = render_index.INDEX_FILENAME + ".tmp"
+        original_write_text = Path.write_text
+        fail_main = {"on": False}
+
+        def failing_write_text(self, data, *a, **kw):
+            if fail_main["on"] and self.name == tmp_name:
+                raise OSError("simulated MAIN publish failure")
+            return original_write_text(self, data, *a, **kw)
+
+        live = render_index.LiveRenderIndex()
+        lines = _text_delta_lines(every * 2)
+        Path.write_text = failing_write_text
+        try:
+            with open(transcript, "a") as out:
+                for i, line in enumerate(lines):
+                    # The first MAIN publish (at `every` checkpoints)
+                    # succeeds; the second one (due at 2*every) fails.
+                    fail_main["on"] = i + 1 > every
+                    live.append(out, line + "\n", transcript)
+                    live.flush(itdir)
+        finally:
+            Path.write_text = original_write_text
+        loaded = render_index.load_index(itdir)
+        assert loaded is not None
+        assert loaded["transcriptBytes"] == transcript.stat().st_size
+        assert len(loaded["checkpoints"]) == every * 2

@@ -5555,11 +5555,19 @@ schedules its next publish geometrically -- not due again until the
 checkpoint count has at least doubled since the last one, or grown by the
 base batch size, whichever needs more lines first -- so the total
 checkpoint records and bytes written across a whole iteration grow at most
-linearly (a small ~2x constant) in the transcript's own final line count:
-doubling the line count at most doubles either total, on every event shape
-a transcript can carry (`tests/test_render_index_linear_writer.py`) because
-the incremental state encoding above keeps one more distinct state's own
-cost bounded too, not only how often the writer republishes.
+linearly (a small ~2x constant) in the transcript's own final line count.
+Between MAIN publishes the writer appends a `render_index.tail.ndjson`
+shard every `LIVE_FLUSH_EVERY_LINES` checkpoints, and it appends that batch
+on a call where a MAIN publish also falls due too, BEFORE the publish
+deletes the tail file, so every checkpoint reaches the tail exactly once at
+that fixed cadence whatever MAIN's schedule does. Summed across
+`render_index.json` and `render_index.tail.ndjson` together, doubling the
+line count at most doubles the total checkpoint records written plus
+`LIVE_FLUSH_EVERY_LINES` records (the geometric series' own first term),
+and at most doubles the total bytes plus a fixed allowance, on every event
+shape a transcript can carry (`tests/test_render_index_linear_writer.py`),
+because the incremental state encoding above keeps one more distinct
+state's own cost bounded too, not only how often the writer republishes.
 
 **Rendering is server-side, and there is exactly one renderer.** `app.js`
 receives finished lines and displays one per element; it implements no
