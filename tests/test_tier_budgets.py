@@ -368,8 +368,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # exempt` proves both directions), measured `.venv/bin/python -m
     # pytest -q -m fast --collect-only` -> fast 6507/453, `-m smoke
     # --collect-only` -> smoke 4815/330.
-    "fast": {"tests": 6507, "modules": 453},
-    "smoke": {"tests": 4815, "modules": 330},
+    # cure-01-04 (PRD B.4-B.5, DoD 2): +2 tests / +1 module (tests/
+    # test_gate_confirmation_progress_identity.py: a gate-origin cure
+    # pass's sole target reopened, worded differently, on a confirmation
+    # review is refused as no-progress; a fresh/unrelated finding after
+    # the same gate pass is still granted), measured `.venv/bin/python -m
+    # pytest -q -m fast --collect-only` -> fast 6509/454, `-m smoke
+    # --collect-only` -> smoke 4817/331.
+    "fast": {"tests": 6509, "modules": 454},
+    "smoke": {"tests": 4817, "modules": 331},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

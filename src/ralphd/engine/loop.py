@@ -13450,15 +13450,32 @@ class LoopSupervisor:
             return False
         if not findings.all_blocking_findings_curable(findings_list):
             return False
-        passes_taken = self._cure_passes_for_approach(approach)
-        if passes_taken == 0:
-            return True
+        # cure-01-04 (PRD v0.27 requirement B.4/B.5, DoD 2): a CONFIRMATION
+        # review compares reopened root cure-task identities against the
+        # previous granted pass's own targeted set irrespective of WHICH
+        # channel granted that pass -- review's own `curePasses` or the
+        # peer gate's separate `gateCurePasses` counter
+        # (`_is_confirmation_review` already reads `cure-lineage.json`,
+        # which both channels append to via `insert_cure_tasks`, so it is
+        # origin-agnostic on its own). The `passes_taken == 0` first-pass
+        # shortcut below is checked from review's OWN counter alone, and
+        # is only reachable for an ACTUAL first review of this approach --
+        # never a confirmation review, whose very existence proves some
+        # channel already granted a pass, review's or the gate's. Checking
+        # `_is_confirmation_review()` before the shortcut (rather than
+        # after) is the fix: the old order let a gate-origin pass leave
+        # review's own `curePasses[approach]` at `0`, so a confirmation
+        # review following it took the shortcut and granted a no-progress
+        # pass even when every previously targeted root was reopened.
         if self._is_confirmation_review():
             tasks = self.run.read_tasks().get("tasks") or []
             current_roots = findings.reopened_root_finding_ids(
                 findings_list, tasks)
             previous_roots = self._cure_pass_targeted_roots(approach)
             return not current_roots.issuperset(previous_roots)
+        passes_taken = self._cure_passes_for_approach(approach)
+        if passes_taken == 0:
+            return True
         current_blocking = findings.blocking_finding_clauses(findings_list)
         previous_blocking = self._cure_pass_blocking_clauses(approach)
         return not current_blocking.issuperset(previous_blocking)
