@@ -340,8 +340,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # measured and pinned exactly), measured `.venv/bin/python -m pytest
     # -q -m fast --collect-only` -> fast 6478/451, `-m smoke
     # --collect-only` -> smoke 4786/328.
-    "fast": {"tests": 6495, "modules": 451},
-    "smoke": {"tests": 4803, "modules": 328},
+    # Task 014 (E.2): +3 tests / +1 module (tests/test_writing_a_prd_
+    # skill.py: the never-converging open-domain skill entry is present
+    # under its heading and the presence check discriminates against the
+    # entry's absence), measured `.venv/bin/python -m pytest -q -m fast
+    # --collect-only` -> fast 6498/452, `-m smoke --collect-only` ->
+    # smoke 4806/329.
+    "fast": {"tests": 6498, "modules": 452},
+    "smoke": {"tests": 4806, "modules": 329},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

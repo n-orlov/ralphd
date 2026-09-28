@@ -110,6 +110,20 @@ Each of these has burned whole approach budgets on real runs:
 - **Put authority in the PRD, not in a later ruling.** An amendment keyed to a
   task id is orphaned when a replan renumbers the tasks; a decision that must
   survive the whole run belongs in the PRD text.
+- **DO NOT write a requirement that says "any"/"every" over an open domain and
+  leans on a heuristic to enforce it.** "Every session settles to its expected
+  state" or "any queue converges" sounds finite but is not: a heuristic check
+  (a clause comparison, a text match, a re-park rule) always has one more
+  counterexample it did not anticipate, so review keeps building a fresh one
+  every cure pass — each one fixed, none of them the last one. A requirement
+  shaped like "R150 Success: every session's queue settles
+  to the expected state" (no product named — the shape is the lesson, not the
+  session or the queue) will come back in cure passes 1, 2 and 3 with a new
+  counterexample each time, because the domain it quantifies over was never
+  closed. Enumerate the finite set of cases the rule must actually cover —
+  the concrete states, transitions or shapes — and require each one by name,
+  instead of asking a heuristic to hold for "any"/"every" member of a domain
+  nothing closes.
 
 ## When the product is ralphd itself
 
