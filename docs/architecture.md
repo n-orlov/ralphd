@@ -1828,7 +1828,35 @@ measure (`tests/test_render_index_linear_writer.py`). Batching, geometric
 or fixed, still bounds only how stale the uncovered suffix a reader falls
 back to scanning can be, never index correctness: every published snapshot
 is a complete, independently-valid index regardless of how it got
-scheduled. `engine/loop.py`'s end-of-iteration bookkeeping then calls `render_index.write_index` once
+scheduled. Task cure-01-01-4 (PRD D.1 and D.2/D.3 together, DoD 4) bounds
+that staleness a second way, on the READ side: the geometric schedule
+above still means a whole-call read taken between two MAIN publishes used
+to treat every checkpoint fed since the last one as wholly unindexed --
+forcing a raw re-render of that whole suffix, which the named PRD Q
+silent-prelude fixtures (prelude depths 1,000/1,700) grow past the
+1,000,000-byte bound well before the writer's own next scheduled publish.
+`flush` now also appends to a small side file, `render_index.
+TAIL_FILENAME` (`render_index.tail.ndjson`), every `LIVE_FLUSH_EVERY_
+LINES` checkpoints fed since the last MAIN publish or tail append -- each
+append a compact, self-contained shard of just that batch (never the
+whole snapshot, so its own cost is O(batch), not O(total)); a MAIN
+publish, geometric or the end-of-iteration `write_index` rebuild, covers
+everything any shard described and deletes the file at the same time.
+`load_index` decodes and appends every shard present, in order, to
+EXTEND MAIN's own `checkpoints`/`transcriptBytes` before falling back to
+any raw suffix scan, re-verifying the extended prefix's own tail exactly
+as it already verifies MAIN's; an absent, undecodable or unverifiable
+tail file simply leaves MAIN's own coverage as the answer. The SUM of
+every tail append's own cost across a whole iteration is then exactly one
+unit of work per checkpoint ever fed, however many times MAIN
+republishes -- linear, the same property the geometric schedule already
+gives the write side, now extended to the read side too
+(`tests/test_d1_real_pirunner_active_iteration_reads_within_cap.py`,
+which drives the real `PiRunner.run` -- a genuine subprocess, kept alive
+before its own EOF -- through both named fixtures and reads through
+`ui_server.rendered_log_lines`'s own two surfaces, staying inside the
+bound and rendering the full renderer's exact last two lines).
+`engine/loop.py`'s end-of-iteration bookkeeping then calls `render_index.write_index` once
 more, exactly like it does for `collapse_index.json` -- a full, from-scratch
 rebuild that is normally a no-op rewrite of already-current bytes, existing
 so a transcript that ends between two live flushes still ends up with an

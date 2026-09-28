@@ -346,8 +346,16 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # entry's absence), measured `.venv/bin/python -m pytest -q -m fast
     # --collect-only` -> fast 6498/452, `-m smoke --collect-only` ->
     # smoke 4806/329.
-    "fast": {"tests": 6498, "modules": 452},
-    "smoke": {"tests": 4806, "modules": 329},
+    # cure-01-01-4 (D.1/D.2 together, DoD 4): +4 tests / +1 module (tests/
+    # test_d1_real_pirunner_active_iteration_reads_within_cap.py: the real
+    # `PiRunner.run` pump, mid-iteration before EOF, reads within the
+    # whole-call cap on both the disk and live surfaces at both named
+    # silent-prelude depths -- no process-boundary helper named, so this
+    # new module's nodes count in `smoke` too), measured `.venv/bin/python
+    # -m pytest -q -m fast --collect-only` -> fast 6502/453, `-m smoke
+    # --collect-only` -> smoke 4810/330.
+    "fast": {"tests": 6502, "modules": 453},
+    "smoke": {"tests": 4810, "modules": 330},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

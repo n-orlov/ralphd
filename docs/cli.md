@@ -3636,7 +3636,17 @@ JSON endpoints served under `/api/`:
   the on-disk surface, on the first and a repeated request, for PRD Q's
   canonical fixture and both of its silent-prelude depths, with the render
   still equal to the full renderer's last `N` lines; the bound is not stated
-  for transcripts or histories beyond what that test measures.
+  for transcripts or histories beyond what that test measures. It holds
+  just as well while the iteration this tail is served against is still
+  RUNNING, between two of the live writer's own geometric publishes (task
+  cure-01-01-4, v0.27 PRD D.1 and D.2/D.3 together, DoD 4,
+  `tests/test_d1_real_pirunner_active_iteration_reads_within_cap.py`,
+  which drives the real engine subprocess, kept alive before its own
+  EOF): `render_index.py`'s live writer appends a small extra shard to a
+  side file every `LIVE_FLUSH_EVERY_LINES` checkpoints in between its own
+  much-rarer full republishes, so the two named silent-prelude depths --
+  large enough to blow past this bound if the whole gap since the last
+  full republish had to be scanned raw -- stay inside it instead.
   `render_index.json` is read whole on every call, so the index-read cost is
   proportional to the number of raw transcript lines before the tail, silent
   lines included, not to `N` — the file is therefore stored compactly: each

@@ -158,6 +158,35 @@ INDEX_FILENAME = "render_index.json"
 # like any other wrong version -- a reader then falls back exactly.
 INDEX_VERSION = 5
 
+# Task cure-01-01-4 (v0.27 PRD D.1 and D.2/D.3 TOGETHER, DoD 4 -- a review
+# finding on the geometric writer task 012 shipped): `LiveRenderIndex`
+# publishes a full, from-scratch `render_index.json` only geometrically
+# rarely (task 012, PRD D.2 -- the ONLY way to keep the SUM of every
+# publish's own O(checkpoints-so-far) cost linear across a whole
+# iteration), so a whole-call tail read taken between two such publishes
+# used to treat every checkpoint since the last one as UNINDEXED --
+# forcing a raw re-render of that whole raw-byte suffix, which the named
+# PRD Q silent-prelude fixtures (heavily padded lines) blow well past the
+# 1,000,000-byte cap on before the writer ever gets to republish (D.1).
+# `TAIL_FILENAME` is a small side file that closes exactly that gap: every
+# `LIVE_FLUSH_EVERY_LINES` newly fed checkpoints, `LiveRenderIndex._flush_
+# tail` APPENDS (never rewrites) one more compact, self-contained shard of
+# them -- `_encode_checkpoint_columns` run over just that batch, so each
+# shard's own cost is O(batch), not O(total) -- and `load_index` reads and
+# decodes every shard present, in order, to EXTEND the main snapshot's own
+# `checkpoints`/`transcriptBytes` before falling back to a raw scan for
+# whatever (small, `LIVE_FLUSH_EVERY_LINES`-bounded) tail remains genuinely
+# uncovered. A full `render_index.json` publish -- geometric or forced --
+# covers everything the tail shards described, so it clears the tail file
+# at the same time: the SUM of every tail append's own cost, across a
+# whole iteration, is then exactly one unit of work per checkpoint ever
+# fed, however many times MAIN republishes -- LINEAR, the same property
+# `_next_flush_threshold` already gives the MAIN file (D.2), now extended
+# to the read side (D.1) without giving it back. Scoped to the named
+# fixtures, not a guarantee for arbitrarily deeper histories (PRD D.1's
+# own disclosed-residual note).
+TAIL_FILENAME = "render_index.tail.ndjson"
+
 # Task cure-01-01-4 (PRD C.1/C.3, D.1; petition remedy for cure-01-03
 # criterion (1)): the identity/provenance witness -- `transcriptInode`
 # (`st_ino`, so a same-size REPLACEMENT, e.g. a rename over the path, is
@@ -491,19 +520,24 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def encode_index(index: dict) -> dict:
-    """The on-disk document for the in-memory `index` (`snapshot()`/
-    `compute_render_index`'s shape): every key but `checkpoints` copied
-    as is, `states` holding each distinct checkpoint state once, and
-    `checkpoints` as the four parallel columns `_COLUMN_KEYS` names.
-    `decode_index(encode_index(index)) == index`. A checkpoint missing
-    `lineCrc32` encodes it as `null`, which `load_index` refuses."""
+def _encode_checkpoint_columns(checkpoints: list[dict], base_offset: int = 0,
+                               base_lines: int = 0) -> tuple[list, dict]:
+    """`checkpoints` as `(states, columns)` -- `states` holding each
+    DISTINCT state appearing in `checkpoints` once (first-appearance
+    order, local to this call only), `columns` the `_COLUMN_KEYS`
+    parallel arrays, deltas computed from `base_offset`/`base_lines` for
+    the first entry (0/0 for a whole-index encoding; a tail shard's own
+    running (byteOffset, renderedLines) baseline otherwise -- task
+    cure-01-01-4, PRD D.1/D.2 together). The one inner loop `encode_index`
+    and `LiveRenderIndex._flush_tail`'s own shard encoding share, so
+    neither can drift from the other's idea of what a checkpoint column
+    entry means."""
     states: list = []
     ids: dict[str, int] = {}
     columns: tuple[list, list, list, list] = ([], [], [], [])
     d_off, d_lines, state_ids, crcs = columns
-    prev_off = prev_lines = 0
-    for cp in index["checkpoints"]:
+    prev_off, prev_lines = base_offset, base_lines
+    for cp in checkpoints:
         state = cp.get("state")
         key = json.dumps(state, sort_keys=True)
         sid = ids.get(key)
@@ -515,10 +549,49 @@ def encode_index(index: dict) -> dict:
         d_lines.append(cp["renderedLines"] - prev_lines)
         prev_off, prev_lines = cp["byteOffset"], cp["renderedLines"]
         crcs.append(cp.get("lineCrc32"))
+    return states, dict(zip(_COLUMN_KEYS, columns))
+
+
+def encode_index(index: dict) -> dict:
+    """The on-disk document for the in-memory `index` (`snapshot()`/
+    `compute_render_index`'s shape): every key but `checkpoints` copied
+    as is, `states` holding each distinct checkpoint state once, and
+    `checkpoints` as the four parallel columns `_COLUMN_KEYS` names.
+    `decode_index(encode_index(index)) == index`. A checkpoint missing
+    `lineCrc32` encodes it as `null`, which `load_index` refuses."""
+    states, columns = _encode_checkpoint_columns(index["checkpoints"])
     doc = {k: v for k, v in index.items() if k != "checkpoints"}
     doc["states"] = states
-    doc["checkpoints"] = dict(zip(_COLUMN_KEYS, columns))
+    doc["checkpoints"] = columns
     return doc
+
+
+def _decode_checkpoint_columns(cols: object, states: object, base_offset: int = 0,
+                               base_lines: int = 0) -> list[dict] | None:
+    """The inverse of `_encode_checkpoint_columns`: `None` when `states`
+    is not an array, `cols` is not an object, the columns are missing,
+    not arrays or of unequal length, or a delta or state id is not an
+    integer naming an existing state -- otherwise the decoded checkpoints
+    list, `byteOffset`/`renderedLines` continuing from `base_offset`/
+    `base_lines`."""
+    if not isinstance(states, list) or not isinstance(cols, dict):
+        return None
+    columns = [cols.get(k) for k in _COLUMN_KEYS]
+    if (any(not isinstance(c, list) for c in columns)
+            or len({len(c) for c in columns}) != 1):
+        return None
+    n_states = len(states)
+    checkpoints = []
+    offset, lines = base_offset, base_lines
+    for d_off, d_lines, sid, crc in zip(*columns):
+        if not (_is_int(d_off) and _is_int(d_lines) and _is_int(sid)
+                and 0 <= sid < n_states):
+            return None
+        offset += d_off
+        lines += d_lines
+        checkpoints.append({"byteOffset": offset, "renderedLines": lines,
+                            "state": states[sid], "lineCrc32": crc})
+    return checkpoints
 
 
 def decode_index(doc: object) -> dict | None:
@@ -533,25 +606,9 @@ def decode_index(doc: object) -> dict | None:
     own validation, applied to the decoded result."""
     if not isinstance(doc, dict):
         return None
-    states = doc.get("states")
-    cols = doc.get("checkpoints")
-    if not isinstance(states, list) or not isinstance(cols, dict):
+    checkpoints = _decode_checkpoint_columns(doc.get("checkpoints"), doc.get("states"))
+    if checkpoints is None:
         return None
-    columns = [cols.get(k) for k in _COLUMN_KEYS]
-    if (any(not isinstance(c, list) for c in columns)
-            or len({len(c) for c in columns}) != 1):
-        return None
-    n_states = len(states)
-    checkpoints = []
-    offset = lines = 0
-    for d_off, d_lines, sid, crc in zip(*columns):
-        if not (_is_int(d_off) and _is_int(d_lines) and _is_int(sid)
-                and 0 <= sid < n_states):
-            return None
-        offset += d_off
-        lines += d_lines
-        checkpoints.append({"byteOffset": offset, "renderedLines": lines,
-                            "state": states[sid], "lineCrc32": crc})
     index = {k: v for k, v in doc.items() if k not in ("checkpoints", "states")}
     index["checkpoints"] = checkpoints
     return index
@@ -593,6 +650,13 @@ class LiveRenderIndex:
         # actually publishes -- `None` until the first `flush` call picks
         # the initial threshold from whatever `every` it is given then.
         self._next_flush_threshold: int | None = None
+        # Task cure-01-01-4 (PRD D.1/D.2 together): how many of
+        # `self._checkpoints` are already reflected on disk -- either
+        # folded into the last MAIN publish, or already appended as a
+        # TAIL shard (`_flush_tail`, `TAIL_FILENAME`). The gap between
+        # this and `len(self._checkpoints)` is exactly what the NEXT tail
+        # append (or MAIN publish, whichever comes first) still owes.
+        self._tail_synced_count = 0
 
     @property
     def transcript_bytes(self) -> int:
@@ -703,12 +767,24 @@ class LiveRenderIndex:
         appended takes custody of the transcript as it stands (stamping
         it), the way a from-scratch build vouches for what it read.
         `poisoned`, once set, is carried into every later snapshot.
-        Returns whether it actually wrote."""
+
+        A call that is not yet due for a full MAIN republish (and is not
+        `poisoned`) instead delegates to `_flush_tail`, which may append
+        a small TAIL shard of its own (task cure-01-01-4, PRD D.1/D.2
+        together -- see `TAIL_FILENAME`'s own module-level comment).
+        Returns whether it actually wrote (to either file)."""
         total = len(self._checkpoints)
         threshold = (every if self._next_flush_threshold is None
                     else self._next_flush_threshold)
         if not force and total < threshold:
-            return False
+            # Not yet due for a full MAIN republish -- task cure-01-01-4
+            # (PRD D.1/D.2 together): the TAIL extension still gets its
+            # own much smaller, fixed-cadence batch (`every`) appended
+            # cheaply, so a reader's unindexed suffix never grows past
+            # it -- see `TAIL_FILENAME`'s own module-level comment.
+            if self._poisoned:
+                return False
+            return self._flush_tail(itdir, total, every)
         output_path = itdir / output_filename
         if self._custody is None and not self._poisoned:
             st = _stamp(output_path)
@@ -727,7 +803,47 @@ class LiveRenderIndex:
             return False
         self._witness_checkpoints = list(self._checkpoints)
         self._next_flush_threshold = _next_flush_threshold(total, every)
+        # This MAIN publish now covers every checkpoint the tail file
+        # described (and more) -- the tail's own job is done until the
+        # next batch of `every` checkpoints accumulates past THIS point.
+        self._tail_synced_count = total
+        self._clear_tail(itdir)
         return True
+
+    def _flush_tail(self, itdir: Path, total: int, every: int) -> bool:
+        """Append one more compact shard of the checkpoints fed since the
+        last tail append or MAIN publish (task cure-01-01-4, PRD D.1/D.2
+        together), once at least `every` of them have accumulated --
+        never rewriting anything already on disk, so this call's own
+        cost is O(batch), not O(total). Returns whether it actually
+        wrote."""
+        if total - self._tail_synced_count < every:
+            return False
+        new = self._checkpoints[self._tail_synced_count:total]
+        prev = (self._checkpoints[self._tail_synced_count - 1]
+               if self._tail_synced_count else None)
+        base_offset = prev["byteOffset"] if prev else 0
+        base_lines = prev["renderedLines"] if prev else 0
+        states, columns = _encode_checkpoint_columns(new, base_offset, base_lines)
+        line = json.dumps({"states": states, "checkpoints": columns})
+        try:
+            with open(itdir / TAIL_FILENAME, "a") as f:
+                f.write(line + "\n")
+        except OSError:
+            return False
+        self._tail_synced_count = total
+        return True
+
+    def _clear_tail(self, itdir: Path) -> None:
+        """Drop `TAIL_FILENAME` -- MAIN now covers everything it described,
+        and a stale shard left behind could only ever confuse a reader
+        (never wrongly extend past `load_index`'s own validation, since
+        every shard is re-verified against the transcript, but there is
+        no reason to keep dead weight around). Never raises."""
+        try:
+            (itdir / TAIL_FILENAME).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def compute_render_index(output_path: Path) -> dict:
@@ -793,8 +909,92 @@ def write_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> None:
         tmp = itdir / (INDEX_FILENAME + ".tmp")
         tmp.write_text(json.dumps(encode_index(index)))
         tmp.replace(itdir / INDEX_FILENAME)
+        # Task cure-01-01-4 (PRD D.1/D.2 together): this full rebuild
+        # already covers everything any TAIL shard described -- drop it,
+        # the same way a live MAIN publish does, so nothing stale is
+        # left for a later reader to decode for no benefit.
+        (itdir / TAIL_FILENAME).unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _decode_tail_shards(text: str, base_offset: int, base_lines: int) -> list[dict] | None:
+    """Decode `TAIL_FILENAME`'s own NDJSON shards (task cure-01-01-4, PRD
+    D.1/D.2 together): each line one `_encode_checkpoint_columns`-shaped
+    document, continuing the running (byteOffset, renderedLines) baseline
+    from one shard to the next. Malformed content anywhere -- a line
+    that is not valid JSON, not an object, or fails
+    `_decode_checkpoint_columns` -- makes the WHOLE tail unusable
+    (`None`); the caller then falls back to MAIN's own coverage alone,
+    never a partially-trusted extension."""
+    checkpoints: list[dict] = []
+    offset, lines = base_offset, base_lines
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            doc = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(doc, dict):
+            return None
+        shard = _decode_checkpoint_columns(doc.get("checkpoints"), doc.get("states"),
+                                           offset, lines)
+        if shard is None:
+            return None
+        checkpoints.extend(shard)
+        if shard:
+            offset, lines = shard[-1]["byteOffset"], shard[-1]["renderedLines"]
+    return checkpoints
+
+
+def _read_tail_extension(itdir: Path, base_offset: int, base_lines: int) -> list[dict] | None:
+    """The decoded TAIL shards for one iteration, continuing from
+    `(base_offset, base_lines)` -- MAIN's own last checkpoint, or
+    `(0, 0)` when MAIN has none. Absence is not failure: no tail file
+    (a writer that has not appended one yet, or a from-scratch rebuild
+    that never does) simply extends by nothing (`[]`, not `None` --
+    `None` is reserved for a tail file that EXISTS but cannot be
+    trusted)."""
+    path = itdir / TAIL_FILENAME
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return None
+    return _decode_tail_shards(text, base_offset, base_lines)
+
+
+def _checkpoints_well_formed(checkpoints: list[dict], start_offset: int = -1,
+                             start_lines: int = -1) -> bool:
+    """Structural + ascending validity of a checkpoints list, continuing
+    from `(start_offset, start_lines)` -- the same shape/ordering/state/
+    CRC check `load_index`'s own inline loop applies to the MAIN-only
+    list, reused here (task cure-01-01-4) to validate a TAIL-extended
+    list without touching that already-covered code path."""
+    prev_offset, prev_lines = start_offset, start_lines
+    valid_states: set[int] = set()
+    for cp in checkpoints:
+        if not isinstance(cp, dict) or any(k not in cp for k in _CHECKPOINT_KEYS):
+            return False
+        offset = cp.get("byteOffset")
+        lines = cp.get("renderedLines")
+        state = cp.get("state")
+        if not isinstance(offset, int) or offset <= prev_offset:
+            return False
+        if not isinstance(lines, int) or lines < prev_lines:
+            return False
+        if id(state) not in valid_states:
+            if not _valid_checkpoint_state_shape(state):
+                return False
+            valid_states.add(id(state))
+        crc = cp.get("lineCrc32")
+        if (not isinstance(crc, int) or isinstance(crc, bool)
+                or not 0 <= crc <= 0xFFFFFFFF):
+            return False
+        prev_offset, prev_lines = offset, lines
+    return True
 
 
 def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | None:
@@ -929,6 +1129,24 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     if checkpoints and not _covered_prefix_matches(
             itdir / output_filename, checkpoints):
         return None
+    # Task cure-01-01-4 (PRD D.1/D.2 together): extend MAIN's own
+    # coverage with whatever TAIL shards describe past it (see
+    # `TAIL_FILENAME`'s own module-level comment) -- structurally
+    # invalid, or not re-verified against the transcript's own current
+    # bytes exactly the way MAIN's tail already was above, simply drops
+    # the extension and returns MAIN's own coverage unchanged; it is
+    # never reason to refuse the whole index.
+    base_offset = checkpoints[-1]["byteOffset"] if checkpoints else -1
+    base_lines = checkpoints[-1]["renderedLines"] if checkpoints else -1
+    tail = _read_tail_extension(itdir, max(base_offset, 0), max(base_lines, 0))
+    if tail:
+        extended = checkpoints + tail
+        if (extended[-1]["byteOffset"] <= actual_size
+                and _checkpoints_well_formed(tail, base_offset, base_lines)
+                and _covered_prefix_matches(itdir / output_filename, extended)):
+            index = dict(index)
+            index["checkpoints"] = extended
+            index["transcriptBytes"] = extended[-1]["byteOffset"]
     return index
 
 
