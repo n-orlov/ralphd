@@ -290,8 +290,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # review` section built from `cure-lineage.json`), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 6440/444,
     # `-m smoke --collect-only` -> 4748/321.
-    "fast": {"tests": 6440, "modules": 444},
-    "smoke": {"tests": 4748, "modules": 321},
+    # Task 006 (B.3 enforcement, #274): +7 tests / +1 module (tests/
+    # test_confirmation_downgrade.py: the confirmation-review downgrade
+    # of an unlinked blocking finding to residual, the `review.
+    # finding_downgraded` event, and the `reopens`/`regression`/exempt
+    # findings staying blocking), measured `.venv/bin/python -m pytest
+    # -q -m fast --collect-only` -> 6447/445, `-m smoke --collect-only`
+    # -> 4755/322.
+    "fast": {"tests": 6447, "modules": 445},
+    "smoke": {"tests": 4755, "modules": 322},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

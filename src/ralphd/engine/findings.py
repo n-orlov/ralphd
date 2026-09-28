@@ -111,6 +111,21 @@ FINDING_SCHEMA: dict = {
         # requirement E.3) reads this to insert a re-take task per path.
         # Deliberately optional on every finding, curable or not.
         "invalidates": {"type": "array"},
+        # Task 006 (PRD requirement B.3, v0.27, #274): the cure task id of
+        # one of a confirmation review's own listed findings that this
+        # finding claims is still open -- see `confirmation_review_
+        # downgrade_candidates` below. Declared here (optional, not
+        # required) purely so a finding carrying it validates with no
+        # `UnrecognisedFindingFieldWarning`; a finding written before this
+        # task, or on an ordinary (non-confirmation) review, simply never
+        # sets it. Adds no newly-required field.
+        "reopens": {"type": "string"},
+        # Task 006 (PRD requirement B.3, v0.27, #274): true when the
+        # failure this finding reports is caused by a change inside the
+        # confirmation review's own diff range -- the other of the two
+        # fields `confirmation_review_downgrade_candidates` below reads.
+        # Optional, same reasoning as `reopens` immediately above.
+        "regression": {"type": "boolean"},
     },
     # Task 014 (requirement E.1, #190): deliberately True, not False.
     # `additionalProperties: False` used to make an unrecognised extra key
@@ -554,6 +569,112 @@ def curable_findings_with_overrun_cured_when(
         if overrun is not None:
             out.append((f, overrun))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Task 006 (PRD requirement B.3, v0.27, #274): what may block a
+# CONFIRMATION review (see `LoopSupervisor._confirmation_review_context`,
+# task 005) is bounded. Every blocking finding filed on one must carry one
+# of two optional fields to stay blocking:
+#   - `reopens` -- the cure task id of one of the previous pass's own
+#     listed findings that is still open (a new example of that finding's
+#     rule, because the rule was not actually closed);
+#   - `regression: true` -- the failure is caused by a change inside the
+#     diff range the confirmation review was told to check.
+# A blocking finding carrying NEITHER field is downgraded to `"residual"`
+# -- unless it is one of the two things that always stay blocking
+# regardless: an exposed secret, or a requirement whose behaviour is
+# absent altogether (`confirmation_review_exempt` below). Both `reopens`
+# and `regression` stay OPTIONAL, undeclared additions to `FINDING_SCHEMA`
+# -- `additionalProperties: True` already tolerates them (see task 004's
+# note above `flagged_criteria_findings`) -- so this adds no new REQUIRED
+# field to review-findings.json validation.
+# ---------------------------------------------------------------------------
+
+# Recognised, case-insensitively, in a finding's `clause` or `evidence`
+# text -- the two always-blocking exceptions the PRD names literally: "an
+# exposed secret" and "a requirement whose behaviour is absent
+# altogether". A finding is exempt from the confirmation-review downgrade
+# the moment either pattern is present in its own text, the same
+# "presence in the finding's own words is the signal" discipline
+# `any_criteria_tamper_finding` above already uses for its own marker.
+_EXPOSED_SECRET_TEXT_RE = re.compile(r"\bsecrets?\b", re.IGNORECASE)
+_ABSENT_BEHAVIOUR_TEXT_RE = re.compile(r"\babsent\b", re.IGNORECASE)
+
+
+def confirmation_review_exempt(finding: dict) -> bool:
+    """Task 006 (PRD requirement B.3): does `finding` name one of the two
+    things that always stay blocking on a confirmation review, with
+    neither `reopens` nor `regression: true` -- an exposed secret, or a
+    requirement whose behaviour is absent altogether? Read from the
+    finding's own `clause`/`evidence` text (case-insensitively); a
+    non-dict or textless finding answers `False` (not exempt), the same
+    fail-towards-the-ordinary-rule posture every other predicate in this
+    module keeps for a malformed entry.
+    """
+    if not isinstance(finding, dict):
+        return False
+    text = f"{finding.get('clause') or ''} {finding.get('evidence') or ''}"
+    return bool(_EXPOSED_SECRET_TEXT_RE.search(text)
+                or _ABSENT_BEHAVIOUR_TEXT_RE.search(text))
+
+
+def confirmation_review_downgrade_candidates(
+        findings_list: list[dict]) -> list[dict]:
+    """Task 006 (PRD requirement B.3): every entry of `findings_list`
+    that a confirmation review's downgrade rule applies to -- `severity:
+    "blocking"`, carrying neither a non-blank `reopens` string nor
+    `regression: true`, and not exempt (`confirmation_review_exempt`).
+    Residual findings, linked findings and the two always-blocking
+    exceptions never enter the returned list. The identical entries
+    (not copies) from `findings_list`, so a caller can compare by
+    identity (`apply_confirmation_review_downgrade` below does exactly
+    that).
+    """
+    out = []
+    for f in findings_list:
+        if not isinstance(f, dict) or f.get("severity") != "blocking":
+            continue
+        reopens = f.get("reopens")
+        if isinstance(reopens, str) and reopens.strip():
+            continue
+        if f.get("regression") is True:
+            continue
+        if confirmation_review_exempt(f):
+            continue
+        out.append(f)
+    return out
+
+
+def apply_confirmation_review_downgrade(
+        findings_list: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Task 006 (PRD requirement B.3): return `(new_list, downgraded)`,
+    where `new_list` is a COPY of `findings_list` with every entry
+    `confirmation_review_downgrade_candidates` names replaced by a copy
+    carrying `severity: "residual"` instead of `"blocking"` -- every
+    other entry (including a residual one, a linked one, or an exempt
+    one) passed through unchanged, in its original position -- and
+    `downgraded` is the list of those replacement copies, in the same
+    order they appear in `findings_list`, for a caller
+    (`LoopSupervisor._review_verdict`) to `emit()` one `review.
+    finding_downgraded` event per entry. Never mutates `findings_list`
+    or any of its dicts; an input with no candidates returns `([...],
+    [])` -- a shallow copy of the list, no downgraded entries.
+    """
+    candidates = confirmation_review_downgrade_candidates(findings_list)
+    candidate_ids = {id(f) for f in candidates}
+    if not candidate_ids:
+        return list(findings_list), []
+    new_list = []
+    downgraded = []
+    for f in findings_list:
+        if id(f) in candidate_ids:
+            copy = dict(f, severity="residual")
+            new_list.append(copy)
+            downgraded.append(copy)
+        else:
+            new_list.append(f)
+    return new_list, downgraded
 
 
 def read_findings_json(path: Path) -> list[dict]:

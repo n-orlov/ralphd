@@ -11151,6 +11151,29 @@ class LoopSupervisor:
             self._write_back_petition_adjudications(
                 parsed.get("petition_adjudications"))
         findings_list, channel_errors = self._review_findings_channel()
+        # Task 006 (PRD requirement B.3, v0.27, #274): on a settled
+        # (non-mid-run) CONFIRMATION review, downgrade every blocking
+        # finding carrying neither `reopens` nor `regression: true` to
+        # residual BEFORE anything below computes a verdict off
+        # `findings_list` -- schema/contract checks, the residual-
+        # recomputation branch further down, and every later reader of
+        # this same list (`_review_success_verdict_label`, `_review_
+        # rejection_signature`, ...) all see the post-downgrade severities,
+        # exactly the same "one place, every caller sees the same list"
+        # discipline `_review_findings_channel`'s own petition-confirmed
+        # downgrade already keeps for itself. Guarded on `findings_list`
+        # being present -- an unreadable/absent channel has nothing to
+        # downgrade -- and on `not mid_run`, since the confirmation-review
+        # section is never folded into a mid-run adjudication episode's
+        # own prompt (`_review_extra_context` is not part of that path),
+        # so a mid-run reply's findings are never subject to this rule.
+        if not mid_run and findings_list and self._is_confirmation_review():
+            findings_list, downgraded = (
+                findings.apply_confirmation_review_downgrade(findings_list))
+            for f in downgraded:
+                self.run.emit(
+                    "review.finding_downgraded", approach=self._approach,
+                    clause=f.get("clause"), evidence=f.get("evidence"))
         if isinstance(parsed, dict):
             payload = parsed
             schema_errors = (
@@ -17144,6 +17167,22 @@ class LoopSupervisor:
             return prd.read_text()
         except OSError:
             return ""
+
+    def _is_confirmation_review(self) -> bool:
+        """Task 006 (PRD requirement B.3, v0.27, #274): true exactly when
+        the approach under review has taken at least one GRANTED cure
+        pass -- the same condition `_confirmation_review_context` below
+        renders its `## Confirmation review` section on, kept here as its
+        own predicate (rather than checking that method's rendered text)
+        so `_review_verdict`'s downgrade enforcement never has to render
+        the whole section just to ask a yes/no question, and so the two
+        never drift apart on what counts as a confirmation review.
+        """
+        approach = self._approach
+        if approach is None:
+            return False
+        lineage = state.read_cure_lineage(self.run.root)
+        return any(p.get("approach") == approach for p in lineage["passes"])
 
     def _confirmation_review_context(self) -> str:
         """PRD requirement B.1/B.2/B.3 (v0.27, #274, task 005): once the
