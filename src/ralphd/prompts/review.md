@@ -360,6 +360,21 @@ such measurement stale.
 A curable blocking finding you file without `cured_when` is a review contract
 violation on the ladder, not a finding the engine can act on.
 
+**File the rule, not the example.** A finding you write from a failing case
+you constructed is not that case reported back — work out **why** the code
+admits it before you write anything down. State that broken rule, in the
+requirement's own terms, as the finding's `cured_when` (for example "a named
+settle reads only the named session's own status cell", not "probe X fails
+with input Y"). The probes that led you there — the reviewer's own
+fixtures — go into `evidence` as **examples**: regression cases that pin the
+rule once it is fixed, not a restatement of the whole criterion and not the
+cure task's own success criteria (`cured_when` is). When several of your
+probes fail for the same broken rule, that is **one** finding with several
+examples in its `evidence`, never several findings — filing one per probe
+splinters a single cause into a checklist a cure pass can satisfy probe by
+probe while leaving the rule itself broken, which is exactly what a
+re-audit then rediscovers with a fresh counterexample next pass.
+
 Write BOTH channels for every finding, whether the run is `verified` or
 `rejected`: the free-markdown `review-findings.md` you already produce
 (human judgement in prose, kept exactly as it is), and beside it a JSON

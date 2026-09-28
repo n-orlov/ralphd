@@ -261,8 +261,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # 2-line tail stays bounded), measured `.venv/bin/python -m pytest -q
     # -m fast --collect-only` -> 6415/439, `-m smoke --collect-only` ->
     # 4723/316.
-    "fast": {"tests": 6415, "modules": 439},
-    "smoke": {"tests": 4723, "modules": 316},
+    # Task 001 (A.1, #274): +6 tests / +1 module (tests/
+    # test_review_finding_rule_prompt.py: review.md files the broken rule
+    # via cured_when, probes as evidence examples, one finding per rule;
+    # findings.py's FINDING_SCHEMA field set unchanged), measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 6421/440,
+    # `-m smoke --collect-only` -> 4729/317.
+    "fast": {"tests": 6421, "modules": 440},
+    "smoke": {"tests": 4729, "modules": 317},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
