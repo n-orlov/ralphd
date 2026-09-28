@@ -40,6 +40,7 @@ in [docs/prds/](prds/README.md).
 
 ## Shipped
 
+- v0.27 — a review converges in one fix round — a spent validation budget asks the operator instead of looping or replanning, and a tail's index read is bounded (#274, #275).
 - v0.26 — the operator can see and answer — an oversized escalation is digested and
   retried instead of vanishing, the hub shows and answers a parked run's question
   in place, and the transcript tail stays exact under the byte cap by reading an
