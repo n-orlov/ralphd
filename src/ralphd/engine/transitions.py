@@ -872,8 +872,37 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # own ordering, because `LoopSupervisor._step_verdict_gate` checks
         # `_gate_cure_pass_available` before falling through to either.
         T("cure", "verdict_gate_rejected_curable_pass_available"),
+        # Task 008 (v0.27 requirement C.1): the gate's own mirror of
+        # `TABLE["review"]`'s `operator_input_needed` edge above --
+        # narrower than review's, on purpose: it fires only when this
+        # rejection WOULD have earned the cure-pass edge just above if
+        # the run-wide `cure_pass_ceiling` were not already spent
+        # (`_gate_rejection_ending` reporting `GATE_REJECTION_ENDING_
+        # CURE_UNAVAILABLE`), so an operator can rule or plainly unpause
+        # before `_archive_approach`/`_write_composite_prd` ever run.
+        # Declared BEFORE the ordinary replan/no-approach-left edges below
+        # for the identical reason the cure-pass edge is declared before
+        # them: `LoopSupervisor._step_verdict_gate` checks this condition
+        # ahead of both. ON by default, gated by the SAME `JobConfig.
+        # operator_input_needed_pause` flag review's own edge reads.
+        T("paused", "verdict_gate_operator_input_needed"),
         T("replan", "verdict_gate_rejected_approach_left"),
         T("finishing", "verdict_gate_rejected_no_approach_left"),
+    ),
+    # Task 008 (v0.27 requirement C.1): `paused`'s own successors gain a
+    # FIFTH target, reachable only under this delta -- resuming a pause
+    # raised from `verdict_gate` (the edge just above) must land back in
+    # `verdict_gate` over the SAME, unarchived approach, never in `review`
+    # (`TABLE["paused"]`'s own default target, correct for every pause
+    # `review` itself raises, wrong here: review already spoke `verified`
+    # for this approach, and re-asking it would be a second, unrelated
+    # verdict over work the peer gate -- not review -- is the one still
+    # judging). `TABLE["paused"]`'s existing four edges are carried over
+    # byte-for-byte, exactly like `PEER_VERDICT_GATE_DELTA["review"]`
+    # above carries review's own edges over -- this is an ADDITION, not a
+    # replacement.
+    "paused": TABLE["paused"] + (
+        T("verdict_gate", "paused_resumed_verdict_gate"),
     ),
 }
 

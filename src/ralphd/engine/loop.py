@@ -8367,6 +8367,25 @@ class LoopSupervisor:
                          "verdict_gate_rejected_curable_pass_available")
             return ("advance", "cure",
                     "verdict_gate_rejected_curable_pass_available")
+        # Task 008 (v0.27 requirement C.1): a rejection that WOULD have
+        # earned the cure-pass edge just above if the run-wide `cure_pass_
+        # ceiling` were not already spent (`ending ==
+        # GATE_REJECTION_ENDING_CURE_UNAVAILABLE`) holds for an operator
+        # instead of falling through to the ordinary archive/replan-or-
+        # finish edges below -- the SAME "before the spend, not after"
+        # reasoning `TABLE["review"]`'s own `operator_input_needed` edge
+        # documents, ON by default through the SAME `JobConfig.operator_
+        # input_needed_pause` flag (`--no-operator-input-needed-pause`
+        # disables both). Checked BEFORE the merits/archive branches below,
+        # mirroring the cure-pass check's own precedence just above.
+        if (ending == state.GATE_REJECTION_ENDING_CURE_UNAVAILABLE
+                and self.cfg.operator_input_needed_pause):
+            replan_available = approach < self.cfg.max_approaches
+            self._pause_and_escalate_gate_operator_input_needed(
+                approach, self._gate_findings() or [], replan_available)
+            self._advance("verdict_gate", "paused",
+                         "verdict_gate_operator_input_needed")
+            return ("advance", "paused", "verdict_gate_operator_input_needed")
         # Task 001 (PRD requirement A.1/A.2): a rejection carrying a
         # genuinely non-curable blocking finding (or a criteria-tamper
         # finding, which blocks the cure edge exactly the same way --
@@ -8617,6 +8636,85 @@ class LoopSupervisor:
         self.run.emit("approach.gate_cure_pass", approach=approach,
                       curePasses=new_count, taskIds=inserted,
                       findings=blocking)
+
+    def _gate_operator_input_needed_escalation_text(
+        self, approach: int, blocking: list[dict], replan_available: bool
+    ) -> str:
+        """Task 008 (v0.27 requirement C.1): the operator-facing
+        escalation body for a `verdict_gate_operator_input_needed` pause
+        -- the same shape `_last_approach_rejection_escalation_text` uses
+        (each blocking finding plus the exact `ralphctl amend` invocation
+        that would resolve it), worded for the case THIS edge covers:
+        every blocking finding IS curable, but the RUN-WIDE `cure_pass_
+        ceiling` (shared with review's own cure channel,
+        `LoopSupervisor._cure_passes_for_run`) is already spent, so there
+        is no cure pass left to grant -- only the ordinary archive/replan-
+        or-finish edges below, which this pause holds instead of taking.
+        """
+        outcome = ("replan a fresh approach" if replan_available else
+                  "end the run with no approach left")
+        lines = [
+            f"Run {self.cfg.run_id} approach {approach}: the peer verdict "
+            "gate rejected this approach on findings that are all curable, "
+            "but the run's own cure-pass ceiling is already spent -- there "
+            "is no cure pass left to grant. Before this task, the engine "
+            f"would now archive approach {approach} and {outcome} -- the "
+            "run has been paused instead so an operator can answer before "
+            "that spend happens; "
+            + self._ruling_then_unpause_escalation_sentences(),
+            "",
+        ]
+        for index, finding in enumerate(blocking, start=1):
+            lines.append(f"Finding {index} (blocking, curable):")
+            lines.append(f"  clause: {finding.get('clause', '')}")
+            lines.append(f"  evidence: {finding.get('evidence', '')}")
+            cured_when = finding.get("cured_when")
+            if isinstance(cured_when, str) and cured_when.strip():
+                lines.append(f"  cured_when: {cured_when}")
+            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _pause_and_escalate_gate_operator_input_needed(
+        self, approach: int, findings_list: list[dict],
+        replan_available: bool,
+    ) -> None:
+        """Task 008 (v0.27 requirement C.1): pause the run through the
+        EXISTING pause machinery -- the same seam every sibling in this
+        family uses (`self.pause()`, `self.notifier`, an `operator_
+        escalation` event always emitted to `events.jsonl` regardless of
+        whether a notifier is wired in) -- taken in `_step_verdict_gate`
+        BEFORE `_archive_approach`/`_write_composite_prd` ever run,
+        exactly like `_pause_and_escalate_operator_input_needed`'s review-
+        side edge, but for the peer verdict gate's own rejection.
+
+        A dedicated method, not a call into review's own `_pause_and_
+        escalate_operator_input_needed`: this pause carries no `cure_
+        preview`/ruling-signature machinery of its own -- the gate records
+        no `rejectionSignatures`/ruling-re-park bookkeeping, only the
+        findings channel and the archive it defers -- so `resume_if_
+        ruling_answers_pause` never releases it on a ruling filing alone
+        (its own reason allow-list names only `operator_input_needed`/
+        `rejected_repeated_signature`); releasing it always needs a
+        separate `ralphctl unpause`, exactly like `rejected_last_
+        approach`/`rejected_incurable` (`_ruling_then_unpause_answer_
+        cmd`, reused by `_operator_escalation_digest_text` below since
+        `"verdict_gate_operator_input_needed"` is not in that method's
+        own single-step allow-list either).
+        """
+        blocking = [f for f in findings_list if f.get("severity") == "blocking"]
+        text = self._gate_operator_input_needed_escalation_text(
+            approach, blocking, replan_available)
+        self.run.emit(
+            "operator_escalation", approach=approach,
+            reason="verdict_gate_operator_input_needed", findings=blocking,
+            replanAvailable=replan_available, escalation=text)
+        self.pause(reason="verdict_gate_operator_input_needed")
+        if self.notifier is not None:
+            digest = self._operator_escalation_digest_text(
+                "verdict_gate_operator_input_needed", approach, findings_list)
+            self._notify_escalation_delivery(
+                digest, reason="verdict_gate_operator_input_needed")
 
     async def _verdict_gate_verdict(self, result) -> tuple[bool, dict | None]:
         """Task 020 (requirement L, #101): the ONE parser of a
@@ -12938,6 +13036,16 @@ class LoopSupervisor:
             self._advance("paused", "worker",
                           "paused_resumed_unresolvable_edge")
             return ("advance", "worker", "paused_resumed_unresolvable_edge")
+        if reason == "verdict_gate_operator_input_needed":
+            # Task 008 (v0.27 requirement C.1): the peer verdict gate's
+            # own pause -- review already spoke `verified` for this
+            # approach, so resuming into `review` (the default branch
+            # below) would ask an unrelated second verdict over work only
+            # the gate is still judging. Resumes straight back into
+            # `verdict_gate`, over the SAME, unarchived approach.
+            self._advance("paused", "verdict_gate",
+                          "paused_resumed_verdict_gate")
+            return ("advance", "verdict_gate", "paused_resumed_verdict_gate")
         self._advance("paused", "review", "paused_resumed")
         return ("advance", "review", "paused_resumed")
 

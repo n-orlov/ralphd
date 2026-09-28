@@ -227,13 +227,15 @@ def test_review_s_other_edges_are_unchanged_by_the_gate(vigilant):
 def test_verdict_gate_has_exactly_the_three_declared_edges(vigilant):
     """Task 001 (PRD requirement A.1, #192) adds a FOURTH declared edge
     (`verdict_gate_rejected_curable_pass_available` -> `cure`) beside the
-    three this test originally pinned -- kept under its original name
-    (this module's own node-id-in-commit-message discipline) with its
-    assertion widened to match."""
+    three this test originally pinned; task 008 (v0.27 requirement C.1)
+    adds a FIFTH (`verdict_gate_operator_input_needed` -> `paused`) --
+    kept under its original name (this module's own node-id-in-commit-
+    message discipline) with its assertion widened to match."""
     edges = tr.successors("verdict_gate", vigilant, peer_verdict_gate=True)
     assert edges == (
         tr.T("finishing", "verdict_gate_approved"),
         tr.T("cure", "verdict_gate_rejected_curable_pass_available"),
+        tr.T("paused", "verdict_gate_operator_input_needed"),
         tr.T("replan", "verdict_gate_rejected_approach_left"),
         tr.T("finishing", "verdict_gate_rejected_no_approach_left"),
     )
@@ -250,10 +252,16 @@ def test_an_undeclared_target_out_of_verdict_gate_is_refused(vigilant):
 
 @pytest.mark.parametrize("vigilant", [True, False])
 def test_no_other_state_declares_an_edge_into_verdict_gate_except_review(vigilant):
+    """Task 008 (v0.27 requirement C.1) adds `paused` as a SECOND
+    source: the pause-before-archive edge's own resume target
+    (`paused_resumed_verdict_gate`) re-enters `verdict_gate` over the
+    SAME approach, exactly like `review`'s own edge into it -- both are
+    legitimate, and this test's name is kept (this module's own node-id-
+    in-commit-message discipline) with its assertion widened."""
     table = tr.table_for(vigilant, peer_verdict_gate=True)
     sources = {state for state, edges in table.items()
               if any(edge.target == "verdict_gate" for edge in edges)}
-    assert sources == {"review"}
+    assert sources == {"review", "paused"}
 
 
 def test_the_two_peer_gates_compose_without_interaction():
@@ -1046,6 +1054,10 @@ def test_the_gate_cure_pass_edge_is_declared_only_under_the_peer_delta():
         by_guard = {e.guard: e.target for e in edges}
         assert by_guard["verdict_gate_rejected_curable_pass_available"] == "cure"
         assert by_guard["verdict_gate_approved"] == "finishing"
+        # Task 008 (v0.27 requirement C.1): the pause-before-archive edge,
+        # added beside the four edges above under the same peer-verdict-
+        # gate delta.
+        assert by_guard["verdict_gate_operator_input_needed"] == "paused"
         assert by_guard["verdict_gate_rejected_approach_left"] == "replan"
         assert by_guard["verdict_gate_rejected_no_approach_left"] == "finishing"
-        assert len(edges) == 4
+        assert len(edges) == 5

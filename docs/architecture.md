@@ -204,6 +204,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `plan_review` | plan_review | peer plan review only | `worker` | `plan_review_revision_refused_work_recorded` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_approved` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `cure` | `verdict_gate_rejected_curable_pass_available` |
+| `verdict_gate` | verdict_gate | peer verdict gate only | `paused` | `verdict_gate_operator_input_needed` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `replan` | `verdict_gate_rejected_approach_left` |
 | `verdict_gate` | verdict_gate | peer verdict gate only | `finishing` | `verdict_gate_rejected_no_approach_left` |
 | `cure` | — | both | `worker` | `cure_pass_appended` |
@@ -211,6 +212,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `paused` | — | both | `worker` | `paused_resumed_stagnation` |
 | `paused` | — | both | `worker` | `paused_resumed_unschedulable_cycle` |
 | `paused` | — | both | `worker` | `paused_resumed_unresolvable_edge` |
+| `paused` | — | peer verdict gate only | `verdict_gate` | `paused_resumed_verdict_gate` |
 | `finishing` | — | both | `reflect` | `reflect_enabled` |
 | `finishing` | — | both | `succeeded` | `reflect_disabled_outcome_succeeded` |
 | `finishing` | — | both | `failed` | `reflect_disabled_outcome_failed` |

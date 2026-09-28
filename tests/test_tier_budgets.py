@@ -305,8 +305,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # progress_identity.py: the identity-based no-progress comparison on
     # a confirmation review), measured `.venv/bin/python -m pytest -q
     # --collect-only -m fast` -> 6455/446, `-m smoke` -> 4763/323.
-    "fast": {"tests": 6455, "modules": 446},
-    "smoke": {"tests": 4763, "modules": 323},
+    # Task 008 (v0.27 requirement C.1, this run): +2 tests / +1 module
+    # (tests/test_gate_pause_before_archive.py: the gate's own pause-
+    # before-archive edge parks instead of archiving with the run-wide
+    # cure ceiling spent, and still takes the cure edge with a pass
+    # left), measured `.venv/bin/python -m pytest -q -m fast --collect-
+    # only` -> fast 6457/447, `-m smoke` -> smoke 4765/324.
+    "fast": {"tests": 6457, "modules": 447},
+    "smoke": {"tests": 4765, "modules": 324},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
