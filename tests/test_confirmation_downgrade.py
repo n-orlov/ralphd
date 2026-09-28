@@ -16,7 +16,12 @@ downgrade`, wired into `LoopSupervisor._review_findings_channel`, so the
 contract ladder that runs BEFORE `_review_verdict` already sees it), with a
 `review.finding_downgraded` event naming it. Two things always stay
 blocking with neither field: an exposed secret, and a requirement whose
-behaviour is absent altogether (`findings.confirmation_review_exempt`).
+behaviour is absent altogether -- asserted by review's own explicit,
+optional `always_blocking_exception` field (`"exposed_secret"` or
+`"absent_behavior"`), never inferred from incidental occurrence, or
+omission, of the bare words "secret"/"absent" in the finding's own
+`clause`/`evidence` text (`findings.confirmation_review_exempt`;
+cure-01-03, PRD B.3, DoD 2).
 
 Every node here is red without this task's change: before it,
 `_review_verdict` never downgrades an unlinked blocking finding on a
@@ -193,7 +198,8 @@ def test_an_exposed_secret_finding_stays_blocking_with_neither_field(
         tmp_path):
     sup, _cure_task_id = _make_confirmation_review(tmp_path)
     secret_finding = _finding(
-        "requirement F.1", "a live API secret is printed in the log")
+        "requirement F.1", "a live API secret is printed in the log",
+        always_blocking_exception="exposed_secret")
     findings.write_findings_json(sup.run.findings_json_file, [secret_finding])
 
     verified, payload, errors = sup._review_verdict(_rejected())
@@ -209,7 +215,8 @@ def test_an_absent_behaviour_finding_stays_blocking_with_neither_field(
         tmp_path):
     sup, _cure_task_id = _make_confirmation_review(tmp_path)
     absent_finding = _finding(
-        "requirement F.2", "the named behaviour is absent from the code")
+        "requirement F.2", "the named behaviour is absent from the code",
+        always_blocking_exception="absent_behavior")
     findings.write_findings_json(sup.run.findings_json_file, [absent_finding])
 
     verified, payload, errors = sup._review_verdict(_rejected())
@@ -220,6 +227,77 @@ def test_an_absent_behaviour_finding_stays_blocking_with_neither_field(
                          if e["type"] == "review.finding_downgraded"]
     assert downgraded_events == []
 
+
+def test_b3_exceptions_classify_the_finding_not_incidental_words(tmp_path):
+    """cure-01-03 (PRD B.3, DoD 2): the always-blocking-exception decision
+    is `always_blocking_exception`, an explicit field review asserts --
+    never a text match on the bare words "secret"/"absent" incidentally
+    present or absent from `clause`/`evidence`. Three findings, none
+    carrying `reopens`/`regression`:
+
+    * an ORDINARY, unlinked defect whose evidence happens to use the word
+      "absent" for something that is not an altogether-missing behaviour
+      (an optional argument being absent) -- downgraded, exactly like any
+      other unlinked finding, because the field is not set;
+    * a genuine exposed-secret finding phrased with no occurrence of the
+      word "secret" at all ("password ... committed in plaintext") --
+      stays blocking, because review set the field explicitly;
+    * a genuine altogether-absent-behaviour finding phrased with no
+      occurrence of the word "absent" at all ("has not been implemented
+      anywhere") -- stays blocking, because review set the field
+      explicitly.
+    """
+    sup, _cure_task_id = _make_confirmation_review(tmp_path)
+    ordinary = _finding(
+        "requirement C.9",
+        "The existing tail renderer drops a blank line when the optional "
+        "query argument is absent. No code in the diff touches that "
+        "renderer.")
+    secret_no_word = _finding(
+        "requirement F.3",
+        "The database password is committed in plaintext to the public "
+        "repository.",
+        always_blocking_exception="exposed_secret")
+    absent_no_word = _finding(
+        "requirement F.4",
+        "No handler implements PATCH /config/budget; every request "
+        "returns 404. The required feature has not been implemented "
+        "anywhere.",
+        always_blocking_exception="absent_behavior")
+    findings.write_findings_json(
+        sup.run.findings_json_file,
+        [ordinary, secret_no_word, absent_no_word])
+
+    verified, payload, errors = sup._review_verdict(_rejected())
+
+    assert errors == []
+    # the two exception findings still block; only the ordinary one was
+    # downgraded -- so the set is not empty and the verdict stays False.
+    assert verified is False
+    downgraded_clauses = {
+        e["clause"] for e in _events(sup.run.root)
+        if e["type"] == "review.finding_downgraded"}
+    assert downgraded_clauses == {"requirement C.9"}
+
+
+def test_incidental_trigger_words_alone_never_exempt_a_finding(tmp_path):
+    """Control for the node above, isolated to `findings.confirmation_
+    review_exempt` itself: text containing "secret"/"absent" with no
+    `always_blocking_exception` field is not exempt, and the field alone
+    -- with no trigger word anywhere in the text -- IS exempt."""
+    assert findings.confirmation_review_exempt(
+        {"clause": "c", "evidence": "a live API secret leaked"}) is False
+    assert findings.confirmation_review_exempt(
+        {"clause": "c", "evidence": "the behaviour is absent"}) is False
+    assert findings.confirmation_review_exempt(
+        {"clause": "c", "evidence": "nothing about either trigger word",
+         "always_blocking_exception": "exposed_secret"}) is True
+    assert findings.confirmation_review_exempt(
+        {"clause": "c", "evidence": "nothing about either trigger word",
+         "always_blocking_exception": "absent_behavior"}) is True
+    assert findings.confirmation_review_exempt(
+        {"clause": "c", "evidence": "e",
+         "always_blocking_exception": "not-a-real-value"}) is False
 
 def test_confirmation_review_downgrade_candidates_is_a_pure_unit(tmp_path):
     """Pure unit pin on `findings.apply_confirmation_review_downgrade`

@@ -361,8 +361,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # cure_task_ids reads the lineage), measured `.venv/bin/python -m
     # pytest -q -m fast --collect-only` -> fast 6505/453, `-m smoke
     # --collect-only` -> smoke 4813/330.
-    "fast": {"tests": 6505, "modules": 453},
-    "smoke": {"tests": 4813, "modules": 330},
+    # cure-01-03 (PRD B.3, DoD 2): +2 tests, no new module (tests/
+    # test_confirmation_downgrade.py: exception classification reads the
+    # explicit `always_blocking_exception` field, not incidental "secret"
+    # /"absent" text; a unit control on `findings.confirmation_review_
+    # exempt` proves both directions), measured `.venv/bin/python -m
+    # pytest -q -m fast --collect-only` -> fast 6507/453, `-m smoke
+    # --collect-only` -> smoke 4815/330.
+    "fast": {"tests": 6507, "modules": 453},
+    "smoke": {"tests": 4815, "modules": 330},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

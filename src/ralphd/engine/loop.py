@@ -17883,7 +17883,12 @@ class LoopSupervisor:
             "to residual before the verdict is computed (event `review."
             "finding_downgraded`, naming the finding). Two things always "
             "stay blocking with NEITHER field: an exposed secret, and a "
-            "requirement whose behaviour is absent altogether.\n")
+            "requirement whose behaviour is absent altogether -- set "
+            "`always_blocking_exception` to `\"exposed_secret\"` or "
+            "`\"absent_behavior\"` on the finding to claim one of these. "
+            "Using the word \"secret\" or \"absent\" in the finding's own "
+            "`clause`/`evidence` text does not, on its own, claim either "
+            "exception -- only the explicit field does.\n")
         return "".join(lines)
 
     def _review_extra_context(self) -> str:

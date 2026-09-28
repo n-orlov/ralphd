@@ -126,6 +126,25 @@ FINDING_SCHEMA: dict = {
         # fields `confirmation_review_downgrade_candidates` below reads.
         # Optional, same reasoning as `reopens` immediately above.
         "regression": {"type": "boolean"},
+        # cure-01-03 (PRD B.3, DoD 2): which of the two things that always
+        # stay blocking on a confirmation review, with neither `reopens`
+        # nor `regression`, this finding IS -- asserted by review itself,
+        # the same "one party asserts it" discipline `curable` documents
+        # for itself. Replaces the earlier case-insensitive `clause`/
+        # `evidence` text match on the bare words "secret"/"absent" (see
+        # `confirmation_review_exempt` below), which both admitted an
+        # unrelated finding that happened to use one of those words for
+        # something else, and missed a genuine exposed secret or absent
+        # -behaviour finding that happened to phrase itself without them.
+        # Optional -- adds no newly-required field -- and ignored unless
+        # it is exactly one of the two enum values; any other value
+        # (including a typo) answers `confirmation_review_exempt` False,
+        # the same fail-towards-the-ordinary-rule posture the rest of
+        # this module keeps for a malformed entry.
+        "always_blocking_exception": {
+            "type": "string",
+            "enum": ["exposed_secret", "absent_behavior"],
+        },
     },
     # Task 014 (requirement E.1, #190): deliberately True, not False.
     # `additionalProperties: False` used to make an unrecognised extra key
@@ -621,32 +640,47 @@ def curable_findings_with_overrun_cured_when(
 # field to review-findings.json validation.
 # ---------------------------------------------------------------------------
 
-# Recognised, case-insensitively, in a finding's `clause` or `evidence`
-# text -- the two always-blocking exceptions the PRD names literally: "an
-# exposed secret" and "a requirement whose behaviour is absent
-# altogether". A finding is exempt from the confirmation-review downgrade
-# the moment either pattern is present in its own text, the same
-# "presence in the finding's own words is the signal" discipline
-# `any_criteria_tamper_finding` above already uses for its own marker.
-_EXPOSED_SECRET_TEXT_RE = re.compile(r"\bsecrets?\b", re.IGNORECASE)
-_ABSENT_BEHAVIOUR_TEXT_RE = re.compile(r"\babsent\b", re.IGNORECASE)
+# cure-01-03 (PRD B.3, DoD 2): the two always-blocking exceptions the PRD
+# names literally -- "an exposed secret" and "a requirement whose
+# behaviour is absent altogether" -- are the only two values `always_
+# blocking_exception` may carry (see `FINDING_SCHEMA` above).
+_ALWAYS_BLOCKING_EXCEPTIONS = frozenset({"exposed_secret", "absent_behavior"})
 
 
 def confirmation_review_exempt(finding: dict) -> bool:
-    """Task 006 (PRD requirement B.3): does `finding` name one of the two
-    things that always stay blocking on a confirmation review, with
-    neither `reopens` nor `regression: true` -- an exposed secret, or a
-    requirement whose behaviour is absent altogether? Read from the
-    finding's own `clause`/`evidence` text (case-insensitively); a
-    non-dict or textless finding answers `False` (not exempt), the same
-    fail-towards-the-ordinary-rule posture every other predicate in this
-    module keeps for a malformed entry.
+    """Task 006 (PRD requirement B.3); cure-01-03 (PRD B.3, DoD 2): does
+    `finding` name one of the two things that always stay blocking on a
+    confirmation review, with neither `reopens` nor `regression: true` --
+    an exposed secret, or a requirement whose behaviour is absent
+    altogether?
+
+    Read from the finding's own explicit, structured `always_blocking_
+    exception` field -- `"exposed_secret"` or `"absent_behavior"` -- never
+    from a text pattern over `clause`/`evidence`. An earlier revision
+    matched the bare words "secret"/"absent" anywhere in that text
+    case-insensitively; that both admitted an ORDINARY finding that
+    happened to use one of those words for something unrelated ("the
+    optional query argument is absent" -- a defect having nothing to do
+    with a requirement's behaviour being unimplemented) and MISSED a
+    genuine exception phrased without the literal word ("the database
+    password is committed in plaintext" names an exposed secret without
+    ever writing "secret"; "the required feature has not been
+    implemented anywhere" names an altogether-absent behaviour without
+    ever writing "absent"). The exception is now a classification review
+    itself asserts on the finding, exactly the same "asserted by exactly
+    one party" discipline `curable` documents for itself -- never a
+    property incidentally recoverable, or losable, from the finding's own
+    prose.
+
+    A non-dict finding, or any value other than one of the two exact enum
+    strings (including a typo, `None`, or the field simply absent),
+    answers `False` (not exempt) -- the same fail-towards-the-ordinary-
+    rule posture every other predicate in this module keeps for a
+    malformed entry.
     """
     if not isinstance(finding, dict):
         return False
-    text = f"{finding.get('clause') or ''} {finding.get('evidence') or ''}"
-    return bool(_EXPOSED_SECRET_TEXT_RE.search(text)
-                or _ABSENT_BEHAVIOUR_TEXT_RE.search(text))
+    return finding.get("always_blocking_exception") in _ALWAYS_BLOCKING_EXCEPTIONS
 
 
 def confirmation_review_downgrade_candidates(
