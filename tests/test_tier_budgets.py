@@ -317,8 +317,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # archives-and-replans once while a different rejection still parks),
     # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
     # fast 6461/448, `-m smoke` -> smoke 4769/325.
-    "fast": {"tests": 6461, "modules": 448},
-    "smoke": {"tests": 4769, "modules": 325},
+    "fast": {"tests": 6472, "modules": 449},
+    "smoke": {"tests": 4780, "modules": 326},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

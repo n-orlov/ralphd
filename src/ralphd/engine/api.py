@@ -440,11 +440,12 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
     # -- iteration budget top-up (PRD req 3 / issue #3) ---------------------
     @app.patch("/config/budget")
     async def patch_budget(body: dict | None = None):
-        """Raise (or lower), in flight, any of four budgets of a running job
+        """Raise (or lower), in flight, any of five budgets of a running job
         without restarting the container: `iterations` (PRD req 3 / issue
         #3), and -- task 003, #94 (a), operator-added scope -- `maxApproaches`,
-        `iterationTimeoutS` and `jobDeadlineEpochS`. Every knob is independent
-        and optional; a request may carry any non-empty subset of the four in
+        `iterationTimeoutS` and `jobDeadlineEpochS`, plus `curePassCeiling`
+        (task 010, v0.27 requirement C.3). Every knob is independent
+        and optional; a request may carry any non-empty subset of the five in
         one call. Every knob uses the SAME `resolve_iterations_spec` grammar:
         `"+N"` tops up relative to the knob's own current value, a bare `N`
         (int or numeric string) sets it absolutely.
@@ -470,14 +471,31 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
           `"+N"` extends the run's remaining wall-clock time by N seconds and
           an absolute value sets the deadline to that Unix epoch second.
           Refused with 409 if the resolved value is at or before "now".
+        * `{"curePassCeiling": "+1"}` / `{"curePassCeiling": 5}` -- task 010
+          (v0.27 requirement C.3): raises the RUN-WIDE `cure_pass_ceiling`
+          both cure channels (`_review_cure_pass_available`/`_gate_cure_
+          pass_available`, via `_cure_passes_for_run()`) read; applied via
+          `loop.set_cure_pass_ceiling`, live at the next rejection either
+          channel classifies. Refused with 409 if the new value is below
+          the run's own cure passes already taken
+          (`loop.cure_passes_used`). Unlike `maxApproaches`/
+          `iterationTimeoutS`/`jobDeadlineEpochS`, this one PERSISTS across
+          a resume, the same way `iterations` does: status.json's
+          `curePassCeiling` is rewritten here, and a fresh container's own
+          startup seeds `cfg.cure_pass_ceiling` from
+          max(status.json's `curePassCeiling`, job.yaml's own
+          `cure_pass_ceiling`) (`main._seed_cure_pass_ceiling`, mirroring
+          `main._seed_iteration_budget`).
 
-        Task 003/#94 (d): none of the three new knobs is seeded from
-        status.json on a fresh container's startup the way `iterations` is
-        (task 010, #51) -- they are process-only. A `resume` with no budget
-        flags reverts `maxApproaches`/`iterationTimeoutS`/the deadline to
-        whatever `job.yaml` (or `ralphctl resume`'s own flags, task 004) say;
-        only `iterations` survives a resume with no flags. See docs/cli.md's
-        budget table for the same statement in operator-facing form.
+        Task 003/#94 (d): none of the `maxApproaches`/`iterationTimeoutS`/
+        `jobDeadlineEpochS` knobs is seeded from status.json on a fresh
+        container's startup the way `iterations` is (task 010, #51) --
+        they are process-only. A `resume` with no budget flags reverts
+        them to whatever `job.yaml` (or `ralphctl resume`'s own flags,
+        task 004) say; only `iterations` and, since task 010 (v0.27
+        requirement C.3), `curePassCeiling` survive a resume with no
+        flags. See docs/cli.md's budget table for the same statement in
+        operator-facing form.
         """
         if finished():
             raise problem(409, "job finished",
@@ -488,8 +506,9 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         has_max_approaches = body.get("maxApproaches") is not None
         has_iteration_timeout = body.get("iterationTimeoutS") is not None
         has_deadline = body.get("jobDeadlineEpochS") is not None
+        has_cure_pass_ceiling = body.get("curePassCeiling") is not None
         if not (has_iterations or has_max_approaches or has_iteration_timeout
-                or has_deadline):
+                or has_deadline or has_cure_pass_ceiling):
             raise problem(422, "iterations required",
                          'expected {"iterations": "+10"} or {"iterations": 40}')
 
@@ -565,6 +584,25 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
             result.update(jobDeadlineEpochS=value,
                           previousJobDeadlineEpochS=previous,
                           deadlineAt=utc_from_epoch(value))
+
+        if has_cure_pass_ceiling:
+            try:
+                value = resolve_iterations_spec(body["curePassCeiling"],
+                                                cfg.cure_pass_ceiling,
+                                                label="cure pass ceiling")
+            except BudgetSpecError as exc:
+                raise problem(422, "invalid curePassCeiling", str(exc)) from exc
+            used = loop.cure_passes_used
+            if value < used:
+                raise problem(409, "cure pass ceiling below cure passes used",
+                             f"{value} is below the {used} cure pass(es) already "
+                             "taken this run; a ceiling can only be set to the "
+                             "current usage or above")
+            previous = cfg.cure_pass_ceiling
+            loop.set_cure_pass_ceiling(value)
+            run.emit("budget_changed", field="curePassCeiling", previous=previous,
+                     curePassCeiling=value, delta=value - previous, source="api")
+            result.update(curePassCeiling=value, previousCurePassCeiling=previous)
 
         return result
 

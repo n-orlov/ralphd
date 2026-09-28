@@ -5938,37 +5938,40 @@ def cmd_budget(args):
     task 004 (#94 (c)+(d)) extends this to the other three `PATCH
     /config/budget` knobs task 003 added: `--approaches`
     (`maxApproaches`), `--timeout` (`jobDeadlineEpochS`) and
-    `--iteration-timeout` (`iterationTimeoutS`).
+    `--iteration-timeout` (`iterationTimeoutS`); task 010 (v0.27
+    requirement C.3) adds a fifth, `--cure-passes` (`curePassCeiling`).
 
     Thin operator front-end for `PATCH /config/budget` (task 045/003), taking
-    the same spec syntax for all four knobs as `resume --iterations`/
+    the same spec syntax for all five knobs as `resume --iterations`/
     `--approaches`/`--timeout`/`--iteration-timeout`: `+N` tops up by N, a
     bare `N` sets the knob absolutely (so lowering is explicit -- a bare
     `-5` is an absolute negative value and is rejected, never read as a
-    decrement). The positional `iterations` and the three flags are each
+    decrement). The positional `iterations` and the four flags are each
     independent and optional; any non-empty subset reaches the engine in
-    ONE request (task 003's `patch_budget` accepts all four in one body).
+    ONE request (task 003's `patch_budget` accepts all five in one body).
     The bare positional keeps meaning the iteration spec exactly as before
     task 004 -- `ralphctl budget <run> +5` is unchanged.
 
     Only the shape is checked here; every semantic decision (below
     `iterationsUsed`/the current approach, job already finished, a deadline
-    in the past) belongs to the engine, which owns the live counters. Exit
-    codes come from the shared api() helper, so they match
-    pause/unpause/retry/abort: 0 applied, 5 on the engine's 409 refusals, 1
-    on its 422 (invalid value), 3 unknown run, 4 API unreachable, 2 for a
-    locally malformed spec or an empty request (usage errors, same as
-    `resume --iterations`).
+    in the past, below the run's own cure passes already taken) belongs to
+    the engine, which owns the live counters. Exit codes come from the
+    shared api() helper, so they match pause/unpause/retry/abort: 0
+    applied, 5 on the engine's 409 refusals, 1 on its 422 (invalid value),
+    3 unknown run, 4 API unreachable, 2 for a locally malformed spec or an
+    empty request (usage errors, same as `resume --iterations`).
 
     The change is live-engine only: `/config/job.yaml` is a read-only
-    mount, so the engine cannot persist any of the four knobs there itself.
-    `iterations` still PERSISTS across a plain resume (task 010/#51's
-    startup seeding). Task 004/#94 (d)'s decision for the other three is the
-    opposite: they are PROCESS-ONLY and a plain `resume` with no
-    `--approaches`/`--timeout`/`--iteration-timeout` flag of its own
-    REVERTS them to job.yaml's own value -- see `cmd_resume`'s docstring and
-    docs/cli.md's budget table for the same statement in operator-facing
-    form.
+    mount, so the engine cannot persist any of the five knobs there itself.
+    `iterations` and, since task 010 (v0.27 requirement C.3),
+    `--cure-passes`/`curePassCeiling` still PERSIST across a plain resume
+    (the engine's own startup seeding, `main._seed_iteration_budget`/
+    `main._seed_cure_pass_ceiling`). Task 004/#94 (d)'s decision for the
+    other three is the opposite: they are PROCESS-ONLY and a plain `resume`
+    with no `--approaches`/`--timeout`/`--iteration-timeout` flag of its
+    own REVERTS them to job.yaml's own value -- see `cmd_resume`'s
+    docstring and docs/cli.md's budget table for the same statement in
+    operator-facing form.
     """
     _require_run(args.run_id)
     body: dict[str, str] = {}
@@ -5976,6 +5979,7 @@ def cmd_budget(args):
         "approaches": "maxApproaches",
         "timeout": "jobDeadlineEpochS",
         "iteration_timeout": "iterationTimeoutS",
+        "cure_passes": "curePassCeiling",
     }
     if args.iterations is not None:
         spec = args.iterations.strip()
@@ -5993,7 +5997,7 @@ def cmd_budget(args):
         body[api_key] = spec
     if not body:
         die(2, "budget: nothing to change -- pass an iteration spec, "
-               "--approaches, --timeout or --iteration-timeout")
+               "--approaches, --timeout, --iteration-timeout or --cure-passes")
     res = api(args.run_id, "PATCH", "/config/budget", body)
     lines = []
     if "iterations" in res:
@@ -6008,6 +6012,9 @@ def cmd_budget(args):
     if "jobDeadlineEpochS" in res:
         lines.append(f"job deadline: {res.get('previousJobDeadlineEpochS')} -> "
                      f"{res.get('jobDeadlineEpochS')} ({res.get('deadlineAt')})")
+    if "curePassCeiling" in res:
+        lines.append(f"cure pass ceiling: {res.get('previousCurePassCeiling')} "
+                     f"-> {res.get('curePassCeiling')}")
     out(args, res, "\n".join(lines) if lines else json.dumps(res))
 
 
@@ -8435,16 +8442,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("budget", help="change a running job's iteration "
                        "budget (and, task 004/#94 (c), its approaches/"
-                       "timeout knobs) in flight (+N tops up, N sets "
-                       "absolutely)")
+                       "timeout knobs, and task 010's cure-pass ceiling) "
+                       "in flight (+N tops up, N sets absolutely)")
     s.add_argument("run_id")
     s.add_argument("iterations", metavar="+N|N", nargs="?", default=None,
                    help="budget top-up (+10) or absolute new budget (40); "
                         "persists across a resume -- "
                         "`resume --iterations +N` only to add more. May be "
                         "omitted if one of --approaches/--timeout/"
-                        "--iteration-timeout is given instead (any non-empty "
-                        "subset of the four is one request)")
+                        "--iteration-timeout/--cure-passes is given instead "
+                        "(any non-empty subset of the five is one request)")
     s.add_argument("--approaches", metavar="+N|N", default=None,
                    help="max-approaches budget top-up/absolute (#94 (c)); "
                         "process-only -- reverts on a plain `resume` "
@@ -8461,6 +8468,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "(#94 (c)); process-only -- reverts on a plain "
                         "`resume` unless that resume itself passes "
                         "`--iteration-timeout` (docs/cli.md's budget table)")
+    s.add_argument("--cure-passes", metavar="+N|N", default=None,
+                   help="run-wide cure-pass ceiling top-up/absolute "
+                        "(v0.27 requirement C.3); refused with `5` if below "
+                        "the cure passes already taken this run. PERSISTS "
+                        "across a plain resume, unlike --approaches/"
+                        "--timeout/--iteration-timeout (docs/cli.md's "
+                        "budget table)")
     s.set_defaults(func=cmd_budget)
 
     s = sub.add_parser("abort", help="terminate a job")

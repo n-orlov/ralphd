@@ -111,9 +111,12 @@ def test_budget_flags_documented_in_cli_docs(ctl: Ctl):
     section = doc.split(heading, 1)[1].split("\n### ", 1)[0]
     for flag in ("--approaches", "--timeout", "--iteration-timeout"):
         assert flag in section, f"{flag} not documented in the budget section"
-    # the per-knob persistence table: 4 knob rows, one saying "live", three
-    # saying "reverts"
-    assert section.count("**live**") == 1
+    # the per-knob persistence table: 5 knob rows since task 010 (v0.27
+    # requirement C.3) added `--cure-passes`, two saying "live" (`iterations`
+    # and, since that task, `curePassCeiling` -- both persist across a plain
+    # resume) and three saying "reverts" (`--approaches`/`--timeout`/
+    # `--iteration-timeout`, #94 (c)+(d), still process-only).
+    assert section.count("**live**") == 2
     assert section.count("**reverts**") == 3
 
 

@@ -3427,6 +3427,18 @@ class LoopSupervisor:
         underscore-named `_deadline_epoch` attribute directly."""
         return self._deadline_epoch
 
+    @property
+    def cure_passes_used(self) -> int:
+        """Public accessor for `_cure_passes_for_run()` (task 010, v0.27
+        requirement C.3): the run-wide cure-pass total already taken across
+        both channels and every approach -- the figure `PATCH /config/budget`'s
+        `curePassCeiling` knob validates a new ceiling against, the same way
+        `iterations_used_charged` above wraps the count `iterations` is
+        validated against. A public wrapper so api.py never has to reach for
+        the underscore-named `_cure_passes_for_run` directly.
+        """
+        return self._cure_passes_for_run()
+
     def set_iteration_budget(self, value: int) -> None:
         """Task 045 (#3): change the iteration budget of a LIVE run.
 
@@ -3440,6 +3452,27 @@ class LoopSupervisor:
         """
         self.cfg.iterations = value
         self.run.update_status(iterationsBudget=value)
+
+    def set_cure_pass_ceiling(self, value: int) -> None:
+        """Task 010 (v0.27 requirement C.3): change the run-wide cure-pass
+        ceiling of a LIVE run, same shape as `set_iteration_budget`
+        immediately above -- and, like `iterations`, PERSISTS across a
+        resume rather than reverting the way `max_approaches`/
+        `iteration_timeout_s`/the job deadline do (task 004/#94 (d)).
+
+        `self.cfg.cure_pass_ceiling` is read at every cure-pass eligibility
+        check (`_review_cure_pass_available`/`_gate_cure_pass_available`,
+        both via `_cure_passes_for_run()`) -- rebinding the field is the
+        whole mechanism, exactly like `iterations`/`budget_left()`.
+        status.json's `curePassCeiling` is rewritten here too, so a fresh
+        container's own startup can seed `cfg.cure_pass_ceiling` from it
+        (`main._seed_cure_pass_ceiling`, mirroring `main._seed_iteration_
+        budget`) the same way `iterations` survives a resume. The caller
+        (api.py) owns validation (refusing a value below the run's own
+        cure passes already taken) and the audit event.
+        """
+        self.cfg.cure_pass_ceiling = value
+        self.run.update_status(curePassCeiling=value)
 
     def set_max_approaches(self, value: int) -> None:
         """#94 (operator-added scope, steer 003), engine-side setter 1 of 3:

@@ -2047,7 +2047,23 @@ seconds, an absolute value is a Unix epoch second), `--iteration-timeout` to
 already running). Same `+N|N` grammar as `--iterations` for every one of
 them.
 
-**Persistence across a resume — one row per knob (#94 (d)):**
+Task 010 (v0.27 requirement C.3) adds a fifth flag, `--cure-passes`, mapped
+to `curePassCeiling` — the run-wide cure-pass ceiling both cure channels
+(review's own and the peer verdict gate's) spend from a single shared pot
+(see `curePasses`/`gateCurePasses` in [api.md](api.md)):
+
+```console
+$ ralphctl budget my-run --cure-passes +1       # top up the run-wide cure-pass ceiling
+```
+
+Refused with `5` if the resolved value is below the cure passes this run
+has already taken (`curePasses`' and `gateCurePasses`' combined total).
+Same `+N|N` grammar as every other knob. Unlike the three knobs above,
+this one PERSISTS across a resume, exactly like `iterations` (see the
+table below).
+
+**Persistence across a resume — one row per knob (#94 (d); task 010, v0.27
+requirement C.3 adds the cure-pass row):**
 
 | knob | flag | job.yaml key | across a plain `resume` (no flag) |
 | --- | --- | --- | --- |
@@ -2055,11 +2071,15 @@ them.
 | approaches budget | `--approaches` | `max_approaches` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--approaches` |
 | job deadline | `--timeout` | `job_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--timeout` |
 | iteration timeout | `--iteration-timeout` | `iteration_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--iteration-timeout` |
+| cure-pass ceiling | `--cure-passes` | `cure_pass_ceiling` | **live**: persists across a resume — the engine's own startup seeds it from `max(status.json's curePassCeiling, job.yaml's cure_pass_ceiling)`, mirroring `iterations`' own seeding (task 010, v0.27 requirement C.3) |
 
-`iterations` is seeded from the LIVE-set value on every resume because the
-engine's own startup already reads `max(status.json's iterationsBudget,
-job.yaml's iterations)` (task 010/#51). The other three have no such
-seeding: they are read from `cfg.max_approaches`/`cfg.job_timeout_s`
+`iterations` and `curePassCeiling` are seeded from the LIVE-set value on
+every resume because the engine's own startup already reads
+`max(status.json's iterationsBudget, job.yaml's iterations)` (task
+010/#51) and, since v0.27 requirement C.3,
+`max(status.json's curePassCeiling, job.yaml's cure_pass_ceiling)`. The
+other three have no such seeding: they are read from
+`cfg.max_approaches`/`cfg.job_timeout_s`
 (indirectly, via `loop.deadline_epoch`, which `job_timeout_s` only seeds at
 *startup*)/`cfg.iteration_timeout_s` — i.e. from job.yaml — every time a
 container starts, live-set values included. A `budget --approaches +1` an
@@ -2069,13 +2089,14 @@ whatever absolute value) on that same resume, which writes job.yaml's
 `max_approaches` directly (see `ralphctl resume` below).
 
 Exit `0` applied · `5` the engine refused (resulting budget below
-`iterationsUsed`/the current approach, a deadline at or before now, or the
-job already finished — resume instead) · `1` the engine rejected a value
-(`422`) · `2` locally malformed spec, or no knob given at all · `3` unknown
-run · `4` API unreachable. `--json` prints the engine's
-`{"iterations": 40, "previous": 25, "iterationsUsed": 17}` (plus
-`maxApproaches`/`iterationTimeoutS`/`jobDeadlineEpochS` and their
-`previous*` counterparts for whichever of the other three were included).
+`iterationsUsed`/the current approach/the cure passes already taken, a
+deadline at or before now, or the job already finished — resume instead) ·
+`1` the engine rejected a value (`422`) · `2` locally malformed spec, or no
+knob given at all · `3` unknown run · `4` API unreachable. `--json` prints
+the engine's `{"iterations": 40, "previous": 25, "iterationsUsed": 17}`
+(plus `maxApproaches`/`iterationTimeoutS`/`jobDeadlineEpochS`/
+`curePassCeiling` and their `previous*` counterparts for whichever of the
+other four were included).
 
 ### `ralphctl abort <run-id> [--reason <text>]`
 
