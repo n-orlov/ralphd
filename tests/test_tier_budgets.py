@@ -432,8 +432,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # siblings on the live surface, the render-index flag agreement and
     # /logs handler answer checks), measured the same way -> fast
     # 6679/456, smoke 4987/333.
-    "fast": {"tests": 6679, "modules": 456},
-    "smoke": {"tests": 4987, "modules": 333},
+    # Task 006: +1 test / +1 module (tests/test_docs_no_release_narrative.py:
+    # the release/task-chronology regex guard over SPEC.md and docs/cli.md,
+    # docs/api.md, docs/architecture.md), measured `.venv/bin/python -m
+    # pytest -q -m fast --collect-only` -> fast 6680/457, `-m smoke
+    # --collect-only` -> smoke 4988/334.
+    "fast": {"tests": 6680, "modules": 457},
+    "smoke": {"tests": 4988, "modules": 334},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

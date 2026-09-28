@@ -102,14 +102,14 @@ Design invariants:
   changes while a hat's subprocess is executing — `_emit_task_changes()`
   runs only at the harness's own at-transition writes (a worker/verify
   iteration ending, a vigilant claim relabelled, a verify verdict applied),
-  never on a timer. Before task 022, a 0.25s background poller
-  (`LoopSupervisor._poll_task_changes`) re-read `tasks.json` while the
-  agent subprocess for a worker iteration was still running, so a status
+  never on a timer. There is no 0.25s background poller
+  (`LoopSupervisor._poll_task_changes`) re-reading `tasks.json` while the
+  agent subprocess for a worker iteration is still running, so a status
   written mid-iteration (the worker prompt's old "flip to `in-progress`
-  first" instruction) surfaced as a `task` event immediately. That poller
-  is retired: `GET /tasks` already re-reads `tasks.json` from disk on
+  first" instruction) never surfaces as a `task` event immediately.
+  `GET /tasks` already re-reads `tasks.json` from disk on
   every call regardless of any poll, so an operator's `GET /tasks` /
-  `ralphctl tasks` view was never actually dependent on it; the one real
+  `ralphctl tasks` view is never actually dependent on a poller; the one real
   loss is a `task` *event* for a transient in-iteration state, which is
   now never observed at all (`_emit_task_changes()`'s diff jumps straight
   from the status before the iteration to the status after it). What an
@@ -882,11 +882,11 @@ Task 017 (v0.19 requirement D, #151): `_check_instant_failure` IGNORES an
 attempt whose error text matched a genuine `INFRA_SIGNATURES` row (DNS,
 TCP, TLS, a gateway 5xx, back-pressure, …) entirely — it touches neither
 the streak nor its signature, leaving that attempt to the infra outage
-budget and backoff ladder alone (§10.5). Before this task, three identical
-instant `ECONNREFUSED` attempts tripped this same counter exactly like
-three identical broken-credential ones, ending a recoverable outage in
-seconds instead of letting the (hours-long, by default) outage budget
-govern it. An *unclassified* no-traffic failure — still `classify_fault()`'s
+budget and backoff ladder alone (§10.5). Three identical
+instant `ECONNREFUSED` attempts do not trip this same counter the way
+three identical broken-credential ones do, so a recoverable outage is
+not ended in seconds; instead the (hours-long, by default) outage budget
+governs it. An *unclassified* no-traffic failure — still `classify_fault()`'s
 `"infra"` by its own deliberate catch-all, but with no signature match — is
 NOT exempted: that shape is exactly the missing/broken-credential incident
 this counter exists for, so it still counts and can still fail fast well
@@ -1112,12 +1112,12 @@ mid-run non-terminal value that is never written to `status.json` at all.
   ordinary review pass, the peer verdict-gate approval, and the grace
   review) -- it never itself decides curability or blocking-ness, only
   whether a genuinely verified approach still has something worth naming.
-- **`unreviewed` (task 016, requirement F.3, #146).** Before this task, a
-  deadline that took the last budgeted attempt while `review` was still
+- **`unreviewed` (task 016, requirement F.3, #146).** A
+  deadline that takes the last budgeted attempt while `review` is still
   mid-flight -- the ordinary self-loop's own exhaustion, or the off-budget
-  grace attempt -- landed on the SAME `unverified` verdict a genuine
+  grace attempt -- does not land on the SAME `unverified` verdict a genuine
   rejection or an operator abort would, so a run a reviewer never actually
-  looked at read identically to one a reviewer looked at and rejected.
+  looked at does not read identically to one a reviewer looked at and rejected.
   `_review_deadline_unreviewed` (an instance flag set the moment the
   deadline is detected mid-review, alongside a `review_deadline_unreviewed`
   event) is read by the tail of `_finish_tail_unverified()`: when it is set
@@ -1916,11 +1916,11 @@ partial, silently-wrong render) when they fire:
 
 - **A checkpoint's `state` must carry EXACTLY `log_render.
   new_render_state()`'s own key set, correctly typed** -- never merely
-  `isinstance(state, dict)`. Before this task, a checkpoint whose `state`
-  was missing a key (an empty `{}`, say) passed `load_index` and only
-  failed later, downstream, inside `log_render.render_to_text` itself
-  (`KeyError: 'text_seen'`) -- an exception reaching the caller instead of
-  an ordinary fallback. The check reaches inside the containers and runs
+  `isinstance(state, dict)`: a checkpoint whose `state`
+  is missing a key (an empty `{}`, say) does not pass `load_index` and
+  fail later, downstream, inside `log_render.render_to_text` itself
+  (`KeyError: 'text_seen'`) -- there is no exception reaching the caller
+  instead of an ordinary fallback. The check reaches inside the containers and runs
   on every checkpoint, not only the leading one: the four collapse flags
   are booleans; `tool_args` is an object; `tool_pending` is an object
   whose every value is a two-element `[name, args]` array with a string

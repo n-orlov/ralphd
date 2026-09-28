@@ -1980,11 +1980,11 @@ task 002, this wave), that rejection's own immediate terminal tail, never
 a fresh replan, whatever approaches remain -- instead of parking a second
 time, mirroring the one-re-park bound a filed ruling already gets
 (`rulingReparked`). A DIFFERENT rejection never
-matches the grant and still parks, exactly as before; filing a ruling that
+matches the grant and still parks; filing a ruling that
 answers the signature (review's own pause only) takes the existing
-re-park path instead of granting this proceed at all. Before this, a bare
-unpause with no ruling re-entered `review`/`verdict_gate` over the SAME
-approach with nothing new to go on and was likely to re-raise the
+re-park path instead of granting this proceed at all. Without a matching
+grant, a bare unpause with no ruling re-enters `review`/`verdict_gate` over
+the SAME approach with nothing new to go on and is likely to re-raise the
 identical rejection and re-park forever.
 
 ### `ralphctl retry <run-id>`

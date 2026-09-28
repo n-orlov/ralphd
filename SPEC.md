@@ -787,11 +787,12 @@ and `_step_review` then takes the declared `review_contract_unrepaired` edge
 to `paused`: the approach is left unarchived, no composite PRD is written, no
 `review rejected approach N` log line is emitted, the approach counter does
 not move, `approach.verdict_recorded` says `verdict: "unreviewed"`, and a
-`resume` re-enters `review` over the SAME approach. Before this a
-still-broken payload fell through to `_review_verdict`'s "not verified"
-default and was scored as a substantive rejection, so `$.verdict: 'fail' is
-not one of ['verified', 'rejected']` — pure schema pedantry — archived an
-approach and wrote a composite PRD for a successor that need not exist.
+`resume` re-enters `review` over the SAME approach. A
+still-broken payload does not fall through to `_review_verdict`'s "not
+verified" default to be scored as a substantive rejection, so
+`$.verdict: 'fail' is not one of ['verified', 'rejected']` — pure schema
+pedantry — does not archive an approach or write a composite PRD for a
+successor that need not exist.
 
 **Nor is a review whose verdict claim was legible but whose findings channel
 never became usable (v0.23 requirement C.2, #219).** The discriminating
@@ -807,9 +808,9 @@ unusable` edge to `paused`, checked immediately after the edge above for
 the identical reason: there is no rejection to classify off a channel the
 engine itself cannot trust. The approach is left unarchived, no composite
 PRD is written, no cure pass is opened, and a `resume` re-enters `review`
-over the SAME approach. Before this task the three shapes above fell
-through to the ordinary rejection ladder, archiving the approach and
-writing a composite PRD off a findings channel the engine itself could not
+over the SAME approach. The three shapes above do not fall
+through to the ordinary rejection ladder, so none archives the approach or
+writes a composite PRD off a findings channel the engine itself cannot
 read.
 `contract.agent_fault` (already emitted by
 `contract_enforcement.enforce_contract`) is the witness; no new event is
