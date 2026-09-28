@@ -1802,40 +1802,63 @@ state that does not exist; decoded checkpoints naming the same state share
 one dict, so each distinct state's shape is validated once and readers
 deep-copy before rendering from it.
 
+**Each distinct state is itself stored incrementally (task 004, PRD
+v0.27 requirements D.2/D.3, #275).** `new_render_state()`'s `tool_args`
+and `tool_pending` dicts hold one entry per in-flight `toolCallId`; a
+transcript with many `tool_execution_start` events that are never matched
+by their `tool_execution_end` leaves those two dicts growing by one entry
+per new distinct state, so a whole-index `states` array holding each one
+in FULL would cost O(distinct states<sup>2</sup>) bytes in total, not
+O(distinct states) -- the compact encoding above dedupes each distinct
+state only ONCE, which does not by itself bound the SIZE of one distinct
+state's own copy. `render_index._encode_states` instead stores the first
+entry of a `states` array in full and every later one as `_diff_state`
+against the entry immediately before it in that same array:
+`tool_args`/`tool_pending` diff key-by-key (`{"add": {<changed or added
+sub-keys>}, "del": [<removed sub-keys>]}`), every other key (the collapse
+flags, `open_tool_line`, `collapse_unresolved`) as a whole value only when
+it changed. `_decode_states` (`_apply_state_patch`) is the exact inverse.
+A `render_index.tail.ndjson` shard's own `states` array is local to that
+batch, so its own first entry diffs against `base_state` -- the checkpoint
+immediately before that batch, from MAIN's own last-published checkpoint
+or the previous shard's own last one -- rather than resetting to a full
+copy at every shard boundary, which would otherwise reintroduce the same
+O(distinct states<sup>2</sup>) cost across shards alone. One more open
+tool call now costs one new `tool_pending` entry's own bytes, on every
+sequence a transcript can carry, not a fresh copy of every entry already
+open (`tests/test_render_index_linear_writer.py`).
+
 **Write timing.** `engine/runner.py`'s `pump()` -- the one place
 `output.jsonl` is written *while the iteration is still running* -- feeds
 `LiveRenderIndex` every raw line the moment it is written to disk, and
 calls `flush()` after every one, which rewrites `render_index.json` from
 scratch with the WHOLE accumulated snapshot (every checkpoint fed so far,
 not just the newly fed batch) whenever the checkpoint count has reached
-the next scheduled publish threshold. Before task 012 (PRD v0.27
-requirement D.2, #275) that threshold was a fixed interval
-(`LIVE_FLUSH_EVERY_LINES`), so each of the ~N / `LIVE_FLUSH_EVERY_LINES`
-rewrites still cost O(total checkpoints so far) and the SUM of every
-flush's cost across a whole iteration was quadratic in the transcript's
-own line count (measured: 1,300/4,600/17,200 checkpoint records
-serialised in total at 200/400/800 transcript lines). `render_index.
-_next_flush_threshold` now schedules the next publish GEOMETRICALLY
-instead: after publishing at `total` checkpoints, the next publish is not
-due again until `total` has doubled (or grown by `LIVE_FLUSH_EVERY_LINES`,
-whichever asks for more lines first, so a short iteration still under that
-base batch size behaves exactly as before). Publishing at
-`LIVE_FLUSH_EVERY_LINES, 2x, 4x, ...` sums to a geometric series bounded
-by `2 * N`, so the total records and total bytes written across a whole
-iteration now grow LINEARLY (a small ~2x constant) in the transcript's own
-line count instead -- doubling the line count at most doubles either
-measure (`tests/test_render_index_linear_writer.py`). Batching, geometric
-or fixed, still bounds only how stale the uncovered suffix a reader falls
-back to scanning can be, never index correctness: every published snapshot
-is a complete, independently-valid index regardless of how it got
-scheduled. Task cure-01-01-4 (PRD D.1 and D.2/D.3 together, DoD 4) bounds
-that staleness a second way, on the READ side: the geometric schedule
-above still means a whole-call read taken between two MAIN publishes used
-to treat every checkpoint fed since the last one as wholly unindexed --
+the next scheduled publish threshold. `render_index._next_flush_
+threshold` schedules that next publish GEOMETRICALLY (PRD v0.27
+requirement D.2, #275): after publishing at `total` checkpoints, the next
+publish is not due again until `total` has doubled (or grown by
+`LIVE_FLUSH_EVERY_LINES`, whichever asks for more lines first, so a
+short iteration still under that base batch size behaves as a fixed
+interval would). Publishing at `LIVE_FLUSH_EVERY_LINES, 2x, 4x, ...` sums
+to a geometric series bounded by `2 * N`, so the total checkpoint records
+and total bytes a whole iteration's MAIN publishes write together grow
+LINEARLY (a small ~2x constant) in the transcript's own line count --
+doubling the line count at most doubles either measure -- rather than the
+quadratic sum a fixed-interval schedule's own O(total checkpoints so far)
+per-rewrite cost would otherwise leave (`tests/test_render_index_linear_
+writer.py`). Batching, geometric or fixed, still bounds only how stale
+the uncovered suffix a reader falls back to scanning can be, never index
+correctness: every published snapshot is a complete, independently-valid
+index regardless of how it got scheduled. Task cure-01-01-4 (PRD D.1 and
+D.2/D.3 together, DoD 4) bounds that staleness a second way, on the READ
+side: the geometric schedule above still means a whole-call read taken
+between two MAIN publishes used to treat every checkpoint fed since the
+last one as wholly unindexed --
 forcing a raw re-render of that whole suffix, which the named PRD Q
 silent-prelude fixtures (prelude depths 1,000/1,700) grow past the
 1,000,000-byte bound well before the writer's own next scheduled publish.
-`flush` now also appends to a small side file, `render_index.
+`flush` also appends to a small side file, `render_index.
 TAIL_FILENAME` (`render_index.tail.ndjson`), every `LIVE_FLUSH_EVERY_
 LINES` checkpoints fed since the last MAIN publish or tail append -- each
 append a compact, self-contained shard of just that batch (never the
@@ -1850,7 +1873,7 @@ tail file simply leaves MAIN's own coverage as the answer. The SUM of
 every tail append's own cost across a whole iteration is then exactly one
 unit of work per checkpoint ever fed, however many times MAIN
 republishes -- linear, the same property the geometric schedule already
-gives the write side, now extended to the read side too
+gives the write side, extended to the read side too
 (`tests/test_d1_real_pirunner_active_iteration_reads_within_cap.py`,
 which drives the real `PiRunner.run` -- a genuine subprocess, kept alive
 before its own EOF -- through both named fixtures and reads through

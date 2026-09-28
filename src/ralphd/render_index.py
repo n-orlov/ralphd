@@ -520,18 +520,142 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+# Task 004 (PRD D.2/D.3 together, #275): which top-level `state` keys hold
+# a dict keyed by an unbounded, ever-growing identifier (`tool_args`,
+# `tool_pending` -- one entry per in-flight `toolCallId`, `new_render_
+# state`'s own key set). A transcript with many started-but-never-ended
+# tool calls (PRD D's own worst case) leaves these two dicts growing by
+# one entry per new DISTINCT state, so a checkpoint's FULL `state` dict
+# grows linearly in how many calls are still open -- storing every
+# distinct state as its own full copy (the shape before this task) then
+# costs O(k) per distinct state for a transcript whose open-call count k
+# itself grows with the transcript, summing to O(n^2) total bytes, not
+# O(n) (`tests/test_render_index_linear_writer.py`'s "never ended"
+# sequence: ~3,984x more bytes at 800 lines than at 200, not the ~4x a
+# doubling should cost at most). Every OTHER state key (the collapse
+# flags, `open_tool_line`, `collapse_unresolved`) is bounded/small and
+# changes as a whole value, never incrementally.
+_DICT_STATE_KEYS = ("tool_args", "tool_pending")
+
+
+def _diff_state(prev: dict, cur: dict) -> dict:
+    """`cur` relative to `prev` (both already `_state_to_json`-shaped, so
+    every key `new_render_state()` defines is present in both): for each
+    `_DICT_STATE_KEYS` entry, only the sub-keys that were added, changed
+    or removed (`{"add": {...}, "del": [...]}`), never the dict's own
+    unchanged sub-keys -- so one more open tool call costs one new
+    `tool_pending` entry's own bytes, not a fresh copy of every entry
+    still open from before. Every other key is compared as a whole value
+    and included only when it changed. A key equal to `prev`'s is omitted
+    entirely."""
+    patch: dict = {}
+    for key, cur_val in cur.items():
+        prev_val = prev.get(key)
+        if (key in _DICT_STATE_KEYS and isinstance(cur_val, dict)
+                and isinstance(prev_val, dict)):
+            added = {k: v for k, v in cur_val.items() if prev_val.get(k) != v}
+            removed = [k for k in prev_val if k not in cur_val]
+            if added or removed:
+                patch[key] = {"add": added, "del": removed}
+        elif cur_val != prev_val:
+            patch[key] = cur_val
+    return patch
+
+
+def _apply_state_patch(prev: dict, patch: dict) -> dict | None:
+    """The inverse of `_diff_state`: `None` on any malformed patch (not a
+    dict, a `_DICT_STATE_KEYS` entry not shaped `{"add": <dict>, "del":
+    <list>}`) rather than silently producing a wrong state."""
+    if not isinstance(patch, dict):
+        return None
+    cur = dict(prev)
+    for key, val in patch.items():
+        if key in _DICT_STATE_KEYS:
+            if (not isinstance(val, dict) or not isinstance(val.get("add"), dict)
+                    or not isinstance(val.get("del"), list)):
+                return None
+            base = dict(prev.get(key) or {})
+            for k in val["del"]:
+                base.pop(k, None)
+            base.update(val["add"])
+            cur[key] = base
+        else:
+            cur[key] = val
+    return cur
+
+
+def _encode_states(states: list[dict], base: dict | None = None) -> list:
+    """`states` (each entry a DISTINCT full state dict, first-appearance
+    order) as the on-disk shape: every entry stored as `_diff_state`
+    against the one immediately before it in THIS SAME list, except the
+    very first, which diffs against `base` when given -- so the on-disk
+    cost of one more distinct state is the size of what actually changed
+    since the last one, never a fresh full copy. `base` matters only for
+    a TAIL shard's own batch-local `states` list (`LiveRenderIndex.
+    _flush_tail`): without it, every shard's own FIRST distinct state
+    would reset to a full copy even though it usually differs from the
+    last state MAIN or the previous shard already described by very
+    little (one more `tool_pending` entry) -- exactly the residual
+    superlinear cost `tests/test_render_index_linear_writer.py`'s
+    `unended_tool_starts` sequence measures directly if this parameter is
+    dropped. `base=None` (a whole-index `encode_index` call, or a tail
+    shard with nothing published before it) stores the first entry in
+    full, exactly as before this parameter existed. `_decode_states` is
+    the exact inverse."""
+    if not states:
+        return []
+    encoded = ([_diff_state(base, states[0])] if base is not None
+              else [states[0]])
+    for prev, cur in zip(states, states[1:]):
+        encoded.append(_diff_state(prev, cur))
+    return encoded
+
+
+def _decode_states(encoded: object, base: dict | None = None) -> list[dict] | None:
+    """The inverse of `_encode_states`: `None` when `encoded` is not a
+    list, its first entry (if any) is not a dict when `base` is `None`
+    (or fails to apply against `base` when one is given), or any later
+    entry fails to apply as a patch (`_apply_state_patch`) -- never a
+    partially-reconstructed list."""
+    if not isinstance(encoded, list):
+        return None
+    if not encoded:
+        return []
+    if base is not None:
+        first = _apply_state_patch(base, encoded[0])
+        if first is None:
+            return None
+    elif isinstance(encoded[0], dict):
+        first = encoded[0]
+    else:
+        return None
+    states = [first]
+    for patch in encoded[1:]:
+        nxt = _apply_state_patch(states[-1], patch)
+        if nxt is None:
+            return None
+        states.append(nxt)
+    return states
+
+
 def _encode_checkpoint_columns(checkpoints: list[dict], base_offset: int = 0,
-                               base_lines: int = 0) -> tuple[list, dict]:
+                               base_lines: int = 0,
+                               base_state: dict | None = None) -> tuple[list, dict]:
     """`checkpoints` as `(states, columns)` -- `states` holding each
-    DISTINCT state appearing in `checkpoints` once (first-appearance
-    order, local to this call only), `columns` the `_COLUMN_KEYS`
-    parallel arrays, deltas computed from `base_offset`/`base_lines` for
-    the first entry (0/0 for a whole-index encoding; a tail shard's own
-    running (byteOffset, renderedLines) baseline otherwise -- task
-    cure-01-01-4, PRD D.1/D.2 together). The one inner loop `encode_index`
-    and `LiveRenderIndex._flush_tail`'s own shard encoding share, so
-    neither can drift from the other's idea of what a checkpoint column
-    entry means."""
+    DISTINCT state appearing in `checkpoints` once, encoded incrementally
+    (`_encode_states`: the first entry diffed against `base_state` when
+    given, every later one against its predecessor -- task 004, PRD
+    D.2/D.3) in first-appearance order, local to this call only. `columns`
+    the `_COLUMN_KEYS` parallel arrays, deltas computed from
+    `base_offset`/`base_lines` for the first entry (0/0 for a whole-index
+    encoding; a tail shard's own running (byteOffset, renderedLines)
+    baseline otherwise -- task cure-01-01-4, PRD D.1/D.2 together).
+    `base_state` is that same tail shard's own last-known state (the
+    checkpoint immediately before this batch, from MAIN or an earlier
+    shard) -- `None` for a whole-index encoding, which has no such
+    predecessor. The one inner loop `encode_index` and `LiveRenderIndex.
+    _flush_tail`'s own shard encoding share, so neither can drift from
+    the other's idea of what a checkpoint column entry means."""
     states: list = []
     ids: dict[str, int] = {}
     columns: tuple[list, list, list, list] = ([], [], [], [])
@@ -549,7 +673,7 @@ def _encode_checkpoint_columns(checkpoints: list[dict], base_offset: int = 0,
         d_lines.append(cp["renderedLines"] - prev_lines)
         prev_off, prev_lines = cp["byteOffset"], cp["renderedLines"]
         crcs.append(cp.get("lineCrc32"))
-    return states, dict(zip(_COLUMN_KEYS, columns))
+    return _encode_states(states, base_state), dict(zip(_COLUMN_KEYS, columns))
 
 
 def encode_index(index: dict) -> dict:
@@ -567,14 +691,20 @@ def encode_index(index: dict) -> dict:
 
 
 def _decode_checkpoint_columns(cols: object, states: object, base_offset: int = 0,
-                               base_lines: int = 0) -> list[dict] | None:
+                               base_lines: int = 0,
+                               base_state: dict | None = None) -> list[dict] | None:
     """The inverse of `_encode_checkpoint_columns`: `None` when `states`
-    is not an array, `cols` is not an object, the columns are missing,
-    not arrays or of unequal length, or a delta or state id is not an
-    integer naming an existing state -- otherwise the decoded checkpoints
-    list, `byteOffset`/`renderedLines` continuing from `base_offset`/
-    `base_lines`."""
-    if not isinstance(states, list) or not isinstance(cols, dict):
+    is not an array, does not decode as an incrementally-encoded state
+    list (`_decode_states` -- task 004, PRD D.2/D.3, given the same
+    `base_state` the writer diffed its own first entry against), `cols`
+    is not an object, the columns are missing, not arrays or of unequal
+    length, or a delta or state id is not an integer naming an existing
+    state -- otherwise the decoded checkpoints list, `byteOffset`/
+    `renderedLines` continuing from `base_offset`/`base_lines`."""
+    if not isinstance(cols, dict):
+        return None
+    states = _decode_states(states, base_state)
+    if states is None:
         return None
     columns = [cols.get(k) for k in _COLUMN_KEYS]
     if (any(not isinstance(c, list) for c in columns)
@@ -815,7 +945,12 @@ class LiveRenderIndex:
         last tail append or MAIN publish (task cure-01-01-4, PRD D.1/D.2
         together), once at least `every` of them have accumulated --
         never rewriting anything already on disk, so this call's own
-        cost is O(batch), not O(total). Returns whether it actually
+        cost is O(batch), not O(total). Task 004 (PRD D.2/D.3): the
+        shard's own `states` are diffed against `prev`'s own `state` (the
+        checkpoint immediately before this batch -- MAIN's own last
+        published checkpoint, or the previous shard's), so an ever-
+        growing `tool_pending`/`tool_args` never resets to a fresh full
+        copy at every shard boundary. Returns whether it actually
         wrote."""
         if total - self._tail_synced_count < every:
             return False
@@ -824,7 +959,9 @@ class LiveRenderIndex:
                if self._tail_synced_count else None)
         base_offset = prev["byteOffset"] if prev else 0
         base_lines = prev["renderedLines"] if prev else 0
-        states, columns = _encode_checkpoint_columns(new, base_offset, base_lines)
+        base_state = prev["state"] if prev else None
+        states, columns = _encode_checkpoint_columns(
+            new, base_offset, base_lines, base_state)
         line = json.dumps({"states": states, "checkpoints": columns})
         try:
             with open(itdir / TAIL_FILENAME, "a") as f:
@@ -918,17 +1055,22 @@ def write_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> None:
         pass
 
 
-def _decode_tail_shards(text: str, base_offset: int, base_lines: int) -> list[dict] | None:
+def _decode_tail_shards(text: str, base_offset: int, base_lines: int,
+                        base_state: dict | None = None) -> list[dict] | None:
     """Decode `TAIL_FILENAME`'s own NDJSON shards (task cure-01-01-4, PRD
     D.1/D.2 together): each line one `_encode_checkpoint_columns`-shaped
     document, continuing the running (byteOffset, renderedLines) baseline
-    from one shard to the next. Malformed content anywhere -- a line
-    that is not valid JSON, not an object, or fails
-    `_decode_checkpoint_columns` -- makes the WHOLE tail unusable
-    (`None`); the caller then falls back to MAIN's own coverage alone,
-    never a partially-trusted extension."""
+    from one shard to the next, and (task 004, PRD D.2/D.3) the running
+    `state` baseline too -- `base_state` is MAIN's own last checkpoint's
+    state (or `None` when MAIN has none), matching whatever `_flush_tail`
+    diffed its own FIRST shard against; every later shard continues from
+    the previous shard's own last checkpoint's state, exactly as the
+    writer does. Malformed content anywhere -- a line that is not valid
+    JSON, not an object, or fails `_decode_checkpoint_columns` -- makes
+    the WHOLE tail unusable (`None`); the caller then falls back to
+    MAIN's own coverage alone, never a partially-trusted extension."""
     checkpoints: list[dict] = []
-    offset, lines = base_offset, base_lines
+    offset, lines, state = base_offset, base_lines, base_state
     for line in text.splitlines():
         if not line.strip():
             continue
@@ -939,16 +1081,18 @@ def _decode_tail_shards(text: str, base_offset: int, base_lines: int) -> list[di
         if not isinstance(doc, dict):
             return None
         shard = _decode_checkpoint_columns(doc.get("checkpoints"), doc.get("states"),
-                                           offset, lines)
+                                           offset, lines, state)
         if shard is None:
             return None
         checkpoints.extend(shard)
         if shard:
             offset, lines = shard[-1]["byteOffset"], shard[-1]["renderedLines"]
+            state = shard[-1]["state"]
     return checkpoints
 
 
-def _read_tail_extension(itdir: Path, base_offset: int, base_lines: int) -> list[dict] | None:
+def _read_tail_extension(itdir: Path, base_offset: int, base_lines: int,
+                         base_state: dict | None = None) -> list[dict] | None:
     """The decoded TAIL shards for one iteration, continuing from
     `(base_offset, base_lines)` -- MAIN's own last checkpoint, or
     `(0, 0)` when MAIN has none. Absence is not failure: no tail file
@@ -963,7 +1107,7 @@ def _read_tail_extension(itdir: Path, base_offset: int, base_lines: int) -> list
         return []
     except OSError:
         return None
-    return _decode_tail_shards(text, base_offset, base_lines)
+    return _decode_tail_shards(text, base_offset, base_lines, base_state)
 
 
 def _checkpoints_well_formed(checkpoints: list[dict], start_offset: int = -1,
@@ -1138,7 +1282,9 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     # never reason to refuse the whole index.
     base_offset = checkpoints[-1]["byteOffset"] if checkpoints else -1
     base_lines = checkpoints[-1]["renderedLines"] if checkpoints else -1
-    tail = _read_tail_extension(itdir, max(base_offset, 0), max(base_lines, 0))
+    base_state = checkpoints[-1]["state"] if checkpoints else None
+    tail = _read_tail_extension(itdir, max(base_offset, 0), max(base_lines, 0),
+                                base_state)
     if tail:
         extended = checkpoints + tail
         if (extended[-1]["byteOffset"] <= actual_size

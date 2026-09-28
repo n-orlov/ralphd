@@ -412,8 +412,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # availability` parametrized over the four fixtures the task names,
     # `test_gate_escalation_mixed_with_ceiling_spent_previews_zero`),
     # measured the same way -> fast 6533/455, smoke 4841/332.
-    "fast": {"tests": 6533, "modules": 455},
-    "smoke": {"tests": 4841, "modules": 332},
+    # Task 004: +2 tests, no new module (tests/test_render_index_linear_
+    # writer.py rewritten from one text_delta-only case to three sequence
+    # classes -- text_delta_control, matched_tool_pairs, unended_tool_
+    # starts), measured the same way -> fast 6535/455, smoke 4843/332.
+    "fast": {"tests": 6535, "modules": 455},
+    "smoke": {"tests": 4843, "modules": 332},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
