@@ -75,9 +75,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _finding(severity: str, curable: bool, clause: str, evidence: str,
-             cured_when: str | None = None) -> dict:
+             cured_when: str | None = None, **links) -> dict:
     payload = {"severity": severity, "curable": curable, "clause": clause,
                "evidence": evidence}
+    # Task 006 (PRD requirement B.3, #274): `links` is `reopens=<cure task
+    # id>` or `regression=True` -- on a CONFIRMATION review (every review
+    # after a granted cure pass) a blocking finding carrying neither is
+    # downgraded to residual, so every SECOND-or-later rejection below
+    # links its findings to keep exercising the cure-pass edges.
+    payload.update(links)
     # Task 011 (PRD requirement C.2, #219): a BLOCKING, curable finding
     # with no `cured_when` is now one of the three shapes `_review_
     # contract_ladder` pauses the run over (`review_findings_unusable`)
@@ -398,6 +404,12 @@ def _cure_tasks(run: RunDir) -> list[dict]:
            if t.get("origin") == "review-cure"]
 
 
+def _first_cure_id(run: RunDir) -> str:
+    """The id of the cure task pass 1 built for requirement C.1 -- what a
+    confirmation review's still-open re-filing of it names in `reopens`."""
+    return _cure_tasks(run)[0]["id"]
+
+
 # 1. A second `rejected` review over the same approach -> replan, not a
 #    second cure pass.
 
@@ -410,7 +422,8 @@ def test_second_rejection_same_approach_takes_the_ordinary_replan_edge(
     assert len(before_cure_tasks) == 1
 
     still_curable = [_finding("blocking", True, "requirement C.1 (#141)",
-                              "still not fixed")]
+                              "still not fixed",
+                              reopens=_first_cure_id(sup.run))]
     reviewer = _rejects_with(still_curable)
     reviewer.sup = sup  # type: ignore[attr-defined]
     sup.runner.run = reviewer  # type: ignore[method-assign]
@@ -441,7 +454,8 @@ def test_second_rejection_with_no_approach_left_takes_task011s_pause_edge(
     sup = _cure_once(root, approach=1, max_approaches=1)
 
     still_curable = [_finding("blocking", True, "requirement C.1 (#141)",
-                              "still not fixed")]
+                              "still not fixed",
+                              reopens=_first_cure_id(sup.run))]
     reviewer = _rejects_with(still_curable)
     reviewer.sup = sup  # type: ignore[attr-defined]
     sup.runner.run = reviewer  # type: ignore[method-assign]
@@ -472,7 +486,7 @@ def test_incurable_precedence_wins_on_the_second_rejection_too(tmp_path):
 
     all_incurable = [_finding("blocking", False, "requirement B (#111)",
                               "an environment fact a fresh approach and a "
-                              "cure task cannot change")]
+                              "cure task cannot change", regression=True)]
     reviewer = _rejects_with(all_incurable)
     reviewer.sup = sup  # type: ignore[attr-defined]
     sup.runner.run = reviewer  # type: ignore[method-assign]
@@ -523,7 +537,8 @@ def test_resume_mid_cure_never_appends_the_cure_tasks_twice(tmp_path):
         "status.json, not default back to 0")
 
     still_curable = [_finding("blocking", True, "requirement C.1 (#141)",
-                              "still not fixed after the cure")]
+                              "still not fixed after the cure",
+                              reopens=cure_tasks_before[0]["id"])]
     reviewer = _rejects_with(still_curable)
     reviewer.sup = sup2  # type: ignore[attr-defined]
     sup2.runner.run = reviewer  # type: ignore[method-assign]
@@ -561,7 +576,7 @@ def test_resume_mid_cure_also_keeps_the_incurable_precedence(tmp_path):
     assert sup2._cure_passes_for_approach(1) == 1
 
     all_incurable = [_finding("blocking", False, "requirement B (#111)",
-                              "an environment fact")]
+                              "an environment fact", regression=True)]
     reviewer = _rejects_with(all_incurable)
     reviewer.sup = sup2  # type: ignore[attr-defined]
     sup2.runner.run = reviewer  # type: ignore[method-assign]
@@ -598,7 +613,8 @@ def test_a_non_superset_second_rejection_grants_a_second_cure_pass(tmp_path):
     assert len(first_cure_tasks) == 1
 
     narrower = [_finding("blocking", True, "requirement D (#167)",
-                         "a different defect, not requirement C.1")]
+                         "a different defect, not requirement C.1",
+                         regression=True)]
     reviewer = _rejects_with(narrower)
     reviewer.sup = sup  # type: ignore[attr-defined]
     sup.runner.run = reviewer  # type: ignore[method-assign]
@@ -630,8 +646,10 @@ def test_a_superset_second_rejection_is_refused_and_replans(tmp_path):
     sup = _cure_once(root, approach=1, max_approaches=3)
 
     superset = [
-        _finding("blocking", True, "requirement C.1 (#141)", "still broken"),
-        _finding("blocking", True, "requirement D (#167)", "also broken"),
+        _finding("blocking", True, "requirement C.1 (#141)", "still broken",
+                 reopens=_first_cure_id(sup.run)),
+        _finding("blocking", True, "requirement D (#167)", "also broken",
+                 regression=True),
     ]
     reviewer = _rejects_with(superset)
     reviewer.sup = sup  # type: ignore[attr-defined]
@@ -659,7 +677,8 @@ def test_the_ceiling_refuses_a_fourth_pass_even_when_not_a_superset(tmp_path):
 
     def _take(clause: str, expect_pass: int) -> None:
         reviewer = _rejects_with(
-            [_finding("blocking", True, clause, "narrower each time")])
+            [_finding("blocking", True, clause, "narrower each time",
+                      regression=True)])
         reviewer.sup = sup  # type: ignore[attr-defined]
         sup.runner.run = reviewer  # type: ignore[method-assign]
         outcome = asyncio.run(sup._step_review())
@@ -673,7 +692,7 @@ def test_the_ceiling_refuses_a_fourth_pass_even_when_not_a_superset(tmp_path):
     # a fourth rejection, disjoint from pass 3's own {E} -- would pass the
     # superset test on its own, but the ceiling refuses it regardless.
     fourth = [_finding("blocking", True, "requirement F (#167)",
-                       "yet another distinct defect")]
+                       "yet another distinct defect", regression=True)]
     reviewer = _rejects_with(fourth)
     reviewer.sup = sup  # type: ignore[attr-defined]
     sup.runner.run = reviewer  # type: ignore[method-assign]

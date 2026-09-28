@@ -122,7 +122,12 @@ def test_a_second_granted_pass_appends_rather_than_overwrites(tmp_path):
     findings.write_findings_json(sup.run.findings_json_file, first)
     sup._take_cure_pass(1)
 
-    second = [_finding("requirement C.2 (#141)", "evidence two", "cure two")]
+    # The second review is a CONFIRMATION review (pass 1 was granted), so
+    # its blocking finding carries `regression: true` to stay blocking
+    # (B.3, task 006) -- an unlinked one is downgraded to residual and
+    # earns no cure task (tests/test_confirmation_downgrade.py).
+    second = [_finding("requirement C.2 (#141)", "evidence two", "cure two",
+                       regression=True)]
     findings.write_findings_json(sup.run.findings_json_file, second)
     sup._take_cure_pass(1)
 

@@ -746,8 +746,16 @@ def test_A3_repeated_insert_only_is_still_explicit_nontrigger(tmp_path):
 
     sup2 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
     sup2._approach = 1
-    findings.write_findings_json(sup2.run.findings_json_file,
-                                 _CURE_INSERT_ONLY_FINDING)
+    # Episode 2 is a CONFIRMATION review (episode 1's cure pass was
+    # granted): the IDENTICAL finding, re-filed as still open, names the
+    # cure task episode 1 built for it in `reopens` -- an unlinked one
+    # would be downgraded to residual (B.3, task 006, tests/
+    # test_confirmation_downgrade.py) and never reach this edge at all.
+    cure_id = next(t["id"] for t in sup2.run.read_tasks()["tasks"]
+                   if t.get("origin") == "review-cure")
+    findings.write_findings_json(
+        sup2.run.findings_json_file,
+        [dict(f, reopens=cure_id) for f in _CURE_INSERT_ONLY_FINDING])
     sup2.runner.run = _rejecting_runner("record went stale again")  # type: ignore[method-assign]
 
     outcome2 = _bounded(sup2._step_review())

@@ -159,8 +159,10 @@ from env vars set by the test:
                       `review-findings.md` (`findings_path` in the
                       payload) and the structured sidecar `review-
                       findings.json` -- one BLOCKING, `curable: true`
-                      finding, matching `engine.findings.FINDING_SCHEMA`.
-                      Once the count is spent, the next (verifying)
+                      finding, matching `engine.findings.FINDING_SCHEMA`;
+                      from the second rejection on it also carries
+                      `regression: true`, so a confirmation review (B.3)
+                      keeps it blocking. Once the count is spent, the next (verifying)
                       invocation removes any `review-findings.json` this
                       knob wrote, so the engine's own "a verified claim
                       may never contradict a still-present blocking
@@ -1804,6 +1806,15 @@ elif "Role: Reviewer" in prompt:
         # test-supplied JSON array of paths onto THIS finding's own
         # `invalidates` field, unset (no key at all) by default -- see the
         # knob's own doc comment above.
+        # Task 006 (v0.27 PRD requirement B.3, #274): every rejection
+        # after the first may be a CONFIRMATION review (the approach took a
+        # granted cure pass), where a blocking finding carrying neither
+        # `reopens` nor `regression: true` is downgraded to residual -- so
+        # the second-and-later rejections link theirs with `regression:
+        # true`, keeping the multi-rejection flows on the edges they test.
+        # Harmless on a first review, where both fields are simply ignored.
+        if curable_seen >= 1:
+            _curable_finding["regression"] = True
         _invalidates_raw = os.environ.get("STUB_REVIEW_CURABLE_INVALIDATES")
         if _invalidates_raw:
             _curable_finding["invalidates"] = json.loads(_invalidates_raw)

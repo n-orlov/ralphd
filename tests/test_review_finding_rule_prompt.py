@@ -80,9 +80,12 @@ def test_review_prompt_fails_the_check_when_the_new_text_is_reverted():
 
 
 def test_findings_schema_field_set_is_unchanged_by_a_dot_1():
+    # A.1 adds no field. `reopens`/`regression` are v0.27 B.3's two
+    # OPTIONAL linking fields (task 006, tests/test_confirmation_downgrade.
+    # py); the required list below is still exactly the original four.
     assert set(findings.FINDING_SCHEMA["properties"]) == {
         "severity", "curable", "clause", "evidence", "author",
-        "cured_when", "invalidates",
+        "cured_when", "invalidates", "reopens", "regression",
     }
     assert findings.FINDING_SCHEMA["required"] == [
         "severity", "curable", "clause", "evidence"]
