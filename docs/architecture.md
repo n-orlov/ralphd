@@ -2576,7 +2576,13 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   `reopens` (a `regression: true` fresh defect, or an exempt
   secret/absent-behaviour finding) contributes no root, so a confirmation
   review whose entire blocking set is fresh is never refused as a
-  repeat. Tests: `tests/test_cure_progress_identity.py`. Every granted pass
+  repeat. The identity comparison applies irrespective of which channel
+  granted the preceding pass: a peer-gate pass increments
+  `gateCurePasses`, never `curePasses`, so
+  `_review_rejection_curable_ignoring_ceiling` checks
+  `_is_confirmation_review()` BEFORE its `curePasses[approach] == 0`
+  first-pass shortcut, which only an actual first review (no lineage
+  entry for the approach) reaches. Tests: `tests/test_cure_progress_identity.py`. Every granted pass
   persists its own blocking clause set to `status.json`'s `cureBlocking
   [approach]` (`_take_cure_pass`, alongside the existing `curePasses`
   increment) so the comparison survives a resume with no shared Python
