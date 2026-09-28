@@ -457,9 +457,18 @@ def test_operator_input_needed_digest_carries_the_passed_preview_numbers(
     notifier = _StubNotifier()
     sup.notifier = notifier
 
+    # Task 003 (this wave): the preview is now zeroed whenever the ON-DISK
+    # findings channel says no cure pass will run over it -- write a
+    # genuinely curable channel to disk (matching the single finding
+    # passed below) so this unit test's own caller-passed preview keeps
+    # flowing through exactly like it did before that widening, rather
+    # than an absent sidecar being read as "never curable" by accident.
+    one_curable = [_finding("clause P", 100)]
+    findings.write_findings_json(sup.run.findings_json_file, one_curable)
+
     preview = {"reopenedTaskIds": ["t-a", "t-b"], "insertCount": 3}
     sup._pause_and_escalate_operator_input_needed(
-        1, [_finding("clause P", 100)], replan_available=True,
+        1, one_curable, replan_available=True,
         cure_preview=preview)
 
     ev = _events(root, "operator_escalation")[-1]

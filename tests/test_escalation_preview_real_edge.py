@@ -22,10 +22,18 @@ carried no A.7 fields on its `operator_escalation` event at all.
 Both sides now zero the preview (and name `ralphctl budget <run>
 --cure-passes` in the escalation text) exactly when the run-wide ceiling
 being spent is what stopped an otherwise-curable rejection from taking a
-cure pass -- never for a rejection that was never curable at all (mixed
-findings, tamper, a superset repeat), whose own honest partial preview is
-untouched (`tests/test_discretionary_gate.py`'s own `insertCount == 2`
-pins for `_MIXED_FINDINGS` stay green).
+cure pass.
+
+Task 003 (this wave) widens the SAME zeroing once more: a rejection whose
+findings were NEVER curable at all (mixed, all-incurable, tamper) used to
+keep its own "honest partial" preview here too -- `insertCount == len
+(blocking)`, one slot per finding, curable or not -- even though no cure
+pass ever runs over it either. `_review_cure_pass_available` already
+answers "will a cure pass run" for every one of these causes; zeroing off
+that single predicate, rather than off a narrower "was this structurally
+curable" gate first, is what closes the gap -- `tests/test_discretionary_
+gate.py`'s own `insertCount == 2` pins for `_MIXED_FINDINGS` are rewritten
+to `0` in the same commit that makes this change.
 """
 
 from __future__ import annotations
@@ -34,7 +42,9 @@ import asyncio
 import json
 from pathlib import Path
 
-from ralphd.engine import findings
+import pytest
+
+from ralphd.engine import findings, state
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
@@ -436,3 +446,175 @@ def test_c4_last_approach_gate_preview_names_finishing(tmp_path):
     assert "end the run with no approach left" in text
     assert "ralphctl budget" in text
     assert "--cure-passes" in text
+
+
+# ===========================================================================
+# 7. Task 003 (this wave): the preview zeroes for EVERY blocking-set shape
+#    that never earns a cure pass -- mixed and all-incurable alike, not
+#    only the ceiling/no-progress causes tasks 011/cure-01-05 already
+#    covered -- and stays real, nonzero for the one shape that DOES earn
+#    one. Driven through the REAL `_step_review`, never a hand-built
+#    lineage/status fixture, so the fixture's own edge (which pause fires,
+#    or the cure edge itself) is exactly what production takes.
+# ===========================================================================
+
+
+def _mixed_1c_1i_findings() -> list[dict]:
+    return [
+        _finding("blocking", False, "requirement C.1 mixed non-curable (v0.27)",
+                 "one blocking finding is not curable"),
+        _finding("blocking", True, "requirement C.1 mixed curable (v0.27)",
+                 "the other blocking finding is curable"),
+    ]
+
+
+def _all_incurable_2i_findings() -> list[dict]:
+    return [
+        _finding("blocking", False, "requirement C.1 incurable A (v0.27)",
+                 "first incurable finding"),
+        _finding("blocking", False, "requirement C.1 incurable B (v0.27)",
+                 "second incurable finding"),
+    ]
+
+
+def _all_curable_2c_findings() -> list[dict]:
+    return [
+        _finding("blocking", True, "requirement C.1 curable A (v0.27)",
+                 "first curable finding"),
+        _finding("blocking", True, "requirement C.1 curable B (v0.27)",
+                 "second curable finding"),
+    ]
+
+
+# name -> (findings builder, cure_pass_ceiling, the outcome/reason this
+# rejection ACTUALLY takes through the real `_step_review`, whether the
+# preview zeroes). The first three never earn a cure pass, whatever the
+# ceiling reads -- `all_incurable_2i` takes the SAME `rejected_incurable`
+# self-loop whether or not the ceiling happens to be spent too, proving
+# the preview tracks cure AVAILABILITY, never the ceiling alone. The
+# fourth, `all_curable_2c_pass_available`, is the one shape that DOES
+# earn a cure pass -- its own real, nonzero preview and cure edge, never
+# a pause at all, is the deliberate contrast every other row proves
+# against.
+_REJECTION_PREVIEW_FIXTURES = {
+    "mixed_1c_1i_ceiling_spent": (
+        _mixed_1c_1i_findings, 0,
+        ("advance", "paused", "operator_input_needed"), True),
+    "all_incurable_2i_ceiling_spent": (
+        _all_incurable_2i_findings, 0,
+        ("advance", "review", "rejected_incurable"), True),
+    "all_incurable_2i_pass_available": (
+        _all_incurable_2i_findings, 3,
+        ("advance", "review", "rejected_incurable"), True),
+    "all_curable_2c_pass_available": (
+        _all_curable_2c_findings, 3,
+        ("advance", "cure", "rejected_curable_pass_available"), False),
+}
+
+
+@pytest.mark.parametrize("fixture_name", sorted(_REJECTION_PREVIEW_FIXTURES))
+def test_review_rejection_preview_matches_cure_availability(
+        tmp_path, fixture_name):
+    build_findings, ceiling, expected_outcome, zeroed = (
+        _REJECTION_PREVIEW_FIXTURES[fixture_name])
+    root = tmp_path / "run"
+    sup = _supervisor(
+        root, max_approaches=2, operator_input_needed_pause=True,
+        cure_pass_ceiling=ceiling, tasks=[],
+        status={"state": "running", "phase": "review", "approach": 1})
+    sup._approach = 1
+    blocking = build_findings()
+    findings.write_findings_json(sup.run.findings_json_file, blocking)
+    # the SAME pure predicate the engine itself consults for the
+    # mechanical trigger/A.7 payload, computed here to prove the actual
+    # write matches its own prediction -- never a hand-picked number.
+    predicted = state.cure_pass_preview(
+        sup.run.read_tasks().get("tasks") or [], blocking)
+    sup.runner.run = _rejecting_runner(fixture_name)  # type: ignore[method-assign]
+
+    outcome = _bounded(sup._step_review())
+
+    assert outcome == expected_outcome
+    if zeroed:
+        # never a cure pass over any of these three shapes -- ceiling
+        # spent or not, mixed or all-incurable -- so the preview reads
+        # zero/empty and the edge it names is the archive-and-replan
+        # every one of them takes (a fresh approach is still budgeted,
+        # `max_approaches=2`), never the honest partial `predicted` count
+        # a cure pass over the identical findings would have produced.
+        assert predicted["insertCount"] > 0
+        escalations = _events(root, "operator_escalation")
+        assert len(escalations) == 1
+        ev = escalations[0]
+        assert ev["reason"] == expected_outcome[2]
+        assert ev["taskIdsValidatedToPending"] == []
+        assert ev["insertCount"] == 0
+        assert ev["nextStepIfUnanswered"] == NEXT_STEP_ARCHIVE_AND_REPLAN
+    else:
+        # the one shape that DOES earn a cure pass: the real, nonzero
+        # preview drives the cure edge itself, never a pause.
+        assert predicted == {"reopenedTaskIds": [], "insertCount": 2}
+        assert _events(root, "operator_escalation") == []
+        cure_events = _events(root, "approach.cure_pass")
+        assert len(cure_events) == 1
+        assert len(cure_events[0]["taskIds"]) == predicted["insertCount"] == 2
+
+
+# ===========================================================================
+# 8. The gate-side sibling of case 1 above: task 002's own mixed-blocking-
+#    set ceiling-spent gate pause (`tests/test_gate_pause_before_archive.
+#    py`'s own coverage) also previews zero -- it always has, since
+#    `_pause_and_escalate_gate_operator_input_needed` builds its A.7
+#    fields off an unconditional `{}` -- pinned here too so this module's
+#    own review-vs-gate pair stays complete for the SAME blocking-set
+#    shape.
+# ===========================================================================
+
+
+def _mixed_1c_1i_gate_findings() -> list[dict]:
+    return [
+        {"severity": "blocking", "curable": True,
+         "clause": "requirement C.1 mixed curable clause (v0.27)",
+         "evidence": "one blocking finding is curable",
+         "cured_when": "the curable finding is repaired"},
+        {"severity": "blocking", "curable": False,
+         "clause": "requirement C.1 mixed non-curable clause (v0.27)",
+         "evidence": "one blocking finding is not curable"},
+    ]
+
+
+def test_gate_escalation_mixed_with_ceiling_spent_previews_zero(tmp_path):
+    root = tmp_path / "run"
+    root.mkdir(parents=True, exist_ok=True)
+    run = RunDir(root=root)
+    run.update_status(state="running")
+    atomic_write_json(run.tasks_file, {"version": 1, "tasks": []})
+    cfg = JobConfig(run_id="task003-gate-preview-mixed", iterations=5,
+                    max_approaches=2, vigilant=False,
+                    peer_verdict_gate=True, cure_pass_ceiling=0,
+                    infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0)
+    sup = LoopSupervisor(cfg, run, root)
+    sup._approach = 1
+    findings.write_findings_json(run.verdict_gate_findings_json_file,
+                                 _mixed_1c_1i_gate_findings())
+
+    orig = LoopSupervisor.run_iteration
+    LoopSupervisor.run_iteration = _gate_rejects(
+        "one blocking finding is curable, the other is not")
+    try:
+        outcome = _bounded(sup._step_verdict_gate())
+    finally:
+        LoopSupervisor.run_iteration = orig
+
+    assert outcome == ("advance", "paused", "verdict_gate_operator_input_needed")
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 1
+    ev = escalations[0]
+    assert ev["reason"] == "verdict_gate_operator_input_needed"
+    assert ev["taskIdsValidatedToPending"] == []
+    assert ev["insertCount"] == 0
+    # the gate's own A.1/A.2 removal-specific rule: a mixed/all-incurable
+    # rejection's `replanAvailable` is always `False` (never `all_
+    # curable`), whatever approaches remain, so an unanswered resume takes
+    # the terminal `finishing` tail, never a fresh replan.
+    assert ev["nextStepIfUnanswered"] == NEXT_STEP_FINISH

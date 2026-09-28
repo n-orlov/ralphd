@@ -193,7 +193,11 @@ def test_operator_input_needed_archive_and_replan_next_step(tmp_path):
         assert got["cured_when"] == want.get("cured_when")
         assert got["invalidates"] == []
     assert pq["consequence"]["taskIdsValidatedToPending"] == []
-    assert pq["consequence"]["insertCount"] == 2
+    # Task 003 (this wave): `_MIXED_FINDINGS` is never curable at all (one
+    # incurable finding) -- a cure pass never runs over it, so the preview
+    # reads zero here too, exactly like the ceiling-spent/no-progress
+    # causes above already do.
+    assert pq["consequence"]["insertCount"] == 0
     assert pq["consequence"]["costSpentThisApproach"] == "$0.42"
     assert pq["consequence"]["tokensSpentThisApproach"] == 321
     assert pq["consequence"]["nextStepIfUnanswered"] == NEXT_STEP_ARCHIVE_AND_REPLAN

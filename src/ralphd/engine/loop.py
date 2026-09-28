@@ -13517,13 +13517,21 @@ class LoopSupervisor:
         this approach's own progress bookkeeping finding no progress (the
         SAME wall restated). A rejection that fails HERE (mixed/incurable
         findings, a tamper finding) was never curable at all -- no cure
-        pass could ever apply to it, ceiling or progress notwithstanding
-        -- and its own honest partial `cure_pass_preview` stays real. A
+        pass could ever apply to it, ceiling or progress notwithstanding.
+        Task 003 (this wave): that used to be the one case whose own
+        "honest partial" `cure_pass_preview` stayed real on every escalation
+        that reaches `_pause_and_escalate_operator_input_needed`/`_pause_
+        and_escalate_repeated_rejection_signature` -- both now zero it too,
+        since `_review_cure_pass_available` (their own gating predicate) is
+        `False` for this case exactly as much as for the ceiling/progress
+        one just below; this function stays the narrower structural half
+        `_review_rejection_curable_ignoring_ceiling`/the ceiling-note text
+        need, not a licence to keep a real preview anywhere else. A
         rejection that passes here but still fails `_review_cure_pass_
         available` was curable in principle, refused only by ceiling or
         progress bookkeeping -- and `_pause_and_escalate_operator_input_
         needed`/`_pause_and_escalate_repeated_rejection_signature` zero
-        THAT rejection's preview, since neither edge ever takes a cure
+        THAT rejection's preview too, since neither edge ever takes a cure
         pass over it, whatever the reopen/insert numbers would have read.
         """
         findings_list = self._review_findings()
@@ -14030,26 +14038,26 @@ class LoopSupervisor:
         actually spent, the escalation TEXT still names `ralphctl budget
         ... --cure-passes` as the lever that would change that outcome.
 
-        Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): the
-        preview fed to both the event's A.7 fields and the delivered
-        digest is zeroed (`{}`, never the real nonzero `cure_preview`/
-        `_effective_cure_preview` the caller computed) whenever this
-        rejection was structurally curable (`_review_rejection_curable_
-        findings`, ignoring both ceiling and progress) but `_review_cure_
-        pass_available` still says no -- ceiling spent, exactly as before,
-        OR this approach's own no-progress/superset comparison finding
-        nothing new to reopen (a repeated confirmation-review re-file of
-        the SAME previously-targeted finding, never a fresh problem) --
-        `insertCount`/`taskIdsValidatedToPending` must name the edge that
-        will ACTUALLY be taken (archive-and-replan or finish, `next_step`
-        already computed below off the SAME `_review_cure_pass_available`
-        plus `replan_available`), never a cure pass's own prediction for
-        an edge this rejection will not take. A rejection that was never
-        curable at all (mixed/incurable findings, tamper) is untouched --
-        that preview already reads its own honest zero/partial reopen
-        count from `state.cure_pass_preview` on the findings themselves,
-        and `budget --cure-passes` would not change its outcome, so no
-        note is appended for it either.
+        Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3), widened by
+        task 003 (this wave): the preview fed to both the event's A.7
+        fields and the delivered digest is zeroed (`{}`, never the real
+        nonzero `cure_preview`/`_effective_cure_preview` the caller
+        computed) exactly when `_review_cure_pass_available` says no --
+        ceiling spent, this approach's own no-progress/superset comparison
+        finding nothing new to reopen (a repeated confirmation-review
+        re-file of the SAME previously-targeted finding), OR the findings
+        were never curable AT ALL (mixed, all-incurable, a criteria-tamper
+        finding) -- `insertCount`/`taskIdsValidatedToPending` must name
+        the edge that will ACTUALLY be taken (archive-and-replan or
+        finish, `next_step` already computed below off the SAME `_review_
+        cure_pass_available` plus `replan_available`), never a cure pass's
+        own prediction (real or the findings' own "one slot per finding"
+        count) for an edge this rejection will not take. `budget --cure-
+        passes` is named in the TEXT only for the ceiling-spent cause
+        (`cure_pass_ceiling_spent` above, unaffected by this widening) --
+        raising the ceiling cannot cure a mixed/all-incurable rejection or
+        make progress where there was none, so no such note is appended
+        for either.
 
         `replan_available` mirrors the caller's own `approach < cfg.max_
         approaches` (default `True` -- the ordinary case, and what every
@@ -14065,9 +14073,17 @@ class LoopSupervisor:
         cure_pass_ceiling_spent = (
             self._review_rejection_curable_ignoring_ceiling(approach)
             and self._cure_pass_ceiling_spent())
-        zero_preview = (
-            self._review_rejection_curable_findings(approach)
-            and not self._review_cure_pass_available(approach))
+        # Task 003 (this wave): zero the preview whenever no cure pass
+        # will actually run, full stop -- `_review_cure_pass_available`
+        # already IS that answer (ceiling spent, no-progress, OR the
+        # findings were never curable at all: mixed/all-incurable/tamper).
+        # Before this task the mixed/incurable case was carved out and kept
+        # its own honest partial `cure_pass_preview` (`insertCount ==
+        # len(blocking)`, counting incurable findings as if a cure task
+        # would be inserted for each) even though a cure pass never runs
+        # for it either -- the exact same contradiction C.4 fixed for the
+        # ceiling/no-progress causes.
+        zero_preview = not self._review_cure_pass_available(approach)
         effective_preview = (
             {} if zero_preview
             else self._effective_cure_preview(blocking, cure_preview))
@@ -14612,18 +14628,29 @@ class LoopSupervisor:
         # progress) AND `_review_cure_pass_available` is False, whatever
         # the reason (ceiling spent, exactly like above, OR this approach's
         # own no-progress/superset comparison finding nothing new to
-        # reopen). Before this task only the ceiling-spent cause zeroed the
-        # preview, so a confirmation review re-filing the SAME previously-
-        # targeted finding (a genuine no-progress refusal, `next_step`
-        # below already reads `ARCHIVE_AND_REPLAN`/`FINISH` for it) still
-        # previewed a real, non-zero reopen/insert count no cure pass will
-        # ever produce. A rejection that was never curable at all (mixed/
-        # incurable findings, tamper) fails the structural check and keeps
-        # its own honest partial preview, unchanged, and appends no
-        # `budget --cure-passes` note either (that lever cannot fix it).
-        zero_preview = (
-            self._review_rejection_curable_findings(approach)
-            and not self._review_cure_pass_available(approach))
+        # reopen). Before cure task cure-01-05 only the ceiling-spent cause
+        # zeroed the preview, so a confirmation review re-filing the SAME
+        # previously-targeted finding (a genuine no-progress refusal,
+        # `next_step` below already reads `ARCHIVE_AND_REPLAN`/`FINISH` for
+        # it) still previewed a real, non-zero reopen/insert count no cure
+        # pass will ever produce.
+        #
+        # Task 003 (this wave): widened once more -- a rejection that was
+        # NEVER curable at all (mixed findings, all-incurable, tamper) used
+        # to keep its own "honest partial" preview here (`insertCount ==
+        # len(blocking)`, one slot per finding, curable or not), on the
+        # theory that `state.cure_pass_preview` never claimed a cure PASS
+        # would run, only that a cure TASK would be inserted per finding if
+        # one did. But no edge ever takes a cure pass over a mixed/all-
+        # incurable rejection either (`_review_cure_pass_available` is
+        # `False` for it exactly as much as for the ceiling/no-progress
+        # causes), so that "honest partial" number was just as stale a
+        # prediction as the ceiling-spent one this task already fixed --
+        # `_review_rejection_curable_findings(approach) and ...` above used
+        # to gate the zeroing on "structurally curable", which is exactly
+        # backwards: `_review_cure_pass_available` alone already answers
+        # "will a cure pass run", whatever the reason it says no.
+        zero_preview = not self._review_cure_pass_available(approach)
         effective_preview = (
             {} if zero_preview
             else self._effective_cure_preview(blocking, cure_preview))
@@ -15387,13 +15414,34 @@ class LoopSupervisor:
         e.g. the `telegram-notify` skill's HTTP push -- in production);
         either way the escalation is also `emit()`ed to `events.jsonl` so
         it is never ONLY reachable through whatever notifier is wired in.
+
+        Task 003 (this wave): the event now also carries the SAME zeroed
+        A.7 preview (`taskIdsValidatedToPending: []`, `insertCount: 0`,
+        `costSpentThisApproach`/`tokensSpentThisApproach`, `approachOfMax`,
+        `hubLink`) plus `nextStepIfUnanswered` every OTHER `operator_
+        escalation` reason that can name an edge already carries -- never
+        the earlier omission where a reader of `events.jsonl` alone (no
+        `parkedQuestion`/digest to fall back to) saw no A.7 fields at all
+        for this reason. The preview is `{}` unconditionally: an all-
+        incurable rejection never takes a cure pass, ceiling or no
+        ceiling, so `_discretionary_gate_escalation_fields(approach, {})`
+        is always the truthful reading, exactly like the peer verdict
+        gate's own mirror (`_pause_and_escalate_gate_operator_input_
+        needed`). `nextStepIfUnanswered` is always `NEXT_STEP_ARCHIVE_AND_
+        REPLAN`, never `NEXT_STEP_FINISH`: the ONLY caller of this method
+        (`_step_review`) already checked `approach < self.cfg.max_
+        approaches` before calling it, so a fresh replan is always what an
+        unanswered resume of THIS pause takes.
         """
         findings_list = self._review_findings() or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         text = self._incurable_rejection_escalation_text(approach, blocking)
+        extra_fields = self._discretionary_gate_escalation_fields(approach, {})
         self.run.emit("operator_escalation", approach=approach,
                       reason="rejected_incurable", findings=blocking,
-                      escalation=text)
+                      escalation=text,
+                      nextStepIfUnanswered=state.NEXT_STEP_ARCHIVE_AND_REPLAN,
+                      **extra_fields)
         self.pause()
         if self.notifier is not None:
             # Cure task cure-01-02 (PRD requirement A.1/A.2, #269, review

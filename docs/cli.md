@@ -3516,15 +3516,16 @@ JSON endpoints served under `/api/`:
   approach is also the run's last (`replanAvailable: false`): the pause
   archives this approach either way, but ends the run instead of
   replanning a fresh one. Task 011 (v0.27 requirement C.4, #275), extended
-  by cure task cure-01-05: the preview itself always names that SAME edge,
-  `insertCount: 0`/`taskIdsValidatedToPending: []` whenever a cure pass
-  would otherwise show but no cure pass will actually run — the run-wide
-  `cure_pass_ceiling` is spent, OR (cure-01-05) this approach's own
-  no-progress comparison finds the rejection re-files a previously
-  targeted finding with nothing new to reopen. A rejection that was never
-  curable at all (mixed/incurable findings, a criteria-tamper finding)
-  keeps its own honest, real preview — the zeroing applies only to a
-  rejection that WOULD be curable if not for the ceiling or the lack of
+  by cure task cure-01-05 and widened once more by task 003 (this wave):
+  the preview itself always names that SAME edge, `insertCount: 0`/
+  `taskIdsValidatedToPending: []` whenever a cure pass would otherwise
+  show but no cure pass will actually run — the run-wide `cure_pass_
+  ceiling` is spent, (cure-01-05) this approach's own no-progress
+  comparison finds the rejection re-files a previously targeted finding
+  with nothing new to reopen, OR (task 003) the findings were never
+  curable at all (mixed, all-incurable, a criteria-tamper finding) — the
+  zeroing now applies to EVERY shape that earns no cure pass, never only
+  a rejection that would be curable if not for the ceiling or the lack of
   progress. The run-detail `ETag` below moves whenever
   `events.jsonl` gains a new escalation, so a fresh one is never served under
   an unchanged tag. Task 008 (v0.26, #269) renders this field as a full-width

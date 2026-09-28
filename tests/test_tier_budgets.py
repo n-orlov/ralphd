@@ -407,8 +407,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # all-curable, mixed and all-incurable sets; no doc keeps the
     # all-curable-only scope), measured the same way -> fast 6528/455,
     # smoke 4836/332.
-    "fast": {"tests": 6528, "modules": 455},
-    "smoke": {"tests": 4836, "modules": 332},
+    # Task 003: +5 tests, no new module (tests/test_escalation_preview_
+    # real_edge.py: `test_review_rejection_preview_matches_cure_
+    # availability` parametrized over the four fixtures the task names,
+    # `test_gate_escalation_mixed_with_ceiling_spent_previews_zero`),
+    # measured the same way -> fast 6533/455, smoke 4841/332.
+    "fast": {"tests": 6533, "modules": 455},
+    "smoke": {"tests": 4841, "modules": 332},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -456,7 +456,12 @@ def test_condition_3_holds_before_any_spend_and_carries_the_six_a7_items(
     assert ev["reason"] == "rejected_repeated_signature"
     assert ev["signature"] == signature
     assert ev["taskIdsValidatedToPending"] == []
-    assert ev["insertCount"] == 2
+    # Task 003 (this wave): `_MIXED_FINDINGS` is never curable at all (one
+    # incurable finding) -- a cure pass never runs over it, ceiling spent
+    # or not, so the preview reads zero here too, covered by `tests/test_
+    # escalation_preview_real_edge.py::test_review_rejection_preview_
+    # matches_cure_availability[mixed_1c_1i_ceiling_spent]`.
+    assert ev["insertCount"] == 0
     assert ev["approachOfMax"] == "approach 1 of 2"
     assert ev["hubLink"] == f"http://127.0.0.1/#/run/{sup.cfg.run_id}"
 
@@ -667,7 +672,12 @@ def test_a_condition_2_gate_early_leaves_condition_1_raised_later(
     # `operator_input_needed` pause does.
     condition_1_event = escalations[1]
     assert condition_1_event["taskIdsValidatedToPending"] == []
-    assert condition_1_event["insertCount"] == 2
+    # Task 003 (this wave): same fix as the sibling pin above -- a mixed
+    # rejection never earns a cure pass, so `insertCount` reads zero,
+    # covered by `tests/test_escalation_preview_real_edge.py::test_
+    # review_rejection_preview_matches_cure_availability[mixed_1c_1i_
+    # ceiling_spent]`.
+    assert condition_1_event["insertCount"] == 0
     assert condition_1_event["approachOfMax"] == "approach 1 of 2"
     assert condition_1_event["hubLink"] == f"http://127.0.0.1/#/run/{sup_b.cfg.run_id}"
 
