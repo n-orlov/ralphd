@@ -46,6 +46,12 @@ Shape (`INDEX_FILENAME`, version `INDEX_VERSION`):
     get output identical to a full render's (task 013's job; this module
     only WRITES the index, per PRD C.1/C.7's own split).
 
+  That is the IN-MEMORY shape (`snapshot`, `compute_render_index`,
+  `load_index`'s return value). On disk (task 013, v0.27 D.1) the file is
+  `encode_index`'s compact document: each distinct `state` stored once in
+  `states`, and `checkpoints` as parallel integer columns (`_COLUMN_KEYS`);
+  `decode_index` is the inverse.
+
 Write side:
   - `compute_render_index` -- the full, from-scratch rebuild (a pure
     function of the transcript file's bytes, like
@@ -145,7 +151,12 @@ from .log_merge import iteration_numbers as _iteration_numbers
 from .log_merge import iteration_output_path as _iteration_output_path
 
 INDEX_FILENAME = "render_index.json"
-INDEX_VERSION = 4
+# Task 013 (v0.27 PRD D.1, #275): version 5 is the COMPACT on-disk encoding
+# (`encode_index`/`decode_index`): each distinct render state stored once,
+# checkpoints as parallel integer columns. Version 4 (one JSON object per
+# checkpoint, each with its own full copy of the render state) is refused
+# like any other wrong version -- a reader then falls back exactly.
+INDEX_VERSION = 5
 
 # Task cure-01-01-4 (PRD C.1/C.3, D.1; petition remedy for cure-01-03
 # criterion (1)): the identity/provenance witness -- `transcriptInode`
@@ -457,6 +468,95 @@ def _state_from_json(d: dict) -> dict:
     return state
 
 
+# Task 013 (v0.27 PRD D.1, #275): the ON-DISK shape of `checkpoints`. A
+# whole tail call reads `render_index.json` in full (`load_index` must
+# validate it before trusting any of it), so the file's own size is part of
+# the call's 1,000,000-byte read bound. One JSON object per raw line, each
+# carrying its own full copy of the render state, cost ~250 bytes a line --
+# ~3 MB for PRD Q's silent-prelude fixtures (12,000+ raw lines, 4 distinct
+# states), three times the bound. The compact encoding stores every
+# DISTINCT state once (`states`, first-appearance order) and the
+# checkpoints as four parallel integer columns: the byte offset and the
+# rendered-fragment count as deltas from the previous checkpoint, the
+# state's position in `states`, and the raw line's CRC-32 -- ~20 bytes a
+# line. The in-memory shape every reader and the hub cache use (a list of
+# `{byteOffset, renderedLines, state, lineCrc32}` dicts) is unchanged:
+# `encode_index` runs only where the file is written, `decode_index` only
+# where it is read. The transcript itself is untouched.
+_COLUMN_KEYS = ("byteOffsetDeltas", "renderedLinesDeltas", "stateIds",
+                "lineCrc32")
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def encode_index(index: dict) -> dict:
+    """The on-disk document for the in-memory `index` (`snapshot()`/
+    `compute_render_index`'s shape): every key but `checkpoints` copied
+    as is, `states` holding each distinct checkpoint state once, and
+    `checkpoints` as the four parallel columns `_COLUMN_KEYS` names.
+    `decode_index(encode_index(index)) == index`. A checkpoint missing
+    `lineCrc32` encodes it as `null`, which `load_index` refuses."""
+    states: list = []
+    ids: dict[str, int] = {}
+    columns: tuple[list, list, list, list] = ([], [], [], [])
+    d_off, d_lines, state_ids, crcs = columns
+    prev_off = prev_lines = 0
+    for cp in index["checkpoints"]:
+        state = cp.get("state")
+        key = json.dumps(state, sort_keys=True)
+        sid = ids.get(key)
+        if sid is None:
+            sid = ids[key] = len(states)
+            states.append(state)
+        state_ids.append(sid)
+        d_off.append(cp["byteOffset"] - prev_off)
+        d_lines.append(cp["renderedLines"] - prev_lines)
+        prev_off, prev_lines = cp["byteOffset"], cp["renderedLines"]
+        crcs.append(cp.get("lineCrc32"))
+    doc = {k: v for k, v in index.items() if k != "checkpoints"}
+    doc["states"] = states
+    doc["checkpoints"] = dict(zip(_COLUMN_KEYS, columns))
+    return doc
+
+
+def decode_index(doc: object) -> dict | None:
+    """The inverse of `encode_index`: the in-memory index for an on-disk
+    document, its checkpoints rebuilt as `{byteOffset, renderedLines,
+    state, lineCrc32}` dicts (checkpoints naming the same state share one
+    dict -- readers deep-copy before rendering from it). Structural only:
+    `None` when `doc` is not an object, `states` is not an array, the
+    columns are missing, not arrays or of unequal length, or a delta or
+    state id is not an integer naming an existing state. Everything else
+    -- ordering, state shape, CRC range, the witness -- is `load_index`'s
+    own validation, applied to the decoded result."""
+    if not isinstance(doc, dict):
+        return None
+    states = doc.get("states")
+    cols = doc.get("checkpoints")
+    if not isinstance(states, list) or not isinstance(cols, dict):
+        return None
+    columns = [cols.get(k) for k in _COLUMN_KEYS]
+    if (any(not isinstance(c, list) for c in columns)
+            or len({len(c) for c in columns}) != 1):
+        return None
+    n_states = len(states)
+    checkpoints = []
+    offset = lines = 0
+    for d_off, d_lines, sid, crc in zip(*columns):
+        if not (_is_int(d_off) and _is_int(d_lines) and _is_int(sid)
+                and 0 <= sid < n_states):
+            return None
+        offset += d_off
+        lines += d_lines
+        checkpoints.append({"byteOffset": offset, "renderedLines": lines,
+                            "state": states[sid], "lineCrc32": crc})
+    index = {k: v for k, v in doc.items() if k not in ("checkpoints", "states")}
+    index["checkpoints"] = checkpoints
+    return index
+
+
 class LiveRenderIndex:
     """Incrementally builds one iteration's render index, one already-
     on-disk raw transcript line at a time.
@@ -621,7 +721,7 @@ class LiveRenderIndex:
                 self._poisoned = True
         try:
             tmp = itdir / (INDEX_FILENAME + ".tmp")
-            tmp.write_text(json.dumps(self.snapshot(self._custody)))
+            tmp.write_text(json.dumps(encode_index(self.snapshot(self._custody))))
             tmp.replace(itdir / INDEX_FILENAME)
         except OSError:
             return False
@@ -691,7 +791,7 @@ def write_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> None:
                     index["transcriptMtimeNs"] = st.st_mtime_ns
                     index["transcriptCtimeNs"] = st.st_ctime_ns
         tmp = itdir / (INDEX_FILENAME + ".tmp")
-        tmp.write_text(json.dumps(index))
+        tmp.write_text(json.dumps(encode_index(index)))
         tmp.replace(itdir / INDEX_FILENAME)
     except OSError:
         pass
@@ -742,10 +842,13 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     except OSError:
         return None
     try:
-        index = json.loads(raw)
+        doc = json.loads(raw)
     except json.JSONDecodeError:
         return None
-    if not isinstance(index, dict) or any(k not in index for k in _REQUIRED_KEYS):
+    if not isinstance(doc, dict) or doc.get("version") != INDEX_VERSION:
+        return None
+    index = decode_index(doc)
+    if index is None or any(k not in index for k in _REQUIRED_KEYS):
         return None
     if index.get("version") != INDEX_VERSION:
         return None
@@ -773,6 +876,9 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     if not isinstance(checkpoints, list):
         return None
     prev_offset, prev_lines = -1, -1
+    # Decoded checkpoints naming the same stored state share one dict:
+    # each distinct state's shape is checked once, not once per line.
+    valid_states: set[int] = set()
     for cp in checkpoints:
         if not isinstance(cp, dict) or any(k not in cp for k in _CHECKPOINT_KEYS):
             return None
@@ -783,8 +889,10 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
             return None
         if not isinstance(lines, int) or lines < prev_lines:
             return None
-        if not _valid_checkpoint_state_shape(state):
-            return None
+        if id(state) not in valid_states:
+            if not _valid_checkpoint_state_shape(state):
+                return None
+            valid_states.add(id(state))
         crc = cp.get("lineCrc32")
         if (not isinstance(crc, int) or isinstance(crc, bool)
                 or not 0 <= crc <= 0xFFFFFFFF):

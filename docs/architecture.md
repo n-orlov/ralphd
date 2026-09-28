@@ -1782,6 +1782,26 @@ running. One file per iteration, `iterations/NNNN/render_index.json`, beside
   witness, extended by task cure-01-03-2's own ctime signal, described
   under Read side below.
 
+**On-disk encoding (task 013, PRD v0.27 requirement D.1, #275).** The list
+above is the in-memory shape every reader and the hub's own cache use. On
+disk (`version` 5, `render_index.encode_index`/`decode_index`) every
+distinct checkpoint `state` is stored once, in a `states` array, and
+`checkpoints` is an object of four parallel integer arrays:
+`byteOffsetDeltas` and `renderedLinesDeltas` (each checkpoint's value as a
+delta from the previous one), `stateIds` (the position in `states`) and
+`lineCrc32`. A transcript's checkpoints take a handful of distinct states
+(PRD Q's silent-prelude fixtures: 12,000+ raw lines, 4 states), so this
+costs about 20 bytes per raw line against ~250 for one JSON object with a
+full state copy per line (the 0.26 shape, `version` 4, now refused like any
+other wrong version). It matters because `load_index` reads the whole file
+on every tail call, and a whole tail call -- transcript, index and side
+state together -- reads at most 1,000,000 bytes on PRD Q's fixtures
+(`tests/test_tail_whole_call_read_bound.py`). `decode_index` refuses
+columns that are missing, of unequal length, non-integer, or that name a
+state that does not exist; decoded checkpoints naming the same state share
+one dict, so each distinct state's shape is validated once and readers
+deep-copy before rendering from it.
+
 **Write timing.** `engine/runner.py`'s `pump()` -- the one place
 `output.jsonl` is written *while the iteration is still running* -- feeds
 `LiveRenderIndex` every raw line the moment it is written to disk, and

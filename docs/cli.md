@@ -3624,18 +3624,16 @@ JSON endpoints served under `/api/`:
   unconditionally) — it is not the only path that can read all of it, since
   the cold-scan fallback above can reach the same result for a positive
   `tail` too. Returns `{"live": bool, "lines": ["<rendered line>", ...]}`
-  — never an error. **The whole call's byte cost, index reads included, is
-  bounded to the same 1,000,000-byte cap (task 013, v0.27 requirement D.1,
-  #275) whenever the fixture's own index stays small enough to read whole**
-  -- the bounded indexed read above still pays for `render_index.json`'s
-  FULL content on every call (there is no partial/bounded read of that
-  single monolithic JSON document), so an iteration whose index is
-  dominated by tens of thousands of one-checkpoint-per-raw-line records can
-  still cost several times the cap even though its own resolved tail never
-  touches most of the transcript behind it -- a disclosed residual
-  (`tests/test_tail_whole_call_read_bound.py` pins the exact measured
-  figures for PRD Q's own silent-prelude fixtures), not something this wave
-  closes. When the run's API isn't reachable (task 039: its
+  — never an error. **A whole indexed tail call reads at most 1,000,000
+  bytes (task 013, v0.27 requirement D.1, #275)**, counting every byte it
+  reads off any file — the transcript, `render_index.json` and any other
+  side state — on the live and the on-disk surface, on the first and a
+  repeated request, for PRD Q's canonical fixture and both of its
+  silent-prelude depths, with the render still equal to the full renderer's
+  last `N` lines. `render_index.json` is read whole on every call, so it is
+  stored compactly: each distinct render state once, the per-line
+  checkpoints as parallel integer arrays (about 20 bytes per raw transcript
+  line; see SPEC.md section 11.4). When the run's API isn't reachable (task 039: its
   container died, or the run finished long ago) `live` is `false` and the
   lines come from the **on-disk transcript merge** instead
   (`ralphd.log_merge.merged_lines` — the very same merge the engine serves

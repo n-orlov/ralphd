@@ -1,65 +1,31 @@
-"""Task 013 (v0.27 PRD D.1, #275): a whole tail call's byte cost, index
-reads included, bounded to the same frozen 1,000,000-byte cap PRD C.2/G.2
-already froze for `ui_server.rendered_log_lines` -- but counted honestly
-this time.
+"""Task 013 (v0.27 PRD D.1, #275): a whole tail call reads at most
+1,000,000 bytes -- the transcript, `render_index.json` and every other
+side-state file included -- through the real client-facing call
+(`ui_server.rendered_log_lines`), on the live `/logs` surface and the
+on-disk fallback, on the first and a repeated request, for PRD Q's own
+canonical fixture (`gap_count=1,000`, no prelude) and both of its
+silent-prelude depths (`gap_count=10,000`, prelude 1,000/1,700), and the
+render equals the full renderer's last N lines exactly.
 
-`test_log_merge_bounded_reads.py`'s own `_count_transcript_bytes` (task
-005, PRD E) and `test_log_render_bounded_tail.py`'s own local copy of it
-both filter to `OUTPUT_FILENAME` by name: neither ever sees a byte read
-off `render_index.json` itself. `render_index.bounded_tail`'s own
-`load_index` (task cure-01-01 era, shipped well before this wave) reads
-that file in FULL (`path.read_text()`) to validate and consume it on
-EVERY call, whatever fraction of the transcript behind it the resolved
-tail actually needed -- a cost neither narrower counter could ever see.
-This module drives the real consumer (`ui_server.rendered_log_lines`),
-through both the live `/logs` ASGI surface and the on-disk dead-run
-fallback, on a first call and a byte-identical repeated one, against
-PRD Q's own canonical fixture (`gap_count=1,000`, no prelude) and both of
-its silent-prelude depths (`gap_count=10,000`, prelude 1,000/1,700),
-using `test_log_render_bounded_tail.py`'s new, honest
-`_count_transcript_bytes` (counts every file a call actually opens, not
-just `output.jsonl`).
+The counter is `test_log_render_bounded_tail._count_transcript_bytes`,
+which counts every byte read off every file the call opens -- unlike
+`test_log_merge_bounded_reads.py`'s own counter, which filters to
+`output.jsonl` by name and so never saw a byte of `render_index.json`.
 
-**Disclosed residual (PRD D.1's own escape hatch, "if an exact render
-cannot be kept within the bound, a petition with the measurement is the
-deliverable instead").** Measured this way, PRD Q's own canonical fixture
-stays comfortably under the cap on both surfaces and both calls -- the
-per-line checkpoint density `render_index`'s write side (task 012, D.2)
-already keeps means the TRANSCRIPT read a bisecting tail walk needs stays
-small regardless of how much silent history sits behind it, and this
-fixture's own `render_index.json` is itself small enough that reading it
-whole costs little. Both silent-prelude depths, though, measured
-identically: their OWN `render_index.json` is dominated by one checkpoint
-per raw NDJSON line -- 10,500+ of them -- and reading that file in FULL
-(there is no partial/bounded read of a single monolithic JSON document;
-`load_index` cannot validate ascending checkpoint order, per-checkpoint
-CRC/state shape, or the witness fields without parsing every byte of it)
-costs ~3.07-3.25MB per call, three times the frozen cap, on EVERY call,
-identically -- first or repeated, live or dead-run, because neither
-`_ABSENT_INDEX_CACHE` (task cure-01-02-2, keyed by iteration identity, a
-pure speed optimisation over an ABSENT on-disk index) nor any other cache
-this hub carries intercepts a request whose iteration's `render_index.json`
-already exists on disk and validates: `render_index.bounded_tail` reads it
-fresh, off disk, every time. Bounding this exactly would need
-`render_index.json`'s own on-disk shape to become seekable/partial-
-readable (a JSONL or segmented successor format, `load_index`'s
-validation rebuilt to verify only a bounded suffix the way
-`_covered_prefix_matches` already does for tamper detection) without
-changing the write side's own one-checkpoint-per-raw-line density
-(`test_render_index_linear_writer.py`'s own `c200==200`/`c400==400`/
-`c800==800` pins, and `test_render_index.py`'s
-`test_every_checkpoint_matches_an_independent_full_render`, both assert
-that density is exact, deliberate, already-shipped behaviour this task
-must not weaken to chase this bound) -- a format migration touching
-`LiveRenderIndex.flush`/`snapshot`, `write_index`, `load_index`,
-`_render_segment` and every test that inspects `render_index.json`'s own
-JSON shape directly, out of THIS task's own scope. The measured, disclosed
-residual is pinned by exact byte count below (a regression in EITHER
-direction -- a further, unexplained increase, or a decrease that would
-mean the fixture stopped exercising this cost at all -- is caught by the
-pin) rather than asserted against the impossible 1,000,000-byte bound;
-this task's own worker report carries the matching `contradictory-clauses`
-petition.
+`render_index.bounded_tail`'s `load_index` reads `render_index.json` in
+full on every call (it validates the whole document before trusting any
+of it), so the file's own size is part of the bound. The 0.26 on-disk
+shape -- one JSON object per raw transcript line, each carrying its own
+full copy of the render state -- cost ~3 MB for the silent-prelude
+fixtures (12,000+ raw lines but only a handful of distinct states), three
+times the bound, on every call. The compact encoding
+(`render_index.encode_index`: each distinct state stored once, the
+checkpoints as parallel integer columns) keeps the same one-checkpoint-
+per-raw-line density and the same exact render at ~20 bytes a line.
+`test_the_0_26_dense_index_shape_alone_exceeds_the_bound` below shows the
+fixtures really do exercise that cost: the 0.26 document for the same
+checkpoints is itself over the bound before a single transcript byte is
+read, so the 0.26 reader fails the bounded test.
 """
 
 from __future__ import annotations
@@ -68,10 +34,12 @@ import asyncio
 import json
 import re
 
+import pytest
+
 from ralphd import collapse_index, render_index
 from ralphd.cli import ui_server
 from ralphd.cli.log_render import new_render_state, render_to_lines
-from ralphd.log_merge import merged_lines
+from ralphd.log_merge import OUTPUT_FILENAME, merged_lines
 
 from test_log_merge_bounded_reads import (
     _api_logs_text,
@@ -84,16 +52,15 @@ _FROZEN_CAP = 1_000_000  # PRD C.2/G.2/D.1: never rises in this wave.
 _GAP_LINE = json.dumps(
     {"type": "message_end", "message": {"content": []}, "padding": "x" * 1000})
 
-# Task 013 (D.1): the disclosed residual's own exact pins -- see this
-# module's docstring. `None` for the canonical fixture: it stays under the
-# frozen cap, so there is nothing to disclose, only to bound.
-_DISCLOSED_RESIDUAL_DISK = {1_000: 3_068_226, 1_700: 3_248_827}
+# (prelude_count, gap_count): PRD Q's canonical fixture, then both
+# silent-prelude depths.
+_FIXTURES = [(0, 1_000), (1_000, 10_000), (1_700, 10_000)]
 
 
 def _write_and_index(reg_root, prelude_count: int, gap_count: int):
     """Builds the fixture, writes BOTH the render index and the legacy
-    collapse index the engine itself would carry for a finished
-    iteration, and returns `(run_root, full_render_last_two_lines)`."""
+    collapse index the engine itself carries for a finished iteration,
+    and returns `(run_root, full_render_lines)`."""
     run_root = reg_root / "runs" / "probe"
     text = f"whole-call-read-bound prelude={prelude_count} gap={gap_count}"
     _write_iteration_with_recognized_nonrendering_gap(
@@ -104,14 +71,13 @@ def _write_and_index(reg_root, prelude_count: int, gap_count: int):
     assert render_index.load_index(itdir) is not None
     full = render_to_lines("".join(merged_lines(run_root)), tty=False,
                            state=new_render_state())
-    return run_root, full[-2:]
+    return run_root, full
 
 
-def _wire_disk(monkeypatch):
-    monkeypatch.setattr(ui_server, "_proxy_text", lambda *a, **k: (False, ""))
-
-
-def _wire_live(monkeypatch, run_root, workspace_root):
+def _wire(monkeypatch, surface, run_root, workspace_root):
+    if surface == "disk":
+        monkeypatch.setattr(ui_server, "_proxy_text", lambda *a, **k: (False, ""))
+        return
     workspace_root.mkdir(exist_ok=True)
 
     def proxy(reg, run_id, path, **kw):
@@ -121,110 +87,57 @@ def _wire_live(monkeypatch, run_root, workspace_root):
     monkeypatch.setattr(ui_server, "_proxy_text", proxy)
 
 
-def test_prd_q_canonical_fixture_bounded_on_every_surface_first_and_repeated(
-        tmp_path, monkeypatch):
-    """PRD Q's own canonical fixture (`gap_count=1,000`, no prelude): the
-    whole call, index bytes included, must stay at or under the frozen
-    1,000,000-byte cap -- on the live `/logs` surface and the on-disk
-    fallback alike, on a first call and a byte-identical repeated one.
-    Fails on the "0.26 reader" (`test_log_merge_bounded_reads.py`'s and
-    `test_log_render_bounded_tail.py`'s own pre-existing counters), which
-    filter to `output.jsonl` and would report only the fraction of this
-    same call's true cost that touches the transcript, silently missing
-    every byte `render_index.bounded_tail` reads off `render_index.json`
-    itself."""
-    for surface in ("disk", "live"):
-        reg = tmp_path / f"q-canonical-{surface}" / "registry"
-        run_root, expected = _write_and_index(reg, prelude_count=0, gap_count=1_000)
-        if surface == "disk":
-            _wire_disk(monkeypatch)
-        else:
-            _wire_live(monkeypatch, run_root, tmp_path / f"workspace-{surface}")
-
-        ui_server._drop_run_detail_caches("probe")
-        counts1 = _count_transcript_bytes(monkeypatch)
-        live1, lines1 = ui_server.rendered_log_lines(reg, "probe", 2)
-        first = counts1[0]
+def _measured_call(monkeypatch, surface, reg, run_root, workspace_root, n):
+    """One `ui_server.rendered_log_lines` call, every byte it reads off
+    any file counted; returns `(bytes_read, live, lines)`."""
+    _wire(monkeypatch, surface, run_root, workspace_root)
+    counts = _count_transcript_bytes(monkeypatch)
+    try:
+        live, lines = ui_server.rendered_log_lines(reg, "probe", n)
+    finally:
         monkeypatch.undo()
-
-        if surface == "disk":
-            _wire_disk(monkeypatch)
-        else:
-            _wire_live(monkeypatch, run_root, tmp_path / f"workspace-{surface}")
-        counts2 = _count_transcript_bytes(monkeypatch)
-        live2, lines2 = ui_server.rendered_log_lines(reg, "probe", 2)
-        second = counts2[0]
-        monkeypatch.undo()
-
-        assert lines1 == expected, (surface, lines1, expected)
-        assert lines2 == expected, (surface, lines2, expected)
-        assert live1 is (surface == "live")
-        assert live2 is (surface == "live")
-        assert first <= _FROZEN_CAP, (surface, "first", first)
-        assert second <= _FROZEN_CAP, (surface, "second", second)
+    return counts[0], live, lines
 
 
-def test_silent_prelude_depths_disclosed_residual_measured_and_render_exact(
-        tmp_path, monkeypatch):
-    """PRD Q's two silent-prelude depths (`gap_count=10,000`, prelude
-    1,000/1,700): the render stays EXACT -- byte-identical to the full
-    renderer's own last two lines -- on every surface, first call and
-    repeated alike, but the whole-call byte cost (index reads honestly
-    included) exceeds the frozen 1,000,000-byte cap roughly threefold,
-    identically on every call: this module's own docstring names why
-    (`render_index.json`'s own monolithic-JSON shape has no partial read,
-    and this fixture's is dominated by 10,500+ one-per-raw-line
-    checkpoints). Pinned by exact measurement (the disclosed-residual
-    disposition PRD D.1 itself pre-authorizes: "a petition with the
-    measurement is the deliverable instead") rather than asserted against
-    the cap it cannot meet; this task's own worker report carries the
-    matching `contradictory-clauses` petition naming this exact obligation
-    and these exact figures."""
-    for prelude_count in (1_000, 1_700):
-        residual = _DISCLOSED_RESIDUAL_DISK[prelude_count]
-        for surface in ("disk", "live"):
-            reg = tmp_path / f"prelude-{prelude_count}-{surface}" / "registry"
-            run_root, expected = _write_and_index(
-                reg, prelude_count=prelude_count, gap_count=10_000)
-            if surface == "disk":
-                _wire_disk(monkeypatch)
-            else:
-                _wire_live(monkeypatch, run_root,
-                          tmp_path / f"workspace-{prelude_count}-{surface}")
+@pytest.mark.parametrize("surface", ["disk", "live"])
+@pytest.mark.parametrize("prelude_count,gap_count", _FIXTURES)
+def test_whole_call_reads_at_most_the_bound_and_renders_exactly(
+        tmp_path, monkeypatch, prelude_count, gap_count, surface):
+    """Every fixture, both surfaces, first and repeated request: at most
+    1,000,000 bytes read per call, index and side-state files included,
+    and the lines returned equal the full renderer's last N exactly."""
+    reg = tmp_path / "registry"
+    run_root, full = _write_and_index(reg, prelude_count, gap_count)
+    workspace_root = tmp_path / "workspace"
+    assert len(full) >= 2, full
+    ui_server._drop_run_detail_caches("probe")
+    for n in (2, 1):
+        for attempt in ("first", "repeated"):
+            read, live, lines = _measured_call(
+                monkeypatch, surface, reg, run_root, workspace_root, n)
+            assert lines == full[-n:], (surface, attempt, n, lines, full[-n:])
+            assert live is (surface == "live")
+            assert read <= _FROZEN_CAP, (prelude_count, surface, attempt, n, read)
 
-            ui_server._drop_run_detail_caches("probe")
-            counts1 = _count_transcript_bytes(monkeypatch)
-            live1, lines1 = ui_server.rendered_log_lines(reg, "probe", 2)
-            first = counts1[0]
-            monkeypatch.undo()
 
-            if surface == "disk":
-                _wire_disk(monkeypatch)
-            else:
-                _wire_live(monkeypatch, run_root,
-                          tmp_path / f"workspace-{prelude_count}-{surface}")
-            counts2 = _count_transcript_bytes(monkeypatch)
-            live2, lines2 = ui_server.rendered_log_lines(reg, "probe", 2)
-            second = counts2[0]
-            monkeypatch.undo()
-
-            assert lines1 == expected, (prelude_count, surface, lines1, expected)
-            assert lines2 == expected, (prelude_count, surface, lines2, expected)
-            assert live1 is (surface == "live")
-            assert live2 is (surface == "live")
-            # Both calls cost the same, and well over the frozen cap:
-            # nothing here caches an on-disk, already-valid render index.
-            assert first > _FROZEN_CAP, (prelude_count, surface, first)
-            assert second > _FROZEN_CAP, (prelude_count, surface, second)
-            if surface == "disk":
-                # Pinned exactly on the disk surface (deterministic,
-                # nothing else touches the filesystem alongside it); the
-                # live surface's own extra `GET /logs?tail=1` probe goes
-                # through the real engine ASGI handler and reads tens of
-                # thousands of additional bytes -- bounded above, not
-                # pinned exactly.
-                assert first == residual, (prelude_count, first)
-                assert second == residual, (prelude_count, second)
-            else:
-                assert residual < first < residual + 100_000, (prelude_count, first)
-                assert residual < second < residual + 100_000, (prelude_count, second)
+@pytest.mark.parametrize("prelude_count,gap_count", _FIXTURES[1:])
+def test_the_0_26_dense_index_shape_alone_exceeds_the_bound(
+        tmp_path, prelude_count, gap_count):
+    """The silent-prelude fixtures really do exercise the index-read cost:
+    the 0.26 on-disk document for the SAME checkpoints (one object per
+    raw line, each with its own full state -- the in-memory shape
+    serialised as is) is over the 1,000,000-byte bound by itself, so a
+    reader that loads it whole cannot pass the test above. The compact
+    file the engine now writes carries every one of those checkpoints
+    (same count, same values once decoded) well under the bound."""
+    run_root, _ = _write_and_index(tmp_path / "registry", prelude_count, gap_count)
+    itdir = run_root / "iterations" / "0001"
+    in_memory = render_index.compute_render_index(itdir / OUTPUT_FILENAME)
+    dense = json.dumps(in_memory)
+    compact = (itdir / render_index.INDEX_FILENAME).read_text()
+    assert len(dense.encode()) > _FROZEN_CAP, len(dense)
+    assert len(compact.encode()) < _FROZEN_CAP // 2, len(compact)
+    loaded = render_index.load_index(itdir)
+    assert loaded is not None
+    assert len(loaded["checkpoints"]) == prelude_count + gap_count + 504
+    assert loaded["checkpoints"] == in_memory["checkpoints"]

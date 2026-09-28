@@ -123,7 +123,78 @@ class TestEntriesEqualAFullRenderOfTheirOwnPrefix:
         render_index.write_index(itdir)
         in_memory = render_index.compute_render_index(itdir / OUTPUT_FILENAME)
         on_disk = json.loads((itdir / render_index.INDEX_FILENAME).read_text())
-        assert on_disk == in_memory
+        assert on_disk == render_index.encode_index(in_memory)
+        assert render_index.decode_index(on_disk) == in_memory
+
+
+class TestCompactOnDiskEncoding:
+    """Task 013 (v0.27 D.1, #275): `render_index.json` stores each distinct
+    render state once and the checkpoints as parallel integer columns
+    (`encode_index`/`decode_index`, version 5); the in-memory shape every
+    reader uses is unchanged, and anything that is not a well-formed
+    version-5 document is refused."""
+
+    def _indexed(self, tmp_path, gap_count=200):
+        run_root = tmp_path / "registry" / "runs" / "probe"
+        gap = json.dumps({"type": "message_end", "message": {"content": []}})
+        _write_iteration_with_recognized_nonrendering_gap(
+            run_root, 1, "hi", gap, gap_count)
+        itdir = run_root / "iterations" / "0001"
+        render_index.write_index(itdir)
+        return itdir
+
+    def test_each_distinct_state_is_stored_once_and_decodes_exactly(self, tmp_path):
+        itdir = self._indexed(tmp_path)
+        doc = json.loads((itdir / render_index.INDEX_FILENAME).read_text())
+        in_memory = render_index.compute_render_index(itdir / OUTPUT_FILENAME)
+        distinct = {json.dumps(cp["state"], sort_keys=True)
+                    for cp in in_memory["checkpoints"]}
+        assert doc["version"] == render_index.INDEX_VERSION == 5
+        assert len(doc["states"]) == len(distinct) < len(in_memory["checkpoints"])
+        assert all(len(doc["checkpoints"][k]) == len(in_memory["checkpoints"])
+                   for k in render_index._COLUMN_KEYS)
+        loaded = render_index.load_index(itdir)
+        assert loaded is not None
+        assert loaded["checkpoints"] == in_memory["checkpoints"]
+
+    def test_the_0_26_dense_version_4_document_is_refused(self, tmp_path):
+        itdir = self._indexed(tmp_path)
+        dense = render_index.decode_index(
+            json.loads((itdir / render_index.INDEX_FILENAME).read_text()))
+        dense["version"] = 4
+        (itdir / render_index.INDEX_FILENAME).write_text(json.dumps(dense))
+        assert render_index.load_index(itdir) is None
+
+    @pytest.mark.parametrize("damage", [
+        "short-column", "state-id-out-of-range", "negative-state-id",
+        "bool-delta", "string-delta", "zero-offset-delta",
+        "negative-lines-delta", "states-not-a-list", "columns-not-an-object"])
+    def test_a_malformed_compact_document_is_refused(self, tmp_path, damage):
+        itdir = self._indexed(tmp_path)
+        path = itdir / render_index.INDEX_FILENAME
+        assert render_index.load_index(itdir) is not None
+        doc = json.loads(path.read_text())
+        cols = doc["checkpoints"]
+        if damage == "short-column":
+            cols["lineCrc32"].pop()
+        elif damage == "state-id-out-of-range":
+            cols["stateIds"][-1] = len(doc["states"])
+        elif damage == "negative-state-id":
+            cols["stateIds"][-1] = -1
+        elif damage == "bool-delta":
+            cols["byteOffsetDeltas"][3] = True
+        elif damage == "string-delta":
+            cols["renderedLinesDeltas"][3] = "0"
+        elif damage == "zero-offset-delta":
+            cols["byteOffsetDeltas"][3] = 0
+        elif damage == "negative-lines-delta":
+            cols["renderedLinesDeltas"][3] = -1
+        elif damage == "states-not-a-list":
+            doc["states"] = {"0": doc["states"][0]}
+        else:
+            doc["checkpoints"] = render_index.decode_index(doc)["checkpoints"]
+        path.write_text(json.dumps(doc))
+        assert render_index.load_index(itdir) is None, damage
 
 
 def _fake_pi_emits_then_hangs(tmp_path, n: int):
@@ -235,7 +306,8 @@ class TestWrittenWhileLive:
         # own equivalent case).
         doc = dict(index)
         doc["transcriptBytes"] = actual_size + 1
-        (itdir / render_index.INDEX_FILENAME).write_text(json.dumps(doc))
+        (itdir / render_index.INDEX_FILENAME).write_text(
+            json.dumps(render_index.encode_index(doc)))
         assert render_index.load_index(itdir) is None
 
 

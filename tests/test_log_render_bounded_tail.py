@@ -802,24 +802,45 @@ def _count_transcript_bytes(monkeypatch) -> list[int]:
     every call, whether or not the tail it resolves ever touches most of
     the transcript behind it -- a cost neither of those two narrower
     counters could ever see, since both filter to `OUTPUT_FILENAME` by
-    name. Every byte read off ANY file under an iteration directory is
-    counted here, wrapping `pathlib.Path.open`'s returned file object's
-    own `.read`, in either text or binary mode, by BYTES actually
-    returned -- not the number of times a file was opened.
+    name. Every byte read off ANY file the call opens is counted here,
+    wrapping `pathlib.Path.open`'s returned file object's own `.read`,
+    `.readline`, `.readlines` and (binary) `.readinto`, in either text or
+    binary mode, by BYTES actually returned -- not the number of times a
+    file was opened. `Path.read_text`/`read_bytes` go through
+    `Path.open`, so `load_index`'s whole-document read of
+    `render_index.json` is counted in full: that file's own size is part
+    of the 1,000,000-byte whole-call bound
+    (`tests/test_tail_whole_call_read_bound.py`), which is why its
+    on-disk encoding is the compact one (`render_index.encode_index`).
     """
     counts = [0]
     real_open = pathlib.Path.open
 
+    def _size(data) -> int:
+        if isinstance(data, list):
+            return sum(_size(item) for item in data)
+        return len(data) if isinstance(data, bytes) else len(data.encode())
+
     def counted(self, mode="r", *args, **kwargs):
         f = real_open(self, mode, *args, **kwargs)
-        real_read = f.read
+        for name in ("read", "readline", "readlines"):
+            real = getattr(f, name)
 
-        def read(*a, **k):
-            data = real_read(*a, **k)
-            counts[0] += len(data) if isinstance(data, bytes) else len(data.encode())
-            return data
+            def wrapped(*a, _real=real, **k):
+                data = _real(*a, **k)
+                counts[0] += _size(data)
+                return data
 
-        f.read = read
+            setattr(f, name, wrapped)
+        if hasattr(f, "readinto"):
+            real_readinto = f.readinto
+
+            def readinto(buf, _real=real_readinto):
+                got = _real(buf)
+                counts[0] += got or 0
+                return got
+
+            f.readinto = readinto
         return f
 
     monkeypatch.setattr(pathlib.Path, "open", counted)

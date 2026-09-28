@@ -340,8 +340,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # measured and pinned exactly), measured `.venv/bin/python -m pytest
     # -q -m fast --collect-only` -> fast 6478/451, `-m smoke
     # --collect-only` -> smoke 4786/328.
-    "fast": {"tests": 6478, "modules": 451},
-    "smoke": {"tests": 4786, "modules": 328},
+    "fast": {"tests": 6495, "modules": 451},
+    "smoke": {"tests": 4803, "modules": 328},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

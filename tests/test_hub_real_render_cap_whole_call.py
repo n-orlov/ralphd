@@ -249,6 +249,24 @@ def _write_live_iteration(run_root, lines, *, ended, indexed_lines):
     return index, sum(len(c) for c in raw)
 
 
+def _read_index_doc(index_path):
+    """`render_index.json` decoded into the in-memory checkpoint shape
+    (`render_index.decode_index`, task 013's compact on-disk encoding),
+    each checkpoint holding its OWN copy of its state, so a test damaging
+    one checkpoint's state damages exactly that one."""
+    doc = render_index.decode_index(json.loads(index_path.read_text()))
+    assert doc is not None
+    for cp in doc["checkpoints"]:
+        cp["state"] = json.loads(json.dumps(cp["state"]))
+    return doc
+
+
+def _write_index_doc(index_path, doc):
+    """Write a (possibly damaged) in-memory index back in the on-disk
+    encoding the engine itself writes (`render_index.encode_index`)."""
+    index_path.write_text(json.dumps(render_index.encode_index(doc)))
+
+
 def _said(text):
     return json.dumps({"type": "message_end", "message": {"content": [
         {"type": "text", "text": text}]}})
@@ -387,7 +405,7 @@ def test_missing_or_wrong_typed_checkpoint_state_falls_back_on_both_surfaces(
                              indexed_lines=2)
         itdir = run_root / "iterations" / "0001"
         index_path = itdir / render_index.INDEX_FILENAME
-        doc = json.loads(index_path.read_text())
+        doc = _read_index_doc(index_path)
         state = doc["checkpoints"][0]["state"]
         if damage == "empty-dict":
             doc["checkpoints"][0]["state"] = {}
@@ -397,7 +415,7 @@ def test_missing_or_wrong_typed_checkpoint_state_falls_back_on_both_surfaces(
             state["text_seen"] = "nope"
         else:
             state["an_unknown_extra_key"] = 1
-        index_path.write_text(json.dumps(doc))
+        _write_index_doc(index_path, doc)
 
         assert render_index.load_index(itdir) is None
         assert render_index.bounded_tail(run_root, 1) is None
@@ -433,7 +451,7 @@ def test_malformed_nested_state_in_a_later_checkpoint_falls_back_on_both_surface
         _write_live_iteration(run_root, lines, ended=False, indexed_lines=3)
         itdir = run_root / "iterations" / "0001"
         index_path = itdir / render_index.INDEX_FILENAME
-        doc = json.loads(index_path.read_text())
+        doc = _read_index_doc(index_path)
         assert len(doc["checkpoints"]) == 3
         state = doc["checkpoints"][-1]["state"]
         if damage == "tool-pending-int":
@@ -450,7 +468,7 @@ def test_malformed_nested_state_in_a_later_checkpoint_falls_back_on_both_surface
             state["collapse_unresolved"] = [1]
         else:
             state["open_tool_line"] = 5
-        index_path.write_text(json.dumps(doc))
+        _write_index_doc(index_path, doc)
 
         assert render_index.load_index(itdir) is None
         assert render_index.bounded_tail(run_root, 1) is None
@@ -575,7 +593,7 @@ def test_missing_wrong_typed_or_inconsistent_checkpoint_fields_fall_back_on_both
         _write_live_iteration(run_root, lines, ended=False, indexed_lines=4)
         itdir = run_root / "iterations" / "0001"
         index_path = itdir / render_index.INDEX_FILENAME
-        doc = json.loads(index_path.read_text())
+        doc = _read_index_doc(index_path)
         middle = doc["checkpoints"][2]
         if damage == "missing-crc":
             del middle["lineCrc32"]
@@ -591,7 +609,7 @@ def test_missing_wrong_typed_or_inconsistent_checkpoint_fields_fall_back_on_both
             middle["state"]["text_seen"] = not middle["state"]["text_seen"]
         else:
             doc["checkpoints"][3]["renderedLines"] += 1
-        index_path.write_text(json.dumps(doc))
+        _write_index_doc(index_path, doc)
 
         assert render_index.load_index(itdir) is None, damage
         assert render_index.bounded_tail(run_root, 1) is None
@@ -617,11 +635,11 @@ def test_a_version_1_index_without_line_checksums_falls_back_exactly(
                               indexed_lines=2)
         itdir = run_root / "iterations" / "0001"
         index_path = itdir / render_index.INDEX_FILENAME
-        doc = json.loads(index_path.read_text())
+        doc = _read_index_doc(index_path)
         doc["version"] = 1
         for cp in doc["checkpoints"]:
             del cp["lineCrc32"]
-        index_path.write_text(json.dumps(doc))
+        _write_index_doc(index_path, doc)
         assert render_index.load_index(itdir) is None
         full = render_to_lines("".join(merged_lines(run_root)), tty=False,
                                state=new_render_state())

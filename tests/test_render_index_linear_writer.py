@@ -36,6 +36,7 @@ allowance).
 from __future__ import annotations
 
 import asyncio
+import json
 import stat
 from pathlib import Path
 
@@ -73,9 +74,11 @@ def _run_and_measure(tmp_path: Path, n: int, label: str):
     `(total_bytes_written, total_records_written, transcript_bytes,
     checkpoint_count)`. `total_records_written` sums, across every
     publish, the number of checkpoint objects that publish's own JSON
-    payload carries -- each has exactly one `"byteOffset"` key, so
-    counting that substring's occurrences counts checkpoints without
-    parsing JSON on every write."""
+    payload carries -- the length of its `checkpoints.lineCrc32` column
+    (task 013, D.1: the compact on-disk encoding stores one column entry
+    per checkpoint record instead of one JSON object carrying a
+    `"byteOffset"` key, which the 0.26 shape let this probe count by
+    substring)."""
     itdir = tmp_path / label / "iterations" / "0001"
     itdir.mkdir(parents=True)
     transcript = itdir / OUTPUT_FILENAME
@@ -91,7 +94,7 @@ def _run_and_measure(tmp_path: Path, n: int, label: str):
         nonlocal total_bytes, total_records
         if self.name == tmp_name:
             total_bytes += len(data.encode("utf-8"))
-            total_records += data.count('"byteOffset"')
+            total_records += len(json.loads(data)["checkpoints"]["lineCrc32"])
         return original_write_text(self, data, *a, **kw)
 
     Path.write_text = spy_write_text
