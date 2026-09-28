@@ -273,8 +273,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # absent for a planner-origin task and for no task selected at all),
     # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
     # 6425/441, `-m smoke --collect-only` -> 4733/318.
-    "fast": {"tests": 6425, "modules": 441},
-    "smoke": {"tests": 4733, "modules": 318},
+    # Task 003 (A.3, #274): +4 tests / +1 module (tests/
+    # test_cure_verify_prompt.py: `_verify_task_extra`'s "Checking the
+    # rule, not just the listed cases" section, present for a
+    # review-cure-origin task, absent for a planner-origin task and for a
+    # steering-origin task), measured `.venv/bin/python -m pytest -q -m
+    # fast --collect-only` -> 6429/442, `-m smoke --collect-only` ->
+    # 4737/319.
+    "fast": {"tests": 6429, "modules": 442},
+    "smoke": {"tests": 4737, "modules": 319},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -17333,6 +17333,84 @@ class LoopSupervisor:
         self._emit_task_changes()
         return False
 
+    def _verify_task_extra(self, task: dict) -> str:
+        """Build the `extra` text `_verify_task` folds into the per-task
+        verify prompt (`build_prompt("verify", extra=..., prompt_name=
+        "task-verify")`), factored out of `_verify_task` itself so it can be
+        exercised directly the same way `_worker_assignment_extra` already
+        is (`tests/test_cure_worker_prompt.py`) -- no behaviour change from
+        the inline version this replaces.
+        """
+        tid = task.get("id", "")
+        title = task.get("title", "")
+        criteria = task.get("successCriteria", "")
+        attempts = task.get("validationAttempts", 0)
+        # Task 004 (requirement A.1, #154): verify receives the SAME
+        # resolved materiality rubric review does -- inline, adopted by
+        # reference, or the engine default (`findings.resolve_materiality_
+        # rubric`). `_review_materiality_rubric_context` computes that
+        # purely from the contract text and the workspace root; nothing in
+        # its body is review-specific, so verify reuses it verbatim rather
+        # than re-resolving the same rubric a second way.
+        # Task 013 (v0.23 requirement A.2, #224): verify also gets every
+        # recorded operator RULING, unconditionally -- A.2's own cure
+        # condition names this explicitly: verify reads `tasks.json` and
+        # honours no amendment today, so a ruling that only reached review
+        # would come back as a verify failure.
+        extra = (self._review_materiality_rubric_context() +
+                self._operator_ruling_review_context(audience="verify") + (
+            f"## Task under verification\n\n"
+            f"- **id**: {tid}\n"
+            f"- **title**: {title}\n"
+            f"- **successCriteria**: {criteria}\n"
+            f"- **validationAttempts**: {attempts} of {VALIDATION_ATTEMPT_LIMIT}\n"
+        ))
+        # Task 003 (PRD requirement A.3): a `review-cure`-origin task
+        # (`state.is_review_cure_origin`) has a `successCriteria` that IS a
+        # review finding's own `cured_when` verbatim -- the broken RULE
+        # review named, not a checklist of the finding's own probe cases.
+        # A verifier that only re-runs the finding's own listed examples
+        # and the worker's own new tests would validate a fix that only
+        # covers cases already thought of, never checking whether the rule
+        # itself is closed. So this task's own verify prompt gets one extra
+        # step: try at least one case of the rule that is NOT taken from
+        # the finding or the worker's tests, before validating. Absent
+        # entirely for a planner-origin or steering-origin task -- "presence
+        # is the signal" discipline this method's worker-side sibling
+        # already uses (`_worker_assignment_extra`'s "Fixing a review
+        # finding" section).
+        if state.is_review_cure_origin(task):
+            extra += (
+                "\n## Checking the rule, not just the listed cases\n\n"
+                "This task is engine-inserted output from a REFUTED review "
+                "finding (`state.is_review_cure_origin`): its "
+                "**successCriteria** above IS the finding's own "
+                "`cured_when` -- the broken RULE review named, not a "
+                "checklist of the finding's own probe cases.\n\n"
+                "Before you validate: try at least one case of the SAME "
+                "rule that is NOT taken from the finding's own evidence and "
+                "NOT taken from any test the worker added -- construct it "
+                "yourself from the rule `cured_when` states. If that case "
+                "still fails, the cause is not fixed even though the "
+                "finding's own examples and the worker's own tests pass --"
+                " reject.\n"
+            )
+        # Task 004 (#121, requirement A.4): task-verify.md step 4 tells the
+        # verifier to recognise the LAST available attempt from
+        # `validationAttempts` itself -- name that condition explicitly here
+        # (one below the limit) instead of leaving the verifier to compute
+        # `VALIDATION_ATTEMPT_LIMIT - 1` from a bare number in prose. Absent
+        # at `attempts == 0` (and at every count that is not one below the
+        # limit) -- present ONLY on the last available attempt.
+        if attempts == VALIDATION_ATTEMPT_LIMIT - 1:
+            extra += (
+                f"- **FINAL ATTEMPT**: this is the LAST available "
+                f"validation attempt (`validationAttempts` is one below "
+                f"`VALIDATION_ATTEMPT_LIMIT`) -- a rejecting verdict now "
+                f"marks the task `failed`.\n"
+            )
+        return extra
+
     async def _verify_task(self, task: dict) -> bool:
         """Run one verify iteration (with bounded retry on transient agent/
         provider errors) for a newly-completed task.
@@ -17397,43 +17475,8 @@ class LoopSupervisor:
         # failures` routes it to review.
         if task.get("validationAttempts", 0) >= VALIDATION_ATTEMPT_LIMIT:
             return self._fail_verify_skipped_exhausted(tid)
-        title = task.get("title", "")
-        criteria = task.get("successCriteria", "")
         attempts = task.get("validationAttempts", 0)
-        # Task 004 (requirement A.1, #154): verify receives the SAME
-        # resolved materiality rubric review does -- inline, adopted by
-        # reference, or the engine default (`findings.resolve_materiality_
-        # rubric`). `_review_materiality_rubric_context` computes that
-        # purely from the contract text and the workspace root; nothing in
-        # its body is review-specific, so verify reuses it verbatim rather
-        # than re-resolving the same rubric a second way.
-        # Task 013 (v0.23 requirement A.2, #224): verify also gets every
-        # recorded operator RULING, unconditionally -- A.2's own cure
-        # condition names this explicitly: verify reads `tasks.json` and
-        # honours no amendment today, so a ruling that only reached review
-        # would come back as a verify failure.
-        extra = (self._review_materiality_rubric_context() +
-                self._operator_ruling_review_context(audience="verify") + (
-            f"## Task under verification\n\n"
-            f"- **id**: {tid}\n"
-            f"- **title**: {title}\n"
-            f"- **successCriteria**: {criteria}\n"
-            f"- **validationAttempts**: {attempts} of {VALIDATION_ATTEMPT_LIMIT}\n"
-        ))
-        # Task 004 (#121, requirement A.4): task-verify.md step 4 tells the
-        # verifier to recognise the LAST available attempt from
-        # `validationAttempts` itself -- name that condition explicitly here
-        # (one below the limit) instead of leaving the verifier to compute
-        # `VALIDATION_ATTEMPT_LIMIT - 1` from a bare number in prose. Absent
-        # at `attempts == 0` (and at every count that is not one below the
-        # limit) -- present ONLY on the last available attempt.
-        if attempts == VALIDATION_ATTEMPT_LIMIT - 1:
-            extra += (
-                f"- **FINAL ATTEMPT**: this is the LAST available "
-                f"validation attempt (`validationAttempts` is one below "
-                f"`VALIDATION_ATTEMPT_LIMIT`) -- a rejecting verdict now "
-                f"marks the task `failed`.\n"
-            )
+        extra = self._verify_task_extra(task)
 
         result: IterationResult | None = None
         verified = False
