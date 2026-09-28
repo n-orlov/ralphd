@@ -3594,8 +3594,13 @@ JSON endpoints served under `/api/`:
   index covers it. The hub first reads the run's own per-iteration render
   indexes (`render_index.json`, via `ralphd.render_index.bounded_tail`)
   straight off disk, walking backward across as many earlier indexed
-  iterations as `N` needs, so the cost is proportional to `N`, not to the
-  run's history or to silent transcript; a cheap `GET /logs?tail=1` probe of
+  iterations as `N` needs; the rendering and walk-back work is proportional
+  to `N`, not to the run's history or to silent transcript, but each
+  per-iteration `render_index.json` is read whole (`load_index` validates
+  the whole document before trusting any of it), so the index-read cost is
+  proportional to the number of raw transcript lines before the tail in
+  every iteration the walk touches, silent lines included, at about 20
+  bytes per raw line — not to `N` alone. A cheap `GET /logs?tail=1` probe of
   the live container API then only decides the `live` flag. When no usable
   index covers the request — a cold run with no index yet, or an index the
   witness refuses — an uncapped **correctness scan** takes over instead: it
@@ -3624,14 +3629,18 @@ JSON endpoints served under `/api/`:
   unconditionally) — it is not the only path that can read all of it, since
   the cold-scan fallback above can reach the same result for a positive
   `tail` too. Returns `{"live": bool, "lines": ["<rendered line>", ...]}`
-  — never an error. **A whole indexed tail call reads at most 1,000,000
-  bytes (task 013, v0.27 requirement D.1, #275)**, counting every byte it
-  reads off any file — the transcript, `render_index.json` and any other
-  side state — on the live and the on-disk surface, on the first and a
-  repeated request, for PRD Q's canonical fixture and both of its
-  silent-prelude depths, with the render still equal to the full renderer's
-  last `N` lines. `render_index.json` is read whole on every call, so it is
-  stored compactly: each distinct render state once, the per-line
+  — never an error. **A whole indexed tail call stays at or under 1,000,000
+  bytes for the fixtures this is measured against (task 013, v0.27
+  requirement D.1, #275)**, counting every byte it reads off any file — the
+  transcript, `render_index.json` and any other side state — on the live and
+  the on-disk surface, on the first and a repeated request, for PRD Q's
+  canonical fixture and both of its silent-prelude depths, with the render
+  still equal to the full renderer's last `N` lines; the bound is not stated
+  for transcripts or histories beyond what that test measures.
+  `render_index.json` is read whole on every call, so the index-read cost is
+  proportional to the number of raw transcript lines before the tail, silent
+  lines included, not to `N` — the file is therefore stored compactly: each
+  distinct render state once, the per-line
   checkpoints as parallel integer arrays (about 20 bytes per raw transcript
   line; see SPEC.md section 11.4). When the run's API isn't reachable (task 039: its
   container died, or the run finished long ago) `live` is `false` and the

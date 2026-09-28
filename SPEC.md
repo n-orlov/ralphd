@@ -5452,10 +5452,14 @@ the exact same `ralphd.cli.log_render` renderer `ralphctl logs` uses (with
 read** whenever a usable index covers it: the server first reads the run's own
 per-iteration render indexes (`render_index.json`, via
 `ralphd.render_index.bounded_tail`) straight off disk, walking backward across
-as many earlier indexed iterations as `tail` needs, so the cost is
-proportional to `tail`, not to the run's history or to silent transcript; a
-`GET /logs?tail=1` probe of the container's API then only decides the `live`
-flag. When no usable index covers the request — a cold run with no index yet,
+as many earlier indexed iterations as `tail` needs; the *rendering and
+walk-back* work this does is proportional to `tail`, not to the run's history
+or to silent transcript, but `load_index` reads each of those per-iteration
+`render_index.json` files whole (see below), so the index-read cost is
+proportional to the number of raw transcript lines before the tail in every
+iteration the walk touches, silent lines included, at about 20 bytes per raw
+line — not to `tail` alone. A `GET /logs?tail=1` probe of the container's API
+then only decides the `live` flag. When no usable index covers the request — a cold run with no index yet,
 or an index the witness refuses — the fast path answers `None` and an
 uncapped **correctness scan** takes over instead: it asks the container for a
 bounded `GET /logs?tail=<bound>` (the on-disk merge with the same bound when
@@ -5481,19 +5485,23 @@ all of it, since the cold-scan fallback above can reach the same result for a
 positive `tail` too. The response, `{"live": bool, "lines": [...]}`, is never
 an error.
 
-**The read side's whole-call byte cost, index reads included, is bounded too
-(task 013, v0.27 requirement D.1, #275).** A tail request through
-`ui_server.rendered_log_lines` reads at most 1,000,000 bytes per call —
-counting every byte it reads off any file: the transcript, `render_index.json`
-and any other side state (`collapse_index.json`, `meta.json`) — on the live
-`/logs` surface and the on-disk fallback alike, on the first and on a repeated
-request, for PRD Q's canonical fixture (`gap_count=1,000`, no prelude) and
-both of its silent-prelude depths (`gap_count=10,000`, prelude 1,000/1,700),
-and the lines returned equal the full renderer's last *N* lines exactly
-(`tests/test_tail_whole_call_read_bound.py`). `load_index` reads
-`render_index.json` whole on every call (it validates the whole document
-before trusting any of it), so the index's own size is part of that bound.
-The file therefore uses a compact encoding (`version` 5,
+**The read side's whole-call byte cost, index reads included, stays at or
+under 1,000,000 bytes for the fixtures this is measured against (task 013,
+v0.27 requirement D.1, #275).** `load_index` reads `render_index.json` whole
+on every call (it validates the whole document before trusting any of it),
+so the index-read cost is proportional to the number of raw transcript lines
+before the tail, silent lines included, at about 20 bytes per raw line — not
+to the tail length. `tests/test_tail_whole_call_read_bound.py` measures a
+tail request through `ui_server.rendered_log_lines` — counting every byte it
+reads off any file: the transcript, `render_index.json` and any other side
+state (`collapse_index.json`, `meta.json`) — on the live `/logs` surface and
+the on-disk fallback alike, on the first and on a repeated request, for PRD
+Q's canonical fixture (`gap_count=1,000`, no prelude) and both of its
+silent-prelude depths (`gap_count=10,000`, prelude 1,000/1,700), staying at
+or under 1,000,000 bytes for exactly those fixtures, with the lines returned
+equal to the full renderer's last *N* lines exactly; the bound is not stated
+for transcripts or histories beyond what that test measures. The file
+therefore uses a compact encoding (`version` 5,
 `render_index.encode_index`/`decode_index`): every distinct checkpoint render
 state is stored once, in `states`, and `checkpoints` is an object of four
 parallel integer arrays — `byteOffsetDeltas` and `renderedLinesDeltas` (each
