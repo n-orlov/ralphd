@@ -8529,19 +8529,40 @@ class LoopSupervisor:
                          "verdict_gate_rejected_curable_pass_available")
             return ("advance", "cure",
                     "verdict_gate_rejected_curable_pass_available")
-        # Task 008 (v0.27 requirement C.1): a rejection that WOULD have
-        # earned the cure-pass edge just above if the run-wide `cure_pass_
-        # ceiling` were not already spent (`ending ==
-        # GATE_REJECTION_ENDING_CURE_UNAVAILABLE`) holds for an operator
+        # Task 008 (v0.27 requirement C.1), widened by task 002 (this
+        # wave) to every blocking-set shape: a rejection this run's own
+        # cure-pass ceiling is already spent for holds for an operator
         # instead of falling through to the ordinary archive/replan-or-
         # finish edges below -- the SAME "before the spend, not after"
         # reasoning `TABLE["review"]`'s own `operator_input_needed` edge
         # documents, ON by default through the SAME `JobConfig.operator_
         # input_needed_pause` flag (`--no-operator-input-needed-pause`
-        # disables both). Checked BEFORE the merits/archive branches below,
+        # disables both). Before task 002 this checked `ending ==
+        # GATE_REJECTION_ENDING_CURE_UNAVAILABLE` alone -- true only when
+        # EVERY blocking finding was curable -- so a mixed or all-
+        # incurable rejection (`ending == GATE_REJECTION_ENDING_MERITS`)
+        # fell straight through to the merits/archive branches below even
+        # with the ceiling spent, ending the run with no pause at all. The
+        # ceiling being spent is itself the trigger now, independent of
+        # curability: `_cure_pass_ceiling_spent()` alone (never `ending`)
+        # decides whether this pause fires, since `cured` already being
+        # `False` at this point means the ceiling being spent is either
+        # the WHOLE reason (CURE_UNAVAILABLE) or simply true alongside a
+        # non-curable finding that would have ended the run regardless of
+        # the ceiling (MERITS) -- either way, an operator gets to see this
+        # rejection before an approach is thrown away or the run ends,
+        # rather than the engine deciding unilaterally that no cure budget
+        # is left to even ask about. `all_curable` (== `ending ==
+        # GATE_REJECTION_ENDING_CURE_UNAVAILABLE`) is threaded through so
+        # the escalation text/`nextStepIfUnanswered` never claims a cure
+        # pass or a fresh replan that a non-curable rejection can never
+        # actually take. Checked BEFORE the merits/archive branches below,
         # mirroring the cure-pass check's own precedence just above.
-        if (ending == state.GATE_REJECTION_ENDING_CURE_UNAVAILABLE
+        gate_findings_list = self._gate_findings()
+        if (gate_findings_list is not None
+                and self._cure_pass_ceiling_spent()
                 and self.cfg.operator_input_needed_pause):
+            all_curable = ending == state.GATE_REJECTION_ENDING_CURE_UNAVAILABLE
             # Task 009 (PRD requirement C.2, #274): a bare `ralphctl
             # unpause` of THIS exact pause, with no ruling ever possible
             # for the gate's own channel, already recorded a one-shot
@@ -8549,10 +8570,11 @@ class LoopSupervisor:
             # (`LoopSupervisor.resume`'s `_record_unpaused_no_ruling_
             # proceed`) -- consuming it here, on the very next rejection
             # that repeats that signature, falls through to the ordinary
-            # archive/replan-or-finish edges below instead of parking
-            # again, mirroring review's own sibling fix just above.
+            # merits/archive/replan-or-finish edges below instead of
+            # parking again, mirroring review's own sibling fix just
+            # above.
             gate_signature = self._gate_rejection_signature(
-                self._gate_findings())
+                gate_findings_list)
             no_ruling_proceed_consumed = (
                 gate_signature is not None
                 and self._no_ruling_proceed_signature(
@@ -8561,9 +8583,18 @@ class LoopSupervisor:
                 self._consume_no_ruling_proceed(
                     "verdict_gate_operator_input_needed")
             else:
-                replan_available = approach < self.cfg.max_approaches
+                # A non-curable (or mixed) rejection ends the run RIGHT
+                # HERE regardless of approaches left (A.1/A.2's own
+                # removal-specific rule, above) -- an unanswered resume of
+                # THIS pause takes that same immediate tail, never a
+                # fresh replan, whatever `approach < cfg.max_approaches`
+                # says. Only an all-curable rejection's unanswered resume
+                # can still replan.
+                replan_available = (
+                    all_curable and approach < self.cfg.max_approaches)
                 self._pause_and_escalate_gate_operator_input_needed(
-                    approach, self._gate_findings() or [], replan_available)
+                    approach, gate_findings_list or [], replan_available,
+                    all_curable=all_curable)
                 self._advance("verdict_gate", "paused",
                              "verdict_gate_operator_input_needed")
                 return ("advance", "paused",
@@ -8843,44 +8874,63 @@ class LoopSupervisor:
                       findings=blocking)
 
     def _gate_operator_input_needed_escalation_text(
-        self, approach: int, blocking: list[dict], replan_available: bool
+        self, approach: int, blocking: list[dict], replan_available: bool,
+        all_curable: bool = True,
     ) -> str:
         """Task 008 (v0.27 requirement C.1): the operator-facing
         escalation body for a `verdict_gate_operator_input_needed` pause
         -- the same shape `_last_approach_rejection_escalation_text` uses
         (each blocking finding plus the exact `ralphctl amend` invocation
-        that would resolve it), worded for the case THIS edge covers:
-        every blocking finding IS curable, but the RUN-WIDE `cure_pass_
-        ceiling` (shared with review's own cure channel,
+        that would resolve it), worded for the case THIS edge originally
+        covered: every blocking finding IS curable, but the RUN-WIDE
+        `cure_pass_ceiling` (shared with review's own cure channel,
         `LoopSupervisor._cure_passes_for_run`) is already spent, so there
         is no cure pass left to grant -- only the ordinary archive/replan-
         or-finish edges below, which this pause holds instead of taking.
 
-        Task 011 (v0.27 requirement C.4, #275): this pause fires ONLY when
-        `_gate_rejection_ending` reports `GATE_REJECTION_ENDING_CURE_
-        UNAVAILABLE` -- curable in principle, ceiling spent, always --
-        so, unlike review's own sibling text (whose `cure_preview` is
-        `None` on some calls), the six A.7 items and `_cure_pass_ceiling_
-        grant_note`'s own line are appended unconditionally, off a
-        preview zeroed to `{}` (there is no cure-reopen/insert prediction
-        to show -- no cure pass is being taken here, ever, by this edge's
-        own construction).
+        Task 002 (this wave) widens this pause to a mixed or all-
+        incurable blocking set too, as long as the ceiling is spent
+        (`all_curable=False`) -- there, `outcome` is never "replan a
+        fresh approach" (`replan_available` is forced `False` by the
+        caller for this case: A.1/A.2's own removal-specific rule already
+        ends a non-curable rejection right here whether or not an
+        approach is left, so an unanswered resume of THIS pause takes
+        that SAME immediate ending, never a fresh replan), each finding's
+        own header names its ACTUAL `curable` field instead of assuming
+        `True`, and `_cure_pass_ceiling_grant_note`'s line is never
+        appended -- raising the ceiling cannot make a non-curable finding
+        curable, so naming that lever here would be the exact misleading
+        note that note's own docstring says it must never be.
+
+        Task 011 (v0.27 requirement C.4, #275): the six A.7 items are
+        appended unconditionally, off a preview zeroed to `{}` (there is
+        no cure-reopen/insert prediction to show -- no cure pass is being
+        taken here, ever, by this edge's own construction, curable or
+        not).
         """
-        outcome = ("replan a fresh approach" if replan_available else
-                  "end the run with no approach left")
+        if not all_curable:
+            outcome = "end the run on the merits"
+            finding_desc = "findings that are not all curable"
+        elif replan_available:
+            outcome = "replan a fresh approach"
+            finding_desc = "findings that are all curable"
+        else:
+            outcome = "end the run with no approach left"
+            finding_desc = "findings that are all curable"
         lines = [
             f"Run {self.cfg.run_id} approach {approach}: the peer verdict "
-            "gate rejected this approach on findings that are all curable, "
-            "but the run's own cure-pass ceiling is already spent -- there "
-            "is no cure pass left to grant. Before this task, the engine "
-            f"would now archive approach {approach} and {outcome} -- the "
+            f"gate rejected this approach on {finding_desc}, "
+            "and the run's own cure-pass ceiling is already spent as well"
+            ". Before this task, the engine "
+            f"would now {outcome} -- the "
             "run has been paused instead so an operator can answer before "
-            "that spend happens; "
+            "that happens; "
             + self._ruling_then_unpause_escalation_sentences(),
             "",
         ]
         for index, finding in enumerate(blocking, start=1):
-            lines.append(f"Finding {index} (blocking, curable):")
+            curable_label = "curable" if finding.get("curable") else "not curable"
+            lines.append(f"Finding {index} (blocking, {curable_label}):")
             lines.append(f"  clause: {finding.get('clause', '')}")
             lines.append(f"  evidence: {finding.get('evidence', '')}")
             cured_when = finding.get("cured_when")
@@ -8889,13 +8939,14 @@ class LoopSupervisor:
             lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
             lines.append("")
         fields = self._discretionary_gate_escalation_fields(approach, {})
+        grant_note = self._cure_pass_ceiling_grant_note() if all_curable else None
         lines.extend(self._discretionary_gate_escalation_text_lines(
-            fields, self._cure_pass_ceiling_grant_note()))
+            fields, grant_note))
         return "\n".join(lines).rstrip() + "\n"
 
     def _pause_and_escalate_gate_operator_input_needed(
         self, approach: int, findings_list: list[dict],
-        replan_available: bool,
+        replan_available: bool, all_curable: bool = True,
     ) -> None:
         """Task 008 (v0.27 requirement C.1): pause the run through the
         EXISTING pause machinery -- the same seam every sibling in this
@@ -8922,11 +8973,12 @@ class LoopSupervisor:
 
         Task 011 (v0.27 requirement C.4, #275): the event now carries the
         SAME six A.7 fields review's own escalations carry, off a preview
-        zeroed to `{}` -- this pause fires ONLY when the rejection would
-        have earned the cure-pass edge if the ceiling were not already
-        spent, so `insertCount: 0`/`taskIdsValidatedToPending: []` is the
-        truthful preview (a cure pass is never taken by this edge, ceiling
-        or not).
+        zeroed to `{}` -- this pause fires only when the run-wide cure-
+        pass ceiling is already spent (task 002, this wave: whether or
+        not the rejection would have earned the cure-pass edge if the
+        ceiling were not spent), so `insertCount: 0`/`taskIdsValidatedTo
+        Pending: []` is the truthful preview (a cure pass is never taken
+        by this edge, ceiling or curability, either way).
 
         Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3):
         `nextStepIfUnanswered` no longer names `NEXT_STEP_ARCHIVE_AND_
@@ -8939,7 +8991,7 @@ class LoopSupervisor:
         """
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         text = self._gate_operator_input_needed_escalation_text(
-            approach, blocking, replan_available)
+            approach, blocking, replan_available, all_curable=all_curable)
         extra_fields = self._discretionary_gate_escalation_fields(approach, {})
         next_step = (state.NEXT_STEP_ARCHIVE_AND_REPLAN if replan_available
                     else state.NEXT_STEP_FINISH)

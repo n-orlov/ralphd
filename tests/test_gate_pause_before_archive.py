@@ -27,6 +27,8 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from ralphd.engine import findings
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
@@ -47,6 +49,57 @@ def _all_curable_gate_findings() -> list[dict]:
     ]
 
 
+# Task 002 (this wave): the three named blocking-set shapes -- one curable
+# plus one non-curable finding, two non-curable findings, and two curable
+# findings (a two-finding sibling of `_all_curable_gate_findings` above,
+# never reused for it: the existing tests above pin a SINGLE-finding all-
+# curable rejection and must keep doing so unchanged).
+def _mixed_1c_1i_gate_findings() -> list[dict]:
+    return [
+        {"severity": "blocking", "curable": True,
+         "clause": "requirement C.1 mixed curable clause (v0.27)",
+         "evidence": "the peer gate found a fixable gap",
+         "cured_when": "a cure task adds the missing behaviour"},
+        {"severity": "blocking", "curable": False,
+         "clause": "requirement C.1 mixed non-curable clause (v0.27)",
+         "evidence": "an environment fact no cure task or fresh approach "
+                    "can change"},
+    ]
+
+
+def _all_incurable_2i_gate_findings() -> list[dict]:
+    return [
+        {"severity": "blocking", "curable": False,
+         "clause": "requirement C.1 incurable clause one (v0.27)",
+         "evidence": "an environment fact no cure task or fresh approach "
+                    "can change"},
+        {"severity": "blocking", "curable": False,
+         "clause": "requirement C.1 incurable clause two (v0.27)",
+         "evidence": "a second environment fact no cure task or fresh "
+                    "approach can change"},
+    ]
+
+
+def _all_curable_2c_gate_findings() -> list[dict]:
+    return [
+        {"severity": "blocking", "curable": True,
+         "clause": "requirement C.1 curable clause one (v0.27)",
+         "evidence": "the peer gate found a fixable gap",
+         "cured_when": "a cure task adds the missing behaviour"},
+        {"severity": "blocking", "curable": True,
+         "clause": "requirement C.1 curable clause two (v0.27)",
+         "evidence": "the peer gate found a second fixable gap",
+         "cured_when": "a cure task adds the other missing behaviour"},
+    ]
+
+
+_CEILING_SPENT_FIXTURES = {
+    "mixed_1c_1i": _mixed_1c_1i_gate_findings,
+    "all_incurable_2i": _all_incurable_2i_gate_findings,
+    "all_curable_2c": _all_curable_2c_gate_findings,
+}
+
+
 def _gate_rejects(reason: str):
     async def handler(self, phase, extra="", *a, **kw):
         r = IterationResult(exit_code=0)
@@ -56,7 +109,9 @@ def _gate_rejects(reason: str):
 
 
 def _fixture(tmp_path: Path, *, cure_pass_ceiling: int,
-            max_approaches: int = 2) -> LoopSupervisor:
+            max_approaches: int = 2,
+            gate_findings: list[dict] | None = None,
+            operator_input_needed_pause: bool = True) -> LoopSupervisor:
     root = tmp_path / "run"
     root.mkdir(parents=True, exist_ok=True)
     run = RunDir(root=root)
@@ -65,11 +120,13 @@ def _fixture(tmp_path: Path, *, cure_pass_ceiling: int,
     cfg = JobConfig(run_id="task008-gate-pause", iterations=5,
                     max_approaches=max_approaches, vigilant=False,
                     peer_verdict_gate=True, cure_pass_ceiling=cure_pass_ceiling,
+                    operator_input_needed_pause=operator_input_needed_pause,
                     infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0)
     sup = LoopSupervisor(cfg, run, root)
     sup._approach = 1
     findings.write_findings_json(run.verdict_gate_findings_json_file,
-                                 _all_curable_gate_findings())
+                                 gate_findings if gate_findings is not None
+                                 else _all_curable_gate_findings())
     return sup
 
 
@@ -150,4 +207,110 @@ def test_gate_rejection_with_a_pass_left_still_takes_the_cure_edge(
     assert status.get("gateCurePasses") == {"1": 1}
     assert status.get("state") != "paused"
     assert not (root / "approaches" / "01").exists()
+    assert _escalations(root) == []
+
+
+# ===========================================================================
+# Task 002 (this wave): the spent-ceiling pause widens to EVERY blocking-
+# set shape -- all-curable (already covered above, re-proven here with a
+# two-finding sibling fixture), mixed, and all-incurable. At 32352c15 the
+# mixed and all-incurable cases fell straight through to the ordinary
+# merits tail (`("tail",)`) even with the ceiling spent, since the pause
+# above checked `ending == GATE_REJECTION_ENDING_CURE_UNAVAILABLE` alone.
+# ===========================================================================
+
+
+@pytest.mark.parametrize("fixture_name", sorted(_CEILING_SPENT_FIXTURES))
+def test_gate_rejection_with_ceiling_spent_parks(tmp_path, fixture_name):
+    """`cure_pass_ceiling=0`, two approaches, for each of the three named
+    blocking-set fixtures -- `_step_verdict_gate()` parks
+    (`verdict_gate_operator_input_needed`) rather than taking the ordinary
+    archive/replan-or-finish (or merits-tail) edges, with exactly one
+    `operator_escalation` event and no `approaches/01` archive.
+    """
+    sup = _fixture(tmp_path, cure_pass_ceiling=0, max_approaches=2,
+                   gate_findings=_CEILING_SPENT_FIXTURES[fixture_name]())
+    root = sup.run.root
+
+    orig = LoopSupervisor.run_iteration
+    LoopSupervisor.run_iteration = _gate_rejects(
+        "blocking findings present, cure-pass ceiling already spent")
+    try:
+        outcome = _bounded(sup._step_verdict_gate())
+    finally:
+        LoopSupervisor.run_iteration = orig
+
+    assert outcome == ("advance", "paused", "verdict_gate_operator_input_needed")
+    status = sup.run.read_status()
+    assert status.get("state") == "paused"
+    assert status.get("pauseReason") == "verdict_gate_operator_input_needed"
+
+    assert sup._approach == 1
+    assert not (root / "approaches" / "01").exists()
+    assert not sup.run.composite_prd_file.exists()
+
+    escalations = _escalations(root)
+    assert len(escalations) == 1
+    assert escalations[0]["reason"] == "verdict_gate_operator_input_needed"
+    assert escalations[0]["approach"] == 1
+
+
+def test_gate_rejection_mixed_with_ceiling_spent_on_last_approach_parks(
+        tmp_path):
+    """The mixed fixture on the run's own LAST approach (`max_approaches=
+    1`) -- A.1/A.2's own removal-specific rule ends a non-curable
+    rejection right there whether or not an approach is left, but this
+    task's widened pause still holds for an operator FIRST, exactly like
+    the approach-left case above; it never reads the lack of a further
+    approach as a reason to skip straight to the terminal tail.
+    """
+    sup = _fixture(tmp_path, cure_pass_ceiling=0, max_approaches=1,
+                   gate_findings=_mixed_1c_1i_gate_findings())
+    root = sup.run.root
+
+    orig = LoopSupervisor.run_iteration
+    LoopSupervisor.run_iteration = _gate_rejects(
+        "one blocking finding is curable, the other is not")
+    try:
+        outcome = _bounded(sup._step_verdict_gate())
+    finally:
+        LoopSupervisor.run_iteration = orig
+
+    assert outcome == ("advance", "paused", "verdict_gate_operator_input_needed")
+    status = sup.run.read_status()
+    assert status.get("state") == "paused"
+    assert not (root / "approaches" / "01").exists()
+    assert not sup.run.composite_prd_file.exists()
+    escalations = _escalations(root)
+    assert len(escalations) == 1
+
+
+def test_gate_rejection_mixed_with_ceiling_spent_disabled_pause_takes_32352c15_ending(
+        tmp_path):
+    """With `operator_input_needed_pause` disabled
+    (`--no-operator-input-needed-pause`), the mixed fixture with the
+    ceiling spent takes the EXACT ending it took at 32352c15 -- the
+    ordinary merits tail (`("tail",)`), no pause, no escalation -- this
+    task's widened pause is gated by the SAME flag review's own sibling
+    edge is, never unconditional.
+    """
+    sup = _fixture(tmp_path, cure_pass_ceiling=0, max_approaches=2,
+                   gate_findings=_mixed_1c_1i_gate_findings(),
+                   operator_input_needed_pause=False)
+    root = sup.run.root
+
+    orig = LoopSupervisor.run_iteration
+    LoopSupervisor.run_iteration = _gate_rejects(
+        "one blocking finding is curable, the other is not")
+    try:
+        outcome = _bounded(sup._step_verdict_gate())
+    finally:
+        LoopSupervisor.run_iteration = orig
+
+    assert outcome == ("tail",)
+    status = sup.run.read_status()
+    assert status.get("state") != "paused"
+    assert status.get("gateRejectionEnding") == "rejected_on_the_merits"
+    assert not (root / "approaches" / "01").exists()
+    assert not sup.run.composite_prd_file.exists()
     assert _escalations(root) == []

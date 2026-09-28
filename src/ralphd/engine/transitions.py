@@ -872,14 +872,17 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # own ordering, because `LoopSupervisor._step_verdict_gate` checks
         # `_gate_cure_pass_available` before falling through to either.
         T("cure", "verdict_gate_rejected_curable_pass_available"),
-        # Task 008 (v0.27 requirement C.1): the gate's own mirror of
-        # `TABLE["review"]`'s `operator_input_needed` edge above --
-        # narrower than review's, on purpose: it fires only when this
-        # rejection WOULD have earned the cure-pass edge just above if
-        # the run-wide `cure_pass_ceiling` were not already spent
-        # (`_gate_rejection_ending` reporting `GATE_REJECTION_ENDING_
-        # CURE_UNAVAILABLE`), so an operator can rule or plainly unpause
-        # before `_archive_approach`/`_write_composite_prd` ever run.
+        # Task 008 (v0.27 requirement C.1), widened by task 002 (this
+        # wave): the gate's own mirror of `TABLE["review"]`'s `operator_
+        # input_needed` edge above -- fires whenever THIS run's own
+        # `cure_pass_ceiling` is already spent, for every blocking-set
+        # shape (all-curable, mixed, all-incurable), not only the case
+        # (before task 002) where this rejection WOULD have earned the
+        # cure-pass edge just above if the ceiling were not spent, so an
+        # operator can rule or plainly unpause before `_archive_approach`/
+        # `_write_composite_prd` -- or, for a mixed/all-incurable
+        # rejection, the immediate merits tail A.1/A.2's own removal-
+        # specific rule takes -- ever run.
         # Declared BEFORE the ordinary replan/no-approach-left edges below
         # for the identical reason the cure-pass edge is declared before
         # them: `LoopSupervisor._step_verdict_gate` checks this condition

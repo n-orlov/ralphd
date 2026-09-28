@@ -393,8 +393,16 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `nextStepIfUnanswered` value with its own outcome text), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
     # 6513/454, `-m smoke --collect-only` -> smoke 4821/331.
-    "fast": {"tests": 6518, "modules": 455},
-    "smoke": {"tests": 4826, "modules": 332},
+    # Task 002 (this wave): +6 tests, no new module (tests/test_gate_
+    # pause_before_archive.py: the ceiling-spent park widened to the
+    # mixed/all-incurable/all-curable fixtures, the last-approach mixed
+    # case, and the pause-disabled 32352c15-parity case; tests/test_
+    # unpause_one_shot_proceed.py: a parked mixed rejection's bare
+    # unpause takes its own immediate terminal tail on the next repeat),
+    # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
+    # fast 6524/455, `-m smoke --collect-only` -> smoke 4832/332.
+    "fast": {"tests": 6524, "modules": 455},
+    "smoke": {"tests": 4832, "modules": 332},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -292,3 +292,77 @@ def test_gate_park_unpause_different_rejection_still_parks(tmp_path):
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 2
+
+
+# ===========================================================================
+# 3. Task 002 (this wave): a mixed (curable + non-curable) blocking set --
+#    the spent-ceiling pause now widens to this shape too. A bare unpause
+#    with no ruling records the one-shot proceed exactly like the all-
+#    curable case above, and the SAME rejection's next run consumes it and
+#    takes its OWN terminal edge (the immediate merits tail, never a fresh
+#    replan -- A.1/A.2's own removal-specific rule) with no second
+#    escalation.
+# ===========================================================================
+
+
+def _mixed_1c_1i_gate_findings() -> list[dict]:
+    return [
+        {"severity": "blocking", "curable": True,
+         "clause": "requirement C.1 mixed curable clause (v0.27)",
+         "evidence": "the peer gate found a fixable gap",
+         "cured_when": "a cure task adds the missing behaviour"},
+        {"severity": "blocking", "curable": False,
+         "clause": "requirement C.1 mixed non-curable clause (v0.27)",
+         "evidence": "an environment fact no cure task or fresh approach "
+                    "can change"},
+    ]
+
+
+def test_gate_park_unpause_mixed_rejection_takes_its_own_terminal_edge(
+        tmp_path):
+    root = tmp_path / "run"
+    sup1 = _gate_fixture(root, gate_findings=_mixed_1c_1i_gate_findings())
+
+    orig = LoopSupervisor.run_iteration
+    LoopSupervisor.run_iteration = _gate_rejects(
+        "one blocking finding is curable, the other is not")
+    try:
+        outcome1 = _bounded(sup1._step_verdict_gate())
+    finally:
+        LoopSupervisor.run_iteration = orig
+    assert outcome1 == ("advance", "paused", "verdict_gate_operator_input_needed")
+
+    # a bare unpause, no ruling filed at all.
+    sup1.resume()
+    status = sup1.run.read_status()
+    assert status["state"] == "running"
+    assert status.get("noRulingProceed", {}).get(
+        "verdict_gate_operator_input_needed")
+
+    # a brand-new supervisor over the same disk-backed run, SAME rejection.
+    sup2 = _gate_fixture(root, gate_findings=_mixed_1c_1i_gate_findings())
+
+    orig = LoopSupervisor.run_iteration
+    LoopSupervisor.run_iteration = _gate_rejects(
+        "the same wall, unmoved")
+    try:
+        outcome2 = _bounded(sup2._step_verdict_gate())
+    finally:
+        LoopSupervisor.run_iteration = orig
+
+    # A.1/A.2's own removal-specific rule: a non-curable rejection ends
+    # the run RIGHT HERE, never a fresh replan, whatever approaches are
+    # left -- the consumed no-ruling proceed falls through to that SAME
+    # immediate tail, not to `verdict_gate_rejected_approach_left`.
+    assert outcome2 == ("tail",)
+    status2 = sup2.run.read_status()
+    assert status2["state"] == "running"
+    assert status2.get("gateRejectionEnding") == "rejected_on_the_merits"
+    assert not status2.get("noRulingProceed", {}).get(
+        "verdict_gate_operator_input_needed")
+    assert not (root / "approaches" / "01").exists()
+
+    # no SECOND escalation -- the one from the first parked rejection is
+    # still the only one on this run.
+    escalations = _events(root, "operator_escalation")
+    assert len(escalations) == 1
