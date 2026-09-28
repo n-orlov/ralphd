@@ -1967,6 +1967,23 @@ alternatives, exactly like `operator_input_needed`'s own review-side
 pause. docs/api.md's `POST /pause` section lists the
 full coverage.
 
+A bare `ralphctl unpause <run-id>` on review's own `operator_input_needed`
+pause, or on the peer verdict gate's `verdict_gate_operator_input_needed`
+sibling (v0.27 requirement C.1), with NO ruling filed to answer it, now
+records a disk-backed one-shot 'proceed' for the exact rejection signature
+that pause was raised over (v0.27 requirement C.2, #274; `status.json`'s
+`noRulingProceed`, SPEC.md §5.2). The next rejection reaching that same
+pause with the IDENTICAL signature consumes the proceed and takes the
+ordinary archive-and-replan edge (or finishes, when no approach is left)
+instead of parking a second time -- mirroring the one-re-park bound a
+filed ruling already gets (`rulingReparked`). A DIFFERENT rejection never
+matches the grant and still parks, exactly as before; filing a ruling that
+answers the signature (review's own pause only) takes the existing
+re-park path instead of granting this proceed at all. Before this, a bare
+unpause with no ruling re-entered `review`/`verdict_gate` over the SAME
+approach with nothing new to go on and was likely to re-raise the
+identical rejection and re-park forever.
+
 ### `ralphctl retry <run-id>`
 
 Wake a **degraded** run (one whose `status` shows `health: degraded` with a

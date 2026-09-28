@@ -1236,8 +1236,137 @@ class LoopSupervisor:
         """Release the loop (`POST /resume`), and clear an engine-recorded
         pause if there is one (task 036, requirement D.1/D.2, #142)."""
         self._pause.set()
+        self._record_unpaused_no_ruling_proceed()
         self._clear_persisted_pause()
         self.run.emit("log", message=state.RESUMED_LOG_MESSAGE)
+
+    # PRD v0.27 requirement C.2 (#274): the two pause reasons a bare
+    # `ralphctl unpause`/`POST /resume`, with NO ruling filed to answer
+    # it, grants a disk-backed one-shot 'proceed' for -- review's own A.1
+    # pause-before-archive and the peer verdict gate's C.1 sibling. Every
+    # OTHER pause reason already has a real, distinct default disposition
+    # a bare unpause resolves into (`state.py`'s own comment on
+    # `OPERATOR_INPUT_NEEDED_PAUSE_REASON`), so none of them needs this.
+    _NO_RULING_PROCEED_PAUSE_REASONS = (
+        "operator_input_needed", "verdict_gate_operator_input_needed")
+
+    def _pausing_rejection_signature(
+        self, reason: str, status: dict
+    ) -> str | None:
+        """The rejection signature `reason`'s pause is CURRENTLY sitting
+        on, read fresh off disk so `resume`'s one-shot 'proceed' (PRD
+        v0.27 C.2, #274) and the rejection ladder's own consuming check
+        (`_step_review`/`_step_verdict_gate`) always agree on what "the
+        same rejection" means:
+
+        * `operator_input_needed` (review's own pause): `_pause_and_
+          escalate_operator_input_needed` already persists it to
+          `rejectionSignatures[str(approach)]` before pausing (task 015)
+          -- read straight off that map, keyed by the approach status.json
+          still records (unarchived, exactly like every sibling pause in
+          this family).
+        * `verdict_gate_operator_input_needed` (the gate's own C.1 pause,
+          task 008): the gate keeps no signature map of its own
+          (`_pause_and_escalate_gate_operator_input_needed`'s own
+          docstring). Nothing runs while the loop sits parked, so the
+          gate's own findings channel is unchanged between the pause and
+          this read -- `_gate_rejection_signature(self._gate_findings())`
+          recomputes the IDENTICAL signature the rejection ladder derived
+          to raise this pause, off the same disk state.
+
+        `None` for any other reason, and for either of the two above when
+        there is nothing to key on (no approach recorded, or no findings
+        channel at all) -- the same "an absent signature never matches"
+        rule every sibling signature in this family already follows.
+        """
+        if reason == "operator_input_needed":
+            approach = status.get("approach")
+            if approach is None:
+                return None
+            signatures = status.get("rejectionSignatures") or {}
+            return signatures.get(str(approach))
+        if reason == "verdict_gate_operator_input_needed":
+            return self._gate_rejection_signature(self._gate_findings())
+        return None
+
+    def _record_unpaused_no_ruling_proceed(self) -> None:
+        """PRD v0.27 requirement C.2 (#274): a bare `ralphctl unpause`/
+        `POST /resume` of review's A.1 pause-before-archive
+        (`operator_input_needed`) or the peer verdict gate's own C.1
+        sibling (`verdict_gate_operator_input_needed`), with NO ruling
+        filed that answers the exact rejection parking it, records a
+        disk-backed one-shot 'proceed' for that rejection's own signature
+        -- never in-memory, the same durability every other pause answer
+        on status.json already has, so a killed-and-restarted process
+        still sees it. `_step_review`/`_step_verdict_gate`'s own rejection
+        ladder is what CONSUMES it, on the very next rejection that
+        repeats the identical signature (`_no_ruling_proceed_signature`),
+        taking the archive-and-replan (or finish) edge without parking
+        again -- this mirrors the one-re-park bound a ruling already has
+        (`_ruling_already_reparked`/`_record_ruling_reparked`).
+
+        Called from `resume()` itself, BEFORE `_clear_persisted_pause`
+        wipes `pauseReason` back to `None` -- reading it after would
+        always see `None` (`_step_paused`'s own docstring already makes
+        the identical point about reading `pauseReason` before the gate).
+
+        A no-op for every pause reason outside `_NO_RULING_PROCEED_PAUSE_
+        REASONS`. Review's own reason is additionally guarded by
+        `_ruling_honoured_for_signature`: when a ruling was just filed and
+        answers this exact signature (`resume_if_ruling_answers_pause`'s
+        own call into this same `resume()`, right after `RunDir.add_
+        ruling`), that is NOT "no ruling" -- the ruling-re-park bound
+        already covers that case, and granting a second, independent
+        one-shot on top of it would let one operator answer buy two
+        different re-parks for the identical rejection. The gate's own
+        pause never has a ruling to check at all, so this guard is simply
+        a no-op for it, not a gap.
+        """
+        status = self.run.read_status()
+        if status.get("state") != PAUSED_STATE:
+            return
+        reason = status.get("pauseReason")
+        if reason not in self._NO_RULING_PROCEED_PAUSE_REASONS:
+            return
+        signature = self._pausing_rejection_signature(reason, status)
+        if signature is None:
+            return
+        if (reason == "operator_input_needed"
+                and self._ruling_honoured_for_signature(signature)):
+            return
+        self._record_no_ruling_proceed(reason, signature)
+
+    def _record_no_ruling_proceed(self, reason: str, signature: str) -> None:
+        """Persist that `reason`'s pause has granted a one-shot 'proceed'
+        for `signature` (PRD v0.27 C.2, #274) -- disk-backed, keyed by
+        pause reason so review's own map and the gate's never collide.
+        """
+        status = self.run.read_status()
+        proceeds = dict(status.get("noRulingProceed") or {})
+        proceeds[reason] = signature
+        self.run.update_status(noRulingProceed=proceeds)
+
+    def _no_ruling_proceed_signature(self, reason: str) -> str | None:
+        """The signature `reason`'s one-shot 'proceed' is currently
+        granted for, or `None` when none is live -- read fresh off disk
+        (PRD v0.27 C.2, #274).
+        """
+        status = self.run.read_status()
+        proceeds = status.get("noRulingProceed") or {}
+        return proceeds.get(reason)
+
+    def _consume_no_ruling_proceed(self, reason: str) -> None:
+        """Spend `reason`'s one-shot 'proceed' -- called exactly once, by
+        the rejection ladder branch that just used it to take the
+        archive-and-replan (or finish) edge instead of parking again
+        (PRD v0.27 C.2, #274). Idempotent: a `reason` already absent is
+        left alone.
+        """
+        status = self.run.read_status()
+        proceeds = dict(status.get("noRulingProceed") or {})
+        if reason in proceeds:
+            del proceeds[reason]
+            self.run.update_status(noRulingProceed=proceeds)
 
     def _clear_persisted_pause(self) -> None:
         """Undo `_persist_pause`'s status.json write (task 036, requirement
@@ -8380,12 +8509,32 @@ class LoopSupervisor:
         # mirroring the cure-pass check's own precedence just above.
         if (ending == state.GATE_REJECTION_ENDING_CURE_UNAVAILABLE
                 and self.cfg.operator_input_needed_pause):
-            replan_available = approach < self.cfg.max_approaches
-            self._pause_and_escalate_gate_operator_input_needed(
-                approach, self._gate_findings() or [], replan_available)
-            self._advance("verdict_gate", "paused",
-                         "verdict_gate_operator_input_needed")
-            return ("advance", "paused", "verdict_gate_operator_input_needed")
+            # Task 009 (PRD requirement C.2, #274): a bare `ralphctl
+            # unpause` of THIS exact pause, with no ruling ever possible
+            # for the gate's own channel, already recorded a one-shot
+            # 'proceed' for this rejection's own signature
+            # (`LoopSupervisor.resume`'s `_record_unpaused_no_ruling_
+            # proceed`) -- consuming it here, on the very next rejection
+            # that repeats that signature, falls through to the ordinary
+            # archive/replan-or-finish edges below instead of parking
+            # again, mirroring review's own sibling fix just above.
+            gate_signature = self._gate_rejection_signature(
+                self._gate_findings())
+            no_ruling_proceed_consumed = (
+                gate_signature is not None
+                and self._no_ruling_proceed_signature(
+                    "verdict_gate_operator_input_needed") == gate_signature)
+            if no_ruling_proceed_consumed:
+                self._consume_no_ruling_proceed(
+                    "verdict_gate_operator_input_needed")
+            else:
+                replan_available = approach < self.cfg.max_approaches
+                self._pause_and_escalate_gate_operator_input_needed(
+                    approach, self._gate_findings() or [], replan_available)
+                self._advance("verdict_gate", "paused",
+                             "verdict_gate_operator_input_needed")
+                return ("advance", "paused",
+                        "verdict_gate_operator_input_needed")
         # Task 001 (PRD requirement A.1/A.2): a rejection carrying a
         # genuinely non-curable blocking finding (or a criteria-tamper
         # finding, which blocks the cure edge exactly the same way --
@@ -8460,6 +8609,29 @@ class LoopSupervisor:
             return findings.read_findings_json(path)
         except ValueError:
             return None
+
+    def _gate_rejection_signature(
+        self, findings_list: list[dict] | None
+    ) -> str | None:
+        """PRD v0.27 requirement C.2 (#274): the peer verdict gate's own
+        "same rejection" signature -- the exact sibling of `_review_
+        rejection_signature`'s blocking-clause hash, but for the gate's
+        own findings channel, which (unlike review's) records no signature
+        of its own on status.json at all. Needed so a bare `ralphctl
+        unpause` of the gate's C.1 pause (`verdict_gate_operator_input_
+        needed`) can tell a repeated rejection from a fresh one, the same
+        way review's own one-shot 'proceed' already can.
+
+        `None` when there is no findings list, or its blocking-clause set
+        is empty -- an absent signature never matches another absent one.
+        """
+        if not findings_list:
+            return None
+        clauses = findings.blocking_finding_clauses(findings_list)
+        if not clauses:
+            return None
+        text = "; ".join(sorted(clauses))
+        return self._normalize_blocker_signature_text(text)
 
     def _gate_cure_passes_for_approach(self, approach: int) -> int:
         """Task 001 (PRD requirement A.1, #192): `gateCurePasses[approach]`
@@ -12882,10 +13054,28 @@ class LoopSupervisor:
         # still a fresh, unbounded, per-verdict decision.
         reviewer_requested_gate_applies = reviewer_requested_gate and not (
             ruling_matches_this_rejection and ruling_re_park_exhausted)
-        if reviewer_requested_gate_applies or (
-                self.cfg.operator_input_needed_pause
-                and not ruling_re_park_exhausted
-                and not repeated_signature):
+        pause_before_archive_due = reviewer_requested_gate_applies or (
+            self.cfg.operator_input_needed_pause
+            and not ruling_re_park_exhausted
+            and not repeated_signature)
+        # Task 009 (PRD requirement C.2, #274): a bare `ralphctl unpause`
+        # of THIS exact pause, with no ruling filed against it, already
+        # recorded a one-shot 'proceed' for this rejection's own signature
+        # (`LoopSupervisor.resume`'s `_record_unpaused_no_ruling_proceed`)
+        # -- consuming it here, on the very next rejection that repeats
+        # that signature, is what stops the pause/re-review/re-park loop
+        # #274 named: the operator already answered once, and pausing
+        # again over the identical wall is not what an unpause with no
+        # ruling means. A DIFFERENT signature never matches (`_no_ruling_
+        # proceed_signature` compares the exact string), so it still
+        # pauses normally, and this proceed is spent for good the moment
+        # it is used.
+        no_ruling_proceed_consumed = (
+            pause_before_archive_due
+            and signature is not None
+            and self._no_ruling_proceed_signature(
+                "operator_input_needed") == signature)
+        if pause_before_archive_due and not no_ruling_proceed_consumed:
             if ruling_matches_this_rejection and not ruling_re_park_exhausted:
                 self._record_ruling_reparked(ruled["seq"])
             replan_available = approach < self.cfg.max_approaches
@@ -12904,6 +13094,8 @@ class LoopSupervisor:
                 cure_preview=cure_preview)
             self._advance("review", "paused", "operator_input_needed")
             return ("advance", "paused", "operator_input_needed")
+        if no_ruling_proceed_consumed:
+            self._consume_no_ruling_proceed("operator_input_needed")
         self._record_rejection_signature(approach, signature)
         self._archive_approach(approach)
         self._write_composite_prd(approach)

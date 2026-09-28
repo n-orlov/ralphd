@@ -275,6 +275,17 @@ def test_a_ruling_filed_against_a_different_signature_is_not_honoured(tmp_path):
 
 
 def test_resuming_without_any_ruling_at_all_emits_no_honoured_event(tmp_path):
+    """Task 009 (PRD v0.27 requirement C.2, #274): rewritten from the
+    version that used to pin the pause/re-review/re-park loop C.2 closes
+    -- a bare `resume()` with no ruling filed now records a one-shot
+    'proceed' for this exact rejection's signature, and the SAME rejection
+    reaching `_step_review()` a second time consumes it and takes the
+    ordinary archive-and-replan edge instead of parking a second time (see
+    `tests/test_unpause_one_shot_proceed.py` for the dedicated coverage of
+    that mechanism). This test's own remaining job is unchanged: no
+    ruling was ever filed, so no `operator_ruling_honoured` event fires
+    either way.
+    """
     root = tmp_path / "run"
     sup1 = _pause_on_operator_input_needed(root)
     sup1.resume()
@@ -293,10 +304,11 @@ def test_resuming_without_any_ruling_at_all_emits_no_honoured_event(tmp_path):
 
     outcome = _bounded(sup2._step_review())
 
-    assert outcome == ("advance", "paused", "operator_input_needed")
+    assert outcome == ("advance", "replan", "rejected_approach_left")
     assert len(calls) == 1
     assert "### Ruling 1 (" not in calls[0]
     assert _events(root, "operator_ruling_honoured") == []
+    assert len(_events(root, "operator_escalation")) == 1
 
 
 # ===========================================================================

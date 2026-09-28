@@ -311,8 +311,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # cure ceiling spent, and still takes the cure edge with a pass
     # left), measured `.venv/bin/python -m pytest -q -m fast --collect-
     # only` -> fast 6457/447, `-m smoke` -> smoke 4765/324.
-    "fast": {"tests": 6457, "modules": 447},
-    "smoke": {"tests": 4765, "modules": 324},
+    # Task 009 (v0.27 requirement C.2, #274): +4 tests / +1 module
+    # (tests/test_unpause_one_shot_proceed.py: review's and the gate's
+    # own pause each unpaused with no ruling, then the same rejection
+    # archives-and-replans once while a different rejection still parks),
+    # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
+    # fast 6461/448, `-m smoke` -> smoke 4769/325.
+    "fast": {"tests": 6461, "modules": 448},
+    "smoke": {"tests": 4769, "modules": 325},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
