@@ -2560,10 +2560,11 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   blocking findings, residuals excluded) must NOT be a superset of the
   clause set the immediately preceding GRANTED pass recorded. On a
   CONFIRMATION review (v0.27 requirement B.4, #274, task 007 --
-  `LoopSupervisor._is_confirmation_review()`, true once ANY `cure-lineage.
-  json` entry names the approach -- a granted cure pass or a
-  REFUTED-petition remedy insertion alike, whether or not a cure pass was
-  ever granted) clause text is ignored and the comparison is
+  `LoopSupervisor._is_confirmation_review()`, true once ANY GRANTED
+  `cure-lineage.json` entry names the approach (`kind: "granted"`,
+  `state.insert_cure_tasks`'s own `pass_kind` default -- never a
+  REFUTED-petition remedy insertion's own entry, `kind: "remedy"`,
+  cure-01-01/VG-01)) clause text is ignored and the comparison is
   by FINDING IDENTITY: the set of `reopens` cure task ids this
   rejection's blocking findings carry, each followed back through
   `tasks[].reopensCureTaskId` (`state.root_cure_task_id`,

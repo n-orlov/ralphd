@@ -148,6 +148,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # cure-01-05 retry: +1 test, no new module (tests/test_hub_parked_
     # actions.py: the named multi-line parked submission), measured
     # `-m fast --collect-only` -> fast 6342/435, `-m smoke` -> smoke 4650/312.
+    # cure-01-01 (VG-01): +5 tests / +1 module (tests/test_confirmation_
+    # scope_granted_pass.py: the confirmation section/listed ids/diff
+    # range surviving a REFUTED-remedy insertion, the reopen-stays-
+    # blocking control, the fresh-supervisor disk reload, two successive
+    # remedy insertions, and B.4's no-progress refusal after a remedy),
+    # measured `-m fast --collect-only` -> fast 6518/455, `-m smoke
+    # --collect-only` -> smoke 4826/332 (every new node runs in-process
+    # apart from its own `git` subprocess helpers, which still count in
+    # both tiers).
     # Task cure-01-01-4 (petition remedy for cure-01-03 criterion (1)):
     # +6 tests in tests/test_hub_real_render_cap_whole_call.py (out-of-
     # window same-size rewrite/replacement, complete and lagging coverage,
@@ -384,8 +393,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `nextStepIfUnanswered` value with its own outcome text), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
     # 6513/454, `-m smoke --collect-only` -> smoke 4821/331.
-    "fast": {"tests": 6513, "modules": 454},
-    "smoke": {"tests": 4821, "modules": 331},
+    "fast": {"tests": 6518, "modules": 455},
+    "smoke": {"tests": 4826, "modules": 332},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -5152,10 +5152,33 @@ def cure_pass_preview(tasks: list, blocking: list[dict]) -> dict:
 
 
 def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
-                      pre_cure_head: str | None = None) -> list:
+                      pre_cure_head: str | None = None,
+                      pass_kind: str = "granted") -> list:
     """Task 009 (PRD requirement C.1, #141; cured under task 006, C.1
     finding 4): append exactly one cure task per entry of `blocking` (in
     finding order) to `tasks.json` and return exactly one id per entry.
+
+    cure-01-01 (PRD v0.27 B.1/B.3/B.4, review verdict-gate VG-01): `pass_
+    kind` tags the `cure-lineage.json` entry this call appends (through
+    `record_cure_pass_lineage` below) `"granted"` (the default -- both
+    `LoopSupervisor._take_cure_pass` and `_take_gate_cure_pass` call this
+    with no override) or `"remedy"` (`_insert_refuted_remedy_tasks`'s own
+    call, the ONE other call site). A REFUTED-petition remedy insertion is
+    not itself a cure PASS -- PRD B.1 requires "at least one cure pass"
+    before a confirmation review exists at all, and a remedy answers one
+    obligation, never the whole blocking set a granted pass was taken
+    over -- so it must never be mistaken for one by a reader that walks
+    `cure-lineage.json`'s `passes` list and reads `passes[-1]`, the bug
+    this tag exists to close: before it, a remedy entry sat in the exact
+    same list a granted pass's own entry did, indistinguishable except by
+    inspecting which caller wrote it, so a remedy landing after a granted
+    pass silently replaced that pass as confirmation review's own source
+    of listed ids and diff range, and narrowed `_cure_pass_targeted_
+    roots`'s no-progress comparison down to the remedy's own single
+    target. `LoopSupervisor._latest_granted_cure_pass` is the one reader
+    every confirmation-review-scoped call now goes through instead of
+    `passes[-1]` directly.
+
     `cure_task_from_finding`'s id is deterministic per `(approach,
     index)`, and in the ordinary case (a fresh approach, `curePasses
     [approach] == 0`, `LoopSupervisor._step_review` calling this exactly
@@ -5640,7 +5663,8 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
         # already gives that same caller-supplied value).
         record_cure_pass_lineage(run.root, approach=approach,
                                  pre_cure_head=pre_cure_head,
-                                 findings_by_cure_task_id=pass_findings)
+                                 findings_by_cure_task_id=pass_findings,
+                                 kind=pass_kind)
     return inserted
 
 
@@ -6936,19 +6960,31 @@ def read_cure_lineage(run_root: Path) -> dict:
 
 def record_cure_pass_lineage(run_root: Path, *, approach: int,
                              pre_cure_head: str | None,
-                             findings_by_cure_task_id: dict) -> dict:
+                             findings_by_cure_task_id: dict,
+                             kind: str = "granted") -> dict:
     """Append one pass entry -- `{"approach", "preCureHead", "findings",
-    "recordedAt"}` -- to the lineage document and persist it. `findings`
-    is `findings_by_cure_task_id` verbatim: one `{"clause", "curedWhen"}`
-    per cure task `insert_cure_tasks` built for a blocking finding on THIS
-    pass, keyed by that cure task's own (collision-resolved) id.
+    "kind", "recordedAt"}` -- to the lineage document and persist it.
+    `findings` is `findings_by_cure_task_id` verbatim: one `{"clause",
+    "curedWhen"}` per cure task `insert_cure_tasks` built for a blocking
+    finding on THIS pass, keyed by that cure task's own (collision-
+    resolved) id.
+
+    cure-01-01 (PRD v0.27 B.1/B.3/B.4, review verdict-gate VG-01): `kind`
+    (`insert_cure_tasks`'s own `pass_kind`, threaded through verbatim) is
+    `"granted"` for a genuine cure pass (`_take_cure_pass`/`_take_gate_
+    cure_pass`, this parameter's default) or `"remedy"` for a REFUTED-
+    petition remedy insertion (`_insert_refuted_remedy_tasks`) -- so a
+    reader can tell the two apart on disk without inspecting which caller
+    wrote the entry. `LoopSupervisor._latest_granted_cure_pass` is the one
+    place that reads it back.
 
     Called once per granted cure pass, from `insert_cure_tasks` itself
     (never from its two callers directly) -- so a THIRD caller of `insert_
     cure_tasks` (`LoopSupervisor._insert_refuted_remedy_tasks`, #209 defect
     4) also gets a lineage entry for its own remedy-derived cure task, with
-    no special case needed here: a remedy finding carries `clause`/`cured_
-    when` exactly like a rejection finding does.
+    no special case needed here beyond the `kind` tag above: a remedy
+    finding carries `clause`/`cured_when` exactly like a rejection finding
+    does.
 
     Appends rather than overwrites -- a run's later cure pass (a fresh
     approach, or a second granted pass over the same one) grows the list;
@@ -6962,6 +6998,7 @@ def record_cure_pass_lineage(run_root: Path, *, approach: int,
         "approach": approach,
         "preCureHead": pre_cure_head,
         "findings": findings_by_cure_task_id,
+        "kind": kind,
         "recordedAt": utcnow(),
     }
     passes.append(entry)

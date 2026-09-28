@@ -13541,22 +13541,27 @@ class LoopSupervisor:
         finding ids (`state.root_cure_task_id`) the immediately preceding
         GRANTED cure pass for `approach` targeted -- read from `cure-
         lineage.json` (`state.read_cure_lineage`, task 004's own B.5
-        foundation record), never from `cureBlocking`'s clause text. The
-        most recent lineage entry naming this `approach` carries
+        foundation record), never from `cureBlocking`'s clause text.
+
+        cure-01-01 (VG-01): the most recent GRANTED lineage entry naming
+        this `approach` (`_latest_granted_cure_pass`, never a REFUTED-
+        petition remedy insertion that may have landed after it) carries
         `findings` keyed by the cure task id `insert_cure_tasks` built for
         each blocking finding of THAT pass; each of those ids is itself
         followed back through `tasks[].reopensCureTaskId` to ITS OWN root
         (a pass's fresh cure task is its own root exactly when it carries
         no `reopensCureTaskId`, i.e. review's first-ever finding about
-        that rule). Absence (no granted pass yet for this approach) reads
-        as the empty set, mirroring `_cure_pass_blocking_clauses`'s own
-        absence handling for the text-based comparison.
+        that rule). A remedy insertion narrowing this set down to its own
+        single target (the bug this task closes) would let a confirmation
+        review reopen every OTHER root the granted pass targeted and
+        still read as "progress" -- exactly the no-progress escape this
+        set exists to close. Absence (no granted pass yet for this
+        approach) reads as the empty set, mirroring `_cure_pass_blocking_
+        clauses`'s own absence handling for the text-based comparison.
         """
-        lineage = state.read_cure_lineage(self.run.root)
-        passes = [p for p in lineage["passes"] if p.get("approach") == approach]
-        if not passes:
+        latest = self._latest_granted_cure_pass(approach)
+        if latest is None:
             return set()
-        latest = passes[-1]
         cure_task_ids = latest.get("findings") or {}
         if not isinstance(cure_task_ids, dict):
             return set()
@@ -16075,6 +16080,15 @@ class LoopSupervisor:
         make. Returns the ids `insert_cure_tasks` returned, `[]` when
         nothing was eligible (the overwhelming common case).
 
+        cure-01-01 (PRD v0.27 B.1/B.3/B.4, review verdict-gate VG-01): the
+        ONE call site that passes `pass_kind="remedy"` to `state.insert_
+        cure_tasks` -- a remedy insertion is not a granted cure pass, and
+        must never be read back as one by `_latest_granted_cure_pass`
+        below (the confirmation section's listed ids, its diff range, and
+        the no-progress roots all stay keyed on the most recent GRANTED
+        pass through that reader, never on `cure-lineage.json`'s literal
+        last entry, which this call's own entry can be).
+
         Called from `_review_verdict` immediately AFTER `_apply_refuted_
         petition_adjudications` and BEFORE `_write_back_petition_
         adjudications`, and both halves of that position are load-bearing:
@@ -16153,7 +16167,7 @@ class LoopSupervisor:
             return []
         inserted = state.insert_cure_tasks(
             self.run, self._approach, remedy_findings,
-            pre_cure_head=self._workspace_head_sha())
+            pre_cure_head=self._workspace_head_sha(), pass_kind="remedy")
         # `zip` is exact: `insert_cure_tasks` returns one id per finding in
         # finding order, and the extra re-take/re-opened ids it can also
         # return come only from `invalidates`, which these synthesized
@@ -17875,6 +17889,53 @@ class LoopSupervisor:
         except OSError:
             return ""
 
+    def _latest_granted_cure_pass(self, approach: int) -> dict | None:
+        """cure-01-01 (PRD v0.27 B.1/B.3/B.4, review verdict-gate VG-01):
+        the most recent `cure-lineage.json` entry for `approach` that is
+        an actual GRANTED cure pass (`kind == "granted"`, `state.insert_
+        cure_tasks`'s own `pass_kind` default, written by `_take_cure_
+        pass`/`_take_gate_cure_pass`) -- never a REFUTED-petition remedy
+        insertion (`kind == "remedy"`, `_insert_refuted_remedy_tasks`'s
+        own call), which appends to the SAME `passes` list through the
+        SAME `insert_cure_tasks` write path but is not itself a cure pass
+        PRD B.1 counts toward a confirmation review.
+
+        Every one of `_is_confirmation_review`, `_confirmation_review_
+        listed_cure_task_ids`, `_confirmation_review_context` and
+        `_cure_pass_targeted_roots` used to read `passes[-1]` directly --
+        the lineage document's literal last entry, granted or not. A
+        remedy landing after a granted pass (the mid-run/end-of-run
+        adjudication episode fires from the SAME `_review_verdict` a
+        rejection or acceptance also flows through, so the two can
+        interleave within one approach) silently became that `passes
+        [-1]`, and the confirmation section, its listed ids and the no-
+        progress root comparison all narrowed down to that one remedy's
+        own single target -- dropping every OTHER finding the granted
+        pass had actually targeted, and moving the diff range's start
+        forward from the granted pass's own `preCureHead` to the remedy's
+        (the workspace HEAD at remedy-insertion time, already past
+        whatever partial fix landed since the granted pass). This reader
+        is the fix: every one of those four call sites now goes through
+        it, so a remedy insertion can grow `cure-lineage.json` without
+        ever replacing or narrowing what a confirmation review, its
+        listed ids or its no-progress comparison see.
+
+        An entry with no `kind` field at all is treated as `"granted"`
+        (`p.get("kind", "granted")`) -- the same default `insert_cure_
+        tasks`'s own `pass_kind` parameter carries, so a lineage entry
+        this build's two granted-pass call sites write (which never pass
+        an override) reads back identically whether or not this key
+        happens to be present. `None` when `approach` is `None` or no
+        granted pass has been recorded for it yet.
+        """
+        if approach is None:
+            return None
+        lineage = state.read_cure_lineage(self.run.root)
+        granted = [p for p in lineage["passes"]
+                  if p.get("approach") == approach
+                  and p.get("kind", "granted") == "granted"]
+        return granted[-1] if granted else None
+
     def _is_confirmation_review(self) -> bool:
         """Task 006 (PRD requirement B.3, v0.27, #274): true exactly when
         the approach under review has taken at least one GRANTED cure
@@ -17884,36 +17945,44 @@ class LoopSupervisor:
         so `_review_verdict`'s downgrade enforcement never has to render
         the whole section just to ask a yes/no question, and so the two
         never drift apart on what counts as a confirmation review.
+
+        cure-01-01 (VG-01): a REFUTED-petition remedy insertion alone --
+        no GRANTED pass yet for this approach -- is NOT a confirmation
+        review (`_latest_granted_cure_pass` returns `None` for it, since
+        it filters `kind == "granted"`), matching PRD B.1's own "at least
+        one cure pass" wording.
         """
         approach = self._approach
         if approach is None:
             return False
-        lineage = state.read_cure_lineage(self.run.root)
-        return any(p.get("approach") == approach for p in lineage["passes"])
+        return self._latest_granted_cure_pass(approach) is not None
 
     def _confirmation_review_listed_cure_task_ids(self) -> frozenset[str]:
-        """cure-01-02-2 (PRD B.3/B.5, DoD 2): the set of cure task ids the
-        CURRENT confirmation section actually lists -- the keys of the
-        most recent GRANTED cure pass's own `findings` map for `self.
-        _approach` (`cure-lineage.json`, task 004), the exact same set
-        `_confirmation_review_context` renders as `### Every blocking
-        finding of the previous granted pass` and `_cure_pass_targeted_
-        roots` walks to its own roots. This is the one bound a `reopens`
-        value must resolve to in order to retain blocking severity
-        through the reopen branch (`findings.apply_confirmation_review_
-        downgrade`, wired below) -- an unrelated or unresolved id is not
-        a member of this set, however it is spelled. Empty when `self.
-        _approach` is `None` or no pass has been granted for it yet, the
-        same absence `_is_confirmation_review` reports as `False` for.
+        """cure-01-02-2 (PRD B.3/B.5, DoD 2); cure-01-01 (VG-01, keyed on
+        the granted pass, never a later remedy insertion): the set of cure
+        task ids the CURRENT confirmation section actually lists -- the
+        keys of the most recent GRANTED cure pass's own `findings` map for
+        `self._approach` (`cure-lineage.json`, task 004, via `_latest_
+        granted_cure_pass`), the exact same set `_confirmation_review_
+        context` renders as `### Every blocking finding of the previous
+        granted pass` and `_cure_pass_targeted_roots` walks to its own
+        roots. This is the one bound a `reopens` value must resolve to in
+        order to retain blocking severity through the reopen branch
+        (`findings.apply_confirmation_review_downgrade`, wired below) --
+        an unrelated or unresolved id is not a member of this set,
+        however it is spelled. Empty when `self._approach` is `None` or
+        no pass has been GRANTED for it yet, the same absence `_is_
+        confirmation_review` reports as `False` for -- a remedy insertion
+        with no granted pass before it also reads as empty, never as that
+        remedy's own lone target.
         """
         approach = self._approach
         if approach is None:
             return frozenset()
-        lineage = state.read_cure_lineage(self.run.root)
-        passes = [p for p in lineage["passes"] if p.get("approach") == approach]
-        if not passes:
+        latest = self._latest_granted_cure_pass(approach)
+        if latest is None:
             return frozenset()
-        findings_by_id = passes[-1].get("findings") or {}
+        findings_by_id = latest.get("findings") or {}
         if not isinstance(findings_by_id, dict):
             return frozenset()
         return frozenset(cid for cid in findings_by_id if isinstance(cid, str))
@@ -17936,15 +18005,19 @@ class LoopSupervisor:
         that never seeded it, e.g. before the very first approach exists)
         degrades the same way.
 
-        Keyed on the MOST RECENT granted pass for the CURRENT approach
-        only (`passes[-1]` among entries naming `approach`): an earlier
-        pass on this same approach was already the subject of an earlier
-        confirmation review, whose own diff range and finding list have
-        already been checked. This section is about what changed since
-        THIS reviewer's own last look -- the pass just taken, and the
-        diff from the HEAD it was taken at (`preCureHead`) to the
-        workspace's CURRENT HEAD (`self._workspace_head_sha()`), not the
-        approach's whole cure history.
+        Keyed on the MOST RECENT GRANTED pass for the CURRENT approach
+        only (`_latest_granted_cure_pass`, never a REFUTED-petition remedy
+        insertion that may have landed after it, cure-01-01/VG-01): an
+        earlier pass on this same approach was already the subject of an
+        earlier confirmation review, whose own diff range and finding
+        list have already been checked. This section is about what
+        changed since THIS reviewer's own last look -- the pass just
+        taken, and the diff from the HEAD it was taken at (`preCureHead`)
+        to the workspace's CURRENT HEAD (`self._workspace_head_sha()`),
+        not the approach's whole cure history, and never a remedy's own
+        later `preCureHead` (a remedy insertion answers one obligation,
+        not the whole blocking set the granted pass was taken over, so it
+        must never replace or narrow the section a granted pass built).
 
         The three checks and their order, the "do not re-audit" rule, and
         the `reopens`/`regression`/downgrade/two-exception instructions
@@ -17958,11 +18031,9 @@ class LoopSupervisor:
         approach = self._approach
         if approach is None:
             return ""
-        lineage = state.read_cure_lineage(self.run.root)
-        passes = [p for p in lineage["passes"] if p.get("approach") == approach]
-        if not passes:
+        latest = self._latest_granted_cure_pass(approach)
+        if latest is None:
             return ""
-        latest = passes[-1]
         findings_by_id = latest.get("findings") or {}
         pre_cure_head = latest.get("preCureHead")
         current_head = self._workspace_head_sha()
