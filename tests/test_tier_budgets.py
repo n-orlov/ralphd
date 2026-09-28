@@ -419,8 +419,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 004 retry: +2 tests, no new module (tests/test_render_index_
     # linear_writer.py's TestTailKeepsItsOwnCadenceOnPublishDueCalls),
     # measured the same way -> fast 6537/455, smoke 4845/332.
-    "fast": {"tests": 6537, "modules": 455},
-    "smoke": {"tests": 4845, "modules": 332},
+    # Task 005: +60 tests / +1 module (tests/test_live_logs_prefix_read_
+    # bound.py: PRD Q's canonical fixture and both silent-prelude depths,
+    # each truncated one line short and to 35/60/83/97% of its own raw
+    # line count, both index kinds, both surfaces -- an in-process module,
+    # so every new node counts in both tiers), measured `.venv/bin/python
+    # -m pytest -q -m fast --collect-only` -> fast 6597/456, `-m smoke
+    # --collect-only` -> smoke 4905/333.
+    "fast": {"tests": 6597, "modules": 456},
+    "smoke": {"tests": 4905, "modules": 333},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

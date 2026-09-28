@@ -3657,7 +3657,15 @@ JSON endpoints served under `/api/`:
   cure-01-01-4, v0.27 PRD D.1 and D.2/D.3 together, DoD 4,
   `tests/test_d1_real_pirunner_active_iteration_reads_within_cap.py`,
   which drives the real engine subprocess, kept alive before its own
-  EOF): `render_index.py`'s live writer appends a small extra shard to a
+  EOF), and just as well at an arbitrary PREFIX of either named fixture --
+  not only wherever a real subprocess happens to publish at
+  (`tests/test_live_logs_prefix_read_bound.py`, task 005, this cure
+  round: PRD Q's canonical fixture and both silent-prelude depths, each
+  truncated one line short of its own full transcript and to 35%, 60%,
+  83% and 97% of its own raw line count, on both surfaces, first and a
+  repeated request, once against the live writer's own published index
+  for that exact prefix and once against a fresh from-scratch rebuild of
+  it): `render_index.py`'s live writer appends a small extra shard to a
   side file every `LIVE_FLUSH_EVERY_LINES` checkpoints in between its own
   much-rarer full republishes, so the two named silent-prelude depths --
   large enough to blow past this bound if the whole gap since the last
