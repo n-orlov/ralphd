@@ -1152,7 +1152,8 @@ def _checkpoints_well_formed(checkpoints: list[dict], start_offset: int = -1,
     return True
 
 
-def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | None:
+def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME, *,
+               verify_bytes: bool = True) -> dict | None:
     """Read and validate one iteration's render index against its transcript
     file's CURRENT size on disk. Returns the parsed dict only when: the
     file exists and parses as a JSON object; carries every required key;
@@ -1190,7 +1191,15 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
     (PRD C.1's own "written incrementally"); the caller (task 013) treats
     that gap as an unindexed suffix to scan directly, never as reason to
     discard the whole index. Absence, truncation/malformed JSON, or any
-    other inconsistency returns `None`, never raises."""
+    other inconsistency returns `None`, never raises.
+
+    `verify_bytes=False` skips only the two `_covered_prefix_matches`
+    re-reads of transcript bytes (MAIN's window and the TAIL extension's);
+    every structural check and the stat-only identity/provenance witness
+    still apply. `resolve_flags_at_offset` is its one caller: it needs
+    nothing from the index but three collapse flags, which the legacy
+    `collapse_index.json` it stands in for is trusted with on a size check
+    alone."""
     path = itdir / INDEX_FILENAME
     try:
         raw = path.read_text()
@@ -1281,7 +1290,7 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
         return None
     if checkpoints and not _witness_holds(index, actual_stat):
         return None
-    if checkpoints and not _covered_prefix_matches(
+    if verify_bytes and checkpoints and not _covered_prefix_matches(
             itdir / output_filename, checkpoints):
         return None
     # Task cure-01-01-4 (PRD D.1/D.2 together): extend MAIN's own
@@ -1300,7 +1309,8 @@ def load_index(itdir: Path, output_filename: str = _OUTPUT_FILENAME) -> dict | N
         extended = checkpoints + tail
         if (extended[-1]["byteOffset"] <= actual_size
                 and _checkpoints_well_formed(tail, base_offset, base_lines)
-                and _covered_prefix_matches(itdir / output_filename, extended)):
+                and (not verify_bytes
+                     or _covered_prefix_matches(itdir / output_filename, extended))):
             index = dict(index)
             index["checkpoints"] = extended
             index["transcriptBytes"] = extended[-1]["byteOffset"]
@@ -1624,3 +1634,64 @@ def latest_iteration_cache_key(run_root: Path) -> tuple[int, int] | None:
     except OSError:
         return None
     return last, size
+
+
+def resolve_flags_at_offset(itdir: Path, cut_offset: int,
+                            output_filename: str = _OUTPUT_FILENAME) -> dict | None:
+    """`collapse_index.resolve_flags_at_offset`'s own answer -- the three
+    collapse guards (`textSeen`/`thinkingSeen`/`toolcallSeen`) a fresh
+    `new_render_state()` holds once the renderer has consumed the
+    transcript's first `cut_offset` bytes -- resolved off THIS index's
+    validated checkpoints instead of the legacy side index, or `None`
+    when `load_index` refuses this index (the caller then keeps its own
+    fallback, unchanged).
+
+    Every raw line has its own checkpoint whose `state` IS the renderer's
+    state right after that line, so a `cut_offset` inside the covered
+    prefix -- always a line start, the offset where a retained tail
+    begins -- is answered by one `bisect` and no transcript read at all.
+    A `cut_offset` past the covered prefix (a live index lagging its
+    transcript) reads only the unindexed gap between the last checkpoint
+    at or before it and `cut_offset` itself, replayed through
+    `collapse_index._transitions` -- the same mirror of the renderer's
+    dispatch the legacy index and its scan fallback use -- never the
+    bytes the index already covers.
+
+    `log_merge.merge_entries_tail`'s bounded reader consults this when
+    `collapse_index.json` EXISTS but fails to validate (a finished
+    iteration's index left stale by a later truncation, a malformed file,
+    a version this build does not read): with a validated render index
+    beside it, that case costs this index's own read plus the gap,
+    instead of the legacy fallback's scan of every byte before the cut."""
+    index = load_index(itdir, output_filename, verify_bytes=False)
+    if index is None:
+        return None
+    checkpoints = index["checkpoints"]
+    offsets = [cp["byteOffset"] for cp in checkpoints]
+    i = bisect.bisect_right(offsets, cut_offset) - 1
+    if i < 0:
+        start = 0
+        seen = {"text": False, "thinking": False, "toolcall": False}
+    else:
+        start = checkpoints[i]["byteOffset"]
+        state = checkpoints[i]["state"]
+        seen = {"text": bool(state["text_seen"]),
+                "thinking": bool(state["thinking_seen"]),
+                "toolcall": bool(state["toolcall_seen"])}
+    if start < cut_offset:
+        try:
+            with (itdir / output_filename).open("rb") as f:
+                f.seek(start)
+                raw = f.read(cut_offset - start)
+        except OSError:
+            return None
+        for _offset, action in _collapse_index._transitions(raw):
+            if action[0] == "reset":
+                seed = action[1]
+                seen = {"text": bool(seed.get("textSeen")),
+                        "thinking": bool(seed.get("thinkingSeen")),
+                        "toolcall": bool(seed.get("toolcallSeen"))}
+            else:
+                seen[action[1]] = True
+    return {"textSeen": seen["text"], "thinkingSeen": seen["thinking"],
+            "toolcallSeen": seen["toolcall"]}

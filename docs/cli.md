@@ -3659,13 +3659,17 @@ JSON endpoints served under `/api/`:
   which drives the real engine subprocess, kept alive before its own
   EOF), and just as well at an arbitrary PREFIX of either named fixture --
   not only wherever a real subprocess happens to publish at
-  (`tests/test_live_logs_prefix_read_bound.py`, task 005, this cure
-  round: PRD Q's canonical fixture and both silent-prelude depths, each
-  truncated one line short of its own full transcript and to 35%, 60%,
-  83% and 97% of its own raw line count, on both surfaces, first and a
-  repeated request, once against the live writer's own published index
-  for that exact prefix and once against a fresh from-scratch rebuild of
-  it): `render_index.py`'s live writer appends a small extra shard to a
+  (`tests/test_live_logs_prefix_read_bound.py`: PRD Q's canonical
+  fixture and both silent-prelude depths, each truncated one line short
+  of its own full transcript and to 35%, 60%, 83% and 97% of its own raw
+  line count, on both surfaces, first and a repeated request, once
+  against the live writer's own published index for that exact prefix
+  and once against a fresh from-scratch rebuild of it, each both with no
+  `collapse_index.json` and with a finished iteration's
+  `collapse_index.json` left on disk stale for the prefix -- the engine's
+  `/logs` handler then resolves its cut's collapse seed off the validated
+  render index instead of scanning every transcript byte before the
+  cut): `render_index.py`'s live writer appends a small extra shard to a
   side file every `LIVE_FLUSH_EVERY_LINES` checkpoints in between its own
   much-rarer full republishes, so the two named silent-prelude depths --
   large enough to blow past this bound if the whole gap since the last

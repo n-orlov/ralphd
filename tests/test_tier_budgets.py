@@ -426,8 +426,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # so every new node counts in both tiers), measured `.venv/bin/python
     # -m pytest -q -m fast --collect-only` -> fast 6597/456, `-m smoke
     # --collect-only` -> smoke 4905/333.
-    "fast": {"tests": 6597, "modules": 456},
-    "smoke": {"tests": 4905, "modules": 333},
+    # Task 005 retry: +82 tests, no new module (tests/test_live_logs_prefix_
+    # read_bound.py: every case again with the finished iteration's stale
+    # collapse_index.json left on disk, the malformed/future_version
+    # siblings on the live surface, the render-index flag agreement and
+    # /logs handler answer checks), measured the same way -> fast
+    # 6679/456, smoke 4987/333.
+    "fast": {"tests": 6679, "modules": 456},
+    "smoke": {"tests": 4987, "modules": 333},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

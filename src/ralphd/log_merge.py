@@ -1344,8 +1344,24 @@ def merge_entries_tail(run_root: Path, tail: int,
                 tail_bytes = len("".join(tail_lines).encode("utf-8"))
                 cut_offset = max(file_size - tail_bytes, 0)
                 if cut_offset > 0:
-                    flags = _resolve_flags_at_offset(d, cut_offset,
-                                                     output_filename=OUTPUT_FILENAME)
+                    # An index FILE that exists but fails to validate
+                    # (typically a finished iteration's own index left
+                    # stale by a later truncation of its transcript) is
+                    # answered off a validated render index first, when
+                    # one sits beside it: that costs the render index's
+                    # own read plus any unindexed gap before the cut,
+                    # never `resolve_flags_at_offset`'s scan of every
+                    # byte before the cut (v0.27 PRD D.1's whole-call
+                    # bound). Only with no usable render index either
+                    # does the scan below still run.
+                    flags = None
+                    if index is None:
+                        from .render_index import resolve_flags_at_offset as _render_index_flags
+                        flags = _render_index_flags(d, cut_offset,
+                                                    output_filename=OUTPUT_FILENAME)
+                    if flags is None:
+                        flags = _resolve_flags_at_offset(d, cut_offset,
+                                                         output_filename=OUTPUT_FILENAME)
                     collapse_seed = {"textSeen": flags["textSeen"],
                                      "thinkingSeen": flags["thinkingSeen"],
                                      "toolcallSeen": flags["toolcallSeen"]}
