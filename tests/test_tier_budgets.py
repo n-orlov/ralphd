@@ -401,8 +401,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # unpause takes its own immediate terminal tail on the next repeat),
     # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
     # fast 6524/455, `-m smoke --collect-only` -> smoke 4832/332.
-    "fast": {"tests": 6524, "modules": 455},
-    "smoke": {"tests": 4832, "modules": 332},
+    # Task 002 retry: +4 doc-guard tests, no new module (tests/test_gate_
+    # pause_before_archive.py: SPEC.md's operator_escalation/pauseReason
+    # rows and docs/api.md's pauseReason row state the gate pause covers
+    # all-curable, mixed and all-incurable sets; no doc keeps the
+    # all-curable-only scope), measured the same way -> fast 6528/455,
+    # smoke 4836/332.
+    "fast": {"tests": 6528, "modules": 455},
+    "smoke": {"tests": 4836, "modules": 332},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

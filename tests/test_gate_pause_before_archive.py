@@ -314,3 +314,55 @@ def test_gate_rejection_mixed_with_ceiling_spent_disabled_pause_takes_32352c15_e
     assert not (root / "approaches" / "01").exists()
     assert not sup.run.composite_prd_file.exists()
     assert _escalations(root) == []
+
+
+_REPO = Path(__file__).resolve().parents[1]
+
+# The pre-task-002 wording scoped the gate's pause to a rejection that
+# "would have earned the gate's own cure-pass edge" -- i.e. all-curable
+# only -- which contradicts `_step_verdict_gate` parking mixed and
+# all-incurable blocking sets on a spent ceiling too.
+_NARROW_SCOPE_PHRASES = (
+    "rejection that would have earned the gate's own cure-pass edge if the "
+    "run-wide `cure_pass_ceiling` were not already spent",
+    "it fires only on a `verdict_gate` rejection that would have earned",
+)
+
+
+@pytest.mark.parametrize("doc, row_prefix", [
+    ("SPEC.md", "| `operator_escalation` |"),
+    ("SPEC.md", "| `pauseReason` |"),
+    ("docs/api.md", "| `pauseReason` |"),
+])
+def test_spec_and_docs_gate_pause_rows_cover_every_blocking_set_shape(
+        doc, row_prefix):
+    """Every spec/doc row describing `verdict_gate_operator_input_needed`
+    states it covers all-curable, mixed and all-incurable blocking sets,
+    and none still scopes it to the all-curable (cure-pass-earning)
+    rejection alone."""
+    text = (_REPO / doc).read_text(encoding="utf-8")
+    rows = [ln for ln in text.splitlines() if ln.startswith(row_prefix)]
+    assert len(rows) == 1, (doc, row_prefix, len(rows))
+    row = rows[0]
+    for phrase in _NARROW_SCOPE_PHRASES:
+        assert phrase not in row, (doc, phrase)
+    # The description segment for this pause reason, from its own
+    # introducing mention to the end of the row.
+    idx = row.rfind('`"verdict_gate_operator_input_needed"` (v0.27')
+    if idx < 0:
+        idx = row.find('adds `"verdict_gate_operator_input_needed"`')
+    assert idx >= 0, (doc, row_prefix)
+    segment = row[idx:idx + 1200]
+    assert "cure_pass_ceiling" in segment
+    assert "mixed" in segment, (doc, segment[:300])
+    assert "all-incurable" in segment, (doc, segment[:300])
+    assert ("all-curable" in segment or "all curable" in segment), (
+        doc, segment[:300])
+
+
+def test_no_spec_or_doc_scopes_gate_pause_to_all_curable_only():
+    for doc in ("SPEC.md", "docs/cli.md", "docs/api.md",
+                "docs/architecture.md"):
+        text = (_REPO / doc).read_text(encoding="utf-8")
+        for phrase in _NARROW_SCOPE_PHRASES:
+            assert phrase not in text, (doc, phrase)
