@@ -326,6 +326,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # spent, unchanged with a pass left), measured `.venv/bin/python -m
     # pytest -q -m fast --collect-only` -> fast 6476/450, `-m smoke` ->
     # smoke 4784/327.
+    # Task 012 (D.2, #275): -1 test / -1 module (retired tests/test_render_
+    # index_live_write_cost.py, whose whole point -- pinning the old
+    # quadratic write-cost shape -- is now the defect this task fixes) / +1
+    # test / +1 module (tests/test_render_index_linear_writer.py, the
+    # covering replacement, pinning the corrected linear shape) -- net
+    # unchanged, measured `.venv/bin/python -m pytest -q -m fast
+    # --collect-only` -> fast 6476/450, `-m smoke --collect-only` -> smoke
+    # 4784/327.
     "fast": {"tests": 6476, "modules": 450},
     "smoke": {"tests": 4784, "modules": 327},
 }

@@ -393,16 +393,43 @@ def _covered_prefix_matches(output_path: Path, checkpoints: list[dict],
 # would cost the whole silent prefix the C.2 bound exists to skip.
 VERIFY_WINDOW_BYTES = 1 << 17
 
-# How many freshly-fed raw lines a live iteration accumulates before
-# `LiveRenderIndex.flush` actually rewrites `render_index.json` on disk --
-# the write itself is O(total checkpoints so far), so paying it on every
-# single line would make a long iteration's own logging cost grow
-# quadratically in its own line count. Batching it costs nothing in
-# CORRECTNESS (PRD C.1's own "written incrementally", not "written
-# synchronously") -- only in how stale the "uncovered suffix" a reader
-# falls back to scanning can be, which `load_index`'s whole contract
-# already treats as ordinary, never as an error.
+# How many freshly-fed raw lines a live iteration accumulates, AT MOST,
+# before `LiveRenderIndex.flush` first rewrites `render_index.json` on
+# disk. Each rewrite still costs O(total checkpoints so far) -- the whole
+# accumulated snapshot, not just the newly-fed batch -- so flushing at a
+# FIXED interval (every `LIVE_FLUSH_EVERY_LINES` lines, however batched)
+# makes the SUM of every flush's own cost across a whole iteration
+# quadratic in the transcript's own line count: doubling the transcript
+# roughly doubles both the number of flushes AND the average cost each
+# one pays (PRD D.2, #275; the shape `tests/test_render_index_live_write_
+# cost.py` used to pin as `docs/architecture.md`'s own "Write timing"
+# claim, before this task corrected it).
+#
+# `flush` now schedules its NEXT publish geometrically instead
+# (`_next_flush_threshold`): after publishing at `total` checkpoints, the
+# next publish is not due again until `total` has at least DOUBLED (or
+# grown by `every`, whichever asks for more lines first, so an iteration
+# still short of `LIVE_FLUSH_EVERY_LINES` checkpoints behaves exactly as
+# before). Publishing at thresholds `every, 2*every, 4*every, ...` sums to
+# a geometric series bounded by `2 * N` for a transcript of `N` lines --
+# LINEAR, not quadratic -- while every published snapshot is still a
+# complete, independently-valid index (task 012, PRD D.2/D.3: nothing
+# about `load_index`'s own contract or an already-published snapshot's
+# correctness changes, only how OFTEN a bigger snapshot gets rewritten).
 LIVE_FLUSH_EVERY_LINES = 20
+
+
+def _next_flush_threshold(total: int, every: int) -> int:
+    """The checkpoint COUNT `total` (a completed publish, or 0 for a
+    writer that has never published) at which `LiveRenderIndex.flush`
+    should next actually rewrite the index, given a base batch size
+    `every`: whichever of `total + every` (never publish less often than
+    the original fixed cadence) and `total * 2` (never publish more often
+    than a doubling would need) asks for MORE lines first -- the standard
+    amortized-doubling schedule that keeps the sum of every publish's own
+    O(checkpoints-at-that-point) cost linear in the FINAL checkpoint
+    count, not quadratic."""
+    return max(total + every, total * 2)
 
 
 def _state_to_json(state: dict) -> dict:
@@ -448,7 +475,6 @@ class LiveRenderIndex:
         self._checkpoints: list[dict] = []
         self._rendered_lines = 0
         self._offset = 0
-        self._lines_since_flush = 0
         # Task cure-01-01-4: `poisoned`, once True, never clears itself --
         # only a fresh `LiveRenderIndex`/a from-scratch `compute_render_index`
         # rebuild starts clean. `_witness_checkpoints` is exactly the
@@ -463,6 +489,10 @@ class LiveRenderIndex:
         self._poisoned = False
         self._witness_checkpoints: list[dict] = []
         self._custody: tuple[int, int, int] | None = None
+        # Task 012 (PRD D.2): the checkpoint COUNT at which `flush` next
+        # actually publishes -- `None` until the first `flush` call picks
+        # the initial threshold from whatever `every` it is given then.
+        self._next_flush_threshold: int | None = None
 
     @property
     def transcript_bytes(self) -> int:
@@ -484,7 +514,6 @@ class LiveRenderIndex:
             "renderedLines": self._rendered_lines,
             "state": _state_to_json(self._state),
             "lineCrc32": zlib.crc32(raw_line)})
-        self._lines_since_flush += 1
 
     def snapshot(self, witness: tuple[int, int, int, int] | None = None) -> dict:
         """The index payload as of every line fed so far, plus the given
@@ -550,8 +579,12 @@ class LiveRenderIndex:
     def flush(self, itdir: Path, *, force: bool = False,
               every: int = LIVE_FLUSH_EVERY_LINES,
               output_filename: str = _OUTPUT_FILENAME) -> bool:
-        """Persist the current snapshot to `itdir / INDEX_FILENAME` when at
-        least `every` new lines were fed since the last flush, or always
+        """Persist the current snapshot to `itdir / INDEX_FILENAME` once
+        the checkpoint count has reached the next scheduled publish
+        threshold (`_next_flush_threshold`, task 012/PRD D.2 -- see
+        `_next_flush_threshold`'s own docstring for the geometric schedule
+        that keeps the total cost of every publish across a whole
+        iteration LINEAR in the transcript's own line count), or always
         when `force` (the pump loop's own end-of-stream call, so the last
         partial batch is never left unwritten). Never raises: exactly
         `collapse_index.write_index`'s own failure contract -- a write
@@ -571,7 +604,10 @@ class LiveRenderIndex:
         it), the way a from-scratch build vouches for what it read.
         `poisoned`, once set, is carried into every later snapshot.
         Returns whether it actually wrote."""
-        if not force and self._lines_since_flush < every:
+        total = len(self._checkpoints)
+        threshold = (every if self._next_flush_threshold is None
+                    else self._next_flush_threshold)
+        if not force and total < threshold:
             return False
         output_path = itdir / output_filename
         if self._custody is None and not self._poisoned:
@@ -590,7 +626,7 @@ class LiveRenderIndex:
         except OSError:
             return False
         self._witness_checkpoints = list(self._checkpoints)
-        self._lines_since_flush = 0
+        self._next_flush_threshold = _next_flush_threshold(total, every)
         return True
 
 

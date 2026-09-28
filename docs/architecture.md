@@ -1785,15 +1785,30 @@ running. One file per iteration, `iterations/NNNN/render_index.json`, beside
 **Write timing.** `engine/runner.py`'s `pump()` -- the one place
 `output.jsonl` is written *while the iteration is still running* -- feeds
 `LiveRenderIndex` every raw line the moment it is written to disk, and
-every `LIVE_FLUSH_EVERY_LINES` fed lines rewrites `render_index.json` from
+calls `flush()` after every one, which rewrites `render_index.json` from
 scratch with the WHOLE accumulated snapshot (every checkpoint fed so far,
-not just the newly fed batch). That batching bounds how stale the
-uncovered suffix a reader falls back to scanning can be, and how often the
-rewrite happens, but not its own total cost: each rewrite still costs
-O(total checkpoints so far), so the sum of every flush's cost across a
-whole iteration is quadratic in the transcript's own line count, the same
-as rewriting on every single line would be, just with a smaller constant.
-`engine/loop.py`'s end-of-iteration bookkeeping then calls `render_index.write_index` once
+not just the newly fed batch) whenever the checkpoint count has reached
+the next scheduled publish threshold. Before task 012 (PRD v0.27
+requirement D.2, #275) that threshold was a fixed interval
+(`LIVE_FLUSH_EVERY_LINES`), so each of the ~N / `LIVE_FLUSH_EVERY_LINES`
+rewrites still cost O(total checkpoints so far) and the SUM of every
+flush's cost across a whole iteration was quadratic in the transcript's
+own line count (measured: 1,300/4,600/17,200 checkpoint records
+serialised in total at 200/400/800 transcript lines). `render_index.
+_next_flush_threshold` now schedules the next publish GEOMETRICALLY
+instead: after publishing at `total` checkpoints, the next publish is not
+due again until `total` has doubled (or grown by `LIVE_FLUSH_EVERY_LINES`,
+whichever asks for more lines first, so a short iteration still under that
+base batch size behaves exactly as before). Publishing at
+`LIVE_FLUSH_EVERY_LINES, 2x, 4x, ...` sums to a geometric series bounded
+by `2 * N`, so the total records and total bytes written across a whole
+iteration now grow LINEARLY (a small ~2x constant) in the transcript's own
+line count instead -- doubling the line count at most doubles either
+measure (`tests/test_render_index_linear_writer.py`). Batching, geometric
+or fixed, still bounds only how stale the uncovered suffix a reader falls
+back to scanning can be, never index correctness: every published snapshot
+is a complete, independently-valid index regardless of how it got
+scheduled. `engine/loop.py`'s end-of-iteration bookkeeping then calls `render_index.write_index` once
 more, exactly like it does for `collapse_index.json` -- a full, from-scratch
 rebuild that is normally a no-op rewrite of already-current bytes, existing
 so a transcript that ends between two live flushes still ends up with an
