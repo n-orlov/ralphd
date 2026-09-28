@@ -2486,21 +2486,44 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   `curePasses` and `gateCurePasses` for every approach, below the configured
   `JobConfig.cure_pass_ceiling`, job.yaml key `cure_pass_ceiling`, default
   3 — a per-approach comparison against the module-level
-  `CURE_PASS_CEILING` literal before that task) AND this rejection's own
+  `CURE_PASS_CEILING` literal before that task) AND this rejection is not
+  a repeat of what the immediately preceding GRANTED pass targeted. How
+  "a repeat" is measured depends on the review. On an ORDINARY
+  (non-confirmation) review it is by clause text: this rejection's own
   blocking clause set
   (`findings.blocking_finding_clauses` -- the `clause` values of its
-  blocking findings, residuals excluded) is NOT a superset of the clause
-  set the immediately preceding GRANTED pass recorded. Every granted pass
+  blocking findings, residuals excluded) must NOT be a superset of the
+  clause set the immediately preceding GRANTED pass recorded. On a
+  CONFIRMATION review (v0.27 requirement B.4, #274, task 007 --
+  `LoopSupervisor._is_confirmation_review()`, the approach has already
+  taken a granted cure pass) clause text is ignored and the comparison is
+  by FINDING IDENTITY: the set of `reopens` cure task ids this
+  rejection's blocking findings carry, each followed back through
+  `tasks[].reopensCureTaskId` (`state.root_cure_task_id`,
+  `findings.reopened_root_finding_ids`) to the root finding it descends
+  from, must NOT be a superset of the identical resolution of the
+  preceding pass's own targeted set (`_cure_pass_targeted_roots`, read
+  from `cure-lineage.json`). A rejection that reopens every previously
+  targeted finding is refused however its clauses are reworded; one that
+  reopens a strict subset earns another pass; a blocking finding with no
+  `reopens` (a `regression: true` fresh defect, or an exempt
+  secret/absent-behaviour finding) contributes no root, so a confirmation
+  review whose entire blocking set is fresh is never refused as a
+  repeat. Tests: `tests/test_cure_progress_identity.py`. Every granted pass
   persists its own blocking clause set to `status.json`'s `cureBlocking
   [approach]` (`_take_cure_pass`, alongside the existing `curePasses`
   increment) so the comparison survives a resume with no shared Python
   state, the same disk-not-memory discipline `curePasses` itself already
-  uses; `_cure_pass_blocking_clauses` reads it back. An unchanged or GROWN
+  uses; `_cure_pass_blocking_clauses` reads it back for the ordinary-review
+  comparison (a confirmation review reads `cure-lineage.json` instead,
+  never this field). On an ordinary review, an unchanged or GROWN
   blocking set -- review pointing at the identical wall, or a bigger one --
   is a superset of itself and is refused, falling through to the ordinary
   replan/pause edges exactly as task 010's original one-pass bound did; a
-  genuinely narrower or different set (real progress, even if incomplete)
-  earns another pass. `approach.cure_pass` gains `blockingBefore`
+  genuinely narrower or different clause set (real progress, even if
+  incomplete) earns another pass. On a confirmation review the same holds
+  of the reopened root-finding set instead of the clause set, so a
+  different clause set alone earns nothing there. `approach.cure_pass` gains `blockingBefore`
   (the previous granted pass's set, `[]` on the first pass), `blockingAfter`
   (this pass's own set) and `passNumber` (the new count) alongside its
   existing fields, so the whole progression is legible off `events.jsonl`
@@ -2510,10 +2533,13 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   re-taken) spent that approach's entire one-cure-pass budget with no
   ordering rule in the plan able to reach it -- under this rule the repeat
   is still refused (same clauses, a superset), but a rejection that instead
-  narrows or shifts its own blocking set is no longer treated identically
-  to one that doesn't. Tests: `tests/test_cure_pass.py` (task 030's own
-  section: the grant on a non-superset second rejection, the refusal on a
-  superset one, and the ceiling at a third).
+  narrows its own blocking set (by clause on an ordinary review, by
+  reopened root finding on a confirmation review) is no longer treated
+  identically to one that doesn't. Tests: `tests/test_cure_pass.py` (task
+  030's own section: the grant on a non-superset second rejection, the
+  refusal on a superset one, and the ceiling at a third) and
+  `tests/test_cure_progress_identity.py` (the confirmation-review
+  identity rule).
 - **A cure is a specification, not a free-text repeat of the finding
   (v0.20 requirement E.2, #171, task 031).** Structured findings gain two
   fields (`engine/findings.py`'s `FINDING_SCHEMA`): `cured_when` (a
