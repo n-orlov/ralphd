@@ -437,8 +437,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # docs/api.md, docs/architecture.md), measured `.venv/bin/python -m
     # pytest -q -m fast --collect-only` -> fast 6680/457, `-m smoke
     # --collect-only` -> smoke 4988/334.
-    "fast": {"tests": 6680, "modules": 457},
-    "smoke": {"tests": 4988, "modules": 334},
+    # VG-01: +5 tests / +1 module (tests/test_one_shot_proceed_cure_edge.py:
+    # the one-shot unpause proceed is spent by the next matching rejection
+    # on the cure edge too -- an in-process module, so every node counts in
+    # both tiers) -> fast 6685/458, smoke 4993/335.
+    "fast": {"tests": 6685, "modules": 458},
+    "smoke": {"tests": 4993, "modules": 335},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
