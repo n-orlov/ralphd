@@ -1300,10 +1300,12 @@ class LoopSupervisor:
         on status.json already has, so a killed-and-restarted process
         still sees it. `_step_review`/`_step_verdict_gate`'s own rejection
         ladder is what CONSUMES it, on the very next rejection that
-        repeats the identical signature (`_no_ruling_proceed_signature`),
-        taking the archive-and-replan (or finish) edge without parking
-        again -- this mirrors the one-re-park bound a ruling already has
-        (`_ruling_already_reparked`/`_record_ruling_reparked`).
+        repeats the identical signature (`_take_matching_no_ruling_
+        proceed`), whichever edge that rejection takes: the cure edge when
+        a pass is available, else the archive-and-replan (or finish) edge,
+        never parking again on that signature -- this mirrors the
+        one-re-park bound a ruling already has (`_ruling_already_
+        reparked`/`_record_ruling_reparked`).
 
         Called from `resume()` itself, BEFORE `_clear_persisted_pause`
         wipes `pauseReason` back to `None` -- reading it after would
@@ -1356,17 +1358,34 @@ class LoopSupervisor:
         return proceeds.get(reason)
 
     def _consume_no_ruling_proceed(self, reason: str) -> None:
-        """Spend `reason`'s one-shot 'proceed' -- called exactly once, by
-        the rejection ladder branch that just used it to take the
-        archive-and-replan (or finish) edge instead of parking again
-        (PRD v0.27 C.2, #274). Idempotent: a `reason` already absent is
-        left alone.
+        """Spend `reason`'s one-shot 'proceed' (PRD v0.27 C.2, #274) --
+        called only through `_take_matching_no_ruling_proceed`.
+        Idempotent: a `reason` already absent is left alone.
         """
         status = self.run.read_status()
         proceeds = dict(status.get("noRulingProceed") or {})
         if reason in proceeds:
             del proceeds[reason]
             self.run.update_status(noRulingProceed=proceeds)
+
+    def _take_matching_no_ruling_proceed(
+        self, reason: str, signature: str | None
+    ) -> bool:
+        """Spend `reason`'s one-shot 'proceed' iff it was granted for
+        exactly `signature`, and say whether it was (PRD v0.27 C.2/C.3,
+        #274, VG-01). Called by the rejection ladder BEFORE it picks an
+        edge, so the very next matching rejection spends the grant
+        whichever edge it takes -- the cure edge included. A grant left
+        unspent across a cure pass would otherwise authorise a LATER
+        archive the operator never saw. On a `True` return the caller
+        also skips every same-signature operator gate for this one
+        rejection: the operator already answered that pause once.
+        """
+        if (signature is None
+                or self._no_ruling_proceed_signature(reason) != signature):
+            return False
+        self._consume_no_ruling_proceed(reason)
+        return True
 
     def _clear_persisted_pause(self) -> None:
         """Undo `_persist_pause`'s status.json write (task 036, requirement
@@ -8523,6 +8542,19 @@ class LoopSupervisor:
         cured = self._gate_cure_pass_available(approach)
         ending = self._gate_rejection_ending(approach, cured)
         self.run.update_status(gateRejectionEnding=ending)
+        # PRD v0.27 C.2/C.3 (#274, VG-01): a bare unpause of this exact
+        # signature's C.1 pause granted a one-shot 'proceed'. This
+        # rejection spends it NOW, before any edge is chosen, so it is
+        # gone whichever edge follows -- the cure edge the operator
+        # granted budget for included -- and a later same-signature
+        # rejection after that cure parks afresh instead of archiving on
+        # a stale answer.
+        gate_findings_list = self._gate_findings()
+        no_ruling_proceed_consumed = (
+            gate_findings_list is not None
+            and self._take_matching_no_ruling_proceed(
+                "verdict_gate_operator_input_needed",
+                self._gate_rejection_signature(gate_findings_list)))
         if cured:
             self._take_gate_cure_pass(approach)
             self._advance("verdict_gate", "cure",
@@ -8558,47 +8590,34 @@ class LoopSupervisor:
         # pass or a fresh replan that a non-curable rejection can never
         # actually take. Checked BEFORE the merits/archive branches below,
         # mirroring the cure-pass check's own precedence just above.
-        gate_findings_list = self._gate_findings()
+        # Task 009 (PRD requirement C.2, #274): a bare `ralphctl unpause`
+        # of THIS exact pause, with no ruling ever possible for the gate's
+        # own channel, recorded a one-shot 'proceed' for this rejection's
+        # own signature (`LoopSupervisor.resume`'s `_record_unpaused_no_
+        # ruling_proceed`). When it was spent above, this rejection falls
+        # through to the ordinary merits/archive/replan-or-finish edges
+        # below instead of parking again, mirroring review's own sibling
+        # rule.
         if (gate_findings_list is not None
                 and self._cure_pass_ceiling_spent()
-                and self.cfg.operator_input_needed_pause):
+                and self.cfg.operator_input_needed_pause
+                and not no_ruling_proceed_consumed):
             all_curable = ending == state.GATE_REJECTION_ENDING_CURE_UNAVAILABLE
-            # Task 009 (PRD requirement C.2, #274): a bare `ralphctl
-            # unpause` of THIS exact pause, with no ruling ever possible
-            # for the gate's own channel, already recorded a one-shot
-            # 'proceed' for this rejection's own signature
-            # (`LoopSupervisor.resume`'s `_record_unpaused_no_ruling_
-            # proceed`) -- consuming it here, on the very next rejection
-            # that repeats that signature, falls through to the ordinary
-            # merits/archive/replan-or-finish edges below instead of
-            # parking again, mirroring review's own sibling fix just
-            # above.
-            gate_signature = self._gate_rejection_signature(
-                gate_findings_list)
-            no_ruling_proceed_consumed = (
-                gate_signature is not None
-                and self._no_ruling_proceed_signature(
-                    "verdict_gate_operator_input_needed") == gate_signature)
-            if no_ruling_proceed_consumed:
-                self._consume_no_ruling_proceed(
+            # A non-curable (or mixed) rejection ends the run RIGHT HERE
+            # regardless of approaches left (A.1/A.2's own removal-
+            # specific rule, above) -- an unanswered resume of THIS pause
+            # takes that same immediate tail, never a fresh replan,
+            # whatever `approach < cfg.max_approaches` says. Only an
+            # all-curable rejection's unanswered resume can still replan.
+            replan_available = (
+                all_curable and approach < self.cfg.max_approaches)
+            self._pause_and_escalate_gate_operator_input_needed(
+                approach, gate_findings_list or [], replan_available,
+                all_curable=all_curable)
+            self._advance("verdict_gate", "paused",
+                         "verdict_gate_operator_input_needed")
+            return ("advance", "paused",
                     "verdict_gate_operator_input_needed")
-            else:
-                # A non-curable (or mixed) rejection ends the run RIGHT
-                # HERE regardless of approaches left (A.1/A.2's own
-                # removal-specific rule, above) -- an unanswered resume of
-                # THIS pause takes that same immediate tail, never a
-                # fresh replan, whatever `approach < cfg.max_approaches`
-                # says. Only an all-curable rejection's unanswered resume
-                # can still replan.
-                replan_available = (
-                    all_curable and approach < self.cfg.max_approaches)
-                self._pause_and_escalate_gate_operator_input_needed(
-                    approach, gate_findings_list or [], replan_available,
-                    all_curable=all_curable)
-                self._advance("verdict_gate", "paused",
-                             "verdict_gate_operator_input_needed")
-                return ("advance", "paused",
-                        "verdict_gate_operator_input_needed")
         # Task 001 (PRD requirement A.1/A.2): a rejection carrying a
         # genuinely non-curable blocking finding (or a criteria-tamper
         # finding, which blocks the cure edge exactly the same way --
@@ -12821,6 +12840,21 @@ class LoopSupervisor:
         # reviewer-requested gate on a rejection the ruling does NOT match
         # still pauses through its own branch below.
         reviewer_requested_gate = self._review_reviewer_requested_operator_gate(payload)
+        # PRD v0.27 C.2/C.3 (#274, VG-01): a bare unpause of this exact
+        # signature's `operator_input_needed` pause granted a one-shot
+        # 'proceed'. This rejection spends it NOW, before any edge is
+        # chosen, so it is gone whichever edge follows (a cure pass the
+        # operator granted budget for included) and can never authorise a
+        # later archive. While it is being spent, none of the operator
+        # gates that pause answered (reviewer request, mechanical reopen
+        # trigger, pause-before-archive) parks again on this signature. A
+        # ruling's own re-park keeps its own bound, and the repeated-
+        # signature pause (a DIFFERENT pause reason, comparing against the
+        # PRECEDING approach) keeps its own discretionary budget.
+        no_ruling_proceed_consumed = self._take_matching_no_ruling_proceed(
+            "operator_input_needed", signature)
+        if no_ruling_proceed_consumed:
+            reviewer_requested_gate = False
         # Task 006 (PRD requirement B.2, #111): a rejection whose BLOCKING
         # findings are ALL incurable takes `rejected_incurable` instead of
         # spending (and losing) a fresh approach on findings a fresh
@@ -12988,6 +13022,7 @@ class LoopSupervisor:
                 self.cfg.operator_input_needed_pause
                 and cure_preview["reopenedTaskIds"]
                 and not ruling_bound_spent_here
+                and not no_ruling_proceed_consumed
                 and self._discretionary_gate_available(approach))
             if reviewer_requested_gate_applies or mechanical_reopen_trigger:
                 if mechanical_reopen_trigger:
@@ -13188,22 +13223,14 @@ class LoopSupervisor:
             and not ruling_re_park_exhausted
             and not repeated_signature)
         # Task 009 (PRD requirement C.2, #274): a bare `ralphctl unpause`
-        # of THIS exact pause, with no ruling filed against it, already
-        # recorded a one-shot 'proceed' for this rejection's own signature
-        # (`LoopSupervisor.resume`'s `_record_unpaused_no_ruling_proceed`)
-        # -- consuming it here, on the very next rejection that repeats
-        # that signature, is what stops the pause/re-review/re-park loop
-        # #274 named: the operator already answered once, and pausing
-        # again over the identical wall is not what an unpause with no
-        # ruling means. A DIFFERENT signature never matches (`_no_ruling_
-        # proceed_signature` compares the exact string), so it still
-        # pauses normally, and this proceed is spent for good the moment
-        # it is used.
-        no_ruling_proceed_consumed = (
-            pause_before_archive_due
-            and signature is not None
-            and self._no_ruling_proceed_signature(
-                "operator_input_needed") == signature)
+        # of THIS exact pause, with no ruling filed against it, recorded a
+        # one-shot 'proceed' for this rejection's own signature
+        # (`LoopSupervisor.resume`'s `_record_unpaused_no_ruling_proceed`).
+        # `no_ruling_proceed_consumed` (spent above, before any edge was
+        # chosen) is what stops the pause/re-review/re-park loop #274
+        # named: the operator already answered once, so this rejection
+        # takes the archive-and-replan (or finish) edge instead of parking
+        # again. A DIFFERENT signature never matches, so it still pauses.
         if pause_before_archive_due and not no_ruling_proceed_consumed:
             if ruling_matches_this_rejection and not ruling_re_park_exhausted:
                 self._record_ruling_reparked(ruled["seq"])
@@ -13223,8 +13250,6 @@ class LoopSupervisor:
                 cure_preview=cure_preview)
             self._advance("review", "paused", "operator_input_needed")
             return ("advance", "paused", "operator_input_needed")
-        if no_ruling_proceed_consumed:
-            self._consume_no_ruling_proceed("operator_input_needed")
         self._record_rejection_signature(approach, signature)
         self._archive_approach(approach)
         self._write_composite_prd(approach)

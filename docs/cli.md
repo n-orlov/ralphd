@@ -1969,12 +1969,17 @@ full coverage.
 
 A bare `ralphctl unpause <run-id>` on review's own `operator_input_needed`
 pause, or on the peer verdict gate's `verdict_gate_operator_input_needed`
-sibling (v0.27 requirement C.1), with NO ruling filed to answer it, now
+sibling (v0.27 requirement C.1), with NO ruling filed to answer it,
 records a disk-backed one-shot 'proceed' for the exact rejection signature
 that pause was raised over (v0.27 requirement C.2, #274; `status.json`'s
-`noRulingProceed`, SPEC.md §5.2). The next rejection reaching that same
-pause with the IDENTICAL signature consumes the proceed and takes the
-ordinary archive-and-replan edge (or finishes, when no approach is left) --
+`noRulingProceed`, SPEC.md §5.2). The very next rejection with the
+IDENTICAL signature consumes the proceed, whichever edge it takes, and
+raises no same-signature operator gate while doing so. After a
+`ralphctl budget <run-id> --cure-passes +1` grant, that rejection takes the
+cure edge and the proceed is spent there: it never survives the cure to
+authorise a later archive, so the next same-signature rejection after the
+cure parks afresh. With no cure pass available, it takes the ordinary
+archive-and-replan edge (or finishes, when no approach is left) --
 or, for the gate's own mixed/all-incurable blocking-set rejection (cure
 task 002, this wave), that rejection's own immediate terminal tail, never
 a fresh replan, whatever approaches remain -- instead of parking a second
