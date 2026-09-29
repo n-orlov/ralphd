@@ -441,8 +441,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # the one-shot unpause proceed is spent by the next matching rejection
     # on the cure edge too -- an in-process module, so every node counts in
     # both tiers) -> fast 6685/458, smoke 4993/335.
-    "fast": {"tests": 6685, "modules": 458},
-    "smoke": {"tests": 4993, "modules": 335},
+    # VG-02: +9 tests / +1 module (tests/test_escalation_cure_advice_
+    # matches_edge.py: the gate's mixed/incurable notifier probe, event
+    # text vs delivered digest agreement over three gate shapes, the
+    # all-curable and last-approach gate advice, and the review-side
+    # mixed and last-approach siblings -- in-process, so every node counts
+    # in both tiers), measured the same way -> fast 6689/458, smoke
+    # 4997/335.
+    "fast": {"tests": 6689, "modules": 458},
+    "smoke": {"tests": 4997, "modules": 335},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
