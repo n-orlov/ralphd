@@ -8939,7 +8939,8 @@ class LoopSupervisor:
             lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
             lines.append("")
         fields = self._discretionary_gate_escalation_fields(approach, {})
-        grant_note = self._cure_pass_ceiling_grant_note() if all_curable else None
+        grant_note = (self._cure_pass_ceiling_grant_note(replan_available)
+                      if all_curable else None)
         lines.extend(self._discretionary_gate_escalation_text_lines(
             fields, grant_note))
         return "\n".join(lines).rstrip() + "\n"
@@ -9003,9 +9004,15 @@ class LoopSupervisor:
             **extra_fields)
         self.pause(reason="verdict_gate_operator_input_needed")
         if self.notifier is not None:
+            # The delivered digest names the `--cure-passes` lever on
+            # exactly the condition the full escalation text does: only an
+            # all-curable rejection can take a cure pass once the ceiling
+            # is raised; a mixed/all-incurable one takes its merits tail
+            # whatever the ceiling.
             digest = self._operator_escalation_digest_text(
                 "verdict_gate_operator_input_needed", approach, findings_list,
-                cure_preview={}, cure_pass_ceiling_spent=True)
+                cure_preview={}, cure_pass_ceiling_spent=all_curable,
+                replan_available=replan_available)
             self._notify_escalation_delivery(
                 digest, reason="verdict_gate_operator_input_needed")
 
@@ -13724,7 +13731,8 @@ class LoopSupervisor:
         return findings.all_blocking_findings_curable(findings_list)
 
     def _last_approach_rejection_escalation_text(
-        self, approach: int, blocking: list[dict]
+        self, approach: int, blocking: list[dict],
+        cure_pass_ceiling_spent: bool = False,
     ) -> str:
         """The operator-facing escalation body for a `rejected_last_
         approach` pause -- the same shape as `_incurable_rejection_
@@ -13733,6 +13741,12 @@ class LoopSupervisor:
         edge actually covers: every finding IS curable, but there is no
         approach budget left to spend a fresh worker pass on them, so the
         run pauses for an operator ruling instead of failing on paperwork.
+
+        `cure_pass_ceiling_spent` (the same predicate `_pause_and_escalate_
+        operator_input_needed` computes) appends `_cure_pass_ceiling_grant_
+        note`'s line when the run-wide ceiling is what refuses the cure
+        pass: a ceiling grant followed by `ralphctl unpause` takes the cure
+        edge over this same approach.
         """
         lines = [
             f"Run {self.cfg.run_id} approach {approach}: review rejected "
@@ -13759,6 +13773,9 @@ class LoopSupervisor:
                 lines.append(f"  cured_when: {cured_when}")
             lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
             lines.append("")
+        if cure_pass_ceiling_spent:
+            lines.append(self._cure_pass_ceiling_grant_note(
+                replan_available=False))
         return "\n".join(lines).rstrip() + "\n"
 
     def _pause_and_escalate_last_approach_rejection(self, approach: int) -> None:
@@ -13784,7 +13801,11 @@ class LoopSupervisor:
         """
         findings_list = self._review_findings() or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
-        text = self._last_approach_rejection_escalation_text(approach, blocking)
+        cure_pass_ceiling_spent = (
+            self._review_rejection_curable_ignoring_ceiling(approach)
+            and self._cure_pass_ceiling_spent())
+        text = self._last_approach_rejection_escalation_text(
+            approach, blocking, cure_pass_ceiling_spent)
         self.run.emit("operator_escalation", approach=approach,
                       reason="rejected_last_approach", findings=blocking,
                       escalation=text)
@@ -13798,7 +13819,9 @@ class LoopSupervisor:
         self.pause(reason="rejected_last_approach")
         if self.notifier is not None:
             digest = self._operator_escalation_digest_text(
-                "rejected_last_approach", approach, findings_list)
+                "rejected_last_approach", approach, findings_list,
+                cure_pass_ceiling_spent=cure_pass_ceiling_spent,
+                replan_available=False)
             self._notify_escalation_delivery(digest, reason="rejected_last_approach")
 
     def _review_rejection_signature(
@@ -13905,6 +13928,7 @@ class LoopSupervisor:
         channel_errors: list[str] | None = None,
         cure_preview: dict | None = None,
         cure_pass_ceiling_spent: bool = False,
+        replan_available: bool = True,
     ) -> str:
         """The operator-facing escalation body for a `rejected_repeated_
         signature` pause -- the same shape as `_last_approach_rejection_
@@ -13982,7 +14006,7 @@ class LoopSupervisor:
                 approach, cure_preview)
             lines.extend(self._discretionary_gate_escalation_text_lines(
                 fields,
-                self._cure_pass_ceiling_grant_note()
+                self._cure_pass_ceiling_grant_note(replan_available)
                 if cure_pass_ceiling_spent else None))
         return "\n".join(lines).rstrip() + "\n"
 
@@ -14089,7 +14113,8 @@ class LoopSupervisor:
             else self._effective_cure_preview(blocking, cure_preview))
         text = self._repeated_rejection_signature_escalation_text(
             approach, blocking, signature, channel_errors, effective_preview,
-            cure_pass_ceiling_spent)
+            cure_pass_ceiling_spent,
+            replan_available=replan_available)
         # Cure task cure-01-02 (PRD requirement A.1/A.7): the event's A.7
         # fields and the POSTED digest's preview line are built off the
         # SAME effective preview, so the notification's "tasks reopened"/
@@ -14121,7 +14146,8 @@ class LoopSupervisor:
         if self.notifier is not None:
             self._notify_escalation_delivery(self._operator_escalation_digest_text(
                 "rejected_repeated_signature", approach, findings_list,
-                effective_preview, cure_pass_ceiling_spent),
+                effective_preview, cure_pass_ceiling_spent,
+                replan_available=replan_available),
                 reason="rejected_repeated_signature")
 
     def _approach_spend_text(self, approach: int) -> tuple[str | None, int | None]:
@@ -14220,7 +14246,7 @@ class LoopSupervisor:
         return state.cure_pass_preview(
             self.run.read_tasks().get("tasks") or [], blocking)
 
-    def _cure_pass_ceiling_grant_note(self) -> str:
+    def _cure_pass_ceiling_grant_note(self, replan_available: bool = True) -> str:
         """Task 011 (v0.27 requirement C.4, #275): the exact live lever
         (C.3's `ralphctl budget <run> --cure-passes +N|N`) an escalation
         whose own archive-and-replan (or finishing) edge is forced ONLY
@@ -14229,14 +14255,21 @@ class LoopSupervisor:
         reading either the full escalation text or the delivered digest
         knows how to make a cure pass available before resuming instead of
         letting the archive/replan (or finish) happen unanswered.
+
+        `replan_available` names the edge the unanswered pause actually
+        takes -- archive-and-replan while an approach is left, finishing
+        the run on the last one -- so the note never contrasts the cure
+        edge with a replan that will not happen.
         """
+        unanswered_edge = ("archive-and-replan" if replan_available
+                           else "finishing the run")
         return (
             "the run's cure-pass ceiling is already spent, which is the "
             "ONLY reason a cure pass is not being taken here -- grant one "
             f"more live with `ralphctl budget {self.cfg.run_id} "
             "--cure-passes +N` (or set the ceiling outright with `--cure-"
             "passes N`) before resuming to take the cure edge instead of "
-            "archive-and-replan.")
+            f"{unanswered_edge}.")
 
     @staticmethod
     def _discretionary_gate_escalation_text_lines(
@@ -14277,6 +14310,7 @@ class LoopSupervisor:
         self, reason: str, approach: int, findings_list: list[dict] | None,
         cure_preview: dict | None = None,
         cure_pass_ceiling_spent: bool = False,
+        replan_available: bool = True,
     ) -> str:
         """Task 001 (PRD requirement A, #269): the notification body an
         `operator_input_needed`/`rejected_repeated_signature` escalation
@@ -14376,7 +14410,8 @@ class LoopSupervisor:
             f"({fields['tokensSpentThisApproach'] if fields['tokensSpentThisApproach'] is not None else 'unavailable'} tokens)",
         ]
         if cure_pass_ceiling_spent:
-            header_lines.append(self._cure_pass_ceiling_grant_note())
+            header_lines.append(
+                self._cure_pass_ceiling_grant_note(replan_available))
         if self.cfg.hub_base_url:
             header_lines.append(f"hub: {fields['hubLink']}")
         header_lines.append(f"answer: {answer_cmd}")
@@ -14554,7 +14589,7 @@ class LoopSupervisor:
                 approach, cure_preview)
             lines.extend(self._discretionary_gate_escalation_text_lines(
                 fields,
-                self._cure_pass_ceiling_grant_note()
+                self._cure_pass_ceiling_grant_note(replan_available)
                 if cure_pass_ceiling_spent else None))
         return "\n".join(lines).rstrip() + "\n"
 
@@ -14687,7 +14722,8 @@ class LoopSupervisor:
         if self.notifier is not None:
             self._notify_escalation_delivery(self._operator_escalation_digest_text(
                 "operator_input_needed", approach, findings_list,
-                effective_preview, cure_pass_ceiling_spent),
+                effective_preview, cure_pass_ceiling_spent,
+                replan_available=replan_available),
                 reason="operator_input_needed")
 
     def _ruling_honoured_for_approach(self, approach: int) -> dict | None:
