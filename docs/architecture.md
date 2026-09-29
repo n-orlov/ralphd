@@ -1817,7 +1817,14 @@ against the entry immediately before it in that same array:
 `tool_args`/`tool_pending` diff key-by-key (`{"add": {<changed or added
 sub-keys>}, "del": [<removed sub-keys>]}`), every other key (the collapse
 flags, `open_tool_line`, `collapse_unresolved`) as a whole value only when
-it changed. `_decode_states` (`_apply_state_patch`) is the exact inverse.
+it changed. `_decode_states` (`_apply_state_patch`) is the exact inverse,
+and validates the whole encoding before applying any of it -- a first
+entry that is not a well-shaped full state, or a patch naming an unknown
+key, a wrong-typed value, or an `add`/`del` pair that is not `{"add":
+<object>, "del": <array of strings>}`, makes the document unusable index
+state (MAIN refused, so the read falls back exactly; a malformed tail
+shard drops only the tail extension), never an exception out of
+`load_index`.
 A `render_index.tail.ndjson` shard's own `states` array is local to that
 batch, so its own first entry diffs against `base_state` -- the checkpoint
 immediately before that batch, from MAIN's own last-published checkpoint

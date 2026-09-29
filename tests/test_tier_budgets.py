@@ -437,8 +437,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # docs/api.md, docs/architecture.md), measured `.venv/bin/python -m
     # pytest -q -m fast --collect-only` -> fast 6680/457, `-m smoke
     # --collect-only` -> smoke 4988/334.
-    "fast": {"tests": 6680, "modules": 457},
-    "smoke": {"tests": 4988, "modules": 334},
+    # VG-03: +27 tests / +1 module (tests/test_render_index_malformed_
+    # state_patch.py: malformed MAIN and TAIL state patches on both
+    # surfaces, malformed first full states, the writer's own round trip --
+    # an in-process module, so every new node counts in both tiers),
+    # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
+    # fast 6707/458, `-m smoke --collect-only` -> smoke 5015/335.
+    "fast": {"tests": 6707, "modules": 458},
+    "smoke": {"tests": 5015, "modules": 335},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
