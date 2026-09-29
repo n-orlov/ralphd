@@ -448,8 +448,16 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # mixed and last-approach siblings -- in-process, so every node counts
     # in both tiers), measured the same way -> fast 6689/458, smoke
     # 4997/335.
-    "fast": {"tests": 6689, "modules": 458},
-    "smoke": {"tests": 4997, "modules": 335},
+    # VG-03: +27 tests / +1 module (tests/test_render_index_malformed_
+    # state_patch.py: malformed MAIN and TAIL state patches on both
+    # surfaces, malformed first full states, the writer's own round trip --
+    # an in-process module, so every new node counts in both tiers),
+    # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
+    # fast 6707/458, `-m smoke --collect-only` -> smoke 5015/335.
+    # VG-01 + VG-02 + VG-03 merged: +41 tests / +3 modules, measured on the
+    # merged tree the same way -> fast 6721/460, smoke 5029/337.
+    "fast": {"tests": 6721, "modules": 460},
+    "smoke": {"tests": 5029, "modules": 337},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

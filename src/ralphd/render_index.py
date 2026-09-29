@@ -303,6 +303,32 @@ _STATE_BOOL_KEYS = ("text_open", "text_seen", "thinking_seen", "toolcall_seen")
 _STATE_DICT_KEYS = ("tool_args", "tool_pending")
 
 
+def _valid_pending_entry(entry: object) -> bool:
+    """One `tool_pending` value: the `[name, args]` pair `_state_from_json`
+    hydrates back into a tuple and the renderer later unpacks as exactly
+    that pair."""
+    return (isinstance(entry, list) and len(entry) == 2
+            and isinstance(entry[0], str))
+
+
+def _valid_state_value(key: str, value: object) -> bool:
+    """Whether `value` is a well-typed value for the NON-dict state key
+    `key` (one of `_STATE_SHAPE_KEYS` outside `_STATE_DICT_KEYS`): a bool
+    collapse flag, a string-or-`null` `open_tool_line`, or a
+    `collapse_unresolved` array of strings (each member goes into a
+    `set`). Shared by the whole-state check below and by
+    `_apply_state_patch`'s own per-field check, so a patch can never set
+    a value a full state would be refused for."""
+    if key in _STATE_BOOL_KEYS:
+        return isinstance(value, bool)
+    if key == "open_tool_line":
+        return value is None or isinstance(value, str)
+    if key == "collapse_unresolved":
+        return (isinstance(value, list)
+                and all(isinstance(flag, str) for flag in value))
+    return False
+
+
 def _valid_checkpoint_state_shape(state: object) -> bool:
     """Structural validity of one checkpoint's `state` value -- cheap
     (no rendering, just key/type checks), and independent of whatever the
@@ -311,8 +337,6 @@ def _valid_checkpoint_state_shape(state: object) -> bool:
     `malformed-state` case: `state["text_seen"]` absent entirely) is
     refused here, before anything tries to `render_to_text` with it."""
     if not isinstance(state, dict) or set(state) != _STATE_SHAPE_KEYS:
-        return False
-    if not all(isinstance(state[k], bool) for k in _STATE_BOOL_KEYS):
         return False
     if not all(isinstance(state[k], dict) for k in _STATE_DICT_KEYS):
         return False
@@ -323,15 +347,10 @@ def _valid_checkpoint_state_shape(state: object) -> bool:
     # like `{"tool_pending": {"call-id": 42}}` or
     # `{"collapse_unresolved": [[1]]}` is structurally malformed and is
     # refused here rather than raising `TypeError` downstream.
-    for entry in state["tool_pending"].values():
-        if not (isinstance(entry, list) and len(entry) == 2
-                and isinstance(entry[0], str)):
-            return False
-    if state["open_tool_line"] is not None and not isinstance(state["open_tool_line"], str):
+    if not all(_valid_pending_entry(e) for e in state["tool_pending"].values()):
         return False
-    unresolved = state["collapse_unresolved"]
-    return (isinstance(unresolved, list)
-            and all(isinstance(flag, str) for flag in unresolved))
+    return all(_valid_state_value(k, v) for k, v in state.items()
+               if k not in _STATE_DICT_KEYS)
 
 
 def _state_matches(state: dict, stored: dict) -> bool:
@@ -562,19 +581,39 @@ def _diff_state(prev: dict, cur: dict) -> dict:
     return patch
 
 
-def _apply_state_patch(prev: dict, patch: dict) -> dict | None:
-    """The inverse of `_diff_state`: `None` on any malformed patch (not a
-    dict, a `_DICT_STATE_KEYS` entry not shaped `{"add": <dict>, "del":
-    <list>}`) rather than silently producing a wrong state."""
+def _apply_state_patch(prev: dict, patch: object) -> dict | None:
+    """The inverse of `_diff_state`, applied to `prev` -- a state that
+    already passes `_valid_checkpoint_state_shape`. The WHOLE patch
+    encoding is validated before any of it is applied, so the result is
+    again a well-shaped state or `None` (the patch is unusable index
+    state, refused like any other malformed index -- never a `TypeError`
+    from a member used as a dictionary key, and never a silently wrong
+    state): the patch must be an object naming only `new_render_state()`
+    keys; each `_DICT_STATE_KEYS` entry exactly `{"add": <object>, "del":
+    <array of strings>}` over a `prev` value that is itself an object,
+    every added `tool_pending` value a `[name, args]` pair
+    (`_valid_pending_entry`); every other entry a well-typed whole value
+    for its key (`_valid_state_value`)."""
     if not isinstance(patch, dict):
         return None
+    for key, val in patch.items():
+        if key in _DICT_STATE_KEYS:
+            if (not isinstance(val, dict) or set(val) != {"add", "del"}
+                    or not isinstance(val["add"], dict)
+                    or not isinstance(val["del"], list)
+                    or not isinstance(prev.get(key), dict)
+                    or not all(isinstance(k, str) for k in val["del"])
+                    or not all(isinstance(k, str) for k in val["add"])):
+                return None
+            if key == "tool_pending" and not all(
+                    _valid_pending_entry(e) for e in val["add"].values()):
+                return None
+        elif key not in _STATE_SHAPE_KEYS or not _valid_state_value(key, val):
+            return None
     cur = dict(prev)
     for key, val in patch.items():
         if key in _DICT_STATE_KEYS:
-            if (not isinstance(val, dict) or not isinstance(val.get("add"), dict)
-                    or not isinstance(val.get("del"), list)):
-                return None
-            base = dict(prev.get(key) or {})
+            base = dict(prev[key])
             for k in val["del"]:
                 base.pop(k, None)
             base.update(val["add"])
@@ -613,10 +652,16 @@ def _encode_states(states: list[dict], base: dict | None = None) -> list:
 
 def _decode_states(encoded: object, base: dict | None = None) -> list[dict] | None:
     """The inverse of `_encode_states`: `None` when `encoded` is not a
-    list, its first entry (if any) is not a dict when `base` is `None`
-    (or fails to apply against `base` when one is given), or any later
-    entry fails to apply as a patch (`_apply_state_patch`) -- never a
-    partially-reconstructed list."""
+    list, its first entry (if any) is not a well-shaped full state
+    (`_valid_checkpoint_state_shape`) when `base` is `None` (or fails to
+    apply against `base` when one is given), or any later entry fails to
+    apply as a patch (`_apply_state_patch`, which validates the whole
+    patch before applying it) -- never a partially-reconstructed list,
+    and never an exception: every state a patch is applied to is itself
+    well-shaped, so a malformed encoding is refused as an unusable index
+    rather than raised out of `load_index`. `base` is a state the caller
+    already holds as well-shaped (MAIN's own validated last checkpoint,
+    or the previous tail shard's own decoded last one)."""
     if not isinstance(encoded, list):
         return None
     if not encoded:
@@ -625,7 +670,7 @@ def _decode_states(encoded: object, base: dict | None = None) -> list[dict] | No
         first = _apply_state_patch(base, encoded[0])
         if first is None:
             return None
-    elif isinstance(encoded[0], dict):
+    elif _valid_checkpoint_state_shape(encoded[0]):
         first = encoded[0]
     else:
         return None

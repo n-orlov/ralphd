@@ -5560,7 +5560,17 @@ full and every later entry as a diff (`_diff_state`) against the entry
 immediately before it in that same array — `tool_args`/`tool_pending` diffed
 key by key (`{"add": {…}, "del": […]}`, only the sub-keys that changed),
 every other key as a whole value only when it changed. `_decode_states`
-(`_apply_state_patch`) is the exact inverse. A `render_index.tail.ndjson`
+(`_apply_state_patch`) is the exact inverse, and it validates the whole
+encoding before applying any of it: the first entry must be a well-shaped
+full state, and each patch may name only render-state keys, each
+`tool_args`/`tool_pending` entry exactly `{"add": <object>, "del": <array of
+strings>}` (every added `tool_pending` value a `[name, args]` pair) and every
+other entry a well-typed value for its key. A patch that is valid JSON but not
+that shape -- a `del` member that is an array or an object, say -- makes the
+encoding unusable index state rather than an exception: a malformed
+`render_index.json` is refused like any other malformed index, so the call
+takes the exact fallback above, and a malformed tail shard drops only the tail
+extension, leaving MAIN's own coverage usable. A `render_index.tail.ndjson`
 shard's own `states` array is local to that one batch, so its first entry
 diffs against `base_state` — the checkpoint immediately before the batch,
 from MAIN's own last-published checkpoint or the previous shard's own last
