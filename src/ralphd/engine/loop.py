@@ -1135,8 +1135,8 @@ class LoopSupervisor:
 
     def interrupt_or_wake(self) -> dict:
         """`POST /interrupt`'s real dispatch (v0.25 task 028b, PRD
-        requirement K.3/K.4, #267): tell *a running iteration was signalled*
-        apart from *an idle loop was woken* instead of the pre-028b lie --
+        requirement K.3/K.4, #267): distinguish signalling a running
+        iteration from merely waking an idle loop, instead of the pre-028b lie --
         `409 "no iteration running"` the instant nothing was running, even
         though `POST /interrupt`'s own `{"message": ...}` body had already
         landed via `run.add_steering` a few lines earlier (the exact

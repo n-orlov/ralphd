@@ -176,6 +176,27 @@ NO_STEERING = "(no steering messages)"
 # `NO_STEERING` discipline again, wording server-side.
 NO_DOCUMENTS = "(no state documents on disk)"
 
+# Task 001 (#277): `POST /interrupt`'s two 200-shape reports, kept as DATA
+# rather than a python literal -- `web/interrupt-wording.json`, served
+# unchanged as a static asset, is the ONE place either phrase is spelled
+# out (`git grep -n '<phrase>' -- src` shows exactly that one line for
+# each). `_interrupt_report` (`cli/main.py`, the CLI's own report line)
+# reads it through `interrupt_report()` below; the hub's steer form
+# (`app.js`) fetches the SAME file as a static asset rather than carrying
+# a second, drifting copy of either phrase.
+INTERRUPT_WORDING_FILE = "interrupt-wording.json"
+
+
+def interrupt_report(res: dict) -> str:
+    """Shared wording for `POST /interrupt`'s two 200 shapes, keyed off the
+    `target` field (`"iteration"` vs anything else, defaulting to the idle
+    phrasing exactly like the pre-001 inline `if res.get("target") ==
+    "iteration"` check did) -- read from `INTERRUPT_WORDING_FILE`, never
+    spelled out here."""
+    wording = json.loads((STATIC_DIR / INTERRUPT_WORDING_FILE).read_text())
+    return wording.get(res.get("target"), wording["idle"])
+
+
 # Task 024 (#18.3): the hub's artifacts panel has NO wording of its own -- the
 # "this run left nothing behind" line is `state.NO_ARTIFACTS`, i.e. the very
 # string `ralphctl artifacts <run> ls` prints, imported above rather than
@@ -2598,8 +2619,26 @@ class Handler(BaseHTTPRequestHandler):
                 except json.JSONDecodeError:
                     self._send_json({"error": "invalid JSON body"}, 400)
                     return
-                ok, code, resp = _proxy_json(reg, run_id, "POST", "/steering",
-                                              body=json.dumps(body).encode())
+                # Task 001 (#277): `now: true` is the hub's own "apply now"
+                # checkbox -- `ralphctl steer --now`'s SAME mechanism
+                # (`cmd_steer`'s `args.now` branch, cli/main.py), never a
+                # second, hub-only path. It proxies straight to the run's
+                # `POST /interrupt` (only `message`/`name` forwarded -- the
+                # `now` flag itself is a hub-side routing decision, not part
+                # of `/interrupt`'s own body contract) and passes the
+                # engine's status code and body (including `target`)
+                # through UNCHANGED, exactly like the `now`-absent branch
+                # below does for `/steering` -- so a caller reading the
+                # response cannot tell the hub touched it at all. `now`
+                # absent or `false` still proxies to `/steering`, unchanged
+                # from before this task.
+                if body.get("now"):
+                    payload = {"message": body.get("message"), "name": body.get("name")}
+                    ok, code, resp = _proxy_json(reg, run_id, "POST", "/interrupt",
+                                                  body=json.dumps(payload).encode())
+                else:
+                    ok, code, resp = _proxy_json(reg, run_id, "POST", "/steering",
+                                                  body=json.dumps(body).encode())
                 if not ok:
                     self._send_json(
                         {"error": "run's API unreachable or rejected the request",

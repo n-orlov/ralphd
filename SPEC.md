@@ -5359,9 +5359,20 @@ dir themselves and a live proxy would only add a way to disagree.
   `ralphd.engine.state.prd_path` that the engine's own route uses, so the live
   and on-disk answers can never disagree. A run dir with no PRD answers with
   the single line `(no PRD recorded)` rather than an empty string.
-- **Steering form and history** — the form posts to the hub's steer endpoint,
-  which forwards to the run's live `POST /steering`, and reports the created file
-  name back; under it, every message the run has received, oldest first, with its
+- **Steering form and history** — the form posts to the hub's steer endpoint
+  (`POST /api/runs/<id>/steer`). Task 001 (#277): with the `apply now`
+  checkbox left unticked the hub forwards `{"message": ..., "name": ...}`
+  to the run's live `POST /steering` and reports the created file name
+  back, exactly as before; ticking it (`now: true`) forwards only
+  `{"message": ..., "name": ...}` to `POST /interrupt` instead, and the
+  hub passes that route's own status code and body (including `target`)
+  through unchanged rather than reshaping it -- the SAME mechanism
+  `ralphctl steer --now`/`ralphctl interrupt` drive, never a second one.
+  The two `POST /interrupt` 200-shape reports ("a running iteration was
+  signalled" / "an idle loop was woken") are spelled out in exactly one
+  place, `web/interrupt-wording.json`, and the checked form shows whichever
+  one the response's `target` names. Under it, every message the run has
+  received, oldest first, with its
   arrival time and a `pending`/`applied` pill, each opening its full body in a
   dialog. A message queued from the form appears immediately rather than after
   the next poll, and flips to `applied` at the iteration boundary that consumed

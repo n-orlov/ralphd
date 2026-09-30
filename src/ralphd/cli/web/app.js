@@ -134,6 +134,23 @@ function h(tag, attrs, children) {
   return el;
 }
 
+// Task 001 (#277): the hub's "apply now" steer form shows the SAME
+// wording `ralphctl steer --now`/`ralphctl interrupt` prints
+// (`_interrupt_report`, cli/main.py) -- fetched from the ONE place either
+// phrase is spelled out (`web/interrupt-wording.json`, served as a plain
+// static asset) rather than hardcoded here a second time, so the two
+// surfaces cannot drift apart. Memoized: the file never changes at
+// runtime, so one fetch per page load is enough.
+let interruptWordingPromise = null;
+function loadInterruptWording() {
+  if (!interruptWordingPromise) {
+    interruptWordingPromise = fetch(hubURL("/interrupt-wording.json"), { cache: "no-store" })
+      .then((r) => r.json())
+      .catch(() => ({}));
+  }
+  return interruptWordingPromise;
+}
+
 async function getJSON(path, headers) {
   const resp = await fetch(hubURL(path), { cache: "no-store", headers: headers || undefined });
   // Task 005 (A.3): a `304` (only ever returned for `GET /api/runs/<id>`,
@@ -1647,7 +1664,15 @@ async function renderRunDetail(runId, myGen) {
       });
       const j = await resp.json().catch(() => ({}));
       if (resp.ok) {
-        statusEl.textContent = "sent (" + (j.file || "ok") + ")";
+        if (now) {
+          // Task 001 (#277): the response is the engine's own `POST
+          // /interrupt` body, passed through unchanged by the hub proxy
+          // -- `target` is whichever of the two shapes it returned.
+          const wording = await loadInterruptWording();
+          statusEl.textContent = wording[j.target] || wording.idle || "sent";
+        } else {
+          statusEl.textContent = "sent (" + (j.file || "ok") + ")";
+        }
         document.getElementById("steer-message").value = "";
         // Task 017 (#17): show it in the history immediately rather than
         // making the operator wait out the 4s poll to see their own message.

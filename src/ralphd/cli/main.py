@@ -5477,10 +5477,13 @@ def _interrupt_report(res: dict) -> str:
     `"idle"`) so the CLI's report matches which of the two 200 shapes the
     engine actually returned, never a bare "interrupted" that used to be
     printed even when the engine had lied with a 409.
+
+    Task 001 (#277): the actual wording moved into `ui_server.
+    interrupt_report` (backed by `web/interrupt-wording.json`) so the
+    hub's "apply now" steer form can render the identical phrasing rather
+    than carrying a second, drifting copy.
     """
-    if res.get("target") == "iteration":
-        return "a running iteration was signalled"
-    return "an idle loop was woken (nothing was running to signal)"
+    return ui_server.interrupt_report(res)
 
 
 def cmd_steer(args):

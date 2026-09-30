@@ -456,7 +456,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # fast 6707/458, `-m smoke --collect-only` -> smoke 5015/335.
     # VG-01 + VG-02 + VG-03 merged: +41 tests / +3 modules, measured on the
     # merged tree the same way -> fast 6721/460, smoke 5029/337.
-    "fast": {"tests": 6721, "modules": 460},
+    # Task 001 (#277): +3 tests / +1 module (tests/test_hub_steer_now_
+    # interrupt.py: now-absent/now-false never touch /interrupt, now:true
+    # interrupts a real running iteration and its steer is consumed --
+    # spawns a real engine, so it counts in fast only, not smoke),
+    # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
+    # fast 6724/461, `-m smoke --collect-only` -> smoke unchanged 5029/337.
+    "fast": {"tests": 6724, "modules": 461},
     "smoke": {"tests": 5029, "modules": 337},
 }
 

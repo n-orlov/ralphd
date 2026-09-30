@@ -167,7 +167,8 @@ class StubEngineApi:
                  prd: str | None = None, steering: list | None = None,
                  steer_status: int = 202, steer_body: dict | None = None,
                  rule_status: int = 202, rule_body: dict | None = None,
-                 resume_status: int = 200, resume_body: dict | None = None):
+                 resume_status: int = 200, resume_body: dict | None = None,
+                 interrupt_status: int = 200, interrupt_body: dict | None = None):
         self.requests: list[tuple[str, str, str | None]] = []
         self.control_tokens: list[str | None] = []
         # Task 011 (v0.26, #269): the raw request body, one entry per
@@ -201,6 +202,14 @@ class StubEngineApi:
         # true}` whether or not the run was actually paused.
         self.resume_status = resume_status
         self.resume_body = resume_body if resume_body is not None else {"resumed": True}
+        # Task 001 (#277): the hub's "apply now" steer proxy target --
+        # `POST /interrupt`, a DISTINCT route from `/steering` above.
+        # Default mirrors the real engine's `target: "iteration"` 200 shape
+        # (`engine/api.py`).
+        self.interrupt_status = interrupt_status
+        self.interrupt_body = (interrupt_body if interrupt_body is not None
+                               else {"interrupted": True, "target": "iteration",
+                                    "signalled": True, "woken": False})
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -255,6 +264,8 @@ class StubEngineApi:
                     self._reply(outer.rule_status, outer.rule_body)
                 elif path == "/resume":
                     self._reply(outer.resume_status, outer.resume_body)
+                elif path == "/interrupt":
+                    self._reply(outer.interrupt_status, outer.interrupt_body)
                 else:
                     self._reply(404, {"detail": "no such route"})
 

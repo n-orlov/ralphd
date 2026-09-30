@@ -1,0 +1,4 @@
+{
+  "iteration": "a running iteration was signalled",
+  "idle": "an idle loop was woken (nothing was running to signal)"
+}

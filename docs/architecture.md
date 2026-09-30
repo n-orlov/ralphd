@@ -2320,6 +2320,23 @@ hub run-detail view (a `.steering-warning` banner).
 next one starts immediately with the new guidance. Steering is guidance for the
 agent; it does not mutate `tasks.json` directly.
 
+**The hub's steer form is the SAME two routes, chosen by one flag (task
+001, #277).** `POST /api/runs/<id>/steer` (`ui_server.py`) is a pure proxy
+with no route of its own: `now` absent or `false` forwards `{"message":
+..., "name": ...}` to the run's live `POST /steering` exactly as before
+this task, and `now: true` -- the hub's "apply now" checkbox, the SAME
+mechanism `ralphctl steer --now`/`ralphctl interrupt` drive -- forwards
+only `{"message": ..., "name": ...}` to `POST /interrupt` instead,
+passing that route's own status code and body (including `target`)
+through unchanged rather than reshaping it into a hub-specific shape. The
+two `POST /interrupt` 200-shape reports ("a running iteration was
+signalled" / "an idle loop was woken") are spelled out in exactly one
+place, `web/interrupt-wording.json`, served as a static asset: `ralphctl
+steer --now`/`ralphctl interrupt` (`cli/main.py`'s `_interrupt_report`,
+via `ui_server.interrupt_report`) and the hub's steer form (`app.js`,
+fetching the same file) both render whichever phrase the response's
+`target` names, never a second, independently-worded copy.
+
 ### Self-protection
 
 `ralphd-engine` is defensive about being invoked accidentally against a run dir

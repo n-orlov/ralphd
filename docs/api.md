@@ -881,6 +881,16 @@ Body optional: `{"message": "..."}` — convenience combo, equivalent to
 `POST /steering` then interrupt; the message is enqueued whenever the
 handler does not refuse, whichever of the two 200 shapes follows.
 
+**The hub's `now` field (task 001, #277).** `ui_server.py`'s `POST
+/api/runs/<id>/steer` proxy (docs/cli.md) reads this exact route: a `now:
+true` in ITS OWN request body forwards `{"message": ..., "name": ...}`
+to this route rather than to `POST /steering`, passing this route's own
+status code and body (including `target`) straight through with no
+reshaping — `now` absent or `false` proxies to `POST /steering` instead,
+unchanged from before this task. The hub's `now` flag never reaches this
+route's own body; it is purely a hub-side routing decision between the
+two proxied targets.
+
 Waking a loop that was parked in an **infra-backoff** wait ends that wait
 early but deliberately does **not** restart the outage-budget episode clock:
 that is `POST /retry`'s own meaning ("the endpoint is back — try it now", and

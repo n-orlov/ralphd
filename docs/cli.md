@@ -3918,10 +3918,19 @@ JSON endpoints served under `/api/`:
   An iteration with no transcript answers with the single `(no transcript
   yet)` line, and an unknown run id, an unknown iteration number or a
   non-numeric one all answer `404` with a naming `error`.
-- `POST /api/runs/<id>/steer` — body `{"message": ..., "name": ...}`,
-  forwarded to the run's live `POST /steering`. Returns the API's own
-  response (`202 {"file": ...}`) on success; `503` with an `error`/`detail`
-  if the run's API is unreachable or rejects it; `404` for an unknown run id.
+- `POST /api/runs/<id>/steer` — body `{"message": ..., "name": ...}`.
+  `now` absent or `false` forwards `{"message": ..., "name": ...}` to the
+  run's live `POST /steering`, returning the API's own response (`202
+  {"file": ...}`) on success. `now: true` is the hub's own "apply now"
+  checkbox — the SAME mechanism `ralphctl steer --now`/`ralphctl
+  interrupt` drive — and forwards only `{"message": ..., "name": ...}` to
+  the run's live `POST /interrupt` instead, passing that route's own
+  status code and body (including `target`) through unchanged: `200
+  {"interrupted": true, "target": "iteration", ...}` when a running
+  iteration was signalled, the same shape naming `"idle"` when nothing was
+  running to signal, or `409` once the job has already finished. Either
+  branch answers `503` with an `error`/`detail` if the run's API is
+  unreachable; `404` for an unknown run id.
 - `POST /api/runs/<id>/retry` — the hub's "retry now" button (task 017):
   forwarded (empty body) to the run's live `POST /retry`, i.e. the same
   thing `ralphctl retry <run-id>` does — wake the pending infra backoff
