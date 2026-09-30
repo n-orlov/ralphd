@@ -56,6 +56,51 @@ from typing import Any
 from .state import TASK_DEPENDENCY_SATISFIED_STATUSES
 
 
+def pending_candidates(tasks: list) -> list:
+    """The full pool step 3 of `select_next_task` (below) considers --
+    every `pending` task whose `dependsOn` entries are all satisfied and
+    which does not carry `deferredUntil` -- in plan (list) order, WITHOUT
+    collapsing it down to the single highest-priority pick.
+
+    Task 002 (#278 B.1/B.4/B.7) split this pool out as its own pure
+    function so a caller (`engine.loop.LoopSupervisor._step_worker`) can
+    see how many genuinely runnable candidates the pending step actually
+    has -- the router is only ever consulted when this list holds 2 or
+    more entries -- without duplicating step 3's candidate-selection logic
+    a second time. `select_next_task` itself is unaffected: it still
+    returns exactly the same single deterministic pick as before this
+    task, over exactly this same pool.
+    """
+    entries = [t for t in tasks if isinstance(t, dict)]
+    status_by_id: dict[str, Any] = {
+        str(t.get("id")): t.get("status", "pending")
+        for t in entries if t.get("id") is not None
+    }
+    candidates = []
+    for t in entries:
+        if t.get("status", "pending") != "pending":
+            continue
+        # v0.20 task 021 (PRD requirement C.1, #156): a task carrying
+        # `deferredUntil` (a worker's `verdict: "deferred"` report,
+        # `LoopSupervisor._apply_worker_deferred_report`) has explicitly
+        # asked to move BEHIND every runnable task -- excluded from the
+        # ordinary candidate pool entirely, the same way an unmet
+        # `dependsOn` excludes a task just below, but for a different
+        # reason: it is not blocked, it was asked to wait. Whether it is
+        # ever picked back up once nothing else is runnable is task 022's
+        # sleep mechanism's business, not this pure function's.
+        if t.get("deferredUntil"):
+            continue
+        raw_deps = t.get("dependsOn")
+        deps = raw_deps if isinstance(raw_deps, list) else []
+        unmet = [dep for dep in deps
+                 if status_by_id.get(str(dep)) not in TASK_DEPENDENCY_SATISFIED_STATUSES]
+        if unmet:
+            continue
+        candidates.append(t)
+    return candidates
+
+
 def select_next_task(tasks: list) -> dict | None:
     """Pick the next task a worker iteration should work on, or `None` if
     nothing is viable. `tasks` is the plain list from `tasks.json`'s
@@ -88,34 +133,7 @@ def select_next_task(tasks: list) -> dict | None:
     if in_progress:
         return _highest_priority_first(in_progress)
 
-    status_by_id: dict[str, Any] = {
-        str(t.get("id")): t.get("status", "pending")
-        for t in entries if t.get("id") is not None
-    }
-
-    candidates = []
-    for t in entries:
-        if t.get("status", "pending") != "pending":
-            continue
-        # v0.20 task 021 (PRD requirement C.1, #156): a task carrying
-        # `deferredUntil` (a worker's `verdict: "deferred"` report,
-        # `LoopSupervisor._apply_worker_deferred_report`) has explicitly
-        # asked to move BEHIND every runnable task -- excluded from the
-        # ordinary candidate pool entirely, the same way an unmet
-        # `dependsOn` excludes a task just below, but for a different
-        # reason: it is not blocked, it was asked to wait. Whether it is
-        # ever picked back up once nothing else is runnable is task 022's
-        # sleep mechanism's business, not this pure function's.
-        if t.get("deferredUntil"):
-            continue
-        raw_deps = t.get("dependsOn")
-        deps = raw_deps if isinstance(raw_deps, list) else []
-        unmet = [dep for dep in deps
-                 if status_by_id.get(str(dep)) not in TASK_DEPENDENCY_SATISFIED_STATUSES]
-        if unmet:
-            continue
-        candidates.append(t)
-
+    candidates = pending_candidates(entries)
     if not candidates:
         return None
 

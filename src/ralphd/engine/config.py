@@ -709,6 +709,18 @@ class JobConfig:
     # `LoopSupervisor._step_generic_hat`.
     router_model: str | None = None
     router_timeout_s: float = 60.0
+    # Task 002 (#278 B.1/B.4/B.7): whether `select_next_task`'s pending
+    # step (`scheduler.pending_candidates`, 2+ runnable tasks) is ever
+    # routed through the router at all. False (the default) here keeps
+    # every pre-existing flow test's task pick fully deterministic --
+    # task 003 (PRD B.5) turns the DEFAULT on and adds the `ralphctl
+    # start --no-route-tasks` opt-out; this field itself is what job.yaml's
+    # `route_task_selection: false` already writes to either way. Read
+    # straight off `JobConfig.load()`'s known/extra split like every other
+    # plain job.yaml key -- no env override (task selection routing is a
+    # planning-time choice, not an operational knob like the router's
+    # latency budget just above).
+    route_task_selection: bool = False
     pricing: dict = field(default_factory=dict)
     # Task 010 (#14): `none` (default) | `aws`. When `aws`, a route the
     # provider did not price (or priced with an implausible zero) is costed

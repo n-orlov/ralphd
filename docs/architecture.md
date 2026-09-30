@@ -519,6 +519,32 @@ not an iteration slot: `LoopSupervisor._ask_router()` never increments
 `usage.byPhase["router"]` so the cost of a call that is never charged as a
 work iteration is still visible, not hidden.
 
+**Task-selection routing is the router's second question (task 002,
+#278 B.1/B.4/B.7).** `engine.scheduler.select_next_task`'s validation-failed
+and in-progress steps stay fully deterministic -- the router is never asked
+for either, only for its pending step, and only when `engine.scheduler.
+pending_candidates()` finds 2 or more genuinely runnable tasks (dependencies
+satisfied, not deferred) AND `route_task_selection` (a `JobConfig`/
+`job.yaml` field, default `False`) is on; a single candidate never reaches
+the router regardless of that flag. `LoopSupervisor._route_task_selection`
+then calls `router.decide_task_selection()` -- a separate function from
+`decide()` above, asked exactly ONCE with no contract retry -- for one
+candidate task id plus a one-line reason. Any of three causes falls back to
+the deterministic pick (`select_next_task`'s own choice) immediately, no
+re-ask: `"unparseable"` (an absent/malformed answer, or one that fails
+`router.TASK_SELECTION_SCHEMA`), `"non_candidate_id"` (a well-formed answer
+naming a task id outside the candidate set) and `"timeout"` (no answer
+within `router_timeout_s`). Every completed router call on either routed
+state -- `task_selection` and `plan_review` alike -- emits one
+`router.decision` event (`LoopSupervisor._emit_router_decision_event`,
+see [api.md](api.md)'s `GET /events` table) carrying `state`, the
+candidate id/target set, the deterministic pick, the choice actually taken,
+a one-line reason, the fallback flag plus its cause, the resolved model and
+the call's own tokens/cost -- on top of, never instead of, the
+`usage.byPhase["router"]` accounting both axes already share, which is why
+`ralphctl cost` shows the router's spend as its own phase bucket whichever
+of the two states produced it.
+
 A contract re-ask is the same shape, uncounted for the same reason.
 Every `contract_enforcement.enforce_contract` retry ladder (task 010) --
 the schema/task-status site in `_step_generic_hat` and the worker's own

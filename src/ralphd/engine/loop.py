@@ -5939,7 +5939,101 @@ class LoopSupervisor:
             "transcripts": [f"{n:04d}.jsonl" for n in
                             range(router_calls_before + 1, self._router_calls + 1)],
         })
+        # Task 002 (#278 B.7): the SAME `router.decision` event shape the
+        # task-selection path emits below (`_route_task_selection`) --
+        # `state`/candidate ids/deterministic pick/choice/reason/fallback
+        # flag+cause/model/tokens/cost, on every completed router call on
+        # either routed state.  `deterministic_target` is the state's own
+        # declared fallback edge's target -- the SAME edge `router.decide`
+        # itself falls back to -- resolved here (not inside `decide()`)
+        # because only the caller knows this axis's real edge set.
+        fallback_guard_name = transitions.fallback_guard(state)
+        deterministic_target = next(
+            (e.target for e in edges if e.guard == fallback_guard_name), None)
+        self._emit_router_decision_event(
+            state=state,
+            candidate_ids=sorted({e.target for e in edges}),
+            deterministic_pick=deterministic_target,
+            choice=outcome.target,
+            reason="",
+            fallback=outcome.used_fallback,
+            fallback_cause=outcome.fallback_cause,
+            usage=outcome.usage)
         return (outcome.target, guard, outcome)
+
+    def _emit_router_decision_event(
+            self, *, state, candidate_ids, deterministic_pick,
+            choice, reason, fallback, fallback_cause, usage) -> None:
+        """Task 002 (#278 B.7): one `router.decision` EVENT (`events.jsonl`,
+        never a bare log line) per completed router call on EITHER routed
+        state -- `task_selection` (`_route_task_selection` below) and the
+        existing `plan_review` axis (`_route_with_router` above) -- so a
+        surface reading `events.jsonl` alone (rather than hunting through
+        `artifacts/router/decisions.jsonl`, which only ever recorded the
+        edge-based axis) can see every router decision this run made, in
+        one shape: `state`, the candidate id/target set, the deterministic
+        pick, the choice actually taken, a one-line reason (empty for the
+        edge-based axis, which never asks the model for one), the fallback
+        flag plus its cause when set, the resolved router model, and the
+        call's own tokens/cost -- never folded into the run's aggregate
+        `usage.byPhase["router"]` bucket a second time; `_ask_router`
+        already does that accumulation for every router call regardless of
+        which of the two states asked it.
+        """
+        usage = usage or {}
+        self.run.emit(
+            "router.decision",
+            state=state,
+            candidateIds=list(candidate_ids),
+            deterministicPick=deterministic_pick,
+            choice=choice,
+            reason=reason,
+            fallback=fallback,
+            fallbackCause=fallback_cause,
+            model=self.cfg.model_for("router"),
+            tokens=usage.get("totalTokens"),
+            costUSD=usage.get("costUSD"))
+
+    async def _route_task_selection(self, candidates: list, deterministic: dict) -> dict:
+        """Task 002 (#278 B.1/B.4/B.7): the ONE place `engine.router.
+        decide_task_selection()` is called in production. Only ever
+        invoked from the worker step (`_step_worker`), and only when
+        `scheduler.pending_candidates()` already found 2+ runnable tasks
+        AND `self.cfg.route_task_selection` is on -- a single candidate,
+        or routing disabled, never reaches this method at all (checked by
+        the caller, not here), so `select_next_task`'s validation-failed
+        and in-progress steps -- and a one-candidate pending step -- stay
+        fully deterministic and never call the router or emit a
+        `router.decision` event.
+
+        Returns the SAME dict object `candidates` already holds for the
+        chosen task id (never a copy) -- exactly like `scheduler.
+        select_next_task` promises its caller, so the ordinary in-progress
+        claim/write logic just below this call site in `_step_worker`
+        keeps mutating the real tasks.json entry in place.
+        """
+        candidate_ids = [str(t.get("id")) for t in candidates]
+        deterministic_id = str(deterministic.get("id"))
+        outcome = await router.decide_task_selection(
+            candidate_ids, deterministic_id, ask=self._ask_router,
+            timeout_s=self.cfg.router_timeout_s)
+        self.run.emit(
+            "log", level=("warning" if outcome.used_fallback else "info"),
+            message=(f"router selected task {outcome.chosen_id!r} for the "
+                     "next worker iteration"
+                     + (", FELL BACK to the deterministic pick "
+                        f"(cause={outcome.fallback_cause!r})"
+                        if outcome.used_fallback else "") + ")"))
+        self._emit_router_decision_event(
+            state="task_selection",
+            candidate_ids=candidate_ids,
+            deterministic_pick=deterministic_id,
+            choice=outcome.chosen_id,
+            reason=outcome.reason,
+            fallback=outcome.used_fallback,
+            fallback_cause=outcome.fallback_cause,
+            usage=outcome.usage)
+        return next(t for t in candidates if str(t.get("id")) == outcome.chosen_id)
 
     def _apply_reported_task_status(self, payload: dict) -> list[str]:
         """Task 019 (requirement F): validate and (if legal) apply one
@@ -9471,6 +9565,28 @@ class LoopSupervisor:
             # the claim moved.
             selected = scheduler.select_next_task(
                 tasks_before.get("tasks", []))
+            # Task 002 (#278 B.1/B.4/B.7): the router is asked for the
+            # pending-step pick, and ONLY the pending-step pick -- never
+            # the validation-failed or in-progress steps just above
+            # (`select_next_task` never returns a "pending"-status task
+            # for either of those; this status check is what tells the
+            # three steps apart here without a second scheduler call) --
+            # and only when there were genuinely 2+ runnable candidates
+            # AND `route_task_selection` is on. A single candidate (the
+            # ordinary case for most plans) or routing disabled makes
+            # `pending_candidates` irrelevant below: `len(...) >= 2` short-
+            # circuits before it is even read, so neither costs a
+            # `pending_candidates` call's worth of work for nothing, and
+            # zero router calls / zero `router.decision` events are ever
+            # made for it.
+            if (isinstance(selected, dict)
+                    and selected.get("status", "pending") == "pending"
+                    and self.cfg.route_task_selection):
+                pending_candidates = scheduler.pending_candidates(
+                    tasks_before.get("tasks", []))
+                if len(pending_candidates) >= 2:
+                    selected = await self._route_task_selection(
+                        pending_candidates, selected)
             assigned_id = selected.get("id") if isinstance(selected, dict) else None
             # Task 014 (PRD requirement C.2, #149): set below, inside the
             # `selected is None` branch, whenever the ENTIRE actionable

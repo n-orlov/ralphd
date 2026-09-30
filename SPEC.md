@@ -692,6 +692,37 @@ directory) and its usage folds into `usage.byPhase["router"]` (§4.2) exactly
 like the five hat phases, so a run's model mix and cost are auditable even for
 the calls that never cost an iteration.
 
+**Task-selection routing is the router's second question (task 002,
+#278 B.1/B.4/B.7).** `engine.scheduler.select_next_task`'s validation-failed
+and in-progress steps stay fully deterministic — the router is never asked
+for either. Its pending step is routed too, but only when
+`engine.scheduler.pending_candidates` finds 2 or more genuinely runnable
+tasks (dependencies satisfied, not deferred) AND `route_task_selection`
+(a `JobConfig`/`job.yaml` field, default `False`) is on; a single candidate
+never reaches the router, whatever `route_task_selection` says. When it is
+asked, `LoopSupervisor._route_task_selection` calls
+`router.decide_task_selection()` — a SEPARATE function from `decide()`
+above, asked exactly ONCE with no contract retry — for one candidate task id
+plus a one-line reason. Any of three causes falls back to the deterministic
+pick ( `select_next_task`'s own choice) immediately: `"unparseable"` (an
+absent/malformed answer, or one that fails `router.TASK_SELECTION_SCHEMA`),
+`"non_candidate_id"` (a well-formed answer naming a task id outside the
+candidate set) and `"timeout"` (no answer within `router_timeout_s`).
+
+Every completed router call on either routed state — `task_selection` and
+`plan_review` alike — emits one `router.decision` event (`events.jsonl`,
+`LoopSupervisor._emit_router_decision_event`) carrying: `state`,
+`candidateIds` (the task ids or edge targets considered), `deterministicPick`,
+`choice` (what was actually taken), `reason` (the router's own one-line
+reason on the task-selection axis; empty on the edge-based axis, which never
+asks for one), `fallback` (bool) and `fallbackCause` (set iff `fallback` is
+true), the resolved `model`, and the call's own `tokens`/`costUSD`. This is
+in addition to — never instead of — `usage.byPhase["router"]` accounting
+(§4.2) and, for the `plan_review` axis only, `artifacts/router/
+decisions.jsonl` (`ralphctl router`); `ralphctl cost` shows the router's
+spend as its own `"router"` phase bucket regardless of which routed state
+produced it, since `_ask_router` accounts every call the same way.
+
 **A contract re-ask is not an iteration either (task 001 requirement B, task
 004).** `LoopSupervisor._ask_contract_fix()` is the uncharged channel every
 `contract_enforcement.enforce_contract` retry ladder calls as its `respond`

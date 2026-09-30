@@ -77,6 +77,18 @@ class RouterOutcome:
     attempts: int          # number of `ask` calls actually made (0 when
                            # used_router is False).
     usage: dict | None = None  # last attempt's usage, or None if none ran.
+    # Task 002 (#278 B.7): a one-word classification of WHY the fallback
+    # was taken -- "timeout" (the last attempt never answered within
+    # `timeout_s`), "unparseable" (absent/malformed JSON, or a schema
+    # violation) or "illegal_target" (a well-formed answer naming a real
+    # state that is simply not one of THIS state's own legal edges).
+    # `None` whenever `used_fallback` is False -- there is no cause to
+    # report for an answer that was actually taken. Feeds
+    # `engine.loop.LoopSupervisor._emit_router_decision_event`'s
+    # `fallbackCause` field alongside the task-selection path's own
+    # `TaskSelectionOutcome.fallback_cause` below, so both routed states
+    # emit the SAME `router.decision` shape.
+    fallback_cause: str | None = None
 
 
 def validate_answer(raw: str | None,
@@ -198,6 +210,7 @@ async def decide(
     error: str | None = None
     last_usage: dict | None = None
     attempts = 0
+    cause: str | None = None
     for attempt_index in range(retry_max + 1):
         attempts = attempt_index + 1
         prompt = _router_prompt(state, edges, error, context)
@@ -205,6 +218,7 @@ async def decide(
             raw, usage = await asyncio.wait_for(ask(prompt), timeout=timeout_s)
         except asyncio.TimeoutError:
             error = f"router: no answer within {timeout_s}s timeout"
+            cause = "timeout"
             continue
         last_usage = usage
         payload, errors = validate_answer(raw, state, vigilant, peer_plan_review)
@@ -214,10 +228,13 @@ async def decide(
                                  used_router=True, used_fallback=False,
                                  attempts=attempts, usage=last_usage)
         error = "; ".join(errors)
+        cause = ("illegal_target" if any("is not a legal successor" in e for e in errors)
+                 else "unparseable")
 
     return RouterOutcome(target=fallback_edge.target, guard=fallback_edge.guard,
                          used_router=True, used_fallback=True,
-                         attempts=attempts, usage=last_usage)
+                         attempts=attempts, usage=last_usage,
+                         fallback_cause=cause)
 
 
 def _router_prompt(state: str, edges: tuple, error: str | None,
@@ -234,6 +251,139 @@ def _router_prompt(state: str, edges: tuple, error: str | None,
     # Task 015 (D.1, #117 half A): whatever evidence the caller supplied
     # (a peer's raw reply, its parse errors, ...) is folded in verbatim,
     # never parsed or reshaped -- `decide()` treats it as opaque text.
+    if context:
+        lines.append(f"Context:\n{context}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Task 002 (#278 B.1/B.4/B.7): task-selection routing -- a SECOND, narrower
+# question from the same module, asked only when `engine.scheduler`'s
+# pending step (`scheduler.pending_candidates`) has genuinely more than one
+# runnable candidate. Deliberately its own function rather than a second
+# caller of `decide()` above: `decide()` answers "which of this STATE's
+# legal EDGES" (`next_step`, validated against `transitions.successors`)
+# and retries up to `retry_max` extra times before falling back; a task
+# pick answers "which of these TASK ids" and is asked exactly ONCE -- one
+# `ask` call, no contract retry -- so an unparseable answer, an answer
+# naming a task outside the candidate set, and a call that outruns
+# `timeout_s` each fall back to the caller-supplied deterministic pick
+# immediately, distinguished only by `fallback_cause` ("unparseable",
+# "non_candidate_id", "timeout") for the `router.decision` event
+# (`engine.loop.LoopSupervisor._emit_router_decision_event`) to report.
+
+# One JSON object, one question: a candidate id plus a one-line reason.
+# Task 004 (#278 B.2/B.3) widens the PROMPT this schema's answer is asked
+# for (every candidate's id/title/description start/origin/priority/
+# dependsOn, the deterministic pick, the last worker iteration's outcome,
+# and B.3's "whose result the others depend on in fact" rule) without
+# touching this schema or the single-call/no-retry/fallback shape below.
+TASK_SELECTION_SCHEMA: dict = {
+    "type": "object",
+    "required": ["candidate_id", "reason"],
+    "properties": {
+        "candidate_id": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+    "additionalProperties": False,
+}
+
+
+@dataclass
+class TaskSelectionOutcome:
+    chosen_id: str
+    reason: str
+    used_router: bool
+    used_fallback: bool
+    fallback_cause: str | None = None
+    usage: dict | None = None
+
+
+def validate_task_selection_answer(
+        raw: str | None, candidate_ids: list) -> tuple[dict | None, str | None]:
+    """Parse and validate one task-selection answer. Returns `(payload,
+    cause)`; `cause` is `None` iff `payload` is not `None`, and is one of
+    the two non-timeout fallback causes otherwise: `"unparseable"` for an
+    absent/malformed answer or one that does not match
+    `TASK_SELECTION_SCHEMA`, `"non_candidate_id"` for an otherwise-valid
+    answer naming a task id that is not in `candidate_ids`."""
+    if raw is None or not raw.strip():
+        return None, "unparseable"
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, "unparseable"
+    if contracts.validate_against(TASK_SELECTION_SCHEMA, payload):
+        return None, "unparseable"
+    if payload["candidate_id"] not in candidate_ids:
+        return None, "non_candidate_id"
+    return payload, None
+
+
+async def decide_task_selection(
+        candidate_ids: list,
+        deterministic_id: str,
+        *,
+        ask: AskFn,
+        timeout_s: float,
+        context: str | None = None,
+) -> TaskSelectionOutcome:
+    """Ask the router to name ONE of `candidate_ids` (plus a one-line
+    reason), exactly once -- never called at all by the only production
+    caller (`engine.loop.LoopSupervisor._route_task_selection`) unless
+    `scheduler.pending_candidates` already found 2+ runnable tasks, so
+    `used_router` is always True here (there is no deterministic-first
+    short-circuit the way `decide()` has for a 0/1-edge state -- the
+    caller is the one that never reaches this function for a single
+    candidate).
+
+    Falls back to `deterministic_id` -- which MUST be a member of
+    `candidate_ids` -- on any of three causes, each its own
+    `fallback_cause`: `"timeout"` (no answer within `timeout_s`),
+    `"unparseable"` (absent/malformed JSON, or a schema violation) and
+    `"non_candidate_id"` (a well-formed answer naming a task id outside
+    `candidate_ids`). No re-prompt, on any of the three -- one `ask` call
+    total, whatever the failure.
+    """
+    if len(candidate_ids) < 2:
+        raise ValueError(
+            "decide_task_selection() called with fewer than 2 candidates "
+            f"({candidate_ids!r}) -- the caller must only reach this "
+            "function when scheduler.pending_candidates() found 2 or more")
+    if deterministic_id not in candidate_ids:
+        raise ValueError(
+            f"deterministic_id {deterministic_id!r} is not one of "
+            f"candidate_ids {candidate_ids!r}")
+    prompt = _task_selection_prompt(candidate_ids, deterministic_id, context)
+    try:
+        raw, usage = await asyncio.wait_for(ask(prompt), timeout=timeout_s)
+    except asyncio.TimeoutError:
+        return TaskSelectionOutcome(chosen_id=deterministic_id, reason="",
+                                    used_router=True, used_fallback=True,
+                                    fallback_cause="timeout", usage=None)
+    payload, cause = validate_task_selection_answer(raw, candidate_ids)
+    if payload is None:
+        return TaskSelectionOutcome(chosen_id=deterministic_id, reason="",
+                                    used_router=True, used_fallback=True,
+                                    fallback_cause=cause, usage=usage)
+    return TaskSelectionOutcome(chosen_id=payload["candidate_id"],
+                                reason=payload.get("reason", ""),
+                                used_router=True, used_fallback=False,
+                                fallback_cause=None, usage=usage)
+
+
+def _task_selection_prompt(candidate_ids: list, deterministic_id: str,
+                          context: str | None = None) -> str:
+    lines = [
+        "Selecting the next task for a worker iteration has more than one "
+        "runnable candidate.",
+        f"Candidate task ids: {list(candidate_ids)!r}.",
+        "The deterministic pick (highest priority, then plan order) is "
+        f"{deterministic_id!r}.",
+        'Answer with exactly one JSON object and nothing else: '
+        '{"candidate_id": "<one of the candidate ids above>", '
+        '"reason": "<one-line reason>"}',
+    ]
     if context:
         lines.append(f"Context:\n{context}")
     return "\n".join(lines)
