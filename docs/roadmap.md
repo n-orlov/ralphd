@@ -9,9 +9,6 @@ in [docs/prds/](prds/README.md).
 
 ### Open issues
 
-- **CI lane reliability (#189, #193).** A `timeout-minutes` kill reports as
-  `cancelled`, two runner slots on one box let the heavy and nightly lanes starve
-  each other, and the browser tier sees intermittent Chrome session drops.
 - **Composite steps (#25).** Let a step upgrade to running one or more sub-jobs.
   Parked as a design discussion.
 
