@@ -17,7 +17,7 @@ The tiers themselves — what they cover and what they cost — are
 |---|---|---|---|---|
 | `gate.yml` | `-m fast` (which is a superset of `-m smoke`) | self-hosted `fast-lane` (`int21h-ws-5`/`-6`, exclusively) | every pull request, every push to `main` | 45 min |
 | `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs, plus a third `browser-image` job that publishes the browser tier's pinned image and runs on nothing but an explicit dispatch with `publish_browser_image: true`, which in turn skips the two tiers (task 011) | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min (40 for the dispatch-only publisher) |
-| `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running `scripts/host_like_dev_layout.sh` with no override inside a plain upstream container (task 077, steer 008) -- the `fast` tier plus (task cure-01-01-2) a supplemental pass over every node that leaves outside `fast`/`smoke`/`docker`/`browser` (the `nightly`-marked nodes and the script's own test module), which `-m fast` alone never selected | self-hosted `ralphd-vps` + `docker-host` (`int21h-ws-1`..`-4`, four eligible slots; `max-parallel: 2` caps how many cells run at once, which is a documented ceiling, not the slot count -- see below) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis); unchanged by cure-01-01-2, whose supplemental pass adds real wall time inside this same ceiling rather than raising it |
+| `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running `scripts/host_like_dev_layout.sh` with no override inside a plain upstream container (task 077, steer 008) -- the `fast` tier plus (task cure-01-01-2) a supplemental pass over every node that leaves outside `fast`/`smoke`/`docker`/`browser` (the `nightly`-marked nodes and the script's own test module), which `-m fast` alone never selected | self-hosted `ralphd-vps` + `docker-host` (`int21h-ws-1` only, so the cells run one at a time -- see below) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis); unchanged by cure-01-01-2, whose supplemental pass adds real wall time inside this same ceiling rather than raising it |
 
 `gate.yml` was on GitHub's own runners until 14 September 2026, when being the
 lane that runs most often stopped being an argument for hosted runners and
@@ -47,7 +47,8 @@ partition survived the move; only its halves changed machines:
 | slots | labels | takes |
 |---|---|---|
 | `int21h-ws-5`, `int21h-ws-6` | `fast-lane` only | `gate.yml` only |
-| `int21h-ws-1` .. `int21h-ws-4` | `ralphd-vps`, `docker-host`, `browser-runner` | `heavy.yml`, `nightly.yml` only |
+| `int21h-ws-1` | `ralphd-vps`, `docker-host`, `browser-runner` | `heavy.yml`, `nightly.yml` only |
+| `int21h-ws-2` .. `int21h-ws-4` | none (parked) | nothing |
 
 Slots 5 and 6 are a **reservation, not spare capacity**, and that is why they
 were registered instead of simply adding `fast-lane` to the four that already
@@ -96,52 +97,25 @@ dispatch.
 
 ## The self-hosted runner
 
-**Corrected fresh from `GET /repos/n-orlov/ralphd/actions/runners` (task 056, K.5).**
-This section used to describe the retired VPS as if it were still the fleet; it
-no longer does, and the live shape belongs to that endpoint, not to this file,
-which has been overtaken within a day of being written twice already (see
-`## The three workflows` above). As read today: `int21h-ws-1` .. `int21h-ws-4`
-carry `ralphd-vps`, `docker-host` and `browser-runner`, and are where
-`heavy.yml` and `nightly.yml` run; `int21h-ws-5` and `int21h-ws-6` carry
-`fast-lane` only and are where `gate.yml` runs; `vmi3245594` and
-`vmi3245594-2` are still registered and online but carry no labels at all, so
-they are eligible for nothing. **All six slots are registrations on one
-physical host**, not six separate machines the way the two VPS slots used to
-be — see `## The three workflows` above for the CPU-contention consequence on
-`gate.yml`'s worker count.
+The live placement belongs to `GET /repos/n-orlov/ralphd/actions/runners`; this is
+what it holds:
 
-**One property this file used to state no longer holds, and it is #189's
-unowned half.** `browser-runner` used to sit on exactly one of two VPS slots
-(`vmi3245594`; steer 009), which is what kept browser-tier work globally
-serial across every workflow — a `concurrency:` group cannot do this itself,
-since it only serialises within one workflow and cannot see what else is
-scheduled on the runner (`heavy.yml`'s own comment on the browser tier says
-so). **Now all four of `int21h-ws-1`..`int21h-ws-4` carry `browser-runner`**,
-so that guarantee is gone: up to four browser-tier jobs (e.g. from four open
-pull requests) could now land concurrently instead of queueing for the one
-slot that used to hold the label. Restoring it needs the operator to move the
-label back onto a bounded subset of slots, which is runner-registration work
-this task leaves untouched, same as the rest of #189's placement half.
+- `int21h-ws-1` carries `ralphd-vps`, `docker-host` and `browser-runner`. It is the
+  **only** slot `heavy.yml` and `nightly.yml` can take, so every heavy job and every
+  nightly cell runs one at a time, and never beside another heavy or nightly job.
+- `int21h-ws-2` .. `int21h-ws-4` are registered and online with no custom labels, so
+  they take nothing.
+- `int21h-ws-5` and `int21h-ws-6` carry `fast-lane` only and run `gate.yml`.
+- `vmi3245594` and `vmi3245594-2` (the VPS) are registered and online with no custom
+  labels, so they take nothing.
 
-**Named requirement (the workflow half a workflow file can actually express):
-no more than 2 of `int21h-ws-1`..`int21h-ws-4` should carry a running
-`heavy`/`nightly` job at once.** Reason: the VPS-era measurement — "2
-concurrent heavy-tier jobs load the host to 1.92, comfortable, not 3" — was
-taken on a 4-core box; the current host is the 12-core workstation shared with
-fast-lane's own 2 slots (see `## The three workflows`), and #189's own
-defect-2 measurement showed a nightly cell's wall clock roughly double when it
-shared a box with the docker tier (61 min vs 20-22 min uncontended, enough to
-cap a 60-minute budget it had already only 2 minutes of margin against
-uncontended). 2 is this document's ceiling until a fresh measurement on the
-current host says otherwise — not a floor to relax toward 4 because four slots
-now exist. **This requirement is documentation only.** No mechanism in
-`heavy.yml` or `nightly.yml` enforces it: a `concurrency:` group is blind
-across workflows (the same limitation that broke `browser-runner`'s old
-guarantee, two paragraphs up), and the one mechanism this repository already
-trusts for cross-workflow, cross-job placement control is a label placed on a
-bounded number of slots — which is runner-registration work, is the operator's
-to do, and is exactly the split named in the comment this task posts on #189.
-A future task can pick this up; see `## Not done yet` below.
+All `int21h-ws-*` slots are registrations on one physical 12-core host. A label is the
+only placement control that works across workflows: a `concurrency:` group only
+serialises within one workflow. So one labelled slot per physical host is what keeps
+`heavy` and `nightly` from sharing a machine, and what keeps browser-tier work
+globally serial. The cost is throughput: a full `nightly` run is its six cells back to
+back. To add capacity, put `ralphd-vps` + `docker-host` on a slot on another physical
+host, not on a second slot of this one.
 
 Host (measured on the retired VPS; not yet re-measured on the current
 workstation, so treated as history rather than a current spec): 4 x86_64
@@ -210,9 +184,9 @@ secrets, and a compromised job has nothing to steal.
   `main` is the one that gets attested; intermediate shas keep the check runs
   they earned on their own pull requests.
 - `nightly.yml` runs its six matrix cells at `max-parallel: 2` and `fail-fast:
-  false` — capped at 2 by the named requirement in `## The self-hosted runner`
-  above, not because only two slots exist (four now do, `int21h-ws-1`..`-4`);
-  one red cell must not cancel another's claim.
+  false`. With one eligible slot (`## The self-hosted runner` above) the cells
+  run one at a time whatever `max-parallel` says; one red cell must not cancel
+  another's claim.
 
 ## Reading a `cancelled` conclusion: which of the three causes it was
 
@@ -312,8 +286,3 @@ finds nothing.
   `heavy.yml` is what supplies the real figures for four cores; the `docker`
   lane runs serially until then, and `-n 2 --dist loadfile` is the next thing to
   try.
-- **#189's placement half (task 056, K.5): a per-physical-slot label bounding
-  which of `int21h-ws-1`..`-4` may run `heavy`/`nightly` concurrently.** This
-  is the operator's to place, the same way `browser-runner` used to sit on one
-  VPS slot; see `## The self-hosted runner` above for why the current
-  all-four `browser-runner` labelling already lost that guarantee once.
