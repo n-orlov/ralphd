@@ -3928,9 +3928,10 @@ JSON endpoints served under `/api/`:
   status code and body (including `target`) through unchanged: `200
   {"interrupted": true, "target": "iteration", ...}` when a running
   iteration was signalled, the same shape naming `"idle"` when nothing was
-  running to signal, or `409` once the job has already finished. Either
-  branch answers `503` with an `error`/`detail` if the run's API is
-  unreachable; `404` for an unknown run id.
+  running to signal, or the engine's own rejection (`409` once the job has
+  already finished, `400`, `401`) with its own body, never wrapped. Either
+  branch answers `503` with an `error` if the run's API is unreachable;
+  `404` for an unknown run id.
 - `POST /api/runs/<id>/retry` — the hub's "retry now" button (task 017):
   forwarded (empty body) to the run's live `POST /retry`, i.e. the same
   thing `ralphctl retry <run-id>` does — wake the pending infra backoff

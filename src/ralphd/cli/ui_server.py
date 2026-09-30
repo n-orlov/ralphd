@@ -2627,15 +2627,26 @@ class Handler(BaseHTTPRequestHandler):
                 # `now` flag itself is a hub-side routing decision, not part
                 # of `/interrupt`'s own body contract) and passes the
                 # engine's status code and body (including `target`)
-                # through UNCHANGED, exactly like the `now`-absent branch
-                # below does for `/steering` -- so a caller reading the
-                # response cannot tell the hub touched it at all. `now`
-                # absent or `false` still proxies to `/steering`, unchanged
-                # from before this task.
+                # through UNCHANGED -- a rejection (409 job finished, 400,
+                # 401, ...) as much as a 200 -- so a caller reading the
+                # response cannot tell the hub touched it at all; only an
+                # unreachable run (no engine answer at all) collapses to the
+                # hub's own 503. `now` absent or `false` still proxies to
+                # `/steering`, unchanged from before this task.
                 if body.get("now"):
                     payload = {"message": body.get("message"), "name": body.get("name")}
                     ok, code, resp = _proxy_json(reg, run_id, "POST", "/interrupt",
                                                   body=json.dumps(payload).encode())
+                    if not ok and not code:
+                        self._send_json(
+                            {"error": "run's API unreachable -- cannot interrupt now"}, 503)
+                        return
+                    # The engine ANSWERED -- a 200 or a rejection (409 job
+                    # finished, 400 bad body, 401, ...) alike: its status
+                    # code and body go back exactly as it sent them, never
+                    # wrapped in the hub's own `{"error", "detail"}` shape.
+                    self._send_json(resp, code)
+                    return
                 else:
                     ok, code, resp = _proxy_json(reg, run_id, "POST", "/steering",
                                                   body=json.dumps(body).encode())

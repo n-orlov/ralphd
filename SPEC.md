@@ -5360,13 +5360,14 @@ dir themselves and a live proxy would only add a way to disagree.
   and on-disk answers can never disagree. A run dir with no PRD answers with
   the single line `(no PRD recorded)` rather than an empty string.
 - **Steering form and history** — the form posts to the hub's steer endpoint
-  (`POST /api/runs/<id>/steer`). Task 001 (#277): with the `apply now`
-  checkbox left unticked the hub forwards `{"message": ..., "name": ...}`
-  to the run's live `POST /steering` and reports the created file name
-  back, exactly as before; ticking it (`now: true`) forwards only
-  `{"message": ..., "name": ...}` to `POST /interrupt` instead, and the
-  hub passes that route's own status code and body (including `target`)
-  through unchanged rather than reshaping it -- the SAME mechanism
+  (`POST /api/runs/<id>/steer`). With the `apply now` checkbox left
+  unticked the hub forwards `{"message": ..., "name": ...}` to the run's
+  live `POST /steering` and reports the created file name back; ticking it
+  (`now: true`) forwards only `{"message": ..., "name": ...}` to `POST
+  /interrupt` instead, and the hub passes that route's own status code and
+  body (including `target`) through unchanged rather than reshaping it --
+  an engine rejection such as `409` included; only an unreachable run
+  answers the hub's own `503` -- the SAME mechanism
   `ralphctl steer --now`/`ralphctl interrupt` drive, never a second one.
   The two `POST /interrupt` 200-shape reports ("a running iteration was
   signalled" / "an idle loop was woken") are spelled out in exactly one

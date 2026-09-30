@@ -1,6 +1,7 @@
 """Task 001 (#277): browser-tier proof of the hub's "apply now" checkbox --
 ticking it, submitting the steer form, and asserting (a) the request the
-page actually sent carries `now: true` and reached `/interrupt`, and (b)
+page itself sent to the hub carries `now: true` (recorded off the page's
+own `window.fetch`) and the hub forwarded it to `/interrupt`, and (b)
 the page renders the SAME wording `ralphctl steer --now`/`ralphctl
 interrupt` print (`_interrupt_report`, cli/main.py; `web/interrupt-
 wording.json`, the one place either phrase is spelled out) rather than the
@@ -45,6 +46,32 @@ def _last_post(engine):
     return last_path, last_body
 
 
+def _record_steer_request_bodies(pw):
+    """Wrap the page's `window.fetch` so every body it POSTs to the hub's
+    `/steer` route is recorded in `window.__steerBodies` -- the browser-to-
+    hub request itself, before the hub has routed or reshaped anything."""
+    pw.eval_js(
+        "(function(){"
+        "  window.__steerBodies = [];"
+        "  const orig = window.fetch;"
+        "  window.fetch = function(url, opts) {"
+        "    if (String(url).includes('/steer') && opts && opts.method === 'POST') {"
+        "      window.__steerBodies.push(String(opts.body));"
+        "    }"
+        "    return orig.apply(this, arguments);"
+        "  };"
+        "  return 'wrapped';"
+        "})()")
+
+
+def _steer_request_bodies(pw):
+    """The recorded browser-to-hub `/steer` bodies, parsed in the page and
+    returned as a JSON array (`--raw eval` prints an object/array result
+    as JSON)."""
+    raw = pw.eval_js("(window.__steerBodies || []).map((b) => JSON.parse(b))")
+    return json.loads(raw)
+
+
 def test_apply_now_checkbox_sends_now_true_and_shows_the_shared_wording(tmp_path, pw):
     engine = StubEngineApi(
         status={"runId": "run-apply-now", "state": "running"},
@@ -60,6 +87,7 @@ def test_apply_now_checkbox_sends_now_true_and_shows_the_shared_wording(tmp_path
             pw.open(f"{server.base}/#/run/run-apply-now")
             _wait_for(pw, "document.body.innerText", "Steer")
 
+            _record_steer_request_bodies(pw)
             pw.fill("#steer-message", "steer now via the checkbox")
             pw.click("#steer-now")
             pw.click("#steer-form button[type=submit]")
@@ -71,9 +99,16 @@ def test_apply_now_checkbox_sends_now_true_and_shows_the_shared_wording(tmp_path
 
             pw.screenshot(SCREENSHOTS_DIR / "apply-now-interrupt-wording.png")
 
-            # The request the PAGE actually sent, not just the stub's reply:
-            # catches a route that ignores the checkbox and still posts a
-            # plain `{message, name}` steering body to `/steering`.
+            # The request the PAGE itself sent to the hub: the checkbox
+            # must put `now: true` in the browser-to-hub body.
+            page_bodies = _steer_request_bodies(pw)
+            assert len(page_bodies) == 1, page_bodies
+            assert page_bodies[0].get("now") is True, page_bodies
+            assert page_bodies[0].get("message") == "steer now via the checkbox", page_bodies
+
+            # And what the hub forwarded on to the engine: `/interrupt`,
+            # never `/steering`, with `now` stripped (a hub-side routing
+            # decision, not part of `/interrupt`'s own body contract).
             last_path, last_body = _last_post(engine)
             assert last_path == "/interrupt", engine.requests
             assert last_body.get("now") is None, (
@@ -101,6 +136,7 @@ def test_apply_now_left_unchecked_still_shows_the_ordinary_sent_line(tmp_path, p
             pw.open(f"{server.base}/#/run/run-no-now")
             _wait_for(pw, "document.body.innerText", "Steer")
 
+            _record_steer_request_bodies(pw)
             pw.fill("#steer-message", "an ordinary queued steer")
             pw.click("#steer-form button[type=submit]")
 
@@ -108,6 +144,10 @@ def test_apply_now_left_unchecked_still_shows_the_ordinary_sent_line(tmp_path, p
                 pw, "document.getElementById('steer-status').textContent", "sent")
             assert "a running iteration was signalled" not in steer_text, steer_text
             assert "an idle loop was woken" not in steer_text, steer_text
+
+            page_bodies = _steer_request_bodies(pw)
+            assert len(page_bodies) == 1, page_bodies
+            assert "now" not in page_bodies[0], page_bodies
 
             last_path, _last_body = _last_post(engine)
             assert last_path == "/steering", engine.requests

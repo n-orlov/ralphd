@@ -462,7 +462,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # spawns a real engine, so it counts in fast only, not smoke),
     # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
     # fast 6724/461, `-m smoke --collect-only` -> smoke unchanged 5029/337.
-    "fast": {"tests": 6724, "modules": 461},
+    # Task 001 retry: +2 tests (the same module's now:true engine-rejection
+    # passthrough, 409 and 400), measured the same way -> fast 6726/461,
+    # smoke unchanged 5029/337.
+    "fast": {"tests": 6726, "modules": 461},
     "smoke": {"tests": 5029, "modules": 337},
 }
 

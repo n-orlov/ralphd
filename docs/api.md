@@ -886,8 +886,9 @@ handler does not refuse, whichever of the two 200 shapes follows.
 true` in ITS OWN request body forwards `{"message": ..., "name": ...}`
 to this route rather than to `POST /steering`, passing this route's own
 status code and body (including `target`) straight through with no
-reshaping — `now` absent or `false` proxies to `POST /steering` instead,
-unchanged from before this task. The hub's `now` flag never reaches this
+reshaping — a rejection (`409`, `400`, `401`) as much as a `200`; only an
+unreachable run answers the hub's own `503`. `now` absent or `false`
+proxies to `POST /steering` instead. The hub's `now` flag never reaches this
 route's own body; it is purely a hub-side routing decision between the
 two proxied targets.
 

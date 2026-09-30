@@ -10,6 +10,9 @@ Two groups:
    proven by inspecting the stub's own recorded request paths, not just by
    the response shape (which could coincidentally match even if the wrong
    route had been hit).
+   Alongside it, `now: true` against a stub engine that REJECTS `POST
+   /interrupt` (409 job finished, 400): the hub answers with the engine's
+   own status code and the engine's own body, not a hub wrapper.
 2. The positive case, against a REAL running engine (`live`, no docker): a
    held worker iteration is interrupted through the hub route, the hub's
    response is the engine's `POST /interrupt` body passed through
@@ -25,7 +28,9 @@ always proxy to `/steering` regardless of `now` would still pass group 1
 `iteration.end`/`STEERING_APPLIED` polls would time out (a queued-but-never-
 interrupted message is never forced to settle by the held worker pass
 ending). Making the hub branch call `/interrupt` unconditionally would fail
-group 1's `never touches /interrupt` assertion.
+group 1's `never touches /interrupt` assertion. Re-wrapping an engine
+rejection in the hub's `{"error", "detail"}` shape fails the rejection
+passthrough node's body-equality assertion.
 """
 
 from __future__ import annotations
@@ -94,6 +99,31 @@ def test_now_absent_or_false_reaches_steering_never_interrupt(tmp_path, ui, body
         hit_paths = [path.split("?", 1)[0] for _method, path, _auth in engine.requests]
         assert "/steering" in hit_paths, hit_paths
         assert "/interrupt" not in hit_paths, hit_paths
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("status,engine_body", [
+    (409, {"detail": "job finished", "example": "preserved"}),
+    (400, {"error": "message must be a string", "field": "message"}),
+])
+def test_now_true_passes_an_engine_rejection_through_unchanged(
+        tmp_path, ui, status, engine_body):
+    """`now: true` + an engine that REJECTS `POST /interrupt`: the hub's
+    answer is the engine's own status code and its own body, byte-for-byte
+    the same JSON object -- never re-wrapped in the hub's
+    `{"error": ..., "detail": ...}` shape."""
+    engine = StubEngineApi(interrupt_status=status, interrupt_body=engine_body)
+    registry = tmp_path / "registry"
+    try:
+        _write_run_with_api(registry, "hubnow-rej", engine, state="running")
+        server = ui(registry)
+        code, resp = server.post("/api/runs/hubnow-rej/steer",
+                                 {"message": "too late", "now": True})
+        assert code == status, resp
+        assert resp == engine_body, resp
+        hit_paths = [path.split("?", 1)[0] for _method, path, _auth in engine.requests]
+        assert "/interrupt" in hit_paths and "/steering" not in hit_paths, hit_paths
     finally:
         engine.close()
 

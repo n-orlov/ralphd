@@ -2323,12 +2323,13 @@ agent; it does not mutate `tasks.json` directly.
 **The hub's steer form is the SAME two routes, chosen by one flag (task
 001, #277).** `POST /api/runs/<id>/steer` (`ui_server.py`) is a pure proxy
 with no route of its own: `now` absent or `false` forwards `{"message":
-..., "name": ...}` to the run's live `POST /steering` exactly as before
-this task, and `now: true` -- the hub's "apply now" checkbox, the SAME
+..., "name": ...}` to the run's live `POST /steering`, and `now: true` -- the hub's "apply now" checkbox, the SAME
 mechanism `ralphctl steer --now`/`ralphctl interrupt` drive -- forwards
 only `{"message": ..., "name": ...}` to `POST /interrupt` instead,
 passing that route's own status code and body (including `target`)
-through unchanged rather than reshaping it into a hub-specific shape. The
+through unchanged rather than reshaping it into a hub-specific shape --
+an engine rejection (`409` job finished, `400`, `401`) included; only an
+unreachable run answers the hub's own `503`. The
 two `POST /interrupt` 200-shape reports ("a running iteration was
 signalled" / "an idle loop was woken") are spelled out in exactly one
 place, `web/interrupt-wording.json`, served as a static asset: `ralphctl
