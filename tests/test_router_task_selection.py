@@ -253,12 +253,73 @@ def test_router_decision_event_carries_the_same_keys_for_task_selection(tmp_path
     assert events[0]["tokens"] == 15
 
 
-def test_router_decision_event_carries_the_same_keys_for_plan_review(
+def _plan_review_edges():
+    from ralphd.engine import transitions
+    return transitions.successors("plan_review", False, peer_plan_review=True)
+
+
+def test_router_decision_event_carries_the_same_keys_for_plan_review(tmp_path):
+    """The existing `plan_review` entry (`transitions.ROUTER_FALLBACK`),
+    routed through `LoopSupervisor._route_with_router` over plan_review's
+    REAL peer-gate edges -- the state name, the edge set and the declared
+    fallback are all plan_review's own, never a synthetic fixture state."""
+    from ralphd.engine import transitions
+    sup, run = _make_sup(tmp_path, [dict(TWO_TASKS[0])],
+                         peer_plan_review=True)
+    agent = _RoutingAgent(run, router_answers=[
+        _ok(json.dumps({"next_step": "planning"}))])
+    sup.runner = agent  # type: ignore[assignment]
+
+    edges = _plan_review_edges()
+    target, guard, _outcome = asyncio.run(sup._route_with_router(
+        "plan_review", edges, peer_plan_review=True))
+
+    assert agent.router_calls == 1
+    assert (target, guard) == (
+        "planning", "plan_review_objected_revision_available")
+    events = _router_decision_events(run)
+    assert len(events) == 1
+    event = events[0]
+    assert REQUIRED_ROUTER_DECISION_KEYS <= set(event)
+    assert event["state"] == "plan_review"
+    assert event["candidateIds"] == sorted({e.target for e in edges})
+    fallback_target = next(
+        e.target for e in edges
+        if e.guard == transitions.fallback_guard("plan_review"))
+    assert event["deterministicPick"] == fallback_target == "worker"
+    assert event["choice"] == "planning"
+    assert event["fallback"] is False
+    assert event["fallbackCause"] is None
+    assert event["model"] == sup.cfg.model_for("router")
+    assert event["tokens"] == 15
+
+
+def test_a_plan_review_router_fallback_emits_its_cause(tmp_path):
+    """Same plan_review entry; an answer that never validates falls back to
+    the declared `plan_review_revision_bound_reached` edge, and the event
+    says so."""
+    sup, run = _make_sup(tmp_path, [dict(TWO_TASKS[0])],
+                         peer_plan_review=True, contract_retry_max=0)
+    agent = _RoutingAgent(run, router_answers=[_ok("no json here")])
+    sup.runner = agent  # type: ignore[assignment]
+
+    target, guard, _outcome = asyncio.run(sup._route_with_router(
+        "plan_review", _plan_review_edges(), peer_plan_review=True))
+
+    assert (target, guard) == ("worker", "plan_review_revision_bound_reached")
+    events = _router_decision_events(run)
+    assert len(events) == 1
+    assert events[0]["state"] == "plan_review"
+    assert events[0]["fallback"] is True
+    assert events[0]["fallbackCause"] == "unparseable"
+    assert events[0]["choice"] == events[0]["deterministicPick"] == "worker"
+
+
+def test_router_decision_event_carries_the_same_keys_for_a_generic_ambiguous_state(
         tmp_path, registered_ambiguous_hat):
-    # The SAME registered-ambiguous-state fixture and harness
-    # tests/test_router_engine.py itself uses -- proven there to drive the
-    # ambiguous state's real `review` continuation end to end without
-    # hanging on a malformed review-contract reply.
+    # `_step_generic_hat`'s own call into `_route_with_router`, end to end,
+    # over the registered-ambiguous-state fixture tests/test_router_engine.py
+    # itself uses -- the same helper both routed-state tests above share.
     from tests.test_router_engine import (
         AMBIGUOUS_STATE as ENGINE_AMBIGUOUS_STATE, _happy_handlers, _run)
 

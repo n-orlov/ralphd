@@ -709,6 +709,17 @@ absent/malformed answer, or one that fails `router.TASK_SELECTION_SCHEMA`),
 `"non_candidate_id"` (a well-formed answer naming a task id outside the
 candidate set) and `"timeout"` (no answer within `router_timeout_s`).
 
+The `plan_review` entry is the router's other routed state:
+`LoopSupervisor._route_with_router` asks `router.decide()` over
+`plan_review`'s real peer-gate edges (`transitions.successors("plan_review",
+vigilant, peer_plan_review=True)`) with `ROUTER_FALLBACK["plan_review"]`
+(`plan_review_revision_bound_reached` → `worker`) as its deterministic pick.
+The live peer gate itself, `_step_plan_review`, decides every reply from its
+own verdict and disk state (an undecidable reply spends a revision directly,
+task 016, #117 half B) and makes no router call, so a peer-gated run emits
+no `plan_review` `router.decision` event from that step; the event is
+emitted by the `_route_with_router` call, whichever caller makes it.
+
 Every completed router call on either routed state — `task_selection` and
 `plan_review` alike — emits one `router.decision` event (`events.jsonl`,
 `LoopSupervisor._emit_router_decision_event`) carrying: `state`,

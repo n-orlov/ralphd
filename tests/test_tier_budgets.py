@@ -470,8 +470,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # no real subprocess, so it counts in smoke too), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
     # 6735/462, `-m smoke --collect-only` -> smoke 5038/338.
-    "fast": {"tests": 6735, "modules": 462},
-    "smoke": {"tests": 5038, "modules": 338},
+    # Task 002 retry: +2 tests (the same module: plan_review's real edges
+    # through _route_with_router, chosen and fallback), measured the same
+    # way -> fast 6737/462, smoke 5040/338.
+    "fast": {"tests": 6737, "modules": 462},
+    "smoke": {"tests": 5040, "modules": 338},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -534,7 +534,13 @@ the deterministic pick (`select_next_task`'s own choice) immediately, no
 re-ask: `"unparseable"` (an absent/malformed answer, or one that fails
 `router.TASK_SELECTION_SCHEMA`), `"non_candidate_id"` (a well-formed answer
 naming a task id outside the candidate set) and `"timeout"` (no answer
-within `router_timeout_s`). Every completed router call on either routed
+within `router_timeout_s`). The other routed state is the `plan_review`
+entry in `ROUTER_FALLBACK`: `_route_with_router` asks `decide()` over
+`plan_review`'s real peer-gate edges, with `plan_review_revision_bound_reached`
+(-> `worker`) as the deterministic pick. `_step_plan_review` itself decides
+every peer reply without the router (an undecidable reply spends a revision
+directly, task 016, #117 half B), so the live gate makes no router call and
+emits no event of its own. Every completed router call on either routed
 state -- `task_selection` and `plan_review` alike -- emits one
 `router.decision` event (`LoopSupervisor._emit_router_decision_event`,
 see [api.md](api.md)'s `GET /events` table) carrying `state`, the
