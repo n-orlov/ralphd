@@ -2951,9 +2951,12 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   `cure.sweep_reopened` event naming the sweep, its prior status and the
   cure task ids. A sweep the SAME pass's own `invalidates` walk already
   re-opened (its path named directly in some finding's `invalidates`) is
-  read here with `status` already `"pending"`, so this step only adds any
-  further cure-task `dependsOn` edges and emits nothing a second time --
-  re-opened once, not twice. A sweep that was never `validated`/`completed`
+  read here with `status` already `"pending"`, so this step does not
+  re-open it again -- re-opened once, not twice -- but still adds any
+  further cure-task `dependsOn` edges and emits its one
+  `cure.sweep_reopened` event, whose `oldStatus` is the status the sweep
+  held before this call began (a snapshot taken before the walk ran). A
+  sweep that was never `validated`/`completed`
   to begin with only gains the `dependsOn` edge, with no event either.
   Tests: `tests/test_cure_sweep_reopen.py` (the v028 shape with an empty
   `invalidates`, a plan with no `sweep` task left untouched, a sweep

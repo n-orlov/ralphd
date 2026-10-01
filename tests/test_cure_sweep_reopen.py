@@ -27,7 +27,7 @@ Five groups of nodes, matching PRD B.6's five cases:
   (today's behaviour);
 * (iii) a finding whose `invalidates` names the sweep's OWN lane-evidence
   path -- re-opened once (through the existing chain), one `preCureHeads`
-  entry, no double-processing by the new sweep step;
+  entry and exactly one `cure.sweep_reopened` event, no double re-open;
 * (iv) a REFUTED-remedy insertion (`pass_kind="remedy"`) re-opens a
   validated sweep exactly as a granted pass does;
 * (v) a non-boolean `sweep` is refused by `validate_proposal_shape`, by
@@ -192,18 +192,24 @@ def test_invalidates_naming_the_sweeps_own_path_reopens_it_once(tmp_path):
     assert tasks["057"]["status"] == "pending"
     assert tasks["058"]["status"] == "pending"
     assert cure_id in tasks["057"]["dependsOn"]
-    # the sweep step still ran (058 is sweep: True) but found it already
-    # pending from the chain re-open above, so it only ensured the
-    # dependsOn edge -- which the chain already placed on 057, not 058,
-    # since 058 had a verification step. No duplicate preCureHeads write.
+    assert cure_id in tasks["058"]["dependsOn"]
+    # the chain re-opened 058 (the record) and its verification task 057;
+    # the sweep step found 058 already pending, so it did not re-open it a
+    # second time -- it only added 058's own dependsOn on the cure task
+    # (B.2). No duplicate preCureHeads write.
     status = run.read_status()
     assert status.get("preCureHeads") == {"058": "deadbeef01"}
     pre_cure_events = _events(root, PRE_CURE_HEAD_RECORDED_EVENT)
     assert len(pre_cure_events) == 1
     assert pre_cure_events[0]["taskId"] == "058"
-    # re-opened once, not twice: no cure.sweep_reopened event fires for a
-    # sweep the invalidates walk already re-opened this same pass.
-    assert _events(root, SWEEP_REOPENED_EVENT) == []
+    # B.3: every re-opened sweep emits cure.sweep_reopened -- including one
+    # the invalidates walk re-opened -- and, re-opened once not twice, it
+    # emits exactly one, naming the status it held before this cure pass.
+    events = _events(root, SWEEP_REOPENED_EVENT)
+    assert len(events) == 1
+    assert events[0]["taskId"] == "058"
+    assert events[0]["oldStatus"] == "validated"
+    assert events[0]["cureTaskIds"] == [cure_id]
 
 
 # ---------------------------------------------------------------------------

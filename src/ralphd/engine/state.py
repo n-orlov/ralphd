@@ -5028,13 +5028,12 @@ def _repair_cure_task_criteria(run: "RunDir", task: dict) -> None:
 # diff on the completion path.
 PRE_CURE_HEAD_RECORDED_EVENT = "task.pre_cure_head_recorded"
 
-# PRD v0.29 requirement B.3 (#280): emitted once per sweep task
-# `insert_cure_tasks`'s own sweep re-open step (B.2, below) actually flips
-# from `validated`/`completed` back to `pending` -- never for a sweep the
-# SAME call's `invalidates` walk already re-opened (that sweep's re-open is
-# already on the record through `PRE_CURE_HEAD_RECORDED_EVENT`, and B.2
-# says a sweep caught by both mechanisms in one pass is re-opened once, not
-# twice). Payload: the sweep's own task id (`taskId`), the status it held
+# PRD v0.29 requirement B.3 (#280): emitted exactly once per sweep task
+# one `insert_cure_tasks` call re-opens -- whether its own sweep re-open
+# step (B.2, below) flips it from `validated`/`completed` back to
+# `pending`, or the SAME call's `invalidates` walk already did (B.2: a
+# sweep caught by both mechanisms in one pass is re-opened once, not
+# twice, so it gets one event, not two). Payload: the sweep's own task id (`taskId`), the status it held
 # immediately before this re-open (`oldStatus`), and every cure task id
 # this pass inserted (`cureTaskIds`, in finding order) -- not only the one
 # whose finding happened to trigger the walk, since B.2's `dependsOn` edge
@@ -5425,6 +5424,15 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
         None) if freeze_id is not None else None
     retake_anchor_id = freeze_id
     inserted: list = []
+    # PRD v0.29 requirement B.3 (#280): every `sweep: True` task's status
+    # as it stood BEFORE this call touched anything -- the sweep step below
+    # reads it to tell a sweep the `invalidates` walk re-opened during this
+    # same call (now `pending`, held something else here) from one that was
+    # already pending, so the walk's re-open still emits its one
+    # `SWEEP_REOPENED_EVENT` with the status it genuinely held.
+    sweep_statuses_before = {
+        t.get("id"): t.get("status", "pending")
+        for t in tasks if isinstance(t, dict) and t.get("sweep") is True}
     # Task 004 (v0.27, B.5 foundation, #274): this pass's own findings,
     # keyed by the cure task id built for each -- the map `record_cure_
     # pass_lineage` below persists once the whole pass is inserted. Built
@@ -5675,8 +5683,9 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
     # already reads), and a `SWEEP_REOPENED_EVENT` naming the sweep, its
     # prior status and the cure task ids. A sweep the `invalidates` walk
     # above ALREADY re-opened this same call is read here with `status`
-    # already `"pending"`, so it falls straight into the dependsOn-only
-    # branch -- re-opened once, not twice, exactly as B.2 requires.
+    # already `"pending"`: it is not re-opened again (once, not twice, as
+    # B.2 requires), but it still emits its one `SWEEP_REOPENED_EVENT`
+    # carrying the status it held before this call (B.3).
     if pass_findings:
         cure_task_ids_this_pass = list(pass_findings.keys())
         for t in tasks:
@@ -5687,6 +5696,17 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
                 _append_validated_dependency_edge(
                     run, tasks, t, cid, "cure-insertion")
             current_status = t.get("status", "pending")
+            status_before = sweep_statuses_before.get(tid, current_status)
+            if current_status == "pending" and status_before != "pending":
+                # Re-opened by this same call's `invalidates` walk: that
+                # walk already flipped the status (and recorded the
+                # pre-cure head for a record it re-opened), so it is not
+                # re-opened a second time here -- but it IS a re-opened
+                # sweep, and B.3 gives every re-opened sweep its event.
+                run.emit(SWEEP_REOPENED_EVENT, taskId=tid,
+                         oldStatus=status_before,
+                         cureTaskIds=list(cure_task_ids_this_pass))
+                continue
             if current_status not in ("validated", "completed"):
                 continue
             old_status = current_status
