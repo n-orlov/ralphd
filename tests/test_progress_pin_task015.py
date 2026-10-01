@@ -12,15 +12,21 @@ only) every sibling module in this family already uses:
    that would trip the three-strike guard without the reset never does
    with it (`test_a_corroborated_claim_resets_the_stagnation_counter_mid_
    streak`);
-2. an uncorroborated claim stagnates -- three consecutive `commit`-kind
-   claims with no tree delta trip the guard exactly as they did before
-   task 012 existed (`test_an_uncorroborated_claim_still_trips_the_three_
-   strike_guard`);
-3. two consecutive external-only claims stagnate -- the SECOND (and every
-   claim after it, in a row) is uncorroborated, so four consecutive
-   external-only claims on one task trip the guard on the fourth, never
-   exempted twice (`test_only_the_first_of_several_consecutive_external_
-   only_claims_is_corroborated_the_rest_stagnate`);
+2. an uncorroborated claim stagnates -- true when #156 landed, superseded
+   by PRD v0.29 #279's own re-poll backoff for the EXACT shape this test
+   scripts (see the function's own docstring, task 014's sweep cure):
+   three consecutive `commit`-kind claims with no tree delta no longer
+   ever reach the three-strike guard at all, because the second
+   consecutive one is already #279's own trigger
+   (`test_an_uncorroborated_claim_now_backs_off_instead_of_tripping_the_
+   three_strike_guard`);
+3. two consecutive external-only claims stagnate -- also superseded by
+   #279 for the same reason: the SECOND external-only claim (uncorroborated)
+   is still an ordinary stagnation witness, but the THIRD is #279's own
+   second-consecutive-re-poll trigger, deferring the task before a third
+   stagnating pass under the OLD guard can ever accumulate
+   (`test_only_the_first_of_several_consecutive_external_only_claims_is_
+   corroborated_the_rest_back_off_instead_of_stagnating`);
 4. the budget counts per task and resets on task change -- one task's
    budget usage does not leak into the next task's own record the moment
    the scheduler moves on (`test_the_progress_budget_resets_the_moment_
@@ -48,6 +54,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import _patch_sleep_for_this_test
 
 TASK_A = "015a"
 TASK_B = "015b"
@@ -116,6 +123,24 @@ def _worker_sup(tmp_path: Path, name: str, tasks: list[dict],
     cfg = JobConfig(run_id=f"task015-{name}", **kw)
     sup = LoopSupervisor(cfg, run, workspace)
     sup._approach = 1
+    # PRD v0.29 #279 cure (task 014's sweep): scenarios 1-3 in this module
+    # deliberately script 2+ consecutive uncorroborated no_verdict passes
+    # on the SAME task (the stagnation-counter behaviour under test), which
+    # is also EXACTLY `_apply_engine_repoll_backoff`'s own trigger
+    # (`tests/test_repoll_backoff.py`'s own `_worker_sup` docstring: "a bare
+    # construction leaves [asyncio.sleep] unpatched and a 600s+ wait really
+    # elapses"). This module predates task 009/#279 and built `sup` directly
+    # rather than through `tests.conftest.make_supervisor` (which patches
+    # `asyncio.sleep` to be instant by default), so the SECOND consecutive
+    # re-poll's real 600s backoff wait (`_sleep_until_earliest_deferred`)
+    # elapsed for real the moment #279 landed, exceeding pytest-timeout's
+    # 120s and crashing the xdist worker it ran under (measured: task 014's
+    # own sweep, fast tier, `node down: Not properly terminated` on this
+    # module's `test_a_corroborated_claim_resets_the_stagnation_counter_
+    # mid_streak`). Patching it here, the same way `make_supervisor` already
+    # does, keeps the backoff wait inert without touching the stagnation
+    # assertions this module exists to pin.
+    _patch_sleep_for_this_test()
     # Task 013's own `_worker_sup` reasoning: the baseline write must land
     # BEFORE `_step_worker()` ever runs, or the first iteration's own
     # tasks.json diff (the baseline hash landing for the first time) reads
@@ -177,8 +202,27 @@ def test_a_corroborated_claim_resets_the_stagnation_counter_mid_streak(tmp_path)
     assert len(claims) == 5
     assert [c["corroborated"] for c in claims] == [False, False, True, False, False]
     assert STAGNATION_MESSAGE not in _log_messages(run)
+    # PRD v0.29 #279 cure (task 014's sweep): passes 1-2 AND passes 4-5 are
+    # each a pair of consecutive uncorroborated re-polls -- a fact
+    # orthogonal to this test's own subject (the three-strike STAGNATION
+    # counter's reset, asserted immediately above and still true). #279's
+    # own, separate consecutive-re-poll counter resets on pass 3's
+    # corroboration exactly like the stagnation counter does (both derive
+    # from the same `is_repoll` signal), so each pair independently
+    # reaches 2 and backs the task off (`task.repoll_backoff`,
+    # `consecutiveCount: 2`, twice) rather than ever reaching 3 within
+    # either pair -- the SAME exemption `is_repoll`'s own ordinary
+    # (non-backoff) branch gives the OLD counter is why pass 5 leaves the
+    # task deferred (`pending`) instead of `in-progress`. task 014's own
+    # sweep crashed an xdist worker on this exact node before this cure,
+    # because the test's harness built `sup` directly rather than through
+    # `tests.conftest.make_supervisor`, leaving the backoff's real
+    # `asyncio.sleep(600)` unpatched.
+    backoffs = _events_of_type(run, "task.repoll_backoff")
+    assert [b["consecutiveCount"] for b in backoffs] == [2, 2], backoffs
     task = next(t for t in sup.run.read_tasks()["tasks"] if t["id"] == TASK_A)
-    assert task["status"] == "in-progress", task
+    assert task["status"] == "pending", task
+    assert task.get("deferredReason", "").startswith("re-poll backoff"), task
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +230,41 @@ def test_a_corroborated_claim_resets_the_stagnation_counter_mid_streak(tmp_path)
 # ---------------------------------------------------------------------------
 
 
-def test_an_uncorroborated_claim_still_trips_the_three_strike_guard(tmp_path):
+def test_an_uncorroborated_claim_now_backs_off_instead_of_tripping_the_three_strike_guard(tmp_path):
     """Three consecutive `file`-kind claims, none backed by a real tree
     delta -- uncorroborated every time (task 012's own pinned behaviour),
-    so requirement A.5's letter ("an uncorroborated [claim] does") holds:
-    the pre-existing three-strike guard still fires exactly as it did
-    before this wave touched anything."""
+    which is EXACTLY what requirement A.5's letter 2 used to call the
+    pre-existing three-strike guard still firing "exactly as it did before
+    this wave touched anything."
+
+    PRD v0.29 #279 cure (task 014's sweep): that is no longer true, and
+    cannot be made true again by any choice of scripted claim shape --
+    #279's `_apply_engine_repoll_backoff` trigger is defined over the
+    SAME signal this scenario is built from (`verdict == "no_verdict"`,
+    `corroborated: false`, `deltaSize: 0`, two consecutive times on one
+    task), and it fires BEFORE a third such pass can ever reach the
+    three-strike guard's own counter: pass 2 is the first ordinary
+    witness (old counter -> 1), but pass 2 is ALSO the first of what
+    becomes two consecutive re-polls, so the re-poll that would have been
+    pass 3 instead backs the task off for 600s -- requirement A.3's own
+    "a re-poll that triggers a backoff neither increments nor resets the
+    approach's stagnation counter" -- and the counter never reaches 3.
+    task 014's own sweep crashed an xdist worker on this exact node before
+    this cure (the module's own `_worker_sup` built `sup` directly rather
+    than through `tests.conftest.make_supervisor`, leaving the backoff's
+    real `asyncio.sleep(600)` unpatched -- `_patch_sleep_for_this_test()`
+    now closes that, matching `tests/test_repoll_backoff.py`'s own
+    documented reasoning for the same gap).
+
+    What is left to pin, and what this rewrite asserts instead: the claims
+    are still recorded and still uncorroborated every time (task 012's
+    letter, unaffected by #279); the OLD three-strike STAGNATION_MESSAGE
+    never appears (superseded, not merely absent by accident); #279's own
+    backoff fires twice (`consecutiveCount` 2 then 3, since the third
+    scripted call is ALSO a re-poll on the already-once-backed-off task);
+    and the task ends up deferred (`pending`, a `re-poll backoff`
+    `deferredReason`) rather than whatever the pre-#279 guard would have
+    left it as."""
     tasks = [{"id": TASK_A, "title": "t", "status": "in-progress",
               "successCriteria": "n/a"}]
     payload = json.dumps({"verdict": "no_verdict", "progress": {
@@ -207,7 +280,12 @@ def test_an_uncorroborated_claim_still_trips_the_three_strike_guard(tmp_path):
     claims = _events_of_type(run, "progress_claim")
     assert len(claims) == 3
     assert all(c["corroborated"] is False for c in claims), claims
-    assert STAGNATION_MESSAGE in _log_messages(run)
+    assert STAGNATION_MESSAGE not in _log_messages(run)
+    backoffs = _events_of_type(run, "task.repoll_backoff")
+    assert [b["consecutiveCount"] for b in backoffs] == [2, 3], backoffs
+    task = next(t for t in run.read_tasks()["tasks"] if t["id"] == TASK_A)
+    assert task["status"] == "pending", task
+    assert task.get("deferredReason", "").startswith("re-poll backoff"), task
 
 
 # ---------------------------------------------------------------------------
@@ -216,17 +294,30 @@ def test_an_uncorroborated_claim_still_trips_the_three_strike_guard(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_only_the_first_of_several_consecutive_external_only_claims_is_corroborated_the_rest_stagnate(
+def test_only_the_first_of_several_consecutive_external_only_claims_is_corroborated_the_rest_back_off_instead_of_stagnating(
         tmp_path):
     """Four consecutive `external`-only claims on one task, no other
     witness: the first is honoured at face value (corroborated); the
-    second is the letter's own case ("two consecutive external-only
-    claims" -- the second does not get the grace the first did, so it
-    stagnates); the third and fourth stagnate too, for the same reason,
-    and by the fourth pass three consecutive stagnating passes (2, 3, 4)
-    have accumulated and the guard fires -- proving the second claim's
-    "stagnates" is not merely a flag on the event but a real contribution
-    to the counter that eventually trips the guard."""
+    second is requirement A.5's letter 3 own case ("two consecutive
+    external-only claims" -- the second does not get the grace the first
+    did, so it is an ordinary stagnation witness, old counter -> 1).
+
+    PRD v0.29 #279 cure (task 014's sweep): the THIRD and FOURTH no longer
+    reach the old three-strike guard at all -- the second and third
+    consecutive uncorroborated claims are ALSO the first two of #279's own
+    re-poll streak, so the third claim is #279's own `consecutiveCount: 2`
+    trigger (backs off 600s instead of becoming the guard's second
+    witness) and the fourth, after the backoff's wait elapses and the task
+    is re-offered, is `consecutiveCount: 3` (backs off again, 1200s). The
+    old guard's own counter is left at 1 forever, never 3, so
+    `STAGNATION_MESSAGE` never appears -- requirement A.3's "neither
+    increments nor resets" holds for every re-poll from the second one
+    onward, not just the one named in its own worked example. task 014's
+    own sweep crashed an xdist worker on this exact node before this cure
+    (the module's own `_worker_sup` built `sup` directly rather than
+    through `tests.conftest.make_supervisor`, leaving the backoff's real
+    `asyncio.sleep(600)` unpatched -- `_patch_sleep_for_this_test()` now
+    closes that)."""
     tasks = [{"id": TASK_A, "title": "t", "status": "in-progress",
               "successCriteria": "n/a"}]
     payload = json.dumps({"verdict": "no_verdict", "progress": {
@@ -242,7 +333,12 @@ def test_only_the_first_of_several_consecutive_external_only_claims_is_corrobora
     claims = _events_of_type(run, "progress_claim")
     assert len(claims) == 4
     assert [c["corroborated"] for c in claims] == [True, False, False, False]
-    assert STAGNATION_MESSAGE in _log_messages(run)
+    assert STAGNATION_MESSAGE not in _log_messages(run)
+    backoffs = _events_of_type(run, "task.repoll_backoff")
+    assert [b["consecutiveCount"] for b in backoffs] == [2, 3], backoffs
+    task = next(t for t in run.read_tasks()["tasks"] if t["id"] == TASK_A)
+    assert task["status"] == "pending", task
+    assert task.get("deferredReason", "").startswith("re-poll backoff"), task
 
 
 # ---------------------------------------------------------------------------

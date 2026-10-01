@@ -15,7 +15,12 @@ engine actually DOES with a `no_verdict`:
   counter (`LoopSupervisor._progress_budget_for`/`_record_progress_budget_
   usage`, `PROGRESS_BUDGET_STATUS_KEY`);
 - an uncorroborated `no_verdict` gets none of that -- it keeps today's
-  three-strike witness rule exactly as task 010 built it, unchanged;
+  three-strike witness rule exactly as task 010 built it, unchanged (this
+  task's own letter, true at the time; PRD v0.29 #279 later layers a
+  separate re-poll-backoff ladder over the SAME repeated-identical-claim
+  shape and intercepts before three such claims ever reach that counter
+  -- see `test_an_uncorroborated_no_verdict_now_backs_off_instead_of_
+  tripping_the_three_strike_guard`'s own docstring, task 014's sweep cure);
 - `taskAbsorptionStreak`'s forced verify (v0.19 B.2) no longer fires for a
   task that is under its own budget AND whose current iteration's claim
   was corroborated -- `_record_task_absorption_streak`'s new
@@ -39,6 +44,7 @@ from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
+from tests.conftest import _patch_sleep_for_this_test
 
 TASK_ID = "013t"
 
@@ -106,6 +112,24 @@ def _worker_sup(tmp_path: Path, name: str, **cfg_kw) -> tuple[LoopSupervisor, Ru
     cfg = JobConfig(run_id=f"task013-{name}", **kw)
     sup = LoopSupervisor(cfg, run, workspace)
     sup._approach = 1
+    # PRD v0.29 #279 cure (task 014's sweep): this module's scenarios script
+    # TWO consecutive uncorroborated no_verdict passes on `TASK_ID`
+    # deliberately (the three-strike guard under test), which is also
+    # EXACTLY `_apply_engine_repoll_backoff`'s own trigger
+    # (`tests/test_repoll_backoff.py`'s own `_worker_sup` docstring: "a bare
+    # construction leaves [asyncio.sleep] unpatched and a 600s+ wait really
+    # elapses"). This module predates task 009/#279 and built `sup` directly
+    # rather than through `tests.conftest.make_supervisor` (which patches
+    # `asyncio.sleep` to be instant by default), so the SECOND consecutive
+    # re-poll's real 600s backoff wait (`_sleep_until_earliest_deferred`)
+    # elapsed for real the moment #279 landed, exceeding pytest-timeout's
+    # 120s and crashing the xdist worker it ran under (measured: task 014's
+    # own sweep, fast tier, `node down: Not properly terminated` on this
+    # module's `test_an_uncorroborated_no_verdict_still_trips_the_three_
+    # strike_guard`). Patching it here, the same way `make_supervisor`
+    # already does, keeps the backoff wait inert without touching the
+    # three-strike assertions this module exists to pin.
+    _patch_sleep_for_this_test()
     # Task 008's own baseline write (normally taken during planning) must
     # land BEFORE `_step_worker()` ever runs, or the FIRST worker iteration's
     # own `before != after` tasks.json diff (the baseline hash landing for
@@ -174,18 +198,44 @@ def test_a_corroborated_no_verdict_spends_the_tasks_own_budget_not_the_approach_
 
 
 # ---------------------------------------------------------------------------
-# 2: an uncorroborated no_verdict still follows today's three-strike rule
+# 2: an uncorroborated no_verdict now backs off instead of following
+#    today's three-strike rule (PRD v0.29 #279 cure, task 014's sweep)
 # ---------------------------------------------------------------------------
 
 
-def test_an_uncorroborated_no_verdict_still_trips_the_three_strike_guard(tmp_path):
+def test_an_uncorroborated_no_verdict_now_backs_off_instead_of_tripping_the_three_strike_guard(tmp_path):
     """Three consecutive iterations, each claiming `commit` evidence but
     touching NOTHING in the workspace -- `_apply_worker_progress_report`
     reads this as uncorroborated every time (task 012's own pinned
     behaviour, `test_commit_evidence_with_no_tree_delta_is_not_corroborated`).
-    Requirement A.3's letter is explicit that this case "keeps today's
-    three-strike witness rule" -- so the pre-existing guard must still fire
-    exactly as it did before this task touched anything."""
+
+    This test used to prove requirement A.3's letter ("keeps today's
+    three-strike witness rule") held unchanged. PRD v0.29 #279 (task 014's
+    sweep cure) supersedes it for exactly this shape: #279's own
+    `_apply_engine_repoll_backoff` trigger is defined over the SAME signal
+    (`verdict == "no_verdict"`, `corroborated: false`, `deltaSize: 0`, two
+    consecutive times on one task), and it intercepts BEFORE a third such
+    pass can ever reach the three-strike guard's own counter -- pass 2 is
+    the first ordinary witness (old counter -> 1) and simultaneously the
+    first of what becomes two consecutive re-polls, so pass 3 backs the
+    task off for 600s instead of becoming the guard's third witness
+    (requirement A.3's own "a re-poll that triggers a backoff neither
+    increments nor resets the approach's stagnation counter"). task 014's
+    own sweep crashed an xdist worker on this exact node before this cure
+    -- this module's `_worker_sup` built `sup` directly rather than through
+    `tests.conftest.make_supervisor`, leaving the backoff's real
+    `asyncio.sleep(600)` unpatched (`_patch_sleep_for_this_test()` now
+    closes that, matching `tests/test_repoll_backoff.py`'s own documented
+    reasoning for the same gap).
+
+    What is left to pin, and what this rewrite asserts instead: the claims
+    are still recorded and still uncorroborated every time (task 012's
+    letter, unaffected by #279); the OLD three-strike message never
+    appears (superseded, not merely absent by accident); #279's own
+    backoff fires twice (`consecutiveCount` 2 then 3, since the third
+    scripted call is ALSO a re-poll on the already-once-backed-off task);
+    and the task ends up deferred (`pending`, a `re-poll backoff`
+    `deferredReason`)."""
     payload = json.dumps({"verdict": "no_verdict", "progress": {
         "summary": "checked, nothing to touch yet",
         "evidence": [{"kind": "commit", "ref": "deadbeef"}]}})
@@ -204,7 +254,12 @@ def test_an_uncorroborated_no_verdict_still_trips_the_three_strike_guard(tmp_pat
     claims = _events_of_type(run, "progress_claim")
     assert len(claims) == 3
     assert all(c["corroborated"] is False for c in claims), claims
-    assert "3 iterations with no task progress" in _log_messages(run)
+    assert "3 iterations with no task progress" not in _log_messages(run)
+    backoffs = _events_of_type(run, "task.repoll_backoff")
+    assert [b["consecutiveCount"] for b in backoffs] == [2, 3], backoffs
+    task = next(t for t in run.read_tasks()["tasks"] if t["id"] == TASK_ID)
+    assert task["status"] == "pending", task
+    assert task.get("deferredReason", "").startswith("re-poll backoff"), task
 
 
 # ---------------------------------------------------------------------------
