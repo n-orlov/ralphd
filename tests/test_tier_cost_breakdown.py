@@ -55,6 +55,12 @@ def _make_sup(registry_root, run_id, tasks, **cfg_kw):
     kw = {"iterations": 5, "max_approaches": 1, "vigilant": False,
           "on_complete": "exit", "infra_retry_backoff_s": [0.0],
           "infra_retry_backoff_max_s": 0.0, "infra_outage_budget_s": 1000.0,
+          # Task 003 (#278 B.5): routing now defaults ON in production, but
+          # this module's two-task fixture scripts an exact-order reply
+          # list with no router answer in it -- off here keeps the
+          # pre-existing deterministic-pick behaviour this module's own
+          # subject (the byTier breakdown) actually tests.
+          "route_task_selection": False,
           **cfg_kw}
     cfg = JobConfig(run_id=run_id, **kw)
     sup = loop_module.LoopSupervisor(cfg, run, root)

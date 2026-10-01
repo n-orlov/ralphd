@@ -383,7 +383,7 @@ def test_the_config_shape_check_would_catch_the_missing_flags():
         '"flags": {"vigilant": false, "onComplete": "idle", '
         '"onCompleteCmd": null, "reflect": false, "peerPlanReview": false, '
         '"peerVerdictGate": false, "operatorInputNeededPause": true, '
-        '"midPlanReview": false},',
+        '"midPlanReview": false, "routeTaskSelection": true},',
         '"flags": {"vigilant": false, "onComplete": "idle"},')
     documented = _documented_config_shape(doc)
     assert set(documented["flags"]) != set(

@@ -406,10 +406,17 @@ def test_router_model_default_is_none_and_falls_back_to_model():
 
 
 def test_router_model_override_via_model_overrides_wins_over_router_model():
+    """Task 003 (#278 B.6) REVERSED this rung order from pre-003: before,
+    `model_overrides["router"]`/`models.router` won over `router_model`
+    (the PRD's own order is the other way) -- `router_model` now wins when
+    both are set, exactly like every other hat's dedicated override wins
+    over a borrowed table entry. Covering node for this flip:
+    tests/test_router_model_rung_order.py.
+    """
     from ralphd.engine.config import JobConfig
     cfg = JobConfig(router_model="router-ref",
                      model_overrides={"router": "override-ref"})
-    assert cfg.model_for("router") == "override-ref"
+    assert cfg.model_for("router") == "router-ref"
 
 
 def test_router_model_from_job_yaml(tmp_path):

@@ -952,8 +952,25 @@ _ZERO_BACKOFF_ENV_KEYS = {
 
 def _with_zero_backoff(job: dict, stub_env: dict | None) -> dict:
     """`job` with the zero backoff schedule filled in, unless this call named
-    either half of it itself (see `_ZERO_BACKOFF_JOB_KEYS`)."""
+    either half of it itself (see `_ZERO_BACKOFF_JOB_KEYS`).
+
+    Task 003 (#278 B.5): also defaults `route_task_selection` to `False`
+    here, unless `job` already names it -- `JobConfig`'s own production
+    default flipped to `True` this task, but the entire pre-existing real-
+    engine e2e suite (every `LiveRun`/`engine_factory` fixture across ~50
+    modules) was written against the OLD default and scripts its stub `pi`
+    agent's replies with no router answer anywhere in them; a plan with 2+
+    pending tasks would otherwise now spend one of those scripted replies
+    on an unscripted router call. False here keeps every one of those
+    fixtures running exactly as before; a module whose SUBJECT is routing
+    (`tests/test_cli_route_task_selection.py`, which drives `ralphctl`
+    rather than a bare `LiveRun`) is unaffected, and any real-engine test
+    that DOES want routing on simply names `route_task_selection: True` in
+    its own `job` dict.
+    """
     out = dict(job)
+    if "route_task_selection" not in out:
+        out["route_task_selection"] = False
     env = stub_env or {}
     named = any(key in out or _ZERO_BACKOFF_ENV_KEYS[key] in env
                 for key in _ZERO_BACKOFF_JOB_KEYS)
@@ -1255,6 +1272,19 @@ DEFAULT_SUPERVISOR_CFG = {
     # `JobConfig`'s own default un-obscured), or sets
     # `operator_input_needed_pause=True` explicitly.
     "operator_input_needed_pause": False,
+    # Task 003 (#278 B.5): `JobConfig.route_task_selection` now defaults
+    # `True` in production, but the entire pre-existing fast suite was
+    # written against the OLD (task 002) default -- a plan with 2+ runnable
+    # pending tasks used to never reach the router at all, and hundreds of
+    # nodes drive a real `_step_worker`/`_run_job_core()` over such a plan
+    # with no router answer ever scripted into their fake agent. Off here
+    # keeps every node that gets its config through this default dict
+    # (`cfg_defaults=True`, the vast majority) running exactly as before --
+    # the same `operator_input_needed_pause` precedent just above; a module
+    # whose SUBJECT is this flag passes `cfg_defaults=False`
+    # (`tests/test_router_task_selection.py`) or sets
+    # `route_task_selection=True` explicitly.
+    "route_task_selection": False,
 }
 
 _real_asyncio_sleep = asyncio.sleep

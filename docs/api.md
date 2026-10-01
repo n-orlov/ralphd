@@ -1038,7 +1038,7 @@ contents, no LLM env values):
               "infraStartupTimeoutS": 150.0, "infraRetryBackoffS": [2, 5, 15, 30, 60, 120, 300],
               "infraRetryBackoffMaxS": 300.0, "infraRetryMax": null, "infraOutageBudgetS": 14400.0,
               "routerTimeoutS": 60.0},
-  "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false, "peerPlanReview": false, "peerVerdictGate": false, "operatorInputNeededPause": true, "midPlanReview": false},
+  "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false, "peerPlanReview": false, "peerVerdictGate": false, "operatorInputNeededPause": true, "midPlanReview": false, "routeTaskSelection": true},
   "contracts": {"retryMax": 2},  // response-contract re-prompt policy, task 010
   "model": {"model": null, "routerModel": null, "overrides": {}, "thinking": null,
              "thinkingOverrides": {}},

@@ -443,18 +443,28 @@ def test_the_shared_launcher_zeroes_the_backoff_unless_the_test_names_one():
     every job.yaml it generates, and yields the WHOLE setting -- both knobs --
     to a test that names either half of it, in the job dict or in `stub_env`
     (a spawned engine's env wins over its job.yaml, and a `max_s` of 0.0
-    would cap an env-named schedule back to zero)."""
+    would cap an env-named schedule back to zero). Task 003 (#278 B.5): the
+    same helper also defaults `route_task_selection` to `False` (unless the
+    job dict already names it), unconditionally -- that default is not
+    paired with any env knob the way the backoff schedule is."""
     from tests.conftest import _with_zero_backoff
 
     assert _with_zero_backoff({"run_id": "x"}, None) == {
-        "run_id": "x", "infra_retry_backoff_s": [0.0],
+        "run_id": "x", "route_task_selection": False,
+        "infra_retry_backoff_s": [0.0],
         "infra_retry_backoff_max_s": 0.0}
     # An explicit job-dict schedule survives untouched, cap included.
     assert _with_zero_backoff({"infra_retry_backoff_s": [2.0]}, None) == {
-        "infra_retry_backoff_s": [2.0]}
+        "infra_retry_backoff_s": [2.0], "route_task_selection": False}
     # ... and so does an env-named one, from either half of the setting.
-    assert _with_zero_backoff({}, {"RALPHD_INFRA_RETRY_BACKOFF_S": "1,1"}) == {}
-    assert _with_zero_backoff({}, {"RALPHD_INFRA_RETRY_BACKOFF_MAX_S": "1"}) == {}
+    assert _with_zero_backoff({}, {"RALPHD_INFRA_RETRY_BACKOFF_S": "1,1"}) == {
+        "route_task_selection": False}
+    assert _with_zero_backoff({}, {"RALPHD_INFRA_RETRY_BACKOFF_MAX_S": "1"}) == {
+        "route_task_selection": False}
+    # An explicit job-dict route_task_selection survives untouched too.
+    assert _with_zero_backoff({"route_task_selection": True}, None) == {
+        "route_task_selection": True, "infra_retry_backoff_s": [0.0],
+        "infra_retry_backoff_max_s": 0.0}
 
 
 @pytest.mark.parametrize("snippet,expected", [

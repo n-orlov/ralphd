@@ -1626,6 +1626,11 @@ _TEMPLATE_SCALAR_FIELDS = {
     # flag and an unset template key both resolve to the same `True` the
     # engine would apply anyway.
     "operator_input_needed_pause": True,
+    # Task 003 (#278 B.5): ON by default, the same reasoning as
+    # `operator_input_needed_pause` just above -- an unset flag/template key
+    # resolves to the same `True` the engine's own `JobConfig.
+    # route_task_selection` default would apply anyway.
+    "route_task_selection": True,
     # Task 006 (#60 pillar 4 cleanup): `model_strategy`/`fast_model` are
     # RETIRED (see `cmd_config`'s rejection for the config-key half, and
     # `engine/config._migrate_legacy_model_config` for the job.yaml half) --
@@ -2139,6 +2144,12 @@ def cmd_start(args):
         # time it reaches this dict -- unlike `peer_plan_review`/`peer_
         # verdict_gate` above, job.yaml always carries an explicit value.
         "operator_input_needed_pause": args.operator_input_needed_pause,
+        # Task 003 (#278 B.5): resolved by the same `_TEMPLATE_SCALAR_FIELDS`
+        # loop (explicit `--no-route-tasks` > template's own key > hard
+        # default `True`), so this is never `None` by the time it reaches
+        # this dict either -- job.yaml always carries an explicit value, and
+        # `resume` (which never rewrites this key) replays it unchanged.
+        "route_task_selection": args.route_task_selection,
         "model": args.model or (llm_profile.get("model") if llm_profile else None),
         # Task 047 (#177): the display-redacted `--llm-header` map, right
         # beside `model` -- so `ralphctl docs`'s redacted `job.yaml` view
@@ -8022,6 +8033,23 @@ def build_parser() -> argparse.ArgumentParser:
                         "the run for an operator ruling; this flag restores "
                         "the pre-A.1 behaviour of archiving and replanning "
                         "(or ending the run) immediately")
+    # Task 003 (#278 B.5): ON by default, same disable-flag shape as
+    # `--no-operator-input-needed-pause` just above. Left unpassed,
+    # `args.route_task_selection` stays `None` and the
+    # `_TEMPLATE_SCALAR_FIELDS` loop below fills it from the template's own
+    # `route_task_selection:` key or the hard default `True` -- so job.yaml
+    # always carries an explicit value. No `resume` equivalent: `resume`
+    # never rewrites job.yaml's `route_task_selection` key, so the value a
+    # run started with (on, or either opt-out) is simply replayed unchanged
+    # on every later resume.
+    s.add_argument("--no-route-tasks", dest="route_task_selection",
+                   action="store_false", default=None,
+                   help="disable router-assisted task-selection (#278 "
+                        "B.5): by default, once 2+ pending tasks are all "
+                        "runnable, the router picks which one to work next; "
+                        "this flag restores the fully deterministic pick "
+                        "(engine.scheduler.select_next_task's own order) "
+                        "unconditionally")
     s.add_argument("--model", help="pi model ref, e.g. provider/model-id")
     s.add_argument("--model-for", action="append", metavar="HAT=REF",
                    help="per-hat model override (repeatable), e.g. "

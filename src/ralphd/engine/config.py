@@ -696,11 +696,12 @@ class JobConfig:
     task_absorption_max_iterations: int = 3
     # Task 018 (requirement E, #60 pillar 2): the router's own model and
     # latency budget. `router_model` is one new key through the EXISTING
-    # `model_overrides` mechanism (`model_overrides["router"]` still wins
-    # when set, see `model_for`) -- this is deliberately NOT pillar 4's
-    # per-hat model roles (Non-goals): one key, not a config rewrite.
-    # Unset (`None`), it resolves to the fast tier (a one-question
-    # classification never needs the strong model) via `model_for`.
+    # `model_overrides` mechanism, but task 003 (#278 B.6) corrected the
+    # rung order to the PRD's own: `router_model` wins OVER
+    # `model_overrides["router"]` now (the reverse of this field's own
+    # pre-003 claim), then the worker hat's `trivial` tier, then `model` --
+    # see `model_for` for the live order. This is deliberately NOT pillar
+    # 4's per-hat model roles (Non-goals): one key, not a config rewrite.
     # Overridable with RALPHD_ROUTER_MODEL / RALPHD_ROUTER_TIMEOUT_S.
     # `router_retry_max` reuses `contract_retry_max`'s N-then-fallback shape
     # rather than adding a second retry-count knob (task 010's policy,
@@ -709,18 +710,21 @@ class JobConfig:
     # `LoopSupervisor._step_generic_hat`.
     router_model: str | None = None
     router_timeout_s: float = 60.0
-    # Task 002 (#278 B.1/B.4/B.7): whether `select_next_task`'s pending
-    # step (`scheduler.pending_candidates`, 2+ runnable tasks) is ever
-    # routed through the router at all. False (the default) here keeps
-    # every pre-existing flow test's task pick fully deterministic --
-    # task 003 (PRD B.5) turns the DEFAULT on and adds the `ralphctl
-    # start --no-route-tasks` opt-out; this field itself is what job.yaml's
-    # `route_task_selection: false` already writes to either way. Read
-    # straight off `JobConfig.load()`'s known/extra split like every other
-    # plain job.yaml key -- no env override (task selection routing is a
-    # planning-time choice, not an operational knob like the router's
-    # latency budget just above).
-    route_task_selection: bool = False
+    # Task 002 (#278 B.1/B.4/B.7) introduced this field False so the pre-
+    # existing flow tests' task picks stayed fully deterministic while that
+    # task landed; task 003 (PRD B.5) now turns the DEFAULT ON -- the router
+    # is asked on `select_next_task`'s pending step whenever `scheduler.
+    # pending_candidates` finds 2+ runnable tasks, unless `job.yaml`'s own
+    # `route_task_selection: false` or `ralphctl start --no-route-tasks` (the
+    # CLI opt-out, `cli/main.py`'s `_TEMPLATE_SCALAR_FIELDS`/`start`
+    # argparser) says otherwise. `ralphctl resume` never re-derives this --
+    # job.yaml is only rewritten for an explicit budget top-up flag -- so the
+    # value a run started with (on by default, or either opt-out) survives
+    # every later resume unchanged. Read straight off `JobConfig.load()`'s
+    # known/extra split like every other plain job.yaml key -- no env
+    # override (task selection routing is a planning-time choice, not an
+    # operational knob like the router's latency budget just above).
+    route_task_selection: bool = True
     pricing: dict = field(default_factory=dict)
     # Task 010 (#14): `none` (default) | `aws`. When `aws`, a route the
     # provider did not price (or priced with an implausible zero) is costed
@@ -889,6 +893,11 @@ class JobConfig:
                 # whether this run would ever run a scoped mid-plan review
                 # episode without reading job.yaml.
                 "midPlanReview": self.mid_plan_review,
+                # Task 003 (#278 B.5): surfaced the same way the flags
+                # above are -- an operator can see whether this run's
+                # task-selection pending step is ever routed through the
+                # router without reading job.yaml.
+                "routeTaskSelection": self.route_task_selection,
             },
             # Task 010: the response-contract re-prompt policy (requirement
             # C). `retryMax` is re-prompts granted after the first attempt
@@ -932,11 +941,31 @@ class JobConfig:
         """Resolve the pi model ref for a phase; None = pi's own default.
 
         Task 006 retired the strategy-tiered rung (`STRATEGY_TIERS`/
-        `model_strategy`/`fast_model`) entirely: the only rungs left are the
-        per-hat table and the bare `model` field. An old job.yaml that still
-        names a strategy never reaches here with one -- `load()` already
-        translated it into `model_overrides` via `_migrate_legacy_model_config`.
+        `model_strategy`/`fast_model`) entirely. Task 003 (#278 B.6)
+        corrected `router`'s own rung order to match the PRD: `router_model`
+        now wins over `model_overrides`/`models`'s `router` entry (the
+        reverse of the pre-003 order), with the worker hat's own `trivial`
+        tier (`model_tiers['worker']['trivial']`, when configured) as a new
+        third rung between that and the bare `model` field. Every other hat
+        keeps the one rung family it always had: the per-hat table, then
+        the bare `model` field. An old job.yaml that still names a strategy
+        never reaches here with one -- `load()` already translated it into
+        `model_overrides` via `_migrate_legacy_model_config`.
         """
+        if phase == "router":
+            if self.router_model:
+                return self.router_model
+            if override := self.model_overrides.get("router"):
+                return override
+            worker_tiers = self.model_tiers.get("worker") \
+                if isinstance(self.model_tiers, dict) else None
+            if isinstance(worker_tiers, dict):
+                leaf = worker_tiers.get("trivial")
+                if isinstance(leaf, str) and leaf:
+                    return leaf
+                if isinstance(leaf, dict) and leaf.get("model"):
+                    return leaf["model"]
+            return self.model
         if override := self.model_overrides.get(phase):
             return override
         # Task 005 (#60 pillar 4, requirement A): a hat name that is not one
@@ -949,11 +978,6 @@ class JobConfig:
         if phase not in MODEL_HATS:
             return (self.model_overrides.get(UNRECOGNISED_HAT_FALLBACK)
                     or self.model)
-        # Task 018 (requirement E): the router's own `router_model` knob,
-        # then the plain `model` field -- no implicit fast tier without an
-        # explicit `model_overrides`/`models` entry (task 006).
-        if phase == "router":
-            return self.router_model or self.model
         # Every other known hat with no per-hat entry falls through to the
         # bare `model` field -- there is no second, strategy-driven rung any
         # more (task 006).

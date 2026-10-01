@@ -42,7 +42,14 @@ def _make_sup(tmp_path, tasks, vigilant=False):
     cfg = JobConfig(run_id="task116-worker-harness", iterations=5,
                     max_approaches=1, vigilant=vigilant, on_complete="exit",
                     infra_retry_backoff_s=[0.0], infra_retry_backoff_max_s=0.0,
-                    infra_outage_budget_s=1000.0)
+                    infra_outage_budget_s=1000.0,
+                    # Task 003 (#278 B.5): routing now defaults ON in
+                    # production, but this module's fake agent answers
+                    # every call (including a router one) with the SAME
+                    # disagreeing payload and this module's own subject is
+                    # the harness-owned status write, not routing -- off
+                    # here keeps the pre-existing deterministic pick.
+                    route_task_selection=False)
     sup = LoopSupervisor(cfg, run, root)
     return sup, run
 

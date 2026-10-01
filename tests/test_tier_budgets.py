@@ -473,8 +473,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 002 retry: +2 tests (the same module: plan_review's real edges
     # through _route_with_router, chosen and fallback), measured the same
     # way -> fast 6737/462, smoke 5040/338.
-    "fast": {"tests": 6737, "modules": 462},
-    "smoke": {"tests": 5040, "modules": 338},
+    # Task 003 (#278 B.5/B.6): +9 tests / +2 modules (tests/
+    # test_router_model_rung_order.py: the four-rung model_for("router")
+    # resolution order; tests/test_cli_route_task_selection.py: the
+    # default-on/--no-route-tasks/resume CLI behaviour -- both in-process,
+    # no real subprocess, so both count in smoke too), measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
+    # 6746/464, `-m smoke --collect-only` -> smoke 5049/340.
+    "fast": {"tests": 6746, "modules": 464},
+    "smoke": {"tests": 5049, "modules": 340},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

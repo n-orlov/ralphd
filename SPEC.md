@@ -672,12 +672,16 @@ resolved reference is recorded per iteration (`meta.json`'s `model`, the
 `transitions.successors(state, vigilant)` returns more than one edge for the
 current state — deterministic-first: a state with ≤1 legal edge (most states,
 most of the time) never routes at all. When it does, `model_for("router")`
-resolves the model: `model_overrides["router"]` first if set, else the
-dedicated `router_model` config key (`JobConfig.router_model`, env
-`RALPHD_ROUTER_MODEL`, `job.yaml` key `router_model`), else `model` directly
-— `router` carries no strategy-tier row (the mechanism it would have had a
-row in is gone), deliberately (a one-question classification never needs a
-per-strategy tier).
+resolves the model through four rungs (task 003, #278 B.6): the dedicated
+`router_model` config key first (`JobConfig.router_model`, env
+`RALPHD_ROUTER_MODEL`, `job.yaml` key `router_model`), then
+`model_overrides["router"]`/`models.router` if set, then the worker hat's
+own `trivial` tier (`model_tiers["worker"]["trivial"]`) when a job.yaml
+configures one, else `model` directly — `router` carries no strategy-tier
+row of its own (the mechanism it would have had a row in is gone),
+deliberately (a one-question classification never needs a per-strategy
+tier; borrowing the worker's own `trivial` rung, when one is configured, is
+the one exception).
 The call is a single JSON question validated against `router.ROUTER_SCHEMA`
 and the table's own legal edges, re-prompted up to `contract_retry_max` times,
 bounded by `router_timeout_s` (`RALPHD_ROUTER_TIMEOUT_S`, default `60.0`,
@@ -692,15 +696,20 @@ directory) and its usage folds into `usage.byPhase["router"]` (§4.2) exactly
 like the five hat phases, so a run's model mix and cost are auditable even for
 the calls that never cost an iteration.
 
-**Task-selection routing is the router's second question (task 002,
-#278 B.1/B.4/B.7).** `engine.scheduler.select_next_task`'s validation-failed
-and in-progress steps stay fully deterministic — the router is never asked
-for either. Its pending step is routed too, but only when
-`engine.scheduler.pending_candidates` finds 2 or more genuinely runnable
-tasks (dependencies satisfied, not deferred) AND `route_task_selection`
-(a `JobConfig`/`job.yaml` field, default `False`) is on; a single candidate
-never reaches the router, whatever `route_task_selection` says. When it is
-asked, `LoopSupervisor._route_task_selection` calls
+**Task-selection routing is the router's second question (task 002/003,
+#278 B.1/B.4/B.5/B.6/B.7).** `engine.scheduler.select_next_task`'s
+validation-failed and in-progress steps stay fully deterministic — the
+router is never asked for either. Its pending step is routed too, but only
+when `engine.scheduler.pending_candidates` finds 2 or more genuinely
+runnable tasks (dependencies satisfied, not deferred) AND
+`route_task_selection` (a `JobConfig`/`job.yaml` field, default `True` as of
+task 003) is on; a single candidate never reaches the router, whatever
+`route_task_selection` says. Routing is ON unless either opt-out is given at
+start time: a `job.yaml` `route_task_selection: false` key, or `ralphctl
+start --no-route-tasks`. `ralphctl resume` never rewrites this key, so the
+value a run started with — on by default, or either opt-out — is replayed
+unchanged on every later resume. When it is asked,
+`LoopSupervisor._route_task_selection` calls
 `router.decide_task_selection()` — a SEPARATE function from `decide()`
 above, asked exactly ONCE with no contract retry — for one candidate task id
 plus a one-line reason. Any of three causes falls back to the deterministic
@@ -3091,7 +3100,10 @@ B.2 — no `ralphctl config` registry level for this one: an endpoint is one
 operator's channel for one job), `review_clone_protocol` (§10.2, #208 — the
 judging hats' disposable-clone identity protocol; no registry level either,
 since the path is a property of one product's repository), `network` and
-`auto_resume`, plus the three image supply keys `image`, `base_image` and
+`auto_resume`, plus `route_task_selection` (#278 B.5, task 003 -- ON by
+default; `ralphctl start --no-route-tasks` is the CLI-flag opt-out, same
+shape as `operator_input_needed_pause`'s own disable flag above), plus the
+three image supply keys `image`, `base_image` and
 `dockerfile` (settled as one unit, §3.2), plus three
 path-valued keys resolved relative to the template directory: `skills` (a list of
 directory names), `creds` (one directory name) and `prd` (a filename, default
@@ -4426,6 +4438,7 @@ returns immediately.
 | `--peer-verdict-gate` | off | opt-in, genuinely blind peer verdict gate (PRD requirement L, #101): a second peer model re-verifies completed work before terminal success; `JobConfig.peer_verdict_gate`, same unset-stays-out-of-`job.yaml` shape as `--peer-plan-review` above |
 | `--mid-plan-review` | off | opt-in mid-plan review episode (PRD requirement K.2, #169): once per approach, once a declared fraction of the plan has already validated, run one review episode scoped to those requirements, opening cure tasks from its findings through the existing cure machinery; `JobConfig.mid_plan_review`, same unset-stays-out-of-`job.yaml` shape as `--peer-plan-review` above |
 | `--no-operator-input-needed-pause` | on (disable flag) | task 014's pause-before-archive gate (PRD requirement A.1, #224): ON by default, unlike the two peer gates above -- a rejection that would otherwise archive the approach holds instead with `pauseReason: "operator_input_needed"`; `JobConfig.operator_input_needed_pause`, resolved by the `_TEMPLATE_SCALAR_FIELDS` loop (§6.7) so job.yaml always carries an explicit `true`/`false`, unlike the two peer gates. The SAME flag also gates the peer verdict gate's own mirror edge (v0.27 requirement C.1, task 008; widened by cure task 002 to every blocking-set shape): a `verdict_gate` rejection holds instead with `pauseReason: "verdict_gate_operator_input_needed"` whenever the run-wide `cure_pass_ceiling` is already spent, whether the rejection is all-curable, mixed, or all-incurable, disabled by the same flag |
+| `--no-route-tasks` | on (disable flag) | task 003 (#278 B.5): disables router-assisted task selection -- by default, once `scheduler.pending_candidates` finds 2+ runnable tasks, the router picks which one to work next; this flag (or a `job.yaml` `route_task_selection: false` key) restores `scheduler.select_next_task`'s own fully deterministic pick unconditionally. `JobConfig.route_task_selection`, resolved by the SAME `_TEMPLATE_SCALAR_FIELDS` loop as `--no-operator-input-needed-pause` above, so job.yaml always carries an explicit `true`/`false`; no `resume` equivalent -- `resume` never rewrites this key, so the value a run started with is replayed unchanged on every later resume |
 | `--reflect` | off | one extra post-terminal `reflect` iteration into `artifacts/reflection/` |
 | `--model REF` | unset | `pi` model ref used by any hat with no per-hat override |
 | `--model-for HAT=REF` | none | per-hat model override (repeatable), e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`; merges into the job's `models:` table over the `--template`'s and the registry's own `models:`/`model_overrides:` key -- see docs/cli.md |

@@ -508,25 +508,33 @@ answer that never validates falls back to the state's own declared choice
 (`transitions.fallback_guard`/`ROUTER_FALLBACK`) rather than ever taking an
 edge the table does not list. The router's own model is a dedicated config
 key, `router_model` (env `RALPHD_ROUTER_MODEL`, `job.yaml` key `router_model`,
-surfaced as `GET /config`'s `model.routerModel`) — checked after
-`model_overrides["router"]` and before falling back to `model` directly;
-`router` carries no strategy-tier row (task 006 retired the tiered mechanism
+surfaced as `GET /config`'s `model.routerModel`) -- resolved through four
+rungs (task 003, #278 B.6): `router_model` first, then `model_overrides
+["router"]`/`models.router` if that is set instead, then the worker hat's
+own `trivial` tier (`model_tiers["worker"]["trivial"]`) when a job.yaml
+configures one, before falling back to `model` directly; `router` carries
+no strategy-tier row of its own (task 006 retired the tiered mechanism
 entirely) -- a one-question classification never needs anything beyond its
-own key or the plain default. Every call
+own key, the worker's borrowed trivial rung, or the plain default. Every call
 is its own transcript under `artifacts/router/NNNN.jsonl` (a plain counter,
 not an iteration slot: `LoopSupervisor._ask_router()` never increments
 `iterations_used` or writes a `meta.json`), and its usage folds into
 `usage.byPhase["router"]` so the cost of a call that is never charged as a
 work iteration is still visible, not hidden.
 
-**Task-selection routing is the router's second question (task 002,
-#278 B.1/B.4/B.7).** `engine.scheduler.select_next_task`'s validation-failed
-and in-progress steps stay fully deterministic -- the router is never asked
-for either, only for its pending step, and only when `engine.scheduler.
-pending_candidates()` finds 2 or more genuinely runnable tasks (dependencies
-satisfied, not deferred) AND `route_task_selection` (a `JobConfig`/
-`job.yaml` field, default `False`) is on; a single candidate never reaches
-the router regardless of that flag. `LoopSupervisor._route_task_selection`
+**Task-selection routing is the router's second question (task 002/003,
+#278 B.1/B.4/B.5/B.6/B.7).** `engine.scheduler.select_next_task`'s
+validation-failed and in-progress steps stay fully deterministic -- the
+router is never asked for either, only for its pending step, and only when
+`engine.scheduler.pending_candidates()` finds 2 or more genuinely runnable
+tasks (dependencies satisfied, not deferred) AND `route_task_selection`
+(a `JobConfig`/`job.yaml` field, default `True` as of task 003) is on; a
+single candidate never reaches the router regardless of that flag. Routing
+is ON unless either opt-out is given at start time -- `job.yaml`'s own
+`route_task_selection: false` key, or `ralphctl start --no-route-tasks`
+(the CLI flag, written to that same job.yaml key); `ralphctl resume` never
+rewrites it, so the value a run started with -- on, or either opt-out --
+is replayed unchanged on every later resume. `LoopSupervisor._route_task_selection`
 then calls `router.decide_task_selection()` -- a separate function from
 `decide()` above, asked exactly ONCE with no contract retry -- for one
 candidate task id plus a one-line reason. Any of three causes falls back to
@@ -1412,7 +1420,11 @@ all real, first-class entries here, resolved through this same table like
 every other known hat — never through the unrecognised-name fallback, which
 is reserved for a typo, not a real role. `router` additionally has its own
 dedicated `router_model` key, checked before `model_overrides["router"]`'s
-sibling rung.
+sibling rung, which itself sits above a third rung this hat alone borrows --
+the worker hat's own `trivial` tier (`model_tiers["worker"]["trivial"]`,
+when a job.yaml configures one) -- ahead of the job default (task 003,
+#278 B.6; see "The router: one constrained question" below for the full
+four-rung order).
 Each hat's `(model, thinking)` PAIR — never just the model — is what
 `JobConfig.bundle_for(hat)` (task 007) actually returns: `thinking_overrides:`
 is the same per-hat table for `pi --thinking`/reasoning settings, kept as a
