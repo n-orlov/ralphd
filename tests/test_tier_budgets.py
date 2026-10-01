@@ -544,7 +544,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # assertions, no subprocess, so counted in smoke too), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 6845/470,
     # `-m smoke` -> 5148/346.
-    "fast": {"tests": 6845, "modules": 470},
+    # Task 008 (PRD v0.29 F.2-F.3): +1 test, no new module (tests/
+    # test_packaging_metadata.py::test_the_declared_version_is_at_least_0_29_0;
+    # the module already spawns a real subprocess elsewhere, so it stays out
+    # of smoke), measured `.venv/bin/python -m pytest -q -m fast
+    # --collect-only` -> 6846/470, `-m smoke` -> 5148/346.
+    "fast": {"tests": 6846, "modules": 470},
     "smoke": {"tests": 5148, "modules": 346},
 }
 

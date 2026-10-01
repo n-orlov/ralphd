@@ -87,6 +87,17 @@ def test_pyproject_and_package_literal_agree_on_the_version():
     )
 
 
+def test_the_declared_version_is_at_least_0_29_0():
+    """PRD v0.29 F.3 bumps the release version to 0.29.0 (#279-#283). Parsed as
+    a tuple so a future bump (0.30.0, 1.0.0, ...) keeps passing instead of
+    pinning the suite to this one release forever."""
+    v = tuple(int(part) for part in declared_version().split("."))
+    assert v >= (0, 29, 0), (
+        f"declared version {declared_version()!r} is below 0.29.0 -- PRD v0.29 "
+        "F.3 asks for the release bump that ships #279-#283"
+    )
+
+
 def test_the_api_version_handler_reports_the_package_literal():
     """`GET /version`'s body is built from `ralphd.__version__` -- the same
     literal the two tests above pin -- so it cannot report a third number."""
