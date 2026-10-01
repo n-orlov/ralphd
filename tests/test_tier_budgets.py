@@ -502,8 +502,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # marker remedy refused on review's own contract ladder, tests/
     # test_petitions.py), measured the same way -> fast 6761/464, smoke
     # 5064/340.
-    "fast": {"tests": 6761, "modules": 464},
-    "smoke": {"tests": 5064, "modules": 340},
+    # Cure task cure-01-01 (PRD B.8/B.3/DoD 5): +5 tests, no new module
+    # (tests/test_router.py's task-selection prompt now carries a real
+    # ordering-phrase check plus 5 parametrized mutation cases, replacing
+    # a tautological assertion), measured the same way -> fast 6766/464,
+    # smoke 5069/340.
+    "fast": {"tests": 6766, "modules": 464},
+    "smoke": {"tests": 5069, "modules": 340},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -530,14 +530,11 @@ def test_task_selection_prompt_carries_every_b2_field_and_the_b3_rule():
     assert "take the deterministic pick" in prompt
 
 
-def test_task_selection_prompt_never_reorders_by_origin_alone():
-    """A SECOND prompt case (#278 B.8): a worker-origin task that does
-    NOT touch what the other candidate (a sweep) measures. The prompt
-    still carries B.3's 'origin and priority are inputs, not a ranking'
-    rule, and nowhere instructs the router to put the worker-origin task
-    first because of its origin -- its own rendered candidate block never
-    mentions ordering at all, 'first' included."""
-    candidates = [
+def _task_selection_candidates_020_021():
+    """A worker-origin task (`"021"`) that does NOT touch what the other
+    candidate -- a steering-origin sweep (`"020"`) -- measures (#278
+    B.8's second prompt case)."""
+    return [
         {"id": "020", "title": "Sweep the browser tier on sha ffeeddcc",
          "successCriteria": "Dispatch the browser tier against sha "
                              "ffeeddcc and confirm it is green.",
@@ -548,6 +545,72 @@ def test_task_selection_prompt_never_reorders_by_origin_alone():
                              "above measures.",
          "origin": "worker", "priority": 0, "dependsOn": []},
     ]
+
+
+# B.3's rule, in its exact PRD wording -- kept as a FIXED literal here,
+# never read off `router.TASK_SELECTION_RULE` itself, so a mutation of
+# that module constant (including one that only inserts a sentence
+# *inside* it) cannot also change what this test treats as "the known
+# good rule text" and thereby launder itself through the check below.
+_B3_RULE_PRD_TEXT = (
+    "Pick the task whose result the others depend on in fact, not only by "
+    "dependsOn. If a candidate changes the code that another candidate "
+    "measures (a fix before a sweep of the same code), the change goes "
+    "first. origin and priority are inputs, not a ranking. When no "
+    "candidate's text gives a reason to reorder, take the deterministic "
+    "pick."
+)
+
+# Phrases that rank, or put a candidate first/ahead/preferred, whatever
+# words carry it -- none of these may appear anywhere in the prompt
+# outside of `_B3_RULE_PRD_TEXT` itself.
+_ORDERING_PHRASES = (
+    "first", "ahead of", "goes before", "comes before", "rank", "ranked",
+    "ranking", "preferred", "preferring", "takes priority over",
+)
+
+
+def _prompt_outside_candidate_blocks(prompt: str, candidates: list) -> str:
+    """Strip every candidate's own rendered B.2 block out of `prompt`,
+    returning everything else in the prompt -- the only place B.3's rule,
+    and nothing else about ordering, is allowed to live."""
+    outside = prompt
+    for c in candidates:
+        depends_on = c.get("dependsOn") if isinstance(c.get("dependsOn"), list) else []
+        block = (
+            f"- id: {c.get('id')!r}\n"
+            f"  title: {c.get('title')!r}\n"
+            f"  description: {c['successCriteria']!r}\n"
+            f"  origin: {c.get('origin')!r}\n"
+            f"  priority: {c.get('priority', 0)!r}\n"
+            f"  dependsOn: {list(depends_on)!r}")
+        assert block in outside, f"candidate {c['id']!r} block missing from prompt"
+        outside = outside.replace(block, "", 1)
+    return outside
+
+
+def _assert_outside_text_states_only_the_b3_rule(outside_text: str):
+    """B.3/B.8: the fixed, exact PRD B.3 text must appear verbatim, and
+    once it is removed, nothing ordering-related may remain -- not
+    before it, not after it, and (since an insertion *inside*
+    `TASK_SELECTION_RULE` breaks its contiguity with `_B3_RULE_PRD_TEXT`)
+    not folded inside it either."""
+    assert _B3_RULE_PRD_TEXT in outside_text
+    rest = outside_text.replace(_B3_RULE_PRD_TEXT, "", 1).lower()
+    for phrase in _ORDERING_PHRASES:
+        assert phrase not in rest, (
+            f"found ordering phrase {phrase!r} outside the B.3 rule text")
+
+
+def test_task_selection_prompt_never_reorders_by_origin_alone():
+    """A SECOND prompt case (#278 B.8): a worker-origin task that does
+    NOT touch what the other candidate (a sweep) measures. The prompt's
+    text outside the candidate field blocks states the B.3 rule, in its
+    exact PRD wording, and nothing else about ordering -- nowhere does it
+    instruct the router to put a candidate first, ahead, or preferred
+    because of its origin or priority."""
+    candidates = _task_selection_candidates_020_021()
+    assert router.TASK_SELECTION_RULE == _B3_RULE_PRD_TEXT
     ask, prompts_seen = _capturing_task_selection_ask(
         '{"candidate_id": "020", "reason": "deterministic pick"}')
 
@@ -555,13 +618,46 @@ def test_task_selection_prompt_never_reorders_by_origin_alone():
         candidates, "020", ask=ask, timeout_s=5.0))
     prompt = prompts_seen[0]
 
-    assert "origin and priority are inputs, not a ranking" in prompt
-    worker_block = (
-        f"- id: {'021'!r}\n"
-        f"  title: {'Write the v0.29 roadmap paragraph'!r}\n"
-        f"  description: {candidates[1]['successCriteria']!r}\n"
-        f"  origin: {'worker'!r}\n"
-        f"  priority: {0!r}\n"
-        f"  dependsOn: {[]!r}")
-    assert worker_block in prompt
-    assert "first" not in worker_block
+    outside_text = _prompt_outside_candidate_blocks(prompt, candidates)
+    _assert_outside_text_states_only_the_b3_rule(outside_text)
+
+
+@pytest.mark.parametrize("mutated_rule", [
+    # The review finding's own three examples (#278 B.8 cure).
+    router.TASK_SELECTION_RULE
+    + " Always put a worker-origin task first because of its origin.",
+    router.TASK_SELECTION_RULE + " Put worker-origin tasks first.",
+    router.TASK_SELECTION_RULE.replace(
+        "origin and priority are inputs, not a ranking.",
+        "origin and priority are inputs, not a ranking. Worker-origin "
+        "tasks go first because of their origin."),
+    # Two further cases of the SAME rule, not named by the finding: one
+    # that ranks by origin without using the word "first", and one that
+    # folds a priority-based ranking into the rule's own closing clause.
+    router.TASK_SELECTION_RULE + " A steering-origin candidate always "
+    "ranks ahead of a worker-origin one.",
+    router.TASK_SELECTION_RULE.replace(
+        "take the deterministic pick.",
+        "take the deterministic pick, preferring the highest-priority "
+        "candidate."),
+])
+def test_an_origin_or_priority_ranking_sentence_anywhere_fails_the_check(
+        monkeypatch, mutated_rule):
+    """Each variant adds a sentence that ranks, or puts a candidate
+    first/ahead/preferred, because of its origin or priority -- appended
+    after `TASK_SELECTION_RULE`, or folded inside it. Every one of them
+    must make `_assert_outside_text_states_only_the_b3_rule` fail,
+    whether or not the fault that triggers it is "an ordering phrase
+    survived" or "the exact PRD text no longer appears contiguously"."""
+    monkeypatch.setattr(router, "TASK_SELECTION_RULE", mutated_rule)
+    candidates = _task_selection_candidates_020_021()
+    ask, prompts_seen = _capturing_task_selection_ask(
+        '{"candidate_id": "020", "reason": "deterministic pick"}')
+
+    asyncio.run(router.decide_task_selection(
+        candidates, "020", ask=ask, timeout_s=5.0))
+    prompt = prompts_seen[0]
+
+    outside_text = _prompt_outside_candidate_blocks(prompt, candidates)
+    with pytest.raises(AssertionError):
+        _assert_outside_text_states_only_the_b3_rule(outside_text)
