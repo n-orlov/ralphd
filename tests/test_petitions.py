@@ -2433,6 +2433,60 @@ def test_review_remedy_errors_wired_into_the_review_contract_ladder(tmp_path):
     assert any("marker" in e for e in errors)
 
 
+def test_an_overrun_post_marker_remedy_is_refused_on_the_review_contract_ladder(tmp_path):
+    """PRD v0.28 requirement C.2 (#276): a REFUTED remedy whose criteria
+    AFTER its `Done when:` marker fold to more than
+    `petitions._REMEDY_MAX_CLAUSES` clauses is re-asked on review's own
+    contract ladder (the path an overlong `cured_when` takes,
+    `tests/test_cured_when.py`'s ladder shape), the re-ask names the
+    clause-bound rule, `_review_verdict` refuses the payload once the
+    retries are spent, and the remedy is never silently truncated: the
+    payload `_review_verdict` reads still carries every one of its
+    clauses, and `refuted_remedy_cure_findings` builds no remedy task
+    from it (no truncated `cured_when`).
+    """
+    sup = make_supervisor(tmp_path)
+    cfg = sup.cfg
+    cfg.contract_retry_max = 1
+    overrun_clauses = [f"({n}) clause {n} holds." for n in
+                       range(1, petitions._REMEDY_MAX_CLAUSES + 3)]
+    overrun_remedy = ("The condition is false. Done when: "
+                      + " ".join(overrun_clauses))
+    rejected = json.dumps({
+        "verdict": "rejected", "reason": "petitioned obligation refuted",
+        "petition_adjudications": [
+            {"obligation": REMEDY_OBLIGATION, "adjudication": "REFUTED",
+             "remedy": overrun_remedy}]})
+    result = IterationResult(final_text=rejected, exit_code=0)
+
+    calls = []
+
+    async def fake_ask_contract_fix(hat, errors, **_kw):
+        calls.append((hat, list(errors)))
+        return rejected, {}
+
+    sup._ask_contract_fix = fake_ask_contract_fix  # type: ignore[method-assign]
+
+    laddered = asyncio.run(sup._review_contract_ladder(result))
+    verified, payload, errors = sup._review_verdict(laddered)
+
+    bound = f"{petitions._REMEDY_MAX_CLAUSES}-clause bound"
+    assert len(calls) == cfg.contract_retry_max
+    assert calls[0][0] == "review"
+    assert any(REMEDY_OBLIGATION in e and "checkable clauses" in e
+               and bound in e for e in calls[0][1])
+    assert verified is False
+    assert any("checkable clauses" in e and bound in e for e in errors)
+    # never silently truncated: the remedy text the verdict reads is whole.
+    remedy_seen = payload["petition_adjudications"][0]["remedy"]
+    assert remedy_seen == overrun_remedy
+    for clause in overrun_clauses:
+        assert clause in remedy_seen
+    # and no remedy task is built from a truncated fold of it.
+    assert petitions.refuted_remedy_cure_findings(
+        payload["petition_adjudications"], _filed(), [_remedy_task()]) == []
+
+
 def test_an_unfiled_blank_or_already_remedied_obligation_creates_no_work(tmp_path):
     """The structural bounds -- gates 1, 2, 3, 5 and 6 -- each of which is
     the reason a rogue payload, a re-adjudication or a resumed episode cannot

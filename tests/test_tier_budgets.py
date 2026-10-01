@@ -498,8 +498,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # test_petitions_review.py; the selfdev-v027 shape on the inserted
     # remedy task in tests/test_midrun_refuted_continues.py), measured the
     # same way -> fast 6760/464, smoke 5063/340.
-    "fast": {"tests": 6760, "modules": 464},
-    "smoke": {"tests": 5063, "modules": 340},
+    # Task 005 second retry: +1 test, no new module (the overrun post-
+    # marker remedy refused on review's own contract ladder, tests/
+    # test_petitions.py), measured the same way -> fast 6761/464, smoke
+    # 5064/340.
+    "fast": {"tests": 6761, "modules": 464},
+    "smoke": {"tests": 5064, "modules": 340},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
