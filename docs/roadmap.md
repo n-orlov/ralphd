@@ -37,6 +37,7 @@ in [docs/prds/](prds/README.md).
 
 ## Shipped
 
+- v0.28 — the hub's apply-now checkbox actually interrupts, task selection with two or more candidates is routed instead of claimed by priority-then-list-order, and a REFUTED remedy task's criteria are folded from its own Done when:/Cured when: marker (#276, #277, #278).
 - v0.27 — a review converges in one fix round — a spent validation budget asks the operator instead of looping or replanning, and a tail's index read is bounded (#274, #275).
 - v0.26 — the operator can see and answer — an oversized escalation is digested and
   retried instead of vanishing, the hub shows and answers a parked run's question
