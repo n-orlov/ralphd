@@ -531,8 +531,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `LoopSupervisor.build_prompt("worker")`, no real subprocess, so it
     # counts in smoke too), measured the same way -> fast 6821/467,
     # smoke 5124/343.
-    "fast": {"tests": 6824, "modules": 468},
-    "smoke": {"tests": 5127, "modules": 344},
+    # Task 006: +4 tests / +1 module (tests/test_sweep_shape_rules.py),
+    # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
+    # 6828/469, `-m smoke` -> 5131/345.
+    "fast": {"tests": 6828, "modules": 469},
+    "smoke": {"tests": 5131, "modules": 345},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

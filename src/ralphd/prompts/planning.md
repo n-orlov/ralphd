@@ -284,10 +284,17 @@ lawyered:
    fragile, because a validation-failed task can be reordered ahead of or
    behind the closure task that names it; an explicit `dependsOn` survives
    that reordering and list order does not.
-7. **A sweep task's successCriteria state its execution shape** — the exact
-   command, its `timeout`, and whether/how it backgrounds and polls — using
-   the numbers step 2b already measured, rather than leaving each worker to
-   rediscover the runtime and guess at a bound.
+7. **A sweep task's execution shape goes in the harness-pinned `## Standing
+   rules` block, never in its own successCriteria.** The recipe (the exact
+   command), its `timeout`, and whether/how it backgrounds and polls all
+   belong in that block, written with the numbers step 2b already measured
+   rather than leaving each worker to rediscover the runtime and guess at a
+   bound. The sweep task's own `successCriteria` names only the observable
+   — the tier or lane ran and what it produced — never the command, the
+   `timeout` value or the polling cadence that got it there. When the
+   measured wait exceeds about 85% of the iteration cap, the Standing rules
+   block also states how to span it: `deferred` with `until` set to the
+   estimated completion, A.5's option (b).
 8. **Every implementation task names its own behaviour-failing test.** Its
    successCriteria name a test that fails if the behaviour is absent, so the
    verifier can check the test's direction and not only that it is green.

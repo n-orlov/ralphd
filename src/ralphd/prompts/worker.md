@@ -177,9 +177,16 @@ immediately starts the next iteration.
 - **Budget your test runs against the iteration clock.** The cap is hard and has
   no grace period: an iteration killed at the cap loses its uncommitted work.
   While you work, run only the targeted test modules that cover what you touched
-  (seconds, not minutes). Run the whole suite at most ONCE per iteration, never
-  chain two whole-suite runs, and background a long run
-  (`nohup ... > /tmp/suite.log 2>&1 &`), polling it instead of blocking on it.
+  (seconds, not minutes). "The whole suite" means the tier recipe the notes'
+  `## Standing rules` block gives, verbatim, with its parallelism — an
+  unparallelised substitute selection (`-m "not browser"`, a bare `pytest`
+  with no `-n`) is not a cheaper alternative, it is a different, weaker run.
+  When the Standing rules block reserves whole-tier runs for sweep tasks, a
+  task that is not a sweep runs no whole tier at all, parallelised or not,
+  and proves itself on the modules its own criteria name instead. Run the
+  whole suite at most ONCE per iteration, never chain two whole-suite runs,
+  and background a long run (`nohup ... > /tmp/suite.log 2>&1 &`), polling
+  it instead of blocking on it.
 - **Return before the cap.** Read `currentIteration.startedAt` from
   `status.json` and `date -u` once you start anything long, and treat ~85% of
   the iteration cap as your own deadline: from there on, commit what is
