@@ -557,8 +557,16 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # no subprocess, so counted in smoke too), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 6850/470,
     # `-m smoke` -> 5152/346.
-    "fast": {"tests": 6850, "modules": 470},
-    "smoke": {"tests": 5152, "modules": 346},
+    # Cure-01-02 (PRD v0.29 C.1-C.3/F.1): +3 tests, no new module (tests/
+    # test_worker_verdict_recovery.py: a schema-invalid verdict beside a
+    # valid fenced payload skips shape 1's recovery and falls to the
+    # generic schema ladder, ladder exhaustion never emits `worker.
+    # verdict_absent`, and a valid-JSON-but-non-dict last line still takes
+    # shape 3 -- pure in-process, no subprocess, so counted in smoke too),
+    # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
+    # 6853/470, `-m smoke` -> 5155/346.
+    "fast": {"tests": 6853, "modules": 470},
+    "smoke": {"tests": 5155, "modules": 346},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

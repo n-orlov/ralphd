@@ -181,6 +181,106 @@ def test_an_unrepaired_iteration_17_shape_exhausts_the_ladder_safely(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# (ii.a) cure-01-02 (PRD v0.29 C.1-C.3/F.1): the entry condition for ALL
+# THREE shapes above is "the last non-blank line is not a JSON object
+# carrying a `verdict` key" -- never "does not parse as a schema-valid
+# verdict payload". A last line that IS such an object, with a PRESENT but
+# schema-invalid `verdict` value, skips shapes 1-3 entirely -- including
+# shape 1's own fenced-recovery scan, even when a valid fenced block sits
+# right beside it in the same reply -- and falls to the pre-existing
+# generic schema-repair ladder instead: `contract.violation`/`contract.
+# agent_fault`, never `contract.recovered`.
+# ---------------------------------------------------------------------------
+
+def test_schema_invalid_verdict_beside_valid_fence_skips_recovery(tmp_path):
+    """The exact probe cure-01-02 cites: prose + a validating fenced
+    ```json block + a last line that IS a JSON object but carries a
+    schema-invalid `verdict` value (`"done"`, not in the worker contract's
+    enum). Because `verdict` is PRESENT (however invalid), shape 1's fenced
+    recovery never runs and `contract.recovered` never fires -- the reply
+    instead goes through the pre-existing generic schema ladder, which may
+    still land on the SAME fenced block through its own `_ask_contract_fix`
+    zero-call scan, but records that recovery as a `contract.violation`,
+    never as `contract.recovered`."""
+    sup, run = _worker_run(tmp_path, "invalid-verdict-beside-fence",
+                           vigilant=False)
+    fenced = json.dumps({"verdict": "complete", "task_id": TASK_1})
+    reply = (
+        "I looked at the task and finished the work.\n\n"
+        "```json\n" + fenced + "\n```\n\n"
+        '{"verdict": "done"}'
+    )
+    agent = _ScriptedWorker([_ok(reply)])
+    sup.runner = agent  # type: ignore[assignment]
+
+    asyncio.run(sup._step_worker())
+
+    # no `contract.recovered` -- shape 1 never ran, verdict was present.
+    assert _events(run, "contract.recovered") == []
+    # the generic schema ladder recorded (at least) one violation for the
+    # invalid `"done"` verdict before it recovered.
+    violations = _events(run, "contract.violation")
+    assert len(violations) >= 1, violations
+    assert violations[0]["hat"] == "worker"
+    # never routed through shape 3 either.
+    assert _events(run, "worker.verdict_absent") == []
+    # the generic ladder's own zero-call fenced scan (inside `_ask_contract_
+    # fix`) still recovers the valid payload -- no EXTRA model call needed
+    # beyond the one real (charged) worker iteration.
+    assert agent.calls == 1
+    tasks = run.read_tasks()["tasks"]
+    assert tasks[0]["status"] == "completed", tasks[0]
+
+
+def test_ladder_exhaustion_never_emits_verdict_absent(tmp_path):
+    """Same rule, a DIFFERENT case than cure-01-02's own second probe: a
+    verdict-less JSON object (shape 2's own entry condition) that exhausts
+    the ladder unrepaired emits `contract.agent_fault` for the record, but
+    NEVER `worker.verdict_absent` -- that event is shape 3's alone, which
+    this reply never reaches because its last line IS a JSON object."""
+    sup, run = _worker_run(tmp_path, "ladder-exhausted-no-absent",
+                           vigilant=False)
+    verdictless = json.dumps({"task": TASK_1, "status": "complete"})
+    agent = _ScriptedWorker([_ok(verdictless)])  # every call replays this
+    sup.runner = agent  # type: ignore[assignment]
+
+    asyncio.run(sup._step_worker())
+
+    tasks = run.read_tasks()["tasks"]
+    assert tasks[0]["status"] == "in-progress", tasks[0]
+    assert len(_events(run, "contract.agent_fault")) == 1
+    # the documented behaviour cure-01-02 pins: ladder exhaustion is never
+    # read as a `worker.verdict_absent` -- that event fires ONLY for a last
+    # line that is not a JSON object at all.
+    assert _events(run, "worker.verdict_absent") == []
+
+
+def test_non_dict_json_last_line_is_verdict_absent_not_recovered(tmp_path):
+    """Same rule again, a THIRD case: the last non-blank line parses as
+    valid JSON but is not an object at all (a bare list) -- shape 3's own
+    entry condition is "not a JSON object", not "not JSON", so this reply
+    takes shape 3 (one `worker.verdict_absent`, no model call, no ladder)
+    exactly like plain prose does, never shape 1 or 2."""
+    sup, run = _worker_run(tmp_path, "non-dict-json-last-line")
+    reply = "some prose explaining the attempt\n\n[1, 2, 3]"
+    agent = _ScriptedWorker([_ok(reply)])
+    sup.runner = agent  # type: ignore[assignment]
+
+    asyncio.run(sup._step_worker())
+
+    assert agent.calls == 1  # no model call beyond the real iteration
+    tasks = run.read_tasks()["tasks"]
+    assert tasks[0]["status"] == "in-progress"  # nothing applied
+
+    absent = _events(run, "worker.verdict_absent")
+    assert len(absent) == 1, absent
+    assert absent[0]["taskId"] == TASK_1
+    assert _events(run, "contract.recovered") == []
+    assert _events(run, "contract.violation") == []
+    assert _events(run, "contract.agent_fault") == []
+
+
+# ---------------------------------------------------------------------------
 # (iii) a plain-prose reply: no ladder, no model call, one verdict_absent.
 # ---------------------------------------------------------------------------
 
