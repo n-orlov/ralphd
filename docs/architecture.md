@@ -3048,6 +3048,35 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   matrix: single-owner, multi-owner, a dead sibling, a stale or already-
   restored baseline, a diff that does and does not touch the cited path,
   and the vigilant variant's `validated` target).
+- **A re-opened sweep is never a candidate for that same reconciliation,
+  whatever paths the cure's diff touches (cure-01-01, PRD requirement
+  B.2/B.5, DoD 2, #280).** The bullet above restores an ORDINARY record
+  whenever the cure's real diff never touches a path its own
+  `successCriteria` cites -- but a `tasks[].sweep: true` task's own
+  criteria name an observable (a whole-tier or CI-lane run), never a file,
+  so that same diff-vs-criteria substring check can never tell a cure
+  that genuinely re-ran the sweep from one that only touched a test file,
+  or landed no commit of its own at all. Left unfiltered, a validated
+  sweep a cure pass re-opened (through either trigger -- B.2's own step,
+  or the `invalidates` walk naming the sweep's own lane-evidence path)
+  would be silently restored to `validated`/`completed` the moment its
+  owning cure task landed, at a tree the sweep itself never re-measured
+  -- the exact #280 failure B.1-B.3 exist to close, reopened through the
+  one path those requirements left unguarded. `state.records_pending_
+  reconciliation` now excludes any task carrying `sweep: True` before it
+  even reads `preCureHeads` or computes a diff for it, so such a task
+  never reaches `LoopSupervisor._reconcile_pre_cure_heads`'s restore at
+  all and stays `pending` until the plan's own scheduler picks it again.
+  This matches review.md's own B.5 rule ("stale even when the cure
+  touches only tests") and is stated on `SPEC.md`'s `tasks[].sweep` and
+  `preCureHeads` rows. Tests: `tests/test_cure_invalidates.py` (a
+  validated sweep driven through a real cure pass and a real git diff,
+  re-opened both ways -- an empty `invalidates` and one naming the
+  sweep's own path -- then completed through `_apply_reported_task_
+  status`, with a cure commit touching only a test file and, separately,
+  one landing no commit at all; plus a direct `records_pending_
+  reconciliation` unit proving the exclusion fires before the ownership/
+  diff bookkeeping an ordinary record goes through).
 - **Cure tasks land before the frozen tail, re-take tasks after it (v0.20
   requirement E.4, #167, task 033).** `insert_cure_tasks` no longer only
   ever `tasks.append`s: `state.last_code_touching_task_id(run, tasks)`

@@ -1306,6 +1306,197 @@ def test_a_diff_that_cannot_be_computed_leaves_the_record_pending(tmp_path):
     assert restored == []
 
 
+# ---------------------------------------------------------------------------
+# Cure-01-01 (PRD requirement B.2/B.5, DoD 2, #280): a `sweep: True` task
+# re-opened by a cure pass is NEVER restored by this reconciliation, no
+# matter what paths the cure's own diff touches -- unlike an ordinary
+# record, whose criteria name a path a cure might genuinely leave
+# untouched, a sweep's own criteria name an observable (a tier/CI-lane
+# run), so this reconciliation's own diff-vs-criteria check could never
+# tell a cure that re-ran the sweep from one that only touched a test.
+# ---------------------------------------------------------------------------
+
+
+def _sweep_cure_pass_over_a_real_workspace(root: Path, workspace: Path, *,
+                                           invalidates_own_path: bool,
+                                           sweep_status: str = "validated"):
+    """Like `_cure_pass_over_a_real_workspace`, but the plan carries a
+    `sweep: True` task instead of an ordinary record. `invalidates_own_
+    path=False` re-opens it ONLY through B.2's own sweep step (an empty
+    `invalidates`); `invalidates_own_path=True` gives it the lane-record
+    shape (criteria naming `RECORD_PATH`, depending on a verification
+    task) and a finding whose `invalidates` names that same path, so it is
+    re-opened through the `invalidates` walk instead -- the SAME two
+    triggers `tests/test_cure_sweep_reopen.py` groups (i) and (iii) pin at
+    the `insert_cure_tasks` level, driven here through a REAL cure pass and
+    a REAL git diff instead. Returns `(sup, cure_id, seed_sha, sweep_id)`.
+    """
+    seed_sha = _init_git_workspace(workspace)
+    sup = _supervisor(root, workspace=workspace,
+                      operator_input_needed_pause=False)
+    sup._approach = 1
+    if invalidates_own_path:
+        tasks = [
+            _task("057", status="validated", criteria="verify every lane"),
+            _task("058", status=sweep_status, depends=["057"],
+                  criteria=f"One commit adds {RECORD_PATH} naming the shipped sha."),
+        ]
+        tasks[1]["sweep"] = True
+        sweep_id = "058"
+        invalidates_paths = [RECORD_PATH]
+    else:
+        tasks = [_task("sweep-task", status=sweep_status,
+                       criteria="run the final tiers")]
+        tasks[0]["sweep"] = True
+        sweep_id = "sweep-task"
+        invalidates_paths = []
+    atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
+    finding = _blocking_curable_finding(
+        "a materiality finding", "evidence absent from the sweep's own tree",
+        invalidates=invalidates_paths,
+        cured_when="the sweep's final tree carries the fix")
+    findings.write_findings_json(sup.run.findings_json_file, [finding])
+
+    async def _review_rejects(prompt, transcript, **kw):
+        return _result(json.dumps({
+            "verdict": "rejected",
+            "reason": "one blocking finding, curable",
+        }))
+
+    sup.runner.run = _review_rejects  # type: ignore[method-assign]
+    outcome = _bounded(sup._step_review())
+    assert outcome == ("advance", "cure", "rejected_curable_pass_available")
+
+    data = sup.run.read_tasks()
+    cure_ids = [t["id"] for t in data["tasks"] if t["id"].startswith("cure-")]
+    assert len(cure_ids) == 1
+    cure_id = cure_ids[0]
+    by_id = {t["id"]: t for t in data["tasks"]}
+    assert by_id[sweep_id]["status"] == "pending"
+    return sup, cure_id, seed_sha, sweep_id
+
+
+def test_a_sweep_reopened_with_empty_invalidates_stays_pending_after_a_test_only_cure(tmp_path):
+    """The finding's own named example (B.2's own sweep step, triggered by
+    an empty `invalidates`): a cure commit touching ONLY a test file never
+    appears in a sweep's own `successCriteria` ("run the final tiers"
+    names no file at all), so the diff-vs-criteria check that restores an
+    ordinary record can never read this as "touched" -- and must not
+    restore the sweep anyway, by the rule itself, not by that accident.
+    """
+    root = tmp_path / "run"
+    workspace = tmp_path / "workspace"
+    sup, cure_id, seed_sha, sweep_id = _sweep_cure_pass_over_a_real_workspace(
+        root, workspace, invalidates_own_path=False)
+
+    new_head = _commit_file(workspace, "tests/test_y.py", "def test_x(): pass\n",
+                            "the cure, touching only a test file")
+    assert new_head != seed_sha
+
+    _set_status(sup.run, cure_id, "in-progress")
+    restored = []
+    sup.notifier = restored.append
+    errors = sup._apply_reported_task_status(
+        {"task_id": cure_id, "task_status": "completed"})
+    assert errors == []
+
+    data = sup.run.read_tasks()
+    tasks = {t["id"]: t for t in data["tasks"]}
+    assert tasks[sweep_id]["status"] == "pending"
+    assert _events(root, "task.un_reopened") == []
+    assert restored == []
+
+
+def test_a_sweep_reopened_through_invalidates_naming_its_own_path_stays_pending(tmp_path):
+    """The finding's second named shape: the sweep IS the plan's own
+    lane-evidence record and the `invalidates` walk re-opened it directly
+    -- still never restored, even though an ORDINARY record in this exact
+    shape (see `test_a_cure_diff_that_misses_the_cited_path_un_reopens_
+    the_record` above) would be.
+    """
+    root = tmp_path / "run"
+    workspace = tmp_path / "workspace"
+    sup, cure_id, seed_sha, sweep_id = _sweep_cure_pass_over_a_real_workspace(
+        root, workspace, invalidates_own_path=True)
+
+    new_head = _commit_file(workspace, "tests/test_y.py", "def test_x(): pass\n",
+                            "the cure, touching only a test file")
+    assert new_head != seed_sha
+
+    _set_status(sup.run, cure_id, "in-progress")
+    restored = []
+    sup.notifier = restored.append
+    errors = sup._apply_reported_task_status(
+        {"task_id": cure_id, "task_status": "completed"})
+    assert errors == []
+
+    data = sup.run.read_tasks()
+    tasks = {t["id"]: t for t in data["tasks"]}
+    assert tasks[sweep_id]["status"] == "pending"
+    assert _events(root, "task.un_reopened") == []
+    assert restored == []
+
+
+def test_a_sweep_still_stays_pending_even_when_the_cure_lands_no_commit_at_all(tmp_path):
+    """A case the finding did not list: an entirely EMPTY diff (the cure
+    task lands no commit of its own; `base_sha == head_sha`) is the one
+    shape that WOULD restore an ordinary record outright -- `git diff
+    --name-only X X` answers `[]`, which touches none of the record's
+    cited paths by definition. A sweep must stay `pending` even here,
+    which is the literal meaning of this task's own successCriteria
+    phrase "whatever paths the cure diff touches" (including the empty
+    set) -- the sweep's own re-run is the deliverable the engine owes, not
+    merely "a diff that happens to graze a file named in its criteria".
+    """
+    root = tmp_path / "run"
+    workspace = tmp_path / "workspace"
+    sup, cure_id, seed_sha, sweep_id = _sweep_cure_pass_over_a_real_workspace(
+        root, workspace, invalidates_own_path=False)
+
+    # the cure task lands no commit of its own -- HEAD never moves.
+    assert sup._workspace_head_sha() == seed_sha
+
+    _set_status(sup.run, cure_id, "in-progress")
+    restored = []
+    sup.notifier = restored.append
+    errors = sup._apply_reported_task_status(
+        {"task_id": cure_id, "task_status": "completed"})
+    assert errors == []
+
+    data = sup.run.read_tasks()
+    tasks = {t["id"]: t for t in data["tasks"]}
+    assert tasks[sweep_id]["status"] == "pending"
+    assert _events(root, "task.un_reopened") == []
+    assert restored == []
+
+
+def test_records_pending_reconciliation_excludes_a_sweep_task_outright(tmp_path):
+    """A case the finding did not list: the pure read half, direct against
+    `records_pending_reconciliation`, with the identical fixture shape
+    `test_records_pending_reconciliation_returns_the_reopened_record`
+    above uses for an ORDINARY record (which that sibling test asserts
+    non-empty) -- the only difference is `sweep: True` on the record task.
+    Proves the exclusion is unconditional on anything about the diff or
+    the ownership bookkeeping (both of which are identical to the ordinary
+    case here, and both of which this function checks AFTER the sweep
+    filter) -- it is excluded before any of that is even consulted.
+    """
+    root = tmp_path / "run"
+    tasks = _lane_fixture_tasks()
+    tasks[1]["sweep"] = True
+    run = _make_run(root, tasks)
+
+    finding = _blocking_curable_finding(
+        "the shipped sha's lanes moved", "a later commit landed after the record",
+        invalidates=[RECORD_PATH])
+    inserted = insert_cure_tasks(run, 1, [finding], pre_cure_head="deadbeef01")
+    cure_id = inserted[0]
+
+    _set_status(run, cure_id, "completed")
+
+    assert records_pending_reconciliation(run, cure_id) == []
+
+
 
 # ---------------------------------------------------------------------------
 # Requirement B.4 (task 008, #221), the overlapping-owner case: ONE cure

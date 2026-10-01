@@ -549,8 +549,16 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # the module already spawns a real subprocess elsewhere, so it stays out
     # of smoke), measured `.venv/bin/python -m pytest -q -m fast
     # --collect-only` -> 6846/470, `-m smoke` -> 5148/346.
-    "fast": {"tests": 6846, "modules": 470},
-    "smoke": {"tests": 5148, "modules": 346},
+    # Cure-01-01 (PRD v0.29 B.2/B.5, DoD 2, #280): +4 tests, no new module
+    # (tests/test_cure_invalidates.py: a sweep stays pending through a
+    # test-only cure with empty invalidates, through invalidates naming its
+    # own path, through a cure that lands no commit at all, and the direct
+    # `records_pending_reconciliation` exclusion unit -- pure in-process,
+    # no subprocess, so counted in smoke too), measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 6850/470,
+    # `-m smoke` -> 5152/346.
+    "fast": {"tests": 6850, "modules": 470},
+    "smoke": {"tests": 5152, "modules": 346},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -5768,8 +5768,19 @@ def records_pending_reconciliation(run: "RunDir", cure_task_id: str) -> list[dic
     discipline `preCureHeads` already uses, never re-derived from `cfg.
     vigilant` -- so the caller restores `completed`, `validated`, `failed`,
     `skipped` or `superseded` alike, whichever this record genuinely held.
-    "Eligible" means ALL THREE:
+    "Eligible" means ALL FOUR:
 
+    - the record's own `sweep` field is NOT `True` (cure-01-01, PRD
+      requirement B.2/B.5, DoD 2, #280): a `sweep: True` task is excluded
+      outright, before any diff is even considered, and stays `pending`
+      until the plan's own scheduler re-runs it -- whatever paths the
+      cure's real diff touches. A sweep's own `successCriteria` names an
+      observable (a tier/CI-lane run), never the files a cure happens to
+      edit, so the diff-vs-criteria substring check below can never see a
+      cure as having "touched" a sweep's cited text, and would otherwise
+      un-reopen every sweep a cure pass ever re-opens -- the exact gap
+      review.md's B.5 rule ("stale even when the cure touches only
+      tests") and SPEC.md's `tasks[].sweep` row name;
     - the record's OWN `preCureHeads[recordId]` entry in `status.json`
       still equals this cure task's own reopen `sha` -- a LATER reopen of
       the same record at a NEWER sha overwrites that entry (B.2's own
@@ -5827,6 +5838,31 @@ def records_pending_reconciliation(run: "RunDir", cure_task_id: str) -> list[dic
     for rid in mine:
         task = by_id.get(rid)
         if task is None or task.get("status") != "pending":
+            continue
+        # Cure-01-01 (PRD requirement B.2/B.5, DoD 2, #280): a `sweep:
+        # True` task is NEVER eligible for reconciliation, whatever paths
+        # a cure's real diff touches. A sweep's own `successCriteria`
+        # names observables ("run the final tiers", a CI lane) rather
+        # than the files a cure happens to edit, so the substring check a
+        # few lines down the call site (`path in criteria`) can never
+        # recognise a cure diff as having "touched" a sweep's own cited
+        # text -- a cure that lands no commit at all, or one that touches
+        # only a test file, reads exactly like one that touched nothing a
+        # sweep cites, and the un-reopen edge would fire over a tree the
+        # sweep never actually re-measured. That contradicts review.md's
+        # own B.5 rule ("stale even when the cure touches only tests") and
+        # SPEC.md's `tasks[].sweep` row ("the mechanism that keeps a
+        # plan's final sweep from staying validated at a tree a later
+        # cure pass moved past") -- a sweep re-opened by `insert_cure_
+        # tasks` (either its own B.2 step or the `invalidates` walk) stays
+        # `pending` until the plan's OWN scheduler re-runs it, never
+        # restored by this reconciliation hook. Filtered here, before the
+        # diff is even computed, rather than at the `_reconcile_pre_cure_
+        # heads` call site: a sweep this function never returns is a
+        # sweep the caller cannot restore no matter what its own diff
+        # logic does, which is the one guarantee this task's successCriteria
+        # asks for ("whatever paths the cure diff touches").
+        if task.get("sweep") is True:
             continue
         live_sha = pre_cure_heads.get(rid)
         at_live_sha = [ev for ev in reopens[rid] if ev.get("sha") == live_sha]
