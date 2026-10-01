@@ -82,6 +82,12 @@ Read these together, not one at a time:
 - **Absence of evidence in one channel is not evidence of absence.** Grep for a
   behaviour more than one way before reporting it missing (an HTTP call may be
   `curl` in one iteration and `python3 urllib.request` in the next).
+- **A `task.repoll_backoff` deferral is the engine waiting, not a hang.** It
+  marks a re-poll that backed off instead of resetting on free tool activity;
+  treat it like any other healthy wait, not a stall.
+- **A `cure.sweep_reopened` event is the sweep being correctly re-run**, not a
+  regression: a cure pass re-opens every validated sweep task so the final
+  sweep repeats on the cured sha.
 
 ## Writing a PRD
 
@@ -97,7 +103,11 @@ anything it can check it can reject, so:
 - paste a `## Materiality rubric` inline that blocks only on substance
   (behaviour absent or wrong, named test missing or red, spec contradicts
   code, secret exposed) and never on "a claim in a tracked record is false";
-- end with one sweep and commit nothing after it.
+- end with one sweep, and commit nothing after it: no CI-run report, record,
+  close-out, notes file or doc touch-up; `origin/main`'s head when the run
+  ends is the swept sha; issue closure is a comment, not a tracked file. A
+  review cure is the only thing that may land after the sweep — it re-runs
+  the whole sweep on the cured sha.
 
 Operator corollary: when `review-findings.md` marks a blocking finding
 **`curable: false`**, the engine does not stop — it replans and burns the

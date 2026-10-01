@@ -538,8 +538,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # test_worker_verdict_recovery.py; direct `LoopSupervisor._step_worker()`
     # calls against a hand-built `RunDir`, no real subprocess, so it counts
     # in smoke too), measured the same way -> fast 6834/470, smoke 5137/346.
-    "fast": {"tests": 6834, "modules": 470},
-    "smoke": {"tests": 5137, "modules": 346},
+    # Task 007 (PRD v0.29 G): +11 tests, no new module (tests/
+    # test_writing_a_prd_skill.py: one presence test per G.1 item plus one
+    # for G.3 and one for G.4, plus a discriminator sanity test; pure text
+    # assertions, no subprocess, so counted in smoke too), measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 6845/470,
+    # `-m smoke` -> 5148/346.
+    "fast": {"tests": 6845, "modules": 470},
+    "smoke": {"tests": 5148, "modules": 346},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

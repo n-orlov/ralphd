@@ -74,7 +74,15 @@ the spec is never a blocking ground.
 Never write "a factual claim in a tracked record is false" as a blocking
 ground: it makes every sentence the run writes a way to fail.
 
-## End the run cleanly
+## Ending the run
+
+The sweep is the plan's last task, and nothing of any kind is committed after
+it: no CI-run report, record, close-out, notes file or doc touch-up.
+`origin/main`'s head when the run ends is the swept sha. Issue closure is a
+comment, not a tracked file. A stale sweep is never process: if `origin/main`
+moved past the swept sha, the sweep is stale and must re-run before the plan
+can be called done. Since 0.29 the plan marks the sweep task `sweep: true`,
+so a cure pass re-opens it instead of leaving a stale sweep behind.
 
 - **One sweep, at the end, and nothing committed after it.** If the PRD needs
   CI green, say "all lanes green at the final pushed sha" and make the sweep
@@ -84,6 +92,63 @@ ground: it makes every sentence the run writes a way to fail.
   commits that made the final record" and "the guard must be green at HEAD as
   the last commit, recorded in a file" are fixed-point chases: every cure
   creates a new HEAD to cure.
+
+## The standing rules block
+
+Put these in the PRD's own `## Standing rules` block, verbatim, never only in
+a task's own criteria:
+
+- the test recipes, given verbatim, with their parallelism;
+- a rule that only the final sweep runs a whole tier, and no other task runs
+  one;
+- commits are made per task and pushed;
+- the sweep's execution shape — what it runs and in what order — belongs here,
+  never inside a task's criteria;
+- how to span a wait longer than ~85% of the iteration cap, using `deferred`;
+- the CI dispatch recipe, so the run can close its own CI loop without an
+  operator's help.
+
+## The rubric's working clauses
+
+Beyond the materiality rubric's four substance grounds, these working clauses
+govern how review applies it:
+
+- file the rule, not the example — a finding names the general rule a bullet
+  stands for, not just the one instance it noticed;
+- read the direction of the evidence — a log line or event that could support
+  either side of a finding is not evidence for either side;
+- a review after a cure pass confirms the cure landed, and does not re-audit
+  the whole product from scratch;
+- judge a hat or router by its contract, not its taste — a stylistic
+  preference is not a materiality-rubric ground;
+- a stale sweep is never process — a sweep that ran before the final commit
+  landed does not satisfy a "green at HEAD" requirement.
+
+## Non-negotiables
+
+- **No weakened test.** A test pinning behaviour this wave changes is
+  rewritten in the same commit, naming the covering node it is rewritten to;
+  nothing else about the suite is retired.
+- **No raised timeout, budget, worker count or per-test bound.**
+- **No new required contract field.** On a self-development run, the
+  installed engine's own judge rejects a verdict or report carrying one
+  anyway.
+
+## Issues in scope
+
+Name the issues the PRD covers. The run reads each named issue in full, and
+the PRD wins wherever the PRD and an issue's own text differ. Check symbols
+(functions, event names, fields) against a named sha, and treat drift from
+that sha as expected, not as a finding.
+
+## Budget and shape
+
+Pre-split each large requirement into named tasks at plan time, rather than
+leaving a single oversized task for a worker to split later. Update the spec
+inside each task that changes behaviour — never in a separate docs-only task.
+State the iteration budget, the approach budget, the wall-clock window and
+the per-iteration cap, and the peer gate settings, so the run knows its own
+budget without guessing.
 
 ## Clauses that make acceptance unreachable — DO NOT
 
@@ -137,6 +202,12 @@ writes. Say so in the PRD, and:
   to maintain;
 - the two-things rule applies unchanged: the spec matches the code, and the
   tests prove the code. Engine incidents are not a reason to add paperwork.
+- **a hat prompt is product behaviour**, proven by a test on the prompt built
+  for the case — the same discipline as any other behaviour, not an
+  exception for prompts;
+- the standing rules tell the run how to avoid, by hand, the known defects of
+  the engine it runs on, since the run cannot patch the engine that is
+  running it.
 
 ## Before launch
 
@@ -148,3 +219,23 @@ writes. Say so in the PRD, and:
       sha, spec consistent, no secret exposed. Nothing else.
 - [ ] Out of scope is stated, and there is an escape hatch (how the run
       petitions a requirement it proves contradictory or impossible).
+- [ ] Ending the run: the sweep is the last task, nothing is committed after
+      it, `origin/main`'s head is the swept sha, issue closure is a comment,
+      a stale sweep is never process, and the sweep task is marked
+      `sweep: true`.
+- [ ] The Standing rules block gives the test recipes verbatim, the
+      only-the-sweep-runs-a-tier rule, the sweep's execution shape, the
+      deferred-wait rule and the CI dispatch recipe.
+- [ ] The rubric's working clauses are stated: file the rule not the
+      example, read the direction of the evidence, a cure-pass review
+      confirms rather than re-audits, judge a hat or router by its contract,
+      and a stale sweep is never process.
+- [ ] Non-negotiables are stated: no weakened test, no raised timeout or
+      bound, no new required contract field.
+- [ ] Issues in scope are named, read in full, and checked against a named
+      sha with drift from it treated as expected.
+- [ ] Large requirements are pre-split into named tasks at plan time, with
+      the iteration/approach/window/cap and peer gate settings stated.
+- [ ] Self-development: hat prompts are proven by tests on the prompt built
+      for the case, and the standing rules name the engine defects to avoid
+      by hand.
