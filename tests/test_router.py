@@ -589,20 +589,73 @@ def _prompt_outside_candidate_blocks(prompt: str, candidates: list) -> str:
     return outside
 
 
-def _assert_outside_text_states_only_the_b3_rule(outside_text: str):
-    """B.3/B.8: the fixed, exact PRD B.3 text must appear verbatim, and
-    once it is removed, nothing ordering-related may remain -- not
-    before it, not after it, and (since an insertion *inside*
-    `TASK_SELECTION_RULE` breaks its contiguity with `_B3_RULE_PRD_TEXT`)
-    not folded inside it either."""
-    assert _B3_RULE_PRD_TEXT in outside_text
+def _non_ordering_scaffolding_lines(deterministic_id: str,
+                                    last_worker_iteration: dict | None) -> set:
+    """Every line the task-selection prompt may carry outside the
+    candidate blocks and B.3's rule, as FIXED literals vetted to say
+    nothing about ordering (the deterministic-pick line only DESCRIBES
+    how the deterministic pick was computed; B.3's own "take the
+    deterministic pick" is the only instruction about it). Membership is
+    by whole-line equality, so ANY sentence added to the prompt outside
+    the candidate blocks -- whatever words it uses, whether a new line or
+    text appended to an existing one -- falls outside this set and fails
+    the check: an ordering sentence cannot hide behind wording that no
+    phrase list anticipated."""
+    lines = {
+        "Selecting the next task for a worker iteration has more than one "
+        "runnable candidate.",
+        "Candidates:",
+        "The deterministic pick (highest priority, then plan order) is "
+        f"{deterministic_id!r}.",
+        'Answer with exactly one JSON object and nothing else: '
+        '{"candidate_id": "<one of the candidate ids above>", '
+        '"reason": "<one-line reason>"}',
+    }
+    if last_worker_iteration:
+        lines.add(
+            "The last worker iteration worked on task "
+            f"{last_worker_iteration.get('task_id')!r}, reported verdict "
+            f"{last_worker_iteration.get('verdict')!r}, and proposed these "
+            f"new tasks: {list(last_worker_iteration.get('proposed_tasks') or [])!r}.")
+    else:
+        lines.add("No worker iteration has run yet this approach.")
+    return lines
+
+
+def _assert_outside_text_states_only_the_b3_rule(
+        outside_text: str, deterministic_id: str = "020",
+        last_worker_iteration: dict | None = None):
+    """B.3/B.8: the fixed, exact PRD B.3 text must appear verbatim, once,
+    on a line of its own, and once it is removed every remaining line
+    must be one of the vetted non-ordering scaffolding lines -- so no
+    other sentence about ordering can sit before it, after it, folded
+    inside it (an insertion breaks its contiguity with
+    `_B3_RULE_PRD_TEXT`), or appended to any other line."""
+    lines = outside_text.split("\n")
+    assert lines.count(_B3_RULE_PRD_TEXT) == 1, (
+        "B.3's rule, in its exact PRD wording, is not a line of its own "
+        "exactly once in the prompt")
+    allowed = _non_ordering_scaffolding_lines(deterministic_id,
+                                              last_worker_iteration)
+    for line in lines:
+        if line == _B3_RULE_PRD_TEXT or not line.strip():
+            continue
+        assert line in allowed, (
+            f"prompt line outside the candidate blocks is neither B.3's "
+            f"rule nor vetted non-ordering scaffolding: {line!r}")
     rest = outside_text.replace(_B3_RULE_PRD_TEXT, "", 1).lower()
     for phrase in _ORDERING_PHRASES:
         assert phrase not in rest, (
             f"found ordering phrase {phrase!r} outside the B.3 rule text")
 
 
-def test_task_selection_prompt_never_reorders_by_origin_alone():
+@pytest.mark.parametrize("last_worker_iteration", [
+    None,
+    # The worker-origin task was proposed by the iteration just before.
+    {"task_id": "019", "verdict": "complete", "proposed_tasks": ["021"]},
+])
+def test_task_selection_prompt_never_reorders_by_origin_alone(
+        last_worker_iteration):
     """A SECOND prompt case (#278 B.8): a worker-origin task that does
     NOT touch what the other candidate (a sweep) measures. The prompt's
     text outside the candidate field blocks states the B.3 rule, in its
@@ -615,11 +668,13 @@ def test_task_selection_prompt_never_reorders_by_origin_alone():
         '{"candidate_id": "020", "reason": "deterministic pick"}')
 
     asyncio.run(router.decide_task_selection(
-        candidates, "020", ask=ask, timeout_s=5.0))
+        candidates, "020", ask=ask, timeout_s=5.0,
+        last_worker_iteration=last_worker_iteration))
     prompt = prompts_seen[0]
 
     outside_text = _prompt_outside_candidate_blocks(prompt, candidates)
-    _assert_outside_text_states_only_the_b3_rule(outside_text)
+    _assert_outside_text_states_only_the_b3_rule(
+        outside_text, "020", last_worker_iteration)
 
 
 @pytest.mark.parametrize("mutated_rule", [
@@ -640,6 +695,10 @@ def test_task_selection_prompt_never_reorders_by_origin_alone():
         "take the deterministic pick.",
         "take the deterministic pick, preferring the highest-priority "
         "candidate."),
+    # The verifier's probe from the rejected attempt, folded inside the
+    # rule constant itself.
+    router.TASK_SELECTION_RULE
+    + " Choose worker-origin candidates over steering-origin candidates.",
 ])
 def test_an_origin_or_priority_ranking_sentence_anywhere_fails_the_check(
         monkeypatch, mutated_rule):
@@ -657,6 +716,80 @@ def test_an_origin_or_priority_ranking_sentence_anywhere_fails_the_check(
     asyncio.run(router.decide_task_selection(
         candidates, "020", ask=ask, timeout_s=5.0))
     prompt = prompts_seen[0]
+
+    outside_text = _prompt_outside_candidate_blocks(prompt, candidates)
+    with pytest.raises(AssertionError):
+        _assert_outside_text_states_only_the_b3_rule(outside_text)
+
+
+def _insert_at_start(prompt, sentence):
+    return sentence + "\n" + prompt
+
+
+def _insert_after_candidates_header(prompt, sentence):
+    return prompt.replace("Candidates:", "Candidates:\n" + sentence, 1)
+
+
+def _append_to_deterministic_pick_line(prompt, sentence):
+    return prompt.replace("is '020'.", "is '020'. " + sentence, 1)
+
+
+def _insert_before_rule(prompt, sentence):
+    return prompt.replace(_B3_RULE_PRD_TEXT, sentence + "\n" + _B3_RULE_PRD_TEXT, 1)
+
+
+def _append_to_rule_line(prompt, sentence):
+    return prompt.replace(_B3_RULE_PRD_TEXT, _B3_RULE_PRD_TEXT + " " + sentence, 1)
+
+
+def _append_after_a_candidate_block(prompt, sentence):
+    return prompt.replace("  dependsOn: []", "  dependsOn: []\n" + sentence, 1)
+
+
+def _insert_at_end(prompt, sentence):
+    return prompt + "\n" + sentence
+
+
+@pytest.mark.parametrize("insert", [
+    _insert_at_start, _insert_after_candidates_header,
+    _append_to_deterministic_pick_line, _insert_before_rule,
+    _append_to_rule_line, _append_after_a_candidate_block, _insert_at_end,
+])
+@pytest.mark.parametrize("sentence", [
+    # The verifier's own rejected-attempt probe: an origin ranking that
+    # uses none of the words a phrase list would look for.
+    "Choose worker-origin candidates over steering-origin candidates.",
+    # Further cases of the same rule, worded so no phrase list catches
+    # them either.
+    "Worker-origin work outranks a sweep.",
+    "Steering-origin tasks win every tie.",
+    "Favour the candidate with the larger priority number.",
+    "Pick the higher-priority task.",
+])
+def test_an_origin_or_priority_ordering_sentence_anywhere_in_the_prompt_fails(
+        monkeypatch, insert, sentence):
+    """#278 B.8 cure: a sentence that orders candidates by origin or
+    priority, inserted ANYWHERE in the prompt outside the candidate field
+    blocks -- before the candidate list, between it and the deterministic
+    pick, appended to an existing line, right before or after B.3's rule,
+    or at the very end -- and worded with none of `_ORDERING_PHRASES`,
+    must still make the check fail. The prompt is built through
+    `router.decide_task_selection` with the builder wrapped so the
+    injected sentence reaches the router's own `ask`."""
+    real_builder = router._task_selection_prompt
+
+    def mutated_builder(*args, **kwargs):
+        return insert(real_builder(*args, **kwargs), sentence)
+
+    monkeypatch.setattr(router, "_task_selection_prompt", mutated_builder)
+    candidates = _task_selection_candidates_020_021()
+    ask, prompts_seen = _capturing_task_selection_ask(
+        '{"candidate_id": "020", "reason": "deterministic pick"}')
+
+    asyncio.run(router.decide_task_selection(
+        candidates, "020", ask=ask, timeout_s=5.0))
+    prompt = prompts_seen[0]
+    assert sentence in prompt
 
     outside_text = _prompt_outside_candidate_blocks(prompt, candidates)
     with pytest.raises(AssertionError):

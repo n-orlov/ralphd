@@ -507,8 +507,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # ordering-phrase check plus 5 parametrized mutation cases, replacing
     # a tautological assertion), measured the same way -> fast 6766/464,
     # smoke 5069/340.
-    "fast": {"tests": 6766, "modules": 464},
-    "smoke": {"tests": 5069, "modules": 340},
+    # Cure task cure-01-01, second attempt: +37 tests, no new module
+    # (the B.8 check is now a whole-line allowlist of vetted scaffolding,
+    # proven by 35 sentence-x-position mutations, one more rule-constant
+    # mutation and a last-worker-iteration variant of the positive case),
+    # measured the same way -> fast 6803/464, smoke 5106/340.
+    "fast": {"tests": 6803, "modules": 464},
+    "smoke": {"tests": 5106, "modules": 340},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
