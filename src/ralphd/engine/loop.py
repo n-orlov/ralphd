@@ -283,6 +283,18 @@ class LoopSupervisor:
         # which tracks the BUDGET a corroborated claim spends, not the
         # claim itself.
         self._last_progress_claim: dict | None = None
+        # PRD v0.29 requirement A.3 (#279): cross-iteration state for the
+        # re-poll backoff ladder -- `_repoll_consecutive_count` counts
+        # consecutive RE-POLLS (a worker iteration on an assigned task
+        # ending `no_verdict` with a `progress_claim` reading
+        # `corroborated: false` and `deltaSize: 0`) on the SAME task, with
+        # no other worker iteration between them. Reset to 0 the moment
+        # the assigned task changes (including to/from `None`) or an
+        # iteration on the task is not a re-poll; incremented once per
+        # re-poll. Purely in-memory, the same scope `_progress_external_
+        # streak`/`stagnant` already use -- never persisted to disk.
+        self._repoll_consecutive_count = 0
+        self._repoll_streak_task_id: str | None = None
         # Task 052 (#10): the host-side rate table (usually inlined into
         # job.yaml by `ralphctl start`) is parsed once, here -- the runner
         # consults it only for messages the provider quoted no price for.
@@ -6290,6 +6302,63 @@ class LoopSupervisor:
                       "#156); moved behind every runnable task"))
         return []
 
+    def _apply_engine_repoll_backoff(self, task_id: str,
+                                     consecutive_count: int,
+                                     backoff_s: float) -> None:
+        """PRD v0.29 requirement A.2/A.4 (#279): the engine's OWN defer
+        of a task stuck in a run of consecutive re-polls -- same single-
+        write shape `_apply_worker_deferred_report` just above uses (one
+        write through `RunState.write_tasks`, `in-progress`/`pending` ->
+        `pending` with `deferredUntil`/`deferredReason` recorded), but
+        applied DIRECTLY by the engine, never through the worker contract:
+        a re-poll is defined by the shape of the progress CLAIM itself
+        (uncorroborated, zero workspace delta), not by anything a worker
+        reports as a verdict, so there is no payload here to validate.
+
+        The backoff is 10 minutes (600s) for the second consecutive
+        re-poll and doubles for each further one, capped at 30 minutes
+        (1800s) -- `_step_worker`'s own call site computes `backoff_s`;
+        this method only applies it. `deferredUntil` is bounded by the
+        job's own deadline exactly as a worker's own `verdict: "deferred"`
+        report is (requirement A.2: "The deadline still bounds it the way
+        it bounds a worker deferral") -- never past `self._deadline_
+        epoch`. Deliberately does not touch `progressBudget`/
+        `taskAbsorptionStreak`: a backoff is a reorder, exactly like an
+        ordinary worker deferral, never an attempt.
+        """
+        tasks_data = self.run.read_tasks()
+        current = None
+        for t in tasks_data.get("tasks", []):
+            if t.get("id") == task_id:
+                current = t
+                break
+        if current is None:
+            return
+        old_status = current.get("status", "pending")
+        until_epoch = min(time.time() + backoff_s, self._deadline_epoch)
+        until = utc_from_epoch(until_epoch)
+        reason = (
+            f"re-poll backoff: consecutive re-poll #{consecutive_count} "
+            f"on this task backed off {backoff_s:.0f}s before the "
+            "scheduler offers it again (PRD v0.29 A.2, #279)")
+        current["status"] = "pending"
+        current["deferredUntil"] = until
+        current["deferredReason"] = reason
+        self.run.write_tasks(tasks_data)
+        self._emit_task_status(task_id, old_status, "pending",
+                               deferredUntil=until, deferredReason=reason)
+        self.run.emit(
+            "task.repoll_backoff", taskId=task_id,
+            consecutiveCount=consecutive_count,
+            backoffSeconds=backoff_s, deferredUntil=until)
+        self.run.emit(
+            "log", level="info",
+            message=(
+                f"task {task_id!r} backed off after {consecutive_count} "
+                f"consecutive re-polls (zero-delta, uncorroborated "
+                f"no_verdict claims): {backoff_s:.0f}s, until {until} "
+                "(PRD v0.29 A.2/A.4, #279)"))
+
     @staticmethod
     def _parse_iso_epoch(ts: str) -> float:
         """v0.20 task 022 (PRD requirement C.1, #156): parse an ISO-8601
@@ -6584,8 +6653,17 @@ class LoopSupervisor:
         # this method runs; the call site reads it exactly once, right
         # after `progress_enforcement.ok`, and only trusts it when its
         # own `taskId` still matches the iteration's `assigned_id`.
+        # PRD v0.29 requirement A.1 (#279): `deltaSize` rides on the
+        # same stashed claim as `taskId`/`corroborated` -- the re-poll
+        # detector at `_step_worker`'s own stagnation-formula site needs
+        # all three to decide whether THIS iteration is a re-poll ("ends
+        # no_verdict with a progress_claim ... corroborated: false and
+        # deltaSize: 0"), and `extra_validate` itself may only return a
+        # `list[str]`, so this instance attribute is still the only
+        # channel back.
         self._last_progress_claim = {
-            "taskId": assigned_task_id, "corroborated": corroborated}
+            "taskId": assigned_task_id, "corroborated": corroborated,
+            "deltaSize": delta_size}
         self.run.emit(
             "progress_claim", taskId=assigned_task_id,
             corroborated=corroborated, deltaSize=delta_size)
@@ -10163,6 +10241,17 @@ class LoopSupervisor:
             progress_claim_corroborated = False
             progress_budget_used: int | None = None
             progress_budget_total: int | None = None
+            # PRD v0.29 requirement A.1 (#279): the re-poll detector at
+            # the stagnation-formula site further down must only read a
+            # claim `_apply_worker_progress_report` actually accepted
+            # THIS pass -- `self._last_progress_claim` is an instance
+            # attribute that otherwise keeps the previous pass's value
+            # across an iteration whose payload carried no `progress`
+            # block at all, which would misread a stale same-task claim
+            # as this iteration's own. Set below, right beside `progress_
+            # claim_corroborated`'s own read of `self._last_progress_
+            # claim`, and consulted (never reassigned) by that formula.
+            progress_claim_this_pass: dict | None = None
             # Task 005 PART 1 (requirement A.1/A.2, #114, closes task 004's
             # residual gap -- operator steer 001): route EVERY worker
             # payload carrying a `petition` field through the declaration
@@ -10348,6 +10437,13 @@ class LoopSupervisor:
                         # site only ever READS the flag this sets, exactly
                         # like `contract_progress`.
                         claim = self._last_progress_claim
+                        if claim is not None and claim.get("taskId") == assigned_id:
+                            # PRD v0.29 requirement A.1 (#279): stash the
+                            # claim THIS pass actually accepted, taskId-
+                            # matched exactly like the corroboration read
+                            # just below, so the re-poll detector further
+                            # down never reads a stale prior-pass value.
+                            progress_claim_this_pass = claim
                         if claim is not None and claim.get("taskId") == assigned_id \
                                 and claim.get("corroborated"):
                             progress_claim_corroborated = True
@@ -11026,6 +11122,60 @@ class LoopSupervisor:
                 # infra/signal fault.
                 continue
 
+            # PRD v0.29 requirement A.1-A.4 (#279): is THIS pass a
+            # RE-POLL -- "a worker iteration on an assigned task that
+            # ends no_verdict with a progress claim whose progress_claim
+            # event reads corroborated: false and deltaSize: 0". Read
+            # from `progress_claim_this_pass` (set just above, only when
+            # `_apply_worker_progress_report` actually accepted a claim
+            # THIS pass, taskId-matched) -- never `self._last_progress_
+            # claim` directly, which would otherwise still read a prior
+            # pass's claim on an iteration whose payload carried no
+            # `progress` block at all.
+            is_repoll = (
+                verdict == "no_verdict"
+                and assigned_id is not None
+                and isinstance(progress_claim_this_pass, dict)
+                and progress_claim_this_pass.get("corroborated") is False
+                and progress_claim_this_pass.get("deltaSize") == 0)
+            # Requirement A.3 (ladder bookkeeping): the consecutive count
+            # resets when the assigned task changes (including to/from
+            # `None` -- a task leaving `pending`/`in-progress` by any
+            # other channel is assigned something else, or nothing, the
+            # very next pass) or when this pass is not a re-poll; it is
+            # incremented once per re-poll, on the same task, with no
+            # other worker iteration between them (a sleep-and-wake pass
+            # on the deferred task never reaches this line at all -- it
+            # `continue`s from the `selected is None` branch above, long
+            # before a worker is ever dispatched).
+            if assigned_id != self._repoll_streak_task_id:
+                self._repoll_consecutive_count = 0
+                self._repoll_streak_task_id = assigned_id
+            if is_repoll:
+                self._repoll_consecutive_count += 1
+            else:
+                self._repoll_consecutive_count = 0
+            if is_repoll and self._repoll_consecutive_count >= 2:
+                # Requirement A.2: the SECOND consecutive re-poll backs
+                # off 600s, doubling for each further one, capped at
+                # 1800s -- count 2 -> 600, 3 -> 1200, 4 -> 1800, 5+ ->
+                # 1800 (the cap, not a further double). Requirement A.3:
+                # "a re-poll that triggers a backoff neither increments
+                # nor resets the approach's stagnation counter, the same
+                # as a worker deferral" -- so this `continue`s exactly
+                # like the infra/signal and petition-hold carve-outs just
+                # above, before `stagnant` is ever touched this pass. The
+                # FIRST re-poll of a run (count == 1) never reaches this
+                # branch at all and falls through to the ordinary
+                # formula below instead (requirement A.3's own "the first
+                # re-poll of a run of them is counted by the ordinary
+                # formula, as A.1 leaves it").
+                backoff_s = min(
+                    600 * (2 ** (self._repoll_consecutive_count - 2)), 1800)
+                self._apply_engine_repoll_backoff(
+                    assigned_id, self._repoll_consecutive_count, backoff_s)
+                continue
+
             after = json.dumps(
                 state.tasks_doc_excluding_new_entries(
                     tasks_after, before_task_ids, origin=state.TASK_ORIGIN_WORKER),
@@ -11102,8 +11252,21 @@ class LoopSupervisor:
             # assigned iteration's `tool_activity` witness is unchanged:
             # `STAGNATION_TOOL_ACTIVITY_MIN_CALLS` keeps its value and its
             # meaning exactly as before this task.
+            #
+            # PRD v0.29 requirement A.1 (#279): `is_repoll` (computed just
+            # above, before the backoff carve-out) ALSO gates this
+            # witness, independently of `assigned_id` -- "tool_activity is
+            # false for a re-poll. The other witnesses are unchanged." A
+            # re-poll that reaches this line (the first of a run, which
+            # the backoff carve-out above never intercepts) still counted
+            # tool calls in its own transcript, same as any other
+            # assigned iteration, but those calls bought nothing: the
+            # worker's own progress claim already says the tree did not
+            # move and nothing was corroborated, so they are no longer
+            # read as a reason to reset the approach's stagnation counter.
             tool_activity = (
                 assigned_id is not None
+                and not is_repoll
                 and state.count_tool_calls(self.run.root, worker_iter_n)
                 >= self.STAGNATION_TOOL_ACTIVITY_MIN_CALLS)
             # Task 013 (PRD requirement A.3, #156): a corroborated

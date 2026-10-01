@@ -1330,9 +1330,31 @@ consecutive one is not. The streak resets the moment the assigned task changes,
 a real tree delta lands, or the claim carries `commit`/`file` evidence instead.
 Every accepted claim records a `progress_claim` event (§5.4) carrying `taskId`,
 `corroborated` and `deltaSize` -- `_apply_worker_progress_report()`'s own record,
-consumed by nothing downstream yet: the per-task progress budget that reads
-`corroborated` for something beyond the record, and the stagnation-counter
-exemption it grants, are a later task's own scope.
+consumed by the per-task progress budget (`progressBudget`, §5.2) that reads `corroborated` for
+something beyond the record, and -- PRD v0.29 requirement A.1-A.4, #279, task
+001 -- by the stagnation witness formula itself: call an iteration a
+**re-poll** when it ends `no_verdict` with a `progress_claim` reading
+`corroborated: false` and `deltaSize: 0` (mutually exclusive with a
+corroborated claim by construction, since `corroborated` is `False` only when
+the tree did not move). Witness (d) -- `tool_activity` (§4.4's four-witness
+formula) -- no longer fires on a re-poll's own tool calls, however many: a
+worker that spends a whole re-poll reading a long-running wait's status (a
+CI lane, a background job) now increments the stagnation counter like any
+other no-progress iteration instead of resetting it on tool calls alone,
+which is what let selfdev-v028's own #279 run 71 one-minute re-polls on one
+task without ever counting one as stagnant. The FIRST re-poll of a run of
+them is still counted by the ordinary formula; the SECOND and every later
+CONSECUTIVE one on the SAME task instead backs the task off --
+`LoopSupervisor._apply_engine_repoll_backoff` defers it back to `pending`
+with `deferredUntil`/`deferredReason` (capped at the job's own `deadlineAt`,
+like every other deferral) and emits `task.repoll_backoff` (§5.4), `continue`ing
+the worker loop before the stagnation counter or the `tasks.json` before/after
+diff is ever touched for that pass -- the same carve-out shape the petition-
+hold and infra/signal re-ask branches already use. The backoff doubles each
+consecutive re-poll, capped at 30 minutes: count `2` -> 600s, `3` -> 1200s,
+`4` and later -> 1800s. A corroborated claim on the task, at any point,
+resets the consecutive-re-poll count to `0`, so the next re-poll after it is
+treated as the first of a fresh run and does not back off.
 
 ### 4.6 Steering, pause, interrupt, abort
 
@@ -2556,6 +2578,7 @@ reconstruct the whole run, including its restarts.
 | `task` | `taskId`, `oldStatus`, `newStatus` | a task's status changed in `tasks.json` (polled while the agent runs, so it lands mid-iteration) |
 | `signal` | `signal` (`COMPLETE` \| `VERIFIED` \| `taskVerified`), `taskId` | a sentinel was accepted |
 | `progress_claim` | `taskId`, `corroborated`, `deltaSize` | a worker's `progress` block (§4.5) was accepted alongside `no_verdict` -- `corroborated` iff `commit`/`file` evidence lined up with a nonzero workspace-fingerprint delta, or `external` evidence was the first of a consecutive run of tree-delta-free claims on that task; `deltaSize` is `_progress_claim_delta_size()`'s own count of changed paths (task 012, PRD requirement A.2, #156) |
+| `task.repoll_backoff` | `taskId`, `consecutiveCount`, `backoffSeconds`, `deferredUntil` | the SECOND or later consecutive re-poll on this task (PRD v0.29 requirement A.1-A.4, #279, task 001; §4.5's re-poll definition) -- `LoopSupervisor._apply_engine_repoll_backoff` deferred the task back to `pending` instead of letting the ordinary stagnation witness formula see this pass; `consecutiveCount` is the ladder position (`2`, `3`, `4`, ...), `backoffSeconds` is `min(600 * 2 ** (consecutiveCount - 2), 1800)` |
 | `deferred_wait` | `taskId`, `until`, `deadlineAt`, `boundedBy` (`"until"` \| `"deadlineAt"`), `sleptUntil`, `waitedS` | nothing is runnable and at least one `pending` task carries `deferredUntil` (§4.5's `"deferred"` verdict, task 021) -- the engine sleeps until the earliest `deferredUntil`, bounded by the job's own `deadlineAt`; `boundedBy` names which of the two the sleep actually stopped at (v0.20 requirement C.1, #156, task 022) |
 | `steering.received` | `file` | a steering message was stored |
 | `steering.consumed` | `file`, `iteration` | an actionable phase finished cleanly with it (§4.6) |

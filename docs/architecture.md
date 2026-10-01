@@ -905,6 +905,77 @@ required`, read BEFORE each dispatch) -- see `tests/test_worker_hat.py::
 test_three_consecutive_commit_only_iterations_never_force_verify_dispatch`
 for the replacement pin.
 
+### Re-polls do not buy free tool-activity resets, and back off instead of stalling (PRD v0.29 requirement A.1-A.4, #279, task 001)
+
+Task 012/013's own corroboration machinery (just above) measured a
+worker's `progress` claim; it never changed what that measurement DID to
+the four-witness formula. selfdev-v028's own #279 incident showed the
+gap: a worker re-checking a long-running wait (a dispatched CI lane, a
+background job) every iteration, honestly reporting `no_verdict` with an
+uncorroborated, zero-delta `progress` claim each time, still spent
+`STAGNATION_TOOL_ACTIVITY_MIN_CALLS`-or-more tool calls reading the lane's
+status every pass -- witness (d) alone kept resetting `stagnant` to `0`
+forever. 71 one-minute iterations, none of them ever counted as stagnant.
+
+Call such an iteration a **re-poll**: a worker iteration on its assigned
+task that ends `no_verdict` with a `progress_claim` event reading
+`corroborated: false` and `deltaSize: 0` (`LoopSupervisor._apply_worker_
+progress_report`'s own record, read back through a per-pass-scoped
+`progress_claim_this_pass`, never the carried-over `self._last_progress_
+claim`, so an iteration whose payload carries no `progress` block at all
+is never mistaken for a re-poll off a stale prior-pass claim). By
+construction a re-poll and a corroborated claim are mutually exclusive --
+`corroborated` is `False` only when the tree did not move, which is
+exactly the re-poll's own `deltaSize: 0` half.
+
+**Witness rule (requirement A.1): `tool_activity` is gated on `not
+is_repoll`, never merely on `assigned_id is not None`.** A re-poll's own
+tool calls -- however many -- no longer count as witness (d); the other
+three witnesses ((a) `tasks.json` changed, (b) a commit landed, (c)
+contract progress) are untouched and still fire exactly as before, on a
+re-poll exactly as on any other iteration. A worker that spends its whole
+re-poll reading a CI lane's status now increments `stagnant` like any
+other no-progress iteration, instead of resetting it. The FIRST re-poll
+of a run of them is counted by this ordinary formula, same as before this
+task (`is_repoll` alone decides witness (d)'s gating, not the ladder
+below) -- it is only the SECOND and later consecutive re-poll that the
+ladder below diverts before the formula is even reached.
+
+**Backoff ladder (requirement A.2): the second and later consecutive
+re-poll on the SAME task defers it instead of dispatching the worker
+again immediately.** `LoopSupervisor._repoll_consecutive_count`/`_repoll_
+streak_task_id` track a run of consecutive re-polls on one task,
+incremented once per re-poll and reset to `0` the moment the assigned
+task changes (including to/from no task selected at all) or the pass is
+not a re-poll (an ordinary no-progress iteration, a corroborated claim,
+or any other verdict). Once that count reaches `2`, `LoopSupervisor.
+_apply_engine_repoll_backoff` runs INSTEAD of dispatching the worker's
+reply through the ordinary witness formula: it writes the task back to
+`pending` with `deferredUntil` (now `+ backoff_s`, capped at the job's
+own `deadlineAt` exactly like every other deferral, §4.5) and
+`deferredReason` (naming the re-poll backoff and the consecutive count),
+and emits a `task.repoll_backoff` event (`taskId`, `consecutiveCount`,
+`backoffSeconds`, `deferredUntil`, §5.4) before `continue`ing the worker
+loop -- the exact same `_sleep_until_earliest_deferred` wake-on-the-
+earliest-`deferredUntil` path an ordinary deferral already uses. The
+backoff itself doubles each additional consecutive re-poll, capped at
+30 minutes: count `2` -> 600s, `3` -> 1200s, `4` and every later one ->
+1800s (`min(600 * 2 ** (count - 2), 1800)`).
+
+**Requirement A.3: a backed-off re-poll touches neither the stagnation
+counter nor `tasks.json`'s own `before`/`after` diff -- it `continue`s
+before either is ever computed, the same carve-out shape the petition-
+hold and infra/signal re-ask branches just above it already use.** A run
+of four re-polls in a row on one task therefore costs the approach
+exactly one stagnation strike (the first), never four, and never zero --
+the ladder's own backoff is the thing that stops the SECOND through
+FOURTH from ever reaching the formula at all, not an exemption from it.
+A corroborated claim on the same task, at any point in the run, resets
+`_repoll_consecutive_count` back to `0` (it is not a re-poll, so it takes
+the ladder's own "not a re-poll" reset branch) -- the very next re-poll
+after it is then treated as the first of a fresh run and does not back
+off.
+
 ### No-progress escalation guard vs. instant startup/infra failures (task 059)
 
 The worker loop's stagnation guard (3 consecutive worker iterations with

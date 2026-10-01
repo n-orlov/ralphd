@@ -512,8 +512,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # proven by 35 sentence-x-position mutations, one more rule-constant
     # mutation and a last-worker-iteration variant of the positive case),
     # measured the same way -> fast 6803/464, smoke 5106/340.
-    "fast": {"tests": 6803, "modules": 464},
-    "smoke": {"tests": 5106, "modules": 340},
+    # Task 001 (#279, PRD v0.29 A.1-A.4): +5 tests / +1 module (tests/
+    # test_repoll_backoff.py; the module spawns no real subprocess, an
+    # in-process `LoopSupervisor._step_worker()` with a scripted runner
+    # like `tests/test_progress_claim_corroboration.py`'s own, so it
+    # counts in smoke too), measured the same way -> fast 6808/465,
+    # smoke 5111/341.
+    "fast": {"tests": 6808, "modules": 465},
+    "smoke": {"tests": 5111, "modules": 341},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
