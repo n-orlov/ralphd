@@ -24,6 +24,15 @@ OTHER uncorroborated shape (anything that is not itself a `no_verdict` +
 zero-delta + uncorroborated re-poll) -- only this module's own scripted
 scenario, which happens to be exactly that shape on every pass, is
 affected.
+
+The rewrite below also bounds its own `_run_job_core()` drive
+(`tests/test_loop_driving_await_guard.py`'s guard: a bare
+`asyncio.run(sup._run_job_core())` can wait forever) with the same
+`_bounded(coro, timeout=30.0)` helper `tests/test_peer_verdict_gate.py`
+and `tests/test_peer_plan_review_gate.py` already define, instead of
+`_drive_until_paused` -- the run no longer pauses for this scenario at
+all, so polling for a `paused` status it will never reach would itself
+hang.
 """
 from __future__ import annotations
 
@@ -43,6 +52,15 @@ from tests.test_worker_hat import (
     _worker_iteration_count,
     _write_plan,
 )
+
+
+def _bounded(coro, timeout: float = 30.0):
+    """Bound a loop-driving await the same way
+    `tests/test_peer_verdict_gate.py` and
+    `tests/test_peer_plan_review_gate.py` already do -- a bare
+    `asyncio.run(sup._run_job_core())` can wait forever
+    (`tests/test_loop_driving_await_guard.py`'s guard)."""
+    return asyncio.run(asyncio.wait_for(coro, timeout))
 
 
 def _uncorroborated_commit_claim(sup, prompt: str = "") -> IterationResult:
@@ -99,7 +117,7 @@ def test_three_uncorroborated_no_verdict_claims_now_back_off_instead_of_tripping
     _write_plan(sup, [_fv_task()])
     sup.iterations_used = 1
 
-    asyncio.run(sup._run_job_core())
+    _bounded(sup._run_job_core())
 
     claims = [e for e in _fv_events(root) if e.get("type") == "progress_claim"]
     assert len(claims) == 19, claims
