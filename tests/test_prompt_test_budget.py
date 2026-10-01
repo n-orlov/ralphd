@@ -116,7 +116,7 @@ def test_prompt_never_chains_two_whole_suite_runs(name):
 def test_prompt_backgrounds_a_long_suite_run_instead_of_blocking(name):
     _assert_all(name, "background it, do not block", [
         r"background (a long|such a) run",
-        r"polling it instead of\s*\n?\s*blocking on it",
+        r"polling\s*\n?\s*it instead of\s*\n?\s*blocking on it",
     ])
 
 

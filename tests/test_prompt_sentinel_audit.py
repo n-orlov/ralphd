@@ -326,6 +326,15 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         ("## Steering ledger (read-only context)",),
         "`sup.build_prompt('worker')` (STEERING_LEDGER_HEADING)", ALL),
     AbsenceAssertion(
+        "test_sweep_shape_rules.py", (78,),
+        ("successCriteria state its execution shape",),
+        "the rendered planning prompt (PRD v0.29 D.2, #282: the old rule 7 "
+        "asked the sweep task's OWN successCriteria to state the command, "
+        "timeout and polling cadence; the new rule 7 moves that into the "
+        "harness-pinned Standing rules block instead, so the old wording "
+        "must be gone from every shipped template, not merely absent by "
+        "accident)", ALL),
+    AbsenceAssertion(
         "test_task_failure_kind_surfaces.py", (562, 563),
         ("validationAttempts", "VALIDATION_ATTEMPT_LIMIT", ">= 3"),
         "two slices of the hub's app.js bundle", None,
@@ -367,6 +376,17 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "test_verify.py", (148, 175), ("FINAL ATTEMPT",),
         "the verify prompt's injected `## Task under verification` block "
         "(task 074's first fix: task-verify.md:32)", ALL),
+    AbsenceAssertion(
+        "test_wait_task_prompt.py", (39, 40),
+        ("prefer recording the run id you are waiting on in the notes over "
+         "sleeping through the rest of your clock",
+         "sleeping through the rest of\n  your clock"),
+        "the rendered worker prompt's \"Return before the cap\" bullet (PRD "
+        "v0.29 A.5, #279: the old sentence worker.md carried is replaced by "
+        "#279's three-way wait rule, and the second literal is a negative "
+        "control over the exact reflow the old sentence used to wrap at, "
+        "so a template edit cannot satisfy the first assertion by merely "
+        "re-wrapping the dead sentence)", ALL),
     AbsenceAssertion(
         "test_worker_hat.py", (1693, 1701, 1707),
         ("## Why the previous attempt was rejected",),
