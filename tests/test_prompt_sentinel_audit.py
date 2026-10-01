@@ -255,14 +255,28 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "check is scoped to `_midrun_adjudication_extra`'s own returned "
         "string, which is never itself a shipped template", lowercased=True),
     AbsenceAssertion(
-        "test_petitions_review.py", (163, 164),
+        "test_petitions_review.py", (197, 198),
         ("Done when", "Cured when"),
         "the rendered review prompt with no open petition (PRD v0.28 "
-        "requirement C.1/C.2, #276): the remedy marker/bound rule is "
-        "stated only inside `petitions.petitions_review_context`'s "
-        "dynamic 'Open impossibility petitions' block, which renders '' "
-        "when nothing is open, so neither literal marker spelling may "
-        "appear anywhere in a shipped template", ALL),
+        "requirement C.1/C.2, #276): the literal marker spellings are "
+        "stated only in `petitions.REMEDY_SHAPE_RULE`, rendered into a "
+        "prompt's extra block only for a petition adjudication, so neither "
+        "may appear anywhere in a shipped template", ALL),
+    AbsenceAssertion(
+        "test_petitions_review.py", (193, 195, 196, 199, 200, 216, 217),
+        ("done-list marker",
+         "`_REMEDY_MAX_CLAUSES` (5) checkable clauses",
+         "Write a `substance` remedy in this exact shape",
+         "<!-- petition-adjudication-only -->",
+         "<!-- /petition-adjudication-only -->"),
+        "the rendered review prompt with no open petition, and the "
+        "delimiters in any rendered review prompt (#276)", None,
+        "review.md legitimately carries these inside its adjudication-only "
+        "block; `petitions.render_adjudication_only_blocks` (called by "
+        "`build_prompt`) drops the block, delimiters and all, unless the "
+        "prompt is built for a petition adjudication, and strips the "
+        "delimiters when it keeps the body -- the asserting test proves "
+        "both against the rendered prompt"),
     AbsenceAssertion(
         "test_price_strategy_derive.py", (174,), ("$0.00",),
         "`format_cost`'s CLI render", None,

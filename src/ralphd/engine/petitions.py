@@ -1375,6 +1375,46 @@ def open_unconfirmed_petitions(workspace: Path, run=None, *,
     return petitions_list
 
 
+# PRD v0.28 requirement C.1/C.2 (#276): the remedy-shape rule every prompt
+# built for a petition adjudication states -- `petitions_review_context`'s
+# 'Open impossibility petitions' block (ordinary run-ending review) and
+# `LoopSupervisor._midrun_adjudication_extra` (the bounded mid-run episode)
+# both render it verbatim. Its presence in a prompt's extra block is also
+# what keeps review.md's own adjudication-only block (`ADJUDICATION_ONLY_
+# BEGIN`/`_END` below) in the rendered prompt: a review prompt with no open
+# petition carries neither.
+REMEDY_SHAPE_RULE = (
+    "On a `substance` remedy (PRD v0.28 requirement C.1/C.2, #276), write "
+    "it in this exact shape: your evidence first, then a literal, "
+    "case-insensitive `Done when:` or `Cured when:` marker, then at most 5 "
+    "checkable completion criteria. Only the text after the marker folds "
+    "into the cure task's bounded success criteria; text before it never "
+    "does. A remedy with no marker at all, or whose criteria after the "
+    "marker exceed that 5-clause bound, is refused on this contract ladder "
+    "and must be rewritten, never silently truncated.")
+
+# The delimiters of a shipped template's adjudication-only block. Text
+# between them reaches a rendered prompt only when that prompt is built for
+# a petition adjudication (its extra block carries `REMEDY_SHAPE_RULE`);
+# otherwise `render_adjudication_only_blocks` drops it, delimiters and all.
+ADJUDICATION_ONLY_BEGIN = "<!-- petition-adjudication-only -->"
+ADJUDICATION_ONLY_END = "<!-- /petition-adjudication-only -->"
+_ADJUDICATION_ONLY_RE = re.compile(
+    re.escape(ADJUDICATION_ONLY_BEGIN) + r"\n?(.*?)"
+    + re.escape(ADJUDICATION_ONLY_END) + r"\n?", re.S)
+
+
+def render_adjudication_only_blocks(template: str, extra: str) -> str:
+    """Resolve every adjudication-only block in `template`: keep its body
+    (delimiters stripped) when `extra` -- the prompt's own appended context
+    -- carries `REMEDY_SHAPE_RULE`, i.e. the prompt is built for a petition
+    adjudication; drop the block whole otherwise. A template with no block
+    is returned unchanged."""
+    adjudicating = REMEDY_SHAPE_RULE in (extra or "")
+    return _ADJUDICATION_ONLY_RE.sub(
+        (lambda m: m.group(1)) if adjudicating else "", template)
+
+
 def petitions_review_context(workspace: Path, run=None, *,
                               contract_text: str = "",
                               tasks: list[dict] | None = None) -> str:
@@ -1428,15 +1468,7 @@ def petitions_review_context(workspace: Path, run=None, *,
          "for the rest of the run, and every later approach inherits the "
          "adjudication) or `REFUTED` (state CONCRETELY what would satisfy "
          "the obligation -- a vague or missing remedy is not a valid "
-         "REFUTED adjudication). On a `substance` remedy (PRD v0.28 "
-         "requirement C.1/C.2, #276), write it in this exact shape: your "
-         "evidence first, then a literal, case-insensitive `Done when:` "
-         "or `Cured when:` marker, then at most 5 checkable completion "
-         "criteria. Only the text after the marker folds into the cure "
-         "task's bounded success criteria; text before it never does. A "
-         "remedy with no marker at all, or whose criteria after the "
-         "marker exceed that 5-clause bound, is refused on this contract "
-         "ladder and must be rewritten, never silently truncated. Carry "
+         "REFUTED adjudication). " + REMEDY_SHAPE_RULE + " Carry "
          "your adjudications in your verdict "
          "payload's `petition_adjudications` field, one entry per "
          "petition, each naming the obligation and your CONFIRMED/REFUTED "

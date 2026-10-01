@@ -183,13 +183,13 @@ def _worker_supervisor(
     return sup, run, root
 
 
-def _refuting_review(sup, prompt=""):
+def _refuting_review(sup, prompt="", remedy: str = REMEDY):
     return _ok("adjudicating the open petition\n" + json.dumps({
         "verdict": "rejected",
         "petition_adjudications": [{
             "obligation": OBLIGATION,
             "adjudication": "REFUTED",
-            "remedy": REMEDY,
+            "remedy": remedy,
         }],
     }))
 
@@ -199,13 +199,19 @@ def _verified(sup, prompt=""):
 
 
 def _run_refuted_episode(
-        tmp_path: Path, task: dict) -> tuple[LoopSupervisor, RunDir]:
+        tmp_path: Path, task: dict, remedy: str = REMEDY,
+        review_prompts: list | None = None) -> tuple[LoopSupervisor, RunDir]:
     sup, run, workspace = _worker_supervisor(tmp_path, task)
     _make_petitions_file(workspace, OBLIGATION)
 
+    def review(s, p):
+        if review_prompts is not None:
+            review_prompts.append(p)
+        return _refuting_review(s, p, remedy=remedy)
+
     agent = _ScriptedAgent({
         "worker": [lambda s, p: _ok(json.dumps({"verdict": "no_verdict"}))],
-        "review": [_refuting_review],
+        "review": [review],
         "verify": [_verified],
     })
     agent.sup = sup  # type: ignore[attr-defined]
@@ -346,6 +352,49 @@ def test_the_substance_remedy_becomes_a_pending_cure_task_through_the_real_engin
     assert not status.get("curePasses")
     assert not status.get("gateCurePasses")
     assert sup._cure_passes_for_run() == 0
+
+
+def test_the_selfdev_v027_shape_folds_items_1_to_5_into_the_remedy_tasks_criteria(
+        tmp_path):
+    """PRD v0.28 requirement C.1 (#276), the selfdev-v027 incident shape,
+    through the real engine path (`_step_worker` -> mid-run episode ->
+    `_insert_refuted_remedy_tasks` -> `state.insert_cure_tasks`): a remedy
+    that opens on a measured diagnosis and only then lists its done-list.
+    The INSERTED remedy task's `successCriteria` holds items (1)-(5) and
+    none of the preamble's sentences; the preamble reaches `description`.
+    The adjudication prompt that produced it carried the shape rule.
+    """
+    preamble_sentences = (
+        "The condition is false.",
+        "Measured at sha 6edb68a4: 3 of 5 lanes red, 2 green.",
+        "The merge drops a filing on every second pass.",
+    )
+    items = (
+        "the merge is idempotent",
+        "every lane is green",
+        "the record cites its own sha",
+        "no filing is dropped",
+        "the audit range is empty",
+    )
+    remedy = (" ".join(preamble_sentences) + " Done when: "
+              + " ".join(f"({n}) {item}." for n, item in enumerate(items, 1)))
+    prompts: list = []
+    _sup, run = _run_refuted_episode(
+        tmp_path, _task_record(), remedy=remedy, review_prompts=prompts)
+
+    assert prompts and petitions.REMEDY_SHAPE_RULE in prompts[0]
+    remedy_tasks = [t for t in run.read_tasks()["tasks"]
+                    if t.get("origin") == "review-cure"]
+    assert len(remedy_tasks) == 1
+    criteria = remedy_tasks[0]["successCriteria"]
+    for n, item in enumerate(items, 1):
+        assert f"({n}) {item}" in criteria
+    for sentence in preamble_sentences:
+        assert sentence.rstrip(".") not in criteria
+    assert "condition is false" not in criteria.lower()
+    assert "Measured at sha" not in criteria
+    for sentence in preamble_sentences:
+        assert sentence.rstrip(".") in remedy_tasks[0]["description"]
 
 
 def test_an_approach_end_review_also_inserts_the_remedy_task(tmp_path):

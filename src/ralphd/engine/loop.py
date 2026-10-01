@@ -1717,7 +1717,12 @@ class LoopSupervisor:
         # PRD dialog make -- falling back to the canonical path name when
         # neither file exists yet, since this only names a path in a prompt.
         prd = prd_path(self.run.root) or self.run.prd_file
-        parts = [self.prompt_text(prompt_name or phase)]
+        # PRD v0.28 requirement C.1/C.2 (#276): a template's adjudication-
+        # only block (review.md's REFUTED-remedy shape rule) survives only
+        # into a prompt built for a petition adjudication -- one whose
+        # `extra` carries `petitions.REMEDY_SHAPE_RULE`.
+        parts = [petitions.render_adjudication_only_blocks(
+            self.prompt_text(prompt_name or phase), extra)]
         parts.append("\n\n## Job context\n")
         parts.append(f"- Run state directory: {self.run.root}\n")
         parts.append(self._workspace_note())
@@ -17774,7 +17779,8 @@ class LoopSupervisor:
             "dependent of the failed task re-pointed onto it -- so write a "
             "`substance` remedy as WORK whose completion is checkable (the "
             "end state that will be true once it is done), and classify a "
-            "remedy that changes no deliverable as `form` instead.\n"
+            "remedy that changes no deliverable as `form` instead. "
+            + petitions.REMEDY_SHAPE_RULE + "\n"
             "\nTask 006 (requirement B.1, #114): if a petition's `Type` is "
             "`contradictory-clauses` or `self-referential` AND its "
             "obligation IS the affected task's own `successCriteria` text "

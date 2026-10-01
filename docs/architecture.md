@@ -1267,7 +1267,15 @@ bound, is refused on the review contract ladder by name
 (`transitions.review_remedy_errors`, the exact sibling of `review_cured_
 when_errors` for an overlong `cured_when`) rather than silently truncated,
 whether the REFUTED entry reaches this mid-run episode or an ordinary
-run-ending review pass.
+run-ending review pass. The review hat is told this shape only when it is
+adjudicating: both prompts built for a petition adjudication (the mid-run
+episode's `_midrun_adjudication_extra` and an ordinary pass's 'Open
+impossibility petitions' block) carry `petitions.REMEDY_SHAPE_RULE`, and
+`build_prompt` keeps `review.md`'s own adjudication-only block (evidence,
+then a done-list marker, then at most `_REMEDY_MAX_CLAUSES` criteria, and
+the refusal) only in such a prompt
+(`petitions.render_adjudication_only_blocks`); a review prompt with no open
+petition carries neither.
 The in-process `self._petition_adjudication_seen` guard above was not
 enough for that on its own: it is per-process, so it resets on an engine
 restart, and it does not cover an ordinary review pass's own prompt at all

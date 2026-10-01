@@ -242,20 +242,22 @@ remedy text, on the same path a curable rejection's cure task takes,
 re-pointing every dependent of the failed task onto it -- whether this
 adjudication happens during the bounded, off-budget mid-run petition
 adjudication episode (see Verdict below) or during an ordinary run-ending
-review, so your refutation leaves no doomed remainder. So write a
-`substance` remedy in this exact shape (PRD v0.28 requirement C.1/C.2,
-#276): your evidence first, then a literal, case-insensitive done-list
-marker (spelled out, with its exact two accepted forms, in the "Open
-impossibility petitions" instructions below whenever one is actually
-open), then the completion criteria -- the end state
-that will be true once the work is done, at most `_REMEDY_MAX_CLAUSES` (5)
-checkable clauses. Only the text AFTER the marker becomes the cure task's
-`successCriteria`; the evidence before it becomes the task's description,
-never a criterion. A remedy with no marker at all, or whose criteria after
-the marker overrun that bound, is refused on this contract ladder -- the
-same ladder an overlong `cured_when` is refused on today -- rather than
-silently truncated. Classify a
-remedy that changes no deliverable as `form`. Carry your
+review, so your refutation leaves no doomed remainder. Classify a
+remedy that changes no deliverable as `form`.
+<!-- petition-adjudication-only -->
+Write a `substance` remedy in this exact shape (PRD v0.28 requirement
+C.1/C.2, #276): your evidence first, then a literal, case-insensitive
+done-list marker (spelled out, with its exact two accepted forms, in this
+prompt's petition instructions below), then the completion criteria -- the
+end state that will be true once the work is done, at most
+`_REMEDY_MAX_CLAUSES` (5) checkable clauses. Only the text AFTER the marker
+becomes the cure task's `successCriteria`; the evidence before it becomes
+the task's description, never a criterion. A remedy with no marker at all,
+or whose criteria after the marker overrun that bound, is refused on this
+contract ladder -- the same ladder an overlong `cured_when` is refused on
+-- rather than silently truncated.
+<!-- /petition-adjudication-only -->
+Carry your
 adjudications in your verdict payload's `petition_adjudications` field (see
 Verdict below), one entry per petition, naming the obligation and your
 CONFIRMED/REFUTED call (and, for REFUTED, the remedy and its `remedy_type`).

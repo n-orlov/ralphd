@@ -493,8 +493,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # all count in smoke too), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
     # 6756/464, `-m smoke --collect-only` -> smoke 5059/340.
-    "fast": {"tests": 6756, "modules": 464},
-    "smoke": {"tests": 5059, "modules": 340},
+    # Task 005 retry: +4 tests, no new module (review.md's adjudication-
+    # only block + its render helper and the mid-run prompt in tests/
+    # test_petitions_review.py; the selfdev-v027 shape on the inserted
+    # remedy task in tests/test_midrun_refuted_continues.py), measured the
+    # same way -> fast 6760/464, smoke 5063/340.
+    "fast": {"tests": 6760, "modules": 464},
+    "smoke": {"tests": 5063, "modules": 340},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
