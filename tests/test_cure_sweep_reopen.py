@@ -42,11 +42,16 @@ from pathlib import Path
 from ralphd.engine import plan_ingestion
 from ralphd.engine.state import (
     PRE_CURE_HEAD_RECORDED_EVENT,
-    SWEEP_REOPENED_EVENT,
     RunDir,
     atomic_write_json,
     insert_cure_tasks,
 )
+
+
+# The event type is spelled by its literal name, never imported: the module
+# must collect against an engine that predates the sweep re-open so that each
+# node below fails on its own assertion there, not at import time.
+SWEEP_REOPENED_EVENT = "cure.sweep_reopened"
 
 
 def _make_run(root: Path, existing_tasks: list) -> RunDir:
@@ -77,6 +82,12 @@ def _events(root: Path, type_: str) -> list[dict]:
     log = root / "events.jsonl"
     lines = log.read_text().splitlines() if log.exists() else []
     return [ev for ev in (json.loads(x) for x in lines) if ev.get("type") == type_]
+
+
+def test_the_engine_exports_the_sweep_reopened_event_type_by_its_literal_name():
+    from ralphd.engine import state
+
+    assert getattr(state, "SWEEP_REOPENED_EVENT", None) == SWEEP_REOPENED_EVENT
 
 
 # ---------------------------------------------------------------------------

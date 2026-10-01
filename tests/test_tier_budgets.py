@@ -523,8 +523,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `plan_ingestion.validate_proposal_shape` calls against an in-memory
     # `RunDir`, no real subprocess, so it counts in smoke too), measured
     # the same way -> fast 6816/466, smoke 5119/342.
-    "fast": {"tests": 6816, "modules": 466},
-    "smoke": {"tests": 5119, "modules": 342},
+    # Task 003 retry: +1 test (the literal-name event-type node in tests/
+    # test_cure_sweep_reopen.py), measured the same way -> fast 6817/466,
+    # smoke 5120/342.
+    "fast": {"tests": 6817, "modules": 466},
+    "smoke": {"tests": 5120, "modules": 342},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
