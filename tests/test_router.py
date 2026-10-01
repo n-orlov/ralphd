@@ -449,3 +449,119 @@ def test_router_knobs_in_effective_view():
     assert eff["budgets"]["routerTimeoutS"] == 9.0
     # unset default is visible too, not just the non-default case.
     assert JobConfig().effective()["model"]["routerModel"] is None
+
+
+# ---------------------------------------------------------------------------
+# Task 004 (#278 B.2/B.3): the task-selection prompt itself -- every
+# candidate field B.2 names, the deterministic pick, the last worker
+# iteration's outcome, and B.3's ordering rule. Same style as the two
+# `decide()` prompt-content tests above (a capturing `ask`, the built
+# prompt read back and asserted on), now against `decide_task_selection`.
+# ---------------------------------------------------------------------------
+
+def _capturing_task_selection_ask(answer: str):
+    prompts_seen: list = []
+
+    async def ask(prompt):
+        prompts_seen.append(prompt)
+        return answer, {}
+
+    return ask, prompts_seen
+
+
+def test_task_selection_prompt_carries_every_b2_field_and_the_b3_rule():
+    """The deck-phase4g shape (#278, PRD B.8): a worker-origin fix task
+    (`"016"`) naming the failure a steering-origin sweep of the same sha
+    (`"013"`) exists to catch -- the real incident this issue cites ("013
+    claimed over 016; the operator had to steer and interrupt"). The
+    deterministic pick is "013" (priority/list order), exactly like that
+    incident. Every B.2 field for both candidates, the deterministic pick,
+    the last worker iteration's outcome, and B.3's rule text must all
+    appear in the built prompt."""
+    candidates = [
+        {"id": "013", "title": "Sweep the fast tier on sha a1b2c3d4",
+         "successCriteria": "Dispatch the fast tier against sha a1b2c3d4 "
+                             "and confirm it is green.",
+         "origin": "steer", "priority": 5, "dependsOn": []},
+        {"id": "016", "title": "Fix the retry handler sha a1b2c3d4 broke",
+         "successCriteria": "test_retry_handler_times_out_under_load fails "
+                             "on sha a1b2c3d4 -- the exact failure the "
+                             "sweep (013) exists to catch -- fix it.",
+         "origin": "worker", "priority": 0, "dependsOn": []},
+    ]
+    last_worker_iteration = {"task_id": "012", "verdict": "complete",
+                             "proposed_tasks": ["016"]}
+    ask, prompts_seen = _capturing_task_selection_ask(
+        '{"candidate_id": "013", "reason": "deterministic pick"}')
+
+    outcome = asyncio.run(router.decide_task_selection(
+        candidates, "013", ask=ask, timeout_s=5.0,
+        last_worker_iteration=last_worker_iteration))
+    assert outcome.used_fallback is False
+    assert len(prompts_seen) == 1
+    prompt = prompts_seen[0]
+
+    for c in candidates:
+        # B.2: id, title, description start (here: successCriteria, the
+        # only descriptive field this plan's tasks actually carry),
+        # origin, priority, dependsOn.
+        assert repr(c["id"]) in prompt
+        assert repr(c["title"]) in prompt
+        assert c["successCriteria"][:80] in prompt
+        assert repr(c["origin"]) in prompt
+        assert repr(c["priority"]) in prompt
+        assert repr(c["dependsOn"]) in prompt
+
+    # B.2: the deterministic pick.
+    assert repr("013") in prompt
+
+    # B.2: the outcome of the last worker iteration -- task id, verdict,
+    # proposed tasks.
+    assert repr("012") in prompt
+    assert repr("complete") in prompt
+    assert repr(["016"]) in prompt
+
+    # B.3: the ordering rule, verbatim.
+    assert "whose result the others depend on in fact" in prompt
+    assert "not only by dependsOn" in prompt
+    assert ("a fix before a sweep of the same code" in prompt
+            or "change goes first" in prompt)
+    assert "origin and priority are inputs, not a ranking" in prompt
+    assert "take the deterministic pick" in prompt
+
+
+def test_task_selection_prompt_never_reorders_by_origin_alone():
+    """A SECOND prompt case (#278 B.8): a worker-origin task that does
+    NOT touch what the other candidate (a sweep) measures. The prompt
+    still carries B.3's 'origin and priority are inputs, not a ranking'
+    rule, and nowhere instructs the router to put the worker-origin task
+    first because of its origin -- its own rendered candidate block never
+    mentions ordering at all, 'first' included."""
+    candidates = [
+        {"id": "020", "title": "Sweep the browser tier on sha ffeeddcc",
+         "successCriteria": "Dispatch the browser tier against sha "
+                             "ffeeddcc and confirm it is green.",
+         "origin": "steer", "priority": 3, "dependsOn": []},
+        {"id": "021", "title": "Write the v0.29 roadmap paragraph",
+         "successCriteria": "docs/roadmap.md gets one new line under "
+                             "Shipped, unrelated to any sha the sweep "
+                             "above measures.",
+         "origin": "worker", "priority": 0, "dependsOn": []},
+    ]
+    ask, prompts_seen = _capturing_task_selection_ask(
+        '{"candidate_id": "020", "reason": "deterministic pick"}')
+
+    asyncio.run(router.decide_task_selection(
+        candidates, "020", ask=ask, timeout_s=5.0))
+    prompt = prompts_seen[0]
+
+    assert "origin and priority are inputs, not a ranking" in prompt
+    worker_block = (
+        f"- id: {'021'!r}\n"
+        f"  title: {'Write the v0.29 roadmap paragraph'!r}\n"
+        f"  description: {candidates[1]['successCriteria']!r}\n"
+        f"  origin: {'worker'!r}\n"
+        f"  priority: {0!r}\n"
+        f"  dependsOn: {[]!r}")
+    assert worker_block in prompt
+    assert "first" not in worker_block

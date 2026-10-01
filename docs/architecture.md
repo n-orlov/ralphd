@@ -559,6 +559,28 @@ the call's own tokens/cost -- on top of, never instead of, the
 `ralphctl cost` shows the router's spend as its own phase bucket whichever
 of the two states produced it.
 
+**The task-selection prompt's input and B.3's ordering rule (task 004,
+#278 B.2/B.3).** `decide_task_selection()` is handed the FULL task dict
+for every runnable candidate -- never a bare id list -- plus the
+deterministic pick and `last_worker_iteration` (a plain
+`{"task_id", "verdict", "proposed_tasks"}` dict describing the worker
+iteration immediately before this call; `None` until one has run this
+approach; tracked on `LoopSupervisor._last_worker_iteration`, set from
+each worker iteration's own first parsed final line). `router._task_
+selection_prompt` quotes, for every candidate, its `id`, `title`, the
+start of its `description` (falling back to `successCriteria`, the field
+every shipped plan's tasks actually carry), `origin`, `priority` and
+`dependsOn`; the deterministic pick; and the last worker iteration's own
+outcome when one is known. One fixed rule, `router.TASK_SELECTION_RULE`,
+is quoted into every call verbatim, never computed per-candidate: pick the
+task whose result the others depend on in fact, not only by `dependsOn`;
+a candidate that changes code another candidate measures (a fix before a
+sweep of the same sha) goes first; `origin` and `priority` are rendered as
+plain candidate fields the rule reasons over, never a ranking the prompt
+applies on its own; when no candidate's text gives a reason to reorder,
+take the deterministic pick. The answer schema stays exactly one candidate
+id plus a one-line reason (`router.TASK_SELECTION_SCHEMA`).
+
 A contract re-ask is the same shape, uncounted for the same reason.
 Every `contract_enforcement.enforce_contract` retry ladder (task 010) --
 the schema/task-status site in `_step_generic_hat` and the worker's own

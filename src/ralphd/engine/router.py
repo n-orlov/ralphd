@@ -276,8 +276,9 @@ def _router_prompt(state: str, edges: tuple, error: str | None,
 # Task 004 (#278 B.2/B.3) widens the PROMPT this schema's answer is asked
 # for (every candidate's id/title/description start/origin/priority/
 # dependsOn, the deterministic pick, the last worker iteration's outcome,
-# and B.3's "whose result the others depend on in fact" rule) without
-# touching this schema or the single-call/no-retry/fallback shape below.
+# and B.3's "whose result the others depend on in fact" rule) -- see
+# `_task_selection_prompt`/`TASK_SELECTION_RULE` below -- without touching
+# this schema or the single-call/no-retry/fallback shape below.
 TASK_SELECTION_SCHEMA: dict = {
     "type": "object",
     "required": ["candidate_id", "reason"],
@@ -320,15 +321,52 @@ def validate_task_selection_answer(
     return payload, None
 
 
+# Task 004 (#278 B.2/B.3): how far into a candidate's `description` (or,
+# absent that field -- the shape every plan in this codebase actually
+# uses -- its `successCriteria`) the prompt quotes, verbatim, before
+# truncating with an ellipsis. Mirrors the `[:160]` convention already
+# used for other operator/model-facing text previews in this module's
+# sibling `engine.loop` (e.g. its fault-line previews).
+_CANDIDATE_DESCRIPTION_PREVIEW_CHARS = 160
+
+# Task 004 (#278 B.3): the router's ordering rule, quoted into the prompt
+# verbatim -- this is the ONLY place that decides task order from the
+# model's point of view; nothing in `_task_selection_prompt` below ever
+# tells the router to prefer a candidate because of its `origin` or
+# `priority` field, on top of this text.
+TASK_SELECTION_RULE = (
+    "Pick the task whose result the others depend on in fact, not only by "
+    "dependsOn. If a candidate changes the code that another candidate "
+    "measures (a fix before a sweep of the same code), the change goes "
+    "first. origin and priority are inputs, not a ranking. When no "
+    "candidate's text gives a reason to reorder, take the deterministic "
+    "pick."
+)
+
+
+def _candidate_description_start(candidate: dict) -> str:
+    """The start of a candidate's descriptive text -- its `description`
+    field if present, else `successCriteria` (every plan this engine ships
+    with uses the latter; no plan task carries both), truncated to
+    `_CANDIDATE_DESCRIPTION_PREVIEW_CHARS` with a trailing ellipsis when
+    cut."""
+    text = candidate.get("description") or candidate.get("successCriteria") or ""
+    text = str(text).strip()
+    if len(text) > _CANDIDATE_DESCRIPTION_PREVIEW_CHARS:
+        return text[:_CANDIDATE_DESCRIPTION_PREVIEW_CHARS] + "..."
+    return text
+
+
 async def decide_task_selection(
-        candidate_ids: list,
+        candidates: list,
         deterministic_id: str,
         *,
         ask: AskFn,
         timeout_s: float,
+        last_worker_iteration: dict | None = None,
         context: str | None = None,
 ) -> TaskSelectionOutcome:
-    """Ask the router to name ONE of `candidate_ids` (plus a one-line
+    """Ask the router to name ONE of `candidates` (plus a one-line
     reason), exactly once -- never called at all by the only production
     caller (`engine.loop.LoopSupervisor._route_task_selection`) unless
     `scheduler.pending_candidates` already found 2+ runnable tasks, so
@@ -337,14 +375,24 @@ async def decide_task_selection(
     caller is the one that never reaches this function for a single
     candidate).
 
+    `candidates` is the FULL task dict for each runnable candidate (task
+    004, #278 B.2) -- never a bare id list -- so the prompt built below can
+    quote each one's id, title, description start, `origin`, `priority`
+    and `dependsOn`. `last_worker_iteration`, if given, is a plain dict
+    with `task_id`/`verdict`/`proposed_tasks` describing the outcome of
+    the worker iteration immediately before this call (B.2's "outcome of
+    the last worker iteration"); `None` when none has run yet this
+    approach.
+
     Falls back to `deterministic_id` -- which MUST be a member of
-    `candidate_ids` -- on any of three causes, each its own
+    `candidates`' ids -- on any of three causes, each its own
     `fallback_cause`: `"timeout"` (no answer within `timeout_s`),
     `"unparseable"` (absent/malformed JSON, or a schema violation) and
     `"non_candidate_id"` (a well-formed answer naming a task id outside
-    `candidate_ids`). No re-prompt, on any of the three -- one `ask` call
+    the candidate set). No re-prompt, on any of the three -- one `ask` call
     total, whatever the failure.
     """
+    candidate_ids = [str(c.get("id")) for c in candidates]
     if len(candidate_ids) < 2:
         raise ValueError(
             "decide_task_selection() called with fewer than 2 candidates "
@@ -354,7 +402,8 @@ async def decide_task_selection(
         raise ValueError(
             f"deterministic_id {deterministic_id!r} is not one of "
             f"candidate_ids {candidate_ids!r}")
-    prompt = _task_selection_prompt(candidate_ids, deterministic_id, context)
+    prompt = _task_selection_prompt(candidates, deterministic_id,
+                                     last_worker_iteration, context)
     try:
         raw, usage = await asyncio.wait_for(ask(prompt), timeout=timeout_s)
     except asyncio.TimeoutError:
@@ -372,18 +421,48 @@ async def decide_task_selection(
                                 fallback_cause=None, usage=usage)
 
 
-def _task_selection_prompt(candidate_ids: list, deterministic_id: str,
-                          context: str | None = None) -> str:
+def _task_selection_prompt(
+        candidates: list, deterministic_id: str,
+        last_worker_iteration: dict | None = None,
+        context: str | None = None) -> str:
+    """Task 004 (#278 B.2/B.3): the prompt a task-selection router call is
+    asked. Every candidate's id/title/description-start/origin/priority/
+    dependsOn (B.2), the deterministic pick, the last worker iteration's
+    own outcome (B.2), and the ordering rule (B.3, `TASK_SELECTION_RULE`)
+    -- `origin`/`priority` are quoted as plain candidate FIELDS here, never
+    folded into any reordering instruction of this function's own; the
+    only reordering instruction in the whole prompt is `TASK_SELECTION_RULE`
+    itself."""
     lines = [
         "Selecting the next task for a worker iteration has more than one "
         "runnable candidate.",
-        f"Candidate task ids: {list(candidate_ids)!r}.",
+        "Candidates:",
+    ]
+    for c in candidates:
+        depends_on = c.get("dependsOn") if isinstance(c.get("dependsOn"), list) else []
+        lines.append(
+            f"- id: {c.get('id')!r}\n"
+            f"  title: {c.get('title')!r}\n"
+            f"  description: {_candidate_description_start(c)!r}\n"
+            f"  origin: {c.get('origin')!r}\n"
+            f"  priority: {c.get('priority', 0)!r}\n"
+            f"  dependsOn: {list(depends_on)!r}")
+    lines.append(
         "The deterministic pick (highest priority, then plan order) is "
-        f"{deterministic_id!r}.",
+        f"{deterministic_id!r}.")
+    if last_worker_iteration:
+        lines.append(
+            "The last worker iteration worked on task "
+            f"{last_worker_iteration.get('task_id')!r}, reported verdict "
+            f"{last_worker_iteration.get('verdict')!r}, and proposed these "
+            f"new tasks: {list(last_worker_iteration.get('proposed_tasks') or [])!r}.")
+    else:
+        lines.append("No worker iteration has run yet this approach.")
+    lines.append(TASK_SELECTION_RULE)
+    lines.append(
         'Answer with exactly one JSON object and nothing else: '
         '{"candidate_id": "<one of the candidate ids above>", '
-        '"reason": "<one-line reason>"}',
-    ]
+        '"reason": "<one-line reason>"}')
     if context:
         lines.append(f"Context:\n{context}")
     return "\n".join(lines)

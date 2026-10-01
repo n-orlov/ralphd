@@ -480,8 +480,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # no real subprocess, so both count in smoke too), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
     # 6746/464, `-m smoke --collect-only` -> smoke 5049/340.
-    "fast": {"tests": 6746, "modules": 464},
-    "smoke": {"tests": 5049, "modules": 340},
+    # Task 004 (#278 B.2/B.3): +2 tests, no new module (tests/test_router.py:
+    # the task-selection prompt carries every B.2 candidate field, the
+    # deterministic pick, the last worker iteration's outcome and B.3's
+    # ordering rule -- in-process, no real subprocess, counts in smoke
+    # too), measured `.venv/bin/python -m pytest -q -m fast --collect-only`
+    # -> fast 6748/464, `-m smoke --collect-only` -> smoke 5051/340.
+    "fast": {"tests": 6748, "modules": 464},
+    "smoke": {"tests": 5051, "modules": 340},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

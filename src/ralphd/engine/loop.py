@@ -361,6 +361,16 @@ class LoopSupervisor:
         # never more; see the dispatch loop's own comment). Read back by
         # tests only; the engine itself never branches on it.
         self._last_worker_dispatch_reentries = 0
+        # Task 004 (#278 B.2): the outcome of the LAST worker iteration
+        # this process has dispatched -- `{"task_id", "verdict",
+        # "proposed_tasks"}`, read back by `_route_task_selection` and
+        # folded into the task-selection router prompt. `None` until the
+        # first worker iteration's own report is parsed; set exactly once
+        # per worker-hat dispatch, from that iteration's own parsed final
+        # line, near the top of its report handling in `_step_worker`
+        # (never re-derived from a later contract-repair reentry -- B.2
+        # only promises the reported outcome, not every ladder's retry).
+        self._last_worker_iteration: dict | None = None
         # Task 123 (#60): task ids the harness has already written a
         # dead-dependency blocked note for (`_step_worker`), so a plan that
         # stays blocked across several worker iterations in a row does not
@@ -6011,12 +6021,19 @@ class LoopSupervisor:
         select_next_task` promises its caller, so the ordinary in-progress
         claim/write logic just below this call site in `_step_worker`
         keeps mutating the real tasks.json entry in place.
+
+        Task 004 (#278 B.2): `candidates` -- the FULL task dicts, never a
+        bare id list -- and `self._last_worker_iteration` are passed
+        straight through to `router.decide_task_selection`, which is what
+        builds the id/title/description-start/origin/priority/dependsOn
+        prompt and folds in the last worker iteration's own outcome.
         """
         candidate_ids = [str(t.get("id")) for t in candidates]
         deterministic_id = str(deterministic.get("id"))
         outcome = await router.decide_task_selection(
-            candidate_ids, deterministic_id, ask=self._ask_router,
-            timeout_s=self.cfg.router_timeout_s)
+            candidates, deterministic_id, ask=self._ask_router,
+            timeout_s=self.cfg.router_timeout_s,
+            last_worker_iteration=self._last_worker_iteration)
         self.run.emit(
             "log", level=("warning" if outcome.used_fallback else "info"),
             message=(f"router selected task {outcome.chosen_id!r} for the "
@@ -10097,6 +10114,20 @@ class LoopSupervisor:
             verdict = payload.get("verdict") if isinstance(payload, dict) else None
             proposed_split_tasks = (
                 payload.get("proposed_tasks") if isinstance(payload, dict) else None)
+            # Task 004 (#278 B.2): record THIS iteration's own reported
+            # outcome -- read back by the NEXT call to `_route_task_
+            # selection` and folded into the task-selection router prompt
+            # as "the outcome of the last worker iteration". Taken from
+            # the worker's own first parsed line, never from a later
+            # contract-repair reentry's possibly-different payload.
+            self._last_worker_iteration = {
+                "task_id": assigned_id,
+                "verdict": verdict,
+                "proposed_tasks": [
+                    t.get("id") for t in proposed_split_tasks
+                    if isinstance(t, dict) and t.get("id")
+                ] if isinstance(proposed_split_tasks, list) else [],
+            }
             applied_this_iteration = False
             # Task 010 (PRD requirement B.1, #153): witness (c) -- a
             # successfully APPLIED petition/unsatisfiable/complete contract
