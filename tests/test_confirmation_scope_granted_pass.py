@@ -124,7 +124,8 @@ def _setup_granted_pass_then_remedy(tmp_path, name: str):
 
     remedy_ids = _file_remedy_petition(
         sup, "requirement C.1 (#141) remedy obligation",
-        "rewrite the cure task's own criteria to name the missing case")
+        "rewrite the cure task's own criteria to name the missing case. "
+        "Done when: the missing case is named in the criteria.")
 
     return sup, pre_cure_head, post_fix_head, remedy_ids
 
@@ -249,7 +250,8 @@ def test_two_successive_remedy_insertions_never_narrow_the_section(
     _commit(sup.workspace, "second-partial-fix.txt")
     remedy_ids_2 = _file_remedy_petition(
         sup, "requirement C.2 (#141) remedy obligation",
-        "rewrite the second cure task's own criteria similarly")
+        "rewrite the second cure task's own criteria similarly. "
+        "Done when: the second cure task's criteria are rewritten.")
     assert len(remedy_ids_2) == 1
     assert remedy_ids_2[0] not in ("cure-01-01", "cure-01-02")
 

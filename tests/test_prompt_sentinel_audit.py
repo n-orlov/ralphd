@@ -255,6 +255,15 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "check is scoped to `_midrun_adjudication_extra`'s own returned "
         "string, which is never itself a shipped template", lowercased=True),
     AbsenceAssertion(
+        "test_petitions_review.py", (163, 164),
+        ("Done when", "Cured when"),
+        "the rendered review prompt with no open petition (PRD v0.28 "
+        "requirement C.1/C.2, #276): the remedy marker/bound rule is "
+        "stated only inside `petitions.petitions_review_context`'s "
+        "dynamic 'Open impossibility petitions' block, which renders '' "
+        "when nothing is open, so neither literal marker spelling may "
+        "appear anywhere in a shipped template", ALL),
+    AbsenceAssertion(
         "test_price_strategy_derive.py", (174,), ("$0.00",),
         "`format_cost`'s CLI render", None,
         "not a template-fed artifact; no shipped template contains it either"),

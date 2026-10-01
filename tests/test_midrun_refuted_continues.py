@@ -96,8 +96,13 @@ CRITERIA = (
 # and no requirement of the contract as history, and history is never
 # surfaced to review at all.
 OBLIGATION = "Task 1: an obligation this test invents for coverage"
-REMEDY = ("Run the missing migration script before the next validation "
-          "attempt; the obligation is achievable once it has run.")
+# PRD v0.28 requirement C.1 (#276): the done-list marker + bounded
+# criteria shape, so this fixture still clears `petitions`' gate 7.
+# `REMEDY_PREAMBLE` is the text before the marker -- the only part that
+# reaches `description`.
+REMEDY_PREAMBLE = ("Run the missing migration script before the next "
+                   "validation attempt.")
+REMEDY = f"{REMEDY_PREAMBLE} Done when: the migration script has run."
 
 
 def _ok(text: str) -> IterationResult:
@@ -314,7 +319,7 @@ def test_the_substance_remedy_becomes_a_pending_cure_task_through_the_real_engin
     assert len(remedy) == 1
     assert remedy[0]["remedyFor"] == OBLIGATION
     assert remedy[0]["title"] == OBLIGATION
-    assert REMEDY in remedy[0]["description"]
+    assert REMEDY_PREAMBLE in remedy[0]["description"]
 
     # it entered the plan `pending` and the SAME `_step_worker` call's
     # scheduler then selected it -- i.e. this is actionable work the loop
@@ -377,7 +382,7 @@ def test_an_approach_end_review_also_inserts_the_remedy_task(tmp_path):
     assert len(remedy) == 1
     assert remedy[0]["remedyFor"] == OBLIGATION
     assert remedy[0]["title"] == OBLIGATION
-    assert REMEDY in remedy[0]["description"]
+    assert REMEDY_PREAMBLE in remedy[0]["description"]
     assert remedy[0]["status"] == "pending"
 
     events = [e for e in _events(run)

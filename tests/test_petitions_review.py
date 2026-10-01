@@ -146,6 +146,35 @@ def test_open_petition_reaches_the_rendered_review_prompt(tmp_path):
     assert "residual-finding carve-out" in prompt
 
 
+def test_the_remedy_marker_and_bound_rule_appears_only_when_a_petition_is_open(
+        tmp_path):
+    """PRD v0.28 requirement C.1/C.2 (#276): the review prompt's
+    instruction on how to write a REFUTED remedy -- evidence, then a
+    `Done when:`/`Cured when:` marker, then at most 5 checkable criteria
+    -- lives in `petitions_review_context`'s dynamic block (`petitions.py`),
+    the same join point that already carries 'Open impossibility
+    petitions'. The mirror of `test_review_clone_protocol.py::test_absent_
+    renders_nothing_at_all`: this hat is told nothing about the shape when
+    nothing is open, and told it in full once a petition actually is.
+    """
+    sup_closed = _supervisor(tmp_path / "closed")
+    closed_prompt = sup_closed.build_prompt(
+        "review", extra=sup_closed._petitions_review_context())
+    assert "Done when" not in closed_prompt
+    assert "Cured when" not in closed_prompt
+
+    reports = tmp_path / "open" / "ws" / "artifacts" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "v0.15-petitions.md").write_text(OPEN_PETITION_MD)
+    sup_open = _supervisor(tmp_path / "open")
+    extra = sup_open._petitions_review_context()
+    assert "Done when" in extra and "Cured when" in extra
+    open_prompt = sup_open.build_prompt("review", extra=extra)
+    assert "Done when" in open_prompt
+    assert "Cured when" in open_prompt
+    assert "5-clause bound" in open_prompt or "5 checkable" in open_prompt
+
+
 def test_review_extra_context_joins_petitions_alongside_amendments(tmp_path, monkeypatch):
     """`_review_extra_context()` is the one join point every review call
     site uses; the petitions block must show up beside whatever else is

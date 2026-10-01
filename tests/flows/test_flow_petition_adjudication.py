@@ -44,7 +44,10 @@ PETITION = {
     "type": "environmental",
     "evidence": "no vault socket exists in this sandbox; /run/vault is absent",
 }
-REMEDY = "mock the vault client and assert the call shape instead"
+# PRD v0.28 requirement C.1 (#276): a `substance` remedy needs a done-list
+# marker, so this fixture carries one.
+REMEDY = ("mock the vault client and assert the call shape instead. Done "
+          "when: the vault client call shape is asserted by a mock.")
 
 
 def _petition_run(engine_factory, run_id: str, adjudications: list[dict]):

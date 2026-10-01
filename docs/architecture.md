@@ -1256,6 +1256,18 @@ this episode and an ordinary review pass scope themselves to
 run-scope record already settled, through `petitions.settled_obligations`
 (CONFIRMED **and** REFUTED, suppression only -- never an exemption; the
 exemption readers stay CONFIRMED-only).
+The substance remedy's own text is required to carry a case-insensitive
+`Done when:`/`Cured when:` marker (`petitions.remedy_marker_fold`, PRD
+v0.28 requirement C.1/C.2, #276): everything before that marker becomes
+the inserted cure task's `description` alone, and everything after it --
+bounded at `_REMEDY_MAX_CLAUSES` (5) checkable clauses, the same bound
+`cured_when` is held to -- becomes its `successCriteria` verbatim. A
+remedy with no marker, or whose criteria past the marker overrun that
+bound, is refused on the review contract ladder by name
+(`transitions.review_remedy_errors`, the exact sibling of `review_cured_
+when_errors` for an overlong `cured_when`) rather than silently truncated,
+whether the REFUTED entry reaches this mid-run episode or an ordinary
+run-ending review pass.
 The in-process `self._petition_adjudication_seen` guard above was not
 enough for that on its own: it is per-process, so it resets on an engine
 restart, and it does not cover an ordinary review pass's own prompt at all

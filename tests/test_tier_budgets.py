@@ -486,8 +486,15 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # ordering rule -- in-process, no real subprocess, counts in smoke
     # too), measured `.venv/bin/python -m pytest -q -m fast --collect-only`
     # -> fast 6748/464, `-m smoke --collect-only` -> smoke 5051/340.
-    "fast": {"tests": 6748, "modules": 464},
-    "smoke": {"tests": 5051, "modules": 340},
+    # Task 005 (#276, PRD v0.28 section C): +8 tests, no new module (the
+    # REFUTED-remedy marker fold/ladder refusal: tests/test_petitions.py,
+    # tests/test_prompt_sentinel_audit.py and tests/test_petitions_
+    # review.py all gained nodes, in-process, no real subprocess, so
+    # all count in smoke too), measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
+    # 6756/464, `-m smoke --collect-only` -> smoke 5059/340.
+    "fast": {"tests": 6756, "modules": 464},
+    "smoke": {"tests": 5059, "modules": 340},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

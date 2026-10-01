@@ -1428,7 +1428,16 @@ def petitions_review_context(workspace: Path, run=None, *,
          "for the rest of the run, and every later approach inherits the "
          "adjudication) or `REFUTED` (state CONCRETELY what would satisfy "
          "the obligation -- a vague or missing remedy is not a valid "
-         "REFUTED adjudication). Carry your adjudications in your verdict "
+         "REFUTED adjudication). On a `substance` remedy (PRD v0.28 "
+         "requirement C.1/C.2, #276), write it in this exact shape: your "
+         "evidence first, then a literal, case-insensitive `Done when:` "
+         "or `Cured when:` marker, then at most 5 checkable completion "
+         "criteria. Only the text after the marker folds into the cure "
+         "task's bounded success criteria; text before it never does. A "
+         "remedy with no marker at all, or whose criteria after the "
+         "marker exceed that 5-clause bound, is refused on this contract "
+         "ladder and must be rewritten, never silently truncated. Carry "
+         "your adjudications in your verdict "
          "payload's `petition_adjudications` field, one entry per "
          "petition, each naming the obligation and your CONFIRMED/REFUTED "
          "call (and, for REFUTED, the remedy). A duplicate filing against "
@@ -2497,6 +2506,51 @@ def record_refuted_adjudications(run, adjudications) -> list[str]:
 _REMEDY_CLAUSE_SPLIT_RE = re.compile(r"[.!?;]+(?=\s|$)")
 _REMEDY_MAX_CLAUSES = 5
 
+# PRD v0.28 requirement C (#276): a REFUTED `substance` remedy is written
+# as evidence FIRST, then a literal case-insensitive done-list marker --
+# `Done when:` or `Cured when:` -- then the completion criteria. Everything
+# BEFORE the marker is the preamble (destined for the cure task's own
+# `description`, never a criterion); everything after it is the criteria
+# text `refuted_remedy_cure_findings` folds into `cured_when`. `\b` on both
+# sides keeps this from matching inside a longer word; `\s+` tolerates any
+# whitespace between the two words, and `\s*:` tolerates space before the
+# colon.
+_REMEDY_MARKER_RE = re.compile(r"(?i)\b(?:done|cured)\s+when\s*:")
+
+
+def remedy_marker_fold(remedy: str) -> "tuple[str, list[str]] | None":
+    """PRD v0.28 requirement C.1 (#276): split a REFUTED remedy's text at
+    its first case-insensitive `Done when:`/`Cured when:` marker
+    (`_REMEDY_MARKER_RE`). Returns `None` when `remedy` carries no such
+    marker at all -- the shape `transitions.review_remedy_errors` refuses
+    on the contract ladder rather than this function silently falling
+    back to folding the whole remedy, which is the exact defect (#276)
+    this task closes: review writes evidence first and criteria last, so
+    folding the whole text let the preamble crowd the actual criteria out
+    of a bounded `cured_when`.
+
+    Otherwise returns `(preamble, clauses)`: `preamble` is the text BEFORE
+    the marker, stripped -- the only text that may ever reach the cure
+    task's `description`; `clauses` is the marker's own clause split
+    (`_REMEDY_CLAUSE_SPLIT_RE`) of the text AFTER it, blanks dropped.
+    Deliberately UNBOUNDED here -- the `_REMEDY_MAX_CLAUSES` bound is a
+    caller's question, never this function's: `refuted_remedy_cure_
+    findings` only ever uses the result once its own gate has confirmed
+    `clauses` is non-empty and within the bound, and `transitions.review_
+    remedy_errors` is that bound's own refusal gate, needing the raw
+    count to report it.
+    """
+    if not isinstance(remedy, str):
+        return None
+    match = _REMEDY_MARKER_RE.search(remedy)
+    if match is None:
+        return None
+    preamble = remedy[:match.start()].strip()
+    clauses = [c.strip() for c
+               in _REMEDY_CLAUSE_SPLIT_RE.split(remedy[match.end():])
+               if c.strip()]
+    return preamble, clauses
+
 
 def refuted_remedy_cure_findings(adjudications, open_petitions,
                                   tasks: list[dict]) -> list[dict]:
@@ -2517,7 +2571,7 @@ def refuted_remedy_cure_findings(adjudications, open_petitions,
     `skipped` (`transitions.TASK_STATUS_TABLE`), so `validationNotes` drove
     no retry and every dependent of it was doomed.
 
-    An entry earns a record only when ALL SIX of these hold:
+    An entry earns a record only when ALL SEVEN of these hold:
 
     1. `item['adjudication'] == 'REFUTED'`. A CONFIRMED entry says the
        obligation is VOID -- there is nothing to do about it, which is
@@ -2580,6 +2634,23 @@ def refuted_remedy_cure_findings(adjudications, open_petitions,
        against the filing and then miss the remedy task its own earlier
        wording already minted, so the one guard that bounds remedy tasks
        across a resume would be the one the rewording walks past.
+    7. `remedy_marker_fold(remedy)` finds a case-insensitive `Done when:`/
+       `Cured when:` marker (PRD v0.28 requirement C.1/C.2, #276), and the
+       text after it folds to at least one and at most `_REMEDY_MAX_
+       CLAUSES` clauses. Both failure shapes -- no marker at all, or more
+       clauses than the bound -- are `transitions.review_remedy_errors`'
+       own contract-ladder refusal (the same ladder an overlong `cured_
+       when` is refused on today, #171): review.md tells a judge to write
+       a `substance` remedy as evidence, then the marker, then the
+       bounded criteria, so a reply missing either half is a malformed
+       REFUTED adjudication the ladder re-asks over before this function
+       ever sees it in the common case. This gate exists for the
+       degenerate path where the ladder could not hold (an exhausted,
+       operator-held pass; a mid-run episode this module has no channel
+       to pause) -- declining the work there, rather than falling back to
+       the OLD unconditional whole-remedy clause split, is what keeps
+       "never silently truncated" true everywhere, not just on the
+       common path.
 
     Each returned dict is shaped like the blocking findings
     `insert_cure_tasks` ordinarily consumes -- `severity`/`curable` carried
@@ -2589,31 +2660,36 @@ def refuted_remedy_cure_findings(adjudications, open_petitions,
     remedy text, `remedy_for` is the obligation again (stamped onto the task
     as `remedyFor` by `state.cure_task_from_finding`).
 
-    When a `failed` task in `tasks` has its own engine-filed obligation
-    (`task_petition_obligation`) fuzzy-matching this one -- i.e. the task
-    this very refutation just failed -- its id is appended to `evidence` as
-    `"(petition REFUTED for task <id>)"`. That suffix is load-bearing, not
-    decoration: it is what makes `insert_cure_tasks`' existing whole-word
-    `_failed_task_ids_named_in` scan recognise the dead task and hand every
-    one of its dependents to the remedy task.
+    `evidence` -- and therefore the cure task's `description` -- is the
+    PREAMBLE alone, the remedy text BEFORE the marker (PRD v0.28
+    requirement C.1, #276: "the text before it goes to the task's
+    `description` only"). When a `failed` task in `tasks` has its own
+    engine-filed obligation (`task_petition_obligation`) fuzzy-matching
+    this one -- i.e. the task this very refutation just failed -- its id
+    is appended to `evidence` as `"(petition REFUTED for task <id>)"`.
+    That suffix is load-bearing, not decoration: it is what makes
+    `insert_cure_tasks`' existing whole-word `_failed_task_ids_named_in`
+    scan recognise the dead task and hand every one of its dependents to
+    the remedy task.
 
-    `cured_when` is the REMEDY, and only the remedy, pre-folded to
-    `_REMEDY_MAX_CLAUSES` above. That is not decoration either: leaving it
-    absent routed the criterion through `state._cure_task_success_criteria`,
-    which folds `clause` BEFORE `evidence` and truncates the pair -- so an
-    obligation that is itself five clauses long (and it can be: a
-    `contradictory-clauses`/`self-referential` petition's obligation IS the
-    affected task's own `successCriteria`, which a planner may write up to
-    `plan_ingestion.MAX_CHECKABLE_CLAUSES` clauses of) consumed the whole
-    budget and the remedy vanished from the criterion entirely, leaving the
-    remedy task scored against the exact text the worker petitioned as
-    unmeetable -- the "no path out" shape this defect exists to remove.
-    Pre-folding here keeps the promise the absent field was chosen for (the
-    same bound review's own `cured_when` is held to, applied by construction
-    rather than by refusal, so `state._repair_cure_task_criteria` stays a
-    no-op and no overrun can ever be refused) while making the remedy the
-    thing the task is measured by; the full untruncated remedy still reaches
-    the task's `description` verbatim through `evidence`.
+    `cured_when` is the marker's own clause split of the text AFTER it,
+    joined verbatim -- never truncated here, because gate 7 above already
+    refused (by declining the entry) any remedy whose post-marker text
+    overran `_REMEDY_MAX_CLAUSES`. That is not decoration either: leaving
+    `cured_when` absent routed the criterion through `state._cure_task_
+    success_criteria`, which folds `clause` BEFORE `evidence` and
+    truncates the pair -- so an obligation that is itself five clauses
+    long (and it can be: a `contradictory-clauses`/`self-referential`
+    petition's obligation IS the affected task's own `successCriteria`,
+    which a planner may write up to `plan_ingestion.MAX_CHECKABLE_CLAUSES`
+    clauses of) consumed the whole budget and the remedy vanished from the
+    criterion entirely, leaving the remedy task scored against the exact
+    text the worker petitioned as unmeetable -- the "no path out" shape
+    this defect exists to remove. Folding only the marked-off criteria
+    keeps the promise the absent field was chosen for -- the remedy's own
+    done-list, and only that, is the thing the task is measured by; the
+    preamble before the marker reaches `description` through `evidence`,
+    never `successCriteria`.
 
     One omission stays deliberate. No `invalidates`: a remedy names no
     invalidated evidence path, so the re-record cascade #209 defect 3
@@ -2655,28 +2731,48 @@ def refuted_remedy_cure_findings(adjudications, open_petitions,
             continue
         if _obligation_confirmed(obligation, seen):
             continue
+        # Gate 7 (PRD v0.28 requirement C.1/C.2, #276): the remedy must
+        # carry a done-list marker, and the criteria after it must fold to
+        # no more than `_REMEDY_MAX_CLAUSES` clauses. Both failures are
+        # `transitions.review_remedy_errors`' own contract-ladder refusal
+        # -- a payload that reaches this far with either defect has
+        # already exhausted that ladder (an operator-held run, or a
+        # mid-run episode this module cannot itself hold), so there is
+        # nothing safe left to do but decline the work rather than fold a
+        # malformed `cured_when` -- a markerless remedy's whole text, or
+        # more than the bound's worth of criteria, were the two shapes the
+        # OLD unconditional clause-split used to truncate silently; this
+        # gate is what makes "never silently truncated" (#276) hold even
+        # on the degenerate path where the ladder never got the chance.
+        fold = remedy_marker_fold(remedy)
+        if fold is None:
+            continue
+        preamble, clauses = fold
+        if not clauses or len(clauses) > _REMEDY_MAX_CLAUSES:
+            continue
         seen.add(norm)
-        evidence = remedy.strip()
+        # The preamble -- the text BEFORE the marker -- is the only remedy
+        # text that ever reaches `evidence`, and therefore the cure task's
+        # `description` (PRD C.1: "the text before it goes to the task's
+        # `description` only"). The suffix below is engine-added context,
+        # not remedy prose, so it is appended regardless of whether the
+        # preamble itself is blank (a remedy that opens directly on the
+        # marker, with nothing before it).
+        evidence = preamble
         for t in tasks:
             if not isinstance(t, dict) or t.get("status") != "failed":
                 continue
             own = _normalize_obligation(task_petition_obligation(t))
             if own and (own in norm or norm in own):
-                evidence = f"{evidence} (petition REFUTED for task {t.get('id')})"
+                suffix = f"(petition REFUTED for task {t.get('id')})"
+                evidence = f"{evidence} {suffix}" if evidence else suffix
                 break
-        remedy_clauses = [c.strip() for c
-                          in _REMEDY_CLAUSE_SPLIT_RE.split(remedy.strip())
-                          if c.strip()]
         out.append({
             "severity": "blocking",
             "curable": True,
             "clause": obligation.strip(),
             "evidence": evidence,
-            # `or remedy.strip()` for the degenerate punctuation-only remedy
-            # the split can empty: the criterion is always built from the
-            # remedy, never silently from the obligation instead.
-            "cured_when": ("; ".join(remedy_clauses[:_REMEDY_MAX_CLAUSES])
-                           or remedy.strip()),
+            "cured_when": "; ".join(clauses),
             "remedy_for": obligation.strip(),
         })
     return out

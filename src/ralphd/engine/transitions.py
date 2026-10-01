@@ -2557,6 +2557,90 @@ def review_cured_when_errors(findings: "list[dict] | None") -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# PRD v0.28 requirement C.2 (#276): a REFUTED `substance` remedy must be
+# written evidence-first, then a done-list marker, then the bounded
+# criteria (`review.md`'s own instruction, task 005's `petitions.
+# petitions_review_context` addition) -- `review_remedy_errors` below is
+# that rule's own contract-ladder refusal, the exact sibling `review_
+# cured_when_errors` above is for `cured_when`.
+# ---------------------------------------------------------------------------
+
+
+def review_remedy_errors(payload: Any) -> list[str]:
+    """PRD v0.28 requirement C.2 (#276): errors in every REFUTED,
+    `substance`-remedy entry of `payload['petition_adjudications']` whose
+    `remedy` text either carries no case-insensitive `Done when:`/`Cured
+    when:` marker at all, or whose text AFTER the marker folds to more
+    than `petitions._REMEDY_MAX_CLAUSES` checkable clauses
+    (`petitions.remedy_marker_fold`) -- refused on review's own contract
+    ladder with a message naming the rule, the SAME ladder (and the same
+    shape of message) `review_cured_when_errors` above refuses an
+    overlong `cured_when` on, and -- unlike that sibling's #209 defect 1
+    lossless-rewrite exception -- never silently folded or truncated
+    instead: a remedy is a judge's OWN prose, not a planner's criteria
+    text `plan_ingestion.repair_criteria` has any licence to rewrite, so
+    the only two outcomes here are a well-formed remedy or a re-ask.
+
+    A CONFIRMED entry, a blank/missing `remedy`, or a `remedy_type`
+    resolving to `"form"` (advice, never a criterion -- `petitions.
+    _refuted_remedy_type`) is never in violation here, the same
+    "nothing proposed, nothing to check" shape every sibling business-rule
+    check in this module uses; a non-dict `payload`, or one carrying no
+    `petition_adjudications` list at all, returns `[]` immediately.
+
+    Deliberately independent of whatever `petitions.refuted_remedy_cure_
+    findings` would separately decide about the SAME entry (whether a
+    petition is actually filed and OPEN for it, whether a remedy task
+    already exists for it) -- those are the WORK gates (1-6 and the new
+    gate 7 that mirrors this very check, in that function's own
+    docstring); this is the FORM gate, asked of every REFUTED substance
+    remedy regardless of what else is true about its obligation, exactly
+    the way `review_cured_when_errors` asks its question of every curable
+    blocking finding regardless of what the review verdict claims.
+    """
+    if not isinstance(payload, dict):
+        return []
+    adjudications = payload.get("petition_adjudications")
+    if not isinstance(adjudications, list):
+        return []
+    errors: list[str] = []
+    for item in adjudications:
+        if not isinstance(item, dict) or item.get("adjudication") != "REFUTED":
+            continue
+        remedy = item.get("remedy")
+        if not isinstance(remedy, str) or not remedy.strip():
+            continue
+        if petitions._refuted_remedy_type(item) != "substance":
+            continue
+        obligation = item.get("obligation")
+        label = (obligation.strip()
+                  if isinstance(obligation, str) and obligation.strip()
+                  else "(unlabeled obligation)")
+        fold = petitions.remedy_marker_fold(remedy)
+        if fold is None:
+            errors.append(
+                f"petition {label!r}: a REFUTED substance remedy requires "
+                "a case-insensitive 'Done when:'/'Cured when:' marker -- "
+                "the criteria a remedy cure task's successCriteria is "
+                "folded from (PRD v0.28 requirement C.1, #276)")
+            continue
+        _preamble, clauses = fold
+        if not clauses:
+            errors.append(
+                f"petition {label!r}: REFUTED remedy's done-list marker "
+                "is followed by no checkable criteria at all (PRD v0.28 "
+                "requirement C.1, #276)")
+            continue
+        if len(clauses) > petitions._REMEDY_MAX_CLAUSES:
+            errors.append(
+                f"petition {label!r}: REFUTED remedy's criteria after the "
+                f"done-list marker carry {len(clauses)} checkable clauses, "
+                f"past the ~{petitions._REMEDY_MAX_CLAUSES}-clause bound "
+                "(PRD v0.28 requirement C.2, #276)")
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Task 018 (requirement K, #101): the peer plan-review hat's sibling to
 # `review_report_errors` just above -- a `verdict: "objected"` claim with
 # no `reason` names nothing a planning revision could act on, exactly the

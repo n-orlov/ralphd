@@ -2123,8 +2123,17 @@ def test_no_petition_adjudications_writes_nothing_and_touches_no_git_state(tmp_p
 # ---------------------------------------------------------------------------
 
 REMEDY_OBLIGATION = "Task 44: render the stacked frame without clipping"
-REMEDY_TEXT = ("Create a code-fix task under the plan's freeze-line "
-               "exception and fix renderStackedFrame's width computation.")
+# PRD v0.28 requirement C.1 (#276): evidence first, then a case-
+# insensitive done-list marker, then the criteria -- the shape
+# `review.md` requires of a REFUTED substance remedy. `REMEDY_PREAMBLE`
+# is the text before the marker (destined for `description` only);
+# `REMEDY_DONE_CLAUSES` is the one checkable clause after it (destined
+# for `cured_when`).
+REMEDY_PREAMBLE = ("Create a code-fix task under the plan's freeze-line "
+                   "exception.")
+REMEDY_DONE_CLAUSES = (
+    "renderStackedFrame computes width without clipping any glyph")
+REMEDY_TEXT = f"{REMEDY_PREAMBLE} Done when: {REMEDY_DONE_CLAUSES}."
 
 
 def _remedy_entry(**overrides) -> dict:
@@ -2154,13 +2163,16 @@ def test_a_substance_remedy_becomes_one_finding_that_folds_into_a_bounded_cure_t
         tmp_path):
     """The whole of gate 1-4 clearing, and the shape of what clears them: a
     finding-shaped record whose `clause` is the obligation, whose `evidence`
-    carries the remedy verbatim, whose `cured_when` is the REMEDY pre-folded
-    to the clause bound review's own `cured_when` is held to (applied by
-    construction rather than by refusal), and which deliberately carries no
-    `invalidates` (a remedy names no invalidated evidence path, so the
-    re-record cascade is never triggered from here). The second half runs the
-    record through the real `insert_cure_tasks` to pin that the bound holds
-    and that the full text survives in `description`.
+    carries the remedy's PREAMBLE (the text before its `Done when:` marker,
+    PRD v0.28 requirement C.1, #276) -- never the done-list criteria --
+    and whose `cured_when` is the done-list text AFTER that marker, held
+    to the same clause bound review's own `cured_when` is held to (applied
+    by construction, never truncation: gate 7 declines any entry whose
+    post-marker text overruns it instead). No `invalidates` (a remedy names
+    no invalidated evidence path, so the re-record cascade is never
+    triggered from here). The second half runs the record through the real
+    `insert_cure_tasks` to pin that the bound holds and that the full
+    preamble survives in `description`.
 
     The `cured_when` assertions replace this node's original `assert
     "cured_when" not in finding`, and inverting that pin is the point rather
@@ -2180,16 +2192,22 @@ def test_a_substance_remedy_becomes_one_finding_that_folds_into_a_bounded_cure_t
     assert len(out) == 1
     finding = out[0]
     assert finding["clause"] == REMEDY_OBLIGATION
-    assert REMEDY_TEXT in finding["evidence"]
+    assert finding["evidence"] == REMEDY_PREAMBLE  # preamble only, never the
+    assert "Done when" not in finding["evidence"]  # done-list criteria
     assert finding["remedy_for"] == REMEDY_OBLIGATION
     assert finding["severity"] == "blocking" and finding["curable"] is True
-    assert finding["cured_when"] in REMEDY_TEXT      # the remedy, not the obligation
+    assert finding["cured_when"] == REMEDY_DONE_CLAUSES  # the done-list, not
+    assert REMEDY_PREAMBLE not in finding["cured_when"]  # the preamble
     assert REMEDY_OBLIGATION not in finding["cured_when"]
     assert plan_ingestion.clause_count_overrun(finding["cured_when"]) is None
     assert "invalidates" not in finding
 
-    # nine sentences of remedy prose: bounded criteria, unbounded description.
-    long_remedy = " ".join(f"Step {n} lands." for n in range(1, 10))
+    # a nine-sentence PREAMBLE: bounded criteria, unbounded description --
+    # the bound (#276) now applies only to the text AFTER the marker, never
+    # to the evidence preceding it.
+    long_preamble = " ".join(f"Step {n} lands." for n in range(1, 10))
+    long_remedy = (f"{long_preamble} Done when: the width computation "
+                   "never clips a glyph.")
     long_out = petitions.refuted_remedy_cure_findings(
         [_remedy_entry(remedy=long_remedy)], _filed(), [_remedy_task()])
     run = RunDir(root=tmp_path / "run-remedy")
@@ -2247,6 +2265,172 @@ def test_a_form_remedy_creates_no_work(tmp_path):
                  else _remedy_entry(remedy_type=value))
         assert len(petitions.refuted_remedy_cure_findings(
             [entry], _filed(), [_remedy_task()])) == 1
+
+
+def test_a_markerless_or_overrun_remedy_creates_no_work(tmp_path):
+    """Gate 7 (PRD v0.28 requirement C.1/C.2, #276), the defensive mirror
+    of `transitions.review_remedy_errors`' own contract-ladder refusal: a
+    `substance` remedy with no `Done when:`/`Cured when:` marker at all,
+    or whose text after the marker overruns `petitions._REMEDY_MAX_
+    CLAUSES`, creates NO work here either -- the ladder is expected to
+    catch both shapes before this function ever runs on a live payload,
+    but a payload that somehow reaches it anyway (an exhausted, operator-
+    held ladder; a mid-run episode this module cannot pause) must never
+    fall back to the OLD unconditional whole-remedy clause truncation.
+    """
+    tasks = [_remedy_task()]
+    # no marker at all.
+    assert petitions.refuted_remedy_cure_findings(
+        [_remedy_entry(remedy="no marker in this remedy at all")],
+        _filed(), tasks) == []
+    # a marker followed by nothing checkable.
+    assert petitions.refuted_remedy_cure_findings(
+        [_remedy_entry(remedy="some preamble. Done when:   ")],
+        _filed(), tasks) == []
+    # a marker, but seven clauses after it -- past the five-clause bound.
+    overrun = ("preamble text. Cured when: " +
+               " ".join(f"clause {n}." for n in range(1, 8)))
+    assert petitions.refuted_remedy_cure_findings(
+        [_remedy_entry(remedy=overrun)], _filed(), tasks) == []
+    # the identical shape WITHIN the bound creates work, so the refusal
+    # above is specifically about the count, not the marker's spelling.
+    within = ("preamble text. Cured when: " +
+              " ".join(f"clause {n}." for n in range(1, 4)))
+    assert len(petitions.refuted_remedy_cure_findings(
+        [_remedy_entry(remedy=within)], _filed(), tasks)) == 1
+
+
+def test_the_selfdev_v027_shape_folds_only_the_done_list_into_criteria(tmp_path):
+    """The literal selfdev-v027 incident shape (PRD v0.28 requirement C,
+    #276): a remedy that opens on a measured diagnosis -- "The condition
+    is false. <measurements>." -- and only THEN lists its done criteria.
+    `cured_when` must hold items (1) through (5) and none of the
+    preamble's own sentences; the preamble reaches `description` alone.
+    """
+    preamble = ("The condition is false. Measured at sha 6edb68a4: "
+                 "3 of 5 lanes red, 2 green.")
+    done_items = [
+        "the merge is idempotent",
+        "every lane is green",
+        "the record cites its own sha",
+        "no filing is dropped",
+        "the audit range is empty",
+    ]
+    remedy = (f"{preamble} Done when: "
+              + " ".join(f"({n}) {item}." for n, item in enumerate(done_items, 1)))
+    out = petitions.refuted_remedy_cure_findings(
+        [_remedy_entry(remedy=remedy)], _filed(), [_remedy_task()])
+    assert len(out) == 1
+    finding = out[0]
+    assert finding["evidence"] == preamble
+    assert "condition is false" not in finding["cured_when"]
+    assert "Measured at sha" not in finding["cured_when"]
+    for n, item in enumerate(done_items, 1):
+        assert f"({n}) {item}" in finding["cured_when"]
+    assert plan_ingestion.clause_count_overrun(finding["cured_when"]) is None
+
+
+# ---------------------------------------------------------------------------
+# `transitions.review_remedy_errors` -- the contract-ladder refusal gate
+# itself (PRD v0.28 requirement C.2, #276), the exact sibling
+# `review_cured_when_errors` is for an overlong `cured_when`. These test
+# the FORM rule directly, independent of whether a petition is filed or
+# already remedied -- `refuted_remedy_cure_findings`'s own gate 7 above is
+# the decision function's defensive mirror of the same rule.
+# ---------------------------------------------------------------------------
+
+
+def test_review_remedy_errors_is_silent_with_no_petition_adjudications():
+    assert transitions.review_remedy_errors(None) == []
+    assert transitions.review_remedy_errors({}) == []
+    assert transitions.review_remedy_errors(
+        {"verdict": "verified"}) == []
+
+
+def test_review_remedy_errors_ignores_confirmed_form_and_blank_remedies():
+    assert transitions.review_remedy_errors({"petition_adjudications": [
+        {"obligation": "X", "adjudication": "CONFIRMED",
+         "remedy": "no marker here"}]}) == []
+    assert transitions.review_remedy_errors({"petition_adjudications": [
+        {"obligation": "X", "adjudication": "REFUTED",
+         "remedy_type": "form", "remedy": "no marker here"}]}) == []
+    assert transitions.review_remedy_errors({"petition_adjudications": [
+        {"obligation": "X", "adjudication": "REFUTED", "remedy": ""}]}) == []
+
+
+def test_review_remedy_errors_refuses_a_markerless_remedy_naming_the_rule():
+    """PRD v0.28 requirement C.1/C.2 (#276): a REFUTED substance remedy
+    with no `Done when:`/`Cured when:` marker at all is refused on the
+    contract ladder, with a message naming the rule and the obligation --
+    never silently truncated into a `cured_when` built from the whole
+    remedy text, the OLD behaviour.
+    """
+    errors = transitions.review_remedy_errors({"petition_adjudications": [
+        {"obligation": REMEDY_OBLIGATION, "adjudication": "REFUTED",
+         "remedy": "fix renderStackedFrame with no done-list at all"}]})
+    assert len(errors) == 1
+    assert REMEDY_OBLIGATION in errors[0]
+    assert "marker" in errors[0]
+
+
+def test_review_remedy_errors_refuses_an_overrun_post_marker_remedy_naming_the_rule():
+    """PRD v0.28 requirement C.1/C.2 (#276): a remedy whose criteria AFTER
+    the marker fold to more than `petitions._REMEDY_MAX_CLAUSES` clauses
+    is refused the same way an overlong `cured_when` is refused today
+    (`review_cured_when_errors`'s own message shape) -- never silently
+    truncated to the bound.
+    """
+    overrun_remedy = ("preamble. Done when: "
+                       + " ".join(f"clause {n}." for n in range(1, 8)))
+    errors = transitions.review_remedy_errors({"petition_adjudications": [
+        {"obligation": REMEDY_OBLIGATION, "adjudication": "REFUTED",
+         "remedy": overrun_remedy}]})
+    assert len(errors) == 1
+    assert REMEDY_OBLIGATION in errors[0]
+    assert "checkable clauses" in errors[0]
+    assert "5-clause bound" in errors[0]
+    # the identical shape within the bound is not refused.
+    within_remedy = ("preamble. Done when: "
+                      + " ".join(f"clause {n}." for n in range(1, 4)))
+    assert transitions.review_remedy_errors({"petition_adjudications": [
+        {"obligation": REMEDY_OBLIGATION, "adjudication": "REFUTED",
+         "remedy": within_remedy}]}) == []
+
+
+def test_review_remedy_errors_wired_into_the_review_contract_ladder(tmp_path):
+    """The ladder re-asks over a markerless REFUTED remedy exactly like it
+    re-asks over a missing `cured_when` (`tests/test_cured_when.py::test_a_
+    missing_cured_when_is_re_asked_over_and_never_verifies`'s own shape):
+    the hat is given a second chance, and `_review_verdict` still reads
+    the broken payload (and the fact that it's broken) once the ladder's
+    retries are spent.
+    """
+    sup = make_supervisor(tmp_path)
+    cfg = sup.cfg
+    cfg.contract_retry_max = 1
+    rejected = json.dumps({
+        "verdict": "rejected", "reason": "petitioned obligation refuted",
+        "petition_adjudications": [
+            {"obligation": REMEDY_OBLIGATION, "adjudication": "REFUTED",
+             "remedy": "fix it with no done-list at all"}]})
+    result = IterationResult(final_text=rejected, exit_code=0)
+
+    calls = []
+
+    async def fake_ask_contract_fix(hat, errors, **_kw):
+        calls.append((hat, list(errors)))
+        return rejected, {}
+
+    sup._ask_contract_fix = fake_ask_contract_fix  # type: ignore[method-assign]
+
+    laddered = asyncio.run(sup._review_contract_ladder(result))
+    verified, payload, errors = sup._review_verdict(laddered)
+
+    assert len(calls) == cfg.contract_retry_max
+    assert calls[0][0] == "review"
+    assert any("marker" in e for e in calls[0][1])
+    assert verified is False
+    assert any("marker" in e for e in errors)
 
 
 def test_an_unfiled_blank_or_already_remedied_obligation_creates_no_work(tmp_path):

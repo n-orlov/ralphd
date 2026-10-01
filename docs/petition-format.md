@@ -120,13 +120,24 @@ Review adjudicates every open petition as part of its verdict:
   done), because a `substance` remedy (`remedy_type`, the default when the
   field is omitted) is inserted as ONE cure task on `state.insert_cure_
   tasks`' own path, `origin: "review-cure"`, stamped `remedyFor` with the
-  obligation, its criteria folded to the same ~5-clause bound a planner's
-  criteria are held to and its full text kept in the task's `description`
-  (#209 defect 4). Every dependent of the `petitioned` task the refutation
+  obligation. Write it in this exact shape (PRD v0.28 requirement
+  C.1/C.2, #276): evidence first, then a literal, case-insensitive `Done
+  when:`/`Cured when:` marker, then the completion criteria — at most
+  `_REMEDY_MAX_CLAUSES` (5) checkable clauses, the same bound a planner's
+  own criteria are held to. `petitions.remedy_marker_fold` splits the
+  remedy at that marker: only the text AFTER it folds into the cure
+  task's `successCriteria`; the text BEFORE it (the evidence) reaches
+  only the task's `description`, never a criterion. A remedy with no
+  marker at all, or whose criteria after the marker overrun the bound, is
+  refused on review's own contract ladder — `transitions.review_remedy_
+  errors`, naming the rule, the exact sibling of the ladder refusal an
+  overlong `cured_when` already gets — and re-asked rather than silently
+  truncated. Every dependent of the `petitioned` task the refutation
   just failed is re-pointed onto that task, so the refutation leaves no
   doomed remainder. A `form` remedy — one that changes no deliverable, only
-  how one is produced — is advice, and still becomes a debt row and nothing
-  else. The insertion happens only for a petition still OPEN on disk, only
+  how one is produced — is advice, needs no marker, and still becomes a
+  debt row and nothing else. The insertion happens only for a petition
+  still OPEN on disk, only
   once per obligation, and on both the mid-run adjudication episode and an
   ordinary run-ending review pass (task 019, requirement D.2, #220 —
   before that task the insertion was restricted to the mid-run episode
