@@ -232,6 +232,78 @@ def test_schema_invalid_verdict_beside_valid_fence_skips_recovery(tmp_path):
     assert tasks[0]["status"] == "completed", tasks[0]
 
 
+@pytest.mark.parametrize("present_value", [None, 42, "", ["complete"]],
+                         ids=["null", "int", "empty-string", "list"])
+def test_any_present_verdict_value_beside_valid_fence_skips_recovery(
+        tmp_path, present_value):
+    """cure-01-02 retry: the rule is KEY PRESENCE, not the key's value. The
+    verifier's own probe was `{"verdict": null}` -- a present `null` used to
+    be read as "no verdict" (`if verdict is None`) and took shape 1's fenced
+    recovery, emitting `contract.recovered`. Every present value -- `null`,
+    a number, an empty string, a list -- is a JSON object CARRYING `verdict`
+    and so must skip shapes 1-3 and take the generic schema ladder exactly
+    like `"done"` above: a `contract.violation`, never `contract.recovered`,
+    never `worker.verdict_absent`."""
+    sup, run = _worker_run(tmp_path, f"present-{type(present_value).__name__}",
+                           vigilant=False)
+    fenced = json.dumps({"verdict": "complete", "task_id": TASK_1})
+    reply = (
+        "I looked at the task and finished the work.\n\n"
+        "```json\n" + fenced + "\n```\n\n"
+        + json.dumps({"verdict": present_value})
+    )
+    agent = _ScriptedWorker([_ok(reply)])
+    sup.runner = agent  # type: ignore[assignment]
+
+    asyncio.run(sup._step_worker())
+
+    assert _events(run, "contract.recovered") == []
+    violations = _events(run, "contract.violation")
+    assert len(violations) >= 1, violations
+    assert violations[0]["hat"] == "worker"
+    assert _events(run, "worker.verdict_absent") == []
+
+
+def test_present_null_verdict_without_fence_is_never_silently_dropped(tmp_path):
+    """Same rule, no fence to recover from: `{"verdict": null}` is a JSON
+    object carrying `verdict`, so it is neither shape 3 (no
+    `worker.verdict_absent`) nor a silent no-progress fall-through -- the
+    generic schema ladder re-asks over it, and on exhaustion records
+    `contract.agent_fault`, leaving the task where it was."""
+    sup, run = _worker_run(tmp_path, "present-null-no-fence", vigilant=False)
+    agent = _ScriptedWorker([_ok('{"verdict": null}')])  # replays forever
+    sup.runner = agent  # type: ignore[assignment]
+
+    asyncio.run(sup._step_worker())
+
+    assert agent.calls == 1 + sup.cfg.contract_retry_max
+    assert len(_events(run, "contract.violation")) >= 1
+    assert len(_events(run, "contract.agent_fault")) == 1
+    assert _events(run, "contract.recovered") == []
+    assert _events(run, "worker.verdict_absent") == []
+    assert run.read_tasks()["tasks"][0]["status"] == "in-progress"
+    assert sup._abort_reason is None
+
+
+def test_present_null_verdict_repaired_by_the_ladder_is_applied(tmp_path):
+    """Same rule, the ladder's success side: a present `null` verdict
+    re-asked once and corrected is applied by the branch owning the
+    corrected verdict -- the generic schema ladder's one bounded
+    re-dispatch, never shape 1/2's `contract.recovered`."""
+    sup, run = _worker_run(tmp_path, "present-null-repaired", vigilant=False)
+    corrected = json.dumps({"verdict": "complete", "task_id": TASK_1})
+    agent = _ScriptedWorker([_ok('{"verdict": null}'), _ok(corrected)])
+    sup.runner = agent  # type: ignore[assignment]
+
+    asyncio.run(sup._step_worker())
+
+    assert agent.calls == 2
+    assert run.read_tasks()["tasks"][0]["status"] == "completed"
+    assert len(_events(run, "contract.violation")) == 1
+    assert _events(run, "contract.recovered") == []
+    assert _events(run, "worker.verdict_absent") == []
+
+
 def test_ladder_exhaustion_never_emits_verdict_absent(tmp_path):
     """Same rule, a DIFFERENT case than cure-01-02's own second probe: a
     verdict-less JSON object (shape 2's own entry condition) that exhausts

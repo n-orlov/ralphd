@@ -10195,6 +10195,13 @@ class LoopSupervisor:
             except (json.JSONDecodeError, TypeError):
                 payload = None
             verdict = payload.get("verdict") if isinstance(payload, dict) else None
+            # cure-01-02 (PRD v0.29 C.1-C.3/F.1): C's entry condition is
+            # KEY PRESENCE, never the key's value -- `{"verdict": null}`
+            # carries a `verdict` exactly as `{"verdict": "done"}` does, so
+            # both skip C below and take the generic schema ladder (the
+            # generic schema site's own gate further down), instead of a present
+            # `null` being read as "no verdict" and silently recovered.
+            verdict_present = isinstance(payload, dict) and "verdict" in payload
             # PRD v0.29 requirement C (#281): a last line that does not
             # parse as a JSON object carrying a `verdict` no longer falls
             # through silently. Three shapes, tried in this order:
@@ -10211,7 +10218,7 @@ class LoopSupervisor:
             #     with `hat="worker"`, `source="fenced"` -- the
             #     iteration-22 shape.
             # C.2 THEN THE LADDER, for a reply that is at least a JSON
-            #     OBJECT even though it carries no valid `verdict` (the
+            #     OBJECT even though it carries no `verdict` key (the
             #     iteration-17 shape, e.g. `{"task": ..., "status":
             #     "complete"}`): carried back to the SAME worker through
             #     `contract_enforcement.enforce_contract`'s uncharged
@@ -10231,7 +10238,7 @@ class LoopSupervisor:
             #     a model call, never the ladder, exactly one `worker.
             #     verdict_absent` event (the task id, no reply text), and
             #     the rest of this method's existing behaviour untouched.
-            if verdict is None:
+            if not verdict_present:
                 fenced_payload = self._extract_validated_fenced_payload(
                     "worker", result.final_text)
                 if fenced_payload is not None:
@@ -10583,7 +10590,8 @@ class LoopSupervisor:
                 # emitted the `contract.violation`/`contract.agent_fault`
                 # events for the record.
 
-            if verdict is not None:
+            if verdict is not None or (
+                    isinstance(payload, dict) and "verdict" in payload):
               # Task 008 (requirement B.2, #128): the generic schema site
               # (the `elif schema_errors:` branch below) used to have no
               # way to re-dispatch a successfully-repaired payload into

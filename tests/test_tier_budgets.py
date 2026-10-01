@@ -565,8 +565,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # shape 3 -- pure in-process, no subprocess, so counted in smoke too),
     # measured `.venv/bin/python -m pytest -q -m fast --collect-only` ->
     # 6853/470, `-m smoke` -> 5155/346.
-    "fast": {"tests": 6853, "modules": 470},
-    "smoke": {"tests": 5155, "modules": 346},
+    # Cure-01-02 retry: +6 tests, no new module (the same file: a present
+    # `verdict` key of ANY value -- null, int, empty string, list -- beside
+    # a valid fence skips shape 1, plus a present null with no fence that
+    # exhausts or is repaired by the generic schema ladder), measured the
+    # same way -> fast 6859/470, smoke 5161/346.
+    "fast": {"tests": 6859, "modules": 470},
+    "smoke": {"tests": 5161, "modules": 346},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
