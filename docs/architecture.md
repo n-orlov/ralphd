@@ -2928,6 +2928,37 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   insertion, the lane re-open chain, the cure-origin exclusion and
   per-path re-take reuse, the planner-declared ordering edge, and the
   emitted event's own `taskIds`).
+- **A cure re-opens the sweep it makes stale, even with no `invalidates`
+  at all (PRD v0.29 requirement B, #280, task 003).** Everything the two
+  bullets above describe re-opens evidence `invalidates` names explicitly;
+  nothing re-opened a plan's own FINAL sweep task when a finding named no
+  path at all, so a sweep could sit `validated` at a tree a later cure
+  pass moved past. A plan-proposal task may now carry an optional boolean
+  `sweep` (`plan_ingestion._TASK_PASSTHROUGH_FIELDS`, refused at shape
+  time by `validate_proposal_shape` when present and not a plain
+  boolean), meaning "this task's own deliverable is a whole-tier or
+  CI-lane run over the final tree" -- absent on every plan written before
+  the field existed, and on most tasks in one written since. The moment
+  `insert_cure_tasks` has inserted at least one cure task, from ANY of its
+  three callers (review's own granted pass, the peer verdict gate's, or a
+  REFUTED-petition remedy insertion, `pass_kind="remedy"`), it walks every
+  `sweep: true` task in the plan: one currently `validated`/`completed`
+  goes back to `pending`, gains a `dependsOn` on EVERY cure task this pass
+  inserted (not only the one belonging to whichever finding happened to
+  name a path), and has its pre-cure head persisted and emitted through
+  the exact same `preCureHeads`/`preCureStatuses`/`task.pre_cure_head_
+  recorded` path the `invalidates` walk above already uses -- plus one
+  `cure.sweep_reopened` event naming the sweep, its prior status and the
+  cure task ids. A sweep the SAME pass's own `invalidates` walk already
+  re-opened (its path named directly in some finding's `invalidates`) is
+  read here with `status` already `"pending"`, so this step only adds any
+  further cure-task `dependsOn` edges and emits nothing a second time --
+  re-opened once, not twice. A sweep that was never `validated`/`completed`
+  to begin with only gains the `dependsOn` edge, with no event either.
+  Tests: `tests/test_cure_sweep_reopen.py` (the v028 shape with an empty
+  `invalidates`, a plan with no `sweep` task left untouched, a sweep
+  caught by both mechanisms re-opened once, a REFUTED-remedy insertion
+  re-opening a sweep too, and the shape refusal on a non-boolean value).
 - **The `invalidates` re-open is a prediction, and it is now reconciled
   against the cure's real diff afterwards (v0.23 requirement B, #221,
   tasks 005-008).** The bullet above still runs first and unconditionally,

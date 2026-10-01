@@ -5028,6 +5028,19 @@ def _repair_cure_task_criteria(run: "RunDir", task: dict) -> None:
 # diff on the completion path.
 PRE_CURE_HEAD_RECORDED_EVENT = "task.pre_cure_head_recorded"
 
+# PRD v0.29 requirement B.3 (#280): emitted once per sweep task
+# `insert_cure_tasks`'s own sweep re-open step (B.2, below) actually flips
+# from `validated`/`completed` back to `pending` -- never for a sweep the
+# SAME call's `invalidates` walk already re-opened (that sweep's re-open is
+# already on the record through `PRE_CURE_HEAD_RECORDED_EVENT`, and B.2
+# says a sweep caught by both mechanisms in one pass is re-opened once, not
+# twice). Payload: the sweep's own task id (`taskId`), the status it held
+# immediately before this re-open (`oldStatus`), and every cure task id
+# this pass inserted (`cureTaskIds`, in finding order) -- not only the one
+# whose finding happened to trigger the walk, since B.2's `dependsOn` edge
+# is added for every cure task this pass inserted, not just one.
+SWEEP_REOPENED_EVENT = "cure.sweep_reopened"
+
 # Task 008 (PRD requirement B.4, #221): the two statuses whose arrival on
 # ANY task fires the completion-path reconciliation hook (`LoopSupervisor.
 # _reconcile_pre_cure_heads`), and -- the same pair, deliberately spelled
@@ -5648,6 +5661,53 @@ def insert_cure_tasks(run: "RunDir", approach: int, blocking: list,
                 retake_anchor_id = retake_task["id"]
                 existing_ids.add(retake_task["id"])
                 inserted.append(retake_task["id"])
+    # PRD v0.29 requirement B.2 (#280): once this call has inserted at
+    # least one cure task (`pass_findings` non-empty iff `blocking` was --
+    # the same condition the lineage write below already keys on), every
+    # task in the plan carrying `sweep: True` gains the `dependsOn` edge on
+    # EVERY cure task this pass inserted, in finding order -- not only the
+    # cure task of whichever finding happened to name its path. A sweep
+    # currently `validated`/`completed` is additionally re-opened to
+    # `pending`, with its pre-cure head recorded through the exact same
+    # `preCureHeads`/`preCureStatuses` map and `PRE_CURE_HEAD_RECORDED_EVENT`
+    # the `invalidates` walk above already uses (one event per owning cure
+    # task, the same multi-owner shape `records_pending_reconciliation`
+    # already reads), and a `SWEEP_REOPENED_EVENT` naming the sweep, its
+    # prior status and the cure task ids. A sweep the `invalidates` walk
+    # above ALREADY re-opened this same call is read here with `status`
+    # already `"pending"`, so it falls straight into the dependsOn-only
+    # branch -- re-opened once, not twice, exactly as B.2 requires.
+    if pass_findings:
+        cure_task_ids_this_pass = list(pass_findings.keys())
+        for t in tasks:
+            if not isinstance(t, dict) or t.get("sweep") is not True:
+                continue
+            tid = t.get("id")
+            for cid in cure_task_ids_this_pass:
+                _append_validated_dependency_edge(
+                    run, tasks, t, cid, "cure-insertion")
+            current_status = t.get("status", "pending")
+            if current_status not in ("validated", "completed"):
+                continue
+            old_status = current_status
+            t["status"] = "pending"
+            reset_validation_attempts_for_reopen(t)
+            pre_cure_heads_status = run.read_status()
+            pre_cure_heads = dict(pre_cure_heads_status.get("preCureHeads") or {})
+            pre_cure_heads[tid] = pre_cure_head
+            pre_cure_statuses = dict(
+                pre_cure_heads_status.get("preCureStatuses") or {})
+            pre_cure_statuses[tid] = old_status
+            run.update_status(preCureHeads=pre_cure_heads,
+                              preCureStatuses=pre_cure_statuses)
+            for cid in cure_task_ids_this_pass:
+                run.emit(PRE_CURE_HEAD_RECORDED_EVENT, taskId=tid,
+                         sha=pre_cure_head, priorStatus=old_status,
+                         approach=approach, cureTaskId=cid)
+            run.emit(SWEEP_REOPENED_EVENT, taskId=tid, oldStatus=old_status,
+                     cureTaskIds=list(cure_task_ids_this_pass))
+            if tid not in inserted:
+                inserted.append(tid)
     if inserted:
         run.write_tasks(data)
     if pass_findings:

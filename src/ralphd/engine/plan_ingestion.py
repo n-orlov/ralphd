@@ -154,6 +154,13 @@ _TASK_PASSTHROUGH_FIELDS: tuple[str, ...] = (
     "priority",
     "tier",
     "estimatedIterations",
+    # PRD v0.29 requirement B.1 (#280): a plan-proposal task's optional
+    # boolean marker that its deliverable is a whole-tier or CI-lane run
+    # over the final tree. Carried through unchanged -- never renamed,
+    # never defaulted here -- so `state.insert_cure_tasks` can read it
+    # straight off the ingested task; a plan with no `sweep` task behaves
+    # exactly as before this field existed.
+    "sweep",
 )
 
 
@@ -211,6 +218,18 @@ def validate_proposal_shape(payload: Any) -> list[str]:
                     f"$.tasks[{i}] (id={tid!r}): 'estimatedIterations' must "
                     f"be an integer >= 1, got {value!r}"
                 )
+        # PRD v0.29 requirement B.1 (#280): `sweep`, when a task carries it
+        # at all, must be a plain boolean -- `True`/`False`, never a string
+        # (`"true"`), an int, or anything else a planner might write
+        # expecting it to be read as truthy. A non-boolean value is refused
+        # here, by shape, exactly where `estimatedIterations`'s own
+        # present-but-wrong case is refused just above, with a message
+        # naming the field.
+        if "sweep" in t and not isinstance(t["sweep"], bool):
+            errors.append(
+                f"$.tasks[{i}] (id={tid!r}): 'sweep' must be a boolean, "
+                f"got {t['sweep']!r}"
+            )
     return errors
 
 

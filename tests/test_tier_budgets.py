@@ -518,8 +518,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # like `tests/test_progress_claim_corroboration.py`'s own, so it
     # counts in smoke too), measured the same way -> fast 6808/465,
     # smoke 5111/341.
-    "fast": {"tests": 6808, "modules": 465},
-    "smoke": {"tests": 5111, "modules": 341},
+    # Task 003 (#280, PRD v0.29 B.1-B.3): +8 tests / +1 module (tests/
+    # test_cure_sweep_reopen.py; direct `state.insert_cure_tasks`/
+    # `plan_ingestion.validate_proposal_shape` calls against an in-memory
+    # `RunDir`, no real subprocess, so it counts in smoke too), measured
+    # the same way -> fast 6816/466, smoke 5119/342.
+    "fast": {"tests": 6816, "modules": 466},
+    "smoke": {"tests": 5119, "modules": 342},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
