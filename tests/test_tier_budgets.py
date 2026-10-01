@@ -526,8 +526,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 003 retry: +1 test (the literal-name event-type node in tests/
     # test_cure_sweep_reopen.py), measured the same way -> fast 6817/466,
     # smoke 5120/342.
-    "fast": {"tests": 6817, "modules": 466},
-    "smoke": {"tests": 5120, "modules": 342},
+    # Task 002 (#279, PRD v0.29 A.5): +4 tests / +1 module (tests/
+    # test_wait_task_prompt.py; the module builds the worker prompt via
+    # `LoopSupervisor.build_prompt("worker")`, no real subprocess, so it
+    # counts in smoke too), measured the same way -> fast 6821/467,
+    # smoke 5124/343.
+    "fast": {"tests": 6821, "modules": 467},
+    "smoke": {"tests": 5124, "modules": 343},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

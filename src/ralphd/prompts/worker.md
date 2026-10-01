@@ -187,11 +187,15 @@ immediately starts the next iteration.
   a notes handoff is a cheap, recorded outcome; an iteration killed at the cap
   records no verdict, no progress and no handoff, and the next iteration
   rediscovers the whole position. This binds every wait, too: size each `sleep`
-  in a poll loop so the loop cannot cross that 85% line, and prefer recording
-  the run id you are waiting on in the notes over sleeping through the rest of
-  your clock. Waiting on an external CI lane is a legitimate deliverable for a
-  task whose criteria are about that lane; it is never how a code task or a
-  review-cure task spends its last minutes.
+  in a poll loop so the loop cannot cross that 85% line. When the wait *is*
+  the task, pick one of three: (a) the estimate fits before the 85% line —
+  wait inside this iteration in a bounded poll loop; (b) it does not fit —
+  report `deferred` with `until` set to the estimated completion; (c)
+  otherwise — poll inside the iteration up to the 85% line, then hand off.
+  An iteration that checks a still-running lane once and returns within
+  minutes is none of these three. Waiting on an external CI lane is a
+  legitimate deliverable for a task whose criteria are about that lane; it is
+  never how a code task or a review-cure task spends its last minutes.
 - **A boundary predicate about a git ref is measured, never inferred.** When a
   standing rule says `main` == `origin/main`, a clean tree, or a branch tip is
   an ancestor of something, check it with a command whose output you read
@@ -550,7 +554,7 @@ Sometimes a task is entirely satisfiable, and you are not stuck on it in the
 ordinary stagnating sense — but it genuinely cannot move forward again until
 some external condition changes (a downstream service ships a field this
 task needs, another team's migration finishes, a fixed calendar date
-arrives). Unlike `unsatisfiable`, this is not a claim that the criteria are
+arrives, a dispatched CI lane will not finish before the 85% line). Unlike `unsatisfiable`, this is not a claim that the criteria are
 wrong — only that the task must wait, and other runnable work should not
 wait behind it in the meantime. Report it directly: end this iteration's
 reply with, as its LAST non-blank line (nothing after it — same placement
