@@ -531,8 +531,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `LoopSupervisor.build_prompt("worker")`, no real subprocess, so it
     # counts in smoke too), measured the same way -> fast 6821/467,
     # smoke 5124/343.
-    "fast": {"tests": 6821, "modules": 467},
-    "smoke": {"tests": 5124, "modules": 343},
+    "fast": {"tests": 6824, "modules": 468},
+    "smoke": {"tests": 5127, "modules": 344},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

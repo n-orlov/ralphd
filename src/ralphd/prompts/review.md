@@ -371,6 +371,18 @@ such measurement stale.
 A curable blocking finding you file without `cured_when` is a review contract
 violation on the ladder, not a finding the engine can act on.
 
+**A cure filed after the plan's sweep makes the sweep stale, even when the
+cure touches only tests.** A `sweep: true` task's `validated`/`completed`
+status is a claim about one tree, and any cure pass changes that tree. The
+engine re-opens every `sweep: true` task by itself the moment a cure pass
+inserts a cure task, whether or not your finding's `invalidates` names the
+sweep's own artifact path — do not route a sweep re-run through `invalidates`.
+`invalidates` is for OTHER evidence the cure stales (a specific test node or
+lane result your finding supersedes); it is not how a sweep gets re-opened,
+and it is never required for that to happen. Prose written into
+`review-findings.md` re-opens nothing by itself — only the engine's own
+cure-insertion re-opens a sweep task, never a sentence describing one.
+
 **File the rule, not the example.** A finding you write from a failing case
 you constructed is not that case reported back — work out **why** the code
 admits it before you write anything down. State that broken rule, in the

@@ -257,7 +257,13 @@ lawyered:
    skip named** in its own successCriteria — a sweep that silently skips a
    marker, a mode or a module is not a sweep. The sweep's output goes to the
    run's artifacts directory (`/run/ralphd/artifacts`, the `Artifacts
-   directory` line in Job context) and is never committed.
+   directory` line in Job context) and is never committed. **Mark it:** set
+   `sweep: true` on every task you propose whose deliverable is a
+   whole-tier or CI-lane run over the final tree, and on nothing else — not
+   on ordinary work, not on a closure task, not on a task that merely
+   mentions a sweep in passing. The engine re-opens a `sweep: true` task by
+   itself whenever a later cure pass lands, so marking the wrong task, or
+   marking none, is how a cure ships on a tree the sweep never re-measured.
 4. **Criteria may only cite paths the repository actually contains** — never
    a generated, untracked directory, and never a path that exists only on
    the machine that produced it, because a check against such a path passes
