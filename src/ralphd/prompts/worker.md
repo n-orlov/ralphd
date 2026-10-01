@@ -80,8 +80,15 @@ immediately starts the next iteration.
      under `## Completion signal` below — valid ONLY when `## Task assigned
      this iteration` said nothing was selectable this same iteration.
    Exactly one of these is your reply's last non-blank line — never two, and
-   never a bare line that is neither. Alongside whichever one of those you
-   send, you may ALSO include `"proposed_tasks": [...]`, an optional array
+   never a bare line that is neither. **Write the verdict bare, never inside
+   a code fence**: fence it and the closing fence line becomes your reply's
+   own last non-blank line instead of the object itself, and a bare fence is
+   not a verdict; a JSON object that is not one of the shapes above —
+   missing `verdict` entirely, or any other shape — is not a verdict either,
+   however JSON-like it looks. (The harness tries to recover a verdict a
+   fenced reply or a near-miss JSON object was reaching for, as a repair
+   path, never as the way to write one on purpose.) Alongside whichever one
+   of those you send, you may ALSO include `"proposed_tasks": [...]`, an optional array
    of new tasks (each shaped exactly like a task in a plan proposal —
    `id`/`title`/`successCriteria`, `dependsOn` optional) — if, and only if,
    the task you were assigned this iteration turned out to be a SPLIT

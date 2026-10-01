@@ -10187,14 +10187,83 @@ class LoopSupervisor:
             # non-JSON last line (plain chatter, or the separate literal
             # `<promise>COMPLETE</promise>` whole-plan marker handled
             # further down, unchanged) or a JSON object with no `verdict`
-            # key at all leaves the rest of this method's existing
-            # behaviour completely untouched.
+            # key at all is no longer read as silent no-progress -- see
+            # PRD v0.29 requirement C (#281) just below.
             worker_final_text = last_nonblank_line(result.final_text)
             try:
                 payload = json.loads(worker_final_text)
             except (json.JSONDecodeError, TypeError):
                 payload = None
             verdict = payload.get("verdict") if isinstance(payload, dict) else None
+            # PRD v0.29 requirement C (#281): a last line that does not
+            # parse as a JSON object carrying a `verdict` no longer falls
+            # through silently. Three shapes, tried in this order:
+            #
+            # C.1 FENCED RECOVERY FIRST, no model call: `_extract_
+            #     validated_fenced_payload` -- the SAME zero-call channel
+            #     `_ask_contract_fix` already tries before any re-ask --
+            #     scans `result.final_text` (prose and all) for a fenced
+            #     ```json block that validates against the worker schema.
+            #     A payload it returns is used exactly as if it had been
+            #     the last line (`payload`/`verdict`/`worker_final_text`
+            #     are all overwritten so every branch below reads the
+            #     recovered reply), and `contract.recovered` is emitted
+            #     with `hat="worker"`, `source="fenced"` -- the
+            #     iteration-22 shape.
+            # C.2 THEN THE LADDER, for a reply that is at least a JSON
+            #     OBJECT even though it carries no valid `verdict` (the
+            #     iteration-17 shape, e.g. `{"task": ..., "status":
+            #     "complete"}`): carried back to the SAME worker through
+            #     `contract_enforcement.enforce_contract`'s uncharged
+            #     `_ask_contract_fix` re-ask ladder, exactly the shape
+            #     every other worker verdict site already uses. Attempt 0
+            #     reuses THIS already-completed iteration's own final
+            #     line -- no extra hat call, no double-charge. On
+            #     exhaustion `payload`/`verdict`/`worker_final_text` stay
+            #     exactly as they were (verdict still `None`) and this
+            #     pass falls through to the ordinary no-verdict
+            #     bookkeeping below, exactly like every other exhausted
+            #     worker ladder site -- `enforce_contract` already emitted
+            #     the `contract.violation`/`contract.agent_fault` events.
+            # C.3 PROSE STAYS PROSE: a reply that is neither of those --
+            #     plain chatter, a bare JSON scalar/list, or the retired
+            #     `<promise>COMPLETE</promise>` whole-plan marker -- never
+            #     a model call, never the ladder, exactly one `worker.
+            #     verdict_absent` event (the task id, no reply text), and
+            #     the rest of this method's existing behaviour untouched.
+            if verdict is None:
+                fenced_payload = self._extract_validated_fenced_payload(
+                    "worker", result.final_text)
+                if fenced_payload is not None:
+                    payload = fenced_payload
+                    verdict = payload.get("verdict")
+                    worker_final_text = json.dumps(fenced_payload)
+                    self.run.emit("contract.recovered", hat="worker",
+                                 source="fenced", taskId=assigned_id)
+                elif isinstance(payload, dict):
+                    event_loop = asyncio.get_running_loop()
+
+                    def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
+                        if attempt == 0:
+                            return worker_final_text
+                        raw, _usage = asyncio.run_coroutine_threadsafe(
+                            self._ask_contract_fix("worker", prior_errors or [],
+                                final_text=result.final_text),
+                            event_loop).result()
+                        return last_nonblank_line(raw)
+
+                    enforcement = await asyncio.to_thread(
+                        contract_enforcement.enforce_contract,
+                        "worker", respond,
+                        max_retries=self.cfg.contract_retry_max,
+                        state=self.run,
+                    )
+                    if enforcement.ok:
+                        payload = enforcement.payload
+                        verdict = payload.get("verdict")
+                        worker_final_text = json.dumps(payload)
+                else:
+                    self.run.emit("worker.verdict_absent", taskId=assigned_id)
             proposed_split_tasks = (
                 payload.get("proposed_tasks") if isinstance(payload, dict) else None)
             # Task 004 (#278 B.2): record THIS iteration's own reported
