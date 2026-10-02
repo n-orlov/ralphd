@@ -5518,7 +5518,7 @@ def _llm_test_pairs(args, resolved: dict, job: JobConfig | None) -> list[tuple]:
 
 def _llm_test_network(args, cfg: dict, reg_cfg: dict) -> str | None:
     """The docker network the ping runs on: `start`'s precedence --
-    `--template` job.yaml `network:` < registry `config.yaml` `network:` <
+    registry `config.yaml` `network:` < `--template` job.yaml `network:` <
     `--network` -- the order `_apply_template` settles it in (flag, else the
     template's key, else the registry's)."""
     network = args.network
@@ -8798,8 +8798,8 @@ def build_parser() -> argparse.ArgumentParser:
                           "harnesses: (and image) `start --template` would use")
     te_.add_argument("--network", default=None, metavar="NET",
                      help="docker network for the ping container, resolved as "
-                          "`start` resolves it (--template job.yaml network: < "
-                          "registry config network < this flag); e.g. 'host' "
+                          "`start` resolves it (registry config network < "
+                          "--template job.yaml network: < this flag); e.g. 'host' "
                           "for gateways that resolve only on the host")
     te_.add_argument("--model-for", action="append", metavar="HAT=REF",
                      help="per-hat model override, as on `start` (needs --hats)")
