@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+"""Stub Claude Code CLI for tests: speaks the stream-json control protocol that
+the real `claude_agent_sdk.query()` drives, so the SDK itself runs unmodified
+against it (point `cli_path` / `RALPHD_CLAUDE_CLI_PATH` at this file).
+
+Nothing here touches the network and no credential is read or needed.
+stdout is NDJSON only; diagnostics go to stderr. The stub never sends
+`session_state_changed`. After the `result` frame it drains stdin to EOF (30 s
+bound), then exits 1 if the result `is_error`, else 0.
+
+Knobs (all environment variables):
+
+STUB_CLAUDE_VERSION       `-v` / `--version` prints "<value> (Claude Code)"
+                          (default 2.1.286).
+STUB_CLAUDE_OBSERVE       path of the JSON observation dump (default
+                          $STUB_RUN_DIR/.stub-claude-observed.json, or
+                          ./.stub-claude-observed.json when STUB_RUN_DIR is
+                          unset). Written once the prompt arrives. Keys: argv,
+                          env, cwd, uid, tools (parsed --tools list),
+                          sdk_tools ([{name, inputSchema}] from MCP tools/list),
+                          prompt, model, effort, thinking, permission_mode,
+                          setting_sources, no_session_persistence, max_turns,
+                          system_prompt.
+STUB_CLAUDE_SCENARIO      text (default) | full (thinking, Bash tool_use and
+                          result, Read tool_use and result, text, result) |
+                          sdk_tool (calls each STUB_CLAUDE_SDK_CALLS entry
+                          through MCP tools/call) | error | refusal |
+                          rate_limited | hang | slow_start.
+STUB_CLAUDE_SCRIPT        path of a JSON file holding a list of raw frames to
+                          emit verbatim after init (overrides the scenario).
+STUB_CLAUDE_FINAL_TEXT    final assistant text (default
+                          "done\\n<promise>COMPLETE</promise>").
+STUB_CLAUDE_TOOL_OUTPUT   text of built-in tool_result frames (scrub tests).
+STUB_CLAUDE_COST          result total_cost_usd (default 0.0444998).
+STUB_CLAUDE_USAGE         JSON object overriding the result `usage`.
+STUB_CLAUDE_SDK_CALLS     JSON list [{"tool":"task-insert","args":{...}}]
+                          (sdk_tool scenario). The server is the first sdk
+                          MCP server in --mcp-config.
+STUB_CLAUDE_RL_STATUS     allowed | allowed_warning | rejected. No
+                          rate_limit_event is sent when unset (the
+                          rate_limited scenario defaults it to rejected).
+STUB_CLAUDE_RL_RESETS_AT  resetsAt, verbatim (an int epoch when it parses as
+                          an int, otherwise the string, e.g. ISO 8601).
+STUB_CLAUDE_RL_TYPE       rateLimitType (default five_hour).
+STUB_CLAUDE_RL_UTIL       utilization written into unifiedWindows[type].
+STUB_CLAUDE_RL_TOPLEVEL_UTIL  set to 1 to add a top-level `utilization` too.
+STUB_CLAUDE_ERROR_STATUS  api_error_status of the error result (400 for
+                          refusal, 500 for error).
+STUB_CLAUDE_ERROR_TYPE    assistant `error` (invalid_request, server_error,
+                          authentication_failed, rate_limit, ...).
+STUB_CLAUDE_ERROR_MESSAGE API error text (default for refusal: the third-party
+                          extra usage 400 message).
+STUB_CLAUDE_SLEEP_BEFORE_INIT  seconds slept before any frame (slow_start).
+STUB_CLAUDE_IGNORE_SIGINT set (non-empty) to ignore SIGINT in `hang`; unset,
+                          SIGINT exits 130.
+STUB_RUN_DIR              directory used for the default observation file.
+"""
+import itertools
+import json
+import os
+import queue
+import signal
+import sys
+import threading
+import time
+import uuid
+
+E = os.environ.get
+VERSION = E("STUB_CLAUDE_VERSION", "2.1.286")
+ARGV = sys.argv[1:]
+if "-v" in ARGV or "--version" in ARGV:
+    print(f"{VERSION} (Claude Code)")
+    sys.exit(0)
+
+
+def argval(flag):
+    for i, x in enumerate(ARGV):
+        if x == flag and i + 1 < len(ARGV):
+            return ARGV[i + 1]
+        if x.startswith(flag + "="):
+            return x.split("=", 1)[1]
+    return None
+
+
+SID = str(uuid.uuid4())
+out_lock = threading.Lock()
+
+
+def emit(o):
+    with out_lock:
+        sys.stdout.write(json.dumps(o) + "\n")
+        sys.stdout.flush()
+
+
+def uid():
+    return str(uuid.uuid4())
+
+
+pending = {}
+inbox = queue.Queue()
+
+
+def reader():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            m = json.loads(line)
+        except ValueError:
+            continue
+        t = m.get("type")
+        if t == "control_response":
+            r = m["response"]
+            q = pending.pop(r.get("request_id"), None)
+            if q:
+                q.put(r)
+        elif t == "control_request":
+            sub = m["request"]["subtype"]
+            body = {}
+            if sub == "initialize":
+                body = {"commands": [], "agents": [], "output_style": "default",
+                        "models": [], "pid": os.getpid()}
+            emit({"type": "control_response", "response": {
+                "subtype": "success", "request_id": m["request_id"], "response": body}})
+        elif t == "user":
+            inbox.put(m)
+    inbox.put(None)
+
+
+threading.Thread(target=reader, daemon=True).start()
+
+ids = itertools.count()
+
+
+def mcp(server, message):
+    rid = uid()
+    q = queue.Queue()
+    pending[rid] = q
+    emit({"type": "control_request", "request_id": rid, "request": {
+        "subtype": "mcp_message", "server_name": server, "message": message}})
+    r = q.get(timeout=30)
+    if r.get("subtype") == "error":
+        raise RuntimeError(r.get("error"))
+    return r["response"]["mcp_response"]
+
+
+scenario = E("STUB_CLAUDE_SCENARIO", "text")
+sleep_before = E("STUB_CLAUDE_SLEEP_BEFORE_INIT")
+if scenario == "slow_start" or sleep_before:
+    time.sleep(float(sleep_before or 5))
+
+# SDK MCP servers (handshake in the order the real CLI uses).
+sdk_tools = {}
+sdk_tool_schemas = []
+sdk_server = None
+cfg = argval("--mcp-config")
+servers = {}
+if cfg:
+    try:
+        servers = json.loads(cfg).get("mcpServers", {})
+    except ValueError:
+        servers = {}
+for name, c in servers.items():
+    if c.get("type") != "sdk":
+        continue
+    sdk_server = sdk_server or name
+    mcp(name, {"jsonrpc": "2.0", "id": next(ids), "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": {"name": "claude-code", "version": VERSION}}})
+    mcp(name, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+    lst = mcp(name, {"jsonrpc": "2.0", "id": next(ids), "method": "tools/list"})
+    for t in lst["result"]["tools"]:
+        sdk_tools[f"mcp__{name}__{t['name']}"] = (name, t["name"])
+        sdk_tool_schemas.append({"name": t["name"], "inputSchema": t.get("inputSchema")})
+
+first = inbox.get()
+if first is None:
+    sys.exit(0)
+content = first["message"]["content"]
+prompt = content if isinstance(content, str) else json.dumps(content)
+
+tools_flag = argval("--tools")
+tools = [t for t in (tools_flag or "").split(",") if t]
+model = argval("--model") or "claude-sonnet-5-5"
+
+obs_path = E("STUB_CLAUDE_OBSERVE") or os.path.join(
+    E("STUB_RUN_DIR") or ".", ".stub-claude-observed.json")
+try:
+    with open(obs_path, "w") as f:
+        json.dump({
+            "argv": ARGV, "env": dict(os.environ), "cwd": os.getcwd(),
+            "uid": os.getuid(), "tools": tools, "sdk_tools": sdk_tool_schemas,
+            "prompt": prompt, "model": argval("--model"),
+            "effort": argval("--effort"), "thinking": argval("--thinking"),
+            "permission_mode": argval("--permission-mode"),
+            "setting_sources": argval("--setting-sources"),
+            "no_session_persistence": "--no-session-persistence" in ARGV,
+            "max_turns": argval("--max-turns"),
+            "system_prompt": argval("--system-prompt"),
+        }, f)
+except OSError as e:
+    print(f"stub-claude: cannot write observation: {e}", file=sys.stderr)
+
+emit({"type": "system", "subtype": "init", "cwd": os.getcwd(), "session_id": SID,
+      "tools": tools + list(sdk_tools),
+      "mcp_servers": [{"name": n, "status": "connected", "source": "sdk"} for n in servers],
+      "model": model, "permissionMode": argval("--permission-mode") or "default",
+      "apiKeySource": "none", "claude_code_version": VERSION, "uuid": uid()})
+
+if scenario == "hang":
+    if E("STUB_CLAUDE_IGNORE_SIGINT"):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    else:
+        signal.signal(signal.SIGINT, lambda *_: os._exit(130))
+    while True:
+        time.sleep(1)
+
+FINAL = E("STUB_CLAUDE_FINAL_TEXT", "done\n<promise>COMPLETE</promise>")
+TOOL_OUT = E("STUB_CLAUDE_TOOL_OUTPUT", "ok")
+USAGE = {"input_tokens": 2, "cache_creation_input_tokens": 10,
+         "cache_read_input_tokens": 100, "output_tokens": 5}
+msg_ids = itertools.count(1)
+
+
+def assistant(blocks, **extra):
+    m = {"type": "assistant", "message": {
+        "model": extra.pop("model", model), "id": f"msg_{next(msg_ids)}", "type": "message",
+        "role": "assistant", "content": blocks, "stop_reason": None, "usage": USAGE},
+        "parent_tool_use_id": None, "session_id": SID, "uuid": uid()}
+    m.update(extra)
+    emit(m)
+
+
+def tool_result(tid, body, is_error=False, extra=None):
+    m = {"type": "user", "message": {"role": "user", "content": [{
+        "type": "tool_result", "tool_use_id": tid, "content": body, "is_error": is_error}]},
+        "parent_tool_use_id": None, "session_id": SID, "uuid": uid()}
+    if extra is not None:
+        m["tool_use_result"] = extra
+    emit(m)
+
+
+def tid():
+    return "toolu_" + uuid.uuid4().hex[:20]
+
+
+def builtin(name, inp):
+    t = tid()
+    assistant([{"type": "tool_use", "id": t, "name": name, "input": inp}])
+    tool_result(t, TOOL_OUT)
+
+
+def rl_event(status, default_reset=None):
+    resets = E("STUB_CLAUDE_RL_RESETS_AT", default_reset)
+    if resets is not None:
+        try:
+            resets = int(resets)
+        except ValueError:
+            pass
+    typ = E("STUB_CLAUDE_RL_TYPE", "five_hour")
+    util = E("STUB_CLAUDE_RL_UTIL")
+    win = {"resetsAt": resets}
+    if util is not None:
+        win["utilization"] = float(util)
+    info = {"status": status, "resetsAt": resets, "rateLimitType": typ,
+            "overageStatus": "rejected", "isUsingOverage": False,
+            "unifiedWindows": {typ: win}}
+    if E("STUB_CLAUDE_RL_TOPLEVEL_UTIL") == "1" and util is not None:
+        info["utilization"] = float(util)
+    emit({"type": "rate_limit_event", "rate_limit_info": info, "uuid": uid(), "session_id": SID})
+
+
+def result(text, is_error=False, status=None):
+    cost = float(E("STUB_CLAUDE_COST", "0.0444998"))
+    usage = {"input_tokens": 6, "output_tokens": 15, "cache_read_input_tokens": 300,
+             "cache_creation_input_tokens": 30}
+    if E("STUB_CLAUDE_USAGE"):
+        usage = json.loads(E("STUB_CLAUDE_USAGE"))
+    emit({"type": "result", "subtype": "success", "is_error": is_error, "duration_ms": 5,
+          "duration_api_ms": 4, "num_turns": 3, "session_id": SID, "result": text,
+          "stop_reason": "end_turn", "total_cost_usd": cost, "usage": usage,
+          "modelUsage": {model: {
+              "inputTokens": usage.get("input_tokens", 0), "outputTokens": usage.get("output_tokens", 0),
+              "cacheReadInputTokens": usage.get("cache_read_input_tokens", 0),
+              "cacheCreationInputTokens": usage.get("cache_creation_input_tokens", 0),
+              "webSearchRequests": 0, "costUSD": cost, "contextWindow": 1000000,
+              "maxOutputTokens": 128000, "costBasis": "list"}},
+          "permission_denials": [], "api_error_status": status,
+          "terminal_reason": "api_error" if is_error else "completed", "uuid": uid()})
+
+
+is_err = False
+script = E("STUB_CLAUDE_SCRIPT")
+if script:
+    with open(script) as f:
+        for frame in json.load(f):
+            emit(frame)
+    is_err = any(isinstance(f, dict) and f.get("type") == "result" and f.get("is_error")
+                 for f in json.load(open(script)))
+elif scenario in ("error", "refusal", "rate_limited"):
+    if scenario == "rate_limited":
+        rl_event(E("STUB_CLAUDE_RL_STATUS", "rejected"), "1790936400")
+        status = int(E("STUB_CLAUDE_ERROR_STATUS", "429"))
+        etype = E("STUB_CLAUDE_ERROR_TYPE", "rate_limit")
+        msg = E("STUB_CLAUDE_ERROR_MESSAGE",
+                'API Error: 429 {"type":"error","error":{"type":"rate_limit_error",'
+                '"message":"Number of request tokens has exceeded your rate limit"}}')
+    elif scenario == "refusal":
+        status = int(E("STUB_CLAUDE_ERROR_STATUS", "400"))
+        etype = E("STUB_CLAUDE_ERROR_TYPE", "invalid_request")
+        msg = E("STUB_CLAUDE_ERROR_MESSAGE",
+                'API Error: 400 {"type":"error","error":{"type":"invalid_request_error",'
+                '"message":"Third-party apps now draw from your extra usage, not your plan limits"}}')
+    else:
+        status = int(E("STUB_CLAUDE_ERROR_STATUS", "500"))
+        etype = E("STUB_CLAUDE_ERROR_TYPE", "server_error")
+        msg = E("STUB_CLAUDE_ERROR_MESSAGE",
+                'API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}')
+        if E("STUB_CLAUDE_RL_STATUS"):
+            rl_event(E("STUB_CLAUDE_RL_STATUS"))
+    assistant([{"type": "text", "text": msg}], model="<synthetic>", error=etype,
+              is_api_error_message=True)
+    result(msg, is_error=True, status=status)
+    is_err = True
+else:
+    if scenario == "full":
+        assistant([{"type": "thinking", "thinking": "plan the work", "signature": "sig"}])
+        if E("STUB_CLAUDE_RL_STATUS"):
+            rl_event(E("STUB_CLAUDE_RL_STATUS"))
+        builtin("Bash", {"command": "echo hi", "description": "say hi"})
+        builtin("Read", {"file_path": "/tmp/stub-claude-read.txt"})
+    elif E("STUB_CLAUDE_RL_STATUS"):
+        rl_event(E("STUB_CLAUDE_RL_STATUS"))
+    if scenario == "sdk_tool":
+        calls = json.loads(E("STUB_CLAUDE_SDK_CALLS", "[]"))
+        for call in calls:
+            full = f"mcp__{sdk_server}__{call['tool']}"
+            t = tid()
+            assistant([{"type": "tool_use", "id": t, "name": full, "input": call.get("args", {})}])
+            r = mcp(sdk_server, {"jsonrpc": "2.0", "id": next(ids), "method": "tools/call",
+                                 "params": {"name": call["tool"], "arguments": call.get("args", {})}})
+            res = r.get("result", {})
+            c = res.get("content", [])
+            tool_result(t, c, bool(res.get("isError", False)), extra=c)
+    assistant([{"type": "text", "text": FINAL}])
+    result(FINAL)
+
+# Drain stdin to EOF (bounded), then exit like the real CLI.
+deadline = time.monotonic() + 30
+while time.monotonic() < deadline:
+    try:
+        if inbox.get(timeout=max(0.1, deadline - time.monotonic())) is None:
+            break
+    except queue.Empty:
+        break
+sys.exit(1 if is_err else 0)

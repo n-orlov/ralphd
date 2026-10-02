@@ -254,3 +254,11 @@ That table is prose, not the budget table `tests/test_tier_budgets.py` parses
 (the one under "## Budgets" above): this one carries no `wall clock`/`budget
 wall clock` header pair, so the guard leaves it alone. The 10.81 s the
 directory adds is inside the fast lane's own recorded measurement above.
+
+### The stub Claude Code CLI (`tests/stub-claude/claude`)
+
+Beside stub-`pi`, `tests/stub-claude/claude` is a fake Claude Code CLI that the
+real `claude_agent_sdk.query()` drives over the stream-json control protocol
+(`cli_path` or `RALPHD_CLAUDE_CLI_PATH`). Its scenarios and every `STUB_CLAUDE_*`
+knob are documented in the script's module docstring, and
+`tests/test_stub_claude.py` (smoke) covers each scenario.
