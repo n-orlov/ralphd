@@ -37,6 +37,7 @@ in [docs/prds/](prds/README.md).
 
 ## Shipped
 
+- v0.30 — a hat can run on Claude Code — another harness runs iterations through the Python Agent SDK on a subscription token, classifies non-transient refusals, waits for rate-limit resets and validates provider access (#284).
 - v0.29 — a wait, a cure and a verdict are never lost — a CI-wait re-poll costs wall clock instead of iterations, a review cure after the final sweep re-opens it instead of leaving it validated at an unmeasured tree, and a fenced or verdict-less worker reply is repaired instead of dropped (#279, #280, #281, #282, #283).
 - v0.28 — the hub's apply-now checkbox actually interrupts, task selection with two or more candidates is routed instead of claimed by priority-then-list-order, and a REFUTED remedy task's criteria are folded from its own Done when:/Cured when: marker (#276, #277, #278).
 - v0.27 — a review converges in one fix round — a spent validation budget asks the operator instead of looping or replanning, and a tail's index read is bounded (#274, #275).
