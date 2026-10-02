@@ -41,6 +41,9 @@ RUN useradd -m -u 1000 -s /bin/bash agent \
 COPY --chown=agent:agent . /opt/ralphd
 RUN pip install --no-cache-dir /opt/ralphd
 
+ARG CLAUDE_AGENT_SDK_VERSION=0.2.163
+RUN pip install --no-cache-dir "claude-agent-sdk==${CLAUDE_AGENT_SDK_VERSION}"
+
 # Requirement I (#48): NO `USER agent` here, on purpose. The engine starts as
 # root and immediately drops its *effective* uid to `agent` while keeping root
 # as its real and saved uid (src/ralphd/engine/privsep.py), so:

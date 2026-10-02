@@ -250,6 +250,7 @@ DEPENDENCY_EVIDENCE = {
     "ruff": _Literal("pyproject.toml", "[tool.ruff]"),
     "build": _Literal("tests/test_image_packaged_inputs.py", '"-m", "build"'),
     "hatchling": _Literal("pyproject.toml", 'build-backend = "hatchling.build"'),
+    "claude-agent-sdk": _Import("claude_agent_sdk", ("src", "tests")),
 }
 
 
@@ -297,4 +298,42 @@ def test_the_dropped_cli_extra_stays_dropped():
     assert extras == {"dev"}, (
         f"unexpected extras {sorted(extras)}: #22 dropped `cli` (nothing under "
         "src/ralphd/cli/ imports httpx or rich)"
+    )
+
+
+def test_dev_sdk_pin_equals_image_pin():
+    """The SDK version is pinned in `pyproject.toml`'s dev extra, and it must
+    equal the pin in `container/Dockerfile` (requirement J.1).
+    """
+    from ralphd.cli import image
+
+    # Get the SDK requirement from the raw pyproject.toml (before version stripping)
+    project = tomllib.loads(PYPROJECT.read_text())["project"]
+    dev_reqs = project.get("optional-dependencies", {}).get("dev", [])
+    dev_sdk_reqs = [r for r in dev_reqs if "claude-agent-sdk" in r]
+    assert dev_sdk_reqs, "claude-agent-sdk not found in dev requirements"
+
+    dev_sdk_req = dev_sdk_reqs[0]
+    # Extract version from "claude-agent-sdk==0.2.163"
+    match = re.match(r"claude-agent-sdk==(.+)$", dev_sdk_req)
+    assert match, f"dev requirement {dev_sdk_req!r} does not use == pinning"
+    dev_version = match.group(1)
+
+    # Get the image pin from container/Dockerfile
+    dockerfile_text = (REPO_ROOT / "container/Dockerfile").read_text()
+    args = image.arg_defaults(dockerfile_text)
+    image_version = args.get("CLAUDE_AGENT_SDK_VERSION")
+    assert image_version, "container/Dockerfile has no CLAUDE_AGENT_SDK_VERSION ARG"
+
+    # They must match
+    assert dev_version == image_version, (
+        f"dev SDK version {dev_version!r} does not match image pin "
+        f"{image_version!r} in container/Dockerfile"
+    )
+
+    # The installed SDK's version must match too
+    import claude_agent_sdk
+    assert claude_agent_sdk.__version__ == dev_version, (
+        f"installed claude-agent-sdk version {claude_agent_sdk.__version__!r} does not match "
+        f"the pinned requirement {dev_version!r}"
     )

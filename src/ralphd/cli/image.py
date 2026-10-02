@@ -158,6 +158,11 @@ NODE_MAJOR_RE = re.compile(r"setup_(\d+)\.x")
 # comment warns about.)
 PI_PIN = "PI_VERSION"
 
+# The Claude Agent SDK version pin. The derived recipe layers the engine and
+# pi on top of a user-supplied base image, and installs the same SDK and
+# bundled CLI that the engine's own image carries.
+SDK_PIN = "CLAUDE_AGENT_SDK_VERSION"
+
 # The file that marks a directory as a ralphd source root worth hashing --
 # i.e. a checkout, or (task 038) the packaged copy of the same inputs inside a
 # wheel install, which is laid out identically on purpose.
@@ -683,7 +688,8 @@ COPY . /opt/ralphd
 RUN set -eu; \\
     python3 -m venv /opt/ralphd-venv; \\
     /opt/ralphd-venv/bin/pip install --no-cache-dir --upgrade pip; \\
-    /opt/ralphd-venv/bin/pip install --no-cache-dir /opt/ralphd
+    /opt/ralphd-venv/bin/pip install --no-cache-dir /opt/ralphd; \\
+    /opt/ralphd-venv/bin/pip install --no-cache-dir "claude-agent-sdk==${CLAUDE_AGENT_SDK_VERSION}"
 ENV PATH=/opt/ralphd-venv/bin:$PATH
 
 # 5. the run contract: uid 1000 owns the mounts, the engine is the entrypoint
@@ -772,6 +778,11 @@ def render_derived_dockerfile(base: str, base_dockerfile: str) -> str:
         raise ImageInputError(
             f"{SOURCE_MARKER} declares no ARG {PI_PIN}=<version>, so the "
             "derived image has no pi version to install (an unpinned install "
+            "would silently resolve some other version)")
+    if SDK_PIN not in args or not args[SDK_PIN]:
+        raise ImageInputError(
+            f"{SOURCE_MARKER} declares no ARG {SDK_PIN}=<version>, so the "
+            "derived image has no SDK version to install (an unpinned install "
             "would silently resolve some other version)")
     node = NODE_MAJOR_RE.search(base_dockerfile)
     if not node:

@@ -570,8 +570,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # a valid fence skips shape 1, plus a present null with no fence that
     # exhausts or is repaired by the generic schema ladder), measured the
     # same way -> fast 6859/470, smoke 5161/346.
-    "fast": {"tests": 6859, "modules": 470},
-    "smoke": {"tests": 5161, "modules": 346},
+    "fast": {"tests": 6862, "modules": 470},
+    "smoke": {"tests": 5163, "modules": 346},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -292,6 +292,11 @@ MODEL_HATS: tuple[str, ...] = (
     "planning", "worker", "verify", "review", "reflect", "router", "steer",
     "plan_review", "verdict_gate")
 
+# The minimum Claude Code CLI version required to run iterations on the
+# claude-code harness. The wrapper checks this at startup and refuses to run
+# below it (requirement J.2).
+CLAUDE_CODE_MIN_VERSION = "2.1.280"
+
 # "What ships": the ref a KNOWN hat resolves to when neither the per-hat
 # table (`models:`/`model_overrides:`) nor the bare `model` field configures
 # anything for it -- i.e. what a job that configures nothing at all gets.

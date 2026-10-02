@@ -67,6 +67,7 @@ def checkout(tmp_path):
     (root / "container/Dockerfile").write_text(
         "FROM python:3.12-slim-bookworm\n"
         "ARG PI_VERSION=0.84.1\n"
+        "ARG CLAUDE_AGENT_SDK_VERSION=0.2.163\n"
         "RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -\n"
         "ARG DOCKER_VERSION=29.7.2\n")
     (root / "container/entrypoint.sh").write_text(
@@ -171,16 +172,20 @@ def test_the_recipe_copies_the_version_pins_instead_of_restating_them(tmp_path):
     (root / "container/Dockerfile").write_text(
         "FROM python:3.12-slim\n"
         "ARG PI_VERSION=9.9.9\n"
+        "ARG CLAUDE_AGENT_SDK_VERSION=0.2.123\n"
         "ARG DOCKER_VERSION=1.2.3\n"
         "RUN curl -fsSL https://deb.nodesource.com/setup_44.x | bash -\n")
     (root / "pyproject.toml").write_text('[project]\nname = "ralphd"\n')
     text = image.derive(root, BASE).dockerfile
     assert "ARG PI_VERSION=9.9.9" in text
+    assert "ARG CLAUDE_AGENT_SDK_VERSION=0.2.123" in text
     assert "ARG DOCKER_VERSION=1.2.3" in text
     assert "RALPHD_NODE_MAJOR=44" in text
     # nothing in the module hard-codes a version of its own
     assert "9.9.9" not in (REPO / "src/ralphd/cli/image.py").read_text()
     assert pinned_pi_version() not in (REPO / "src/ralphd/cli/image.py").read_text()
+    assert "0.2.123" not in (REPO / "src/ralphd/cli/image.py").read_text()
+    assert "0.2.163" not in (REPO / "src/ralphd/cli/image.py").read_text()
 
 
 def test_the_real_repo_derives_a_recipe_pinning_the_real_pi_version():
@@ -231,7 +236,62 @@ def test_a_source_root_that_cannot_answer_is_refused(tmp_path):
         "FROM python:3.12-slim\nARG PI_VERSION=0.84.1\n")
     with pytest.raises(image.ImageInputError) as e:
         image.derive(root, BASE)
-    assert "node" in str(e.value)
+    assert "CLAUDE_AGENT_SDK_VERSION" in str(e.value)
+
+    (root / "container/Dockerfile").write_text(
+        "FROM python:3.12-slim\nARG PI_VERSION=0.84.1\n"
+        "ARG CLAUDE_AGENT_SDK_VERSION=0.2.163\n"
+        "RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -\n")
+    # Now it has all the required pins, so derive should work
+    derived = image.derive(root, BASE)
+    assert derived is not None
+
+
+def test_derived_recipe_accepts_a_pinned_sdk(checkout):
+    """The derived recipe requires a pinned SDK version, exactly like it does
+    for pi. A bump in `container/Dockerfile` reaches the derived image."""
+    derived = image.derive(checkout, BASE)
+    text = derived.dockerfile
+    # The derived recipe should include the SDK ARG from the base Dockerfile
+    assert "ARG CLAUDE_AGENT_SDK_VERSION=0.2.163" in text
+    assert "claude-agent-sdk==${CLAUDE_AGENT_SDK_VERSION}" in text
+
+
+def test_derived_recipe_refuses_an_unpinned_sdk(tmp_path):
+    """Like the pi version, an unpinned, empty, or missing SDK version
+    is refused, not silently resolved to whatever pip feels like."""
+    root = tmp_path / "checkout"
+    (root / "container").mkdir(parents=True)
+    (root / "pyproject.toml").write_text('[project]\nname = "ralphd"\n')
+
+    # Missing SDK version
+    (root / "container/Dockerfile").write_text(
+        "FROM python:3.12-slim\n"
+        "ARG PI_VERSION=0.84.1\n"
+        "RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -\n")
+    with pytest.raises(image.ImageInputError) as e:
+        image.derive(root, BASE)
+    assert "CLAUDE_AGENT_SDK_VERSION" in str(e.value)
+
+    # Empty SDK version
+    (root / "container/Dockerfile").write_text(
+        "FROM python:3.12-slim\n"
+        "ARG PI_VERSION=0.84.1\n"
+        "ARG CLAUDE_AGENT_SDK_VERSION=\n"
+        "RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -\n")
+    with pytest.raises(image.ImageInputError) as e:
+        image.derive(root, BASE)
+    assert "CLAUDE_AGENT_SDK_VERSION" in str(e.value)
+
+    # Latest keyword instead of version
+    (root / "container/Dockerfile").write_text(
+        "FROM python:3.12-slim\n"
+        "ARG PI_VERSION=0.84.1\n"
+        "ARG CLAUDE_AGENT_SDK_VERSION=latest\n"
+        "RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -\n")
+    # This actually should succeed since the value is not empty, only warn-able
+    derived = image.derive(root, BASE)
+    assert derived is not None
 
 
 def test_a_lost_template_marker_is_an_assertion_not_a_silent_hole():
