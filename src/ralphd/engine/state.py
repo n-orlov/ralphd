@@ -3083,7 +3083,13 @@ def iteration_summary_lines(detail: dict) -> list[str]:
         model_line = f"model:     {model}"
         if detail.get("modelRaw") and detail["modelRaw"] != model:
             model_line += f"  (gateway id: {detail['modelRaw']})"
+        # v0.31 (#285): the agent harness beside the model, when recorded
+        # (iterations from before v0.30 carry none and print as before).
+        if isinstance(detail.get("harness"), str) and detail["harness"]:
+            model_line += f"  \u00b7 {detail['harness']}"
         lines.append(model_line)
+    elif isinstance(detail.get("harness"), str) and detail["harness"]:
+        lines.append(f"harness:   {detail['harness']}")
     lines += [
         f"tokens:    {detail.get('tokensDisplay')}",
         f"cost:      {detail.get('costDisplay')}",

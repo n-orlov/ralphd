@@ -3149,7 +3149,11 @@ function renderTimeline(el, iterations, runId) {
       // raw ISO `startedAt` still in the payload for sorting/consumers.
       h("span", { class: "at" }, [String(it.startedAtLocal || "")]),
       h("span", { class: "phase" }, [String(it.phase || "")]),
-      h("span", {}, [String(it.model || "")]),
+      // v0.31 (#285): the agent harness beside the model --
+      // `anthropic/claude-opus-5-5 · claude-code`. `harness` is meta.json's
+      // own field (loop.py); a pre-0.30 iteration has none and shows the bare
+      // model exactly as before.
+      h("span", { class: "model" }, [iterationModelLabel(it)]),
       h("span", { class: "task-id" }, ["task: " + taskCell]),
       h("span", { class: "tier" }, ["tier: " + String(it.effectiveTier || "\u2014")]),
       h("span", { class: "cost" }, [String(it.costDisplay || "")]),
@@ -3169,6 +3173,14 @@ function renderTimeline(el, iterations, runId) {
     rowsBox.appendChild(row);
   }
   el.appendChild(details);
+}
+
+// v0.31 (#285): "<model> · <harness>" for one iteration row. Tolerates a
+// missing model, a missing harness (pre-0.30 meta.json) and junk types.
+function iterationModelLabel(it) {
+  const model = it && it.model ? String(it.model) : "";
+  const harness = it && typeof it.harness === "string" ? it.harness : "";
+  return harness ? (model ? model + " \u00B7 " + harness : harness) : model;
 }
 
 async function loadLogs(runId) {

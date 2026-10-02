@@ -188,3 +188,23 @@ def test_provisioning_lines_end_with_each_hats_harness():
     assert any(l.startswith("planning") and l.endswith("[pi]") for l in lines)
     assert all(l.endswith("]") for l in lines)
     assert any(l.startswith("verify.hard") and l.endswith("[pi]") for l in lines)
+
+
+def test_the_hub_provisioning_lines_show_each_hats_harness(tmp_path, capsys):
+    """v0.31 (#285): a run whose job.yaml puts hats on claude-code shows
+    `[claude-code]` / `[pi]` per hat -- tier rungs included -- in the hub's
+    own `provisioningLines`, the strings app.js renders unchanged."""
+    ctl = Ctl(tmp_path, capsys)
+    run_id = "hat-status-harness"
+    _write_dead_run(ctl.registry, run_id, iterationsUsed=0, iterationsBudget=25)
+    cdir = ctl.registry / "configs" / run_id
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "job.yaml").write_text(
+        "models: " + json.dumps({"worker": WORKER}) + "\n"
+        "harnesses: " + json.dumps({"worker": "claude-code"}) + "\n"
+        "model_tiers: " + json.dumps({"worker": {"hard": VERIFIER}}) + "\n")
+    detail = run_detail(ctl.registry, run_id)
+    lines = detail["status"]["provisioningLines"]
+    worker = [l for l in lines if l.startswith("worker.")]
+    assert len(worker) == 3 and all(l.endswith("[claude-code]") for l in worker)
+    assert any(l.startswith("planning") and l.endswith("[pi]") for l in lines)

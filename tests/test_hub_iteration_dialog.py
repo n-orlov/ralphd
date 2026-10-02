@@ -392,3 +392,55 @@ def test_app_js_labels_all_three_regions_outcome_first():
     # the ORDER an operator sees is the ORDER `ITERATION_REGIONS` is built in
     # (mapped straight into the dialog's children, outcome first).
     assert regions_list_at < outcome_at < input_at < logs_at
+
+
+# ------------------------------------------- v0.31 (#285): harness beside model
+def test_dialog_summary_shows_the_harness_beside_the_model(tmp_path):
+    registry, run_dir = _run(tmp_path)
+    _write_iteration(run_dir, 2, _meta(harness="claude-code"), texts=["x"])
+    view = iteration_view(registry, "run-iter", 2)
+    # the hub payload carries meta.json's own field verbatim...
+    assert view["harness"] == "claude-code"
+    # ...and the shared summary words it next to the model
+    assert ("model:     amazon-bedrock/eu.anthropic.claude-opus-5"
+            "  (gateway id: eu.anthropic.claude-opus-5)  · claude-code") in view["text"]
+
+
+def test_dialog_summary_without_a_harness_field_is_unchanged(tmp_path):
+    """A pre-0.30 iteration has no `harness` in meta.json: no extra text."""
+    registry, run_dir = _run(tmp_path)
+    _write_iteration(run_dir, 2, _meta(), texts=["x"])
+    view = iteration_view(registry, "run-iter", 2)
+    assert "harness" not in view
+    assert "·" not in view["text"]
+    assert "harness" not in "\n".join(view["summaryLines"])
+
+
+def test_dialog_summary_names_the_harness_even_with_no_model(tmp_path):
+    registry, run_dir = _run(tmp_path)
+    _write_iteration(run_dir, 2, _meta(model=None, modelResolved=None, modelRaw=None,
+                                       harness="pi"), texts=["x"])
+    lines = iteration_view(registry, "run-iter", 2)["summaryLines"]
+    assert "harness:   pi" in lines
+
+
+def test_claude_code_iteration_transcript_renders_in_the_dialog(tmp_path):
+    """The claude-code wrapper's pi-shaped events land in `output.jsonl`
+    (the raw SDK envelopes go to the `output.claude.jsonl` sidecar), so the
+    hub renders it through the same `log_render` path as `ralphctl logs`."""
+    registry, run_dir = _run(tmp_path)
+    d = _write_iteration(run_dir, 3, _meta(3, harness="claude-code"),
+                         texts=["hello from claude-code"])
+    (d / "output.claude.jsonl").write_text(
+        json.dumps({"kind": "AssistantMessage", "content": [{"text": "RAW-SIDECAR-ONLY"}]}) + "\n")
+    view = iteration_view(registry, "run-iter", 3)
+    assert any("hello from claude-code" in line for line in view["log"])
+    assert not any("RAW-SIDECAR-ONLY" in line for line in view["log"])
+    assert view["hasTranscript"] is True
+
+
+def test_app_js_timeline_row_shows_model_and_harness():
+    src = STATIC_APP_JS.read_text()
+    assert "function iterationModelLabel" in src
+    assert "it.harness" in src
+    assert 'h("span", { class: "model" }, [iterationModelLabel(it)])' in src
