@@ -1332,6 +1332,14 @@ event so the adjustment is auditable rather than silent. `infraWaitTotalS` is
 re-read from `status.json` at startup, so it survives a resume. Without it a
 four-hour outage would silently consume half an eight-hour job.
 
+**A rate-limit wait must not eat it either.** While the loop waits for a
+subscription's rate-limit window to reset (§8.4), `_account_rate_limit_wait()`
+extends the same two deadlines through the same `_extend_deadline_by()` by
+exactly the seconds waited, adds them to its own total `rateLimitWaitTotalS`
+(never to `infraWaitTotalS`; also re-read from `status.json` at startup) and
+emits `deadline_extended` with reason `"rate limit wait"`. The rate-limited
+attempt is refunded, so the wait costs neither an iteration nor working time.
+
 `set_iteration_budget()` tops the budget up in flight, rebinding `cfg.iterations`
 and rewriting `iterationsBudget`; because `budget_left()` re-reads the field every
 turn the new budget applies at the next iteration boundary, with no container
@@ -2051,6 +2059,8 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `health` | string | `ok` \| `degraded` — degraded while sitting out an infra outage |
 | `infraWait` | object \| null | the backoff wait in progress: `since`, `attempt`, `error`, `phase`, `nextAttemptAt`, `waitedS`, `budgetS`, `remainingS`; `null` whenever nothing is being waited on |
 | `infraWaitTotalS` | float | cumulative seconds this run spent in infra backoff waits |
+| `rateLimitWait` | object \| null | the rate-limit wait in progress (§8.4): `type` (the provider's `rateLimitType`), `resetsAt` (ISO; the window's reset, or the 15-minute re-probe), `since`; `null` whenever no rate-limit wait is in progress |
+| `rateLimitWaitTotalS` | float | cumulative seconds this run spent waiting for rate-limit windows to reset (§4.5); absent until the first wait, seeded from `status.json` at startup so it survives `resume` |
 | `pausedTotalS` | float | cumulative seconds credited back for operator pauses (v0.14 requirement P, #95, task 016) -- the pause twin of `infraWaitTotalS` above, published beside it; absent (read as `0`) for a run that has never been paused, and seeded from `status.json` at startup so it survives `resume` |
 | `planReviewRevisions` | object | `{"<approach>": <count>}` -- per-approach peer plan-review revision counter (v0.14 requirement K, #101, task 018); absent for a run with `peer_plan_review: false` (the default) or one whose plan was never objected to |
 | `planReviewApproved` | object | `{"<approach>": true}` -- per-approach marker that the peer plan review let this approach's plan proceed (an `approved` verdict or the revision bound being reached), written by `_step_plan_review` (#161); a resume reads it (or any task past `pending`) to skip re-entering `plan_review` over a plan that is already being worked, since a revision re-ingests a proposal with every status reset to `pending`. Absent for a run with `peer_plan_review: false` or one whose plan review has not spoken yet |
@@ -2655,9 +2665,11 @@ reconstruct the whole run, including its restarts.
 | `steering.consumed` | `file`, `iteration` | an actionable phase finished cleanly with it (§4.6) |
 | `infra_wait` | the whole `infraWait` payload plus `backoffS` | a backoff wait starts |
 | `infra_retry` | `phase`, `attempt`, `maxAttempts`, `error`, `noTrafficTimeout`, `instantFailure`, `backoffS`, `waitedS`, `budgetS` | an attempt classified as an infra fault |
-| `infra_retry_now` | `phase`, `attempt`, `error`, `source`, `message` | the operator woke a backoff wait |
+| `infra_retry_now` | `phase`, `attempt`, `error`, `source`, `message`; for a rate-limit wait `phase`, `rateLimitWait`, `source`, `message` | the operator woke a backoff wait or a rate-limit wait |
+| `rate_limit_wait_started` | `phase`, `rateLimitType`, `resetsAt`, `since`, `waitS`, `resetsKnown` | a rate-limit wait starts (§8.4); the notifier is told |
+| `rate_limit_wait_ended` | `phase`, `rateLimitType`, `waitedS`, `wokenBy` (`"reset"` \| `"retry"` \| `"abort"`) | the rate-limit wait ended; the notifier is told |
 | `infra_recovered` | `health`, `infraWaitTotalS` | an iteration reached the model again |
-| `deadline_extended` | `phase`, `attempt`, `waitedS`, `infraWaitTotalS`, `deadlineAt`, `reason` | a finished wait pushed the deadline out |
+| `deadline_extended` | `phase`, `attempt`, `waitedS`, `infraWaitTotalS`, `deadlineAt`, `reason`; a rate-limit wait carries `rateLimitWaitTotalS` instead of `attempt`/`infraWaitTotalS` and `reason` `"rate limit wait"` | a finished wait pushed the deadline out |
 | `reflect_infra_delay` | `phase`, `delayS`, `error`, `budgetS` | reflect waits before its first attempt because the job just died on an infra fault |
 | `reflect_done` | `ok`, `error` | the reflect phase's verdict |
 | `reflect_tombstone_cleared` | `path` | a successful reflect attempt removed a stale `reflection/FAILED.md` left by an earlier one (§12.2) |
@@ -3541,8 +3553,9 @@ as two independent questions, answered by two independent mechanisms:
 
 - `src/ralphd/engine/faults.py` holds `classify_fault()`, a pure function over
   one iteration's failure signals. It answers `None` (not a failure),
-  `"infra"` (the LLM endpoint or the network between it and the container) or
-  `"work"` (the agent's own doing).
+  `"infra"` (the LLM endpoint or the network between it and the container),
+  `"work"` (the agent's own doing), `"signal"` (§8.2 step 5) or `"rate_limit"`
+  (the provider's rate-limit window is exhausted, §8.2).
 - `src/ralphd/engine/loop.py` holds the machinery that acts on that verdict:
   retry in place, refund the iteration, escalate the backoff, publish a
   degraded status, and give up on a wall-clock budget rather than an attempt
@@ -3622,8 +3635,10 @@ merely leaked out of inner plumbing). `_run_job_core`'s outer guard stays
 `classify_fault()` takes `error_text`, `exit_code`, `interrupted`,
 `timed_out`, `no_traffic_timeout`, `produced_traffic`, `operator_abort` and —
 since task 014 (#49 part 2) — `duration_s`,
-and applies exactly this order (the verdicts are `None`, `"infra"`, `"work"`
-and — since task 013, #49 — `"signal"`, the tuple `faults.FAULT_CLASSES`):
+plus the structured provider evidence `rate_limit`, `rate_limit_fresh`,
+`http_status` and `error_type`, and applies exactly this order (the verdicts
+are `None`, `"infra"`, `"work"`, — since task 013, #49 — `"signal"`, and
+`"rate_limit"`, the tuple `faults.FAULT_CLASSES`):
 
 1. If none of the failure signals in §8.1 is present, return `None`. Nothing
    downstream runs for a successful iteration.
@@ -3657,6 +3672,30 @@ and — since task 013, #49 — `"signal"`, the tuple `faults.FAULT_CLASSES`):
    carry — see §17 entry 1 for why an absolute clock could not be raised out
    of the failure it caused.
 7. Otherwise return `"infra"`.
+
+**The rate-limit rung sits between steps 2 and 3.** After the abort carve-out
+(an abort is never waited out) and before the watchdog and signature rungs,
+`faults.rate_limit_evidence()` decides whether the provider rate-limited the
+iteration, and if so the verdict is `"rate_limit"` — never `"infra"`, `"work"`
+or `"signal"`. It reads structured evidence only, which only the `claude-code`
+runner reports (`IterationResult.rate_limit`, `rate_limit_fresh`, `http_status`,
+`error_type`):
+
+- a rate-limit report (`rate_limit_event.rate_limit_info`) that arrived during
+  this iteration (`rate_limit_fresh`) with `status == "rejected"`;
+- `error_type` `rate_limit` (the SDK's assistant-message error) or
+  `rate_limit_error` (the API's own type);
+- HTTP `429` together with an error type, a `rateLimitType` on the last report,
+  or `rate_limit_error` in the error text.
+
+A report carried over from an earlier iteration is not evidence: every
+iteration is a new Claude Code process that reports its window on its first
+request, so an old `rejected` can be stale. A pi error is text only, so a pi
+`429` or `rate limit` keeps its `back-pressure` signature (§8.3) and stays
+`"infra"`. The evidence is persisted in the iteration's `meta.json` (`rateLimit`,
+`rateLimitFresh`, `httpStatus`, `errorType`, each only when reported), so
+`ralphctl fault` and `ralphctl iteration` re-derive the same class. A
+`"rate_limit"` verdict is waited out, not retried as an outage (§8.4).
 
 `produced_traffic` is derived in `LoopSupervisor._classify_result()` as
 `bool(result.final_text) or bool(result.usage)` — the agent said something, or
@@ -3710,7 +3749,7 @@ when traffic exists, so it is specified family by family.
 | TLS | `TLS handshake`, `SSL handshake`, `certificate verify failed` | the transport could not be secured |
 | opaque transport | `connection error` | the SDK's own catch-all, reported as a bare `Connection error.` |
 | gateway 5xx | `bad gateway`, `gateway timeout`, `service unavailable`, `ServiceUnavailable`, `internal server error`, `50[234]` | the endpoint answered, with a server-side failure |
-| back-pressure | `429`, `529`, `rate[ _-]?limit`, `throttl`, `overloaded` | the endpoint is refusing load, and waiting is the correct response |
+| back-pressure | `429`, `529`, `rate[ _-]?limit`, `throttl`, `overloaded` | the endpoint is refusing load, and waiting is the correct response (structured rate-limit evidence is decided before this table, §8.2) |
 | Bedrock stream | `ModelStreamErrorException` | the upstream terminated a Bedrock response stream |
 | capacity and quota | `quota`, `capacity` | the account or region has nothing left to serve |
 
@@ -3847,6 +3886,33 @@ requested while an iteration is still running credits only the time the loop was
 parked. `pausedTotalS` is seeded from `status.json` at startup, the same way
 `infraWaitTotalS` is, and therefore survives `resume`.
 
+**A rate limit is a wait, not an outage.** A `"rate_limit"` verdict (§8.2) is
+handled in the same wrapper, before the infra path: the attempt is refunded
+through `_refund_iteration("infra")` (so `iterationsRefunded.infra` counts
+rate-limited attempts too), and `_wait_out_rate_limit()` waits until the
+window resets, then the wrapper re-runs the **same** phase, extra text, prompt,
+tier and task. The wait lasts until the window's `resetsAt` plus 0–60 s of
+jitter (`_rate_limit_jitter_s()`). `resetsAt` is taken from
+`unifiedWindows[rateLimitType]`, else the report's top level, and is accepted
+as epoch seconds (milliseconds above `1e12`) or ISO 8601
+(`faults.parse_resets_at`). With no reset known it waits
+`RATE_LIMIT_UNKNOWN_RESET_WAIT_S` (15 minutes) and re-probes. The wait goes
+through `_wait_out_backoff()`, so `POST /retry` wakes it (§8.5), an abort ends it
+and returns the rate-limited result, and a steer wakes it only for the rest of
+the wait to resume. It never touches the outage episode (`_infra_episode_*`,
+`infraWaitTotalS`, `health`), never calls `_reset_infra_episode()` and is not
+scored by the instant-failure streak. While it lasts, `status.json` carries
+`rateLimitWait = {type, resetsAt, since}` (`null` otherwise), and it emits
+`rate_limit_wait_started` and `rate_limit_wait_ended` (with `wokenBy`:
+`reset`, `retry` or `abort`) and sends the notifier a message at each end. The
+seconds actually waited extend the deadline (§4.5) through
+`_account_rate_limit_wait()`, which adds them to `rateLimitWaitTotalS` (seeded
+from `status.json`, so it survives `resume`) and emits `deadline_extended` with
+reason `"rate limit wait"`. The loop keeps each harness's last rate-limit
+report, and a `"rate_limit"` iteration that is returned (an abort) is skipped by
+the stagnation bookkeeping and rolls back a claim made this pass, as `"infra"`
+does.
+
 The degraded status contract is two fields, not a new state. **`state` stays
 `running` throughout an outage**, because adding a `degraded` state value
 would break every consumer's terminal-state logic. Instead:
@@ -3962,6 +4028,11 @@ it is waiting out an outage, and the two conditions are independent. When the
 run is not in a backoff wait there is nothing to wake, and the API answers
 `409` rather than silently pretending to have acted. An `infra_retry_now`
 event records that the operator asked.
+
+A rate-limit wait (§8.4) is woken the same way: `retry_now()` accepts it while
+`_rate_limit_waiting` is set, the `infra_retry_now` event carries the wait as
+`rateLimitWait`, and the same work re-runs at once. Only the seconds actually
+waited extend the deadline. The outage episode clock is not involved.
 
 ### 8.6 Cost and usage accounting
 

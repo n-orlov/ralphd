@@ -757,6 +757,18 @@ Human output also renders (task 003):
   itself runs, `health` still `degraded`) it reports the ongoing episode
   without a countdown. A healthy run prints no such line -- its output is
   byte-identical to before this line existed.
+- `waiting:` -- shown only while the run waits for a provider's rate-limit
+  window to reset (`rateLimitWait` in [api.md](api.md); a `claude-code`
+  iteration classified `rate_limit`). It names the window type and when it
+  resets, in local time:
+
+  ```
+  waiting:   rate limit (five_hour) until 2026-10-02 17:00:00 +0200
+  ```
+
+  The run is not degraded: the iteration is refunded, the deadline moves by
+  the time waited and the same work re-runs at the reset (or at once, after
+  `ralphctl retry`).
 - `reflection:` (task 020) -- shown only when the post-terminal `reflect`
   iteration **failed** (status.json's `reflect.ok` is `false`, see
   [api.md](api.md)):
@@ -1278,8 +1290,9 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
 `events.jsonl`.
 
 - **`fault:`** is the class the engine recorded and acted on (`infra` ·
-  `work`), with the iteration and phase it happened in — read from the newest
-  `iterations/NNNN/meta.json` that carries a `faultClass`.
+  `work` · `signal` · `rate_limit`), with the iteration and phase it happened
+  in — read from the newest `iterations/NNNN/meta.json` that carries a
+  `faultClass`.
 - **`because:`** names which branch of the classifier decided it, in the
   classifier's own words: the startup watchdog fired (no LLM traffic at all) ·
   the error text matched a known infra signature · the agent reached the model
@@ -1306,6 +1319,10 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   refunded, at **any** duration (#49 part 2, task 014; the duration bound this
   used to carry was retired by task 117 / steering 005 after a run's worth of
   real stream aborts landed above it and failed an approach for it).
+  The provider reporting its rate-limit window as reached (a `claude-code`
+  iteration's structured evidence, kept in `meta.json`) is `rate_limit`:
+  waited out until the window resets, without spending an iteration or the
+  outage budget.
 - **`signature:`** is the row of `engine/faults.py`'s `INFRA_SIGNATURES` table
   that matched: its family (`dns` · `tcp` · `stream` · `tls` · `sdk` ·
   `http-5xx` · `backpressure` · `bedrock-stream` · `capacity`), what that
@@ -1322,6 +1339,9 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   plus the run-wide `infraWaitTotalS` when earlier outages added to it. Infra
   waits extend the job deadline, so this time never counts against
   `job_timeout_s`.
+- **`waiting:`** appears while the run waits for a rate-limit window to reset
+  (status.json's `rateLimitWait`), with the same wording as `status`:
+  `waiting:   rate limit (five_hour) until <local time>`.
 - **`recovered:`** appears when the engine emitted `infra_recovered` — a later
   iteration reached the model, so the episode is over and the ladder is not a
   live one. **`gave up:`** prints `status.json`'s `abortReason` when the run
@@ -2015,7 +2035,11 @@ number keeps escalating, so the *next* automatic backoff is unchanged). It
 never unpauses a paused run and never touches steering — use `unpause` to
 release an operator pause.
 
-Exit `0` woken · `5` the run is not in an infra wait (or already finished) ·
+It also wakes a run waiting for a rate-limit window to reset (`status` shows
+`waiting:   rate limit (...) until ...`): the same work re-runs at once. That
+wait has no outage budget to reset.
+
+Exit `0` woken · `5` the run is in neither wait (or already finished) ·
 `3` unknown run · `4` API unreachable. `--json` prints the engine's
 `{"retrying": true}`.
 

@@ -4140,6 +4140,8 @@ event:
 | `null` | not a failure: exit 0, **no error text recorded**, not interrupted, not timed out, no startup-window kill |
 | `"infra"` | the endpoint/provider/network is at fault — retried and refunded by the wrapper (§10.2) |
 | `"work"` | the agent reached the model and then genuinely failed — or the *operator* terminated it |
+| `"signal"` | a signal ended an iteration that had reached the model, with no abort recorded (below) — not retried |
+| `"rate_limit"` | the provider reported its rate-limit window exhausted, in structured form — waited out until the window resets, then the same work re-runs (below) |
 
 Because both the recorded field and the retry decision come from that one
 call, an operator reading `faultClass: "infra"` can be sure that is why the
@@ -4207,6 +4209,24 @@ Three deliberate details:
   shape, 14 of them above 120s, and failed an approach on three of them in a
   row before the bound was retired in favour of deciding the shape alone
   (SPEC §17 entry 1 records the whole history).
+
+- **A rate limit is a wait, not a failure.** The `claude-code` runner reports
+  structured provider evidence beside the error text: the last
+  `rate_limit_event.rate_limit_info` (`IterationResult.rate_limit`, with
+  `rate_limit_fresh` when it arrived in this iteration), `http_status` and
+  `error_type`. `faults.rate_limit_evidence()` reads only those: a fresh
+  report with `status: "rejected"`, an error type `rate_limit`, or HTTP 429
+  with a rate-limit type. Its rung sits after the abort carve-out and before
+  the watchdog and the signature table, so a rate limit is never `"infra"`.
+  The wrapper refunds the attempt, waits until the window's `resetsAt` plus
+  0–60 s of jitter (15 minutes when no reset is known), and re-runs the same
+  work (`_wait_out_rate_limit()`). The wait extends the deadline
+  (`rateLimitWaitTotalS`, `deadline_extended` reason `"rate limit wait"`),
+  never touches the outage budget or `health`, is published as
+  `status.rateLimitWait` and the `rate_limit_wait_started`/`_ended` events,
+  tells the notifier at each end, and is woken by `POST /retry`. pi reports
+  errors as text only, so a pi `429` stays in the `back-pressure` family
+  above.
 
 Anything else that produced **no** LLM traffic at all is classified `"infra"`
 too: an unclassifiable no-traffic failure is far likelier to be an
@@ -4318,8 +4338,9 @@ emits `infra_retry_now`, and **restarts the outage-budget clock** — the
 operator asserting "it is back" is new information, and a run that has
 already sat out most of its budget must not die one attempt later. The
 attempt counter is *kept*, so repeated impatient retries keep escalating the
-backoff instead of hammering a still-broken endpoint. `409` when the run is
-not in an infra wait. `/retry` and `/resume` are independent by design:
+backoff instead of hammering a still-broken endpoint. A rate-limit wait
+(§10.1) is woken the same way, and re-runs the same work at once; it has no
+outage clock to restart. `409` when the run is in neither wait. `/retry` and `/resume` are independent by design:
 `/retry` never unpauses a paused run, `/resume` never shortens a backoff, and
 neither touches steering.
 

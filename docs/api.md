@@ -119,6 +119,8 @@ The one-call summary. Response:
   "pausedTotalS": 0,               // cumulative time credited back for operator pauses, task 016
   "health": "ok",                  // "ok" | "degraded"
   "infraWait": null,               // populated only while waiting out an infra outage
+  "rateLimitWait": null,           // populated only while waiting for a rate-limit window to reset
+  "rateLimitWaitTotalS": 0,        // cumulative rate-limit wait; written once a wait has happened
   "reflect": null,                 // absent/null until the reflect phase ends, see below
   "currentIteration": {
     "number": 7, "phase": "worker",
@@ -329,6 +331,12 @@ paused/survives-resume shape), and emits its own `deadline_extended` event
 whose `reason` reads `"operator pause"` — never `"infra wait"` — so the two
 credit sources stay distinguishable in `events.jsonl`.
 
+A rate-limit wait (`rateLimitWait`, below) is credited back the same way: the
+seconds actually waited extend `deadlineAt`, accumulate in
+`rateLimitWaitTotalS` (separate from `infraWaitTotalS`; survives `ralphctl
+resume`; absent until the first wait) and emit a `deadline_extended` event
+whose `reason` reads `"rate limit wait"`.
+
 #### `approach` and `maxApproaches`
 
 `approach` is the current approach number (1-based) and `maxApproaches` its
@@ -442,6 +450,28 @@ run-detail card. A wait can be cut short with `POST /retry`. The whole model
 (fault taxonomy, outage budget, deadline extension, retry-now, the
 instant-failure fail-fast carve-out) is described in `docs/architecture.md`
 §10 “Resilience: transient endpoint outages”.
+
+#### `rateLimitWait`
+
+A `claude-code` iteration the provider rate-limited (`faultClass:
+"rate_limit"`) is not an outage: `health` stays `"ok"` and `infraWait` stays
+`null`. The loop waits for the window to reset and re-runs the same work, and
+publishes the wait in its own field, `null` whenever no such wait is in
+progress:
+
+```json
+"rateLimitWait": {
+  "type": "five_hour",                    // the provider's rateLimitType (null if not reported)
+  "resetsAt": "2026-10-02T15:00:00Z",     // when the window resets (or the 15-minute re-probe)
+  "since": "2026-10-02T14:12:40Z"         // when the wait started
+}
+```
+
+The wait lasts until `resetsAt` plus 0–60 s of jitter, does not consume an
+iteration (the attempt is refunded under `iterationsRefunded.infra`) and does
+not touch the outage budget. It is surfaced by `ralphctl status` and `ralphctl
+fault` as `waiting:   rate limit (<type>) until <local time>`, and by the hub
+run-detail card with a "retry now" button. `POST /retry` wakes it.
 
 #### `reflect`
 
@@ -638,6 +668,13 @@ the infra-retry wrapper acts on:
 | `"infra"` | the LLM endpoint/provider/network broke (no traffic within the startup window, a recognized infra error signature, or a bare `aborted` with a clean exit and no abort recorded for the run, at any duration — a stream the provider hung up on) — the attempt is retried and refunded, never charged to the iteration budget |
 | `"work"` | the agent really ran (LLM traffic observed) and then failed on its own — including a bare `aborted` that arrived more than two minutes in, which is no longer distinguishable from an agent that worked and then aborted — or an abort/interrupt was recorded for the run — an operator's, or the engine giving up on its own — which is never retried as an outage (the *explanation* surfaces name which of the two only when it can be established; the class cannot tell them apart, issue #49) |
 | `"signal"` | the agent reached the model and was then ended by a signal, with no abort recorded for this run (an OOM kill, a stray `pkill`, a `docker stop` of its process group) — it was terminated before it could fail, so it is neither the agent's work failure nor an endpoint outage, and it is **not** retried (a signal usually means something outside the run wants it to stop) |
+| `"rate_limit"` | the provider reported its rate-limit window exhausted, in structured form (a `claude-code` iteration only: a fresh rate-limit report with `status: "rejected"`, an error type `rate_limit`, or HTTP 429 with a rate-limit type) — the attempt is refunded, the loop waits for the window to reset (`rateLimitWait` under `GET /status`) and re-runs the same work. A pi text `429` stays `"infra"` |
+
+When the runner reported structured provider evidence, `meta.json` also
+carries it: `rateLimit` (the last rate-limit report: `status`, `resetsAt`,
+`rateLimitType`, `unifiedWindows`, …) with `rateLimitFresh` (whether it arrived
+during this iteration), `httpStatus` and `errorType`. Each is absent when not
+reported.
 
 The field is absent only while an iteration is still in flight (before its
 `endedAt` is written). The signature families behind `"infra"`, and the
@@ -739,7 +776,7 @@ then follows. Event types:
 |------|--------------------|
 | `state` | lifecycle transition: `state` is `running` (emitted by every engine process as it starts the job loop, resume included -- except a process that resumes a run dir already recorded `finishing`, task 012/#56 below, which has no job loop left to start and promotes straight to the terminal event), `finishing` (task 012, #56: the verdict is settled but the post-terminal `reflect` iteration has not run yet -- see status.json's `pendingTerminalState`), the non-terminal `timed_out` hold (v0.24 task 010, requirement B.3, #169: the deadline/budget hold froze on the spot, `verdict: null`, resume-eligible, skips the `finishing`/reflect dance entirely) or the terminal `succeeded`/`failed`/`aborted`; the startup event also carries `resumed` (`true` when this process picked up a run dir that already held recorded work) |
 | `phase` | phase entered (planning/worker/verify/review), approach number |
-| `iteration.start` / `iteration.end` | number, phase, model / exit, sentinel, error, `faultClass` (`null` \| `"infra"` \| `"work"`, identical to the iteration's `meta.json` — see `GET /iterations`) |
+| `iteration.start` / `iteration.end` | number, phase, model / exit, sentinel, error, `faultClass` (`null` \| `"infra"` \| `"work"` \| `"signal"` \| `"rate_limit"`, identical to the iteration's `meta.json` — see `GET /iterations`) |
 | `iteration.attempt_archived` | a reused iteration number's earlier, crashed attempt was archived before the new one wrote: `number`, `attempt` (`1` for the oldest), `path` (`iterations/NNNN/attempts/NN`), `files` |
 | `task` | task id + old/new status — emitted live while a worker iteration is still running (polled every ~0.25s against `tasks.json`), not only after the iteration ends, so `pending -> in-progress` is observable in real time |
 | `steering.received` / `steering.consumed` | steering file name; `steering.consumed` also carries the `iteration` and is emitted only after that iteration finished cleanly (never twice for the same file) |
@@ -748,12 +785,14 @@ then follows. Event types:
 | `infra_retry` | an infra-classified attempt is being retried: phase, attempt, error, `backoffS` (`null` when giving up), `waitedS`, `budgetS` |
 | `infra_wait` | a backoff wait started: the full `infraWait` payload (`since`, `attempt`, `error`, `phase`, `nextAttemptAt`, `waitedS`, `budgetS`, `remainingS`) plus `backoffS`; the run is now `health: "degraded"` |
 | `infra_recovered` | an iteration reached the model again: `health: "ok"`, `infraWaitTotalS` — the outage episode is over and `infraWait` is back to `null` |
-| `infra_retry_now` | an operator woke a backoff wait via `POST /retry`: phase, attempt, error, `source: "operator"` |
+| `infra_retry_now` | an operator woke a backoff wait via `POST /retry`: phase, attempt, error, `source: "operator"`; for a rate-limit wait: phase, `rateLimitWait` (`type`, `resetsAt`, `since`), `source` |
+| `rate_limit_wait_started` | a rate-limit wait started: phase, `rateLimitType`, `resetsAt`, `since`, `waitS` (the planned wait), `resetsKnown`; the notifier is told |
+| `rate_limit_wait_ended` | the rate-limit wait ended: phase, `rateLimitType`, `waitedS`, `wokenBy` (`"reset"` \| `"retry"` \| `"abort"`); the notifier is told |
 | `reflect_infra_delay` | the job ended on an infra-shaped failure, so the post-terminal `reflect` iteration waits before its first attempt instead of firing into the same dead endpoint: `delayS`, `error`, `budgetS` (reflect's own, capped, outage budget). Followed by an ordinary `infra_wait` with `attempt: 0` |
 | `reflect_done` | the post-terminal `reflect` iteration finished: `ok`, plus `error`/`errorClass` when it failed (same verdict as status.json's `reflect`) |
 | `reflect_skipped` | the post-terminal `reflect` phase produced no verdict because a signal was already taking the engine down: `attempted` (false = never started, true = cut short mid-attempt), `signal`, `reason`. No `FAILED.md` is written on this path — see status.json's `reflect` |
 | `reflect_tombstone_cleared` | a successful `reflect` attempt removed a stale `reflection/FAILED.md` written by an earlier one: `path`. The alias `reflect-failed` disappears from `artifacts ls` with the file |
-| `deadline_extended` | the job deadline moved out after an infra wait OR an operator pause: `waitedS`, new `deadlineAt`, `reason` (`"infra wait"` — also phase/attempt/`infraWaitTotalS` — or `"operator pause"` — also `pausedTotalS`) |
+| `deadline_extended` | the job deadline moved out after an infra wait, an operator pause OR a rate-limit wait: `waitedS`, new `deadlineAt`, `reason` (`"infra wait"` — also phase/attempt/`infraWaitTotalS` — or `"operator pause"` — also `pausedTotalS` — or `"rate limit wait"` — also phase/`rateLimitWaitTotalS`) |
 | `budget_changed` | the iteration budget was changed in flight via `PATCH /config/budget`: `field: "iterations"` (also `"maxApproaches"`/`"iterationTimeoutS"`/`"jobDeadlineEpochS"`/`"curePassCeiling"` — task 003/#94 (a) and task 010/v0.27 requirement C.3 widen the knob, never the event's own shape), `previous`, the new value under the field's own key (`iterations`/`maxApproaches`/`iterationTimeoutS`/`jobDeadlineEpochS`/`curePassCeiling`), `delta`, `iterationsUsed` (`iterations` field only), `source: "api"` |
 | `notification.sent` / `notification.failed` | the engine-owned `notify` hat tool (or the engine's own operator-escalation notifier) POSTed to the configured notifier URL: `endpoint`, `textSha256`, `httpStatus`. A successful send (2xx) emits `notification.sent`; an unconfigured URL, a connection error, or a non-2xx status all emit the distinct `notification.failed` instead -- never `notification.sent` for a send that did not actually succeed (requirement B.1, #197). v0.23 requirement A.7 (#224, task 017): a failing POST is retried exactly ONCE, immediately, with no backoff, before either event is recorded -- `httpStatus` on the event is always the LAST attempt's own status, and exactly one of the two events is ever recorded per call (two failures in a row still record one `notification.failed`, not two). Task cure-01-01-3 (v0.26 requirement A.4's own DoD 1): this per-call retry-once is the one, non-escalation caller's behaviour; an operator-escalation delivery attempt (below) disables it (`max_attempts=1`) so its own outer retries are the ONLY retrying that happens, and each escalation attempt still emits exactly one of these two events, one real POST per event |
 | `notification.escalation_undelivered` | v0.26 requirement A.4 (task 004, #269), tightened by task cure-01-01-3 (the same requirement's DoD 1, "at most 3 escalation delivery attempts"): an operator-escalation notification (`_pause_and_escalate_*`/`_pause_for_commit_secret_hit`) never reached the notifier after up to 3 delivery attempts with bounded backoff between them (60s, then 120s -- 180s total) -- and those 3 attempts are also the TOTAL count of real notifier HTTP POSTs made, never 3 attempts each silently paying for a second internal retry: `reason` (the escalating pause's own `operator_escalation.reason` string -- also its persisted `pauseReason`, except `rejected_incurable`, whose reason-less in-memory pause never persists one). Each of the up-to-3 attempts still records its own honest `notification.sent`/`notification.failed` event above, unchanged; this is the ADDITIONAL, distinct event marking that the escalation itself was never delivered at all -- never emitted when any attempt succeeds |
@@ -1014,8 +1053,14 @@ CLI: `ralphctl retry <run-id>` (docs/cli.md). Hub: the "retry now" button on
 a degraded run-detail card, via the hub's `POST /api/runs/<id>/retry` proxy
 (docs/cli.md's `ralphctl ui` section).
 
-`409` when the run is not actually in an infra wait (`health: "ok"` /
-`infraWait: null`, or the job already finished) — the problem detail says so.
+It also wakes a rate-limit wait (`rateLimitWait` under `GET /status`): the
+same work re-runs at once, only the seconds actually waited extend the
+deadline, and the outage budget is not involved. `infra_retry_now` then
+carries `rateLimitWait`.
+
+`409` when the run is in neither wait (`health: "ok"` / `infraWait: null` /
+`rateLimitWait: null`, or the job already finished) — the problem detail says
+so.
 Naming: `/retry` is about a **degraded** run waiting out an endpoint outage;
 `/resume` is about a **paused** run waiting for the operator. They are
 independent — `/retry` never unpauses a paused run and never touches steering,
