@@ -22,7 +22,9 @@ STUB_CLAUDE_OBSERVE       path of the JSON observation dump (default
                           setting_sources, no_session_persistence, max_turns,
                           system_prompt, pid, config_skills (sorted names in
                           $CLAUDE_CONFIG_DIR/skills, each with "@" appended
-                          when it is a symlink; null when the dir is absent).
+                          when it is a symlink; null when the dir is absent),
+                          init_skills (the `skills` filter of the SDK's
+                          initialize request; null when none was sent).
 STUB_CLAUDE_SCENARIO      text (default) | full (thinking, Bash tool_use and
                           result, Read tool_use and result, text, result) |
                           sdk_tool (calls each STUB_CLAUDE_SDK_CALLS entry
@@ -102,6 +104,9 @@ pending = {}
 inbox = queue.Queue()
 
 
+init_skills = []
+
+
 def reader():
     for line in sys.stdin:
         line = line.strip()
@@ -121,6 +126,7 @@ def reader():
             sub = m["request"]["subtype"]
             body = {}
             if sub == "initialize":
+                init_skills.append(m["request"].get("skills"))
                 body = {"commands": [], "agents": [], "output_style": "default",
                         "models": [], "pid": os.getpid()}
             emit({"type": "control_response", "response": {
@@ -209,6 +215,7 @@ try:
             "max_turns": argval("--max-turns"),
             "system_prompt": argval("--system-prompt"),
             "pid": os.getpid(), "config_skills": config_skills(),
+            "init_skills": init_skills[0] if init_skills else None,
         }, f)
 except OSError as e:
     print(f"stub-claude: cannot write observation: {e}", file=sys.stderr)

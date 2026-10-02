@@ -125,10 +125,18 @@ def observed(tmp_path_factory):
         mp.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
         mp.setenv("CLAUDE_CODE_SESSION_ID", "fake-session")
         mp.setenv("CLAUDE_CODE_OAUTH_TOKEN", FAKE_OAUTH)
+        # Gateway routing from the base env, as `docker run -e` would set it.
+        mp.setenv("AWS_BEARER_TOKEN_BEDROCK", "fake-bedrock-bearer")
+        mp.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
         pi_home = runner_mod._ChildProcessRunner._child_env(None)["HOME"]
         runner = _runner(tmp_path)
         result = _run(runner, tmp_path, extra_env={
             "ANTHROPIC_AUTH_TOKEN": "fake-auth-token-for-tests",
+            "ANTHROPIC_BASE_URL": "https://gateway.invalid/anthropic",
+            "ANTHROPIC_BEDROCK_BASE_URL": "https://gateway.invalid/bedrock",
+            "ANTHROPIC_VERTEX_PROJECT_ID": "fake-project",
+            "ANTHROPIC_VERTEX_BASE_URL": "https://gateway.invalid/vertex",
+            "CLAUDE_CODE_USE_VERTEX": "1",
             "RALPHD_CONTROL_TOKEN": "fake-control-token"})
     return {"result": result, "obs": _obs(observe), "spawned": spawned,
             "sentinel": sentinel, "itdir": tmp_path / "it",
@@ -163,6 +171,53 @@ def test_the_cli_env_is_stripped_and_isolated(observed):
     assert "home" not in json.loads(
         (observed["itdir"] / "output.claude-scratch" / "wrapper.json").read_text())
     assert not (observed["itdir"] / "output.claude-scratch" / "home").exists()
+
+
+def test_gateway_and_cloud_routing_never_reaches_the_cli(observed):
+    """A claude-code hat always talks to api.anthropic.com with the OAuth
+    token, whether the routing var came from the base env or from `extra_env`
+    (profile env:, forwarded env, a mid-run PUT /config/llm)."""
+    env = observed["obs"]["env"]
+    for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_BEDROCK_BASE_URL",
+                 "ANTHROPIC_VERTEX_PROJECT_ID", "ANTHROPIC_VERTEX_BASE_URL",
+                 "AWS_BEARER_TOKEN_BEDROCK", "CLAUDE_CODE_USE_BEDROCK",
+                 "CLAUDE_CODE_USE_VERTEX"):
+        assert name not in env, name
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == FAKE_OAUTH
+
+
+def test_pi_children_keep_the_gateway_routing_vars():
+    """The strip is the claude-code wrapper's alone: pi's child env (the
+    `aigw-claude` profile) still carries every one of them, byte for byte."""
+    extra = {"ANTHROPIC_BASE_URL": "https://gateway.invalid/anthropic",
+             "ANTHROPIC_BEDROCK_BASE_URL": "https://gateway.invalid/bedrock",
+             "ANTHROPIC_VERTEX_PROJECT_ID": "fake-project",
+             "AWS_BEARER_TOKEN_BEDROCK": "fake-bedrock-bearer",
+             "CLAUDE_CODE_USE_BEDROCK": "1"}
+    env = runner_mod._ChildProcessRunner._child_env(extra)
+    for name, value in extra.items():
+        assert env[name] == value
+
+
+def test_scrub_environ_strips_routing_and_keeps_the_oauth_token():
+    from ralphd.harness.claude_code import scrub_environ
+    env = {"ANTHROPIC_BASE_URL": "x", "ANTHROPIC_BEDROCK_BASE_URL": "x",
+           "ANTHROPIC_VERTEX_REGION": "x", "AWS_BEARER_TOKEN_BEDROCK": "x",
+           "CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_USE_VERTEX": "1",
+           "CLAUDE_CODE_OAUTH_TOKEN": FAKE_OAUTH, "AWS_REGION": "eu-west-1",
+           "HOME": "/h", "ANTHROPIC_MODEL_NOTE": "kept"}
+    removed = scrub_environ(env)
+    assert removed == ["ANTHROPIC_BASE_URL", "ANTHROPIC_BEDROCK_BASE_URL",
+                       "ANTHROPIC_VERTEX_REGION", "AWS_BEARER_TOKEN_BEDROCK",
+                       "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"]
+    assert env == {"CLAUDE_CODE_OAUTH_TOKEN": FAKE_OAUTH, "AWS_REGION": "eu-west-1",
+                   "HOME": "/h", "ANTHROPIC_MODEL_NOTE": "kept"}
+
+
+def test_the_bundled_cli_skills_are_switched_off(observed):
+    """The SDK's initialize request carries `skills: []`, its documented
+    "suppress every skill" filter; ralphd's own skills ride the system prompt."""
+    assert observed["obs"]["init_skills"] == []
 
 
 def test_exactly_the_six_builtin_tools(observed):

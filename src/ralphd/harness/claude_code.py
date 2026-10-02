@@ -12,8 +12,9 @@ What it does, in order:
    NDJSON-only.
 2. Scrubs its own `os.environ` (the SDK hands the CLI child the whole of it
    and `options.env` can only add): `ANTHROPIC_API_KEY`,
-   `ANTHROPIC_AUTH_TOKEN`, `CLAUDECODE`, `CLAUDE_EFFORT`, `CLAUDE_PID`,
-   `CLAUDE_CONFIG_DIR` and every `CLAUDE_CODE_*` except
+   `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_BEDROCK_*`,
+   `ANTHROPIC_VERTEX_*`, `AWS_BEARER_TOKEN_BEDROCK`, `CLAUDECODE`,
+   `CLAUDE_EFFORT`, `CLAUDE_PID`, `CLAUDE_CONFIG_DIR` and every `CLAUDE_CODE_*` except
    `CLAUDE_CODE_OAUTH_TOKEN` are removed. The SDK itself then sets
    `CLAUDE_CODE_ENTRYPOINT=sdk-py`, `CLAUDE_AGENT_SDK_VERSION` and
    `CLAUDE_CODE_SDK_READS_SESSION_STATE`.
@@ -24,9 +25,9 @@ What it does, in order:
 4. Calls `query()` with an isolated Claude Code: a fresh `CLAUDE_CONFIG_DIR`
    from the scratch area (`HOME` is inherited: the agent's real home, as
    for pi), `setting_sources=[]`, no persisted
-   session, `bypassPermissions`, cwd = the workspace, exactly the six
-   built-in tools in `BUILTIN_TOOLS`, no `max_turns`, and the effort row of
-   `EFFORT_TABLE`.
+   session, `skills=[]` (the CLI's bundled skills off), `bypassPermissions`,
+   cwd = the workspace, exactly the six built-in tools in `BUILTIN_TOOLS`, no
+   `max_turns`, and the effort row of `EFFORT_TABLE`.
 5. For every SDK message prints one raw envelope
    (`{"type": "ralphd.claude_raw", "raw": {"kind": ..., ...}}`) and then the
    pi events `Normaliser.feed` makes of it. SDK errors end the stream with an
@@ -91,7 +92,13 @@ KEPT_CLAUDE_CODE_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 STRIPPED_ENV = frozenset({
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE", "CLAUDE_EFFORT",
     "CLAUDE_PID", "CLAUDE_CONFIG_DIR",
+    # Gateway / cloud-provider routing: a claude-code hat always talks to
+    # api.anthropic.com with CLAUDE_CODE_OAUTH_TOKEN, however the profile or
+    # forwarded env (which pi hats keep) is set up. CLAUDE_CODE_USE_BEDROCK /
+    # CLAUDE_CODE_USE_VERTEX are covered by the CLAUDE_CODE_* rule.
+    "ANTHROPIC_BASE_URL", "AWS_BEARER_TOKEN_BEDROCK",
 })
+STRIPPED_ENV_PREFIXES = ("ANTHROPIC_BEDROCK_", "ANTHROPIC_VERTEX_")
 
 VERSION_TOO_OLD = "claude_code_version_too_old"
 CLI_NOT_FOUND = "claude_code_cli_not_found"
@@ -130,8 +137,8 @@ def scrub_environ(env: Any) -> list[str]:
     Returns the removed names, sorted."""
     removed = []
     for name in list(env):
-        if name in STRIPPED_ENV or (
-                name.startswith("CLAUDE_CODE_") and name != KEPT_CLAUDE_CODE_ENV):
+        if (name in STRIPPED_ENV or name.startswith(STRIPPED_ENV_PREFIXES)
+                or (name.startswith("CLAUDE_CODE_") and name != KEPT_CLAUDE_CODE_ENV)):
             del env[name]
             removed.append(name)
     return sorted(removed)
@@ -246,6 +253,10 @@ def build_options(cfg: dict, cli: str, stderr_cb) -> ClaudeAgentOptions:
         tools=list(BUILTIN_TOOLS),
         permission_mode="bypassPermissions",
         setting_sources=[],
+        # The SDK's documented "no skills" filter (initialize `skills: []`):
+        # the CLI's bundled skills never reach the model, now or if the Skill
+        # tool is ever added. ralphd's own skills ride the system prompt index.
+        skills=[],
         cwd=cfg["workspace"],
         model=cfg.get("model") or None,
         extra_args={"no-session-persistence": None},
