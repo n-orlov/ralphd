@@ -152,6 +152,10 @@ BASE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]*$")
 ARG_LINE_RE = re.compile(r"^ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S*)[ \t]*$", re.MULTILINE)
 NODE_MAJOR_RE = re.compile(r"setup_(\d+)\.x")
 
+# A version pin must be an exact semantic version (digits.digits.digits),
+# never a keyword like "latest" or an unpinned wildcard.
+VERSION_PIN_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
 # The one pin the derived recipe cannot do without: pi's version. (An
 # unpinned `npm install -g @earendil-works/pi-coding-agent` silently resolves
 # whatever npm feels like -- the failure mode container/Dockerfile's own
@@ -779,11 +783,19 @@ def render_derived_dockerfile(base: str, base_dockerfile: str) -> str:
             f"{SOURCE_MARKER} declares no ARG {PI_PIN}=<version>, so the "
             "derived image has no pi version to install (an unpinned install "
             "would silently resolve some other version)")
+    if not VERSION_PIN_RE.match(args[PI_PIN]):
+        raise ImageInputError(
+            f"{SOURCE_MARKER} declares ARG {PI_PIN}={args[PI_PIN]}, which is "
+            "not an exact version (required format: digits.digits.digits)")
     if SDK_PIN not in args or not args[SDK_PIN]:
         raise ImageInputError(
             f"{SOURCE_MARKER} declares no ARG {SDK_PIN}=<version>, so the "
             "derived image has no SDK version to install (an unpinned install "
             "would silently resolve some other version)")
+    if not VERSION_PIN_RE.match(args[SDK_PIN]):
+        raise ImageInputError(
+            f"{SOURCE_MARKER} declares ARG {SDK_PIN}={args[SDK_PIN]}, which is "
+            "not an exact version (required format: digits.digits.digits)")
     node = NODE_MAJOR_RE.search(base_dockerfile)
     if not node:
         raise ImageInputError(

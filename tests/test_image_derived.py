@@ -239,6 +239,14 @@ def test_a_source_root_that_cannot_answer_is_refused(tmp_path):
     assert "CLAUDE_AGENT_SDK_VERSION" in str(e.value)
 
     (root / "container/Dockerfile").write_text(
+        "FROM python:3.12-slim\n"
+        "ARG PI_VERSION=0.84.1\n"
+        "ARG CLAUDE_AGENT_SDK_VERSION=0.2.163\n")
+    with pytest.raises(image.ImageInputError) as e:
+        image.derive(root, BASE)
+    assert "node" in str(e.value)
+
+    (root / "container/Dockerfile").write_text(
         "FROM python:3.12-slim\nARG PI_VERSION=0.84.1\n"
         "ARG CLAUDE_AGENT_SDK_VERSION=0.2.163\n"
         "RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -\n")
@@ -289,9 +297,9 @@ def test_derived_recipe_refuses_an_unpinned_sdk(tmp_path):
         "ARG PI_VERSION=0.84.1\n"
         "ARG CLAUDE_AGENT_SDK_VERSION=latest\n"
         "RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -\n")
-    # This actually should succeed since the value is not empty, only warn-able
-    derived = image.derive(root, BASE)
-    assert derived is not None
+    with pytest.raises(image.ImageInputError) as e:
+        image.derive(root, BASE)
+    assert "CLAUDE_AGENT_SDK_VERSION" in str(e.value)
 
 
 def test_a_lost_template_marker_is_an_assertion_not_a_silent_hole():
