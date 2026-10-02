@@ -26,8 +26,7 @@ in [docs/prds/](prds/README.md).
 - **Remote/daemon mode.** The token and bind options make running ralphd on a
   server with the CLI over the network possible; making it pleasant (TLS,
   discovery) is not yet done.
-- **Alternative agent runtimes** (Claude Code, Codex, opencode) behind an
-  interface, once the pi-only loop is stable.
+- **Alternative agent runtimes** (Codex, opencode) behind an interface.
 - **Named env-wiring profiles.** Reusable `--forward-env`/`--llm-env`/`--env`/creds
   bundles referenced by name at `start`, analogous to LLM profiles. Today a run
   records the wiring it resolved for its own resume, but an operator cannot name
