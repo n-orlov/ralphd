@@ -4273,8 +4273,10 @@ Three deliberate details:
 - **A non-transient refusal fails fast.** `faults.REFUSED_SIGNATURES` is a
   second `(family, regex)` table beside the infra one: `extra-usage` (the
   subscription's third-party refusal), `invalid-request`, `authentication`,
-  `permission`, `not-found` (`not_found_error` or `model_not_found`, in a run as
-in `llm test`), and the `claude-code` harness's own pre-flight
+  `permission`, `not-found` (`not_found_error`), `model-not-found`
+  (`model_not_found`, only with the structured `http_status` a `claude-code`
+  runner reports, so pi's text-only gateway 404 stays `infra`, in a run and in
+  `llm test`), and the `claude-code` harness's own pre-flight
   refusals `cc-version`, `cc-cli-missing` and `cc-root`. `matched_refusal()`
   needs a provider family to come with an HTTP 400, 401, 403 or 404 (the
   structured `http_status`, else the first status token of pi's `<status>

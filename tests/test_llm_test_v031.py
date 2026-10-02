@@ -1,7 +1,8 @@
 """v0.31 #286: `ralphctl llm test` resolves and judges as `start` does.
 
 (a) `--hats` runs the engine's claude-code route check, with or without
-    `--no-ping`; (b) a 404 / `model_not_found` ping is `refused`, not `infra`;
+    `--no-ping`; (b) a claude-code 404 / `model_not_found` ping is `refused`, as
+    in a run (pi's text-only 404 keeps `infra`, as in a run);
 (c) `--network` is resolved with `start`'s precedence and reaches the ping
 container; (d) a runner that exits non-zero shows a scrubbed tail of its
 stderr in the FAIL line.
@@ -95,7 +96,7 @@ def test_the_route_check_only_applies_with_hats(ctl):
 
 # -- (b) refusals are `refused` ---------------------------------------------
 
-def test_a_404_model_not_found_ping_is_refused_not_infra(ctl):
+def test_a_pi_404_model_not_found_ping_stays_infra_like_the_loop(ctl):
     ctl.write_profile("acme", {"description": "acme", "model": "acme/m1"})
     res = ctl.run("llm", "test", "acme", "--image", PINNED_IMAGE, env={
         "STUB_INBAND_ERROR_COUNT": "1",
@@ -103,26 +104,29 @@ def test_a_404_model_not_found_ping_is_refused_not_infra(ctl):
             '404 {"error":{"code":"model_not_found","message":"no such model"}}'})
     assert res.returncode == 1
     (line,) = res.stdout.splitlines()
-    assert line.startswith("FAIL pi acme/m1  refused: 404 ")
+    assert line.startswith("FAIL pi acme/m1  infra: ")
 
 
-def test_judge_classifies_model_not_found_as_refused_like_the_loop():
+def test_judge_classifies_model_not_found_like_the_loop():
     from ralphd.engine.faults import explain_fault
     from ralphd.engine.llm_ping import judge
     from ralphd.engine.runner import IterationResult
 
-    for result in (
-            IterationResult(exit_code=1, error_message="404 model_not_found"),
-            IterationResult(exit_code=1, http_status=404, harness="claude-code",
-                            error_message="API Error: 404 model_not_found: no such model"),
-            IterationResult(exit_code=0, error_message=(
-                '404 {"type":"error","error":{"type":"not_found_error"}}'))):
-        verdict = judge("pi", "m", result)
+    for harness, expected, result in (
+            # pi's text-only gateway 404 is unchanged: infra, as in a run
+            ("pi", "infra", IterationResult(
+                exit_code=1, error_message="404 model_not_found")),
+            ("claude-code", "refused", IterationResult(
+                exit_code=1, http_status=404, harness="claude-code",
+                error_message="API Error: 404 model_not_found: no such model")),
+            ("pi", "refused", IterationResult(exit_code=0, error_message=(
+                '404 {"type":"error","error":{"type":"not_found_error"}}')))):
+        verdict = judge(harness, "m", result)
         loop_class = explain_fault(
             error_text=result.error_message, exit_code=result.exit_code,
             interrupted=False, timed_out=False, no_traffic_timeout=False,
             produced_traffic=False, http_status=result.http_status)["faultClass"]
-        assert verdict["faultClass"] == loop_class == "refused"
+        assert verdict["faultClass"] == loop_class == expected
 
 
 # -- (c) --network -----------------------------------------------------------
@@ -223,7 +227,7 @@ def test_runner_stderr_tail_keeps_non_event_lines_and_scrubs(tmp_path):
     from ralphd.engine.llm_ping import runner_stderr_tail
 
     transcript = tmp_path / "ping.jsonl"
-    transcript.write_text('{"type":"agent_start"}\nfirst   line\n{"type":"x"}\n'
+    transcript.write_text('{"type":"session"}\nfirst   line\n{"type":"x"}\n'
                           "last line\n")
     assert runner_stderr_tail(transcript) == "first line | last line"
     stderr_log = tmp_path / "ping.claude-scratch" / "stderr.log"

@@ -15,6 +15,7 @@ from ralphd.engine.faults import (
     FAULT_CLASS_SIGNAL,
     FAULT_REASON_RATE_LIMIT,
     FAULT_REASON_REFUSED,
+    REFUSAL_FAMILIES_STRUCTURED_STATUS_ONLY,
     REFUSED_SIGNATURES,
     classify_fault,
     effective_utilization,
@@ -477,6 +478,7 @@ def test_a_text_refusal_classifies_refused(error_text, family, exit_code, traffi
     (401, "authentication_failed", "authentication"),
     (403, "permission_error", "permission"),
     (404, "not_found_error", "not-found"),
+    (404, "model_not_found", "model-not-found"),
 ])
 def test_a_structured_status_and_type_classify_refused(status, etype, family):
     """claude-code: the status and the SDK's error type are structured; the
@@ -500,8 +502,11 @@ def test_a_structured_status_and_type_classify_refused(status, etype, family):
     # an unknown 4xx body stays where it was
     (_api_error(400, "something_else", "odd"), {}),
     (_api_error(413, "request_too_large", "too big"), {}),
+    # pi's text-only gateway 404 keeps the class it always had (infra): no
+    # structured status, so `model_not_found` does not refuse
+    ('404 {"error":{"code":"model_not_found","message":"no such model"}}', {}),
 ], ids=["no-status", "text-500", "text-503", "status-500", "status-502",
-        "unknown-type", "413"])
+        "unknown-type", "413", "pi-model-not-found"])
 def test_a_5xx_or_statusless_body_is_never_refused(error_text, kwargs):
     assert classify_fault(error_text=error_text, exit_code=1,
                           **kwargs) != FAULT_CLASS_REFUSED
@@ -542,4 +547,8 @@ def test_an_abort_is_never_a_refusal():
 
 
 def test_every_refusal_family_has_a_text_case():
-    assert {c[2] for c in _REFUSAL_TEXT_CASES} == {f for f, _ in REFUSED_SIGNATURES}
+    # the structured-status-only families have no text-only (pi) case: pi's
+    # text keeps its class for them
+    assert ({c[2] for c in _REFUSAL_TEXT_CASES}
+            == {f for f, _ in REFUSED_SIGNATURES}
+            - REFUSAL_FAMILIES_STRUCTURED_STATUS_ONLY)

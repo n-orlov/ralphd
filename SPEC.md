@@ -3883,9 +3883,10 @@ error type.
 | `invalid-request` | `invalid_request(_error)?` | the provider rejected the request as invalid |
 | `authentication` | `authentication_(error\|failed)` | the provider rejected the credentials |
 | `permission` | `permission_error` | the credentials lack permission for the request |
-| `not-found` | `not_found_error\|model_not_found` | the provider does not know the model or resource |
+| `not-found` | `not_found_error` | the provider does not know the model or resource |
+| `model-not-found` | `model_not_found` | the gateway or provider does not know the model asked for (claude-code only: needs the structured `http_status`) |
 
-`model_not_found` is in the `not-found` row so a gateway's `404 model_not_found` is `"refused"` in a run as well as in `llm test`, where it used to be `"infra"`.
+The `model-not-found` row counts only with the structured `http_status` a `claude-code` runner reports (`faults.REFUSAL_FAMILIES_STRUCTURED_STATUS_ONLY`), never with a status token read from the error text. pi reports no structured status, so a pi gateway `404 model_not_found` keeps the class it always had (`"infra"`, in a run and in `llm test` alike): pi behaviour is unchanged.
 
 A provider family (every row but the `cc-*` ones) counts only with an HTTP
 `400`, `401`, `403` or `404`: the structured `http_status` when the runner

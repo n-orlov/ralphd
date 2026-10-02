@@ -36,7 +36,7 @@ in [docs/prds/](prds/README.md).
 
 ## Shipped
 
-- v0.31 — Claude Code polish — the hub and `ralphctl iteration` show each iteration's harness beside its model (#285), `llm test --hats` runs start's route check, takes `--network`, reports a runner's stderr tail and classifies `model_not_found` as refused, and a Claude Code hat no longer inherits gateway or cloud routing env (#286), and the wrapper passes the SDK's `skills=[]` so the CLI's bundled skills stay off (#287).
+- v0.31 — Claude Code polish — the hub and `ralphctl iteration` show each iteration's harness beside its model (#285), `llm test --hats` runs start's route check, takes `--network`, reports a runner's stderr tail and classifies a claude-code `model_not_found` as refused (pi unchanged), and a Claude Code hat no longer inherits gateway or cloud routing env (#286), and the wrapper passes the SDK's `skills=[]` so the CLI's bundled skills stay off (#287).
 - v0.30 — a hat can run on Claude Code — another harness runs iterations through the Python Agent SDK on a subscription token, classifies non-transient refusals, waits for rate-limit resets and validates provider access (#284).
 - v0.29 — a wait, a cure and a verdict are never lost — a CI-wait re-poll costs wall clock instead of iterations, a review cure after the final sweep re-opens it instead of leaving it validated at an unmeasured tree, and a fenced or verdict-less worker reply is repaired instead of dropped (#279, #280, #281, #282, #283).
 - v0.28 — the hub's apply-now checkbox actually interrupts, task selection with two or more candidates is routed instead of claimed by priority-then-list-order, and a REFUTED remedy task's criteria are folded from its own Done when:/Cured when: marker (#276, #277, #278).

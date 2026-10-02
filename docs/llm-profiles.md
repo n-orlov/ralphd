@@ -432,7 +432,8 @@ ralphctl llm test aigw-claude --hats --template deck --network host
 When the runner exits non-zero without an error of its own, the `FAIL` line
 reads `infra: the runner exited N: <tail>`, the tail being the last 300
 characters of the child's stderr, scrubbed of the profile's secrets. A model
-the provider answers with `404 model_not_found` is `refused`, not `infra`.
+a `claude-code` hat's provider answers with `404 model_not_found` is `refused`,
+not `infra`; a pi hat's gateway `404 model_not_found` stays `infra`, as in a run.
 
 `--no-ping` stops after resolution. See `docs/cli.md` for every option.
 

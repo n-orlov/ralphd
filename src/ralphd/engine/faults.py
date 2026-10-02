@@ -230,8 +230,12 @@ REFUSED_SIGNATURES: tuple[tuple[str, str], ...] = (
     ("invalid-request", r"invalid_request(?:_error)?"),
     ("authentication", r"authentication_(?:error|failed)"),
     ("permission", r"permission_error"),
-    # `model_not_found` is the gateway/Bedrock spelling of the same 404.
-    ("not-found", r"not_found_error|model_not_found"),
+    ("not-found", r"not_found_error"),
+    # `model_not_found` is the gateway/Bedrock spelling of the same 404. It
+    # refuses only on the structured `http_status` a claude-code runner
+    # reports (REFUSAL_FAMILIES_STRUCTURED_STATUS_ONLY): pi's text-only
+    # `404 ... model_not_found` keeps the class it always had (infra).
+    ("model-not-found", r"model_not_found"),
 )
 
 # What each refusal family MEANS, for the explanation surfaces. Every family
@@ -247,12 +251,19 @@ REFUSED_FAMILY_DESCRIPTIONS = {
     "authentication": "the provider rejected the credentials",
     "permission": "the credentials lack permission for this request",
     "not-found": "the provider does not know the model or resource asked for",
+    "model-not-found": ("the gateway or provider does not know the model "
+                        "asked for"),
 }
 
 # The families that need no HTTP status: the harness refused before any
 # request was sent.
 REFUSAL_FAMILIES_WITHOUT_STATUS = frozenset(
     {"cc-version", "cc-cli-missing", "cc-root"})
+
+# The families that count only with the structured `http_status` a runner
+# reported (claude-code), never with a status token read out of the error
+# text: pi's behaviour is unchanged for these shapes.
+REFUSAL_FAMILIES_STRUCTURED_STATUS_ONLY = frozenset({"model-not-found"})
 
 # The HTTP statuses a provider refusal family requires.
 REFUSED_HTTP_STATUSES = (400, 401, 403, 404)
@@ -285,7 +296,9 @@ def matched_refusal(error_text: str | None, http_status: int | None = None,
 
     The row's pattern is searched in ``error_text``, then in ``error_type``.
     A provider family also needs ``refusal_http_status`` to be 400, 401, 403
-    or 404; the ``cc-*`` families need no status. Returns the same shape as
+    or 404; the ``cc-*`` families need no status; the families in
+    ``REFUSAL_FAMILIES_STRUCTURED_STATUS_ONLY`` need the structured
+    ``http_status`` itself, not a token read from the text. Returns the same shape as
     ``matched_signature`` (``family``, ``description``, ``pattern``,
     ``match``) plus ``httpStatus``, so ``ralphctl fault`` prints it the same
     way.
@@ -301,6 +314,10 @@ def matched_refusal(error_text: str | None, http_status: int | None = None,
             continue
         if (family not in REFUSAL_FAMILIES_WITHOUT_STATUS
                 and status not in REFUSED_HTTP_STATUSES):
+            continue
+        if (family in REFUSAL_FAMILIES_STRUCTURED_STATUS_ONLY
+                and not (isinstance(http_status, int)
+                         and not isinstance(http_status, bool))):
             continue
         return {"family": family,
                 "description": REFUSED_FAMILY_DESCRIPTIONS.get(family, ""),

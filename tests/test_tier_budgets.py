@@ -587,8 +587,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.31 polish: +28 tests / +1 module in fast and +23 tests / +1 module
     # in smoke, measured `.venv/bin/python -m pytest -q -m fast --collect-only`
     # -> fast 7244/488, `-m smoke` -> smoke 5528/364.
-    "fast": {"tests": 7244, "modules": 488},
-    "smoke": {"tests": 5528, "modules": 364},
+    # v0.31 final-review fix (pi-model_not_found case, one more test per
+    # tier), measured `.venv/bin/python -m pytest -q -m fast --collect-only`
+    # -> fast 7247/488, `-m smoke` -> smoke 5530/364.
+    "fast": {"tests": 7247, "modules": 488},
+    "smoke": {"tests": 5530, "modules": 364},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

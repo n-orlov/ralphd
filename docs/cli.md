@@ -1362,7 +1362,7 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   family means, the pattern, and the exact substring it matched in the error.
   For a `refused` fault it is the row of `REFUSED_SIGNATURES` that matched,
   printed the same way (`extra-usage` · `invalid-request` · `authentication` ·
-  `permission` · `not-found` · `cc-version` · `cc-cli-missing` · `cc-root`):
+  `permission` · `not-found` · `model-not-found` · `cc-version` · `cc-cli-missing` · `cc-root`):
   `signature: authentication -- the provider rejected the credentials
   (pattern authentication_(?:error|failed), matched "authentication_error")`.
   `(no signature matched)` for a work fault or a watchdog kill — never a guess.
@@ -2802,8 +2802,9 @@ message is `the runner exited N: <tail>`: the tail is the last of the child's
 stderr (the ping transcript's non-JSON lines and the claude-code wrapper's
 `stderr.log`), whitespace collapsed, scrubbed of every known secret value and
 kept to its last 300 characters. A `getaddrinfo ENOTFOUND` exit stays `infra`
-and now names the resolver error in the line. A provider `404` whose error is
-`model_not_found` is `refused`, as `not_found_error` is. `--json` prints a list with one verdict per pair (`profile`,
+and now names the resolver error in the line. A `claude-code` provider `404` whose
+error is `model_not_found` is `refused`, as `not_found_error` is; a pi gateway
+`404 model_not_found` stays `infra`, as in a run. `--json` prints a list with one verdict per pair (`profile`,
 `image`, `harness`, `model`, `ok`, `faultClass`, `reason`, `message`,
 `exitCode`). The exit status is `1` if any pair fails, else `0`.
 
