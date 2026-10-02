@@ -580,6 +580,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/engine/contract_enforcement.py` | The re-prompt loop around `contracts.validate_payload` (task 010): malformed JSON, an absent payload, and valid JSON of the wrong shape are all ordinary cases here, re-prompted with the specific validation error up to `contract_retry_max` times, logged loudly to `events.jsonl`, and scored as one agent-fault iteration if the hat never recovers. |
 | `src/ralphd/engine/plan_ingestion.py` | Ingests the planner's file-borne `plan-proposal.json` as untrusted input (task 011): schema validation, then semantic lint (unresolvable `dependsOn`, cycles, duplicate ids, boilerplate `successCriteria`, a task gated on this run's own terminal state), then apply — initialising every task to `pending` regardless of what the planner wrote for `status`. |
 | `src/ralphd/engine/runner.py` | `AgentRunner` + `IterationResult`, and the one child-process path both runners share: spawn, pump and scrub NDJSON into `output.jsonl`, parse events and usage, scan for the exact sentinels, enforce the iteration timeout and the startup-window watchdog, and kill the process group on every exit path. `PiRunner` spawns one `pi` process; `ClaudeCodeRunner` spawns the `claude-code` wrapper (`python -m ralphd.harness.claude_code`) in a per-call scratch area, links the skills into its config dir, and demuxes the wrapper's raw SDK envelopes into a scrubbed `<stem>.claude.jsonl`. |
+| `src/ralphd/engine/llm_ping.py` | `ralphd-engine --llm-ping --harness H [--model M] [--timeout S]`, the far side of `ralphctl llm test` (§7.5): builds the runner an iteration on that harness uses (`PiRunner` or `ClaudeCodeRunner`) over a scratch workspace, sends a one-line prompt, judges the `IterationResult` with `faults.explain_fault` and prints one scrubbed JSON verdict line. It imports no SDK. |
 | `src/ralphd/engine/privsep.py` | The uid boundary (§13.4): resolve the account iterations run as, drop the engine's *effective* identity to it while keeping root real and saved, and hand every spawn site the kwargs that drop a child all the way down. `separated()` reads the live process credentials, so nothing claims a boundary the kernel is not enforcing; every function is a no-op with one warning when the engine did not start as root. `root_for_write()`/`write_root_owned_json()` (task 105, #60 requirement D) reuse the same boundary the other direction: momentarily raise the engine's own effective uid back to root to write a file root-owned, restoring it before returning. `write_protected_tasks_json()`/`release_protected_tasks_dir()` (task 004, requirement B, #202) close the gap `write_root_owned_json()` left open for `tasks.json` specifically -- a root-owned FILE in an agent-writable DIRECTORY still lets a dropped child `os.replace()` a substituted document onto it, a directory-entry operation gated by the parent, never the target -- by landing the authoritative copy inside a root-owned 0700 directory (`PROTECTED_TASKS_DIRNAME`, self-healed against a precreated file or a planted symlink on every write, not only at creation) and refreshing an ordinary agent-readable view copy alongside it; the protected directory is handed back to the agent uid at the engine's own shutdown funnel so a host-side `rm`/`DELETE` can still remove it. |
 | `src/ralphd/engine/api.py` | The FastAPI app: every route in §3.1, bearer-token enforcement, the SSE event stream, `GET /logs` tail and live-follow on top of `log_merge`, `PATCH /config/budget`, and the config CRUD that writes into the overlay and re-places creds/skills immediately. |
 | `src/ralphd/engine/faults.py` | `classify_fault()` — a pure function mapping a finished iteration to `"infra"`, `"work"`, `"signal"`, `"rate_limit"`, `"refused"` or `None` (§8.2), with `INFRA_SIGNATURES` and `REFUSED_SIGNATURES` as the two reviewable signature tables (one row per pattern, labelled by family) and the `aborted`/operator carve-out. No engine state. |
@@ -3522,30 +3523,65 @@ token is defined as equivalent to holding the job's credentials.**
 dir — no registry entry is created, no run is started.
 
 It runs in two stages. First it resolves the profile on the host exactly as `start`
-would: exit `3` for an unknown name, exit `1` with the same diagnostic for an
-unresolvable `${env:}`/`${file:}`/`${cmd:}` reference. No resolved value is
-printed, so this stage needs neither redaction nor docker. Then, if resolution
-succeeded and `docker version` answers, it performs a real one-token completion:
+does: exit `3` for an unknown name, exit `1` with the same diagnostic for an
+unresolvable `${env:}`/`${file:}`/`${cmd:}` reference. The resolution covers the
+env, the mounts, the profile's `pi:` fragment with its headers, `harness:` and
+`builtin_providers:`. For `host` it stages the host's `~/.pi/agent` files as
+`start --llm host` does, resolving `!command` apiKeys on the host. A `--template`'s
+`llm_header:` list is merged into the pi config as on `start`. No resolved value is
+printed, so this stage needs neither redaction nor docker.
+
+Then, if resolution succeeded and `docker version` answers, it pings every
+distinct (harness, model) pair the run would use:
+
+- with no `--hats`, the one pair `(profile harness, --model or the profile's
+  model)`;
+- with `--hats`, every hat in `MODEL_HATS` and every configured `model_tiers`
+  leaf, each on its hat's harness, merged as `start` merges them: the registry's
+  `config.yaml` < the `--template`'s `job.yaml` (`model:`, `models:`,
+  `model_tiers:`, `harnesses:`) < `--model`, `--model-for`, `--model-for-tier`
+  and `--harness-for` on the same command line. Those three per-hat flags need
+  `--hats` (exit `2` otherwise).
+
+Each pair goes through the same runner code path as an iteration, in a throwaway
+container from the run image, as the agent uid:
 
 ```
-docker run --rm -i --entrypoint pi --label ralphd.llm-test=<name> \
-  <resolved env> <resolved mounts> <image> -p --mode json --no-session [--model <m>]
+docker run --rm -i --user 1000 --label ralphd.llm-test=<name> \
+  <resolved env> <resolved mounts> <pi config mounts> \
+  --entrypoint ralphd-engine <image> --llm-ping --harness <h> [--model <m>]
 ```
 
-with a one-line prompt on stdin. The entrypoint goes straight to `pi`, so
-`ralphd-engine` is bypassed entirely; the profile's `pi:` fragment is written to a
-temporary `models.json`, mounted read-only, and deleted afterwards. `--model`
-overrides the pinged model (default: the profile's `model`), `--image` the image;
-a failed ping exits `1` with the container's output. With `--no-ping`, or when no
+`ralphd-engine --llm-ping` (`engine/llm_ping.py`) builds `PiRunner` or
+`ClaudeCodeRunner` over a scratch workspace, sends a one-line prompt and judges
+the `IterationResult`, never the exit status. A pair passes when no error was
+recorded, the call did not time out, the runner exited `0` and the reply text is
+not blank. Otherwise its fault class comes from `faults.explain_fault` over the
+same inputs the loop uses (§8.2): an in-band provider error that pi reports with
+exit `0` fails the pair. The ping prints one JSON line, `{harness, model, ok,
+faultClass, reason, message, exitCode}`, with the message scrubbed of every
+secret-shaped value in the container's env; the host scrubs it again against the
+profile's env values and the pi config's key and header values. A container that prints no verdict fails its
+pair as `no-verdict`.
+
+The image is the one `start` would run, ranked as `start` ranks it: `--image`,
+else the template's, else the registry's `image:`/`base_image:`/`dockerfile:`,
+else `RALPHD_IMAGE`, else the content-hashed image of this source tree (built on
+a cache miss, as `start` does). The staged pi config files are mounted read-only into the agent's
+`~/.pi/agent` and deleted afterwards.
+
+The output is one line per pair, `ok  <harness>  <model>` or `FAIL <harness>
+<model>  <faultClass>: <message>`; `--json` prints a list of the per-pair
+verdicts. The exit status is `1` if any pair fails. With `--no-ping`, or when no
 docker daemon answers, the ping is skipped and successful resolution alone is
 reported, which the output says explicitly.
 
 A green `llm test` proves the profile parses, every reference resolves on *this*
-host right now, and the resulting env, mounts and pi config are enough for pi to
-reach the endpoint, authenticate and get a completion back for that model id. It
-does not prove that a short-lived token will still be valid an hour into a job
-(rotate through `PUT /config/llm`), that any *other* model id in the profile works,
-or anything about quota and throttling under a real job's load.
+host right now, and each harness the run would use reaches its endpoint,
+authenticates and gets a completion back for each model id it would use. It does
+not prove that a short-lived token will still be valid an hour into a job (rotate
+through `PUT /config/llm`), or anything about quota and throttling under a real
+job's load.
 ## 8. Fault model and resilience
 
 A long autonomous run does not fail cleanly. It fails because a gateway returns

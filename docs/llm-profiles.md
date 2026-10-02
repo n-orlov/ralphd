@@ -129,8 +129,8 @@ Resolution rules:
   a task-045-era run resolved `${env:}` headers into `headers` with
   nothing marking them, and "literal" is not a guess a display surface
   may make about a resolved secret.
-- `ralphctl llm test <profile>` verifies a profile end-to-end with a one-token
-  completion in a throwaway container.
+- `ralphctl llm test <profile>` verifies a profile end-to-end through the runner
+  (see "Verifying a profile" below).
 
 ## Built-in profiles
 
@@ -378,6 +378,36 @@ To continue, fix the cause, then unpause:
    (see Mid-run rotation below).
 2. `ralphctl unpause <run-id>` re-runs the same work. If the provider refuses
    again, the run pauses again. A ruling does not release this pause.
+
+## Verifying a profile
+
+`ralphctl llm test <profile>` resolves the profile as `start` does, then pings
+every distinct (harness, model) pair the run would use. Each ping goes through
+the runner an iteration uses (`PiRunner` or `ClaudeCodeRunner`), in a throwaway
+container from the run image, as the agent uid. It is judged by what the
+runner reports, not by the exit status, so an in-band provider error fails it:
+
+```
+$ ralphctl llm test claude-sub
+FAIL claude-code anthropic/claude-sonnet-5  refused: 400 invalid_request: ...
+```
+
+Each line is `ok  <harness>  <model>` or `FAIL <harness> <model>  <fault class>:
+<message>`, with the provider's message scrubbed. The command exits `1` if any
+pair fails.
+
+Without job context the pair is the profile's `model` on the profile's
+`harness:`. To check a whole run's wiring, add `--hats`: every hat and every
+configured tier is merged from the registry's `config.yaml`, the `--template`
+and the `--model-for`, `--model-for-tier` and `--harness-for` flags, as `start`
+merges them, and each distinct pair is pinged once:
+
+```
+ralphctl llm test claude-sub --hats --template mixed \
+  --harness-for review=pi --model-for review=aigw-openai/some-model
+```
+
+`--no-ping` stops after resolution. See `docs/cli.md` for every option.
 
 ## Mid-run rotation
 

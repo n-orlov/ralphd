@@ -2736,7 +2736,7 @@ LLM profile inspection:
 ```
 ralphctl llm profiles                 # list profiles (~/.ralphd/llm-profiles)
 ralphctl llm show <profile>           # resolved (redacted) view
-ralphctl llm test <profile>           # spin up a throwaway container, 1-token ping
+ralphctl llm test <profile>           # ping each (harness, model) pair through the runner
 ```
 
 Mid-run rotation of a live job's endpoint/key is an **API-only** capability in
@@ -2761,18 +2761,48 @@ unreadable `${file:}`, failing `${cmd:}`) exits `1` with the same diagnostic
 `start` would show. `--json` emits the full resolved (redacted) document.
 
 `test <profile>` first resolves the profile on the host exactly like `start`
-/ `show` (same exit codes: `3` unknown name, `1` unresolvable reference,
-unredacted since nothing is printed) -- no docker needed for this part. If
-resolution succeeds and a docker daemon answers `docker version`, it follows
-up with a real one-token completion in a throwaway container: `docker run
---rm --label ralphd.llm-test=<name> --entrypoint pi <resolved env/mounts>
-<image> -p --mode json --no-session [--model <model>]`, piping a one-line
-prompt on stdin (entrypoint overridden straight to `pi`, bypassing
-`ralphd-engine` entirely -- this never touches a run dir). Exit `1` with the
-container's stderr/stdout on a failed ping. When docker isn't reachable (or
-`--no-ping` is given), the ping is skipped and resolution success alone is
-reported (exit `0`). `--image`/`--model` override the image/model used for
-the ping.
+(same exit codes: `3` unknown name, `1` unresolvable reference, unredacted
+since nothing is printed) -- no docker needed for this part. It resolves the
+env, mounts, `pi:` fragment and headers, `harness:` and `builtin_providers:`;
+for `host` it stages the host's `~/.pi/agent` files with `!command` apiKeys
+resolved, as `start --llm host` does. If resolution succeeds and a docker
+daemon answers `docker version`, it pings every distinct (harness, model)
+pair the run would use, each through the runner an iteration uses, in a
+throwaway container from the run image, as the agent uid:
+
+```
+docker run --rm -i --user 1000 --label ralphd.llm-test=<name> <resolved env/mounts> \
+  --entrypoint ralphd-engine <image> --llm-ping --harness <h> [--model <m>]
+```
+
+Each pair is judged by its `IterationResult`, not the container's exit
+status, so an in-band provider error fails it. The output is one line per
+pair:
+
+```
+ok  pi  acme/m1
+FAIL claude-code anthropic/claude-sonnet-5  refused: 400 invalid_request: ...
+```
+
+The failure line carries the fault class (`refused`, `rate_limit`, `infra`,
+...; `no-verdict` when the container printed none) and the scrubbed provider
+message. `--json` prints a list with one verdict per pair (`profile`,
+`image`, `harness`, `model`, `ok`, `faultClass`, `reason`, `message`,
+`exitCode`). The exit status is `1` if any pair fails, else `0`.
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `--image <ref>` | the run image | image to ping in; by default the one `start` would run (template, registry, `RALPHD_IMAGE`, else the content-hashed image, built on a cache miss) |
+| `--model <ref>` | the profile's `model` | model to ping; with `--hats`, the job's base `model` |
+| `--hats` | off | ping every hat's (harness, model) pair and every configured `model_tiers` leaf, merged as `start` merges them: registry `config.yaml` < `--template` < the flags below |
+| `--template <name>` | none | the template whose `job.yaml` `model:`/`models:`/`model_tiers:`/`harnesses:` (and image keys) `start --template` would use |
+| `--model-for HAT=REF` | none | as on `start`; repeatable; needs `--hats` |
+| `--model-for-tier HAT:TIER=REF` | none | as on `start`; repeatable; needs `--hats` |
+| `--harness-for HAT=NAME` | none | as on `start`; repeatable; needs `--hats` |
+| `--no-ping` | off | resolve only; skip the container ping even when docker answers |
+
+When docker isn't reachable (or `--no-ping` is given), the ping is skipped
+and resolution success alone is reported (exit `0`).
 
 ### `ralphctl resume <run-id> [--iterations +N]`
 
