@@ -37,6 +37,11 @@ from .state import billable_tokens
 PING_PROMPT = "Reply with exactly the single word: ok"
 DEFAULT_PING_TIMEOUT_S = 120
 MESSAGE_LIMIT = 400
+# The runner's own stderr, as much of it as a FAIL line can use: at most this
+# many characters of the scrubbed tail (the rest of `MESSAGE_LIMIT` is the
+# `the runner exited N:` lead-in).
+STDERR_TAIL_LIMIT = 300
+_TAIL_READ_BYTES = 16384
 
 
 def build_runner(harness: str, workspace: Path):
@@ -46,9 +51,42 @@ def build_runner(harness: str, workspace: Path):
     return PiRunner(workspace)
 
 
-def judge(harness: str, model: str | None, result: IterationResult) -> dict:
+def runner_stderr_tail(transcript: Path) -> str:
+    """The scrubbed, bounded tail of what the runner's child wrote to stderr.
+
+    The runner merges the child's stderr into its stdout and records every
+    line that is not an agent event (pi NDJSON) in the transcript, so those
+    lines, plus the claude-code wrapper's own `stderr.log` beside the
+    transcript, are the child's stderr. Lines are whitespace-collapsed and
+    joined with ` | `; the result is scrubbed (`redact.scrub_text`) and at
+    most `STDERR_TAIL_LIMIT` characters, keeping the END. Empty when there is
+    nothing, or nothing readable."""
+    stderr_log = transcript.with_name(transcript.stem + ".claude-scratch") / "stderr.log"
+    lines: list[str] = []
+    for path in (transcript, stderr_log):
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(0, 2)
+                fh.seek(max(0, fh.tell() - _TAIL_READ_BYTES))
+                raw = fh.read().decode(errors="replace")
+        except OSError:
+            continue
+        for line in raw.splitlines():
+            line = " ".join(line.split())
+            if line and not line.startswith("{"):
+                lines.append(line)
+    tail = scrub_text(" | ".join(lines))
+    return tail[-STDERR_TAIL_LIMIT:].strip()
+
+
+def judge(harness: str, model: str | None, result: IterationResult,
+          stderr_tail: str = "") -> dict:
     """The one-line verdict for `result`, classified exactly as the loop
-    classifies an iteration (no abort is ever recorded for a ping)."""
+    classifies an iteration (no abort is ever recorded for a ping).
+
+    `stderr_tail` is the runner's scrubbed stderr tail
+    (`runner_stderr_tail`); it is appended to the `the runner exited N`
+    message so a resolver or spawn error is visible in the FAIL line."""
     error = result.error_message or ""
     explained = explain_fault(
         error_text=error,
@@ -72,6 +110,9 @@ def judge(harness: str, model: str | None, result: IterationResult) -> dict:
             message = "the ping timed out"
         elif result.exit_code not in (0, None):
             message = f"the runner exited {result.exit_code}"
+            tail = scrub_text(stderr_tail or "").strip()
+            if tail:
+                message += f": {tail[-STDERR_TAIL_LIMIT:]}"
         else:
             message = "the model returned no text"
     fault_class = explained["faultClass"]
@@ -104,7 +145,10 @@ async def ping(harness: str, model: str | None,
         runner = build_runner(harness, workspace)
         result = await runner.run(PING_PROMPT, scratch / "ping.jsonl",
                                   model=model, timeout_s=timeout_s)
-        return judge(harness, model, result)
+        tail = ""
+        if result.exit_code not in (0, None) and not result.error_message:
+            tail = runner_stderr_tail(scratch / "ping.jsonl")
+        return judge(harness, model, result, tail)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 

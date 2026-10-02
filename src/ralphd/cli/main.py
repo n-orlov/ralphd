@@ -50,7 +50,7 @@ from ..engine.config import (
 from ..engine import findings
 from ..engine import petitions
 from ..engine import privsep
-from ..engine.llm import _tier_leaf_ref
+from ..engine.llm import UnroutableHatModel, _tier_leaf_ref, check_hat_routes
 from ..engine.redact import is_secret_name, scrub_text
 from ..engine.tiers import TIERS
 from ..engine.transitions import OPERATOR_RULEABLE_TASK_STATUSES, TASK_STATUSES
@@ -5459,14 +5459,44 @@ def _llm_test_resolve(name: str) -> dict:
             "builtin_providers": list(profile.get("builtin_providers") or [])}
 
 
-def _llm_test_pairs(args, resolved: dict, cfg: dict, reg_cfg: dict) -> list[tuple]:
+def _llm_test_job(args, resolved: dict, cfg: dict, reg_cfg: dict) -> JobConfig:
+    """The job config `llm test --hats` resolves: the profile's harness and
+    model under registry `config.yaml` < `--template` job.yaml <
+    `--model-for`/`--model-for-tier`/`--harness-for`, merged exactly as
+    `start` merges them."""
+    model = args.model or cfg.get("model") or reg_cfg.get("model") or resolved["model"]
+    try:
+        return JobConfig(
+            model=model,
+            model_overrides=_resolve_model_table(args, cfg, reg_cfg),
+            model_tiers=_resolve_model_tiers_table(args, cfg, reg_cfg),
+            harnesses=_resolve_harness_table(args, cfg, reg_cfg, resolved["harness"]))
+    except (TypeError, ValueError) as e:
+        die(2, f"llm test --hats: the merged model tables do not load: {e}")
+
+
+def _llm_test_check_routes(job: JobConfig) -> None:
+    """The route check `start` runs before iteration 1 (the engine's own
+    `check_hat_routes`), applied to the merged `--hats` job: a claude-code hat
+    whose plain or tier ref is not `anthropic/*` is refused with the engine's
+    message and exit 1, with or without `--no-ping`. Only the claude-code rule
+    applies here -- the pi provider-key rule reads the staged
+    `~/.pi/agent/models.json`, which `llm test` does not stage until it pings
+    -- so the check runs over an empty home with no built-in providers."""
+    with tempfile.TemporaryDirectory(prefix="ralphd-llm-test-routes-") as home:
+        try:
+            check_hat_routes(job, home=Path(home))
+        except UnroutableHatModel as e:
+            die(1, str(e))
+
+
+def _llm_test_pairs(args, resolved: dict, job: JobConfig | None) -> list[tuple]:
     """The distinct (harness, model) pairs `llm test` pings, in first-seen
-    order. Without `--hats`: the profile's harness and model (`--model`
-    wins). With `--hats`: every hat in `MODEL_HATS` and every configured
-    `model_tiers` leaf, merged exactly as `start` merges them -- registry
-    `config.yaml` < `--template` job.yaml < `--model-for`/`--model-for-tier`/
-    `--harness-for` -- each on its hat's harness."""
-    if not args.hats:
+    order. Without `--hats` (`job` is None): the profile's harness and model
+    (`--model` wins). With `--hats`: every hat in `MODEL_HATS` and every
+    configured `model_tiers` leaf of `job` (`_llm_test_job`), each on its
+    hat's harness."""
+    if job is None:
         for flag, value in (("--model-for", args.model_for),
                             ("--model-for-tier", args.model_for_tier),
                             ("--harness-for", args.harness_for)):
@@ -5474,15 +5504,6 @@ def _llm_test_pairs(args, resolved: dict, cfg: dict, reg_cfg: dict) -> list[tupl
                 die(2, f"llm test: {flag} needs --hats (it names a hat, and only "
                         "--hats pings per hat)")
         return [(resolved["harness"], args.model or resolved["model"])]
-    model = args.model or cfg.get("model") or reg_cfg.get("model") or resolved["model"]
-    try:
-        job = JobConfig(
-            model=model,
-            model_overrides=_resolve_model_table(args, cfg, reg_cfg),
-            model_tiers=_resolve_model_tiers_table(args, cfg, reg_cfg),
-            harnesses=_resolve_harness_table(args, cfg, reg_cfg, resolved["harness"]))
-    except (TypeError, ValueError) as e:
-        die(2, f"llm test --hats: the merged model tables do not load: {e}")
     pairs: list[tuple] = []
     for hat in MODEL_HATS:
         harness = job.harness_for(hat)
@@ -5493,6 +5514,17 @@ def _llm_test_pairs(args, resolved: dict, cfg: dict, reg_cfg: dict) -> list[tupl
             for leaf in tiers.values():
                 pairs.append((harness, _tier_leaf_ref(leaf, plain)))
     return list(dict.fromkeys(pairs))
+
+
+def _llm_test_network(args, cfg: dict, reg_cfg: dict) -> str | None:
+    """The docker network the ping runs on: `start`'s precedence --
+    `--template` job.yaml `network:` < registry `config.yaml` `network:` <
+    `--network` -- the order `_apply_template` settles it in (flag, else the
+    template's key, else the registry's)."""
+    network = args.network
+    if network is None:
+        network = cfg.get("network", reg_cfg.get("network"))
+    return str(network) if network else None
 
 
 def _llm_test_image(args, cfg: dict, reg_cfg: dict) -> str:
@@ -5588,7 +5620,11 @@ def _cmd_llm_test(args):
     never the container's exit status; any failed pair exits 1."""
     resolved = _llm_test_resolve(args.name)
     _tdir, cfg, reg_cfg = _load_template_and_registry(args.template)
-    pairs = _llm_test_pairs(args, resolved, cfg, reg_cfg)
+    job = _llm_test_job(args, resolved, cfg, reg_cfg) if args.hats else None
+    if job is not None:
+        _llm_test_check_routes(job)
+    pairs = _llm_test_pairs(args, resolved, job)
+    network = _llm_test_network(args, cfg, reg_cfg)
     header_overrides: dict[str, str] = {}
     template_headers = cfg.get("llm_header") or []
     if template_headers and not isinstance(template_headers, list):
@@ -5627,6 +5663,7 @@ def _cmd_llm_test(args):
             cmd = [DOCKER, "run", "--rm", "-i",
                    "--user", str(privsep.DEFAULT_AGENT_UID),
                    "--label", f"ralphd.llm-test={args.name}",
+                   *(["--network", network] if network else []),
                    *env_args, *mount_args, "--entrypoint", "ralphd-engine",
                    image_ref, "--llm-ping", "--harness", harness]
             if model:
@@ -8759,6 +8796,11 @@ def build_parser() -> argparse.ArgumentParser:
     te_.add_argument("--template",
                      help="template whose job.yaml models:/model_tiers:/"
                           "harnesses: (and image) `start --template` would use")
+    te_.add_argument("--network", default=None, metavar="NET",
+                     help="docker network for the ping container, resolved as "
+                          "`start` resolves it (--template job.yaml network: < "
+                          "registry config network < this flag); e.g. 'host' "
+                          "for gateways that resolve only on the host")
     te_.add_argument("--model-for", action="append", metavar="HAT=REF",
                      help="per-hat model override, as on `start` (needs --hats)")
     te_.add_argument("--model-for-tier", action="append", metavar="HAT:TIER=REF",

@@ -230,7 +230,8 @@ REFUSED_SIGNATURES: tuple[tuple[str, str], ...] = (
     ("invalid-request", r"invalid_request(?:_error)?"),
     ("authentication", r"authentication_(?:error|failed)"),
     ("permission", r"permission_error"),
-    ("not-found", r"not_found_error"),
+    # `model_not_found` is the gateway/Bedrock spelling of the same 404.
+    ("not-found", r"not_found_error|model_not_found"),
 )
 
 # What each refusal family MEANS, for the explanation surfaces. Every family
