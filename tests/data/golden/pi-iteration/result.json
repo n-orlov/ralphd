@@ -1,0 +1,21 @@
+{
+  "error_message": "",
+  "exit_code": 0,
+  "final_text": "The token is golden-FAKE-SECRET-not-a-real-token-0001. Done.\n<promise>COMPLETE</promise>",
+  "interrupted": false,
+  "model": "anthropic/claude-x",
+  "model_raw": "claude-x",
+  "no_traffic_timeout": false,
+  "timed_out": false,
+  "usage": {
+    "cacheRead": 300,
+    "cacheWrite": 40,
+    "costDerived": true,
+    "costDerivedUSD": 0.0054,
+    "costPriced": false,
+    "costUSD": 0.0123,
+    "input": 2700,
+    "output": 140,
+    "totalTokens": 3180
+  }
+}

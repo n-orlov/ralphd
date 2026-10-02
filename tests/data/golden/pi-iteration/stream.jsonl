@@ -1,0 +1,19 @@
+{"type": "agent_start"}
+(node:1) ExperimentalWarning: a non-JSON stderr line merged into stdout
+{"type": "message_start", "message": {"role": "assistant", "content": []}}
+{"type": "message_update", "assistantMessageEvent": {"type": "thinking_start", "contentIndex": 0}}
+{"type": "message_update", "assistantMessageEvent": {"type": "thinking_delta", "contentIndex": 0, "delta": "Look at the repo first."}}
+{"type": "message_update", "assistantMessageEvent": {"type": "thinking_end", "contentIndex": 0, "content": "Look at the repo first."}}
+{"type": "message_update", "assistantMessageEvent": {"type": "toolcall_start", "contentIndex": 1}}
+{"type": "message_update", "assistantMessageEvent": {"type": "toolcall_end", "contentIndex": 1, "toolCall": {"type": "toolCall", "id": "call_golden_1", "name": "bash", "arguments": {"command": "cat .env"}}}}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "Look at the repo first."}, {"type": "toolCall", "id": "call_golden_1", "name": "bash", "arguments": {"command": "cat .env"}}], "provider": "anthropic", "model": "claude-x", "stopReason": "toolUse", "usage": {"input": 1200, "output": 80, "cacheRead": 300, "cacheWrite": 40, "totalTokens": 1620, "cost": {"total": 0.0123}}}}
+{"type": "tool_execution_start", "toolCallId": "call_golden_1", "toolName": "bash", "args": {"command": "cat .env"}}
+{"type": "tool_execution_end", "toolCallId": "call_golden_1", "toolName": "bash", "result": {"content": [{"type": "text", "text": "API_TOKEN=golden-FAKE-SECRET-not-a-real-token-0001\n"}]}, "isError": false}
+{"type": "message_start", "message": {"role": "assistant", "content": []}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_start", "contentIndex": 0}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "The token is "}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "golden-FAKE-SECRET-not-a-real-token-0001"}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": ". Done.\n"}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_end", "contentIndex": 0, "content": "The token is golden-FAKE-SECRET-not-a-real-token-0001. Done.\n<promise>COMPLETE</promise>"}}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "The token is golden-FAKE-SECRET-not-a-real-token-0001. Done.\n<promise>COMPLETE</promise>"}], "provider": "anthropic", "model": "claude-x", "stopReason": "stop", "usage": {"input": 1500, "output": 60, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 1560}}}
+{"type": "agent_end"}

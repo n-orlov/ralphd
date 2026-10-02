@@ -1,0 +1,14 @@
+[
+  "-p",
+  "--mode",
+  "json",
+  "--no-session",
+  "-e",
+  "/opt/ralphd/ext/a.ts",
+  "-e",
+  "/opt/ralphd/ext/b.ts",
+  "--model",
+  "anthropic/claude-x",
+  "--thinking",
+  "high"
+]

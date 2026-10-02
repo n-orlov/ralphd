@@ -1,0 +1,10 @@
+[
+  "-p",
+  "--mode",
+  "json",
+  "--no-session",
+  "--model",
+  "anthropic/claude-x",
+  "--thinking",
+  "high"
+]
