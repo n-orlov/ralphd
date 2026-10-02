@@ -1,0 +1,16 @@
+{"type": "message_start", "message": {"role": "assistant"}}
+{"type": "message_update", "assistantMessageEvent": {"type": "thinking_start"}}
+{"type": "message_update", "assistantMessageEvent": {"type": "thinking_delta", "delta": "plan the work"}}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "plan the work"}], "usage": {"input": 2, "output": 5, "cacheRead": 100, "cacheWrite": 10, "totalTokens": 117}, "provider": "anthropic", "model": "claude-sonnet-5-5", "stopReason": "stop"}}
+{"type": "message_start", "message": {"role": "assistant"}}
+{"type": "tool_execution_start", "toolCallId": "toolu_1", "toolName": "bash", "args": {"command": "echo hi", "description": "say hi"}}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "toolu_1", "name": "bash", "arguments": {"command": "echo hi", "description": "say hi"}}], "usage": {"input": 2, "output": 5, "cacheRead": 100, "cacheWrite": 10, "totalTokens": 117}, "provider": "anthropic", "model": "claude-sonnet-5-5", "stopReason": "toolUse"}}
+{"type": "tool_execution_end", "toolCallId": "toolu_1", "toolName": "bash", "isError": false, "result": "ok"}
+{"type": "message_start", "message": {"role": "assistant"}}
+{"type": "tool_execution_start", "toolCallId": "toolu_2", "toolName": "read", "args": {"path": "/tmp/stub-claude-read.txt"}}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "toolCall", "id": "toolu_2", "name": "read", "arguments": {"path": "/tmp/stub-claude-read.txt"}}], "usage": {"input": 2, "output": 5, "cacheRead": 100, "cacheWrite": 10, "totalTokens": 117}, "provider": "anthropic", "model": "claude-sonnet-5-5", "stopReason": "toolUse"}}
+{"type": "tool_execution_end", "toolCallId": "toolu_2", "toolName": "read", "isError": false, "result": "ok"}
+{"type": "message_start", "message": {"role": "assistant"}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "done\n<promise>COMPLETE</promise>"}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_end", "content": "done\n<promise>COMPLETE</promise>"}}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "done\n<promise>COMPLETE</promise>"}], "usage": {"input": 2, "output": 5, "cacheRead": 100, "cacheWrite": 10, "totalTokens": 117}, "provider": "anthropic", "model": "claude-sonnet-5-5", "stopReason": "stop"}}

@@ -1977,6 +1977,7 @@ strictly append-only.
 │       ├── meta.json        # what ran, how it ended, what it cost
 │       ├── prompt.md        # the exact prompt the agent was given
 │       ├── output.jsonl     # the agent's raw NDJSON transcript
+│       ├── output.claude.jsonl  # claude-code only: the scrubbed raw SDK stream; nothing reads it
 │       └── attempts/NN/     # earlier attempt(s) at this same number, archived on resume (§5.5)
 ├── approaches/
 │   └── NN/                  # archived tasks.json/notes.md/review-findings.md
@@ -2114,6 +2115,8 @@ price of zero**:
 | `costPriced` | iteration usage | `false` when tokens were billed that the provider quoted no usable price for |
 | `costZeroQuoted` | iteration usage | `true` when the provider quoted exactly `0` for non-zero billable tokens — an *implausible zero*, recorded as unknown rather than as free (§8.6) |
 | `costFree` | iteration usage and buckets | `true` only when a route the operator **declared** free priced this traffic, which is the one way a `$0.00` over billable tokens is believed |
+| `costBasis` | iteration usage and buckets | `subscription` for a `claude-code` iteration (billed against the plan, `costUSD` is exactly `0.0`); on a bucket, `subscription` while every contributor was subscription and `mixed` once anything else billed (§8.6) |
+| `listEquivalentUSD` | iteration usage, buckets and `cost_breakdown` | the SDK's list price for subscription traffic, summed per bucket and **never** added to `costUSD` (§8.6); readers add `listEquivalentDisplay` |
 | `costDerivedUSD` / `costDerived` | iteration usage and buckets | money computed from a rate table (operator map or built-in), kept in its own field so it can never be summed with a quoted price |
 | `costStatus` | buckets only | absent (fully priced) \| `partial` (`costUSD` is a lower bound) \| `unknown` (no price at all) \| `derived` |
 | `costDisplay` | added by readers | the rendered string from `state.format_cost()` — e.g. `unavailable`, `$0.56+ (partial, rest unavailable)`, `~$0.45 derived` |
@@ -2738,6 +2741,17 @@ still runs.
 `faultClass` sits next to the raw signals it was derived from, so an operator can
 see *why* an attempt was retried and refunded without re-deriving the
 classification from exit codes and token counts.
+
+`iterations/NNNN/output.jsonl` is pi-shaped for every harness: a `claude-code`
+iteration's SDK messages are normalised into the same events (`message_start`,
+`message_update`, `tool_execution_start`/`_end`, `message_end` with `usage`), so
+`ralphctl logs`, `log_merge`, `collapse_index`, the render index and
+`state.count_tool_calls` read it unchanged. A `claude-code` iteration also
+writes `iterations/NNNN/output.claude.jsonl`, the raw SDK stream, one
+`{"kind": "<SDK class>", ...}` object per line. The engine scrubs it with the
+same secret map as `output.jsonl`, so a value redacted from one is redacted from
+the other. No consumer reads it: it is a forensic record, no reader globs `*.jsonl`
+over an iteration directory, and deleting it changes no log, hub or cost output.
 
 ```json
 {
@@ -3980,7 +3994,24 @@ applies it **on read as well as on write**, so a run dir written by an older
 engine reports honestly rather than confidently. Freeness is only ever
 *declared*, never inferred from a zero: `pricing.free` patterns mark the usage
 `costFree: true`, the only bool carried up into the `byPhase`/`byApproach`
-rollups.
+rollups, and it is carried only while every contributor to the bucket was free:
+a bucket that mixes priced money (or billed-but-unpriced tokens) with free
+iterations is priced.
+
+**A subscription bills nothing per token.** An iteration on the `claude-code`
+harness records exactly `costUSD: 0.0`, `costFree: true` and
+`costBasis: "subscription"`. It never carries `costZeroQuoted` and is never
+derived from a rate table: the runner reads no pricing for it. The SDK's own
+list-price figure (`total_cost_usd`) is kept as `listEquivalentUSD`, a separate
+number that `state.merge_cost_flags` and the usage accumulators sum per phase,
+approach, tier and task but never add to `costUSD`. A bucket whose contributors
+are all subscription has `costBasis: "subscription"` and cost source
+`subscription`; one that also holds any other billed traffic has
+`costBasis: "mixed"`. A subscription `0.0` is not a price
+(`state.price_reported`), so it never turns an unknown bucket into a partial
+one. `cost_breakdown` carries a top-level `listEquivalentUSD`, and `ralphctl
+cost`, `ralphctl status` and the hub show it as a separate `list-equiv:` line
+(a stat card and a column in the hub), never as part of the cost.
 
 `cost_status()` in `src/ralphd/engine/state.py` collapses a usage dict to
 `None` (fully priced, or nothing billed), `"derived"`, `"partial"` or
@@ -4124,6 +4155,14 @@ mode-0700 host directory `start`/`resume` bind at
 the `events.jsonl` `petition_adjudications_recorded` MAC witness that is the
 documented fallback authentication check whenever no key survived into it
 (§5.2's `runSecretsMount` is the per-run answer to whether one actually did).
+
+`doctor` also probes the job image's Claude Code runtime (`claude_code_runtime`):
+it runs the wrapper's `--probe-version` with the image's own `python` and passes
+when the Claude Agent SDK imports and the CLI it bundles reports a version at or
+above `CLAUDE_CODE_MIN_VERSION`. A probe that cannot be made (docker down, image
+absent, a derived supply with no single tag, an unparseable answer) is
+report-only, with no `checks` key, because an unanswerable question is not a
+broken image.
 
 `repair` is the guarded editor for the run dir. It refuses to touch a run
 whose container is actually running, exiting `5`, because editing state under

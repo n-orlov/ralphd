@@ -1974,6 +1974,25 @@ assistant message's `error` sets `error_type`. A raw envelope counts as
 traffic for the startup watchdog unless it is a `SystemMessage`, so the CLI's
 own `init` does not hold off a hung first request.
 
+**The normalisation table.** `output.jsonl` is pi-shaped, so every transcript
+consumer works for both harnesses. `Normaliser` maps each SDK message as
+follows.
+
+| SDK message | pi events in `output.jsonl` |
+|---|---|
+| `AssistantMessage` text block | `message_update` `text_delta`, then `text_end` |
+| `AssistantMessage` thinking block | `message_update` `thinking_start`, then `thinking_delta` |
+| `AssistantMessage` tool-use block | `tool_execution_start` (`toolName` lowercased for the six built-ins, `mcp__ralphd__` stripped for hat tools) |
+| end of one assistant message group | `message_end` with `usage` (`input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens`) and `stopReason` (`stop`, `toolUse`, `length`) |
+| `UserMessage` tool-result block | `tool_execution_end` with `isError` and the result text |
+| `ResultMessage` with `is_error` | a final `message_end` with `stopReason: "error"` and an `errorMessage` carrying the status and error type |
+| `RateLimitEvent` | nothing in `output.jsonl`; `IterationResult.rate_limit` |
+| every message | one scrubbed line in `output.claude.jsonl` |
+
+`output.claude.jsonl` is never a transcript. Every reader of an iteration
+directory names `output.jsonl` explicitly (`log_merge.OUTPUT_FILENAME`), and a
+guard test fails if a source file globs `*.jsonl` over one.
+
 ### Diagnosability requirements
 
 Failures must be visible without digging into transcripts:
