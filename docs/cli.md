@@ -725,6 +725,10 @@ Human output also renders (task 003):
   `7/7 completed` when everything is done, or `5/7 completed (1
   in-progress, 1 pending)` when it is not, instead of a raw JSON dump of
   the counts.
+- `list-equiv:` -- printed after `usage:` when the run has subscription
+  traffic (a `claude-code` hat): the SDK's list price for it, e.g.
+  `list-equiv: $0.4000  (subscription list price, not billed)`. It is never
+  part of the `usage:` cost.
 - `usage:` -- a one-line summary of the `usage` dict, e.g. `$0.56, 625k
   tokens (planning $0.10 / worker $0.40 / review $0.06)`, instead of a raw
   JSON dump. The per-phase breakdown only lists phases that actually
@@ -1391,6 +1395,10 @@ much of this figure is actually known" meant reading JSON by hand.
   hub's usage card show, produced by the one shared formatter
   (`ralphd.engine.state.format_cost`, `decimals=4` here), so a breakdown can
   never disagree with the number printed beside it.
+- **`list-equiv:`** appears after `cost:` when the run has subscription
+  traffic (a `claude-code` hat): the SDK's list price for it, apart from the
+  cost, which stays `$0` for that traffic. The phase and approach tables gain a
+  `list-equiv:` column on the rows that have one.
 - **`tokens:`** is the run total in full (`format_tokens`, the counters the
   provider actually reported — no zeroed cache fields are invented). Each table
   row carries that bucket's one-number token count instead.
@@ -3121,6 +3129,18 @@ of them, exit code `0`/`1` accordingly):
   (not newer than the engine's own, PRD req 18). Failures are listed in
   `--json`'s `registryIssues` (also the human report, under `! registry
   schema issues:`).
+
+- `claude_code_runtime` — the job image carries the Claude Agent SDK and a
+  Claude Code CLI at or above `CLAUDE_CODE_MIN_VERSION` (`2.1.280`). `doctor`
+  runs `python -m ralphd.harness.claude_code --probe-version` in the image
+  (`docker run --rm --entrypoint python <image>`; `python` is the engine's
+  interpreter in both the base and the derived image) and compares the CLI
+  version it reports. An SDK or wrapper import failure, or a CLI below the
+  minimum, fails the check and the report line names the minimum. When the
+  image cannot be probed (docker down, image absent, a derived supply with no
+  single tag, an unparseable answer) the check is report-only: the line
+  `! claude_code_runtime: not probed (<why>)` appears and `checks` carries no
+  `claude_code_runtime` key.
 
 Two dangling-container checks, in both directions — always **non-fatal**
 (report-only; never affect `ok`/the exit code):

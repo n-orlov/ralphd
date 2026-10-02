@@ -39,6 +39,7 @@ import yaml
 
 from .. import __version__
 from ..engine.config import (
+    CLAUDE_CODE_MIN_VERSION,
     DEFAULT_HARNESS,
     HARNESSES,
     MODEL_HATS,
@@ -52,6 +53,7 @@ from ..engine import privsep
 from ..engine.tiers import TIERS
 from ..engine.transitions import OPERATOR_RULEABLE_TASK_STATUSES, TASK_STATUSES
 from ..engine.state import (
+    format_money,
     CURRENT_SCHEMA_VERSION,
     GATE_REJECTION_ENDING_CURE_TAKEN,
     GATE_REJECTION_ENDING_CURE_UNAVAILABLE,
@@ -3865,6 +3867,8 @@ def cmd_status(args):
         # dir whose status.json predates the fields.
         status.setdefault("health", "ok")
         status.setdefault("infraWait", None)
+        # v0.30 F.2: same for the rate-limit wait.
+        status.setdefault("rateLimitWait", None)
         # Task 020 (#5): same for the reflect verdict -- null means "no
         # reflect iteration has finished" (reflect off, or not there yet).
         status.setdefault("reflect", None)
@@ -4190,6 +4194,11 @@ def cmd_status(args):
     # no_verdict's own usage is visible without `--json`.
     lines.extend(_format_progress_budget_lines(status.get("progressBudget")))
     lines.append(f"usage:     {_summarize_usage(status.get('usage') or {})}")
+    # The subscription list price (claude-code hats), apart from the cost.
+    _listed = (status.get("usage") or {}).get("listEquivalentUSD")
+    if isinstance(_listed, (int, float)) and not isinstance(_listed, bool) and _listed:
+        lines.append(f"list-equiv: {format_money(_listed, 4)}"
+                     "  (subscription list price, not billed)")
     # Task 020 (E.4): name the run-secrets MAC-key mount, and name the
     # documented fallback check in the same line whenever NO KEY is
     # available -- whether because the directory is not bound at all (a
@@ -7445,6 +7454,67 @@ def _doctor_image_reference(args, reg_cfg: dict) -> tuple[str | None, str, str |
     return DEFAULT_IMAGE, IMAGE_IN_USE_FALLBACK, None
 
 
+def _version_tuple(v: str) -> tuple[int, ...] | None:
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)", (v or "").strip())
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def _probe_claude_code_runtime(ref: str) -> dict | None:
+    """Ask the job image for its Claude Code runtime: the wrapper's
+    `--probe-version`, run with the image's own `python` (the system
+    interpreter in the base image, the venv's in a derived one).
+
+    Returns `{"sdk", "cli", "ok", "error"}`, or `None` when nothing can be
+    said: docker is down, the image is absent, or the answer is not the
+    wrapper's JSON. An image whose interpreter cannot import the SDK or the
+    wrapper is an answer, not an absence: `{"error": ...}` with no version.
+    """
+    try:
+        res = sh([DOCKER, "run", "--rm", "--entrypoint", "python", ref,
+                  "-m", "ralphd.harness.claude_code", "--probe-version"],
+                 timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out_lines = (res.stdout or "").strip().splitlines()
+    if res.returncode == 0 and out_lines:
+        try:
+            doc = json.loads(out_lines[-1])
+        except ValueError:
+            return None
+        if isinstance(doc, dict) and "cli" in doc:
+            return doc
+        return None
+    err = (res.stderr or "")
+    if res.returncode == 1 and re.search(
+            r"(ModuleNotFoundError|ImportError|No module named)", err):
+        last = err.strip().splitlines()[-1] if err.strip() else "import failed"
+        return {"sdk": None, "cli": None, "ok": False, "error": last[:300]}
+    return None
+
+
+def _doctor_claude_code_runtime(ref: str | None, docker_ok: bool,
+                                why_not: str | None = None
+                                ) -> tuple[bool | None, str]:
+    """`(verdict, report line)` for doctor's `claude_code_runtime` check.
+    `verdict is None` is report-only (not probed); otherwise it feeds
+    `checks`."""
+    if ref is None:
+        return None, f"! claude_code_runtime: not probed ({why_not or 'no single image tag'})"
+    if not docker_ok:
+        return None, "! claude_code_runtime: not probed (docker is not reachable)"
+    probe = _probe_claude_code_runtime(ref)
+    if probe is None:
+        return None, f"! claude_code_runtime: not probed (no usable answer from {ref})"
+    if probe.get("error") or not probe.get("cli"):
+        return False, ("claude_code_runtime: the claude_agent_sdk wrapper does not "
+                       f"run in {ref}: {probe.get('error') or 'no CLI version reported'}")
+    have, need = _version_tuple(probe["cli"]), _version_tuple(CLAUDE_CODE_MIN_VERSION)
+    if have is None or have < need:
+        return False, (f"claude_code_runtime: Claude Code {probe['cli']} in {ref} is "
+                       f"older than the minimum {CLAUDE_CODE_MIN_VERSION}")
+    return True, ""
+
+
 def _doctor_image_staleness(args, reg_cfg: dict,
                             source_hash: str | None) -> tuple[dict, bool]:
     """`doctor`'s job-image verdict, and whether the check passes (task 037).
@@ -7589,6 +7659,12 @@ def cmd_doctor(args):
     src_root, source_hash = current_source_hash()
     image_verdict, image_ok = _doctor_image_staleness(args, reg_cfg, source_hash)
     checks["image"] = image_ok
+    cc_ref, _cc_where, cc_base = _doctor_image_reference(args, reg_cfg)
+    cc_verdict, cc_line = _doctor_claude_code_runtime(
+        cc_ref, checks["docker"],
+        f"derived from {cc_base}" if cc_base else None)
+    if cc_verdict is not None:
+        checks["claude_code_runtime"] = cc_verdict
     run_images = _run_image_staleness(source_hash)
     stale_runs = [e for e in run_images
                   if e["staleness"] == IMAGE_STALENESS_STALE]
@@ -7644,6 +7720,8 @@ def cmd_doctor(args):
     # strays/dangling registry entries are report-only, never affect the verdict
     ok = all(checks.values())
     report = "\n".join(f"{'✓' if v else '✗'} {k}" for k, v in checks.items())
+    if cc_line:
+        report += "\n" + cc_line
     # The staleness line is report-only, so it is marked `!` exactly when it is
     # news the operator has to act on (a stale or unrunnable image) and left
     # unmarked when it is not (fresh, or honestly unknowable).
