@@ -307,9 +307,15 @@ AMBIENT_HOME_ALLOWLIST: list[dict[str, str]] = [
         # Task 032 (v0.21, requirement F.6, #159/#194): same +5 as the entry
         # above it: 4948->4953, read off the numbered line (task 035/077).
         "line": "4953",
-        "code": "models_json = Path.home() / \".pi\" / \"agent\" / \"models.json\"",
-        "reason": ("same `_llm_test_resolve` host path, the `models.json` half "
-                   "-- same reasoning as the `.aws` mount just above it."),
+        #
+        # v0.30 T11 (PRD H.1): `llm test host` now stages the whole host pi
+        # dir the way `start --llm host` does (`HOST_PI_FILES`, `!command`
+        # apiKeys resolved), so the read names `~/.pi/agent` instead of its
+        # `models.json` alone.
+        "code": "pi_dir = Path.home() / \".pi\" / \"agent\"",
+        "reason": ("same `_llm_test_resolve` host path, the `~/.pi/agent` half "
+                   "-- same reasoning as the `.aws` mount just above it: `llm "
+                   "test host` stages exactly what `start --llm host` copies."),
     },
     {
         "path": "cli/main.py",

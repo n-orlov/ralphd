@@ -50,6 +50,8 @@ from ..engine.config import (
 from ..engine import findings
 from ..engine import petitions
 from ..engine import privsep
+from ..engine.llm import _tier_leaf_ref
+from ..engine.redact import is_secret_name, scrub_text
 from ..engine.tiers import TIERS
 from ..engine.transitions import OPERATOR_RULEABLE_TASK_STATUSES, TASK_STATUSES
 from ..engine.state import (
@@ -1915,6 +1917,25 @@ def _resolve_image_supply(args, cfg: dict, reg_cfg: dict) -> None:
         args.image = IMAGE_ENV
 
 
+def _load_template_and_registry(template: str | None) -> tuple[Path | None, dict, dict]:
+    """`(template dir, its parsed job.yaml, <registry>/config.yaml)` -- the
+    two layers `start` merges under its own flags, loaded once for `start`
+    (`_apply_template`) and for `llm test --hats`. Dies 3 on an unknown
+    template and 2 on a job.yaml that is not a mapping."""
+    tdir = None
+    cfg: dict = {}
+    if template:
+        tdir = registry() / "templates" / template
+        if not tdir.is_dir():
+            die(3, f"unknown template: {template} (expected {tdir})")
+        cfg_file = tdir / "job.yaml"
+        if cfg_file.is_file():
+            cfg = yaml.safe_load(cfg_file.read_text()) or {}
+            if not isinstance(cfg, dict):
+                die(2, f"template {template}: job.yaml must be a mapping")
+    return tdir, cfg, _registry_config(registry())
+
+
 def _apply_template(args) -> Path | None:
     """Load `<registry>/templates/<name>/` (PRD req 25) and fill in any
     `start` flag the caller left at its argparse default with the
@@ -1926,18 +1947,7 @@ def _apply_template(args) -> Path | None:
     (for `--prd`/`--skills`/`--creds` defaulting below) or None if no
     `--template` was given.
     """
-    tdir = None
-    cfg = {}
-    if args.template:
-        tdir = registry() / "templates" / args.template
-        if not tdir.is_dir():
-            die(3, f"unknown template: {args.template} (expected {tdir})")
-        cfg_file = tdir / "job.yaml"
-        if cfg_file.is_file():
-            cfg = yaml.safe_load(cfg_file.read_text()) or {}
-            if not isinstance(cfg, dict):
-                die(2, f"template {args.template}: job.yaml must be a mapping")
-    reg_cfg = _registry_config(registry())
+    tdir, cfg, reg_cfg = _load_template_and_registry(args.template)
     # the three image supply points first, as one unit (task 035): the loop
     # below fills fields independently, which is exactly wrong for three keys
     # that contradict each other.
@@ -5413,47 +5423,182 @@ def cmd_llm(args):
         _cmd_llm_test(args)
 
 
-def _llm_test_resolve(name: str):
+def _llm_test_resolve(name: str) -> dict:
     """Resolve profile `name` for `ralphctl llm test`, unredacted (this runs
     entirely on the host, same trust level as `start`). Returns
-    ``(model, env, mounts, pi_fragment)``. Built-ins never fail to resolve
+    ``{"model", "env", "mounts", "pi", "pi_dir", "harness",
+    "builtin_providers"}``: `pi` is a named profile's `pi:` fragment and
+    `pi_dir` the host's `~/.pi/agent` for `host` (staged like `start --llm
+    host` stages it, `_llm_test_stage_pi`). Built-ins never fail to resolve
     (nothing to read); a named profile dies exactly like `start`/`show`
     (exit 3 unknown name, exit 1 unresolvable reference) with the same
     diagnostic."""
+    resolved = {"model": None, "env": {}, "mounts": [], "pi": None,
+                "pi_dir": None, "harness": DEFAULT_HARNESS,
+                "builtin_providers": []}
     if name == "none":
-        return None, {}, [], None
+        return resolved
     if name == "host":
         env = {var: os.environ[var] for var in HOST_LLM_ENV if os.environ.get(var)}
         mounts = []
         aws = Path.home() / ".aws"
         if aws.is_dir():
             mounts.append(f"{aws}:/home/agent/.aws:ro")
-        pi_fragment = None
-        models_json = Path.home() / ".pi" / "agent" / "models.json"
-        if models_json.is_file():
-            try:
-                pi_fragment = json.loads(models_json.read_text())
-            except (OSError, json.JSONDecodeError):
-                pi_fragment = None
-        return None, env, mounts, pi_fragment
+        pi_dir = Path.home() / ".pi" / "agent"
+        return {**resolved, "env": env, "mounts": mounts, "pi_dir": pi_dir}
     path = llm_profiles.profile_path(registry(), name)
     if not path.is_file():
         die(3, f"llm profile '{name}' not found (looked for {path})")
     try:
-        resolved = llm_profiles.resolve_profile(name, registry())
+        profile = llm_profiles.resolve_profile(name, registry())
     except llm_profiles.ProfileError as e:
         die(1, str(e))
-    return resolved["model"], resolved["env"], resolved["mounts"], resolved["pi"]
+    return {**resolved, "model": profile["model"], "env": profile["env"],
+            "mounts": profile["mounts"], "pi": profile["pi"],
+            "harness": profile.get("harness") or DEFAULT_HARNESS,
+            "builtin_providers": list(profile.get("builtin_providers") or [])}
+
+
+def _llm_test_pairs(args, resolved: dict, cfg: dict, reg_cfg: dict) -> list[tuple]:
+    """The distinct (harness, model) pairs `llm test` pings, in first-seen
+    order. Without `--hats`: the profile's harness and model (`--model`
+    wins). With `--hats`: every hat in `MODEL_HATS` and every configured
+    `model_tiers` leaf, merged exactly as `start` merges them -- registry
+    `config.yaml` < `--template` job.yaml < `--model-for`/`--model-for-tier`/
+    `--harness-for` -- each on its hat's harness."""
+    if not args.hats:
+        for flag, value in (("--model-for", args.model_for),
+                            ("--model-for-tier", args.model_for_tier),
+                            ("--harness-for", args.harness_for)):
+            if value:
+                die(2, f"llm test: {flag} needs --hats (it names a hat, and only "
+                        "--hats pings per hat)")
+        return [(resolved["harness"], args.model or resolved["model"])]
+    model = args.model or cfg.get("model") or reg_cfg.get("model") or resolved["model"]
+    try:
+        job = JobConfig(
+            model=model,
+            model_overrides=_resolve_model_table(args, cfg, reg_cfg),
+            model_tiers=_resolve_model_tiers_table(args, cfg, reg_cfg),
+            harnesses=_resolve_harness_table(args, cfg, reg_cfg, resolved["harness"]))
+    except (TypeError, ValueError) as e:
+        die(2, f"llm test --hats: the merged model tables do not load: {e}")
+    pairs: list[tuple] = []
+    for hat in MODEL_HATS:
+        harness = job.harness_for(hat)
+        plain = job.model_for(hat)
+        pairs.append((harness, plain))
+        tiers = job.model_tiers.get(hat) if isinstance(job.model_tiers, dict) else None
+        if isinstance(tiers, dict):
+            for leaf in tiers.values():
+                pairs.append((harness, _tier_leaf_ref(leaf, plain)))
+    return list(dict.fromkeys(pairs))
+
+
+def _llm_test_image(args, cfg: dict, reg_cfg: dict) -> str:
+    """The image `start` would run with the same `--image`, template and
+    registry: `_resolve_image_supply` then `resolve_job_image` (which builds
+    the content-hashed image on a cache miss, exactly as `start` does)."""
+    supply = argparse.Namespace(image=args.image, base_image=None, dockerfile=None)
+    _resolve_image_supply(supply, cfg, reg_cfg)
+    return resolve_job_image(supply.image, base=supply.base_image,
+                             dockerfile=supply.dockerfile)["image"]
+
+
+def _llm_test_stage_pi(resolved: dict, header_overrides: dict, stage: Path) -> list[str]:
+    """Assemble the pi config `start` would place in `/config/pi` under
+    `stage` -- the host's `HOST_PI_FILES` with `!command` apiKeys resolved,
+    or the profile's `pi:` fragment, `--template` `llm_header`s merged in --
+    and return the `-v` args that mount each file read-only into the agent's
+    `~/.pi/agent`."""
+    dest = stage / "pi"
+    dest.mkdir()
+    if resolved["pi_dir"] is not None:
+        for name in HOST_PI_FILES:
+            src = resolved["pi_dir"] / name
+            if src.exists():
+                shutil.copy2(src, dest / name)
+        _resolve_pi_apikeys(dest / "models.json")
+        if header_overrides:
+            doc = _read_json(dest / "models.json")
+            if doc:
+                llm_profiles.merge_headers_into_pi_config(doc, header_overrides)
+                (dest / "models.json").write_text(json.dumps(doc, indent=1))
+    elif resolved["pi"]:
+        doc = llm_profiles.merge_headers_into_pi_config(
+            json.loads(json.dumps(resolved["pi"])), header_overrides)
+        (dest / "models.json").write_text(json.dumps(doc, indent=1))
+    mounts: list[str] = []
+    _ensure_run_dir_agent_owned(stage)
+    _ensure_run_dir_agent_owned(dest)
+    for f in sorted(dest.iterdir()):
+        os.chmod(f, 0o600)
+        _ensure_run_dir_agent_owned(f)
+        mounts += ["-v", f"{f}:/home/agent/.pi/agent/{f.name}:ro"]
+    return mounts
+
+
+def _llm_test_secrets(env: dict, pi_doc) -> dict[str, str]:
+    """Values the ping's message must never show: every profile env value
+    and every secret-named or header value in the pi config."""
+    out: dict[str, str] = {}
+    for k, v in env.items():
+        if isinstance(v, str) and len(v) >= 8:
+            out.setdefault(v, f"llm-test:{k}")
+
+    def walk(node, key: str = "", under_headers: bool = False) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, str(k), under_headers or str(k) == "headers")
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, key, under_headers)
+        elif isinstance(node, str) and len(node) >= 8 and (
+                under_headers or is_secret_name(key)):
+            out.setdefault(node, f"llm-test:pi:{key}")
+
+    walk(pi_doc)
+    return out
+
+
+def _llm_test_verdict(res: subprocess.CompletedProcess) -> dict | None:
+    """The ping's JSON verdict: the last stdout line that parses as one."""
+    for line in reversed((res.stdout or "").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            doc = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(doc, dict) and "ok" in doc:
+            return doc
+    return None
 
 
 def _cmd_llm_test(args):
-    """`ralphctl llm test <profile>`: resolve on the host (dies with the
-    exact diagnostic `start`/`show` would on a missing/unresolvable
-    profile -- no docker needed for this part). If resolution succeeds and
-    docker is reachable (and `--no-ping` wasn't given), follow up with a
-    real one-token completion in a throwaway `--rm`, labeled container
-    (entrypoint overridden straight to `pi`, bypassing ralphd-engine)."""
-    model, env, mounts, pi_fragment = _llm_test_resolve(args.name)
+    """`ralphctl llm test <profile>`: resolve on the host exactly as `start`
+    does (dies with the exact diagnostic `start`/`show` would on a
+    missing/unresolvable profile -- no docker needed for this part). If
+    resolution succeeds and docker is reachable (and `--no-ping` wasn't
+    given), ping every distinct (harness, model) pair the run would use
+    (`_llm_test_pairs`) through the runner itself: `ralphd-engine --llm-ping`
+    in a throwaway `--rm`, labeled container from the run image, as the
+    agent uid. Each pair is judged by its `IterationResult` and fault class,
+    never the container's exit status; any failed pair exits 1."""
+    resolved = _llm_test_resolve(args.name)
+    _tdir, cfg, reg_cfg = _load_template_and_registry(args.template)
+    pairs = _llm_test_pairs(args, resolved, cfg, reg_cfg)
+    header_overrides: dict[str, str] = {}
+    template_headers = cfg.get("llm_header") or []
+    if template_headers and not isinstance(template_headers, list):
+        die(2, f"template {args.template}: llm_header must be a list of strings")
+    if template_headers:
+        try:
+            header_overrides = llm_profiles.resolve_header_specs(
+                [str(h) for h in template_headers])
+        except llm_profiles.HeaderError as e:
+            die(2, str(e))
     try:
         docker_ok = sh([DOCKER, "version", "--format", "{{.Server.Version}}"]) \
             .returncode == 0
@@ -5465,36 +5610,62 @@ def _cmd_llm_test(args):
         out(args, {"profile": args.name, "resolved": True, "pinged": False},
             f"llm profile '{args.name}' resolves OK{reason}")
         return
+    image_ref = _llm_test_image(args, cfg, reg_cfg)
     env_args: list[str] = []
-    for k, v in env.items():
+    for k, v in resolved["env"].items():
         env_args += ["-e", f"{k}={v}"]
     mount_args: list[str] = []
-    for m in mounts:
+    for m in resolved["mounts"]:
         mount_args += ["-v", m]
-    tmp_pi: Path | None = None
-    if pi_fragment:
-        tmp_pi = Path(tempfile.mkdtemp(prefix="ralphd-llm-test-"))
-        pi_file = tmp_pi / "models.json"
-        pi_file.write_text(json.dumps(pi_fragment))
-        os.chmod(pi_file, 0o600)
-        mount_args += ["-v", f"{pi_file}:/home/agent/.pi/agent/models.json:ro"]
-    ping_model = args.model or model
-    cmd = [DOCKER, "run", "--rm", "-i", "--entrypoint", "pi",
-           "--label", f"ralphd.llm-test={args.name}",
-           *env_args, *mount_args, args.image,
-           "-p", "--mode", "json", "--no-session"]
-    if ping_model:
-        cmd += ["--model", ping_model]
+    stage = Path(tempfile.mkdtemp(prefix="ralphd-llm-test-"))
+    verdicts: list[dict] = []
     try:
-        res = sh(cmd, input="Reply with exactly the single word: ok\n")
+        mount_args += _llm_test_stage_pi(resolved, header_overrides, stage)
+        secrets_map = _llm_test_secrets(resolved["env"], _read_json(stage / "pi" / "models.json")
+                                        or resolved["pi"])
+        for harness, model in pairs:
+            cmd = [DOCKER, "run", "--rm", "-i",
+                   "--user", str(privsep.DEFAULT_AGENT_UID),
+                   "--label", f"ralphd.llm-test={args.name}",
+                   *env_args, *mount_args, "--entrypoint", "ralphd-engine",
+                   image_ref, "--llm-ping", "--harness", harness]
+            if model:
+                cmd += ["--model", model]
+            res = sh(cmd, input="")
+            verdict = _llm_test_verdict(res)
+            if verdict is None:
+                tail = (res.stderr or res.stdout or "").strip()[-400:]
+                verdict = {"ok": False, "faultClass": None, "reason": None,
+                           "message": f"the ping container printed no verdict "
+                                      f"(exit {res.returncode}): {tail}",
+                           "exitCode": res.returncode}
+            verdicts.append({
+                "profile": args.name, "image": image_ref,
+                "harness": harness, "model": model,
+                "ok": bool(verdict.get("ok")),
+                "faultClass": verdict.get("faultClass"),
+                "reason": verdict.get("reason"),
+                "message": scrub_text(str(verdict.get("message") or ""),
+                                      extra=secrets_map)[:400],
+                "exitCode": verdict.get("exitCode"),
+            })
     finally:
-        if tmp_pi is not None:
-            shutil.rmtree(tmp_pi, ignore_errors=True)
-    if res.returncode != 0:
-        die(1, f"llm profile '{args.name}': ping container failed (exit "
-               f"{res.returncode}): {(res.stderr or res.stdout).strip()[:400]}")
-    out(args, {"profile": args.name, "resolved": True, "pinged": True},
-        f"llm profile '{args.name}' resolves OK and the container ping succeeded")
+        shutil.rmtree(stage, ignore_errors=True)
+    if args.json:
+        print(json.dumps(verdicts, indent=2))
+    else:
+        for v in verdicts:
+            shown = v["model"] or "(default model)"
+            if v["ok"]:
+                print(f"ok  {v['harness']}  {shown}")
+            else:
+                print(f"FAIL {v['harness']} {shown}  "
+                      f"{v['faultClass'] or 'no-verdict'}: {v['message']}")
+    failed = sum(1 for v in verdicts if not v["ok"])
+    if failed:
+        print(f"ralphctl: llm profile '{args.name}': {failed} of {len(verdicts)} "
+              f"ping(s) failed", file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------- control
@@ -8573,11 +8744,28 @@ def build_parser() -> argparse.ArgumentParser:
     te_ = llmsub.add_parser("test", help="validate a profile resolves; optional "
                             "1-token ping in a throwaway container")
     te_.add_argument("name")
-    te_.add_argument("--image", default=DEFAULT_IMAGE)
-    te_.add_argument("--model", help="override the model used for the ping")
+    te_.add_argument("--image", default=None,
+                     help="image to ping in (default: the image `start` would "
+                          "run, resolved the same way)")
+    te_.add_argument("--model", help="override the model used for the ping "
+                                     "(with --hats: the job's base model)")
     te_.add_argument("--no-ping", action="store_true",
                       help="only validate resolution; skip the container ping "
                            "even if docker is available")
+    te_.add_argument("--hats", action="store_true",
+                     help="ping every distinct (harness, model) pair the "
+                          "job's hats would use, merged as `start` merges "
+                          "them (registry < --template < the flags below)")
+    te_.add_argument("--template",
+                     help="template whose job.yaml models:/model_tiers:/"
+                          "harnesses: (and image) `start --template` would use")
+    te_.add_argument("--model-for", action="append", metavar="HAT=REF",
+                     help="per-hat model override, as on `start` (needs --hats)")
+    te_.add_argument("--model-for-tier", action="append", metavar="HAT:TIER=REF",
+                     help="per-hat-per-tier model override, as on `start` "
+                          "(needs --hats)")
+    te_.add_argument("--harness-for", action="append", metavar="HAT=NAME",
+                     help="per-hat agent harness, as on `start` (needs --hats)")
     s.set_defaults(func=cmd_llm)
 
     s = sub.add_parser("steer", help="send steering guidance (or --list what "

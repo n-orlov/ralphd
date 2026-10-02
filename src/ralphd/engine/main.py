@@ -87,6 +87,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version", action="version", version=f"ralphd-engine {_version()}"
     )
+    # `ralphctl llm test` runs `ralphd-engine --llm-ping --harness H --model
+    # M [--timeout S]` in a throwaway container: one ping through the runner,
+    # one JSON verdict line, no loop, no API, no run dir (engine/llm_ping.py).
+    parser.add_argument(
+        "--llm-ping", nargs=argparse.REMAINDER, metavar="ARG", default=None,
+        help="send one ping through the runner and print the verdict as one "
+             "JSON line; the remaining arguments are --harness, --model and "
+             "--timeout (see engine/llm_ping.py)",
+    )
     return parser
 
 
@@ -427,7 +436,12 @@ async def amain() -> int:
 def main() -> None:
     # parse_args() calls sys.exit(0) itself for -h/--help/--version, before
     # amain() (and thus any dir creation / server / lock / config load) runs.
-    build_arg_parser().parse_args()
+    args = build_arg_parser().parse_args()
+    if args.llm_ping is not None:
+        # A ping is not a job: no uid boundary, no control credentials, no
+        # run dir. It runs as whatever uid the container was started with.
+        from .llm_ping import main as llm_ping_main
+        sys.exit(llm_ping_main(args.llm_ping))
     _configure_logging()
     # Task 020 (#48): establish the uid boundary before anything else runs --
     # before the first file is created, so no run-dir file is ever owned by

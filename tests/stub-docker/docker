@@ -63,6 +63,14 @@ just enough behavior for ralphctl to proceed. Knobs:
                               its own two streams, so a process that died
                               with a fatal message on stderr shows up here
                               and nowhere else (default empty).
+  STUB_DOCKER_RUN_EXEC        if set, `docker run ... --entrypoint X <image>
+                              args...` (no `-d`) execs `X args...` locally
+                              instead of faking a container: the `-e` env is
+                              merged over this process's own, stdin and the
+                              exit status pass through, and `--user`, `-v`
+                              and labels are ignored. A `docker run` with no
+                              `--entrypoint` is faked as usual. The argv is
+                              still recorded first.
 """
 import hashlib
 import json
@@ -163,6 +171,40 @@ if cmd == "run" and os.environ.get("STUB_DOCKER_LIVE_ENGINE"):
                           start_new_session=True)
     print("f" * 64)  # fake container id
     sys.exit(0)
+
+# `docker run` options that take a value (as their own argv item) -- what
+# `_split_run_argv` must skip to find the image.
+_RUN_VALUE_OPTIONS = {"-e", "--env", "-v", "--volume", "-p", "--publish",
+                      "--label", "-l", "--user", "-u", "--entrypoint", "--name",
+                      "--network", "--ulimit", "--group-add", "-w", "--workdir",
+                      "--add-host"}
+
+
+def _split_run_argv(argv):
+    """`(entrypoint, image, args)` of a `docker run` argv (argv[0] == "run")."""
+    entrypoint = None
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a == "--entrypoint" and i + 1 < len(argv):
+            entrypoint = argv[i + 1]
+        if a in _RUN_VALUE_OPTIONS:
+            i += 2
+            continue
+        if a.startswith("-"):
+            i += 1
+            continue
+        return entrypoint, a, argv[i + 1:]
+    return entrypoint, None, []
+
+
+if cmd == "run" and os.environ.get("STUB_DOCKER_RUN_EXEC") and "-d" not in argv:
+    entrypoint, _image, run_args = _split_run_argv(argv)
+    if entrypoint:
+        _mounts, _port, run_env = _parse_run_argv(argv)
+        exec_env = {**os.environ, **run_env}
+        sys.stdout.flush()
+        os.execvpe(entrypoint, [entrypoint, *run_args], exec_env)
 
 if cmd == "run":
     print("f" * 64)  # fake container id

@@ -634,30 +634,38 @@ def test_llm_test_builtins_resolve_trivially_without_docker(ctl):
 
 
 def test_llm_test_docker_ping_invocation_shape(ctl):
+    """The ping is `ralphd-engine --llm-ping` in a throwaway container as the
+    agent uid, never `--entrypoint pi` judged by its exit status (PRD v0.30
+    H.3). This stub docker only fakes a container id and exits 0 -- the old
+    pass condition -- which is no verdict, so the pair fails. A ping that
+    really runs through the runner is covered by
+    tests/test_llm_test_real_path.py::test_a_healthy_pair_prints_ok_and_pings_through_the_runner."""
     ctl.write_profile("acme", {
         "description": "acme",
         "model": "acme/big-model",
         "env": {"ACME_KEY": "top-secret-value"},
         "pi": {"providers": {"acme": {"baseUrl": "https://gw.example.com"}}},
     })
-    res = ctl.run("llm", "test", "acme")  # stub docker present via ctl.run()
-    assert res.returncode == 0, res.stderr
-    assert "ping succeeded" in res.stdout
+    res = ctl.run("llm", "test", "acme", "--image", "ralphd:pinned")
+    assert res.returncode == 1
+    assert "no verdict" in res.stdout
     runs = [a for a in ctl.recorded() if a[:1] == ["run"]]
     assert len(runs) == 1, ctl.recorded()
     argv = runs[0]
     assert "--rm" in argv
     assert "-d" not in argv  # never detached -- this is a throwaway ping
-    assert "--label" in argv
+    assert argv[argv.index("--user") + 1] == "1000"
     label_i = argv.index("--label")
     assert argv[label_i + 1] == "ralphd.llm-test=acme"
-    assert "--entrypoint" in argv
     ep_i = argv.index("--entrypoint")
-    assert argv[ep_i + 1] == "pi"
-    assert "-e" in argv
+    assert argv[ep_i + 1] == "ralphd-engine"
     assert "ACME_KEY=top-secret-value" in env_vars(argv)
-    assert argv[-1] == "-p" or "--model" in argv  # pi's own args tail the argv
-    assert "acme/big-model" in argv
+    mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert [m.split(":", 1)[1] for m in mounts] == [
+        "/home/agent/.pi/agent/models.json:ro"]
+    assert argv[argv.index("--llm-ping") - 1] == "ralphd:pinned"
+    assert argv[argv.index("--llm-ping"):] == [
+        "--llm-ping", "--harness", "pi", "--model", "acme/big-model"]
 
 
 def test_llm_test_no_ping_flag_skips_container_even_when_docker_available(ctl):
