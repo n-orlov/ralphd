@@ -4160,6 +4160,7 @@ event:
 | `"work"` | the agent reached the model and then genuinely failed — or the *operator* terminated it |
 | `"signal"` | a signal ended an iteration that had reached the model, with no abort recorded (below) — not retried |
 | `"rate_limit"` | the provider reported its rate-limit window exhausted, in structured form — waited out until the window resets, then the same work re-runs (below) |
+| `"refused"` | the provider refused the call in a way waiting does not fix (a 400/401/403/404), or the `claude-code` harness refused to start — not retried; the run pauses for the operator (below) |
 
 Because both the recorded field and the retry decision come from that one
 call, an operator reading `faultClass: "infra"` can be sure that is why the
@@ -4245,6 +4246,25 @@ Three deliberate details:
   tells the notifier at each end, and is woken by `POST /retry`. pi reports
   errors as text only, so a pi `429` stays in the `back-pressure` family
   above.
+
+- **A non-transient refusal fails fast.** `faults.REFUSED_SIGNATURES` is a
+  second `(family, regex)` table beside the infra one: `extra-usage` (the
+  subscription's third-party refusal), `invalid-request`, `authentication`,
+  `permission`, `not-found`, and the `claude-code` harness's own pre-flight
+  refusals `cc-version`, `cc-cli-missing` and `cc-root`. `matched_refusal()`
+  needs a provider family to come with an HTTP 400, 401, 403 or 404 (the
+  structured `http_status`, else the first status token of pi's `<status>
+  <body>` text); the `cc-*` families need none. Its rung sits right after the
+  rate-limit rung, so a 429 is never `"refused"`, and before the watchdog and
+  the signature table, so a refusal is never retried as `"infra"`. The
+  wrapper refunds the attempt and calls `_pause_for_provider_refusal()`: the
+  run pauses with `pauseReason: "operator_input_needed"` and `pauseDetail =
+  {"reason": "provider_refused", ...}` carrying the scrubbed provider message,
+  emits `provider_refused`, notifies through the escalation delivery path, and
+  parks in place in `_gate()`. `ralphctl unpause` clears both and the wrapper
+  re-runs the same work. `pauseDetail` keeps review's pause machinery out:
+  no `noRulingProceed` one-shot on unpause, no release by `POST /rule`, and no
+  `operator_escalation` event.
 
 Anything else that produced **no** LLM traffic at all is classified `"infra"`
 too: an unclassifiable no-traffic failure is far likelier to be an

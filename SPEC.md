@@ -582,7 +582,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/engine/runner.py` | `AgentRunner` + `IterationResult`, and the one child-process path both runners share: spawn, pump and scrub NDJSON into `output.jsonl`, parse events and usage, scan for the exact sentinels, enforce the iteration timeout and the startup-window watchdog, and kill the process group on every exit path. `PiRunner` spawns one `pi` process; `ClaudeCodeRunner` spawns the `claude-code` wrapper (`python -m ralphd.harness.claude_code`) in a per-call scratch area, links the skills into its config dir, and demuxes the wrapper's raw SDK envelopes into a scrubbed `<stem>.claude.jsonl`. |
 | `src/ralphd/engine/privsep.py` | The uid boundary (§13.4): resolve the account iterations run as, drop the engine's *effective* identity to it while keeping root real and saved, and hand every spawn site the kwargs that drop a child all the way down. `separated()` reads the live process credentials, so nothing claims a boundary the kernel is not enforcing; every function is a no-op with one warning when the engine did not start as root. `root_for_write()`/`write_root_owned_json()` (task 105, #60 requirement D) reuse the same boundary the other direction: momentarily raise the engine's own effective uid back to root to write a file root-owned, restoring it before returning. `write_protected_tasks_json()`/`release_protected_tasks_dir()` (task 004, requirement B, #202) close the gap `write_root_owned_json()` left open for `tasks.json` specifically -- a root-owned FILE in an agent-writable DIRECTORY still lets a dropped child `os.replace()` a substituted document onto it, a directory-entry operation gated by the parent, never the target -- by landing the authoritative copy inside a root-owned 0700 directory (`PROTECTED_TASKS_DIRNAME`, self-healed against a precreated file or a planted symlink on every write, not only at creation) and refreshing an ordinary agent-readable view copy alongside it; the protected directory is handed back to the agent uid at the engine's own shutdown funnel so a host-side `rm`/`DELETE` can still remove it. |
 | `src/ralphd/engine/api.py` | The FastAPI app: every route in §3.1, bearer-token enforcement, the SSE event stream, `GET /logs` tail and live-follow on top of `log_merge`, `PATCH /config/budget`, and the config CRUD that writes into the overlay and re-places creds/skills immediately. |
-| `src/ralphd/engine/faults.py` | `classify_fault()` — a pure function mapping a finished iteration to `"infra"`, `"work"`, or `None`, with `_INFRA_TEXT_PATTERNS` as the single reviewable signature table (one commented line per family) and the `aborted`/operator carve-out. No engine state. |
+| `src/ralphd/engine/faults.py` | `classify_fault()` — a pure function mapping a finished iteration to `"infra"`, `"work"`, `"signal"`, `"rate_limit"`, `"refused"` or `None` (§8.2), with `INFRA_SIGNATURES` and `REFUSED_SIGNATURES` as the two reviewable signature tables (one row per pattern, labelled by family) and the `aborted`/operator carve-out. No engine state. |
 | `src/ralphd/engine/pricing.py` | `PricingMap`: the optional host-side per-million-token rate table with gateway alias globs and declared-free patterns, used *only* when the provider quoted no usable price, producing a cost marked derived and never merged into `costUSD`. `PricingChain` layers the operator map over a built-in table so exactly one of them prices any message, and `resolve_pricing()` builds whichever of the two `price_strategy` asks for (§8.6). |
 | `src/ralphd/engine/pricing_aws.py` | The shipped AWS Bedrock rate table: canonical per-model USD/Mtok rates, a generated alias map for the gateway spellings, and a machine-readable `AS_OF` date with a `staleness()` verdict. Exposed as a `PricingMap` through `pricing_map()`, so there is one matcher rather than a second resolver, and refreshed by `tools/refresh_bedrock_rates.py`. |
 | `src/ralphd/engine/redact.py` | The mechanical secret scrubber: build the value set from env vars and placed cred files, rebuild it after any creds/llm mutation, keep it in memory only, and expose `scrub_text` to the three write/serve points. Enforces the ≥8-character floor. |
@@ -2104,6 +2104,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `steerRedeliveries` | object | `{"<name>": <count>}` — per-message redelivery counter (task 006, requirement B.1, #122) `_reverse_stale_steer_settlement` maintains, disk-backed and surviving a resume, the same shape `planReviewRevisions` already uses: a clean steer iteration that honestly reports `settled: false` gets the message unconsumed and redelivered while its count stays below `steer_redelivery_max`, and is instead marked settled-by-exhaustion once it reaches the cap. Absent for a run that has never had a `settled: false` steer payload |
 | `verdictGatePeeks` | array | v0.17 requirement D.5 (#125 A): one `{approach, iteration, calls}` entry per `verdict_gate` iteration (either call site) whose own transcript held a tool call reading past the gate's honor-system blindness — `iterations/`, `events.jsonl`, or the per-iteration transcript file (`state.detect_verdict_gate_peek`). A recorded observation only: never consulted by `_verdict_gate_verdict`, so it never changes `verdict`. Absent for a run with `peer_verdict_gate: false` or one whose gate iterations never peeked |
 | `pauseReason` | string \| null | v0.18 requirement D.1/D.2 (#142, task 036) -- why the engine paused ITSELF, written together with `state: "paused"` at the escalation site the moment the decision is made, and cleared back to `null` (with `state` back to `running`) by `POST /resume`. Nine values: `"rejected_last_approach"` -- the last approach was rejected on blocking findings that are all `curable: true` with its single cure pass already spent, so the run holds for an operator ruling instead of ending `failed` on paperwork, and a resume re-enters `review` over the SAME approach; `"stagnation"` (v0.19 requirement B.3, #153, task 012) -- the last approach's worker stagnation guard (three no-progress iterations) would otherwise fail the run silently, so the run holds instead, and a resume re-enters `worker` over the SAME approach (there is no verdict pending, only unfinished tasks); `"rejected_repeated_signature"` (v0.20.1 requirement E.5, #190, task 016) -- an ORDINARY rejection's own blocking-clause signature (`rejectionSignatures`, below) repeated the immediately preceding approach's own recorded rejection signature, so the run holds instead of spending a fresh approach on a wall it has already lost one approach to, and a resume re-enters `review` over the SAME approach, exactly like `"rejected_last_approach"`; and `"unschedulable_dependency_cycle"` (v0.22 requirement E, #206, task 002) -- a `dependsOn` CYCLE (a self-loop is the length-one case) touches the plan's own actionable remainder, detected by graph SHAPE alone (never by any task's status, which is why a merely in-flight, not-yet-resolved dependency never trips it) on the very first selection pass nothing is schedulable, so the run holds for an operator's `tasks.json` edit instead of grinding through three no-progress worker iterations first, and a resume re-enters `worker` over the SAME approach, exactly like `"stagnation"`; `"unresolvable_dependency_edge"` (v0.22 requirement E, #206) -- a `dependsOn` edge naming a task id the plan does not carry at all, which no worker iteration can ever satisfy, so the run holds for the same `tasks.json` edit and a resume re-enters `worker`, exactly like `"unschedulable_dependency_cycle"`; `"review_contract_unrepaired"` (GH #209 defect 2) -- `review` ran to completion but its own verdict claim was never readable across `contract_retry_max + 1` attempts, so no verdict was ever rendered and the run holds instead of attributing a rejection to a judge that never spoke, and a resume re-enters `review` over the SAME approach, exactly like `"rejected_last_approach"`; `"review_findings_unusable"` (v0.23 requirement C.2, #219, task 011) -- the discriminating sibling of `"review_contract_unrepaired"`: review's own verdict claim WAS legible, but the REVIEW CONTRACT CHANNEL the ladder re-asked over never became usable (a present-but-invalid findings sidecar, a `verified` claim contradicting a blocking finding, a curable finding with no `cured_when`, or -- v0.23 requirement C.3, task 012 -- a stray/wrong-typed field elsewhere in the payload's own closed schema, the `additionalProperties: False` slip a stubborn hat repeats on every re-ask), so there is no rejection to classify off a channel the engine itself cannot trust and the run holds instead, and a resume re-enters `review` over the SAME approach, exactly like the edge above; and `"operator_input_needed"` (v0.23 requirement A.1, #224, task 014) -- an ORDINARY rejection that would otherwise archive the approach (whether the next step would have been a fresh `replan` or the terminal `rejected_no_approach_left` outcome) holds instead, ON by default (`JobConfig.operator_input_needed_pause`, disabled with `ralphctl start --no-operator-input-needed-pause`), so an operator can answer -- with a ruling (`ralphctl rule <run> --file <ruling.md> --name <slug>`, task 013) or a plain `ralphctl unpause <run>` -- before that spend happens, and a resume re-enters `review` over the SAME approach, exactly like every edge above; and `"verdict_gate_operator_input_needed"` (v0.27 requirement C.1, task 008; widened by cure task 002 to cover EVERY blocking-set shape) -- the peer verdict gate's own mirror of `"operator_input_needed"`: a `verdict_gate` rejection holds instead of the ordinary archive/replan-or-finish (or, for a mixed/all-incurable set, the immediate merits tail) edges whenever the run-wide `cure_pass_ceiling` is already spent (`LoopSupervisor._cure_pass_ceiling_spent`), whether that rejection's blocking findings are all curable (`gateRejectionEnding: "rejected_cure_unavailable"`), mixed, or all non-curable (`gateRejectionEnding: "rejected_on_the_merits"`) -- ON by default through the SAME `JobConfig.operator_input_needed_pause` flag; a resume re-enters `verdict_gate` (never `review`, which has already spoken `verified` for this approach) over the SAME approach. A mixed/all-incurable rejection's own unanswered resume still takes ITS terminal tail immediately, never a fresh `replan`, whatever approaches remain -- A.1/A.2's own removal-specific rule draws no exception for a park that holds it first. Unlike `"operator_input_needed"`/`"rejected_repeated_signature"`, filing a ruling against this pause alone never releases it (`resume_if_ruling_answers_pause`'s own reason allow-list names neither this nor `"rejected_last_approach"`/`"rejected_incurable"`) -- releasing it always needs a separate `ralphctl unpause <run>`. The task-boundary commit-secret-scan hold (task 030, requirement I.3, #210, §4.6) records this SAME value from `worker` with no review verdict behind it, emits no `operator_escalation` event (its record is the `commit_secret_scan` event), and resumes into `worker`, exactly like `"stagnation"`; its own answer depends on whether its approach already carries a recorded `rejectionSignatures` entry (cure task cure-01-01-9, PRD A.1/A.6, D.1) -- with none (the common case), `ralphctl unpause <run>` alone (a ruling does not release it); with one (an earlier `"operator_input_needed"`/`"rejected_repeated_signature"` pause on the SAME approach, already answered by a ruling before this hold ever landed), `ralphctl rule <run> --file <ruling.md> --name <slug>` releases it too, since `resume_if_ruling_answers_pause` reads only this field and that signature, never which pause raised it. Either way `approach` and `phase` are left untouched and the approach is not archived. Absent/`null` for an operator `POST /pause`, which records no status field at all |
+| `pauseDetail` | object \| null | the sub-reason of an engine pause that shares `pauseReason: "operator_input_needed"` but has no review rejection behind it, written in the same status write as `pauseReason` and cleared with it: `{"reason": "provider_refused", "family", "message", "httpStatus", "phase", "iteration"}` for a refused iteration (§8.4; `message` is the scrubbed provider error). While it is set, an unpause grants no `noRulingProceed` and a ruling does not release the pause; `null` otherwise |
 | `rejectionSignatures` | object | `{"<approach>": "<signature>"}` -- v0.20.1 requirement E.5 (#190, task 016) per-approach findings-channel REJECTION signature: the sorted, normalised blocking-clause set (`LoopSupervisor._review_rejection_signature`) of an ORDINARY rejection (one that took none of `rejected_incurable`/`rejected_curable_pass_available`/`rejected_last_approach`), written the moment that rejection is about to archive the approach and replan. `_step_review` compares the entry for the approach that just rejected against its predecessor's; a genuine match takes the `rejected_repeated_signature` pause edge instead of archiving/replanning. Disk-backed and survives a resume. Absent for a run that has never taken this ordinary-rejection branch |
 | `rulingReparked` | array | `[<seq>, ...]` -- v0.23 requirement A.5 (#224, task 016) the operator ruling `seq` numbers (`state.ruling_entries`) that have already spent their ONE re-park: a re-run `review` re-rejecting on the SAME finding signature a recorded ruling addressed (`LoopSupervisor._ruling_honoured_for_approach`) takes the `operator_input_needed` pause once for that ruling and appends its `seq` here (`_record_ruling_reparked`); a later rejection matching that same ruling's own signature (`_ruling_already_reparked`) proceeds to the ordinary archive/replan tail instead of re-parking a second time -- one re-park per ruling, never per signature (a fresh ruling filed later against the identical signature is a different ruling and earns its own re-park). Disk-backed for the life of the RUN, additive, never reset per approach. Absent for a run that has never re-parked on a ruled signature |
 | `noRulingProceed` | object | `{"<reason>": "<signature>"}` -- v0.27 requirement C.2 (#274, task 009) a one-shot 'proceed', keyed by pause reason (`"operator_input_needed"` \| `"verdict_gate_operator_input_needed"`), granted the moment a bare `ralphctl unpause <run>`/`POST /resume` releases that exact pause with NO ruling filed to answer it (`LoopSupervisor.resume`'s own `_record_unpaused_no_ruling_proceed`, called before `pauseReason` is cleared) -- keyed on the SAME rejection signature the pause itself was raised over (`rejectionSignatures[str(approach)]` for review's own pause; `LoopSupervisor._gate_rejection_signature` off the gate's own findings channel for its C.1 sibling, which keeps no signature map of its own). The very next rejection whose own signature matches the grant (`_no_ruling_proceed_signature`) consumes it (`_take_matching_no_ruling_proceed`, deleting the entry) before any edge is chosen, WHICHEVER edge that rejection then takes, and raises no same-signature operator gate while doing so (review: the reviewer's `raise_operator_gate`, the reopen-validated trigger and the pause-before-archive itself; gate: its C.1 pause) -- mirroring the one-re-park bound `rulingReparked` already gives a ruling. With a cure pass available (for example one `ralphctl budget <run> --cure-passes +1` granted before the unpause, v0.27 C.3) that rejection takes the cure edge and the grant is spent there; otherwise it takes the ordinary archive-and-replan (or finishing) edge instead of parking again. A grant therefore never survives a cure to authorise a later archive: the next same-signature rejection after that cure parks afresh. A ruling's own re-park (`rulingReparked`) keeps its own bound, and the `rejected_repeated_signature` pause keeps its own discretionary budget (`discretionaryGateSpent`). A rejection on a DIFFERENT signature never matches and still parks. Review's own grant is additionally refused when a ruling was just filed that already answers the signature (`_ruling_honoured_for_signature`) -- that case is `rulingReparked`'s own bound, not a second, independent one-shot on top of it. Disk-backed and survives a resume; absent for a run that has never unpaused either of these two pauses with no ruling filed |
@@ -2668,6 +2669,7 @@ reconstruct the whole run, including its restarts.
 | `infra_retry_now` | `phase`, `attempt`, `error`, `source`, `message`; for a rate-limit wait `phase`, `rateLimitWait`, `source`, `message` | the operator woke a backoff wait or a rate-limit wait |
 | `rate_limit_wait_started` | `phase`, `rateLimitType`, `resetsAt`, `since`, `waitS`, `resetsKnown` | a rate-limit wait starts (§8.4); the notifier is told |
 | `rate_limit_wait_ended` | `phase`, `rateLimitType`, `waitedS`, `wokenBy` (`"reset"` \| `"retry"` \| `"abort"`) | the rate-limit wait ended; the notifier is told |
+| `provider_refused` | `phase`, `iteration`, `family`, `description`, `match`, `httpStatus`, `errorType`, `harness`, `message` (scrubbed) | an iteration was classified `refused` (§8.4); the run is paused with `pauseDetail` and the notifier is told |
 | `infra_recovered` | `health`, `infraWaitTotalS` | an iteration reached the model again |
 | `deadline_extended` | `phase`, `attempt`, `waitedS`, `infraWaitTotalS`, `deadlineAt`, `reason`; a rate-limit wait carries `rateLimitWaitTotalS` instead of `attempt`/`infraWaitTotalS` and `reason` `"rate limit wait"` | a finished wait pushed the deadline out |
 | `reflect_infra_delay` | `phase`, `delayS`, `error`, `budgetS` | reflect waits before its first attempt because the job just died on an infra fault |
@@ -3554,8 +3556,9 @@ as two independent questions, answered by two independent mechanisms:
 - `src/ralphd/engine/faults.py` holds `classify_fault()`, a pure function over
   one iteration's failure signals. It answers `None` (not a failure),
   `"infra"` (the LLM endpoint or the network between it and the container),
-  `"work"` (the agent's own doing), `"signal"` (§8.2 step 5) or `"rate_limit"`
-  (the provider's rate-limit window is exhausted, §8.2).
+  `"work"` (the agent's own doing), `"signal"` (§8.2 step 5), `"rate_limit"`
+  (the provider's rate-limit window is exhausted, §8.2) or `"refused"` (the
+  provider refused the call in a way waiting does not fix, §8.2).
 - `src/ralphd/engine/loop.py` holds the machinery that acts on that verdict:
   retry in place, refund the iteration, escalate the backoff, publish a
   degraded status, and give up on a wall-clock budget rather than an attempt
@@ -3637,8 +3640,8 @@ merely leaked out of inner plumbing). `_run_job_core`'s outer guard stays
 since task 014 (#49 part 2) — `duration_s`,
 plus the structured provider evidence `rate_limit`, `rate_limit_fresh`,
 `http_status` and `error_type`, and applies exactly this order (the verdicts
-are `None`, `"infra"`, `"work"`, — since task 013, #49 — `"signal"`, and
-`"rate_limit"`, the tuple `faults.FAULT_CLASSES`):
+are `None`, `"infra"`, `"work"`, — since task 013, #49 — `"signal"`,
+`"rate_limit"` and `"refused"`, the tuple `faults.FAULT_CLASSES`):
 
 1. If none of the failure signals in §8.1 is present, return `None`. Nothing
    downstream runs for a successful iteration.
@@ -3696,6 +3699,18 @@ request, so an old `rejected` can be stale. A pi error is text only, so a pi
 `rateLimitFresh`, `httpStatus`, `errorType`, each only when reported), so
 `ralphctl fault` and `ralphctl iteration` re-derive the same class. A
 `"rate_limit"` verdict is waited out, not retried as an outage (§8.4).
+
+**The refusal rung comes right after it.** `faults.matched_refusal()` looks the
+error up in the refusal table (§8.3) and, on a match, the verdict is
+`"refused"`, with the matched row as the explanation's `signature`. It reads
+the error text, the structured `http_status` and the structured `error_type`,
+so it decides for both harnesses: pi reports a provider error as the text
+`<status> <json body>`, and the `claude-code` runner reports the status and
+type as structured fields. Because it follows the rate-limit rung, a `429` is
+never `"refused"`. Because it precedes the watchdog and signature rungs, a
+refusal is never `"infra"`, even when its body reads infra-shaped (an
+`Internal server error` text beside a structured `400`). A `"refused"` verdict
+is not retried: the run pauses for the operator (§8.4).
 
 `produced_traffic` is derived in `LoopSupervisor._classify_result()` as
 `bool(result.final_text) or bool(result.usage)` — the agent said something, or
@@ -3768,6 +3783,33 @@ ordinary agent failure text — `pytest exited 1: 3 failed, 12 passed`, an
 `AssertionError`, a `ruff check failed`, an agent giving up on a merge conflict
 — must stay `"work"` with traffic observed, so the table cannot quietly swallow
 genuine work failures into an infinite retry.
+
+**The refusal table.** `faults.REFUSED_SIGNATURES` sits beside the infra table
+and has the same shape: one `(family, regex)` row per refusal, each family
+described in `faults.REFUSED_FAMILY_DESCRIPTIONS`. `matched_refusal()` returns
+the first row, in table order, whose pattern matches the error text or the
+error type.
+
+| family | pattern | what it means |
+|---|---|---|
+| `cc-version` | `claude_code_version_too_old` | the Claude Code CLI is below `CLAUDE_CODE_MIN_VERSION`, or its version cannot be read |
+| `cc-cli-missing` | `claude_code_cli_not_found` | the Claude Code CLI is not there |
+| `cc-root` | `claude_code_runs_as_root` | the agent uid resolved to 0, so the wrapper was never spawned |
+| `extra-usage` | `Third-party apps now draw from your extra usage` | a subscription token was refused for a third-party client (#284) |
+| `invalid-request` | `invalid_request(_error)?` | the provider rejected the request as invalid |
+| `authentication` | `authentication_(error\|failed)` | the provider rejected the credentials |
+| `permission` | `permission_error` | the credentials lack permission for the request |
+| `not-found` | `not_found_error` | the provider does not know the model or resource |
+
+A provider family (every row but the `cc-*` ones) counts only with an HTTP
+`400`, `401`, `403` or `404`: the structured `http_status` when the runner
+reported one, else the first `4xx`/`5xx` status token in the error text. A
+`429` or a `5xx` never refuses, whatever the body says, so every infra family
+above keeps its class. The `cc-*` families are the `claude-code` harness's own
+pre-flight refusals: no request reached a provider, so they need no status.
+The extra-usage row precedes `invalid-request` because its body also carries
+`invalid_request_error`. The table is asserted family by family, for both
+harnesses, in `tests/test_fault_classifier.py` and `tests/test_refused_fault.py`.
 
 ### 8.4 Retry, backoff and the outage budget
 
@@ -3912,6 +3954,29 @@ reason `"rate limit wait"`. The loop keeps each harness's last rate-limit
 report, and a `"rate_limit"` iteration that is returned (an abort) is skipped by
 the stagnation bookkeeping and rolls back a claim made this pass, as `"infra"`
 does.
+
+**A refusal pauses for the operator.** A `"refused"` verdict (§8.2) is handled
+in the same wrapper, after the rate-limit branch and before the infra path. It
+is not retried and never touches the outage episode. The attempt is refunded
+through `_refund_iteration("infra")`, because the work never ran, and
+`_pause_for_provider_refusal()` pauses the run with `pauseReason:
+"operator_input_needed"` and `pauseDetail = {"reason": "provider_refused",
+"family", "message", "httpStatus", "phase", "iteration"}`, written in one
+status write. `message` is the provider's error, scrubbed (`redact.scrub_text`)
+and cut to 500 characters. It emits `provider_refused` and sends the notifier a
+message quoting that scrubbed text, through the escalation delivery path.
+It emits no `operator_escalation` event, because that shape routes a restarted
+episode into `review` over a rejected approach. The wrapper then parks in place
+(`_gate()`), and the time parked extends the deadline like any operator pause.
+`ralphctl unpause` (`POST /resume`) clears the pause and its detail, and the
+wrapper re-runs the **same** phase, extra text, prompt, tier and task. The
+operator fixes the profile or credentials first (`PUT /config/llm`). An abort
+ends the park and returns the refused result. A `pauseDetail` keeps the review
+pause machinery away: an unpause grants no `noRulingProceed` one-shot, and a
+ruling filed through `POST /rule` does not release the pause. A fresh episode
+clears `pauseDetail` with `pauseReason`. A returned `"refused"` iteration is
+skipped by the stagnation bookkeeping and rolls back a claim made this pass,
+as `"infra"` does.
 
 The degraded status contract is two fields, not a new state. **`state` stays
 `running` throughout an outage**, because adding a `degraded` state value

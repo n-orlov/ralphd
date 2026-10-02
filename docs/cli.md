@@ -769,6 +769,16 @@ Human output also renders (task 003):
   The run is not degraded: the iteration is refunded, the deadline moves by
   the time waited and the same work re-runs at the reset (or at once, after
   `ralphctl retry`).
+- `paused:` -- shown only while the run is paused on a provider refusal
+  (`pauseDetail` in [api.md](api.md); an iteration classified `refused`). It
+  names the refusal family and quotes the provider's error, scrubbed:
+
+  ```
+  paused:    provider refused (extra-usage): 400 {"type":"error","error":{"type":"invalid_request_error","message":"Third-party apps now draw from your extra usage, not your plan limits"}} -- fix the profile or credentials (PUT /config/llm), then ralphctl unpause
+  ```
+
+  Nothing is retried. Fix the LLM profile or credentials, then `ralphctl
+  unpause <run-id>` re-runs the same work.
 - `reflection:` (task 020) -- shown only when the post-terminal `reflect`
   iteration **failed** (status.json's `reflect.ok` is `false`, see
   [api.md](api.md)):
@@ -1290,7 +1300,7 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
 `events.jsonl`.
 
 - **`fault:`** is the class the engine recorded and acted on (`infra` ·
-  `work` · `signal` · `rate_limit`), with the iteration and phase it happened
+  `work` · `signal` · `rate_limit` · `refused`), with the iteration and phase it happened
   in — read from the newest `iterations/NNNN/meta.json` that carries a
   `faultClass`.
 - **`because:`** names which branch of the classifier decided it, in the
@@ -1322,11 +1332,20 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   The provider reporting its rate-limit window as reached (a `claude-code`
   iteration's structured evidence, kept in `meta.json`) is `rate_limit`:
   waited out until the window resets, without spending an iteration or the
-  outage budget.
+  outage budget. A non-transient refusal from either harness (an HTTP 400,
+  401, 403 or 404 naming a bad request, rejected credentials, a missing
+  permission or model, or the subscription's extra-usage refusal; or the
+  `claude-code` harness refusing to start) is `refused`: not retried, and the
+  run pauses for the operator.
 - **`signature:`** is the row of `engine/faults.py`'s `INFRA_SIGNATURES` table
   that matched: its family (`dns` · `tcp` · `stream` · `tls` · `sdk` ·
   `http-5xx` · `backpressure` · `bedrock-stream` · `capacity`), what that
   family means, the pattern, and the exact substring it matched in the error.
+  For a `refused` fault it is the row of `REFUSED_SIGNATURES` that matched,
+  printed the same way (`extra-usage` · `invalid-request` · `authentication` ·
+  `permission` · `not-found` · `cc-version` · `cc-cli-missing` · `cc-root`):
+  `signature: authentication -- the provider rejected the credentials
+  (pattern authentication_(?:error|failed), matched "authentication_error")`.
   `(no signature matched)` for a work fault or a watchdog kill — never a guess.
 - **`ladder:`** is the run's *own* recorded retry attempts (one `infra_retry`
   event each), not `infra_retry_backoff_s` re-simulated: a wait cut short by
@@ -1342,6 +1361,8 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
 - **`waiting:`** appears while the run waits for a rate-limit window to reset
   (status.json's `rateLimitWait`), with the same wording as `status`:
   `waiting:   rate limit (five_hour) until <local time>`.
+- **`paused:`** appears while the run is paused on a provider refusal
+  (status.json's `pauseDetail`), with the same wording as `status`.
 - **`recovered:`** appears when the engine emitted `infra_recovered` — a later
   iteration reached the model, so the episode is over and the ladder is not a
   live one. **`gave up:`** prints `status.json`'s `abortReason` when the run
@@ -1974,6 +1995,14 @@ works too, resuming with no ruling recorded. The full `operator_escalation.escal
 text the engine produces names both live-run levers, never `ralphctl
 resume` -- `resume` starts a fresh container over an existing run dir
 (crash recovery, budget top-up) and is not for a run that is still alive.
+
+A provider refusal (`pauseReason: operator_input_needed` with `pauseDetail.
+reason: provider_refused`, printed by `status` as `paused:    provider
+refused (<family>): ...`) is answered by fixing the cause, not by a ruling: a
+ruling never releases it. Fix the LLM profile or credentials (`ralphctl llm`,
+`PUT /config/llm`), then `ralphctl unpause <run-id>` re-runs the refused work.
+An unpause before the fix re-runs it too, and pauses again if it is refused
+again.
 
 With a notifier configured (`--notifier-url`), every engine-recorded pause
 also POSTs the operator a bounded digest (at most `MAX_NOTIFY_CHARS`) instead
