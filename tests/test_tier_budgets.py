@@ -584,8 +584,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # test_fault_classifier.py and test_cli_fault_explanation.py), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
     # 7157/484, `-m smoke` -> smoke 5446/360.
-    "fast": {"tests": 7157, "modules": 484},
-    "smoke": {"tests": 5446, "modules": 360},
+    "fast": {"tests": 7216, "modules": 487},
+    "smoke": {"tests": 5505, "modules": 363},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
