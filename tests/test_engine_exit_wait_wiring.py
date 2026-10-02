@@ -73,6 +73,11 @@ EXEMPT: dict[str, list[tuple[re.Pattern, str]]] = {
          "bare `proc` is the PTY-driven `ralphctl logs` CLI subprocess "
          "under test, never the engine"),
     ],
+    "test_stub_claude.py": [
+        (re.compile(r"(?<![.\w])proc\.wait\(timeout="),
+         "bare `proc` is the stub Claude Code CLI under a SIGINT test, "
+         "never the engine"),
+    ],
     "test_cli_logs_signal.py": [
         (re.compile(r"(?<![.\w])proc\.wait\(timeout="),
          "bare `proc` is the CLI subprocess under a signal-delivery test, "
