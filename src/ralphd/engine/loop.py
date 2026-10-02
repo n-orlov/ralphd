@@ -3258,7 +3258,12 @@ class LoopSupervisor:
             # phase. Passed only when non-empty so every other phase's
             # runner call is byte-for-byte what it always was.
             extension_kw = {}
-            if exts := self._hat_extensions(phase):
+            if bundle.harness == "claude-code":
+                # The same live broker, handed over as tool names: the
+                # claude-code wrapper serves them as in-process SDK tools.
+                if names := self._hat_tool_names(phase):
+                    extension_kw["hat_tools"] = list(names)
+            elif exts := self._hat_extensions(phase):
                 extension_kw["extensions"] = exts
             runner = self._runner_for(bundle.harness)
             result = await runner.run(
@@ -5637,6 +5642,17 @@ class LoopSupervisor:
         if phase == "review" and review_broker is not None:
             return [str(review_broker.extension_file)]
         return []
+
+    def _hat_tool_names(self, phase: str) -> tuple[str, ...]:
+        """The tool names THIS phase's iteration is wired with: the same
+        live-broker lookup as `_hat_extensions`, so both harnesses see the
+        same scope (steer: its table/context tools plus notify; worker:
+        notify; review: record-verdict; any other phase: none)."""
+        broker = {"steer": getattr(self, "_steer_tool_broker", None),
+                  "worker": getattr(self, "_worker_tool_broker", None),
+                  "review": getattr(self, "_review_tool_broker", None),
+                  }.get(phase)
+        return tuple(sorted(broker.wired_tools())) if broker is not None else ()
 
     async def _run_worker_iteration(self, extra: str, tier: str | None,
                                      task_id: str | None = None):

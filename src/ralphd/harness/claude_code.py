@@ -58,9 +58,12 @@ from claude_agent_sdk import (
     CLINotFoundError,
     ProcessError,
     ResultError,
+    create_sdk_mcp_server,
     query,
+    tool as sdk_tool,
 )
 
+from ..engine import hat_tools as hat_tools_mod
 from ..engine.config import CLAUDE_CODE_MIN_VERSION
 from .normalise import RAW_ENVELOPE_TYPE, Normaliser
 
@@ -210,8 +213,32 @@ def system_prompt(skills: list[dict], hat_tools: list[str]) -> str:
     return "\n\n".join(parts)
 
 
+MCP_SERVER_NAME = "ralphd"
+
+
+def hat_tool_server(names: list[str], run_root: str):
+    """The in-process MCP server carrying ralphd's hat tools for this hat.
+    Each handler relays through the same request/response spool pi's
+    extension uses (`hat_tools.call`, run in a thread because it blocks) and
+    returns the response JSON as one text block, never flagged as an error,
+    exactly what pi's extension returns."""
+    tools = []
+    for spec in hat_tools_mod.sdk_tool_specs(names):
+        def make(tool_name: str):
+            async def handler(args: dict) -> dict:
+                resp = await asyncio.to_thread(
+                    hat_tools_mod.call, Path(run_root), tool_name, dict(args or {}))
+                return {"content": [{"type": "text", "text": json.dumps(resp)}]}
+            return handler
+        tools.append(sdk_tool(spec["name"], spec["description"],
+                              spec["input_schema"])(make(spec["name"])))
+    return create_sdk_mcp_server(name=MCP_SERVER_NAME, tools=tools)
+
+
 def build_options(cfg: dict, cli: str, stderr_cb) -> ClaudeAgentOptions:
     hat_tools = list(cfg.get("hat_tools") or [])
+    mcp_servers = ({MCP_SERVER_NAME: hat_tool_server(hat_tools, cfg["run_root"])}
+                   if hat_tools and cfg.get("run_root") else {})
     sp = system_prompt(list(cfg.get("skills") or []), hat_tools)
     return ClaudeAgentOptions(
         cli_path=cli,
@@ -222,6 +249,7 @@ def build_options(cfg: dict, cli: str, stderr_cb) -> ClaudeAgentOptions:
         model=cfg.get("model") or None,
         extra_args={"no-session-persistence": None},
         system_prompt=sp or None,
+        mcp_servers=mcp_servers,
         max_turns=None,
         stderr=stderr_cb,
         env={"HOME": cfg["home"], "CLAUDE_CONFIG_DIR": cfg["config_dir"]},

@@ -1944,6 +1944,7 @@ it calls `query()` with:
 | `extra_args` | `--no-session-persistence` |
 | `cwd` | the workspace |
 | `env` | `HOME` and `CLAUDE_CONFIG_DIR` from the scratch area |
+| `mcp_servers` | `{"ralphd": <in-process SDK server>}` when the hat has tools, else empty |
 | `max_turns` | unset; the iteration timeout is the only bound |
 | `system_prompt` | the hat-tool naming line and the skills index, or empty when there is neither |
 | effort | the `EFFORT_TABLE` row for `thinking or effort` |
@@ -1952,6 +1953,23 @@ it calls `query()` with:
 thinking off (`--thinking disabled`) and sets no effort, `minimal` and `low`
 are `low`, and `medium`, `high` and `xhigh` map to themselves. No level means
 no flag.
+
+**Hat tools.** A hat's tools are the same on both harnesses. The engine's
+`LoopSupervisor._hat_tool_names(phase)` is the sorted tool names of the same
+live broker `_hat_extensions` reads, so the scope is identical: steer gets its
+table and context tools plus `notify`, worker `notify`, review `record-verdict`,
+every other phase nothing. For a `claude-code` hat the dispatch passes those
+names as `hat_tools=` instead of pi's `extensions=`. The wrapper builds one
+in-process SDK MCP server named `ralphd` from them. `hat_tools.sdk_tool_specs`
+renders each tool's name, description and JSON Schema (`json_schema`) from the
+same `_TOOL_PARAMS` / `_TOOL_DOCS` declaration `extension_source` renders pi's
+typebox from, so there is one source and two renderings. Each handler calls
+`hat_tools.call` in a thread, the same spool client pi's extension shells out
+to, and returns the response JSON as one text block, never flagged as an error,
+as pi's extension does. The `SteerToolBroker` in the engine executes the call,
+so every applier guarantee and the `steer.tool_call` audit event are unchanged.
+The model sees the tools as `mcp__ralphd__<name>`; the system prompt says so,
+and the normaliser strips the prefix so transcripts match pi's.
 
 **The stdout protocol.** stdout is NDJSON, one object per line, flushed per
 line, and nothing is printed before the first SDK message. For each SDK

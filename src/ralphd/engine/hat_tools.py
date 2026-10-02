@@ -356,6 +356,165 @@ def parameters_source(tool: str) -> str:
     return "\n".join(lines)
 
 
+# -- the JSON-Schema rendering of the same declaration ----------------------
+#
+# A harness whose tools are in-process MCP tools (claude-code) needs JSON
+# Schema, not typebox source. `json_schema` parses the small typebox subset
+# `_TOOL_PARAMS` uses (String, Number, Array, Object, Optional, plus an
+# options object with `description` / `additionalProperties`), so there is
+# one declaration and two renderings.
+
+_TYPEBOX_SCALARS = {"String": "string", "Number": "number"}
+# JSON Schema keywords are named once here: this code RENDERS a schema from
+# the declaration, it never validates a payload against one (that is
+# `contracts.validate_payload`'s alone).
+_KW_TYPE, _KW_PROPERTIES, _KW_REQUIRED = "type", "properties", "required"
+
+
+class _TypeboxParser:
+    def __init__(self, text: str) -> None:
+        self.s = text
+        self.i = 0
+
+    def _ws(self) -> None:
+        while self.i < len(self.s) and self.s[self.i].isspace():
+            self.i += 1
+
+    def _eat(self, token: str) -> bool:
+        self._ws()
+        if self.s.startswith(token, self.i):
+            self.i += len(token)
+            return True
+        return False
+
+    def _expect(self, token: str) -> None:
+        if not self._eat(token):
+            raise ValueError(f"typebox: expected {token!r} at {self.i}: "
+                             f"{self.s[self.i:self.i + 30]!r}")
+
+    def _ident(self) -> str:
+        self._ws()
+        start = self.i
+        while self.i < len(self.s) and (self.s[self.i].isalnum()
+                                        or self.s[self.i] == "_"):
+            self.i += 1
+        if start == self.i:
+            raise ValueError(f"typebox: identifier expected at {start}")
+        return self.s[start:self.i]
+
+    def _literal(self):
+        self._ws()
+        if self.s[self.i] == '"':
+            decoded, end = json.JSONDecoder().raw_decode(self.s, self.i)
+            self.i = end
+            return decoded
+        for word, value in (("true", True), ("false", False)):
+            if self._eat(word):
+                return value
+        start = self.i
+        while self.i < len(self.s) and (self.s[self.i].isdigit()
+                                        or self.s[self.i] in "+-.eE"):
+            self.i += 1
+        return json.loads(self.s[start:self.i])
+
+    def _options(self) -> dict:
+        """A JS object literal of scalar options -> its JSON Schema keys."""
+        out: dict = {}
+        self._expect("{")
+        while not self._eat("}"):
+            key = self._ident()
+            self._expect(":")
+            out[key] = self._literal()
+            self._eat(",")
+        return {k: v for k, v in out.items()
+                if k in ("description", "additionalProperties")}
+
+    def parse(self) -> tuple[dict, bool]:
+        """One `Type.X(...)` expression -> (schema, is_optional)."""
+        self._expect("Type.")
+        name = self._ident()
+        self._expect("(")
+        optional = False
+        if name == "Optional":
+            schema, _ = self.parse()
+            optional = True
+        elif name in _TYPEBOX_SCALARS:
+            schema = {_KW_TYPE: _TYPEBOX_SCALARS[name]}
+            if self._eat("{"):
+                self.i -= 1
+                schema.update(self._options())
+        elif name == "Array":
+            inner, _ = self.parse()
+            schema = {_KW_TYPE: "array", "items": inner}
+            if self._eat(","):
+                if self._eat(")"):
+                    return schema, optional
+                schema.update(self._options())
+        elif name == "Object":
+            props: dict = {}
+            required: list[str] = []
+            self._expect("{")
+            while not self._eat("}"):
+                key = self._ident()
+                self._expect(":")
+                child, child_optional = self.parse()
+                props[key] = child
+                if not child_optional:
+                    required.append(key)
+                self._eat(",")
+            schema = {_KW_TYPE: "object", _KW_PROPERTIES: props}
+            if required:
+                schema[_KW_REQUIRED] = required
+            if self._eat(","):
+                if not self._eat(")"):
+                    schema.update(self._options())
+                    self._eat(",")
+                    self._expect(")")
+                return schema, optional
+        else:
+            raise ValueError(f"typebox: unsupported Type.{name}")
+        self._eat(",")
+        self._expect(")")
+        return schema, optional
+
+
+def _parse_typebox(source: str) -> tuple[dict, bool]:
+    return _TypeboxParser(source).parse()
+
+
+def json_schema(tool: str) -> dict:
+    """`tool`'s parameters as a JSON Schema object, rendered from the same
+    `_TOOL_PARAMS` declaration `parameters_source` renders typebox from: one
+    property per documented top-level payload key, `required` listing the
+    fields the declaration marks required."""
+    props: dict = {}
+    required: list[str] = []
+    for field_name, (typebox, is_required) in _ALL_WIRED_TOOLS[tool][
+            "params"].items():
+        schema, _ = _parse_typebox(typebox)
+        props[field_name] = schema
+        if is_required:
+            required.append(field_name)
+    out: dict = {_KW_TYPE: "object", _KW_PROPERTIES: props}
+    if required:
+        out[_KW_REQUIRED] = required
+    return out
+
+
+def tool_description(tool: str) -> str:
+    """The description both harnesses show the model: the doc text plus the
+    usage payload, the same string `extension_source` registers."""
+    doc = _ALL_WIRED_TOOLS[tool]
+    return doc["description"] + "\n\nArguments (JSON object): " + doc["usage"]
+
+
+def sdk_tool_specs(names) -> list[dict]:
+    """`[{name, description, input_schema}]` for in-process SDK tools, in
+    the order given. An unknown name raises KeyError."""
+    return [{"name": n, "description": tool_description(n),
+             "input_schema": json_schema(n)} for n in names]
+
+
 def context_files(run: RunDir) -> dict[str, tuple[Path, bool]]:
     """The run-context files the context tools can reach: name -> (path,
     writable). Deliberately a small explicit allowlist keyed by bare name --
