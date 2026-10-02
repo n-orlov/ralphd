@@ -186,3 +186,53 @@ async def test_post_retry_does_not_unpause_or_touch_steering(tmp_path):
     assert not sup._pause.is_set(), "/retry must not unpause a paused run"
     assert sup.run.pending_steering() == []
     assert not list(sup.run.steering_dir.glob("*.md"))
+
+
+def _rate_limited_result(resets_at: float) -> IterationResult:
+    info = {"status": "rejected", "rateLimitType": "five_hour",
+            "resetsAt": resets_at,
+            "unifiedWindows": {"five_hour": {"resetsAt": resets_at}}}
+    r = IterationResult(exit_code=1, harness="claude-code", rate_limit=info,
+                        rate_limit_fresh=True, http_status=429,
+                        error_type="rate_limit")
+    r.error_message = "429 rate_limit: API Error: 429 rate_limit_error"
+    r.duration_s = 2.0
+    return r
+
+
+@pytest.mark.asyncio
+async def test_post_retry_wakes_a_rate_limit_wait(tmp_path):
+    """v0.30 F.2: `retry_now()` accepts a rate-limit wait too. A real 30 s
+    wait (reset 30 s away, no jitter) ends at once on POST /retry, the same
+    work re-runs, and the event names the rate-limit wait."""
+    sup = _supervisor(tmp_path)
+    sup._rate_limit_jitter_s = lambda: 0.0  # type: ignore[method-assign]
+    calls = _feed(sup, [_rate_limited_result(time.time() + LONG_BACKOFF),
+                        _ok_result()])
+    started = _instrument_waits(sup)
+
+    async with _client(sup) as client:
+        began = time.monotonic()
+        task = asyncio.ensure_future(sup.run_iteration("worker"))
+        deadline = time.monotonic() + 15.0
+        while not (started and sup._rate_limit_waiting):
+            assert time.monotonic() < deadline, "the rate-limit wait never started"
+            await asyncio.sleep(0.01)
+        assert started[0] > LONG_BACKOFF - 5.0
+        resp = await client.post("/retry")
+        result = await asyncio.wait_for(task, timeout=10)
+        elapsed = time.monotonic() - began
+
+    assert resp.status_code == 200
+    assert not result.error_message, "the re-run attempt succeeded"
+    assert calls == ["worker", "worker"]
+    assert elapsed < 5.0, f"the rate-limit wait was not cut short ({elapsed:.1f}s)"
+    manual = _events(sup.run, "infra_retry_now")
+    assert len(manual) == 1 and manual[0]["phase"] == "worker"
+    assert manual[0]["rateLimitWait"]["type"] == "five_hour"
+    assert _events(sup.run, "rate_limit_wait_ended")[0]["wokenBy"] == "retry"
+    # only the seconds actually waited extend the deadline
+    waited = _events(sup.run, "deadline_extended")[0]
+    assert waited["reason"] == "rate limit wait" and waited["waitedS"] < 5.0
+    # the infra outage clock was never involved
+    assert _events(sup.run, "infra_retry") == []

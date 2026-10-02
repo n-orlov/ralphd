@@ -94,6 +94,7 @@ from ..engine.state import (
     format_image_id,
     format_last_tool_call,
     format_local_time,
+    format_rate_limit_wait_line,
     format_provisioning_lines,
     escalation_pause_markers,
     format_router_calls_listing,
@@ -3664,6 +3665,14 @@ def _countdown_to(ts) -> str:
     return f"in {format_duration(remaining)} (at {ts})"
 
 
+def _format_rate_limit_wait_lines(status: dict) -> list[str]:
+    """v0.30 F.2: the `waiting:` line for a run sitting in a rate-limit wait
+    (status.json `rateLimitWait`), worded by
+    `state.format_rate_limit_wait_line`. Empty when there is no such wait."""
+    line = format_rate_limit_wait_line(status.get("rateLimitWait"))
+    return [line] if line else []
+
+
 def _format_degraded_lines(status: dict) -> list[str]:
     """Task 013 (#5): the `degraded:` line(s) for a run sitting out an infra
     outage, so `ralphctl status` says *why nothing is happening* instead of
@@ -4161,6 +4170,8 @@ def cmd_status(args):
     # here, with the countdown to the next attempt; nothing at all for a
     # healthy run, whose output stays byte-identical.
     lines.extend(_format_degraded_lines(status))
+    # v0.30 F.2: a run waiting for a rate-limit window to reset says so.
+    lines.extend(_format_rate_limit_wait_lines(status))
     # Task 003: a `reason:` line whenever status.json carries a non-empty
     # `reason` (set by the engine on terminal failed/aborted states, or the
     # engine-error path) -- previously only visible via --json.
@@ -6015,7 +6026,9 @@ def cmd_unpause(args):
 
 
 def cmd_retry(args):
-    """Task 016 (#5): wake a degraded run's infra backoff wait *now*.
+    """Task 016 (#5): wake a degraded run's infra backoff wait *now*. v0.30
+    F.2: a run in a rate-limit wait (`rateLimitWait`) is woken the same way
+    and re-runs the same work at once.
 
     Deliberately NOT `unpause`: a degraded run is not paused, it is sitting
     out an LLM-endpoint outage (`/status` health `degraded` + a populated
@@ -6028,7 +6041,8 @@ def cmd_retry(args):
     """
     _require_run(args.run_id)
     out(args, api(args.run_id, "POST", "/retry"),
-        "retrying now (infra backoff wait woken; outage budget clock reset)")
+        "retrying now (infra backoff or rate-limit wait woken; an infra "
+        "wake has its outage budget clock reset)")
 
 
 def cmd_budget(args):
@@ -8627,7 +8641,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_amend)
 
     s = sub.add_parser("retry", help="wake a degraded run's infra backoff "
-                       "wait immediately (resets the outage-budget clock)")
+                       "wait, or a rate-limit wait, immediately (an infra "
+                       "wake resets the outage-budget clock)")
     s.add_argument("run_id")
     s.set_defaults(func=cmd_retry)
 

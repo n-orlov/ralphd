@@ -313,6 +313,8 @@ async def amain() -> int:
                       # deliberately does NOT grow a "degraded" value -- that
                       # would break every consumer's terminal-state logic.
                       health="ok", infraWait=None,
+                      # v0.30 F.2: likewise the rate-limit wait.
+                      rateLimitWait=None,
                       # Task 006 (#16): the approach *denominator*, written
                       # with the very first status write rather than only when
                       # the loop reaches `running`, so no surface has to

@@ -135,6 +135,7 @@ h2 {
 .infra-wait { color: var(--warn); font-weight: 600; margin-top: 0.4rem; }
 .infra-wait-budget { font-weight: 400; color: var(--muted); }
 .infra-wait-error { font-weight: 400; white-space: pre-wrap; }
+.rate-limit-wait { color: var(--warn); font-weight: 600; margin-top: 0.4rem; }
 /* task 017 (#5): countdown + "retry now" button on a degraded card. */
 .infra-retry-controls {
   display: flex;

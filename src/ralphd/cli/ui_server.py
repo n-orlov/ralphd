@@ -94,6 +94,7 @@ from ..engine.state import (
     format_cost,
     format_iteration_log_header,
     format_local_time,
+    format_rate_limit_wait_line,
     format_provisioning_lines,
     format_run_document_size,
     iteration_detail,
@@ -1251,6 +1252,10 @@ def _with_local_times(doc: dict) -> dict:
     for field in _LOCAL_TIME_FIELDS:
         if doc.get(field):
             out[field + "Local"] = format_local_time(doc[field])
+    # v0.30 F.2: the rate-limit wait's one line, in the host's local time.
+    line = format_rate_limit_wait_line(doc.get("rateLimitWait"))
+    if line:
+        out["rateLimitWaitLine"] = line
     return out
 
 

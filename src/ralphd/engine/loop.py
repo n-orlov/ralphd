@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 import shlex
 import shutil
@@ -55,7 +56,13 @@ from .config import (
     JobConfig,
     overlay_or_config,
 )
-from .faults import classify_fault, matched_signature
+from .faults import (
+    FAULT_CLASS_RATE_LIMIT,
+    RATE_LIMIT_UNKNOWN_RESET_WAIT_S,
+    classify_fault,
+    matched_signature,
+    rate_limit_resets_at,
+)
 from .llm import current_env
 from .pricing import resolve_pricing
 from .runner import (
@@ -339,6 +346,12 @@ class LoopSupervisor:
         # True only while the loop is actually parked in an infra backoff
         # wait: what POST /retry can wake (409 otherwise).
         self._infra_waiting = False
+        # v0.30 F.2: True only while the loop sits in a rate-limit wait
+        # (`_wait_out_rate_limit`). POST /retry wakes that wait too.
+        self._rate_limit_waiting = False
+        # The rate-limit wait in progress ({type, resetsAt, since, phase}),
+        # for the `infra_retry_now` event a POST /retry emits.
+        self._rate_limit_wait_info: dict | None = None
         # v0.25 task 028a (PRD requirement K.1/K.2, #267): the one bell a
         # deferred wait (`_sleep_until_earliest_deferred`) races against
         # its timer via `asyncio.wait(..., return_when=FIRST_COMPLETED)`
@@ -675,6 +688,19 @@ class LoopSupervisor:
         # from status.json for the same resume-survival reason.
         self._paused_wait_total_s = float(
             run.read_status().get("pausedTotalS") or 0.0)
+        # v0.30 F.2: the rate-limit twin of the two totals above. A wait for
+        # a subscription window to reset extends the deadline like they do,
+        # and is published as `rateLimitWaitTotalS`, never folded into
+        # `infraWaitTotalS` or the outage budget.
+        self._rate_limit_wait_total_s = float(
+            run.read_status().get("rateLimitWaitTotalS") or 0.0)
+        # The rate-limit waiting the ceiling (`rate_limit_max_wait_s`)
+        # bounds: per process, so a resumed or unpaused run starts a new
+        # count.
+        self._rate_limit_waited_s = 0.0
+        # The last rate-limit report per harness (F.4/F.5): each iteration's
+        # `IterationResult.rate_limit`, kept when it is not None.
+        self._rate_limit_state: dict[str, dict] = {}
         # Task 012 (#5): does status.json currently say health "degraded"?
         # Tracked in memory so the transition back to "ok" is emitted (and
         # written) exactly once, on the iteration that proves the endpoint is
@@ -1615,6 +1641,16 @@ class LoopSupervisor:
         the backoff wait it interrupts, plus the outage-budget episode clock
         reset done by the waiter itself.
         """
+        if self._rate_limit_waiting:
+            # v0.30 F.2: a rate-limit wait is woken the same way: the
+            # operator asserts the window has room again.
+            wait = dict(self._rate_limit_wait_info or {})
+            self.run.emit("infra_retry_now", phase=wait.pop("phase", None),
+                          rateLimitWait=wait, source="operator",
+                          message="manual retry requested: waking the rate "
+                                  "limit wait and re-running the same work")
+            self._retry_now.set()
+            return True
         if not self._infra_waiting:
             return False
         wait = self.run.read_status().get("infraWait") or {}
@@ -2470,6 +2506,18 @@ class LoopSupervisor:
             result = await self._run_iteration_once(phase, extra, prompt_name, tier,
                                                     task_id=task_id)
             fault = self._classify_result(result)
+            if fault == FAULT_CLASS_RATE_LIMIT:
+                # v0.30 F.2: the subscription's window is exhausted. Refund
+                # the attempt, wait for the reset (the deadline moves by the
+                # time waited; the outage episode is left untouched) and
+                # re-run the same work. An abort during the wait ends it.
+                self._refund_iteration("infra")
+                self.run.update_status(
+                    iterationsUsed=self.iterations_used_charged)
+                outcome = await self._wait_out_rate_limit(phase, result.rate_limit)
+                if outcome == "abort":
+                    return result
+                continue
             if fault != "infra":
                 # The agent reached the model -- a success, or a genuine work
                 # failure it produced itself. Either way the outage (if there
@@ -2798,6 +2846,109 @@ class LoopSupervisor:
                       waitedS=round(waited_s, 3), infraWaitTotalS=total,
                       deadlineAt=deadline_at, reason="infra wait")
 
+    def _now_epoch(self) -> float:
+        """Wall-clock now, as UTC epoch seconds: the seam rate-limit tests
+        patch to fix the clock."""
+        return time.time()
+
+    def _rate_limit_jitter_s(self) -> float:
+        """Seconds added to a rate-limit reset so a fleet of runs does not
+        hit the provider in the same second: 0-60 s. Tests patch it to 0."""
+        return random.uniform(0.0, 60.0)
+
+    async def _wait_out_rate_limit(self, phase: str, info: dict | None) -> str:
+        """Waits for a rate-limit window to reset (v0.30 F.2). Returns how
+        the wait ended: "reset" (the time ran out), "retry" (POST /retry) or
+        "abort" (the run is ending).
+
+        The wait lasts until the window's `resetsAt` plus
+        `_rate_limit_jitter_s()`, or `RATE_LIMIT_UNKNOWN_RESET_WAIT_S` when
+        no reset is known. It goes through `_wait_out_backoff`, so POST
+        /retry, a steer and an abort can all wake it. A steer does not end
+        it: the rest of the wait resumes. While it lasts, status.json has
+        `rateLimitWait = {type, resetsAt, since}`; `rate_limit_wait_started`
+        and `rate_limit_wait_ended` are emitted and the notifier is told at
+        each end. The time actually waited extends the deadline
+        (`_account_rate_limit_wait`); the outage budget is not touched.
+        """
+        now = self._now_epoch()
+        resets = rate_limit_resets_at(info)
+        if resets is not None:
+            target = resets + self._rate_limit_jitter_s()
+        else:
+            target = now + RATE_LIMIT_UNKNOWN_RESET_WAIT_S
+        planned = max(0.0, target - now)
+        rl_type = info.get("rateLimitType") if isinstance(info, dict) else None
+        wait = {"type": rl_type,
+                "resetsAt": utc_from_epoch(resets if resets is not None else target),
+                "since": utc_from_epoch(now)}
+        self._rate_limit_wait_info = {**wait, "phase": phase}
+        self.run.update_status(rateLimitWait=wait)
+        self.run.emit("rate_limit_wait_started", phase=phase,
+                      rateLimitType=rl_type, resetsAt=wait["resetsAt"],
+                      since=wait["since"], waitS=round(planned, 3),
+                      resetsKnown=resets is not None)
+        if self.notifier is not None:
+            self._notify(
+                f"ralphd {self.cfg.run_id}: rate limit ({rl_type or 'unknown'}) "
+                f"reached during {phase}; waiting until "
+                f"{state.format_local_time(wait['resetsAt'])}, then re-running "
+                "the same work")
+        log.warning("iteration %s rate-limited (%s): waiting %.0fs until %s",
+                    phase, rl_type, planned, wait["resetsAt"])
+        waited = 0.0
+        ended = "reset"
+        try:
+            while True:
+                remaining = max(0.0, planned - waited)
+                self._rate_limit_waiting = True
+                try:
+                    elapsed, woken = await self._wait_out_backoff(remaining)
+                finally:
+                    self._rate_limit_waiting = False
+                waited += elapsed
+                if woken:
+                    ended = "retry"
+                    break
+                if self._abort_reason is not None:
+                    ended = "abort"
+                    break
+                if elapsed >= remaining:
+                    break
+                # A steer woke the wait: the window has not reset, so the
+                # rest of the wait resumes.
+        finally:
+            self._rate_limit_wait_info = None
+            self.run.update_status(rateLimitWait=None)
+            self.run.emit("rate_limit_wait_ended", phase=phase,
+                          rateLimitType=rl_type, waitedS=round(waited, 3),
+                          wokenBy=ended)
+            if self.notifier is not None:
+                self._notify(
+                    f"ralphd {self.cfg.run_id}: rate-limit wait over after "
+                    f"{state.format_duration(waited)} ({ended})"
+                    + ("" if ended == "abort" else f"; re-running {phase}"))
+            self._account_rate_limit_wait(waited, phase)
+        return ended
+
+    def _account_rate_limit_wait(self, waited_s: float, phase: str) -> None:
+        """Books one finished rate-limit wait (v0.30 F.2): the deadline moves
+        out by exactly the waited seconds (`_extend_deadline_by`), the total
+        is published as `rateLimitWaitTotalS`, and `deadline_extended` is
+        emitted with reason "rate limit wait". The infra outage counters are
+        not touched; `_rate_limit_waited_s` is the count the ceiling reads."""
+        if waited_s <= 0:
+            return
+        self._rate_limit_wait_total_s += waited_s
+        self._rate_limit_waited_s += waited_s
+        self._extend_deadline_by(waited_s)
+        total = round(self._rate_limit_wait_total_s, 3)
+        deadline_at = utc_from_epoch(self._deadline_epoch)
+        self.run.update_status(rateLimitWaitTotalS=total, deadlineAt=deadline_at)
+        self.run.emit("deadline_extended", phase=phase, waitedS=round(waited_s, 3),
+                      rateLimitWaitTotalS=total, deadlineAt=deadline_at,
+                      reason="rate limit wait")
+
     def _extend_deadline_by(self, waited_s: float) -> None:
         """Shared clock math for every kind of parked-time credit (task 016,
         #P): moves ``self.deadline`` (monotonic, what ``budget_left()`` and
@@ -2914,7 +3065,12 @@ class LoopSupervisor:
             # Steering 004: the verdict is decided by the flag above; this one
             # only lets `explain_fault` word the reason honestly (an abort that
             # arrived from outside vs. this engine giving up on its own).
-            operator_abort_recorded=self._operator_abort_recorded)
+            operator_abort_recorded=self._operator_abort_recorded,
+            # v0.30 F.1: the provider's structured evidence (claude-code only).
+            rate_limit=getattr(result, "rate_limit", None),
+            rate_limit_fresh=bool(getattr(result, "rate_limit_fresh", False)),
+            http_status=getattr(result, "http_status", None),
+            error_type=getattr(result, "error_type", None))
 
     def _verify_skills_placement(self) -> None:
         """Task 003 (#83 detection): a placement that was verified once at
@@ -3255,6 +3411,18 @@ class LoopSupervisor:
                     modelRaw=result.model_raw,
                     steeringConsumed=consumed_now,
                     usage=result.usage)
+        # v0.30 F.1: the structured provider evidence the verdict read, only
+        # when the runner reported it, so `ralphctl fault` and `ralphctl
+        # iteration` re-derive the same class from meta.json.
+        rate_limit = getattr(result, "rate_limit", None)
+        if rate_limit is not None:
+            meta.update(rateLimit=rate_limit,
+                        rateLimitFresh=bool(getattr(result, "rate_limit_fresh", False)))
+            self._rate_limit_state[getattr(result, "harness", "pi")] = rate_limit
+        if getattr(result, "http_status", None) is not None:
+            meta["httpStatus"] = result.http_status
+        if getattr(result, "error_type", None):
+            meta["errorType"] = result.error_type
         atomic_write_json(itdir / "meta.json", meta)
         # Task 020 (PRD G.1/G.2/G.7/G.10, #214): the ONE place this
         # iteration's own `output.jsonl` is known to be fully written --
@@ -5205,6 +5373,7 @@ class LoopSupervisor:
                                infraWaitTotalS=round(self._infra_wait_total_s, 3),
                                pausedTotalS=round(self._paused_wait_total_s, 3),
                                health="ok", infraWait=None,
+                               rateLimitWait=None,
                                # Task 036 (requirement D.1/D.2, #142): a fresh
                                # episode is not parked on anything -- an
                                # engine-recorded pause belongs to the process
@@ -10211,7 +10380,8 @@ class LoopSupervisor:
             # back (`claimed_from` is None for an already-in-progress pick
             # resumed from an earlier pass, which is left exactly as it
             # was found).
-            if claimed_from is not None and self._last_fault_class == "infra":
+            if claimed_from is not None and self._last_fault_class in ("infra",
+                                                                       "rate_limit"):
                 for t in tasks_after.get("tasks", []):
                     if t.get("id") == assigned_id and t.get("status") == "in-progress":
                         t["status"] = claimed_from
@@ -11209,7 +11379,7 @@ class LoopSupervisor:
                 # no-progress evidence (task 059) -- skip stagnation
                 # bookkeeping entirely this pass.
                 continue
-            if self._last_fault_class in ("infra", "signal"):
+            if self._last_fault_class in ("infra", "signal", "rate_limit"):
                 # Task 117 (steering 005): an iteration whose own fault class
                 # is `"infra"` or `"signal"` reached this line either because
                 # the retry wrapper gave up on it (outage budget spent or

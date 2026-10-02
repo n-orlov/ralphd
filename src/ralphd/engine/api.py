@@ -182,6 +182,8 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # has to handle.
         s.setdefault("health", "ok")
         s.setdefault("infraWait", None)
+        # v0.30 F.2: same for the rate-limit wait.
+        s.setdefault("rateLimitWait", None)
         # Task 019 (#5): same for the reflect phase's verdict -- null means
         # "no reflect iteration has finished" (reflect off, or not there yet),
         # never "an older engine wrote this run dir".
@@ -841,8 +843,9 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
             raise problem(
                 409, "not waiting on an infra fault",
                 "/retry only wakes a run whose /status shows health "
-                "'degraded' with a populated infraWait; use /resume to "
-                "release an operator pause")
+                "'degraded' with a populated infraWait, or a populated "
+                "rateLimitWait (a rate-limit wait); use /resume to release "
+                "an operator pause")
         return {"retrying": True}
 
     @app.post("/abort")

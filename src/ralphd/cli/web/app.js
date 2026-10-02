@@ -2395,6 +2395,7 @@ function renderSummary(el, detail) {
     ]));
   }
   renderInfraWait(el, s, detail.runId, detail.live !== false);
+  renderRateLimitWait(el, s, detail.runId, detail.live !== false);
   renderContainerGone(el, detail);
   renderReflect(el, s);
   renderProvisionalVerdict(el, s);
@@ -2578,6 +2579,24 @@ function renderInfraWait(el, s, runId, live) {
   el.appendChild(box);
 }
 
+// v0.30 F.2: a run waiting for its rate-limit window to reset. Not an outage
+// (`health` stays "ok"), so it is not the degraded card: one line, worded
+// server-side (`rateLimitWaitLine`, from `state.format_rate_limit_wait_line`,
+// the same words `ralphctl status` prints), plus the countdown to the reset
+// and the same "retry now" button, which `POST /retry` honours for this wait
+// too. textContent only.
+function renderRateLimitWait(el, s, runId, live) {
+  const wait = (s.rateLimitWait && typeof s.rateLimitWait === "object") ? s.rateLimitWait : null;
+  if (wait == null) return;
+  const line = String(s.rateLimitWaitLine ||
+    ("waiting: rate limit (" + String(wait.type || "unknown type") + ") until " +
+     String(wait.resetsAt || "?"))).replace(/\s+/g, " ");
+  const box = h("div", { class: "rate-limit-wait" }, [h("div", {}, ["\u23F3 " + line])]);
+  renderRetryNow(box, runId, live, { nextAttemptAt: wait.resetsAt },
+                 "retrying now (rate-limit wait woken)");
+  el.appendChild(box);
+}
+
 function nextAttemptText(iso) {
   return "next attempt " + countdownTo(iso);
 }
@@ -2594,7 +2613,7 @@ function nextAttemptText(iso) {
 // when the run's API is reachable: a dead run's card is a read-only
 // on-disk snapshot, so a button whose proxy can only ever answer 503
 // would be a lie. textContent only (via `h()`'s text nodes).
-function renderRetryNow(box, runId, live, wait) {
+function renderRetryNow(box, runId, live, wait, okText) {
   const row = h("div", { class: "infra-retry-controls" }, []);
   const countdown = h("span", { class: "infra-countdown" }, [nextAttemptText(wait.nextAttemptAt)]);
   row.appendChild(countdown);
@@ -2625,7 +2644,7 @@ function renderRetryNow(box, runId, live, wait) {
       });
       const j = await resp.json().catch(() => ({}));
       if (resp.ok) {
-        statusEl.textContent = " retrying now (outage budget clock reset)";
+        statusEl.textContent = " " + (okText || "retrying now (outage budget clock reset)");
       } else {
         // #155/G.7 (task 069): shared with the steer form's error branch --
         // see `innermostReason`'s own comment above.

@@ -18,9 +18,11 @@ regardless of duration.
 
 from __future__ import annotations
 
+import math
 import re
+from datetime import datetime, timezone
 
-FaultClass = str  # "infra" | "work" | "signal"
+FaultClass = str  # "infra" | "work" | "signal" | "rate_limit"
 
 # The three verdicts, as constants, because task 013 (#49) added the third one
 # and "is this class one of the ones we know about" became a question worth
@@ -40,8 +42,21 @@ FAULT_CLASS_WORK = "work"
 # `"infra"` alone): a signal usually means something outside the run wants it
 # to stop, and relaunching into that is how a retry loop fights its operator.
 FAULT_CLASS_SIGNAL = "signal"
+# The provider refused the call because the subscription's rate-limit window
+# is exhausted. It is never `infra` (an outage retry would burn the outage
+# budget against a window with a known reset), never `work` (the agent did
+# nothing wrong) and never `signal`. The loop waits until the window resets
+# and re-runs the same work (`LoopSupervisor._wait_out_rate_limit`). It is
+# decided only from STRUCTURED evidence (`rate_limit_evidence`), which only the
+# claude-code runner reports: a pi error is text, and a pi text `429` or `rate
+# limit` stays `infra` through the `backpressure` signature family.
+FAULT_CLASS_RATE_LIMIT = "rate_limit"
 FAULT_CLASSES: tuple[str, ...] = (FAULT_CLASS_INFRA, FAULT_CLASS_WORK,
-                                 FAULT_CLASS_SIGNAL)
+                                 FAULT_CLASS_SIGNAL, FAULT_CLASS_RATE_LIMIT)
+
+# The rate-limit wait used when the provider reported no `resetsAt`: wait
+# this long, then re-probe with the same work.
+RATE_LIMIT_UNKNOWN_RESET_WAIT_S = 900.0
 
 # Task 014 (#49 part 2) introduced a duration bound here,
 # `ABORTED_STREAM_MAX_DURATION_S = 120.0`, to decide whether a bare in-band
@@ -226,6 +241,142 @@ FAULT_REASON_ABORTED_STREAM = (
     "mid-stream")
 
 
+# Task T08 (v0.30 F.1): a rate limit reported by the provider in structured
+# form. The verdict says which piece of evidence decided it.
+FAULT_REASON_RATE_LIMIT = (
+    "the provider reported its rate limit as reached -- the run waits until "
+    "the window resets and re-runs the same work, without spending an "
+    "iteration or the outage budget")
+
+
+def parse_resets_at(value) -> float | None:
+    """A rate-limit `resetsAt` as UTC epoch seconds, or None.
+
+    Accepts int or float epoch seconds (a value above 1e12 is read as
+    milliseconds), a numeric string, and ISO 8601 with `Z` or an offset (a
+    value with neither is read as UTC). Anything else is None.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except ValueError:
+            try:
+                parsed = datetime.fromisoformat(
+                    text[:-1] + "+00:00" if text[-1] in "Zz" else text)
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+    else:
+        return None
+    if not math.isfinite(number) or number <= 0:
+        return None
+    if number > 1e12:
+        number /= 1000.0
+    return number
+
+
+def _rate_limit_window(info: dict | None) -> dict | None:
+    """The `unifiedWindows` entry for the info's own `rateLimitType`."""
+    if not isinstance(info, dict):
+        return None
+    windows = info.get("unifiedWindows")
+    if not isinstance(windows, dict):
+        return None
+    window = windows.get(info.get("rateLimitType"))
+    return window if isinstance(window, dict) else None
+
+
+def _number(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def effective_utilization(info: dict | None) -> float | None:
+    """How much of the rate-limit window is used, from 0 to 1, or None.
+
+    The top-level `utilization` when the provider sent one. Otherwise the
+    `unifiedWindows` entry for `rateLimitType`, and otherwise the highest
+    utilization over all the windows. The real CLI reports utilization only
+    per window."""
+    if not isinstance(info, dict):
+        return None
+    top = _number(info.get("utilization"))
+    if top is not None:
+        return top
+    window = _rate_limit_window(info)
+    if window is not None:
+        own = _number(window.get("utilization"))
+        if own is not None:
+            return own
+    windows = info.get("unifiedWindows")
+    if isinstance(windows, dict):
+        values = [_number(w.get("utilization")) for w in windows.values()
+                  if isinstance(w, dict)]
+        values = [v for v in values if v is not None]
+        if values:
+            return max(values)
+    return None
+
+
+def rate_limit_resets_at(info: dict | None) -> float | None:
+    """When the reported window resets, as UTC epoch seconds, or None. The
+    `unifiedWindows` entry for `rateLimitType` wins over the top level."""
+    if not isinstance(info, dict):
+        return None
+    window = _rate_limit_window(info)
+    if window is not None:
+        resets = parse_resets_at(window.get("resetsAt"))
+        if resets is not None:
+            return resets
+    return parse_resets_at(info.get("resetsAt"))
+
+
+def rate_limit_evidence(*, rate_limit: dict | None = None,
+                        rate_limit_fresh: bool = False,
+                        http_status: int | None = None,
+                        error_type: str | None = None,
+                        error_text: str = "") -> str | None:
+    """Which structured evidence says the provider rate-limited this
+    iteration, or None. The rule (v0.30 F.1):
+
+    - a rate-limit report that arrived during this iteration
+      (`rate_limit_fresh`) with `status == "rejected"`;
+    - `error_type == "rate_limit"` (the SDK's assistant-message error), or
+      the API's own `rate_limit_error`;
+    - HTTP 429 together with an error type, a `rateLimitType` on the last
+      report, or `rate_limit_error` in the error text.
+
+    A report carried over from an earlier iteration is not evidence: each
+    iteration is a new CLI process that reports its window on its first
+    request, so an old `rejected` can be stale. A bare text `429` (pi) is not
+    evidence either; it stays `infra`.
+    """
+    info = rate_limit if isinstance(rate_limit, dict) else None
+    if rate_limit_fresh and info is not None and info.get("status") == "rejected":
+        return "rate limit report: status rejected"
+    etype = (error_type or "").strip()
+    if etype in ("rate_limit", "rate_limit_error"):
+        return f"provider error type {etype}"
+    if http_status == 429 and not isinstance(http_status, bool):
+        if etype:
+            return f"HTTP 429 with error type {etype}"
+        if info is not None and info.get("rateLimitType"):
+            return f"HTTP 429 with rate limit type {info['rateLimitType']}"
+        if "rate_limit_error" in (error_text or ""):
+            return "HTTP 429 with rate_limit_error"
+    return None
+
+
 def matched_signature(error_text: str | None) -> dict | None:
     """Which row of ``INFRA_SIGNATURES`` matches ``error_text``, or None
     (task 025, #18.4).
@@ -261,6 +412,10 @@ def explain_fault(
     produced_traffic: bool = False,
     operator_abort: bool = False,
     operator_abort_recorded: bool = False,
+    rate_limit: dict | None = None,
+    rate_limit_fresh: bool = False,
+    http_status: int | None = None,
+    error_type: str | None = None,
 ) -> dict:
     """``classify_fault``'s verdict *with its reasoning*, from exactly the same
     inputs (task 025, #18.4).
@@ -320,6 +475,14 @@ def explain_fault(
     identical to the real thing and a real crash reporting nothing but that
     one word with a clean exit is vanishingly unlikely (a crash reports what
     crashed).
+
+    v0.30 F.1: ``rate_limit``, ``rate_limit_fresh``, ``http_status`` and
+    ``error_type`` are the structured provider evidence the claude-code
+    runner reports. When ``rate_limit_evidence`` finds a rate limit in them,
+    the class is ``"rate_limit"``. That rung sits after the abort carve-out
+    (an abort is never waited out) and before the watchdog and signature
+    rungs, so a rate limit is never ``infra``. The returned dict then also
+    carries ``rateLimit``: ``{"evidence", "type", "resetsAt"}``.
     """
     signature = matched_signature(error_text)
     is_failure = (
@@ -344,6 +507,16 @@ def explain_fault(
             reason = FAULT_REASON_ABORT_RECORDED
         return {"faultClass": "work", "reason": reason,
                 "signature": signature}
+    evidence = rate_limit_evidence(
+        rate_limit=rate_limit, rate_limit_fresh=rate_limit_fresh,
+        http_status=http_status, error_type=error_type, error_text=error_text)
+    if evidence is not None:
+        info = rate_limit if isinstance(rate_limit, dict) else {}
+        return {"faultClass": FAULT_CLASS_RATE_LIMIT,
+                "reason": FAULT_REASON_RATE_LIMIT, "signature": None,
+                "rateLimit": {"evidence": evidence,
+                              "type": info.get("rateLimitType"),
+                              "resetsAt": rate_limit_resets_at(info)}}
     if no_traffic_timeout:
         return {"faultClass": "infra",
                 "reason": FAULT_REASON_NO_TRAFFIC_TIMEOUT,
@@ -400,6 +573,10 @@ def classify_fault(
     produced_traffic: bool = False,
     operator_abort: bool = False,
     operator_abort_recorded: bool = False,
+    rate_limit: dict | None = None,
+    rate_limit_fresh: bool = False,
+    http_status: int | None = None,
+    error_type: str | None = None,
 ) -> FaultClass | None:
     """Classify one finished iteration's failure signal.
 
@@ -489,6 +666,12 @@ def classify_fault(
     verdict this function returns. Wording the difference was task 025's scope;
     re-classifying these shapes is issue #49 -- task 013 took the signal case
     out of ``"work"``. (This paragraph used to name #23, now closed.)
+
+    v0.30 F.1: returns ``"rate_limit"`` when the structured provider evidence
+    (``rate_limit``, ``rate_limit_fresh``, ``http_status``, ``error_type``)
+    says the subscription's rate limit was reached -- see
+    ``rate_limit_evidence``. A pi error carries none of these, so pi's
+    classes are unchanged.
     """
     return explain_fault(
         error_text=error_text,
@@ -499,4 +682,8 @@ def classify_fault(
         produced_traffic=produced_traffic,
         operator_abort=operator_abort,
         operator_abort_recorded=operator_abort_recorded,
+        rate_limit=rate_limit,
+        rate_limit_fresh=rate_limit_fresh,
+        http_status=http_status,
+        error_type=error_type,
     )["faultClass"]

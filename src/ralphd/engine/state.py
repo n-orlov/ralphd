@@ -30,7 +30,12 @@ from . import contract_enforcement
 from . import plan_ingestion
 from . import privsep
 from . import transitions
-from .faults import explain_fault, matched_signature
+from .faults import (
+    FAULT_CLASS_RATE_LIMIT,
+    FAULT_REASON_RATE_LIMIT,
+    explain_fault,
+    matched_signature,
+)
 from .redact import redact_job_yaml, scrub_text
 from . import tiers
 
@@ -3344,6 +3349,7 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
             timed_out=bool(detail.get("timedOut")),
             no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
             produced_traffic=billable_tokens(usage) > 0,
+            **meta_provider_evidence(detail),
         )
         detail["reason"] = derived["reason"]
         detail["signature"] = derived["signature"]
@@ -7908,6 +7914,7 @@ def _recorded_fault_notice(detail: dict, recorded_fault, derived: dict) -> str |
         timed_out=bool(detail.get("timedOut")),
         no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
         produced_traffic=bool(usage),
+        **meta_provider_evidence(detail),
     )
     if old_style["faultClass"] == recorded_fault:
         return FAULT_VERDICT_RECLASSIFIED_NOTICE
@@ -7916,7 +7923,38 @@ def _recorded_fault_notice(detail: dict, recorded_fault, derived: dict) -> str |
 # Event types the explanation reads, so a huge events.jsonl is not held in
 # memory to answer one question.
 FAULT_EVENT_TYPES = ("infra_retry", "infra_wait", "infra_recovered",
-                     "reflect_infra_delay")
+                     "reflect_infra_delay", "rate_limit_wait_started",
+                     "rate_limit_wait_ended")
+
+
+def meta_provider_evidence(meta: dict) -> dict:
+    """The structured provider evidence an iteration's meta.json records
+    (v0.30 F.1: `rateLimit`, `rateLimitFresh`, `httpStatus`, `errorType`), as
+    `faults.explain_fault` keyword arguments, so a re-derived class matches
+    the one the engine recorded. Empty for a meta.json without them."""
+    out: dict = {}
+    rate_limit = meta.get("rateLimit")
+    if isinstance(rate_limit, dict):
+        out["rate_limit"] = rate_limit
+        out["rate_limit_fresh"] = bool(meta.get("rateLimitFresh"))
+    status = meta.get("httpStatus")
+    if isinstance(status, int) and not isinstance(status, bool):
+        out["http_status"] = status
+    error_type = meta.get("errorType")
+    if isinstance(error_type, str) and error_type:
+        out["error_type"] = error_type
+    return out
+
+
+def format_rate_limit_wait_line(wait) -> str | None:
+    """The one wording of a rate-limit wait in progress (v0.30 F.2), shared by
+    `ralphctl status`, `ralphctl fault` and the hub: `waiting:   rate limit
+    (<type>) until <local time>`. None when `wait` is not a wait."""
+    if not isinstance(wait, dict):
+        return None
+    rl_type = wait.get("type") or "unknown type"
+    return (f"waiting:   rate limit ({rl_type}) until "
+            f"{format_local_time(wait.get('resetsAt'))}")
 
 
 def read_events(run_root: Path, types=None, limit: int | None = None) -> list[dict]:
@@ -8116,6 +8154,8 @@ def fault_explanation(run_root: Path) -> dict:
     wait = status.get("infraWait")
     wait = wait if isinstance(wait, dict) else None
     last_retry = attempts[-1] if attempts else None
+    rate_limit_wait = status.get("rateLimitWait")
+    rate_limit_wait = rate_limit_wait if isinstance(rate_limit_wait, dict) else None
 
     exp: dict = {
         "hasFault": False,
@@ -8134,6 +8174,8 @@ def fault_explanation(run_root: Path) -> dict:
         "ladder": None,
         "budget": None,
         "notices": [],
+        # v0.30 F.2: status.json's rate-limit wait in progress, or None.
+        "rateLimitWait": rate_limit_wait,
     }
 
     if detail is not None:
@@ -8148,6 +8190,7 @@ def fault_explanation(run_root: Path) -> dict:
             timed_out=bool(detail.get("timedOut")),
             no_traffic_timeout=bool(detail.get("noTrafficTimeout")),
             produced_traffic=billable_tokens(usage) > 0,
+            **meta_provider_evidence(detail),
         )
         exp.update(hasFault=True,
                    faultClass=recorded,
@@ -8214,6 +8257,13 @@ def fault_explanation(run_root: Path) -> dict:
         exp["budget"]["display"] = format_fault_budget(exp["budget"])
         exp["hasFault"] = exp["hasFault"] or bool(attempts) or wait is not None
 
+    if rate_limit_wait is not None:
+        # `waiting` stays the infra backoff's flag; the rate-limit wait has
+        # its own line (`format_rate_limit_wait_line`).
+        exp["hasFault"] = True
+        if exp["faultClass"] is None:
+            exp["faultClass"] = FAULT_CLASS_RATE_LIMIT
+            exp["reason"] = FAULT_REASON_RATE_LIMIT
     exp["signatureDisplay"] = format_fault_signature(exp["signature"])
     exp["summaryLines"] = fault_summary_lines(exp)
     return exp
@@ -8258,6 +8308,9 @@ def fault_summary_lines(exp: dict) -> list[str]:
     budget = exp.get("budget")
     if isinstance(budget, dict):
         lines.append(f"budget:    {budget.get('display') or USAGE_NONE}")
+    waiting_line = format_rate_limit_wait_line(exp.get("rateLimitWait"))
+    if waiting_line:
+        lines.append(waiting_line)
     health = exp.get("health")
     if health:
         state = f"health:    {health}"

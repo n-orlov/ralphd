@@ -9,7 +9,16 @@ from __future__ import annotations
 
 import pytest
 
-from ralphd.engine.faults import FAULT_CLASS_SIGNAL, classify_fault
+from ralphd.engine.faults import (
+    FAULT_CLASS_RATE_LIMIT,
+    FAULT_CLASS_SIGNAL,
+    FAULT_REASON_RATE_LIMIT,
+    classify_fault,
+    effective_utilization,
+    explain_fault,
+    parse_resets_at,
+    rate_limit_resets_at,
+)
 
 
 def test_success_is_not_a_failure():
@@ -303,3 +312,111 @@ def test_ordinary_agent_failure_text_is_not_infra(error_text):
         exit_code=1,
         produced_traffic=True,
     ) == "work", f"unexpected infra signature match in: {error_text!r}"
+
+
+# -- v0.30 F.1: the `rate_limit` class, from structured evidence only --------
+
+_RL_ERROR = 'API Error: 429 {"type":"error","error":{"type":"rate_limit_error"}}'
+_REJECTED = {"status": "rejected", "resetsAt": 1790936400,
+             "rateLimitType": "five_hour",
+             "unifiedWindows": {"five_hour": {"resetsAt": 1790936400}}}
+
+
+@pytest.mark.parametrize("kwargs", [
+    # a fresh rate-limit report with status rejected
+    {"rate_limit": _REJECTED, "rate_limit_fresh": True},
+    # the SDK's assistant error type
+    {"error_type": "rate_limit"},
+    {"error_type": "rate_limit_error"},
+    # HTTP 429 together with an error type, a rateLimitType or the API's
+    # own rate_limit_error in the text
+    {"http_status": 429, "error_type": "server_error"},
+    {"http_status": 429, "rate_limit": {"status": "allowed",
+                                        "rateLimitType": "seven_day"}},
+    {"http_status": 429},
+], ids=["fresh-rejected", "error-type", "error-type-api", "429-type",
+        "429-window", "429-text"])
+def test_structured_rate_limit_evidence_classifies_rate_limit(kwargs):
+    exp = explain_fault(error_text=_RL_ERROR, exit_code=1, **kwargs)
+    assert exp["faultClass"] == FAULT_CLASS_RATE_LIMIT
+    assert exp["reason"] == FAULT_REASON_RATE_LIMIT
+    assert exp["rateLimit"]["evidence"]
+    assert classify_fault(error_text=_RL_ERROR, exit_code=1,
+                          **kwargs) == FAULT_CLASS_RATE_LIMIT
+
+
+def test_rate_limit_wins_over_the_watchdog_and_the_signature_rungs():
+    """Never infra: the rung sits before no_traffic_timeout and the
+    `backpressure` signature that matches the same text."""
+    assert classify_fault(error_text=_RL_ERROR, no_traffic_timeout=True,
+                          error_type="rate_limit") == FAULT_CLASS_RATE_LIMIT
+    assert classify_fault(error_text="429 rate limit", exit_code=1,
+                          produced_traffic=True,
+                          error_type="rate_limit") == FAULT_CLASS_RATE_LIMIT
+
+
+def test_an_abort_is_never_waited_out_as_a_rate_limit():
+    assert classify_fault(error_text="aborted", operator_abort=True,
+                          error_type="rate_limit") == "work"
+
+
+@pytest.mark.parametrize("error_text", [
+    "429 Too Many Requests",
+    "rate limit exceeded",
+    _RL_ERROR,
+])
+def test_a_pi_text_429_stays_infra(error_text):
+    """pi reports errors as text only, with no structured fields: its 429
+    stays an infra `backpressure` fault, as before."""
+    assert classify_fault(error_text=error_text, exit_code=0) == "infra"
+    assert classify_fault(error_text=error_text, exit_code=1,
+                          produced_traffic=True) == "infra"
+
+
+def test_a_stale_or_unrejected_report_is_not_evidence():
+    # carried over from an earlier iteration: not fresh
+    assert classify_fault(error_text="boom", exit_code=1, produced_traffic=True,
+                          rate_limit=_REJECTED,
+                          rate_limit_fresh=False) == "work"
+    # fresh but allowed
+    allowed = dict(_REJECTED, status="allowed_warning")
+    assert classify_fault(error_text="boom", exit_code=1, produced_traffic=True,
+                          rate_limit=allowed, rate_limit_fresh=True) == "work"
+    # a 5xx with an error type is not a rate limit
+    assert classify_fault(error_text="API Error: 500", exit_code=1,
+                          http_status=500, error_type="server_error") == "infra"
+
+
+def test_a_rejected_report_on_a_clean_iteration_is_not_a_failure():
+    assert classify_fault(exit_code=0, produced_traffic=True,
+                          rate_limit=_REJECTED, rate_limit_fresh=True) is None
+
+
+@pytest.mark.parametrize("value,expected", [
+    (1790936400, 1790936400.0),
+    (1790936400.5, 1790936400.5),
+    ("1790936400", 1790936400.0),
+    (1790936400000, 1790936400.0),           # milliseconds
+    ("2026-10-02T15:00:00Z", 1790953200.0),
+    ("2026-10-02T17:00:00+02:00", 1790953200.0),
+    ("2026-10-02T15:00:00", 1790953200.0),   # no offset: UTC
+    (None, None), ("", None), ("soon", None), (True, None), (-5, None),
+])
+def test_parse_resets_at_accepts_epoch_and_iso(value, expected):
+    assert parse_resets_at(value) == expected
+
+
+def test_the_window_for_the_reported_type_decides_reset_and_utilization():
+    info = {"status": "allowed_warning", "resetsAt": 100, "rateLimitType": "five_hour",
+            "unifiedWindows": {"five_hour": {"utilization": 0.96, "resetsAt": 200},
+                               "seven_day": {"utilization": 0.4, "resetsAt": 300}}}
+    assert rate_limit_resets_at(info) == 200.0
+    assert effective_utilization(info) == 0.96
+    # a top-level utilization wins
+    assert effective_utilization(dict(info, utilization=0.5)) == 0.5
+    # no window for the type: top-level reset, max over the windows
+    other = dict(info, rateLimitType="opus")
+    assert rate_limit_resets_at(other) == 100.0
+    assert effective_utilization(other) == 0.96
+    assert effective_utilization(None) is None
+    assert rate_limit_resets_at({"status": "rejected"}) is None
