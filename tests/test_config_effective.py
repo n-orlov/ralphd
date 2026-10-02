@@ -108,6 +108,10 @@ def test_get_config_shows_effective_config_no_secrets(config_engine, tmp_path):
     assert doc["budgets"]["infraRetryBackoffMaxS"] == 0.0
     assert doc["budgets"]["infraOutageBudgetS"] == 14400
     assert doc["budgets"]["infraRetryMax"] is None
+    # v0.30 F.3/F.4: the rate-limit ceiling and the preempt threshold, unset
+    # here, surface their defaults.
+    assert doc["budgets"]["rateLimitMaxWaitS"] == 86400
+    assert doc["budgets"]["rateLimitPreemptUtilization"] == 0.95
     assert doc["flags"]["vigilant"] is True
     assert doc["flags"]["onComplete"] == "idle"
     assert doc["model"]["overrides"]["worker"] == "prov/fast-x"

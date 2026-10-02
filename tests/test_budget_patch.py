@@ -348,3 +348,41 @@ async def test_multiple_knobs_in_one_request_all_apply(tmp_path):
     assert sup.cfg.max_approaches == 4
     assert sup.cfg.iteration_timeout_s == 660
 
+
+
+# -- v0.30 F.3: rateLimitMaxWaitS --------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec,expected", [("+3600", 90000), (172800, 172800),
+                                           ("600", 600)])
+async def test_rate_limit_max_wait_is_set_live_and_persisted(tmp_path, spec, expected):
+    sup = _supervisor(tmp_path)
+    assert sup.cfg.rate_limit_max_wait_s == 86400
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget",
+                                  json={"rateLimitMaxWaitS": spec})
+        assert resp.status_code == 200, resp.text
+        config = (await client.get("/config")).json()
+    assert resp.json() == {"rateLimitMaxWaitS": expected,
+                           "previousRateLimitMaxWaitS": 86400}
+    assert sup.cfg.rate_limit_max_wait_s == expected
+    assert sup.run.read_status()["rateLimitMaxWaitS"] == expected
+    assert config["budgets"]["rateLimitMaxWaitS"] == expected
+    (event,) = _events(sup.run, "budget_changed")
+    assert event["field"] == "rateLimitMaxWaitS"
+    assert event["previous"] == 86400 and event["rateLimitMaxWaitS"] == expected
+    assert event["delta"] == expected - 86400
+    assert sup.cfg.iterations == 25, "no other knob moved"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec", ["+-5", "0", "abc", True])
+async def test_rate_limit_max_wait_rejects_bad_input(tmp_path, spec):
+    sup = _supervisor(tmp_path)
+    async with _client(sup) as client:
+        resp = await client.patch("/config/budget",
+                                  json={"rateLimitMaxWaitS": spec})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["title"] == "invalid rateLimitMaxWaitS"
+    assert sup.cfg.rate_limit_max_wait_s == 86400
+    assert not _events(sup.run, "budget_changed")

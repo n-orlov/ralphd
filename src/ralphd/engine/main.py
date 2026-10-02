@@ -154,6 +154,28 @@ def _seed_cure_pass_ceiling(cfg: JobConfig, run: RunDir) -> None:
              cfg.cure_pass_ceiling)
 
 
+def _seed_rate_limit_max_wait(cfg: JobConfig, run: RunDir) -> None:
+    """v0.30 F.3: the effective rate-limit wait ceiling at startup is
+    max(status.json's recorded `rateLimitMaxWaitS`, job.yaml's
+    `rate_limit_max_wait_s`) -- `_seed_cure_pass_ceiling`'s winner rule, for
+    the same reason: an in-flight raise (`PATCH /config/budget`
+    `rateLimitMaxWaitS` / `ralphctl budget <run> --rate-limit-wait +N`)
+    survives a container restart, and job.yaml may raise the floor but never
+    lower a ceiling the run already earned. Called once, before the loop
+    starts."""
+    status_ceiling = run.read_status().get("rateLimitMaxWaitS")
+    job_ceiling = cfg.rate_limit_max_wait_s
+    if (isinstance(status_ceiling, int) and not isinstance(status_ceiling, bool)
+            and status_ceiling > job_ceiling):
+        cfg.rate_limit_max_wait_s = status_ceiling
+        source = "status.json"
+    else:
+        source = "job.yaml"
+    log.info("rate-limit wait ceiling seeded from %s: status.json=%s "
+             "job.yaml=%s -> effective=%s", source, status_ceiling, job_ceiling,
+             cfg.rate_limit_max_wait_s)
+
+
 async def _run_on_complete_cmd(cfg: JobConfig, run: RunDir, final_state: str) -> None:
     """Run the operator-supplied `on_complete_cmd` shell hook exactly once,
     after the job has reached a terminal state (PRD req 26). Receives
@@ -212,6 +234,7 @@ async def amain() -> int:
 
     _seed_iteration_budget(cfg, run)
     _seed_cure_pass_ceiling(cfg, run)
+    _seed_rate_limit_max_wait(cfg, run)
     # Task 004 (requirement B, #202): lift an existing run's authoritative
     # task record into the ancestor-protected, bind-mounted record
     # directory (`privsep.task_record_dir()`) before ANY other code reads

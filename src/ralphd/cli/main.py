@@ -6058,7 +6058,8 @@ def cmd_budget(args):
     /config/budget` knobs task 003 added: `--approaches`
     (`maxApproaches`), `--timeout` (`jobDeadlineEpochS`) and
     `--iteration-timeout` (`iterationTimeoutS`); task 010 (v0.27
-    requirement C.3) adds a fifth, `--cure-passes` (`curePassCeiling`).
+    requirement C.3) adds a fifth, `--cure-passes` (`curePassCeiling`), and
+    v0.30 F.3 a sixth, `--rate-limit-wait` (`rateLimitMaxWaitS`, seconds).
 
     Thin operator front-end for `PATCH /config/budget` (task 045/003), taking
     the same spec syntax for all five knobs as `resume --iterations`/
@@ -6082,10 +6083,10 @@ def cmd_budget(args):
 
     The change is live-engine only: `/config/job.yaml` is a read-only
     mount, so the engine cannot persist any of the five knobs there itself.
-    `iterations` and, since task 010 (v0.27 requirement C.3),
-    `--cure-passes`/`curePassCeiling` still PERSIST across a plain resume
-    (the engine's own startup seeding, `main._seed_iteration_budget`/
-    `main._seed_cure_pass_ceiling`). Task 004/#94 (d)'s decision for the
+    `iterations`, `--cure-passes`/`curePassCeiling` and
+    `--rate-limit-wait`/`rateLimitMaxWaitS` still PERSIST across a plain
+    resume (the engine's own startup seeding, `main._seed_iteration_budget`/
+    `main._seed_cure_pass_ceiling`/`main._seed_rate_limit_max_wait`). Task 004/#94 (d)'s decision for the
     other three is the opposite: they are PROCESS-ONLY and a plain `resume`
     with no `--approaches`/`--timeout`/`--iteration-timeout` flag of its
     own REVERTS them to job.yaml's own value -- see `cmd_resume`'s
@@ -6099,6 +6100,7 @@ def cmd_budget(args):
         "timeout": "jobDeadlineEpochS",
         "iteration_timeout": "iterationTimeoutS",
         "cure_passes": "curePassCeiling",
+        "rate_limit_wait": "rateLimitMaxWaitS",
     }
     if args.iterations is not None:
         spec = args.iterations.strip()
@@ -6116,7 +6118,8 @@ def cmd_budget(args):
         body[api_key] = spec
     if not body:
         die(2, "budget: nothing to change -- pass an iteration spec, "
-               "--approaches, --timeout, --iteration-timeout or --cure-passes")
+               "--approaches, --timeout, --iteration-timeout, --cure-passes "
+               "or --rate-limit-wait")
     res = api(args.run_id, "PATCH", "/config/budget", body)
     lines = []
     if "iterations" in res:
@@ -6134,6 +6137,10 @@ def cmd_budget(args):
     if "curePassCeiling" in res:
         lines.append(f"cure pass ceiling: {res.get('previousCurePassCeiling')} "
                      f"-> {res.get('curePassCeiling')}")
+    if "rateLimitMaxWaitS" in res:
+        lines.append(f"rate-limit wait ceiling: "
+                     f"{res.get('previousRateLimitMaxWaitS')}s -> "
+                     f"{res.get('rateLimitMaxWaitS')}s")
     out(args, res, "\n".join(lines) if lines else json.dumps(res))
 
 
@@ -8655,7 +8662,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("budget", help="change a running job's iteration "
                        "budget (and, task 004/#94 (c), its approaches/"
-                       "timeout knobs, and task 010's cure-pass ceiling) "
+                       "timeout knobs, the cure-pass ceiling and the "
+                       "rate-limit wait ceiling) "
                        "in flight (+N tops up, N sets absolutely)")
     s.add_argument("run_id")
     s.add_argument("iterations", metavar="+N|N", nargs="?", default=None,
@@ -8663,8 +8671,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "persists across a resume -- "
                         "`resume --iterations +N` only to add more. May be "
                         "omitted if one of --approaches/--timeout/"
-                        "--iteration-timeout/--cure-passes is given instead "
-                        "(any non-empty subset of the five is one request)")
+                        "--iteration-timeout/--cure-passes/"
+                        "--rate-limit-wait is given instead "
+                        "(any non-empty subset of the six is one request)")
     s.add_argument("--approaches", metavar="+N|N", default=None,
                    help="max-approaches budget top-up/absolute (#94 (c)); "
                         "process-only -- reverts on a plain `resume` "
@@ -8688,6 +8697,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "across a plain resume, unlike --approaches/"
                         "--timeout/--iteration-timeout (docs/cli.md's "
                         "budget table)")
+    s.add_argument("--rate-limit-wait", metavar="+N|N", default=None,
+                   help="ceiling, in seconds, on the run's total rate-limit "
+                        "waiting: top-up/absolute (v0.30 F.3); a wait that "
+                        "would pass it pauses the run for the operator "
+                        "instead. PERSISTS across a plain resume, like "
+                        "--cure-passes")
     s.set_defaults(func=cmd_budget)
 
     s = sub.add_parser("abort", help="terminate a job")

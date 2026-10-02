@@ -145,3 +145,47 @@ async def test_equal_budgets_prefer_job_yaml_source_label(tmp_path, monkeypatch)
 
     seeded = [e for e in _events(run_dir) if e["type"] == "budget_seeded"]
     assert seeded[0]["source"] == "job.yaml"
+
+
+# -- v0.30 F.3: the rate-limit wait ceiling survives a resume -------------------
+
+def _seed_run(tmp_path, status: dict | None):
+    from ralphd.engine.state import RunDir
+
+    root = tmp_path / "run"
+    root.mkdir()
+    run = RunDir(root=root)
+    if status is not None:
+        run.update_status(**status)
+    return run
+
+
+@pytest.mark.parametrize("status,job,expected", [
+    ({"rateLimitMaxWaitS": 172800}, 86400, 172800),   # the live raise wins
+    ({"rateLimitMaxWaitS": 3600}, 86400, 86400),      # job.yaml raises the floor
+    (None, 7200, 7200),                               # a fresh run dir
+    ({"rateLimitMaxWaitS": True}, 86400, 86400),      # not a number of seconds
+])
+def test_rate_limit_max_wait_seed(tmp_path, status, job, expected):
+    from ralphd.engine.config import JobConfig
+    from ralphd.engine.main import _seed_rate_limit_max_wait
+
+    run = _seed_run(tmp_path, status)
+    cfg = JobConfig(run_id="rlw-seed", rate_limit_max_wait_s=job)
+    _seed_rate_limit_max_wait(cfg, run)
+    assert cfg.rate_limit_max_wait_s == expected
+
+
+def test_a_live_rate_limit_ceiling_raise_survives_a_fresh_engine(tmp_path):
+    """`set_rate_limit_max_wait` (PATCH /config/budget) writes status.json;
+    a fresh process over the same run dir seeds its ceiling from it."""
+    from ralphd.engine.config import JobConfig
+    from ralphd.engine.main import _seed_rate_limit_max_wait
+
+    run = _seed_run(tmp_path, {"state": "running"})
+    sup = LoopSupervisor(JobConfig(run_id="rlw-seed"), run, tmp_path)
+    sup.set_rate_limit_max_wait(100000)
+    fresh = JobConfig(run_id="rlw-seed")
+    assert fresh.rate_limit_max_wait_s == 86400
+    _seed_rate_limit_max_wait(fresh, run)
+    assert fresh.rate_limit_max_wait_s == 100000

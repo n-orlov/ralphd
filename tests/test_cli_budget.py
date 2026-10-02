@@ -199,3 +199,52 @@ def test_budget_is_documented_in_cli_docs(ctl: Ctl):
     assert "resume" in section and "--iterations" in section
     help_out = ctl.run("--help")
     assert "budget" in help_out.stdout
+
+
+# -- v0.30 F.3: --rate-limit-wait (rateLimitMaxWaitS) -------------------------
+
+@pytest.mark.parametrize("spec", ["+3600", "172800"])
+def test_budget_rate_limit_wait_round_trips_rate_limit_max_wait_s(
+        ctl: Ctl, engine, spec):
+    eng = engine(body={"rateLimitMaxWaitS": 90000,
+                       "previousRateLimitMaxWaitS": 86400})
+    run_id = f"tst-budget-rlw-{spec.strip('+')}"
+    _seed(ctl, run_id, eng)
+    res = ctl.run("budget", run_id, "--rate-limit-wait", spec)
+    assert res.returncode == 0, res.stderr
+    assert eng.requests[-1]["body"] == {"rateLimitMaxWaitS": spec}
+    assert "rate-limit wait ceiling: 86400s -> 90000s" in res.stdout
+
+
+def test_budget_rate_limit_wait_joins_other_knobs_in_one_request(ctl: Ctl, engine):
+    eng = engine(body={"iterations": 30, "previous": 25, "iterationsUsed": 3,
+                       "rateLimitMaxWaitS": 90000,
+                       "previousRateLimitMaxWaitS": 86400})
+    _seed(ctl, "tst-budget-rlw-both", eng)
+    res = ctl.run("budget", "tst-budget-rlw-both", "+5",
+                  "--rate-limit-wait", "+3600")
+    assert res.returncode == 0, res.stderr
+    assert len(eng.requests) == 1
+    assert eng.requests[0]["body"] == {"iterations": "+5",
+                                       "rateLimitMaxWaitS": "+3600"}
+
+
+def test_budget_rate_limit_wait_malformed_spec_exits_2(ctl: Ctl, engine):
+    eng = engine()
+    _seed(ctl, "tst-budget-rlw-bad", eng)
+    res = ctl.run("budget", "tst-budget-rlw-bad", "--rate-limit-wait", "1h")
+    assert res.returncode == 2, res.stderr
+    assert "--rate-limit-wait: invalid value" in res.stderr
+    assert eng.requests == [], "malformed spec must not reach the engine"
+
+
+def test_budget_rate_limit_wait_is_documented():
+    root = Path(__file__).resolve().parents[1]
+    doc = (root / "docs" / "cli.md").read_text()
+    heading = "### `ralphctl budget <run-id> <+N|N>`"
+    section = doc.split(heading, 1)[1].split("\n### ", 1)[0]
+    assert "--rate-limit-wait" in section and "rateLimitMaxWaitS" in section
+    assert "rateLimitMaxWaitS" in (root / "docs" / "api.md").read_text()
+    spec = (root / "SPEC.md").read_text()
+    assert "rate_limit_max_wait_s" in spec
+    assert "rate_limit_preempt_utilization" in spec

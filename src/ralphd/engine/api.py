@@ -448,9 +448,9 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         without restarting the container: `iterations` (PRD req 3 / issue
         #3), and -- task 003, #94 (a), operator-added scope -- `maxApproaches`,
         `iterationTimeoutS` and `jobDeadlineEpochS`, plus `curePassCeiling`
-        (task 010, v0.27 requirement C.3). Every knob is independent
-        and optional; a request may carry any non-empty subset of the five in
-        one call. Every knob uses the SAME `resolve_iterations_spec` grammar:
+        (task 010, v0.27 requirement C.3), and `rateLimitMaxWaitS` (v0.30
+        F.3). Every knob is independent and optional; a request may carry
+        any non-empty subset of the six in one call. Every knob uses the SAME `resolve_iterations_spec` grammar:
         `"+N"` tops up relative to the knob's own current value, a bare `N`
         (int or numeric string) sets it absolutely.
 
@@ -490,6 +490,11 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
           max(status.json's `curePassCeiling`, job.yaml's own
           `cure_pass_ceiling`) (`main._seed_cure_pass_ceiling`, mirroring
           `main._seed_iteration_budget`).
+        * `{"rateLimitMaxWaitS": "+3600"}` / `{"rateLimitMaxWaitS": 172800}`
+          -- v0.30 F.3: the ceiling, in seconds, on the run's total
+          rate-limit waiting; applied via `loop.set_rate_limit_max_wait`,
+          read before the next rate-limit wait starts. It persists across a
+          resume like `curePassCeiling` (`main._seed_rate_limit_max_wait`).
 
         Task 003/#94 (d): none of the `maxApproaches`/`iterationTimeoutS`/
         `jobDeadlineEpochS` knobs is seeded from status.json on a fresh
@@ -511,8 +516,10 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         has_iteration_timeout = body.get("iterationTimeoutS") is not None
         has_deadline = body.get("jobDeadlineEpochS") is not None
         has_cure_pass_ceiling = body.get("curePassCeiling") is not None
+        has_rate_limit_max_wait = body.get("rateLimitMaxWaitS") is not None
         if not (has_iterations or has_max_approaches or has_iteration_timeout
-                or has_deadline or has_cure_pass_ceiling):
+                or has_deadline or has_cure_pass_ceiling
+                or has_rate_limit_max_wait):
             raise problem(422, "iterations required",
                          'expected {"iterations": "+10"} or {"iterations": 40}')
 
@@ -607,6 +614,20 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
             run.emit("budget_changed", field="curePassCeiling", previous=previous,
                      curePassCeiling=value, delta=value - previous, source="api")
             result.update(curePassCeiling=value, previousCurePassCeiling=previous)
+
+        if has_rate_limit_max_wait:
+            try:
+                value = resolve_iterations_spec(body["rateLimitMaxWaitS"],
+                                                cfg.rate_limit_max_wait_s,
+                                                label="rate-limit wait ceiling")
+            except BudgetSpecError as exc:
+                raise problem(422, "invalid rateLimitMaxWaitS", str(exc)) from exc
+            previous = cfg.rate_limit_max_wait_s
+            loop.set_rate_limit_max_wait(value)
+            run.emit("budget_changed", field="rateLimitMaxWaitS", previous=previous,
+                     rateLimitMaxWaitS=value, delta=value - previous, source="api")
+            result.update(rateLimitMaxWaitS=value,
+                          previousRateLimitMaxWaitS=previous)
 
         return result
 

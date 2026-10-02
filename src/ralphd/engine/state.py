@@ -35,6 +35,7 @@ from .faults import (
     FAULT_CLASS_REFUSED,
     FAULT_REASON_RATE_LIMIT,
     FAULT_REASON_REFUSED,
+    RATE_LIMIT_CEILING_REASON,
     explain_fault,
     matched_refusal,
     matched_signature,
@@ -7927,7 +7928,8 @@ def _recorded_fault_notice(detail: dict, recorded_fault, derived: dict) -> str |
 # memory to answer one question.
 FAULT_EVENT_TYPES = ("infra_retry", "infra_wait", "infra_recovered",
                      "reflect_infra_delay", "rate_limit_wait_started",
-                     "rate_limit_wait_ended", "provider_refused")
+                     "rate_limit_wait_ended", "provider_refused",
+                     "rate_limit_ceiling_reached")
 
 
 def meta_provider_evidence(meta: dict) -> dict:
@@ -7968,7 +7970,9 @@ def format_pause_detail_line(detail) -> str | None:
     """The one wording of a pause's sub-reason (status.json `pauseDetail`),
     shared by `ralphctl status` and `ralphctl fault`: for a provider refusal,
     `paused:    provider refused (<family>): <message> -- fix the profile or
-    credentials, then ralphctl unpause`. None when there is no detail."""
+    credentials, then ralphctl unpause`; for the rate-limit ceiling, `paused:
+    rate-limit ceiling reached (<waited> waited of <max>); the <type> window
+    resets at <local time> -- ...`. None when there is no detail."""
     if not isinstance(detail, dict) or not detail.get("reason"):
         return None
     reason = str(detail["reason"])
@@ -7980,6 +7984,14 @@ def format_pause_detail_line(detail) -> str | None:
             line += f": {message}"
         return (line + " -- fix the profile or credentials (PUT /config/llm), "
                 "then ralphctl unpause")
+    if reason == RATE_LIMIT_CEILING_REASON:
+        rl_type = detail.get("rateLimitType") or "unknown type"
+        return (f"paused:    rate-limit ceiling reached "
+                f"({format_duration(detail.get('waitedS'))} waited of "
+                f"{format_duration(detail.get('maxWaitS'))}); the {rl_type} "
+                f"window resets at {format_local_time(detail.get('resetsAt'))} "
+                "-- ralphctl unpause resets the count, ralphctl budget "
+                "--rate-limit-wait raises the ceiling")
     return f"paused:    {reason.replace('_', ' ')}"
 
 
@@ -8295,6 +8307,15 @@ def fault_explanation(run_root: Path) -> dict:
         if exp["faultClass"] is None:
             exp["faultClass"] = FAULT_CLASS_RATE_LIMIT
             exp["reason"] = FAULT_REASON_RATE_LIMIT
+    if (pause_detail is not None
+            and pause_detail.get("reason") == RATE_LIMIT_CEILING_REASON):
+        # Parked on the rate-limit ceiling (v0.30 F.3): the pause is the
+        # explanation when no rate-limited iteration says more.
+        exp["hasFault"] = True
+        if exp["faultClass"] is None:
+            exp["faultClass"] = FAULT_CLASS_RATE_LIMIT
+            exp["reason"] = FAULT_REASON_RATE_LIMIT
+            exp["phase"] = pause_detail.get("phase")
     if pause_detail is not None and pause_detail.get("reason") == "provider_refused":
         # The run is parked on a refusal; when the refused iteration's
         # meta.json cannot be read, the pause itself is the explanation.

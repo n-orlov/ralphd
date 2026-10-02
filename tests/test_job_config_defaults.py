@@ -23,6 +23,8 @@ from ralphd.engine.config import (
     DEFAULT_INFRA_OUTAGE_BUDGET_S,
     DEFAULT_INFRA_RETRY_BACKOFF_MAX_S,
     DEFAULT_INFRA_RETRY_BACKOFF_S,
+    DEFAULT_RATE_LIMIT_MAX_WAIT_S,
+    DEFAULT_RATE_LIMIT_PREEMPT_UTILIZATION,
     JobConfig,
 )
 
@@ -107,6 +109,35 @@ def test_infra_knobs_in_effective_budgets():
     assert budgets["infraOutageBudgetS"] == DEFAULT_INFRA_OUTAGE_BUDGET_S
     assert budgets["infraRetryMax"] is None
     assert JobConfig(infra_retry_max=2).effective()["budgets"]["infraRetryMax"] == 2
+
+
+def test_rate_limit_ceiling_and_preempt_defaults():
+    """v0.30 F.3/F.4: a day of total rate-limit waiting, and a preempt at 95%
+    of a window."""
+    cfg = JobConfig()
+    assert cfg.rate_limit_max_wait_s == 86400 == DEFAULT_RATE_LIMIT_MAX_WAIT_S
+    assert (cfg.rate_limit_preempt_utilization == 0.95
+            == DEFAULT_RATE_LIMIT_PREEMPT_UTILIZATION)
+
+
+def test_rate_limit_knobs_from_job_yaml(tmp_path):
+    p = tmp_path / "job.yaml"
+    p.write_text("rate_limit_max_wait_s: 3600\n"
+                 "rate_limit_preempt_utilization: 0.8\n")
+    cfg = JobConfig.load(p)
+    assert cfg.rate_limit_max_wait_s == 3600
+    assert cfg.rate_limit_preempt_utilization == 0.8
+    assert cfg.extra == {}, "both keys are known JobConfig fields"
+
+
+def test_rate_limit_knobs_in_effective_budgets():
+    budgets = JobConfig().effective()["budgets"]
+    assert budgets["rateLimitMaxWaitS"] == DEFAULT_RATE_LIMIT_MAX_WAIT_S
+    assert budgets["rateLimitPreemptUtilization"] == 0.95
+    budgets = JobConfig(rate_limit_max_wait_s=60,
+                        rate_limit_preempt_utilization=0.5).effective()["budgets"]
+    assert budgets["rateLimitMaxWaitS"] == 60
+    assert budgets["rateLimitPreemptUtilization"] == 0.5
 
 
 @_privsep_root_skip

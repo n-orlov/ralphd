@@ -165,7 +165,8 @@ def test_the_fixtures_harmless_sibling_is_not_flagged_at_all():
 
 def _budget_ns(**over):
     base = dict(json=False, command="budget", run_id="s1", iterations=None,
-                approaches=None, timeout=None, iteration_timeout=None)
+                approaches=None, timeout=None, iteration_timeout=None,
+                cure_passes=None, rate_limit_wait=None)
     base.update(over)
     return argparse.Namespace(**base)
 
@@ -185,6 +186,21 @@ def test_budget_flag_before_trailing_iterations_spec_is_folded_in():
                                 _LEFTOVER_POSITIONAL_FIELDS["budget"])
     assert ns.iterations == "+10"
     assert ns.approaches == "+2"
+
+
+def test_budget_rate_limit_wait_before_trailing_iterations_spec_is_folded_in():
+    """`budget s1 --rate-limit-wait +3600 +10` (v0.30 F.3): the new flag
+    takes the same route as the other knobs."""
+    ns = _budget_ns(rate_limit_wait="+3600")
+    _place_leftover_positional("budget", ["+10"], ns,
+                                _LEFTOVER_POSITIONAL_FIELDS["budget"])
+    assert ns.iterations == "+10"
+    assert ns.rate_limit_wait == "+3600"
+
+
+def test_budget_parser_knows_the_rate_limit_wait_flag():
+    ns = build_parser().parse_args(["budget", "s1", "--rate-limit-wait", "+60"])
+    assert ns.rate_limit_wait == "+60" and ns.iterations is None
 
 
 def test_budget_with_no_leftover_is_a_pure_no_op():

@@ -49,6 +49,7 @@ from . import state
 from . import tiers
 from . import transitions
 from .config import (
+    CLAUDE_CODE_HARNESS,
     CONFIG_DIR,
     DEFAULT_INFRA_RETRY_BACKOFF_S,
     MAX_NOTIFY_CHARS,
@@ -59,8 +60,10 @@ from .config import (
 from .faults import (
     FAULT_CLASS_RATE_LIMIT,
     FAULT_CLASS_REFUSED,
+    RATE_LIMIT_CEILING_REASON,
     RATE_LIMIT_UNKNOWN_RESET_WAIT_S,
     classify_fault,
+    effective_utilization,
     matched_refusal,
     matched_signature,
     rate_limit_resets_at,
@@ -1337,9 +1340,21 @@ class LoopSupervisor:
         """Release the loop (`POST /resume`), and clear an engine-recorded
         pause if there is one (task 036, requirement D.1/D.2, #142)."""
         self._pause.set()
+        self._reset_rate_limit_count_on_ceiling_unpause()
         self._record_unpaused_no_ruling_proceed()
         self._clear_persisted_pause()
         self.run.emit("log", message=state.RESUMED_LOG_MESSAGE)
+
+    def _reset_rate_limit_count_on_ceiling_unpause(self) -> None:
+        """v0.30 F.3: an unpause of a rate-limit ceiling pause starts the
+        run's rate-limit waiting count again from zero. Read before
+        `_clear_persisted_pause` wipes `pauseDetail`."""
+        status = self.run.read_status()
+        if status.get("state") != PAUSED_STATE:
+            return
+        detail = status.get("pauseDetail")
+        if isinstance(detail, dict) and detail.get("reason") == RATE_LIMIT_CEILING_REASON:
+            self._rate_limit_waited_s = 0.0
 
     # PRD v0.27 requirement C.2 (#274): the two pause reasons a bare
     # `ralphctl unpause`/`POST /resume`, with NO ruling filed to answer
@@ -2524,6 +2539,18 @@ class LoopSupervisor:
         retry_max = self.cfg.infra_retry_max  # None == no explicit attempt cap
         budget = self._outage_budget_for(phase)
         while True:
+            preempt = self._rate_limit_preempt_report(phase)
+            if preempt is not None:
+                # v0.30 F.4: the last report says this harness's window is
+                # nearly spent. Do not start what will be cut: wait for that
+                # window's reset at this boundary (the ceiling applies), then
+                # forget the report, which described the window just reset.
+                harness, info = preempt
+                outcome = await self._wait_out_rate_limit(phase, info,
+                                                          reason="preempt")
+                self._rate_limit_state[harness] = None
+                if outcome == "abort":
+                    return self._preempt_aborted_result(harness)
             result = await self._run_iteration_once(phase, extra, prompt_name, tier,
                                                     task_id=task_id)
             fault = self._classify_result(result)
@@ -2889,10 +2916,21 @@ class LoopSupervisor:
         hit the provider in the same second: 0-60 s. Tests patch it to 0."""
         return random.uniform(0.0, 60.0)
 
-    async def _wait_out_rate_limit(self, phase: str, info: dict | None) -> str:
+    async def _wait_out_rate_limit(self, phase: str, info: dict | None,
+                                   reason: str = "rate_limit") -> str:
         """Waits for a rate-limit window to reset (v0.30 F.2). Returns how
-        the wait ended: "reset" (the time ran out), "retry" (POST /retry) or
+        the wait ended: "reset" (the time ran out), "retry" (POST /retry),
+        "resume" (the ceiling paused the run and an unpause released it) or
         "abort" (the run is ending).
+
+        `reason` is "rate_limit" for a rate-limited iteration and "preempt"
+        for a wait taken before starting one (F.4); it is carried on both
+        events and words the notifier messages.
+
+        The ceiling (F.3): a wait that would take the run's rate-limit
+        waiting since the last ceiling unpause (`_rate_limit_waited_s`) past
+        `cfg.rate_limit_max_wait_s` does not start. The run pauses for the
+        operator instead (`_pause_for_rate_limit_ceiling`).
 
         The wait lasts until the window's `resetsAt` plus
         `_rate_limit_jitter_s()`, or `RATE_LIMIT_UNKNOWN_RESET_WAIT_S` when
@@ -2915,18 +2953,33 @@ class LoopSupervisor:
         wait = {"type": rl_type,
                 "resetsAt": utc_from_epoch(resets if resets is not None else target),
                 "since": utc_from_epoch(now)}
+        if self._rate_limit_waited_s + planned > self.cfg.rate_limit_max_wait_s:
+            return await self._pause_for_rate_limit_ceiling(
+                phase, wait, planned, reason)
+        preempt = reason == "preempt"
         self._rate_limit_wait_info = {**wait, "phase": phase}
         self.run.update_status(rateLimitWait=wait)
         self.run.emit("rate_limit_wait_started", phase=phase,
                       rateLimitType=rl_type, resetsAt=wait["resetsAt"],
                       since=wait["since"], waitS=round(planned, 3),
-                      resetsKnown=resets is not None)
+                      resetsKnown=resets is not None, reason=reason,
+                      **({"utilization": effective_utilization(info)}
+                         if preempt else {}))
         if self.notifier is not None:
-            self._notify(
-                f"ralphd {self.cfg.run_id}: rate limit ({rl_type or 'unknown'}) "
-                f"reached during {phase}; waiting until "
-                f"{state.format_local_time(wait['resetsAt'])}, then re-running "
-                "the same work")
+            if preempt:
+                used = effective_utilization(info)
+                self._notify(
+                    f"ralphd {self.cfg.run_id}: rate limit "
+                    f"({rl_type or 'unknown'}) "
+                    + (f"at {used:.0%} " if used is not None else "")
+                    + f"before {phase}; not starting it, waiting until "
+                    f"{state.format_local_time(wait['resetsAt'])}")
+            else:
+                self._notify(
+                    f"ralphd {self.cfg.run_id}: rate limit ({rl_type or 'unknown'}) "
+                    f"reached during {phase}; waiting until "
+                    f"{state.format_local_time(wait['resetsAt'])}, then re-running "
+                    "the same work")
         log.warning("iteration %s rate-limited (%s): waiting %.0fs until %s",
                     phase, rl_type, planned, wait["resetsAt"])
         waited = 0.0
@@ -2955,14 +3008,90 @@ class LoopSupervisor:
             self.run.update_status(rateLimitWait=None)
             self.run.emit("rate_limit_wait_ended", phase=phase,
                           rateLimitType=rl_type, waitedS=round(waited, 3),
-                          wokenBy=ended)
+                          wokenBy=ended, reason=reason)
             if self.notifier is not None:
                 self._notify(
                     f"ralphd {self.cfg.run_id}: rate-limit wait over after "
                     f"{state.format_duration(waited)} ({ended})"
-                    + ("" if ended == "abort" else f"; re-running {phase}"))
+                    + ("" if ended == "abort"
+                       else f"; starting {phase}" if preempt
+                       else f"; re-running {phase}"))
             self._account_rate_limit_wait(waited, phase)
         return ended
+
+    async def _pause_for_rate_limit_ceiling(self, phase: str, wait: dict,
+                                            planned: float, reason: str) -> str:
+        """The rate-limit ceiling is reached (v0.30 F.3): the wait does not
+        start. Pause for the operator and park in place. Returns "resume" (an
+        unpause: the caller re-probes the same work) or "abort".
+
+        The pause is `operator_input_needed` with `pauseDetail = {"reason":
+        "rate_limit_ceiling", "resetsAt", "waitedS", "maxWaitS", "plannedS",
+        "rateLimitType", "phase"}`. A `rate_limit_ceiling_reached` event and a
+        notifier message naming the reset in local time follow. The unpause
+        resets the count (`resume`); the time parked extends the deadline
+        like any operator pause (`_gate`)."""
+        max_wait = self.cfg.rate_limit_max_wait_s
+        waited = round(self._rate_limit_waited_s, 3)
+        detail = {"reason": RATE_LIMIT_CEILING_REASON,
+                  "resetsAt": wait["resetsAt"], "waitedS": waited,
+                  "maxWaitS": max_wait, "plannedS": round(planned, 3),
+                  "rateLimitType": wait.get("type"), "phase": phase}
+        self.pause(reason="operator_input_needed", detail=detail)
+        self.run.emit("rate_limit_ceiling_reached", phase=phase,
+                      rateLimitType=wait.get("type"), resetsAt=wait["resetsAt"],
+                      waitedS=waited, maxWaitS=max_wait,
+                      plannedS=round(planned, 3), reason=reason)
+        log.warning("iteration %s: a %.0fs rate-limit wait would pass the "
+                    "%ss ceiling (%.0fs waited): pausing for the operator",
+                    phase, planned, max_wait, waited)
+        if self.notifier is not None:
+            text = (
+                f"ralphd {self.cfg.run_id}: rate-limit ceiling reached before "
+                f"{phase}: {state.format_duration(waited)} waited of the "
+                f"{state.format_duration(max_wait)} allowed, and the "
+                f"{wait.get('type') or 'unknown'} window resets at "
+                f"{state.format_local_time(wait['resetsAt'])}. The run is "
+                "paused (operator_input_needed, rate_limit_ceiling).\n"
+                f"ralphctl unpause {self.cfg.run_id} resets the count and "
+                f"re-probes {phase}; ralphctl budget {self.cfg.run_id} "
+                "--rate-limit-wait +N raises the ceiling")
+            self._notify_escalation_delivery(text, reason="operator_input_needed")
+        await self._gate()
+        if self._abort_reason is not None:
+            return "abort"
+        return "resume"
+
+    def _rate_limit_preempt_report(self, phase: str) -> tuple[str, dict] | None:
+        """`(harness, report)` when `phase` is about to start on the
+        `claude-code` harness and the run's last rate-limit report for it is
+        `allowed_warning` at or above `cfg.rate_limit_preempt_utilization`
+        (v0.30 F.4); None otherwise, including when no report is known. A pi
+        hat never preempts: its harness reports no rate-limit state. Nor does
+        a report whose window has already reset."""
+        harness = self.cfg.harness_for(phase)
+        if harness != CLAUDE_CODE_HARNESS:
+            return None
+        info = self._rate_limit_state.get(harness)
+        if not isinstance(info, dict) or info.get("status") != "allowed_warning":
+            return None
+        used = effective_utilization(info)
+        if used is None or used < self.cfg.rate_limit_preempt_utilization:
+            return None
+        resets = rate_limit_resets_at(info)
+        if resets is not None and resets <= self._now_epoch():
+            # The window the report describes has already reset.
+            return None
+        return harness, info
+
+    def _preempt_aborted_result(self, harness: str) -> IterationResult:
+        """What the retry wrapper returns when an abort ends a preempt wait
+        before the iteration started: the shape of an iteration the operator
+        aborted, with nothing spawned and no attempt charged."""
+        result = IterationResult(exit_code=None, interrupted=True,
+                                 harness=harness)
+        result.error_message = "aborted"
+        return result
 
     def _account_rate_limit_wait(self, waited_s: float, phase: str) -> None:
         """Books one finished rate-limit wait (v0.30 F.2): the deadline moves
@@ -3828,6 +3957,17 @@ class LoopSupervisor:
         """
         self.cfg.cure_pass_ceiling = value
         self.run.update_status(curePassCeiling=value)
+
+    def set_rate_limit_max_wait(self, value: int) -> None:
+        """v0.30 F.3: change the rate-limit wait ceiling of a LIVE run, same
+        shape as `set_cure_pass_ceiling` above. `_wait_out_rate_limit` reads
+        `cfg.rate_limit_max_wait_s` before every wait, so rebinding the field
+        is the whole mechanism. status.json's `rateLimitMaxWaitS` is
+        rewritten so a fresh container seeds the ceiling from it
+        (`main._seed_rate_limit_max_wait`). The caller (api.py) owns
+        validation and the audit event."""
+        self.cfg.rate_limit_max_wait_s = value
+        self.run.update_status(rateLimitMaxWaitS=value)
 
     def set_max_approaches(self, value: int) -> None:
         """#94 (operator-added scope, steer 003), engine-side setter 1 of 3:

@@ -70,6 +70,10 @@ FAULT_CLASSES: tuple[str, ...] = (FAULT_CLASS_INFRA, FAULT_CLASS_WORK,
 # this long, then re-probe with the same work.
 RATE_LIMIT_UNKNOWN_RESET_WAIT_S = 900.0
 
+# The `pauseDetail.reason` of the pause a run takes when its next rate-limit
+# wait would pass `JobConfig.rate_limit_max_wait_s` (v0.30 F.3).
+RATE_LIMIT_CEILING_REASON = "rate_limit_ceiling"
+
 # Task 014 (#49 part 2) introduced a duration bound here,
 # `ABORTED_STREAM_MAX_DURATION_S = 120.0`, to decide whether a bare in-band
 # `aborted` after real traffic was the provider hanging up mid-stream (infra)

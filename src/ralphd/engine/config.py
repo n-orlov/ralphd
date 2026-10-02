@@ -128,6 +128,12 @@ DEFAULT_INFRA_RETRY_BACKOFF_MAX_S = 300.0
 # resets on any successful iteration.
 DEFAULT_INFRA_OUTAGE_BUDGET_S = 4 * 3600.0
 
+# v0.30 F.3/F.4: the ceiling on a run's total rate-limit waiting (a day), and
+# the utilization of an `allowed_warning` window at which a `claude-code`
+# iteration waits for the reset instead of starting.
+DEFAULT_RATE_LIMIT_MAX_WAIT_S = 86400
+DEFAULT_RATE_LIMIT_PREEMPT_UTILIZATION = 0.95
+
 # Task 010 (#14): how a cost is derived when the provider quotes none (or
 # quotes an implausible zero -- see state.is_zero_quote). `none` is the
 # shipped default: without an explicit opt-in ralphd never puts a number it
@@ -298,6 +304,9 @@ MODEL_HATS: tuple[str, ...] = (
 # its `HatBundle`.
 HARNESSES: tuple[str, ...] = ("pi", "claude-code")
 DEFAULT_HARNESS = "pi"
+# The harness that reports rate-limit state (v0.30 F): only its hats wait
+# on a rate limit or are preempted near one.
+CLAUDE_CODE_HARNESS = "claude-code"
 
 # The minimum Claude Code CLI version required to run iterations on the
 # claude-code harness. The wrapper checks this at startup and refuses to run
@@ -668,6 +677,17 @@ class JobConfig:
     infra_retry_backoff_max_s: float = DEFAULT_INFRA_RETRY_BACKOFF_MAX_S
     infra_retry_max: int | None = None
     infra_outage_budget_s: float = DEFAULT_INFRA_OUTAGE_BUDGET_S
+    # v0.30 F.3: the ceiling on a run's TOTAL rate-limit waiting, in seconds.
+    # A wait that would take the run past it does not start; the run pauses
+    # `operator_input_needed` (`pauseDetail.reason == "rate_limit_ceiling"`)
+    # instead, and an unpause resets the count. Settable in flight with
+    # `PATCH /config/budget` `rateLimitMaxWaitS` (`ralphctl budget
+    # --rate-limit-wait`).
+    rate_limit_max_wait_s: int = DEFAULT_RATE_LIMIT_MAX_WAIT_S
+    # v0.30 F.4: a `claude-code` iteration is not started while the run's last
+    # rate-limit report for that harness is `allowed_warning` at or above
+    # this utilization (0-1); the loop waits for that window's reset first.
+    rate_limit_preempt_utilization: float = DEFAULT_RATE_LIMIT_PREEMPT_UTILIZATION
     # Task 052 (#10): optional host-side pricing map (see engine/pricing.py),
     # normally inlined into job.yaml from `<registry>/config.yaml`'s
     # `pricing:` key by `ralphctl start`. Used ONLY when the provider quotes
@@ -881,6 +901,10 @@ class JobConfig:
                 # null = no explicit attempt cap (retry within the budget).
                 "infraRetryMax": self.infra_retry_max,
                 "infraOutageBudgetS": self.infra_outage_budget_s,
+                # v0.30 F.3/F.4: the rate-limit wait ceiling and the
+                # preempt threshold.
+                "rateLimitMaxWaitS": self.rate_limit_max_wait_s,
+                "rateLimitPreemptUtilization": self.rate_limit_preempt_utilization,
                 # Task 018 (requirement E): the router's latency budget --
                 # a call that hangs cannot stall the loop; see
                 # `LoopSupervisor._ask_router` / `engine.router.decide`.
