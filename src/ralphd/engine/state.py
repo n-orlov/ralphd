@@ -8301,6 +8301,7 @@ COST_SOURCE_DERIVED = COST_DERIVED_WORD
 COST_SOURCE_PARTIAL = "partial"
 COST_SOURCE_UNAVAILABLE = COST_UNAVAILABLE
 COST_SOURCE_FREE = "declared free"
+COST_SOURCE_SUBSCRIPTION = "subscription"
 COST_SOURCE_NO_TRAFFIC = "no traffic"
 # Printed once, and only when one of those qualifiers actually appears, so a
 # fully priced run's breakdown is not padded with an explanation of vocabulary
@@ -8361,7 +8362,6 @@ def cost_source(usage: dict | None) -> str | None:
     """Which kind of money a bucket holds, in one word -- the machine-readable
     twin of what `format_cost`' string says, or None when the bucket says
     nothing at all.
-COST_SOURCE_SUBSCRIPTION = "subscription"
 
     `cost_status` (the shared classifier) answers three of the cases straight
     off; the two it renders as None are told apart here, because "the provider
@@ -8386,6 +8386,8 @@ COST_SOURCE_SUBSCRIPTION = "subscription"
         return COST_SOURCE_DERIVED
     if billable_tokens(usage) == 0:
         return COST_SOURCE_NO_TRAFFIC
+    if usage.get("costBasis") == COST_BASIS_SUBSCRIPTION:
+        return COST_SOURCE_SUBSCRIPTION
     if usage.get("costFree") is True:
         return COST_SOURCE_FREE
     if usage.get("costUSD") is not None:
@@ -8406,6 +8408,9 @@ def cost_bucket(usage: dict | None, key: str = COST_TOTAL_KEY) -> dict:
     out["tokensTotalDisplay"] = format_token_total(raw)
     out["costDisplay"] = format_cost(raw, decimals=4)
     out["costSource"] = cost_source(raw)
+    listed = raw.get("listEquivalentUSD")
+    if isinstance(listed, (int, float)) and not isinstance(listed, bool):
+        out["listEquivalentDisplay"] = format_money(listed, 4)
     return out
 
 
@@ -8432,61 +8437,6 @@ def _cost_buckets(raw, numeric_keys: bool = False, tier_keys: bool = False) -> l
     return [cost_bucket(raw.get(k), str(k)) for k in keys]
 
 
-def _accumulate_task_usage(bucket: dict, usage: dict) -> dict:
-    """Add one iteration's `usage` dict into `bucket` (a per-task rollup) in
-    place, returning it -- the SAME algorithm `LoopSupervisor._merge_usage`/
-    `_merge_cost_status` (`engine/loop.py`) use to roll a per-iteration usage
-    dict into status.json's byPhase/byApproach/byTier buckets (tasks 017/049/
-    050/052), duplicated here rather than imported: `engine.loop` imports
-    `engine.state`, so the dependency cannot run the other way. Kept
-    if usage.get("costBasis") == COST_BASIS_SUBSCRIPTION:
-        return COST_SOURCE_SUBSCRIPTION
-    algorithmically identical -- same cost-status monotonicity, same
-    `costFree` carry, same non-numeric-marker skip -- so a task's aggregated
-    cost (task 036, G.4) can never disagree with what the SAME iterations
-    would produce inside status.json's own rollup.
-    """
-    prev = bucket.get("costStatus")
-    unpriced_gap = ((usage.get("costPriced") is False or is_zero_quote(usage))
-                    and usage.get("costDerived") is not True)
-    has_unknown = prev in ("partial", "unknown") or unpriced_gap
-    has_derived = (prev == "derived"
-                   or isinstance(bucket.get("costDerivedUSD"), float)
-                   or isinstance(usage.get("costDerivedUSD"), float))
-    if not has_unknown:
-        status = "derived" if has_derived else None
-    else:
-        has_price = (prev == "partial" or has_derived
-                     or price_reported(bucket) or price_reported(usage))
-        status = "partial" if has_price else "unknown"
-    for k, v in usage.items():
-    listed = raw.get("listEquivalentUSD")
-    if isinstance(listed, (int, float)) and not isinstance(listed, bool):
-        out["listEquivalentDisplay"] = format_money(listed, 4)
-        if isinstance(v, (bool, str)):
-            continue
-        bucket[k] = (round(bucket.get(k, 0) + v, 6) if isinstance(v, float)
-                     else bucket.get(k, 0) + v)
-    if status:
-        bucket["costStatus"] = status
-    return bucket
-
-
-def task_totals(iterations: list) -> dict:
-    """Per-task aggregated time/cost for the hub tasks table (task 036,
-    G.4; re-keyed task 001/PRD I.1, #29's defect recurring in this new
-    place): `{"<approach>:<taskId>": {"durationS": float, "durationDisplay":
-    str, "costDisplay": str, "iterationCount": int, "iterations": [...]}}`,
-    summed from every entry in `iterations` (`iteration_detail`'s own shape
-    -- this run's `run_detail` iteration list) whose `assignedTaskId` names
-    that task, INCLUDING a validation-failed re-entry that dispatched a
-    second iteration against the same task id -- a task's total reflects
-    every attempt at it, never only its last one.
-
-    Keys are approach-namespaced -- `"<approach>:<taskId>"` -- following the
-    #29 fix site's own stated rule (`RunDir.migrate_legacy_vigilant_verified`
-    above): every approach's planning pass renumbers `tasks.json` from
-    "001", so a flat `taskId`-only key would let approach 2's task "001"
 def price_reported(d: dict) -> bool:
     """True when `d` (an iteration usage dict or a bucket) holds at least one
     provider-reported price: a float `costUSD`. A subscription iteration's
@@ -8545,6 +8495,57 @@ def merge_cost_flags(bucket: dict, usage: dict) -> None:
         bucket["costBasis"] = basis
 
 
+def _accumulate_task_usage(bucket: dict, usage: dict) -> dict:
+    """Add one iteration's `usage` dict into `bucket` (a per-task rollup) in
+    place, returning it -- the SAME algorithm `LoopSupervisor._merge_usage`/
+    `_merge_cost_status` (`engine/loop.py`) use to roll a per-iteration usage
+    dict into status.json's byPhase/byApproach/byTier buckets (tasks 017/049/
+    050/052), duplicated here rather than imported: `engine.loop` imports
+    `engine.state`, so the dependency cannot run the other way. Kept
+    algorithmically identical -- same cost-status monotonicity, same
+    `costFree` carry, same non-numeric-marker skip -- so a task's aggregated
+    cost (task 036, G.4) can never disagree with what the SAME iterations
+    would produce inside status.json's own rollup.
+    """
+    prev = bucket.get("costStatus")
+    unpriced_gap = ((usage.get("costPriced") is False or is_zero_quote(usage))
+                    and usage.get("costDerived") is not True)
+    has_unknown = prev in ("partial", "unknown") or unpriced_gap
+    has_derived = (prev == "derived"
+                   or isinstance(bucket.get("costDerivedUSD"), float)
+                   or isinstance(usage.get("costDerivedUSD"), float))
+    if not has_unknown:
+        status = "derived" if has_derived else None
+    else:
+        has_price = (prev == "partial" or has_derived
+                     or price_reported(bucket) or price_reported(usage))
+        status = "partial" if has_price else "unknown"
+    merge_cost_flags(bucket, usage)
+    for k, v in usage.items():
+        if isinstance(v, (bool, str)):
+            continue
+        bucket[k] = (round(bucket.get(k, 0) + v, 6) if isinstance(v, float)
+                     else bucket.get(k, 0) + v)
+    if status:
+        bucket["costStatus"] = status
+    return bucket
+
+
+def task_totals(iterations: list) -> dict:
+    """Per-task aggregated time/cost for the hub tasks table (task 036,
+    G.4; re-keyed task 001/PRD I.1, #29's defect recurring in this new
+    place): `{"<approach>:<taskId>": {"durationS": float, "durationDisplay":
+    str, "costDisplay": str, "iterationCount": int, "iterations": [...]}}`,
+    summed from every entry in `iterations` (`iteration_detail`'s own shape
+    -- this run's `run_detail` iteration list) whose `assignedTaskId` names
+    that task, INCLUDING a validation-failed re-entry that dispatched a
+    second iteration against the same task id -- a task's total reflects
+    every attempt at it, never only its last one.
+
+    Keys are approach-namespaced -- `"<approach>:<taskId>"` -- following the
+    #29 fix site's own stated rule (`RunDir.migrate_legacy_vigilant_verified`
+    above): every approach's planning pass renumbers `tasks.json` from
+    "001", so a flat `taskId`-only key would let approach 2's task "001"
     inherit approach 1's minutes and dollars, exactly the bug this task
     fixes (#207 -- "$52.50 reported where $8.31 belonged"). The approach
     namespace comes from EACH iteration's own `approach` field (the
@@ -8571,7 +8572,6 @@ def merge_cost_flags(bucket: dict, usage: dict) -> None:
     `iterations` list (this run's chronological order), so a task detail
     view can list exactly the iterations the total above was summed from,
     never a re-derived or re-ordered set.
-    merge_cost_flags(bucket, usage)
     """
     raw: dict[str, dict] = {}
     for it in iterations:
@@ -8772,6 +8772,8 @@ def cost_breakdown(run_root: Path) -> dict:
         "modelRaw": status.get("modelRaw"),
         "sources": sorted({b["costSource"] for b in buckets if b["costSource"]}),
     }
+    if isinstance(usage.get("listEquivalentUSD"), (int, float)):
+        out["listEquivalentUSD"] = usage["listEquivalentUSD"]
     out["summaryLines"] = cost_breakdown_lines(out)
     return out
 
@@ -8837,8 +8839,6 @@ def cost_breakdown_lines(bd: dict) -> list[str]:
             model += f"  (gateway id: {bd['modelRaw']})"
         lines.append(model)
     lines.extend(f"!! {n}" for n in (bd.get("notices") or []))
-    if isinstance(usage.get("listEquivalentUSD"), (int, float)):
-        out["listEquivalentUSD"] = usage["listEquivalentUSD"]
     for label, key in (("by phase:", "byPhase"), ("by approach:", "byApproach"),
                        ("by tier:", "byTier")):
         buckets = bd.get(key) or []

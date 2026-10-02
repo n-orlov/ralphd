@@ -3416,6 +3416,7 @@ class LoopSupervisor:
         never added.
         """
         status = cls._merge_cost_status(bucket, usage)
+        state.merge_cost_flags(bucket, usage)
         for k, v in usage.items():
             if isinstance(v, (bool, str)):
                 continue
@@ -3579,7 +3580,6 @@ class LoopSupervisor:
         start -- see `_run_job_core`'s `update_status(...,
         maxApproaches=self.cfg.max_approaches, ...)`) so `GET /status` can
         never disagree with `GET /config`'s live `cfg.effective()` read.
-        state.merge_cost_flags(bucket, usage)
         The caller (api.py) owns validation (refusing a value below the
         current approach) and the audit event.
         """
