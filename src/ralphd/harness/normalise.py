@@ -26,6 +26,16 @@ from typing import Any
 
 MCP_PREFIX = "mcp__ralphd__"
 
+# The wrapper's stdout carries pi events plus one raw envelope per SDK
+# message, `{"type": RAW_ENVELOPE_TYPE, "raw": {"kind": <SDK class name>,
+# ...}}`. The engine-side runner demuxes them. A raw envelope counts as agent
+# traffic for the startup watchdog only when its kind is in
+# RAW_TRAFFIC_KINDS: a `SystemMessage` (the CLI's own `init`) is not.
+RAW_ENVELOPE_TYPE = "ralphd.claude_raw"
+RAW_TRAFFIC_KINDS = frozenset(
+    {"AssistantMessage", "UserMessage", "RateLimitEvent", "ResultMessage", "StreamEvent"}
+)
+
 TOOL_NAMES = {
     "Read": "read",
     "Write": "write",

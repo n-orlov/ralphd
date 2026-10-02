@@ -244,7 +244,9 @@ def list_skills(config_dir: Path) -> list[dict]:
     return out
 
 
-def verify_placement(config_dir: Path, home: Path) -> tuple[list[str], list[str]]:
+def verify_placement(config_dir: Path, home: Path, *,
+                     extra_targets: tuple[Path, ...] | list[Path] = ()
+                     ) -> tuple[list[str], list[str]]:
     """Read-only check of what `place_skills()` last claimed to have done
     (task 003, #83 detection): recompute the same expected name set
     `place_skills()` would place right now (mounted + api, minus
@@ -266,24 +268,36 @@ def verify_placement(config_dir: Path, home: Path) -> tuple[list[str], list[str]
     likes, from a fresh process even, and get the same answer -- "lost"
     means the filesystem disagrees with what the sources say should be
     there right now, not "disagrees with some remembered snapshot".
+
+    `extra_targets` are further skill roots the same names must resolve
+    in, checked by the same rule: the `claude-code` harness's per-iteration
+    `CLAUDE_CONFIG_DIR/skills`, which `link_skills()` fills. A name is
+    verified only when it resolves at `_pi_skills_dir(home)` AND at every
+    extra target; missing from any one of them, it is lost.
     """
     mounted, api = _sources(config_dir)
     deleted = _deleted_names()
     expected = sorted((set(mounted) | set(api)) - deleted)
-    target = _pi_skills_dir(home)
+    targets = [_pi_skills_dir(home), *extra_targets]
     verified: list[str] = []
     lost: list[str] = []
     for name in expected:
-        link = target / name
-        try:
-            ok = link.is_symlink() and link.is_dir()
-        except OSError:
-            ok = False
+        ok = True
+        for target in targets:
+            link = Path(target) / name
+            try:
+                ok = link.is_symlink() and link.is_dir()
+            except OSError:
+                ok = False
+            if not ok:
+                break
         (verified if ok else lost).append(name)
     return verified, lost
 
 
-def verify_placement_and_report(run, config_dir: Path, home: Path) -> None:
+def verify_placement_and_report(run, config_dir: Path, home: Path, *,
+                                extra_targets: tuple[Path, ...] | list[Path] = ()
+                                ) -> None:
     """`verify_placement()` plus the run-event half of #83's detection
     requirement (task 003): a placement that resolves gets a
     `skills.placement.verified` run EVENT (not just an INFO log line) so
@@ -291,6 +305,10 @@ def verify_placement_and_report(run, config_dir: Path, home: Path) -> None:
     events.jsonl, not merely the absence of a complaint; a placement that
     doesn't resolve gets a `skills.placement.lost` run event, loud enough
     to grep out of events.jsonl instead of scrolling a log file for it.
+
+    `extra_targets` is passed through to `verify_placement()`: the
+    `claude-code` runner reports on its iteration's own skill root here,
+    right after `link_skills()` and before it spawns the wrapper.
 
     `run` is anything with an `.emit(type_, **data)` method shaped like
     `state.RunDir.emit` -- callers pass the real RunDir; tests can pass a
@@ -303,7 +321,8 @@ def verify_placement_and_report(run, config_dir: Path, home: Path) -> None:
     already showed can go unnoticed.
     """
     try:
-        verified, lost = verify_placement(config_dir, home)
+        verified, lost = verify_placement(config_dir, home,
+                                          extra_targets=extra_targets)
     except Exception as exc:  # pragma: no cover -- defensive, see docstring
         log.error("skills placement verification itself failed: %r", exc)
         return
@@ -373,3 +392,72 @@ def place_skills(config_dir: Path, *, home: Path) -> list[str]:
     if placed:
         log.info("placed skills: %s", ", ".join(placed))
     return placed
+
+
+def _link_source(config_dir: Path, name: str, home: Path) -> Path | None:
+    """The absolute directory `link_skills()` points `name` at: the same
+    effective source `place_skills()` links, except `telegram-notify`,
+    which points at the materialised copy `place_skills()` built under
+    `home` (when it exists)."""
+    found = effective_source(config_dir, name)
+    if found is None:
+        return None
+    src = found[0]
+    if name == "telegram-notify":
+        staging = _notify_preference_staging_dir(home)
+        if staging.is_dir():
+            src = staging
+    return Path(os.path.abspath(src))
+
+
+def link_skills(config_dir: Path, *, home: Path, target: Path) -> list[str]:
+    """Link every effective skill into `target` as `target/<name>`, an
+    absolute symlink to the source `place_skills()` uses for that name.
+
+    This is the `claude-code` harness's skill root: the runner calls it
+    for the iteration's fresh `CLAUDE_CONFIG_DIR/skills`, so the links
+    must be absolute (the wrapper's `HOME` is a scratch dir, not `home`).
+    Only `target`'s own entries are replaced; nothing outside `target` is
+    written or removed. Returns the linked names, sorted.
+    """
+    mounted, api = _sources(config_dir)
+    deleted = _deleted_names()
+    names = sorted((set(mounted) | set(api)) - deleted)
+    target.mkdir(parents=True, exist_ok=True)
+    linked: list[str] = []
+    for name in names:
+        src = _link_source(config_dir, name, home)
+        if src is None:
+            continue
+        link = target / name
+        if link.is_symlink() or link.is_file():
+            link.unlink()
+        elif link.is_dir():
+            shutil.rmtree(link)
+        link.symlink_to(src, target_is_directory=True)
+        linked.append(name)
+    return linked
+
+
+def skill_description(skill_dir: Path) -> str:
+    """The `description` from `skill_dir/SKILL.md`'s front matter, or ''.
+
+    Reads only the leading `---` block, one `key: value` per line; a
+    quoted value has its quotes removed."""
+    try:
+        text = (skill_dir / "SKILL.md").read_text(errors="replace")
+    except OSError:
+        return ""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ""
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        key, sep, value = line.partition(":")
+        if sep and key.strip() == "description":
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            return value
+    return ""

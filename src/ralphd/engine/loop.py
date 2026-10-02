@@ -58,7 +58,13 @@ from .config import (
 from .faults import classify_fault, matched_signature
 from .llm import current_env
 from .pricing import resolve_pricing
-from .runner import AgentRunner, IterationResult, PiRunner, last_nonblank_line
+from .runner import (
+    AgentRunner,
+    ClaudeCodeRunner,
+    IterationResult,
+    PiRunner,
+    last_nonblank_line,
+)
 from .skills import ambient_home, verify_placement_and_report
 from .state import (
     PAUSED_STATE,
@@ -304,10 +310,17 @@ class LoopSupervisor:
         self.runner = PiRunner(workspace,
                                pricing=resolve_pricing(cfg.pricing,
                                                        cfg.price_strategy))
-        # One runner per harness. `pi` is always registered; a harness a
-        # later task adds is registered next to it. A test that assigns a
-        # double to `self.runner` overrides every harness (`_runner_for`).
-        self._runners: dict[str, AgentRunner] = {"pi": self.runner}
+        # One runner per harness. A test that assigns a double to
+        # `self.runner` overrides every harness (`_runner_for`). The
+        # claude-code runner links the skill sources `place_skills()` uses
+        # (`CONFIG_DIR` read at call time, the engine's own home) into each
+        # iteration's own Claude Code config dir.
+        self._runners: dict[str, AgentRunner] = {
+            "pi": self.runner,
+            "claude-code": ClaudeCodeRunner(
+                workspace, run=run, config_dir=lambda: CONFIG_DIR,
+                home_fn=ambient_home),
+        }
         # Seed from any already-completed iterations on disk (0 for a
         # fresh run dir) so a restarted engine numbers its next iteration
         # N+1 instead of reusing/duplicating past numbers (PRD req 16).

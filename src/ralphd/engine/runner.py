@@ -15,7 +15,10 @@ import contextlib
 import json
 import logging
 import os
+import pwd
+import shutil
 import signal
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -25,11 +28,13 @@ from typing import Protocol, runtime_checkable
 from .. import (
     render_index,
 )
+from ..harness.normalise import RAW_ENVELOPE_TYPE, RAW_TRAFFIC_KINDS
 from . import state
 from .config import CONTROL_PLANE_ENV_VARS
 from .pricing import PricingSource
 from .privsep import agent_child_kwargs
 from .redact import scrub_text
+from .skills import link_skills, skill_description, verify_placement_and_report
 
 COMPLETE = "<promise>COMPLETE</promise>"
 VERIFIED = "<promise>VERIFIED</promise>"
@@ -538,13 +543,19 @@ class _ChildProcessRunner:
                 except ProcessLookupError:
                     pass
                 await self._proc.wait()
+            pid = self._proc.pid
             self._proc = None
         result.duration_s = time.monotonic() - _t0
         if result.exit_code and result.exit_code < 0:
             result.interrupted = True
         if result.exit_code == -signal.SIGINT or result.exit_code == 130:
             result.interrupted = True
+        self._after_child(pid, result)
         return result
+
+    def _after_child(self, pgid: int, result: IterationResult) -> None:
+        """Called once the child is reaped, with its process group id. The
+        default does nothing."""
 
     def _handle_line(self, raw: bytes, out, result: IterationResult,
                      live_index: render_index.LiveRenderIndex,
@@ -656,6 +667,217 @@ class PiRunner(_ChildProcessRunner):
         return await self._run_child(cmd, env, prompt, transcript,
                                      IterationResult(), timeout_s,
                                      startup_timeout_s, model=model)
+
+
+# The wrapper module `ClaudeCodeRunner` spawns, and the in-band signature of
+# its pre-spawn refusal to run the wrapper as root.
+CLAUDE_CODE_WRAPPER_MODULE = "ralphd.harness.claude_code"
+CLAUDE_CODE_ROOT_REFUSAL = "claude_code_runs_as_root"
+_ANTHROPIC_PREFIX = "anthropic/"
+
+
+class ClaudeCodeRunner(_ChildProcessRunner):
+    """Runs one iteration on Claude Code: `python -m ralphd.harness.claude_code`
+    as a child, through the same spawn path as pi.
+
+    Per call it builds a scratch area beside the transcript
+    (`<stem>.claude-scratch/`: `config/` becomes the wrapper's
+    `CLAUDE_CONFIG_DIR`, `home/` its `HOME`), links the effective skills
+    into `config/skills`, writes `wrapper.json` and spawns the wrapper. The
+    wrapper's stdout carries pi events, handled exactly as pi's, and raw SDK
+    envelopes, which `_handle_line` scrubs and appends, unwrapped, to
+    `<stem>.claude.jsonl` beside the transcript. After the call `config/`
+    and `home/` are removed; `wrapper.json` and `stderr.log` stay.
+
+    `run` (the run's `RunDir`) is the handle skill-placement events are
+    emitted on and whose root is the hat-tool spool. `config_dir` (a path
+    or a zero-argument callable returning one) and `home_fn` locate the
+    skill sources exactly as `place_skills()` does.
+    """
+
+    harness = "claude-code"
+
+    def __init__(self, workspace: Path, python_bin: str = sys.executable, *,
+                 run=None, config_dir=None,
+                 home_fn: Callable[[], Path] | None = None,
+                 pricing: PricingSource | None = None):
+        super().__init__(workspace, pricing=pricing)
+        self.python_bin = python_bin
+        self._run_dir = run
+        self._config_dir = config_dir
+        self._home_fn = home_fn
+        # The last rate-limit report of this run (the CLI's own
+        # `rate_limit_info`); carried into every later result until a newer
+        # one arrives.
+        self._last_rate_limit: dict | None = None
+        # The SDK result's `total_cost_usd` for the call in flight.
+        self.sdk_total_cost_usd: float | None = None
+        self._raw_path: Path | None = None
+
+    # -- pre-spawn ---------------------------------------------------------
+
+    @staticmethod
+    def _child_uid() -> int:
+        """The uid the wrapper would run as: the spawn kwargs' `user`, else
+        this process's effective uid."""
+        user = agent_child_kwargs().get("user")
+        if user is None:
+            return os.geteuid()
+        if isinstance(user, str):
+            try:
+                return pwd.getpwnam(user).pw_uid
+            except KeyError:
+                return -1
+        return int(user)
+
+    def _skill_roots(self) -> tuple[Path | None, Path | None]:
+        cfg = self._config_dir() if callable(self._config_dir) else self._config_dir
+        home = self._home_fn() if self._home_fn is not None else None
+        return cfg, home
+
+    def _link_skills(self, target: Path) -> list[dict]:
+        """Link the effective skills into `target` and report the check on
+        both roots. Never raises: a failure here costs the skills, not the
+        iteration."""
+        config_dir, home = self._skill_roots()
+        if config_dir is None or home is None:
+            return []
+        try:
+            names = link_skills(Path(config_dir), home=Path(home), target=target)
+        except Exception as exc:
+            log.error("claude-code: linking skills into %s failed: %r", target, exc)
+            return []
+        if self._run_dir is not None:
+            verify_placement_and_report(self._run_dir, Path(config_dir), Path(home),
+                                        extra_targets=[target])
+        return [{"name": n, "description": skill_description(target / n),
+                 "path": str(target / n / "SKILL.md")} for n in names]
+
+    # -- run ---------------------------------------------------------------
+
+    async def run(
+        self,
+        prompt: str,
+        transcript: Path,
+        model: str | None = None,
+        thinking: str | None = None,
+        effort: str | None = None,
+        timeout_s: int = 2700,
+        extra_env: dict | None = None,
+        startup_timeout_s: float | None = None,
+        extensions: list[str] | None = None,
+        hat_tools: list | None = None,
+    ) -> IterationResult:
+        # `extensions` are pi's `-e` files; this harness wires hat tools
+        # from `hat_tools` instead, so it ignores them.
+        result = IterationResult(harness=self.harness,
+                                 rate_limit=self._last_rate_limit)
+        if self._child_uid() == 0:
+            result.error_message = (
+                f"{CLAUDE_CODE_ROOT_REFUSAL}: the claude-code wrapper never runs "
+                "as root, and the agent uid resolved to 0; run the engine with a "
+                "non-root agent account (RALPHD_AGENT_USER)")
+            return result
+        self.sdk_total_cost_usd = None
+        # Absolute: the wrapper runs with the workspace as its cwd.
+        scratch = Path(os.path.abspath(
+            transcript.with_name(transcript.stem + ".claude-scratch")))
+        config_dir = scratch / "config"
+        home = scratch / "home"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        home.mkdir(parents=True, exist_ok=True)
+        try:
+            skills = self._link_skills(config_dir / "skills")
+            tool_names = [getattr(t, "name", t) for t in (hat_tools or ())]
+            root = getattr(self._run_dir, "root", None)
+            run_root = str(root) if root is not None else None
+            cli_model = model
+            if cli_model and cli_model.startswith(_ANTHROPIC_PREFIX):
+                cli_model = cli_model[len(_ANTHROPIC_PREFIX):]
+            wrapper_cfg = {
+                "model": cli_model,
+                "thinking": thinking,
+                "effort": effort,
+                "workspace": os.path.abspath(self.workspace),
+                "config_dir": str(config_dir),
+                "home": str(home),
+                "hat_tools": tool_names,
+                "run_root": run_root,
+                "skills": skills,
+                "stderr_log": str(scratch / "stderr.log"),
+            }
+            cfg_path = scratch / "wrapper.json"
+            cfg_path.write_text(json.dumps(wrapper_cfg, indent=2) + "\n")
+            cmd = [self.python_bin, "-m", CLAUDE_CODE_WRAPPER_MODULE,
+                   "--config", str(cfg_path)]
+            env = self._child_env(extra_env)
+            if tool_names and run_root:
+                env["RALPHD_HAT_TOOLS_RUN"] = run_root
+            self._raw_path = transcript.with_name(transcript.stem + ".claude.jsonl")
+            return await self._run_child(cmd, env, prompt, transcript, result,
+                                         timeout_s, startup_timeout_s,
+                                         model=model)
+        finally:
+            for d in (config_dir, home):
+                shutil.rmtree(d, ignore_errors=True)
+
+    def _after_child(self, pgid: int, result: IterationResult) -> None:
+        """When the ladder or an interrupt ended the iteration, SIGKILL
+        whatever is left of the wrapper's process group. The wrapper can
+        exit on SIGINT before the Claude Code CLI it started does (a CLI
+        that ignores SIGINT), and the shared path's SIGKILL covers only a
+        wrapper that is still alive."""
+        if not (result.timed_out or result.no_traffic_timeout or result.interrupted):
+            return
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGKILL)
+
+    # -- per line ----------------------------------------------------------
+
+    def _handle_line(self, raw: bytes, out, result: IterationResult,
+                     live_index: render_index.LiveRenderIndex,
+                     transcript: Path, *, model: str | None = None) -> bool:
+        """A raw SDK envelope is folded into `result`, scrubbed and appended,
+        unwrapped, to `<stem>.claude.jsonl`; it is traffic unless its kind is
+        a system message. Every other line is a pi event (the base hook)."""
+        if RAW_ENVELOPE_TYPE.encode() in raw:
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError:
+                event = None
+            if isinstance(event, dict) and event.get("type") == RAW_ENVELOPE_TYPE:
+                payload = event.get("raw")
+                if not isinstance(payload, dict):
+                    payload = {}
+                self._absorb_raw(payload, result)
+                raw_path = self._raw_path or transcript.with_name(
+                    transcript.stem + ".claude.jsonl")
+                line = scrub_text(json.dumps(payload, ensure_ascii=False))
+                with open(raw_path, "a") as fh:
+                    fh.write(line + "\n")
+                return payload.get("kind") in RAW_TRAFFIC_KINDS
+        return super()._handle_line(raw, out, result, live_index, transcript,
+                                    model=model)
+
+    def _absorb_raw(self, payload: dict, result: IterationResult) -> None:
+        kind = payload.get("kind")
+        if kind == "RateLimitEvent":
+            info = payload.get("rate_limit_info")
+            if isinstance(info, dict):
+                self._last_rate_limit = info
+                result.rate_limit = info
+                result.rate_limit_fresh = True
+        elif kind == "ResultMessage":
+            status = payload.get("api_error_status")
+            if isinstance(status, int) and not isinstance(status, bool):
+                result.http_status = status
+            cost = payload.get("total_cost_usd")
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                self.sdk_total_cost_usd = float(cost)
+        elif kind == "AssistantMessage":
+            err = payload.get("error")
+            if err:
+                result.error_type = str(err)
 
 
 def _scan_pi_line(line: bytes,

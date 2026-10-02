@@ -1,6 +1,6 @@
 """Harness dispatch (v0.30 T02c): a hat has a harness, the bundle carries it,
-and the loop holds one runner per harness and dispatches on it. Only `pi` is
-registered by default; these tests register a fake under `claude-code`."""
+and the loop holds one runner per harness and dispatches on it. `pi` and
+`claude-code` are registered by default; these tests replace both with fakes."""
 
 from __future__ import annotations
 
