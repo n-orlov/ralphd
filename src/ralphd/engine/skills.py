@@ -416,7 +416,7 @@ def link_skills(config_dir: Path, *, home: Path, target: Path) -> list[str]:
 
     This is the `claude-code` harness's skill root: the runner calls it
     for the iteration's fresh `CLAUDE_CONFIG_DIR/skills`, so the links
-    must be absolute (the wrapper's `HOME` is a scratch dir, not `home`).
+    must be absolute (the CLI's config dir is a scratch dir, not under `home`).
     Only `target`'s own entries are replaced; nothing outside `target` is
     written or removed. Returns the linked names, sorted.
     """

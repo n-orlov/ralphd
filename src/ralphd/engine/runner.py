@@ -682,12 +682,15 @@ class ClaudeCodeRunner(_ChildProcessRunner):
 
     Per call it builds a scratch area beside the transcript
     (`<stem>.claude-scratch/`: `config/` becomes the wrapper's
-    `CLAUDE_CONFIG_DIR`, `home/` its `HOME`), links the effective skills
-    into `config/skills`, writes `wrapper.json` and spawns the wrapper. The
+    `CLAUDE_CONFIG_DIR`), links the effective skills into `config/skills`,
+    writes `wrapper.json` and spawns the wrapper. `HOME` is NOT scratch: the
+    wrapper and the CLI inherit the child env's `HOME` (the agent's real
+    home, exactly what a pi child gets), so `~/.creds`, `~/.gitconfig`,
+    `~/.ssh`, `--user` pip installs and the like persist across iterations. The
     wrapper's stdout carries pi events, handled exactly as pi's, and raw SDK
     envelopes, which `_handle_line` scrubs and appends, unwrapped, to
     `<stem>.claude.jsonl` beside the transcript. After the call `config/`
-    and `home/` are removed; `wrapper.json` and `stderr.log` stay.
+    is removed; `wrapper.json` and `stderr.log` stay.
 
     `run` (the run's `RunDir`) is the handle skill-placement events are
     emitted on and whose root is the hat-tool spool. `config_dir` (a path
@@ -783,9 +786,7 @@ class ClaudeCodeRunner(_ChildProcessRunner):
         scratch = Path(os.path.abspath(
             transcript.with_name(transcript.stem + ".claude-scratch")))
         config_dir = scratch / "config"
-        home = scratch / "home"
         config_dir.mkdir(parents=True, exist_ok=True)
-        home.mkdir(parents=True, exist_ok=True)
         try:
             skills = self._link_skills(config_dir / "skills")
             tool_names = [getattr(t, "name", t) for t in (hat_tools or ())]
@@ -800,7 +801,6 @@ class ClaudeCodeRunner(_ChildProcessRunner):
                 "effort": effort,
                 "workspace": os.path.abspath(self.workspace),
                 "config_dir": str(config_dir),
-                "home": str(home),
                 "hat_tools": tool_names,
                 "run_root": run_root,
                 "skills": skills,
@@ -818,8 +818,7 @@ class ClaudeCodeRunner(_ChildProcessRunner):
                                          timeout_s, startup_timeout_s,
                                          model=model)
         finally:
-            for d in (config_dir, home):
-                shutil.rmtree(d, ignore_errors=True)
+            shutil.rmtree(config_dir, ignore_errors=True)
 
     def _after_child(self, pgid: int, result: IterationResult) -> None:
         """When the ladder or an interrupt ended the iteration, SIGKILL

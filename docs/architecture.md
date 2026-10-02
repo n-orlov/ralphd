@@ -1916,12 +1916,15 @@ that imports `claude_agent_sdk`; the engine process never loads it
 run as uid 0 it returns an in-band `claude_code_runs_as_root` error and spawns
 nothing. It builds a scratch area beside the transcript,
 `<stem>.claude-scratch/` (`iterations/NNNN/output.claude-scratch/`): `config/`
-is the wrapper's `CLAUDE_CONFIG_DIR`, `home/` its `HOME`. It links the skills
+is the wrapper's `CLAUDE_CONFIG_DIR`. `HOME` is not scratch: the wrapper
+inherits the child env's `HOME`, the agent's real home, exactly as a pi child
+does, so `~/.creds`, `~/.gitconfig`, `~/.ssh` and `--user` installs persist
+across iterations. It links the skills
 into `config/skills` and verifies both skill roots (SPEC §6.5), then writes
 `wrapper.json`: the model with its `anthropic/` prefix stripped, `thinking`,
-`effort`, the workspace, the two scratch dirs, the hat's tool names, the run
+`effort`, the workspace, the scratch config dir, the hat's tool names, the run
 root, the skills index and the `stderr.log` path. After the call it removes
-`config/` and `home/`; `wrapper.json` and `stderr.log` stay. When the ladder or
+`config/`; `wrapper.json` and `stderr.log` stay. When the ladder or
 an interrupt ended the call, it also SIGKILLs what is left of the wrapper's
 process group, since the CLI can outlive a wrapper that exited on SIGINT.
 
@@ -1943,7 +1946,7 @@ it calls `query()` with:
 | `setting_sources` | `[]` |
 | `extra_args` | `--no-session-persistence` |
 | `cwd` | the workspace |
-| `env` | `HOME` and `CLAUDE_CONFIG_DIR` from the scratch area |
+| `env` | `CLAUDE_CONFIG_DIR` from the scratch area; `HOME` is inherited (the agent's real home, as for pi) |
 | `mcp_servers` | `{"ralphd": <in-process SDK server>}` when the hat has tools, else empty |
 | `max_turns` | unset; the iteration timeout is the only bound |
 | `system_prompt` | the hat-tool naming line and the skills index, or empty when there is neither |

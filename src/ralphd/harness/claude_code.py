@@ -22,7 +22,8 @@ What it does, in order:
    error, exit 1). The CLI is `$RALPHD_CLAUDE_CLI_PATH`, else the SDK's
    bundled binary.
 4. Calls `query()` with an isolated Claude Code: a fresh `CLAUDE_CONFIG_DIR`
-   and `HOME` from the scratch area, `setting_sources=[]`, no persisted
+   from the scratch area (`HOME` is inherited: the agent's real home, as
+   for pi), `setting_sources=[]`, no persisted
    session, `bypassPermissions`, cwd = the workspace, exactly the six
    built-in tools in `BUILTIN_TOOLS`, no `max_turns`, and the effort row of
    `EFFORT_TABLE`.
@@ -252,7 +253,7 @@ def build_options(cfg: dict, cli: str, stderr_cb) -> ClaudeAgentOptions:
         mcp_servers=mcp_servers,
         max_turns=None,
         stderr=stderr_cb,
-        env={"HOME": cfg["home"], "CLAUDE_CONFIG_DIR": cfg["config_dir"]},
+        env={"CLAUDE_CONFIG_DIR": cfg["config_dir"]},
         **effort_options(cfg.get("thinking"), cfg.get("effort")),
     )
 

@@ -114,6 +114,10 @@ def observed(tmp_path_factory):
 
     with pytest.MonkeyPatch.context() as mp:
         observe = _stub_env(mp, tmp_path)
+        fake_home = tmp_path / "agent-home"
+        (fake_home / ".creds").mkdir(parents=True)
+        (fake_home / ".creds" / "x.env").write_text("TOKEN=1\n")
+        mp.setenv("HOME", str(fake_home))
         mp.setattr(runner_mod, "agent_child_kwargs", lambda: dict(sentinel))
         mp.setattr(asyncio, "create_subprocess_exec", spy)
         mp.setenv("RALPHD_API_TOKEN", "fake-control-plane-token")
@@ -121,12 +125,14 @@ def observed(tmp_path_factory):
         mp.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
         mp.setenv("CLAUDE_CODE_SESSION_ID", "fake-session")
         mp.setenv("CLAUDE_CODE_OAUTH_TOKEN", FAKE_OAUTH)
+        pi_home = runner_mod._ChildProcessRunner._child_env(None)["HOME"]
         runner = _runner(tmp_path)
         result = _run(runner, tmp_path, extra_env={
             "ANTHROPIC_AUTH_TOKEN": "fake-auth-token-for-tests",
             "RALPHD_CONTROL_TOKEN": "fake-control-token"})
     return {"result": result, "obs": _obs(observe), "spawned": spawned,
-            "sentinel": sentinel, "itdir": tmp_path / "it"}
+            "sentinel": sentinel, "itdir": tmp_path / "it",
+            "fake_home": fake_home, "pi_home": pi_home}
 
 
 def test_the_wrapper_runs_as_the_agent_uid(observed):
@@ -147,8 +153,16 @@ def test_the_cli_env_is_stripped_and_isolated(observed):
     assert env["CLAUDE_CODE_ENTRYPOINT"] == "sdk-py"
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == FAKE_OAUTH
     scratch = (observed["itdir"] / "output.claude-scratch").resolve()
-    assert Path(env["HOME"]) == scratch / "home"
     assert Path(env["CLAUDE_CONFIG_DIR"]) == scratch / "config"
+    # HOME is the same one a pi child gets (`~/.creds`, `~/.gitconfig`, `~/.ssh`,
+    # `--user` installs persist); only CLAUDE_CONFIG_DIR is scratch.
+    assert env["HOME"] == observed["pi_home"] == str(observed["fake_home"])
+    assert (Path(env["HOME"]) / ".creds" / "x.env").read_text() == "TOKEN=1\n"
+    cfg = Path(env["CLAUDE_CONFIG_DIR"])
+    assert not cfg.is_relative_to(Path(env["HOME"]))
+    assert "home" not in json.loads(
+        (observed["itdir"] / "output.claude-scratch" / "wrapper.json").read_text())
+    assert not (observed["itdir"] / "output.claude-scratch" / "home").exists()
 
 
 def test_exactly_the_six_builtin_tools(observed):
