@@ -168,3 +168,43 @@ def test_a_loop_dispatched_worker_iteration_matches_the_golden_argv_and_transcri
     assert dump["argv"] == _golden_json("argv-loop.json")
     written = sup.run.iteration_dir(1) / "output.jsonl"
     assert written.read_bytes() == (GOLDEN / "output.jsonl").read_bytes()
+
+
+def test_pi_runner_is_the_first_agent_runner_and_ignores_hat_tools(
+        fake_pi, dump_path, live_fake_secret, tmp_path):
+    """`PiRunner` satisfies `AgentRunner`, and the protocol's `hat_tools`
+    slot changes nothing about a pi iteration: pi gets its tools as
+    `extensions`, so the argv, transcript and result stay golden."""
+    from ralphd.engine.runner import AgentRunner
+
+    runner = PiRunner(tmp_path, pi_bin=str(fake_pi), pricing=PRICING)
+    assert isinstance(runner, AgentRunner)
+    transcript = tmp_path / "output.jsonl"
+    result = asyncio.run(runner.run(
+        PROMPT, transcript, model=MODEL, thinking="high", timeout_s=30,
+        extensions=EXTENSIONS, hat_tools=["task-insert"]))
+    assert json.loads(dump_path.read_text())["argv"] == _golden_json("argv.json")
+    assert transcript.read_bytes() == (GOLDEN / "output.jsonl").read_bytes()
+    _assert_result_matches_golden(result)
+    assert result.harness == "pi"
+
+
+def test_the_cost_step_is_a_hook_on_the_shared_path(
+        fake_pi, dump_path, live_fake_secret, tmp_path):
+    """A runner on the shared child-process path replaces only the cost
+    step by overriding `_account_cost`; every other field it scans is
+    unchanged. The hook sees each assistant `message_end`'s usage once."""
+    seen: list[dict] = []
+
+    class _CostProbe(PiRunner):
+        def _account_cost(self, usage, result, pricing=None, model=None):
+            seen.append(dict(usage))
+
+    result = asyncio.run(_CostProbe(tmp_path, pi_bin=str(fake_pi)).run(
+        PROMPT, tmp_path / "output.jsonl", model=MODEL, timeout_s=30))
+    assert [u["totalTokens"] for u in seen] == [1620, 1560]
+    golden = _golden_json("result.json")
+    assert result.final_text == golden["final_text"]
+    assert {k: result.usage[k] for k in ("input", "output", "totalTokens")} == \
+        {k: golden["usage"][k] for k in ("input", "output", "totalTokens")}
+    assert not any(k.startswith("cost") for k in result.usage)

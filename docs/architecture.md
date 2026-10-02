@@ -1864,6 +1864,42 @@ Because both share a process, "interrupt" is a plain `SIGINT` to the `pi` child
 process group; the supervisor records the iteration as interrupted and proceeds to
 the next one (which will see any newly arrived steering).
 
+### Runner protocol
+
+The supervisor runs every hat invocation through one interface,
+`runner.AgentRunner`: an async `run(prompt, transcript, *, model, thinking,
+effort, timeout_s, extra_env, startup_timeout_s, extensions, hat_tools)` that
+returns an `IterationResult`, a `running` property, and `interrupt()`, which
+SIGINTs the iteration in flight. pi is the first implementation: `PiRunner`.
+
+Every runner spawns its agent through one shared child-process path,
+`runner._ChildProcessRunner._run_child`. A runner builds only its own argv and
+env. The env is always `os.environ` plus `extra_env` minus
+`CONTROL_PLANE_ENV_VARS` (`_child_env`). The shared path does the rest:
+
+- the spawn, in its own session (`start_new_session=True`) and as the agent
+  uid (`privsep.agent_child_kwargs()`), with the workspace as cwd and stderr
+  merged into stdout;
+- the prompt on stdin;
+- the pump, which hands each line to one per-line hook, `_handle_line`, and
+  counts a line the hook calls traffic toward the startup watchdog;
+- the startup watchdog, the timeout → SIGINT → `SHUTDOWN_GRACE_S` → SIGKILL
+  ladder, the reap, and the `interrupted` verdict.
+
+The default `_handle_line` reads the line as a pi NDJSON event. It scans the
+raw bytes (`message_end` gives the final text, error, model and token
+counters; the cost step is the `_account_cost` hook, `_accumulate_cost` by
+default), scrubs the line with `redact.scrub_text`, appends it to
+`output.jsonl` and feeds the live render index. A line is traffic when it
+parses as JSON.
+
+`IterationResult` also carries `harness` (`pi` for a pi iteration) and
+structured provider evidence (`rate_limit`, `rate_limit_fresh`,
+`http_status` and `error_type`). pi reports errors as text only, so a pi
+result always holds their defaults. `tests/test_pi_golden.py` pins a pi
+iteration's argv, child env, `output.jsonl` and result to the golden files in
+`tests/data/golden/pi-iteration/`.
+
 ### Diagnosability requirements
 
 Failures must be visible without digging into transcripts:

@@ -1,4 +1,12 @@
-"""Spawn one pi iteration and capture its transcript."""
+"""Spawn one agent iteration and capture its transcript.
+
+`AgentRunner` is the protocol the loop dispatches an iteration through.
+`_ChildProcessRunner` is the one child-process path every runner shares:
+spawn in its own session as the agent uid, prompt on stdin, the pump that
+scans, scrubs and appends each line, the startup watchdog, and the
+timeout -> SIGINT -> `SHUTDOWN_GRACE_S` -> SIGKILL ladder. `PiRunner` is the
+first implementation: it builds pi's argv and env and hands them to that path.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +17,10 @@ import logging
 import os
 import signal
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from .. import (
     render_index,
@@ -135,6 +145,19 @@ class IterationResult:
     # so the engine can tell "nothing observed" from "observed nothing".
     model: str | None = None
     model_raw: str | None = None
+    # Structured provider evidence. Only a runner that receives it in a
+    # structured form fills these; pi reports errors as text alone, so a pi
+    # result always carries the defaults. `rate_limit` is the last
+    # rate-limit report the runner saw in this run, and `rate_limit_fresh`
+    # is true when that report arrived during THIS iteration. `http_status`
+    # and `error_type` are the provider's own status code and error type for
+    # an in-band error.
+    rate_limit: dict | None = None
+    rate_limit_fresh: bool = False
+    http_status: int | None = None
+    error_type: str | None = None
+    # The harness that ran the iteration: `pi` or `claude-code`.
+    harness: str = "pi"
 
     @property
     def last_line(self) -> str:
@@ -164,13 +187,40 @@ class IterationResult:
         return VERIFIED in (self.final_text or "") and not self.saw_verified
 
 
-class PiRunner:
-    """Runs `pi -p --mode json` as a subprocess, one call per iteration."""
+@runtime_checkable
+class AgentRunner(Protocol):
+    """What the loop needs from a harness's runner: one iteration per
+    `run(...)` call, the transcript written to `transcript`, and a way to
+    SIGINT the iteration in flight."""
 
-    def __init__(self, workspace: Path, pi_bin: str = "pi",
-                 pricing: PricingSource | None = None):
+    @property
+    def running(self) -> bool: ...
+
+    def interrupt(self) -> bool: ...
+
+    async def run(self, prompt: str, transcript: Path, *,
+                  model: str | None = None, thinking: str | None = None,
+                  effort: str | None = None, timeout_s: int = 2700,
+                  extra_env: dict | None = None,
+                  startup_timeout_s: float | None = None,
+                  extensions: list[str] | None = None,
+                  hat_tools: list | None = None) -> IterationResult: ...
+
+
+class _ChildProcessRunner:
+    """The child-process path every `AgentRunner` implementation shares.
+
+    A subclass builds its own argv and env and calls `_run_child`, which
+    owns everything after that: the spawn (`start_new_session=True`,
+    `agent_child_kwargs()`), the prompt on stdin, the pump, the startup
+    watchdog, the timeout -> SIGINT -> `SHUTDOWN_GRACE_S` -> SIGKILL
+    ladder, the reap and the `interrupted` verdict. The per-line work is one
+    overridable hook, `_handle_line`, whose default treats every line as a
+    pi NDJSON event: scan it, scrub it, append it, index it.
+    """
+
+    def __init__(self, workspace: Path, pricing: PricingSource | None = None):
         self.workspace = workspace
-        self.pi_bin = pi_bin
         # Task 052 (#10): optional host-side rate table, consulted ONLY when
         # the provider quotes no price of its own (see _accumulate_cost).
         self.pricing = pricing
@@ -181,7 +231,7 @@ class PiRunner:
         return self._proc is not None and self._proc.returncode is None
 
     def interrupt(self) -> bool:
-        """SIGINT the running pi process group. Returns False if none running.
+        """SIGINT the running agent process group. Returns False if none running.
 
         Task 001 (curing the gate red at `472d055`, duration_s=61.06,
         exit_code=-9, timed_out=True): `start_new_session=True` makes the
@@ -215,45 +265,10 @@ class PiRunner:
         except ProcessLookupError:
             return False
 
-    async def run(
-        self,
-        prompt: str,
-        transcript: Path,
-        model: str | None = None,
-        thinking: str | None = None,
-        effort: str | None = None,
-        timeout_s: int = 2700,
-        extra_env: dict | None = None,
-        startup_timeout_s: float | None = None,
-        extensions: list[str] | None = None,
-    ) -> IterationResult:
-        cmd = [self.pi_bin, "-p", "--mode", "json", "--no-session"]
-        # Task 033 (#114): phase-scoped extensions -- `pi -e <path>` per
-        # entry. The engine passes these for the steer hat's live tool
-        # surface only (`LoopSupervisor._hat_extensions`); every other
-        # phase's argv is unchanged, because an extension placed in the
-        # agent's global `~/.pi/agent/extensions/` would register those
-        # tools for EVERY hat and silently widen the authority boundary
-        # the tool surface exists to be (PRD requirement H).
-        for path in extensions or ():
-            cmd += ["-e", str(path)]
-        if model:
-            cmd += ["--model", model]
-        # Task 007 (PRD requirement C): `thinking`/`effort` are the two
-        # provider-shaped halves of a hat's `config.HatBundle` -- pi's own
-        # CLI exposes exactly one flag for either (`--thinking <level>`;
-        # pi translates it into whatever the resolved model's own family
-        # needs, reasoning_effort included), so both compose onto the same
-        # flag. `thinking` wins when a bundle somehow carries both (never
-        # true for a bundle `JobConfig.bundle_for` itself produces -- see
-        # its docstring), so an `effort`-only bundle (an OpenAI-family hat)
-        # is never silently overridden by a stray Anthropic-shaped level,
-        # and is never left with NO flag either: its own value still reaches
-        # pi, just composed from its own field.
-        if thinking:
-            cmd += ["--thinking", thinking]
-        elif effort:
-            cmd += ["--thinking", effort]
+    @staticmethod
+    def _child_env(extra_env: dict | None) -> dict:
+        """The child's environment: this process's, plus `extra_env`, minus
+        every control-plane coordinate."""
         # Task 003 (#62, requirement A): an iteration never inherits the
         # coordinates that locate or authenticate to the engine's own
         # control-plane API, however they got into this process's
@@ -263,8 +278,18 @@ class PiRunner:
         env = {**os.environ, **(extra_env or {})}
         for _name in CONTROL_PLANE_ENV_VARS:
             env.pop(_name, None)
+        return env
 
-        result = IterationResult()
+    async def _run_child(self, cmd: list[str], env: dict, prompt: str,
+                         transcript: Path, result: IterationResult,
+                         timeout_s: float, startup_timeout_s: float | None,
+                         *, model: str | None = None) -> IterationResult:
+        """Run `cmd` to completion under the shared ladder and fill `result`.
+
+        `model` is the ref the engine requested; the default line hook
+        prices against it (or, unpinned, against the model the agent
+        reported).
+        """
         _t0 = time.monotonic()
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -274,7 +299,7 @@ class PiRunner:
             cwd=str(self.workspace),
             env=env,
             limit=STREAM_LIMIT,
-            start_new_session=True,  # own pgid so SIGINT hits pi, not the engine
+            start_new_session=True,  # own pgid so SIGINT hits the agent, not the engine
             # Task 020 (#48): under the uid boundary the iteration runs as the
             # `agent` uid while the engine keeps a real uid of 0, so nothing
             # this subprocess (or any tool it spawns) can signal the
@@ -310,22 +335,11 @@ class PiRunner:
                         line = await self._proc.stdout.readline()
                         if not line:
                             break
-                        saw_event = self._scan_line(line, result,
-                                                    pricing=self.pricing,
-                                                    model=model)
+                        saw_event = self._handle_line(line, out, result,
+                                                      live_index, transcript,
+                                                      model=model)
                         if saw_event and not first_traffic.is_set():
                             first_traffic.set()
-                        # Mechanical secret redaction (task 060): scrub any
-                        # known secret value before it ever touches disk --
-                        # scanning above uses the raw bytes so sentinel/usage
-                        # extraction is unaffected either way.
-                        scrubbed = scrub_text(line.decode(errors="replace"))
-                        # Writes, flushes, feeds and provenance-stamps the
-                        # line, checking first that nothing but this very
-                        # writer has touched the transcript since its own
-                        # last write (task cure-01-01-4).
-                        live_index.append(out, scrubbed, transcript)
-                        live_index.flush(transcript.parent)
                 # The stream ended (clean EOF, a timeout/interrupt further
                 # down, or the process just dying) -- flush whatever the
                 # last partial batch left unwritten so a reader stopped
@@ -532,6 +546,45 @@ class PiRunner:
             result.interrupted = True
         return result
 
+    def _handle_line(self, raw: bytes, out, result: IterationResult,
+                     live_index: render_index.LiveRenderIndex,
+                     transcript: Path, *, model: str | None = None) -> bool:
+        """Handle one line of the child's merged stdout/stderr.
+
+        Returns True iff the line is agent traffic, which is what the
+        startup watchdog waits for. The default scans the raw bytes as a pi
+        event, then scrubs the line and appends it to the transcript.
+        """
+        saw_event = _scan_pi_line(
+            raw, lambda msg: self._scan_message_end(msg, result, self.pricing,
+                                                    model))
+        # Mechanical secret redaction (task 060): scrub any
+        # known secret value before it ever touches disk --
+        # scanning above uses the raw bytes so sentinel/usage
+        # extraction is unaffected either way.
+        scrubbed = scrub_text(raw.decode(errors="replace"))
+        # Writes, flushes, feeds and provenance-stamps the
+        # line, checking first that nothing but this very
+        # writer has touched the transcript since its own
+        # last write (task cure-01-01-4).
+        live_index.append(out, scrubbed, transcript)
+        live_index.flush(transcript.parent)
+        return saw_event
+
+    def _scan_message_end(self, msg: dict, result: IterationResult,
+                          pricing: PricingSource | None,
+                          model: str | None) -> None:
+        """Fold one assistant `message_end` into `result`; the cost step is
+        `_account_cost`."""
+        _scan_assistant_message(msg, result, pricing=pricing, model=model,
+                                account_cost=self._account_cost)
+
+    def _account_cost(self, usage: dict, result: IterationResult,
+                      pricing: PricingSource | None = None,
+                      model: str | None = None) -> None:
+        """Fold one message's usage into `result`'s cost fields."""
+        _accumulate_cost(usage, result, pricing=pricing, model=model)
+
     @staticmethod
     def _scan_line(line: bytes, result: IterationResult,
                    pricing: PricingSource | None = None,
@@ -543,42 +596,119 @@ class PiRunner:
         window watchdog uses this to distinguish a hang that produces
         nothing at all from an agent that's genuinely streaming).
         """
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            return False
-        if event.get("type") == "message_end":
-            msg = event.get("message", {})
-            if msg.get("role") == "assistant":
-                if msg.get("stopReason") == "error":
-                    result.error_message = msg.get("errorMessage", "unknown agent error")
-                text = "".join(c.get("text", "") for c in msg.get("content", [])
-                               if c.get("type") == "text")
-                if text.strip():
-                    result.final_text = text
-                # Task 012 (#14): the model *pi resolved*, not the ref the
-                # engine asked for -- which may be None (pi's own default),
-                # exactly the case where run state used to say `model: null`
-                # while every message on the wire named a concrete id.
-                resolved, raw = state.model_ids(msg.get("provider"), msg.get("model"))
-                if resolved:
-                    result.model, result.model_raw = resolved, raw
-                usage = msg.get("usage") or {}
-                for key in ("input", "output", "cacheRead", "cacheWrite", "totalTokens"):
-                    result.usage[key] = result.usage.get(key, 0) + (usage.get(key) or 0)
-                # Task 050 (#14): price against the id pi *reported* when the
-                # engine pinned no ref of its own. `model` is None for every
-                # unpinned run (`cfg.model_for(phase)` returns None and pi
-                # picks its own model) -- which is precisely the route
-                # `price_strategy: aws` was written for, so keying the rate
-                # lookup on the request alone meant it could never fire.
-                # A pinned ref still wins: an operator naming a ref decides
-                # which rate applies, even when it resolves to nothing (an
-                # unknown pinned ref stays `unavailable` rather than quietly
-                # borrowing the observed id's rate).
-                _accumulate_cost(usage, result, pricing=pricing,
-                                 model=model or result.model)
-        return True
+        return _scan_pi_line(
+            line, lambda msg: _scan_assistant_message(
+                msg, result, pricing=pricing, model=model))
+
+
+class PiRunner(_ChildProcessRunner):
+    """Runs `pi -p --mode json` as a subprocess, one call per iteration."""
+
+    def __init__(self, workspace: Path, pi_bin: str = "pi",
+                 pricing: PricingSource | None = None):
+        super().__init__(workspace, pricing=pricing)
+        self.pi_bin = pi_bin
+
+    async def run(
+        self,
+        prompt: str,
+        transcript: Path,
+        model: str | None = None,
+        thinking: str | None = None,
+        effort: str | None = None,
+        timeout_s: int = 2700,
+        extra_env: dict | None = None,
+        startup_timeout_s: float | None = None,
+        extensions: list[str] | None = None,
+        hat_tools: list | None = None,
+    ) -> IterationResult:
+        # `hat_tools` is the `AgentRunner` slot for a harness that wires
+        # ralphd's hat tools itself; pi receives them as `extensions`
+        # (`-e <path>`), so it ignores this argument.
+        cmd = [self.pi_bin, "-p", "--mode", "json", "--no-session"]
+        # Task 033 (#114): phase-scoped extensions -- `pi -e <path>` per
+        # entry. The engine passes these for the steer hat's live tool
+        # surface only (`LoopSupervisor._hat_extensions`); every other
+        # phase's argv is unchanged, because an extension placed in the
+        # agent's global `~/.pi/agent/extensions/` would register those
+        # tools for EVERY hat and silently widen the authority boundary
+        # the tool surface exists to be (PRD requirement H).
+        for path in extensions or ():
+            cmd += ["-e", str(path)]
+        if model:
+            cmd += ["--model", model]
+        # Task 007 (PRD requirement C): `thinking`/`effort` are the two
+        # provider-shaped halves of a hat's `config.HatBundle` -- pi's own
+        # CLI exposes exactly one flag for either (`--thinking <level>`;
+        # pi translates it into whatever the resolved model's own family
+        # needs, reasoning_effort included), so both compose onto the same
+        # flag. `thinking` wins when a bundle somehow carries both (never
+        # true for a bundle `JobConfig.bundle_for` itself produces -- see
+        # its docstring), so an `effort`-only bundle (an OpenAI-family hat)
+        # is never silently overridden by a stray Anthropic-shaped level,
+        # and is never left with NO flag either: its own value still reaches
+        # pi, just composed from its own field.
+        if thinking:
+            cmd += ["--thinking", thinking]
+        elif effort:
+            cmd += ["--thinking", effort]
+        env = self._child_env(extra_env)
+        return await self._run_child(cmd, env, prompt, transcript,
+                                     IterationResult(), timeout_s,
+                                     startup_timeout_s, model=model)
+
+
+def _scan_pi_line(line: bytes,
+                  on_message_end: Callable[[dict], None]) -> bool:
+    """Parse one pi NDJSON line and hand an assistant `message_end`'s
+    message to `on_message_end`. True iff the line parsed as JSON at all."""
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return False
+    if event.get("type") == "message_end":
+        msg = event.get("message", {})
+        if msg.get("role") == "assistant":
+            on_message_end(msg)
+    return True
+
+
+def _scan_assistant_message(msg: dict, result: IterationResult,
+                            pricing: PricingSource | None = None,
+                            model: str | None = None,
+                            account_cost: Callable[..., None] | None = None
+                            ) -> None:
+    """Fold one assistant message into `result`: error, final text, the
+    model it reports, token counters, then the cost via `account_cost`
+    (default `_accumulate_cost`)."""
+    account_cost = account_cost or _accumulate_cost
+    if msg.get("stopReason") == "error":
+        result.error_message = msg.get("errorMessage", "unknown agent error")
+    text = "".join(c.get("text", "") for c in msg.get("content", [])
+                   if c.get("type") == "text")
+    if text.strip():
+        result.final_text = text
+    # Task 012 (#14): the model *pi resolved*, not the ref the
+    # engine asked for -- which may be None (pi's own default),
+    # exactly the case where run state used to say `model: null`
+    # while every message on the wire named a concrete id.
+    resolved, raw = state.model_ids(msg.get("provider"), msg.get("model"))
+    if resolved:
+        result.model, result.model_raw = resolved, raw
+    usage = msg.get("usage") or {}
+    for key in ("input", "output", "cacheRead", "cacheWrite", "totalTokens"):
+        result.usage[key] = result.usage.get(key, 0) + (usage.get(key) or 0)
+    # Task 050 (#14): price against the id pi *reported* when the
+    # engine pinned no ref of its own. `model` is None for every
+    # unpinned run (`cfg.model_for(phase)` returns None and pi
+    # picks its own model) -- which is precisely the route
+    # `price_strategy: aws` was written for, so keying the rate
+    # lookup on the request alone meant it could never fire.
+    # A pinned ref still wins: an operator naming a ref decides
+    # which rate applies, even when it resolves to nothing (an
+    # unknown pinned ref stays `unavailable` rather than quietly
+    # borrowing the observed id's rate).
+    account_cost(usage, result, pricing=pricing, model=model or result.model)
 
 
 def _accumulate_cost(usage: dict, result: IterationResult,
