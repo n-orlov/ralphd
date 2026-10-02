@@ -119,14 +119,15 @@ def _bundle_from_leaf(leaf: object, fallback: HatBundle) -> HatBundle:
     """
     if isinstance(leaf, str):
         return HatBundle(model=leaf, thinking=fallback.thinking,
-                          effort=fallback.effort)
+                          effort=fallback.effort, harness=fallback.harness)
     if isinstance(leaf, Mapping):
         model = leaf.get("model", fallback.model)
         if "thinking" in leaf or "effort" in leaf:
             return HatBundle(model=model, thinking=leaf.get("thinking"),
-                              effort=leaf.get("effort"))
+                              effort=leaf.get("effort"),
+                              harness=fallback.harness)
         return HatBundle(model=model, thinking=fallback.thinking,
-                          effort=fallback.effort)
+                          effort=fallback.effort, harness=fallback.harness)
     return fallback
 
 

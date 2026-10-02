@@ -292,6 +292,13 @@ MODEL_HATS: tuple[str, ...] = (
     "planning", "worker", "verify", "review", "reflect", "router", "steer",
     "plan_review", "verdict_gate")
 
+# The agent harnesses a hat can run on. `pi` is the default and the only one
+# every hat has always used; `claude-code` runs the hat on the Claude Code
+# CLI. A hat's harness is resolved by `JobConfig.harness_for` and carried on
+# its `HatBundle`.
+HARNESSES: tuple[str, ...] = ("pi", "claude-code")
+DEFAULT_HARNESS = "pi"
+
 # The minimum Claude Code CLI version required to run iterations on the
 # claude-code harness. The wrapper checks this at startup and refuses to run
 # below it (requirement J.2).
@@ -356,6 +363,9 @@ class HatBundle:
     model: str | None = None
     thinking: str | None = None
     effort: str | None = None
+    # The agent harness the hat runs on (`HARNESSES`). A hat's tiers share
+    # it: a tier rung never carries its own harness.
+    harness: str = DEFAULT_HARNESS
 
 
 @dataclass
@@ -614,6 +624,8 @@ class JobConfig:
     # is still the only place a `JobConfig` is read for this and `bundle_for`
     # is still the only method it calls to do so.
     model_tiers: dict = field(default_factory=dict)  # hat -> tier -> leaf
+    # hat -> harness name (`HARNESSES`); an absent hat runs on `pi`.
+    harnesses: dict = field(default_factory=dict)
     api_token: str | None = None
     # Task 004 (#62 candidate 1, requirement A): a second, mandatory-by-
     # default secret gating *only* the mutating half of the API (see this
@@ -988,6 +1000,14 @@ class JobConfig:
         # more (task 006).
         return self.model
 
+    def harness_for(self, hat: str) -> str:
+        """The harness `hat` runs on: its `harnesses` entry for a known hat,
+        planning's entry for an unrecognised name (the same degradation
+        `model_for` applies), `pi` when nothing is configured."""
+        table = self.harnesses if isinstance(self.harnesses, dict) else {}
+        key = hat if hat in MODEL_HATS else UNRECOGNISED_HAT_FALLBACK
+        return table.get(key) or DEFAULT_HARNESS
+
     def bundle_for(self, phase: str) -> HatBundle:
         """Task 007 (PRD requirement C): the (model, thinking) bundle
         `loop.py`'s dispatch hands to `runner.PiRunner.run`, replacing the
@@ -1014,15 +1034,17 @@ class JobConfig:
           native vocabulary and never the OpenAI one.
         """
         model = self.model_for(phase)
+        harness = self.harness_for(phase)
         override = self.thinking_overrides.get(phase)
         if override is None:
-            return HatBundle(model=model, thinking=self.thinking)
+            return HatBundle(model=model, thinking=self.thinking,
+                              harness=harness)
         if isinstance(override, dict):
             return HatBundle(model=model, thinking=override.get("thinking"),
-                              effort=override.get("effort"))
+                              effort=override.get("effort"), harness=harness)
         if _model_family(model) == "openai":
-            return HatBundle(model=model, effort=override)
-        return HatBundle(model=model, thinking=override)
+            return HatBundle(model=model, effort=override, harness=harness)
+        return HatBundle(model=model, thinking=override, harness=harness)
 
     def provisioning_table(self) -> list[dict]:
         """Task 010 (#79, PRD requirement O), widened by task 006 (#68): the

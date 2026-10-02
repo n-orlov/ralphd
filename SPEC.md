@@ -1817,6 +1817,20 @@ logic in its own dedicated helper rather than calling either function --
 neither is a second RESOLUTION algorithm, both defer to `bundle_for` for
 any rung `model_tiers` leaves unset.
 
+**The bundle carries the hat's harness.** `HatBundle.harness` names the agent
+harness the hat runs on (`config.HARNESSES`: `pi` or `claude-code`; `pi` is the
+default). `JobConfig.harness_for(hat)` resolves it from job.yaml's `harnesses`
+map (§6.2): a known hat's own entry, an unrecognised hat name follows
+`planning`, and an absent entry is `pi`. `bundle_for` stamps it on every
+bundle and every tier rung of a hat shares it: a `model_tiers` leaf never names
+its own harness, so a hat's `trivial` and `hard` rungs always run on the same
+harness. The loop holds one runner per harness (`LoopSupervisor._runners`) and
+dispatches each iteration on `bundle.harness`; the router and the
+contract-repair re-ask use `harness_for("router")` and `harness_for(hat)`. A
+runner a test assigns to `sup.runner` serves every harness. An interrupt
+reaches every registered runner, and each iteration's `meta.json` records
+`harness`.
+
 **The resolver is a pure function, not a transition-table entry.**
 `tiers.resolve_bundle(hat, effective_tier, host_map) -> HatBundle` does no I/O,
 touches no clock, and never reads `JobConfig` itself (only `default_host_map`,
@@ -2925,6 +2939,7 @@ Every field:
 | `thinking` | string \| null | `null` | pi `--thinking` level, e.g. `medium`, `high` |
 | `thinking_overrides` | map hat→setting | `{}` | per-hat thinking/reasoning table (task 007, §4.7), same key vocabulary as `model_overrides` but never merged into it -- a model ref and its thinking setting are two independent axes. Each entry is either a plain `pi --thinking` string (the same vocabulary `thinking` speaks) or a provider-shaped object (`{thinking: ...}`/`{effort: ...}`); read together with `model_overrides` by `JobConfig.bundle_for`/`tiers.resolve_bundle` into a hat's `(model, thinking)` bundle. `job.yaml`-only |
 | `model_tiers` | map hat→tier→leaf | `{}` | the hat x tier host map's own job.yaml surface (task 002, §4.7): one leaf per `(hat, tier)` rung a job.yaml wants to name explicitly, `hat`/`tier` drawn from `MODEL_HATS`/`tiers.TIERS` (`trivial\|normal\|hard`) and `leaf` shaped like a `model_overrides` entry widened with an optional `model` key (`{model: ..., thinking: ...}`/`{model: ..., effort: ...}`, or a plain ref string). A rung this table leaves unset falls through to `bundle_for`'s already-resolved bundle for that hat, so a job.yaml naming only `model`/`models` still collapses every rung to the same bundle -- see §4.7. Settable in `job.yaml` directly, or from `start` with the repeatable `--model-for-tier HAT:TIER=REF` flag (task 004, §10.2), which merges rung by rung into this table over the `--template`'s and the registry's own `model_tiers:` key |
+| `harnesses` | map hat→harness | `{}` | the agent harness each hat runs on, one of `pi\|claude-code` (§4.7); `hat` is drawn from `MODEL_HATS`. An absent hat runs on `pi`, and an unrecognised hat name follows `planning`. A hat's tiers all share its harness |
 | `api_token` | string \| null | `null` | bearer token the API requires; `RALPHD_API_TOKEN` (how `start --api-token` delivers it) overrides |
 | `infra_startup_timeout_s` | float | `150.0` | how long a phase may run with **zero** parseable pi events before the engine kills it as an infra fault instead of waiting out `iteration_timeout_s` |
 | `infra_retry_backoff_s` | list[float] | `[2, 5, 15, 30, 60, 120, 300]` | sleep before each retry of the same phase after an infra-classified failure; the last value repeats. Fast at the start on purpose — a 30-second gateway blip should cost seconds, not minutes |

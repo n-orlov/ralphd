@@ -58,7 +58,7 @@ from .config import (
 from .faults import classify_fault, matched_signature
 from .llm import current_env
 from .pricing import resolve_pricing
-from .runner import IterationResult, PiRunner, last_nonblank_line
+from .runner import AgentRunner, IterationResult, PiRunner, last_nonblank_line
 from .skills import ambient_home, verify_placement_and_report
 from .state import (
     PAUSED_STATE,
@@ -304,6 +304,10 @@ class LoopSupervisor:
         self.runner = PiRunner(workspace,
                                pricing=resolve_pricing(cfg.pricing,
                                                        cfg.price_strategy))
+        # One runner per harness. `pi` is always registered; a harness a
+        # later task adds is registered next to it. A test that assigns a
+        # double to `self.runner` overrides every harness (`_runner_for`).
+        self._runners: dict[str, AgentRunner] = {"pi": self.runner}
         # Seed from any already-completed iterations on disk (0 for a
         # fresh run dir) so a restarted engine numbers its next iteration
         # N+1 instead of reusing/duplicating past numbers (PRD req 16).
@@ -1146,8 +1150,33 @@ class LoopSupervisor:
         like, was asked for by the operator (task 003, #11)."""
         return self._abort_reason is not None or self._operator_interrupted
 
+    def _runner_for(self, harness: str) -> AgentRunner:
+        """The runner that executes `harness`. A runner assigned to
+        `self.runner` after construction (a test double) wins for every
+        harness; otherwise the registered runner, or a clear error."""
+        if self.runner is not self._runners["pi"]:
+            return self.runner
+        runner = self._runners.get(harness)
+        if runner is None:
+            raise RuntimeError(
+                f"no runner registered for harness {harness!r} "
+                f"(registered: {sorted(self._runners)})")
+        return runner
+
+    def _interrupt_runners(self) -> bool:
+        """Interrupt every distinct runner; True when any delivered."""
+        seen: list = []
+        for r in (self.runner, *self._runners.values()):
+            if not any(r is x for x in seen):
+                seen.append(r)
+        delivered = False
+        for r in seen:
+            if r.interrupt():
+                delivered = True
+        return delivered
+
     def interrupt(self) -> bool:
-        delivered = self.runner.interrupt()
+        delivered = self._interrupt_runners()
         if delivered:
             # Only record it when a signal actually reached a running agent
             # -- an interrupt with nothing running changes no iteration's
@@ -1703,7 +1732,7 @@ class LoopSupervisor:
         # deferred-wait attempt (if the run somehow had one, which an
         # ending run never does) clears it before racing its own timer.
         self._deferred_wake.set()
-        self.runner.interrupt()
+        self._interrupt_runners()
 
     # -- prompts -----------------------------------------------------------
     def prompt_text(self, name: str) -> str:
@@ -2969,6 +2998,7 @@ class LoopSupervisor:
         (itdir / "prompt.md").write_text(prompt)
 
         meta = {"number": n, "phase": phase, "model": model,
+                "harness": bundle.harness,
                 "approach": self.run.read_status().get("approach"),
                 "startedAt": utcnow(),
                 # Task 027 (PRD requirement F.1, #158/#194): the two values
@@ -3061,7 +3091,8 @@ class LoopSupervisor:
             extension_kw = {}
             if exts := self._hat_extensions(phase):
                 extension_kw["extensions"] = exts
-            result = await self.runner.run(
+            runner = self._runner_for(bundle.harness)
+            result = await runner.run(
                 prompt, itdir / "output.jsonl", model=model,
                 thinking=bundle.thinking, effort=bundle.effort,
                 timeout_s=timeout,
@@ -8006,7 +8037,8 @@ class LoopSupervisor:
         self._router_calls += 1
         transcript = router_dir / f"{self._router_calls:04d}.jsonl"
         model = self.cfg.model_for("router")
-        result = await self.runner.run(
+        runner = self._runner_for(self.cfg.harness_for("router"))
+        result = await runner.run(
             prompt, transcript, model=model,
             timeout_s=self.cfg.router_timeout_s, extra_env=current_env())
         if result.usage:
@@ -8140,7 +8172,8 @@ class LoopSupervisor:
             "JSON object itself."
         )
         model = self.cfg.model_for(hat)
-        result = await self.runner.run(
+        runner = self._runner_for(self.cfg.harness_for(hat))
+        result = await runner.run(
             prompt, transcript, model=model,
             timeout_s=self.cfg.router_timeout_s, extra_env=current_env())
         if result.usage:

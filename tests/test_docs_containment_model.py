@@ -104,7 +104,7 @@ def test_the_doc_check_catches_every_dropped_claim(path: Path, claim: str):
 # --------------------------------------------------------------------------
 
 def _boundary_handler() -> ast.ExceptHandler:
-    """The `try` whose own body is the single `await self.runner.run(...)`."""
+    """The `try` whose own body is the single `await runner.run(...)` (the per-harness runner `_runner_for` picked)."""
     tree = ast.parse(LOOP_PY.read_text())
     found = []
     for node in ast.walk(tree):
@@ -115,7 +115,7 @@ def _boundary_handler() -> ast.ExceptHandler:
                for inner in ast.walk(stmt)):
             continue
         src = ast.unparse(node.body)
-        if "self.runner.run(" in src and "await" in src:
+        if "runner.run(" in src and "await" in src:
             found.append(node)
     assert len(found) == 1, (
         f"expected exactly one try/except around the agent await, got {len(found)}")
