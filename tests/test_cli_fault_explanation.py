@@ -57,6 +57,8 @@ from ralphd.engine.faults import (
     FAULT_REASON_WORK,
     INFRA_FAMILY_DESCRIPTIONS,
     INFRA_SIGNATURES,
+    REFUSED_FAMILY_DESCRIPTIONS,
+    REFUSED_SIGNATURES,
     classify_fault,
     explain_fault,
     matched_signature,
@@ -194,6 +196,19 @@ def test_every_signature_row_is_named_and_described(family, pattern):
 
 def test_infra_family_descriptions_have_no_orphans():
     assert set(INFRA_FAMILY_DESCRIPTIONS) == {f for f, _ in INFRA_SIGNATURES}
+
+
+@pytest.mark.parametrize("family,pattern", REFUSED_SIGNATURES)
+def test_every_refusal_row_is_named_and_described(family, pattern):
+    """v0.30 G.3: `ralphctl fault` names a refusal's family and meaning
+    exactly as it does an infra signature's."""
+    assert family in REFUSED_FAMILY_DESCRIPTIONS, \
+        f"refusal {pattern!r} belongs to an undescribed family {family!r}"
+    assert REFUSED_FAMILY_DESCRIPTIONS[family].strip()
+
+
+def test_refused_family_descriptions_have_no_orphans():
+    assert set(REFUSED_FAMILY_DESCRIPTIONS) == {f for f, _ in REFUSED_SIGNATURES}
 
 
 # The verbatim shapes tests/test_fault_classifier.py pins as infra: every one
@@ -763,6 +778,52 @@ def test_ralphctl_fault_output_is_unchanged_by_task014(tmp_path):
         "infra waits in this run\n"
         "gave up:   infra fault: worker iteration failed throughout a 210s "
         "infra outage\n")
+
+
+_REFUSAL_ERROR = ('401 {"type":"error","error":{"type":"authentication_error",'
+                  '"message":"invalid x-api-key"}}')
+
+
+def test_ralphctl_fault_explains_a_refusal_with_its_matched_signature(tmp_path):
+    """v0.30 G.3: a `refused` fault names its refusal family, what it means,
+    the pattern and the matched text, and the pause it is parked in."""
+    detail = {"reason": "provider_refused", "family": "authentication",
+              "message": _REFUSAL_ERROR, "httpStatus": 401, "phase": "worker",
+              "iteration": 3}
+    registry, run_dir = _dead_run(tmp_path, state="paused",
+                                  pauseReason="operator_input_needed",
+                                  pauseDetail=detail)
+    _write_iteration(run_dir, 3, _fault_meta(3, error=_REFUSAL_ERROR,
+                                             faultClass="refused"))
+    _events_file(run_dir, [])
+    r = _ctl(registry, "fault", "faulty")
+    assert r.returncode == 0, r.stderr
+    out = r.stdout
+    assert "fault:     refused (iteration 3, phase worker)" in out
+    assert "the provider refused the call with a non-transient 4xx" in out
+    assert ("signature: authentication -- the provider rejected the "
+            "credentials (pattern authentication_(?:error|failed), matched "
+            '"authentication_error")') in out
+    assert ("paused:    provider refused (authentication): 401 ") in out
+    assert "then ralphctl unpause" in out
+    # the re-derived verdict agrees with the recorded one: no divergence notice
+    assert "diverge" not in out.lower()
+
+
+def test_a_claude_code_refusal_reads_its_structured_status_back(tmp_path):
+    """The claude-code runner's structured evidence (`httpStatus`,
+    `errorType`) is persisted in meta.json, so the explanation re-derives
+    `refused` even when the error text carries a different status."""
+    text = "403 permission_error: API Error: 500 Internal server error"
+    registry, run_dir = _dead_run(tmp_path, state="running")
+    _write_iteration(run_dir, 2, _fault_meta(2, error=text, faultClass="refused",
+                                             httpStatus=403,
+                                             errorType="permission_error"))
+    _events_file(run_dir, [])
+    r = _ctl(registry, "fault", "faulty")
+    assert r.returncode == 0, r.stderr
+    assert "fault:     refused (iteration 2, phase worker)" in r.stdout
+    assert "signature: permission --" in r.stdout
 
 
 def test_ralphctl_fault_json_carries_the_shaping_and_the_text(tmp_path):

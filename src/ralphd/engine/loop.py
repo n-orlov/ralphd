@@ -58,8 +58,10 @@ from .config import (
 )
 from .faults import (
     FAULT_CLASS_RATE_LIMIT,
+    FAULT_CLASS_REFUSED,
     RATE_LIMIT_UNKNOWN_RESET_WAIT_S,
     classify_fault,
+    matched_refusal,
     matched_signature,
     rate_limit_resets_at,
 )
@@ -1261,7 +1263,7 @@ class LoopSupervisor:
         self._deferred_wake.set()
         return {"target": "idle", "signalled": False, "woken": True}
 
-    def pause(self, reason: str = "") -> None:
+    def pause(self, reason: str = "", detail: dict | None = None) -> None:
         """Hold the loop at the next iteration boundary (task 015's
         `pause`/`resume` seam, `POST /pause`).
 
@@ -1280,13 +1282,21 @@ class LoopSupervisor:
           status.json by `_persist_pause` below -- nobody typed it, so
           nothing else would tell the host the run is parked waiting for a
           human ruling rather than working.
+
+        `detail` (v0.30 G.2) is the sub-reason of an engine pause that shares
+        its `pauseReason` with review's own (`operator_input_needed`) but is
+        not a review rejection: `{"reason": "provider_refused", ...}`. It is
+        written as `pauseDetail` in the same status.json write as
+        `pauseReason`, and its presence keeps the review-pause machinery (the
+        no-ruling one-shot proceed, a ruling releasing the pause) away from
+        it.
         """
         self._pause.clear()
         self.run.emit("log", message="paused at next iteration boundary")
         if reason:
-            self._persist_pause(reason)
+            self._persist_pause(reason, detail)
 
-    def _persist_pause(self, reason: str) -> None:
+    def _persist_pause(self, reason: str, detail: dict | None = None) -> None:
         """Record an engine-initiated pause on status.json IMMEDIATELY (task
         036, requirement D.1/D.2, #142): `state: "paused"` plus
         `pauseReason: "<the edge that paused>"`, written at the escalation
@@ -1315,7 +1325,8 @@ class LoopSupervisor:
         current = status.get("state")
         if current == "finishing" or current in TERMINAL_STATES:
             return
-        self.run.update_status(state=PAUSED_STATE, pauseReason=reason)
+        self.run.update_status(state=PAUSED_STATE, pauseReason=reason,
+                               pauseDetail=detail)
         self.run.emit("log", message=(
             f"run state recorded `{PAUSED_STATE}` on status.json "
             f"(pauseReason: {reason}); `ralphctl rule {self.cfg.run_id} "
@@ -1417,6 +1428,11 @@ class LoopSupervisor:
         status = self.run.read_status()
         if status.get("state") != PAUSED_STATE:
             return
+        if status.get("pauseDetail"):
+            # v0.30 G.2: a provider refusal (or a rate-limit ceiling) pauses
+            # with `operator_input_needed` too, but no review rejection is
+            # behind it, so an unpause grants no one-shot proceed.
+            return
         reason = status.get("pauseReason")
         if reason not in self._NO_RULING_PROCEED_PAUSE_REASONS:
             return
@@ -1497,7 +1513,8 @@ class LoopSupervisor:
         if status.get("state") != PAUSED_STATE:
             return
         reason = status.get("pauseReason")
-        self.run.update_status(state="running", pauseReason=None)
+        self.run.update_status(state="running", pauseReason=None,
+                               pauseDetail=None)
         self.run.emit("log", message=(
             f"recorded pause cleared (pauseReason was: {reason}); resuming "
             f"approach {status.get('approach')} in the "
@@ -1542,6 +1559,10 @@ class LoopSupervisor:
         """
         status = self.run.read_status()
         if status.get("state") != PAUSED_STATE:
+            return False
+        if status.get("pauseDetail"):
+            # v0.30 G.2: a provider refusal is not answered by a ruling; only
+            # an unpause (after fixing the profile or credentials) releases it.
             return False
         if status.get("pauseReason") not in (
                 "operator_input_needed", "rejected_repeated_signature"):
@@ -2518,6 +2539,18 @@ class LoopSupervisor:
                 if outcome == "abort":
                     return result
                 continue
+            if fault == FAULT_CLASS_REFUSED:
+                # v0.30 G.2: a refusal waiting cannot fix. No retry and no
+                # outage accounting: refund the attempt, pause for the
+                # operator and park right here; an unpause re-runs the same
+                # work, an abort ends it.
+                self._refund_iteration("infra")
+                self.run.update_status(
+                    iterationsUsed=self.iterations_used_charged)
+                outcome = await self._pause_for_provider_refusal(phase, result)
+                if outcome == "abort":
+                    return result
+                continue
             if fault != "infra":
                 # The agent reached the model -- a success, or a genuine work
                 # failure it produced itself. Either way the outage (if there
@@ -2948,6 +2981,63 @@ class LoopSupervisor:
         self.run.emit("deadline_extended", phase=phase, waitedS=round(waited_s, 3),
                       rateLimitWaitTotalS=total, deadlineAt=deadline_at,
                       reason="rate limit wait")
+
+    # How much of a provider's refusal message is kept on status.json, the
+    # event and the notifier message.
+    PROVIDER_REFUSAL_MESSAGE_MAX = 500
+
+    async def _pause_for_provider_refusal(self, phase: str,
+                                          result: IterationResult) -> str:
+        """A `refused` iteration (v0.30 G.2): pause for the operator and park
+        in place. Returns "resume" (an unpause: the caller re-runs the same
+        work) or "abort" (the run is ending).
+
+        The pause is `operator_input_needed` with `pauseDetail = {"reason":
+        "provider_refused", "family", "message", "httpStatus", "phase",
+        "iteration"}`, the message scrubbed and bounded. A `provider_refused`
+        event and a notifier message quoting the scrubbed provider message
+        follow. No `operator_escalation` event is emitted: that shape routes
+        a restarted episode into review over a rejected approach, and there
+        is none here. Nothing is retried and the outage budget is not
+        touched. The time parked extends the deadline like any operator
+        pause (`_gate`).
+        """
+        refusal = matched_refusal(result.error_message or "",
+                                  getattr(result, "http_status", None),
+                                  getattr(result, "error_type", None)) or {}
+        family = refusal.get("family")
+        message = redact.scrub_text(result.error_message or "").strip()
+        message = message[:self.PROVIDER_REFUSAL_MESSAGE_MAX]
+        detail = {"reason": "provider_refused", "family": family,
+                  "message": message, "httpStatus": refusal.get("httpStatus"),
+                  "phase": phase, "iteration": self.iterations_used}
+        self.pause(reason="operator_input_needed", detail=detail)
+        self.run.emit("provider_refused", phase=phase,
+                      iteration=self.iterations_used, family=family,
+                      description=refusal.get("description"),
+                      match=refusal.get("match"),
+                      httpStatus=refusal.get("httpStatus"),
+                      errorType=getattr(result, "error_type", None),
+                      harness=getattr(result, "harness", None),
+                      message=message)
+        log.warning("iteration %s refused by the provider (%s): pausing for "
+                    "the operator", phase, family)
+        if self.notifier is not None:
+            text = (
+                f"ralphd {self.cfg.run_id}: the provider refused the {phase} "
+                f"iteration ({family or 'refused'}"
+                + (f": {refusal['description']}" if refusal.get("description")
+                   else "")
+                + "). It is not retried; the run is paused "
+                "(operator_input_needed, provider_refused).\n"
+                f"provider: {message}\n"
+                "fix the LLM profile or credentials (PUT /config/llm), then "
+                f"ralphctl unpause {self.cfg.run_id} re-runs the same work")
+            self._notify_escalation_delivery(text, reason="operator_input_needed")
+        await self._gate()
+        if self._abort_reason is not None:
+            return "abort"
+        return "resume"
 
     def _extend_deadline_by(self, waited_s: float) -> None:
         """Shared clock math for every kind of parked-time credit (task 016,
@@ -5391,6 +5481,9 @@ class LoopSupervisor:
                                # still routes this episode back into review
                                # over the same approach.)
                                pauseReason=None,
+                               # v0.30 G.2: the pause's sub-reason goes with
+                               # it; the refused work re-runs from here.
+                               pauseDetail=None,
                                iterationsBudget=self.cfg.iterations,
                                maxApproaches=self.cfg.max_approaches,
                                onComplete=self.cfg.on_complete, verdict=None,
@@ -10396,8 +10489,8 @@ class LoopSupervisor:
             # back (`claimed_from` is None for an already-in-progress pick
             # resumed from an earlier pass, which is left exactly as it
             # was found).
-            if claimed_from is not None and self._last_fault_class in ("infra",
-                                                                       "rate_limit"):
+            if claimed_from is not None and self._last_fault_class in (
+                    "infra", "rate_limit", "refused"):
                 for t in tasks_after.get("tasks", []):
                     if t.get("id") == assigned_id and t.get("status") == "in-progress":
                         t["status"] = claimed_from
@@ -11395,7 +11488,8 @@ class LoopSupervisor:
                 # no-progress evidence (task 059) -- skip stagnation
                 # bookkeeping entirely this pass.
                 continue
-            if self._last_fault_class in ("infra", "signal", "rate_limit"):
+            if self._last_fault_class in ("infra", "signal", "rate_limit",
+                                          "refused"):
                 # Task 117 (steering 005): an iteration whose own fault class
                 # is `"infra"` or `"signal"` reached this line either because
                 # the retry wrapper gave up on it (outage budget spent or

@@ -22,7 +22,7 @@ import math
 import re
 from datetime import datetime, timezone
 
-FaultClass = str  # "infra" | "work" | "signal" | "rate_limit"
+FaultClass = str  # "infra" | "work" | "signal" | "rate_limit" | "refused"
 
 # The three verdicts, as constants, because task 013 (#49) added the third one
 # and "is this class one of the ones we know about" became a question worth
@@ -51,8 +51,20 @@ FAULT_CLASS_SIGNAL = "signal"
 # claude-code runner reports: a pi error is text, and a pi text `429` or `rate
 # limit` stays `infra` through the `backpressure` signature family.
 FAULT_CLASS_RATE_LIMIT = "rate_limit"
+# The provider (or the claude-code harness itself) refused the call in a way
+# that waiting does not fix: an HTTP 400/401/403/404 that is not a rate limit,
+# such as a bad request, a rejected credential, a missing permission or model,
+# the subscription's third-party/extra-usage refusal, or a Claude Code CLI
+# below the minimum version. It is never `infra` (retrying it as an outage
+# burns the outage budget on a call that can never succeed), never `work` and
+# never `rate_limit`. The loop does not retry it: the run pauses for the
+# operator (`LoopSupervisor._pause_for_provider_refusal`), and an unpause
+# re-runs the same work. Decided by `matched_refusal` over
+# `REFUSED_SIGNATURES`.
+FAULT_CLASS_REFUSED = "refused"
 FAULT_CLASSES: tuple[str, ...] = (FAULT_CLASS_INFRA, FAULT_CLASS_WORK,
-                                 FAULT_CLASS_SIGNAL, FAULT_CLASS_RATE_LIMIT)
+                                 FAULT_CLASS_SIGNAL, FAULT_CLASS_RATE_LIMIT,
+                                 FAULT_CLASS_REFUSED)
 
 # The rate-limit wait used when the provider reported no `resetsAt`: wait
 # this long, then re-probe with the same work.
@@ -190,6 +202,108 @@ _INFRA_SIGNATURE_RES = tuple(
     for family, pattern in INFRA_SIGNATURES
 )
 
+# v0.30 G.1: the refusals that waiting does not fix -- the twin of
+# INFRA_SIGNATURES above, one (family, regex) row per shape, matched by
+# `matched_refusal` alone. A provider family counts only together with an
+# HTTP 400, 401, 403 or 404: the structured `http_status` when the runner
+# reported one (claude-code), else the first 4xx/5xx status token in the
+# error text (pi writes `<status> <body>`). A 429 or a 5xx never refuses,
+# whatever the body says. The `cc-*` families are the claude-code harness's
+# own pre-flight refusals: no request reached a provider, so they need no
+# status. Table order decides when several rows could match; the
+# extra-usage row precedes invalid-request because its body also carries
+# `invalid_request_error`.
+REFUSED_SIGNATURES: tuple[tuple[str, str], ...] = (
+    # The Claude Code CLI is older than CLAUDE_CODE_MIN_VERSION (or its
+    # version cannot be read), or is not there at all.
+    ("cc-version", r"claude_code_version_too_old"),
+    ("cc-cli-missing", r"claude_code_cli_not_found"),
+    # The agent uid resolved to root, so the wrapper was never spawned.
+    ("cc-root", r"claude_code_runs_as_root"),
+    # A subscription token sent from a third-party client (#284).
+    ("extra-usage", r"Third-party apps now draw from your extra usage"),
+    # The API's own error types (and the Agent SDK's names for them).
+    ("invalid-request", r"invalid_request(?:_error)?"),
+    ("authentication", r"authentication_(?:error|failed)"),
+    ("permission", r"permission_error"),
+    ("not-found", r"not_found_error"),
+)
+
+# What each refusal family MEANS, for the explanation surfaces. Every family
+# in REFUSED_SIGNATURES has an entry (asserted in
+# tests/test_fault_explanation.py).
+REFUSED_FAMILY_DESCRIPTIONS = {
+    "cc-version": "the Claude Code CLI is below the minimum version ralphd runs",
+    "cc-cli-missing": "the Claude Code CLI was not found",
+    "cc-root": "the claude-code harness refuses to run the agent as root",
+    "extra-usage": ("the subscription refused a third-party client: it would "
+                    "draw from extra usage, not the plan limits"),
+    "invalid-request": "the provider rejected the request as invalid",
+    "authentication": "the provider rejected the credentials",
+    "permission": "the credentials lack permission for this request",
+    "not-found": "the provider does not know the model or resource asked for",
+}
+
+# The families that need no HTTP status: the harness refused before any
+# request was sent.
+REFUSAL_FAMILIES_WITHOUT_STATUS = frozenset(
+    {"cc-version", "cc-cli-missing", "cc-root"})
+
+# The HTTP statuses a provider refusal family requires.
+REFUSED_HTTP_STATUSES = (400, 401, 403, 404)
+
+_REFUSED_SIGNATURE_RES = tuple(
+    (family, pattern, re.compile(pattern, re.IGNORECASE))
+    for family, pattern in REFUSED_SIGNATURES
+)
+
+# The first HTTP-status-shaped token in an error text: pi writes an API
+# error as `<status> <json body>`.
+_HTTP_STATUS_IN_TEXT_RE = re.compile(r"\b([45]\d\d)\b")
+
+
+def refusal_http_status(error_text: str | None,
+                        http_status: int | None = None) -> int | None:
+    """The HTTP status a refusal is judged by: the structured `http_status`
+    when the runner reported one, else the first 4xx/5xx token in the
+    error text, else None."""
+    if isinstance(http_status, int) and not isinstance(http_status, bool):
+        return http_status
+    found = _HTTP_STATUS_IN_TEXT_RE.search(error_text or "")
+    return int(found.group(1)) if found else None
+
+
+def matched_refusal(error_text: str | None, http_status: int | None = None,
+                    error_type: str | None = None) -> dict | None:
+    """Which row of ``REFUSED_SIGNATURES`` refuses this error, or None
+    (v0.30 G.1).
+
+    The row's pattern is searched in ``error_text``, then in ``error_type``.
+    A provider family also needs ``refusal_http_status`` to be 400, 401, 403
+    or 404; the ``cc-*`` families need no status. Returns the same shape as
+    ``matched_signature`` (``family``, ``description``, ``pattern``,
+    ``match``) plus ``httpStatus``, so ``ralphctl fault`` prints it the same
+    way.
+    """
+    text = error_text or ""
+    etype = error_type or ""
+    if not text and not etype:
+        return None
+    status = refusal_http_status(text, http_status)
+    for family, pattern, regex in _REFUSED_SIGNATURE_RES:
+        found = regex.search(text) or regex.search(etype)
+        if not found:
+            continue
+        if (family not in REFUSAL_FAMILIES_WITHOUT_STATUS
+                and status not in REFUSED_HTTP_STATUSES):
+            continue
+        return {"family": family,
+                "description": REFUSED_FAMILY_DESCRIPTIONS.get(family, ""),
+                "pattern": pattern,
+                "match": found.group(0),
+                "httpStatus": status}
+    return None
+
 # Why a fault got the class it got -- the classifier explaining ITSELF, in one
 # clause per branch of the ladder below, so the CLI and the hub cannot word the
 # same verdict differently (task 025, #18.4).
@@ -247,6 +361,12 @@ FAULT_REASON_RATE_LIMIT = (
     "the provider reported its rate limit as reached -- the run waits until "
     "the window resets and re-runs the same work, without spending an "
     "iteration or the outage budget")
+
+# v0.30 G.1: a refusal that waiting does not fix.
+FAULT_REASON_REFUSED = (
+    "the provider refused the call with a non-transient 4xx (or the "
+    "claude-code harness refused to start) -- it is not retried; the run "
+    "pauses for the operator, and an unpause re-runs the same work")
 
 
 def parse_resets_at(value) -> float | None:
@@ -483,6 +603,13 @@ def explain_fault(
     (an abort is never waited out) and before the watchdog and signature
     rungs, so a rate limit is never ``infra``. The returned dict then also
     carries ``rateLimit``: ``{"evidence", "type", "resetsAt"}``.
+
+    v0.30 G.1: the next rung is the refusal: when ``matched_refusal`` finds a
+    ``REFUSED_SIGNATURES`` row (a 400/401/403/404 from either harness, or a
+    claude-code pre-flight refusal), the class is ``"refused"`` and
+    ``signature`` is the matched refusal row. It follows the rate-limit rung,
+    so a 429 is never ``refused``, and precedes the watchdog and signature
+    rungs, so a refusal is never retried as ``infra``.
     """
     signature = matched_signature(error_text)
     is_failure = (
@@ -517,6 +644,10 @@ def explain_fault(
                 "rateLimit": {"evidence": evidence,
                               "type": info.get("rateLimitType"),
                               "resetsAt": rate_limit_resets_at(info)}}
+    refusal = matched_refusal(error_text, http_status, error_type)
+    if refusal is not None:
+        return {"faultClass": FAULT_CLASS_REFUSED,
+                "reason": FAULT_REASON_REFUSED, "signature": refusal}
     if no_traffic_timeout:
         return {"faultClass": "infra",
                 "reason": FAULT_REASON_NO_TRAFFIC_TIMEOUT,
@@ -672,6 +803,9 @@ def classify_fault(
     says the subscription's rate limit was reached -- see
     ``rate_limit_evidence``. A pi error carries none of these, so pi's
     classes are unchanged.
+
+    v0.30 G.1: returns ``"refused"`` for a non-transient refusal from either
+    harness -- see ``matched_refusal``.
     """
     return explain_fault(
         error_text=error_text,

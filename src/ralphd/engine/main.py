@@ -315,6 +315,8 @@ async def amain() -> int:
                       health="ok", infraWait=None,
                       # v0.30 F.2: likewise the rate-limit wait.
                       rateLimitWait=None,
+                      # v0.30 G.2: and the pause's sub-reason.
+                      pauseDetail=None,
                       # Task 006 (#16): the approach *denominator*, written
                       # with the very first status write rather than only when
                       # the loop reaches `running`, so no surface has to

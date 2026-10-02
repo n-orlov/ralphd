@@ -95,6 +95,7 @@ from ..engine.state import (
     format_last_tool_call,
     format_local_time,
     format_rate_limit_wait_line,
+    format_pause_detail_line,
     format_provisioning_lines,
     escalation_pause_markers,
     format_router_calls_listing,
@@ -3878,6 +3879,8 @@ def cmd_status(args):
         status.setdefault("infraWait", None)
         # v0.30 F.2: same for the rate-limit wait.
         status.setdefault("rateLimitWait", None)
+        # v0.30 G.2: and for the pause's sub-reason.
+        status.setdefault("pauseDetail", None)
         # Task 020 (#5): same for the reflect verdict -- null means "no
         # reflect iteration has finished" (reflect off, or not there yet).
         status.setdefault("reflect", None)
@@ -4172,6 +4175,10 @@ def cmd_status(args):
     lines.extend(_format_degraded_lines(status))
     # v0.30 F.2: a run waiting for a rate-limit window to reset says so.
     lines.extend(_format_rate_limit_wait_lines(status))
+    # v0.30 G.2: a run paused on a provider refusal says what was refused.
+    _pause_line = format_pause_detail_line(status.get("pauseDetail"))
+    if _pause_line:
+        lines.append(_pause_line)
     # Task 003: a `reason:` line whenever status.json carries a non-empty
     # `reason` (set by the engine on terminal failed/aborted states, or the
     # engine-error path) -- previously only visible via --json.

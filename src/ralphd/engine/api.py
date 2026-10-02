@@ -184,6 +184,8 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         s.setdefault("infraWait", None)
         # v0.30 F.2: same for the rate-limit wait.
         s.setdefault("rateLimitWait", None)
+        # v0.30 G.2: and for the pause's sub-reason (provider_refused).
+        s.setdefault("pauseDetail", None)
         # Task 019 (#5): same for the reflect phase's verdict -- null means
         # "no reflect iteration has finished" (reflect off, or not there yet),
         # never "an older engine wrote this run dir".

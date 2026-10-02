@@ -579,8 +579,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # G3 (this run): +80 tests / +5 modules (smoke), +80 tests / +5 modules
     # (fast), measured `.venv/bin/python -m pytest -q -m fast --collect-only`
     # -> fast 7036/482, `-m smoke` -> smoke 5336/358.
-    "fast": {"tests": 7053, "modules": 483},
-    "smoke": {"tests": 5353, "modules": 359},
+    # T09 (this run): +104 tests / +1 module in fast and +93 tests / +1
+    # module in smoke (tests/test_refused_fault.py, plus refusal cases in
+    # test_fault_classifier.py and test_cli_fault_explanation.py), measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> fast
+    # 7157/484, `-m smoke` -> smoke 5446/360.
+    "fast": {"tests": 7157, "modules": 484},
+    "smoke": {"tests": 5446, "modules": 360},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

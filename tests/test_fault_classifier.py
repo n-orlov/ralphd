@@ -11,11 +11,15 @@ import pytest
 
 from ralphd.engine.faults import (
     FAULT_CLASS_RATE_LIMIT,
+    FAULT_CLASS_REFUSED,
     FAULT_CLASS_SIGNAL,
     FAULT_REASON_RATE_LIMIT,
+    FAULT_REASON_REFUSED,
+    REFUSED_SIGNATURES,
     classify_fault,
     effective_utilization,
     explain_fault,
+    matched_refusal,
     parse_resets_at,
     rate_limit_resets_at,
 )
@@ -420,3 +424,122 @@ def test_the_window_for_the_reported_type_decides_reset_and_utilization():
     assert effective_utilization(other) == 0.96
     assert effective_utilization(None) is None
     assert rate_limit_resets_at({"status": "rejected"}) is None
+
+
+# -- v0.30 G.1: the `refused` class -------------------------------------------
+
+def _api_error(status: int, etype: str, message: str) -> str:
+    """pi's in-band text for an Anthropic API error: `<status> <json body>`."""
+    return (f'{status} {{"type":"error","error":{{"type":"{etype}",'
+            f'"message":"{message}"}}}}')
+
+
+EXTRA_USAGE = "Third-party apps now draw from your extra usage, not your plan limits"
+
+# (id, error_text, family): text only, the shape pi reports.
+_REFUSAL_TEXT_CASES = [
+    ("extra-usage", _api_error(400, "invalid_request_error", EXTRA_USAGE),
+     "extra-usage"),
+    ("invalid-request", _api_error(400, "invalid_request_error",
+                                   "max_tokens: 64000 > 32000"),
+     "invalid-request"),
+    ("authentication", _api_error(401, "authentication_error",
+                                  "invalid x-api-key"), "authentication"),
+    ("permission", _api_error(403, "permission_error",
+                              "not allowed to use this model"), "permission"),
+    ("not-found", _api_error(404, "not_found_error", "model: claude-nope"),
+     "not-found"),
+    ("cc-version", "claude_code_version_too_old: Claude Code 2.1.75 at "
+                   "/usr/bin/claude is older than 2.1.280", "cc-version"),
+    ("cc-root", "claude_code_runs_as_root: the agent uid resolved to 0",
+     "cc-root"),
+    ("cc-cli-missing", "claude_code_cli_not_found: /usr/bin/claude",
+     "cc-cli-missing"),
+]
+
+
+@pytest.mark.parametrize("error_text,family",
+                         [c[1:] for c in _REFUSAL_TEXT_CASES],
+                         ids=[c[0] for c in _REFUSAL_TEXT_CASES])
+@pytest.mark.parametrize("exit_code,traffic", [(0, False), (1, True)],
+                         ids=["exit0-no-traffic", "exit1-traffic"])
+def test_a_text_refusal_classifies_refused(error_text, family, exit_code, traffic):
+    exp = explain_fault(error_text=error_text, exit_code=exit_code,
+                        produced_traffic=traffic)
+    assert exp["faultClass"] == FAULT_CLASS_REFUSED
+    assert exp["reason"] == FAULT_REASON_REFUSED
+    assert exp["signature"]["family"] == family
+    assert exp["signature"]["match"] in error_text
+
+
+@pytest.mark.parametrize("status,etype,family", [
+    (400, "invalid_request", "invalid-request"),
+    (401, "authentication_failed", "authentication"),
+    (403, "permission_error", "permission"),
+    (404, "not_found_error", "not-found"),
+])
+def test_a_structured_status_and_type_classify_refused(status, etype, family):
+    """claude-code: the status and the SDK's error type are structured; the
+    text may say anything (here a body the CLI got wrong)."""
+    exp = explain_fault(error_text=f"{status} {etype}: API Error",
+                        exit_code=1, http_status=status, error_type=etype)
+    assert exp["faultClass"] == FAULT_CLASS_REFUSED
+    assert exp["signature"]["family"] == family
+    assert exp["signature"]["httpStatus"] == status
+    # the type alone finds the family when the text does not name it
+    assert matched_refusal("API Error", status, etype)["family"] == family
+
+
+@pytest.mark.parametrize("error_text,kwargs", [
+    # a provider family needs a 400/401/403/404
+    ("invalid_request_error: bad", {}),
+    (_api_error(500, "invalid_request_error", "odd"), {}),
+    (_api_error(503, "permission_error", "odd"), {}),
+    ("invalid_request_error", {"http_status": 500}),
+    ("invalid_request_error", {"http_status": 502}),
+    # an unknown 4xx body stays where it was
+    (_api_error(400, "something_else", "odd"), {}),
+    (_api_error(413, "request_too_large", "too big"), {}),
+], ids=["no-status", "text-500", "text-503", "status-500", "status-502",
+        "unknown-type", "413"])
+def test_a_5xx_or_statusless_body_is_never_refused(error_text, kwargs):
+    assert classify_fault(error_text=error_text, exit_code=1,
+                          **kwargs) != FAULT_CLASS_REFUSED
+    assert matched_refusal(error_text, kwargs.get("http_status")) is None
+
+
+def test_a_429_is_a_rate_limit_never_refused():
+    text = _api_error(429, "rate_limit_error", "invalid_request_error lookalike")
+    assert classify_fault(error_text=text, exit_code=1, http_status=429,
+                          error_type="rate_limit") == FAULT_CLASS_RATE_LIMIT
+    # pi's text 429 stays infra
+    assert classify_fault(error_text=text, exit_code=1) == "infra"
+    assert matched_refusal(text, 429, "invalid_request") is None
+
+
+@pytest.mark.parametrize("error_text",
+                         [case[1] for case in _INFRA_FAMILY_CASES],
+                         ids=[case[0] for case in _INFRA_FAMILY_CASES])
+def test_every_infra_family_case_is_still_infra_and_never_refused(error_text):
+    assert matched_refusal(error_text) is None
+    assert classify_fault(error_text=error_text, exit_code=1,
+                          produced_traffic=True) == "infra"
+
+
+def test_refusal_beats_the_watchdog_and_the_signature_rungs():
+    """A refusal whose body also reads infra-shaped (an `Internal server
+    error` text beside a structured 400) is refused, not retried."""
+    assert classify_fault(error_text="400 invalid_request: Internal server error",
+                          exit_code=1, http_status=400,
+                          error_type="invalid_request") == FAULT_CLASS_REFUSED
+    assert classify_fault(error_text=_api_error(401, "authentication_error", "x"),
+                          no_traffic_timeout=True) == FAULT_CLASS_REFUSED
+
+
+def test_an_abort_is_never_a_refusal():
+    assert classify_fault(error_text=_api_error(401, "authentication_error", "x"),
+                          operator_abort=True) == "work"
+
+
+def test_every_refusal_family_has_a_text_case():
+    assert {c[2] for c in _REFUSAL_TEXT_CASES} == {f for f, _ in REFUSED_SIGNATURES}

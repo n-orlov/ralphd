@@ -32,8 +32,11 @@ from . import privsep
 from . import transitions
 from .faults import (
     FAULT_CLASS_RATE_LIMIT,
+    FAULT_CLASS_REFUSED,
     FAULT_REASON_RATE_LIMIT,
+    FAULT_REASON_REFUSED,
     explain_fault,
+    matched_refusal,
     matched_signature,
 )
 from .redact import redact_job_yaml, scrub_text
@@ -7924,7 +7927,7 @@ def _recorded_fault_notice(detail: dict, recorded_fault, derived: dict) -> str |
 # memory to answer one question.
 FAULT_EVENT_TYPES = ("infra_retry", "infra_wait", "infra_recovered",
                      "reflect_infra_delay", "rate_limit_wait_started",
-                     "rate_limit_wait_ended")
+                     "rate_limit_wait_ended", "provider_refused")
 
 
 def meta_provider_evidence(meta: dict) -> dict:
@@ -7955,6 +7958,29 @@ def format_rate_limit_wait_line(wait) -> str | None:
     rl_type = wait.get("type") or "unknown type"
     return (f"waiting:   rate limit ({rl_type}) until "
             f"{format_local_time(wait.get('resetsAt'))}")
+
+
+# v0.30 G.2: how much of a refused provider message the `paused:` line quotes.
+PAUSE_DETAIL_MESSAGE_MAX = 200
+
+
+def format_pause_detail_line(detail) -> str | None:
+    """The one wording of a pause's sub-reason (status.json `pauseDetail`),
+    shared by `ralphctl status` and `ralphctl fault`: for a provider refusal,
+    `paused:    provider refused (<family>): <message> -- fix the profile or
+    credentials, then ralphctl unpause`. None when there is no detail."""
+    if not isinstance(detail, dict) or not detail.get("reason"):
+        return None
+    reason = str(detail["reason"])
+    if reason == "provider_refused":
+        line = f"paused:    provider refused ({detail.get('family') or 'unknown'})"
+        message = _one_line(str(detail.get("message") or "").strip(),
+                            PAUSE_DETAIL_MESSAGE_MAX)
+        if message:
+            line += f": {message}"
+        return (line + " -- fix the profile or credentials (PUT /config/llm), "
+                "then ralphctl unpause")
+    return f"paused:    {reason.replace('_', ' ')}"
 
 
 def read_events(run_root: Path, types=None, limit: int | None = None) -> list[dict]:
@@ -8156,6 +8182,8 @@ def fault_explanation(run_root: Path) -> dict:
     last_retry = attempts[-1] if attempts else None
     rate_limit_wait = status.get("rateLimitWait")
     rate_limit_wait = rate_limit_wait if isinstance(rate_limit_wait, dict) else None
+    pause_detail = status.get("pauseDetail")
+    pause_detail = pause_detail if isinstance(pause_detail, dict) else None
 
     exp: dict = {
         "hasFault": False,
@@ -8176,6 +8204,9 @@ def fault_explanation(run_root: Path) -> dict:
         "notices": [],
         # v0.30 F.2: status.json's rate-limit wait in progress, or None.
         "rateLimitWait": rate_limit_wait,
+        # v0.30 G.2: status.json's pause sub-reason (a provider refusal), or
+        # None.
+        "pauseDetail": pause_detail,
     }
 
     if detail is not None:
@@ -8264,6 +8295,17 @@ def fault_explanation(run_root: Path) -> dict:
         if exp["faultClass"] is None:
             exp["faultClass"] = FAULT_CLASS_RATE_LIMIT
             exp["reason"] = FAULT_REASON_RATE_LIMIT
+    if pause_detail is not None and pause_detail.get("reason") == "provider_refused":
+        # The run is parked on a refusal; when the refused iteration's
+        # meta.json cannot be read, the pause itself is the explanation.
+        exp["hasFault"] = True
+        if exp["faultClass"] is None:
+            exp["faultClass"] = FAULT_CLASS_REFUSED
+            exp["reason"] = FAULT_REASON_REFUSED
+            exp["phase"] = pause_detail.get("phase")
+            exp["error"] = pause_detail.get("message") or None
+            exp["signature"] = matched_refusal(
+                exp["error"], pause_detail.get("httpStatus"))
     exp["signatureDisplay"] = format_fault_signature(exp["signature"])
     exp["summaryLines"] = fault_summary_lines(exp)
     return exp
@@ -8311,6 +8353,9 @@ def fault_summary_lines(exp: dict) -> list[str]:
     waiting_line = format_rate_limit_wait_line(exp.get("rateLimitWait"))
     if waiting_line:
         lines.append(waiting_line)
+    pause_line = format_pause_detail_line(exp.get("pauseDetail"))
+    if pause_line:
+        lines.append(pause_line)
     health = exp.get("health")
     if health:
         state = f"health:    {health}"
