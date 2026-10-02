@@ -353,6 +353,13 @@ gateway, keep the gateway profile (`harness: pi`), put
 `CLAUDE_CODE_OAUTH_TOKEN` in its `env:`, and select the subscription hats with
 `--harness-for HAT=claude-code`.
 
+The gateway's routing stays in the container env for the pi hats only. A
+`claude-code` hat's wrapper removes `ANTHROPIC_BASE_URL`,
+`AWS_BEARER_TOKEN_BEDROCK`, every `ANTHROPIC_BEDROCK_*` and `ANTHROPIC_VERTEX_*`
+variable and `CLAUDE_CODE_USE_BEDROCK`/`CLAUDE_CODE_USE_VERTEX` from the
+environment its CLI sees, so it always talks to `api.anthropic.com` with
+`CLAUDE_CODE_OAUTH_TOKEN`, and the same profile serves both harnesses.
+
 ### When the provider refuses (`provider_refused`)
 
 A refusal that waiting does not fix is not retried. It is an HTTP 400, 401, 403
@@ -406,6 +413,26 @@ merges them, and each distinct pair is pinged once:
 ralphctl llm test claude-sub --hats --template mixed \
   --harness-for review=pi --model-for review=aigw-openai/some-model
 ```
+
+With `--hats`, the merged job is also checked as `start` checks it, with or
+without `--no-ping`: a `claude-code` hat whose model is not `anthropic/*` is
+refused with `start`'s message and exit `1` before any container runs.
+
+A gateway that resolves only on the host (a tailnet or VPN name) cannot be
+reached from the default docker bridge, and the ping fails `infra` with
+`getaddrinfo ENOTFOUND`. `--network NET` puts every ping container on that
+network, as `start --network` does; without the flag it takes the
+`--template`'s `job.yaml` `network:`, then the registry's `network:`, then
+the default bridge:
+
+```
+ralphctl llm test aigw-claude --hats --template deck --network host
+```
+
+When the runner exits non-zero without an error of its own, the `FAIL` line
+reads `infra: the runner exited N: <tail>`, the tail being the last 300
+characters of the child's stderr, scrubbed of the profile's secrets. A model
+the provider answers with `404 model_not_found` is `refused`, not `infra`.
 
 `--no-ping` stops after resolution. See `docs/cli.md` for every option.
 

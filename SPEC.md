@@ -580,7 +580,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/engine/contract_enforcement.py` | The re-prompt loop around `contracts.validate_payload` (task 010): malformed JSON, an absent payload, and valid JSON of the wrong shape are all ordinary cases here, re-prompted with the specific validation error up to `contract_retry_max` times, logged loudly to `events.jsonl`, and scored as one agent-fault iteration if the hat never recovers. |
 | `src/ralphd/engine/plan_ingestion.py` | Ingests the planner's file-borne `plan-proposal.json` as untrusted input (task 011): schema validation, then semantic lint (unresolvable `dependsOn`, cycles, duplicate ids, boilerplate `successCriteria`, a task gated on this run's own terminal state), then apply — initialising every task to `pending` regardless of what the planner wrote for `status`. |
 | `src/ralphd/engine/runner.py` | `AgentRunner` + `IterationResult`, and the one child-process path both runners share: spawn, pump and scrub NDJSON into `output.jsonl`, parse events and usage, scan for the exact sentinels, enforce the iteration timeout and the startup-window watchdog, and kill the process group on every exit path. `PiRunner` spawns one `pi` process; `ClaudeCodeRunner` spawns the `claude-code` wrapper (`python -m ralphd.harness.claude_code`) in a per-call scratch area, links the skills into its config dir, and demuxes the wrapper's raw SDK envelopes into a scrubbed `<stem>.claude.jsonl`. |
-| `src/ralphd/engine/llm_ping.py` | `ralphd-engine --llm-ping --harness H [--model M] [--timeout S]`, the far side of `ralphctl llm test` (§7.5): builds the runner an iteration on that harness uses (`PiRunner` or `ClaudeCodeRunner`) over a scratch workspace, sends a one-line prompt, judges the `IterationResult` with `faults.explain_fault` and prints one scrubbed JSON verdict line. It imports no SDK. |
+| `src/ralphd/engine/llm_ping.py` | `ralphd-engine --llm-ping --harness H [--model M] [--timeout S]`, the far side of `ralphctl llm test` (§7.5): builds the runner an iteration on that harness uses (`PiRunner` or `ClaudeCodeRunner`) over a scratch workspace, sends a one-line prompt, judges the `IterationResult` with `faults.explain_fault` and prints one scrubbed JSON verdict line. A non-zero exit with no error text of its own is reported as `the runner exited N: <tail>`, the tail being `runner_stderr_tail()`: the last 300 scrubbed characters of the child's stderr. It imports no SDK. |
 | `src/ralphd/engine/privsep.py` | The uid boundary (§13.4): resolve the account iterations run as, drop the engine's *effective* identity to it while keeping root real and saved, and hand every spawn site the kwargs that drop a child all the way down. `separated()` reads the live process credentials, so nothing claims a boundary the kernel is not enforcing; every function is a no-op with one warning when the engine did not start as root. `root_for_write()`/`write_root_owned_json()` (task 105, #60 requirement D) reuse the same boundary the other direction: momentarily raise the engine's own effective uid back to root to write a file root-owned, restoring it before returning. `write_protected_tasks_json()`/`release_protected_tasks_dir()` (task 004, requirement B, #202) close the gap `write_root_owned_json()` left open for `tasks.json` specifically -- a root-owned FILE in an agent-writable DIRECTORY still lets a dropped child `os.replace()` a substituted document onto it, a directory-entry operation gated by the parent, never the target -- by landing the authoritative copy inside a root-owned 0700 directory (`PROTECTED_TASKS_DIRNAME`, self-healed against a precreated file or a planted symlink on every write, not only at creation) and refreshing an ordinary agent-readable view copy alongside it; the protected directory is handed back to the agent uid at the engine's own shutdown funnel so a host-side `rm`/`DELETE` can still remove it. |
 | `src/ralphd/engine/api.py` | The FastAPI app: every route in §3.1, bearer-token enforcement, the SSE event stream, `GET /logs` tail and live-follow on top of `log_merge`, `PATCH /config/budget`, and the config CRUD that writes into the overlay and re-places creds/skills immediately. |
 | `src/ralphd/engine/faults.py` | `classify_fault()` — a pure function mapping a finished iteration to `"infra"`, `"work"`, `"signal"`, `"rate_limit"`, `"refused"` or `None` (§8.2), with `INFRA_SIGNATURES` and `REFUSED_SIGNATURES` as the two reviewable signature tables (one row per pattern, labelled by family) and the `aborted`/operator carve-out. No engine state. |
@@ -589,7 +589,7 @@ and detached outlives it — the daemon has no parentage notion to fall back on.
 | `src/ralphd/engine/redact.py` | The mechanical secret scrubber: build the value set from env vars and placed cred files, rebuild it after any creds/llm mutation, keep it in memory only, and expose `scrub_text` to the three write/serve points. Enforces the ≥8-character floor. |
 | `src/ralphd/harness/__init__.py` | The package for agent harnesses other than pi; docstring only. |
 | `src/ralphd/harness/normalise.py` | The pure SDK-message to pi-event normaliser. `Normaliser(model_ref=...)` takes plain dicts (`dataclasses.asdict` of an SDK message, tagged with a `kind` of `assistant`, `user`, `result` or `rate_limit`) through `feed` and returns pi-shaped events: `message_start`, `message_update` (`text_delta`/`text_end`, `thinking_start`/`thinking_delta`), exactly one `tool_execution_start` per tool call, `tool_execution_end`, and one `message_end` per assistant message id with `usage` counted once per id (`input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens` as their sum), `provider: "anthropic"` and the SDK model id. SDK tool names map to pi names (`Read` to `read`, `mcp__ralphd__X` to `X`) and `file_path` maps to `path`. A final `result` text that differs from the last assistant text is emitted as a trailing assistant `message_end`, so `final_text` and `saw_complete` read the promise line. `finish(error)` emits an in-band `message_end` with `stopReason: "error"` and an `errorMessage` of `<status> <type>: <message>`, plus `ralphd: {httpStatus, errorType}` hints for humans. It imports no SDK and does no I/O, so the engine process can import it. |
-| `src/ralphd/harness/claude_code.py` | The `claude-code` harness wrapper, run as a child process and the only module that imports `claude_agent_sdk`: scrubs its own env, refuses a CLI below `CLAUDE_CODE_MIN_VERSION`, calls the SDK's `query()` with an isolated Claude Code (fresh config dir and home, no setting sources, no persisted session, `bypassPermissions`, exactly the six built-in tools, `EFFORT_TABLE`), and prints a raw envelope plus the normalised pi events for every SDK message. `--probe-version` prints the SDK and CLI versions. |
+| `src/ralphd/harness/claude_code.py` | The `claude-code` harness wrapper, run as a child process and the only module that imports `claude_agent_sdk`: scrubs its own env (credentials, `CLAUDE_CODE_*` and gateway/cloud routing, §6.5), refuses a CLI below `CLAUDE_CODE_MIN_VERSION`, calls the SDK's `query()` with an isolated Claude Code (fresh config dir and home, no setting sources, `skills=[]`, no persisted session, `bypassPermissions`, exactly the six built-in tools, `EFFORT_TABLE`), and prints a raw envelope plus the normalised pi events for every SDK message. `--probe-version` prints the SDK and CLI versions. |
 | `src/ralphd/engine/commit_scan.py` | Task 029 (PRD v0.25 requirement I.2, #210): the git sink's bound. `redact.py` scrubs known secret VALUES out of everything the engine persists or serves; a commit the worker writes and pushes is neither, and that sink is irrevocable. `scan_commits_for_secrets` is the detector — VALUE matching only against the redaction map's `value -> label` pairs, never a "looks like a token" shape, over every commit in a boundary range's MESSAGE and then DIFF. `push_if_clean` is the engine-side gate (scan first; a `git push` subprocess starts only on a clean scan), `install_push_gate`/`gate_push_refs`/`hook_main` are the same scan reached from git's OWN `pre-push` hook through an engine-owned `core.hooksPath` outside the workspace — the layer that stops the WORKER's own mid-iteration push, which the task boundary is too late to prevent — and `refusal_text` is the one refusal spelling, naming the variable NAME only and never the matched value. `LoopSupervisor._scan_task_boundary_commits`/`_install_commit_scan_push_gate` are the production call sites; fails open on an unreadable git read, like its `loop.py` siblings. |
 | `src/ralphd/engine/creds.py` | `place_creds()`: `/config/creds` (plus overlay and tombstones) → `~/.creds/*.env` at `0600`, conventional extras (`gitconfig`, `git-credentials`, `netrc`, `ssh/`), and the one-shot `setup.sh` escape hatch. Logs names, never contents. |
 | `src/ralphd/engine/skills.py` | `place_skills()`: rebuild `~/.pi/agent/skills/` from scratch (symlinks) out of mounted skills, API-origin overlay skills that win over same-named mounted ones, and tombstones — cheap enough to re-run after every mutation, so skill CRUD needs no restart. `link_skills()` links the same sources into a `claude-code` iteration's config dir, and `verify_placement()` checks both roots. |
@@ -2740,6 +2740,7 @@ still runs.
 | `model` | string \| null | the model reference the engine *requested*; `null` means the agent's own default |
 | `modelResolved` | string \| null | the `provider/model` reference the iteration's own messages reported — the answer when `model` is `null` |
 | `modelRaw` | string \| null | the provider's own id, when it differs from the resolved reference |
+| `harness` | string | the agent harness the iteration ran on, `pi` or `claude-code`; absent from an iteration recorded before v0.30. `ralphctl iteration` and the hub print it beside the model (§11) |
 | `approach` | int \| null | the approach this iteration belongs to |
 | `startedAt` / `endedAt` | string | UTC ISO-8601; a missing `endedAt` means the iteration never finished |
 | `steeringDelivered` | array | steering file names this iteration's prompt carried |
@@ -3170,6 +3171,27 @@ its `Skill` tool, so it does not discover that directory itself. The wrapper put
 a skills index (each skill's name, front-matter `description` and absolute
 `SKILL.md` path) in the system prompt, and the agent reads a skill with `Read`,
 the way pi's agent does.
+
+The wrapper also keeps Claude Code's own bundled skills (`deep-research`,
+`code-review`, `schedule`, ...) away from the agent. It passes the SDK's
+`skills=[]`, the documented way to suppress every skill from the listing, on
+top of the missing `Skill` tool: with that tool not offered the bundled skills
+never reach the model's request, and `skills=[]` keeps that true if the tool is
+ever added. The CLI's `init` event still lists them by name; that is
+informational and costs no prompt tokens.
+
+The same wrapper strips the routing a `claude-code` hat must not inherit. Its
+own `os.environ` loses `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`ANTHROPIC_BASE_URL`, `AWS_BEARER_TOKEN_BEDROCK`, every `ANTHROPIC_BEDROCK_*`
+and `ANTHROPIC_VERTEX_*` variable and every `CLAUDE_CODE_*` except
+`CLAUDE_CODE_OAUTH_TOKEN` (which covers `CLAUDE_CODE_USE_BEDROCK` and
+`CLAUDE_CODE_USE_VERTEX`), after every merge: the container env, the profile's
+`env:`, forwarded env and a mid-run `PUT /config/llm`. A `claude-code` hat
+therefore always talks to `api.anthropic.com` with `CLAUDE_CODE_OAUTH_TOKEN`,
+whatever a gateway profile sets. A `pi` hat keeps all of those variables, so a
+profile that carries both a gateway and the OAuth token (`aigw-claude`) serves
+both harnesses at once. The wrapper logs the removed names, never values, to
+its `stderr.log`.
 `examples/skills/toolchain-sibling/` is the shipped example: a description written
 to fire on a missing-toolchain situation, plus a copy-pasteable `run.sh`.
 
@@ -3543,12 +3565,20 @@ distinct (harness, model) pair the run would use:
   and `--harness-for` on the same command line. Those three per-hat flags need
   `--hats` (exit `2` otherwise).
 
+With `--hats` the merged job also goes through `engine/llm.py:check_hat_routes`,
+the route check `start` runs before iteration 1 (§4.7), before any ping and with
+or without `--no-ping`: a `claude-code` hat whose model or tier reference is not
+`anthropic/*` exits `1` with `start`'s message, and no container runs. Only the
+`claude-code` rule applies. The `pi` provider-key rule reads the staged
+`~/.pi/agent/models.json`, which `llm test` stages only when it pings, so it is
+skipped. Without `--hats` there is no route check.
+
 Each pair goes through the same runner code path as an iteration, in a throwaway
 container from the run image, as the agent uid:
 
 ```
 docker run --rm -i --user 1000 --label ralphd.llm-test=<name> \
-  <resolved env> <resolved mounts> <pi config mounts> \
+  [--network <net>] <resolved env> <resolved mounts> <pi config mounts> \
   --entrypoint ralphd-engine <image> --llm-ping --harness <h> [--model <m>]
 ```
 
@@ -3562,7 +3592,21 @@ exit `0` fails the pair. The ping prints one JSON line, `{harness, model, ok,
 faultClass, reason, message, exitCode}`, with the message scrubbed of every
 secret-shaped value in the container's env; the host scrubs it again against the
 profile's env values and the pi config's key and header values. A container that prints no verdict fails its
-pair as `no-verdict`.
+pair as `no-verdict`. When the runner exits non-zero without an error text of
+its own, the message is `the runner exited N: <tail>`, where the tail is the
+non-JSON lines of the ping transcript (where the runner merges the child's
+stderr) and the claude-code wrapper's `stderr.log`, whitespace collapsed,
+scrubbed with `redact.scrub_text` and cut to its last `STDERR_TAIL_LIMIT` (300)
+characters. The class is unchanged: a `getaddrinfo ENOTFOUND` exit is still
+`infra`, now with the resolver error in its line.
+
+The ping container's network resolves as `start`'s does: `llm test --network
+NET`, else the `--template`'s `job.yaml` `network:`, else the registry's
+`config.yaml` `network:`, else none. With none, no `--network` argument is
+passed and the container is on the default bridge. A gateway that resolves
+only on the host, such as a tailnet name, needs `--network host`; otherwise
+the ping fails `infra` with `getaddrinfo ENOTFOUND`. Every ping gets it,
+including each `--hats` ping.
 
 The image is the one `start` would run, ranked as `start` ranks it: `--image`,
 else the template's, else the registry's `image:`/`base_image:`/`dockerfile:`,
@@ -3839,7 +3883,9 @@ error type.
 | `invalid-request` | `invalid_request(_error)?` | the provider rejected the request as invalid |
 | `authentication` | `authentication_(error\|failed)` | the provider rejected the credentials |
 | `permission` | `permission_error` | the credentials lack permission for the request |
-| `not-found` | `not_found_error` | the provider does not know the model or resource |
+| `not-found` | `not_found_error\|model_not_found` | the provider does not know the model or resource |
+
+`model_not_found` is in the `not-found` row so a gateway's `404 model_not_found` is `"refused"` in a run as well as in `llm test`, where it used to be `"infra"`.
 
 A provider family (every row but the `cc-*` ones) counts only with an HTTP
 `400`, `401`, `403` or `404`: the structured `http_status` when the runner
@@ -5769,10 +5815,17 @@ dir themselves and a live proxy would only add a way to disagree.
   is labelled `stale` with the reader's own sentence, and the table keeps showing
   the plan instead of blinking empty while an agent rewrites `tasks.json`.
 - **Iteration timeline** — per iteration: `#N`, absolute local start time,
-  phase, model, an error pill when it failed, and duration once it ended. Each
+  phase, `<model> · <harness>` (the bare model for an iteration whose
+  `meta.json` records no `harness`), an error pill when it failed, and duration once it ended. Each
   row opens an **iteration dialog** carrying that iteration's whole story —
   phase, timestamps, duration, exit reason, tokens, cost and its full rendered
-  transcript — byte-identical to what `ralphctl iteration <id> <n>` prints.
+  transcript — byte-identical to what `ralphctl iteration <id> <n>` prints. The
+  dialog's and the command's `model:` line ends with `  · <harness>` when
+  `meta.json` records one (`harness:   <h>` on its own when there is no model);
+  an iteration from before v0.30 prints as it always did. The transcript is
+  `output.jsonl`, the pi-shaped events, for a `claude-code` iteration too: the
+  raw `output.claude.jsonl` sidecar is not read. The run's provisioning lines
+  suffix every hat line and every tier rung line with `[harness]`.
 - **State documents panel** — one row per run document: the worker's `notes.md`,
   `review-findings.md`, `composite-prd.md`, the debt ledger `debt.md` (task 006,
   requirement A.3) and the run's `job.yaml` **with

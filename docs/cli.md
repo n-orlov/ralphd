@@ -1188,6 +1188,17 @@ steering:  001-focus.md
   appended as `[infra fault]`/`[work fault]` — alongside the signal, never
   instead of it. One definition (`engine.state.format_exit_reason`), shared with
   the hub's iteration dialog.
+- **The `model:` line names the harness too.** When `meta.json` records a
+  `harness` (every iteration from v0.30 on, `pi` included), the `model:` line
+  ends with `  · <harness>`, for example `model:     amazon-bedrock/eu.anthropic.claude-opus-5  · claude-code`; an iteration that recorded a harness but no
+  model prints `harness:   <h>` instead. An iteration from before v0.30 has no
+  `harness` field and prints exactly as it always did. The hub's iteration
+  timeline row shows `<model> · <harness>` the same way, and its dialog and
+  this command share the line (`state.iteration_summary_lines`).
+- **The log region is the pi-shaped `output.jsonl`.** For a `claude-code`
+  iteration that is the wrapper's normalised events, not the raw SDK stream:
+  `output.claude.jsonl` is a forensic sidecar that neither this command, the
+  hub's log view nor `ralphctl logs` reads.
 - **Purely on-disk, no container needed and no snapshot notice.**
   `iterations/NNNN/meta.json`, `prompt.md` and the transcript are written by
   the engine itself, atomically, at the start and the end of every iteration,
@@ -2786,7 +2797,13 @@ FAIL claude-code anthropic/claude-sonnet-5  refused: 400 invalid_request: ...
 
 The failure line carries the fault class (`refused`, `rate_limit`, `infra`,
 ...; `no-verdict` when the container printed none) and the scrubbed provider
-message. `--json` prints a list with one verdict per pair (`profile`,
+message. When the runner exits non-zero without an error of its own, the
+message is `the runner exited N: <tail>`: the tail is the last of the child's
+stderr (the ping transcript's non-JSON lines and the claude-code wrapper's
+`stderr.log`), whitespace collapsed, scrubbed of every known secret value and
+kept to its last 300 characters. A `getaddrinfo ENOTFOUND` exit stays `infra`
+and now names the resolver error in the line. A provider `404` whose error is
+`model_not_found` is `refused`, as `not_found_error` is. `--json` prints a list with one verdict per pair (`profile`,
 `image`, `harness`, `model`, `ok`, `faultClass`, `reason`, `message`,
 `exitCode`). The exit status is `1` if any pair fails, else `0`.
 
@@ -2796,10 +2813,21 @@ message. `--json` prints a list with one verdict per pair (`profile`,
 | `--model <ref>` | the profile's `model` | model to ping; with `--hats`, the job's base `model` |
 | `--hats` | off | ping every hat's (harness, model) pair and every configured `model_tiers` leaf, merged as `start` merges them: registry `config.yaml` < `--template` < the flags below |
 | `--template <name>` | none | the template whose `job.yaml` `model:`/`models:`/`model_tiers:`/`harnesses:` (and image keys) `start --template` would use |
+| `--network <net>` | `--template` `job.yaml` `network:`, else the registry's `network`, else none | docker network for the ping container, resolved as `start` resolves it; every ping, including each `--hats` ping, gets `--network <net>`. None means no `--network` argument (the default bridge). Pass `host` for a gateway that resolves only on the host (a tailnet or VPN name) |
 | `--model-for HAT=REF` | none | as on `start`; repeatable; needs `--hats` |
 | `--model-for-tier HAT:TIER=REF` | none | as on `start`; repeatable; needs `--hats` |
 | `--harness-for HAT=NAME` | none | as on `start`; repeatable; needs `--hats` |
 | `--no-ping` | off | resolve only; skip the container ping even when docker answers |
+
+With `--hats`, the merged job also goes through the route check `start` runs
+before iteration 1, before the ping and with or without `--no-ping`: a
+`claude-code` hat whose model or tier reference is not `anthropic/*` is
+refused with `start`'s message and exit `1`, and no container runs
+(`hat 'planning' runs on the claude-code harness but is configured with model
+'X', whose provider 'Y' is not 'anthropic'; ...`). Only that rule applies:
+the pi provider-key rule reads the staged `~/.pi/agent/models.json`, which
+`llm test` stages only when it pings. Without `--hats` there is no route
+check.
 
 When docker isn't reachable (or `--no-ping` is given), the ping is skipped
 and resolution success alone is reported (exit `0`).
@@ -3026,7 +3054,9 @@ harnesses:
 ```
 
 `ralphctl status`, `status --json` and the hub name each hat's harness at the
-end of its provisioning line, for example `worker    anthropic/claude-sonnet-5  [claude-code]`.
+end of its provisioning line, for example `worker    anthropic/claude-sonnet-5  [claude-code]`;
+each tier rung line (`worker.hard`, ...) carries the same `[harness]` suffix,
+the hat's, since a tier has no harness of its own.
 A `claude-code` hat must use an `anthropic/*` model ref (or none); the engine
 refuses any other ref at start with exit `5`, naming the hat, the tier, the ref
 and the harness.

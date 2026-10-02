@@ -1933,7 +1933,18 @@ prompt from stdin, and scrubs its own `os.environ`, because the SDK hands the
 CLI all of it and its `env` option can only add: `ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN`, `CLAUDECODE`, `CLAUDE_EFFORT`, `CLAUDE_PID`,
 `CLAUDE_CONFIG_DIR` and every `CLAUDE_CODE_*` except `CLAUDE_CODE_OAUTH_TOKEN`
-go. The SDK then sets `CLAUDE_CODE_ENTRYPOINT=sdk-py` itself. It runs
+go. So does the gateway and cloud-provider routing (`STRIPPED_ENV`,
+`STRIPPED_ENV_PREFIXES`): `ANTHROPIC_BASE_URL`, `AWS_BEARER_TOKEN_BEDROCK` and
+every `ANTHROPIC_BEDROCK_*` and `ANTHROPIC_VERTEX_*` variable
+(`CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX` fall under the
+`CLAUDE_CODE_*` rule). The scrub runs in the wrapper, after the config is read,
+so it applies after every merge into the child's env: the container env, the
+profile's `env:`, forwarded env and `extra_env` from a mid-run
+`PUT /config/llm`. A `claude-code` hat therefore always uses `api.anthropic.com`
+with `CLAUDE_CODE_OAUTH_TOKEN`, however the profile is wired. `_child_env` is
+unchanged, so a `pi` child keeps every one of these variables and a profile
+that carries a gateway for its pi hats (`aigw-claude`) keeps working. The
+wrapper logs the removed names, never values, to `stderr.log`. The SDK then sets `CLAUDE_CODE_ENTRYPOINT=sdk-py` itself. It runs
 `<cli> -v` and stops with an in-band `claude_code_version_too_old` error below
 `config.CLAUDE_CODE_MIN_VERSION` (`claude_code_cli_not_found` when there is no
 CLI). The CLI is `$RALPHD_CLAUDE_CLI_PATH`, else the SDK's bundled binary. Then
@@ -1944,6 +1955,7 @@ it calls `query()` with:
 | `tools` | exactly `Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob` (`BUILTIN_TOOLS`) |
 | `permission_mode` | `bypassPermissions` |
 | `setting_sources` | `[]` |
+| `skills` | `[]`: suppress every skill from the CLI's listing. `None` is not "off" in the SDK |
 | `extra_args` | `--no-session-persistence` |
 | `cwd` | the workspace |
 | `env` | `CLAUDE_CONFIG_DIR` from the scratch area; `HOME` is inherited (the agent's real home, as for pi) |
@@ -1951,6 +1963,14 @@ it calls `query()` with:
 | `max_turns` | unset; the iteration timeout is the only bound |
 | `system_prompt` | the hat-tool naming line and the skills index, or empty when there is neither |
 | effort | the `EFFORT_TABLE` row for `thinking or effort` |
+
+**Bundled skills.** The CLI ships skills of its own (`deep-research`,
+`code-review`, `schedule`, ...). With the `Skill` tool not offered they never
+reach the model's request, and `skills=[]` keeps that true if the tool is ever
+added. ralphd's own skills reach the agent through the system prompt index and
+the links in the scratch config dir (SPEC §6.5). The SDK's `init` event still
+names the bundled skills even with `skills=[]`; that is cosmetic and costs no
+prompt tokens.
 
 `EFFORT_TABLE` maps pi's levels onto the efforts the SDK accepts: `off` turns
 thinking off (`--thinking disabled`) and sets no effort, `minimal` and `low`
@@ -4253,7 +4273,8 @@ Three deliberate details:
 - **A non-transient refusal fails fast.** `faults.REFUSED_SIGNATURES` is a
   second `(family, regex)` table beside the infra one: `extra-usage` (the
   subscription's third-party refusal), `invalid-request`, `authentication`,
-  `permission`, `not-found`, and the `claude-code` harness's own pre-flight
+  `permission`, `not-found` (`not_found_error` or `model_not_found`, in a run as
+in `llm test`), and the `claude-code` harness's own pre-flight
   refusals `cc-version`, `cc-cli-missing` and `cc-root`. `matched_refusal()`
   needs a provider family to come with an HTTP 400, 401, 403 or 404 (the
   structured `http_status`, else the first status token of pi's `<status>
