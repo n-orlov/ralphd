@@ -1870,7 +1870,9 @@ The supervisor runs every hat invocation through one interface,
 `runner.AgentRunner`: an async `run(prompt, transcript, *, model, thinking,
 effort, timeout_s, extra_env, startup_timeout_s, extensions, hat_tools)` that
 returns an `IterationResult`, a `running` property, and `interrupt()`, which
-SIGINTs the iteration in flight. pi is the first implementation: `PiRunner`.
+SIGINTs the iteration in flight. There are two implementations: `PiRunner`
+for the `pi` harness and `ClaudeCodeRunner` for `claude-code`
+(`LoopSupervisor._runners`).
 
 Every runner spawns its agent through one shared child-process path,
 `runner._ChildProcessRunner._run_child`. A runner builds only its own argv and
@@ -1899,6 +1901,78 @@ structured provider evidence (`rate_limit`, `rate_limit_fresh`,
 result always holds their defaults. `tests/test_pi_golden.py` pins a pi
 iteration's argv, child env, `output.jsonl` and result to the golden files in
 `tests/data/golden/pi-iteration/`.
+
+### The `claude-code` wrapper
+
+`ClaudeCodeRunner` runs a hat on Claude Code through the Claude Agent SDK for
+Python. The SDK runs in a child process, `python -m ralphd.harness.claude_code
+--config <wrapper.json>`, spawned by the shared path above, so the agent uid,
+the own session, the control-plane env strip, the startup watchdog and the
+timeout ladder are pi's. `ralphd/harness/claude_code.py` is the only module
+that imports `claude_agent_sdk`; the engine process never loads it
+(`tests/test_engine_never_imports_sdk.py`).
+
+**Before the spawn.** The runner refuses a root child: when the spawn would
+run as uid 0 it returns an in-band `claude_code_runs_as_root` error and spawns
+nothing. It builds a scratch area beside the transcript,
+`<stem>.claude-scratch/` (`iterations/NNNN/output.claude-scratch/`): `config/`
+is the wrapper's `CLAUDE_CONFIG_DIR`, `home/` its `HOME`. It links the skills
+into `config/skills` and verifies both skill roots (SPEC §6.5), then writes
+`wrapper.json`: the model with its `anthropic/` prefix stripped, `thinking`,
+`effort`, the workspace, the two scratch dirs, the hat's tool names, the run
+root, the skills index and the `stderr.log` path. After the call it removes
+`config/` and `home/`; `wrapper.json` and `stderr.log` stay. When the ladder or
+an interrupt ended the call, it also SIGKILLs what is left of the wrapper's
+process group, since the CLI can outlive a wrapper that exited on SIGINT.
+
+**Inside the wrapper.** It redirects its own stderr to `stderr.log`, reads the
+prompt from stdin, and scrubs its own `os.environ`, because the SDK hands the
+CLI all of it and its `env` option can only add: `ANTHROPIC_API_KEY`,
+`ANTHROPIC_AUTH_TOKEN`, `CLAUDECODE`, `CLAUDE_EFFORT`, `CLAUDE_PID`,
+`CLAUDE_CONFIG_DIR` and every `CLAUDE_CODE_*` except `CLAUDE_CODE_OAUTH_TOKEN`
+go. The SDK then sets `CLAUDE_CODE_ENTRYPOINT=sdk-py` itself. It runs
+`<cli> -v` and stops with an in-band `claude_code_version_too_old` error below
+`config.CLAUDE_CODE_MIN_VERSION` (`claude_code_cli_not_found` when there is no
+CLI). The CLI is `$RALPHD_CLAUDE_CLI_PATH`, else the SDK's bundled binary. Then
+it calls `query()` with:
+
+| option | value |
+|---|---|
+| `tools` | exactly `Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob` (`BUILTIN_TOOLS`) |
+| `permission_mode` | `bypassPermissions` |
+| `setting_sources` | `[]` |
+| `extra_args` | `--no-session-persistence` |
+| `cwd` | the workspace |
+| `env` | `HOME` and `CLAUDE_CONFIG_DIR` from the scratch area |
+| `max_turns` | unset; the iteration timeout is the only bound |
+| `system_prompt` | the hat-tool naming line and the skills index, or empty when there is neither |
+| effort | the `EFFORT_TABLE` row for `thinking or effort` |
+
+`EFFORT_TABLE` maps pi's levels onto the efforts the SDK accepts: `off` turns
+thinking off (`--thinking disabled`) and sets no effort, `minimal` and `low`
+are `low`, and `medium`, `high` and `xhigh` map to themselves. No level means
+no flag.
+
+**The stdout protocol.** stdout is NDJSON, one object per line, flushed per
+line, and nothing is printed before the first SDK message. For each SDK
+message the wrapper prints a raw envelope,
+`{"type": "ralphd.claude_raw", "raw": {"kind": "<SDK class>", ...}}` (a
+`RateLimitEvent` carries the CLI's own `rate_limit_info`), and then the pi
+events `harness.normalise.Normaliser` makes of it. An SDK error ends the
+stream with an in-band error `message_end` (`stopReason: "error"`) that
+carries the API status and error type. On SIGINT the wrapper cancels the
+query, ends the stream with an `aborted` error and exits 130.
+
+`ClaudeCodeRunner._handle_line` demuxes the stream. A pi event takes the
+default path into `output.jsonl`. A raw envelope is scrubbed with the same
+`redact.scrub_text` and appended, unwrapped, to `<stem>.claude.jsonl`
+(`iterations/NNNN/output.claude.jsonl`), so the engine's one secret map scrubs
+both files. Raw envelopes also fill the result's structured evidence: a
+`RateLimitEvent` sets `rate_limit` (kept for the rest of the run) and
+`rate_limit_fresh`, a result's `api_error_status` sets `http_status`, and an
+assistant message's `error` sets `error_type`. A raw envelope counts as
+traffic for the startup watchdog unless it is a `SystemMessage`, so the CLI's
+own `init` does not hold off a hung first request.
 
 ### Diagnosability requirements
 
