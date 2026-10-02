@@ -69,6 +69,24 @@ def _gone(pid: int) -> bool:
         return True
 
 
+def _live_group_members(pgid: int) -> list[int]:
+    """Non-zombie pids in process group `pgid`. A bare `killpg(pgid, 0)`
+    also succeeds on zombies, and under a PID 1 that never reaps orphans
+    (CI's job container) a killed group member stays a zombie for good."""
+    live = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat") as fh:
+                fields = fh.read().rsplit(")", 1)[1].split()
+        except OSError:
+            continue
+        if int(fields[2]) == pgid and fields[0] != "Z":
+            live.append(int(entry))
+    return live
+
+
 def _wait_gone(pid: int, bound_s: float = 5.0) -> bool:
     deadline = time.monotonic() + bound_s
     while time.monotonic() < deadline:
@@ -274,14 +292,9 @@ def test_timeout_kills_the_group(tmp_path, monkeypatch):
     assert _wait_gone(stub_pid), "the stub CLI outlived the iteration"
     (pgid,) = pgids
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            break
+    while _live_group_members(pgid) and time.monotonic() < deadline:
         time.sleep(0.05)
-    with pytest.raises(ProcessLookupError):
-        os.killpg(pgid, 0)
+    assert _live_group_members(pgid) == []
 
 
 def test_the_startup_watchdog_fires_on_a_silent_cli(tmp_path, monkeypatch):
