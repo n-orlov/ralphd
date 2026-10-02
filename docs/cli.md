@@ -777,6 +777,14 @@ Human output also renders (task 003):
   paused:    provider refused (extra-usage): 400 {"type":"error","error":{"type":"invalid_request_error","message":"Third-party apps now draw from your extra usage, not your plan limits"}} -- fix the profile or credentials (PUT /config/llm), then ralphctl unpause
   ```
 
+  It is also shown while the run is paused on the rate-limit ceiling
+  (`rate_limit_max_wait_s`): it names the waiting done, the ceiling and the
+  window's reset in local time:
+
+  ```
+  paused:    rate-limit ceiling reached (1d waited of 1d); the five_hour window resets at 2026-10-03 09:00:00 +0200 -- ralphctl unpause resets the count, ralphctl budget --rate-limit-wait raises the ceiling
+  ```
+
   Nothing is retried. Fix the LLM profile or credentials, then `ralphctl
   unpause <run-id>` re-runs the same work.
 - `reflection:` (task 020) -- shown only when the post-terminal `reflect`
@@ -1361,8 +1369,9 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
 - **`waiting:`** appears while the run waits for a rate-limit window to reset
   (status.json's `rateLimitWait`), with the same wording as `status`:
   `waiting:   rate limit (five_hour) until <local time>`.
-- **`paused:`** appears while the run is paused on a provider refusal
-  (status.json's `pauseDetail`), with the same wording as `status`.
+- **`paused:`** appears while the run is paused on a provider refusal or on
+  the rate-limit ceiling (status.json's `pauseDetail`), with the same wording
+  as `status`; a ceiling pause explains itself as `fault:     rate_limit`.
 - **`recovered:`** appears when the engine emitted `infra_recovered` — a later
   iteration reached the model, so the episode is over and the ladder is not a
   live one. **`gave up:`** prints `status.json`'s `abortReason` when the run
@@ -2004,6 +2013,12 @@ ruling never releases it. Fix the LLM profile or credentials (`ralphctl llm`,
 An unpause before the fix re-runs it too, and pauses again if it is refused
 again.
 
+A rate-limit ceiling pause (`pauseDetail.reason: rate_limit_ceiling`, printed
+as `paused:    rate-limit ceiling reached (...)`) is not answered by a ruling
+either. `ralphctl unpause <run-id>` resets the run's rate-limit waiting count
+and re-probes the same work; `ralphctl budget <run-id> --rate-limit-wait +N`
+raises the ceiling first if the run should keep waiting on its own.
+
 With a notifier configured (`--notifier-url`), every engine-recorded pause
 also POSTs the operator a bounded digest (at most `MAX_NOTIFY_CHARS`) instead
 of the raw diagnostic text: run id, `pauseReason`, `approach n of m`,
@@ -2133,6 +2148,21 @@ Same `+N|N` grammar as every other knob. Unlike the three knobs above,
 this one PERSISTS across a resume, exactly like `iterations` (see the
 table below).
 
+`--rate-limit-wait` maps to `rateLimitMaxWaitS`, the ceiling in seconds on
+the run's total rate-limit waiting (`rate_limit_max_wait_s`, default 86400).
+A rate-limit wait that would pass it does not start: the run pauses
+`operator_input_needed` with `paused:    rate-limit ceiling reached (…)` in
+`ralphctl status` and `ralphctl fault`, and the notifier names the window's
+reset. Raise the ceiling, or just `ralphctl unpause` (which resets the count
+and re-probes the same work):
+
+```console
+$ ralphctl budget my-run --rate-limit-wait +43200   # half a day more of waiting
+```
+
+The new ceiling is read before the next rate-limit wait. It persists across a
+resume like `--cure-passes`.
+
 **Persistence across a resume — one row per knob (#94 (d); task 010, v0.27
 requirement C.3 adds the cure-pass row):**
 
@@ -2143,6 +2173,7 @@ requirement C.3 adds the cure-pass row):**
 | job deadline | `--timeout` | `job_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--timeout` |
 | iteration timeout | `--iteration-timeout` | `iteration_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--iteration-timeout` |
 | cure-pass ceiling | `--cure-passes` | `cure_pass_ceiling` | **live**: persists across a resume — the engine's own startup seeds it from `max(status.json's curePassCeiling, job.yaml's cure_pass_ceiling)`, mirroring `iterations`' own seeding (task 010, v0.27 requirement C.3) |
+| rate-limit wait ceiling | `--rate-limit-wait` | `rate_limit_max_wait_s` | **live**: persists across a resume — the engine's own startup seeds it from `max(status.json's rateLimitMaxWaitS, job.yaml's rate_limit_max_wait_s)` |
 
 `iterations` and `curePassCeiling` are seeded from the LIVE-set value on
 every resume because the engine's own startup already reads
@@ -2166,8 +2197,8 @@ deadline at or before now, or the job already finished — resume instead) ·
 knob given at all · `3` unknown run · `4` API unreachable. `--json` prints
 the engine's `{"iterations": 40, "previous": 25, "iterationsUsed": 17}`
 (plus `maxApproaches`/`iterationTimeoutS`/`jobDeadlineEpochS`/
-`curePassCeiling` and their `previous*` counterparts for whichever of the
-other four were included).
+`curePassCeiling`/`rateLimitMaxWaitS` and their `previous*` counterparts for
+whichever of the other five were included).
 
 ### `ralphctl abort <run-id> [--reason <text>]`
 
