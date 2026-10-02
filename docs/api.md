@@ -1045,7 +1045,7 @@ contents, no LLM env values):
   "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false, "peerPlanReview": false, "peerVerdictGate": false, "operatorInputNeededPause": true, "midPlanReview": false, "routeTaskSelection": true},
   "contracts": {"retryMax": 2},  // response-contract re-prompt policy, task 010
   "model": {"model": null, "routerModel": null, "overrides": {}, "thinking": null,
-             "thinkingOverrides": {}},
+             "thinkingOverrides": {}, "harnesses": {"planning": "pi", "worker": "pi"}},
   "pricing": null,                 // or the resolved host-side rate table, see below
   "priceStrategy": "none",         // "none" | "aws" — may a built-in rate table derive a cost?
   "priceTables": {"names": [], "answers": "neither", "tables": []},  // which table may price this run, in order
@@ -1094,7 +1094,7 @@ can answer before that spend happens. Same `start`-time-only shape as
 
 `model.overrides` (`model_overrides:`/`models:` in `job.yaml`) is the per-hat
 model table keyed by `planning`/`worker`/`review`/`verify`/`reflect`/`router`
-(`MODEL_HATS`); `model.thinking` is every hat's default `pi --thinking`
+(`MODEL_HATS`); `model.harnesses` (`harnesses:`) is the agent harness each hat in `MODEL_HATS` runs on (`pi` or `claude-code`); `model.thinking` is every hat's default `pi --thinking`
 level and `model.thinkingOverrides` (`thinking_overrides:`) is the same
 per-hat table for thinking/reasoning settings — task 007's own field, kept
 separate from `model.overrides` because a model ref and its thinking setting

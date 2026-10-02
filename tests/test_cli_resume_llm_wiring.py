@@ -336,3 +336,42 @@ def test_resume_reproduces_env_seen_by_real_pi_subprocess(ctl):
     assert seen.get("ANTHROPIC_API_KEY") == secret, (
         "resumed engine's real `pi` subprocess never observed the original "
         f"start-time env (saw: {seen.get('ANTHROPIC_API_KEY')!r})")
+
+
+# --------------------------------------------------- builtin_providers (I.2)
+def _builtin_profile(ctl):
+    d = ctl.registry / "llm-profiles"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "bi.yaml").write_text("builtin_providers: [anthropic]\n")
+
+
+def test_builtin_only_profile_still_writes_wiring_and_resume_keeps_it(ctl):
+    _builtin_profile(ctl)
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "bi",
+                  "--run-id", "tst-builtin")
+    assert res.returncode == 0, res.stderr
+    path = ctl.registry / "configs" / "tst-builtin" / "llm-wiring.json"
+    assert json.loads(path.read_text())["builtinProviders"] == ["anthropic"]
+
+    _stop_container(ctl)
+    res = ctl.run("resume", "tst-builtin", env={
+        "STUB_DOCKER_CONTAINERS": "ralphd-tst-builtin",
+        "STUB_DOCKER_RUNNING": ""})
+    assert res.returncode == 0, res.stderr
+    assert json.loads(path.read_text())["builtinProviders"] == ["anthropic"]
+
+
+def test_builtin_providers_survive_resume_llm_header(ctl):
+    _builtin_profile(ctl)
+    res = ctl.run("start", "--prd", str(ctl.prd), "--llm", "bi",
+                  "--run-id", "tst-builtin-hdr")
+    assert res.returncode == 0, res.stderr
+    _stop_container(ctl)
+    res = ctl.run("resume", "tst-builtin-hdr", "--llm-header", "X-Test: 1", env={
+        "STUB_DOCKER_CONTAINERS": "ralphd-tst-builtin-hdr",
+        "STUB_DOCKER_RUNNING": ""})
+    assert res.returncode == 0, res.stderr
+    doc = json.loads((ctl.registry / "configs" / "tst-builtin-hdr"
+                      / "llm-wiring.json").read_text())
+    assert doc["builtinProviders"] == ["anthropic"]
+    assert doc["headers"] == {"X-Test": "1"}

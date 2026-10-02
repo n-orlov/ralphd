@@ -17,7 +17,7 @@ from . import privsep
 from .api import create_app
 from .config import CONFIG_DIR, RUN_DIR, WORKSPACE_DIR, JobConfig
 from .creds import place_creds
-from .llm import UnroutableHatModel, check_hat_routes
+from .llm import UnroutableHatModel, check_hat_routes, read_builtin_providers
 from .loop import LoopSupervisor
 from .privsep import agent_child_kwargs, separate_engine_identity
 from .redact import refresh_redaction_map
@@ -276,7 +276,8 @@ async def amain() -> int:
     # makes `start` depend on network health. A typo in one hat's ref must
     # surface here, not three hours in on that hat's first dispatch.
     try:
-        check_hat_routes(cfg, home=_skills_home)
+        check_hat_routes(cfg, home=_skills_home,
+                         builtin_providers=read_builtin_providers(CONFIG_DIR))
     except UnroutableHatModel as exc:
         print(f"ralphd-engine: {exc}", file=sys.stderr)
         log.error("%s", exc)

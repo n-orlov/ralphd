@@ -39,6 +39,8 @@ import yaml
 
 from .. import __version__
 from ..engine.config import (
+    DEFAULT_HARNESS,
+    HARNESSES,
     MODEL_HATS,
     MUTATING_METHODS,
     PRICE_STRATEGIES,
@@ -622,7 +624,8 @@ def _llm_wiring_path(cdir: Path) -> Path:
 
 def _write_llm_wiring(cdir: Path, mode: str, env: dict[str, str],
                       mounts: list[str], headers: dict[str, str] | None = None,
-                      header_ref_names: set[str] | None = None) -> None:
+                      header_ref_names: set[str] | None = None,
+                      builtin_providers: list[str] | None = None) -> None:
     """Persist the *resolved* env vars + extra mounts contributed by
     `--llm` wiring at `start` time (task 058, operator steering 018), and
     the resolved `--llm-header` pairs (task 045, #177), so `ralphctl
@@ -650,9 +653,13 @@ def _write_llm_wiring(cdir: Path, mode: str, env: dict[str, str],
     any HTTP route, mounted read-only into the container like everything
     else under `<cdir>`) rather than inventing a new secret-at-rest
     mechanism.
+
+    `builtin_providers` is the profile's `builtin_providers:` list, stored
+    as `builtinProviders`; the engine's route check reads it. A profile
+    that declares only that list still writes the file.
     """
     path = _llm_wiring_path(cdir)
-    if not env and not mounts and not headers:
+    if not env and not mounts and not headers and not builtin_providers:
         # nothing --llm-wiring-specific to remember (e.g. `--llm none`, or
         # a profile/host env that set nothing) -- leave no file rather
         # than writing an empty one.
@@ -663,12 +670,15 @@ def _write_llm_wiring(cdir: Path, mode: str, env: dict[str, str],
         doc["headers"] = headers
         # always recorded now (see the docstring): absence == a pre-047 file
         doc["headerRefNames"] = sorted(n for n in (header_ref_names or ()) if n in headers)
+    if builtin_providers:
+        doc["builtinProviders"] = list(builtin_providers)
     path.write_text(json.dumps(doc, indent=2))
     os.chmod(path, 0o600)
 
 
 def _read_llm_wiring(cdir: Path) -> dict:
-    """The `{"mode", "env", "mounts", "headers", "headerRefNames"}` `--llm`
+    """The `{"mode", "env", "mounts", "headers", "headerRefNames",
+    "builtinProviders"}` `--llm`
     wiring persisted by `_write_llm_wiring` at `start` time, or empty
     defaults for a run started before task 058 (no file at all) or with
     nothing to reproduce. `headers` (task 045, #177) is the resolved
@@ -681,7 +691,8 @@ def _read_llm_wiring(cdir: Path) -> dict:
     recorded = doc.get("headerRefNames")
     return {"mode": doc.get("mode") or "host", "env": doc.get("env") or {},
             "mounts": doc.get("mounts") or [], "headers": headers,
-            "headerRefNames": set(headers if recorded is None else recorded)}
+            "headerRefNames": set(headers if recorded is None else recorded),
+            "builtinProviders": list(doc.get("builtinProviders") or [])}
 
 
 def _extra_env_wiring_path(cdir: Path) -> Path:
@@ -1810,6 +1821,51 @@ def _resolve_model_table(args, cfg: dict, reg_cfg: dict) -> dict:
     return table
 
 
+def _resolve_harness_table(args, cfg: dict, reg_cfg: dict,
+                           profile_harness: str = DEFAULT_HARNESS) -> dict:
+    """The per-hat agent-harness table `start` persists as job.yaml's
+    `harnesses:` -- every hat in `MODEL_HATS`, each one of `HARNESSES`.
+
+    Order, weakest to strongest (the same per-key merge `_resolve_model_table`
+    does for `models:`):
+
+    1. the LLM profile's `harness:` (every hat; `pi` for `host`/`none`);
+    2. `<registry>/config.yaml`'s `harnesses:` map;
+    3. the `--template`'s `job.yaml` `harnesses:` map;
+    4. repeatable `--harness-for HAT=NAME`, in argv order.
+
+    Unlike a model table, an unknown hat or harness name is an error
+    (`die(2)`): a typo must not silently run a hat on the wrong harness.
+    """
+    table = {hat: profile_harness for hat in MODEL_HATS}
+    for label, layer in (("registry config.yaml", reg_cfg.get("harnesses")),
+                         ("template job.yaml", cfg.get("harnesses"))):
+        if layer is None:
+            continue
+        if not isinstance(layer, dict):
+            die(2, f"{label}: harnesses: must be a mapping of hat to harness name")
+        for hat, name in layer.items():
+            _check_harness_entry(f"{label} harnesses:", hat, name)
+            table[hat] = name
+    for spec in getattr(args, "harness_for", None) or []:
+        hat, sep, name = spec.partition("=")
+        if not sep or not hat.strip() or not name.strip():
+            die(2, f"--harness-for {spec!r} must be HAT=NAME, e.g. worker=claude-code "
+                    f"(known hats: {', '.join(MODEL_HATS)}; "
+                    f"harnesses: {', '.join(HARNESSES)})")
+        _check_harness_entry("--harness-for", hat.strip(), name.strip())
+        table[hat.strip()] = name.strip()
+    return table
+
+
+def _check_harness_entry(where: str, hat, name) -> None:
+    if hat not in MODEL_HATS:
+        die(2, f"{where}: unknown hat {hat!r} (known hats: {', '.join(MODEL_HATS)})")
+    if name not in HARNESSES:
+        die(2, f"{where}: unknown harness {name!r} for hat {hat!r} "
+                f"(known harnesses: {', '.join(HARNESSES)})")
+
+
 def _resolve_image_supply(args, cfg: dict, reg_cfg: dict) -> None:
     """Settle `image` / `base_image` / `dockerfile` as one unit (task 035, H3).
 
@@ -1895,6 +1951,11 @@ def _apply_template(args) -> Path | None:
     # `args.model_tiers` is not an argparse field; `cmd_start` reads it
     # from here.
     args.model_tiers = _resolve_model_tiers_table(args, cfg, reg_cfg)
+    # The `harnesses:` layers can only be merged once the LLM profile (the
+    # weakest layer) is resolved in `cmd_start`; keep the template and
+    # registry dicts for `_resolve_harness_table`.
+    args.template_cfg = cfg
+    args.registry_cfg = reg_cfg
     for key, hard_default in _TEMPLATE_SCALAR_FIELDS.items():
         if getattr(args, key) is None:
             reg_key = _REGISTRY_CONFIG_FIELD_KEYS.get(key)
@@ -2073,6 +2134,12 @@ def cmd_start(args):
         except llm_profiles.ProfileError as e:
             die(2, str(e))
 
+    # The per-hat harness table, now that the profile's `harness:` is known.
+    harness_table = _resolve_harness_table(
+        args, getattr(args, "template_cfg", None) or {},
+        getattr(args, "registry_cfg", None) or {},
+        llm_profile["harness"] if llm_profile else DEFAULT_HARNESS)
+
     # `--llm-header` (#177): parsed + resolved once, here, alongside the
     # profile above and for the same reason -- a `${cmd:...}` header value
     # shells out on the host exactly once, before the container starts, and
@@ -2181,6 +2248,9 @@ def cmd_start(args):
         # `_resolve_model_tiers_table`) -- omitted entirely when empty,
         # exactly like `models` above.
         "model_tiers": args.model_tiers or None,
+        # Every hat's resolved agent harness (`_resolve_harness_table`);
+        # `resume` replays it unchanged, an absent key means all `pi`.
+        "harnesses": harness_table,
         "thinking": args.thinking,
         "iteration_timeout_s": args.iteration_timeout * 60,
         "job_timeout_s": args.timeout * 60,
@@ -2346,7 +2416,8 @@ def cmd_start(args):
             (dest / "models.json").write_text(json.dumps(pi_doc, indent=1))
             os.chmod(dest / "models.json", 0o600)
         _write_llm_wiring(cdir, args.llm, llm_profile["env"], llm_profile["mounts"],
-                          wiring_headers, wiring_header_ref_names)
+                          wiring_headers, wiring_header_ref_names,
+                          llm_profile["builtin_providers"])
     else:
         _write_llm_wiring(cdir, "none", {}, [])
     # Resolved `name=value` pairs from --forward-env/--llm-env/--env, in
@@ -3071,7 +3142,8 @@ def cmd_resume(args):
         # untouched keeps whatever the persisted wiring already said.
         effective_ref_names = (wiring["headerRefNames"] - set(new_headers)) | new_ref_names
         _write_llm_wiring(cdir, wiring["mode"], wiring["env"], wiring["mounts"],
-                          effective_headers, effective_ref_names)
+                          effective_headers, effective_ref_names,
+                          wiring["builtinProviders"])
 
     # Reproduce the resolved --forward-env/--llm-env/--env pairs from
     # `start` time (task 001) in the same order/precedence, never re-read
@@ -5295,6 +5367,9 @@ def cmd_llm(args):
             print(f"model: {doc.get('model') or '(unset)'}")
             print(f"fast_model: {doc.get('fast_model') or '(unset)'}")
             print(f"price_strategy: {doc.get('price_strategy') or '(unset)'}")
+            print(f"harness: {doc.get('harness') or 'pi'}")
+            print(f"builtin_providers: "
+                  f"{', '.join(doc.get('builtin_providers') or []) or '(none)'}")
             print("env:")
             for k, v in doc["env"].items():
                 print(f"  {k} = {v}")
@@ -8057,6 +8132,13 @@ def build_parser() -> argparse.ArgumentParser:
                         f"(known hats: {', '.join(MODEL_HATS)}); merges into the "
                         "job's models: table over the --template's and the "
                         "registry's own models:/model_overrides: key -- see docs/cli.md")
+    s.add_argument("--harness-for", action="append", metavar="HAT=NAME",
+                   help="per-hat agent harness (repeatable), e.g. "
+                        "--harness-for worker=claude-code "
+                        f"(known hats: {', '.join(MODEL_HATS)}; harnesses: "
+                        f"{', '.join(HARNESSES)}); merges into the job's "
+                        "harnesses: table over the --template's, the "
+                        "registry's and the LLM profile's harness: -- see docs/cli.md")
     s.add_argument("--model-for-tier", action="append", metavar="HAT:TIER=REF",
                    help="per-hat-per-tier model override (repeatable), e.g. "
                         "--model-for-tier worker:hard=amazon-bedrock/eu.anthropic.claude-opus-5 "

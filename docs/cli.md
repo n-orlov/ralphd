@@ -86,6 +86,7 @@ ralphctl start --prd <file|-> [options]
 | `--model <id>` | profile default | model used by any hat with no per-hat override; falls back to the `--template`'s value, then the registry's `model` (`ralphctl config`), then the `--llm` profile's own `model:`. `router` (task 018, requirement E; rung order corrected task 003, #278 B.6) resolves `router_model` first, then the dedicated per-hat table entry (`model_overrides["router"]`/`models.router`), then the worker hat's own `trivial` tier (`model_tiers["worker"]["trivial"]`) when configured, then `model`; see `routerModel`/`routerTimeoutS` under `GET /config` (`docs/api.md`). `--fast-model` and `--model-strategy` (and `ralphctl config set model_strategy`/`fast_model`) are retired (task 006): the parser still recognises the flag names (hidden from `--help`) only so `start` can refuse them with exit `2` naming this `models:`/`model_overrides:` replacement, never a silent no-op; a job.yaml still carrying either legacy key from before task 006 is translated into an equivalent per-hat table at engine load time, never ignored |
 | `--no-route-tasks` | on (this is the disable flag) | task 003's router-assisted task-selection opt-out (#278 B.5): by default, once `engine.scheduler.pending_candidates` finds 2+ runnable tasks, the router picks which one to work next (`LoopSupervisor._route_task_selection`); this flag (or a `job.yaml` `route_task_selection: false` key) restores the fully deterministic pick, `engine.scheduler.select_next_task`'s own order, unconditionally. Written to the run's `job.yaml` as `route_task_selection` (always an explicit `true`/`false`) and visible in `GET /config`; no `resume` equivalent -- `resume` never rewrites this key, so the value a run started with is replayed unchanged on every later resume |
 | `--model-for HAT=REF` | — | per-hat model override (task 008, #60 pillar 4 requirement A), repeatable — e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`. Known hats: `planning\|worker\|verify\|review\|reflect\|router` (`MODEL_HATS`; an unrecognised name still resolves via `model_for`'s anti-downgrade rule rather than erroring). Writes/merges into the run's `job.yaml` `models:` table — the mechanism `model_overrides`/`models:` always was ([llm-profiles.md](llm-profiles.md) unaffected, `docs/api.md`'s `GET /config` `model.overrides`) — the ONLY thing this flag adds is a way to *reach* that table from `start` without hand-editing `job.yaml` and `resume`-ing. Unlike every other `start` scalar above, the table is **merged key by key across levels, not replaced whole**: explicit `--model-for` flags (last one wins for a repeated hat) > the `--template`'s own `job.yaml` `models:`/`model_overrides:` key > `<registry>/config.yaml`'s own `models:`/`model_overrides:` key (a nested mapping, edited directly like `pricing:` below — there is no scalar `ralphctl config set` for a table) > (a named LLM profile has no per-hat table of its own yet, so this rung is presently always empty) > absent, i.e. each hat falls through to `model_for`'s other rungs exactly as before. A malformed value (no `=`) exits `2` naming the expected `HAT=REF` shape |
+| `--harness-for HAT=NAME` | — | per-hat agent harness, repeatable — e.g. `--harness-for worker=claude-code`. `NAME` is `pi` or `claude-code`; `HAT` is one of the `MODEL_HATS`. Merges per hat into the run's `job.yaml` `harnesses:` table, weakest to strongest: the LLM profile's `harness:` < `<registry>/config.yaml`'s `harnesses:` < the `--template`'s `harnesses:` < this flag. `start` writes every hat's resolved harness, and `resume` replays it. An unknown hat or harness name, or a value without `=`, exits `2`; see "Per-hat harness" below |
 | `--model-for-tier HAT:TIER=REF` | — | per-(hat, tier) rung override (task 002/004, #68), repeatable — e.g. `--model-for-tier worker:hard=amazon-bedrock/eu.anthropic.claude-opus-5`. `TIER` is one of the three declared tiers, `trivial\|normal\|hard` (`tiers.TIERS`); `HAT` is the same `MODEL_HATS` vocabulary `--model-for` uses. Merges rung by rung — hat AND tier both have to match for one flag to overwrite another — into the run's `job.yaml` `model_tiers:` table, over the `--template`'s and `<registry>/config.yaml`'s own `model_tiers:` key, the identical three-level order `--model-for` merges `models:` across; see "Per-(hat, tier) override table" below. A hat/tier this flag never names falls through to that hat's plain `--model-for`/`models:` answer (`bundle_for`), not to some cheaper tier — there is no second per-hat table this could conflict with. A malformed value (no `:` before the `=`, or no `=` at all) exits `2` naming the expected `HAT:TIER=REF` shape |
 | `--thinking <level>` | — | pi thinking level; falls back to the `--template`'s value, then the registry's `thinking` (`ralphctl config`) |
 | `--price-strategy none\|aws` | none | derive a cost for routes the provider does not price (or prices with an implausible `$0`): `aws` uses ralphd's built-in AWS Bedrock rate table, `none` leaves such a cost `unavailable`. Written to the run's `job.yaml` as `price_strategy` (so `resume` replays it) and visible in `GET /config` (`priceStrategy`); falls back to the `--template`'s value, then the registry's `price_strategy` (`ralphctl config`), then the `--llm` profile's own `price_strategy:` — see "Built-in AWS Bedrock rate table" below |
@@ -2885,6 +2886,28 @@ no scalar `config set` for a table) > absent, i.e. each hat falls through to
 `model_for`'s other rungs (the bare `model` field, then pi's own default).
 See `--model-for` above and "`ralphctl config get/set`" above for both
 settable levels.
+
+#### Per-hat harness (`harnesses:`)
+
+Each hat runs on one agent harness, `pi` (the default) or `claude-code`. A hat's
+tiers share its harness. `start` resolves the table in this order, weakest to
+strongest, merging per hat: the LLM profile's `harness:` (every hat), then
+`<registry>/config.yaml`'s `harnesses:`, then the `--template`'s `harnesses:`,
+then each `--harness-for HAT=NAME`. The result, with all nine hats, is written
+to `job.yaml`; `ralphctl docs <run> job.yaml` shows it unmasked.
+
+```yaml
+# job.yaml (or --harness-for HAT=NAME / a --template / <registry>/config.yaml)
+harnesses:
+  worker: claude-code
+  review: pi
+```
+
+`ralphctl status`, `status --json` and the hub name each hat's harness at the
+end of its provisioning line, for example `worker    anthropic/claude-sonnet-5  [claude-code]`.
+A `claude-code` hat must use an `anthropic/*` model ref (or none); the engine
+refuses any other ref at start with exit `5`, naming the hat, the tier, the ref
+and the harness.
 
 #### Per-(hat, tier) override table (`model_tiers:`, task 002)
 

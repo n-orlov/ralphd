@@ -196,6 +196,11 @@ def format_provisioning_lines(table: list[dict]) -> list[str]:
             return f"  (effort: {bundle_row['effort']})"
         return ""
 
+    def _harness_suffix(row: dict) -> str:
+        # Every hat line names the agent harness it runs on, after the model
+        # and any thinking/effort suffix.
+        return f"  [{row.get('harness') or 'pi'}]"
+
     lines = []
     for row in table:
         if not isinstance(row, dict):
@@ -210,11 +215,11 @@ def format_provisioning_lines(table: list[dict]) -> list[str]:
                 label = f"{hat}.{tier}"
                 model = rung.get("model") or "pi default"
                 lines.append(f"{label:<{_PROVISIONING_HAT_WIDTH}} {model}"
-                             f"{_bundle_suffix(rung)}")
+                             f"{_bundle_suffix(rung)}{_harness_suffix(row)}")
             continue
         model = row.get("model") or "pi default"
         lines.append(f"{hat:<{_PROVISIONING_HAT_WIDTH}} {model}"
-                     f"{_bundle_suffix(row)}")
+                     f"{_bundle_suffix(row)}{_harness_suffix(row)}")
     return lines
 
 

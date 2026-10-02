@@ -19,6 +19,10 @@ fast_model: provider/cheap-model-id # profile's own second model ref (task 006:
                                     # job.yaml)
 price_strategy: aws                 # optional: none|aws — built-in rate table for
                                     # routes this gateway does not price itself
+harness: pi                         # optional: pi|claude-code — agent harness for every
+                                    # hat (default pi; see "Claude subscription" below)
+builtin_providers: [anthropic]      # optional: providers pi serves without a models.json
+                                    # entry; the start-time route check accepts them
 
 env:                                # env vars set in the container
   SOME_API_KEY: "literal-value"     # literal … # pragma: allowlist secret
@@ -45,6 +49,13 @@ pi:                                 # merged into the container's pi provider co
         - id: some-model
           name: Some Model
 ```
+
+`harness` is validated when the profile is resolved, so a typo is a
+`ProfileError` at `start`. The registry's and the template's `harnesses:` maps
+and `--harness-for` override it per hat. `builtin_providers` lets the engine's
+route check accept a pi hat whose model ref uses one of the listed providers
+without a `models.json` entry; it is persisted in `llm-wiring.json` as
+`builtinProviders` and replayed by `resume`.
 
 Resolution rules:
 
@@ -302,6 +313,45 @@ come from the OpenAI-shaped route on the *same* gateway, keyed by the same
 (`(hat, effective_tier, host_map) -> HatBundle`) that resolves every other
 hat's ladder — a cross-family worker/verify split at the plain per-hat level
 and a cross-family ladder at the per-tier level cost the same one profile.
+
+## Claude subscription
+
+A profile can run hats on the `claude-code` harness, which drives the Claude Code
+CLI with a Claude subscription token instead of an API gateway:
+
+```yaml
+# ~/.ralphd/llm-profiles/claude-sub.yaml
+description: Claude subscription via Claude Code
+harness: claude-code
+builtin_providers: [anthropic]       # lets a pi hat use anthropic/* too
+model: anthropic/claude-sonnet-5
+env:
+  CLAUDE_CODE_OAUTH_TOKEN: ${file:~/.config/claude/oauth-token}
+```
+
+Every hat then runs on `claude-code`. A `claude-code` hat's model ref must be
+`anthropic/*` (or unset, so the CLI picks its default); any other provider is
+refused at start with exit `5`.
+
+A mixed run keeps some hats on pi, for example review on an AIGW gateway while
+the subscription does the rest. Point `--harness-for` at the hat:
+
+```
+ralphctl start --prd prd.md --llm claude-sub \
+  --harness-for review=pi --model-for review=aigw-openai/some-model
+```
+
+or set `harnesses:` in the template's `job.yaml` or the registry's `config.yaml`:
+
+```yaml
+harnesses:
+  review: pi
+```
+
+A profile carries one `pi:` fragment. For a mixed run where the pi hats use a
+gateway, keep the gateway profile (`harness: pi`), put
+`CLAUDE_CODE_OAUTH_TOKEN` in its `env:`, and select the subscription hats with
+`--harness-for HAT=claude-code`.
 
 ## Mid-run rotation
 

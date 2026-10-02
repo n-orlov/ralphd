@@ -935,6 +935,9 @@ class JobConfig:
                 # alongside the per-hat model table it travels with in
                 # `HatBundle` -- see `bundle_for`.
                 "thinkingOverrides": dict(self.thinking_overrides),
+                # The per-hat agent harness (`HARNESSES`) the table above
+                # runs on; every hat in `MODEL_HATS` is listed.
+                "harnesses": {h: self.harness_for(h) for h in MODEL_HATS},
             },
             # Task 052 (#10): the host-side rate table as resolved (null when
             # none is configured, and the shipped default IS none) -- so an
@@ -1116,10 +1119,12 @@ class JobConfig:
                     "model": bundle.model,
                     "thinking": bundle.thinking,
                     "effort": bundle.effort,
+                    "harness": bundle.harness,
                 })
             else:
                 rows.append({
                     "hat": hat,
+                    "harness": self.harness_for(hat),
                     "rungs": [
                         {"tier": tier, "model": bundle.model,
                          "thinking": bundle.thinking, "effort": bundle.effort}

@@ -37,7 +37,7 @@ def _write_models_json(home: Path, providers: dict) -> None:
 
 class _FakeCfg:
     """Minimal stand-in for `JobConfig` -- `check_hat_routes` only ever
-    touches `model_for()` and `model_tiers`."""
+    touches `model_for()`, `harness_for()` and `model_tiers`."""
 
     def __init__(self, refs: dict[str, str | None]):
         self._refs = refs
@@ -45,6 +45,9 @@ class _FakeCfg:
 
     def model_for(self, hat: str) -> str | None:
         return self._refs.get(hat)
+
+    def harness_for(self, hat: str) -> str:
+        return "pi"
 
 
 def _refs_naming(hat: str, ref: str) -> dict[str, str | None]:

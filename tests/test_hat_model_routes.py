@@ -50,7 +50,7 @@ def _write_models_json(home_dir, providers: dict) -> None:
 
 
 async def _run_amain(tmp_path, monkeypatch, *, models_yaml_block: str,
-                      providers: dict):
+                      providers: dict, llm_wiring: dict | None = None):
     from ralphd.engine import config as config_mod
     from ralphd.engine import main as main_mod
     from ralphd.engine import skills as skills_mod
@@ -64,6 +64,8 @@ async def _run_amain(tmp_path, monkeypatch, *, models_yaml_block: str,
         "run_id: hat-route-check\niterations: 5\non_complete: exit\n"
         + models_yaml_block)
     _write_models_json(home_dir, providers)
+    if llm_wiring is not None:
+        (cfg_dir / "llm-wiring.json").write_text(json.dumps(llm_wiring))
 
     monkeypatch.setattr(config_mod, "CONFIG_DIR", cfg_dir)
     monkeypatch.setattr(main_mod, "CONFIG_DIR", cfg_dir)
@@ -231,3 +233,75 @@ async def test_fully_routable_table_starts_normally_no_network_call(
     logs = [e for e in _events(run_dir)
             if e["type"] == "log" and e.get("level") == "error"]
     assert logs == []
+
+
+# ---------------------------------------------- per-harness routes (A.5, I.1)
+async def _message(tmp_path, monkeypatch, **kw):
+    rc, run_dir, calls, main_mod = await _run_amain(tmp_path, monkeypatch, **kw)
+    logs = [e for e in _events(run_dir)
+            if e["type"] == "log" and e.get("level") == "error"]
+    return rc, calls, main_mod, (logs[-1]["message"] if logs else "")
+
+
+@pytest.mark.asyncio
+async def test_claude_code_hat_with_non_anthropic_ref_is_refused_empty_models_json(
+        tmp_path, monkeypatch):
+    rc, calls, main_mod, message = await _message(
+        tmp_path, monkeypatch,
+        models_yaml_block=("harnesses:\n  worker: claude-code\n"
+                           "models:\n  worker: aigw-openai/x\n"),
+        providers={})
+    assert rc == main_mod.EXIT_UNROUTABLE_HAT_MODEL
+    assert calls == []
+    assert "'worker'" in message and "aigw-openai/x" in message
+    assert "claude-code" in message
+
+
+@pytest.mark.asyncio
+async def test_claude_code_tier_leaf_with_non_anthropic_ref_is_refused(
+        tmp_path, monkeypatch):
+    rc, calls, main_mod, message = await _message(
+        tmp_path, monkeypatch,
+        models_yaml_block=("harnesses:\n  verify: claude-code\n"
+                           "model_tiers:\n  verify:\n    hard: aigw-openai/x\n"),
+        providers={})
+    assert rc == main_mod.EXIT_UNROUTABLE_HAT_MODEL
+    assert "'verify'" in message and "'hard'" in message
+    assert "aigw-openai/x" in message and "claude-code" in message
+
+
+@pytest.mark.asyncio
+async def test_claude_code_hat_with_anthropic_or_no_ref_starts(
+        tmp_path, monkeypatch):
+    rc, calls, _m, message = await _message(
+        tmp_path, monkeypatch,
+        models_yaml_block=("harnesses:\n  worker: claude-code\n"
+                           "  review: claude-code\n"
+                           "models:\n  worker: anthropic/claude-sonnet-5\n"),
+        providers={})
+    assert rc == 0, message
+    assert calls == ["hat-route-check"]
+
+
+@pytest.mark.asyncio
+async def test_builtin_providers_make_anthropic_pi_hat_routable(
+        tmp_path, monkeypatch):
+    block = "models:\n  worker: anthropic/claude-sonnet-5\n"
+    providers = {GOOD_PROVIDER: {"baseUrl": "https://example.invalid"}}
+    rc, calls, main_mod, message = await _message(
+        tmp_path, monkeypatch, models_yaml_block=block, providers=providers,
+        llm_wiring={"mode": "p", "env": {}, "mounts": [],
+                    "builtinProviders": ["anthropic"]})
+    assert rc == 0, message
+    assert calls == ["hat-route-check"]
+
+
+@pytest.mark.asyncio
+async def test_without_builtin_providers_anthropic_pi_hat_is_refused(
+        tmp_path, monkeypatch):
+    rc, calls, main_mod, message = await _message(
+        tmp_path, monkeypatch,
+        models_yaml_block="models:\n  worker: anthropic/claude-sonnet-5\n",
+        providers={GOOD_PROVIDER: {"baseUrl": "https://example.invalid"}})
+    assert rc == main_mod.EXIT_UNROUTABLE_HAT_MODEL
+    assert "anthropic" in message and GOOD_PROVIDER in message

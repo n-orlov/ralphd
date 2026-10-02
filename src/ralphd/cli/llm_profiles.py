@@ -20,7 +20,7 @@ from pathlib import Path
 
 import yaml
 
-from ..engine.config import PRICE_STRATEGIES, normalize_price_strategy
+from ..engine.config import HARNESSES, PRICE_STRATEGIES, normalize_price_strategy
 from ..engine.redact import MASK
 
 _REF_RE = re.compile(r"^\$\{(env|file|cmd):(.*)\}$", re.DOTALL)
@@ -209,6 +209,21 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
         raise ProfileError(
             f"llm profile '{name}': price_strategy: {price_strategy!r} is not one "
             f"of {'|'.join(PRICE_STRATEGIES)}")
+    harness = doc.get("harness")
+    if harness is None:
+        harness = "pi"
+    if harness not in HARNESSES:
+        raise ProfileError(
+            f"llm profile '{name}': harness: {harness!r} is not one "
+            f"of {'|'.join(HARNESSES)}")
+    builtin_providers = doc.get("builtin_providers")
+    if builtin_providers is None:
+        builtin_providers = []
+    if (not isinstance(builtin_providers, list)
+            or not all(isinstance(x, str) and x for x in builtin_providers)):
+        raise ProfileError(
+            f"llm profile '{name}': builtin_providers: must be a list of "
+            f"provider names (strings)")
     combined = dict(host_env if host_env is not None else os.environ)
     resolved_env: dict[str, str] = {}
     env_section = doc.get("env") or {}
@@ -287,6 +302,8 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
         # inlines it into job.yaml unless an explicit --price-strategy (or a
         # template/registry default) already decided.
         "price_strategy": price_strategy,
+        "harness": harness,
+        "builtin_providers": list(builtin_providers),
         "env": resolved_env,
         "mounts": mounts,
         "pi": pi_fragment,

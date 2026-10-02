@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
 from pathlib import Path
 
 from .config import OVERLAY_DIR
@@ -111,7 +112,8 @@ def _tier_leaf_ref(leaf: object, fallback_ref: str | None) -> str | None:
     return fallback_ref
 
 
-def check_hat_routes(cfg, *, home: Path) -> None:
+def check_hat_routes(cfg, *, home: Path,
+                     builtin_providers: Iterable[str] = ()) -> None:
     """Task 009 (PRD requirement D, #60 pillar 4), widened by task 005
     (#68) to every configured tier rung, not just each hat's plain
     `model_for` answer: before iteration 1, resolve every
@@ -152,20 +154,35 @@ def check_hat_routes(cfg, *, home: Path) -> None:
     same refusal as `provider_keys()` itself (a caller that omits it gets
     a `TypeError` before `provider_keys()` ever reads a filesystem path).
     """
-    available = provider_keys(home=home)
-    if not available:
-        return
     from .config import MODEL_HATS
-    for hat in MODEL_HATS:
-        ref = cfg.model_for(hat)
+    available = provider_keys(home=home)
+    builtin = set(builtin_providers)
+    # With nothing declared (no models.json providers, no builtins) the pi
+    # rungs are skipped, as before; a claude-code rung is checked regardless.
+    pi_checked = bool(available) or bool(builtin)
+    routable = sorted(set(available) | builtin)
+
+    def _check(hat: str, tier: str | None, ref: str | None) -> None:
         if not ref:
-            continue
+            return
         key = _provider_key(ref)
-        if key not in available:
+        where = f"hat {hat!r}" + (f" tier {tier!r}" if tier else "")
+        if cfg.harness_for(hat) == "claude-code":
+            if key != "anthropic":
+                raise UnroutableHatModel(
+                    f"{where} runs on the claude-code harness but is "
+                    f"configured with model {ref!r}, whose provider "
+                    f"{key!r} is not 'anthropic'; the claude-code harness "
+                    f"only serves anthropic models")
+            return
+        if pi_checked and key not in routable:
             raise UnroutableHatModel(
-                f"hat {hat!r} is configured with model {ref!r}, whose "
+                f"{where} is configured with model {ref!r}, whose "
                 f"provider {key!r} is not one of the providers this "
-                f"profile declares ({', '.join(available)})")
+                f"profile declares ({', '.join(routable)})")
+
+    for hat in MODEL_HATS:
+        _check(hat, None, cfg.model_for(hat))
 
     raw_table = cfg.model_tiers if isinstance(cfg.model_tiers, dict) else {}
     for hat in MODEL_HATS:
@@ -174,16 +191,25 @@ def check_hat_routes(cfg, *, home: Path) -> None:
             continue
         fallback_ref = cfg.model_for(hat)
         for tier, leaf in tier_table.items():
-            ref = _tier_leaf_ref(leaf, fallback_ref)
-            if not ref:
-                continue
-            key = _provider_key(ref)
-            if key not in available:
-                raise UnroutableHatModel(
-                    f"hat {hat!r} tier {tier!r} is configured with model "
-                    f"{ref!r}, whose provider {key!r} is not one of the "
-                    f"providers this profile declares "
-                    f"({', '.join(available)})")
+            _check(hat, tier, _tier_leaf_ref(leaf, fallback_ref))
+
+
+def read_builtin_providers(config_dir: Path) -> list[str]:
+    """The profile's `builtin_providers` as persisted in `llm-wiring.json`
+    (`builtinProviders`), read inside `privsep.root_for_write()` like the
+    other 0600 host-owned config files. `[]` when the file or key is
+    absent or malformed."""
+    from . import privsep
+    path = Path(config_dir) / "llm-wiring.json"
+    try:
+        with privsep.root_for_write():
+            doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    names = doc.get("builtinProviders") if isinstance(doc, dict) else None
+    if not isinstance(names, list):
+        return []
+    return [n for n in names if isinstance(n, str) and n]
 
 
 def current_env() -> dict[str, str]:

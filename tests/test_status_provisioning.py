@@ -56,7 +56,7 @@ def test_provisioning_table_resolves_the_prd_worked_configuration():
     assert by_hat["review"] is None
     assert by_hat["reflect"] is None
     assert by_hat["router"] is None
-    assert all(set(row) == {"hat", "model", "thinking", "effort"} for row in table)
+    assert all(set(row) == {"hat", "model", "thinking", "effort", "harness"} for row in table)
 
 
 def test_format_provisioning_lines_has_no_strategy_wording_and_no_none():
@@ -76,13 +76,13 @@ def test_provisioning_table_collapses_a_one_model_configuration(tmp_path=None):
     three tiers resolve to the SAME `bundle_for` answer -- `default_host_
     map`'s own no-op-widening guarantee (task 002) -- so `provisioning_
     table` collapses every row back down to task 010's original
-    single-rung shape (`{"hat", "model", "thinking", "effort"}`), never a
+    single-rung shape (`{"hat", "model", "thinking", "effort", "harness"}`), never a
     `"rungs"` list, for a one-model configuration."""
     cfg = JobConfig(model_overrides={
         "planning": PLANNER, "worker": WORKER, "verify": VERIFIER})
     table = cfg.provisioning_table()
     assert all("rungs" not in row for row in table)
-    assert all(set(row) == {"hat", "model", "thinking", "effort"} for row in table)
+    assert all(set(row) == {"hat", "model", "thinking", "effort", "harness"} for row in table)
     lines = format_provisioning_lines(table)
     assert any(line.startswith("worker ") for line in lines)
     assert not any("." in line.split()[0] for line in lines)
@@ -174,3 +174,17 @@ def test_the_three_surfaces_agree_before_any_iteration_has_run(tmp_path, capsys)
     assert doc["provisioningLines"] == hub_lines
     # Present before any iteration has run.
     assert doc.get("iterationsUsed") == 0
+
+
+def test_provisioning_lines_end_with_each_hats_harness():
+    """Every hat line, collapsed or per-rung, names the hat's harness."""
+    from ralphd.engine.state import format_provisioning_lines
+    cfg = JobConfig(
+        model_overrides={"worker": WORKER},
+        harnesses={"worker": "claude-code"},
+        model_tiers={"verify": {"hard": VERIFIER}})
+    lines = format_provisioning_lines(cfg.provisioning_table())
+    assert any(l.startswith("worker") and l.endswith("[claude-code]") for l in lines)
+    assert any(l.startswith("planning") and l.endswith("[pi]") for l in lines)
+    assert all(l.endswith("]") for l in lines)
+    assert any(l.startswith("verify.hard") and l.endswith("[pi]") for l in lines)
