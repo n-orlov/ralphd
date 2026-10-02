@@ -663,6 +663,7 @@ price. `usage.costPriced` is the marker:
 | `costUSD` present, `costPriced: false` | mixed: the value is the priced subtotal only, so treat it as partial |
 | `costUSD: 0`, no `costPriced` | nothing was billed at all (e.g. pi's zero-filled `usage` on an in-band error) |
 | no `costUSD`, `costPriced: false`, `costZeroQuoted: true` | the provider quoted **exactly 0** for billable tokens — an *implausible zero*, treated as unknown (v0.6, see below) |
+| `costUSD: 0.0`, `costFree: true`, `costBasis: "subscription"`, `listEquivalentUSD: 0.40` | a `claude-code` iteration: billed nothing, with the SDK's list price kept apart and never added to `costUSD`; buckets add `costBasis` (`subscription` or `mixed`) and sum `listEquivalentUSD` |
 | `costUSD: 0.0`, `costPriced: true`, `costFree: true` | the route is **declared** free in `pricing.free`, so this $0 is real and renders `$0.00` |
 | `costDerivedUSD: 0.31`, `costDerived: true` | every unpriced message was covered by the host-side pricing map — cost is *derived*, and kept out of `costUSD` |
 | `costDerived: false` | at least one unpriced message had no rate in the map (or no map is configured), so part of the cost stays unknown |

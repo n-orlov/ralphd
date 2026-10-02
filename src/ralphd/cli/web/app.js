@@ -2665,6 +2665,13 @@ function renderUsage(el, usage, runId) {
     if (usage.costStatus) card.classList.add("cost-" + usage.costStatus);
     grid.appendChild(card);
   }
+  // The subscription list price (`listEquivalentUSD`): shown apart from the
+  // cost, never added to it. `listEquivalentDisplay` is rendered server-side.
+  if (usage.listEquivalentDisplay && usage.listEquivalentUSD) {
+    const listCard = statCard("list-equivalent", usage.listEquivalentDisplay);
+    listCard.classList.add("list-equivalent");
+    grid.appendChild(listCard);
+  }
   el.appendChild(grid);
   for (const [label, key] of [["by phase", "byPhase"], ["by approach", "byApproach"], ["by tier", "byTier"]]) {
     const bucket = usage[key];
@@ -2675,6 +2682,8 @@ function renderUsage(el, usage, runId) {
     // that", and `iterations` is a plain counter `loop._accumulate_usage`
     // keeps only on `byTier` buckets (never on byPhase/byApproach).
     const cols = key === "byTier" ? ["tokens", "cost", "iterations"] : ["tokens", "cost"];
+    const hasListEquiv = Object.values(bucket).some((v) => v && v.listEquivalentUSD);
+    if (hasListEquiv) cols.push("list-equivalent");
     const table = h("table", {}, [h("thead", {}, [h("tr", {}, [
       h("th", {}, [key === "byPhase" ? "phase" : key === "byApproach" ? "approach" : "tier"]),
       ...cols.map((c) => h("th", {}, [c])),
@@ -2687,6 +2696,9 @@ function renderUsage(el, usage, runId) {
         h("td", {}, [v.costDisplay ?? (v.costUSD != null ? "$" + Number(v.costUSD).toFixed(4) : "")]),
       ];
       if (cols.includes("iterations")) cells.push(h("td", {}, [String(v.iterations ?? "")]));
+      if (hasListEquiv) {
+        cells.push(h("td", {}, [v.listEquivalentUSD ? String(v.listEquivalentDisplay ?? "") : ""]));
+      }
       tbody.appendChild(h("tr", {}, cells));
     }
     table.appendChild(tbody);

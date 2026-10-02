@@ -3345,7 +3345,7 @@ class LoopSupervisor:
         float) while the historical nothing-was-billed case adds an int `0` --
         so the type is exactly the "was a price ever quoted" bit, with no
         extra bookkeeping key in the published contract."""
-        return isinstance(d.get("costUSD"), float)
+        return state.price_reported(d)
 
     @staticmethod
     def _has_derived_price(d: dict) -> bool:
@@ -3410,16 +3410,17 @@ class LoopSupervisor:
         049, v0.6): an operator-declared free route is why a bucket's `$0.00`
         over billable tokens is honest, so the declaration has to survive the
         rollup -- otherwise `state.is_zero_quote` would re-read that same zero
-        as the implausible-zero anomaly.
+        as the implausible-zero anomaly. It survives only while every
+        contributor was free (`state.merge_cost_flags`), which also carries
+        the string `costBasis` ("subscription", or "mixed"); string values are
+        never added.
         """
         status = cls._merge_cost_status(bucket, usage)
         for k, v in usage.items():
-            if isinstance(v, bool):
+            if isinstance(v, (bool, str)):
                 continue
             bucket[k] = round(bucket.get(k, 0) + v, 6) if isinstance(v, float) \
                 else bucket.get(k, 0) + v
-        if usage.get("costFree") is True:
-            bucket["costFree"] = True
         if status:
             bucket["costStatus"] = status
         return bucket
@@ -3578,6 +3579,7 @@ class LoopSupervisor:
         start -- see `_run_job_core`'s `update_status(...,
         maxApproaches=self.cfg.max_approaches, ...)`) so `GET /status` can
         never disagree with `GET /config`'s live `cfg.effective()` read.
+        state.merge_cost_flags(bucket, usage)
         The caller (api.py) owns validation (refusing a value below the
         current approach) and the audit event.
         """

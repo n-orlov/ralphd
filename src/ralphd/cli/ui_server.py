@@ -67,6 +67,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from .. import __version__, collapse_index, render_index
 from ..engine.config import MUTATING_METHODS, JobConfig
 from ..engine.state import (
+    format_money,
     NO_ARTIFACTS,
     NO_ROUTER_CALLS,
     NONTERMINAL_STATES,
@@ -1273,7 +1274,11 @@ def _with_cost_display(doc: dict) -> dict:
         if not isinstance(bucket, dict):
             return bucket
         display = format_cost(bucket, decimals=4)
-        return {**bucket, "costDisplay": display} if display is not None else dict(bucket)
+        out = {**bucket, "costDisplay": display} if display is not None else dict(bucket)
+        listed = bucket.get("listEquivalentUSD")
+        if isinstance(listed, (int, float)) and not isinstance(listed, bool):
+            out["listEquivalentDisplay"] = format_money(listed, 4)
+        return out
 
     out_usage = rendered(usage)
     for key in ("byPhase", "byApproach", "byTier"):

@@ -334,3 +334,15 @@ def test_app_js_renders_the_cost_dialog_as_text_nodes_only():
                            "steering history (#17)")]
     assert "innerHTML" not in region
     assert "html" not in region.replace("openCostDialog", "")
+
+
+def test_app_js_shows_the_list_equivalent_stat_card_as_text_nodes():
+    """A subscription run's list price is its own stat card and column, apart
+    from the cost, built from the server's `listEquivalentDisplay`."""
+    src = STATIC_APP_JS.read_text()
+    region = src[src.index("function renderUsage"):src.index("function statCard")]
+    assert 'statCard("list-equivalent"' in region
+    assert "listEquivalentDisplay" in region
+    assert '"list-equivalent"' in region
+    assert "innerHTML = \"\"" in region  # the reset is the only innerHTML use
+    assert region.count("innerHTML") == 1

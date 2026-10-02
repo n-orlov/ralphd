@@ -492,7 +492,8 @@ def _usage_lines(usage: dict) -> list[str]:
     lines = ["", "## Usage"]
     for key in state.COST_TOKEN_KEYS:
         lines.append(f"- {key}: {usage.get(key)}")
-    for key in ("costUSD", "costDerivedUSD", "costStatus", "costFree"):
+    for key in ("costUSD", "costDerivedUSD", "costStatus", "costFree", "costBasis",
+                "listEquivalentUSD"):
         lines.append(f"- {key}: {usage.get(key)}")
     lines.append(f"- tokens: {state.format_tokens(usage) if usage else state.USAGE_NONE}")
     lines.append(f"- cost: {state.format_cost(usage, decimals=4)}")

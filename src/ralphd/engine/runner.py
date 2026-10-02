@@ -859,6 +859,24 @@ class ClaudeCodeRunner(_ChildProcessRunner):
         return super()._handle_line(raw, out, result, live_index, transcript,
                                     model=model)
 
+    @staticmethod
+    def _mark_subscription(result: IterationResult) -> None:
+        """A claude-code iteration bills against the subscription: exactly
+        $0, declared free, basis `subscription`. Never `costZeroQuoted`,
+        never derived from a rate table."""
+        usage = result.usage
+        usage.setdefault("costUSD", 0.0)
+        usage["costFree"] = True
+        usage["costBasis"] = state.COST_BASIS_SUBSCRIPTION
+
+    def _account_cost(self, usage: dict, result: IterationResult,
+                      pricing: PricingSource | None = None,
+                      model: str | None = None) -> None:
+        """Subscription cost: `costUSD` stays `0.0` whatever the message's own
+        figures say, and `pricing` is never consulted."""
+        self._mark_subscription(result)
+        result.usage["costUSD"] = round(result.usage.get("costUSD", 0.0) + 0.0, 6)
+
     def _absorb_raw(self, payload: dict, result: IterationResult) -> None:
         kind = payload.get("kind")
         if kind == "RateLimitEvent":
@@ -874,6 +892,10 @@ class ClaudeCodeRunner(_ChildProcessRunner):
             cost = payload.get("total_cost_usd")
             if isinstance(cost, (int, float)) and not isinstance(cost, bool):
                 self.sdk_total_cost_usd = float(cost)
+                # The SDK's list price for this call: shown apart, never
+                # folded into `costUSD`.
+                self._mark_subscription(result)
+                result.usage["listEquivalentUSD"] = round(float(cost), 6)
         elif kind == "AssistantMessage":
             err = payload.get("error")
             if err:

@@ -392,7 +392,8 @@ def cost_status(usage: dict | None) -> str | None:
     return None
 
 
-def _money(amount: float, decimals: int | None) -> str:
+def format_money(amount: float, decimals: int | None) -> str:
+    """`$1.2300`-style money, the one spelling every cost surface shares."""
     return f"${amount}" if decimals is None else f"${amount:.{decimals}f}"
 
 
@@ -430,15 +431,15 @@ def format_cost(usage: dict | None, decimals: int | None = 2) -> str | None:
         # a float `costUSD`, per loop._has_reported_price; the int `0` a
         # no-traffic iteration contributes is not a quote, and neither is
         # task 049's implausible zero), derived part marked
-        parts = ([_money(amount, decimals)]
+        parts = ([format_money(amount, decimals)]
                  if isinstance(amount, float) and not is_zero_quote(usage) else [])
-        parts.append(f"~{_money(derived, decimals)} {COST_DERIVED_WORD}")
+        parts.append(f"~{format_money(derived, decimals)} {COST_DERIVED_WORD}")
         rendered = " + ".join(parts)
         return (f"{rendered}, partial (rest {COST_UNAVAILABLE})"
                 if status == "partial" else rendered)
     if amount is None:
         return None
-    rendered = _money(amount, decimals)
+    rendered = format_money(amount, decimals)
     return rendered + COST_PARTIAL_SUFFIX if status == "partial" else rendered
 
 
@@ -8314,7 +8315,14 @@ COST_LEGEND_SOURCES = (COST_SOURCE_DERIVED, COST_SOURCE_PARTIAL,
 # a hand-edited status.json cannot smuggle in a display string its own numbers
 # do not support (`ITERATION_DERIVED_KEYS`' rule, same reason).
 COST_BUCKET_DERIVED_KEYS = ("key", "tokens", "tokensDisplay", "tokensTotalDisplay",
-                            "costDisplay", "costSource", "byPhase", "byApproach", "byTier")
+                            "costDisplay", "costSource", "listEquivalentDisplay",
+                            "byPhase", "byApproach", "byTier")
+# `costBasis` values a usage dict or bucket carries. A claude-code iteration
+# bills against a subscription: `costUSD` is exactly 0 and the SDK's list-price
+# figure rides apart as `listEquivalentUSD`, never added to the cost. A bucket
+# whose contributors are not all subscription is "mixed".
+COST_BASIS_SUBSCRIPTION = "subscription"
+COST_BASIS_MIXED = "mixed"
 
 
 def _token_total(usage: dict | None) -> int | None:
@@ -8353,6 +8361,7 @@ def cost_source(usage: dict | None) -> str | None:
     """Which kind of money a bucket holds, in one word -- the machine-readable
     twin of what `format_cost`' string says, or None when the bucket says
     nothing at all.
+COST_SOURCE_SUBSCRIPTION = "subscription"
 
     `cost_status` (the shared classifier) answers three of the cases straight
     off; the two it renders as None are told apart here, because "the provider
@@ -8430,6 +8439,8 @@ def _accumulate_task_usage(bucket: dict, usage: dict) -> dict:
     dict into status.json's byPhase/byApproach/byTier buckets (tasks 017/049/
     050/052), duplicated here rather than imported: `engine.loop` imports
     `engine.state`, so the dependency cannot run the other way. Kept
+    if usage.get("costBasis") == COST_BASIS_SUBSCRIPTION:
+        return COST_SOURCE_SUBSCRIPTION
     algorithmically identical -- same cost-status monotonicity, same
     `costFree` carry, same non-numeric-marker skip -- so a task's aggregated
     cost (task 036, G.4) can never disagree with what the SAME iterations
@@ -8446,16 +8457,16 @@ def _accumulate_task_usage(bucket: dict, usage: dict) -> dict:
         status = "derived" if has_derived else None
     else:
         has_price = (prev == "partial" or has_derived
-                     or isinstance(bucket.get("costUSD"), float)
-                     or isinstance(usage.get("costUSD"), float))
+                     or price_reported(bucket) or price_reported(usage))
         status = "partial" if has_price else "unknown"
     for k, v in usage.items():
-        if isinstance(v, bool):
+    listed = raw.get("listEquivalentUSD")
+    if isinstance(listed, (int, float)) and not isinstance(listed, bool):
+        out["listEquivalentDisplay"] = format_money(listed, 4)
+        if isinstance(v, (bool, str)):
             continue
         bucket[k] = (round(bucket.get(k, 0) + v, 6) if isinstance(v, float)
                      else bucket.get(k, 0) + v)
-    if usage.get("costFree") is True:
-        bucket["costFree"] = True
     if status:
         bucket["costStatus"] = status
     return bucket
@@ -8476,6 +8487,64 @@ def task_totals(iterations: list) -> dict:
     #29 fix site's own stated rule (`RunDir.migrate_legacy_vigilant_verified`
     above): every approach's planning pass renumbers `tasks.json` from
     "001", so a flat `taskId`-only key would let approach 2's task "001"
+def price_reported(d: dict) -> bool:
+    """True when `d` (an iteration usage dict or a bucket) holds at least one
+    provider-reported price: a float `costUSD`. A subscription iteration's
+    `0.0` is not a price (nothing was quoted, nothing is billed per token),
+    so it never turns an unknown bucket into a partial one; a mixed or
+    subscription bucket counts only when it holds real money."""
+    amount = d.get("costUSD")
+    if not isinstance(amount, float):
+        return False
+    if d.get("costBasis") in (COST_BASIS_SUBSCRIPTION, COST_BASIS_MIXED):
+        return amount > 0
+    return True
+
+
+def merge_cost_flags(bucket: dict, usage: dict) -> None:
+    """Fold one iteration's `costFree` and `costBasis` into `bucket`, called
+    BEFORE the counters are added so the bucket still describes what came
+    earlier. Shared by `LoopSupervisor._merge_usage` and
+    `_accumulate_task_usage` so a task rollup never disagrees with the
+    status.json rollup.
+
+    `costFree` holds only while every contributor was free: a bucket that
+    mixes priced money (or billed-but-unpriced tokens) with free iterations
+    is priced. `costBasis` is "subscription" while every contributor was
+    subscription and "mixed" as soon as one billed anything else; a
+    contributor that billed nothing is neutral."""
+    sub = usage.get("costBasis") == COST_BASIS_SUBSCRIPTION
+    free = usage.get("costFree") is True
+    prev_basis = bucket.get("costBasis")
+    prev_free = bucket.get("costFree") is True
+
+    def _spent(d: dict) -> bool:
+        amount = d.get("costUSD")
+        return (isinstance(amount, (int, float)) and not isinstance(amount, bool)
+                and amount > 0)
+
+    paid_now = not free and (_spent(usage) or usage.get("costPriced") is False)
+    paid_prev = _spent(bucket) or bucket.get("costStatus") in ("partial", "unknown")
+    if (prev_free or free) and not (paid_now or paid_prev):
+        bucket["costFree"] = True
+    else:
+        bucket.pop("costFree", None)
+
+    other_now = not sub and (billable_tokens(usage) > 0 or _spent(usage))
+    prior_other = (prev_basis not in (None, COST_BASIS_SUBSCRIPTION)
+                   or (prev_basis is None
+                       and (billable_tokens(bucket) > 0 or _spent(bucket))))
+    if sub:
+        basis = COST_BASIS_MIXED if prior_other else COST_BASIS_SUBSCRIPTION
+    elif other_now:
+        basis = (COST_BASIS_MIXED if prev_basis == COST_BASIS_SUBSCRIPTION
+                 else prev_basis)
+    else:
+        basis = prev_basis
+    if basis:
+        bucket["costBasis"] = basis
+
+
     inherit approach 1's minutes and dollars, exactly the bug this task
     fixes (#207 -- "$52.50 reported where $8.31 belonged"). The approach
     namespace comes from EACH iteration's own `approach` field (the
@@ -8502,6 +8571,7 @@ def task_totals(iterations: list) -> dict:
     `iterations` list (this run's chronological order), so a task detail
     view can list exactly the iterations the total above was summed from,
     never a re-derived or re-ordered set.
+    merge_cost_flags(bucket, usage)
     """
     raw: dict[str, dict] = {}
     for it in iterations:
@@ -8720,12 +8790,21 @@ def _cost_rows(buckets: list[dict]) -> list[str]:
     content (a phase name is 6-8 characters, an approach key is 1-2), and a
     bucket that recorded nothing renders `USAGE_NONE` rather than a zero."""
     key_w = max(len(b["key"]) for b in buckets)
-    cells = [(b["key"], b["costDisplay"] or USAGE_NONE, b["tokensTotalDisplay"])
+    cells = [(b["key"], b["costDisplay"] or USAGE_NONE, b["tokensTotalDisplay"],
+              b.get("listEquivalentDisplay") if b.get("listEquivalentUSD") else None)
              for b in buckets]
     cost_w = max(len(c[1]) for c in cells)
     tok_w = max(len(c[2]) for c in cells)
-    return [f"  {k:<{key_w}}  {cost:<{cost_w}}  {tokens:>{tok_w}}".rstrip()
-            for k, cost, tokens in cells]
+    # The list-equivalent column appears only when some row in the group has
+    # one, so a pure pi run's table is unchanged.
+    show_list = any(c[3] for c in cells)
+    rows = []
+    for k, cost, tokens, listed in cells:
+        row = f"  {k:<{key_w}}  {cost:<{cost_w}}  {tokens:>{tok_w}}"
+        if show_list:
+            row += f"  list-equiv: {listed}" if listed else ""
+        rows.append(row.rstrip())
+    return rows
 
 
 def cost_breakdown_lines(bd: dict) -> list[str]:
@@ -8739,8 +8818,11 @@ def cost_breakdown_lines(bd: dict) -> list[str]:
     if not isinstance(bd, dict) or not bd.get("hasUsage"):
         return [COST_NO_USAGE]
     total = bd.get("total") or {}
-    lines = [f"cost:      {total.get('costDisplay') or USAGE_NONE}",
-             f"tokens:    {total.get('tokensDisplay') or USAGE_NONE}"]
+    lines = [f"cost:      {total.get('costDisplay') or USAGE_NONE}"]
+    if total.get("listEquivalentDisplay") and total.get("listEquivalentUSD"):
+        lines.append(f"list-equiv: {total['listEquivalentDisplay']}"
+                     "  (subscription list price, not billed)")
+    lines.append(f"tokens:    {total.get('tokensDisplay') or USAGE_NONE}")
     # The verdict word is added only when it is NOT already spelled inside the
     # money string: `format_cost` says `derived`/`partial`/`unavailable` itself,
     # and repeating it would say the same thing twice -- but a bare `$0.12` (or
@@ -8755,6 +8837,8 @@ def cost_breakdown_lines(bd: dict) -> list[str]:
             model += f"  (gateway id: {bd['modelRaw']})"
         lines.append(model)
     lines.extend(f"!! {n}" for n in (bd.get("notices") or []))
+    if isinstance(usage.get("listEquivalentUSD"), (int, float)):
+        out["listEquivalentUSD"] = usage["listEquivalentUSD"]
     for label, key in (("by phase:", "byPhase"), ("by approach:", "byApproach"),
                        ("by tier:", "byTier")):
         buckets = bd.get(key) or []
