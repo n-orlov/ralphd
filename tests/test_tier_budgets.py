@@ -590,8 +590,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.31 final-review fix (pi-model_not_found case, one more test per
     # tier), measured `.venv/bin/python -m pytest -q -m fast --collect-only`
     # -> fast 7247/488, `-m smoke` -> smoke 5530/364.
-    "fast": {"tests": 7247, "modules": 488},
-    "smoke": {"tests": 5530, "modules": 364},
+    # v0.31.1 (#288): +5 tests / +1 module (tests/test_hub_current_iteration.py),
+    # measured by the gate's fast tier -> fast 7252/489, smoke 5535/365.
+    "fast": {"tests": 7252, "modules": 489},
+    "smoke": {"tests": 5535, "modules": 365},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
