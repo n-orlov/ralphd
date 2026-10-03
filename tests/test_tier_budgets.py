@@ -592,8 +592,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # -> fast 7247/488, `-m smoke` -> smoke 5530/364.
     # v0.31.1 (#288): +5 tests / +1 module (tests/test_hub_current_iteration.py),
     # measured by the gate's fast tier -> fast 7252/489, smoke 5535/365.
-    "fast": {"tests": 7252, "modules": 489},
-    "smoke": {"tests": 5535, "modules": 365},
+    # #289 router panel: +5 tests in tests/test_router_task_selection.py (an
+    # existing module) -> fast 7257/489, smoke 5540/365.
+    "fast": {"tests": 7257, "modules": 489},
+    "smoke": {"tests": 5540, "modules": 365},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
