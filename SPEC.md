@@ -5610,10 +5610,11 @@ always reports `containerGone: false`.
 
 `#/run/<id>` renders one run from a single payload —
 `{runId, live, containerGone, deletable, deleteRefusal, status, tasks,
-iterations, parkedQuestion}` — where
+iterations, parkedQuestion, currentIteration}` — where
 `status` and `tasks` are proxied from the container when its API answers and read
-from disk otherwise, and `iterations` is always read from
-`iterations/*/meta.json`. Every panel below it is one further endpoint, and only
+from disk otherwise, `iterations` is always read from
+`iterations/*/meta.json`, and `currentIteration` is the Current iteration
+panel's own fields, built from the other three (#288). Every panel below it is one further endpoint, and only
 four of them have a live answer to prefer at all: the run payload, the log tail,
 the PRD and the steering history proxy the container and fall back to the run dir;
 the iteration, document, artifact, fault and cost views are **on-disk only by
@@ -5827,6 +5828,23 @@ dir themselves and a live proxy would only add a way to disagree.
   `output.jsonl`, the pi-shaped events, for a `claude-code` iteration too: the
   raw `output.claude.jsonl` sidecar is not read. The run's provisioning lines
   suffix every hat line and every tier rung line with `[harness]`.
+  Rows are newest first. Collapsed (the default at any iteration count) shows
+  the 3 newest rows; the older ones sit behind a `show all N iterations`
+  disclosure, and the expand/collapse choice persists per section type in
+  `localStorage` (`ralphd.collapse.timeline`).
+- **Current iteration panel** — beside the live log tail on a wide screen,
+  stacked above it on a narrow one. Built server-side (`run_detail`'s
+  `currentIteration`, from `status.json`'s `currentIteration`, the in-flight
+  iteration's `meta.json` and its task): number and phase (opening the
+  iteration dialog), `<model> · <harness>`, effective tier, assigned task id
+  and title, which dispatch against that task this is in the current approach
+  plus its progress budget, start time, elapsed against the dispatch timeout
+  (`iteration_timeout_s`, capped for `reflect`) with a progress bar, tokens
+  and cost once `meta.json` has them, the infra-retry note and rate-limit
+  wait line, and every pending task still held by a future `deferredUntil`
+  (a worker deferral or a re-poll backoff). With no iteration running it says
+  why: the run is over, paused, timed out, waiting on a deferral until a
+  given time, or between iterations.
 - **State documents panel** — one row per run document: the worker's `notes.md`,
   `review-findings.md`, `composite-prd.md`, the debt ledger `debt.md` (task 006,
   requirement A.3) and the run's `job.yaml` **with

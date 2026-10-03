@@ -431,6 +431,30 @@ footer.autorefresh {
 .provisioning summary:focus-visible { outline: 2px solid var(--accent); }
 
 .timeline-details .timeline-rows { margin-top: 0.5rem; }
+/* #288: the newest rows sit above the "show all N" summary. */
+.timeline-recent { margin-bottom: 0.4rem; }
+
+/* #288: the Current iteration panel beside the live log tail --
+   side by side on a wide screen, stacked on a narrow one. */
+.live-row { display: flex; flex-direction: column; gap: 0 1.5rem; }
+.live-row > section { min-width: 0; }
+@media (min-width: 1000px) {
+  .live-row { flex-direction: row; align-items: flex-start; }
+  .live-row .current-iteration-sec { flex: 0 0 22rem; }
+  .live-row .log-sec { flex: 1 1 auto; }
+}
+.ci-title { font-size: 1rem; margin-bottom: 0.4rem; padding: 0.1rem 0.2rem; }
+.ci-fields { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.75rem;
+  font-size: 0.85rem; }
+.ci-row { display: contents; }
+.ci-key { color: var(--muted); }
+.ci-val { overflow-wrap: anywhere; }
+.ci-bar { height: 6px; margin: 0.6rem 0 0.3rem; border-radius: 3px;
+  background: rgba(127, 127, 127, 0.2); overflow: hidden; }
+.ci-bar-fill { height: 100%; background: var(--accent); }
+.ci-bar-late .ci-bar-fill { background: var(--warn); }
+.ci-wait { color: var(--warn); font-weight: 600; font-size: 0.85rem; margin-top: 0.4rem; }
+.ci-deferred { color: var(--muted); font-size: 0.85rem; margin-top: 0.3rem; }
 
 /* artifacts panel (task 024, #18.3) -- same affordance as a document row.
    Task 021 (#82): the list is collapsed by default behind a native

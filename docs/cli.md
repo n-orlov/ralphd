@@ -4234,7 +4234,12 @@ The bundle itself (open `http://<bind>:<port>/` in a browser):
   `unavailable` wording, computed server-side by `ui_server` and delivered
   as `usage.costDisplay` exactly like `startedAtLocal`, never re-derived
   from `costUSD` in the browser), a task table, an iteration timeline (number,
-  phase, model, duration once ended — each row clickable, see below), a live log tail rendered with the
+  phase, model, duration once ended — each row clickable, see below; newest
+  first, collapsed to the 3 newest behind a `show all N iterations`
+  disclosure), a **Current iteration** panel beside the log (the in-flight
+  iteration's number, phase, model/harness, tier, task, elapsed vs.
+  `iteration_timeout_s`, waits and deferrals — or why nothing is running —
+  built server-side as `run_detail`'s `currentIteration`), a live log tail rendered with the
   *same* pretty rules as `ralphctl logs` (iteration boundaries, streamed
   text, compact tool one-liners, elided thinking, malformed-line
   markers — rendered **server-side** by the shared `ralphd.cli.log_render`

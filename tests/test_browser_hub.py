@@ -3794,18 +3794,15 @@ def test_task_dialog_shows_more_than_the_current_status_task039(tmp_path, pw):
 
 
 def test_iteration_history_and_provisioning_collapse_by_default_task040(tmp_path, pw):
-    """Task 040 (PRD I.2): the iteration history renders collapsed by
-    default once it holds 15 or more records, and stays expanded below
-    that count; the run-detail "provisioning (resolved hat -> model)"
-    block (this PRD's "model config header") renders collapsed by default
-    regardless of iteration count.
+    """Task 040 (PRD I.2), as reworked by #288: the iteration
+    history renders collapsed by default at ANY iteration count, and
+    "collapsed" means the 3 newest rows stay visible while the older ones
+    sit behind a native `<details class="timeline-details">`; the run-detail
+    "provisioning (resolved hat -> model)" block renders collapsed by
+    default regardless of iteration count.
 
-    `renderTimeline` (`app.js`) wraps the timeline rows in a native
-    `<details class="timeline-details">`, `open` set only when the
-    iteration count is under `TIMELINE_COLLAPSE_THRESHOLD` (15); the
-    provisioning block (`renderSummary`) no longer carries `open` at all.
-    Two fixtures -- 14 iterations and 15 -- so the threshold's own boundary
-    is exercised, not just "some" vs "many".
+    Two fixtures -- 14 iterations and 15 -- the old I.2 threshold's own
+    boundary, so a regression to the count-based default is caught.
     """
     from ralphd.engine.state import JOB_CONFIG_FILE
 
@@ -3836,19 +3833,21 @@ def test_iteration_history_and_provisioning_collapse_by_default_task040(tmp_path
     server = UiServer(registry)
     server.wait_ready()
     try:
-        # -- below the threshold: expanded by default -----------------------
+        # -- below the old threshold: collapsed by default too ---------------
         pw.open(f"{server.base}/#/run/run-few-iters-040")
         _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 14)
         assert int(pw.eval_js("document.querySelectorAll('.timeline-item').length")) == 14
-        assert pw.eval_js("document.querySelector('.timeline-details').open") == "true"
+        assert pw.eval_js("document.querySelector('.timeline-details').open") == "false"
+        assert int(pw.eval_js(
+            "document.querySelectorAll('.timeline-recent .timeline-item').length")) == 3
         summary = pw.eval_js("document.querySelector('.timeline-details summary').textContent")
         assert "14" in summary, summary
         # the model config header (provisioning block) is collapsed
         # regardless of the iteration count on this same page
         assert pw.eval_js("document.querySelector('.provisioning').open") == "false"
-        pw.screenshot(SCREENSHOTS_DIR / "30-iteration-history-expanded-task040.png")
+        pw.screenshot(SCREENSHOTS_DIR / "30-iteration-history-collapsed-14-task040.png")
 
-        # -- at the threshold: collapsed by default --------------------------
+        # -- at the old threshold: collapsed by default ----------------------
         pw.open(f"{server.base}/#/run/run-many-iters-040")
         _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 15)
         assert int(pw.eval_js("document.querySelectorAll('.timeline-item').length")) == 15
@@ -3872,11 +3871,9 @@ def test_iteration_history_collapse_state_persists_in_localstorage_task041(tmp_p
     "open" or "closed", written on the native `<details>` element's own
     `toggle` event (`wireCollapsePersistence`).
 
-    Both runs below have 14 iterations -- below `TIMELINE_COLLAPSE_
-    THRESHOLD` (15), so task 040's own default is "expanded" -- which is
-    exactly what makes the collapsed state observed here provably the
-    stored preference winning over that default, not a coincidence of the
-    fixture's own iteration count.
+    #288: the default is collapsed (last 3 visible) at any count,
+    so the stored "open" preference is what this test proves wins -- an
+    expanded section on a reload or on another run can only come from it.
     """
     from ralphd.engine.state import JOB_CONFIG_FILE
 
@@ -3904,15 +3901,18 @@ def test_iteration_history_collapse_state_persists_in_localstorage_task041(tmp_p
     server = UiServer(registry)
     server.wait_ready()
     try:
-        # -- no preference stored yet: task 040's own default (expanded, 14
-        # is below the threshold) still governs -----------------------------
+        # -- no preference stored yet: the default (collapsed) governs ------
         pw.open(f"{server.base}/#/run/run-a-041")
         _wait_for_count_ge(pw, "document.querySelectorAll('.timeline-item').length", 14)
-        assert pw.eval_js("document.querySelector('.timeline-details').open") == "true"
+        assert pw.eval_js("document.querySelector('.timeline-details').open") == "false"
         assert pw.eval_js("window.localStorage.getItem('ralphd.collapse.timeline')") == "null"
 
-        # -- operator collapses it: the native `<details>` toggle fires, the
-        # key shape is exactly `ralphd.collapse.timeline` -> "closed" -------
+        # -- operator expands then collapses it: the native `<details>`
+        # toggle fires, the key shape is exactly `ralphd.collapse.timeline`
+        # -> "closed" --------------------------------------------------------
+        pw.click(".timeline-details summary")
+        _wait_for(pw, "document.querySelector('.timeline-details').open", "true")
+        assert pw.eval_js("window.localStorage.getItem('ralphd.collapse.timeline')").strip('"') == "open"
         pw.click(".timeline-details summary")
         _wait_for(pw, "document.querySelector('.timeline-details').open", "false")
         assert pw.eval_js("window.localStorage.getItem('ralphd.collapse.timeline')").strip('"') == "closed"
@@ -3923,8 +3923,7 @@ def test_iteration_history_collapse_state_persists_in_localstorage_task041(tmp_p
         assert pw.eval_js("document.querySelector('.timeline-details').open") == "false"
         pw.screenshot(SCREENSHOTS_DIR / "32-timeline-collapse-persists-reload-task041.png")
 
-        # -- restores on navigation: a DIFFERENT run, below the threshold,
-        # still renders collapsed -- the key is scoped by section type, not
+        # -- restores on navigation: a DIFFERENT run still renders collapsed -- the key is scoped by section type, not
         # by job. `goto`, not `open`: `open` launches a fresh non-persistent
         # browser context per call (empty storage every time), which is not
         # what "navigate to another run" means here -----------------------

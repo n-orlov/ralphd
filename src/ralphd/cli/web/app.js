@@ -1567,7 +1567,13 @@ async function renderRunDetail(runId, myGen) {
     h("div", { id: "approach-box" }, []),
   ]);
   const timelineSec = h("section", {}, [h("h2", {}, ["Iteration timeline"]), h("div", { id: "timeline-box" })]);
-  const logSec = h("section", {}, [
+  // #288: what the in-flight iteration is, side by side with its
+  // log on a wide screen (`.live-row`), stacked on a narrow one.
+  const currentSec = h("section", { class: "current-iteration-sec" }, [
+    h("h2", {}, ["Current iteration"]),
+    h("div", { id: "current-iteration-box" }, [h("p", { class: "muted" }, ["(loading…)"])]),
+  ]);
+  const logSec = h("section", { class: "log-sec" }, [
     h("h2", {}, ["Live log tail"]),
     h("div", { id: "logbox" }, ["(loading…)"]),
   ]);
@@ -1641,7 +1647,7 @@ async function renderRunDetail(runId, myGen) {
   app.appendChild(taskSec);
   app.appendChild(approachSec);
   app.appendChild(timelineSec);
-  app.appendChild(logSec);
+  app.appendChild(h("div", { class: "live-row" }, [currentSec, logSec]));
   app.appendChild(steerSec);
   app.appendChild(ruleSec);
   app.appendChild(h("footer", { class: "autorefresh" }, [`auto-refreshing every ${REFRESH_MS / 1000}s`]));
@@ -1749,6 +1755,10 @@ async function renderRunDetail(runId, myGen) {
   // the pause getting answered/resumed to `null`) always differs here and
   // rebuilds -- fresh findings need a fresh, empty answer box.
   let lastParkedQuestionJSON;
+  // #288: the last `currentIteration` panel payload, re-rendered on
+  // EVERY tick (a `304` included) so its elapsed time keeps moving while
+  // the back-off holds the payload itself still.
+  let lastCurrentIteration = null;
   // Test-only instrumentation (never read by the app itself): lets a
   // browser test observe the back-off without waiting out the full
   // 15-30s band it targets.
@@ -1796,7 +1806,10 @@ async function renderRunDetail(runId, myGen) {
       renderTasks(document.getElementById("task-box"), body.tasks,
                   body.status && body.status.progressBudget);
       renderTimeline(document.getElementById("timeline-box"), body.iterations || [], runId);
+      lastCurrentIteration = body.currentIteration || null;
     }
+    renderCurrentIteration(document.getElementById("current-iteration-box"),
+                           lastCurrentIteration, runId);
     // Task 049 (H.7): `loadLogs` (the transcript/log-tail poll,
     // `GET /api/runs/<id>/logs?tail=200`) already shares this SAME
     // `load()` call, which is itself scheduled through `scheduleRefresh`
@@ -3013,12 +3026,13 @@ function renderTasks(el, tasks, progressBudget) {
   el.appendChild(table);
 }
 
-// Task 040 (I.2): the iteration history renders collapsed by default once
-// it holds 15 or more records -- a native `<details>`/`<summary>` disclosure,
-// the same chrome the artifacts and router-call panels already use (task
-// 021/022), so a long-running job's page does not open with dozens of rows
-// pre-rendered. Below 15 it renders expanded (`open`), same as it always
-// has.
+// Task 040 (I.2), reworked by #288: the iteration history is newest
+// first, and its `TIMELINE_RECENT_COUNT` newest rows are always visible; the
+// rest sit behind a native `<details>`/`<summary>` ("show all N"), the same
+// chrome the artifacts and router-call panels already use (task 021/022).
+// Collapsed is the default at any iteration count -- "collapsed" means "the
+// last 3", never "nothing", so the rows an operator actually wants are never
+// hidden and a 300-iteration run no longer buries them at the bottom.
 //
 // Task 041 (I.3): an operator's own expand/collapse choice is persisted in
 // `localStorage`, scoped per SECTION TYPE, not per job (PRD I.3 -- "expanding
@@ -3032,7 +3046,7 @@ function renderTasks(el, tasks, progressBudget) {
 // preference -- not the 15-record threshold -- now wins on every rebuild
 // once the operator has toggled it once, so an in-session expand survives
 // a poll too.
-const TIMELINE_COLLAPSE_THRESHOLD = 15;
+const TIMELINE_RECENT_COUNT = 3;
 
 // `localStorage` key shape: `ralphd.collapse.<sectionType>`, value the
 // literal string "open" or "closed". Anything else (key unset, corrupted,
@@ -3092,22 +3106,25 @@ function renderTimeline(el, iterations, runId) {
     el.appendChild(h("p", { class: "muted" }, ["(no iterations yet)"]));
     return;
   }
-  const sorted = [...iterations].sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
-  // I.3: a stored preference overrides the I.2 threshold default once the
-  // operator has toggled this section at least once, on ANY run -- the
-  // key is scoped by section type ("timeline"), not by `runId`.
-  const timelinePref = readCollapsePref("timeline");
-  const collapsed = timelinePref === "open" ? false
-    : timelinePref === "closed" ? true
-    : sorted.length >= TIMELINE_COLLAPSE_THRESHOLD;
-  const rowsBox = h("div", { class: "timeline-rows" }, []);
-  const detailsAttrs = { class: "timeline-details" };
-  if (!collapsed) detailsAttrs.open = "";
-  const details = h("details", detailsAttrs, [
-    h("summary", {}, ["iteration history (" + String(sorted.length) + ")"]),
-    rowsBox,
-  ]);
-  wireCollapsePersistence(details, "timeline");
+  const sorted = [...iterations].sort((a, b) => (b.number ?? 0) - (a.number ?? 0));
+  const recentBox = h("div", { class: "timeline-rows timeline-recent" }, []);
+  el.appendChild(recentBox);
+  let olderBox = null;
+  if (sorted.length > TIMELINE_RECENT_COUNT) {
+    // I.3: a stored preference wins once the operator has toggled this
+    // section at least once, on ANY run -- the key is scoped by section
+    // type ("timeline"), not by `runId`. Default: collapsed.
+    const detailsAttrs = { class: "timeline-details" };
+    if (readCollapsePref("timeline") === "open") detailsAttrs.open = "";
+    olderBox = h("div", { class: "timeline-rows timeline-older" }, []);
+    const details = h("details", detailsAttrs, [
+      h("summary", {}, ["show all " + String(sorted.length) + " iterations (" +
+        String(sorted.length - TIMELINE_RECENT_COUNT) + " older)"]),
+      olderBox,
+    ]);
+    wireCollapsePersistence(details, "timeline");
+    el.appendChild(details);
+  }
   for (const it of sorted) {
     const dur = it.endedAt
       ? fmtDuration(durationBetween(it.startedAt, it.endedAt))
@@ -3170,9 +3187,9 @@ function renderTimeline(el, iterations, runId) {
       // never recorded a fault.
       it.causeText ? h("span", { class: "cause" }, ["cause: " + String(it.causeText)]) : null,
     ]);
-    rowsBox.appendChild(row);
+    (olderBox && recentBox.childNodes.length >= TIMELINE_RECENT_COUNT
+      ? olderBox : recentBox).appendChild(row);
   }
-  el.appendChild(details);
 }
 
 // v0.31 (#285): "<model> · <harness>" for one iteration row. Tolerates a
@@ -3181,6 +3198,102 @@ function iterationModelLabel(it) {
   const model = it && it.model ? String(it.model) : "";
   const harness = it && typeof it.harness === "string" ? it.harness : "";
   return harness ? (model ? model + " \u00B7 " + harness : harness) : model;
+}
+
+// #288: the "Current iteration" panel beside the live log. Every
+// field comes from `ui_server.current_iteration_panel` (`body.
+// currentIteration`); the only thing computed here is elapsed time against
+// the browser's clock, so the bar keeps moving between payload refreshes.
+function renderCurrentIteration(el, cur, runId) {
+  if (!el) return;
+  el.innerHTML = "";
+  if (!cur) {
+    el.appendChild(h("p", { class: "muted" }, ["(unknown)"]));
+    return;
+  }
+  const deferredLines = (cur.deferred || []).map((d) => h("div", { class: "ci-deferred" }, [
+    "deferred: task " + String(d.taskId) + " until " + String(d.untilLocal || d.until) +
+      (d.reason ? " \u2014 " + String(d.reason) : ""),
+  ]));
+  const rateLine = cur.rateLimitWaitLine
+    ? h("div", { class: "ci-wait" }, ["\u23F3 " + String(cur.rateLimitWaitLine)]) : null;
+  if (!cur.active) {
+    el.appendChild(h("p", { class: "ci-idle muted" }, [String(cur.idleText || "idle")]));
+    if (rateLine) el.appendChild(rateLine);
+    for (const line of deferredLines) el.appendChild(line);
+    return;
+  }
+  const number = cur.number ?? null;
+  const title = h("div", { class: "ci-title" }, [
+    h("b", {}, ["#" + (number == null ? "?" : String(number))]),
+    " " + String(cur.phase || ""),
+  ]);
+  if (number != null) {
+    title.classList.add("timeline-clickable");
+    title.setAttribute("role", "button");
+    title.setAttribute("tabindex", "0");
+    title.title = "show this iteration's detail and log";
+    const open = () => { openIterationDialog(runId, number); };
+    title.onclick = open;
+    title.onkeydown = (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
+    };
+  }
+  el.appendChild(title);
+  const rows = [];
+  const modelLabel = iterationModelLabel(cur);
+  if (modelLabel) rows.push(["model", modelLabel]);
+  rows.push(["tier", String(cur.effectiveTier || "\u2014")]);
+  if (cur.assignedTaskId != null) {
+    let task = String(cur.assignedTaskId);
+    if (cur.taskTitle) task += " \u2014 " + String(cur.taskTitle);
+    rows.push(["task", task]);
+    let attempts = "iteration " + String(cur.taskIterations ?? "?") + " on this task";
+    if (cur.progressBudget) {
+      attempts += ", budget " + String(cur.progressBudget.used) + "/" +
+        String(cur.progressBudget.budget);
+    }
+    rows.push(["attempt", attempts]);
+  } else {
+    rows.push(["task", "\u2014"]);
+  }
+  if (cur.startedAtLocal) rows.push(["started", String(cur.startedAtLocal)]);
+  const elapsed = cur.startedAt
+    ? durationBetween(cur.startedAt, new Date().toISOString()) : null;
+  const timeout = typeof cur.timeoutSeconds === "number" ? cur.timeoutSeconds : null;
+  if (elapsed != null) {
+    let text = fmtDuration(elapsed);
+    if (timeout) {
+      const left = timeout - elapsed;
+      text += " of " + fmtDuration(timeout) +
+        (left > 0 ? " (" + fmtDuration(left) + " left)" : " (over the iteration timeout)");
+    }
+    rows.push(["elapsed", text]);
+  }
+  if (cur.tokensDisplay) rows.push(["tokens", String(cur.tokensDisplay)]);
+  if (cur.costDisplay) rows.push(["cost", String(cur.costDisplay)]);
+  const grid = h("div", { class: "ci-fields" }, []);
+  for (const [k, v] of rows) {
+    grid.appendChild(h("div", { class: "ci-row", "data-field": k }, [
+      h("span", { class: "ci-key" }, [k]), h("span", { class: "ci-val" }, [v]),
+    ]));
+  }
+  el.appendChild(grid);
+  if (elapsed != null && timeout) {
+    const pct = Math.max(0, Math.min(100, (elapsed / timeout) * 100));
+    // Width through CSSOM, never a `style=` attribute: HUB_CSP's
+    // `style-src 'self'` blocks inline style attributes (test_hub_csp.py).
+    const fill = h("div", { class: "ci-bar-fill" }, []);
+    fill.style.width = pct.toFixed(1) + "%";
+    el.appendChild(h("div", {
+      class: "ci-bar" + (pct >= 90 ? " ci-bar-late" : ""),
+      role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100",
+      "aria-valuenow": String(Math.round(pct)),
+    }, [fill]));
+  }
+  if (cur.note) el.appendChild(h("div", { class: "ci-wait" }, ["\u23F3 " + String(cur.note)]));
+  if (rateLine) el.appendChild(rateLine);
+  for (const line of deferredLines) el.appendChild(line);
 }
 
 async function loadLogs(runId) {

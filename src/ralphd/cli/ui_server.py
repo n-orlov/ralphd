@@ -57,6 +57,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import socket
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -101,6 +102,7 @@ from ..engine.state import (
     iteration_detail_text,
     iteration_summary_lines,
     parked_question,
+    parse_utc,
     prd_path,
     read_iteration_prompt,
     read_tasks_doc,
@@ -1990,6 +1992,140 @@ def _drop_run_detail_caches(run_id: str) -> None:
     _ABSENT_INDEX_CACHE.pop(run_id, None)
 
 
+# #288: the `reflect` hat's own dispatch timeout -- mirrors
+# `LoopSupervisor.REFLECT_TAIL_TIMEOUT_S` (engine/loop.py), which the hub
+# does not import (the loop module is the engine, not a read path).
+REFLECT_TAIL_TIMEOUT_S = 600.0
+
+
+def _iteration_timeout_s(cfg_path: Path, phase) -> float | None:
+    """The dispatch timeout the engine applied to an iteration of `phase`
+    (loop.py's `timeout = min(iteration_timeout_s, ...)`), read from this
+    run's own host-side job.yaml. None when the job.yaml is absent or does
+    not load -- the panel then shows elapsed time without a bound."""
+    if not cfg_path.is_file():
+        return None
+    try:
+        timeout = float(JobConfig.load(cfg_path).iteration_timeout_s)
+    except Exception:
+        return None
+    if phase == "reflect":
+        timeout = min(timeout, REFLECT_TAIL_TIMEOUT_S)
+    return timeout
+
+
+def _deferred_tasks(tasks: dict, now: float) -> list[dict]:
+    """Every pending task still held back by a future `deferredUntil` -- a
+    worker's own deferral or v0.29's engine re-poll backoff (both write the
+    same `deferredUntil`/`deferredReason` pair) -- earliest release first."""
+    out = []
+    for t in (tasks or {}).get("tasks") or []:
+        until = t.get("deferredUntil") if isinstance(t, dict) else None
+        if not until or t.get("status") != "pending":
+            continue
+        try:
+            if parse_utc(until) <= now:
+                continue
+        except (TypeError, ValueError):
+            pass  # a worker-written `until` in another ISO form: keep it
+        out.append({"taskId": t.get("id"), "title": t.get("title"),
+                    "until": until, "untilLocal": format_local_time(until),
+                    "reason": t.get("deferredReason")})
+    return sorted(out, key=lambda d: str(d["until"]))
+
+
+def current_iteration_panel(status: dict, iterations: list, tasks: dict,
+                            cfg_path: Path, *, now: float | None = None) -> dict:
+    """#288: the run page's "Current iteration" panel, built here
+    from `status.json`'s `currentIteration` plus the in-flight iteration's
+    own row (`iteration_detail` over its `meta.json`, already in
+    `iterations`) and the task it was dispatched against -- so app.js only
+    lays the fields out and never re-derives them.
+
+    `active` is True exactly while `currentIteration` is a live dict (the
+    same tell `renderSummary`/`ralphctl status` use). When it is not,
+    `idleText` says why nothing is running: the run is over, paused, timed
+    out, waiting on a deferral, or simply between iterations.
+    """
+    now = time.time() if now is None else now
+    status = status if isinstance(status, dict) else {}
+    cur = status.get("currentIteration")
+    deferred = _deferred_tasks(tasks, now)
+    panel: dict = {"active": isinstance(cur, dict), "deferred": deferred}
+    if status.get("rateLimitWaitLine"):
+        panel["rateLimitWaitLine"] = status["rateLimitWaitLine"]
+
+    if not isinstance(cur, dict):
+        state = str(status.get("state") or "")
+        if state in TERMINAL_STATES:
+            text = f"no iteration running — the run is over ({state})"
+        elif state == "paused":
+            reason = status.get("pauseReason")
+            text = "no iteration running — paused" + (f" ({reason})" if reason else "")
+        elif state == "timed_out":
+            text = "no iteration running — timed out (resumable hold)"
+        elif deferred and not any(
+                isinstance(t, dict) and t.get("status") in ("pending", "in-progress")
+                and not any(d["taskId"] == t.get("id") for d in deferred)
+                for t in (tasks or {}).get("tasks") or []):
+            first = deferred[0]
+            text = (f"idle — waiting on deferral: task {first['taskId']} "
+                    f"until {first['untilLocal']}")
+        elif state:
+            text = f"idle — between iterations ({state})"
+        else:
+            text = "idle"
+        panel["idleText"] = text
+        return panel
+
+    number = cur.get("number")
+    row = None
+    if number is not None:
+        row = next((it for it in iterations if it.get("number") == number), None)
+    elif iterations and not iterations[-1].get("endedAt"):
+        # An infra-retry backoff rewrites `currentIteration` to just
+        # `{phase, note}`; the slot being retried is the newest one.
+        row = iterations[-1]
+    row = row or {}
+    phase = cur.get("phase") or row.get("phase")
+    started = cur.get("startedAt") or row.get("startedAt")
+    task_id = row.get("assignedTaskId")
+    panel.update({
+        "number": number if number is not None else row.get("number"),
+        "phase": phase,
+        "model": cur.get("model") or row.get("model"),
+        "harness": row.get("harness"),
+        "effectiveTier": row.get("effectiveTier"),
+        "assignedTaskId": task_id,
+        "startedAt": started,
+        "startedAtLocal": format_local_time(started) if started else None,
+        "timeoutSeconds": _iteration_timeout_s(cfg_path, phase),
+        "note": cur.get("note"),
+    })
+    # Tokens/cost land in meta.json only when the iteration ends; a row
+    # without `usage` has nothing to show yet, so say nothing rather than
+    # "unavailable".
+    if row.get("usage"):
+        panel["tokensDisplay"] = row.get("tokensDisplay")
+        panel["costDisplay"] = row.get("costDisplay")
+    if task_id is not None:
+        task = next((t for t in (tasks or {}).get("tasks") or []
+                     if isinstance(t, dict) and t.get("id") == task_id), {})
+        approach = row.get("approach")
+        panel["taskTitle"] = task.get("title")
+        panel["taskStatus"] = task.get("status")
+        # This iteration included: the Nth dispatch against this task in
+        # the current approach (ids restart per approach, #207).
+        panel["taskIterations"] = sum(
+            1 for it in iterations
+            if it.get("assignedTaskId") == task_id and it.get("approach") == approach)
+        budget = status.get("progressBudget")
+        if isinstance(budget, dict) and budget.get("taskId") == task_id:
+            panel["progressBudget"] = {"used": budget.get("used"),
+                                       "budget": budget.get("budget")}
+    return panel
+
+
 def run_detail_etag(reg: Path, run_id: str) -> str:
     """Task 003 (A.1): the `ETag` for `GET /api/runs/<id>`.
 
@@ -2180,6 +2316,9 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         "parkedQuestion": parked_question(run_dir, shaped_status),
         "tasks": tasks,
         "iterations": iterations,
+        # #288: the "Current iteration" panel beside the live log.
+        "currentIteration": current_iteration_panel(
+            shaped_status, iterations, tasks, _config_dir(reg, run_id) / "job.yaml"),
     }
 
 
