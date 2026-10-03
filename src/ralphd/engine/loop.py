@@ -6449,12 +6449,15 @@ class LoopSupervisor:
             reason="",
             fallback=outcome.used_fallback,
             fallback_cause=outcome.fallback_cause,
-            usage=outcome.usage)
+            usage=outcome.usage,
+            transcripts=[f"{n:04d}.jsonl" for n in
+                         range(router_calls_before + 1, self._router_calls + 1)])
         return (outcome.target, guard, outcome)
 
     def _emit_router_decision_event(
             self, *, state, candidate_ids, deterministic_pick,
-            choice, reason, fallback, fallback_cause, usage) -> None:
+            choice, reason, fallback, fallback_cause, usage,
+            transcripts=None) -> None:
         """Task 002 (#278 B.7): one `router.decision` EVENT (`events.jsonl`,
         never a bare log line) per completed router call on EITHER routed
         state -- `task_selection` (`_route_task_selection` below) and the
@@ -6483,7 +6486,18 @@ class LoopSupervisor:
             fallbackCause=fallback_cause,
             model=self.cfg.model_for("router"),
             tokens=usage.get("totalTokens"),
-            costUSD=usage.get("costUSD"))
+            costUSD=usage.get("costUSD"),
+            # #289: on a derived-pricing (AIGW) run the provider quotes no
+            # price, so `costUSD` is null and the call's money lives in
+            # `costDerivedUSD` -- set by the runner from the SAME pricing map
+            # `_accumulate_usage` folds into the run's totals (the usage
+            # dict `_ask_router` returns IS the one it accumulated).  Kept in
+            # its own field, never merged into `costUSD`, like every usage
+            # surface (`_has_derived_price`).
+            costDerivedUSD=usage.get("costDerivedUSD"),
+            # #289: which `artifacts/router/NNNN.jsonl` transcript(s) this
+            # decision's call(s) wrote, so an entry can point at its own.
+            transcripts=list(transcripts or []))
 
     async def _route_task_selection(self, candidates: list, deterministic: dict) -> dict:
         """Task 002 (#278 B.1/B.4/B.7): the ONE place `engine.router.
@@ -6511,6 +6525,14 @@ class LoopSupervisor:
         """
         candidate_ids = [str(t.get("id")) for t in candidates]
         deterministic_id = str(deterministic.get("id"))
+        # #289: same technique as `_route_with_router` -- the counter delta
+        # across the call names the transcript file(s) it produced.  The
+        # decision is NOT also written to `decisions.jsonl` (that file stays
+        # edge-axis-only): `state.router_call_entries` reads this axis from
+        # the `router.decision` event instead, so no call is ever listed
+        # twice -- and that same read is what lets runs that finished before
+        # this fix list their task-selection calls.
+        router_calls_before = self._router_calls
         outcome = await router.decide_task_selection(
             candidates, deterministic_id, ask=self._ask_router,
             timeout_s=self.cfg.router_timeout_s,
@@ -6530,7 +6552,9 @@ class LoopSupervisor:
             reason=outcome.reason,
             fallback=outcome.used_fallback,
             fallback_cause=outcome.fallback_cause,
-            usage=outcome.usage)
+            usage=outcome.usage,
+            transcripts=[f"{n:04d}.jsonl" for n in
+                         range(router_calls_before + 1, self._router_calls + 1)])
         return next(t for t in candidates if str(t.get("id")) == outcome.chosen_id)
 
     def _apply_reported_task_status(self, payload: dict) -> list[str]:

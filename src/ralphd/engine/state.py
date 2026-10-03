@@ -7733,6 +7733,67 @@ def router_call_entry(raw: dict, index: int) -> dict:
     }
 
 
+# #289: the `router.decision` event's `state` for the task-selection axis --
+# the one axis `decisions.jsonl` never recorded (only `_route_with_router`
+# writes there; `_route_task_selection` only emits the event).
+TASK_SELECTION_ROUTER_STATE = "task_selection"
+
+
+def task_selection_call_entry(ev: dict, index: int) -> dict:
+    """#289: one `router.decision` event on the `task_selection` axis, shaped
+    like `router_call_entry` so both surfaces render either kind from one
+    dict. The task-selection shape has no edges or guards: its candidates are
+    task ids (`taskCandidateIds`), it has a deterministic pick, and it
+    carries the model's one-line `reason` -- all added as extra keys, with
+    the edge-shaped keys filled so a reader that only knows the edge shape
+    (`chosenTarget`, `usedFallback`) still prints something true.
+
+    The event holds the call's own tokens/cost, not a usage dict, so one is
+    rebuilt for `cost_bucket` -- `costUSD` (provider-quoted) and
+    `costDerivedUSD` (host pricing map) stay separate, exactly as everywhere
+    else; a run that predates the derived field simply shows no cost.
+    """
+    usage: dict = {}
+    tokens = ev.get("tokens")
+    if isinstance(tokens, (int, float)) and not isinstance(tokens, bool):
+        usage["totalTokens"] = tokens
+    cost = ev.get("costUSD")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        usage["costUSD"] = float(cost)
+        usage["costPriced"] = True
+    derived = ev.get("costDerivedUSD")
+    if isinstance(derived, (int, float)) and not isinstance(derived, bool):
+        usage["costDerivedUSD"] = float(derived)
+        usage["costDerived"] = True
+    bucket = cost_bucket(usage, key="router")
+    ids = [str(i) for i in ev.get("candidateIds") or []]
+    return {
+        "index": index,
+        "ts": ev.get("ts"),
+        "state": ev.get("state"),
+        "vigilant": None,
+        "candidateEdges": [],
+        "taskCandidateIds": ids,
+        "deterministicPick": ev.get("deterministicPick"),
+        "reason": ev.get("reason") or "",
+        "chosenTarget": ev.get("choice"),
+        "chosenGuard": None,
+        "usedRouter": not ev.get("fallback"),
+        "usedFallback": bool(ev.get("fallback")),
+        "fallbackGuard": None,
+        "fallbackCause": ev.get("fallbackCause"),
+        "attempts": None,
+        "model": ev.get("model"),
+        "transcripts": ev.get("transcripts") or [],
+        "tokens": bucket["tokens"],
+        "tokensDisplay": bucket["tokensDisplay"],
+        "costDisplay": bucket["costDisplay"],
+        "costSource": bucket["costSource"],
+        "chargesIteration": False,
+        "note": ROUTER_CALL_NOTE,
+    }
+
+
 def router_call_entries(run_root: Path) -> list[dict]:
     """Every completed router decision this run recorded, oldest first, as
     `router_call_entry` dicts -- the ONE reader `ralphctl router` and the
@@ -7743,14 +7804,25 @@ def router_call_entries(run_root: Path) -> list[dict]:
     and one whose container is long gone read identically. A run that never
     reached a router-ambiguous state (every shipped run, today) answers with
     an empty list, which the caller pairs with `NO_ROUTER_CALLS`.
+
+    #289: two sources, merged by timestamp. The edge-based axis is read from
+    `artifacts/router/decisions.jsonl` ONLY -- `_route_with_router` writes
+    that line AND a `router.decision` event for the same call, so the event
+    is deliberately ignored for it (never listed twice). The task-selection
+    axis never wrote a decisions line, so it is read from `events.jsonl`
+    (`state == "task_selection"` events): a pure on-disk read, which is why
+    runs finished before this fix list their task-selection calls too.
+    `index` is the 1-based position in the merged list (it used to be the
+    decisions.jsonl line number, which is the same thing for a file without
+    blank lines).
     """
     path = Path(run_root) / ARTIFACTS_DIR_NAME / "router" / ROUTER_DECISIONS_FILENAME
     try:
         lines = path.read_text().splitlines()
     except OSError:
-        return []
-    entries = []
-    for i, line in enumerate(lines, start=1):
+        lines = []
+    shaped: list[tuple[str, dict]] = []
+    for line in lines:
         line = line.strip()
         if not line:
             continue
@@ -7759,6 +7831,17 @@ def router_call_entries(run_root: Path) -> list[dict]:
         except json.JSONDecodeError:
             continue
         if isinstance(raw, dict):
+            shaped.append((str(raw.get("ts") or ""), raw))
+    for ev in read_events(run_root, types=("router.decision",)):
+        if ev.get("state") == TASK_SELECTION_ROUTER_STATE:
+            shaped.append((str(ev.get("ts") or ""), {"__event__": ev}))
+    # Stable: equal timestamps (second resolution) keep decisions-then-events.
+    shaped.sort(key=lambda pair: pair[0])
+    entries = []
+    for i, (_, raw) in enumerate(shaped, start=1):
+        if "__event__" in raw:
+            entries.append(task_selection_call_entry(raw["__event__"], i))
+        else:
             entries.append(router_call_entry(raw, i))
     return entries
 
@@ -7772,6 +7855,28 @@ def router_call_summary_lines(entry: dict) -> list[str]:
     """
     if not isinstance(entry, dict):
         return []
+    # #289: a task-selection entry has candidate task ids, a deterministic
+    # pick and a reason instead of edges/guards/attempts.
+    task_ids = entry.get("taskCandidateIds")
+    if task_ids is not None:
+        return [
+            f"router call:  #{entry.get('index')}",
+            f"state:         {entry.get('state')}",
+            f"candidates:    {', '.join(task_ids) or '(none recorded)'}",
+            f"deterministic: {entry.get('deterministicPick')}",
+            f"chosen:        {entry.get('chosenTarget')}",
+            f"reason:        {entry.get('reason') or '(none)'}",
+            f"fallback used: {bool(entry.get('usedFallback'))}"
+            + (f" (cause={entry.get('fallbackCause')})"
+               if entry.get("usedFallback") else ""),
+            f"model:         {entry.get('model') or '(unset -- pi default)'}",
+            "transcripts:   "
+            + (", ".join(entry.get("transcripts") or []) or "(none recorded)"),
+            f"tokens:        {entry.get('tokensDisplay')}",
+            f"cost:          {entry.get('costDisplay') or USAGE_NONE}",
+            "",
+            entry.get("note") or ROUTER_CALL_NOTE,
+        ]
     candidates = ", ".join(
         f"{e.get('target')}({e.get('guard')})"
         for e in entry.get("candidateEdges") or [] if isinstance(e, dict)

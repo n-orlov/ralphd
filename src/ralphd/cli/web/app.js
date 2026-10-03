@@ -1132,17 +1132,35 @@ function renderRouterCalls(box, ok, body) {
   box.innerHTML = "";
   const list = h("div", { class: "router-call-list", id: "router-call-list" }, []);
   for (const c of items) {
-    const candidates = Array.isArray(c.candidateEdges)
-      ? c.candidateEdges.map((e) => `${e.target}(${e.guard})`).join(", ")
-      : "";
+    // #289: a task_selection entry lists task ids (`taskCandidateIds`) and has
+    // no guard; an edge-based one lists `target(guard)` pairs.
+    const isTask = Array.isArray(c.taskCandidateIds);
+    const candidates = isTask
+      ? c.taskCandidateIds.join(", ")
+      : (Array.isArray(c.candidateEdges)
+        ? c.candidateEdges.map((e) => `${e.target}(${e.guard})`).join(", ")
+        : "");
     list.appendChild(h("div", { class: "router-call-item" }, [
       h("span", { class: "router-call-index" }, ["#" + String(c.index)]),
       h("span", { class: "router-call-state" }, [String(c.state || "")]),
       h("span", { class: "router-call-arrow" }, [" \u2192 "]),
       h("span", { class: "router-call-chosen" },
-        [String(c.chosenTarget || "") + " (guard=" + String(c.chosenGuard || "") + ")"]),
+        [String(c.chosenTarget || "") +
+          (isTask ? "" : " (guard=" + String(c.chosenGuard || "") + ")")]),
       c.usedFallback ? h("span", { class: "router-call-fallback" }, [" FELL BACK"]) : null,
       h("span", { class: "muted router-call-candidates" }, [" candidates: " + candidates]),
+      isTask && c.deterministicPick != null
+        ? h("span", { class: "muted router-call-deterministic" },
+            [" deterministic: " + String(c.deterministicPick)])
+        : null,
+      isTask && c.reason
+        ? h("span", { class: "muted router-call-reason" },
+            [" reason: " + String(c.reason)])
+        : null,
+      isTask && c.usedFallback && c.fallbackCause
+        ? h("span", { class: "muted router-call-fallback-cause" },
+            [" cause: " + String(c.fallbackCause)])
+        : null,
       h("span", { class: "muted router-call-model" },
         [" model: " + String(c.model || "(unset)")]),
       h("span", { class: "muted router-call-cost" },

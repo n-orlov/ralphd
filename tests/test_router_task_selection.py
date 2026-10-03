@@ -361,3 +361,127 @@ def test_ralphctl_cost_shows_router_spend_as_its_own_phase(tmp_path, capsys):
     doc = json.loads(result.stdout)
     phase_keys = {b["key"] for b in doc["byPhase"]}
     assert "router" in phase_keys
+
+
+# ---------------------------------------------------------------------------
+# #289: the router panel / `ralphctl router` list task_selection calls.
+# `state.router_call_entries` used to read only `decisions.jsonl`, which only
+# the edge-based axis writes; the task_selection axis lives in `events.jsonl`.
+# ---------------------------------------------------------------------------
+
+def _write_decision_line(run: RunDir, ts: str, target: str = "worker") -> None:
+    run.record_router_decision({
+        "state": "plan_review", "vigilant": False,
+        "candidateEdges": [{"target": target, "guard": "g"}],
+        "chosenTarget": target, "chosenGuard": "g", "usedRouter": True,
+        "usedFallback": False, "fallbackGuard": "g", "attempts": 1,
+        "model": "m", "usage": {"totalTokens": 3}, "transcripts": ["0001.jsonl"]})
+    # `record_router_decision` stamps "now"; pin the ts so ordering is testable.
+    path = run.artifacts_dir / "router" / "decisions.jsonl"
+    rows = [json.loads(x) for x in path.read_text().splitlines()]
+    rows[-1]["ts"] = ts
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def _append_event(run: RunDir, ts: str, **fields) -> None:
+    with open(run.root / "events.jsonl", "a") as f:
+        f.write(json.dumps({"ts": ts, "type": "router.decision", **fields}) + "\n")
+
+
+def _ts_event(choice: str, **extra) -> dict:
+    return {"state": "task_selection", "candidateIds": ["001", "002"],
+            "deterministicPick": "001", "choice": choice, "reason": "why",
+            "fallback": False, "fallbackCause": None, "model": "m",
+            "tokens": 15, "costUSD": None, **extra}
+
+
+def test_task_selection_events_are_listed_as_router_calls(tmp_path):
+    from ralphd.engine import state as state_mod
+    sup, run = _make_sup(tmp_path, [dict(t) for t in TWO_TASKS],
+                         route_task_selection=True)
+    sup.runner = _RoutingAgent(run, router_answers=[
+        _ok(json.dumps({"candidate_id": "002", "reason": "picked"}))])  # type: ignore[assignment]
+    asyncio.run(sup._step_worker())
+
+    entries = state_mod.router_call_entries(run.root)
+    assert len(entries) == 1
+    e = entries[0]
+    assert (e["index"], e["state"], e["chosenTarget"]) == (1, "task_selection", "002")
+    assert e["taskCandidateIds"] == ["001", "002"]
+    assert e["deterministicPick"] == "001" and e["reason"] == "picked"
+    assert e["usedFallback"] is False and e["chargesIteration"] is False
+    assert e["tokens"] == 15
+    # the going-forward half: the call's own transcript is named
+    assert e["transcripts"] == ["0001.jsonl"]
+    text = "\n".join(state_mod.router_call_summary_lines(e))
+    assert "002" in text and "picked" in text and "0001.jsonl" in text
+    assert "candidates:    001, 002" in text
+    # decisions.jsonl stays edge-axis-only
+    assert not (run.artifacts_dir / "router" / "decisions.jsonl").exists()
+
+
+def test_edge_based_calls_are_not_listed_twice(tmp_path):
+    """`_route_with_router` writes a decisions line AND a router.decision
+    event; only the decisions line may become an entry."""
+    from ralphd.engine import state as state_mod
+    sup, run = _make_sup(tmp_path, [dict(TWO_TASKS[0])], peer_plan_review=True)
+    sup.runner = _RoutingAgent(run, router_answers=[
+        _ok(json.dumps({"next_step": "planning"}))])  # type: ignore[assignment]
+    asyncio.run(sup._route_with_router(
+        "plan_review", _plan_review_edges(), peer_plan_review=True))
+
+    assert len(_router_decision_events(run)) == 1
+    entries = state_mod.router_call_entries(run.root)
+    assert [e["state"] for e in entries] == ["plan_review"]
+
+
+def test_mixed_axes_merge_chronologically(tmp_path):
+    from ralphd.cli import ui_server
+    from ralphd.engine import state as state_mod
+    _, run = _make_sup(tmp_path, [dict(TWO_TASKS[0])])
+    _append_event(run, "2026-01-01T00:00:03Z", **_ts_event("002"))
+    _write_decision_line(run, "2026-01-01T00:00:02Z")
+    _append_event(run, "2026-01-01T00:00:01Z", **_ts_event("001"))
+    # the edge axis's own event twin must be ignored
+    _append_event(run, "2026-01-01T00:00:02Z", state="plan_review",
+                  candidateIds=["worker"], choice="worker")
+
+    entries = state_mod.router_call_entries(run.root)
+    assert [(e["index"], e["state"], e["chosenTarget"]) for e in entries] == [
+        (1, "task_selection", "001"), (2, "plan_review", "worker"),
+        (3, "task_selection", "002")]
+    view = ui_server.router_calls_view(run.root.parent.parent, run.root.name)
+    assert [c["index"] for c in view["routerCalls"]] == [1, 2, 3]
+    assert view["notice"] == ""
+
+
+def test_a_task_selection_fallback_entry_says_why(tmp_path):
+    from ralphd.engine import state as state_mod
+    _, run = _make_sup(tmp_path, [dict(TWO_TASKS[0])])
+    _append_event(run, "2026-01-01T00:00:01Z", **_ts_event(
+        "001", fallback=True, fallbackCause="timeout", reason=""))
+    (e,) = state_mod.router_call_entries(run.root)
+    assert e["usedFallback"] is True and e["fallbackCause"] == "timeout"
+    assert "cause=timeout" in "\n".join(state_mod.router_call_summary_lines(e))
+
+
+def test_router_decision_event_carries_the_derived_cost(tmp_path):
+    """#289: on a derived-pricing run the provider quotes no `costUSD`; the
+    event carries the call's `costDerivedUSD` (set by the runner from the
+    pricing map and accumulated by `_accumulate_usage`) in its own field."""
+    from ralphd.engine import state as state_mod
+    sup, run = _make_sup(tmp_path, [dict(t) for t in TWO_TASKS],
+                         route_task_selection=True)
+    derived = _ok(json.dumps({"candidate_id": "002", "reason": "picked"}))
+    derived.usage = {"input": 10, "output": 5, "totalTokens": 15,
+                     "costPriced": False, "costDerived": True,
+                     "costDerivedUSD": 0.000123}
+    sup.runner = _RoutingAgent(run, router_answers=[derived])  # type: ignore[assignment]
+    asyncio.run(sup._step_worker())
+
+    (ev,) = _router_decision_events(run)
+    assert ev["costUSD"] is None
+    assert ev["costDerivedUSD"] == 0.000123
+    (entry,) = state_mod.router_call_entries(run.root)
+    assert entry["costSource"] == "derived"
+    assert "0.0001" in entry["costDisplay"]
