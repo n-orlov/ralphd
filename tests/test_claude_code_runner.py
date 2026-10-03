@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import site
 import time
 from pathlib import Path
 
@@ -117,6 +118,10 @@ def observed(tmp_path_factory):
         fake_home = tmp_path / "agent-home"
         (fake_home / ".creds").mkdir(parents=True)
         (fake_home / ".creds" / "x.env").write_text("TOKEN=1\n")
+        # A `pip install --user` layout finds ralphd and the SDK under
+        # $HOME/.local; pin the user base so the fake HOME doesn't hide them.
+        mp.setenv("PYTHONUSERBASE",
+                  os.environ.get("PYTHONUSERBASE") or site.getuserbase())
         mp.setenv("HOME", str(fake_home))
         mp.setattr(runner_mod, "agent_child_kwargs", lambda: dict(sentinel))
         mp.setattr(asyncio, "create_subprocess_exec", spy)
