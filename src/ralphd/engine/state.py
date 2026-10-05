@@ -7644,22 +7644,28 @@ def artifact_entry(run_root: Path, rel_path: str, *,
         return entry
     if not entry["exists"]:
         return entry
+    # ONE open, and at most `ARTIFACT_PREVIEW_MAX_BYTES` read in total: the
+    # sniff head is the body's own first bytes, and the rest of the body
+    # continues from where the sniff stopped. Truncation is decided from the
+    # size on disk, never by reading a byte past the cap to see if one exists.
     try:
-        head = path.open("rb").read(ARTIFACT_SNIFF_BYTES)
+        with path.open("rb") as fh:
+            head = fh.read(ARTIFACT_SNIFF_BYTES)
+            entry["isText"] = _artifact_is_text(head)
+            entry["imageMime"] = _sniff_image_mime(head)
+            entry["kind"] = _artifact_kind(entry["isText"],
+                                           entry["imageMime"])
+            data = None
+            if bodies and entry["isText"]:
+                data = head
+                if len(head) == ARTIFACT_SNIFF_BYTES:
+                    data += fh.read(ARTIFACT_PREVIEW_MAX_BYTES - len(head))
     except OSError:
         entry["body"] = RUN_DOCUMENT_UNREADABLE
         return entry
-    entry["isText"] = _artifact_is_text(head)
-    entry["imageMime"] = _sniff_image_mime(head)
-    entry["kind"] = _artifact_kind(entry["isText"], entry["imageMime"])
-    if bodies and entry["isText"]:
-        try:
-            with path.open("rb") as fh:
-                data = fh.read(ARTIFACT_PREVIEW_MAX_BYTES + 1)
-        except OSError:
-            entry["body"] = RUN_DOCUMENT_UNREADABLE
-            return entry
-        if len(data) > ARTIFACT_PREVIEW_MAX_BYTES:
+    if data is not None:
+        if (len(data) >= ARTIFACT_PREVIEW_MAX_BYTES
+                and entry["bytes"] > ARTIFACT_PREVIEW_MAX_BYTES):
             # The cap can cut a multi-byte character in half; drop the
             # fragment rather than show a replacement character at the seam.
             data = data[:ARTIFACT_PREVIEW_MAX_BYTES]

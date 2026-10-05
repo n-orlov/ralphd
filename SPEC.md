@@ -5912,7 +5912,7 @@ dir themselves and a live proxy would only add a way to disagree.
   children, its subdirectories first as entries of kind `dir` carrying
   `fileCount`. The listing stats files and never opens one. `GET
   /api/runs/<id>/artifacts/<path>` is the text view: it reads at most
-  `ARTIFACT_PREVIEW_MAX_BYTES` (1 MiB) and answers `content`, `truncated`
+  `ARTIFACT_PREVIEW_MAX_BYTES` (1 MiB) in total, kind sniff included, and answers `content`, `truncated`
   (true when the file is larger) and the full size in `bytes`; a file no
   preview handles (binary, image) answers its sniffed `kind` and size and no
   `content`, and images keep the `ARTIFACT_INLINE_MAX_BYTES` cap on

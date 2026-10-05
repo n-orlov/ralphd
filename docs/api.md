@@ -850,7 +850,8 @@ or a NUL is refused with `404`.
   carrying `fileCount`. The listing stats files and never opens one. `notice`
   is `(no artifacts)` for a run that left nothing.
 - `GET /api/runs/<id>/artifacts/<path>` is the text view of one file. It reads
-  at most 1 MiB (`ARTIFACT_PREVIEW_MAX_BYTES`): `content` holds the text,
+  at most 1 MiB (`ARTIFACT_PREVIEW_MAX_BYTES`) in total, kind sniff included:
+  `content` holds the text,
   `truncated` is `true` when the file is larger, and `bytes` is always the full
   size. A file no preview handles returns its `kind` and size and no `content`.
   Images are served by `GET /api/runs/<id>/artifacts-raw/<path>` up to

@@ -234,6 +234,8 @@ def test_text_view_reads_at_most_1_mib_and_says_it_was_truncated(tmp_path, ui):
 
 
 def test_the_text_view_never_reads_past_the_cap(tmp_path, monkeypatch):
+    # Every byte the view pulls off disk, summed over every open of every
+    # file, is at most ARTIFACT_PREVIEW_MAX_BYTES -- the sniff included.
     registry = _seed(tmp_path, {"big.txt": b"z" * (3 * MIB)})
     seen: list[int] = []
     real = Path.open
@@ -243,8 +245,13 @@ def test_the_text_view_never_reads_past_the_cap(tmp_path, monkeypatch):
             self._fh = fh
 
         def read(self, n=-1):
-            seen.append(n)
-            return self._fh.read(n)
+            assert n is not None and n >= 0, "an unbounded read"
+            data = self._fh.read(n)
+            seen.append(len(data))
+            return data
+
+        def __getattr__(self, name):
+            raise AssertionError(f"unexpected file call {name}")
 
         def __enter__(self):
             return self
@@ -254,8 +261,11 @@ def test_the_text_view_never_reads_past_the_cap(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "open",
                         lambda self, *a, **k: Spy(real(self, *a, **k)))
-    artifact_view(registry, RUN, "big.txt")
-    assert seen and all(0 < n <= MIB + 1 for n in seen), seen
+    view = artifact_view(registry, RUN, "big.txt")
+    assert ARTIFACT_PREVIEW_MAX_BYTES == MIB
+    assert sum(seen) == MIB, seen
+    assert view["truncated"] is True and view["bytes"] == 3 * MIB
+    assert len(view["content"].encode()) == MIB
 
 
 def test_a_file_under_the_cap_is_whole_and_not_truncated(tmp_path):
