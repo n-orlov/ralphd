@@ -226,7 +226,7 @@ def test_undefer_while_another_task_is_worked_lands_before_the_next_selection(tm
                  [_task(TASK_1),
                   _task(TASK_2, deferredUntil=until, deferredReason=REASON)],
                  job_timeout_s=3600)
-    final = asyncio.run(sup._run_job_core())
+    final = asyncio.run(asyncio.wait_for(sup._run_job_core(), 30.0))
     assert final == "succeeded", sup.run.read_status()
     # not applied by the API/mid-iteration, only at the loop's boundary
     assert seen["during"] == until
