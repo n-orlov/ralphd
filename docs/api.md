@@ -46,7 +46,7 @@ Two independent gates, and only the second is the boundary:
 
 **Mutating routes** (require `control_token` when one is configured, i.e.
 unconditionally for any run started or resumed by `ralphctl` after task
-004): `POST /steering`, `POST /rule`, `POST /interrupt`, `POST /pause`, `POST /resume`,
+004): `POST /steering`, `POST /rule`, `POST /interrupt`, `POST /tasks/{task_id}/undefer`, `POST /pause`, `POST /resume`,
 `POST /retry`, `POST /abort`, `POST /shutdown`, `PATCH /config/budget`,
 `PUT /config/prompts/{name}`, `PUT`/`DELETE /config/skills/{name}`,
 `PUT`/`DELETE /config/creds/{name}`, `PUT /config/llm`. This list is
@@ -799,6 +799,7 @@ then follows. Event types:
 | `reflect_done` | the post-terminal `reflect` iteration finished: `ok`, plus `error`/`errorClass` when it failed (same verdict as status.json's `reflect`) |
 | `reflect_skipped` | the post-terminal `reflect` phase produced no verdict because a signal was already taking the engine down: `attempted` (false = never started, true = cut short mid-attempt), `signal`, `reason`. No `FAILED.md` is written on this path — see status.json's `reflect` |
 | `reflect_tombstone_cleared` | a successful `reflect` attempt removed a stale `reflection/FAILED.md` written by an earlier one: `path`. The alias `reflect-failed` disappears from `artifacts ls` with the file |
+| `task.undeferred` | an operator's `POST /tasks/{task_id}/undefer` was applied on the loop: `taskId`, `until` and `reason` (the cleared deferral), `by: "operator"` |
 | `run.paused` | optional; the run is held: `reason` is `operator` for a `POST /pause` that takes effect, or the engine's `pauseReason` for an engine pause persisted to `status.json` |
 | `run.unpaused` | optional; the run's pause ended: `pausedS`, the seconds it was held (from the first `run.paused` of the stretch) |
 | `deadline_extended` | the job deadline moved out after an infra wait, an operator pause OR a rate-limit wait: `waitedS`, new `deadlineAt`, `reason` (`"infra wait"` — also phase/attempt/`infraWaitTotalS` — or `"operator pause"` — also `pausedTotalS` — or `"rate limit wait"` — also phase/`rateLimitWaitTotalS`) |
@@ -907,6 +908,31 @@ of its own, and a ruling releases it only when an earlier `operator_
 input_needed`/`rejected_repeated_signature` pause on the SAME approach,
 already answered by a ruling, left a `rejectionSignatures` entry behind
 (see the `pauseReason` row of `GET /status` and `POST /pause`, below).
+
+### `POST /tasks/{task_id}/undefer`
+Releases a deferred task (one carrying `deferredUntil`/`deferredReason`) before
+its time. It sits behind the control-token middleware like every mutating route.
+The handler never writes `tasks.json`; it checks, queues the release and rings
+the loop's wake bell. Every refusal is decided before anything is queued:
+
+- `409` when the job has finished (`state` is `succeeded`/`failed`/`aborted`/
+  `timed_out`).
+- `404` when the plan has no task with that id.
+- `409`, with a message saying the task is not deferred, when the task carries
+  no `deferredUntil`.
+- Otherwise `200` with `{"undeferring": true, "taskId": ...}`.
+
+The loop thread applies the release at its next selection boundary: at once
+when the loop is parked in the deferred wait, otherwise before it selects the
+next task (for example while a different task is being worked). Applying it
+clears `deferredUntil` and `deferredReason` and emits `task.undeferred` with
+`taskId`, the cleared `until` and `reason`, and `by: "operator"`. A deferred
+wait the release ends records its `deferred_wait` event with
+`boundedBy: "undefer"`. A release whose task stopped being deferred before it
+was applied emits nothing and changes nothing. A task's transition history
+(`state.task_transition_history`) lists the release as an operator cut
+(`kind: "undeferred"`, cause `operator: undeferred (was deferred until ...)`),
+never as a deferral expiring.
 
 ### `POST /interrupt`
 v0.25 task 028b (PRD requirement K.3/K.4, #267) reworked this: it used to

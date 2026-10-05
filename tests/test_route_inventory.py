@@ -44,6 +44,7 @@ EXPECTED_MUTATING = frozenset(
         ("PUT", "/config/llm"),
         ("POST", "/steering"),
         ("POST", "/interrupt"),
+        ("POST", "/tasks/{task_id}/undefer"),
         ("POST", "/pause"),
         ("POST", "/resume"),
         ("POST", "/retry"),

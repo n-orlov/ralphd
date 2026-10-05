@@ -273,7 +273,7 @@ The API is FastAPI on `:7777` in the same process as the loop. It reads state fi
 and writes only to the steering inbox, the config overlay, and the supervisor's
 control channel: `GET` for `/healthz`, `/version`, `/status`, `/tasks`, `/prd`,
 `/notes`, `/iterations[/{n}[/output]]`, `/logs`, `/events` (SSE), `/artifacts`,
-`/config`; `POST` for `/steering`, `/interrupt`, `/pause`, `/resume`, `/retry`,
+`/config`; `POST` for `/steering`, `/interrupt`, `/tasks/{task_id}/undefer`, `/pause`, `/resume`, `/retry`,
 `/abort`, `/shutdown`; `PATCH /config/budget`; and `GET`/`PUT`/`DELETE` under
 `/config/{prompts,skills,creds,llm}`. Default posture is loopback-only with **no
 auth**; `--api-token` makes `Authorization: Bearer` mandatory on every route (§9.1, §13.3).
@@ -2664,7 +2664,8 @@ reconstruct the whole run, including its restarts.
 | `signal` | `signal` (`COMPLETE` \| `VERIFIED` \| `taskVerified`), `taskId` | a sentinel was accepted |
 | `progress_claim` | `taskId`, `corroborated`, `deltaSize` | a worker's `progress` block (§4.5) was accepted alongside `no_verdict` -- `corroborated` iff `commit`/`file` evidence lined up with a nonzero workspace-fingerprint delta, or `external` evidence was the first of a consecutive run of tree-delta-free claims on that task; `deltaSize` is `_progress_claim_delta_size()`'s own count of changed paths (task 012, PRD requirement A.2, #156) |
 | `task.repoll_backoff` | `taskId`, `consecutiveCount`, `backoffSeconds`, `deferredUntil` | the SECOND or later consecutive re-poll on this task (PRD v0.29 requirement A.1-A.4, #279, task 001; §4.5's re-poll definition) -- `LoopSupervisor._apply_engine_repoll_backoff` deferred the task back to `pending` instead of letting the ordinary stagnation witness formula see this pass; `consecutiveCount` is the ladder position (`2`, `3`, `4`, ...), `backoffSeconds` is `min(600 * 2 ** (consecutiveCount - 2), 1800)` |
-| `deferred_wait` | `taskId`, `until`, `deadlineAt`, `boundedBy` (`"until"` \| `"deadlineAt"`), `sleptUntil`, `waitedS` | nothing is runnable and at least one `pending` task carries `deferredUntil` (§4.5's `"deferred"` verdict, task 021) -- the engine sleeps until the earliest `deferredUntil`, bounded by the job's own `deadlineAt`; `boundedBy` names which of the two the sleep actually stopped at (v0.20 requirement C.1, #156, task 022) |
+| `deferred_wait` | `taskId`, `until`, `deadlineAt`, `boundedBy` (`"until"` \| `"deadlineAt"` \| `"steering"` \| `"abort"` \| `"undefer"`), `sleptUntil`, `waitedS` | nothing is runnable and at least one `pending` task carries `deferredUntil` (§4.5's `"deferred"` verdict, task 021) -- the engine sleeps until the earliest `deferredUntil`, bounded by the job's own `deadlineAt`; `boundedBy` names what actually ended the sleep (`"undefer"` when an operator's `POST /tasks/{task_id}/undefer` release cut it short) (v0.20 requirement C.1, #156, task 022) |
+| `task.undeferred` | `taskId`, `until`, `reason`, `by` (`"operator"`) | the loop applied an operator's `POST /tasks/{task_id}/undefer`: the task's `deferredUntil`/`deferredReason` were cleared (`until`/`reason` are the cleared values) before the next task selection; a release whose task was no longer deferred emits nothing and writes nothing. `state.task_transition_history` renders it as an operator cut (`kind: "undeferred"`, cause `operator: undeferred (...)`), distinct from a deferral expiring |
 | `steering.received` | `file` | a steering message was stored |
 | `steering.consumed` | `file`, `iteration` | an actionable phase finished cleanly with it (§4.6) |
 | `infra_wait` | the whole `infraWait` payload plus `backoffS` | a backoff wait starts |
@@ -4576,6 +4577,7 @@ exists asks this route rather than probing.
 | `GET` | `/steering` | every steering file with a `consumed` flag |
 | `POST` | `/rule` | record an operator RULING keyed to a rejection signature (task 013, requirement A.2, #224); `202` with the written filename -- see §4.6 |
 | `POST` | `/interrupt` | signal the running iteration, optionally queueing a message first |
+| `POST` | `/tasks/{task_id}/undefer` | release a deferred task now: `200` once the release is queued and the loop's wake bell is rung; the loop thread applies it (§4.5) |
 | `POST` | `/pause` | stop at the next iteration boundary |
 | `POST` | `/resume` | release an operator pause |
 | `POST` | `/retry` | wake an infra backoff wait now — see §8.5 |
@@ -4755,6 +4757,7 @@ operation that would be a no-op from one that would be a lie:
 | `POST /steering` | the job is finished; steering has no effect |
 | `POST /rule` | the job is finished; a ruling has no effect |
 | `POST /interrupt` | no iteration is running, so no signal was delivered |
+| `POST /tasks/{task_id}/undefer` | the job is finished (checked before anything is queued), or the task carries no `deferredUntil` (the message says the task is not deferred); an unknown task is `404` |
 | `POST /pause` | the job is finished |
 | `POST /retry` | the job is finished, or the run is not in an infra backoff wait |
 | `POST /abort` | the job is already finished |

@@ -841,6 +841,27 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         result = loop.interrupt_or_wake()
         return {"interrupted": True, **result}
 
+    @app.post("/tasks/{task_id}/undefer")
+    async def undefer(task_id: str):
+        # #292: release a deferred task early. Every refusal comes BEFORE
+        # anything is enqueued (the `/interrupt` model): a finished run first,
+        # then an unknown task, then a task carrying no `deferredUntil`. This
+        # handler never writes tasks.json -- `loop.request_undefer` queues the
+        # release and rings the wake bell, and the loop thread applies it at
+        # its next selection boundary.
+        if finished():
+            raise problem(409, "job finished", "no deferral to release")
+        task = next((t for t in run.read_tasks().get("tasks", [])
+                     if isinstance(t, dict) and str(t.get("id")) == task_id),
+                    None)
+        if task is None:
+            raise problem(404, "no such task", f"unknown task {task_id!r}")
+        if not task.get("deferredUntil"):
+            raise problem(409, "task not deferred",
+                          f"task {task_id!r} is not deferred")
+        loop.request_undefer(task_id)
+        return {"undeferring": True, "taskId": task.get("id")}
+
     @app.post("/pause")
     async def pause():
         if finished():

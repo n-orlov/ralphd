@@ -368,6 +368,12 @@ class LoopSupervisor:
         # it without a new seam of its own.
         self._deferred_wake = asyncio.Event()
         self.run.set_wake_event(self._deferred_wake)
+        # #292: task ids an operator asked to release from a deferral
+        # (`POST /tasks/{id}/undefer`). The API handler only appends here and
+        # rings the bell above; the loop applies them (`_apply_undefer_
+        # requests`) at its selection boundary, so tasks.json is only ever
+        # written from the loop's own flow.
+        self._undefer_requests: list[str] = []
         self._abort_reason: str | None = None
         # Task 003 (#11): operator-initiated abort/interrupt bookkeeping,
         # consulted by classify_fault(operator_abort=...) so a SIGINT the
@@ -1268,6 +1274,51 @@ class LoopSupervisor:
             return {"target": "iteration", "signalled": True, "woken": False}
         self._deferred_wake.set()
         return {"target": "idle", "signalled": False, "woken": True}
+
+    def request_undefer(self, task_id: str) -> None:
+        """#292: queue an operator's release of `task_id` from its deferral
+        and ring the wake bell. Writes nothing: `_apply_undefer_requests`
+        applies it on the loop at the next selection boundary (immediately,
+        when the loop is parked in the deferred wait)."""
+        self._undefer_requests.append(str(task_id))
+        self._deferred_wake.set()
+
+    def _undefer_pending_for(self, tasks_doc: dict) -> bool:
+        """True when a queued release names a task that is still deferred in
+        `tasks_doc` (what `_sleep_until_earliest_deferred` reads to name
+        `boundedBy: "undefer"`)."""
+        queued = set(self._undefer_requests)
+        return any(isinstance(t, dict) and str(t.get("id")) in queued
+                   and t.get("deferredUntil")
+                   for t in tasks_doc.get("tasks", []))
+
+    def _apply_undefer_requests(self) -> list[str]:
+        """#292: drain the queued releases on the loop thread, before the
+        next task selection. Each one clears the task's `deferredUntil`/
+        `deferredReason` and emits `task.undeferred` (`taskId`, the cleared
+        `until` and `reason`, `by: "operator"`). A release whose task is no
+        longer deferred emits nothing and writes nothing -- when none of the
+        queued releases still applies, tasks.json is not rewritten at all.
+        Returns the ids actually released."""
+        if not self._undefer_requests:
+            return []
+        queued, self._undefer_requests = self._undefer_requests, []
+        doc = self.run.read_tasks()
+        released: list[tuple[str, object, object]] = []
+        for tid in dict.fromkeys(queued):
+            for t in doc.get("tasks", []):
+                if (isinstance(t, dict) and str(t.get("id")) == tid
+                        and t.get("deferredUntil")):
+                    released.append((t.get("id"), t.pop("deferredUntil"),
+                                     t.pop("deferredReason", None)))
+                    break
+        if not released:
+            return []
+        self.run.write_tasks(doc)
+        for tid, until, reason in released:
+            self.run.emit("task.undeferred", taskId=tid, until=until,
+                          reason=reason, by="operator")
+        return [str(r[0]) for r in released]
 
     def pause(self, reason: str = "", detail: dict | None = None) -> None:
         """Hold the loop at the next iteration boundary (task 015's
@@ -7013,6 +7064,10 @@ class LoopSupervisor:
         # simply caught by the very NEXT dispatch pass's own top check
         # instead of this one.
         self._deferred_wake.clear()
+        if self._undefer_requests:
+            # A release queued between this pass's boundary and the clear
+            # above must not be lost to the clear: ring the bell again.
+            self._deferred_wake.set()
         started = time.time()
         timer_task = asyncio.ensure_future(asyncio.sleep(wait_s))
         wake_task = asyncio.ensure_future(self._deferred_wake.wait())
@@ -7026,7 +7081,12 @@ class LoopSupervisor:
         woken = wake_task in done
         if woken:
             self._deferred_wake.clear()
-            bounded_by = "abort" if self._abort_reason is not None else "steering"
+            if self._abort_reason is not None:
+                bounded_by = "abort"
+            elif self._undefer_pending_for(tasks_doc):
+                bounded_by = "undefer"
+            else:
+                bounded_by = "steering"
         self.run.emit(
             "deferred_wait", taskId=earliest_task.get("id"),
             until=earliest_task["deferredUntil"],
@@ -7039,8 +7099,11 @@ class LoopSupervisor:
                 "log", level="info",
                 message=(f"deferred wait for task {earliest_task.get('id')!r} "
                           f"woken by {bounded_by} after {waited_s:.3f}s -- "
-                          "its own deferral is left untouched (task 028a, "
-                          "requirement K.1/K.2, #267); re-entering dispatch"))
+                          + ("the operator's release is applied at the top "
+                             "of the next pass (#292); re-entering dispatch"
+                             if bounded_by == "undefer" else
+                             "its own deferral is left untouched (task 028a, "
+                             "requirement K.1/K.2, #267); re-entering dispatch")))
             return True
         if bounded_by != "until":
             return False
@@ -10158,6 +10221,9 @@ class LoopSupervisor:
             # fixtures write no amendment, so the applier writes nothing
             # there either way.
             self._apply_operator_status_rulings()
+            # #292: an operator's release from a deferral lands here, on the
+            # loop thread, before this pass selects a task.
+            self._apply_undefer_requests()
             # Task 012 (requirement I, #98): unsettled operator steering is
             # ABSOLUTE TOP PRIORITY -- above a validation-failed retry
             # (guard 1 of this same while loop, computed a few lines below

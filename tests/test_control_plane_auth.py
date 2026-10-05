@@ -68,7 +68,7 @@ def _client(sup: LoopSupervisor) -> httpx.AsyncClient:
 
 
 def _concrete(path: str) -> str:
-    return path.replace("{name}", "planted")
+    return path.replace("{name}", "planted").replace("{task_id}", "planted")
 
 
 @pytest.mark.asyncio

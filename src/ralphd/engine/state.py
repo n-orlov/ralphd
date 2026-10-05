@@ -9057,8 +9057,24 @@ def task_transition_history(run_root: Path, task_id: str) -> list[dict]:
     `events.jsonl`.
     """
     out: list[dict] = []
-    for ev in read_events(run_root, types=("task",)):
+    for ev in read_events(run_root, types=("task", "task.undeferred")):
         if str(ev.get("taskId")) != str(task_id):
+            continue
+        if ev.get("type") == "task.undeferred":
+            # #292: an operator cut. Its own entry and cause wording, never
+            # the deferral-expiry shape (an expiry records no `task` event).
+            until, reason = ev.get("until"), ev.get("reason")
+            cause = "operator: undeferred"
+            if until:
+                cause += f" (was deferred until {until}"
+                cause += f": {reason})" if reason else ")"
+            out.append({
+                "ts": ev.get("ts"),
+                "tsLocal": format_local_time(ev.get("ts")),
+                "oldStatus": "pending", "newStatus": "pending",
+                "kind": "undeferred", "by": ev.get("by") or "operator",
+                "cause": cause,
+            })
             continue
         entry = {
             "ts": ev.get("ts"),

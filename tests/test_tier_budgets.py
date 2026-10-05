@@ -603,8 +603,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # #291 shared run-timing helper, hub header rows, `ralphctl status` lines:
     # +10 tests in the new tests/test_run_timing.py -> fast 7286/491,
     # smoke 5561/367.
-    "fast": {"tests": 7286, "modules": 491},
-    "smoke": {"tests": 5561, "modules": 367},
+    # #292 undefer route and loop release: +15 tests in the new
+    # tests/test_undefer.py, +2 route-inventory cases -> fast 7301/492,
+    # smoke 5576/368.
+    "fast": {"tests": 7301, "modules": 492},
+    "smoke": {"tests": 5576, "modules": 368},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
