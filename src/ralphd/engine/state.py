@@ -295,6 +295,90 @@ def format_local_time(ts: str | None) -> str:
     return time.strftime(LOCAL_TIME_FORMAT, time.localtime(epoch))
 
 
+def first_event_ts(run_root: Path) -> str | None:
+    """`ts` of the first line of `events.jsonl`, read as ONE line -- never
+    the whole file (a long run's events file is megabytes). None when the
+    file is missing/empty/unparseable or the line carries no `ts`."""
+    try:
+        with open(Path(run_root) / "events.jsonl", "rb") as fh:
+            line = fh.readline()
+        ts = json.loads(line.decode("utf-8")).get("ts") if line.strip() else None
+    except (OSError, ValueError, AttributeError):
+        return None
+    return ts if isinstance(ts, str) and ts else None
+
+
+def run_timing(status: dict, run_root: Path | None = None, *,
+               end_ts: str | None = None) -> dict:
+    """The ONE shared header/status timing helper (#291): the hub's run header
+    and `ralphctl status` both render what this returns.
+
+    * `startedAt` -- the ORIGINAL start: `status.firstStartedAt`, else (a run
+      recorded before that field existed) the `ts` of the first line of the
+      run's `events.jsonl`, else the current episode's `startedAt`.
+    * `resumedAt` -- the current episode's `startedAt`, present only when the
+      run has more than one episode (`episodes`).
+    * `wallSeconds` -- `end_ts` (the caller passes `endedAt` for a finished
+      run; falsy means now) minus the original start.
+    * `activeSeconds` -- every episode's own wall clock summed (each
+      `previousEndings` entry's `startedAt`..`endedAt`, plus the current
+      episode's `startedAt`..end), minus `pausedTotalS`. OMITTED, never
+      guessed, when any episode's start (or a finished episode's end) is
+      unknown.
+    Every value is optional: a status with nothing to measure yields `{}`-ish
+    output with no wall/active keys.
+    """
+    status = status if isinstance(status, dict) else {}
+    current = status.get("startedAt") or None
+    original = status.get("firstStartedAt") or None
+    if not original and run_root is not None:
+        original = first_event_ts(run_root)
+    original = original or current
+    endings = [e for e in (status.get("previousEndings") or [])
+               if isinstance(e, dict)]
+    episodes = len(endings) + 1 if (original or current) else 0
+    out: dict = {"episodes": episodes}
+    if original:
+        out["startedAt"] = original
+    if episodes > 1 and current:
+        out["resumedAt"] = current
+    try:
+        if original:
+            out["wallSeconds"] = elapsed_seconds(original, end_ts)
+        spans = []
+        for entry in endings:
+            if not (entry.get("startedAt") and entry.get("endedAt")):
+                raise ValueError("episode start unknown")
+            spans.append(elapsed_seconds(entry["startedAt"], entry["endedAt"]))
+        if not current:
+            raise ValueError("current episode start unknown")
+        spans.append(elapsed_seconds(current, end_ts))
+        paused = status.get("pausedTotalS")
+        paused = float(paused) if isinstance(paused, (int, float)) \
+            and not isinstance(paused, bool) else 0.0
+        out["activeSeconds"] = max(0.0, sum(spans) - paused)
+    except (ValueError, TypeError):
+        out.pop("activeSeconds", None)
+    return out
+
+
+def format_run_timing_lines(timing: dict) -> list[list[str]]:
+    """`[label, text]` rows for the four header/status lines -- `started`,
+    `resumed` (multi-episode runs only), `wall`, `active` (only when
+    computable) -- worded here once so the hub and `ralphctl status` cannot
+    describe the same run differently."""
+    lines: list[list[str]] = []
+    if timing.get("startedAt"):
+        lines.append(["started", format_local_time(timing["startedAt"])])
+    if timing.get("resumedAt"):
+        lines.append(["resumed", format_local_time(timing["resumedAt"])])
+    if timing.get("wallSeconds") is not None:
+        lines.append(["wall", format_duration(timing["wallSeconds"])])
+    if timing.get("activeSeconds") is not None:
+        lines.append(["active", format_duration(timing["activeSeconds"])])
+    return lines
+
+
 # Task 051 (#10): the one word every surface uses for "the provider quoted no
 # price, so there is no cost figure" -- deliberately not `$0.0000`, which is a
 # real (free) price and was exactly the lie #10 reported.

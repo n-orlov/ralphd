@@ -96,6 +96,8 @@ from ..engine.state import (
     format_image_id,
     format_last_tool_call,
     format_local_time,
+    format_run_timing_lines,
+    run_timing,
     format_rate_limit_wait_line,
     format_pause_detail_line,
     format_provisioning_lines,
@@ -4104,8 +4106,17 @@ def cmd_status(args):
         # -- not instead of -- the durations, through the one shared
         # `format_local_time` formatter; `--json` keeps the raw ISO
         # `startedAt`/`endedAt` fields untouched for machine consumers.
-        f"started:   {format_local_time(status.get('startedAt'))}",
     ]
+    # #291: `started` is the run's ORIGINAL start; `resumed` (multi-episode
+    # runs only), `wall` and `active` come from the ONE helper the hub's run
+    # header also renders (`engine/state.run_timing`).
+    _timing = run_timing(status, run_root(args.run_id),
+                         end_ts=ended_at_for_display or stale_since)
+    status["timing"] = _timing
+    if not _timing.get("startedAt"):
+        lines.append(f"started:   {format_local_time(status.get('startedAt'))}")
+    for _label, _text in format_run_timing_lines(_timing):
+        lines.append(f"{_label + ':':<10} {_text}")
     if ended_at_for_display:
         lines.append(f"ended:     {format_local_time(ended_at_for_display)}")
     elif stale_since:

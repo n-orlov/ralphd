@@ -593,6 +593,28 @@ same shared formatter (`ralphd.engine.state.format_local_time`) the `logs`
 iteration boundaries and the hub use. `--json` is unaffected: it keeps the raw
 ISO `startedAt`/`endedAt` fields for machine consumers.
 
+The header carries four timing lines, all from one shared helper
+(`ralphd.engine.state.run_timing`) that the hub's run header also renders:
+
+```
+started:   2026-09-02 09:00:00 +0200
+resumed:   2026-09-02 11:00:00 +0200
+wall:      3h
+active:    1h 50m
+```
+
+- `started:` is the run's **original** start: `firstStartedAt`, or — for a run
+  recorded before that field existed — the `ts` of the first line of
+  `events.jsonl` (that one line is read, never the whole file).
+- `resumed:` is the current episode's start and is printed only when the run
+  has more than one episode.
+- `wall:` is the original start to `endedAt` (to now while the run is live).
+- `active:` is every episode's own wall clock (each `previousEndings[]` entry's
+  `startedAt` to `endedAt`, plus the current episode) summed, minus
+  `pausedTotalS`. It is omitted when any episode's start is unknown.
+
+`ralphctl runs` keeps its columns; its `STARTED` column is unchanged.
+
 `--json` adds machine-usable duration fields alongside the existing timestamp
 fields (nothing existing is removed or renamed): a top-level `durationSeconds`
 (elapsed-so-far or total, numeric seconds, same rule as the human line above),

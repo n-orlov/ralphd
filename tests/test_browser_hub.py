@@ -4015,3 +4015,35 @@ def test_iteration_history_collapse_and_persistence_together_task042(tmp_path, p
         pw.screenshot(SCREENSHOTS_DIR / "35-timeline-expand-navigate-still-expanded-task042.png")
     finally:
         server.stop()
+
+
+def test_run_detail_header_shows_resumed_only_for_a_multi_episode_run(tmp_path, pw):
+    """#291 (PRD B.5): the header's `started`/`wall`/`active` rows are the
+    server's `timingLines`; `resumed` appears only when the run has more than
+    one episode. Asserts the rendered text, not the payload."""
+    from ralphd.engine.state import format_local_time
+
+    registry = tmp_path / "registry"
+    t0, t0_end, t1, t1_end = ("2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z",
+                              "2026-01-01T02:00:00Z", "2026-01-01T03:00:00Z")
+    _write_dead_run(registry, "run-one-episode", state="succeeded",
+                    startedAt=t0, firstStartedAt=t0, endedAt=t0_end)
+    _write_dead_run(registry, "run-two-episodes", state="succeeded",
+                    startedAt=t1, firstStartedAt=t0, endedAt=t1_end,
+                    pausedTotalS=600.0,
+                    previousEndings=[{"startedAt": t0, "endedAt": t0_end,
+                                      "reason": "stopped", "verdict": None}])
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-one-episode")
+        one = _wait_for(pw, "document.body.innerText", "active")
+        assert "started" in one and "wall" in one, one
+        assert "resumed" not in one, one
+
+        pw.open(f"{server.base}/#/run/run-two-episodes")
+        two = _wait_for(pw, "document.body.innerText", "resumed")
+        assert format_local_time(t0) in two and format_local_time(t1) in two, two
+        assert "wall" in two and "active" in two, two
+    finally:
+        server.stop()

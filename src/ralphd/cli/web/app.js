@@ -2376,7 +2376,13 @@ function renderSummary(el, detail) {
   // (`engine/state.format_local_time`, delivered as `startedAtLocal` /
   // `endedAtLocal` by `ui_server.run_detail`) rather than a second
   // JS implementation, so the hub and `ralphctl status` can never drift.
-  if (s.startedAtLocal) rows.push(["started", String(s.startedAtLocal)]);
+  // #291: started / resumed (multi-episode runs only) / wall / active come
+  // from the server's one shared timing helper as `timingLines`.
+  if (Array.isArray(s.timingLines) && s.timingLines.length > 0) {
+    for (const row of s.timingLines) rows.push([String(row[0]), String(row[1])]);
+  } else if (s.startedAtLocal) {
+    rows.push(["started", String(s.startedAtLocal)]);
+  }
   if (!iterationInProgress && s.endedAtLocal) rows.push(["ended", String(s.endedAtLocal)]);
   const p = h("p", {}, []);
   for (const [k, v] of rows) {

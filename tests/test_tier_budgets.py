@@ -600,8 +600,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # #291 run start and pause events: +5 tests in the new
     # tests/test_run_pause_events.py, +3 in test_episode_scoped_ending.py
     # -> fast 7276/490, smoke 5551/366.
-    "fast": {"tests": 7276, "modules": 490},
-    "smoke": {"tests": 5551, "modules": 366},
+    # #291 shared run-timing helper, hub header rows, `ralphctl status` lines:
+    # +10 tests in the new tests/test_run_timing.py -> fast 7286/491,
+    # smoke 5561/367.
+    "fast": {"tests": 7286, "modules": 491},
+    "smoke": {"tests": 5561, "modules": 367},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

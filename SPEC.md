@@ -2676,7 +2676,7 @@ reconstruct the whole run, including its restarts.
 | `provider_refused` | `phase`, `iteration`, `family`, `description`, `match`, `httpStatus`, `errorType`, `harness`, `message` (scrubbed) | an iteration was classified `refused` (§8.4); the run is paused with `pauseDetail` and the notifier is told |
 | `infra_recovered` | `health`, `infraWaitTotalS` | an iteration reached the model again |
 | `run.paused` | `reason` | optional; the run is held: `operator` for a `POST /pause` that takes effect, else the engine's `pauseReason` persisted to `status.json` |
-| `run.unpaused` | `pausedS` | optional; the run left a paused state, `pausedS` seconds after the first `run.paused` of the stretch |
+| `run.unpaused` | `pausedS` | optional; the run's pause ended, `pausedS` seconds after the first `run.paused` of the stretch |
 | `deadline_extended` | `phase`, `attempt`, `waitedS`, `infraWaitTotalS`, `deadlineAt`, `reason`; a rate-limit wait carries `rateLimitWaitTotalS` instead of `attempt`/`infraWaitTotalS` and `reason` `"rate limit wait"` | a finished wait pushed the deadline out |
 | `reflect_infra_delay` | `phase`, `delayS`, `error`, `budgetS` | reflect waits before its first attempt because the job just died on an infra fault |
 | `reflect_done` | `ok`, `error` | the reflect phase's verdict |
@@ -5284,6 +5284,8 @@ state:     running  (live api: True)
 verdict:   unverified
 duration:  1h 12m  (elapsed)
 started:   2026-08-19 09:14:02 +0300
+wall:      1h 12m
+active:    1h 12m
 phase:     review  approach 2/3
 iteration: 5/8
 model:     amazon-bedrock/eu.anthropic.claude-opus-5  (gateway id: eu.anthropic.claude-opus-5)
@@ -5291,6 +5293,18 @@ image:     ralphd:9f2c1a4b7d80  (id 0f1e2d3c4b5a)
 tasks:     5/7 completed (1 in-progress, 1 pending)
 usage:     $0.56, 625k tokens (planning $0.10 / worker $0.40 / review $0.06)
 ```
+
+The timing lines come from one shared helper, `run_timing` in
+`engine/state.py`, which the hub's run header calls too. `started:` is the
+run's **original** start: `firstStartedAt`, else the `ts` of the first line of
+`events.jsonl` (read as a single line, never the whole file). `resumed:` is the
+current episode's `startedAt` and is printed only when the run has more than
+one episode. `wall:` is the original start to `endedAt` (to now while the run
+is live, to the last status write for a vanished container). `active:` is the
+sum of every episode's own wall clock (each `previousEndings[]` entry's
+`startedAt` to `endedAt`, plus the current episode) minus `pausedTotalS`, and
+the line is omitted when any episode's start is unknown. `ralphctl runs` keeps
+its columns.
 
 Three of those lines answer "which run am I actually looking at", and each is
 printed only when the run state carries it. `phase:` carries the **approach
@@ -5804,7 +5818,12 @@ dir themselves and a live proxy would only add a way to disagree.
   `innermostReason`) in a shared status line beneath them, and the
   panel's own name/text fields are cleared on a successful ruling submit.
 - **Summary card** — state, verdict, phase, approach as `2/3`, iterations,
-  duration, and an explicit provenance row: `live: yes (proxied from container)`
+  duration, the four timing rows `started` (the original start), `resumed`
+  (the current episode's start, shown only when the run has more than one
+  episode), `wall` (original start to `endedAt`, or to now) and `active` (the
+  summed episode wall clock minus `pausedTotalS`, omitted when any episode's
+  start is unknown) -- rendered server-side by the same `run_timing` helper
+  `ralphctl status` uses and delivered as `timingLines` -- and an explicit provenance row: `live: yes (proxied from container)`
   or `no (on-disk snapshot)`.
 - **Usage panel** — total tokens and cost, plus the `byPhase`, `byApproach`
   and `byTier` breakdowns when present (the tier bucket also carries

@@ -69,6 +69,8 @@ from .. import __version__, collapse_index, render_index
 from ..engine.config import MUTATING_METHODS, JobConfig
 from ..engine.state import (
     format_money,
+    format_run_timing_lines,
+    run_timing,
     NO_ARTIFACTS,
     NO_ROUTER_CALLS,
     NONTERMINAL_STATES,
@@ -1378,6 +1380,23 @@ def _with_approach_display(doc: dict) -> dict:
                                                      doc.get("maxApproaches"))}
 
 
+def _with_run_timing(doc: dict, run_dir: Path) -> dict:
+    """#291: the run header's `started`/`resumed`/`wall`/`active` rows, from
+    the ONE shared helper (`engine/state.run_timing`) `ralphctl status` also
+    renders. `timingLines` is `[[label, text], ...]`, worded server-side --
+    app.js only places it. Computed per request, outside the status-block
+    cache, because `wall`/`active` of a live run depend on now. A run inside
+    the `finishing` window (an `endedAt` beside a `currentIteration`) is not
+    ended yet, so it measures to now, as the duration row does.
+    """
+    if not isinstance(doc, dict):
+        return doc
+    ended = None if isinstance(doc.get("currentIteration"), dict) else doc.get("endedAt")
+    timing = run_timing(doc, run_dir, end_ts=ended)
+    return {**doc, "timing": timing,
+            "timingLines": format_run_timing_lines(timing)}
+
+
 def _with_pause_markers(doc: dict, run_dir: Path) -> dict:
     """Task 005 (PRD requirement A.5, #269): attach `pauseMarker` (task
     017, previously only carried by `run_list`'s flat rows) and the new
@@ -2223,6 +2242,7 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
     # docstring for why the read is always local (`run_dir`) even on the
     # live-proxied branch.
     shaped_status = _with_pause_markers(shaped_status, run_dir)
+    shaped_status = _with_run_timing(shaped_status, run_dir)
 
     # Task 004 (#15): the on-disk path goes through the engine's hardened
     # reader, so a poll that lands inside an agent's rewrite of tasks.json
