@@ -7883,7 +7883,15 @@ def task_selection_call_entry(ev: dict, index: int) -> dict:
         usage["costDerived"] = True
     bucket = cost_bucket(usage, key="router")
     ids = [str(i) for i in ev.get("candidateIds") or []]
+    # #293: the OPTIONAL worker iteration this decision selected a task for;
+    # an event written before the field existed has none, and the entry then
+    # simply omits the key.
+    it = ev.get("iteration")
+    link = ({"iteration": it}
+            if isinstance(it, int) and not isinstance(it, bool) and it > 0
+            else {})
     return {
+        **link,
         "index": index,
         "ts": ev.get("ts"),
         "state": ev.get("state"),

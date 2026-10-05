@@ -6557,7 +6557,7 @@ class LoopSupervisor:
     def _emit_router_decision_event(
             self, *, state, candidate_ids, deterministic_pick,
             choice, reason, fallback, fallback_cause, usage,
-            transcripts=None) -> None:
+            transcripts=None, iteration=None) -> None:
         """Task 002 (#278 B.7): one `router.decision` EVENT (`events.jsonl`,
         never a bare log line) per completed router call on EITHER routed
         state -- `task_selection` (`_route_task_selection` below) and the
@@ -6575,6 +6575,11 @@ class LoopSupervisor:
         which of the two states asked it.
         """
         usage = usage or {}
+        # #293: the OPTIONAL `iteration` -- the worker iteration whose task
+        # this decision selected -- joins a routed iteration row to its
+        # router call; absent (never null) on an edge-axis decision, which
+        # selects no task.
+        extra = {"iteration": iteration} if iteration is not None else {}
         self.run.emit(
             "router.decision",
             state=state,
@@ -6597,7 +6602,8 @@ class LoopSupervisor:
             costDerivedUSD=usage.get("costDerivedUSD"),
             # #289: which `artifacts/router/NNNN.jsonl` transcript(s) this
             # decision's call(s) wrote, so an entry can point at its own.
-            transcripts=list(transcripts or []))
+            transcripts=list(transcripts or []),
+            **extra)
 
     async def _route_task_selection(self, candidates: list, deterministic: dict) -> dict:
         """Task 002 (#278 B.1/B.4/B.7): the ONE place `engine.router.
@@ -6654,7 +6660,11 @@ class LoopSupervisor:
             fallback_cause=outcome.fallback_cause,
             usage=outcome.usage,
             transcripts=[f"{n:04d}.jsonl" for n in
-                         range(router_calls_before + 1, self._router_calls + 1)])
+                         range(router_calls_before + 1, self._router_calls + 1)],
+            # #293: the router runs BEFORE the dispatch and charges no
+            # iteration, so the worker iteration this pick is dispatched as
+            # is the next number `_run_iteration_once` hands out.
+            iteration=self.iterations_used + 1)
         return next(t for t in candidates if str(t.get("id")) == outcome.chosen_id)
 
     def _apply_reported_task_status(self, payload: dict) -> list[str]:

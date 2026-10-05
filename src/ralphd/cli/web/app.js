@@ -859,6 +859,7 @@ async function openIterationDialog(runId, number) {
   const dlg = h("dialog", { id: "text-dialog",
                            class: "text-dialog iteration-dialog" }, [
     h("h3", { class: "dialog-title" }, [iterationTitle(runId, number)]),
+    routerCallLink(body),
     ...ITERATION_REGIONS.map(r => iterationRegion(r.key, r.label, body[r.field])),
     h("form", { method: "dialog", class: "dialog-close" }, [
       h("button", { type: "submit" }, ["close"]),
@@ -1114,6 +1115,47 @@ async function loadArtifacts(runId) {
 
 const ROUTER_CALLS_LOAD_FAILED = "failed to load the run's router calls";
 
+// #293: every panel entry has the element id `router-call-<index>` (the
+// entry's own 1-based `index`), which is what an iteration's "router call"
+// link scrolls to.
+function routerCallElementId(index) {
+  return "router-call-" + String(index);
+}
+
+// #293: open the router panel, scroll to the entry and highlight it (and
+// only it). Any open dialog is closed first -- a modal dialog would
+// otherwise leave the panel behind it unreachable.
+function openRouterCall(index) {
+  for (const dlg of document.querySelectorAll("dialog")) {
+    if (typeof dlg.close === "function") dlg.close(); else dlg.remove();
+  }
+  const details = document.querySelector(".router-call-list-details");
+  if (details) details.open = true;
+  for (const el of document.querySelectorAll(".router-call-highlight")) {
+    el.classList.remove("router-call-highlight");
+  }
+  const entry = document.getElementById(routerCallElementId(index));
+  if (!entry) return false;
+  entry.classList.add("router-call-highlight");
+  if (typeof entry.scrollIntoView === "function") entry.scrollIntoView({ block: "center" });
+  return true;
+}
+
+// #293: the "router call" link of a routed iteration -- null when the row
+// (or dialog payload) carries no `routerCallIndex`, so an unrouted iteration
+// shows no link. A click never also opens the row's own iteration dialog.
+function routerCallLink(it) {
+  const index = it ? it.routerCallIndex : null;
+  if (typeof index !== "number" || !Number.isFinite(index)) return null;
+  return h("button", {
+    type: "button",
+    class: "router-call-link",
+    "data-router-call": String(index),
+    title: "show the router call that picked this iteration's task",
+    onclick: (ev) => { ev.stopPropagation(); openRouterCall(index); },
+  }, ["router call"]);
+}
+
 function renderRouterCalls(box, ok, body) {
   if (!ok || !body) {
     box.innerHTML = "";
@@ -1140,7 +1182,7 @@ function renderRouterCalls(box, ok, body) {
       : (Array.isArray(c.candidateEdges)
         ? c.candidateEdges.map((e) => `${e.target}(${e.guard})`).join(", ")
         : "");
-    list.appendChild(h("div", { class: "router-call-item" }, [
+    list.appendChild(h("div", { class: "router-call-item", id: routerCallElementId(c.index) }, [
       h("span", { class: "router-call-index" }, ["#" + String(c.index)]),
       h("span", { class: "router-call-state" }, [String(c.state || "")]),
       h("span", { class: "router-call-arrow" }, [" \u2192 "]),
@@ -3262,6 +3304,7 @@ function renderTimeline(el, iterations, runId) {
       h("span", { class: "tier" }, ["tier: " + String(it.effectiveTier || "\u2014")]),
       h("span", { class: "cost" }, [String(it.costDisplay || "")]),
       it.error ? h("span", { class: "pill pill-failed" }, ["error"]) : null,
+      routerCallLink(it),
       h("span", { class: "dur" }, [dur]),
       // Task 015 (#89, requirement I, hub half): the SAME cause sentence the
       // iteration dialog's `cause:` line shows -- `it.causeText`, formatted

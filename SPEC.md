@@ -747,7 +747,13 @@ Every completed router call on either routed state — `task_selection` and
 `choice` (what was actually taken), `reason` (the router's own one-line
 reason on the task-selection axis; empty on the edge-based axis, which never
 asks for one), `fallback` (bool) and `fallbackCause` (set iff `fallback` is
-true), the resolved `model`, and the call's own `tokens`/`costUSD`. This is
+true), the resolved `model`, and the call's own `tokens`/`costUSD`. A
+`task_selection` event also carries the optional `iteration`, the number of the
+worker iteration whose task it selected (the router runs before the dispatch and
+charges no iteration, so this is the next iteration number); an `iteration` is
+absent from a `plan_review` event, which selects no task, and from an event
+written before the field existed. `state.task_selection_call_entry` exposes it on
+the router-call entry. This is
 in addition to — never instead of — `usage.byPhase["router"]` accounting
 (§4.2) and, for the `plan_review` axis only, `artifacts/router/
 decisions.jsonl` (`ralphctl router`); `ralphctl cost` shows the router's
@@ -5903,6 +5909,15 @@ dir themselves and a live proxy would only add a way to disagree.
   that never reached a router-ambiguous state (every shipped run, today --
   `transitions.ROUTER_FALLBACK` is `{}` by design) shows the panel's own
   empty-state sentence instead of nothing.
+  Each entry has the element id `router-call-<index>` (its own 1-based
+  `index`). A timeline row and the iteration dialog of an iteration whose task
+  the router selected carry a "router call" link: `run_detail` sets
+  `routerCallIndex` on that iteration's row only (and `GET /api/runs/<id>/
+  iterations/<n>` on that iteration's payload), taken from the `iteration` field
+  of the `task_selection` `router.decision` event, and clicking the link opens
+  the router panel, scrolls to the entry and highlights it. An iteration the
+  router did not select for, and every iteration of a run whose events carry no
+  `iteration`, has no `routerCallIndex` and shows no link.
 - **Approach history panel** — every previous approach `_archive_approach`
   copied into `approaches/NN/` before the loop started the next one, most
   recent last, each row its own archived task counts (never the live plan's)

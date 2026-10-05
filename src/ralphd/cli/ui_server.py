@@ -833,6 +833,10 @@ def iteration_view(reg: Path, run_id: str, number: int, *,
     out = {"runId": run_id, **detail, "summaryLines": summary,
            "outcomeText": "\n".join(summary),
            "promptText": prompt_text, "text": "\n".join(body)}
+    # #293: the dialog's own "router call" link (absent when not routed).
+    call_index = _router_call_index_by_iteration(run_dir).get(number)
+    if call_index is not None:
+        out["routerCallIndex"] = call_index
     # `log`/`logsText` are absent (not empty) when the caller asked for no
     # transcript -- an empty list/string would claim the iteration produced
     # none (`ralphctl iteration --no-log`'s own rule, applied to both).
@@ -2213,6 +2217,33 @@ def log_tail_etag(reg: Path, run_id: str) -> str:
     return f'{base[:-1]}-{size}"'
 
 
+def _router_call_index_by_iteration(run_dir: Path) -> dict[int, int]:
+    """#293: worker iteration number -> the 1-based `index` of the router call
+    that selected its task, from the `iteration` field the `task_selection`
+    `router.decision` event carries (`state.router_call_entries`). Empty for a
+    run whose events lack the field (it predates it), and an iteration the
+    router never picked for has no entry. When one iteration number was routed
+    more than once (a pick the loop re-made before dispatching) the LAST call
+    wins -- the one whose choice was dispatched."""
+    out: dict[int, int] = {}
+    for entry in router_call_entries(run_dir):
+        number = entry.get("iteration")
+        if isinstance(number, int) and not isinstance(number, bool):
+            out[number] = entry["index"]
+    return out
+
+
+def _with_router_call_index(rows: list[dict], run_dir: Path) -> list[dict]:
+    """#293: each routed iteration row gains `routerCallIndex`; every other
+    row is returned untouched (the key is absent, never null). Rows are copied
+    before they are marked -- the cached row dicts are shared across requests."""
+    by_iteration = _router_call_index_by_iteration(run_dir)
+    if not by_iteration:
+        return rows
+    return [({**row, "routerCallIndex": by_iteration[row.get("number")]}
+             if row.get("number") in by_iteration else row) for row in rows]
+
+
 def run_detail(reg: Path, run_id: str) -> dict | None:
     """Run detail view (PRD req 21): task table + iteration timeline data,
     live where possible, falling back to the on-disk snapshot for a dead
@@ -2292,6 +2323,8 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
         detail = _cached_iteration_row(run_dir, run_id, number)
         if detail is not None and detail.get("hasMeta"):
             iterations.append(detail)
+    # #293: the router call that selected each routed iteration's task.
+    iterations = _with_router_call_index(iterations, run_dir)
 
     # Task 036 (G.4; re-scoped task 001/PRD I.1, #207): the hub tasks
     # table's time/cost columns -- per-task sums over exactly the

@@ -723,3 +723,5 @@ th.actions-col { cursor: default; }
 /* Task 008 (v0.26, #269): the runs-list `⏸ parked for input` marker becomes
    a link straight to the run's own parked panel above. */
 a.parked-panel-link { color: inherit; text-decoration: underline; }
+.router-call-link { margin-left: 0.5em; cursor: pointer; }
+.router-call-highlight { outline: 2px solid var(--accent); background: rgba(127, 127, 127, 0.15); }
