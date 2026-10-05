@@ -282,6 +282,11 @@ class LoopSupervisor:
         self.cfg = cfg
         self.run = run
         self.workspace = workspace
+        # #291: the first `events.jsonl` line as this process FOUND it,
+        # before it emits anything itself -- on a resume, the run's original
+        # start; a line this process appends (to a fresh or a removed file)
+        # never counts as one (see `_original_start`).
+        self._found_first_event_ts = first_event_ts(run.root)
         # Task 012 (PRD requirement A.2, #156): cross-iteration state for the
         # "external evidence honoured at face value once consecutively"
         # rule -- `_progress_external_streak` counts consecutive iterations
@@ -5590,28 +5595,44 @@ class LoopSupervisor:
         self._account_infra_wait(elapsed, "reflect", 0)
         self._end_infra_wait()
 
-    def _original_start(self, opening_status: dict,
-                        previous_endings: list[dict]) -> str | None:
+    def _original_start(self, opening_status: dict) -> str | None:
         """The run's true original start for a status that lacks
         `firstStartedAt` (#291): never a later episode's `startedAt`.
 
-        The original start is the earliest instant on record: the `ts` of the
-        first `events.jsonl` line and every episode start still known (the
-        retained `previousEndings[].startedAt` and the status's own
-        `startedAt`, which names only the latest prior episode). None for a
-        run with no prior episode at all -- a fresh start, whose own
-        episode start the caller uses.
+        `opening_status` is status.json as this episode found it -- read
+        BEFORE `_previous_endings` trims the history to its cap, so the
+        earliest retained episode start is still in it.
+
+        A fresh run (no prior episode on record) returns None and the caller
+        uses this episode's own start. A resume returns the earliest instant
+        on record: the `ts` of the first `events.jsonl` line and every episode
+        start still known (each `previousEndings[].startedAt` and the
+        status's own `startedAt`, which names only the latest prior
+        episode). When a resume has none of those, it also returns None --
+        and the caller then writes NO `firstStartedAt` rather than this
+        (later) episode's start.
         """
-        known = [e["startedAt"] for e in previous_endings
+        endings = [e for e in (opening_status.get("previousEndings") or [])
+                   if isinstance(e, dict)]
+        known = [e["startedAt"] for e in endings
                  if isinstance(e.get("startedAt"), str) and e["startedAt"]]
-        if opening_status.get("startedAt"):
-            known.append(opening_status["startedAt"])
-        if not known and not previous_endings:
-            return None
-        from_events = first_event_ts(self.run.root)
+        current = opening_status.get("startedAt")
+        if isinstance(current, str) and current:
+            known.append(current)
+        from_events = self._found_first_event_ts
         if from_events:
             known.append(from_events)
         return min(known) if known else None
+
+    def _resuming_a_prior_episode(self, opening_status: dict) -> bool:
+        """True when some earlier episode of this run already entered
+        `running` (#291): a recorded episode start or ending, or an
+        iteration already on disk. A fresh run's own `events.jsonl` lines
+        (written by this process before its `running` write) are NOT such
+        evidence, so they never stand in for a fresh run's start."""
+        return bool(opening_status.get("startedAt")
+                    or opening_status.get("previousEndings")
+                    or self.iterations_used)
 
     def _previous_endings(self) -> list[dict]:
         """The endings of this run's EARLIER episodes (task 022, #30), read
@@ -5716,19 +5737,27 @@ class LoopSupervisor:
         name them) and remain short-circuit returns straight to the tail,
         exactly as before.
         """
+        # #291: status.json as this episode found it, read before anything
+        # below trims or re-bases it.
+        opening_status = self.run.read_status()
         # Task 022 (#30): read the ending fields before overwriting them.
         previous_endings = self._previous_endings()
         # #291: `firstStartedAt` is written once, by the run's first episode,
-        # and carried unchanged by every later one. A run first started by an
-        # engine that predates the field falls back to the `startedAt` it
-        # left behind, the earliest start still on record.
-        opening_status = self.run.read_status()
-        first_started_at = (opening_status.get("firstStartedAt")
-                            or self._original_start(opening_status,
-                                                    previous_endings))
+        # and carried unchanged by every later one. A resume of a run that
+        # lacks it (recorded by an engine predating the field) writes the
+        # run's earliest recorded start -- or none at all, never this or any
+        # later episode's start.
         episode_started_at = utcnow()
+        first_started_at = opening_status.get("firstStartedAt")
+        if not first_started_at:
+            if self._resuming_a_prior_episode(opening_status):
+                first_started_at = self._original_start(opening_status)
+            else:
+                first_started_at = episode_started_at
+        first_start_patch = ({"firstStartedAt": first_started_at}
+                             if first_started_at else {})
         self.run.update_status(state="running", startedAt=episode_started_at,
-                               firstStartedAt=first_started_at or episode_started_at,
+                               **first_start_patch,
                                deadlineAt=utc_from_epoch(self._deadline_epoch),
                                infraWaitTotalS=round(self._infra_wait_total_s, 3),
                                pausedTotalS=round(self._paused_wait_total_s, 3),

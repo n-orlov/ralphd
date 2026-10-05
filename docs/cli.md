@@ -610,7 +610,8 @@ active:    1h 50m
 
 - `started:` is the run's **original** start: `firstStartedAt`, or — for a run
   recorded before that field existed — the `ts` of the first line of
-  `events.jsonl` (that one line is read, never the whole file).
+  `events.jsonl` (that one line is read, never the whole file), else the
+  earliest episode start on record.
 - `resumed:` is the current episode's start and is printed only when the run
   has more than one episode.
 - `wall:` is the original start to `endedAt` (to now while the run is live).

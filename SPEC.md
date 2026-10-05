@@ -2098,7 +2098,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `usage` | object | token and cost totals, plus `byPhase`, `byApproach` and `byTier` buckets |
 | `createdAt` | string | UTC ISO-8601, first status write |
 | `startedAt` | string | when the loop entered `running` in the CURRENT episode; each episode rewrites it |
-| `firstStartedAt` | string | optional; when the run's first episode entered `running`. Written once and never rewritten by a later episode. An engine that resumes a run lacking it writes the run's earliest recorded start (the first `events.jsonl` line or the earliest retained episode start), never the latest prior episode's `startedAt`; absent on a run recorded before the field existed and not yet resumed |
+| `firstStartedAt` | string | optional; when the run's first episode entered `running`. Written once and never rewritten by a later episode. An engine that resumes a run lacking it writes the run's earliest recorded start (the earliest of the first `events.jsonl` line as the engine found it, every `previousEndings[].startedAt` and `startedAt`, read before the history is trimmed to its cap), or no `firstStartedAt` at all when none is on record, never its own or another later episode's start; absent on a run recorded before the field existed and not yet resumed |
 | `endedAt` | string | this **episode**'s terminal write, reset when the next episode enters `running` (see "Ending fields are episode-scoped" below), so it can never predate `startedAt` and a terminal run's value is exactly what its final episode wrote |
 | `previousEndings` | array | earlier episodes' endings, oldest first: `{startedAt, endedAt, reason, verdict}` per superseded ending (`startedAt` is the start of the episode the ending closes, optional on an entry recorded before the field existed), plus `termination` (task 005, #173) when that episode was told to stop, capped at the 50 most recent, `[]` in a first episode |
 | `updatedAt` | string | last write of any field |
@@ -5315,7 +5315,8 @@ usage:     $0.56, 625k tokens (planning $0.10 / worker $0.40 / review $0.06)
 The timing lines come from one shared helper, `run_timing` in
 `engine/state.py`, which the hub's run header calls too. `started:` is the
 run's **original** start: `firstStartedAt`, else the `ts` of the first line of
-`events.jsonl` (read as a single line, never the whole file). `resumed:` is the
+`events.jsonl` (read as a single line, never the whole file), else the
+earliest episode start on record (`previousEndings[].startedAt`, `startedAt`). `resumed:` is the
 current episode's `startedAt` and is printed only when the run has more than
 one episode. `wall:` is the original start to `endedAt` (to now while the run
 is live, to the last status write for a vanished container). `active:` is the

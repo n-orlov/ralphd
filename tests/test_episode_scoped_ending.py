@@ -383,6 +383,105 @@ def test_a_truncated_history_does_not_stand_in_for_the_original_start(tmp_path):
     assert sup.run.read_status()["firstStartedAt"] == original
 
 
+@pytest.fixture
+def shared_clock(monkeypatch, clock) -> _Clock:
+    """One clock for the loop AND for `events.jsonl` stamps, so a run's
+    events and its episode starts are ordered the way a real run's are."""
+    monkeypatch.setattr("ralphd.engine.state.utcnow", clock)
+    return clock
+
+
+def test_a_resume_with_only_the_events_file_keeps_the_events_start(
+        tmp_path, shared_clock):
+    """#291 (cure): a crashed pre-field episode left no `firstStartedAt`, no
+    `startedAt` and no ending to append -- only its events file. The resume
+    must keep the start `run_timing` reported from that file's first line."""
+    from ralphd.engine.state import first_event_ts, run_timing
+    root = tmp_path / "run"
+    _episode(root, [_plan, _abort])
+    run = RunDir(root=root)
+    run.update_status(firstStartedAt=REMOVE_STATUS_KEY,
+                      startedAt=REMOVE_STATUS_KEY, endedAt=None, reason=None,
+                      verdict=None, state="running")
+    before = run_timing(run.read_status(), root)["startedAt"]
+    assert before == first_event_ts(root)
+    sup, _state = _episode(root, [_abort])
+    status = sup.run.read_status()
+    assert status["firstStartedAt"] == before
+    assert run_timing(status, root)["startedAt"] == before
+
+
+def test_a_capped_history_without_events_keeps_the_earliest_retained_start(
+        tmp_path, shared_clock):
+    """#291 (cure): with the history at its cap and no events file, the
+    earliest start on record is the oldest RETAINED entry -- read before this
+    episode's own append trims it away."""
+    root = tmp_path / "run"
+    starts = []
+    for i in range(PREVIOUS_ENDINGS_MAX + 1):
+        sup, _state = _episode(root, [_plan, _abort] if i == 0 else [_abort],
+                               iterations=1000)
+        starts.append(sup.run.read_status()["startedAt"])
+    _strip_first_started_at(root)
+    (root / "events.jsonl").unlink()
+    opening = RunDir(root=root).read_status()
+    assert len(opening["previousEndings"]) == PREVIOUS_ENDINGS_MAX
+    assert opening["previousEndings"][0]["startedAt"] == starts[0]
+    sup, _state = _episode(root, [_abort], iterations=1000)
+    assert sup.run.read_status()["firstStartedAt"] == starts[0]
+
+
+def test_a_resume_with_no_recorded_start_writes_no_first_started_at(
+        tmp_path, shared_clock):
+    """#291 (cure): a resume that finds no start on record at all writes NO
+    `firstStartedAt` -- never its own start -- and a line it appends to a
+    re-created events file does not count as the run's original start."""
+    root = tmp_path / "run"
+    _episode(root, [_plan, _abort])
+    RunDir(root=root).update_status(
+        firstStartedAt=REMOVE_STATUS_KEY, startedAt=REMOVE_STATUS_KEY,
+        previousEndings=[], endedAt=None, reason=None, verdict=None)
+    (root / "events.jsonl").unlink()
+    sup, _state = _episode(root, [_abort])
+    status = sup.run.read_status()
+    assert (root / "events.jsonl").exists(), "this episode wrote events"
+    assert "firstStartedAt" not in status, status.get("firstStartedAt")
+
+
+def test_run_timing_start_never_moves_later_across_a_resume_without_events(
+        tmp_path, shared_clock):
+    """#291 (cure): with no `firstStartedAt` and no events file, the start
+    `run_timing` reports before the resume is the earliest episode start on
+    record, and the resume leaves it exactly there."""
+    from ralphd.engine.state import run_timing
+    root = tmp_path / "run"
+    starts = []
+    for script in ([_plan, _abort], [_abort], [_abort]):
+        sup, _state = _episode(root, script)
+        starts.append(sup.run.read_status()["startedAt"])
+    _strip_first_started_at(root)
+    (root / "events.jsonl").unlink()
+    before = run_timing(RunDir(root=root).read_status(), root)["startedAt"]
+    assert before == starts[0]
+    sup, _state = _episode(root, [_abort])
+    status = sup.run.read_status()
+    assert status["firstStartedAt"] == starts[0]
+    assert run_timing(status, root)["startedAt"] == before
+
+
+def test_a_fresh_run_records_its_own_running_start_not_an_earlier_event(
+        tmp_path, shared_clock):
+    """#291: a fresh run's `firstStartedAt` is when its first episode
+    entered `running`, even though its events file already holds earlier
+    lines -- the events fallback is for resumes only."""
+    from ralphd.engine.state import first_event_ts
+    root = tmp_path / "run"
+    sup, _state = _episode(root, [_plan, _abort])
+    status = sup.run.read_status()
+    assert first_event_ts(root) < status["startedAt"]
+    assert status["firstStartedAt"] == status["startedAt"]
+
+
 def test_a_first_episode_records_an_empty_history(tmp_path):
     sup, state = _episode(tmp_path / "run", [_plan, _finish_task, _review_ok])
     assert state == "succeeded"

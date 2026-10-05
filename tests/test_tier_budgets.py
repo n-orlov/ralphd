@@ -621,8 +621,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # (tests/test_run_cost_column.py) -> fast 7387/498, smoke 5662/374.
     # #291 firstStartedAt resume cure: +3 tests / +0 modules
     # (tests/test_episode_scoped_ending.py) -> fast 7390/498, smoke 5665/374.
-    "fast": {"tests": 7390, "modules": 498},
-    "smoke": {"tests": 5665, "modules": 374},
+    # #291 original-start cure, second pass: +5 tests / +0 modules
+    # (tests/test_episode_scoped_ending.py) -> fast 7395/498, smoke 5670/374.
+    "fast": {"tests": 7395, "modules": 498},
+    "smoke": {"tests": 5670, "modules": 374},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

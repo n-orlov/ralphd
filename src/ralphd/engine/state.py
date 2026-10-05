@@ -315,7 +315,8 @@ def run_timing(status: dict, run_root: Path | None = None, *,
 
     * `startedAt` -- the ORIGINAL start: `status.firstStartedAt`, else (a run
       recorded before that field existed) the `ts` of the first line of the
-      run's `events.jsonl`, else the current episode's `startedAt`.
+      run's `events.jsonl`, else the earliest episode start on record (each
+      `previousEndings[].startedAt` and the current `startedAt`).
     * `resumedAt` -- the current episode's `startedAt`, present only when the
       run has more than one episode (`episodes`).
     * `wallSeconds` -- `end_ts` (the caller passes `endedAt` for a finished
@@ -333,9 +334,14 @@ def run_timing(status: dict, run_root: Path | None = None, *,
     original = status.get("firstStartedAt") or None
     if not original and run_root is not None:
         original = first_event_ts(run_root)
-    original = original or current
     endings = [e for e in (status.get("previousEndings") or [])
                if isinstance(e, dict)]
+    if not original:
+        known = [e["startedAt"] for e in endings
+                 if isinstance(e.get("startedAt"), str) and e["startedAt"]]
+        if isinstance(current, str):
+            known.append(current)
+        original = min(known) if known else None
     episodes = len(endings) + 1 if (original or current) else 0
     out: dict = {"episodes": episodes}
     if original:
