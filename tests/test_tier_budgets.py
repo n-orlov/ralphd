@@ -610,8 +610,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # the new tests/test_undefer_surfaces.py -> fast 7314/493, smoke 5589/369.
     # #293 router-call link: +5 tests in the new tests/test_router_call_link.py
     # -> fast 7319/494, smoke 5594/370.
-    "fast": {"tests": 7319, "modules": 494},
-    "smoke": {"tests": 5594, "modules": 370},
+    # #294 paged artifact listing, capped view, download route: +38 tests in
+    # the new tests/test_artifact_paging.py -> fast 7357/495, smoke 5632/371.
+    "fast": {"tests": 7357, "modules": 495},
+    "smoke": {"tests": 5632, "modules": 371},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

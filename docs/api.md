@@ -832,6 +832,33 @@ historical marker from the run's real terminus (see `ralphctl watch` in
 ### `GET /artifacts` and `GET /artifacts/{path}`
 List (recursive, with sizes) and download files from the artifacts dir.
 
+### The hub's artifact routes
+The hub (`ralphctl ui`) reads a run's `artifacts/` straight off disk through
+three routes, whether or not the run is live. Each resolves the name through
+`state.artifact_relpath` alone; a name with `..` (also `%2e%2e`), a leading `/`
+or a NUL is refused with `404`.
+
+- `GET /api/runs/<id>/artifacts?offset=&limit=&q=&dir=` returns one page,
+  `{runId, total, offset, limit, entries, notice}`. `limit` defaults to `200`
+  and is clamped to `1000`. Each entry has `path` (relative to `artifacts/`),
+  `name`, `size`, `mtime`, `key` (the well-known alias, or `null`), `title`,
+  `sizeDisplay` and a `kind` taken from the file name's extension alone:
+  `image`, `markdown`, `json`, `html`, `text` or `binary`. `q` is a
+  case-insensitive substring match on the relative path. Without `dir` the
+  entries are every file, flat, in path order. With `dir` they are that
+  directory's direct children, subdirectories first as entries of kind `dir`
+  carrying `fileCount`. The listing stats files and never opens one. `notice`
+  is `(no artifacts)` for a run that left nothing.
+- `GET /api/runs/<id>/artifacts/<path>` is the text view of one file. It reads
+  at most 1 MiB (`ARTIFACT_PREVIEW_MAX_BYTES`): `content` holds the text,
+  `truncated` is `true` when the file is larger, and `bytes` is always the full
+  size. A file no preview handles returns its `kind` and size and no `content`.
+  Images are served by `GET /api/runs/<id>/artifacts-raw/<path>` up to
+  `ARTIFACT_INLINE_MAX_BYTES` (5 MiB).
+- `GET /api/runs/<id>/artifacts-download/<path...>` streams the whole file, of
+  any size or kind, as `Content-Disposition: attachment` with
+  `Content-Type: application/octet-stream`.
+
 ## Steering & control
 
 ### `POST /steering`

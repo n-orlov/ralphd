@@ -123,7 +123,7 @@ def test_artifact_list_reports_the_tree_with_keys_and_a_server_size_cell(tmp_pat
 
     payload = artifact_list(registry, "hub-arts")
     assert payload["runId"] == "hub-arts"
-    by_path = {a["path"]: a for a in payload["artifacts"]}
+    by_path = {a["path"]: a for a in payload["entries"]}
     assert set(by_path) == {"reflection/report.md",
                             "reflection/suggestions.diff",
                             "reports/pricing-anomaly.md"}
@@ -135,8 +135,9 @@ def test_artifact_list_reports_the_tree_with_keys_and_a_server_size_cell(tmp_pat
     assert by_path["reflection/report.md"]["sizeDisplay"] == \
         f"{len(REPORT.encode()):,}"
     # the size cell is the CLI's own formatter, not a second spelling
-    for a in payload["artifacts"]:
-        assert a["sizeDisplay"] == format_artifact_size(a)
+    for a in payload["entries"]:
+        assert a["sizeDisplay"] == format_artifact_size(
+            {"exists": True, "bytes": a["size"]})
     assert payload["notice"] == ""
 
 
@@ -147,7 +148,7 @@ def test_artifact_list_carries_no_bodies(tmp_path):
     _seed_artifacts(registry)
 
     payload = artifact_list(registry, "hub-arts")
-    for a in payload["artifacts"]:
+    for a in payload["entries"]:
         assert "body" not in a, a
     blob = json.dumps(payload)
     assert "requirement C" not in blob and "worker.md" not in blob
@@ -158,21 +159,24 @@ def test_artifact_list_says_so_when_a_run_left_nothing(tmp_path):
     _seed_artifacts(registry, report=None, suggestions=None, other=None)
 
     payload = artifact_list(registry, "hub-arts")
-    assert payload["artifacts"] == []
+    assert payload["entries"] == [] and payload["total"] == 0
     # the CLI's own line, not a second wording for the same fact
     assert payload["notice"] == NO_ARTIFACTS
 
 
 def test_artifact_list_is_what_ralphctl_artifacts_ls_reports(tmp_path):
-    """One shaping: the hub's rows ARE the CLI's rows (plus `sizeDisplay`)."""
+    """The hub's page and the CLI's listing name the same files and sizes
+    (the page is paged and extension-kinded; the CLI sniffs)."""
     registry = tmp_path / "registry"
     _seed_artifacts(registry)
 
     r = _ctl(registry, "--json", "artifacts", "hub-arts", "ls")
     assert r.returncode == 0, r.stderr
     cli = json.loads(r.stdout)["artifacts"]
-    hub = artifact_list(registry, "hub-arts")["artifacts"]
-    assert [_with_artifact_display(e) for e in cli] == hub
+    hub = artifact_list(registry, "hub-arts")["entries"]
+    assert [(e["path"], e["bytes"]) for e in cli] == \
+        [(e["path"], e["size"]) for e in hub]
+    assert [e["key"] for e in cli] == [e["key"] for e in hub]
 
 
 # ------------------------------------------------- the run record (task 007)
@@ -190,11 +194,11 @@ def test_hub_artifacts_panel_lists_and_serves_the_run_record(tmp_path):
     (run_dir / "artifacts" / "run-record.md").write_text(md)
     (run_dir / "artifacts" / "run-record.json").write_text(js)
 
-    listing = artifact_list(registry, "hub-arts")["artifacts"]
+    listing = artifact_list(registry, "hub-arts")["entries"]
     by_path = {e["path"]: e for e in listing}
-    assert by_path["run-record.md"]["exists"] is True
+    assert by_path["run-record.md"]["size"] == len(md)
     assert by_path["run-record.md"]["key"] == "run-record"
-    assert by_path["run-record.json"]["exists"] is True
+    assert by_path["run-record.json"]["size"] == len(js)
     assert by_path["run-record.json"]["key"] == "run-record-json"
 
     view = artifact_view(registry, "hub-arts", "run-record")
@@ -426,7 +430,8 @@ def test_app_js_collapses_the_artifact_list_behind_a_native_details():
     assert "open" not in details_call
     # the summary text carries the artifact count
     summary_call = region[region.index('h("summary"'):]
-    assert "items.length" in summary_call[:summary_call.index(')') + 1]
+    # the count is the listing's `total` (the page may hold fewer entries)
+    assert "total" in summary_call[:summary_call.index(')') + 1]
 
 
 def _artifact_dialog_kind_branch(src: str) -> str:
@@ -440,10 +445,12 @@ def _artifact_dialog_kind_branch(src: str) -> str:
 
 def _kind_branch_present(branch: str) -> bool:
     """Task 025 (#54): the dialog's SHAPE is decided from the server's own
-    `kind` field -- `a.kind === ARTIFACT_KIND_IMAGE`, the constant mirroring
+    `kind` field -- the one-file view's sniffed `body.kind ===
+    ARTIFACT_KIND_IMAGE` (the listing's kind is extension-derived, #294), the
+    constant mirroring
     `state.ARTIFACT_KIND_IMAGE` -- and routed to a dedicated image dialog
     function, never to a client-side extension check."""
-    return ("a.kind === ARTIFACT_KIND_IMAGE" in branch
+    return ("body.kind === ARTIFACT_KIND_IMAGE" in branch
             and "openImageArtifactDialog" in branch)
 
 
@@ -467,7 +474,7 @@ def test_the_kind_branch_check_would_catch_a_removed_guard():
     branch = _artifact_dialog_kind_branch(src)
     assert _kind_branch_present(branch)
     mutated = branch.replace(
-        "  if (a.kind === ARTIFACT_KIND_IMAGE) {\n"
+        "  if (ok && body && body.kind === ARTIFACT_KIND_IMAGE) {\n"
         "    return openImageArtifactDialog(runId, a, name);\n  }\n", "")
     assert mutated != branch
     assert not _kind_branch_present(mutated)

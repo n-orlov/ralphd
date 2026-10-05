@@ -124,7 +124,11 @@ def test_svg_is_never_added_to_the_image_allow_list():
     assert not any("svg" in m for m in ARTIFACT_IMAGE_MIME_TYPES)
 
 
-def test_cli_and_hub_report_the_same_kind_for_every_entry(tmp_path):
+def test_cli_sniffs_kinds_while_the_hub_listing_derives_them_from_the_extension(
+        tmp_path):
+    """#294 changes the hub listing on purpose: it never opens a file, so its
+    `kind` is the extension's. The CLI listing and the hub's one-file view still
+    sniff magic bytes (so a ZIP named `.png` is not previewed as an image)."""
     registry = _seed(tmp_path, {
         "fake.png": ZIP_BYTES,
         "payload.bin": PNG_BYTES,
@@ -134,9 +138,6 @@ def test_cli_and_hub_report_the_same_kind_for_every_entry(tmp_path):
     })
     root = registry / "runs" / "kind-run"
     cli_entries = {e["path"]: e["kind"] for e in artifact_entries(root)}
-    hub_payload = artifact_list(registry, "kind-run")
-    hub_entries = {e["path"]: e["kind"] for e in hub_payload["artifacts"]}
-    assert cli_entries == hub_entries
     assert cli_entries == {
         "fake.png": ARTIFACT_KIND_BINARY,
         "payload.bin": ARTIFACT_KIND_IMAGE,
@@ -144,3 +145,15 @@ def test_cli_and_hub_report_the_same_kind_for_every_entry(tmp_path):
         "logo.svg": ARTIFACT_KIND_TEXT,
         "notes.txt": ARTIFACT_KIND_TEXT,
     }
+    hub_payload = artifact_list(registry, "kind-run")
+    hub_entries = {e["path"]: e["kind"] for e in hub_payload["entries"]}
+    assert hub_entries == {
+        "fake.png": ARTIFACT_KIND_IMAGE,
+        "payload.bin": ARTIFACT_KIND_BINARY,
+        "dump.tar.gz": ARTIFACT_KIND_BINARY,
+        "logo.svg": ARTIFACT_KIND_BINARY,
+        "notes.txt": ARTIFACT_KIND_TEXT,
+    }
+    from ralphd.cli.ui_server import artifact_view
+    for name, kind in cli_entries.items():
+        assert artifact_view(registry, "kind-run", name)["kind"] == kind

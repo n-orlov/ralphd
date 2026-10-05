@@ -13,7 +13,7 @@ import shutil
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, TextIO
 
 from ..log_merge import (
@@ -7458,6 +7458,38 @@ ARTIFACT_IMAGE_MIME_TYPES: tuple[str, ...] = (
 # it already does for a non-image kind.
 ARTIFACT_INLINE_MAX_BYTES = 5 * 1024 * 1024
 
+# The text view (`artifact_entry` with bodies) never reads more than this many
+# bytes of a file: a job can write a multi-gigabyte log, and the hub (or
+# `ralphctl artifacts show`) has no business loading it whole. Over the cap the
+# entry carries the first `ARTIFACT_PREVIEW_MAX_BYTES` bytes, `truncated: True`
+# and the file's full size; `GET /api/runs/<id>/artifacts-download/<path>` (and
+# `ralphctl artifacts <run> pull`) hand out the whole file.
+ARTIFACT_PREVIEW_MAX_BYTES = 1024 * 1024
+
+# The paged listing (`artifact_listing`): `limit` defaults to 200 and is
+# clamped to 1000, so one request never describes more than a bounded page.
+ARTIFACT_LIST_DEFAULT_LIMIT = 200
+ARTIFACT_LIST_MAX_LIMIT = 1000
+
+# What the paged listing calls a subdirectory (its entry carries `fileCount`),
+# and the kinds it derives from a file name's extension alone -- the listing
+# never opens a file, so it cannot sniff. `binary` is "no preview handles it".
+ARTIFACT_KIND_DIR = "dir"
+ARTIFACT_KIND_MARKDOWN = "markdown"
+ARTIFACT_KIND_JSON = "json"
+ARTIFACT_KIND_HTML = "html"
+_ARTIFACT_EXTENSION_KINDS: dict[str, str] = {
+    **{ext: ARTIFACT_KIND_IMAGE for ext in
+       (".png", ".jpg", ".jpeg", ".gif", ".webp")},
+    **{ext: ARTIFACT_KIND_MARKDOWN for ext in (".md", ".markdown")},
+    ".json": ARTIFACT_KIND_JSON, ".jsonl": ARTIFACT_KIND_JSON,
+    **{ext: ARTIFACT_KIND_HTML for ext in (".html", ".htm")},
+    **{ext: ARTIFACT_KIND_TEXT for ext in
+       (".txt", ".log", ".diff", ".patch", ".yaml", ".yml", ".toml", ".ini",
+        ".cfg", ".csv", ".tsv", ".py", ".js", ".ts", ".sh", ".xml", ".rst",
+        ".out", ".err", ".env")},
+}
+
 
 def _sniff_image_mime(data: bytes) -> str | None:
     """The `Content-Type` for `data` if its LEADING BYTES carry one of the
@@ -7590,7 +7622,9 @@ def artifact_entry(run_root: Path, rel_path: str, *,
                   server-decided answer (task 022, #54) both `ralphctl
                   artifacts ls` and the hub's artifacts panel show, sniffed
                   from magic bytes and never from the extension,
-      `body`      the text -- omitted entirely with `bodies=False`, for a file
+      `body`      the text, at most `ARTIFACT_PREVIEW_MAX_BYTES` of it (a file
+                  over the cap sets `truncated: True`; `bytes` is still the
+                  full size) -- omitted entirely with `bodies=False`, for a file
                   that does not exist and for a binary one, since an empty
                   string would read like an empty file (`artifact_body` turns
                   each of those into its own wording).
@@ -7620,9 +7654,24 @@ def artifact_entry(run_root: Path, rel_path: str, *,
     entry["kind"] = _artifact_kind(entry["isText"], entry["imageMime"])
     if bodies and entry["isText"]:
         try:
-            entry["body"] = path.read_text(errors="replace")
+            with path.open("rb") as fh:
+                data = fh.read(ARTIFACT_PREVIEW_MAX_BYTES + 1)
         except OSError:
             entry["body"] = RUN_DOCUMENT_UNREADABLE
+            return entry
+        if len(data) > ARTIFACT_PREVIEW_MAX_BYTES:
+            # The cap can cut a multi-byte character in half; drop the
+            # fragment rather than show a replacement character at the seam.
+            data = data[:ARTIFACT_PREVIEW_MAX_BYTES]
+            for cut in range(4):
+                try:
+                    data[:len(data) - cut].decode()
+                except UnicodeDecodeError:
+                    continue
+                data = data[:len(data) - cut]
+                break
+            entry["truncated"] = True
+        entry["body"] = data.decode(errors="replace")
     return entry
 
 
@@ -7647,6 +7696,126 @@ def artifact_entries(run_root: Path, *, bodies: bool = False) -> list[dict]:
     return [artifact_entry(run_root, p.relative_to(root).as_posix(),
                            bodies=bodies)
             for p in found]
+
+
+def artifact_kind_for_name(name) -> str:
+    """The kind of a file decided from its NAME's extension alone -- what the
+    paged listing reports, since it never opens a file. One of
+    `ARTIFACT_KIND_IMAGE`/`_MARKDOWN`/`_JSON`/`_HTML`/`_TEXT`; every other
+    extension (and none) is `ARTIFACT_KIND_BINARY`, i.e. no preview handles it.
+    """
+    return _ARTIFACT_EXTENSION_KINDS.get(
+        PurePosixPath(str(name or "")).suffix.lower(), ARTIFACT_KIND_BINARY)
+
+
+def _clamp_page(offset, limit) -> tuple[int, int]:
+    try:
+        offset = max(0, int(offset))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = ARTIFACT_LIST_DEFAULT_LIMIT
+    return offset, max(1, min(limit, ARTIFACT_LIST_MAX_LIMIT))
+
+
+def _count_files(directory: str) -> int:
+    return sum(len(files) for _, _, files in os.walk(directory))
+
+
+def artifact_listing(run_root: Path, *, offset=0, limit=None, q: str = "",
+                     dir: str = "") -> dict | None:
+    """One page of a run's artifacts, WITHOUT opening any file: the paged
+    listing behind `GET /api/runs/<id>/artifacts` (#294).
+
+    Returns `{total, offset, limit, entries}`, or None when `dir` names a
+    directory `artifact_relpath` refuses (the caller answers 404 -- the one
+    resolver, no second guard here). Each entry is `{path, name, size, mtime,
+    kind}`: `path` is relative to `artifacts/` (what the view/download routes
+    take back), `kind` comes from the extension alone, and the page's files
+    are `stat`ed, never read.
+
+    Without `dir` the listing is every file under the tree, flat, in path
+    order. With `dir` it is that directory's direct children only: its
+    subdirectories first, as entries of kind `ARTIFACT_KIND_DIR` carrying
+    `fileCount` (every file beneath them), then its files. `q` keeps the
+    entries whose relative path contains it, case-insensitively. `limit`
+    defaults to `ARTIFACT_LIST_DEFAULT_LIMIT` and is clamped to
+    `ARTIFACT_LIST_MAX_LIMIT`.
+
+    Only the page's entries are stat-ed/counted, so a first page of a huge
+    tree costs a directory walk plus 200 stats.
+    """
+    offset, limit = _clamp_page(offset, limit)
+    base = Path(run_root) / ARTIFACTS_DIR_NAME
+    rel_dir = ""
+    if str(dir or "") != "":
+        resolved = artifact_relpath(dir)
+        if resolved is None:
+            return None
+        rel_dir = resolved
+    needle = str(q or "").lower()
+    found: list[tuple[int, str, str]] = []  # (sort group, rel path, abs path)
+    try:
+        if rel_dir:
+            top = base / rel_dir
+            with os.scandir(top) as it:
+                children = list(it)
+            for child in children:
+                rel = f"{rel_dir}/{child.name}"
+                try:
+                    if child.is_dir(follow_symlinks=False):
+                        found.append((0, rel, child.path))
+                    elif child.is_file():
+                        found.append((1, rel, child.path))
+                except OSError:
+                    continue
+        else:
+            for root, dirs, files in os.walk(base):
+                prefix = os.path.relpath(root, base).replace(os.sep, "/")
+                prefix = "" if prefix == "." else prefix + "/"
+                for name in files:
+                    found.append((1, prefix + name, os.path.join(root, name)))
+    except OSError:
+        found = []
+    if needle:
+        found = [f for f in found if needle in f[1].lower()]
+    found.sort(key=lambda f: (f[0], f[1]))
+    entries = []
+    for group, rel, absolute in found[offset:offset + limit]:
+        name = rel.rsplit("/", 1)[-1]
+        try:
+            st = os.stat(absolute)
+        except OSError:
+            continue
+        entry = {"path": rel, "name": name, "mtime": round(st.st_mtime, 3)}
+        if group == 0:
+            entry.update(size=0, kind=ARTIFACT_KIND_DIR,
+                         fileCount=_count_files(absolute))
+        else:
+            entry.update(size=st.st_size, kind=artifact_kind_for_name(name))
+        entries.append(entry)
+    return {"total": len(found), "offset": offset, "limit": limit,
+            "entries": entries}
+
+
+def artifact_download(run_root: Path, name) -> dict | None:
+    """What the download route streams for `name`: `{file, size, filename}`
+    (`file` a Path to open, never read whole here), or None when `name` cannot
+    address an artifact (`artifact_relpath`'s guard -- the one resolver) or
+    names no regular file. Any kind, any size: the caller streams it."""
+    rel = artifact_relpath(name)
+    if rel is None:
+        return None
+    path = Path(run_root) / ARTIFACTS_DIR_NAME / rel
+    try:
+        if not path.is_file():
+            return None
+        size = path.stat().st_size
+    except OSError:
+        return None
+    return {"file": path, "size": size, "filename": path.name}
 
 
 def artifact(run_root: Path, name, *, bodies: bool = True) -> dict | None:
@@ -7733,6 +7902,10 @@ def artifact_summary_lines(entry: dict) -> list[str]:
         lines.append(f"purpose:   {entry.get('title')}")
     lines.append(f"size:      {format_artifact_size(entry)}"
                  + (" bytes" if entry.get("exists") else ""))
+    if entry.get("truncated"):
+        lines.append(f"preview:   first {ARTIFACT_PREVIEW_MAX_BYTES:,} bytes "
+                     "only (download or `ralphctl artifacts <run> pull` "
+                     "for the whole file)")
     return lines
 
 

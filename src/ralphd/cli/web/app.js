@@ -1011,18 +1011,18 @@ function openImageArtifactDialog(runId, a, name) {
 
 async function openArtifactDialog(runId, a) {
   const name = String(a.path || a.key || "");
-  // The listing row (`a`) already carries the server's `kind` -- no second
-  // fetch is needed to decide the SHAPE of the dialog, only (for a
-  // non-image) to get the body text. A tarball (kind === "binary") and plain
-  // text both still go through the JSON route below and `openTextDialog`,
-  // unchanged: the `pull` wording for a tarball is exactly today's binary
-  // path, not a new one.
-  if (a.kind === ARTIFACT_KIND_IMAGE) {
-    return openImageArtifactDialog(runId, a, name);
-  }
+  // The listing's `kind` comes from the file NAME alone (it never opens a
+  // file, #294), so the shape of the dialog is decided from the one-file
+  // view's `kind` instead -- the server's magic-byte sniff. A ZIP named
+  // `.png` is therefore never handed to an `<img>`, and a PNG named `.bin`
+  // is. A tarball (kind === "binary") and plain text both go through
+  // `openTextDialog`: the `pull` wording for a tarball is today's binary path.
   const path = `/api/runs/${encodeURIComponent(runId)}/artifacts/` +
     encodeURIComponent(name);
   const { ok, body } = await getJSON(path);
+  if (ok && body && body.kind === ARTIFACT_KIND_IMAGE) {
+    return openImageArtifactDialog(runId, a, name);
+  }
   const text = (ok && body && typeof body.text === "string" && body.text)
     ? body.text
     : "(failed to load " + name + ")";
@@ -1036,7 +1036,9 @@ function renderArtifacts(box, ok, body, runId) {
     box.appendChild(h("p", { class: "muted" }, [ARTIFACT_LOAD_FAILED]));
     return;
   }
-  const items = Array.isArray(body.artifacts) ? body.artifacts : [];
+  // `GET .../artifacts` is a page (#294): `{total, offset, limit, entries}`.
+  const items = Array.isArray(body.entries) ? body.entries : [];
+  const total = Number.isInteger(body.total) ? body.total : items.length;
   // Task 021 (#82) applies `renderApproachHistory`'s own lesson here: `load()`
   // rebuilds every sub-panel, this one included, every REFRESH_MS, so an
   // unconditional rebuild would silently re-collapse the `<details>` below
@@ -1044,7 +1046,7 @@ function renderArtifacts(box, ok, body, runId) {
   // artifact set is unchanged from the last render -- the open/closed state
   // (and any focus inside it) then survives untouched across polls.
   const wanted = items.map((a) => String(a.path || a.key || "")).join("\u0000") +
-    "|" + String(body.notice || "");
+    "|" + String(total) + "|" + String(body.notice || "");
   if (box.dataset.artifacts === wanted) return;
   box.dataset.artifacts = wanted;
   box.innerHTML = "";
@@ -1077,7 +1079,7 @@ function renderArtifacts(box, ok, body, runId) {
   // anything behind; each row stays a real `<button>`, unaffected by the
   // wrapper, once the panel is expanded.
   const details = h("details", { class: "artifact-list-details" }, [
-    h("summary", {}, ["artifacts (" + String(items.length) + ")"]),
+    h("summary", {}, ["artifacts (" + String(total) + ")"]),
     list,
   ]);
   box.appendChild(details);

@@ -4006,33 +4006,44 @@ JSON endpoints served under `/api/`:
   back *from*. A document this run never wrote is not an error — its `text` is
   the `(not written)` wording. `404` for an unknown run id or a name that
   matches no known document.
-- `GET /api/runs/<id>/artifacts` and `GET /api/runs/<id>/artifacts/<path>` —
-  what the job left behind in `artifacts/`, for the hub's **Artifacts** panel and
-  its dialogs (task 024, issue #18.3): the same shaping `ralphctl artifacts`
-  prints from (`ralphd.engine.state.artifact_entries`/`artifact`). The listing
-  answers `{runId, artifacts: [...], notice}` with one entry per *file* under
-  `artifacts/` in path order (an artifact tree is whatever the agent wrote, so
-  unlike the document listing there is no fixed set of rows): `path` (relative
-  to `artifacts/`, and what you pass back in the URL), `key` (the well-known
-  name — `report`, `suggestions`, `reflect-failed` — or `null`), `title`,
-  `file`, `available`, `exists`, `bytes`, `isText` and `sizeDisplay`, rendered
-  server-side by `state.format_artifact_size` (the same file-size vocabulary as
-  the documents above). `notice` is `(no artifacts)` — `state.NO_ARTIFACTS`, the
-  very line `ralphctl artifacts <run> ls` prints — for a run that produced
-  nothing, else `""`. The listing carries **no bodies**: a 4s poll must not ship
-  a whole reflection report. `GET .../artifacts/<path>` adds `body`,
-  `summaryLines` and `text` — the complete dialog body, exactly what `ralphctl
-  artifacts <run> show <name>` prints. The path may be a well-known key
-  (`report`), a path relative to `artifacts/`, or that path with the directory
-  (`artifacts/reflection/report.md`), spelled either as one percent-encoded
-  segment or with real slashes. Resolution *and* the traversal guard are the
-  shaping's single `state.artifact_relpath` — an absolute path, a `..` segment
-  or a NUL is not an artifact and gets a `404`, never a file from elsewhere on
-  the host. On-disk only, with no `live` flag (the agent writes these files into
-  a directory this host holds); a binary artifact answers with the `(binary file
-  …)` wording rather than bytes, and one that is no longer there with `(not
-  written)` rather than a `404`. `404` for an unknown run id or a name that
-  cannot address an artifact at all.
+- `GET /api/runs/<id>/artifacts?offset=&limit=&q=&dir=` and `GET
+  /api/runs/<id>/artifacts/<path>` — what the job left behind in `artifacts/`,
+  for the hub's **Artifacts** panel and its dialogs (issue #18.3, #294). The
+  listing is one page, `{runId, total, offset, limit, entries, notice}`
+  (`ralphd.engine.state.artifact_listing`): `limit` defaults to 200 and is
+  clamped to 1000, and each entry has `path` (relative to `artifacts/`, and
+  what you pass back in the URL), `name`, `size`, `mtime`, `key` (the
+  well-known name — `report`, `suggestions`, `reflect-failed` — or `null`),
+  `title`, `sizeDisplay` and a `kind` derived from the extension alone
+  (`image`, `markdown`, `json`, `html`, `text`, else `binary`). `q` is a
+  case-insensitive substring match on the relative path; `dir` lists one
+  directory's direct children, subdirectories first as entries of kind `dir`
+  carrying `fileCount`. The listing stats files and never opens one, so a poll
+  never ships or sniffs a body. `notice` is `(no artifacts)` —
+  `state.NO_ARTIFACTS`, the line `ralphctl artifacts <run> ls` prints — for a
+  run that produced nothing, else `""`. `GET .../artifacts/<path>` is the text
+  view: it reads at most `state.ARTIFACT_PREVIEW_MAX_BYTES` (1 MiB) and adds
+  `content` (the text), `truncated` (`true` when the file is larger; `bytes` is
+  always the full size), `summaryLines` and `text` — the dialog body, what
+  `ralphctl artifacts <run> show <name>` prints. A file no preview handles
+  (binary, image) answers its sniffed `kind` and size and no `content`. The
+  path may be a well-known key (`report`), a path relative to `artifacts/`, or
+  that path with the directory (`artifacts/reflection/report.md`), spelled
+  either as one percent-encoded segment or with real slashes. Resolution *and*
+  the traversal guard are the single `state.artifact_relpath` — an absolute
+  path, a `..` segment (also `%2e%2e`) or a NUL is not an artifact and gets a
+  `404` on the listing's `dir`, the text view and the download route alike,
+  never a file from elsewhere on the host. On-disk only, with no `live` flag
+  (the agent writes these files into a directory this host holds); a binary
+  artifact answers with the `(binary file …)` wording, and one that is no
+  longer there with `(not written)` rather than a `404`. `404` for an unknown
+  run id or a name that cannot address an artifact at all.
+- `GET /api/runs/<id>/artifacts-download/<path...>` — the whole file, of any
+  size or kind, streamed as `Content-Disposition: attachment` with
+  `Content-Type: application/octet-stream` and `X-Content-Type-Options:
+  nosniff`. The name goes through `state.artifact_relpath` (via
+  `state.artifact_download`), like every artifact route; a refused name, a
+  missing file or an unknown run id is a `404`.
 - `GET /api/runs/<id>/artifacts-raw/<path>` — the raw byte route (task 023,
   issue #54) an `<img src>` can point at directly, since a dialog cannot embed
   an image from a JSON endpoint. Same name shape as `artifacts` above (one

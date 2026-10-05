@@ -83,8 +83,12 @@ from ..engine.state import (
     archived_approach_view,
     archived_approaches_list,
     artifact,
-    artifact_entries,
+    ARTIFACT_KIND_DIR,
+    artifact_download,
+    artifact_key,
+    artifact_listing,
     artifact_raw,
+    artifact_title,
     artifact_summary_lines,
     artifact_text,
     cost_breakdown,
@@ -991,34 +995,47 @@ def _with_artifact_display(entry: dict) -> dict:
     return {**entry, "sizeDisplay": format_artifact_size(entry)}
 
 
-def artifact_list(reg: Path, run_id: str) -> dict:
-    """What a run left behind in `artifacts/`, for the hub's artifacts panel
-    (task 024, #18.3): above all the reflect phase's `reflection/report.md` and
-    `reflection/suggestions.diff`, which until now could only be read by knowing
-    the registry layout and `cat`-ing files on the host.
+def _artifact_page_entry(entry: dict) -> dict:
+    """One paged-listing entry plus the two strings the panel places: the
+    well-known `key` (None for an ordinary file) and `sizeDisplay` -- the
+    document size vocabulary for a file, a file count for a directory. Always
+    recomputed from the entry's own fields (and the well-known `title`, '' for an
+    ordinary file)."""
+    if entry.get("kind") == ARTIFACT_KIND_DIR:
+        n = int(entry.get("fileCount") or 0)
+        display = f"{n:,} file" + ("" if n == 1 else "s")
+    else:
+        display = format_artifact_size(
+            {"exists": True, "bytes": entry.get("size", 0)})
+    return {**entry, "key": artifact_key(entry.get("path")),
+            "title": artifact_title(entry.get("path")),
+            "sizeDisplay": display}
 
-    The listing `ralphctl artifacts <run> ls` prints, as a payload:
-    `state.artifact_entries` (the ONE shaping, task 023) with `sizeDisplay`
-    added, so a file cannot be described as missing in one surface and empty in
-    the other. Unlike the document panel there is no fixed set of rows -- an
-    artifact tree is whatever the agent wrote -- so a run that produced nothing
-    is an empty list plus `state.NO_ARTIFACTS`, the CLI's own wording.
 
-    Bodies are deliberately NOT included (`artifact_entries(bodies=False)`): the
-    panel needs labels, and shipping a whole reflection report on every 4s poll
-    would be pure waste. The body arrives when a dialog opens, from
-    `artifact_view`.
+def artifact_list(reg: Path, run_id: str, *, offset=0, limit=None,
+                  q: str = "", dir: str = "") -> dict | None:
+    """One page of what a run left behind in `artifacts/` (#294):
+    `state.artifact_listing` -- `{total, offset, limit, entries}` -- with each
+    entry's `sizeDisplay`/`key` added, plus `runId` and `state.NO_ARTIFACTS` as
+    `notice` when the run produced nothing at all.
+
+    The listing stats files and never opens one: the kind comes from the
+    extension, the page is bounded (`limit` defaults to 200, clamped to 1000),
+    and a hub poll never walks content. None when `dir` is a name
+    `state.artifact_relpath` refuses (caller -> 404).
 
     Purely on-disk, like `iteration_view`/`document_list` and `ralphctl
     artifacts`: the agent writes these files into a directory this host holds,
-    so a live run and one whose container is long gone read identically --
-    there is no live answer to prefer, hence no `live` flag and no snapshot
-    notice.
+    so a live run and one whose container is long gone read identically.
     """
-    entries = [_with_artifact_display(e) for e in
-               artifact_entries(reg / "runs" / run_id, bodies=False)]
-    return {"runId": run_id, "artifacts": entries,
-            "notice": "" if entries else NO_ARTIFACTS}
+    page = artifact_listing(reg / "runs" / run_id, offset=offset, limit=limit,
+                            q=q, dir=dir)
+    if page is None:
+        return None
+    entries = [_artifact_page_entry(e) for e in page["entries"]]
+    empty = page["total"] == 0 and not q and not dir
+    return {"runId": run_id, **page, "entries": entries,
+            "notice": NO_ARTIFACTS if empty else ""}
 
 
 def router_calls_view(reg: Path, run_id: str) -> dict:
@@ -1068,9 +1085,17 @@ def artifact_view(reg: Path, run_id: str, name: str) -> dict | None:
     entry = artifact(reg / "runs" / run_id, name)
     if entry is None:
         return None
-    return {"runId": run_id, **_with_artifact_display(entry),
+    view = {"runId": run_id, **_with_artifact_display(entry),
             "summaryLines": artifact_summary_lines(entry),
-            "text": artifact_text(entry)}
+            "text": artifact_text(entry),
+            "truncated": bool(entry.get("truncated"))}
+    # `content` is the capped text itself (`ARTIFACT_PREVIEW_MAX_BYTES`), only
+    # for a file a text preview handles: an image, a binary and an absent file
+    # answer their kind and size and no content.
+    if isinstance(entry.get("body"), str) and entry.get("exists") \
+            and entry.get("isText"):
+        view["content"] = entry["body"]
+    return view
 
 
 def approaches_list_view(reg: Path, run_id: str) -> dict:
@@ -2536,6 +2561,36 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_attachment(self, file: Path, size: int, filename: str) -> None:
+        """Stream `file` (`size` bytes) as `Content-Disposition: attachment`.
+        The filename is ASCII-quoted with an RFC 5987 `filename*` for the
+        real name, so no run-written name can inject a header."""
+        try:
+            fh = file.open("rb")
+        except OSError:
+            self._send_bytes(b"not found\n", 404, "text/plain", nosniff=True)
+            return
+        ascii_name = "".join(c if c.isascii() and c.isprintable()
+                             and c not in '"\\;' else "_" for c in filename)
+        with fh:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{ascii_name}"; '
+                f"filename*=UTF-8''{quote(filename, safe='')}")
+            self.send_header("Content-Security-Policy", HUB_CSP)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            remaining = size
+            while remaining > 0:
+                chunk = fh.read(min(65536, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+
     def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0") or "0")
         return self.rfile.read(length) if length else b""
@@ -2666,6 +2721,28 @@ class Handler(BaseHTTPRequestHandler):
                     raw["contentType"] or "text/plain; charset=utf-8",
                     nosniff=True)
                 return
+            if (len(segs) >= 5 and segs[:2] == ["api", "runs"]
+                    and segs[3] == "artifacts-download"):
+                # #294: the whole file, any size or kind, as an attachment.
+                # The name is resolved by the ONE resolver
+                # (`state.artifact_relpath`, via `artifact_download`); a name it
+                # refuses (traversal, absolute, NUL) and a file that is not
+                # there both answer 404. The bytes are streamed in chunks, never
+                # read whole, and are never served inline (`attachment` +
+                # `nosniff` + an opaque content type).
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_bytes(b"not found\n", 404, "text/plain",
+                                     nosniff=True)
+                    return
+                name = "/".join(unquote(s) for s in segs[4:])
+                dl = artifact_download(reg / "runs" / run_id, name)
+                if dl is None:
+                    self._send_bytes(b"not found\n", 404, "text/plain",
+                                     nosniff=True)
+                    return
+                self._send_attachment(dl["file"], dl["size"], dl["filename"])
+                return
             if (len(segs) >= 4 and segs[:2] == ["api", "runs"]
                     and segs[3] == "artifacts"):
                 # Task 024 (#18.3): what the job left behind -- the listing for
@@ -2682,7 +2759,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"error": f"run {run_id} not found"}, 404)
                     return
                 if len(segs) == 4:
-                    self._send_json(artifact_list(reg, run_id))
+                    def _q(key, default=""):
+                        vals = qs.get(key)
+                        return vals[0] if vals else default
+                    page = artifact_list(
+                        reg, run_id, offset=_q("offset", 0),
+                        limit=_q("limit", None), q=_q("q"), dir=_q("dir"))
+                    if page is None:
+                        self._send_json(
+                            {"error": f"not an artifact directory: "
+                                      f"{_q('dir')!r}"}, 404)
+                        return
+                    self._send_json(page)
                     return
                 name = "/".join(unquote(s) for s in segs[4:])
                 view = artifact_view(reg, run_id, name)

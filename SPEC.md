@@ -5898,7 +5898,28 @@ dir themselves and a live proxy would only add a way to disagree.
   reflection report first among them) opens as text, a previewable image
   opens holding an `<img>` whose `src` is the raw byte route, and everything
   else (opaque binary, e.g. a tarball) is reported as such rather than
-  mangled. `app.js` carries no client-side extension list of its own.
+  mangled. `app.js` carries no client-side extension list of its own. The
+  panel is fed by the paged listing below, never by a whole-tree walk, and its
+  count is the listing's `total`.
+  The hub serves three artifact routes, all on-disk, all resolving the name
+  through `state.artifact_relpath` alone (no second resolver): `GET
+  /api/runs/<id>/artifacts?offset=&limit=&q=&dir=` is one page,
+  `{total, offset, limit, entries}`, whose entries carry `path`, `size`,
+  `mtime` and a `kind` derived from the file name's extension alone
+  (`image`, `markdown`, `json`, `html`, `text`, else `binary`), `limit`
+  defaulting to 200 and clamped to 1000; `q` keeps the entries whose relative
+  path contains it, case-insensitively; `dir` lists one directory's direct
+  children, its subdirectories first as entries of kind `dir` carrying
+  `fileCount`. The listing stats files and never opens one. `GET
+  /api/runs/<id>/artifacts/<path>` is the text view: it reads at most
+  `ARTIFACT_PREVIEW_MAX_BYTES` (1 MiB) and answers `content`, `truncated`
+  (true when the file is larger) and the full size in `bytes`; a file no
+  preview handles (binary, image) answers its sniffed `kind` and size and no
+  `content`, and images keep the `ARTIFACT_INLINE_MAX_BYTES` cap on
+  `artifacts-raw`. `GET /api/runs/<id>/artifacts-download/<path...>` streams
+  the whole file, of any size or kind, with `Content-Disposition: attachment`.
+  A name containing `..` (also as `%2e%2e`), a leading `/` or a NUL is refused
+  with `404` by all three routes.
 - **Router calls panel** — behind a native `<details>`/`<summary>` disclosure
   (task 022, P, #80), this run's own router decisions: `GET /api/runs/<id>/
   router` → `{runId, routerCalls: [...]}`, the very entries `ralphctl router
@@ -6296,6 +6317,16 @@ logs) in the artifacts directory". The engine-written files under
 | `artifacts/reports/*.md` | agent | a report the PRD asked for; only a `*-petitions.md` file is read back (§12.3) |
 | `artifacts/screenshots/**` | agent | browser-driven verification of a UI change |
 | anything else | agent | logs, samples, gate records — free-form by design |
+
+**Reading it back.** The hub lists the tree one bounded page at a time (§11:
+`artifact_listing`, extension-derived `kind`, no file opened), previews a text
+file through the 1 MiB `ARTIFACT_PREVIEW_MAX_BYTES` cap (`artifact_entry`
+carries `truncated: true` and the full size when the file is larger), serves an
+image under `ARTIFACT_INLINE_MAX_BYTES` (5 MiB), and hands out any file whole
+as an attachment (`artifact_download`). Every one of those resolves its name
+through `artifact_relpath`, the one guard. `ralphctl artifacts <id> show`
+prints the same capped view, naming the cap when it applied; `pull` copies
+whole files.
 
 **The run record (`run_record.py`, v0.18 requirement B.1, #140).** Neither
 file is agent-produced, and neither is faulted for omitting or predating
