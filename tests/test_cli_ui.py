@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -168,7 +169,9 @@ class StubEngineApi:
                  steer_status: int = 202, steer_body: dict | None = None,
                  rule_status: int = 202, rule_body: dict | None = None,
                  resume_status: int = 200, resume_body: dict | None = None,
-                 interrupt_status: int = 200, interrupt_body: dict | None = None):
+                 interrupt_status: int = 200, interrupt_body: dict | None = None,
+                 undefer_status: int = 200, undefer_body: dict | None = None,
+                 on_undefer=None):
         self.requests: list[tuple[str, str, str | None]] = []
         self.control_tokens: list[str | None] = []
         # Task 011 (v0.26, #269): the raw request body, one entry per
@@ -210,6 +213,12 @@ class StubEngineApi:
         self.interrupt_body = (interrupt_body if interrupt_body is not None
                                else {"interrupted": True, "target": "iteration",
                                     "signalled": True, "woken": False})
+        # #292: `POST /tasks/<id>/undefer` -- the hub's "Undefer now" proxy
+        # target. `on_undefer(task_id)` runs on a 200 so a test can move the
+        # run's tasks the way the real loop thread would.
+        self.undefer_status = undefer_status
+        self.undefer_body = undefer_body
+        self.on_undefer = on_undefer
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -266,6 +275,13 @@ class StubEngineApi:
                     self._reply(outer.resume_status, outer.resume_body)
                 elif path == "/interrupt":
                     self._reply(outer.interrupt_status, outer.interrupt_body)
+                elif path.startswith("/tasks/") and path.endswith("/undefer"):
+                    task_id = urllib.parse.unquote(path[len("/tasks/"):-len("/undefer")])
+                    if outer.undefer_status == 200 and outer.on_undefer:
+                        outer.on_undefer(task_id)
+                    self._reply(outer.undefer_status,
+                                outer.undefer_body if outer.undefer_body is not None
+                                else {"undeferring": True, "taskId": task_id})
                 else:
                     self._reply(404, {"detail": "no such route"})
 

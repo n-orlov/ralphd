@@ -63,7 +63,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .. import __version__, collapse_index, render_index
 from ..engine.config import MUTATING_METHODS, JobConfig
@@ -2844,6 +2844,30 @@ class Handler(BaseHTTPRequestHandler):
                 if not ok and not code:
                     self._send_json(
                         {"error": "run's API is unreachable — cannot retry now"}, 503)
+                    return
+                self._send_json(resp if isinstance(resp, dict) else {"detail": str(resp)},
+                                code)
+                return
+            if (len(segs) == 6 and segs[:2] == ["api", "runs"] and segs[3] == "tasks"
+                    and segs[5] == "undefer"):
+                # #292: the hub's "Undefer now" button -- the SAME engine verb
+                # `ralphctl undefer` calls, `POST /tasks/<id>/undefer`
+                # (docs/api.md). A pure proxy, never a host-side write: the
+                # engine's own status code and body (404 unknown task, 409
+                # job finished / task not deferred) pass straight through so
+                # the button can show the server's message; only a run whose
+                # API does not answer collapses to this hub's 503.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                task_id = unquote(segs[4])
+                ok, code, resp = _proxy_json(
+                    reg, run_id, "POST",
+                    f"/tasks/{quote(task_id, safe='')}/undefer", body=b"")
+                if not ok and not code:
+                    self._send_json(
+                        {"error": "run's API is unreachable — cannot undefer now"}, 503)
                     return
                 self._send_json(resp if isinstance(resp, dict) else {"detail": str(resp)},
                                 code)

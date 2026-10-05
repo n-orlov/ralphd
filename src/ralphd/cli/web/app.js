@@ -1777,6 +1777,9 @@ async function renderRunDetail(runId, myGen) {
   // EVERY tick (a `304` included) so its elapsed time keeps moving while
   // the back-off holds the payload itself still.
   let lastCurrentIteration = null;
+  // #292: whether the last payload came from the run's live API (the
+  // "Undefer now" buttons exist only then).
+  let lastLive = false;
   // Test-only instrumentation (never read by the app itself): lets a
   // browser test observe the back-off without waiting out the full
   // 15-30s band it targets.
@@ -1821,13 +1824,15 @@ async function renderRunDetail(runId, myGen) {
       renderDelete(document.getElementById("delete-box"), runId, body);
       renderUsage(document.getElementById("usage-box"),
                   body.status && body.status.usage, runId);
+      lastLive = body.live === true;
       renderTasks(document.getElementById("task-box"), body.tasks,
-                  body.status && body.status.progressBudget);
+                  body.status && body.status.progressBudget,
+                  { runId, live: lastLive });
       renderTimeline(document.getElementById("timeline-box"), body.iterations || [], runId);
       lastCurrentIteration = body.currentIteration || null;
     }
     renderCurrentIteration(document.getElementById("current-iteration-box"),
-                           lastCurrentIteration, runId);
+                           lastCurrentIteration, runId, lastLive);
     // Task 049 (H.7): `loadLogs` (the transcript/log-tail poll,
     // `GET /api/runs/<id>/logs?tail=200`) already shares this SAME
     // `load()` call, which is itself scheduled through `scheduleRefresh`
@@ -2935,7 +2940,59 @@ function taskProgressBudget(progressBudget, t) {
   return progressBudget;
 }
 
-function renderTasks(el, tasks, progressBudget) {
+// #292: the "Undefer now" affordance on a deferred task -- the SAME engine
+// verb `ralphctl undefer` drives, through the hub's own proxy route
+// (`POST /api/runs/<id>/tasks/<task>/undefer`). Shown only while the run is
+// live; the server's own message (a 409 "task not deferred"/"job finished",
+// the hub's 503 "API unreachable") is shown verbatim. The message is kept at
+// module level, keyed by run and task, so the 4 s rebuilds of the task table
+// and the Current iteration panel do not wipe it.
+let undeferNote = null;
+
+function undeferNoteFor(runId, taskId) {
+  return undeferNote && undeferNote.runId === runId && undeferNote.taskId === String(taskId)
+    ? undeferNote.text : "";
+}
+
+function undeferButton(runId, taskId) {
+  const statusEl = h("span", { class: "undefer-now-status muted" }, [
+    undeferNoteFor(runId, taskId),
+  ]);
+  const button = h("button", {
+    class: "undefer-now", type: "button", "data-task-id": String(taskId),
+  }, ["Undefer now"]);
+  // The task row is itself clickable (opens the criteria dialog) and its own
+  // keydown handler ignores keys that bubble up from a child, so the button
+  // never also opens the dialog.
+  button.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    button.disabled = true;
+    const set = (text) => {
+      undeferNote = { runId, taskId: String(taskId), text };
+      statusEl.textContent = text;
+    };
+    set(" undeferring\u2026");
+    try {
+      const resp = await fetch(hubURL(
+        `/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(String(taskId))}/undefer`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        set(" released at the loop's next selection");
+      } else {
+        set(" failed: " + String(innermostReason(j, resp.status)));
+      }
+    } catch (e) {
+      set(" failed: " + e);
+    }
+    button.disabled = false;
+  });
+  return [button, statusEl];
+}
+
+function renderTasks(el, tasks, progressBudget, undefer) {
   el.innerHTML = "";
   const doc = tasks || {};
   const list = doc.tasks || [];
@@ -2994,6 +3051,7 @@ function renderTasks(el, tasks, progressBudget) {
       title: "show this task's success criteria",
       onclick: open,
       onkeydown: (ev) => {
+        if (ev.target !== ev.currentTarget) return;
         if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
       },
     }, [
@@ -3021,6 +3079,8 @@ function renderTasks(el, tasks, progressBudget) {
         ...(workerOrigin ? [" ", pill("worker-origin")] : []),
         ...(blockedBy ? [" ", pill("blocked by " + blockedBy.join(", "))] : []),
         ...(t.deferredUntil ? [" ", pill("deferred until " + String(t.deferredUntil))] : []),
+        ...(t.deferredUntil && undefer && undefer.live && undefer.runId
+            ? [" ", ...undeferButton(undefer.runId, t.id)] : []),
         ...(budget ? [" ", pill("budget " + budget.used + "/" + budget.budget)] : []),
       ]),
       h("td", {}, [String(t.title || "")]),
@@ -3231,7 +3291,7 @@ function iterationModelLabel(it) {
 // field comes from `ui_server.current_iteration_panel` (`body.
 // currentIteration`); the only thing computed here is elapsed time against
 // the browser's clock, so the bar keeps moving between payload refreshes.
-function renderCurrentIteration(el, cur, runId) {
+function renderCurrentIteration(el, cur, runId, live) {
   if (!el) return;
   el.innerHTML = "";
   if (!cur) {
@@ -3241,6 +3301,7 @@ function renderCurrentIteration(el, cur, runId) {
   const deferredLines = (cur.deferred || []).map((d) => h("div", { class: "ci-deferred" }, [
     "deferred: task " + String(d.taskId) + " until " + String(d.untilLocal || d.until) +
       (d.reason ? " \u2014 " + String(d.reason) : ""),
+    ...(live === true && runId ? [" ", ...undeferButton(runId, d.taskId)] : []),
   ]));
   const rateLine = cur.rateLimitWaitLine
     ? h("div", { class: "ci-wait" }, ["\u23F3 " + String(cur.rateLimitWaitLine)]) : null;

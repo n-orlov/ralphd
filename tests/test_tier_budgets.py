@@ -606,8 +606,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # #292 undefer route and loop release: +15 tests in the new
     # tests/test_undefer.py, +2 route-inventory cases -> fast 7301/492,
     # smoke 5576/368.
-    "fast": {"tests": 7301, "modules": 492},
-    "smoke": {"tests": 5576, "modules": 368},
+    # #292 `ralphctl undefer`, hub proxy route and button text: +13 tests in
+    # the new tests/test_undefer_surfaces.py -> fast 7314/493, smoke 5589/369.
+    "fast": {"tests": 7314, "modules": 493},
+    "smoke": {"tests": 5589, "modules": 369},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

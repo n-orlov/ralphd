@@ -2128,6 +2128,26 @@ Exit `0` woken · `5` the run is in neither wait (or already finished) ·
 `3` unknown run · `4` API unreachable. `--json` prints the engine's
 `{"retrying": true}`.
 
+### `ralphctl undefer <run-id> <task-id>`
+
+Release a **deferred** task now instead of waiting out its `deferredUntil`
+(a worker's `verdict: "deferred"` report, or the engine's own re-poll
+backoff). Posts `POST /tasks/<task-id>/undefer` through the same `api()` path
+as `steer` and `retry`, and writes nothing host-side: the engine's loop
+thread clears `deferredUntil`/`deferredReason` at its next selection boundary
+and emits `task.undeferred`, ending a deferred wait at once (its
+`deferred_wait` event reads `boundedBy: "undefer"`). Prints
+`undeferring task <id> (released at the loop's next selection)`.
+
+Exit `0` accepted · `5` the engine's `409` (the job has finished, or the task
+is not deferred), printed with the server's message · `3` unknown run · `4`
+API unreachable (`API unreachable: …`). An unknown task id is the engine's
+`404`, which exits `1`. `--json` prints the engine's
+`{"undeferring": true, "taskId": ...}`.
+
+The hub's **Undefer now** button does the same through
+`POST /api/runs/<id>/tasks/<task>/undefer` (see the hub section below).
+
 ### `ralphctl budget <run-id> <+N|N>`
 
 Change a **running** job's iteration budget in flight (`PATCH /config/budget`)
@@ -3573,13 +3593,15 @@ container API when reachable. `--port` defaults to a free ephemeral port;
 `--bind` defaults to `127.0.0.1`. Ctrl-C to stop.
 
 **The hub has no authentication of its own** (PRD requirement H, operator
-ruling 4 -- no hub-level auth token, no new secret) and it publishes five
+ruling 4 -- no hub-level auth token, no new secret) and it publishes six
 mutating routes: `DELETE /api/runs/<id>` (deletes a run), `POST
 /api/runs/<id>/steer` (steers a run), `POST /api/runs/<id>/retry` (retries
 a degraded run now), (task 013, v0.23 requirement A.2, #224) `POST
 /api/runs/<id>/rule` (records an operator ruling) and (task 006) `POST
 /api/runs/<id>/unpause` (unpauses a run -- the SAME `/resume` route
-`ralphctl unpause` calls, so there is no second unpause mechanism).
+`ralphctl unpause` calls, so there is no second unpause mechanism) and
+(#292) `POST /api/runs/<id>/tasks/<task>/undefer` (releases a deferred
+task now -- the SAME route `ralphctl undefer` calls).
 `--bind` accepting any
 address with no warning would let `--bind 0.0.0.0` publish all of those to
 the LAN silently, so **`ralphctl ui` refuses a non-loopback `--bind`**
@@ -3596,7 +3618,8 @@ ralphctl: serving hub at http://127.0.0.1:PORT (registry: ~/.ralphd) --
 mutating routes published: DELETE /api/runs/<id> (delete a run), POST
 /api/runs/<id>/steer (steer a run), POST /api/runs/<id>/retry (retry a
 degraded run now), POST /api/runs/<id>/rule (record an operator ruling),
-POST /api/runs/<id>/unpause (unpause a run) --
+POST /api/runs/<id>/unpause (unpause a run), POST
+/api/runs/<id>/tasks/<task>/undefer (release a deferred task now) --
 the hub has no authentication of its own
 ```
 
@@ -4173,6 +4196,16 @@ JSON endpoints served under `/api/`:
   true}` in the ordinary case) with its status code passed through
   unedited; `503` (with an `error`) only when the run's API is
   unreachable; `404` for an unknown run id.
+- `POST /api/runs/<id>/tasks/<task>/undefer` — the **Undefer now** button
+  (#292): forwarded (empty body) to the run's live `POST
+  /tasks/<task>/undefer`, the SAME engine route `ralphctl undefer` calls,
+  and never a host-side write. The engine's status and body pass through
+  (its `404` unknown task, `409` job finished or task not deferred) so the
+  button shows the server's own message; `503` (with an `error`) only when
+  the run's API is unreachable; `404` for an unknown run id. The button
+  appears on a deferred task's task-table row and on its entry in the Current
+  iteration panel's deferred list, only while the run's API answers (a
+  run's on-disk snapshot offers none).
 - `DELETE /api/runs/<id>` — delete a **finished** run's state (task 030, issue
   #19): exactly what `ralphctl rm <id> --force --yes` does, in one HTTP call —
   the leftover job container is stopped and removed, the run's labeled

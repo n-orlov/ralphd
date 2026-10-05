@@ -31,6 +31,7 @@ import threading
 import time
 import tty as tty_module
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Self
@@ -6271,6 +6272,22 @@ def cmd_retry(args):
         "wake has its outage budget clock reset)")
 
 
+def cmd_undefer(args):
+    """#292: release one deferred task early -- `POST /tasks/<id>/undefer`
+    through the same `api()` helper `steer`/`retry` use, so it writes nothing
+    host-side: the engine's loop thread clears `deferredUntil` itself.
+
+    Exit `0` released · `5` the engine's 409 (job finished, or the task is
+    not deferred) · `3` unknown run · `4` API unreachable. An unknown task id
+    is the engine's 404, which `api()` reports as exit `1`.
+    """
+    _require_run(args.run_id)
+    res = api(args.run_id, "POST",
+              f"/tasks/{urllib.parse.quote(str(args.task_id), safe='')}/undefer")
+    out(args, res, f"undeferring task {res.get('taskId', args.task_id)} "
+                   "(released at the loop's next selection)")
+
+
 def cmd_budget(args):
     """Task 046 (#3): change a *running* job's iteration budget in flight;
     task 004 (#94 (c)+(d)) extends this to the other three `PATCH
@@ -7396,12 +7413,15 @@ def _bind_is_loopback(bind: str) -> bool:
 # `POST /rule` joins this tuple at task 013 (see docs/cli.md).
 # `POST /unpause` joins it at task 006 (see docs/cli.md) -- the hub's
 # `/resume` proxy, the SAME engine route `ralphctl unpause` calls.
+# `POST /tasks/<task>/undefer` joins it at #292 -- the SAME engine route
+# `ralphctl undefer` calls.
 _HUB_MUTATING_ROUTES = (
     "DELETE /api/runs/<id> (delete a run)",
     "POST /api/runs/<id>/steer (steer a run)",
     "POST /api/runs/<id>/retry (retry a degraded run now)",
     "POST /api/runs/<id>/rule (record an operator ruling)",
     "POST /api/runs/<id>/unpause (unpause a run)",
+    "POST /api/runs/<id>/tasks/<task>/undefer (release a deferred task now)",
 )
 
 _HUB_NON_LOOPBACK_BIND_FLAG = "--allow-non-loopback-bind"
@@ -8900,6 +8920,12 @@ def build_parser() -> argparse.ArgumentParser:
                        "wake resets the outage-budget clock)")
     s.add_argument("run_id")
     s.set_defaults(func=cmd_retry)
+
+    s = sub.add_parser("undefer", help="release a deferred task now instead "
+                       "of waiting out its deferredUntil")
+    s.add_argument("run_id")
+    s.add_argument("task_id")
+    s.set_defaults(func=cmd_undefer)
 
     s = sub.add_parser("budget", help="change a running job's iteration "
                        "budget (and, task 004/#94 (c), its approaches/"
