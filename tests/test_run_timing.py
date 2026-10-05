@@ -161,6 +161,7 @@ def test_runs_columns_are_unchanged(tmp_path):
     res = _ctl(registry, "runs")
     assert res.returncode == 0, (res.stdout, res.stderr)
     header = res.stdout.splitlines()[0].split()
-    assert header[-1] == "STARTED"
+    # COST (#296) is the last column; the timing columns are still only STARTED
+    assert header[-2:] == ["STARTED", "COST"], header
     for word in ("WALL", "ACTIVE", "RESUMED"):
         assert word not in header
