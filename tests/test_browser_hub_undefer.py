@@ -81,6 +81,12 @@ def test_undefer_now_button_releases_the_task_and_the_pill_disappears(tmp_path, 
                       "Undefer now")
             pw.screenshot(SCREENSHOTS_DIR / "undefer-now-before.png")
 
+            # The click must land while the detail poll is already backed off
+            # (two consecutive 304s were served, so the next scheduled poll is
+            # BACKOFF_POLL_MS away); only an immediate repaint after the POST
+            # can then make the pill disappear inside the 15 s wait below.
+            _wait_for(pw, "String(window.__hubDetailPollIntervalMs())", "20000", timeout=30)
+
             pw.click("#task-box .undefer-now")
 
             _wait_for(

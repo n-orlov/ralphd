@@ -4232,7 +4232,9 @@ JSON endpoints served under `/api/`:
   the run's API is unreachable; `404` for an unknown run id. The button
   appears on a deferred task's task-table row and on its entry in the Current
   iteration panel's deferred list, only while the run's API answers (a
-  run's on-disk snapshot offers none).
+  run's on-disk snapshot offers none). A successful click reloads the open
+  run-detail view at once rather than waiting for the next poll, even while
+  that poll is backed off.
 - `DELETE /api/runs/<id>` — delete a **finished** run's state (task 030, issue
   #19): exactly what `ralphctl rm <id> --force --yes` does, in one HTTP call —
   the leftover job container is stopped and removed, the run's labeled

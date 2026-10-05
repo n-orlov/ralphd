@@ -6057,7 +6057,10 @@ dir themselves and a live proxy would only add a way to disagree.
   and body pass through (`404` unknown task, `409` job finished or task not
   deferred) and the button shows the server's message; `503` (with an `error`)
   when the run's API is unreachable; `404` for an unknown run. The `deferred
-  until` pill disappears once the loop applies the release.
+  until` pill disappears once the loop applies the release. A successful POST
+  makes the open run-detail view reload at once and drops its `304` streak (so
+  the poll is back at the 4 s cadence instead of waiting out a 20 s back-off
+  interval); the back-off rule itself is unchanged.
 - **Unpause proxy** — `POST /api/runs/<id>/unpause` (task 006) forwards
   (empty body) to the run's live `POST /resume`, the SAME engine route
   `ralphctl unpause <run-id>` calls, so there is no second unpause

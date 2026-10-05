@@ -2008,6 +2008,18 @@ async function renderRunDetail(runId, myGen) {
   // 15-30s band it targets.
   window.__hubDetailPollIntervalMs = () => pollIntervalMs;
 
+  // #292: a successful "Undefer now" repaints this view at once. Dropping the
+  // 304 streak keeps the back-off rule itself untouched; `load()`'s tail then
+  // snaps the poll back to REFRESH_MS because the streak no longer holds.
+  detailReloadNow = {
+    runId,
+    fn: () => {
+      if (myGen !== renderGeneration) return;
+      unchangedStreak = 0;
+      load();
+    },
+  };
+
   async function load() {
     // Task 016 (#27): same discard-if-superseded rule as `renderRunList`'s
     // `load()` -- see the comment there. The detail view's `load()` also
@@ -3183,6 +3195,11 @@ function taskProgressBudget(progressBudget, t) {
 // and the Current iteration panel do not wipe it.
 let undeferNote = null;
 
+// The live run-detail view's "reload now" hook (installed by
+// `renderRunDetail`, keyed by run id); `undeferButton` calls it after a
+// successful POST so the repaint does not wait for the next scheduled poll.
+let detailReloadNow = null;
+
 function undeferNoteFor(runId, taskId) {
   return undeferNote && undeferNote.runId === runId && undeferNote.taskId === String(taskId)
     ? undeferNote.text : "";
@@ -3215,6 +3232,7 @@ function undeferButton(runId, taskId) {
       const j = await resp.json().catch(() => ({}));
       if (resp.ok) {
         set(" released at the loop's next selection");
+        if (detailReloadNow && detailReloadNow.runId === runId) detailReloadNow.fn();
       } else {
         set(" failed: " + String(innermostReason(j, resp.status)));
       }
