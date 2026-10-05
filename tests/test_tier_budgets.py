@@ -615,8 +615,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # #294 artifacts browse modal + bounded summary: +6 tests in
     # tests/test_artifact_paging.py and +8 in the new
     # tests/test_artifact_browser_js.py -> fast 7371/496, smoke 5646/372.
-    "fast": {"tests": 7371, "modules": 496},
-    "smoke": {"tests": 5646, "modules": 372},
+    # #295 hub provisioning table: +7 tests / +1 module
+    # (tests/test_provisioning_table.py) -> fast 7378/497, smoke 5653/373.
+    "fast": {"tests": 7378, "modules": 497},
+    "smoke": {"tests": 5653, "modules": 373},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

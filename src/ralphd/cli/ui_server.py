@@ -1352,6 +1352,67 @@ def _with_cost_display(doc: dict) -> dict:
     return {**doc, "usage": out_usage}
 
 
+PROVISIONING_BASE_COLUMNS = ("hat", "model", "thinking/effort", "harness")
+
+
+def _thinking_effort_cell(bundle) -> str:
+    """`thinking: X` / `effort: X` (never both -- `HatBundle` forbids it) or
+    an empty string when the bundle (a `HatBundle` or a table row/rung dict)
+    carries neither."""
+    if isinstance(bundle, dict):
+        thinking, effort = bundle.get("thinking"), bundle.get("effort")
+    else:
+        thinking, effort = bundle.thinking, bundle.effort
+    if thinking:
+        return f"thinking: {thinking}"
+    if effort:
+        return f"effort: {effort}"
+    return ""
+
+
+def provisioning_table_cells(cfg: JobConfig) -> dict:
+    """The hub header's hat -> model table, worded here and only placed by
+    app.js. `{"columns": [...], "rows": [[cell, ...], ...]}`: one row per
+    hat from `JobConfig.provisioning_table()` with the hat, its own model
+    (`bundle_for(hat)`, the answer a tiered hat's rungs fall back to), its
+    thinking/effort and its harness (`harness_for(hat)`); `trivial`/`normal`/
+    `hard` columns are appended only when at least one hat has rungs. A
+    rung's cell is its model, plus its thinking/effort when that differs
+    from the hat's own; a hat without rungs has empty tier cells."""
+    table = cfg.provisioning_table()
+    tiered = any(isinstance(r, dict) and r.get("rungs") for r in table)
+    tiers = ("trivial", "normal", "hard")
+    columns = list(PROVISIONING_BASE_COLUMNS) + (list(tiers) if tiered else [])
+    rows: list[list[str]] = []
+    for row in table:
+        if not isinstance(row, dict):
+            continue
+        hat = str(row.get("hat", ""))
+        if row.get("rungs"):
+            own = cfg.bundle_for(hat)
+            model = own.model or "pi default"
+            own_te = _thinking_effort_cell(own)
+        else:
+            model = row.get("model") or "pi default"
+            own_te = _thinking_effort_cell(row)
+        cells = [hat, str(model), own_te, str(cfg.harness_for(hat))]
+        if tiered:
+            by_tier = {r.get("tier"): r for r in (row.get("rungs") or [])
+                       if isinstance(r, dict)}
+            for tier in tiers:
+                rung = by_tier.get(tier)
+                if rung is None:
+                    cells.append("")
+                    continue
+                cell = str(rung.get("model") or "pi default")
+                te = _thinking_effort_cell(rung)
+                if te and te != own_te:
+                    cell += f" ({te})"
+                cells.append(cell)
+        rows.append(cells)
+    return {"columns": columns, "rows": rows}
+
+
 def _with_provisioning(doc: dict, cfg_path: Path) -> dict:
     """Task 010 (#79, PRD requirement O): attach the resolved hat -> model
     mapping to a status doc server-side, the same discipline
@@ -1366,8 +1427,9 @@ def _with_provisioning(doc: dict, cfg_path: Path) -> dict:
     (`ralphctl status --json`'s own `provisioning` key, so the two surfaces
     describe the identical mapping); `provisioningLines` is
     `state.format_provisioning_lines` over those SAME rows -- the exact
-    strings `ralphctl status`'s plain-text output prints, rendered by the
-    hub as-is (`renderSummary`, `app.js`), never re-worded in JS.
+    strings `ralphctl status`'s plain-text output prints; the hub header
+    itself renders `provisioningTable` (`provisioning_table_cells`), the
+    same rows as table cells worded here, never re-worded in JS.
 
     A run with no job.yaml on disk yet (or an unreadable one) gets an empty
     table rather than raising -- the same "absent, not a crash" discipline
@@ -1376,13 +1438,18 @@ def _with_provisioning(doc: dict, cfg_path: Path) -> dict:
     if not isinstance(doc, dict):
         return doc
     table: list[dict] = []
+    cells: dict = {"columns": [], "rows": []}
     if cfg_path.is_file():
         try:
-            table = JobConfig.load(cfg_path).provisioning_table()
+            cfg = JobConfig.load(cfg_path)
+            table = cfg.provisioning_table()
+            cells = provisioning_table_cells(cfg)
         except Exception:
             table = []
+            cells = {"columns": [], "rows": []}
     return {**doc, "provisioning": table,
-            "provisioningLines": format_provisioning_lines(table)}
+            "provisioningLines": format_provisioning_lines(table),
+            "provisioningTable": cells}
 
 
 def _with_llm_headers(doc: dict, cfg_path: Path) -> dict:

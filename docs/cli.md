@@ -3104,8 +3104,9 @@ harnesses:
   review: pi
 ```
 
-`ralphctl status`, `status --json` and the hub name each hat's harness at the
-end of its provisioning line, for example `worker    anthropic/claude-sonnet-5  [claude-code]`;
+`ralphctl status` and `status --json` name each hat's harness at the end of
+its provisioning line (the hub shows it in the `harness` column of its
+provisioning table), for example `worker    anthropic/claude-sonnet-5  [claude-code]`;
 each tier rung line (`worker.hard`, ...) carries the same `[harness]` suffix,
 the hat's, since a tier has no harness of its own.
 A `claude-code` hat must use an `anthropic/*` model ref (or none); the engine
@@ -3129,7 +3130,8 @@ ladder collapses to that one bundle, and `ralphctl status`/`status --json`
 render the collapsed single-rung row exactly as they did before this table
 existed; a hat with at least one configured rung instead renders one line per
 tier, labelled `<hat>.<tier>` (`state.format_provisioning_lines`, the one
-formatter `ralphctl status`/`status --json`/the hub all call). A leaf
+formatter `ralphctl status`/`status --json` call; the hub renders the same
+rows as a table with `trivial`/`normal`/`hard` columns). A leaf
 is either a plain model ref string or a mapping naming `model`/`thinking`/
 `effort` explicitly, the same shape family `thinking_overrides:` speaks:
 

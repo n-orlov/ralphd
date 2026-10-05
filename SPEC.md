@@ -5867,12 +5867,26 @@ dir themselves and a live proxy would only add a way to disagree.
   `meta.json` records one (`harness:   <h>` on its own when there is no model), and then ends with `  · thinking: <level>` or `  · effort: <level>` when it records one (on the `harness:` line, or as its own line when there is neither model nor harness);
   an iteration from before v0.30 prints as it always did. The transcript is
   `output.jsonl`, the pi-shaped events, for a `claude-code` iteration too: the
-  raw `output.claude.jsonl` sidecar is not read. The run's provisioning lines
-  suffix every hat line and every tier rung line with `[harness]`.
+  raw `output.claude.jsonl` sidecar is not read. `ralphctl status`'s
+  `provisioning:` lines suffix every hat line and every tier rung line with
+  `[harness]`.
   Rows are newest first. Collapsed (the default at any iteration count) shows
   the 3 newest rows; the older ones sit behind a `show all N iterations`
   disclosure, and the expand/collapse choice persists per section type in
   `localStorage` (`ralphd.collapse.timeline`).
+- **Provisioning table** — the collapsed `provisioning` `<details>` in the run
+  header holds a `<table>` of the resolved hat → model mapping, built from
+  `JobConfig.provisioning_table()` and worded server-side
+  (`ui_server.provisioning_table_cells`, delivered as `status.provisioningTable`
+  `{columns, rows}`; app.js only places the cell strings). One row per hat:
+  `hat`, `model` (the hat's own model, `pi default` when none is configured),
+  `thinking/effort` and `harness` (`JobConfig.harness_for(hat)`). `trivial`,
+  `normal` and `hard` columns appear only when at least one hat has tier rungs;
+  a rung's cell is its model, followed by `(thinking: …)`/`(effort: …)` when
+  that differs from the hat's own, and a hat without rungs has empty tier cells.
+  The `<details>` keeps its remembered open state
+  (`ralphd.collapse.provisioning`). `ralphctl status`'s `provisioning:` block is
+  the same mapping as plain lines and is unchanged.
 - **Current iteration panel** — beside the live log tail on a wide screen,
   stacked above it on a narrow one. Built server-side (`run_detail`'s
   `currentIteration`, from `status.json`'s `currentIteration`, the in-flight

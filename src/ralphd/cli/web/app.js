@@ -2520,6 +2520,19 @@ function stateCell(detail, s) {
   return h("span", {}, [pillEl, ...spans]);
 }
 
+// The provisioning `<table>`: `table.columns` are the header cells and each
+// of `table.rows` a list of cell strings, all worded by
+// `ui_server.provisioning_table_cells`; this only places them.
+function provisioningTableNode(table) {
+  const cols = Array.isArray(table.columns) ? table.columns : [];
+  const rows = Array.isArray(table.rows) ? table.rows : [];
+  return h("table", { class: "provisioning-table" }, [
+    h("thead", {}, [h("tr", {}, cols.map((c) => h("th", {}, [String(c)])))]),
+    h("tbody", {}, rows.map((row) =>
+      h("tr", {}, row.map((cell) => h("td", {}, [String(cell)]))))),
+  ]);
+}
+
 function renderSummary(el, detail) {
   const s = detail.status || {};
   el.innerHTML = "";
@@ -2610,18 +2623,17 @@ function renderSummary(el, detail) {
   }
   el.appendChild(p);
   // Task 010 (#79, PRD requirement O): the resolved hat -> model mapping,
-  // one row per hat, worded server-side by the ONE shared Python formatter
-  // (`engine/state.format_provisioning_lines`, delivered as
-  // `provisioningLines` by `ui_server.run_detail`'s `_with_provisioning` --
-  // the exact strings `ralphctl status`'s own `provisioning:` block
-  // prints, so the hub cannot describe the mapping differently). A native
+  // one row per hat, worded server-side (delivered as
+  // `provisioningTable` by `ui_server.run_detail`'s `_with_provisioning`:
+  // `{columns, rows}` of cell strings worded in Python; app.js only places
+  // them in a `<table>`). A native
   // `<details>` disclosure, never a hand-rolled one, and present the
   // instant a run is created -- it comes from job.yaml alone, not from
   // anything an iteration observed, so it is not gated on
   // `iterationInProgress`/`s.model` the way the per-iteration model line
   // elsewhere on this page is.
-  const provLines = s.provisioningLines || [];
-  if (provLines.length > 0) {
+  const provTable = s.provisioningTable || {};
+  if (Array.isArray(provTable.rows) && provTable.rows.length > 0) {
     // Task 040 (I.2): collapsed by default, like the iteration history
     // above. Task 041 (I.3): a stored "provisioning" preference (scoped
     // per section type, not per job, same mechanism as the timeline
@@ -2633,8 +2645,7 @@ function renderSummary(el, detail) {
     if (provOpen) provAttrs.open = "";
     const provDetails = h("details", provAttrs, [
       h("summary", {}, ["provisioning (resolved hat \u2192 model)"]),
-      h("div", { class: "provisioning-rows" },
-        provLines.map((line) => h("div", {}, [String(line)]))),
+      provisioningTableNode(provTable),
     ]);
     wireCollapsePersistence(provDetails, "provisioning");
     el.appendChild(provDetails);

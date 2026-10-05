@@ -749,3 +749,9 @@ th.actions-col { cursor: default; }
 a.parked-panel-link { color: inherit; text-decoration: underline; }
 .router-call-link { margin-left: 0.5em; cursor: pointer; }
 .router-call-highlight { outline: 2px solid var(--accent); background: rgba(127, 127, 127, 0.15); }
+
+/* #295: the provisioning table inside the run header's <details>. */
+.provisioning-table { border-collapse: collapse; margin: 0.4em 0; }
+.provisioning-table th, .provisioning-table td {
+  text-align: left; padding: 0.15em 0.8em 0.15em 0; font-family: monospace;
+}
