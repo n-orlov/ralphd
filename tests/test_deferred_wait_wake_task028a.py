@@ -161,6 +161,9 @@ def test_the_earliest_until_wakes_the_task_with_one_timer_sleep_for_the_whole_bo
     sup = _build(root, {"worker": [], "review": []}, tasks,
                 job_timeout_s=3600)
     sleep_calls = _install_sleep_counter(monkeypatch)
+    # `until` is published at whole-second resolution, so the planned bound is
+    # measured from the published instant, not from the 50 s it was built from.
+    expected_wait_s = sup._parse_iso_epoch(until) - time.time()
 
     woken = asyncio.run(sup._sleep_until_earliest_deferred(
         sup.run.read_tasks()))
@@ -168,7 +171,7 @@ def test_the_earliest_until_wakes_the_task_with_one_timer_sleep_for_the_whole_bo
     assert woken is True
     # exactly one timer sleep, for the WHOLE planned bound -- never sliced.
     assert len(sleep_calls) == 1, sleep_calls
-    assert sleep_calls[0] == pytest.approx(50, abs=1.0), sleep_calls
+    assert sleep_calls[0] == pytest.approx(expected_wait_s, abs=0.5), sleep_calls
 
     task = sup.run.read_tasks()["tasks"][0]
     assert "deferredUntil" not in task
