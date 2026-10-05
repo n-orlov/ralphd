@@ -1195,6 +1195,14 @@ steering:  001-focus.md
   `harness` field and prints exactly as it always did. The hub's iteration
   timeline row shows `<model> · <harness>` the same way, and its dialog and
   this command share the line (`state.iteration_summary_lines`).
+- **The thinking or effort level rides beside the model.** When `meta.json`
+  records `thinking` or `effort` (written only when the hat's bundle carries
+  one), the `model:` line ends with `  · thinking: <level>` or
+  `  · effort: <level>` after the harness (on the `harness:` line when there is
+  no model, on its own line when there is neither). An iteration that recorded
+  neither prints nothing extra. `--json` carries `thinking`, `effort` and
+  `thinkingDisplay` (`""` when neither was recorded); the hub's timeline row
+  shows `thinkingDisplay` beside the model and harness.
 - **The log region is the pi-shaped `output.jsonl`.** For a `claude-code`
   iteration that is the wrapper's normalised events, not the raw SDK stream:
   `output.claude.jsonl` is a forensic sidecar that neither this command, the

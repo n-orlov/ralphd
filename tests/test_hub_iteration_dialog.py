@@ -444,3 +444,54 @@ def test_app_js_timeline_row_shows_model_and_harness():
     assert "function iterationModelLabel" in src
     assert "it.harness" in src
     assert 'h("span", { class: "model" }, [iterationModelLabel(it)])' in src
+
+
+# ------------------------------------------- #290: thinking / effort display
+def test_iteration_detail_carries_thinking_and_effort_display(tmp_path):
+    registry, run_dir = _run(tmp_path)
+    _write_iteration(run_dir, 2, _meta(2, thinking="high"), texts=["x"])
+    _write_iteration(run_dir, 3, _meta(3, effort="medium"), texts=["x"])
+    d2 = iteration_detail(run_dir, 2)
+    assert (d2["thinking"], d2["effort"], d2["thinkingDisplay"]) == (
+        "high", None, "thinking: high")
+    d3 = iteration_detail(run_dir, 3)
+    assert (d3["thinking"], d3["effort"], d3["thinkingDisplay"]) == (
+        None, "medium", "effort: medium")
+
+
+def test_iteration_detail_without_thinking_or_effort_has_empty_display(tmp_path):
+    registry, run_dir = _run(tmp_path)
+    _write_iteration(run_dir, 2, _meta(), texts=["x"])
+    detail = iteration_detail(run_dir, 2)
+    assert detail["thinkingDisplay"] == ""
+    assert detail["thinking"] is None and detail["effort"] is None
+    assert "thinking" not in "\n".join(iteration_summary_lines(detail))
+
+
+def test_hostile_meta_cannot_smuggle_a_thinking_display(tmp_path):
+    registry, run_dir = _run(tmp_path)
+    _write_iteration(run_dir, 2, _meta(thinkingDisplay="thinking: fake"), texts=["x"])
+    assert iteration_detail(run_dir, 2)["thinkingDisplay"] == ""
+
+
+def test_dialog_summary_places_thinking_beside_model_and_harness(tmp_path):
+    registry, run_dir = _run(tmp_path)
+    _write_iteration(run_dir, 2, _meta(harness="claude-code", effort="high"), texts=["x"])
+    view = iteration_view(registry, "run-iter", 2)
+    assert view["thinkingDisplay"] == "effort: high"
+    assert ("(gateway id: eu.anthropic.claude-opus-5)  · claude-code"
+            "  · effort: high") in view["text"]
+
+
+def test_dialog_summary_names_thinking_with_harness_only(tmp_path):
+    registry, run_dir = _run(tmp_path)
+    _write_iteration(run_dir, 2, _meta(model=None, modelResolved=None, modelRaw=None,
+                                       harness="pi", thinking="low"), texts=["x"])
+    lines = iteration_view(registry, "run-iter", 2)["summaryLines"]
+    assert "harness:   pi  · thinking: low" in lines
+
+
+def test_app_js_timeline_row_places_thinking_display_only_when_present():
+    src = STATIC_APP_JS.read_text()
+    assert ('it.thinkingDisplay ? h("span", { class: "thinking" }, '
+            '[String(it.thinkingDisplay)]) : null') in src

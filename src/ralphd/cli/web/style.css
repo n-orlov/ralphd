@@ -185,6 +185,7 @@ tr.row-warning td { background: #fffaf0; }
    never recomputed here. */
 .timeline-item .task-id { color: var(--muted); width: 6rem; flex: none; }
 .timeline-item .tier { color: var(--muted); width: 5rem; flex: none; }
+.timeline-item .thinking { color: var(--muted); flex: none; }
 .timeline-item .cost { color: var(--muted); width: 5.5rem; flex: none; text-align: right; }
 .timeline-item .dur { color: var(--muted); width: 4.5rem; flex: none; text-align: right; }
 /* task 015 (#89, requirement I, hub half): this iteration's own fault cause

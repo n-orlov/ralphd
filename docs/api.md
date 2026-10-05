@@ -732,7 +732,7 @@ billed (the sentinel row above), or the operator **declared** the route free in
 rollups so a reader cannot mistake it for the anomaly).
 
 ### `GET /iterations/{n}`
-One iteration's `meta.json`.
+One iteration's `meta.json`. Besides the model and harness it carries `thinking` or `effort`, the level the dispatch handed the harness; each key is written only when the hat's bundle carries that setting, so both are absent for a hat with neither. The iteration-detail payload behind `ralphctl iteration --json` and the hub dialog adds `thinkingDisplay` (`thinking: <level>`, `effort: <level>`, or the empty string).
 
 A slot can have been attempted twice: an engine killed mid-iteration leaves its
 directory with no `endedAt`, and the resumed engine reuses that number. The dead

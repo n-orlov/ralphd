@@ -3415,6 +3415,13 @@ class LoopSupervisor:
                 # applied.
                 "steeringDelivered": [p.name for p in pending],
                 "steeringConsumed": []}
+        # #290: the thinking/effort level this dispatch hands the harness,
+        # recorded only when the resolved bundle carries one (a hat with
+        # neither leaves both keys absent, and every reader copes).
+        if bundle.thinking:
+            meta["thinking"] = bundle.thinking
+        if bundle.effort:
+            meta["effort"] = bundle.effort
         atomic_write_json(itdir / "meta.json", meta)
         self.run.emit("iteration.start", number=n, phase=phase, model=model)
         log.info("iteration %d start: phase=%s model=%s", n, phase, model)

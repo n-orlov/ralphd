@@ -2903,6 +2903,8 @@ ITERATION_DERIVED_KEYS = (
     # CLI/dialog's `cause:` line format the SAME string from the SAME
     # `reason`/`faultClass` instead of each spelling the join themselves.
     "causeText",
+    # #290: the one rendered `thinking: <level>` / `effort: <level>` string.
+    "thinkingDisplay",
 )
 
 # Whether a duration is final or still growing (`ralphctl status`' own words).
@@ -3087,9 +3089,18 @@ def iteration_summary_lines(detail: dict) -> list[str]:
         # (iterations from before v0.30 carry none and print as before).
         if isinstance(detail.get("harness"), str) and detail["harness"]:
             model_line += f"  \u00b7 {detail['harness']}"
+        thinking_display = detail.get("thinkingDisplay")
+        if isinstance(thinking_display, str) and thinking_display:
+            model_line += f"  \u00b7 {thinking_display}"
         lines.append(model_line)
     elif isinstance(detail.get("harness"), str) and detail["harness"]:
-        lines.append(f"harness:   {detail['harness']}")
+        harness_line = f"harness:   {detail['harness']}"
+        thinking_display = detail.get("thinkingDisplay")
+        if isinstance(thinking_display, str) and thinking_display:
+            harness_line += f"  \u00b7 {thinking_display}"
+        lines.append(harness_line)
+    elif detail.get("thinkingDisplay"):
+        lines.append(str(detail["thinkingDisplay"]))
     lines += [
         f"tokens:    {detail.get('tokensDisplay')}",
         f"cost:      {detail.get('costDisplay')}",
@@ -3215,6 +3226,17 @@ def contract_fault_for_iteration(run_root: Path, number: int) -> dict | None:
     }
 
 
+def format_thinking(thinking: str | None, effort: str | None) -> str:
+    """`thinking: <level>` / `effort: <level>` for one iteration, or the empty
+    string when neither was recorded (the bundle never carries both; thinking
+    wins if a hand-edited meta.json names both)."""
+    if thinking:
+        return f"thinking: {thinking}"
+    if effort:
+        return f"effort: {effort}"
+    return ""
+
+
 def iteration_detail(run_root: Path, number: int) -> dict | None:
     """Everything known about one iteration of a run, or None when the run dir
     holds no such iteration (task 019, #18.1).
@@ -3236,6 +3258,9 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
                          for one still in flight (the wording `ralphctl
                          status`' duration line already uses),
       `exitReason`       `format_exit_reason` above,
+      `thinking`/`effort`/`thinkingDisplay`  the recorded level (None when
+                         absent) and `format_thinking`' string (`""` when
+                         neither was recorded),
       `tokensDisplay`    `format_tokens` above,
       `costDisplay`      `format_cost(usage, decimals=4)` -- 4 decimals
                          because a single iteration is small money; a cost
@@ -3297,6 +3322,13 @@ def iteration_detail(run_root: Path, number: int) -> dict | None:
     duration = elapsed_seconds(detail.get("startedAt"), detail.get("endedAt"))
     detail["durationS"] = round(duration, 3) if duration is not None else None
     detail["durationDisplay"] = format_duration(duration)
+    # #290: the thinking/effort level the dispatch recorded (both optional --
+    # an iteration from before the field, or a hat with neither, has none)
+    # and the one display string the hub row, dialog and CLI all place.
+    for key in ("thinking", "effort"):
+        value = meta.get(key)
+        detail[key] = value if isinstance(value, str) and value else None
+    detail["thinkingDisplay"] = format_thinking(detail["thinking"], detail["effort"])
     # An unfinished iteration's duration is elapsed-so-far, not a total: said
     # out loud in the same two words `ralphctl status`' duration line uses,
     # rather than left for each surface to guess.

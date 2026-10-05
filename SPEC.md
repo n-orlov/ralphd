@@ -2741,6 +2741,7 @@ still runs.
 | `modelResolved` | string \| null | the `provider/model` reference the iteration's own messages reported — the answer when `model` is `null` |
 | `modelRaw` | string \| null | the provider's own id, when it differs from the resolved reference |
 | `harness` | string | the agent harness the iteration ran on, `pi` or `claude-code`; absent from an iteration recorded before v0.30. `ralphctl iteration` and the hub print it beside the model (§11) |
+| `thinking` / `effort` | string | the thinking or effort level the dispatch handed the harness, written only when the resolved bundle carries one (a bundle never carries both; `thinking` is the `pi --thinking` / Claude level, `effort` the OpenAI-family one). Absent for a hat with neither and for an iteration recorded before the field. `iteration_detail` returns both (`null` when absent) plus `thinkingDisplay`: `thinking: <level>`, `effort: <level>`, or the empty string. `ralphctl iteration` and the hub print `thinkingDisplay` beside the model (§11) |
 | `approach` | int \| null | the approach this iteration belongs to |
 | `startedAt` / `endedAt` | string | UTC ISO-8601; a missing `endedAt` means the iteration never finished |
 | `steeringDelivered` | array | steering file names this iteration's prompt carried |
@@ -5818,12 +5819,12 @@ dir themselves and a live proxy would only add a way to disagree.
   the plan instead of blinking empty while an agent rewrites `tasks.json`.
 - **Iteration timeline** — per iteration: `#N`, absolute local start time,
   phase, `<model> · <harness>` (the bare model for an iteration whose
-  `meta.json` records no `harness`), an error pill when it failed, and duration once it ended. Each
+  `meta.json` records no `harness`) followed by `thinkingDisplay` (`thinking: <level>` or `effort: <level>`; nothing, not even a placeholder, when `meta.json` records neither), an error pill when it failed, and duration once it ended. Each
   row opens an **iteration dialog** carrying that iteration's whole story —
   phase, timestamps, duration, exit reason, tokens, cost and its full rendered
   transcript — byte-identical to what `ralphctl iteration <id> <n>` prints. The
   dialog's and the command's `model:` line ends with `  · <harness>` when
-  `meta.json` records one (`harness:   <h>` on its own when there is no model);
+  `meta.json` records one (`harness:   <h>` on its own when there is no model), and then ends with `  · thinking: <level>` or `  · effort: <level>` when it records one (on the `harness:` line, or as its own line when there is neither model nor harness);
   an iteration from before v0.30 prints as it always did. The transcript is
   `output.jsonl`, the pi-shaped events, for a `claude-code` iteration too: the
   raw `output.claude.jsonl` sidecar is not read. The run's provisioning lines

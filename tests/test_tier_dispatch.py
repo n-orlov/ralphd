@@ -483,3 +483,35 @@ def test_configured_normal_rung_ref_reaches_the_runner_call_when_tier_is_normal(
     # the hard-only rung's ref never leaks onto the normal dispatch
     assert worker_call["model"] != "hard-only-ref"
 
+
+
+# ---------------------------------------------------------------------------
+# #290: the dispatch write records the bundle's thinking / effort level, and
+# only the one the bundle actually carries.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cfg_kw,expect_thinking,expect_effort", [
+    ({"thinking": "high"}, "high", None),
+    ({"thinking_overrides": {"verify": {"effort": "medium"}}}, None, "medium"),
+    ({}, None, None),
+], ids=["thinking-only", "effort-only", "neither"])
+def test_dispatch_meta_records_thinking_or_effort_only_when_bundle_has_it(
+        tmp_path, cfg_kw, expect_thinking, expect_effort):
+    task = {"id": "001", "title": "t", "status": "in-progress",
+            "successCriteria": "c", "tier": "normal", "effectiveTier": "hard"}
+    sup, _run = _make_sup(tmp_path, [task], **cfg_kw)
+    agent = _InFlightVerifyAgent(sup, _verify_result_verified)
+    sup.runner = agent
+
+    asyncio.run(sup._verify_task(task))
+
+    assert agent.observed_metas, "runner.run() was never called"
+    for meta in agent.observed_metas:
+        if expect_thinking is None:
+            assert "thinking" not in meta, meta
+        else:
+            assert meta["thinking"] == expect_thinking, meta
+        if expect_effort is None:
+            assert "effort" not in meta, meta
+        else:
+            assert meta["effort"] == expect_effort, meta

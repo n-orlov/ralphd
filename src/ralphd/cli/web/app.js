@@ -3189,6 +3189,9 @@ function renderTimeline(el, iterations, runId) {
       // own field (loop.py); a pre-0.30 iteration has none and shows the bare
       // model exactly as before.
       h("span", { class: "model" }, [iterationModelLabel(it)]),
+      // #290: `thinking: <level>` / `effort: <level>`, worded by Python
+      // (`thinkingDisplay`); nothing at all when the iteration recorded none.
+      it.thinkingDisplay ? h("span", { class: "thinking" }, [String(it.thinkingDisplay)]) : null,
       h("span", { class: "task-id" }, ["task: " + taskCell]),
       h("span", { class: "tier" }, ["tier: " + String(it.effectiveTier || "\u2014")]),
       h("span", { class: "cost" }, [String(it.costDisplay || "")]),

@@ -502,3 +502,22 @@ def test_real_engine_iteration_dir_renders_end_to_end(live, capsys):
     last = iteration_numbers(r.run_dir)[-1]
     missing = r.ralphctl("iteration", "itreal", str(last + 1))
     assert missing.returncode == 1 and "no iteration" in missing.stderr
+
+
+# ------------------------------------------------------- #290: thinking/effort
+def test_cli_iteration_prints_thinking_beside_the_model(tmp_path):
+    registry, run_dir = _dead_run(tmp_path)
+    _write_iteration(run_dir, 2, _base_meta(thinking="high"), texts=["x"])
+    out = _ctl(registry, "iteration", "itdetail", "2", "--no-log")
+    assert out.returncode == 0, out.stderr
+    assert "  · thinking: high" in out.stdout
+    js = _ctl(registry, "--json", "iteration", "itdetail", "2", "--no-log")
+    assert json.loads(js.stdout)["thinkingDisplay"] == "thinking: high"
+
+
+def test_cli_iteration_prints_nothing_extra_without_thinking(tmp_path):
+    registry, run_dir = _dead_run(tmp_path)
+    _write_iteration(run_dir, 2, _base_meta(), texts=["x"])
+    out = _ctl(registry, "iteration", "itdetail", "2", "--no-log")
+    assert out.returncode == 0, out.stderr
+    assert "thinking" not in out.stdout and "effort" not in out.stdout
