@@ -388,7 +388,7 @@ List all runs (live and historical) from the registry, **newest first**.
 
 ```
 ralphctl runs [--state starting|running|paused|finishing|timed_out|succeeded|failed|aborted]
-              [--sort runId|state|verdict|phase|approach|tasks|iterationsUsed|startedAt]
+              [--sort runId|state|verdict|phase|approach|tasks|iterationsUsed|startedAt|cost]
               [--reverse]
 ```
 
@@ -399,7 +399,9 @@ unrecognised `--sort` key is a usage error (exit `2`, below).
 
 Columns: run ID, state, verdict, phase, approach, tasks, iterations
 used/budget, started (absolute local time via the shared formatter, see
-`status` below).
+`status` below), cost (the run header's total string, e.g. `$0.5600`,
+`$0.2500+ (partial, rest unavailable)` or `unavailable`; blank for a run with
+no `usage`; `--json` carries it as `costDisplay` beside the raw `costUSD`).
 The **approach** column renders the counter against its limit (task 007,
 issue #16): `2/3` for a run with `maxApproaches` recorded, a bare `2` for a
 pre-v0.6 run dir where the limit is unknown (the live config's limit is never
@@ -490,6 +492,9 @@ keys, the same lifecycle orders and the same raw payload values:
   sorts on the completion
   **ratio** `tasksCompleted / tasksTotal` (so `5/7` outranks `100/250`) and
   starts **ascending**, least-complete first — the runs that still owe work;
+  `cost` sorts on the raw `costUSD` number, ascending first, and a run whose
+  cost is unknown (no `usage` in `status.json`, nothing priced) has no number
+  and sorts last;
 - `--reverse` flips whichever direction the key starts with;
 - rows with a missing value for the key (no `startedAt`/`approach`/plan yet)
   sort last under an ascending key and first under a descending one, so a

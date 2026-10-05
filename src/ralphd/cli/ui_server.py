@@ -101,6 +101,7 @@ from ..engine.state import (
     format_approach,
     format_artifact_size,
     format_cost,
+    run_cost_fields,
     format_iteration_log_header,
     format_local_time,
     format_rate_limit_wait_line,
@@ -419,6 +420,11 @@ def run_list(reg: Path) -> list[dict]:
                 "iterationsUsed": status.get("iterationsUsed"),
                 "iterationsBudget": status.get("iterationsBudget"),
                 "startedAt": status.get("startedAt"),
+                # Task 011 (#296): the COST column -- `costDisplay` is the run
+                # detail header's own total string and `costUSD` the number
+                # the column sorts on (None == unknown, sorts last); both come
+                # from this row's status.json alone.
+                **run_cost_fields(status),
                 "containerGone": False,
                 # Task 031 (#19): what this row's delete control may promise,
                 # decided by the delete endpoint's OWN gate over the same

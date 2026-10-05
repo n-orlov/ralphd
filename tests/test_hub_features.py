@@ -365,7 +365,7 @@ def test_app_js_has_a_tasks_column_between_approach_and_iterations():
     block = hc_APP_JS.split("const RUN_COLUMNS = [")[1].split("];")[0]
     labels = re.findall(r'label:\s*"([^"]+)"', block)
     assert labels == ["RUN", "STATE", "VERDICT", "PHASE", "APPROACH", "TASKS",
-                      "ITERATIONS", "STARTED"], labels
+                      "ITERATIONS", "STARTED", "COST"], labels
     # the CELL renders the string the SERVER formatted, and the trouble flags
     # the server worded -- never a second JS spelling of either.
     assert "r.tasksDisplay" in hc_APP_JS

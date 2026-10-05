@@ -5465,14 +5465,15 @@ $ ralphctl --json watch <id> | jq -c 'select(.type=="state")'
 It exits at the run's real terminus, including on a resumed run whose log
 still carries an earlier episode's terminal event (§10.3).
 
-`ralphctl runs` sorts with `--sort {approach,iterationsUsed,phase,runId,
+`ralphctl runs` sorts with `--sort {approach,cost,iterationsUsed,phase,runId,
 startedAt,state,tasks,verdict}` and `--reverse`, defaulting to `startedAt`
 descending — newest first, not the alphabetical order a directory listing
 yields. Keys sort on raw payload values, not rendered cell text:
 `iterationsUsed` numerically rather than on the `"17/250"` string, `approach`
 on the bare counter rather than on the rendered `10/12`, `tasks` on the
-**completion ratio** so `5/7` outranks `100/250`, `startedAt`
-on the parsed instant so ISO values with different UTC offsets order correctly,
+**completion ratio** so `5/7` outranks `100/250`, `cost` on the raw
+`costUSD` number rather than the rendered `$0.5600`/`unavailable` string,
+`startedAt` on the parsed instant so ISO values with different UTC offsets order correctly,
 and `state`/`verdict` in lifecycle order (`starting → running → paused →
 finishing → succeeded → failed → aborted`, and
 no-verdict → `unverified` → `verified`). Missing values
@@ -5481,9 +5482,13 @@ sort last, and the run id breaks ties so the order is total and stable.
 flips whichever direction the key starts with. A run with no plan at all has no
 ratio rather than a zero one, so it sorts last ascending instead of pretending to
 be 0% done — the same "unknown is not zero" rule that keeps its TASKS cell blank
-instead of `0/0`.
+instead of `0/0`. `cost` likewise starts ascending, and a run whose cost is
+unknown (no `usage` in `status.json`, or nothing priced) has no number rather
+than `$0`, so it sorts last ascending. The COST column of the table prints the
+`costDisplay` string, the very total the run detail header shows, from
+`status.json` alone.
 
-**Those eight keys are exactly the hub's eight sortable columns, and both
+**Those nine keys are exactly the hub's nine sortable columns, and both
 surfaces use one implementation** (`sort_run_rows`/`RUN_SORT_KEYS` in
 `main.py`, mirrored by `RUN_COLUMNS` in `app.js` against the same raw fields).
 `--json` emits the human table's rows in the same sequence, so a script and a
@@ -5601,11 +5606,11 @@ trailing-slash rule.
 ### 11.2 Run list
 
 The default view (`#/`) is a table of every run under the registry, refreshed
-every 4 seconds, with the run id linking to its detail view. Its eight columns
-are exactly the eight `ralphctl runs --sort` keys:
+every 4 seconds, with the run id linking to its detail view. Its nine columns
+are exactly the nine `ralphctl runs --sort` keys:
 
 `RUN` · `STATE` · `VERDICT` · `PHASE` · `APPROACH` · `TASKS` · `ITERATIONS` ·
-`STARTED`
+`STARTED` · `COST`
 
 Every header is click-to-sort; clicking the active column reverses it; the
 active column carries a `▲`/`▼` indicator and an `aria-sort` attribute. The
@@ -5614,12 +5619,14 @@ values, not the rendered cell text, so `ITERATIONS` sorts numerically on
 `iterationsUsed` rather than on the `"17/250"` string, `TASKS` on the
 `tasksCompleted`/`tasksTotal` ratio rather than on `"5/7"` (a run with no plan
 has no value and sorts last ascending), `STARTED` on the parsed instant, and
-`STATE`/`VERDICT` in lifecycle order.
+`COST` on the raw `costUSD` (a run with unknown cost has no value and sorts
+last ascending), and `STATE`/`VERDICT` in lifecycle order.
 
 **The cells themselves are rendered by the server**, not composed in the
 browser: `approachDisplay` (`2/3`, bare `2` when the run recorded no ceiling,
 empty when it never reached an approach), `tasksDisplay` with its trouble flags
-and stale pill, `costDisplay`. The raw numbers travel beside them for sorting.
+and stale pill, `costDisplay` (the COST cell: the run detail header's own total
+string, empty for a run with no usage). The raw numbers travel beside them for sorting.
 The same strings are what `ralphctl runs` prints, from the same formatters in
 `engine/state.py`, so a terminal and a browser tab cannot word the same run
 differently.

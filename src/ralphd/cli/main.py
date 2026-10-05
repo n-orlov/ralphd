@@ -91,6 +91,7 @@ from ..engine.state import (
     format_approach,
     format_artifact_listing,
     format_cost,
+    run_cost_fields,
     format_duration,
     task_progress_budget_estimate,
     format_image,
@@ -3304,6 +3305,9 @@ RUN_SORT_KEYS: dict = {
     # raw counts in task 015; until then every row's value is None, which the
     # missing-value rule below already handles.
     "tasks": lambda r: _task_ratio(r),
+    # Task 011 (#296): the hub's COST column sorts on the raw number; a run
+    # whose cost is unknown has None, which sorts last ascending.
+    "cost": lambda r: _num_or_none(r.get("costUSD")),
     "iterationsUsed": lambda r: _num_or_none(r.get("iterationsUsed")),
     "startedAt": lambda r: _epoch_or_none(r.get("startedAt")),
 }
@@ -3390,6 +3394,10 @@ def cmd_runs(args):
                          "iterations": f"{used}"
                                        f"/{status.get('iterationsBudget', '?')}",
                          "startedAt": status.get("startedAt"),
+                         # Task 011 (#296): `costDisplay` (the run header's
+                         # total string) and the raw `costUSD` that
+                         # `--sort cost` compares, from status.json alone.
+                         **run_cost_fields(status),
                          # Task 015 (#21): the same TASKS fields the hub's run
                          # list carries, built by the same
                          # `TasksRead.row_fields` -- raw counts (what `--sort
@@ -3414,10 +3422,11 @@ def cmd_runs(args):
         print(json.dumps(rows, indent=2))
     else:
         fmt = ("{runId:<24} {state:<10} {verdict:<10} {phase:<9} {approach:<8} "
-               "{tasks:<12} {iterations:<7} {startedAt}")
+               "{tasks:<12} {iterations:<7} {startedAt:<25} {cost}")
         print(fmt.format(runId="RUN", state="STATE", verdict="VERDICT",
                          phase="PHASE", approach="APPROACH", tasks="TASKS",
-                         iterations="ITER", startedAt="STARTED"))
+                         iterations="ITER", startedAt="STARTED",
+                         cost="COST"))
         for r in rows:
             state_display = str(r["state"])
             if r.get("pauseMarker"):
@@ -3441,7 +3450,10 @@ def cmd_runs(args):
                 iterations=str(r["iterations"]),
                 # Task 048 (#4)'s shared absolute formatter for the human
                 # column; --json keeps the raw ISO value for sorting/consumers.
-                startedAt=format_local_time(r["startedAt"])))
+                startedAt=format_local_time(r["startedAt"]),
+                # Task 011 (#296): the run header's total string, blank for
+                # a run with no usage.
+                cost=str(r["costDisplay"])))
 
 
 def _format_reason_lines(reason) -> list[str]:

@@ -536,6 +536,29 @@ def format_cost(usage: dict | None, decimals: int | None = 2) -> str | None:
     return rendered + COST_PARTIAL_SUFFIX if status == "partial" else rendered
 
 
+def run_cost_fields(status: dict | None) -> dict:
+    """The run-list COST cell's two fields, from one `status.json` document
+    and nothing else: `costDisplay` (the run detail header's own total string,
+    `format_cost(usage, decimals=4)`; `""` for a run with no cost information,
+    which is what the header omits) and `costUSD` (the number `--sort cost`
+    and the hub's COST column compare, or None when the run's cost is unknown
+    -- no usage, `"unavailable"`, or nothing priced -- so it sorts last
+    instead of pretending to be $0). A partial run sorts on its priced
+    subtotal; a derived-only run on its derived amount."""
+    usage = (status or {}).get("usage")
+    if not isinstance(usage, dict):
+        return {"costDisplay": "", "costUSD": None}
+    display = format_cost(usage, decimals=4)
+    amount = None
+    if cost_status(usage) != "unknown":
+        for key in ("costUSD", "costDerivedUSD"):
+            value = usage.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                amount = float(value)
+                break
+    return {"costDisplay": display or "", "costUSD": amount}
+
+
 def atomic_write(path: Path, data: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(data)

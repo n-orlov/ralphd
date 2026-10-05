@@ -617,8 +617,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # tests/test_artifact_browser_js.py -> fast 7371/496, smoke 5646/372.
     # #295 hub provisioning table: +7 tests / +1 module
     # (tests/test_provisioning_table.py) -> fast 7378/497, smoke 5653/373.
-    "fast": {"tests": 7378, "modules": 497},
-    "smoke": {"tests": 5653, "modules": 373},
+    # #296 run-list COST column: +9 tests / +1 module
+    # (tests/test_run_cost_column.py) -> fast 7387/498, smoke 5662/374.
+    "fast": {"tests": 7387, "modules": 498},
+    "smoke": {"tests": 5662, "modules": 374},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -326,6 +326,11 @@ const RUN_COLUMNS = [
   // epoch seconds from the raw ISO instant -- NOT the ISO string, which
   // only sorts correctly while every run happens to use the same offset
   { label: "STARTED", key: "startedAt", value: r => isoToEpoch(r.startedAt) },
+  // Task 011 (#296): the CELL text is the server-rendered `costDisplay` (the
+  // run header's own total string); the SORT value is the raw `costUSD`. A
+  // run whose cost is unknown has no number (null), so it sorts last
+  // ascending instead of pretending to be $0.
+  { label: "COST", key: "cost", value: r => numOrNull(r.costUSD) },
 ];
 
 function approachText(o) {
@@ -393,7 +398,9 @@ function taskCell(r) {
 }
 
 function runColumn(key) {
-  return RUN_COLUMNS.find(c => c.key === key) || RUN_COLUMNS[RUN_COLUMNS.length - 1];
+  // An unknown key falls back to the default column (STARTED), whatever its
+  // position in the list.
+  return RUN_COLUMNS.find(c => c.key === key) || RUN_COLUMNS.find(c => c.key === "startedAt");
 }
 
 function cmpValues(a, b) {
@@ -426,7 +433,8 @@ function toggleRunSort(key) {
   // useful biggest/newest first, text columns A->Z.
   // TASKS is deliberately NOT in this list: least-complete first is the
   // useful first click (those runs still owe work), and ascending also puts
-  // the plan-less runs -- which have no progress to compare -- last.
+  // the plan-less runs -- which have no progress to compare -- last. COST is
+  // likewise ascending-first, which puts unknown-cost runs last.
   const desc = key === "startedAt" || key === "iterationsUsed" || key === "approach";
   runSort = { key, dir: desc ? -1 : 1 };
 }
@@ -1721,6 +1729,7 @@ async function renderRunList(myGen) {
         taskCell(r),
         h("td", {}, [`${r.iterationsUsed ?? 0}/${r.iterationsBudget ?? "?"}`]),
         h("td", { class: "muted" }, [String(r.startedAt || "")]),
+        h("td", { class: "run-cost" }, [String(r.costDisplay || "")]),
         // Task 031 (#19): delete this run, for a terminal run only, behind
         // the confirmation. `load()` afterwards, so the row leaves the table
         // as soon as it is really gone rather than at the next 4s poll.

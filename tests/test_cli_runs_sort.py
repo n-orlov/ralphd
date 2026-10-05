@@ -152,7 +152,7 @@ def test_sort_composes_with_state_filter(ctl):
 
 def test_unknown_sort_key_is_a_usage_error(ctl):
     _seed(ctl)
-    res = ctl.run("runs", "--sort", "cost")
+    res = ctl.run("runs", "--sort", "bogus")
     assert res.returncode == 2, res.stdout
     assert "--sort" in res.stderr
 

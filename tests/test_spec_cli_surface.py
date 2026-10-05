@@ -309,9 +309,9 @@ def test_the_count_check_would_catch_the_seven_key_claim():
     keys = set(RUN_SORT_KEYS)
     old = ("**Those seven keys are exactly the hub's seven sortable columns, "
            "and both surfaces use one implementation**")
-    assert len(keys) == 8, sorted(keys)
+    assert len(keys) == 9, sorted(keys)
     assert len(_count_word_problems(old, len(keys))) == 2
-    assert not _count_word_problems(old.replace("seven", "eight"), len(keys))
+    assert not _count_word_problems(old.replace("seven", "nine"), len(keys))
 
 
 # --------------------------------------------------------------------------
