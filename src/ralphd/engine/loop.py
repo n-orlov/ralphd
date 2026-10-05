@@ -693,6 +693,9 @@ class LoopSupervisor:
         # from status.json for the same resume-survival reason.
         self._paused_wait_total_s = float(
             run.read_status().get("pausedTotalS") or 0.0)
+        # #291: monotonic instant the current pause began (`run.paused`),
+        # `None` while the run is not held by this process.
+        self._paused_since: float | None = None
         # v0.30 F.2: the rate-limit twin of the two totals above. A wait for
         # a subscription window to reset extends the deadline like they do,
         # and is published as `rateLimitWaitTotalS`, never folded into
@@ -1294,10 +1297,33 @@ class LoopSupervisor:
         no-ruling one-shot proceed, a ruling releasing the pause) away from
         it.
         """
+        was_running = self._pause.is_set()
         self._pause.clear()
         self.run.emit("log", message="paused at next iteration boundary")
         if reason:
             self._persist_pause(reason, detail)
+        elif was_running:
+            self._emit_run_paused("operator")
+
+    def _emit_run_paused(self, reason: str) -> None:
+        """#291: `run.paused` names why the run is held, and starts the clock
+        `run.unpaused`'s `pausedS` reads. A second pause while already paused
+        (an engine escalation landing on an operator pause) emits its own
+        `run.paused` but keeps the first pause's start, so the one
+        `run.unpaused` that follows measures the whole held stretch."""
+        if self._paused_since is None:
+            self._paused_since = time.monotonic()
+        self.run.emit("run.paused", reason=reason)
+
+    def _emit_run_unpaused(self) -> None:
+        """#291: leaving a paused state emits `run.unpaused` with the seconds
+        the run was held. Nothing is emitted for a resume of a run this
+        process never paused."""
+        if self._paused_since is None:
+            return
+        paused_s = round(time.monotonic() - self._paused_since, 3)
+        self._paused_since = None
+        self.run.emit("run.unpaused", pausedS=paused_s)
 
     def _persist_pause(self, reason: str, detail: dict | None = None) -> None:
         """Record an engine-initiated pause on status.json IMMEDIATELY (task
@@ -1330,6 +1356,7 @@ class LoopSupervisor:
             return
         self.run.update_status(state=PAUSED_STATE, pauseReason=reason,
                                pauseDetail=detail)
+        self._emit_run_paused(reason)
         self.run.emit("log", message=(
             f"run state recorded `{PAUSED_STATE}` on status.json "
             f"(pauseReason: {reason}); `ralphctl rule {self.cfg.run_id} "
@@ -1343,6 +1370,7 @@ class LoopSupervisor:
         self._reset_rate_limit_count_on_ceiling_unpause()
         self._record_unpaused_no_ruling_proceed()
         self._clear_persisted_pause()
+        self._emit_run_unpaused()
         self.run.emit("log", message=state.RESUMED_LOG_MESSAGE)
 
     def _reset_rate_limit_count_on_ceiling_unpause(self) -> None:
@@ -5572,9 +5600,14 @@ class LoopSupervisor:
         # fields when it started), so nothing is appended and no ending can be
         # recorded twice.
         if status.get("endedAt") or status.get("reason"):
+            # #291: the entry also names when the episode it ends began --
+            # `startedAt` is rewritten by every episode's opening write, so
+            # this is the only place that start survives.
             entry = {"endedAt": status.get("endedAt"),
                      "reason": status.get("reason"),
                      "verdict": status.get("verdict")}
+            if status.get("startedAt"):
+                entry = {"startedAt": status["startedAt"], **entry}
             termination = status.get("termination")
             if termination:
                 entry["termination"] = termination
@@ -5610,7 +5643,16 @@ class LoopSupervisor:
         """
         # Task 022 (#30): read the ending fields before overwriting them.
         previous_endings = self._previous_endings()
-        self.run.update_status(state="running", startedAt=utcnow(),
+        # #291: `firstStartedAt` is written once, by the run's first episode,
+        # and carried unchanged by every later one. A run first started by an
+        # engine that predates the field falls back to the `startedAt` it
+        # left behind, the earliest start still on record.
+        opening_status = self.run.read_status()
+        first_started_at = (opening_status.get("firstStartedAt")
+                            or opening_status.get("startedAt"))
+        episode_started_at = utcnow()
+        self.run.update_status(state="running", startedAt=episode_started_at,
+                               firstStartedAt=first_started_at or episode_started_at,
                                deadlineAt=utc_from_epoch(self._deadline_epoch),
                                infraWaitTotalS=round(self._infra_wait_total_s, 3),
                                pausedTotalS=round(self._paused_wait_total_s, 3),

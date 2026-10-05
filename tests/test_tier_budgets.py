@@ -597,8 +597,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # #290 iteration thinking/effort: +11 tests in existing modules
     # (test_tier_dispatch, test_hub_iteration_dialog, test_cli_iteration_detail)
     # -> fast 7268/489, smoke 5543/365.
-    "fast": {"tests": 7268, "modules": 489},
-    "smoke": {"tests": 5543, "modules": 365},
+    # #291 run start and pause events: +5 tests in the new
+    # tests/test_run_pause_events.py, +3 in test_episode_scoped_ending.py
+    # -> fast 7276/490, smoke 5551/366.
+    "fast": {"tests": 7276, "modules": 490},
+    "smoke": {"tests": 5551, "modules": 366},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

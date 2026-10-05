@@ -268,12 +268,49 @@ def test_a_terminal_runs_ending_is_exactly_what_its_final_episode_wrote(
 
 def test_the_superseded_ending_is_kept_as_history(aborted_then_resumed):
     _root, first, _mid, final = aborted_then_resumed
+    # #291: each entry also carries the `startedAt` of the episode it ends
+    # (this node covers that: the entry equals episode 1's own start too).
     assert final["previousEndings"] == [
-        {"endedAt": first["endedAt"], "reason": first["reason"],
+        {"startedAt": first["startedAt"],
+         "endedAt": first["endedAt"], "reason": first["reason"],
          "verdict": first["verdict"], "termination": first["termination"]}]
     assert ABORT_REASON in final["previousEndings"][0]["reason"], (
         "the evidence an operator needs -- why the earlier episode ended -- "
         "is still in the run dir")
+
+
+def test_first_started_at_is_the_first_episodes_start_after_a_resume(
+        aborted_then_resumed):
+    """#291: `startedAt` is the CURRENT episode's start; `firstStartedAt` is
+    written by the first episode and never rewritten by a later one."""
+    _root, first, mid, final = aborted_then_resumed
+    assert first["firstStartedAt"] == first["startedAt"]
+    assert mid["startedAt"] > first["startedAt"]
+    assert mid["firstStartedAt"] == first["startedAt"]
+    assert final["firstStartedAt"] == first["startedAt"]
+    assert final["startedAt"] == mid["startedAt"]
+
+
+def test_every_previous_ending_carries_the_start_of_the_episode_it_ends(tmp_path):
+    root = tmp_path / "run"
+    starts = []
+    for script in ([_plan, _abort], [_abort], [_abort]):
+        sup, _state = _episode(root, script)
+        starts.append(sup.run.read_status()["startedAt"])
+    status = RunDir(root=root).read_status()
+    assert [e["startedAt"] for e in status["previousEndings"]] == starts[:2]
+    assert status["startedAt"] == starts[2]
+    assert status["firstStartedAt"] == starts[0]
+
+
+def test_a_run_recorded_without_first_started_at_falls_back_to_its_start(tmp_path):
+    root = tmp_path / "run"
+    sup, _state = _episode(root, [_plan, _abort])
+    earlier = sup.run.read_status()["startedAt"]
+    from ralphd.engine.state import REMOVE_STATUS_KEY as _rm
+    RunDir(root=root).update_status(firstStartedAt=_rm)
+    sup2, _state = _episode(root, [_abort])
+    assert sup2.run.read_status()["firstStartedAt"] == earlier
 
 
 def test_a_first_episode_records_an_empty_history(tmp_path):
@@ -335,7 +372,8 @@ def test_a_crashed_episode_appends_nothing_and_no_ending_is_recorded_twice(
     status3 = sup3.run.read_status()
     assert status3["previousEndings"] == \
         crashed["previousEndings"] == [
-            {"endedAt": after_abort["endedAt"], "reason": after_abort["reason"],
+            {"startedAt": after_abort["startedAt"],
+             "endedAt": after_abort["endedAt"], "reason": after_abort["reason"],
              "verdict": after_abort["verdict"],
              "termination": after_abort["termination"]}]
     assert status3["state"] == "paused", status3

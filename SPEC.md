@@ -2091,9 +2091,10 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `onComplete` | string | `exit` \| `idle` |
 | `usage` | object | token and cost totals, plus `byPhase`, `byApproach` and `byTier` buckets |
 | `createdAt` | string | UTC ISO-8601, first status write |
-| `startedAt` | string | when the loop entered `running` |
+| `startedAt` | string | when the loop entered `running` in the CURRENT episode; each episode rewrites it |
+| `firstStartedAt` | string | optional; when the run's first episode entered `running`. Written once and never rewritten by a later episode; absent on a run recorded before the field existed |
 | `endedAt` | string | this **episode**'s terminal write, reset when the next episode enters `running` (see "Ending fields are episode-scoped" below), so it can never predate `startedAt` and a terminal run's value is exactly what its final episode wrote |
-| `previousEndings` | array | earlier episodes' endings, oldest first: `{endedAt, reason, verdict}` per superseded ending, plus `termination` (task 005, #173) when that episode was told to stop, capped at the 50 most recent, `[]` in a first episode |
+| `previousEndings` | array | earlier episodes' endings, oldest first: `{startedAt, endedAt, reason, verdict}` per superseded ending (`startedAt` is the start of the episode the ending closes, optional on an entry recorded before the field existed), plus `termination` (task 005, #173) when that episode was told to stop, capped at the 50 most recent, `[]` in a first episode |
 | `updatedAt` | string | last write of any field |
 | `deadlineAt` | string | wall-clock deadline, extended by every infra wait |
 | `approachStartHeads` | object | `{"<approach>": "<sha>"|null}` — the workspace HEAD `approach` started at (v0.20.1 requirement A.1, task 001), written by `_approach_start_head` the FIRST time `_step_worker` reads it for that approach and read back unchanged on every later entry for the SAME approach — another iteration of the same process, an in-process resume, or a genuinely fresh process/`LoopSupervisor` built over the same run-state tree — so the stagnation-exhaustion "did this approach gain commits" comparison's own origin can never be silently reset to whatever HEAD happens to be at the moment of a restart. `null` for a non-git workspace, still recorded (distinguishing "already read" from "never read yet"). Absent for an approach whose `_step_worker` has never run |
@@ -2674,6 +2675,8 @@ reconstruct the whole run, including its restarts.
 | `rate_limit_ceiling_reached` | `phase`, `rateLimitType`, `resetsAt`, `waitedS`, `maxWaitS`, `plannedS`, `reason` (`"rate_limit"` \| `"preempt"`) | a rate-limit wait would pass `rate_limit_max_wait_s`, so it did not start (§8.4); the run is paused with `pauseDetail` and the notifier is told |
 | `provider_refused` | `phase`, `iteration`, `family`, `description`, `match`, `httpStatus`, `errorType`, `harness`, `message` (scrubbed) | an iteration was classified `refused` (§8.4); the run is paused with `pauseDetail` and the notifier is told |
 | `infra_recovered` | `health`, `infraWaitTotalS` | an iteration reached the model again |
+| `run.paused` | `reason` | optional; the run is held: `operator` for a `POST /pause` that takes effect, else the engine's `pauseReason` persisted to `status.json` |
+| `run.unpaused` | `pausedS` | optional; the run left a paused state, `pausedS` seconds after the first `run.paused` of the stretch |
 | `deadline_extended` | `phase`, `attempt`, `waitedS`, `infraWaitTotalS`, `deadlineAt`, `reason`; a rate-limit wait carries `rateLimitWaitTotalS` instead of `attempt`/`infraWaitTotalS` and `reason` `"rate limit wait"` | a finished wait pushed the deadline out |
 | `reflect_infra_delay` | `phase`, `delayS`, `error`, `budgetS` | reflect waits before its first attempt because the job just died on an infra fault |
 | `reflect_done` | `ok`, `error` | the reflect phase's verdict |
