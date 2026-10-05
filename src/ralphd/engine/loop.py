@@ -80,6 +80,7 @@ from .runner import (
 from .skills import ambient_home, verify_placement_and_report
 from .state import (
     PAUSED_STATE,
+    first_event_ts,
     STEERING_APPLIED,
     STEER_APPLICATION_PENDING,
     TASK_FAILURE_VALIDATION_EXHAUSTED,
@@ -5589,6 +5590,29 @@ class LoopSupervisor:
         self._account_infra_wait(elapsed, "reflect", 0)
         self._end_infra_wait()
 
+    def _original_start(self, opening_status: dict,
+                        previous_endings: list[dict]) -> str | None:
+        """The run's true original start for a status that lacks
+        `firstStartedAt` (#291): never a later episode's `startedAt`.
+
+        The original start is the earliest instant on record: the `ts` of the
+        first `events.jsonl` line and every episode start still known (the
+        retained `previousEndings[].startedAt` and the status's own
+        `startedAt`, which names only the latest prior episode). None for a
+        run with no prior episode at all -- a fresh start, whose own
+        episode start the caller uses.
+        """
+        known = [e["startedAt"] for e in previous_endings
+                 if isinstance(e.get("startedAt"), str) and e["startedAt"]]
+        if opening_status.get("startedAt"):
+            known.append(opening_status["startedAt"])
+        if not known and not previous_endings:
+            return None
+        from_events = first_event_ts(self.run.root)
+        if from_events:
+            known.append(from_events)
+        return min(known) if known else None
+
     def _previous_endings(self) -> list[dict]:
         """The endings of this run's EARLIER episodes (task 022, #30), read
         off status.json just before this episode's `running` write re-bases
@@ -5700,7 +5724,8 @@ class LoopSupervisor:
         # left behind, the earliest start still on record.
         opening_status = self.run.read_status()
         first_started_at = (opening_status.get("firstStartedAt")
-                            or opening_status.get("startedAt"))
+                            or self._original_start(opening_status,
+                                                    previous_endings))
         episode_started_at = utcnow()
         self.run.update_status(state="running", startedAt=episode_started_at,
                                firstStartedAt=first_started_at or episode_started_at,

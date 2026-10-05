@@ -163,7 +163,7 @@ keys with no section of their own below:
 |-------|---------|
 | `schemaVersion` | the run-dir schema this state was written under; a run dir whose recorded version is newer than the engine build refuses to start (see `docs/architecture.md`) |
 | `createdAt` / `startedAt` | first status write (state `starting`) / when the loop entered `running` in the CURRENT episode |
-| `firstStartedAt` | optional; when the run's first episode entered `running`. Written once and carried unchanged by every later episode, while `startedAt` is rewritten by each. Absent on a run recorded before the field existed |
+| `firstStartedAt` | optional; when the run's first episode entered `running`. Written once and carried unchanged by every later episode, while `startedAt` is rewritten by each. A resume of a run lacking it writes the run's earliest recorded start, never the latest prior episode's. Absent on a run recorded before the field existed and not yet resumed |
 | `updatedAt` | last write of any field — every `update_status` stamps it |
 | `endedAt` | this **episode**'s terminal write; `null` while the run is still going, and reset when a resumed episode starts (so it can never predate `startedAt`). Written the moment the outcome is settled, which with `reflect: true` is *before* `state` becomes terminal -- see `pendingTerminalState` |
 | `pendingTerminalState` | present only while `state` is `finishing` (task 012, #56): the terminal state (`succeeded`\|`failed`\|`aborted`) this run is going to become the moment the post-terminal `reflect` iteration is over. `verdict` is already the settled value at that point too -- nothing after `state` becomes `finishing` can change either one |

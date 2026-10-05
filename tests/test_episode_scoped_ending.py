@@ -313,6 +313,76 @@ def test_a_run_recorded_without_first_started_at_falls_back_to_its_start(tmp_pat
     assert sup2.run.read_status()["firstStartedAt"] == earlier
 
 
+def _strip_first_started_at(root: Path) -> None:
+    RunDir(root=root).update_status(firstStartedAt=REMOVE_STATUS_KEY)
+
+
+def test_a_resume_of_a_multi_episode_run_without_first_started_at_keeps_the_first_start(
+        tmp_path):
+    """#291 (cure): with two or more prior episodes and no `firstStartedAt`,
+    the resume must write the FIRST episode's start, never the latest prior
+    episode's `startedAt`; `run_timing` then reports that original start."""
+    from ralphd.engine.state import run_timing
+    root = tmp_path / "run"
+    starts = []
+    for script in ([_plan, _abort], [_abort], [_abort]):
+        sup, _state = _episode(root, script)
+        starts.append(sup.run.read_status()["startedAt"])
+    _strip_first_started_at(root)
+    sup4, _state = _episode(root, [_abort])
+    status = sup4.run.read_status()
+    assert status["firstStartedAt"] == starts[0]
+    assert status["firstStartedAt"] != starts[2]
+    assert run_timing(status, root)["startedAt"] == starts[0]
+    # and it stays put through yet another resume
+    sup5, _state = _episode(root, [_abort])
+    assert sup5.run.read_status()["firstStartedAt"] == starts[0]
+
+
+def test_a_pre_field_run_without_episode_starts_takes_the_first_events_line(
+        tmp_path):
+    """A run recorded before `previousEndings[].startedAt` existed has only
+    the events file left: its first line is the original start."""
+    root = tmp_path / "run"
+    for script in ([_plan, _abort], [_abort], [_abort]):
+        _episode(root, script)
+    status = RunDir(root=root).read_status()
+    stripped = [{k: v for k, v in e.items() if k != "startedAt"}
+                for e in status["previousEndings"]]
+    RunDir(root=root).update_status(firstStartedAt=REMOVE_STATUS_KEY,
+                                    previousEndings=stripped)
+    original = "2026-08-22T13:00:00Z"
+    events = (root / "events.jsonl").read_text().splitlines()
+    first = json.loads(events[0])
+    first["ts"] = original
+    (root / "events.jsonl").write_text(
+        "\n".join([json.dumps(first)] + events[1:]) + "\n")
+    sup, _state = _episode(root, [_abort])
+    assert sup.run.read_status()["firstStartedAt"] == original
+
+
+def test_a_truncated_history_does_not_stand_in_for_the_original_start(tmp_path):
+    """When the bounded `previousEndings` has dropped the oldest episodes its
+    earliest `startedAt` is NOT the run's start; the events file is."""
+    root = tmp_path / "run"
+    _episode(root, [_plan, _abort])
+    original = "2026-08-22T12:00:00Z"
+    events = (root / "events.jsonl").read_text().splitlines()
+    first = json.loads(events[0])
+    first["ts"] = original
+    (root / "events.jsonl").write_text(
+        "\n".join([json.dumps(first)] + events[1:]) + "\n")
+    status = RunDir(root=root).read_status()
+    full = [{"startedAt": f"2026-08-22T14:{i % 60:02d}:00Z",
+             "endedAt": "2026-08-22T14:59:00Z", "reason": "x", "verdict": None}
+            for i in range(PREVIOUS_ENDINGS_MAX)]
+    RunDir(root=root).update_status(firstStartedAt=REMOVE_STATUS_KEY,
+                                    previousEndings=full)
+    sup, _state = _episode(root, [_abort])
+    assert status["startedAt"] != original
+    assert sup.run.read_status()["firstStartedAt"] == original
+
+
 def test_a_first_episode_records_an_empty_history(tmp_path):
     sup, state = _episode(tmp_path / "run", [_plan, _finish_task, _review_ok])
     assert state == "succeeded"

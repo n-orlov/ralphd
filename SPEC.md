@@ -2098,7 +2098,7 @@ The single answer to "what is this run doing". One document, patched field by fi
 | `usage` | object | token and cost totals, plus `byPhase`, `byApproach` and `byTier` buckets |
 | `createdAt` | string | UTC ISO-8601, first status write |
 | `startedAt` | string | when the loop entered `running` in the CURRENT episode; each episode rewrites it |
-| `firstStartedAt` | string | optional; when the run's first episode entered `running`. Written once and never rewritten by a later episode; absent on a run recorded before the field existed |
+| `firstStartedAt` | string | optional; when the run's first episode entered `running`. Written once and never rewritten by a later episode. An engine that resumes a run lacking it writes the run's earliest recorded start (the first `events.jsonl` line or the earliest retained episode start), never the latest prior episode's `startedAt`; absent on a run recorded before the field existed and not yet resumed |
 | `endedAt` | string | this **episode**'s terminal write, reset when the next episode enters `running` (see "Ending fields are episode-scoped" below), so it can never predate `startedAt` and a terminal run's value is exactly what its final episode wrote |
 | `previousEndings` | array | earlier episodes' endings, oldest first: `{startedAt, endedAt, reason, verdict}` per superseded ending (`startedAt` is the start of the episode the ending closes, optional on an entry recorded before the field existed), plus `termination` (task 005, #173) when that episode was told to stop, capped at the 50 most recent, `[]` in a first episode |
 | `updatedAt` | string | last write of any field |
