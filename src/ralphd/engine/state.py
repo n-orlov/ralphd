@@ -7731,7 +7731,7 @@ def _count_files(directory: str) -> int:
 
 
 def artifact_listing(run_root: Path, *, offset=0, limit=None, q: str = "",
-                     dir: str = "") -> dict | None:
+                     dir: str = "", top: bool = False) -> dict | None:
     """One page of a run's artifacts, WITHOUT opening any file: the paged
     listing behind `GET /api/runs/<id>/artifacts` (#294).
 
@@ -7746,7 +7746,9 @@ def artifact_listing(run_root: Path, *, offset=0, limit=None, q: str = "",
     order. With `dir` it is that directory's direct children only: its
     subdirectories first, as entries of kind `ARTIFACT_KIND_DIR` carrying
     `fileCount` (every file beneath them), then its files. `q` keeps the
-    entries whose relative path contains it, case-insensitively. `limit`
+    entries whose relative path contains it, case-insensitively. `top` (no
+    `dir`) lists the artifacts root's own direct children the same way a `dir`
+    does, which is how the browse modal opens on the root. `limit`
     defaults to `ARTIFACT_LIST_DEFAULT_LIMIT` and is clamped to
     `ARTIFACT_LIST_MAX_LIMIT`.
 
@@ -7764,12 +7766,11 @@ def artifact_listing(run_root: Path, *, offset=0, limit=None, q: str = "",
     needle = str(q or "").lower()
     found: list[tuple[int, str, str]] = []  # (sort group, rel path, abs path)
     try:
-        if rel_dir:
-            top = base / rel_dir
-            with os.scandir(top) as it:
+        if rel_dir or top:
+            with os.scandir(base / rel_dir if rel_dir else base) as it:
                 children = list(it)
             for child in children:
-                rel = f"{rel_dir}/{child.name}"
+                rel = f"{rel_dir}/{child.name}" if rel_dir else child.name
                 try:
                     if child.is_dir(follow_symlinks=False):
                         found.append((0, rel, child.path))
@@ -7804,6 +7805,48 @@ def artifact_listing(run_root: Path, *, offset=0, limit=None, q: str = "",
         entries.append(entry)
     return {"total": len(found), "offset": offset, "limit": limit,
             "entries": entries}
+
+
+# The run page's artifacts summary counts files with a bounded walk: it stops
+# after this many files and says the count is a lower bound (`capped`), so a
+# poll over a job that wrote a huge tree costs one bounded walk, not the tree.
+ARTIFACT_SUMMARY_COUNT_CAP = 5000
+
+
+def artifact_summary(run_root: Path) -> dict:
+    """What the run page's artifacts section shows, WITHOUT opening any file:
+    `{count, capped, aliases}`.
+
+    `count` is the number of regular files under `artifacts/`, counted by a
+    directory walk that stops at `ARTIFACT_SUMMARY_COUNT_CAP` (`capped` True
+    then: the count is a lower bound). `aliases` is one `{key, path, title,
+    size}` per `ARTIFACT_ALIASES` row whose file exists, in alias order -- found
+    by `stat`ing those few paths, never by listing the tree. No file is read
+    or sniffed.
+    """
+    base = Path(run_root) / ARTIFACTS_DIR_NAME
+    count = 0
+    capped = False
+    try:
+        for _root, _dirs, files in os.walk(base):
+            count += len(files)
+            if count >= ARTIFACT_SUMMARY_COUNT_CAP:
+                count = ARTIFACT_SUMMARY_COUNT_CAP
+                capped = True
+                break
+    except OSError:
+        pass
+    aliases = []
+    for key, rel, title in ARTIFACT_ALIASES:
+        try:
+            if not (base / rel).is_file():
+                continue
+            size = (base / rel).stat().st_size
+        except OSError:
+            continue
+        aliases.append({"key": key, "path": rel, "title": title,
+                        "size": size})
+    return {"count": count, "capped": capped, "aliases": aliases}
 
 
 def artifact_download(run_root: Path, name) -> dict | None:

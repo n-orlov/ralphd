@@ -84,9 +84,11 @@ from ..engine.state import (
     archived_approaches_list,
     artifact,
     ARTIFACT_KIND_DIR,
+    ARTIFACT_PREVIEW_MAX_BYTES,
     artifact_download,
     artifact_key,
     artifact_listing,
+    artifact_summary,
     artifact_raw,
     artifact_title,
     artifact_summary_lines,
@@ -1013,7 +1015,7 @@ def _artifact_page_entry(entry: dict) -> dict:
 
 
 def artifact_list(reg: Path, run_id: str, *, offset=0, limit=None,
-                  q: str = "", dir: str = "") -> dict | None:
+                  q: str = "", dir: str = "", top: bool = False) -> dict | None:
     """One page of what a run left behind in `artifacts/` (#294):
     `state.artifact_listing` -- `{total, offset, limit, entries}` -- with each
     entry's `sizeDisplay`/`key` added, plus `runId` and `state.NO_ARTIFACTS` as
@@ -1029,13 +1031,28 @@ def artifact_list(reg: Path, run_id: str, *, offset=0, limit=None,
     so a live run and one whose container is long gone read identically.
     """
     page = artifact_listing(reg / "runs" / run_id, offset=offset, limit=limit,
-                            q=q, dir=dir)
+                            q=q, dir=dir, top=top)
     if page is None:
         return None
     entries = [_artifact_page_entry(e) for e in page["entries"]]
     empty = page["total"] == 0 and not q and not dir
     return {"runId": run_id, **page, "entries": entries,
             "notice": NO_ARTIFACTS if empty else ""}
+
+
+def artifact_summary_view(reg: Path, run_id: str) -> dict:
+    """What the run page's artifacts section needs and nothing more (#294):
+    `state.artifact_summary` -- the bounded file count and the aliased artifacts
+    that exist -- with `sizeDisplay` added to each alias and
+    `state.NO_ARTIFACTS` as `notice` when the run left nothing. It lists no
+    page, opens no file and never walks past `ARTIFACT_SUMMARY_COUNT_CAP`, so
+    the run-detail poll can call it every refresh. Purely on-disk, like
+    `artifact_list`."""
+    summary = artifact_summary(reg / "runs" / run_id)
+    aliases = [{**a, "sizeDisplay": format_artifact_size(
+        {"exists": True, "bytes": a["size"]})} for a in summary["aliases"]]
+    return {"runId": run_id, **summary, "aliases": aliases,
+            "notice": NO_ARTIFACTS if summary["count"] == 0 else ""}
 
 
 def router_calls_view(reg: Path, run_id: str) -> dict:
@@ -1089,6 +1106,15 @@ def artifact_view(reg: Path, run_id: str, name: str) -> dict | None:
             "summaryLines": artifact_summary_lines(entry),
             "text": artifact_text(entry),
             "truncated": bool(entry.get("truncated"))}
+    if view["truncated"]:
+        # The preview-pane notice is worded here, like every display string
+        # (app.js only places it): what was shown, of how much, and the way
+        # to the rest.
+        shown = format_artifact_size(
+            {"exists": True, "bytes": ARTIFACT_PREVIEW_MAX_BYTES})
+        view["truncationNotice"] = (
+            f"(preview truncated: the first {shown} of "
+            f"{view['sizeDisplay']} -- download the file for the rest)")
     # `content` is the capped text itself (`ARTIFACT_PREVIEW_MAX_BYTES`), only
     # for a file a text preview handles: an image, a binary and an absent file
     # answer their kind and size and no content.
@@ -2743,6 +2769,16 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._send_attachment(dl["file"], dl["size"], dl["filename"])
                 return
+            if (len(segs) == 4 and segs[:2] == ["api", "runs"]
+                    and segs[3] == "artifacts-summary"):
+                # #294: the run page's count and alias links -- a bounded
+                # call that sniffs nothing (see `artifact_summary_view`).
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                self._send_json(artifact_summary_view(reg, run_id))
+                return
             if (len(segs) >= 4 and segs[:2] == ["api", "runs"]
                     and segs[3] == "artifacts"):
                 # Task 024 (#18.3): what the job left behind -- the listing for
@@ -2764,7 +2800,8 @@ class Handler(BaseHTTPRequestHandler):
                         return vals[0] if vals else default
                     page = artifact_list(
                         reg, run_id, offset=_q("offset", 0),
-                        limit=_q("limit", None), q=_q("q"), dir=_q("dir"))
+                        limit=_q("limit", None), q=_q("q"), dir=_q("dir"),
+                        top=_q("top") in ("1", "true"))
                     if page is None:
                         self._send_json(
                             {"error": f"not an artifact directory: "

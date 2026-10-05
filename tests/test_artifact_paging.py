@@ -399,3 +399,82 @@ def test_the_new_routes_use_artifact_relpath_and_add_no_second_resolver(
         body = body[:body.index("\n\n\ndef ")]
         assert "artifact_relpath(" in body
         assert "resolve()" not in body and "is_relative_to" not in body
+
+
+# ------------------------------------------- the run page's summary (#294 E.6)
+
+
+def test_the_root_top_view_lists_the_roots_direct_children_with_counts(tmp_path, ui):
+    registry = _many(tmp_path, 30)
+    server = ui(registry)
+    code, body = server.get(f"/api/runs/{RUN}/artifacts?top=1")
+    assert code == 200
+    assert [(e["path"], e["kind"]) for e in body["entries"][:3]] == [
+        ("logs", ARTIFACT_KIND_DIR), ("reports", ARTIFACT_KIND_DIR),
+        ("shots", ARTIFACT_KIND_DIR)]
+    assert body["entries"][0]["fileCount"] == 10
+    assert body["entries"][-1]["path"] == "README.MD"
+    assert body["total"] == 4
+
+
+def test_the_summary_is_a_bounded_count_plus_the_aliases_that_exist(tmp_path, ui):
+    registry = _seed(tmp_path, {"reflection/report.md": b"# r\n",
+                                "reflection/suggestions.diff": b"d",
+                                "other/x.txt": b"x"})
+    server = ui(registry)
+    code, body = server.get(f"/api/runs/{RUN}/artifacts-summary")
+    assert code == 200
+    assert body["count"] == 3 and body["capped"] is False and body["notice"] == ""
+    assert [(a["key"], a["path"]) for a in body["aliases"]] == [
+        ("report", "reflection/report.md"),
+        ("suggestions", "reflection/suggestions.diff")]
+    assert all(a["sizeDisplay"] and a["title"] for a in body["aliases"])
+    assert "entries" not in body            # no page, no bodies
+    code, _ = server.get("/api/runs/no-such-run/artifacts-summary")
+    assert code == 404
+
+
+def test_the_summary_of_a_run_with_nothing_says_so(tmp_path, ui):
+    server = ui(_seed(tmp_path))
+    _, body = server.get(f"/api/runs/{RUN}/artifacts-summary")
+    assert body["count"] == 0 and body["aliases"] == []
+    assert body["notice"] == state.NO_ARTIFACTS
+
+
+def test_the_summary_sniffs_no_file_contents(tmp_path, monkeypatch):
+    from ralphd.cli.ui_server import artifact_summary_view
+
+    registry = _seed(tmp_path, {"reflection/report.md": b"# r\n",
+                                "a/b.bin": b"\x00\x01", "c.txt": b"c"})
+
+    def boom(*a, **k):
+        raise AssertionError(f"the summary opened a file: {a!r}")
+
+    real_open = builtins.open
+    monkeypatch.setattr(builtins, "open", boom)
+    monkeypatch.setattr(Path, "open", boom)
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    monkeypatch.setattr(Path, "read_text", boom)
+    try:
+        body = artifact_summary_view(registry, RUN)
+    finally:
+        monkeypatch.setattr(builtins, "open", real_open)
+    assert body["count"] == 3
+    assert [a["key"] for a in body["aliases"]] == ["report"]
+
+
+def test_the_summary_count_walk_stops_at_the_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(state, "ARTIFACT_SUMMARY_COUNT_CAP", 25)
+    registry = _many(tmp_path, 60)
+    summary = state.artifact_summary(registry / "runs" / RUN)
+    assert summary["count"] == 25 and summary["capped"] is True
+
+
+def test_a_truncated_view_carries_a_server_worded_notice(tmp_path):
+    registry = _seed(tmp_path, {"big.txt": b"a" * (2 * MIB),
+                                "small.txt": b"hi"})
+    big = artifact_view(registry, RUN, "big.txt")
+    assert big["truncated"] is True
+    assert "truncated" in big["truncationNotice"]
+    assert "download" in big["truncationNotice"]
+    assert "truncationNotice" not in artifact_view(registry, RUN, "small.txt")

@@ -1029,6 +1029,11 @@ async function openArtifactDialog(runId, a) {
   return openTextDialog(artifactTitle(runId, a), text, null);
 }
 
+// #294: the run page's artifacts section is a SUMMARY -- the count, quick
+// links to the aliased artifacts that exist (`state.ARTIFACT_ALIASES`) and a
+// "Browse artifacts" button -- from `GET .../artifacts-summary`, a bounded call
+// that opens no file. The poll never fetches the artifact list; the list is
+// fetched one page of one directory at a time, only by the modal below.
 function renderArtifacts(box, ok, body, runId) {
   if (!ok || !body) {
     box.innerHTML = "";
@@ -1036,58 +1041,47 @@ function renderArtifacts(box, ok, body, runId) {
     box.appendChild(h("p", { class: "muted" }, [ARTIFACT_LOAD_FAILED]));
     return;
   }
-  // `GET .../artifacts` is a page (#294): `{total, offset, limit, entries}`.
-  const items = Array.isArray(body.entries) ? body.entries : [];
-  const total = Number.isInteger(body.total) ? body.total : items.length;
-  // Task 021 (#82) applies `renderApproachHistory`'s own lesson here: `load()`
-  // rebuilds every sub-panel, this one included, every REFRESH_MS, so an
-  // unconditional rebuild would silently re-collapse the `<details>` below
-  // the moment the operator opened it. Skip the rebuild entirely when the
-  // artifact set is unchanged from the last render -- the open/closed state
-  // (and any focus inside it) then survives untouched across polls.
-  const wanted = items.map((a) => String(a.path || a.key || "")).join("\u0000") +
-    "|" + String(total) + "|" + String(body.notice || "");
+  const aliases = Array.isArray(body.aliases) ? body.aliases : [];
+  const count = Number.isInteger(body.count) ? body.count : 0;
+  // `load()` rebuilds every sub-panel each REFRESH_MS: skip the rebuild when
+  // the summary is unchanged, so focus on a link survives the poll.
+  const wanted = String(count) + "|" + String(!!body.capped) + "|" +
+    String(body.notice || "") + "|" +
+    aliases.map((a) => String(a.path || "") + ":" + String(a.size)).join("\u0000");
   if (box.dataset.artifacts === wanted) return;
   box.dataset.artifacts = wanted;
   box.innerHTML = "";
-  const list = h("div", { class: "artifact-list", id: "artifact-list" }, []);
-  for (const a of items) {
-    const path = String(a.path || "");
-    const key = String(a.key || "");
-    const size = String(a.sizeDisplay || "");
-    // A <button>, like a document row: keyboard reachability and Enter/Space
-    // come from the platform. A binary artifact stays clickable -- the server
-    // answers with its own "copy it out with pull" wording, which is a better
-    // answer than an unexplained dead row.
-    list.appendChild(h("button", {
-      type: "button",
-      class: "artifact-item",
-      "data-artifact": path,
-      "data-artifact-key": key,
-      title: String(a.title || ""),
-      onclick: () => { openArtifactDialog(runId, a); },
-    }, [
-      key ? h("span", { class: "artifact-key" }, [key]) : null,
-      h("span", { class: "artifact-path" }, [path]),
-      h("span", { class: "muted artifact-size" }, [" " + size]),
-    ]));
+  box.appendChild(h("p", { class: "artifact-count", id: "artifact-count" },
+    ["artifacts (" + String(count) + (body.capped ? "+" : "") + ")"]));
+  if (aliases.length) {
+    const list = h("div", { class: "artifact-list", id: "artifact-list" }, []);
+    for (const a of aliases) {
+      const path = String(a.path || "");
+      const key = String(a.key || "");
+      // A <button>: Enter/Space come from the platform.
+      list.appendChild(h("button", {
+        type: "button",
+        class: "artifact-item",
+        "data-artifact": path,
+        "data-artifact-key": key,
+        title: String(a.title || ""),
+        onclick: () => { openArtifactDialog(runId, a); },
+      }, [
+        h("span", { class: "artifact-key" }, [key]),
+        h("span", { class: "artifact-path" }, [path]),
+        h("span", { class: "muted artifact-size" }, [" " + String(a.sizeDisplay || "")]),
+      ]));
+    }
+    box.appendChild(list);
   }
-  // Collapsed by default, same native `<details>`/`<summary>` chrome as the
-  // approach-history panel (no hand-rolled toggle) -- a run with a long
-  // artifact tree used to push the whole page down every time. The summary
-  // carries the COUNT so collapsing it never hides whether the run left
-  // anything behind; each row stays a real `<button>`, unaffected by the
-  // wrapper, once the panel is expanded.
-  const details = h("details", { class: "artifact-list-details" }, [
-    h("summary", {}, ["artifacts (" + String(total) + ")"]),
-    list,
-  ]);
-  box.appendChild(details);
+  box.appendChild(h("button", {
+    type: "button",
+    id: "browse-artifacts",
+    class: "browse-artifacts",
+    onclick: () => { openArtifactBrowser(runId); },
+  }, ["Browse artifacts"]));
   if (body.notice) {
-    // Wording comes from the server (`state.NO_ARTIFACTS`, the same line
-    // `ralphctl artifacts ls` prints), like the document panel's notice.
-    // Kept outside the collapsed `<details>` so an empty run's notice is
-    // visible without expanding anything.
+    // Wording comes from the server (`state.NO_ARTIFACTS`).
     box.appendChild(h("p", { class: "muted", id: "artifacts-notice" },
                       [String(body.notice)]));
   }
@@ -1096,9 +1090,185 @@ function renderArtifacts(box, ok, body, runId) {
 async function loadArtifacts(runId) {
   const box = document.getElementById("artifacts-box");
   const { ok, body } = await getJSON(
-    `/api/runs/${encodeURIComponent(runId)}/artifacts`);
+    `/api/runs/${encodeURIComponent(runId)}/artifacts-summary`);
   if (!box) return;
   renderArtifacts(box, ok, body, runId);
+}
+
+// ---- the browse modal (#294)
+//
+// Opening the modal fetches ONE page of ONE directory (the artifacts root's
+// direct children, `top=1`) and nothing else; every later fetch is a user act:
+// entering a directory or a breadcrumb, searching, paging, previewing a file.
+// A search from the root is a flat search of the whole tree (`q`); inside a
+// directory it filters that directory's children. Every string shown was
+// formatted in Python (`sizeDisplay`, `truncationNotice`, `text`) and is placed
+// as a text node; the one place agent-authored HTML can appear is the preview
+// `<iframe>`, whose `sandbox` attribute is empty -- no `allow-scripts`, no
+// `allow-same-origin` -- so the document runs nothing and has an opaque origin.
+const ARTIFACT_PAGE_LIMIT = 200;
+const ARTIFACT_KIND_DIR = "dir";
+const ARTIFACT_KIND_HTML = "html";
+
+function artifactDownloadPath(runId, path) {
+  return hubURL(`/api/runs/${encodeURIComponent(runId)}/artifacts-download/` +
+    encodeURIComponent(path));
+}
+
+function artifactListPath(runId, st) {
+  const qs = [`offset=${st.offset}`, `limit=${ARTIFACT_PAGE_LIMIT}`];
+  if (st.dir) qs.push("dir=" + encodeURIComponent(st.dir));
+  else if (!st.q) qs.push("top=1");
+  if (st.q) qs.push("q=" + encodeURIComponent(st.q));
+  return `/api/runs/${encodeURIComponent(runId)}/artifacts?` + qs.join("&");
+}
+
+// Which preview a one-file view gets: `view.kind` is the server's sniff (an
+// image, plain text, or opaque binary); the listing's extension kind only
+// decides whether a text file is shown as a rendered-in-sandbox document.
+function artifactPreviewNodes(runId, entry, view) {
+  const path = String(entry.path || "");
+  if (view && view.kind === ARTIFACT_KIND_IMAGE) {
+    return [h("img", { class: "artifact-preview-image", alt: path,
+                       src: artifactRawPath(runId, path) })];
+  }
+  const nodes = [];
+  if (view && view.truncated && view.truncationNotice) {
+    nodes.push(h("p", { class: "muted artifact-truncated" },
+                 [String(view.truncationNotice)]));
+  }
+  if (view && typeof view.content === "string") {
+    if (entry.kind === ARTIFACT_KIND_HTML) {
+      // sandbox="" : every restriction on, nothing re-enabled.
+      nodes.push(h("iframe", { class: "artifact-preview-html", sandbox: "",
+                               srcdoc: view.content, title: path }));
+    } else {
+      nodes.push(h("pre", { class: "artifact-preview-text" }, [view.content]));
+    }
+    return nodes;
+  }
+  const text = (view && typeof view.text === "string" && view.text)
+    ? view.text : "(failed to load " + path + ")";
+  nodes.push(h("pre", { class: "artifact-preview-text" }, [text]));
+  return nodes;
+}
+
+async function openArtifactBrowser(runId) {
+  const st = { dir: "", q: "", offset: 0 };
+  const crumbs = h("nav", { class: "artifact-crumbs" }, []);
+  const search = h("input", { type: "search", class: "artifact-search",
+                              placeholder: "search names", "aria-label": "search artifact names" }, []);
+  const form = h("form", { class: "artifact-search-form" }, [
+    search, h("button", { type: "submit" }, ["search"]),
+  ]);
+  const list = h("div", { class: "artifact-rows" }, []);
+  const pager = h("div", { class: "artifact-pager" }, []);
+  const preview = h("div", { class: "artifact-preview" },
+    [h("p", { class: "muted" }, ["select a file to preview it"])]);
+  const dlg = h("dialog", { id: "text-dialog", class: "text-dialog artifact-browser" }, [
+    h("h3", { class: "dialog-title" }, ["Artifacts — " + String(runId)]),
+    crumbs, form,
+    h("div", { class: "artifact-browser-body" }, [
+      h("div", { class: "artifact-browser-left" }, [list, pager]),
+      preview,
+    ]),
+    h("form", { method: "dialog", class: "dialog-close" }, [
+      h("button", { type: "submit" }, ["close"]),
+    ]),
+  ]);
+  showDialog(dlg);
+
+  const go = async () => {
+    const { ok, body } = await getJSON(artifactListPath(runId, st));
+    list.innerHTML = "";
+    pager.innerHTML = "";
+    if (!ok || !body) {
+      list.appendChild(h("p", { class: "muted" }, [ARTIFACT_LOAD_FAILED]));
+      return;
+    }
+    renderCrumbs();
+    const entries = Array.isArray(body.entries) ? body.entries : [];
+    const total = Number.isInteger(body.total) ? body.total : entries.length;
+    if (body.notice) list.appendChild(h("p", { class: "muted" }, [String(body.notice)]));
+    for (const e of entries) {
+      const path = String(e.path || "");
+      if (e.kind === ARTIFACT_KIND_DIR) {
+        list.appendChild(h("div", { class: "artifact-row artifact-row-dir" }, [
+          h("button", {
+            type: "button", class: "artifact-row-open", "data-dir": path,
+            onclick: () => { st.dir = path; st.q = ""; st.offset = 0; search.value = ""; go(); },
+          }, [
+            h("span", { class: "artifact-path" }, [String(e.name || path) + "/"]),
+            h("span", { class: "muted artifact-size" }, [" " + String(e.sizeDisplay || "")]),
+          ]),
+        ]));
+        continue;
+      }
+      list.appendChild(h("div", { class: "artifact-row" }, [
+        h("button", {
+          type: "button", class: "artifact-row-open", "data-file": path,
+          title: String(e.title || ""),
+          onclick: () => { previewFile(e); },
+        }, [
+          h("span", { class: "artifact-path" }, [st.q || !st.dir ? path : String(e.name || path)]),
+          h("span", { class: "muted artifact-size" }, [" " + String(e.sizeDisplay || "")]),
+        ]),
+        h("a", { class: "artifact-download", href: artifactDownloadPath(runId, path),
+                 download: String(e.name || path) }, ["download"]),
+      ]));
+    }
+    const first = total === 0 ? 0 : body.offset + 1;
+    const last = body.offset + entries.length;
+    pager.appendChild(h("span", { class: "muted artifact-range" },
+      [`${first}–${last} of ${total}`]));
+    const prev = h("button", {
+      type: "button", class: "artifact-prev",
+      onclick: () => { st.offset = Math.max(0, body.offset - body.limit); go(); },
+    }, ["previous"]);
+    prev.disabled = !(body.offset > 0);
+    const next = h("button", {
+      type: "button", class: "artifact-next",
+      onclick: () => { st.offset = body.offset + body.limit; go(); },
+    }, ["next"]);
+    next.disabled = !(body.offset + entries.length < total);
+    pager.appendChild(prev);
+    pager.appendChild(next);
+  };
+
+  const renderCrumbs = () => {
+    crumbs.innerHTML = "";
+    const jump = (dir) => () => { st.dir = dir; st.q = ""; st.offset = 0; search.value = ""; go(); };
+    crumbs.appendChild(h("button", { type: "button", class: "artifact-crumb",
+                                     "data-crumb": "", onclick: jump("") }, ["artifacts"]));
+    let acc = "";
+    for (const part of st.dir ? st.dir.split("/") : []) {
+      acc = acc ? acc + "/" + part : part;
+      crumbs.appendChild(h("span", { class: "muted" }, [" / "]));
+      crumbs.appendChild(h("button", { type: "button", class: "artifact-crumb",
+                                       "data-crumb": acc, onclick: jump(acc) }, [part]));
+    }
+  };
+
+  const previewFile = async (entry) => {
+    preview.innerHTML = "";
+    preview.appendChild(h("h4", { class: "artifact-preview-title" }, [String(entry.path || "")]));
+    preview.appendChild(h("a", { class: "artifact-download",
+      href: artifactDownloadPath(runId, String(entry.path || "")),
+      download: String(entry.name || entry.path || "") }, ["download"]));
+    const { ok, body } = await getJSON(
+      `/api/runs/${encodeURIComponent(runId)}/artifacts/` +
+      encodeURIComponent(String(entry.path || "")));
+    for (const n of artifactPreviewNodes(runId, entry, ok ? body : null)) preview.appendChild(n);
+  };
+
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    st.q = search.value.trim();
+    st.offset = 0;
+    go();
+  });
+  await go();
+  return dlg;
 }
 
 // ------------------------------------------------------ router calls (#80)

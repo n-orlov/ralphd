@@ -834,11 +834,16 @@ List (recursive, with sizes) and download files from the artifacts dir.
 
 ### The hub's artifact routes
 The hub (`ralphctl ui`) reads a run's `artifacts/` straight off disk through
-three routes, whether or not the run is live. Each resolves the name through
+routes, whether or not the run is live. Each resolves the name through
 `state.artifact_relpath` alone; a name with `..` (also `%2e%2e`), a leading `/`
 or a NUL is refused with `404`.
 
-- `GET /api/runs/<id>/artifacts?offset=&limit=&q=&dir=` returns one page,
+- `GET /api/runs/<id>/artifacts-summary` returns `{runId, count, capped,
+  aliases, notice}`: the number of files under `artifacts/` (a walk that stops
+  at 5000 files, `capped: true` then), and one `{key, path, title, size,
+  sizeDisplay}` per well-known alias that exists. It opens no file; the run
+  page's poll calls it instead of the listing.
+- `GET /api/runs/<id>/artifacts?offset=&limit=&q=&dir=&top=` returns one page,
   `{runId, total, offset, limit, entries, notice}`. `limit` defaults to `200`
   and is clamped to `1000`. Each entry has `path` (relative to `artifacts/`),
   `name`, `size`, `mtime`, `key` (the well-known alias, or `null`), `title`,
@@ -847,13 +852,14 @@ or a NUL is refused with `404`.
   case-insensitive substring match on the relative path. Without `dir` the
   entries are every file, flat, in path order. With `dir` they are that
   directory's direct children, subdirectories first as entries of kind `dir`
-  carrying `fileCount`. The listing stats files and never opens one. `notice`
+  carrying `fileCount`; `top=1` (no `dir`) is the same one-level view of the
+  artifacts root. The listing stats files and never opens one. `notice`
   is `(no artifacts)` for a run that left nothing.
 - `GET /api/runs/<id>/artifacts/<path>` is the text view of one file. It reads
   at most 1 MiB (`ARTIFACT_PREVIEW_MAX_BYTES`) in total, kind sniff included:
   `content` holds the text,
-  `truncated` is `true` when the file is larger, and `bytes` is always the full
-  size. A file no preview handles returns its `kind` and size and no `content`.
+  `truncated` is `true` when the file is larger (with a worded
+  `truncationNotice`), and `bytes` is always the full size. A file no preview handles returns its `kind` and size and no `content`.
   Images are served by `GET /api/runs/<id>/artifacts-raw/<path>` up to
   `ARTIFACT_INLINE_MAX_BYTES` (5 MiB).
 - `GET /api/runs/<id>/artifacts-download/<path...>` streams the whole file, of

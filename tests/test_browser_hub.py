@@ -2894,27 +2894,21 @@ def test_run_detail_browses_artifacts_and_opens_the_reflect_report(tmp_path, pw)
     server.wait_ready()
     try:
         pw.open(f"{server.base}/#/run/run-arts-dialog")
-        _wait_for_count_ge(pw, _ARTIFACT_ITEMS, 3)
+        _wait_for_count_ge(pw, _ARTIFACT_ITEMS, 2)
         rows = pw.eval_js(_ARTIFACT_ROW_TEXT)
-        # every file is listed by its path; the well-known two carry the name
-        # `ralphctl artifacts show` takes, the third is keyless but present
+        # #294: the section is a summary -- the count, quick links to the
+        # ALIASED artifacts that exist (`report`, `suggestions`), and a Browse
+        # button; the keyless third file is only in the modal
         assert "reflection/report.md [report]" in rows, rows
         assert "reflection/suggestions.diff [suggestions]" in rows, rows
-        assert "reports/pricing-anomaly.md []" in rows, rows
-        assert int(pw.eval_js(_ARTIFACT_ITEMS)) == 3
+        assert "pricing-anomaly" not in rows, rows
+        assert int(pw.eval_js(_ARTIFACT_ITEMS)) == 2
         assert int(pw.eval_js(_DIALOGS)) == 0
-
-        # -- task 021 (#82): collapsed by default behind a native <details>,
-        # summary carries the COUNT so collapsing never hides whether the run
-        # left anything behind
-        assert pw.eval_js(
-            "document.querySelector('.artifact-list-details').open") == "false"
-        summary_text = pw.eval_js(
-            "document.querySelector('.artifact-list-details summary').textContent")
-        assert "3" in summary_text, summary_text
-        pw.click(".artifact-list-details summary")
-        assert pw.eval_js(
-            "document.querySelector('.artifact-list-details').open") == "true"
+        count_text = pw.eval_js(
+            "document.querySelector('#artifact-count').textContent")
+        assert "3" in count_text, count_text
+        assert pw.eval_js("document.querySelector('#browse-artifacts').textContent"
+                          ).strip('"') == "Browse artifacts"
 
         # -- the reflect report ---------------------------------------------
         pw.click('button.artifact-item[data-artifact-key="report"]')
@@ -2940,7 +2934,7 @@ def test_run_detail_browses_artifacts_and_opens_the_reflect_report(tmp_path, pw)
 
         # -- it survives a full 4s poll without stacking -------------------
         time.sleep(5.0)
-        assert int(pw.eval_js(_ARTIFACT_ITEMS)) == 3      # panel re-rendered
+        assert int(pw.eval_js(_ARTIFACT_ITEMS)) == 2      # panel re-rendered
         assert int(pw.eval_js(_DIALOGS)) == 1             # ...behind ONE dialog
         assert pw.eval_js("document.querySelector('dialog.text-dialog').open") == "true"
 
@@ -2951,16 +2945,11 @@ def test_run_detail_browses_artifacts_and_opens_the_reflect_report(tmp_path, pw)
         assert int(pw.eval_js(_DIALOGS)) == 0
 
         # -- the suggested diff, keyboard-reachable -------------------------
-        # A <button> gets Enter/Space from the platform -- but the 4s `load()`
-        # poll legitimately replaces the panel's nodes (collapsing the
-        # `<details>` back to its default, task 021/#82), so a focus taken
-        # just before one lands is lost through no fault of the button:
-        # re-open the details and retry the whole focus+Enter cycle (never a
-        # mouse click here).
+        # A <button> gets Enter/Space from the platform -- retry the whole
+        # focus+Enter cycle in case a poll re-renders the panel in between
+        # (never a mouse click here).
         focus_js = (
-            "(() => { const d = document.querySelector('.artifact-list-details');"
-            " if (d && !d.open) d.open = true;"
-            " const el = document.querySelector('button.artifact-item"
+            "(() => { const el = document.querySelector('button.artifact-item"
             "[data-artifact-key=\"suggestions\"]'); if (!el) return 'missing';"
             " el.focus();"
             " return document.activeElement === el ? 'focused' : 'lost'; })()")
@@ -3004,15 +2993,15 @@ _PNG_1X1 = base64.b64decode(
 
 
 def test_run_detail_artifact_dialog_branches_on_server_kind(tmp_path, pw):
-    """Task 025 (#54): the artifact dialog's SHAPE is decided from the
-    server's own `kind` field (task 022's magic-byte sniff), never from a
-    client-side extension list. A previewable image gets an `<img>` pointed
-    at the raw byte route (task 023) and actually renders it (`naturalWidth`
-    > 0, not just a src attribute); a tarball -- opaque binary -- still gets
-    today's `pull` wording in the plain text dialog, unchanged.
+    """Task 025 (#54), now through the browse modal (#294): the preview pane's
+    SHAPE is decided from the server's own `kind` field (task 022's magic-byte
+    sniff), never from a client-side extension list. A previewable image gets
+    an `<img>` pointed at the raw byte route (task 023) and actually renders it
+    (`naturalWidth` > 0, not just a src attribute); a tarball -- opaque binary
+    -- still gets today's `pull` wording as text, unchanged.
 
     Also proves the file's NAME does not decide the shape: `renamed.bin` is a
-    real PNG under a non-image extension and still gets the image dialog,
+    real PNG under a non-image extension and still gets the image preview,
     because `kind` is sniffed from the bytes, never the name.
     """
     from ralphd.engine.state import ARTIFACT_BINARY
@@ -3031,57 +3020,119 @@ def test_run_detail_artifact_dialog_branches_on_server_kind(tmp_path, pw):
     server.wait_ready()
     try:
         pw.open(f"{server.base}/#/run/run-arts-kinds")
-        _wait_for_count_ge(pw, _ARTIFACT_ITEMS, 3)
+        _wait_for(pw, "document.querySelector('#browse-artifacts') ? 'y' : ''",
+                  "y")
         assert int(pw.eval_js(_DIALOGS)) == 0
-        # task 021 (#82): expand the collapsed-by-default artifact list
-        # before clicking any row inside it.
-        pw.eval_js("(document.querySelector('.artifact-list-details').open = true)")
+        pw.click("#browse-artifacts")
+        _wait_for_count_ge(pw, "document.querySelectorAll('.artifact-row').length", 3)
+        assert int(pw.eval_js(_DIALOGS)) == 1
 
         # -- a previewable image: <img>, not <pre> -------------------------
-        pw.click('button.artifact-item[data-artifact="screenshot.png"]')
-        _wait_for(pw, "document.querySelectorAll('.text-dialog img').length",
-                 "1")
-        assert int(pw.eval_js(_DIALOGS)) == 1
+        pw.click('button[data-file="screenshot.png"]')
+        _wait_for(pw, "document.querySelectorAll('.artifact-preview img').length",
+                  "1")
         assert int(pw.eval_js(
-            "document.querySelectorAll('.text-dialog pre').length")) == 0
+            "document.querySelectorAll('.artifact-preview pre').length")) == 0
         src = pw.eval_js(
-            "document.querySelector('.text-dialog img').getAttribute('src')")
+            "document.querySelector('.artifact-preview img').getAttribute('src')")
         assert ("/api/runs/run-arts-kinds/artifacts-raw/screenshot.png"
                 in src), src
         width = _wait_for(
-            pw, "document.querySelector('.text-dialog img').naturalWidth",
+            pw, "document.querySelector('.artifact-preview img').naturalWidth",
             "1")
         assert int(width) > 0, width  # the browser actually decoded real bytes
         pw.screenshot(SCREENSHOTS_DIR / "25-artifact-image-dialog.png")
-        pw.click(".text-dialog .dialog-close button")
-        deadline = time.time() + 10
-        while time.time() < deadline and pw.eval_js(_DIALOGS) != "0":
-            time.sleep(0.2)
-        assert int(pw.eval_js(_DIALOGS)) == 0
 
-        # -- a real PNG under a non-image extension: still the image dialog
-        pw.click('button.artifact-item[data-artifact="renamed.bin"]')
-        _wait_for(pw, "document.querySelectorAll('.text-dialog img').length",
-                 "1")
-        src2 = pw.eval_js(
-            "document.querySelector('.text-dialog img').getAttribute('src')")
-        assert ("/api/runs/run-arts-kinds/artifacts-raw/renamed.bin"
-                in src2), src2
-        pw.click(".text-dialog .dialog-close button")
-        deadline = time.time() + 10
-        while time.time() < deadline and pw.eval_js(_DIALOGS) != "0":
-            time.sleep(0.2)
-        assert int(pw.eval_js(_DIALOGS)) == 0
+        # -- a real PNG under a non-image extension: still the image -------
+        pw.click('button[data-file="renamed.bin"]')
+        _wait_for(pw, "(document.querySelector('.artifact-preview img') || {getAttribute: () => ''})"
+                      ".getAttribute('src')", "renamed.bin")
 
         # -- a tarball: today's `pull` wording, plain text, no <img> -------
-        pw.click('button.artifact-item[data-artifact="archive.tar.gz"]')
-        body = _wait_for(pw, "document.querySelector('.text-dialog').textContent",
-                         "archive.tar.gz")
+        pw.click('button[data-file="archive.tar.gz"]')
+        body = _wait_for(pw, "document.querySelector('.artifact-preview').textContent",
+                         ARTIFACT_BINARY)
         assert ARTIFACT_BINARY in body, body
         assert int(pw.eval_js(
-            "document.querySelectorAll('.text-dialog img').length")) == 0
+            "document.querySelectorAll('.artifact-preview img').length")) == 0
         assert int(pw.eval_js(
-            "document.querySelectorAll('.text-dialog pre').length")) == 1
+            "document.querySelectorAll('.artifact-preview pre').length")) == 1
+    finally:
+        server.stop()
+
+
+def test_run_detail_browse_modal_navigates_searches_previews_and_downloads(
+        tmp_path, pw):
+    """#294 (E.5): the "Browse artifacts" button opens a modal on the artifacts
+    root; the operator enters a directory, searches by name (`q`), previews a
+    text file as text and sees a download link on it; an html file previews in
+    an `<iframe sandbox>` that carries neither `allow-scripts` nor
+    `allow-same-origin`."""
+    registry = tmp_path / "registry"
+    run_dir = _write_dead_run(registry, "run-arts-modal", state="succeeded",
+                              verdict="verified")
+    artifacts = run_dir / "artifacts"
+    (artifacts / "reports").mkdir(parents=True)
+    (artifacts / "reports" / "alpha.md").write_text("# Alpha <b>report</b>\n")
+    (artifacts / "reports" / "beta.txt").write_text("beta body\n")
+    (artifacts / "reports" / "page.html").write_text(
+        "<p>hello</p><script>parent.document.title='pwned'</script>")
+    (artifacts / "top.txt").write_text("top body\n")
+
+    server = UiServer(registry)
+    server.wait_ready()
+    try:
+        pw.open(f"{server.base}/#/run/run-arts-modal")
+        _wait_for(pw, "document.querySelector('#browse-artifacts') ? 'y' : ''",
+                  "y")
+        pw.click("#browse-artifacts")
+        _wait_for(pw, "document.querySelector('.artifact-browser') "
+                      "? document.querySelector('.artifact-rows').textContent : ''",
+                  "reports/")
+        assert pw.eval_js(
+            "document.querySelectorAll('button[data-file=\"top.txt\"]').length") == "1"
+
+        # -- navigate into a directory --------------------------------------
+        pw.click('button[data-dir="reports"]')
+        _wait_for(pw, "document.querySelector('.artifact-rows').textContent",
+                  "alpha.md")
+        crumbs = pw.eval_js("document.querySelector('.artifact-crumbs').textContent")
+        assert "reports" in crumbs, crumbs
+        assert "top body" not in pw.eval_js(
+            "document.querySelector('.artifact-rows').textContent")
+
+        # -- search by name ---------------------------------------------------
+        pw.fill(".artifact-search", "beta")
+        pw.click(".artifact-search-form button")
+        _wait_for(pw, "document.querySelectorAll('.artifact-row').length", "1")
+        assert "beta.txt" in pw.eval_js(
+            "document.querySelector('.artifact-rows').textContent")
+
+        # -- preview a text file as text; a download link on it ---------------
+        pw.click('button[data-file="reports/beta.txt"]')
+        body = _wait_for(pw, "document.querySelector('.artifact-preview').textContent",
+                         "beta body")
+        assert "beta body" in body, body
+        href = pw.eval_js(
+            "document.querySelector('.artifact-preview a.artifact-download')"
+            ".getAttribute('href')")
+        assert "/api/runs/run-arts-modal/artifacts-download/" in href, href
+        assert "beta.txt" in href, href
+
+        # -- html: sandboxed iframe with nothing re-enabled -------------------
+        pw.fill(".artifact-search", "page")
+        pw.click(".artifact-search-form button")
+        _wait_for(pw, "document.querySelectorAll('.artifact-row').length", "1")
+        pw.click('button[data-file="reports/page.html"]')
+        _wait_for(pw, "document.querySelectorAll('.artifact-preview iframe').length",
+                  "1")
+        sandbox = pw.eval_js(
+            "document.querySelector('.artifact-preview iframe')"
+            ".getAttribute('sandbox')")
+        assert "allow-scripts" not in sandbox, sandbox
+        assert "allow-same-origin" not in sandbox, sandbox
+        time.sleep(0.5)
+        assert "pwned" not in pw.eval_js("document.title")
     finally:
         server.stop()
 

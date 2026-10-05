@@ -414,24 +414,27 @@ def test_app_js_renders_artifacts_as_text_from_server_strings():
     assert "innerHTML" not in region.replace('box.innerHTML = "";', "")
 
 
-def test_app_js_collapses_the_artifact_list_behind_a_native_details():
-    """Task 021 (#82): the panel used to push the whole page down for a run
-    with a long artifact tree. `renderArtifacts` now wraps `.artifact-list`
-    in a native `<details>`/`<summary>` -- no hand-rolled toggle -- collapsed
-    by default, with the artifact COUNT in the summary so collapsing it never
-    hides whether the run left anything behind."""
+def test_app_js_artifacts_section_is_a_summary_with_a_browse_button():
+    """#294 (E.5/E.6), replacing the task-021 (#82) pin on the inline
+    `<details>` list: the run page's artifacts section is the COUNT, quick
+    links to the aliased artifacts and a "Browse artifacts" button, loaded from
+    the bounded `artifacts-summary` call -- never the artifact list. The list
+    lives in the modal (behavioural proof: tests/test_artifact_browser_js.py)."""
     src = STATIC_APP_JS.read_text()
     region = src[src.index("function renderArtifacts"):
                  src.index("async function loadArtifacts")]
-    assert 'h("details"' in region
-    assert 'h("summary"' in region
-    # collapsed by default: no `open` attribute set on the wrapper
-    details_call = region[region.index('h("details"'):region.index('h("summary"')]
-    assert "open" not in details_call
-    # the summary text carries the artifact count
-    summary_call = region[region.index('h("summary"'):]
-    # the count is the listing's `total` (the page may hold fewer entries)
-    assert "total" in summary_call[:summary_call.index(')') + 1]
+    assert 'h("details"' not in region          # no inline list any more
+    assert "artifact-count" in region and "body.count" in region
+    assert "body.aliases" in region
+    assert "Browse artifacts" in region and "openArtifactBrowser" in region
+    load = src[src.index("async function loadArtifacts"):
+               src.index("// ---- the browse modal")]
+    assert "/artifacts-summary" in load
+    assert "/artifacts`" not in load and "/artifacts?" not in load
+    # the modal's preview: an html file goes in a sandbox with nothing re-enabled
+    assert 'sandbox: ""' in src
+    assert "allow-scripts" not in src.replace("`allow-scripts`", "")
+    assert "allow-same-origin" not in src.replace("`allow-same-origin`", "")
 
 
 def _artifact_dialog_kind_branch(src: str) -> str:

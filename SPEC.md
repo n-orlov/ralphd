@@ -5892,34 +5892,51 @@ dir themselves and a live proxy would only add a way to disagree.
   requirement A.3) and the run's `job.yaml` **with
   secrets redacted**, each opening its body in a dialog. A document that was
   never written is listed as such rather than omitted: absence is an answer.
-- **Artifacts panel** — what the job left behind under `artifacts/`, size and
-  path per entry, with each row's dialog branching on the server-decided
-  `kind` (§12.1) and never a filename's extension: a text artifact (the
-  reflection report first among them) opens as text, a previewable image
-  opens holding an `<img>` whose `src` is the raw byte route, and everything
-  else (opaque binary, e.g. a tarball) is reported as such rather than
-  mangled. `app.js` carries no client-side extension list of its own. The
-  panel is fed by the paged listing below, never by a whole-tree walk, and its
-  count is the listing's `total`.
-  The hub serves three artifact routes, all on-disk, all resolving the name
+- **Artifacts section and browse modal** — the run page's artifacts section is
+  a summary: the artifact count, quick links to the `ARTIFACT_ALIASES`
+  artifacts that exist (each opens its text in the shared dialog) and a
+  "Browse artifacts" button. The count and the alias links come from `GET
+  /api/runs/<id>/artifacts-summary` → `{runId, count, capped, aliases,
+  notice}` (`state.artifact_summary`): a directory walk that stops at
+  `ARTIFACT_SUMMARY_COUNT_CAP` files (`capped` is then `true` and the count a
+  lower bound, shown as `N+`) plus one `stat` per alias, never a file open or
+  sniff. The run-detail poll calls only that route; it never fetches the
+  artifact list. The button opens a modal that fetches one page of one
+  directory on open (the artifacts root's direct children, `top=1`) and
+  nothing else, and fetches again only on an operator act: entering a
+  directory or a breadcrumb, searching, paging, previewing a file. A search
+  box is backed by `q` (a flat search of the whole tree from the root, a filter
+  of the directory's children inside one); the pager walks past `limit`
+  (200). Selecting a file opens a preview pane from the text view: text,
+  markdown and json are shown as text; an image is an `<img>` whose `src` is
+  the raw byte route, chosen from the server-sniffed `kind` and never a
+  filename's extension; an html file is an `<iframe sandbox>` whose `sandbox`
+  attribute is empty, carrying neither `allow-scripts` nor `allow-same-origin`;
+  a capped preview shows the server's `truncationNotice`; a file no preview
+  handles shows the server's `pull` wording. Every file row and the preview
+  carry a download link to `artifacts-download`. `app.js` carries no
+  client-side extension list of its own.
+  The hub serves four artifact routes, all on-disk, all resolving the name
   through `state.artifact_relpath` alone (no second resolver): `GET
-  /api/runs/<id>/artifacts?offset=&limit=&q=&dir=` is one page,
+  /api/runs/<id>/artifacts?offset=&limit=&q=&dir=&top=` is one page,
   `{total, offset, limit, entries}`, whose entries carry `path`, `size`,
   `mtime` and a `kind` derived from the file name's extension alone
   (`image`, `markdown`, `json`, `html`, `text`, else `binary`), `limit`
   defaulting to 200 and clamped to 1000; `q` keeps the entries whose relative
   path contains it, case-insensitively; `dir` lists one directory's direct
-  children, its subdirectories first as entries of kind `dir` carrying
-  `fileCount`. The listing stats files and never opens one. `GET
+  children (`top=1` does the same for the artifacts root), its subdirectories
+  first as entries of kind `dir` carrying `fileCount`. The listing stats files
+  and never opens one. `GET
   /api/runs/<id>/artifacts/<path>` is the text view: it reads at most
   `ARTIFACT_PREVIEW_MAX_BYTES` (1 MiB) in total, kind sniff included, and answers `content`, `truncated`
-  (true when the file is larger) and the full size in `bytes`; a file no
+  (true when the file is larger, with the worded `truncationNotice`) and the
+  full size in `bytes`; a file no
   preview handles (binary, image) answers its sniffed `kind` and size and no
   `content`, and images keep the `ARTIFACT_INLINE_MAX_BYTES` cap on
   `artifacts-raw`. `GET /api/runs/<id>/artifacts-download/<path...>` streams
   the whole file, of any size or kind, with `Content-Disposition: attachment`.
   A name containing `..` (also as `%2e%2e`), a leading `/` or a NUL is refused
-  with `404` by all three routes.
+  with `404` by every route that takes a name.
 - **Router calls panel** — behind a native `<details>`/`<summary>` disclosure
   (task 022, P, #80), this run's own router decisions: `GET /api/runs/<id>/
   router` → `{runId, routerCalls: [...]}`, the very entries `ralphctl router
@@ -6318,8 +6335,10 @@ logs) in the artifacts directory". The engine-written files under
 | `artifacts/screenshots/**` | agent | browser-driven verification of a UI change |
 | anything else | agent | logs, samples, gate records — free-form by design |
 
-**Reading it back.** The hub lists the tree one bounded page at a time (§11:
-`artifact_listing`, extension-derived `kind`, no file opened), previews a text
+**Reading it back.** The hub's run page shows the count and the alias links
+from a bounded, contents-free summary (§11: `artifact_summary`) and opens a
+browse modal that lists the tree one bounded page of one directory at a time
+(`artifact_listing`, extension-derived `kind`, no file opened), previews a text
 file through the 1 MiB `ARTIFACT_PREVIEW_MAX_BYTES` cap (`artifact_entry`
 carries `truncated: true` and the full size when the file is larger), serves an
 image under `ARTIFACT_INLINE_MAX_BYTES` (5 MiB), and hands out any file whole

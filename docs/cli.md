@@ -4006,7 +4006,15 @@ JSON endpoints served under `/api/`:
   back *from*. A document this run never wrote is not an error — its `text` is
   the `(not written)` wording. `404` for an unknown run id or a name that
   matches no known document.
-- `GET /api/runs/<id>/artifacts?offset=&limit=&q=&dir=` and `GET
+- `GET /api/runs/<id>/artifacts-summary` — the run page's **Artifacts**
+  section: `{runId, count, capped, aliases, notice}`, the bounded file count
+  (a walk that stops at 5000 files) and the well-known artifacts that exist.
+  It opens no file, and it is the only artifact call the run-detail poll makes;
+  the section's "Browse artifacts" button opens a modal over the listing below
+  (directory navigation, a name search backed by `q`, paging, a preview pane
+  and a download link per file; an html file previews in an `<iframe sandbox>`
+  with no `allow-scripts` and no `allow-same-origin`).
+- `GET /api/runs/<id>/artifacts?offset=&limit=&q=&dir=&top=` and `GET
   /api/runs/<id>/artifacts/<path>` — what the job left behind in `artifacts/`,
   for the hub's **Artifacts** panel and its dialogs (issue #18.3, #294). The
   listing is one page, `{runId, total, offset, limit, entries, notice}`
@@ -4018,8 +4026,9 @@ JSON endpoints served under `/api/`:
   (`image`, `markdown`, `json`, `html`, `text`, else `binary`). `q` is a
   case-insensitive substring match on the relative path; `dir` lists one
   directory's direct children, subdirectories first as entries of kind `dir`
-  carrying `fileCount`. The listing stats files and never opens one, so a poll
-  never ships or sniffs a body. `notice` is `(no artifacts)` —
+  carrying `fileCount` (`top=1` is the same one-level view of the artifacts
+  root). The listing stats files and never opens one, so a poll never ships or
+  sniffs a body. `notice` is `(no artifacts)` —
   `state.NO_ARTIFACTS`, the line `ralphctl artifacts <run> ls` prints — for a
   run that produced nothing, else `""`. `GET .../artifacts/<path>` is the text
   view: it reads at most `state.ARTIFACT_PREVIEW_MAX_BYTES` (1 MiB) and adds
