@@ -2601,6 +2601,10 @@ function renderSummary(el, detail) {
   for (const [hname, hvalue] of Object.entries(llmHeaders)) {
     rows.push([`header: ${hname}`, String(hvalue)]);
   }
+  // Issue #297: docker access, worded server-side (`ui_server._with_docker_
+  // access`, the same formatter `ralphctl status` prints) so a run that lost
+  // its socket mount shows it.
+  if (s.dockerAccessLine) rows.push(["docker", String(s.dockerAccessLine)]);
   // Task 035 (G.3): the engine version this run is executing (F.4's
   // `status.json` field, always present) -- and, whenever the workspace's
   // own version is knowable at all (`workspaceVersion`, persisted for every

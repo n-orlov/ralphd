@@ -1,6 +1,6 @@
 # ralphd solution technical specification
 
-**Implementation snapshot:** `0.32.1` (working tree on top of `af8f4264`), inspected 6 October 2026.
+**Implementation snapshot:** `0.32.2` (working tree on top of `34312979`), inspected 6 October 2026.
 
 This document explains how the implemented harness turns a product requirement
 document (PRD) into a durable, supervised coding run. It is intended for engineers
@@ -1386,8 +1386,13 @@ recorded image, network, workspace mounts, LLM wiring and extra environment. It
 re-binds the protected task-record and run-secrets mounts, moves any legacy
 in-run-dir `.api-token`/`.control-token` into the host-only control directory,
 and accepts `+N|N` top-ups for iterations, approaches, job timeout and iteration
-timeout ([`cmd_resume`](../src/ralphd/cli/main.py)). `--allow-docker` is not
-replayed and must be passed again. This differs from `unpause`, which calls
+timeout ([`cmd_resume`](../src/ralphd/cli/main.py)). Docker access is replayed
+too (#297, 0.32.2): `start` records it on or off in the config dir's
+`docker-access.json` (not the agent-writable run dir), and a bare resume or a
+`doctor --fix` auto-resume re-applies it, re-validating the socket and refusing
+with exit 2 if a recorded grant's socket is gone or the record exists but
+cannot be read; `--no-allow-docker` drops it
+and `--allow-docker` grants it, each re-recorded. This differs from `unpause`, which calls
 `POST /resume` on an already-running engine to release an operator pause or an
 engine-recorded pause. An unpause of review's `operator_input_needed` pause (or the
 verdict gate's equivalent) with no matching ruling also records a one-shot,

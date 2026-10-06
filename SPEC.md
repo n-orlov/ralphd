@@ -2169,6 +2169,16 @@ nothing recording that they had been references), so every value of such a
 file is masked wholesale rather than guessed literal — the names still
 show. Empty for a run with no `--llm-header` wiring at all.
 
+`dockerAccess` (#297, v0.32.2) is host-merged the same way, by `ralphctl
+status` and the hub (`ui_server._with_docker_access`, which also adds the
+rendered `dockerAccessLine`): `{enabled, setBy, at}` read from
+`<config-dir>/docker-access.json` (never `host.json`, which lives in the
+agent-writable run dir) through `state.read_docker_access`, with `enabled`
+`null` for a run that predates the record, plus `unreadable: true` when the
+record exists but cannot be read; the CLI adds `line`, rendered by the
+shared `state.format_docker_access`. Always present, and never taken from a
+proxied engine payload.
+
 `runSecretsMount` (v0.19 requirement E.4, #150/#152, task 020) is host-merged
 the same way: `ralphctl start`/`resume` bind a mode-0700 host directory,
 `run_secrets_dir(run_id)` (`<config>/<run>/run-secrets/`), at the fixed
@@ -4946,7 +4956,7 @@ returns immediately.
 | `--env KEY=VAL` | none | plain container env; repeatable |
 | `--skills DIR` | none | skill dir (or a dir of them); repeatable |
 | `--creds DIR` | none | copy `*.env` plus recognized extras into the job's creds |
-| `--allow-docker` | off | mount the host docker socket — root-equivalent host access |
+| `--allow-docker` | off | mount the host docker socket — root-equivalent host access; recorded on/off in `<config-dir>/docker-access.json` so every resume and auto-resume re-applies it (#297, §13.2) |
 | `--image REF` | built `ralphd:<hash>`, or `$RALPHD_IMAGE` | pin a finished job image and run it as-is, hashing and building nothing (§3.2) |
 | `--base-image REF` | none | build the job image *on top of* this image: it only has to carry your toolchain, ralphd layers the engine and `pi` onto it and runs the derived `ralphd-derived:<hash>`. Mutually exclusive with `--image` |
 | `--dockerfile PATH` | none | build this Dockerfile (its own directory is the build context) into that base image instead of naming one that already exists; recorded in `job.yaml` and replayed by `resume` |
@@ -5023,7 +5033,9 @@ is the supported way to correct a recorded value.
 
 `resume` recomputes only what must change for a new container: a fresh port
 (`--port`, else a free ephemeral one), `--api-bind`, `--network` (defaulting
-to the network recorded at start time), `--allow-docker`, and the
+to the network recorded at start time), docker access (the run's recorded
+value unless `--allow-docker`/`--no-allow-docker` is passed and re-recorded;
+§13.2), and the
 budget — `--iterations +10` tops it up in `job.yaml` before the container
 starts, a bare `--iterations 30` sets it absolutely, omitting it continues
 with whatever remains. It refuses a run whose container is currently running
@@ -6833,6 +6845,24 @@ because a socket proxy that permits `run` at all permits arbitrary mounts — so
 the CLI prints a loud warning at launch and the guidance is the honest one: use
 it only with PRDs you trust as much as your own shell. Without the flag there is
 no socket, which is the default.
+
+**Docker access is a property of the run (#297).** `start` records it, on or
+off, in `<config-dir>/docker-access.json` (`{allow_docker, setBy, at}`), and
+every later container for the run re-applies it: a bare `resume`, a `doctor
+--fix` auto-resume, the abort → edit → resume recipe. Precedence on `resume` is
+explicit flag (`--allow-docker` / `--no-allow-docker`, mutually exclusive, and
+re-recorded with `setBy: resume` once `docker run` succeeds) > record > off,
+so a run with no record (started before 0.32.2) and a run started without the
+flag never gain the socket by themselves. Each re-application re-validates the
+socket and re-prints the warning; a recorded grant whose socket is missing or
+not a socket is refused with exit `2` before the resume mutates anything,
+never silently dropped, and so is a record that exists but cannot be read
+(it may have been a grant; an explicit flag decides and rewrites it). `start`
+and a flagged resume write the record atomically. The record lives in the config dir (mounted
+`/config:ro`), not in the run dir's `host.json` next to `network`: the run dir
+is writable from inside the container, and a grant the agent could write would
+be a root escalation on the next unattended resume. `ralphctl status` and the
+hub show it as `dockerAccess` / a `docker:` line (§5.2).
 
 Since the escalation is all-or-nothing, the mitigations are about the job not
 destroying *itself*:

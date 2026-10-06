@@ -208,6 +208,10 @@ def test_resume_allow_docker_reinjects_socket(ctl, unix_sock):
     argv = _run_argv(ctl)
     assert f"{unix_sock}:/var/run/docker.sock" in argv
     assert "ROOT-EQUIVALENT" in res.stderr
+    # Issue #297: an explicit flag is recorded so later resumes keep it.
+    rec = json.loads((ctl.registry / "configs" / "tst-dock2"
+                      / "docker-access.json").read_text())
+    assert rec["allow_docker"] is True and rec["setBy"] == "resume"
 
 
 def test_resume_labels_job_role_and_exports_self_container_id(ctl):

@@ -99,6 +99,8 @@ from ..engine.state import (
     run_cost_fields,
     format_duration,
     task_progress_budget_estimate,
+    docker_access_view,
+    format_docker_access,
     format_image,
     format_image_id,
     format_last_tool_call,
@@ -116,6 +118,10 @@ from ..engine.state import (
     image_record,
     image_record_from,
     is_operator_termination,
+    read_docker_access,
+    docker_access_unreadable,
+    DOCKER_ACCESS_FILE,
+    atomic_write_json,
     iteration_detail,
     iteration_detail_text,
     parse_utc,
@@ -763,6 +769,99 @@ def _write_auto_resume_setting(cdir: Path, enabled: bool) -> None:
     """
     _auto_resume_path(cdir).write_text(
         json.dumps({"auto_resume": bool(enabled)}, indent=2) + "\n")
+
+
+# Issue #297: the ONE wording of the root-equivalent warning, printed on every
+# container launch that mounts the socket (start, and every resume that
+# re-applies it -- flag or record).
+_DOCKER_SOCK_WARNING = (
+    "ralphctl: WARNING: --allow-docker mounts the host docker socket "
+    "into the job container. The docker socket is ROOT-EQUIVALENT "
+    "access to this host — the job can mount any host path and run "
+    "privileged containers. Only use with PRDs you trust.")
+
+
+def _write_docker_access_setting(cdir: Path, enabled: bool, set_by: str) -> None:
+    """Persist the run's docker access (issue #297) next to
+    `auto-resume.json` in the config dir -- `/config:ro` inside the
+    container, so unlike host.json in the agent-writable run dir the job
+    cannot grant itself the socket for its next resume. `set_by` is
+    "start" or "resume" (a resume that passed an explicit flag)."""
+    # Atomic: a truncated record would read as damaged and refuse every
+    # later bare resume (see `_resolve_resume_docker_access`).
+    atomic_write_json(cdir / DOCKER_ACCESS_FILE,
+                      {"allow_docker": bool(enabled), "setBy": set_by,
+                       "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+
+
+def _validated_docker_sock(source: str, cdir: Path | None = None) -> tuple[str, int]:
+    """Stat the host docker socket, returning `(path, gid)`, or die 2.
+
+    `source` is "flag" (an explicit `--allow-docker`: today's wording) or
+    "recorded" (a resume re-applying the run's record: name the record and
+    the `--no-allow-docker` way out, since silently dropping the socket is
+    exactly the #297 bug)."""
+    sock = docker_sock()
+    problem = None
+    try:
+        st = os.stat(sock)
+    except OSError:
+        problem = f"docker socket {sock} not found"
+    else:
+        if not stat_mod.S_ISSOCK(st.st_mode):
+            problem = f"{sock} is not a socket"
+    if problem is None:
+        return sock, st.st_gid
+    if source == "recorded":
+        rec = read_docker_access(cdir) or {}
+        die(2, f"ralphctl resume: this run has docker access recorded "
+               f"({cdir / DOCKER_ACCESS_FILE}, set by {rec.get('setBy') or 'start'}) "
+               f"but {problem} -- restore the socket, or pass --no-allow-docker "
+               f"to drop docker access (recorded, so later resumes keep it dropped)")
+    die(2, f"--allow-docker: {problem}")
+
+
+def _docker_access_args(rdir: Path, run_id: str, ws, ws_named, *,
+                        source: str, cdir: Path | None = None
+                        ) -> tuple[list[str], list[str]]:
+    """The `docker run` args (socket mount + group) and env
+    (`RALPHD_HOST_*`, `RALPHD_RUN_ID`) that give a job container docker
+    access -- the single copy `start` and `resume` share, re-validating the
+    socket and printing the ROOT-EQUIVALENT warning every time."""
+    sock, gid = _validated_docker_sock(source, cdir)
+    docker_args = ["-v", f"{sock}:/var/run/docker.sock", "--group-add", str(gid)]
+    env_args: list[str] = []
+    if ws:
+        env_args += ["-e", f"RALPHD_HOST_WORKSPACE={ws}"]
+    elif ws_named:
+        hostwss = json.dumps({n: str(p) for n, p in ws_named.items()})
+        env_args += ["-e", f"RALPHD_HOST_WORKSPACES={hostwss}"]
+    env_args += ["-e", f"RALPHD_HOST_RUN_DIR={rdir}",
+                 "-e", f"RALPHD_RUN_ID={run_id}"]
+    print(_DOCKER_SOCK_WARNING, file=sys.stderr)
+    return docker_args, env_args
+
+
+def _resolve_resume_docker_access(args, cdir: Path) -> tuple[bool, str]:
+    """Issue #297 precedence: an explicit `--allow-docker`/`--no-allow-docker`
+    > the run's record > off. Returns `(enabled, source)`, source one of
+    "flag"/"recorded"/"default". A run with no record (predating #297) is
+    off, exactly as a bare resume always was; a record that exists but cannot
+    be read may have been a grant, so a bare resume refuses (exit 2) rather
+    than silently dropping the socket -- an explicit flag settles it."""
+    flag = getattr(args, "allow_docker", None)
+    if flag is not None:
+        return bool(flag), "flag"
+    rec = read_docker_access(cdir)
+    if rec is not None:
+        return rec["allow_docker"], "recorded"
+    if docker_access_unreadable(cdir):
+        die(2, f"ralphctl resume: this run's docker-access record "
+               f"{cdir / DOCKER_ACCESS_FILE} exists but cannot be read -- it "
+               f"may have been a grant, so it is not treated as off; pass "
+               f"--allow-docker or --no-allow-docker to decide (recorded, so "
+               f"later resumes follow it)")
+    return False, "default"
 
 
 def _read_auto_resume_setting(run_id: str) -> bool:
@@ -2417,27 +2516,9 @@ def cmd_start(args):
     port_args = _network_args(args.network, args.api_bind, port,
                               docker_args, env_args)
     if args.allow_docker:
-        sock = docker_sock()
-        try:
-            st = os.stat(sock)
-        except OSError:
-            die(2, f"--allow-docker: docker socket {sock} not found")
-        if not stat_mod.S_ISSOCK(st.st_mode):
-            die(2, f"--allow-docker: {sock} is not a socket")
-        docker_args += ["-v", f"{sock}:/var/run/docker.sock",
-                        "--group-add", str(st.st_gid)]
-        if ws is not None:
-            env_args += ["-e", f"RALPHD_HOST_WORKSPACE={ws}"]
-        elif ws_named:
-            hostwss = json.dumps({n: str(p) for n, p in ws_named.items()})
-            env_args += ["-e", f"RALPHD_HOST_WORKSPACES={hostwss}"]
-        env_args += ["-e", f"RALPHD_HOST_RUN_DIR={rdir}",
-                     "-e", f"RALPHD_RUN_ID={run_id}"]
-        print("ralphctl: WARNING: --allow-docker mounts the host docker socket "
-              "into the job container. The docker socket is ROOT-EQUIVALENT "
-              "access to this host — the job can mount any host path and run "
-              "privileged containers. Only use with PRDs you trust.",
-              file=sys.stderr)
+        _d, _e = _docker_access_args(rdir, run_id, ws, ws_named, source="flag")
+        docker_args += _d
+        env_args += _e
     for sdir in args.skills or []:
         _copy_skills(sdir, cdir)
 
@@ -2519,6 +2600,9 @@ def cmd_start(args):
     # ever read back by `ralphctl` (task 027's `doctor --fix`); it is
     # deliberately not passed into the container.
     _write_auto_resume_setting(cdir, args.auto_resume)
+    # Issue #297: docker access is a property of the run, recorded on/off so
+    # every later container (bare resume, auto-resume) re-applies it.
+    _write_docker_access_setting(cdir, bool(args.allow_docker), "start")
     if token:
         env_args += ["-e", f"RALPHD_API_TOKEN={token}"]
     env_args += ["-e", f"RALPHD_CONTROL_TOKEN={control_token}"]
@@ -3094,7 +3178,15 @@ def cmd_resume(args):
     `--iteration-timeout` last set in the container that just exited. Only
     passing the flag again here carries a live change forward. See
     docs/cli.md's budget table for the same statement in operator-facing
-    form, one row per knob."""
+    form, one row per knob.
+
+    Issue #297: docker access is the opposite -- it IS replayed. The run's
+    `<cdir>/docker-access.json` record (written by `start`) decides it when
+    neither `--allow-docker` nor `--no-allow-docker` is passed; an explicit
+    flag wins and is re-recorded once `docker run` succeeds. A recorded grant
+    whose socket is missing is refused (exit 2) before anything is mutated,
+    never silently dropped. The record lives in the config dir, not host.json,
+    because the run dir is agent-writable."""
     run_id = args.run_id
     _require_run(run_id)
     rdir = run_root(run_id)
@@ -3105,6 +3197,12 @@ def cmd_resume(args):
     if running:
         die(5, f"container {name} is still running -- a live engine already "
                f"holds this run dir's lock; `abort` or `stop` it first")
+    # Issue #297: resolve the run's docker access and, when it is on,
+    # validate the socket BEFORE anything below mutates the run (the
+    # container rm, the job.yaml top-up) -- a refused resume changes nothing.
+    allow_docker, docker_src = _resolve_resume_docker_access(args, cdir)
+    if allow_docker:
+        _validated_docker_sock(docker_src, cdir)
     if running is False:
         # exited/stopped container occupying the name -- `docker run --name`
         # refuses to reuse a name already in use by any container.
@@ -3230,26 +3328,18 @@ def cmd_resume(args):
     network = args.network or prev_meta.get("network")
     port_args = _network_args(network, args.api_bind, port,
                               docker_args, env_args)
-    if args.allow_docker:
-        sock = docker_sock()
-        try:
-            st = os.stat(sock)
-        except OSError:
-            die(2, f"--allow-docker: docker socket {sock} not found")
-        if not stat_mod.S_ISSOCK(st.st_mode):
-            die(2, f"--allow-docker: {sock} is not a socket")
-        docker_args += ["-v", f"{sock}:/var/run/docker.sock",
-                        "--group-add", str(st.st_gid)]
-        if ws:
-            env_args += ["-e", f"RALPHD_HOST_WORKSPACE={ws}"]
-        elif ws_named:
-            env_args += ["-e", f"RALPHD_HOST_WORKSPACES={json.dumps(ws_named)}"]
-        env_args += ["-e", f"RALPHD_HOST_RUN_DIR={rdir}",
-                     "-e", f"RALPHD_RUN_ID={run_id}"]
-        print("ralphctl: WARNING: --allow-docker mounts the host docker socket "
-              "into the job container. The docker socket is ROOT-EQUIVALENT "
-              "access to this host. Only use with PRDs you trust.",
-              file=sys.stderr)
+    if allow_docker:
+        _d, _e = _docker_access_args(rdir, run_id, ws, ws_named,
+                                     source=docker_src, cdir=cdir)
+        docker_args += _d
+        env_args += _e
+        if docker_src == "recorded":
+            _set_by = (read_docker_access(cdir) or {}).get("setBy") or "start"
+            print(f"ralphctl: docker access: on (recorded at {_set_by}; pass "
+                  "--no-allow-docker to drop it)", file=sys.stderr)
+    elif docker_src == "flag" and (read_docker_access(cdir) or {}).get("allow_docker"):
+        print("ralphctl: docker access dropped (--no-allow-docker); recorded, "
+              "later resumes keep it dropped", file=sys.stderr)
     if ws_named:
         env_args += ["-e", f"RALPHD_WORKSPACES={','.join(ws_named)}"]
 
@@ -3258,6 +3348,11 @@ def cmd_resume(args):
     res = sh(cmd)
     if res.returncode != 0:
         die(1, f"docker run failed: {res.stderr.strip()}")
+    # Only an explicit flag re-records (and only once the container is up,
+    # so a failed resume never flips it); a bare resume leaves the record --
+    # or a legacy run's absence of one -- exactly as it was.
+    if getattr(args, "allow_docker", None) is not None:
+        _write_docker_access_setting(cdir, args.allow_docker, "resume")
     container = res.stdout.strip()
     meta = {"runId": run_id, "container": container, "port": port,
             "apiUrl": f"http://{args.api_bind}:{port}",
@@ -4017,6 +4112,15 @@ def cmd_status(args):
     # all, the same discipline `provisioning` above follows.
     status["llmHeaders"] = llm_profiles.read_llm_wiring_headers(config_root(args.run_id))
 
+    # Issue #297: whether this run's containers get the host docker socket,
+    # from the host-side record in its config dir -- always present (null
+    # `enabled` for a run predating the record), and always computed here,
+    # never taken from the engine's answer, so a lost mount is visible.
+    _dcdir = config_root(args.run_id)
+    _dview = docker_access_view(read_docker_access(_dcdir),
+                                unreadable=docker_access_unreadable(_dcdir))
+    status["dockerAccess"] = {**_dview, "line": format_docker_access(_dview)}
+
     # Task 020 (E.4): whether this run's per-run MAC-key host directory is
     # bound (created by `start`/`resume`, see `run_secrets_dir`) -- known
     # from the host alone, live or not, unlike `model`/`provisioning`
@@ -4220,6 +4324,10 @@ def cmd_status(args):
         lines.append("llm headers:")
         for _hname, _hvalue in status["llmHeaders"].items():
             lines.append(f"  {_hname}: {_hvalue}")
+    # Issue #297: docker access, printed unconditionally (known from the
+    # config dir alone) so a run that lost its socket says so.
+    if isinstance(status.get("dockerAccess"), dict):
+        lines.append(f"docker:    {status['dockerAccess'].get('line')}")
     # Task 010 (#79, PRD requirement O): the resolved hat -> model mapping
     # (`provisioningLines`, computed above from job.yaml through the ONE
     # shared `state.format_provisioning_lines` formatter) -- printed
@@ -7716,16 +7824,29 @@ def _auto_resume_dangling(args, dangling: list[dict]) -> dict:
         rargs = argparse.Namespace(
             run_id=run_id, iterations=None, approaches=None, timeout=None,
             iteration_timeout=None, image=args.image, port=None,
-            api_bind="127.0.0.1", network=None, allow_docker=False,
+            api_bind="127.0.0.1", network=None,
+            # Issue #297: None = replay the docker access the run recorded
+            # (never grant one it did not have, never silently drop one).
+            allow_docker=None,
             llm_header=None, detach=True, json=False)
         buf = io.StringIO()
+        errbuf = io.StringIO()
         try:
-            with contextlib.redirect_stdout(buf):
-                cmd_resume(rargs)
+            try:
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(errbuf):
+                    cmd_resume(rargs)
+            finally:
+                # Still show the operator what resume said (the
+                # ROOT-EQUIVALENT warning above all), just captured first so
+                # a refusal's reason can be reported below.
+                sys.stderr.write(errbuf.getvalue())
         except SystemExit as e:
             if e.code:
+                _err_lines = [ln.strip() for ln in errbuf.getvalue().splitlines()
+                              if ln.strip()]
                 failed.append({"runId": run_id,
-                               "error": f"resume exited {e.code}"})
+                               "error": f"resume exited {e.code}"
+                                        + (f": {_err_lines[-1]}" if _err_lines else "")})
                 continue
         except (OSError, ValueError) as e:
             failed.append({"runId": run_id, "error": str(e)})
@@ -8795,11 +8916,21 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--network", default=None, metavar="NET",
                    help="docker network override; defaults to the network "
                         "recorded at start time")
-    s.add_argument("--allow-docker", action="store_true",
-                   help="remount the host docker socket (ROOT-EQUIVALENT "
-                        "host access -- trusted PRDs only)")
+    # Issue #297: tri-state -- None (neither flag) replays the run's record.
+    _dg = s.add_mutually_exclusive_group()
+    _dg.add_argument("--allow-docker", dest="allow_docker", action="store_const",
+                     const=True,
+                     help="mount the host docker socket (ROOT-EQUIVALENT host "
+                          "access -- trusted PRDs only) and record it for later "
+                          "resumes; defaults to the docker access recorded at "
+                          "start (or by the last resume that passed a flag); "
+                          "re-validates the socket")
+    _dg.add_argument("--no-allow-docker", dest="allow_docker", action="store_const",
+                     const=False,
+                     help="drop recorded docker access for this and every later "
+                          "resume (recorded)")
     s.add_argument("--no-detach", dest="detach", action="store_false")
-    s.set_defaults(func=cmd_resume, detach=True)
+    s.set_defaults(func=cmd_resume, detach=True, allow_docker=None)
 
     s = sub.add_parser("logs", help="agent transcript (tail-style: -N, -Nf, -f)")
     s.add_argument("run_id")

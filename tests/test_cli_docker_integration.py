@@ -121,6 +121,29 @@ def test_start_allow_docker_real_injection(ctl, tmp_path):
     assert f"RALPHD_RUN_ID={run_id}" in env
 
 
+def test_resume_replays_allow_docker_real(ctl, tmp_path):
+    """Issue #297: a BARE resume of a run started with --allow-docker gets
+    the socket bind, group and RALPHD_HOST_* env back on the real container."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    run_id = rid("itg-redock")
+    res = ctl.start(run_id, "--workspace", str(ws), "--allow-docker")
+    assert res.returncode == 0, res.stderr
+    res = ctl.run("stop", run_id, "--force")
+    assert res.returncode == 0, res.stderr
+    res = ctl.run("resume", run_id, "--image", IMAGE)
+    assert res.returncode == 0, res.stderr
+    assert "ROOT-EQUIVALENT" in res.stderr
+
+    info = inspect(f"ralphd-{run_id}")
+    assert f"{DOCKER_SOCK}:/var/run/docker.sock" in info["HostConfig"]["Binds"]
+    assert info["HostConfig"]["GroupAdd"] == [str(os.stat(DOCKER_SOCK).st_gid)]
+    env = info["Config"]["Env"]
+    assert f"RALPHD_HOST_WORKSPACE={ws}" in env
+    assert f"RALPHD_HOST_RUN_DIR={ctl.registry / 'runs' / run_id}" in env
+    assert f"RALPHD_RUN_ID={run_id}" in env
+
+
 def test_stop_reaps_real_labeled_sibling(ctl):
     run_id = rid("itg-reap")
     res = ctl.start(run_id)

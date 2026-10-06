@@ -68,6 +68,10 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 from .. import __version__, collapse_index, render_index
 from ..engine.config import MUTATING_METHODS, JobConfig
 from ..engine.state import (
+    docker_access_view,
+    format_docker_access,
+    read_docker_access,
+    docker_access_unreadable,
     format_run_timing_lines,
     run_timing,
     NO_ARTIFACTS,
@@ -1495,6 +1499,28 @@ def _with_llm_headers(doc: dict, cfg_path: Path) -> dict:
     return {**doc, "llmHeaders": headers}
 
 
+def _with_docker_access(doc: dict, cfg_path: Path) -> dict:
+    """Issue #297: attach this run's docker access to a status doc
+    server-side, mirroring `_with_llm_headers` -- read from the host-side
+    record in `cfg_path.parent` through the ONE shared reader/formatter
+    `ralphctl status` also uses (`state.read_docker_access` /
+    `format_docker_access`). Always overwrites: a `dockerAccess`/
+    `dockerAccessLine` in a proxied live payload is never trusted.
+
+    Applied OUTSIDE the on-disk status-block cache (keyed on status.json's
+    mtime alone), so a resume that re-records access shows at once."""
+    if not isinstance(doc, dict):
+        return doc
+    try:
+        view = docker_access_view(
+            read_docker_access(cfg_path.parent),
+            unreadable=docker_access_unreadable(cfg_path.parent))
+    except Exception:
+        view = docker_access_view(None)
+    return {**doc, "dockerAccess": view,
+            "dockerAccessLine": format_docker_access(view)}
+
+
 def _with_approach_display(doc: dict) -> dict:
     """Task 008 (#16): attach the rendered approach counter (`2/3`) to a status
     doc server-side, by the same one shared formatter `ralphctl status`/`runs`
@@ -2399,6 +2425,8 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
             _cfg_path), _cfg_path)
     else:
         shaped_status = _cached_disk_status_block(reg, run_dir, run_id, recorded_status)
+    shaped_status = _with_docker_access(
+        shaped_status, _config_dir(reg, run_id) / "job.yaml")
 
     # Task 005 (PRD requirement A.5, #269): both markers, on the SAME doc
     # whichever branch produced it -- see `_with_pause_markers`'s own

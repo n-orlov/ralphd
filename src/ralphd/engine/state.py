@@ -1563,6 +1563,78 @@ def image_record(run_root: Path) -> dict:
     return image_record_from(read_json(Path(run_root) / HOST_FILE, None))
 
 
+# Issue #297: whether a run's job container gets the host docker socket is a
+# property of the RUN, recorded once by `ralphctl start` (and re-recorded by a
+# `resume` that passed `--allow-docker`/`--no-allow-docker`) so every later
+# container -- a bare resume, a `doctor --fix` auto-resume -- re-applies it.
+# It lives in the run's CONFIG dir (mounted `/config:ro`, next to
+# `auto-resume.json`), never in host.json: the run dir is bind-mounted
+# read-write into the container, so an agent could forge a grant there and
+# gain root-equivalent access on the next unattended resume. One reader here
+# for the CLI and the hub (which cannot import cli.main at module level).
+DOCKER_ACCESS_FILE = "docker-access.json"
+
+
+def read_docker_access(cdir: Path) -> dict | None:
+    """The parsed docker-access record in a run's config dir, its
+    `allow_docker` coerced to a real bool (a string spelling like "false"
+    never reads as True); None when absent, unreadable or malformed -- a run
+    predating #297 has no record, and callers treat that as "off"."""
+    try:
+        doc = json.loads((Path(cdir) / DOCKER_ACCESS_FILE).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or "allow_docker" not in doc:
+        return None
+    val = doc["allow_docker"]
+    enabled = (val.strip().lower() in ("1", "true", "yes", "on")
+               if isinstance(val, str) else bool(val))
+    return {**doc, "allow_docker": enabled}
+
+
+def docker_access_unreadable(cdir: Path) -> bool:
+    """True when a docker-access record EXISTS in `cdir` but
+    `read_docker_access` cannot use it (truncated, not JSON, no
+    `allow_docker`). Distinct from absent: a run predating #297 is "off",
+    but a damaged record may have been a grant, so treating it as "off"
+    would be the silent drop #297 exists to stop."""
+    path = Path(cdir) / DOCKER_ACCESS_FILE
+    return (path.exists() or path.is_symlink()) and read_docker_access(cdir) is None
+
+
+def docker_access_view(record, *, unreadable: bool = False) -> dict:
+    """`{"enabled", "setBy", "at"}` for display: `enabled` is None when
+    nothing is recorded (never omitted -- the same discipline as the image
+    record), and non-string junk in `setBy`/`at` is dropped. `unreadable`
+    (a record on disk that `read_docker_access` rejected) adds
+    `"unreadable": True` so the line does not claim the run predates #297."""
+    if not isinstance(record, dict):
+        view = {"enabled": None, "setBy": None, "at": None}
+        if unreadable:
+            view["unreadable"] = True
+        return view
+    set_by, at = record.get("setBy"), record.get("at")
+    return {"enabled": bool(record.get("allow_docker")),
+            "setBy": set_by if isinstance(set_by, str) else None,
+            "at": at if isinstance(at, str) else None}
+
+
+def format_docker_access(view) -> str:
+    """THE one-line rendering of a run's docker access, shared by
+    `ralphctl status` and the hub so the two can never word it differently."""
+    if isinstance(view, dict) and view.get("unreadable"):
+        return (f"unreadable ({DOCKER_ACCESS_FILE} is damaged; a resume "
+                "refuses until --allow-docker or --no-allow-docker)")
+    if not isinstance(view, dict) or view.get("enabled") is None:
+        return ("not recorded (run predates #297; a resume mounts the socket "
+                "only with --allow-docker)")
+    if view["enabled"]:
+        return "on (host docker socket mounted -- ROOT-EQUIVALENT)"
+    if view.get("setBy") == "resume":
+        return "off (dropped by resume --no-allow-docker)"
+    return "off"
+
+
 def format_image_id(image_id) -> str:
     """A docker-style short image id (12 hex, algorithm prefix dropped) for
     display; '' when there is nothing to show."""

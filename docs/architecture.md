@@ -3667,6 +3667,21 @@ image builds):
   overridable via `RALPHD_DOCKER_SOCK`) and adds the socket's group via
   `--group-add <gid>` (computed at launch — the gid differs per host). The
   containers the job starts are **siblings** on the host daemon, not children.
+- **Recorded per run, replayed on every container (#297).** Docker access
+  is a property of the run, not of one launch: `start` writes it, on or off,
+  to `<config-dir>/docker-access.json`, and every later container — a bare
+  `resume`, a `doctor --fix` auto-resume, the abort → edit → resume recipe —
+  re-applies it, re-validating the socket and re-printing the warning.
+  `resume --allow-docker` / `--no-allow-docker` override and re-record it;
+  a recorded grant whose socket is gone, or a record that exists but cannot
+  be read, is refused (exit `2`, before anything is mutated) rather than
+  silently dropped. It is deliberately
+  *not* stored in `host.json` beside `network`: the run dir is bind-mounted
+  read-write into the container, so a grant stored there could be written by
+  the agent itself and turned into root on the next unattended resume. The
+  config dir is mounted `/config:ro`, the same reason `auto-resume.json`
+  lives there. A run with no record (started before 0.32.2) resumes without
+  the socket unless the flag is passed.
 - **Path translation gotcha.** A sibling's `-v` is resolved by the *host*
   daemon: container-local paths (`/workspace`, `/run/ralphd`) mount as empty
   dirs and the daemon may auto-create them root-owned on the host. ralphctl

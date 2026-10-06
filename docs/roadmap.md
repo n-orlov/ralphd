@@ -36,6 +36,7 @@ in [docs/prds/](prds/README.md).
 
 ## Shipped
 
+- v0.32.2 — docker access survives every container restart — `start --allow-docker` records it for the run (in the read-only config dir, never the agent-writable run dir), a bare `resume` and a `doctor --fix` auto-resume re-apply it with the socket re-validated, `resume --no-allow-docker` drops it for good, a recorded socket that has gone missing refuses the resume instead of silently dropping it, and `ralphctl status` and the hub show a `docker:` line (#297).
 - v0.32.1 — cost grouped by payer — a profile's `billing:` block names who pays and how (metered, subscription, chargeback, free), every iteration is stamped with it, and `ralphctl cost`/`status`, the hub and the run record show a `spend:` headline and a by-payer table with per-model rows; runs recorded before it keep their layout (#298).
 - v0.32 — the hub shows what the run knows — each iteration shows its thinking/effort (#290), the header shows the original start, the latest resume and both durations (#291), `ralphctl undefer` and a hub button wake a deferred task now (#292), each iteration links to its router call (#293), artifacts open in a paged browser modal (#294), the hat model map is a table (#295), and the runs list has a sortable cost column (#296).
 - v0.31.1 — the hub's iteration timeline collapses to the 3 newest behind "show all N iterations", and a Current iteration panel beside the live log shows the in-flight iteration's model, harness, tier, task, attempt, elapsed against the timeout and any deferral, built server-side (#288).

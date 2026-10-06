@@ -100,7 +100,7 @@ ralphctl start --prd <file|-> [options]
 | `--forward-env NAME\|PREFIX_*` | — | forward host env var(s) into the container, by exact name or prefix glob (repeatable). Required for any non-standard vars — see [llm-profiles.md](llm-profiles.md) |
 | `--skills <dir>` | — | mount a skills directory (repeatable) |
 | `--creds <dir>` | — | mount a credentials directory (see below) |
-| `--allow-docker` | off | mount the host docker socket into the job container — **root-equivalent host access**, see below |
+| `--allow-docker` | off | mount the host docker socket into the job container — **root-equivalent host access**, see below. Recorded (on or off) for the run, so every later resume and auto-resume re-applies it (#297) |
 | `--image <ref>` | built from source (`ralphd:<hash>`) | pin an exact engine image instead of building one — see "The job image" below; falls back to the registry's `image` (`ralphctl config`) if set |
 | `--base-image <ref>` | — | build the job image **on top of** this one — see "Bring your own base image" below. Mutually exclusive with `--image` |
 | `--dockerfile <path>` | — | build **this** Dockerfile (with its own directory as the build context) into that base image instead of naming one that already exists — see "Bring your own base image" below. Mutually exclusive with `--image` and `--base-image` |
@@ -347,6 +347,17 @@ containers; grant it only to PRDs you trust as much as your own shell. ralphctl
 prints this warning to stderr at launch. Sibling rules the agent is told (and
 you should know):
 
+- **Docker access belongs to the run, not to one container (#297).** `start`
+  records it — on or off — in `<registry>/configs/<run>/docker-access.json`
+  (`{"allow_docker", "setBy", "at"}`, mounted read-only into the container),
+  and every later container for the run re-applies it: a bare `resume`, a
+  `doctor --fix` auto-resume, the abort → edit `job.yaml` → resume recipe.
+  The socket is re-validated and the warning re-printed on each of them.
+  `resume --no-allow-docker` drops it and records that, so it stays dropped;
+  a run started without the flag never gains it unless a resume passes
+  `--allow-docker` explicitly. `ralphctl status` and the hub show it as a
+  `docker:` line.
+
 - Containers the job starts are **siblings on the host daemon** — their `-v`
   paths are *host* paths. ralphctl injects `RALPHD_HOST_WORKSPACE`,
   `RALPHD_HOST_RUN_DIR`, and `RALPHD_RUN_ID` so the agent can mount the right
@@ -576,6 +587,22 @@ omitted for a run dir that records no image (pre-v0.6), never `image: None`.
 `imageDockerfile`, all explicitly `null` when unrecorded — the same six fields
 `GET /status` serves, read from the same `host.json` record, and the same record
 `resume` reproduces.
+
+A `docker:` line (issue #297) says whether the run's containers get the host
+docker socket, read from the run's `docker-access.json` record (see
+`start --allow-docker`), always printed so a lost mount is visible:
+
+```
+docker:    on (host docker socket mounted -- ROOT-EQUIVALENT)
+```
+
+The other values are `off`, `off (dropped by resume --no-allow-docker)`,
+`not recorded (run predates #297; a resume mounts the socket only with
+--allow-docker)`, and `unreadable (docker-access.json is damaged; a resume
+refuses until --allow-docker or --no-allow-docker)`. `--json` carries
+`dockerAccess: {enabled, setBy, at, line}`, `enabled` `null` when nothing is
+recorded, plus `unreadable: true` when a record exists but cannot be read; the hub's run header shows the same
+line as its `docker` row.
 
 Task 032 (F.6): the running engine's own version (task 030's `status.json`
 `engineVersion`) rides beside the content-hash tag on this same line, tag
@@ -3057,7 +3084,33 @@ passed a flag. Carrying a live change forward needs passing the same flag
 (with whatever value you want to keep) on the resume that follows it. See
 `ralphctl budget`'s section above for the full per-knob table.
 
-`--allow-docker`, `--image`, `--port`, `--api-bind`, `--network` (defaults
+**Docker access (#297).** With neither flag, `resume` re-applies the docker
+access recorded for the run in `<registry>/configs/<run>/docker-access.json`
+(written by `start`, and by any resume that passed a flag): the socket is
+re-validated, the ROOT-EQUIVALENT warning is printed again, and a one-line
+`docker access: on (recorded at start; ...)` notice says where it came from.
+Precedence is explicit flag > record > off:
+
+| flag | effect | recorded |
+|---|---|---|
+| (none) | the recorded value; **off** for a run with no record (one started before 0.32.2) | no |
+| `--allow-docker` | mount the socket | yes, `setBy: resume` |
+| `--no-allow-docker` | no socket, no `RALPHD_HOST_*` env | yes, so later bare resumes keep it dropped |
+
+The two flags are mutually exclusive (exit `2`). When the record says on but
+the socket is missing or not a socket, `resume` **refuses** with exit `2`
+before it changes anything (no container removed, no `job.yaml` top-up
+written) and names the record and `--no-allow-docker` — it never silently
+drops the socket. A record that exists but cannot be read (truncated, not
+JSON) is refused the same way, naming the file: it may have been a grant, so
+it is never read as off — pass `--allow-docker` or `--no-allow-docker` to
+decide, and that flag rewrites the record. A `doctor --fix` auto-resume replays the record the same way
+and reports such a refusal's reason in `autoResume.failed[].error`. The record
+lives in the config dir, never in the run dir's `host.json`: the run dir is
+writable from inside the container, so the agent cannot grant itself the
+socket for its next resume.
+
+`--image`, `--port`, `--api-bind`, `--network` (defaults
 to the network recorded at start time), `--no-detach` mirror
 `start`'s flags of the same name. `--image` on `resume` pins as always; with no
 flag, `resume` **reproduces the image this run started on** — the reference and
@@ -3077,7 +3130,9 @@ again with.
 
 Exit codes: `3` unknown run, `5` the run's container is still alive (a live
 engine already holds the run dir's flock; `abort`/`stop` it first), `2` a
-malformed `--iterations` value, `1` the underlying `docker run` failed.
+malformed `--iterations` value, both docker flags, or recorded/requested docker
+access whose socket is missing or not a socket, `1` the underlying
+`docker run` failed.
 
 ### `ralphctl config get <key>` / `ralphctl config set <key> <value>`
 

@@ -181,16 +181,20 @@ commits and issue state all persist. It is the same run continuing.
 ```bash
 # a longer wall clock is NOT a resume flag — edit the run's job.yaml first:
 #   job_timeout_s: 43200        (the deadline is computed at engine start)
-ralphctl resume <run> --iterations +500 --allow-docker
+ralphctl resume <run> --iterations +500
 ```
 
 - **`resume` has no `--timeout`.** The window comes from `job_timeout_s` in
   `~/.ralphd/configs/<run>/job.yaml`, read when the engine starts — so editing
   it before resuming grants a full fresh window.
 - `--iterations +N` adds to the existing budget; a bare integer sets it.
-- **`--allow-docker` is not replayed.** If the original run had the socket, pass
-  it again or the work that needs siblings will fail. Check what the previous
-  container actually had (`docker inspect` its mounts) rather than guessing.
+- **Docker access is replayed (since 0.32.2, #297).** A run started with
+  `--allow-docker` keeps the socket on a bare `resume` and on auto-resume;
+  `resume --no-allow-docker` drops it and later bare resumes keep it dropped.
+  If a recorded socket is missing, resume refuses (exit 2) instead of
+  dropping it silently. `ralphctl status` shows it on the `docker:` line. A
+  run started before 0.32.2 has no record: pass `--allow-docker` once and it
+  is recorded from then on.
 - `--network` and the image default to what the run recorded. **Do not pin
   `--image` without a reason** — the default already reproduces the recorded
   image and keeps its provenance, which pinning discards.

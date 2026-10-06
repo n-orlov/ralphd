@@ -629,8 +629,16 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # #298 review cures: +10 tests / +0 modules (tests/test_payer_billing.py:
     # stamped zero-quote, mixed-payer headline, control-character labels)
     # -> fast 7468/499, smoke 5743/375.
-    "fast": {"tests": 7468, "modules": 499},
-    "smoke": {"tests": 5743, "modules": 375},
+    # #297 docker access replayed on resume: +22 tests / +1 module
+    # (tests/test_cli_docker_access_replay.py), +1 in
+    # tests/test_cli_docker_integration.py (real daemon, skipped without one)
+    # -> fast 7491/500, smoke 5766/376.
+    # #297 review cures: +3 tests / +0 modules
+    # (tests/test_cli_docker_access_replay.py: a damaged record refuses a bare
+    # resume and auto-resume, and reads as unreadable) -> fast 7494/500,
+    # smoke 5769/376.
+    "fast": {"tests": 7494, "modules": 500},
+    "smoke": {"tests": 5769, "modules": 376},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

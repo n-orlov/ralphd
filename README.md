@@ -17,7 +17,7 @@ outputs. The CLI is documented to be driven by a human **or** by another AI agen
 - **ralphctl** is the host-side CLI: it builds the image, starts and resumes
   containers, and reads and steers runs. It also serves the local web hub
   (`ralphctl ui`).
-- Both ship in one Python distribution, `ralphd` (version 0.32.1, Python >= 3.11).
+- Both ship in one Python distribution, `ralphd` (version 0.32.2, Python >= 3.11).
 
 ```
 ┌─────────────────────────────┐        ┌──────────────────────────────────────┐
