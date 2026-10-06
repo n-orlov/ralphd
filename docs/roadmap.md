@@ -36,6 +36,7 @@ in [docs/prds/](prds/README.md).
 
 ## Shipped
 
+- v0.32.1 — cost grouped by payer — a profile's `billing:` block names who pays and how (metered, subscription, chargeback, free), every iteration is stamped with it, and `ralphctl cost`/`status`, the hub and the run record show a `spend:` headline and a by-payer table with per-model rows; runs recorded before it keep their layout (#298).
 - v0.32 — the hub shows what the run knows — each iteration shows its thinking/effort (#290), the header shows the original start, the latest resume and both durations (#291), `ralphctl undefer` and a hub button wake a deferred task now (#292), each iteration links to its router call (#293), artifacts open in a paged browser modal (#294), the hat model map is a table (#295), and the runs list has a sortable cost column (#296).
 - v0.31.1 — the hub's iteration timeline collapses to the 3 newest behind "show all N iterations", and a Current iteration panel beside the live log shows the in-flight iteration's model, harness, tier, task, attempt, elapsed against the timeout and any deferral, built server-side (#288).
 - v0.31 — Claude Code polish — the hub and `ralphctl iteration` show each iteration's harness beside its model (#285), `llm test --hats` runs start's route check, takes `--network`, reports a runner's stderr tail and classifies a claude-code `model_not_found` as refused (pi unchanged), and a Claude Code hat no longer inherits gateway or cloud routing env (#286), and the wrapper passes the SDK's `skills=[]` so the CLI's bundled skills stay off (#287).

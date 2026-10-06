@@ -40,8 +40,13 @@ import yaml
 
 from .. import __version__
 from ..engine.config import (
+    BILLING_BASES,
+    BILLING_LABEL_CONTROL_RE,
     CLAUDE_CODE_MIN_VERSION,
     DEFAULT_HARNESS,
+    DEFAULT_SUBSCRIPTION_PAYER,
+    HARNESS_FORCED_BASIS,
+    HOST_BILLING_PAYER,
     HARNESSES,
     MODEL_HATS,
     MUTATING_METHODS,
@@ -2043,6 +2048,39 @@ def _print_rubric_status(prd_text: str, workspace_root: Path) -> None:
         print(f"ralphctl: warning: {event['message']}", file=sys.stderr)
 
 
+def _job_billing(args, llm_profile, registry_billing: dict) -> dict | None:
+    """#298: the job.yaml `billing` block. Each of payer/basis takes the
+    first of: the `--billing-*` flag; the named profile's billing block (the
+    registry block for `host`); the fallback. `None` for `--llm none`.
+    Raises `ProfileError` where the result breaks `HARNESS_FORCED_BASIS`."""
+    flag_payer = getattr(args, "billing_payer", None)
+    flag_basis = getattr(args, "billing_basis", None)
+    if args.llm == "none":
+        if flag_payer is not None or flag_basis is not None:
+            die(2, "--billing-payer/--billing-basis need --llm <profile> or host")
+        return None
+    if flag_payer is not None and not flag_payer.strip():
+        die(2, "--billing-payer must not be blank")
+    if flag_payer is not None and BILLING_LABEL_CONTROL_RE.search(flag_payer.strip()):
+        die(2, "--billing-payer must not contain control characters")
+    if llm_profile is not None:
+        base, profile, harness = llm_profile["billing"], args.llm, llm_profile["harness"]
+    else:
+        # host: the registry block, already resolved with the host fallbacks
+        # (HOST_BILLING_PAYER, DEFAULT_BILLING_BASIS) for any field it omits.
+        base, profile, harness = registry_billing, "host", DEFAULT_HARNESS
+    payer = flag_payer.strip() if flag_payer else base["payer"]
+    basis = flag_basis or base["basis"]
+    forced = HARNESS_FORCED_BASIS.get(harness)
+    if forced and basis != forced:
+        die(2, f"--billing-basis {basis!r} contradicts harness {harness!r}, "
+               f"which always bills {forced!r}")
+    return {"payer": payer, "basis": basis, "profile": profile,
+            "harness": harness,
+            "subscription_payer": (registry_billing.get("subscription_payer")
+                                   or DEFAULT_SUBSCRIPTION_PAYER)}
+
+
 def cmd_start(args):
     _apply_template(args)
     # Task 006 (#60 pillar 4 cleanup): `--fast-model`/`--model-strategy` are
@@ -2151,6 +2189,18 @@ def cmd_start(args):
                 args.llm, registry(), header_ref_names=profile_header_ref_names)
         except llm_profiles.ProfileError as e:
             die(2, str(e))
+
+    # #298: the registry `billing:` block (for `--llm host` and the
+    # subscription label), validated once for every --llm value.
+    try:
+        registry_billing = llm_profiles.resolve_billing(
+            _registry_config(registry()).get("billing"),
+            label="registry config.yaml", harness=DEFAULT_HARNESS,
+            default_payer=HOST_BILLING_PAYER,
+            extra_keys=("subscription_payer",))
+        job_billing = _job_billing(args, llm_profile, registry_billing)
+    except llm_profiles.ProfileError as e:
+        die(2, str(e))
 
     # The per-hat harness table, now that the profile's `harness:` is known.
     harness_table = _resolve_harness_table(
@@ -2290,6 +2340,9 @@ def cmd_start(args):
         # strategy the run started with.
         "price_strategy": args.price_strategy or (
             llm_profile.get("price_strategy") if llm_profile else None),
+        # #298: who pays for the run's tokens (`_job_billing`); omitted for
+        # `--llm none`, so a run without it keeps the legacy layout.
+        "billing": job_billing,
         # Task 010 (requirement B.2, #197): by the time cmd_start reads it,
         # `args.notifier_url` is already the layered answer (explicit flag >
         # `--template`'s own `notifier_url:` key > None) -- see
@@ -4247,10 +4300,19 @@ def cmd_status(args):
     lines.extend(_format_progress_budget_lines(status.get("progressBudget")))
     lines.append(f"usage:     {_summarize_usage(status.get('usage') or {})}")
     # The subscription list price (claude-code hats), apart from the cost.
+    # Lazy import (#298): keeps main's module import independent of the payer
+    # view; a run without byPayer gets today's output byte for byte.
+    from ..engine import state as _st
+    _pv = _st.payer_view(status.get("usage") or {})
     _listed = (status.get("usage") or {}).get("listEquivalentUSD")
     if isinstance(_listed, (int, float)) and not isinstance(_listed, bool) and _listed:
         lines.append(f"list-equiv: {format_money(_listed, 4)}"
-                     "  (subscription list price, not billed)")
+                     + (_st.COST_LIST_EQUIV_ZERO_PRICED_NOTE if _pv else
+                        "  (subscription list price, not billed)"))
+    if _pv:
+        if _pv.get("headline"):
+            lines.append(_pv["headline"])
+        lines.extend(f"!! {n}" for n in _pv.get("notices") or [])
     # Task 020 (E.4): name the run-secrets MAC-key mount, and name the
     # documented fallback check in the same line whenever NO KEY is
     # available -- whether because the directory is not bound at all (a
@@ -5428,6 +5490,8 @@ def cmd_llm(args):
             print(f"model: {doc.get('model') or '(unset)'}")
             print(f"fast_model: {doc.get('fast_model') or '(unset)'}")
             print(f"price_strategy: {doc.get('price_strategy') or '(unset)'}")
+            _b = doc.get("billing") or {}
+            print(f"billing: {_b.get('payer')} ({_b.get('basis')})")
             print(f"harness: {doc.get('harness') or 'pi'}")
             print(f"builtin_providers: "
                   f"{', '.join(doc.get('builtin_providers') or []) or '(none)'}")
@@ -8576,6 +8640,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="LLM profile: host|none, or a name from "
                         "<registry>/llm-profiles/<name>.yaml (docs/llm-profiles.md) "
                         "[default: host, or the template's value]")
+    s.add_argument("--billing-payer", default=None, metavar="TEXT",
+                   help="who pays for this run's tokens, as a free-text label "
+                        "(#298); falls back to the --llm profile's billing "
+                        "block (registry billing: for host)")
+    s.add_argument("--billing-basis", default=None, choices=list(BILLING_BASES),
+                   help="how the run's tokens are billed (#298); the "
+                        "claude-code harness is always 'subscription'")
     s.add_argument("--llm-env", action="append", metavar="KEY=VAL")
     s.add_argument("--llm-header", action="append", metavar="NAME:VALUE|NAME=VALUE",
                    help="set this HTTP header on every provider of the "

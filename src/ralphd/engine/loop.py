@@ -3714,6 +3714,7 @@ class LoopSupervisor:
         # broken seconds ago" from "the job ended for its own reasons".
         self._last_fault_class = fault_class
         self._last_fault_error = result.error_message or ""
+        self._stamp_billing(result.usage, bundle.harness)
         meta.update(endedAt=utcnow(), exitCode=result.exit_code,
                     interrupted=result.interrupted, timedOut=result.timed_out,
                     noTrafficTimeout=result.no_traffic_timeout,
@@ -3760,8 +3761,10 @@ class LoopSupervisor:
         # that covers it exactly, same failure contract as
         # `collapse_index.write_index` above.
         render_index.write_index(itdir)
+        # byPayer.byModel keys on the REQUESTED ref (`model`); the resolved
+        # spelling is already in meta.json as modelResolved/modelRaw.
         self._accumulate_usage(result.usage, phase=phase, approach=meta.get("approach"),
-                               tier=effective_tier)
+                               tier=effective_tier, model=model)
         self.run.emit("iteration.end", number=n, phase=phase,
                       exitCode=result.exit_code, interrupted=result.interrupted,
                       sawComplete=result.saw_complete, sawVerified=result.saw_verified,
@@ -3912,7 +3915,8 @@ class LoopSupervisor:
 
     def _accumulate_usage(self, usage: dict, phase: str | None = None,
                            approach: int | None = None,
-                           tier: str | None = None) -> None:
+                           tier: str | None = None,
+                           model: str | None = None) -> None:
         status = self.run.read_status()
         total = status.get("usage", {})
         by_phase = total.get("byPhase", {})
@@ -3938,7 +3942,19 @@ class LoopSupervisor:
         total["byPhase"] = by_phase
         total["byApproach"] = by_approach
         total["byTier"] = by_tier
+        # #298: the per-payer breakdown lives in state.py; a legacy
+        # (unstamped) usage leaves `total` untouched.
+        state.accumulate_payer_usage(total, usage, model=model)
         self.run.update_status(usage=total)
+
+    def _stamp_billing(self, usage: dict, harness: str) -> None:
+        """#298: stamp `payer`/`basis` onto one iteration's usage, copied
+        from job.yaml's `billing` at call time. A run without `billing`
+        (every pre-0.32.1 run, and `--llm none`) stays unstamped and keeps
+        the legacy layout."""
+        pb = self.cfg.billing_for(harness)
+        if pb:
+            state.stamp_billing(usage, *pb)
 
     def _emit_task_changes(self) -> None:
         tasks = {t["id"]: t.get("status") for t in self.run.read_tasks().get("tasks", [])}
@@ -8670,12 +8686,14 @@ class LoopSupervisor:
         self._router_calls += 1
         transcript = router_dir / f"{self._router_calls:04d}.jsonl"
         model = self.cfg.model_for("router")
-        runner = self._runner_for(self.cfg.harness_for("router"))
+        harness = self.cfg.harness_for("router")
+        runner = self._runner_for(harness)
         result = await runner.run(
             prompt, transcript, model=model,
             timeout_s=self.cfg.router_timeout_s, extra_env=current_env())
         if result.usage:
-            self._accumulate_usage(result.usage, phase="router")
+            self._stamp_billing(result.usage, harness)
+            self._accumulate_usage(result.usage, phase="router", model=model)
         return (result.final_text or ""), (result.usage or {})
 
     @staticmethod
@@ -8805,12 +8823,14 @@ class LoopSupervisor:
             "JSON object itself."
         )
         model = self.cfg.model_for(hat)
-        runner = self._runner_for(self.cfg.harness_for(hat))
+        harness = self.cfg.harness_for(hat)
+        runner = self._runner_for(harness)
         result = await runner.run(
             prompt, transcript, model=model,
             timeout_s=self.cfg.router_timeout_s, extra_env=current_env())
         if result.usage:
-            self._accumulate_usage(result.usage, phase="contract")
+            self._stamp_billing(result.usage, harness)
+            self._accumulate_usage(result.usage, phase="contract", model=model)
         return (result.final_text or ""), (result.usage or {})
 
     async def _one_planning_attempt(self, extra: str):

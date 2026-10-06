@@ -500,6 +500,26 @@ def _usage_lines(usage: dict) -> list[str]:
     lines += _usage_bucket_lines("byPhase", usage.get("byPhase"))
     lines += _usage_bucket_lines("byApproach", usage.get("byApproach"))
     lines += _usage_bucket_lines("byTier", usage.get("byTier"))
+    # #298: the payer breakdown, only for a run that was stamped.
+    pv = state.payer_view(usage)
+    if pv is not None:
+        lines.append("- byPayer:")
+        if pv.get("headline"):
+            lines.append(f"  - headline: {pv['headline']}")
+
+        def _payer_line(indent: str, row: dict) -> str:
+            text = (f"{indent}- `{row.get('key')}` ({row.get('basis')}): "
+                    f"{row.get('tokensTotalDisplay')}, {row.get('costDisplay')}")
+            if row.get("listEquivalentDisplay"):
+                text += f", list-equiv {row['listEquivalentDisplay']}"
+            if row.get("footnote"):
+                text += f" ({row['footnote']})"
+            return text
+
+        for row in pv.get("rows") or []:
+            lines.append(_payer_line("  ", row))
+            for model_row in row.get("models") or []:
+                lines.append(_payer_line("    ", model_row))
     return lines
 
 

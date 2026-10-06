@@ -1,0 +1,1105 @@
+{
+ "iterations": [
+  {
+   "harness": "pi",
+   "model": "amazon-bedrock/eu.anthropic.claude-opus-5-5",
+   "usage": {
+    "cacheRead": 1037380,
+    "cacheWrite": 73597,
+    "costDerived": true,
+    "costDerivedUSD": 1.389448,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 44,
+    "output": 24001,
+    "totalTokens": 1135022
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "amazon-bedrock/eu.anthropic.claude-sonnet-5",
+   "usage": {
+    "cacheRead": 4713647,
+    "cacheWrite": 121083,
+    "costDerived": true,
+    "costDerivedUSD": 1.631404,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 128,
+    "output": 23740,
+    "totalTokens": 4858598
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "amazon-bedrock/eu.anthropic.claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 1073698,
+    "cacheWrite": 65685,
+    "costPriced": true,
+    "costUSD": 1.214031,
+    "input": 50,
+    "output": 10656,
+    "totalTokens": 1150089
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 292416,
+    "cacheWrite": 40884,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 18,
+    "listEquivalentUSD": 0.261491,
+    "output": 724,
+    "totalTokens": 334042
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6-astra",
+   "usage": {
+    "cacheRead": 429592,
+    "cacheWrite": 52208,
+    "costDerived": true,
+    "costDerivedUSD": 1.547702,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 26,
+    "output": 6491,
+    "totalTokens": 488317
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 189352,
+    "cacheWrite": 43357,
+    "costDerived": true,
+    "costDerivedUSD": 0.166112,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 16,
+    "output": 2365,
+    "totalTokens": 235090
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 3019076,
+    "cacheWrite": 95118,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 86,
+    "listEquivalentUSD": 1.245035,
+    "output": 1285,
+    "totalTokens": 3115565
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 100504,
+    "cacheWrite": 30259,
+    "costDerived": true,
+    "costDerivedUSD": 0.114417,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 14,
+    "output": 1829,
+    "totalTokens": 132606
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 4180930,
+    "cacheWrite": 137269,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 108,
+    "listEquivalentUSD": 1.57203,
+    "output": 1443,
+    "totalTokens": 4319750
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 698162,
+    "cacheWrite": 65753,
+    "costDerived": true,
+    "costDerivedUSD": 0.306536,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 30,
+    "output": 4441,
+    "totalTokens": 768386
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 933296,
+    "cacheWrite": 60413,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 40,
+    "listEquivalentUSD": 0.553548,
+    "output": 784,
+    "totalTokens": 994533
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 160725,
+    "cacheWrite": 34545,
+    "costDerived": true,
+    "costDerivedUSD": 0.133361,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 16,
+    "output": 1877,
+    "totalTokens": 197163
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 1580208,
+    "cacheWrite": 79709,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 52,
+    "listEquivalentUSD": 0.834852,
+    "output": 1034,
+    "totalTokens": 1661003
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 349421,
+    "cacheWrite": 57813,
+    "costDerived": true,
+    "costDerivedUSD": 0.237408,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 20,
+    "output": 3631,
+    "totalTokens": 410885
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 3551793,
+    "cacheWrite": 114889,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 90,
+    "listEquivalentUSD": 1.401311,
+    "output": 1319,
+    "totalTokens": 3668091
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 255729,
+    "cacheWrite": 44931,
+    "costDerived": true,
+    "costDerivedUSD": 0.174099,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 20,
+    "output": 2033,
+    "totalTokens": 302713
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 3237172,
+    "cacheWrite": 124767,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 78,
+    "listEquivalentUSD": 1.455415,
+    "output": 1142,
+    "totalTokens": 3363159
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 248851,
+    "cacheWrite": 44755,
+    "costDerived": true,
+    "costDerivedUSD": 0.170239,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 20,
+    "output": 1795,
+    "totalTokens": 295421
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 634741,
+    "cacheWrite": 58071,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 30,
+    "listEquivalentUSD": 0.452803,
+    "output": 644,
+    "totalTokens": 693486
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 60605,
+    "cacheWrite": 27965,
+    "costDerived": true,
+    "costDerivedUSD": 0.102777,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 10,
+    "output": 1744,
+    "totalTokens": 90324
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 1634562,
+    "cacheWrite": 88396,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 54,
+    "listEquivalentUSD": 0.98705,
+    "output": 259,
+    "totalTokens": 1723271
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 321612,
+    "cacheWrite": 43542,
+    "costDerived": true,
+    "costDerivedUSD": 0.204655,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 22,
+    "output": 4499,
+    "totalTokens": 369675
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 5841667,
+    "cacheWrite": 141584,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 124,
+    "listEquivalentUSD": 2.065481,
+    "output": 1307,
+    "totalTokens": 5984682
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 272589,
+    "cacheWrite": 50767,
+    "costDerived": true,
+    "costDerivedUSD": 0.215894,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 20,
+    "output": 4205,
+    "totalTokens": 327581
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 1997961,
+    "cacheWrite": 89809,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 60,
+    "listEquivalentUSD": 0.990736,
+    "output": 1058,
+    "totalTokens": 2088888
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 644662,
+    "cacheWrite": 57203,
+    "costDerived": true,
+    "costDerivedUSD": 0.271115,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 32,
+    "output": 3893,
+    "totalTokens": 705790
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-opus-5-5",
+   "usage": {
+    "cacheRead": 750535,
+    "cacheWrite": 60692,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 34,
+    "listEquivalentUSD": 0.860773,
+    "output": 154,
+    "totalTokens": 811415
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 627944,
+    "cacheWrite": 55126,
+    "costDerived": true,
+    "costDerivedUSD": 0.253715,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 32,
+    "output": 2998,
+    "totalTokens": 686100
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 2775001,
+    "cacheWrite": 113816,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 70,
+    "listEquivalentUSD": 1.273384,
+    "output": 1052,
+    "totalTokens": 2889939
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 241223,
+    "cacheWrite": 61599,
+    "costDerived": true,
+    "costDerivedUSD": 0.223076,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 18,
+    "output": 2464,
+    "totalTokens": 305304
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 642045,
+    "cacheWrite": 62514,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 30,
+    "listEquivalentUSD": 0.392177,
+    "output": 906,
+    "totalTokens": 705495
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 108644,
+    "cacheWrite": 29041,
+    "costDerived": true,
+    "costDerivedUSD": 0.119763,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 14,
+    "output": 2538,
+    "totalTokens": 140237
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 1326855,
+    "cacheWrite": 83809,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 52,
+    "listEquivalentUSD": 0.702905,
+    "output": 1142,
+    "totalTokens": 1411858
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 1330088,
+    "cacheWrite": 72090,
+    "costDerived": true,
+    "costDerivedUSD": 0.485959,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 54,
+    "output": 12844,
+    "totalTokens": 1415076
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 1688360,
+    "cacheWrite": 83124,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 62,
+    "listEquivalentUSD": 0.854745,
+    "output": 916,
+    "totalTokens": 1772462
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 1062694,
+    "cacheWrite": 70636,
+    "costDerived": true,
+    "costDerivedUSD": 0.413454,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 44,
+    "output": 9292,
+    "totalTokens": 1142666
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 447217,
+    "cacheWrite": 38866,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 28,
+    "listEquivalentUSD": 0.298651,
+    "output": 163,
+    "totalTokens": 486274
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 144524,
+    "cacheWrite": 27117,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 12,
+    "listEquivalentUSD": 0.18046,
+    "output": 763,
+    "totalTokens": 172416
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 236083,
+    "cacheWrite": 29894,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 18,
+    "listEquivalentUSD": 0.196937,
+    "output": 744,
+    "totalTokens": 266739
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 99294,
+    "cacheWrite": 28055,
+    "costDerived": true,
+    "costDerivedUSD": 0.101656,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 14,
+    "output": 1232,
+    "totalTokens": 128595
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 652638,
+    "cacheWrite": 40134,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 38,
+    "listEquivalentUSD": 0.365544,
+    "output": 277,
+    "totalTokens": 693087
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 118185,
+    "cacheWrite": 28477,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 10,
+    "listEquivalentUSD": 0.18256,
+    "output": 829,
+    "totalTokens": 147501
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 109897,
+    "cacheWrite": 28160,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 10,
+    "listEquivalentUSD": 0.154943,
+    "output": 50,
+    "totalTokens": 138117
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 83872,
+    "cacheWrite": 25348,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 8,
+    "listEquivalentUSD": 0.156923,
+    "output": 829,
+    "totalTokens": 110057
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 322346,
+    "cacheWrite": 30802,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 22,
+    "listEquivalentUSD": 0.239563,
+    "output": 675,
+    "totalTokens": 353845
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 245719,
+    "cacheWrite": 49579,
+    "costDerived": true,
+    "costDerivedUSD": 0.206289,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 18,
+    "output": 3898,
+    "totalTokens": 299214
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 296974,
+    "cacheWrite": 37608,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 22,
+    "listEquivalentUSD": 0.206371,
+    "output": 597,
+    "totalTokens": 335201
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 472180,
+    "cacheWrite": 35633,
+    "costDerived": true,
+    "costDerivedUSD": 0.205674,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 38,
+    "output": 5060,
+    "totalTokens": 512911
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 722742,
+    "cacheWrite": 43047,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 42,
+    "listEquivalentUSD": 0.387812,
+    "output": 964,
+    "totalTokens": 766795
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 451063,
+    "cacheWrite": 49245,
+    "costDerived": true,
+    "costDerivedUSD": 0.238738,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 28,
+    "output": 4876,
+    "totalTokens": 505212
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 641017,
+    "cacheWrite": 37584,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 42,
+    "listEquivalentUSD": 0.32821,
+    "output": 797,
+    "totalTokens": 679440
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 246596,
+    "cacheWrite": 35233,
+    "costDerived": true,
+    "costDerivedUSD": 0.171586,
+    "costPriced": false,
+    "costUSD": 0,
+    "costZeroQuoted": true,
+    "input": 22,
+    "output": 4320,
+    "totalTokens": 286171
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6-astra",
+   "usage": {
+    "cacheRead": 21667969,
+    "cacheWrite": 290434,
+    "costDerived": true,
+    "costDerivedUSD": 32.692258,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 244,
+    "output": 88388,
+    "totalTokens": 22047035
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 526761,
+    "cacheWrite": 39804,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 30,
+    "listEquivalentUSD": 0.33982,
+    "output": 846,
+    "totalTokens": 567441
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 217457,
+    "cacheWrite": 44814,
+    "costDerived": true,
+    "costDerivedUSD": 0.188881,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 20,
+    "output": 3789,
+    "totalTokens": 266080
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-opus-5-5",
+   "usage": {
+    "cacheRead": 775432,
+    "cacheWrite": 63063,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 34,
+    "listEquivalentUSD": 0.989152,
+    "output": 208,
+    "totalTokens": 838737
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-opus-5-5",
+   "usage": {
+    "cacheRead": 596233,
+    "cacheWrite": 64505,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 32,
+    "listEquivalentUSD": 0.6218,
+    "output": 237,
+    "totalTokens": 661007
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 412624,
+    "cacheWrite": 47253,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 24,
+    "listEquivalentUSD": 0.313771,
+    "output": 769,
+    "totalTokens": 460670
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6-astra",
+   "usage": {
+    "cacheRead": 891185,
+    "cacheWrite": 81100,
+    "costDerived": true,
+    "costDerivedUSD": 2.727828,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 36,
+    "output": 11491,
+    "totalTokens": 983812
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 140568,
+    "cacheWrite": 38483,
+    "costDerived": true,
+    "costDerivedUSD": 0.145949,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 14,
+    "output": 2239,
+    "totalTokens": 181304
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 2450938,
+    "cacheWrite": 99838,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 72,
+    "listEquivalentUSD": 1.181716,
+    "output": 1272,
+    "totalTokens": 2552120
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 296397,
+    "cacheWrite": 48870,
+    "costDerived": true,
+    "costDerivedUSD": 0.217501,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 22,
+    "output": 4587,
+    "totalTokens": 349876
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-opus-5-5",
+   "usage": {
+    "cacheRead": 615190,
+    "cacheWrite": 67929,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 32,
+    "listEquivalentUSD": 0.782449,
+    "output": 847,
+    "totalTokens": 683998
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 470562,
+    "cacheWrite": 46855,
+    "costDerived": true,
+    "costDerivedUSD": 0.253092,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 30,
+    "output": 6583,
+    "totalTokens": 524030
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 11255296,
+    "cacheWrite": 198160,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 176,
+    "listEquivalentUSD": 3.603512,
+    "output": 1771,
+    "totalTokens": 11455403
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 888047,
+    "cacheWrite": 66699,
+    "costDerived": true,
+    "costDerivedUSD": 0.371318,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 40,
+    "output": 8193,
+    "totalTokens": 962979
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-opus-5-5",
+   "usage": {
+    "cacheRead": 432319,
+    "cacheWrite": 53143,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 22,
+    "listEquivalentUSD": 0.740473,
+    "output": 160,
+    "totalTokens": 485644
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6-astra",
+   "usage": {
+    "cacheRead": 6317113,
+    "cacheWrite": 205400,
+    "costDerived": true,
+    "costDerivedUSD": 11.675104,
+    "costPriced": false,
+    "costUSD": 0,
+    "costZeroQuoted": true,
+    "input": 92,
+    "output": 34564,
+    "totalTokens": 6557169
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-fable-5-1",
+   "usage": {
+    "cacheRead": 1129009,
+    "cacheWrite": 114051,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 514,
+    "listEquivalentUSD": 4.186259,
+    "output": 86,
+    "totalTokens": 1243660
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 589965,
+    "cacheWrite": 49989,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 34,
+    "listEquivalentUSD": 0.36759,
+    "output": 820,
+    "totalTokens": 640808
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 252921,
+    "cacheWrite": 69435,
+    "costDerived": true,
+    "costDerivedUSD": 0.253464,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 16,
+    "output": 3151,
+    "totalTokens": 325523
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {
+    "cacheRead": 1765668,
+    "cacheWrite": 80215,
+    "costBasis": "subscription",
+    "costFree": true,
+    "costUSD": 0.0,
+    "input": 62,
+    "listEquivalentUSD": 0.851437,
+    "output": 1082,
+    "totalTokens": 1847027
+   }
+  },
+  {
+   "harness": "pi",
+   "model": "aigw-openai/openai.gpt-6.1-sol",
+   "usage": {
+    "cacheRead": 497059,
+    "cacheWrite": 49036,
+    "costDerived": true,
+    "costDerivedUSD": 0.248727,
+    "costPriced": false,
+    "costZeroQuoted": true,
+    "input": 30,
+    "output": 5376,
+    "totalTokens": 551501
+   }
+  },
+  {
+   "harness": "claude-code",
+   "model": "anthropic/claude-sonnet-5-5",
+   "usage": {}
+  }
+ ],
+ "source": "~/.ralphd/runs/deck-phase4k iterations/*/meta.json (harness, model, usage only; #298)"
+}

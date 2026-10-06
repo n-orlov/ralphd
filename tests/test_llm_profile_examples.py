@@ -69,6 +69,9 @@ def test_gateway_example_matches_docs_shape():
     assert pi["apiKey"] == "${env:GW_API_KEY}"
     ids = [m["id"] for m in pi["models"]]
     assert ids == ["big-model", "small-model"]
+    # #298: a gateway bills an internal cost centre. The generic example
+    # ships a placeholder label, never an organisation's own gateway name.
+    assert doc["billing"] == {"payer": "My gateway", "basis": "chargeback"}
 
 
 def test_cross_family_example_matches_docs_shape():
@@ -91,6 +94,27 @@ def test_cross_family_example_matches_docs_shape():
     assert openai_ids == [
         "openai.gpt-5.6-sol", "openai.gpt-5.6-luna", "openai.gpt-5.6-terra",
     ]
+    # #298: the AIGW-specific example names its own gateway.
+    assert doc["billing"] == {"payer": "AIGW gateway", "basis": "chargeback"}
+
+
+def test_claude_sub_example_file_exists():
+    # #298: the Claude subscription snippet of docs/llm-profiles.md ships too.
+    assert (EXAMPLES_DIR / "claude-sub.yaml").is_file()
+
+
+def test_claude_sub_example_matches_docs_shape(tmp_path):
+    doc = yaml.safe_load((EXAMPLES_DIR / "claude-sub.yaml").read_text())
+    assert doc["harness"] == "claude-code"
+    assert doc["model"].startswith("anthropic/")
+    assert doc["env"]["CLAUDE_CODE_OAUTH_TOKEN"].startswith("${file:")
+    assert doc["billing"] == {"payer": "Claude subscription", "basis": "subscription"}
+    assert "pi" not in doc
+    # its billing block validates against the claude-code harness (`${file:}`
+    # is not resolved here: billing is literal and read before env).
+    from ralphd.cli.llm_profiles import resolve_billing
+    assert resolve_billing(doc["billing"], label="claude-sub", harness=doc["harness"],
+                           default_payer="claude-sub") == doc["billing"]
 
 
 def test_cross_family_example_resolves_given_placeholder_env(tmp_path, monkeypatch):
@@ -152,7 +176,8 @@ def test_gateway_example_resolves_given_stubbed_cmd_and_placeholder_env(tmp_path
     assert [m["id"] for m in pi["models"]] == ["big-model", "small-model"]
 
 
-@pytest.mark.parametrize("fn", ["bedrock.yaml", "gateway.yaml", "aigw-cross-family.yaml"])
+@pytest.mark.parametrize("fn", ["bedrock.yaml", "gateway.yaml", "aigw-cross-family.yaml",
+                                "claude-sub.yaml"])
 def test_example_has_no_real_endpoints_or_org_specific_values(fn):
     text = (EXAMPLES_DIR / fn).read_text()
     lower = text.lower()

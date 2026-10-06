@@ -16,3 +16,6 @@ build/
 # engine reads a workspace petitions file from disk, so nothing here needs
 # to be tracked.
 /artifacts/
+
+# JetBrains IDE settings
+.idea/

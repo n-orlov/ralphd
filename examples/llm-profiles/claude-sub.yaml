@@ -1,0 +1,23 @@
+# examples/llm-profiles/claude-sub.yaml
+#
+# A Claude subscription via the Claude Code CLI (the `claude-code` harness)
+# instead of an API gateway. Copy this file to
+# ~/.ralphd/llm-profiles/claude-sub.yaml (or any other name) and use
+# `--llm claude-sub` on `ralphctl start`.
+#
+# The OAuth token is never a literal in this file: it is read from a host
+# file at container-start time and travels only as container env.
+#
+# `billing:` (#298) names who pays: the subscription is a flat fee, so its
+# hats report $0 and their list price rides apart as the list-equivalent.
+# The claude-code harness always bills `subscription`; any other basis here
+# is refused at `start`.
+description: Claude subscription via Claude Code
+harness: claude-code
+builtin_providers: [anthropic]       # lets a pi hat use anthropic/* too
+model: anthropic/claude-sonnet-5
+env:
+  CLAUDE_CODE_OAUTH_TOKEN: ${file:~/.config/claude/oauth-token}
+billing:
+  payer: Claude subscription
+  basis: subscription

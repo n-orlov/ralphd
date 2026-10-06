@@ -93,6 +93,8 @@ ralphctl start --prd <file|-> [options]
 | `--notifier-url <url>` | unset | endpoint the engine's notify hat tool POSTs operator updates to (task 010, PRD requirement B.2, #197) -- configuring the channel no longer requires `start` -> `docker stop` -> hand-edit `job.yaml` -> `resume`. Written to the run's `job.yaml` as `notifier_url` (so `resume` replays it) exactly like `--price-strategy` above; when the flag is absent it falls back to the `--template`'s own `notifier_url:` key (`notifier_url` is one of the template scalar fields, see "Templates" below), and a `notifier_url:` key hand-added to a started run's own `job.yaml` reaches the config the same way. It has no registry-wide level of its own (`ralphctl config`), unlike `--price-strategy`: an endpoint is one operator's channel for one job, not a fleet-wide default. Precedence: `RALPHD_NOTIFIER_URL`, read by the engine inside the container at load time, overrides everything below unconditionally (a single-run override with no job.yaml edit); then the flag, then the template's key; unset means unconfigured, and the notify hat tool answers "no notifier URL configured" instead of raising |
 | `--review-clone-protocol <command>` | unset | the command line -- a workspace-relative script, plus any arguments it needs -- the `review` and `verdict_gate` hats run inside their disposable clone to prove that clone is what they are measuring, in place of the Python `pip install -e .` plus `__file__` assertion those prompts otherwise spell out (#208). A product with no `pyproject.toml` cannot satisfy that recipe, so a hat honouring its prompt measures nothing and rejects `curable: false` on every approach; naming the product's own equivalent here authorizes it at launch, where it is auditable, instead of through a mid-run `ralphctl amend --wave`. **The value is the command the hat runs, as written** (#265): the whole string is rendered **verbatim** into the `## Disposable-clone protocol (operator-authorized)` block -- the engine introduces no shell, performs no argv parsing on it and invents no quoting convention, so a script that itself requires an argument can be named through this same flag exactly as it is invoked anywhere else. Worked example: a Go product's `ci/review.sh` requires at least one argument and exits 2 with none, so `--review-clone-protocol 'ci/review.sh smoke'` names it complete with the argument it needs, and the hat sees `` `ci/review.sh smoke` `` in its prompt unchanged. A bare path with no arguments (the only shape used before #265) renders exactly as it always has. Written to the run's `job.yaml` as `review_clone_protocol` (so `resume` replays it) exactly like `--notifier-url` above, and when the flag is absent it falls back to the `--template`'s own `review_clone_protocol:` key (one of the template scalar fields, see "Templates" below); a key hand-added to a started run's own `job.yaml` reaches the config the same way. No registry-wide level (`ralphctl config`): the command is a property of one product's repository, not a fleet-wide default. The engine neither runs nor validates it -- it renders it into every hat's prompt as above, and the judging hat requires exit 0 before citing any measurement from that clone. Unset leaves the prompts' Python recipe as the protocol, so an existing run is unaffected |
 | `--llm <profile>` | `host` | LLM profile ([llm-profiles.md](llm-profiles.md)); falls back to the registry's `default_llm_profile` (`ralphctl config`) if set
+| `--billing-payer TEXT` | the `--llm` profile's `billing.payer` | who pays for this run's tokens, a free-text label (#298) written into the run's `job.yaml` `billing` block and shown by `ralphctl cost`/`status` and the hub's by-payer table. Falls back to the profile's `billing:` block (for `--llm host`, the registry `config.yaml`'s `billing:` mapping, see "Who pays" below), then to the profile name (`host models.json` for host). A blank value, or one holding a control character such as a newline, exits `2`; so does either billing flag with `--llm none` |
+| `--billing-basis metered\|subscription\|chargeback\|free` | the profile's `billing.basis`, else `metered` | how those tokens are billed (#298): `metered`/`chargeback` report the priced cost, `subscription`/`free` report `$0` with the list price apart as the list-equivalent. The `claude-code` harness always bills `subscription`, so a different basis on a `claude-code` profile exits `2` |
 | `--llm-env KEY=VAL` | — | ad-hoc env additions to the LLM config (repeatable) |
 | `--llm-header NAME:VALUE` | none | set this HTTP header on every provider of the resolved pi config (`NAME=VALUE` also accepted; repeatable; a same-named header the profile already carries -- whether set per-provider or via the profile's own top-level `headers:` shorthand (#177) -- is overridden, others are kept; `${env:}`/`${file:}`/`${cmd:}` resolve on the host); falls back to a `--template`'s own `llm_header:` list (task 045, #177) — see [llm-profiles.md](llm-profiles.md) for the full flag > template > per-provider profile headers > top-level profile `headers:` precedence, and the `ralphctl resume` section below for `resume --llm-header`'s override |
 | `--forward-env NAME\|PREFIX_*` | — | forward host env var(s) into the container, by exact name or prefix glob (repeatable). Required for any non-standard vars — see [llm-profiles.md](llm-profiles.md) |
@@ -756,7 +758,16 @@ Human output also renders (task 003):
 - `list-equiv:` -- printed after `usage:` when the run has subscription
   traffic (a `claude-code` hat): the SDK's list price for it, e.g.
   `list-equiv: $0.4000  (subscription list price, not billed)`. It is never
-  part of the `usage:` cost.
+  part of the `usage:` cost. On a payer-stamped run (#298) its note reads
+  `(list price of subscription/free usage, not billed)`.
+- `spend:` -- printed on a payer-stamped run (#298) after `usage:`, and after
+  `list-equiv:` when that line is printed (a run with only metered or
+  chargeback traffic has none): the same headline `ralphctl cost` opens
+  with, e.g. `spend:     ~$58.65
+  (chargeback, estimated); subscription: $0.00 (would be $27.17 at list)`.
+  When `by payer` does not cover the whole token total (a run resumed
+  across the upgrade) a `!! by payer covers N of M tokens ...` notice
+  replaces it. A run without payers prints neither line.
 - `usage:` -- a one-line summary of the `usage` dict, e.g. `$0.56, 625k
   tokens (planning $0.10 / worker $0.40 / review $0.06)`, instead of a raw
   JSON dump. The per-phase breakdown only lists phases that actually
@@ -1481,6 +1492,27 @@ by approach:
 legend:    a bare amount was quoted by the provider; ~ marks money derived from the host-side rate table; unavailable means tokens were billed that nothing priced
 ```
 
+A run started on 0.32.1 or later with a `billing` block (#298, see `ralphctl
+start --billing-payer`) also groups the cost **by payer** (abridged):
+
+```
+$ ralphctl cost deck-phase4k
+run:       deck-phase4k
+spend:     ~$58.65 (chargeback, estimated); subscription: $0.00 (would be $27.17 at list)
+cost:      $1.2140 + ~$57.4329 derived
+list-equiv: $27.1744  (list price of subscription/free usage, not billed)
+tokens:    106,200,000 total (in 700,000, out 1,500,000, cache read 104,000,000)
+by payer:
+  Claude subscription                              subscription  57,400,000 tokens  $0.0000    list-equiv: $27.1744
+    anthropic/claude-sonnet-5-5                    subscription  57,400,000 tokens  $0.0000    list-equiv: $27.1744
+  AIGW gateway                                     chargeback    48,800,000 tokens  ~$58.6469  ($1.2140 quoted + ~$57.4329 derived)
+    aigw-openai/openai.gpt-6-astra                 chargeback    41,700,000 tokens  ~$57.4329  (~$57.4329 derived)
+    amazon-bedrock/eu.anthropic.claude-sonnet-5-5  chargeback     7,100,000 tokens  $1.2140
+note:      by phase, by approach and by tier are alternative breakdowns of the same total -- do not add them up
+by phase:
+  ...
+```
+
 `status.json`'s `usage` has carried `byPhase`/`byApproach` buckets since
 day one (`loop._accumulate_usage`, PRD req 19) and nothing rendered them:
 `status` printed one headline plus a hard-coded `planning/worker/review`
@@ -1488,6 +1520,18 @@ parenthetical (two of which a vigilant run does not even use), and the hub's
 usage card showed the raw numbers. "Which phase burned the tokens" and "how
 much of this figure is actually known" meant reading JSON by hand.
 
+- **`spend:`** (#298) comes first on a payer-stamped run: the metered and
+  chargeback money as one figure (marked `~` and `estimated` when part of it
+  was derived; the quoted/derived split stays in each payer row's footnote and
+  in the `cost:` line), then the subscription/free bases at `$0.00` with what
+  they would cost at list. A payer label used under both kinds of basis
+  (its row reads `mixed`) feeds both halves: its money is spend and its
+  list-equivalent goes to the `$0.00` clause. `mixed` is never printed as a
+  basis there; the bases its model rows name are, else `zero-priced` for the
+  `$0.00` clause. It is withheld, with a `!!` notice saying how many
+  tokens `by payer` covers, when the run was resumed across the upgrade and
+  its earlier iterations were never stamped. "Spend", not "you pay": a
+  chargeback is not necessarily personal money.
 - **`cost:`** is the headline — the *same* string `ralphctl status` and the
   hub's usage card show, produced by the one shared formatter
   (`ralphd.engine.state.format_cost`, `decimals=4` here), so a breakdown can
@@ -1495,7 +1539,9 @@ much of this figure is actually known" meant reading JSON by hand.
 - **`list-equiv:`** appears after `cost:` when the run has subscription
   traffic (a `claude-code` hat): the SDK's list price for it, apart from the
   cost, which stays `$0` for that traffic. The phase and approach tables gain a
-  `list-equiv:` column on the rows that have one.
+  `list-equiv:` column on the rows that have one. On a payer-stamped run it
+  also covers `pi` routes billed on a `subscription`/`free` basis, and its
+  note reads `(list price of subscription/free usage, not billed)`.
 - **`tokens:`** is the run total in full (`format_tokens`, the counters the
   provider actually reported — no zeroed cache fields are invented). Each table
   row carries that bucket's one-number token count instead.
@@ -1514,6 +1560,17 @@ much of this figure is actually known" meant reading JSON by hand.
   iterations dispatched at that tier), the one field no other bucket has.
   A bucket that recorded nothing renders `(none)` — never `$0.00`, which
   would read like a phase that ran for free.
+- **`by payer:`** (#298) groups the same total by whatever payer labels the
+  run's profiles declared — never by model prefix, so two gateways' routes or
+  a subscription and a gateway on the same `anthropic/` model land in their
+  own rows. Columns: payer, basis, tokens, cost, then the list-equivalent and
+  a footnote when present; each payer's model rows (keyed by the requested
+  model ref) follow it, indented. A zero-priced row's cost is `$0.0000` and
+  its list-equivalent says `unavailable` (or `$X+ (partial, rest
+  unavailable)`) when some of its tokens could not be list-priced — what a
+  `claude-code` iteration interrupted before the SDK's own figure looks like.
+  The closing `note:` says the breakdowns are alternatives, not addends. A
+  run recorded before payers keeps exactly the layout above.
 - **`!!` notices** name the anomaly behind a wall of `unavailable`: a provider
   that quoted `$0` for billable tokens (task 049) is reported as unpriced, and
   the notice names the `pricing:` map as the remedy — the same sentence every
@@ -1534,7 +1591,10 @@ much of this figure is actually known" meant reading JSON by hand.
   `costDisplay`, `costSource`; `byTier` entries additionally carry
   `iterations`), `costDisplay`/`costStatus`/`costSource` for the run,
   `model`/`modelRaw`, `sources`, `notices`, `hasUsage`, plus `summaryLines` and
-  `text` (the human block, verbatim, minus the `run:` line).
+  `text` (the human block, verbatim, minus the `run:` line). A payer-stamped
+  run adds `payerView` (`headline`, `note`, `notices`, `columns`, `rows`, each
+  row with `basis`, `costDisplay`, `footnote`, `listEquivalentDisplay` and its
+  `models`); the key is absent otherwise.
 - Exit codes: `0` · `3` run not found. Pinned by
   `tests/test_cli_cost_breakdown.py`.
 - The block below the `run:` line is worded ONCE, by
@@ -2820,7 +2880,10 @@ by every `<name>.yaml` under `<registry>/llm-profiles/`, in that order.
 `${env:}`/`${file:}`/`${cmd:}` reference likewise masked -- literal `pi:`
 fields (e.g. `baseUrl`) stay visible so the resolved shape is still useful
 for diagnosis. `model`/`fast_model`/`price_strategy` are printed as declared
-(`(unset)` when the profile has no opinion). `host`/`none` have no file to
+(`(unset)` when the profile has no opinion), and the line after
+`price_strategy` is `billing: <payer> (<basis>)` (#298) -- the profile's
+`billing:` block with its fallbacks applied, e.g. `billing: AIGW gateway
+(chargeback)`; billing values are literal, never masked. `host`/`none` have no file to
 resolve; `show` reports them as
 built-in with nothing to redact. Exit `3` for an unknown profile name (no such
 `<name>.yaml`); a profile that fails to *resolve* (unset `${env:}` var,
@@ -3300,6 +3363,37 @@ date is a future lie, so building the map logs a warning once it is older than
 $ python tools/refresh_bedrock_rates.py            # rewrite the table + as-of date
 $ python tools/refresh_bedrock_rates.py --check    # non-zero if out of date
 ```
+
+#### Who pays (`billing:`, #298)
+
+`ralphctl cost`, `ralphctl status` and the hub group a run's cost **by payer**
+when its `job.yaml` carries a `billing` block. `start` writes that block from,
+for each of payer and basis, the first of: `--billing-payer`/`--billing-basis`;
+the `--llm` profile's own `billing:` (see `docs/llm-profiles.md`); the
+fallback (the profile name, `metered`). For `--llm host` the middle rung is a
+`billing:` mapping in `<registry>/config.yaml`, edited directly like
+`pricing:` above (there is no `config set` key for it):
+
+```yaml
+billing:
+  payer: Home subscription          # payer for --llm host [default: host models.json]
+  basis: subscription               # metered|subscription|chargeback|free [default: metered]
+  subscription_payer: Claude Max    # label for claude-code hats under a non-claude-code
+                                    # profile or host [default: claude-code subscription]
+```
+
+Set `basis: subscription` when the host's `models.json` logs in with a
+subscription OAuth, so its traffic reports `$0` with a list-equivalent. The
+block is validated at every `start`, whatever `--llm` says; an unknown key or
+basis, or a blank label, exits `2`. `subscription_payer` applies to every
+named profile too: a `claude-code` hat always bills the subscription, so a
+`claude-code` hat in a run on a gateway profile is stamped with this label.
+`--llm none` writes no `billing` and is never grouped; giving
+`--billing-payer`/`--billing-basis` with it exits `2`. Like `pricing`, the
+block is inlined into `job.yaml`, so `resume` replays it and a later profile
+edit never rewrites a run's history; it is never written to
+`llm-wiring.json`. A run started before 0.32.1 has no block and keeps its old
+layout, including after a resume on 0.32.1.
 
 ### `ralphctl doctor`
 

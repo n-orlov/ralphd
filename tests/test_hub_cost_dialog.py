@@ -323,6 +323,14 @@ def test_app_js_words_no_cost_fact_of_its_own():
         assert wording not in src, wording
     for label in ("by phase:", "by approach:", "tokens:", "source:"):
         assert label not in src, label
+    # #298: the payer view's wording is the server's too. The column names
+    # (`PAYER_COLUMNS`) are deliberately not listed: single generic words
+    # such as "cost" and "tokens" are already legitimately present.
+    for wording in (st.PAYER_HEADLINE_LABEL.strip(), st.PAYER_GROUP_LABEL,
+                    st.PAYER_ALTERNATIVES_NOTE,
+                    st.PAYER_UNATTRIBUTED_NOTICE.split("{")[0],
+                    st.COST_LIST_EQUIV_ZERO_PRICED_NOTE.strip(), "list-equiv:"):
+        assert wording not in src, wording
     region = src[src.index("const COST_LOAD_FAILED"):src.index("function costCell")]
     assert "toFixed" not in region
 

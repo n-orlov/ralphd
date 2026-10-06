@@ -68,7 +68,6 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 from .. import __version__, collapse_index, render_index
 from ..engine.config import MUTATING_METHODS, JobConfig
 from ..engine.state import (
-    format_money,
     format_run_timing_lines,
     run_timing,
     NO_ARTIFACTS,
@@ -1335,10 +1334,16 @@ def _with_cost_display(doc: dict) -> dict:
     bucket; the raw `costUSD`/`costStatus` fields are left untouched for
     machine consumers, and a bucket with no cost information at all gets no
     `costDisplay` (app.js then falls back to its own number rendering).
+
+    #298: a run whose usage carries `byPayer` also gets `payerView`, the
+    server-worded payer table (`state.payer_view`); the raw `byPayer` passes
+    through untouched and a legacy run gets no `payerView` key at all.
     """
     usage = doc.get("usage")
     if not isinstance(usage, dict):
         return doc
+    # Lazy: the payer vocabulary lives in engine/state (#298).
+    from ..engine.state import payer_view, format_list_equivalent
 
     def rendered(bucket):
         if not isinstance(bucket, dict):
@@ -1347,7 +1352,7 @@ def _with_cost_display(doc: dict) -> dict:
         out = {**bucket, "costDisplay": display} if display is not None else dict(bucket)
         listed = bucket.get("listEquivalentUSD")
         if isinstance(listed, (int, float)) and not isinstance(listed, bool):
-            out["listEquivalentDisplay"] = format_money(listed, 4)
+            out["listEquivalentDisplay"] = format_list_equivalent(bucket, 4)
         return out
 
     out_usage = rendered(usage)
@@ -1355,6 +1360,9 @@ def _with_cost_display(doc: dict) -> dict:
         buckets = usage.get(key)
         if isinstance(buckets, dict):
             out_usage[key] = {k: rendered(v) for k, v in buckets.items()}
+    pv = payer_view(usage)
+    if pv is not None:
+        out_usage["payerView"] = pv
     return {**doc, "usage": out_usage}
 
 

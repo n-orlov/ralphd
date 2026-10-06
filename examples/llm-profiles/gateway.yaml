@@ -13,6 +13,12 @@
 description: any bearer-token gateway exposing an Anthropic- or OpenAI-style API
 model: my-gateway/big-model
 fast_model: my-gateway/small-model
+# #298: who pays. A gateway that bills an internal cost centre is a
+# `chargeback`; `metered` if it is your own card. Several profiles may share
+# one payer label, and the hub groups cost by it.
+billing:
+  payer: My gateway
+  basis: chargeback
 env:
   GW_API_KEY: ${cmd:aws secretsmanager get-secret-value --secret-id my-gw-key --query SecretString --output text}
 pi:

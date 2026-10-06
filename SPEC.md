@@ -2137,6 +2137,11 @@ price of zero**:
 | `costFree` | iteration usage and buckets | `true` only when a route the operator **declared** free priced this traffic, which is the one way a `$0.00` over billable tokens is believed |
 | `costBasis` | iteration usage and buckets | `subscription` for a `claude-code` iteration (billed against the plan, `costUSD` is exactly `0.0`); on a bucket, `subscription` while every contributor was subscription and `mixed` once anything else billed (§8.6) |
 | `listEquivalentUSD` | iteration usage, buckets and `cost_breakdown` | the SDK's list price for subscription traffic, summed per bucket and **never** added to `costUSD` (§8.6); readers add `listEquivalentDisplay` |
+| `payer` / `basis` | iteration usage (and router/contract usage) | who pays for this call and how (#298): stamped by the engine from job.yaml's `billing` at call time (`JobConfig.billing_for`, `state.stamp_billing`), so a later profile edit never rewrites history. `basis` is one of `metered`, `subscription`, `chargeback`, `free`; it never replaces `costBasis`. Absent for a run with no `billing` (every run started before 0.32.1, and `--llm none`) |
+| `listEquivalentQuotedUSD` / `listEquivalentDerivedUSD` | iteration usage and buckets | a `pi` route stamped `subscription`/`free` (#298): the provider-quoted `costUSD` and the derived `costDerivedUSD` the runner recorded, RELOCATED here (their sum is added to `listEquivalentUSD`) while `costUSD` becomes `0.0` with `costFree: true` (and `costBasis: "subscription"` for a subscription). Money only moves between keys; the rates are never changed |
+| `listEquivalentPriced` / `listEquivalentDerived` / `listEquivalentZeroQuoted` | iteration usage only | the same stamp renames `costPriced`/`costDerived`/`costZeroQuoted`, values kept, so iteration usage stays an information superset of the unstamped record |
+| `listEquivalentUnpricedTokens` | iteration usage and buckets | tokens of zero-priced (`subscription`/`free`) usage that nothing could list-price -- the whole iteration's token total when any part of its list price is missing, so an upper bound. Present only when `> 0`. It makes `format_cost` say `$0.0000 (list-equivalent unavailable)` instead of a silent `$0`, and a bucket's list-equivalent read `$X+ (partial, rest unavailable)` -- the expected reading for a `claude-code` iteration that timed out or was interrupted before the SDK reported its list price |
+| `byPayer` / `byModel` | status.json `usage` | `byPayer` maps each payer label to a bucket of the same counters and cost fields as any other, plus its merged `basis` (`mixed` once one label saw two bases) and `byModel`, one bucket per REQUESTED model ref (`(default model)` when none). For every numeric field the sum over `byPayer` equals the total, as for `byPhase`. Absent for a run never stamped (§8.6) |
 | `costDerivedUSD` / `costDerived` | iteration usage and buckets | money computed from a rate table (operator map or built-in), kept in its own field so it can never be summed with a quoted price |
 | `costStatus` | buckets only | absent (fully priced) \| `partial` (`costUSD` is a lower bound) \| `unknown` (no price at all) \| `derived` |
 | `costDisplay` | added by readers | the rendered string from `state.format_cost()` — e.g. `unavailable`, `$0.56+ (partial, rest unavailable)`, `~$0.45 derived` |
@@ -3000,6 +3005,7 @@ Every field:
 | `rate_limit_max_wait_s` | int | `86400` (1 day) | ceiling on the run's total rate-limit waiting (§8.4). A wait that would take the count past it does not start; the run pauses `operator_input_needed` with `pauseDetail.reason: "rate_limit_ceiling"`, and an unpause resets the count. Settable in flight with `PATCH /config/budget` `rateLimitMaxWaitS` (`ralphctl budget --rate-limit-wait`), which persists across a resume; `GET /config` shows it as `budgets.rateLimitMaxWaitS` |
 | `rate_limit_preempt_utilization` | float | `0.95` | a `claude-code` iteration does not start while that harness's last rate-limit report is `allowed_warning` at or above this utilization (0–1); the loop waits for that window's reset first (§8.4). `GET /config` shows it as `budgets.rateLimitPreemptUtilization` |
 | `pricing` | map | `{}` | host-side rate table, consulted only when the provider quoted no price (§7.3) |
+| `billing` | map \| null | `null` | who pays for the run's tokens (#298), written by `start` as one JSON line `{payer, basis, profile, harness, subscription_payer}`: payer/basis each take the first of `--billing-payer`/`--billing-basis`, the named profile's `billing:` (§7.1) or, for `--llm host`, the registry `config.yaml`'s `billing:` block, then the fallback (the profile name / `host models.json`, and `metered`); `subscription_payer` comes from the registry block (default `claude-code subscription`). Never written for `--llm none`, never written to `llm-wiring.json`, and replayed unchanged by `resume`. `normalize_billing` repairs a hand-edited value with a warning and only a non-mapping degrades to `null`. `JobConfig.billing_for(harness)` gives the `(payer, basis)` the engine stamps on each iteration's usage (§8.6): the profile's own pair on its harness, `subscription_payer`/`subscription` for a `claude-code` hat under any other profile, and the profile name/`metered` for a `pi` hat under a `claude-code` profile. A job.yaml without the key -- every run started before 0.32.1 -- is never stamped. `GET /config` shows the effective value as `billing` |
 | *(anything else)* | — | — | unknown keys are preserved on `JobConfig.extra`, never rejected, and never surfaced by `GET /config` (they may contain operator-supplied secret-shaped values) |
 
 Task 006 retired the earlier per-strategy tier table (`JobConfig.STRATEGY_TIERS`)
@@ -3051,7 +3057,7 @@ own startup seeds its budget from `max(status.json's iterationsBudget,
 job.yaml's iterations)` (§9.2, task 010, #51); `resume --iterations +N` is only
 needed to add *more* on top of that effective number, not merely to keep it.
 
-`GET /config` reports the effective view — budgets, flags, model block, resolved
+`GET /config` reports the effective view — budgets, flags, model block, `billing`, resolved
 pricing table — and deliberately excludes `api_token` and `extra`.
 
 ### 6.3 Workspaces
@@ -3362,6 +3368,9 @@ pi:                                  # pi provider config for this container
       api: openai-completions        # or anthropic-messages
       apiKey: ${env:GW_API_KEY}      # resolved against `env:` above
       models: [{id: some-model}]
+billing:                             # optional (#298): who pays, literal values
+  payer: AIGW gateway                # free-text label; default the profile name
+  basis: chargeback                  # metered|subscription|chargeback|free
 ```
 
 | key | type | meaning |
@@ -3371,6 +3380,7 @@ pi:                                  # pi provider config for this container
 | `fast_model` | string | the profile's own second model ref; carried through by `ralphctl llm show`/`resolve_profile()` but, since task 006 retired job.yaml's `fast_model` key, no longer forwarded into a started job's job.yaml |
 | `price_strategy` | string | which built-in rate table may derive a cost for this profile's routes (§8.6); one of `PRICE_STRATEGIES`, validated at resolve time so a typo is a `ProfileError` rather than a silent `none`. `--price-strategy` and a template/registry value beat it |
 | `harness` | string | the agent harness every hat of a job started with this profile runs on, one of `HARNESSES` (`pi` or `claude-code`; `pi` when absent); validated at resolve time so a typo is a `ProfileError`. The registry's, the template's and the `--harness-for` per-hat values beat it (§6.2) |
+| `billing` | mapping | who pays for this profile's tokens (#298): `payer` (free-text label, literal -- never resolved, never masked; default the profile name) and `basis` (one of `BILLING_BASES`: `metered`, `subscription`, `chargeback`, `free`, case-insensitive; default `metered`, and always `subscription` under `harness: claude-code` -- any other basis there is a `ProfileError`). `resolve_profile()` always returns it as `{payer, basis}`; `start` inlines it into job.yaml's `billing` (§6.2) |
 | `builtin_providers` | list of strings | provider keys pi serves without a `models.json` entry (for example `anthropic`); the route check (§3.1) accepts a `pi` rung whose provider key is listed. Persisted in `llm-wiring.json` as `builtinProviders` and replayed by `resume`; a profile that sets only this key still writes the file |
 | `env` | mapping | env vars for the container. Entries resolve top to bottom and each one joins the resolution environment, so a later entry — and `mounts`/`pi` — may reference an earlier one |
 | `mounts` | list | `host:container[:ro]` specs added to `docker run`; the host side is `~`-expanded |
@@ -4284,6 +4294,29 @@ one. `cost_breakdown` carries a top-level `listEquivalentUSD`, and `ralphctl
 cost`, `ralphctl status` and the hub show it as a separate `list-equiv:` line
 (a stat card and a column in the hub), never as part of the cost.
 
+**Cost grouped by payer (#298, v0.32.1).** A run whose job.yaml carries
+`billing` (§6.2) stamps `payer` and `basis` on every iteration's, router call's
+and contract call's usage (`LoopSupervisor._stamp_billing`, before anything
+reads it), and `state.accumulate_payer_usage` folds the stamped usage into
+`usage.byPayer` beside `byPhase`/`byApproach`/`byTier`, with the same
+accumulator. Nothing names a vendor: the rows are whatever payer labels the
+profiles declared, and several profiles may share one. A `metered` or
+`chargeback` stamp only labels the usage. A `subscription` or `free` stamp
+makes a `pi` route's cost `0.0` and moves its quoted and derived money into
+`listEquivalentQuotedUSD`/`listEquivalentDerivedUSD` (summed into
+`listEquivalentUSD`); a `claude-code` iteration already has that shape.
+`state.payer_view` is the one wording of the table, used by `ralphctl cost`,
+`ralphctl status`, the hub and the run record: a `spend:` headline (metered
+and chargeback money as ONE `~` figure when any of it was derived -- a
+deliberate exception to `format_cost`'s never-sum rule, with the quoted/derived
+split kept in each payer row's footnote and in the unchanged `cost:` line --
+then the zero-priced bases at `$0.00` with what they would cost at list), one
+row per payer (payer, basis, tokens, cost, list-equivalent) with its model
+rows, and a note that by phase, by approach and by tier are alternative
+breakdowns of the same total. When `byPayer` covers fewer tokens than the
+total (a run resumed across the upgrade) the headline is withheld and a notice
+says how much is covered. A run without `byPayer` renders exactly as before.
+
 `cost_status()` in `src/ralphd/engine/state.py` collapses a usage dict to
 `None` (fully priced, or nothing billed), `"derived"`, `"partial"` or
 `"unknown"`. Run totals mix priced and unpriced iterations, and the mix reads
@@ -4905,6 +4938,8 @@ returns immediately.
 | `--notifier-url URL` | unset | endpoint the notify hat tool POSTs operator updates to (PRD requirement B.2, #197); written to `job.yaml` as `notifier_url` (§10.2 precedence: `RALPHD_NOTIFIER_URL` beats it; without the flag a `--template`'s own `notifier_url:` key (§6.7) or a hand-set key in the run's own `job.yaml` still reaches it; unset means unconfigured) |
 | `--review-clone-protocol PATH` | unset | workspace-relative executable the `review` and `verdict_gate` hats run inside their disposable clone to prove the clone is measuring itself, in place of the prompts' Python `pip install -e .` / `__file__` recipe (#208); written to `job.yaml` as `review_clone_protocol` (so `resume` replays it), and reachable without the flag via a `--template`'s own key (§6.7) or a hand-set key in the run's own `job.yaml`. Rendered to every hat as the `## Disposable-clone protocol (operator-authorized)` block; the engine neither runs nor validates it. Unset leaves the prompts' Python recipe in force, which a product with no `pyproject.toml` cannot satisfy |
 | `--llm PROFILE` | `host` | `host`, `none`, or a name under `<registry>/llm-profiles/` |
+| `--billing-payer TEXT` | the profile's `billing.payer` | who pays for the run's tokens (#298), written into job.yaml's `billing` (§6.2); falls back to the profile's `billing:` (the registry `config.yaml` `billing:` for `host`), then the profile name. Blank, or given with `--llm none`, exits `2` |
+| `--billing-basis B` | the profile's `billing.basis`, else `metered` | `metered\|subscription\|chargeback\|free` (#298); a basis the `claude-code` harness contradicts, or the flag with `--llm none`, exits `2` |
 | `--llm-env KEY=VAL` | none | extra env for the LLM wiring; repeatable |
 | `--llm-header 'Name: value'` | none | set this HTTP header on every provider of the resolved pi config (`Name=value` also accepted; repeatable; a same-named header the profile already carries is overridden, others are kept; `${env:}`/`${file:}`/`${cmd:}` resolve on the host, task 044, #177) |
 | `--forward-env NAME\|PREFIX_*` | none | forward host env var(s) by name or prefix; repeatable |

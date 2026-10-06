@@ -236,6 +236,21 @@ iteration for it has ended. `byTier` buckets carry one extra field no other
 bucket does, `iterations`: a plain per-tier count of how many iterations
 landed in that bucket, never merged as a token/cost field.
 
+`usage.byPayer` (#298, v0.32.1) groups the same totals by **who pays**: one
+bucket per payer label stamped on the usage (`payer`/`basis`, below), with
+the same counters and cost fields as any other bucket plus its `basis`
+(`metered`, `subscription`, `chargeback`, `free`, or `mixed` once one label
+was used under two bases) and `byModel`, one bucket per REQUESTED model ref
+(`(default model)` when the hat named none). It is accumulated by the same
+algorithm, so for every numeric field `sum(byPayer[*][field]) ==
+usage[field]`, and inside each payer `sum(byModel[*][field])` equals that
+payer's bucket. The labels are whatever the run's profiles declared, so a run
+mixing three payers has three entries with no code change. byPhase, byApproach,
+byTier and byPayer are **alternative breakdowns of the same total** -- never
+add them up. A run whose job.yaml has no `billing` (every run started before
+0.32.1, and `--llm none`) has no `byPayer`; a run resumed across the upgrade
+has one covering only its later iterations.
+
 The cost fields carry the same unknown/partial honesty as an individual
 iteration's (`GET /iterations` below). A bucket — the top-level total *and*
 every `byPhase`/`byApproach`/`byTier` entry — describes how it mixes priced and
@@ -261,6 +276,14 @@ usage panel) does so through the single formatter
 `partial` as `$<priced subtotal>+ (partial, rest unavailable)`. The hub gets
 that string server-side as `usage.costDisplay` (plus `costDisplay` on each
 `byPhase`/`byApproach`/`byTier` bucket) alongside the untouched raw fields.
+For a run with `byPayer` the hub also attaches `usage.payerView`
+(`state.payer_view`), the server-worded payer table: `headline` (the
+`spend:` line, or `null` when `byPayer` does not cover the whole token total),
+`note`, `notices`, `columns` and `rows`, each row a bucket's display fields
+plus `basis`, `costDisplay`, `footnote`, `listEquivalentDisplay` and its
+`models` rows. The raw `byPayer` passes through untouched, and a run without it
+gets no `payerView` key at all. The hub's cost dialog (`GET
+/api/runs/<id>/cost`, docs/cli.md) carries the same `payerView`.
 
 #### Derived cost (optional host-side pricing map)
 
@@ -709,6 +732,9 @@ price. `usage.costPriced` is the marker:
 | `costUSD: 0.0`, `costPriced: true`, `costFree: true` | the route is **declared** free in `pricing.free`, so this $0 is real and renders `$0.00` |
 | `costDerivedUSD: 0.31`, `costDerived: true` | every unpriced message was covered by the host-side pricing map — cost is *derived*, and kept out of `costUSD` |
 | `costDerived: false` | at least one unpriced message had no rate in the map (or no map is configured), so part of the cost stays unknown |
+| `payer: "AIGW gateway"`, `basis: "chargeback"` | #298: who pays, stamped from job.yaml's `billing` at call time (also on router and contract usage). A `metered`/`chargeback` stamp only labels the usage; both keys are absent for a run without `billing` |
+| `basis: "subscription"`, `costUSD: 0.0`, `costFree: true`, `listEquivalentQuotedUSD: 0.25`, `listEquivalentDerivedUSD: 0.75`, `listEquivalentUSD: 1.0` | a `pi` route stamped `subscription` (or `free`, which sets no `costBasis`): the runner's quoted and derived money is relocated, never dropped, and summed into `listEquivalentUSD`; `costPriced`/`costDerived`/`costZeroQuoted` are renamed `listEquivalentPriced`/`listEquivalentDerived`/`listEquivalentZeroQuoted` with their values kept |
+| `listEquivalentUnpricedTokens: 150` | zero-priced tokens nothing could list-price (the whole iteration's total, so an upper bound). The cost renders `$0.0000 (list-equivalent unavailable)`, never a silent `$0`; a bucket's list-equivalent renders `$X+ (partial, rest unavailable)` -- what a `claude-code` iteration interrupted before the SDK's list price looks like |
 
 How a run total / `byPhase` / `byApproach` bucket summarises a mix of priced and
 unpriced iterations is the `costStatus` contract under `GET /status` above.
@@ -1168,6 +1194,7 @@ contents, no LLM env values):
              "thinkingOverrides": {}, "harnesses": {"planning": "pi", "worker": "pi"}},
   "pricing": null,                 // or the resolved host-side rate table, see below
   "priceStrategy": "none",         // "none" | "aws" — may a built-in rate table derive a cost?
+  "billing": null,                 // #298: job.yaml's normalised billing block, or null
   "priceTables": {"names": [], "answers": "neither", "tables": []},  // which table may price this run, in order
   "prompts": [{"name": "planning", "source": "builtin"}, ...],
   "skills": [{"name": "...", "origin": "mounted"}, ...],
@@ -1310,6 +1337,16 @@ one: an unrecognised configured value degrades to `"none"` (with a warning in
 the engine log) rather than failing the job, so what this field says is what
 the run actually does.
 
+`billing` (#298, v0.32.1) is job.yaml's `billing` block as the engine uses
+it: `{"payer", "basis", "profile", "harness", "subscription_payer"}`, written
+by `ralphctl start` (docs/cli.md) and `null` for a run without one (every run
+started before 0.32.1, and `--llm none`), which is never payer-stamped. Like
+`priceStrategy` it is the **effective** value: a hand-edited block with a bad
+`basis` or a blank `payer` is repaired (with a warning in the engine log) to
+`metered` or the profile name, a `claude-code` profile's basis is always
+`subscription`, and only a value that is not a mapping at all degrades to
+`null`.
+
 `priceTables` (v0.6, #14) answers *which* table may produce a rate for this
 run, before any money is derived — the operator map, the built-in AWS table,
 both (in the order they are consulted) or neither:
@@ -1434,7 +1471,7 @@ directly: there is no `ralphctl llm set` wrapper in v0.6 (docs/cli.md). `204`.
 
 ## Versioning
 
-`GET /version` → `{"ralphd": "0.32.0", "api": 1}` — the package version and the
+`GET /version` → `{"ralphd": "0.32.1", "api": 1}` — the package version and the
 API contract version (`ralphd.API_VERSION`), and nothing else: the engine does
 not report pi's version here (`GET /iterations` reports the model each iteration
 actually used, which is the version-shaped question operators ask). Breaking API

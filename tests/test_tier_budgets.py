@@ -623,8 +623,14 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # (tests/test_episode_scoped_ending.py) -> fast 7390/498, smoke 5665/374.
     # #291 original-start cure, second pass: +5 tests / +0 modules
     # (tests/test_episode_scoped_ending.py) -> fast 7395/498, smoke 5670/374.
-    "fast": {"tests": 7395, "modules": 498},
-    "smoke": {"tests": 5670, "modules": 374},
+    # #298 cost grouped by payer: +60 tests / +1 module
+    # (tests/test_payer_billing.py) and +3 in tests/test_llm_profile_examples.py
+    # (the claude-sub example) -> fast 7458/499, smoke 5733/375.
+    # #298 review cures: +10 tests / +0 modules (tests/test_payer_billing.py:
+    # stamped zero-quote, mixed-payer headline, control-character labels)
+    # -> fast 7468/499, smoke 5743/375.
+    "fast": {"tests": 7468, "modules": 499},
+    "smoke": {"tests": 5743, "modules": 375},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

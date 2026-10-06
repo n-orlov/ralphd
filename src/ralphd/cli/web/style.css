@@ -284,6 +284,8 @@ button:hover { opacity: 0.9; }
   min-width: 8rem;
 }
 
+.pay-headline { font-weight: 600; margin: 0.5rem 0; }
+.payer-model td:first-child { padding-left: 1.5em; }
 .usage-grid .stat .k { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; }
 .usage-grid .stat .v { font-size: 1.1rem; font-weight: 600; }
 /* Task 051 (#10): an unknown/partial cost is not a number -- render it as the

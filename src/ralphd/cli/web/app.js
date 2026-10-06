@@ -2954,6 +2954,10 @@ function renderUsage(el, usage, runId) {
     el.appendChild(h("p", { class: "muted" }, ["(no usage data)"]));
     return;
   }
+  // #298: the payer view is worded server-side (`state.payer_view`); this
+  // only places its strings. Absent for every run recorded before payers.
+  const pv = usage.payerView || null;
+  if (pv && pv.headline) el.appendChild(h("p", { class: "pay-headline" }, [pv.headline]));
   const grid = h("div", { class: "usage-grid" });
   const total = usage.totalTokens ?? usage.total_tokens;
   const cost = usage.costUSD ?? usage.cost_usd;
@@ -2980,6 +2984,26 @@ function renderUsage(el, usage, runId) {
     grid.appendChild(listCard);
   }
   el.appendChild(grid);
+  if (pv && Array.isArray(pv.rows)) {
+    const payTable = h("table", {}, [h("thead", {}, [h("tr", {},
+      (pv.columns || []).map((c) => h("th", {}, [c])))])]);
+    const payBody = h("tbody", {});
+    const payRow = (r, cls) => h("tr", cls ? { class: cls } : {}, [
+      h("td", {}, [String(r.key ?? "")]),
+      h("td", {}, [String(r.basis ?? "")]),
+      h("td", {}, [String(r.tokensTotalDisplay ?? "")]),
+      h("td", {}, [String(r.costDisplay ?? "") + (r.footnote ? " (" + r.footnote + ")" : "")]),
+      h("td", {}, [r.listEquivalentDisplay || ""]),
+    ]);
+    for (const r of pv.rows) {
+      payBody.appendChild(payRow(r, null));
+      for (const m of r.models || []) payBody.appendChild(payRow(m, "payer-model"));
+    }
+    payTable.appendChild(payBody);
+    el.appendChild(payTable);
+    for (const n of pv.notices || []) el.appendChild(h("p", { class: "muted" }, [n]));
+    if (pv.note) el.appendChild(h("p", { class: "muted payer-note" }, [pv.note]));
+  }
   for (const [label, key] of [["by phase", "byPhase"], ["by approach", "byApproach"], ["by tier", "byTier"]]) {
     const bucket = usage[key];
     if (!bucket || Object.keys(bucket).length === 0) continue;

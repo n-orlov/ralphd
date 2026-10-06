@@ -395,6 +395,16 @@ COST_PARTIAL_SUFFIX = f"+ (partial, rest {COST_UNAVAILABLE})"
 # with a `~` on the amount so a derived figure can never be mistaken for a
 # provider-reported one, whatever surface it appears on.
 COST_DERIVED_WORD = "derived"
+# #298: what a zero-priced (subscription/free) iteration or bucket appends to
+# its `$0.0000` when nothing could put a list price on its tokens -- point 6
+# of the issue: an unpriceable subscription model is never a silent $0. Only
+# stamped runs carry `listEquivalentUnpricedTokens`, so legacy output is
+# unchanged.
+COST_LIST_UNAVAILABLE_SUFFIX = f" (list-equivalent {COST_UNAVAILABLE})"
+# #298: the wording of the total's list-equivalent line once a run is payer-
+# stamped -- list price now covers pi routes under a subscription/free basis
+# too, not only the claude-code subscription.
+COST_LIST_EQUIV_ZERO_PRICED_NOTE = "  (list price of subscription/free usage, not billed)"
 # Task 049 (v0.6, steering 001): the token counters that mean "this call was
 # billable". Any one of them being non-zero next to a quoted cost of exactly 0
 # is the implausible-zero anomaly (see `is_zero_quote`).
@@ -403,6 +413,12 @@ COST_TOKEN_KEYS = ("input", "output", "cacheRead", "cacheWrite", "totalTokens")
 COST_ZERO_QUOTE_NOTICE = (
     "provider quoted $0 for billable tokens; treated as an unpriced route "
     "(declare its rates, or declare it free, in `pricing:` to settle it)")
+# #298: the numeric keys only `stamp_billing` writes, and only on zero-priced
+# usage. Every such pi iteration with tokens carries at least one of them, and
+# they survive every bucket fold, so a bucket holding one explains its $0.
+COST_STAMPED_ZERO_PRICED_KEYS = ("listEquivalentQuotedUSD",
+                                 "listEquivalentDerivedUSD",
+                                 "listEquivalentUnpricedTokens")
 
 
 def billable_tokens(usage: dict | None) -> int:
@@ -434,14 +450,20 @@ def is_zero_quote(usage: dict | None) -> bool:
     definition has no rates: `artifacts/reports/pricing-anomaly.md` §4). So it
     is classified as *unknown*, never as priced and never rendered `$0.00`.
 
-    Two shapes stay honest zeros, and neither is *inferred* from the zero:
+    Three shapes stay honest zeros, and none is *inferred* from the zero:
 
     * nothing was billed (`billable_tokens == 0`) -- the historical int-0
       no-traffic sentinel of #10, byte-for-byte unchanged;
     * the route DECLARED itself free, recorded as `costFree: true` by
       `runner._accumulate_cost` from the operator's `pricing.free` patterns
       (`engine/pricing.PricingMap.is_free`). "Free" is always a declaration in
-      the data, so a pure formatter can honour it without reading config.
+      the data, so a pure formatter can honour it without reading config;
+    * a bucket that folded a payer-stamped zero-priced pi route (#298):
+      `stamp_billing` writes that route's `costUSD` as 0.0, and once a
+      derived-only or unpriced sibling drops `costFree` from the merged
+      bucket, the 0.0 would otherwise read as a quote. Only `stamp_billing`
+      writes the `COST_STAMPED_ZERO_PRICED_KEYS`, so a run recorded before
+      0.32.1 is never affected.
     """
     if not usage or usage.get("costFree") is True:
         return False
@@ -450,7 +472,17 @@ def is_zero_quote(usage: dict | None) -> bool:
         return False
     if amount != 0:
         return False
+    if _stamped_zero_priced(usage):
+        return False
     return billable_tokens(usage) > 0
+
+
+def _stamped_zero_priced(usage: dict | None) -> bool:
+    """#298: `usage` folded at least one payer-stamped zero-priced pi route,
+    so a 0.0 `costUSD` in it is that route's declared $0, not a quote."""
+    usage = usage or {}
+    return any(_is_number(usage.get(k)) and usage[k] > 0
+               for k in COST_STAMPED_ZERO_PRICED_KEYS)
 
 
 def cost_status(usage: dict | None) -> str | None:
@@ -496,6 +528,56 @@ def format_money(amount: float, decimals: int | None) -> str:
     return f"${amount}" if decimals is None else f"${amount:.{decimals}f}"
 
 
+def _is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _list_unpriced_tokens(usage: dict | None) -> int:
+    """#298: `listEquivalentUnpricedTokens` when it is a positive number, else
+    0 -- the tokens of zero-priced usage that nothing could list-price."""
+    raw = (usage or {}).get("listEquivalentUnpricedTokens")
+    return int(raw) if _is_number(raw) and raw > 0 else 0
+
+
+def format_list_equivalent(usage: dict | None,
+                           decimals: int | None = 4) -> str | None:
+    """`usage`'s list-equivalent figure for humans, or None with nothing to say
+    (#298). The one spelling `cost_bucket`, the payer view and the hub share.
+
+    * a numeric `listEquivalentUSD` -> `"$27.1744"`, marked `~` when part of
+      it was derived from the host-side rate table (`listEquivalentDerivedUSD`)
+      and suffixed `COST_PARTIAL_SUFFIX` when some zero-priced tokens could not
+      be list-priced at all (`listEquivalentUnpricedTokens`);
+    * no figure but unpriced tokens -> `"unavailable"`;
+    * neither -> None.
+
+    Legacy data carries neither new key, so the result is byte-identical to
+    the `format_money(listEquivalentUSD, 4)` every surface printed before.
+    """
+    usage = usage or {}
+    listed = usage.get("listEquivalentUSD")
+    unpriced = _list_unpriced_tokens(usage) > 0
+    derived = usage.get("listEquivalentDerivedUSD")
+    derived = isinstance(derived, float) and derived > 0
+    if _is_number(listed):
+        return (("~" if derived else "") + format_money(listed, decimals)
+                + (COST_PARTIAL_SUFFIX if unpriced else ""))
+    if unpriced:
+        return COST_UNAVAILABLE
+    return None
+
+
+def _zero_priced_list_unavailable(usage: dict | None) -> bool:
+    """#298 point 6: zero-priced usage (declared free, or the claude-code
+    subscription) whose tokens nothing could list-price, with no
+    list-equivalent figure at all."""
+    usage = usage or {}
+    zero_priced = (usage.get("costFree") is True
+                   or usage.get("costBasis") == "subscription")
+    return (zero_priced and _list_unpriced_tokens(usage) > 0
+            and not _is_number(usage.get("listEquivalentUSD")))
+
+
 def format_cost(usage: dict | None, decimals: int | None = 2) -> str | None:
     """Render `usage`'s cost for humans, or None when there is nothing to say.
 
@@ -516,6 +598,13 @@ def format_cost(usage: dict | None, decimals: int | None = 2) -> str | None:
       derived"` when provider-quoted and host-derived money are both present:
       the two are shown as separate amounts, never one sum, so a derived
       figure is never mistaken for what the provider actually billed;
+    * zero-priced (`costFree`, or `costBasis: subscription`) with
+      `listEquivalentUnpricedTokens` and no `listEquivalentUSD` (#298 point
+      6) -> `"$0.0000 (list-equivalent unavailable)"`: an unpriceable
+      subscription/free iteration is never a silent $0. Only payer-stamped
+      runs carry that key, so a legacy run renders exactly as before; a
+      PARTIALLY list-priced bucket says nothing extra here -- its
+      list-equivalent column (`format_list_equivalent`) carries the gap;
     * no cost information whatsoever -> None, so the caller keeps its own
       "omit the field" / legacy `$0.00` behaviour.
     """
@@ -529,9 +618,11 @@ def format_cost(usage: dict | None, decimals: int | None = 2) -> str | None:
         # provider-quoted part first (only when a price was actually QUOTED --
         # a float `costUSD`, per loop._has_reported_price; the int `0` a
         # no-traffic iteration contributes is not a quote, and neither is
-        # task 049's implausible zero), derived part marked
-        parts = ([format_money(amount, decimals)]
-                 if isinstance(amount, float) and not is_zero_quote(usage) else [])
+        # task 049's implausible zero, nor the $0 a payer-stamped zero-priced
+        # route contributed, #298), derived part marked
+        quoted = (isinstance(amount, float) and not is_zero_quote(usage)
+                  and not (amount == 0 and _stamped_zero_priced(usage)))
+        parts = [format_money(amount, decimals)] if quoted else []
         parts.append(f"~{format_money(derived, decimals)} {COST_DERIVED_WORD}")
         rendered = " + ".join(parts)
         return (f"{rendered}, partial (rest {COST_UNAVAILABLE})"
@@ -539,7 +630,11 @@ def format_cost(usage: dict | None, decimals: int | None = 2) -> str | None:
     if amount is None:
         return None
     rendered = format_money(amount, decimals)
-    return rendered + COST_PARTIAL_SUFFIX if status == "partial" else rendered
+    if status == "partial":
+        return rendered + COST_PARTIAL_SUFFIX
+    if _zero_priced_list_unavailable(usage):
+        return rendered + COST_LIST_UNAVAILABLE_SUFFIX
+    return rendered
 
 
 def run_cost_fields(status: dict | None) -> dict:
@@ -8922,13 +9017,39 @@ COST_LEGEND_SOURCES = (COST_SOURCE_DERIVED, COST_SOURCE_PARTIAL,
 # do not support (`ITERATION_DERIVED_KEYS`' rule, same reason).
 COST_BUCKET_DERIVED_KEYS = ("key", "tokens", "tokensDisplay", "tokensTotalDisplay",
                             "costDisplay", "costSource", "listEquivalentDisplay",
-                            "byPhase", "byApproach", "byTier")
+                            "byPhase", "byApproach", "byTier",
+                            # #298: the payer view's nested groups and its own
+                            # derived strings.
+                            "byPayer", "byModel", "payerView", "models",
+                            "footnote")
 # `costBasis` values a usage dict or bucket carries. A claude-code iteration
 # bills against a subscription: `costUSD` is exactly 0 and the SDK's list-price
 # figure rides apart as `listEquivalentUSD`, never added to the cost. A bucket
 # whose contributors are not all subscription is "mixed".
 COST_BASIS_SUBSCRIPTION = "subscription"
 COST_BASIS_MIXED = "mixed"
+# #298: the billing vocabulary as this module sees it. `engine.config` owns
+# the operator-facing set (BILLING_BASES); state.py keeps its own literals so
+# the renderers never import config. A payer bucket whose iterations carried
+# more than one `basis` is "mixed".
+BILLING_BASIS_MIXED = "mixed"
+PAYER_ZERO_PRICED_BASES = ("subscription", "free")
+# The payer view's wording, spelled once for `ralphctl cost`/`status`, the
+# hub and the run record. "spend", not "you pay": AIGW chargeback is not the
+# operator's personal money (operator ruling on #298).
+PAYER_HEADLINE_LABEL = "spend:     "
+PAYER_GROUP_LABEL = "by payer:"
+PAYER_ALTERNATIVES_NOTE = (
+    "note:      by phase, by approach and by tier are alternative breakdowns "
+    "of the same total -- do not add them up")
+PAYER_DEFAULT_MODEL = "(default model)"
+# The $0 clause's label for a "mixed" payer whose model rows name no single
+# zero-priced basis.
+PAYER_ZERO_PRICED_WORD = "zero-priced"
+PAYER_UNATTRIBUTED_NOTICE = (
+    "by payer covers {attributed:,} of {total:,} tokens; the rest was recorded "
+    "before payer stamping, so there is no spend headline")
+PAYER_COLUMNS = ["payer", "basis", "tokens", "cost", "list-equivalent"]
 
 
 def _token_total(usage: dict | None) -> int | None:
@@ -9013,9 +9134,9 @@ def cost_bucket(usage: dict | None, key: str = COST_TOTAL_KEY) -> dict:
     out["tokensTotalDisplay"] = format_token_total(raw)
     out["costDisplay"] = format_cost(raw, decimals=4)
     out["costSource"] = cost_source(raw)
-    listed = raw.get("listEquivalentUSD")
-    if isinstance(listed, (int, float)) and not isinstance(listed, bool):
-        out["listEquivalentDisplay"] = format_money(listed, 4)
+    listed = format_list_equivalent(raw, 4)
+    if listed is not None:
+        out["listEquivalentDisplay"] = listed
     return out
 
 
@@ -9134,6 +9255,121 @@ def _accumulate_task_usage(bucket: dict, usage: dict) -> dict:
     if status:
         bucket["costStatus"] = status
     return bucket
+
+
+def stamp_billing(usage: dict, payer: str, basis: str) -> dict:
+    """Stamp one iteration's (or router/contract call's) `usage` with the
+    payer and billing basis its routing profile declared (#298), in place,
+    returning it. The caller (`LoopSupervisor._stamp_billing`) copies both
+    from job.yaml's `billing` at call time, so a later profile edit never
+    rewrites history; a legacy run has no `billing` and is never stamped.
+
+    A metered/chargeback stamp only labels the usage. A zero-priced one
+    (`PAYER_ZERO_PRICED_BASES`) makes the cost $0 and RELOCATES the runner's
+    own money evidence under `listEquivalent*` names -- nothing is dropped, so
+    meta.json stays an information superset of the unstamped record, and the
+    rates the runner computed are never changed. Money only moves between
+    keys:
+
+    * the claude-code runner (`costBasis: subscription`) is already $0 with
+      its SDK list price in `listEquivalentUSD`; only an iteration that ended
+      before that figure arrived gains `listEquivalentUnpricedTokens`;
+    * a pi route's quoted `costUSD` becomes `listEquivalentQuotedUSD`, its
+      `costDerivedUSD` becomes `listEquivalentDerivedUSD`, their sum is added
+      to `listEquivalentUSD`, and `costPriced`/`costDerived`/`costZeroQuoted`
+      are renamed `listEquivalentPriced`/`listEquivalentDerived`/
+      `listEquivalentZeroQuoted`. `costUSD` becomes 0.0 with `costFree` set,
+      mirroring `runner._mark_subscription` (and stopping `is_zero_quote`
+      from reading the $0 as the anomaly). When part or all of the list price
+      is missing, the WHOLE iteration's token count is recorded as
+      `listEquivalentUnpricedTokens` -- an upper bound, not an exact split.
+
+    A no-traffic iteration's `{}` stays `{}`.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return usage
+    usage["payer"] = payer
+    usage["basis"] = basis
+    if basis not in PAYER_ZERO_PRICED_BASES:
+        return usage
+    if usage.get("costBasis") == COST_BASIS_SUBSCRIPTION:
+        tokens = _token_total(usage) or 0
+        if not _is_number(usage.get("listEquivalentUSD")) and tokens > 0:
+            usage["listEquivalentUnpricedTokens"] = tokens
+        return usage
+    # Everything is computed from the runner's record BEFORE any key moves.
+    zq = is_zero_quote(usage)
+    amount = usage.get("costUSD")
+    quoted = amount if isinstance(amount, float) and not zq and amount > 0 else 0.0
+    derived = usage.get("costDerivedUSD")
+    derived = derived if isinstance(derived, float) else 0.0
+    gap = ((usage.get("costPriced") is False or zq)
+           and usage.get("costDerived") is not True)
+    tokens = _token_total(usage) or 0
+    if quoted > 0:
+        usage["listEquivalentQuotedUSD"] = round(quoted, 6)
+    if derived > 0:
+        usage["listEquivalentDerivedUSD"] = round(derived, 6)
+    if quoted + derived > 0:
+        listed = usage.get("listEquivalentUSD")
+        listed = listed if _is_number(listed) else 0
+        usage["listEquivalentUSD"] = round(listed + quoted + derived, 6)
+    if tokens and (gap or quoted + derived == 0):
+        usage["listEquivalentUnpricedTokens"] = tokens
+    for src, dst in (("costPriced", "listEquivalentPriced"),
+                     ("costDerived", "listEquivalentDerived"),
+                     ("costZeroQuoted", "listEquivalentZeroQuoted")):
+        if src in usage:
+            usage[dst] = usage.pop(src)
+    usage.pop("costDerivedUSD", None)
+    usage["costUSD"] = 0.0
+    usage["costFree"] = True
+    if basis == "subscription":
+        usage["costBasis"] = COST_BASIS_SUBSCRIPTION
+    return usage
+
+
+def _merge_payer_basis(bucket: dict, prev_basis, usage: dict) -> None:
+    basis = usage.get("basis")
+    bucket["basis"] = (basis if prev_basis in (None, basis)
+                       else BILLING_BASIS_MIXED)
+
+
+def accumulate_payer_usage(total: dict, usage: dict,
+                           model: str | None = None) -> None:
+    """Fold one stamped `usage` into status.json's `usage.byPayer` (#298), in
+    place: `{"<payer>": {...bucket counters..., "basis", "byModel":
+    {"<requested model ref | (default model)>": {..., "basis"}}}}`.
+
+    The same `_accumulate_task_usage` algorithm every other bucket uses, so
+    for every numeric field the sum over byPayer equals the total, exactly
+    like byPhase. `basis` is merged explicitly (the string is skipped by the
+    counter loop) and turns "mixed" when one payer label is used under two
+    bases. `model` is the REQUESTED ref, never the resolved id, so one
+    dispatch config always gives one row (the resolved spelling stays in
+    meta.json's `modelResolved`/`modelRaw`).
+
+    Usage without a `payer` (every legacy run) leaves `total` untouched, so
+    such a run never gains `byPayer`.
+    """
+    payer = usage.get("payer") if isinstance(usage, dict) else None
+    if not isinstance(payer, str) or not payer:
+        return
+    by_payer = total.get("byPayer") or {}
+    bucket = by_payer.get(payer) or {}
+    prev_basis = bucket.get("basis")
+    _accumulate_task_usage(bucket, usage)
+    _merge_payer_basis(bucket, prev_basis, usage)
+    mkey = (model.strip() if isinstance(model, str) and model.strip()
+            else PAYER_DEFAULT_MODEL)
+    by_model = bucket.setdefault("byModel", {})
+    row = by_model.get(mkey) or {}
+    prev_basis = row.get("basis")
+    _accumulate_task_usage(row, usage)
+    _merge_payer_basis(row, prev_basis, usage)
+    by_model[mkey] = row
+    by_payer[payer] = bucket
+    total["byPayer"] = by_payer
 
 
 def task_totals(iterations: list) -> dict:
@@ -9348,6 +9584,205 @@ def task_transition_history(run_root: Path, task_id: str) -> list[dict]:
     return out
 
 
+def _payer_row(raw: dict, key: str) -> dict:
+    """One `byPayer` bucket (or one of its `byModel` rows) shaped for the
+    payer view: `cost_bucket` plus `basis`, the row's own `costDisplay`,
+    `footnote` and `listEquivalentDisplay` (#298)."""
+    row = cost_bucket(raw, key)
+    basis = raw.get("basis")
+    row["basis"] = basis
+    amount = raw.get("costUSD")
+    quoted = (amount if isinstance(amount, float) and not is_zero_quote(raw)
+              else 0.0)
+    derived = raw.get("costDerivedUSD")
+    derived = derived if isinstance(derived, float) else 0.0
+    if basis in PAYER_ZERO_PRICED_BASES:
+        # $0 by declaration -- never "unavailable", and the list column says
+        # what format_cost's suffix would, so it is not repeated here.
+        row["costDisplay"] = format_money(0.0, 4)
+        row["listEquivalentDisplay"] = format_list_equivalent(raw, 4)
+        lq = raw.get("listEquivalentQuotedUSD")
+        lq = lq if isinstance(lq, float) else 0.0
+        ld = raw.get("listEquivalentDerivedUSD")
+        ld = ld if isinstance(ld, float) else 0.0
+        if lq and ld:
+            row["footnote"] = (f"list {format_money(lq, 4)} quoted + "
+                               f"~{format_money(ld, 4)} derived")
+        elif ld:
+            row["footnote"] = f"list ~{format_money(ld, 4)} derived"
+        else:
+            row["footnote"] = None
+        return row
+    status = cost_status(raw)
+    partial = status == "partial"
+    # #298 point 5: one "~" figure for quoted + derived money is a deliberate
+    # exception to `format_cost`'s never-sum rule -- the operator asked for a
+    # single number per payer. The split survives in the footnote below and
+    # in the unchanged `cost:` line.
+    if status == "unknown":
+        row["costDisplay"] = COST_UNAVAILABLE
+    elif derived > 0:
+        row["costDisplay"] = ("~" + format_money(quoted + derived, 4)
+                              + (COST_PARTIAL_SUFFIX if partial else ""))
+    else:
+        row["costDisplay"] = format_cost(raw, 4)
+    parts = None
+    if quoted and derived:
+        parts = (f"{format_money(quoted, 4)} quoted + "
+                 f"~{format_money(derived, 4)} derived")
+    elif derived:
+        parts = f"~{format_money(derived, 4)} derived"
+    if parts and partial:
+        parts += f", rest {COST_UNAVAILABLE}"
+    row["footnote"] = parts
+    # A "mixed" payer holds zero-priced contributions too, so it keeps their
+    # list price; a pure metered/chargeback row has none to show.
+    row["listEquivalentDisplay"] = (format_list_equivalent(raw, 4)
+                                    if basis == BILLING_BASIS_MIXED else None)
+    return row
+
+
+def _payer_sort_key(row: dict):
+    return (-(row["tokens"] or 0), row["key"])
+
+
+def _concrete_bases(raw: dict, basis) -> set[str]:
+    """The bases a payer bucket actually saw: its own `basis`, or for a
+    "mixed" bucket whichever single bases its `byModel` rows recorded (a
+    model row used under two bases is "mixed" too and names none)."""
+    if basis != BILLING_BASIS_MIXED:
+        return {basis} if isinstance(basis, str) and basis else set()
+    by_model = raw.get("byModel")
+    return {m["basis"] for m in (by_model.values()
+                                 if isinstance(by_model, dict) else ())
+            if isinstance(m, dict) and isinstance(m.get("basis"), str)
+            and m["basis"] and m["basis"] != BILLING_BASIS_MIXED}
+
+
+def _payer_headline(rows: list[dict], raws: dict) -> str:
+    """The one-line spend summary (#298 point 5), 2 decimals: metered/
+    chargeback money first, then the zero-priced bases at $0 with what they
+    would have cost at list.
+
+    A "mixed" payer (one label used under a zero-priced and a paid basis)
+    feeds both halves: its money is spend, its list-equivalent goes to the
+    $0 clause, as on its own row. "mixed" is never printed as a basis; the
+    bases its model rows name are, else `PAYER_ZERO_PRICED_WORD` for the $0
+    clause and nothing for the spend."""
+    def _mixed(r):
+        return r["basis"] == BILLING_BASIS_MIXED
+
+    def _zero_only(r):
+        return (r["basis"] in PAYER_ZERO_PRICED_BASES
+                or (_mixed(r) and raws[r["key"]].get("costFree") is True))
+
+    def _has_list(raw):
+        return ((_is_number(raw.get("listEquivalentUSD"))
+                 and raw["listEquivalentUSD"] > 0)
+                or _list_unpriced_tokens(raw) > 0)
+
+    paid = [r for r in rows if not _zero_only(r)]
+    zero = [r for r in rows if _zero_only(r)
+            or (_mixed(r) and _has_list(raws[r["key"]]))]
+    qs = ds = 0.0
+    statuses = []
+    for r in paid:
+        raw = raws[r["key"]]
+        amount = raw.get("costUSD")
+        if isinstance(amount, float) and not is_zero_quote(raw):
+            qs += amount
+        derived = raw.get("costDerivedUSD")
+        if isinstance(derived, float):
+            ds += derived
+        statuses.append(cost_status(raw))
+    bases = sorted(set().union(*(
+        _concrete_bases(raws[r["key"]], r["basis"]) for r in paid))
+        - set(PAYER_ZERO_PRICED_BASES))
+    partial = any(s in ("partial", "unknown") for s in statuses)
+    money = qs + ds > 0
+    if not paid:
+        spend = format_money(0.0, 2)
+    elif all(s == "unknown" for s in statuses) and not money:
+        spend = COST_UNAVAILABLE + (f" ({', '.join(bases)})" if bases else "")
+    else:
+        # #298 point 5: quoted + derived summed into ONE estimate on purpose
+        # (see `_payer_row`); the split stays on the payer rows' footnotes.
+        words = (bases + (["estimated"] if ds else [])
+                 + ([f"rest {COST_UNAVAILABLE}"] if partial else []))
+        spend = (("~" if ds else "") + format_money(qs + ds, 2)
+                 + ("+" if partial else "")
+                 + (" (" + ", ".join(words) + ")" if words else ""))
+    headline = PAYER_HEADLINE_LABEL + spend
+    if zero:
+        ls = 0.0
+        for r in zero:
+            listed = raws[r["key"]].get("listEquivalentUSD")
+            if _is_number(listed):
+                ls += listed
+        us = any(_list_unpriced_tokens(raws[r["key"]]) for r in zero)
+        lds = any(isinstance(raws[r["key"]].get("listEquivalentDerivedUSD"), float)
+                  and raws[r["key"]]["listEquivalentDerivedUSD"] > 0 for r in zero)
+        t = "~" if lds else ""
+        if ls and not us:
+            suffix = f" (would be {t}{format_money(ls, 2)} at list)"
+        elif ls and us:
+            suffix = (f" (would be {t}{format_money(ls, 2)}+ at list, "
+                      f"rest {COST_UNAVAILABLE})")
+        elif us:
+            suffix = COST_LIST_UNAVAILABLE_SUFFIX
+        else:
+            suffix = ""
+        labels = set()
+        for r in zero:
+            named = (_concrete_bases(raws[r["key"]], r["basis"])
+                     & set(PAYER_ZERO_PRICED_BASES))
+            labels |= named or {PAYER_ZERO_PRICED_WORD}
+        headline += ("; " + "/".join(sorted(labels))
+                     + ": " + format_money(0.0, 2) + suffix)
+    return headline
+
+
+def payer_view(usage: dict | None) -> dict | None:
+    """status.json's `usage.byPayer` shaped for every surface (#298):
+    `{"headline", "note", "notices", "columns", "rows"}`, each row a
+    `cost_bucket` plus `basis`/`costDisplay`/`footnote`/
+    `listEquivalentDisplay` and its `models` (the same shape, one per
+    requested model ref), largest first. None for a run that recorded no
+    payer -- every legacy run -- so callers gate the whole view on it.
+
+    The headline is withheld when byPayer does not cover the run's whole
+    token total (a run resumed across the upgrade): a spend figure that
+    silently left out the unstamped part would be wrong, so a notice says
+    how much is covered instead.
+    """
+    by_payer = (usage or {}).get("byPayer") if isinstance(usage, dict) else None
+    if not isinstance(by_payer, dict) or not by_payer:
+        return None
+    raws = {str(k): v if isinstance(v, dict) else {} for k, v in by_payer.items()}
+    rows = []
+    for key, raw in raws.items():
+        row = _payer_row(raw, key)
+        by_model = raw.get("byModel")
+        models = [_payer_row(m if isinstance(m, dict) else {}, str(mk))
+                  for mk, m in (by_model.items() if isinstance(by_model, dict)
+                                else ())]
+        models.sort(key=_payer_sort_key)
+        row["models"] = models
+        rows.append(row)
+    rows.sort(key=_payer_sort_key)
+    attributed = sum(r["tokens"] or 0 for r in rows)
+    total = _token_total(usage) or 0
+    notices = []
+    if attributed != total:
+        headline = None
+        notices.append(PAYER_UNATTRIBUTED_NOTICE.format(
+            attributed=int(attributed), total=int(total)))
+    else:
+        headline = _payer_headline(rows, raws)
+    return {"headline": headline, "note": PAYER_ALTERNATIVES_NOTE,
+            "notices": notices, "columns": list(PAYER_COLUMNS), "rows": rows}
+
+
 def cost_breakdown(run_root: Path) -> dict:
     """Everything status.json knows about what this run spent, per phase and
     per approach (task 027, #18.5).
@@ -9395,6 +9830,11 @@ def cost_breakdown(run_root: Path) -> dict:
     }
     if isinstance(usage.get("listEquivalentUSD"), (int, float)):
         out["listEquivalentUSD"] = usage["listEquivalentUSD"]
+    # #298: present only for a payer-stamped run, so a legacy breakdown keeps
+    # exactly today's keys.
+    pv = payer_view(usage)
+    if pv is not None:
+        out["payerView"] = pv
     out["summaryLines"] = cost_breakdown_lines(out)
     return out
 
@@ -9430,6 +9870,39 @@ def _cost_rows(buckets: list[dict]) -> list[str]:
     return rows
 
 
+def _payer_lines(pv: dict) -> list[str]:
+    """The `by payer:` group of `cost_breakdown_lines` (#298): payer rows in
+    column order payer/basis/tokens/cost, each followed by its model rows
+    indented two further spaces, columns sized across both like `_cost_rows`,
+    then the view's notices and the alternative-breakdowns note."""
+    cells = []
+    for row in pv.get("rows") or []:
+        for depth, r in [(0, row)] + [(1, m) for m in row.get("models") or []]:
+            cells.append(("  " * depth + str(r.get("key") or ""),
+                          r.get("basis") or "",
+                          r.get("tokensTotalDisplay") or "",
+                          r.get("costDisplay") or USAGE_NONE,
+                          r.get("listEquivalentDisplay"),
+                          r.get("footnote")))
+    lines = [PAYER_GROUP_LABEL]
+    if cells:
+        key_w = max(len(c[0]) for c in cells)
+        basis_w = max(len(c[1]) for c in cells)
+        tok_w = max(len(c[2]) for c in cells)
+        cost_w = max(len(c[3]) for c in cells)
+        for key, basis, tokens, cost, listed, footnote in cells:
+            line = (f"  {key:<{key_w}}  {basis:<{basis_w}}  {tokens:>{tok_w}}"
+                    f"  {cost:<{cost_w}}")
+            if listed:
+                line += f"  list-equiv: {listed}"
+            if footnote:
+                line += f"  ({footnote})"
+            lines.append(line.rstrip())
+    lines.extend(f"!! {n}" for n in (pv.get("notices") or []))
+    lines.append(PAYER_ALTERNATIVES_NOTE)
+    return lines
+
+
 def cost_breakdown_lines(bd: dict) -> list[str]:
     """One run's cost breakdown as labelled text lines, worded ONCE
     (`fault_summary_lines`' role for #18.5): `ralphctl cost` prints these and
@@ -9441,10 +9914,14 @@ def cost_breakdown_lines(bd: dict) -> list[str]:
     if not isinstance(bd, dict) or not bd.get("hasUsage"):
         return [COST_NO_USAGE]
     total = bd.get("total") or {}
+    pv = bd.get("payerView")
     lines = [f"cost:      {total.get('costDisplay') or USAGE_NONE}"]
+    if pv and pv.get("headline"):
+        lines.insert(0, pv["headline"])
     if total.get("listEquivalentDisplay") and total.get("listEquivalentUSD"):
         lines.append(f"list-equiv: {total['listEquivalentDisplay']}"
-                     "  (subscription list price, not billed)")
+                     + (COST_LIST_EQUIV_ZERO_PRICED_NOTE if pv
+                        else "  (subscription list price, not billed)"))
     lines.append(f"tokens:    {total.get('tokensDisplay') or USAGE_NONE}")
     # The verdict word is added only when it is NOT already spelled inside the
     # money string: `format_cost` says `derived`/`partial`/`unavailable` itself,
@@ -9460,6 +9937,8 @@ def cost_breakdown_lines(bd: dict) -> list[str]:
             model += f"  (gateway id: {bd['modelRaw']})"
         lines.append(model)
     lines.extend(f"!! {n}" for n in (bd.get("notices") or []))
+    if pv:
+        lines.extend(_payer_lines(pv))
     for label, key in (("by phase:", "byPhase"), ("by approach:", "byApproach"),
                        ("by tier:", "byTier")):
         buckets = bd.get(key) or []

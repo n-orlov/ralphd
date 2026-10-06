@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -163,6 +164,55 @@ def normalize_price_strategy(value: object) -> str:
     return DEFAULT_PRICE_STRATEGY
 
 
+def normalize_billing(value: object) -> dict | None:
+    """Coerce a job.yaml `billing:` value to its canonical dict (#298).
+
+    Never raises: only a non-mapping degrades to `None` (a legacy, unstamped
+    run); every other defect is repaired with a warning, so a typo never
+    turns a stamped run into an unstamped one. The effective value is visible
+    in `GET /config` (`billing`), so a degraded hand-edit is observable.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        log.warning("billing %r is not a mapping -- run is not stamped", value)
+        return None
+
+    def _text(v: object) -> str | None:
+        if not isinstance(v, str):
+            return None
+        clean = BILLING_LABEL_CONTROL_RE.sub(" ", v).strip()
+        if clean and clean != v.strip():
+            log.warning("billing label %r holds control characters -- "
+                        "using %r", v, clean)
+        return clean or None
+
+    harness = str(value.get("harness") or "").strip()
+    if harness not in HARNESSES:
+        harness = DEFAULT_HARNESS
+    profile = _text(value.get("profile"))
+    payer = _text(value.get("payer"))
+    if payer is None:
+        payer = profile or BILLING_UNLABELLED_PAYER
+        log.warning("billing payer %r is not a non-blank string -- using %r",
+                    value.get("payer"), payer)
+    basis = str(value.get("basis") or "").strip().lower()
+    if basis not in BILLING_BASES:
+        log.warning("billing basis %r is not one of %s -- using %r",
+                    value.get("basis"), "|".join(BILLING_BASES),
+                    DEFAULT_BILLING_BASIS)
+        basis = DEFAULT_BILLING_BASIS
+    forced = HARNESS_FORCED_BASIS.get(harness)
+    if forced and basis != forced:
+        log.warning("billing basis %r contradicts harness %r (always %r) -- "
+                    "using %r", basis, harness, forced, forced)
+        basis = forced
+    return {"payer": payer, "basis": basis, "profile": profile,
+            "harness": harness,
+            "subscription_payer": (_text(value.get("subscription_payer"))
+                                   or DEFAULT_SUBSCRIPTION_PAYER)}
+
+
 # Phase names with a builtin prompt (see src/ralphd/prompts/); the only names
 # accepted by the prompts CRUD API (PRD req 10).
 PROMPT_NAMES = ("planning", "worker", "review", "task-verify")
@@ -307,6 +357,28 @@ DEFAULT_HARNESS = "pi"
 # The harness that reports rate-limit state (v0.30 F): only its hats wait
 # on a rate limit or are preempted near one.
 CLAUDE_CODE_HARNESS = "claude-code"
+
+# #298: who pays for a hat's tokens. `basis` is one of BILLING_BASES; the
+# zero-priced ones (subscription/free) bill nothing per token, so their
+# money is reported as a list-equivalent instead of a cost.
+BILLING_BASES: tuple[str, ...] = ("metered", "subscription", "chargeback", "free")
+DEFAULT_BILLING_BASIS = "metered"
+ZERO_PRICED_BASES: tuple[str, ...] = ("subscription", "free")
+# The ONE engine-side statement that the claude-code runner always bills the
+# subscription. The profile validator and `JobConfig.billing_for` both read
+# it. It is the data twin of `runner.ClaudeCodeRunner._mark_subscription`
+# (the cost-side code); a test pins the two together.
+HARNESS_FORCED_BASIS: dict[str, str] = {CLAUDE_CODE_HARNESS: "subscription"}
+# Derived from the harness name so no vendor/product name is spelled here;
+# the operator renames it through the registry `billing:` knob.
+DEFAULT_SUBSCRIPTION_PAYER = f"{CLAUDE_CODE_HARNESS} subscription"
+HOST_BILLING_PAYER = "host models.json"
+BILLING_UNLABELLED_PAYER = "(unlabelled payer)"
+# A payer label is printed into line-oriented output (`ralphctl cost`/
+# `status`, the run record), so a control character -- a newline above all --
+# would forge extra lines there. Profiles and flags refuse one; a hand-edited
+# job.yaml has each run of them collapsed to a space.
+BILLING_LABEL_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
 
 # The minimum Claude Code CLI version required to run iterations on the
 # claude-code harness. The wrapper checks this at startup and refuses to run
@@ -770,6 +842,11 @@ class JobConfig:
     # RALPHD_PRICE_STRATEGY, and settable from an LLM profile / `ralphctl
     # start --price-strategy` (both land in job.yaml on the host side).
     price_strategy: str = DEFAULT_PRICE_STRATEGY
+    # #298: who pays for this run's tokens -- `{payer, basis, profile,
+    # harness, subscription_payer}`, inlined by `ralphctl start`. `None` (every
+    # run recorded before 0.32.1, and `--llm none`) is never stamped and keeps
+    # the legacy usage layout. Read through `billing_for`.
+    billing: dict | None = None
     # Task 029 (PRD requirement I.2, #210): the task-boundary git sink.
     # `redact.scrub_text` scrubs known secret VALUES out of everything the
     # engine persists or serves; a commit the run's own worker writes is
@@ -801,6 +878,7 @@ class JobConfig:
         # strategy that a downstream `== "aws"` check would silently treat as
         # "not aws" with no warning.
         self.price_strategy = normalize_price_strategy(self.price_strategy)
+        self.billing = normalize_billing(self.billing)
         # Task 005: fold the `models:` alias into `model_overrides` -- the one
         # table `model_for` actually reads -- exactly once, here, so a
         # JobConfig built directly (tests, the API) behaves identically to
@@ -973,6 +1051,9 @@ class JobConfig:
             # an unknown configured name shows up here as the `none` it
             # actually behaves as.
             "priceStrategy": self.price_strategy,
+            # #298: the effective (normalised) billing block, null for a
+            # legacy run, so a degraded hand-edit is observable here.
+            "billing": dict(self.billing) if self.billing else None,
             # Task 011 (#14): every table that may derive a cost, in the order
             # they are consulted, so "which table produced this rate" is
             # answerable from the API alone: `names`/`answers` name the
@@ -1034,6 +1115,22 @@ class JobConfig:
         table = self.harnesses if isinstance(self.harnesses, dict) else {}
         key = hat if hat in MODEL_HATS else UNRECOGNISED_HAT_FALLBACK
         return table.get(key) or DEFAULT_HARNESS
+
+    def billing_for(self, harness: str) -> tuple[str, str] | None:
+        """#298: the `(payer, basis)` stamped on a `harness` hat's usage, or
+        `None` for a legacy / `--llm none` run (never stamped). The
+        claude-code runner always bills the subscription, so a hat on it under
+        a non-claude-code profile is stamped with `subscription_payer`."""
+        b = self.billing
+        if not b:
+            return None
+        forced = HARNESS_FORCED_BASIS.get(harness)
+        if forced:
+            return (b["payer"] if b["harness"] == harness
+                    else b["subscription_payer"], forced)
+        if harness == b["harness"]:
+            return (b["payer"], b["basis"])
+        return (b["profile"] or BILLING_UNLABELLED_PAYER, DEFAULT_BILLING_BASIS)
 
     def bundle_for(self, phase: str) -> HatBundle:
         """Task 007 (PRD requirement C): the (model, thinking) bundle

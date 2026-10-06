@@ -20,7 +20,15 @@ from pathlib import Path
 
 import yaml
 
-from ..engine.config import HARNESSES, PRICE_STRATEGIES, normalize_price_strategy
+from ..engine.config import (
+    BILLING_BASES,
+    BILLING_LABEL_CONTROL_RE,
+    DEFAULT_BILLING_BASIS,
+    HARNESS_FORCED_BASIS,
+    HARNESSES,
+    PRICE_STRATEGIES,
+    normalize_price_strategy,
+)
 from ..engine.redact import MASK
 
 _REF_RE = re.compile(r"^\$\{(env|file|cmd):(.*)\}$", re.DOTALL)
@@ -156,13 +164,62 @@ def expand_mount_host_path(spec: str) -> str:
     return f"{Path(host).expanduser()}:{rest}"
 
 
+def resolve_billing(raw: object, *, label: str, harness: str,
+                    default_payer: str,
+                    extra_keys: tuple[str, ...] = ()) -> dict:
+    """Validate a `billing:` mapping (#298) from a profile or the registry.
+
+    Values are literal (never resolved, never masked). Returns
+    `{"payer", "basis", **extra keys present}`; raises `ProfileError`
+    (`<label>: billing ...`) on a non-mapping, an unknown key, a blank payer
+    or one holding a control character, an unknown basis, or a basis that contradicts `HARNESS_FORCED_BASIS`.
+    """
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ProfileError(f"{label}: billing: must be a mapping, got {raw!r}")
+    allowed = ("payer", "basis", *extra_keys)
+    bad = sorted(str(k) for k in raw if k not in allowed)
+    if bad:
+        raise ProfileError(
+            f"{label}: billing: unknown key(s) {', '.join(bad)} "
+            f"(allowed: {', '.join(allowed)})")
+    out: dict = {}
+    for key in ("payer", *extra_keys):
+        if key in raw:
+            v = raw[key]
+            if not isinstance(v, str) or not v.strip():
+                raise ProfileError(
+                    f"{label}: billing {key}: {v!r} must be a non-blank string")
+            if BILLING_LABEL_CONTROL_RE.search(v.strip()):
+                raise ProfileError(
+                    f"{label}: billing {key}: {v!r} must not contain control "
+                    f"characters (a newline would forge a line in the output)")
+            out[key] = v.strip()
+    basis = None
+    if "basis" in raw:
+        basis = str(raw["basis"]).strip().lower()
+        if basis not in BILLING_BASES:
+            raise ProfileError(
+                f"{label}: billing basis: {raw['basis']!r} is not one "
+                f"of {'|'.join(BILLING_BASES)}")
+    forced = HARNESS_FORCED_BASIS.get(harness)
+    if forced and basis is not None and basis != forced:
+        raise ProfileError(
+            f"{label}: billing basis: {basis!r} contradicts harness "
+            f"{harness!r}, which always bills {forced!r}")
+    payer = out.pop("payer", None)
+    return {"payer": payer or default_payer,
+            "basis": basis or forced or DEFAULT_BILLING_BASIS, **out}
+
+
 def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
                     redact: bool = False,
                     header_ref_names: set[str] | None = None) -> dict:
     """Load and fully resolve a named profile.
 
     Returns ``{"description", "model", "fast_model", "price_strategy",
-    "env", "mounts", "pi"}`` where `env` is a `str -> str` dict of
+    "harness", "billing", "env", "mounts", "pi"}`` where `env` is a `str -> str` dict of
     fully-resolved values,
     `mounts` is a list of `host:container[:ro]` strings (host side
     `~`-expanded), and `pi` is the resolved `pi:` fragment (or `None`).
@@ -216,6 +273,10 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
         raise ProfileError(
             f"llm profile '{name}': harness: {harness!r} is not one "
             f"of {'|'.join(HARNESSES)}")
+    # #298: who pays -- literal values, so never resolved and never masked.
+    billing = resolve_billing(
+        doc.get("billing"), label=f"llm profile '{name}'", harness=harness,
+        default_payer=name)
     builtin_providers = doc.get("builtin_providers")
     if builtin_providers is None:
         builtin_providers = []
@@ -303,6 +364,7 @@ def resolve_profile(name: str, reg: Path, host_env: dict | None = None, *,
         # template/registry default) already decided.
         "price_strategy": price_strategy,
         "harness": harness,
+        "billing": billing,
         "builtin_providers": list(builtin_providers),
         "env": resolved_env,
         "mounts": mounts,

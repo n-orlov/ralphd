@@ -21,6 +21,9 @@ price_strategy: aws                 # optional: none|aws — built-in rate table
                                     # routes this gateway does not price itself
 harness: pi                         # optional: pi|claude-code — agent harness for every
                                     # hat (default pi; see "Claude subscription" below)
+billing:                            # optional (#298): who pays for this profile's tokens
+  payer: My gateway                 # free-text label [default: the profile name]
+  basis: chargeback                 # metered|subscription|chargeback|free [default: metered]
 builtin_providers: [anthropic]      # optional: providers pi serves without a models.json
                                     # entry; the start-time route check accepts them
 
@@ -88,6 +91,30 @@ Resolution rules:
   a provider quote; see `docs/cli.md` ("Built-in AWS Bedrock rate table") and
   `docs/api.md` (`priceStrategy`). An unknown value here is an error at `start`
   time, not a silent fallback.
+- `billing` (v0.32.1, #298, optional) says **who pays** for this profile's
+  tokens, so `ralphctl cost`, `ralphctl status` and the hub can group a run's
+  cost by payer instead of by model prefix (an `anthropic/` ref can be a
+  subscription or a gateway). `payer` is a free-text label shown as-is, on
+  one line (a control character such as a newline is a `ProfileError`);
+  `basis` is one of `metered`, `subscription`, `chargeback`, `free`
+  (case-insensitive, like `price_strategy`). Both values are literal: never
+  resolved, never masked. `metered`/`chargeback` report the priced cost (the
+  provider's quote, then `pricing:`, then the built-in table);
+  `subscription`/`free` report `$0` and keep the would-be price apart as the
+  list-equivalent, for those rows only. Fallbacks: no block means payer = the
+  profile name and basis = `metered`, and a `harness: claude-code` profile is
+  always `subscription` (any other basis is a `ProfileError`). In a mixed run
+  a `pi` hat under a `claude-code` profile is stamped with the profile name
+  and `metered`, and a `claude-code` hat under any other profile (or `--llm
+  host`) with the registry `config.yaml`'s `billing.subscription_payer`
+  (default `claude-code subscription`). Several profiles may share one payer
+  label; their rows merge. `--llm host` takes payer and basis from the
+  registry `config.yaml`'s `billing:` block (default `host models.json`,
+  `metered`), and `--llm none` is never grouped. `ralphctl start
+  --billing-payer`/`--billing-basis` override the profile for one run (see
+  `docs/cli.md`, "Who pays"). `start` inlines the result into `job.yaml`, so
+  editing the profile later never rewrites a run's history, and a run started
+  before 0.32.1 keeps its old cost layout.
 - `--llm-env KEY=VAL` on `start` layers on top of the profile.
 - **`--llm-header NAME:VALUE`** (`NAME=VALUE` also accepted, repeatable, #177)
   sets that HTTP header on EVERY provider of the resolved pi config -- both
@@ -211,6 +238,9 @@ SSO mid-run) are surfaced as iteration failures and fixable live via
 description: any bearer-token gateway exposing an Anthropic- or OpenAI-style API
 model: my-gateway/big-model
 fast_model: my-gateway/small-model
+billing:
+  payer: My gateway
+  basis: chargeback
 env:
   GW_API_KEY: ${cmd:aws secretsmanager get-secret-value --secret-id my-gw-key --query SecretString --output text}
 pi:
@@ -245,6 +275,9 @@ cross-family is routable today").
 # examples/llm-profiles/aigw-cross-family.yaml
 description: one gateway fronting a Bedrock-shaped Anthropic route and an OpenAI-shaped route, one bearer token
 model: amazon-bedrock/eu.anthropic.claude-opus-5
+billing:
+  payer: AIGW gateway
+  basis: chargeback
 env:
   AIGW_BEARER_TOKEN: ${env:AIGW_BEARER_TOKEN}
 pi:
@@ -327,9 +360,12 @@ builtin_providers: [anthropic]       # lets a pi hat use anthropic/* too
 model: anthropic/claude-sonnet-5
 env:
   CLAUDE_CODE_OAUTH_TOKEN: ${file:~/.config/claude/oauth-token}
+billing:
+  payer: Claude subscription
+  basis: subscription
 ```
 
-Every hat then runs on `claude-code`. A `claude-code` hat's model ref must be
+This ships as `examples/llm-profiles/claude-sub.yaml`. Every hat then runs on `claude-code`. A `claude-code` hat's model ref must be
 `anthropic/*` (or unset, so the CLI picks its default); any other provider is
 refused at start with exit `5`.
 
@@ -352,6 +388,20 @@ A profile carries one `pi:` fragment. For a mixed run where the pi hats use a
 gateway, keep the gateway profile (`harness: pi`), put
 `CLAUDE_CODE_OAUTH_TOKEN` in its `env:`, and select the subscription hats with
 `--harness-for HAT=claude-code`.
+
+Such a mixed run reports two payers (#298): the gateway profile's own
+`billing:` for its pi hats, and the registry `config.yaml`'s
+`billing.subscription_payer` (default `claude-code subscription`) for the
+`claude-code` hats, which always bill `subscription`. With `--llm claude-sub`
+and a `review=pi` hat as above, review is stamped `claude-sub` and
+`metered`; to show the gateway's own label instead, start on the gateway
+profile and move the subscription hats with `--harness-for HAT=claude-code`. A
+`claude-code` iteration that timed out, was interrupted or was killed at the
+iteration cap before the SDK reported its list price still costs `$0`, but
+its tokens have no list price: the subscription row's list-equivalent then
+reads `$X+ (partial, rest unavailable)` and the `spend:` headline says
+`would be $X+ at list, rest unavailable`. That is expected, not a pricing
+fault.
 
 The gateway's routing stays in the container env for the pi hats only. A
 `claude-code` hat's wrapper removes `ANTHROPIC_BASE_URL`,
