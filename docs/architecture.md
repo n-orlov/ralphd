@@ -607,18 +607,19 @@ one per phase: `planning.md`, `worker.md`, `review.md`, `task-verify.md`,
 `reflect.md`, `steer.md` (task 009, PRD requirement G), `plan_review.md`
 (task 018, PRD requirement K — the opt-in peer plan-review gate) and
 `verdict_gate.md` (task 020, PRD requirement L — the opt-in, genuinely
-BLIND peer verdict gate). Every one
+BLIND peer verdict gate), plus `judge_retry.md` (the bounded-budget wording a
+judging hat's retry prompt appends, not a phase of its own). Every one
 of them is **overridable by mount**: a file of the same
 name in `/config/prompts/` (mapped by the CLI) takes precedence, resolved per
 iteration through the config overlay order (§5). Runtime replacement over the
 API (`PUT /config/prompts/{name}`, taking effect next iteration) covers the
 four phases `engine/config.py: PROMPT_NAMES` lists — `reflect`, `steer`,
-`plan_review` and `verdict_gate` are deliberately not among them (none of
-the four is listed
+`plan_review`, `verdict_gate` and `judge_retry` are deliberately not among
+them (none of the five is listed
 by `GET /config/prompts` or `ralphctl prompts ls` either), so the
 post-terminal reflection prompt, the steer hat's prompt, the peer
-plan-review hat's prompt and the peer verdict-gate hat's prompt can only be
-replaced by a mount or in the image.
+plan-review hat's prompt, the peer verdict-gate hat's prompt and the judge
+retry wording can only be replaced by a mount or in the image.
 `PUT /config/prompts/{name}` is one of
 the routes `control_token` gates unconditionally (task 005, requirement A /
 #62, SPEC §13.3), and no spawned iteration's own process can ever present
@@ -4199,12 +4200,27 @@ event:
 | `"signal"` | a signal ended an iteration that had reached the model, with no abort recorded (below) — not retried |
 | `"rate_limit"` | the provider reported its rate-limit window exhausted, in structured form — waited out until the window resets, then the same work re-runs (below) |
 | `"refused"` | the provider refused the call in a way waiting does not fix (a 400/401/403/404), or the `claude-code` harness refused to start — not retried; the run pauses for the operator (below) |
-| `"output_truncated"` | the final assistant message ended `stopReason: "length"` with no text — the provider cut the reply off at its output-token limit; not a work failure, and no retry or refund of its own |
+| `"output_truncated"` | the final assistant message ended `stopReason: "length"` with no text — the provider cut the reply off at its output-token limit; not a work failure; a worker, verify or planning iteration gets no retry or refund of its own, and the peer `verdict_gate` retries it (below) |
 
 Because both the recorded field and the retry decision come from that one
 call, an operator reading `faultClass: "infra"` can be sure that is why the
 attempt was retried and refunded — the taxonomy is not a second, cosmetic
 opinion about the failure.
+
+**A truncated or empty judge reply is retried.** The peer `verdict_gate`
+hat's single parser, `LoopSupervisor._verdict_gate_verdict`, re-dispatches the
+same hat as a fresh iteration (`_dispatch_verdict_gate`) when the iteration
+ended `output_truncated`, or when the contract ladder ran out on replies that
+were all empty, before any verdict is recorded. A truncated reply skips the
+ladder, since the same hat with the same output budget would be cut off again.
+The retry is capped by `judge_retry_max` (default `2`, `0` disables it,
+negative values are refused), emits `verdict_gate.retry` with `hat`, `attempt`,
+`cap` and `reason` (`output_truncated` or `empty_reply`), and is refunded
+through the `infra` counter so it never costs an iteration or an approach. It
+differs from the attempt it replaces: `prompts/judge_retry.md` is appended to
+its prompt (the previous attempt ran out of output budget; emit the verdict
+within a bounded investigation) and its thinking level is one step lower
+(`high` to `medium`; the lowest level, or no level, is kept).
 
 Three deliberate details:
 

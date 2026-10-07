@@ -30,6 +30,7 @@ provisioning_policy` for the guard that keeps it that way.
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 from typing import Mapping
 
@@ -248,3 +249,30 @@ def all_hat_tier_pairs() -> tuple[tuple[str, str], ...]:
     `MODEL_HATS x TIERS` -- as a tuple so a table-driven test can iterate
     it without re-deriving the product itself."""
     return tuple(itertools.product(MODEL_HATS, TIERS))
+
+
+# ---------------------------------------------------------------------------
+# One step down the thinking ladder (the judge retry, #300)
+# ---------------------------------------------------------------------------
+
+#: The thinking/effort vocabulary, lowest first (the one pi's `--thinking`
+#: speaks and `HatBundle` documents).
+THINKING_LEVELS: tuple[str, ...] = (
+    "off", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def lower_thinking_level(level: str | None) -> str | None:
+    """`level` one step down `THINKING_LEVELS` (`high` -> `medium`). The
+    lowest level, a level this vocabulary does not name and `None` (nothing
+    configured, so nothing to lower) come back unchanged."""
+    if level in THINKING_LEVELS:
+        return THINKING_LEVELS[max(0, THINKING_LEVELS.index(level) - 1)]
+    return level
+
+
+def lower_bundle(bundle: HatBundle) -> HatBundle:
+    """`bundle` with its thinking and effort levels each one step lower,
+    everything else (model, harness) untouched. Pure."""
+    return dataclasses.replace(
+        bundle, thinking=lower_thinking_level(bundle.thinking),
+        effort=lower_thinking_level(bundle.effort))

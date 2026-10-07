@@ -778,6 +778,13 @@ class JobConfig:
     # see `engine/contract_enforcement.py` for the mechanism itself (not
     # wired into `_run_job_core` yet -- that is task 014's cutover).
     contract_retry_max: int = 2
+    # How many FRESH, uncharged re-dispatches a judging hat (today the peer
+    # `verdict_gate`) is granted when its reply was cut off by the provider
+    # (`output_truncated`) or came back empty after the contract ladder
+    # (`empty_reply`), before the engine falls back to its no-verdict
+    # handling. 0 disables the retry. Negative or non-integer values are
+    # refused at construction. Overridable with RALPHD_JUDGE_RETRY_MAX.
+    judge_retry_max: int = 2
     # Task 011 (v0.19 PRD requirement B.2, #153) added an explicit NUMBER --
     # how many CONSECUTIVE worker iterations may be spent on the SAME task,
     # each landing real commits but no completion signal, before the engine
@@ -872,6 +879,12 @@ class JobConfig:
     workspace_push_branch: str = "main"
     extra: dict = field(default_factory=dict)
 
+    def _validate_judge_retry_max(self) -> None:
+        v = self.judge_retry_max
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ValueError(
+                f"judge_retry_max must be an integer >= 0, got {v!r}")
+
     def __post_init__(self) -> None:
         # Normalise here, not only in `load`, so a JobConfig built directly
         # (tests, the API, future callers) can never carry an unknown
@@ -879,6 +892,7 @@ class JobConfig:
         # "not aws" with no warning.
         self.price_strategy = normalize_price_strategy(self.price_strategy)
         self.billing = normalize_billing(self.billing)
+        self._validate_judge_retry_max()
         # Task 005: fold the `models:` alias into `model_overrides` -- the one
         # table `model_for` actually reads -- exactly once, here, so a
         # JobConfig built directly (tests, the API) behaves identically to
@@ -947,6 +961,9 @@ class JobConfig:
             cfg.price_strategy = normalize_price_strategy(v)
         if v := os.environ.get("RALPHD_CONTRACT_RETRY_MAX"):
             cfg.contract_retry_max = int(v)
+        if v := os.environ.get("RALPHD_JUDGE_RETRY_MAX"):
+            cfg.judge_retry_max = int(v)
+            cfg._validate_judge_retry_max()
         if v := os.environ.get("RALPHD_TASK_ABSORPTION_MAX_ITERATIONS"):
             cfg.task_absorption_max_iterations = int(v)
         if v := os.environ.get("RALPHD_ROUTER_MODEL"):
@@ -1023,6 +1040,7 @@ class JobConfig:
             # -- `retryMax + 1` total attempts before an agent fault.
             "contracts": {
                 "retryMax": self.contract_retry_max,
+                "judgeRetryMax": self.judge_retry_max,
             },
             "model": {
                 "model": self.model,

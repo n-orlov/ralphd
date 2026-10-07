@@ -485,6 +485,10 @@ class LoopSupervisor:
         # is what makes `_hat_extensions("steer")` non-empty, so no other
         # phase can ever be launched with the steer tool surface.
         self._steer_tool_broker: hat_tools.SteerToolBroker | None = None
+        # #300: True only while a judging hat's retry dispatch is in flight
+        # (`_dispatch_verdict_gate`); `_run_iteration_once` then hands the
+        # harness a thinking/effort level one step lower than the bundle's.
+        self._judge_retry_step_down = False
         # Task 012 (PRD requirement D.2, #184): the last steer pass's own
         # broker, read-only, kept around strictly for `_depends_on_refusal_
         # notes` after `_steer_tool_broker` itself has already been
@@ -3467,6 +3471,8 @@ class LoopSupervisor:
         effective_tier = tier if tiers.is_tier(tier) else tiers.DEFAULT_TIER
         host_map = tiers.default_host_map(self.cfg)
         bundle = tiers.resolve_bundle(phase, effective_tier, host_map)
+        if self._judge_retry_step_down:
+            bundle = tiers.lower_bundle(bundle)
         model = bundle.model
         pending = (self.run.pending_steering()
                    if phase in STEERING_ACTIONABLE_PHASES else [])
@@ -9380,11 +9386,7 @@ class LoopSupervisor:
             self._budget_exhausted_tail = True
             return ("tail",)
         self.run.emit("phase", phase="verdict_gate", approach=approach)
-        result = await self.run_iteration(
-            "verdict_gate",
-            extra=self._operator_amendment_review_context(
-                audience="verdict_gate"),
-            tier=state.run_level_verify_tier())
+        result = await self._dispatch_verdict_gate()
         approved, payload = await self._verdict_gate_verdict(result)
         self._record_gate_approach_verdict(approach, approved, payload)
         self._record_verdict_gate_peek(approach)
@@ -9978,8 +9980,62 @@ class LoopSupervisor:
         with `payload` None so the caller's log says "no usable
         verdict_gate payload" rather than inventing a reason.
         """
+        attempt = 0
+        cap = self.cfg.judge_retry_max
+        while True:
+            approved, payload, reason = await self._verdict_gate_read_reply(result)
+            if reason is None or attempt >= cap:
+                return approved, payload
+            if self._abort_reason is not None or time.monotonic() >= self.deadline:
+                return approved, payload
+            attempt += 1
+            # The failed attempt is refunded (the same `infra` counter a
+            # rate-limit wait or a refusal refunds into), so the retries are
+            # never charged against `--iterations`.
+            self._refund_iteration("infra")
+            self.run.update_status(iterationsUsed=self.iterations_used_charged)
+            self.run.emit("verdict_gate.retry", hat="verdict_gate",
+                          attempt=attempt, cap=cap, reason=reason)
+            log.warning("verdict_gate reply unusable (%s); retrying as a fresh "
+                        "iteration (attempt %d of %d)", reason, attempt, cap)
+            result = await self._dispatch_verdict_gate(
+                retry_wording=self.prompt_text("judge_retry"), step_down=True)
+
+    async def _dispatch_verdict_gate(self, *, retry_wording: str = "",
+                                     step_down: bool = False):
+        """The ONE `run_iteration("verdict_gate", ...)` call: the first
+        attempt (`_step_verdict_gate`) and every judge retry
+        (`_verdict_gate_verdict`) both go through it. A retry appends the
+        bounded-budget wording (`prompts/judge_retry.md`) to `extra` and runs
+        one thinking step lower."""
+        extra = self._operator_amendment_review_context(audience="verdict_gate")
+        if retry_wording:
+            extra = (extra + "\n\n" if extra else "") + retry_wording
+        self._judge_retry_step_down = step_down
+        try:
+            return await self.run_iteration(
+                "verdict_gate", extra=extra,
+                tier=state.run_level_verify_tier())
+        finally:
+            self._judge_retry_step_down = False
+
+    async def _verdict_gate_read_reply(
+            self, result) -> tuple[bool, dict | None, str | None]:
+        """One reading of a `verdict_gate` iteration's reply, with the
+        contract ladder: `(approved, payload, retry_reason)`.
+
+        `retry_reason` is `None` for a usable verdict and for every unusable
+        reply the engine keeps today's safe default for (a non-empty
+        malformed reply). It is `output_truncated` when the iteration ended
+        `stopReason: length` with no text (re-asking the same hat with the
+        same output budget cannot help, so the ladder is skipped) and
+        `empty_reply` when the ladder was exhausted on replies that were all
+        empty. The caller decides whether a retry is still available."""
         if result is None:
-            return False, None
+            return False, None, None
+        if getattr(result, "output_truncated", False) and not (
+                result.final_text or "").strip():
+            return False, None, "output_truncated"
         try:
             parsed = json.loads(last_nonblank_line(result.final_text))
         except (json.JSONDecodeError, TypeError, AttributeError):
@@ -9987,18 +10043,21 @@ class LoopSupervisor:
         if isinstance(parsed, dict) and not contracts.validate_payload("verdict_gate", parsed):
             if not transitions.verdict_gate_report_errors(parsed):
                 approved = parsed.get("verdict") == "verified"
-                return approved, parsed
+                return approved, parsed, None
 
         first_attempt_text = last_nonblank_line(result.final_text)
         event_loop = asyncio.get_running_loop()
+        replies: list[str] = []
 
         def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
             if attempt == 0:
+                replies.append(result.final_text or "")
                 return first_attempt_text
             raw, _usage = asyncio.run_coroutine_threadsafe(
                 self._ask_contract_fix("verdict_gate", prior_errors or [],
                                        final_text=result.final_text),
                 event_loop).result()
+            replies.append(raw or "")
             return last_nonblank_line(raw)
 
         enforcement = await asyncio.to_thread(
@@ -10009,10 +10068,11 @@ class LoopSupervisor:
             extra_validate=transitions.verdict_gate_report_errors,
         )
         if not enforcement.ok:
-            return False, None
+            all_empty = all(not r.strip() for r in replies)
+            return False, None, "empty_reply" if all_empty else None
         payload = enforcement.payload
         approved = payload.get("verdict") == "verified"
-        return approved, payload
+        return approved, payload, None
 
     def _record_gate_approach_verdict(self, approach: int, approved: bool,
                                       payload: dict | None) -> None:

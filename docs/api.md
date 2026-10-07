@@ -171,7 +171,7 @@ keys with no section of their own below:
 | `previousEndings` | earlier episodes' endings, oldest first — `{startedAt, endedAt, reason, verdict}` per superseded ending (`startedAt` is the start of the episode that ending closes; optional, absent on an entry recorded before the field existed), `[]` for a run still in its first episode, capped at the 50 most recent. Kept because the terminal `state` event in `events.jsonl` records the state but not the reason or verdict |
 | `termination` | present once the run was told to stop — see below |
 | `iterationsUsed` | the **charged** iteration count: raw attempts minus infra AND steer refunds (task 014, #98). `iteration` (the raw number of the attempt running now) is the higher figure whenever anything was refunded, and `iterationsUsed` is what every budget surface prints and what `PATCH /config/budget` validates against |
-| `iterationsRefunded` | `{infra, steer, adjudication}` — the refunds this run has earned, written as they are earned and read back by the next engine process, so a `resume` (or an auto-resume after a crash) no longer re-charges refunds granted before it (issue #32). Absent, and read as zeroes, until the run earns its first refund; a pre-v0.7 run dir therefore keeps its recorded `iterationsUsed`. `infra` also counts the refunded attempts of a rate-limit wait and of a provider refusal (`faultClass` `"rate_limit"`/`"refused"`). Infra and steer refunds are subtracted from `iterationsUsed`; an adjudication episode's refund (v0.24 task 015, requirement E.1, #169, renamed this key from the retired off-budget grace review's own `grace`) is deliberately not (it stays visible as a used iteration) but is still subtracted from the budget comparison |
+| `iterationsRefunded` | `{infra, steer, adjudication}` — the refunds this run has earned, written as they are earned and read back by the next engine process, so a `resume` (or an auto-resume after a crash) no longer re-charges refunds granted before it (issue #32). Absent, and read as zeroes, until the run earns its first refund; a pre-v0.7 run dir therefore keeps its recorded `iterationsUsed`. `infra` also counts the refunded attempts of a rate-limit wait and of a provider refusal (`faultClass` `"rate_limit"`/`"refused"`), and of a peer `verdict_gate` retry (`verdict_gate.retry`, below). Infra and steer refunds are subtracted from `iterationsUsed`; an adjudication episode's refund (v0.24 task 015, requirement E.1, #169, renamed this key from the retired off-budget grace review's own `grace`) is deliberately not (it stays visible as a used iteration) but is still subtracted from the budget comparison |
 | `unconsumedSteering` | steering files still pending at the terminal write |
 | `steerSettled` | the most recent `steer` hat iteration's own `settled` claim (`{"settled": bool, "at": timestamp, "notes": string\|null}`), `null` until the first one runs. `settled` is a harness-observable fact distinct from `done`: it means only "the hat processed this iteration's pending steering message(s) and applied its changes to the plan" -- it says nothing about whether the tasks it inserted or changed will pass. That verdict is the ordinary lifecycle's, read off those tasks' own `status` plus their `origin: "steer"` marker (task 011); the exit gate (`GET /tasks`, the terminal `state`/`verdict`) waits on THAT, never on this field (task 013, #98) |
 | `steering` | live counts — `{pending, consumed}` over `steering/NNN-*.md`, added by the API rather than stored |
@@ -1190,7 +1190,7 @@ contents, no LLM env values):
               "rateLimitMaxWaitS": 86400, "rateLimitPreemptUtilization": 0.95,
               "routerTimeoutS": 60.0},
   "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false, "peerPlanReview": false, "peerVerdictGate": false, "operatorInputNeededPause": true, "midPlanReview": false, "routeTaskSelection": true},
-  "contracts": {"retryMax": 2},  // response-contract re-prompt policy, task 010
+  "contracts": {"retryMax": 2, "judgeRetryMax": 2},  // response-contract re-prompt policy, task 010; judgeRetryMax caps the judging-hat retry on a truncated or empty reply
   "model": {"model": null, "routerModel": null, "overrides": {}, "thinking": null,
              "thinkingOverrides": {}, "harnesses": {"planning": "pi", "worker": "pi"}},
   "pricing": null,                 // or the resolved host-side rate table, see below
@@ -1273,6 +1273,15 @@ malformed, absent or wrong-shape response contract payload (task 010, see
 against the budget — `retryMax + 1` total attempts, each failed one logged to
 `events.jsonl` (`contract.violation`) the moment it happens, with a final
 `contract.agent_fault` if none of them validate.
+
+`contracts.judgeRetryMax` (`judge_retry_max` / `RALPHD_JUDGE_RETRY_MAX`,
+default `2`; `0` disables it; a negative or non-integer value is refused) caps
+the fresh, uncharged re-dispatches the peer `verdict_gate` hat gets when its
+reply was cut off by the provider (`faultClass: "output_truncated"`) or was
+empty after the contract ladder. Each retry emits a `verdict_gate.retry` event
+(`hat`, `attempt`, `cap`, `reason` of `"output_truncated"` or `"empty_reply"`),
+runs with the bounded-budget wording of `prompts/judge_retry.md` and one
+thinking step lower, and is refunded through `iterationsRefunded.infra`.
 
 Each of those re-prompts is itself the uncharged contract-repair channel,
 `LoopSupervisor._ask_contract_fix()` (task 001 requirement B, task 004) --

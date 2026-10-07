@@ -38,7 +38,7 @@ outside that directory.
    worked, what didn't, and specific actionable suggestions for improving the
    whole shipped prompt set -- every hat under `src/ralphd/prompts/*.md`
    (currently `planning`, `plan_review`, `worker`, `review`, `task-verify`,
-   `verdict_gate`, `steer`, `reflect`) -- or skills used by future runs of
+   `verdict_gate`, `judge_retry`, `steer`, `reflect`) -- or skills used by future runs of
    this loop. This scope is the whole prompt surface, not a fixed subset: a
    hat added to that directory later is in scope too.
 4. If you have a specific, concrete textual improvement to propose for a prompt

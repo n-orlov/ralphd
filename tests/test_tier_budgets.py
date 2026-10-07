@@ -640,8 +640,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # #300 A: output_truncated fault class: +21 tests / +1 module
     # (tests/test_output_truncated_fault_class.py) -> fast 7515/501,
     # smoke 5790/377.
-    "fast": {"tests": 7515, "modules": 501},
-    "smoke": {"tests": 5790, "modules": 377},
+    # #300 B (judge retry): +32 tests / +1 module (tests/test_judge_retry.py)
+    # -> fast 7547/502, smoke 5822/378.
+    "fast": {"tests": 7547, "modules": 502},
+    "smoke": {"tests": 5822, "modules": 378},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
