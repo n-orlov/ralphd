@@ -651,8 +651,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # smoke 5862/381.
     # Version floor (0.32.3): +1 test in tests/test_packaging_metadata.py ->
     # fast 7600/506, smoke 5874/382.
-    "fast": {"tests": 7600, "modules": 506},
-    "smoke": {"tests": 5874, "modules": 382},
+    # #300 B.1 (review empty_reply retry): +7 tests in
+    # tests/test_review_truncation_retry.py -> fast 7607/506, smoke 5881/382.
+    "fast": {"tests": 7607, "modules": 506},
+    "smoke": {"tests": 5881, "modules": 382},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

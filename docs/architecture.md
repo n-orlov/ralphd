@@ -1291,7 +1291,8 @@ mid-run non-terminal value that is never written to `status.json` at all.
     during review" back on a run no deadline touched.
   - **`unreviewed` also covers "a judging hat never spoke" (#300).** The
     review hat's own twin: when review's first attempt and every
-    `judge_retry_max` retry ended `stopReason: length` with no text and no
+    `judge_retry_max` retry ended `stopReason: length` with no text, or
+    exhausted the contract ladder on empty replies, and no
     budget remains, `_step_review` reaches the same
     `_park_judge_no_verdict("review", ...)` before `_review_verdict` can record
     anything, so the run ends `unreviewed` with a reason naming review and no
@@ -4241,9 +4242,11 @@ differs from the attempt it replaces: `prompts/judge_retry.md` is appended to
 its prompt (the previous attempt ran out of output budget; emit the verdict
 within a bounded investigation) and its thinking level is one step lower
 (`high` to `medium`; the lowest level, or no level, is kept). Review's retry
-fires on `output_truncated` only and emits `review.retry`; an empty,
-non-truncated review reply keeps the contract ladder and its
-`review_contract_unrepaired` hold.
+fires on `output_truncated` and on `empty_reply` (its contract ladder was
+exhausted on replies that were all empty), emits `review.retry`, and goes
+through the same helper; when every retry fails review takes the
+`judge_no_verdict` park instead of the `review_contract_unrepaired` hold. A
+non-empty malformed review reply keeps the contract ladder and that hold.
 
 **A gate with no verdict after every retry parks the run.** When the retries
 also fail, `_verdict_gate_verdict` reports the cause (`output_truncated` or

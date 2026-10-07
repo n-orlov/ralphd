@@ -497,6 +497,9 @@ class LoopSupervisor:
         # (`output_truncated`) when every review retry also ended with no
         # reply; `_step_review` parks on it instead of reading a verdict.
         self._review_no_verdict: str | None = None
+        # #300 B.1: True iff the last review contract ladder was exhausted
+        # on replies that were all empty (reset at every ordinary entry).
+        self._review_ladder_all_empty: bool = False
         # Task 012 (PRD requirement D.2, #184): the last steer pass's own
         # broker, read-only, kept around strictly for `_depends_on_refusal_
         # notes` after `_steer_tool_broker` itself has already been
@@ -13142,6 +13145,7 @@ class LoopSupervisor:
         if not mid_run:
             self._review_contract_unrepaired = False
             self._review_findings_unusable = False
+            self._review_ladder_all_empty = False
             self._confirmation_downgrades_announced = set()
         if result is None or self._review_interrupted(result):
             return result
@@ -13308,14 +13312,17 @@ class LoopSupervisor:
 
         first_attempt_text = last_nonblank_line(result.final_text)
         event_loop = asyncio.get_running_loop()
+        replies: list[str] = []
 
         def respond(attempt: int, prior_errors: list[str] | None) -> str | None:
             if attempt == 0:
+                replies.append(result.final_text or "")
                 return first_attempt_text
             raw, _usage = asyncio.run_coroutine_threadsafe(
                 self._ask_contract_fix("review", prior_errors or [],
                                        final_text=result.final_text),
                 event_loop).result()
+            replies.append(raw or "")
             return last_nonblank_line(raw)
 
         enforcement = await asyncio.to_thread(
@@ -13343,6 +13350,12 @@ class LoopSupervisor:
         # `None` here would crash every one of them for a signalling
         # convenience).
         if not mid_run:
+            # #300 B.1: an exhausted ladder whose replies were ALL empty is
+            # a judging hat that said nothing -- `_read_review_reply` hands
+            # that to `_judge_reply_with_retry` as `empty_reply`. A
+            # non-empty malformed reply keeps today's hold.
+            self._review_ladder_all_empty = all(
+                not r.strip() for r in replies)
             if verdict_claim_unreadable:
                 self._review_contract_unrepaired = True
             # Task 010 (requirement C.1, #219): the sibling record, on the
@@ -13487,8 +13500,9 @@ class LoopSupervisor:
         contract ladder is skipped (re-asking the same hat with the same
         output budget cannot help) and the review flags describe this pass
         as having no readable verdict. Every other reply goes through the
-        ordinary contract ladder, unchanged -- review's empty-reply ladder
-        exhaustion keeps its existing `review_contract_unrepaired` pause."""
+        ordinary contract ladder: when that is exhausted on replies that were
+        all empty the reading is `empty_reply`, while a non-empty malformed
+        reply keeps its existing `review_contract_unrepaired` pause."""
         if (result is not None and not self._review_interrupted(result)
                 and getattr(result, "output_truncated", False)
                 and not (result.final_text or "").strip()):
@@ -13496,7 +13510,21 @@ class LoopSupervisor:
             self._review_findings_unusable = False
             self._confirmation_downgrades_announced = set()
             return result, "output_truncated"
-        return await self._review_contract_ladder(result), None
+        result = await self._review_contract_ladder(result)
+        if (self._review_ladder_all_empty
+                and (self._review_contract_unrepaired
+                     or self._review_findings_unusable)
+                and not self._review_interrupted(result)):
+            # The ladder was exhausted on replies that were all empty: the
+            # same retry the gate gets. The flags describe THIS pass, which
+            # has no readable verdict, so they are cleared exactly as for
+            # `output_truncated`.
+            self._review_contract_unrepaired = False
+            self._review_findings_unusable = False
+            self._review_ladder_all_empty = False
+            self._confirmation_downgrades_announced = set()
+            return result, "empty_reply"
+        return result, None
 
     async def _redispatch_review(self):
         return await self._run_one_review_dispatch(

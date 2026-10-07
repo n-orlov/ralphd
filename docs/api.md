@@ -1298,8 +1298,8 @@ against the budget — `retryMax + 1` total attempts, each failed one logged to
 default `2`; `0` disables it; a negative or non-integer value is refused) caps
 the fresh, uncharged re-dispatches a judging hat gets when its reply was cut off
 by the provider (`faultClass: "output_truncated"`): the peer `verdict_gate` hat,
-which also retries a reply that was empty after the contract ladder, and the
-`review` hat, which retries a truncated reply only. Each retry emits a
+and the `review` hat; both also retry a reply that was empty after the
+contract ladder. Each retry emits a
 `verdict_gate.retry` or `review.retry` event
 (`hat`, `attempt`, `cap`, `reason` of `"output_truncated"` or `"empty_reply"`),
 runs with the bounded-budget wording of `prompts/judge_retry.md` and one

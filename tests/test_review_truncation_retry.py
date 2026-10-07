@@ -61,6 +61,18 @@ def _review_truncated(sup, prompt=""):
     return r
 
 
+def _review_empty(sup, prompt=""):
+    return _ok("")
+
+
+def _review_blank(sup, prompt=""):
+    return _ok("  \n\t\n")
+
+
+def _review_prose(sup, prompt=""):
+    return _ok("I looked at it and it seems fine to me")
+
+
 def _gate_approves(sup, prompt=""):
     return _ok(json.dumps({"verdict": "verified"}))
 
@@ -250,6 +262,104 @@ def test_a_spent_budget_at_the_review_park_ends_unreviewed_not_rejected(tmp_path
     approaches = sup.run.root / "approaches"
     assert not approaches.exists() or not any(approaches.iterdir())
     assert _events(sup, "review.no_verdict")[0]["parked"] is False
+
+
+# ---------------------------------------------------------------------------
+# (2b) a review ladder exhausted on empty replies is retried, then parked
+# ---------------------------------------------------------------------------
+
+EMPTY_WORDING = "no verdict: empty reply"
+# one review dispatch whose reply is empty costs the first reply plus
+# `contract_retry_max` (2) empty contract re-asks, all scripted on `review`
+LADDER = 3
+
+
+def test_an_empty_review_reply_is_retried_uncharged_with_reason_empty_reply(
+        tmp_path):
+    sup, final = _run(tmp_path / "run", [_review_empty] * LADDER + [_review_verifies])
+    status = sup.run.read_status()
+    assert final == "succeeded", status
+    assert status["verdict"] == "verified", status
+    events = _events(sup, "review.retry")
+    assert len(events) == 1, events
+    assert events[0]["hat"] == "review"
+    assert events[0]["reason"] == "empty_reply"
+    assert events[0]["attempt"] == 1 and events[0]["cap"] == 2
+    assert _events(sup, "review.no_verdict") == []
+    assert _recorded_verdicts(sup) == [("review", "verified")]
+    base, _ = _run(tmp_path / "base", [_review_verifies])
+    assert sup.iterations_used_charged == base.iterations_used_charged
+    first, retry = _review_prompts(sup)[0], _review_prompts(sup)[-1]
+    assert BUDGET_WORDING not in first and BUDGET_WORDING in retry
+
+
+def test_a_review_that_replies_empty_every_attempt_parks_not_holds(tmp_path):
+    sup, final, parked = _run_parked(
+        tmp_path / "run", [_review_empty], unpause=False)
+    assert parked is not None, "the run never parked"
+    assert parked["pauseReason"] == "operator_input_needed", parked
+    detail = parked["pauseDetail"]
+    assert detail["reason"] == "judge_no_verdict"
+    assert detail["hat"] == "review"
+    assert detail["cause"] == "empty_reply"
+    assert EMPTY_WORDING in detail["message"]
+    assert parked["gateRejectionEnding"] == state.GATE_REJECTION_ENDING_NO_VERDICT
+    assert len(_events(sup, "review.retry")) == 2
+    assert {e["reason"] for e in _events(sup, "review.retry")} == {"empty_reply"}
+    assert _events(sup, "review.no_verdict")[0]["parked"] is True
+    assert not _events(sup, "escalation.review_contract_unrepaired")
+    approaches = sup.run.root / "approaches"
+    assert not approaches.exists() or not any(approaches.iterdir())
+    assert not any(v == "rejected" for _c, v in _recorded_verdicts(sup))
+    assert final == "aborted"
+
+
+def test_unpause_redispatches_review_after_an_empty_reply_park(tmp_path):
+    sup, final, parked = _run_parked(
+        tmp_path / "run",
+        [_review_empty] * (3 * LADDER) + [_review_verifies],
+        unpause=True)
+    assert parked is not None
+    assert final == "succeeded", sup.run.read_status()
+    assert sup.run.read_status().get("gateRejectionEnding") is None
+    assert _recorded_verdicts(sup) == [("review", "verified")]
+
+
+def test_a_whitespace_only_review_reply_counts_as_empty(tmp_path):
+    sup, final = _run(tmp_path / "run", [_review_blank] * LADDER + [_review_verifies])
+    assert final == "succeeded", sup.run.read_status()
+    assert [e["reason"] for e in _events(sup, "review.retry")] == ["empty_reply"]
+
+
+def test_review_judge_retry_max_zero_parks_an_empty_reply_without_a_retry(
+        tmp_path):
+    sup, final, parked = _run_parked(
+        tmp_path / "run", [_review_empty] * LADDER + [_review_verifies],
+        unpause=True, judge_retry_max=0)
+    assert parked is not None
+    assert parked["pauseDetail"]["cause"] == "empty_reply"
+    assert _events(sup, "review.retry") == []
+    assert final == "succeeded"
+
+
+def test_a_spent_budget_after_empty_review_replies_ends_unreviewed(tmp_path):
+    sup, final, parked = _run_parked(
+        tmp_path / "run", [_review_empty], unpause=True, iterations=3)
+    status = sup.run.read_status()
+    assert parked is None, "the run parked with nothing left to resume into"
+    assert final == "failed", status
+    assert status["verdict"] == "unreviewed", status
+    assert EMPTY_WORDING in (status.get("reason") or "")
+    assert _events(sup, "review.no_verdict")[0]["parked"] is False
+
+
+def test_a_non_empty_malformed_review_reply_keeps_the_contract_hold(tmp_path):
+    sup, final, parked = _run_parked(
+        tmp_path / "run", [_review_prose], unpause=False)
+    assert parked is not None
+    assert parked["pauseReason"] == "review_contract_unrepaired", parked
+    assert _events(sup, "review.retry") == []
+    assert _events(sup, "review.no_verdict") == []
 
 
 # ---------------------------------------------------------------------------
