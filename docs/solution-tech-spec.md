@@ -264,14 +264,15 @@ recorded separately in `rateLimitWait`. `verdict` is the judgment of the work,
 separate from the lifecycle state: `verified`, `verified-with-residuals`,
 `unverified`, `unreviewed`, or `null`. A deadline that lands during review
 produces a `timed_out` hold with `verdict: null` and reason `"deadline during
-review"`, not a reviewed rejection. `unreviewed` is written in two cases, both only when no
+review"`, not a reviewed rejection. `unreviewed` is written in three cases, all only when no
 budget remained: review ran but never produced a readable verdict (with budget
-left the run pauses on `review_contract_unrepaired` instead), or review said
+left the run pauses on `review_contract_unrepaired` instead); review said
 `verified` but the peer verdict gate produced no verdict after every
-`judge_retry_max` retry (with budget left the run pauses on
-`operator_input_needed` with `pauseDetail.reason: judge_no_verdict` instead).
-In the second case review's `verified` verdict stays on record and no rejection
-is recorded.
+`judge_retry_max` retry; or the review hat itself was cut off
+(`stopReason: length`, no text) on every attempt and every retry (in both of
+the last two, with budget left the run pauses on `operator_input_needed` with
+`pauseDetail.reason: judge_no_verdict` instead). In the last two cases the
+recorded review verdict stays as it is and no rejection is recorded.
 
 An ordinary operator `pause` holds execution at the next boundary and emits a log
 event without changing `status.json` to `paused`. Engine-initiated escalation

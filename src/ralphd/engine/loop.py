@@ -493,6 +493,10 @@ class LoopSupervisor:
         # no budget remained to park for; `_finish_tail_unverified` ends the
         # run `unreviewed` on it.
         self._judge_no_verdict_unreviewed: str | None = None
+        # #300: set by `_run_review_iteration` to the no-verdict reason
+        # (`output_truncated`) when every review retry also ended with no
+        # reply; `_step_review` parks on it instead of reading a verdict.
+        self._review_no_verdict: str | None = None
         # Task 012 (PRD requirement D.2, #184): the last steer pass's own
         # broker, read-only, kept around strictly for `_depends_on_refusal_
         # notes` after `_steer_tool_broker` itself has already been
@@ -10012,28 +10016,53 @@ class LoopSupervisor:
         with `payload` None so the caller's log says "no usable
         verdict_gate payload" rather than inventing a reason.
         """
+        async def read(r):
+            approved, payload, reason = await self._verdict_gate_read_reply(r)
+            return (approved, payload), reason
+
+        async def redispatch():
+            return await self._dispatch_verdict_gate(
+                retry_wording=self.prompt_text("judge_retry"), step_down=True)
+
+        (approved, payload), no_verdict = await self._judge_reply_with_retry(
+            "verdict_gate", result, read, redispatch)
+        return approved, payload, no_verdict
+
+    async def _judge_reply_with_retry(self, hat: str, result, read, redispatch):
+        """The ONE retry rule for a judging hat's unusable reply (#300),
+        shared by `_verdict_gate_verdict` and review's
+        `_run_review_iteration`: no second copy of it exists.
+
+        `read(result)` reads one reply and returns `(value, retry_reason)`
+        where `retry_reason` is None for a usable reply (or one the engine
+        keeps today's safe default for) and `output_truncated` /
+        `empty_reply` otherwise. While a retry reason stands, the attempts
+        are under `cfg.judge_retry_max`, and the run is neither aborting nor
+        past its deadline, the failed attempt is refunded (the `infra`
+        counter, so no retry is charged against `--iterations`), a
+        `<hat>.retry` event {hat, attempt, cap, reason} is emitted, and
+        `redispatch()` runs the same hat again as a fresh iteration (retry
+        wording, one thinking step lower). Returns `(value, reason)` of the
+        last reading: `reason` is None unless every retry also failed."""
         attempt = 0
         cap = self.cfg.judge_retry_max
         while True:
-            approved, payload, reason = await self._verdict_gate_read_reply(result)
+            value, reason = await read(result)
             if reason is None:
-                return approved, payload, None
+                return value, None
             if attempt >= cap:
-                return approved, payload, reason
+                return value, reason
             if self._abort_reason is not None or time.monotonic() >= self.deadline:
-                return approved, payload, reason
+                return value, reason
             attempt += 1
-            # The failed attempt is refunded (the same `infra` counter a
-            # rate-limit wait or a refusal refunds into), so the retries are
-            # never charged against `--iterations`.
             self._refund_iteration("infra")
             self.run.update_status(iterationsUsed=self.iterations_used_charged)
-            self.run.emit("verdict_gate.retry", hat="verdict_gate",
+            self.run.emit(f"{hat}.retry", hat=hat,
                           attempt=attempt, cap=cap, reason=reason)
-            log.warning("verdict_gate reply unusable (%s); retrying as a fresh "
-                        "iteration (attempt %d of %d)", reason, attempt, cap)
-            result = await self._dispatch_verdict_gate(
-                retry_wording=self.prompt_text("judge_retry"), step_down=True)
+            log.warning("%s reply unusable (%s); retrying as a fresh "
+                        "iteration (attempt %d of %d)", hat, reason, attempt,
+                        cap)
+            result = await redispatch()
 
     JUDGE_NO_VERDICT_WORDING = {
         "output_truncated": "no verdict: output truncated",
@@ -10068,8 +10097,8 @@ class LoopSupervisor:
             self._judge_no_verdict_unreviewed = f"{hat}: {wording}"
             self._terminal_reason_note = (
                 f"{hat}: {wording}, and no budget or wall clock remained to ask "
-                "again; review's verdict is unchanged and no rejection was "
-                "recorded")
+                "again; no rejection was recorded and the recorded review "
+                "verdict is unchanged")
             self.run.emit(f"{hat}.no_verdict", hat=hat, approach=approach,
                           reason=reason, parked=False)
             return "budget"
@@ -10084,7 +10113,7 @@ class LoopSupervisor:
                 f"ralphd {self.cfg.run_id}: the {hat} produced {wording} "
                 f"on approach {approach} after {self.cfg.judge_retry_max} "
                 "retries. It is not a rejection: nothing is archived and "
-                "review's verdict stands. The run is paused "
+                "no verdict is recorded for it. The run is paused "
                 "(operator_input_needed, judge_no_verdict).\n"
                 f"ralphctl unpause {self.cfg.run_id} re-dispatches the {hat}")
             self._notify_escalation_delivery(text, reason="operator_input_needed")
@@ -13433,7 +13462,12 @@ class LoopSupervisor:
             # argument on purpose.
             result = await self._run_one_review_dispatch()
             if not self._review_interrupted(result):
-                return await self._review_contract_ladder(result)
+                result, self._review_no_verdict = (
+                    await self._judge_reply_with_retry(
+                        "review", result, self._read_review_reply,
+                        self._redispatch_review))
+                if not self._review_interrupted(result):
+                    return result
             self._advance("review", "review", "review_interrupted")
             if result.timed_out and not self._abort_reason:
                 checkpoint = state.read_review_early_verdict(self.run.root)
@@ -13446,7 +13480,30 @@ class LoopSupervisor:
                 return None
             await self._gate()
 
-    async def _run_one_review_dispatch(self):
+    async def _read_review_reply(self, result):
+        """One reading of a review iteration's reply for
+        `_judge_reply_with_retry`: `(result, retry_reason)`. A reply that
+        ended `stopReason: length` with no text is `output_truncated`: the
+        contract ladder is skipped (re-asking the same hat with the same
+        output budget cannot help) and the review flags describe this pass
+        as having no readable verdict. Every other reply goes through the
+        ordinary contract ladder, unchanged -- review's empty-reply ladder
+        exhaustion keeps its existing `review_contract_unrepaired` pause."""
+        if (result is not None and not self._review_interrupted(result)
+                and getattr(result, "output_truncated", False)
+                and not (result.final_text or "").strip()):
+            self._review_contract_unrepaired = False
+            self._review_findings_unusable = False
+            self._confirmation_downgrades_announced = set()
+            return result, "output_truncated"
+        return await self._review_contract_ladder(result), None
+
+    async def _redispatch_review(self):
+        return await self._run_one_review_dispatch(
+            retry_wording=self.prompt_text("judge_retry"), step_down=True)
+
+    async def _run_one_review_dispatch(self, *, retry_wording: str = "",
+                                       step_down: bool = False):
         """ONE review invocation, with the `record-verdict` checkpoint
         tool wired live for exactly its duration -- Task 025 (PRD
         requirement H.1/H.4, #264), the same seam `_run_hat_iteration`/
@@ -13471,11 +13528,18 @@ class LoopSupervisor:
         broker.place()
         self._review_tool_broker = broker
         serving = asyncio.create_task(broker.serve())
+        extra = self._review_extra_context()
+        if retry_wording:
+            # #300: a judge retry appends the bounded-budget wording and runs
+            # one thinking step lower, exactly as the verdict_gate's does.
+            extra = (extra + "\n\n" if extra else "") + retry_wording
+        self._judge_retry_step_down = step_down
         try:
             return await self.run_iteration(
-                "review", extra=self._review_extra_context(),
+                "review", extra=extra,
                 tier=state.run_level_verify_tier())
         finally:
+            self._judge_retry_step_down = False
             serving.cancel()
             try:
                 await serving
@@ -13813,6 +13877,17 @@ class LoopSupervisor:
         # boundary off `events.jsonl` rather than off the load site.
         self._apply_operator_status_rulings()
         result = await self._run_review_iteration(approach)
+        while result is not None and self._review_no_verdict:
+            # #300: review produced no verdict after every retry. Not a
+            # rejection: park (or, with no budget left to resume into, end
+            # `unreviewed`) before `_review_verdict` can record one.
+            outcome = await self._park_judge_no_verdict(
+                "review", approach, self._review_no_verdict)
+            if outcome != "resume":
+                self._advance("review", "finishing", "review_no_verdict")
+                return ("tail",)
+            self.run.update_status(gateRejectionEnding=None)
+            result = await self._run_review_iteration(approach)
         if result is None:
             return self._review_unjudged_at_budget_end(approach)
         verified, payload, contract_errors = self._review_verdict(result)

@@ -857,7 +857,9 @@ Human output also renders (task 003):
   It is also shown while the run is parked because a judging hat produced no
   verdict (`pauseDetail.reason: judge_no_verdict`): the peer `verdict_gate`'s
   reply was cut off by the provider or came back empty, and every
-  `judge_retry_max` retry failed the same way. It names the hat and the cause:
+  `judge_retry_max` retry failed the same way. The `review` hat parks the same
+  way when its reply was cut off on every attempt, and the line then names
+  `review`. It names the hat and the cause:
 
   ```
   paused:    verdict_gate: no verdict: output truncated -- ralphctl unpause re-dispatches it
@@ -867,7 +869,8 @@ Human output also renders (task 003):
   The `gate:` line is the fourth `gateRejectionEnding` value
   (`no_verdict_output_truncated`). It is not a rejection and `status` never
   says `rejected on the merits` for it: nothing is archived, no composite PRD is
-  written, and review's recorded `verified` verdict stands.
+  written, and the recorded review verdict stands (a review park records none
+  for that approach). An unpause re-dispatches the hat that had no verdict.
 - `reflection:` (task 020) -- shown only when the post-terminal `reflect`
   iteration **failed** (status.json's `reflect.ok` is `false`, see
   [api.md](api.md)):
@@ -2170,10 +2173,10 @@ again.
 
 A no-verdict park (`pauseReason: operator_input_needed` with `pauseDetail.
 reason: judge_no_verdict`, printed as `paused:    verdict_gate: no verdict:
-output truncated`) is not answered by a ruling and an unpause grants it no
-`proceed`: `ralphctl unpause <run-id>` re-dispatches the gate as a fresh first
-attempt, with a fresh retry allowance, and the gate's verdict then decides the
-run. With `judge_retry_max: 0` the park follows the first failed attempt. When
+output truncated`, or `review: no verdict: output truncated`) is not answered by
+a ruling and an unpause grants it no `proceed`: `ralphctl unpause <run-id>`
+re-dispatches the hat (the gate, or review for a review park) as a fresh first
+attempt, with a fresh retry allowance, and its verdict then decides the run. With `judge_retry_max: 0` the park follows the first failed attempt. When
 the iteration budget or the deadline is already spent at the park, the run does
 not park: it ends `unreviewed` with review's verdict intact, never `rejected`.
 

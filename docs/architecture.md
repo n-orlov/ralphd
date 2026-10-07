@@ -1289,7 +1289,13 @@ mid-run non-terminal value that is never written to `status.json` at all.
     `unresolvable_dependency_edge` all pause with none either); giving this
     branch the deadline's event to buy the routing would put "deadline
     during review" back on a run no deadline touched.
-  - **`unreviewed` also covers "the peer verdict gate never spoke" (#300).**
+  - **`unreviewed` also covers "a judging hat never spoke" (#300).** The
+    review hat's own twin: when review's first attempt and every
+    `judge_retry_max` retry ended `stopReason: length` with no text and no
+    budget remains, `_step_review` reaches the same
+    `_park_judge_no_verdict("review", ...)` before `_review_verdict` can record
+    anything, so the run ends `unreviewed` with a reason naming review and no
+    `rejected` is recorded. The gate's case follows.
     Review rendered `verified`, but the gate produced no verdict on its
     first attempt or on any `judge_retry_max` retry (`output_truncated` or
     `empty_reply`), and the iteration budget or the deadline is already
@@ -4218,8 +4224,11 @@ call, an operator reading `faultClass: "infra"` can be sure that is why the
 attempt was retried and refunded — the taxonomy is not a second, cosmetic
 opinion about the failure.
 
-**A truncated or empty judge reply is retried.** The peer `verdict_gate`
-hat's single parser, `LoopSupervisor._verdict_gate_verdict`, re-dispatches the
+**A truncated or empty judge reply is retried.** One helper,
+`LoopSupervisor._judge_reply_with_retry`, holds the retry rule for both judging
+hats: the cap, the refund, the `<hat>.retry` event and the re-dispatch. The peer
+`verdict_gate` hat's single parser, `LoopSupervisor._verdict_gate_verdict`, and
+review's `_run_review_iteration` each call it. The parser re-dispatches the
 same hat as a fresh iteration (`_dispatch_verdict_gate`) when the iteration
 ended `output_truncated`, or when the contract ladder ran out on replies that
 were all empty, before any verdict is recorded. A truncated reply skips the
@@ -4231,7 +4240,10 @@ through the `infra` counter so it never costs an iteration or an approach. It
 differs from the attempt it replaces: `prompts/judge_retry.md` is appended to
 its prompt (the previous attempt ran out of output budget; emit the verdict
 within a bounded investigation) and its thinking level is one step lower
-(`high` to `medium`; the lowest level, or no level, is kept).
+(`high` to `medium`; the lowest level, or no level, is kept). Review's retry
+fires on `output_truncated` only and emits `review.retry`; an empty,
+non-truncated review reply keeps the contract ladder and its
+`review_contract_unrepaired` hold.
 
 **A gate with no verdict after every retry parks the run.** When the retries
 also fail, `_verdict_gate_verdict` reports the cause (`output_truncated` or
@@ -4243,6 +4255,9 @@ no composite PRD is written, review's `verified` record stays, and
 in place (the shape the provider-refusal pause uses), and an unpause
 re-dispatches the gate. With the iteration budget or the deadline already
 spent it ends `unreviewed` through `_finish_tail_unverified`, never `rejected`.
+Review parks the same way: `_step_review` calls `_park_judge_no_verdict("review",
+...)` before `_review_verdict` reads the reply, so no approach verdict is
+recorded, `review.no_verdict` is emitted and an unpause re-runs review.
 
 Three deliberate details:
 
