@@ -8587,7 +8587,8 @@ FAULT_EVENT_TYPES = ("infra_retry", "infra_wait", "infra_recovered",
 
 def meta_provider_evidence(meta: dict) -> dict:
     """The structured provider evidence an iteration's meta.json records
-    (v0.30 F.1: `rateLimit`, `rateLimitFresh`, `httpStatus`, `errorType`), as
+    (v0.30 F.1: `rateLimit`, `rateLimitFresh`, `httpStatus`, `errorType`, plus
+    the optional `outputTruncated`), as
     `faults.explain_fault` keyword arguments, so a re-derived class matches
     the one the engine recorded. Empty for a meta.json without them."""
     out: dict = {}
@@ -8601,6 +8602,8 @@ def meta_provider_evidence(meta: dict) -> dict:
     error_type = meta.get("errorType")
     if isinstance(error_type, str) and error_type:
         out["error_type"] = error_type
+    if meta.get("outputTruncated") is True:
+        out["output_truncated"] = True
     return out
 
 

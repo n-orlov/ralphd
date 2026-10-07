@@ -3756,7 +3756,8 @@ since task 014 (#49 part 2) — `duration_s`,
 plus the structured provider evidence `rate_limit`, `rate_limit_fresh`,
 `http_status` and `error_type`, and applies exactly this order (the verdicts
 are `None`, `"infra"`, `"work"`, — since task 013, #49 — `"signal"`,
-`"rate_limit"` and `"refused"`, the tuple `faults.FAULT_CLASSES`):
+`"rate_limit"`, `"refused"` and `"output_truncated"`, the tuple
+`faults.FAULT_CLASSES`):
 
 1. If none of the failure signals in §8.1 is present, return `None`. Nothing
    downstream runs for a successful iteration.
@@ -3826,6 +3827,23 @@ never `"refused"`. Because it precedes the watchdog and signature rungs, a
 refusal is never `"infra"`, even when its body reads infra-shaped (an
 `Internal server error` text beside a structured `400`). A `"refused"` verdict
 is not retried: the run pauses for the operator (§8.4).
+
+**The truncation rung follows the refusal rung.** When the iteration's final
+assistant message ended `stopReason: "length"` (pi's own value, and what
+`harness/normalise.py` maps a claude-code `max_tokens` to) with no text
+content, the runner sets `IterationResult.output_truncated` and the verdict is
+`"output_truncated"`: the provider cut the reply off at its output-token limit
+before it said anything usable. It is a failure signal in its own right even
+with exit code 0 and no error text, so the iteration is no longer scored a clean
+success. A `length` message that carries text is a usable reply and classifies
+as before, and so does a message that ended `stop`, `toolUse` or `error`. The
+class is recorded as `faultClass: "output_truncated"` in the iteration's
+`meta.json` and `iteration.end` event, with `outputTruncated: true` in
+`meta.json` (only when set) so `ralphctl fault` and `ralphctl iteration`
+re-derive it. It adds no retry and no refund: `_run_iteration_with_infra_retry`
+acts on `"infra"`, `"rate_limit"` and `"refused"` alone, so a worker, verify or
+planning iteration that ends `output_truncated` is handled as any other
+non-infra fault is.
 
 `produced_traffic` is derived in `LoopSupervisor._classify_result()` as
 `bool(result.final_text) or bool(result.usage)` — the agent said something, or

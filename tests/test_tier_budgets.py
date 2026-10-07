@@ -637,8 +637,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # (tests/test_cli_docker_access_replay.py: a damaged record refuses a bare
     # resume and auto-resume, and reads as unreadable) -> fast 7494/500,
     # smoke 5769/376.
-    "fast": {"tests": 7494, "modules": 500},
-    "smoke": {"tests": 5769, "modules": 376},
+    # #300 A: output_truncated fault class: +21 tests / +1 module
+    # (tests/test_output_truncated_fault_class.py) -> fast 7515/501,
+    # smoke 5790/377.
+    "fast": {"tests": 7515, "modules": 501},
+    "smoke": {"tests": 5790, "modules": 377},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

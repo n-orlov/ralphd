@@ -163,6 +163,10 @@ class IterationResult:
     error_type: str | None = None
     # The harness that ran the iteration: `pi` or `claude-code`.
     harness: str = "pi"
+    # True when the iteration's FINAL assistant message ended `stopReason:
+    # "length"` (the provider cut the reply off at its output-token cap) and
+    # carried no text content. The engine classifies it `output_truncated`.
+    output_truncated: bool = False
 
     @property
     def last_line(self) -> str:
@@ -931,6 +935,11 @@ def _scan_assistant_message(msg: dict, result: IterationResult,
                    if c.get("type") == "text")
     if text.strip():
         result.final_text = text
+    # The LAST assistant message decides: a `length` message with no text is
+    # a reply the provider cut off before it said anything usable; any later
+    # message (or one that carries text) clears it again.
+    result.output_truncated = (msg.get("stopReason") == "length"
+                               and not text.strip())
     # Task 012 (#14): the model *pi resolved*, not the ref the
     # engine asked for -- which may be None (pi's own default),
     # exactly the case where run state used to say `model: null`

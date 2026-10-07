@@ -3374,7 +3374,10 @@ class LoopSupervisor:
             rate_limit=getattr(result, "rate_limit", None),
             rate_limit_fresh=bool(getattr(result, "rate_limit_fresh", False)),
             http_status=getattr(result, "http_status", None),
-            error_type=getattr(result, "error_type", None))
+            error_type=getattr(result, "error_type", None),
+            # A final `length` message with no text: the provider cut the
+            # reply off (`output_truncated`), not a clean iteration.
+            output_truncated=bool(getattr(result, "output_truncated", False)))
 
     def _verify_skills_placement(self) -> None:
         """Task 003 (#83 detection): a placement that was verified once at
@@ -3736,6 +3739,10 @@ class LoopSupervisor:
             meta.update(rateLimit=rate_limit,
                         rateLimitFresh=bool(getattr(result, "rate_limit_fresh", False)))
             self._rate_limit_state[getattr(result, "harness", "pi")] = rate_limit
+        if getattr(result, "output_truncated", False):
+            # Optional: only a truncated, text-free final reply records it,
+            # so `ralphctl fault` re-derives `output_truncated` from meta.json.
+            meta["outputTruncated"] = True
         if getattr(result, "http_status", None) is not None:
             meta["httpStatus"] = result.http_status
         if getattr(result, "error_type", None):

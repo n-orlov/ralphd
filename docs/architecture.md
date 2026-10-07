@@ -4199,6 +4199,7 @@ event:
 | `"signal"` | a signal ended an iteration that had reached the model, with no abort recorded (below) — not retried |
 | `"rate_limit"` | the provider reported its rate-limit window exhausted, in structured form — waited out until the window resets, then the same work re-runs (below) |
 | `"refused"` | the provider refused the call in a way waiting does not fix (a 400/401/403/404), or the `claude-code` harness refused to start — not retried; the run pauses for the operator (below) |
+| `"output_truncated"` | the final assistant message ended `stopReason: "length"` with no text — the provider cut the reply off at its output-token limit; not a work failure, and no retry or refund of its own |
 
 Because both the recorded field and the retry decision come from that one
 call, an operator reading `faultClass: "infra"` can be sure that is why the

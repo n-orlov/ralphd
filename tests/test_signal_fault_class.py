@@ -130,15 +130,17 @@ def test_the_reason_is_recorded_beside_the_new_class():
     assert exp["reason"] != FAULT_REASON_WORK
 
 
-def test_the_class_vocabulary_is_exactly_five_plus_none():
+def test_the_class_vocabulary_is_exactly_six_plus_none():
     """v0.30 F.1 added `rate_limit` (covered by
-    tests/test_fault_classifier.py's structured-evidence cases) and G.1
+    tests/test_fault_classifier.py's structured-evidence cases), G.1
     added `refused` (covered by tests/test_refused_fault.py and
-    tests/test_fault_classifier.py's refusal cases); the tuple is still
+    tests/test_fault_classifier.py's refusal cases) and v0.32.3 A added
+    `output_truncated` (covered by
+    tests/test_output_truncated_fault_class.py); the tuple is still
     pinned exactly."""
     assert FAULT_CLASSES == (FAULT_CLASS_INFRA, FAULT_CLASS_WORK,
                              FAULT_CLASS_SIGNAL, FAULT_CLASS_RATE_LIMIT,
-                             FAULT_CLASS_REFUSED)
+                             FAULT_CLASS_REFUSED, "output_truncated")
     seen = {classify_fault(**kwargs) for kwargs, _, _ in LADDER.values()}
     assert seen - {None} <= set(FAULT_CLASSES), seen
     assert FAULT_CLASS_SIGNAL in seen, "the table must exercise the new class"

@@ -1393,7 +1393,7 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
 `events.jsonl`.
 
 - **`fault:`** is the class the engine recorded and acted on (`infra` ·
-  `work` · `signal` · `rate_limit` · `refused`), with the iteration and phase it happened
+  `work` · `signal` · `rate_limit` · `refused` · `output_truncated`), with the iteration and phase it happened
   in — read from the newest `iterations/NNNN/meta.json` that carries a
   `faultClass`.
 - **`because:`** names which branch of the classifier decided it, in the
@@ -1430,6 +1430,12 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   permission or model, or the subscription's extra-usage refusal; or the
   `claude-code` harness refusing to start) is `refused`: not retried, and the
   run pauses for the operator.
+  A final reply the provider cut off at its output-token limit
+  (`stopReason: length`, or a claude-code `max_tokens`) before it carried any
+  text is `output_truncated`, and `because:` says the provider cut the final
+  reply off, not that the work failed. A cut-off reply that did carry text is a
+  usable reply and is not a fault. The class adds no retry and no refund of its
+  own.
 - **`signature:`** is the row of `engine/faults.py`'s `INFRA_SIGNATURES` table
   that matched: its family (`dns` · `tcp` · `stream` · `tls` · `sdk` ·
   `http-5xx` · `backpressure` · `bedrock-stream` · `capacity`), what that

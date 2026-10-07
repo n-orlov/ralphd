@@ -962,13 +962,16 @@ supervisor exception can still fail the job with an `engine error`.
 ### Fault classes and retries
 
 The classifier ([`faults.py`](../src/ralphd/engine/faults.py)) returns `infra`,
-`work`, `signal`, `rate_limit`, or `refused`.
+`work`, `signal`, `rate_limit`, `refused`, or `output_truncated`.
 
 - **`rate_limit`.** It comes from structured Claude Code evidence only. A pi text
   `429` stays `infra`.
 - **`refused`.** A non-transient HTTP 400/401/403/404 or harness refusal, matched
   against `REFUSED_SIGNATURES`. Examples include a bad credential, a missing model,
   the subscription's extra-usage refusal, and a Claude Code CLI that is too old.
+- **`output_truncated`.** The final assistant message ended `stopReason: length`
+  with no text, so the provider cut the reply off. It is recorded on the
+  iteration but adds no retry or refund.
 - **`infra`.** Provider and network failures, service errors, pi back-pressure
   text, and the relevant stream-abort shapes.
 

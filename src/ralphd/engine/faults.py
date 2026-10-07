@@ -23,6 +23,7 @@ import re
 from datetime import datetime, timezone
 
 FaultClass = str  # "infra" | "work" | "signal" | "rate_limit" | "refused"
+#                   # | "output_truncated"
 
 # The three verdicts, as constants, because task 013 (#49) added the third one
 # and "is this class one of the ones we know about" became a question worth
@@ -62,9 +63,16 @@ FAULT_CLASS_RATE_LIMIT = "rate_limit"
 # re-runs the same work. Decided by `matched_refusal` over
 # `REFUSED_SIGNATURES`.
 FAULT_CLASS_REFUSED = "refused"
+# The provider cut the iteration's final reply off at its output-token cap
+# (`stopReason: "length"`) before it carried any text. It is not a work
+# failure and not an outage: the record says what happened, and no hat gains a
+# retry or a refund from it here (the judging hats act on it in their own
+# steps). Decided from the structured `output_truncated` flag the runner sets.
+FAULT_CLASS_OUTPUT_TRUNCATED = "output_truncated"
 FAULT_CLASSES: tuple[str, ...] = (FAULT_CLASS_INFRA, FAULT_CLASS_WORK,
                                  FAULT_CLASS_SIGNAL, FAULT_CLASS_RATE_LIMIT,
-                                 FAULT_CLASS_REFUSED)
+                                 FAULT_CLASS_REFUSED,
+                                 FAULT_CLASS_OUTPUT_TRUNCATED)
 
 # The rate-limit wait used when the provider reported no `resetsAt`: wait
 # this long, then re-probe with the same work.
@@ -390,6 +398,11 @@ FAULT_REASON_REFUSED = (
     "claude-code harness refused to start) -- it is not retried; the run "
     "pauses for the operator, and an unpause re-runs the same work")
 
+# A final reply the provider cut off at its output-token cap, with no text.
+FAULT_REASON_OUTPUT_TRUNCATED = (
+    "the provider cut the final reply off at its output-token limit "
+    "(stopReason length) before it carried any text -- not a work failure")
+
 
 def parse_resets_at(value) -> float | None:
     """A rate-limit `resetsAt` as UTC epoch seconds, or None.
@@ -558,6 +571,7 @@ def explain_fault(
     rate_limit_fresh: bool = False,
     http_status: int | None = None,
     error_type: str | None = None,
+    output_truncated: bool = False,
 ) -> dict:
     """``classify_fault``'s verdict *with its reasoning*, from exactly the same
     inputs (task 025, #18.4).
@@ -640,6 +654,7 @@ def explain_fault(
         or interrupted
         or bool((error_text or "").strip())
         or (exit_code is not None and exit_code != 0)
+        or output_truncated
     )
     if not is_failure:
         return {"faultClass": None, "reason": FAULT_REASON_NOT_A_FAILURE,
@@ -670,6 +685,12 @@ def explain_fault(
     if refusal is not None:
         return {"faultClass": FAULT_CLASS_REFUSED,
                 "reason": FAULT_REASON_REFUSED, "signature": refusal}
+    if output_truncated and not (error_text or "").strip():
+        # A text-free `length` final message with no error recorded: the
+        # provider ended the reply, nothing else failed. (An error text on
+        # top of it keeps the ladder's own reading below.)
+        return {"faultClass": FAULT_CLASS_OUTPUT_TRUNCATED,
+                "reason": FAULT_REASON_OUTPUT_TRUNCATED, "signature": None}
     if no_traffic_timeout:
         return {"faultClass": "infra",
                 "reason": FAULT_REASON_NO_TRAFFIC_TIMEOUT,
@@ -730,6 +751,7 @@ def classify_fault(
     rate_limit_fresh: bool = False,
     http_status: int | None = None,
     error_type: str | None = None,
+    output_truncated: bool = False,
 ) -> FaultClass | None:
     """Classify one finished iteration's failure signal.
 
@@ -842,4 +864,5 @@ def classify_fault(
         rate_limit_fresh=rate_limit_fresh,
         http_status=http_status,
         error_type=error_type,
+        output_truncated=output_truncated,
     )["faultClass"]
