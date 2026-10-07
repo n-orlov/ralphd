@@ -4411,7 +4411,12 @@ JSON endpoints served under `/api/`:
   /tasks/<task>/undefer`, the SAME engine route `ralphctl undefer` calls,
   and never a host-side write. The engine's status and body pass through
   (its `404` unknown task, `409` job finished or task not deferred) so the
-  button shows the server's own message; `503` (with an `error`) only when
+  button shows the server's own message. A `404` with the engine framework's
+  bare `{"detail": "Not Found"}` body means the run's engine has no undefer
+  route, so the hub answers it with a `detail` saying the run's engine
+  (naming `engineVersion` from `status.json` when it is a well-formed version
+  older than 0.31.0) predates undefer (0.31+) and to resume it on a newer
+  image; `503` (with an `error`) only when
   the run's API is unreachable; `404` for an unknown run id. The button
   appears on a deferred task's task-table row and on its entry in the Current
   iteration panel's deferred list, only while the run's API answers (a

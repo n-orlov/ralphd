@@ -6197,7 +6197,14 @@ dir themselves and a live proxy would only add a way to disagree.
   (empty body) to the run's live `POST /tasks/<task>/undefer`, the SAME engine
   route `ralphctl undefer` calls; never a host-side write. The engine's status
   and body pass through (`404` unknown task, `409` job finished or task not
-  deferred) and the button shows the server's message; `503` (with an `error`)
+  deferred) and the button shows the server's message, except a `404` whose
+  body is the engine framework's bare `{"detail": "Not Found"}` (the run's
+  engine has no undefer route): the hub answers that `404` with a `detail`
+  reading "this run's engine (v0.30.0) predates undefer (0.31+); resume it on
+  a newer image to use it" (the version comes from `status.json`'s
+  `engineVersion`, parsed and compared by the one dotted-version helper in
+  `cli/versions.py`; the parenthesis is omitted when it is absent, malformed
+  or not older than 0.31.0); `503` (with an `error`)
   when the run's API is unreachable; `404` for an unknown run. The `deferred
   until` pill disappears once the loop applies the release. A successful POST
   makes the open run-detail view reload at once and drops its `304` streak (so

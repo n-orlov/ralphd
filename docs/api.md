@@ -997,6 +997,17 @@ was applied emits nothing and changes nothing. A task's transition history
 (`kind: "undeferred"`, cause `operator: undeferred (was deferred until ...)`),
 never as a deferral expiring.
 
+The hub proxies this route as `POST /api/runs/<id>/tasks/<task>/undefer`. The
+proxy writes nothing on the host; the engine's status and body pass through
+unchanged (`404` with a `title` such as `no such task`, `409`, `503`). A `404`
+whose body is the bare `{"detail": "Not Found"}` of an engine with no undefer
+route is answered by the hub with a `detail` reading "this run's engine
+(v0.30.0) predates undefer (0.31+); resume it on a newer image to use it". The
+version comes from the run's `status.json` `engineVersion`, parsed and compared
+numerically by the dotted-version helper in `ralphd.cli.versions`; the
+parenthesis is omitted when `engineVersion` is absent, malformed or not older
+than 0.31.0.
+
 ### `POST /interrupt`
 v0.25 task 028b (PRD requirement K.3/K.4, #267) reworked this: it used to
 lie with a `409 "no iteration running"` the instant nothing was running,

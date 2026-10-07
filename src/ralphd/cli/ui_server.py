@@ -141,6 +141,7 @@ from ..log_merge import (
     merged_lines,
 )
 from . import llm_profiles
+from .versions import compare_versions
 from .log_render import new_render_state, render_tail_lines, render_to_lines
 
 STATIC_DIR = Path(__file__).parent / "web"
@@ -445,6 +446,28 @@ def run_list(reg: Path) -> list[dict]:
                     pool.map(lambda r: _api_reachable(reg, r["runId"]), maybe_zombies)):
                 row["containerGone"] = not reachable
     return rows
+
+
+UNDEFER_MIN_ENGINE_VERSION = "0.31.0"
+
+
+def _is_missing_route_body(resp: object) -> bool:
+    """True for the engine framework's bare 404 body for an unknown route
+    (`{"detail": "Not Found"}`), false for the engine's own problem bodies
+    (which carry a `title`, e.g. `no such task`)."""
+    return (isinstance(resp, dict) and "title" not in resp
+            and resp.get("detail") == "Not Found")
+
+
+def undefer_route_missing_message(engine_version: object) -> str:
+    """The sentence the Undefer button shows when the run's engine has no
+    undefer route. The version is named only when `status.json` carries a
+    well-formed one older than the release that added the route."""
+    named = ""
+    if compare_versions(engine_version, UNDEFER_MIN_ENGINE_VERSION) == -1:
+        named = f" (v{str(engine_version).strip()})"
+    return (f"this run's engine{named} predates undefer (0.31+); "
+            "resume it on a newer image to use it")
 
 
 def _proxy_json(reg: Path, run_id: str, method: str, path: str,
@@ -3136,6 +3159,15 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(
                         {"error": "run's API is unreachable — cannot undefer now"}, 503)
                     return
+                if code == 404 and _is_missing_route_body(resp):
+                    # The engine has no such ROUTE (its framework's bare
+                    # `{"detail": "Not Found"}`), as opposed to its own
+                    # `404 no such task`: the run predates undefer. Say so in
+                    # a body the button already displays.
+                    status = _read_json(reg / "runs" / run_id / "status.json", {}) or {}
+                    resp = {"title": "undefer unavailable",
+                            "detail": undefer_route_missing_message(
+                                status.get("engineVersion"))}
                 self._send_json(resp if isinstance(resp, dict) else {"detail": str(resp)},
                                 code)
                 return
