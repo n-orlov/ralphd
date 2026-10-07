@@ -1451,3 +1451,46 @@ def test_the_observables_the_derived_lower_bound_passage_names_are_real():
     LoopSupervisor._merge_usage(total, dict(no_rate))
     assert total["costStatus"] == "partial"
     assert state.format_cost(total) == "~$0.45 derived, partial (rest unavailable)"
+
+
+# --- `unreviewed`: every writer the engine has, no "exactly N" the code
+# --- contradicts (review cure cure-01-02) ----------------------------------
+
+def _api_verdict_comment() -> str:
+    return next(line for line in API_DOC.read_text().splitlines()
+                if '"verdict": null,' in line)
+
+
+def test_api_doc_unreviewed_enumerates_all_three_writers():
+    text = _api_verdict_comment()
+    assert "exactly two" not in text
+    assert "exactly three cases" in text
+    # (a) review's contract ladder exhausted
+    assert "review never produced a parseable contract payload" in text
+    # (b) the peer verdict gate had no verdict after retries
+    assert "verdict_gate: no verdict" in text
+    # (c) the review hat itself had no verdict after retries, both variants
+    assert "review: no verdict: output truncated" in text
+    assert "review: no verdict: empty reply" in text
+    assert 'pauseDetail.hat: "review"' in text
+
+
+def test_every_doc_counts_the_unreviewed_writers_as_three():
+    spec = (REPO_ROOT / "SPEC.md").read_text()
+    tech = (REPO_ROOT / "docs" / "solution-tech-spec.md").read_text()
+    flat_tech = " ".join(tech.split())
+    assert "written by exactly THREE cases, all in" in spec
+    assert "both in `_finish_tail_unverified`" not in spec
+    assert "`unreviewed` is written in three cases" in flat_tech
+    assert "exactly two cases" not in API_DOC.read_text()
+
+
+def test_unreviewed_writers_in_code_match_the_documented_three():
+    # the reasons the engine can attach to an `unreviewed` verdict: the
+    # ladder-exhaustion reason, and the shared judge no-verdict note (gate
+    # and review) -- each wording the docs name exists in the code
+    src = (REPO_ROOT / "src" / "ralphd" / "engine" / "loop.py").read_text()
+    assert "review never produced a parseable contract" in src
+    assert "_judge_no_verdict_unreviewed = f\"{hat}: {wording}\"" in src
+    for wording in ("no verdict: output truncated", "no verdict: empty reply"):
+        assert wording in src

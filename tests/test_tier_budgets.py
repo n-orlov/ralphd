@@ -653,7 +653,7 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # fast 7600/506, smoke 5874/382.
     # #300 B.1 (review empty_reply retry): +7 tests in
     # tests/test_review_truncation_retry.py -> fast 7607/506, smoke 5881/382.
-    "fast": {"tests": 7607, "modules": 506},
+    "fast": {"tests": 7610, "modules": 506},
     "smoke": {"tests": 5881, "modules": 382},
 }
 
