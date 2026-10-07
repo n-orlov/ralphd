@@ -649,8 +649,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # #300 C (undefer missing route): +20 tests / +1 module
     # (tests/test_hub_undefer_route_missing.py) -> fast 7587/505,
     # smoke 5862/381.
-    "fast": {"tests": 7587, "modules": 505},
-    "smoke": {"tests": 5862, "modules": 381},
+    "fast": {"tests": 7599, "modules": 506},
+    "smoke": {"tests": 5874, "modules": 382},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

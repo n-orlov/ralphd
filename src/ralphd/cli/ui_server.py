@@ -459,6 +459,14 @@ def _is_missing_route_body(resp: object) -> bool:
             and resp.get("detail") == "Not Found")
 
 
+def undefer_available(engine_version: object) -> bool:
+    """Whether the run's engine has the undefer route: false only for a
+    well-formed `engineVersion` older than `UNDEFER_MIN_ENGINE_VERSION`;
+    an absent or malformed version is true (the button stays, and the
+    proxy's own missing-route sentence covers a real miss)."""
+    return compare_versions(engine_version, UNDEFER_MIN_ENGINE_VERSION) != -1
+
+
 def undefer_route_missing_message(engine_version: object) -> str:
     """The sentence the Undefer button shows when the run's engine has no
     undefer route. The version is named only when `status.json` carries a
@@ -2527,6 +2535,11 @@ def run_detail(reg: Path, run_id: str) -> dict | None:
     return {
         "runId": run_id,
         "live": ok_s,
+        # Whether the run's engine has the undefer route; the hub shows the
+        # Undefer button only when this is true (`app.js` does no version
+        # arithmetic). Derived from the run's own `engineVersion`.
+        "undeferAvailable": undefer_available(
+            shaped_status.get("engineVersion", recorded_status.get("engineVersion"))),
         # Task 024 (#8): `live: false` alone is not the story -- a *finished*
         # run is unreachable by design. Paired with a non-terminal recorded
         # state it means the container died without recording a terminal

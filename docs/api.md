@@ -1008,6 +1008,15 @@ numerically by the dotted-version helper in `ralphd.cli.versions`; the
 parenthesis is omitted when `engineVersion` is absent, malformed or not older
 than 0.31.0.
 
+The hub's run payload (`GET /api/runs/<id>`) carries `undeferAvailable`, a
+boolean computed with that same helper from the run's `engineVersion`: it is
+`false` only for a well-formed version older than 0.31.0, and `true` for
+0.31.0 and later and for an absent or malformed version. The hub page places
+the Undefer button, on a deferred task's row and on the Current iteration
+panel's deferred entry, only when `undeferAvailable` is `true` (and the run is
+live); a run whose engine predates 0.31.0 shows no Undefer button. The page
+does no version arithmetic itself.
+
 ### `POST /interrupt`
 v0.25 task 028b (PRD requirement K.3/K.4, #267) reworked this: it used to
 lie with a `409 "no iteration running"` the instant nothing was running,

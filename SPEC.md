@@ -6192,8 +6192,13 @@ dir themselves and a live proxy would only add a way to disagree.
   either one reaches the SAME `POST /api/runs/<id>/rule` route.
 - **Undefer now** — a deferred task's task-table row and its entry in the
   Current iteration panel's deferred list each carry an **Undefer now** button
-  while the run's API answers (a dead run's on-disk snapshot shows none). It
-  posts `POST /api/runs/<id>/tasks/<task>/undefer` (#292), which forwards
+  while the run's API answers (a dead run's on-disk snapshot shows none) and
+  the run payload's `undeferAvailable` is `true`. That boolean is computed by
+  the one dotted-version helper in `cli/versions.py` from `engineVersion`: it
+  is `false` only for a well-formed version older than 0.31.0 (`true` for
+  0.31.0 and later and for an absent or malformed version), and a run whose
+  engine predates 0.31.0 shows no button; `app.js` does no version arithmetic.
+  It posts `POST /api/runs/<id>/tasks/<task>/undefer` (#292), which forwards
   (empty body) to the run's live `POST /tasks/<task>/undefer`, the SAME engine
   route `ralphctl undefer` calls; never a host-side write. The engine's status
   and body pass through (`404` unknown task, `409` job finished or task not

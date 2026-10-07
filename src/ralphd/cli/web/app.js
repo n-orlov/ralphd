@@ -2003,6 +2003,9 @@ async function renderRunDetail(runId, myGen) {
   // #292: whether the last payload came from the run's live API (the
   // "Undefer now" buttons exist only then).
   let lastLive = false;
+  // Whether the run's engine has the undefer route (`body.undeferAvailable`,
+  // computed server-side); the Undefer buttons are placed only when true.
+  let lastUndeferAvailable = false;
   // Test-only instrumentation (never read by the app itself): lets a
   // browser test observe the back-off without waiting out the full
   // 15-30s band it targets.
@@ -2060,14 +2063,15 @@ async function renderRunDetail(runId, myGen) {
       renderUsage(document.getElementById("usage-box"),
                   body.status && body.status.usage, runId);
       lastLive = body.live === true;
+      lastUndeferAvailable = body.undeferAvailable === true;
       renderTasks(document.getElementById("task-box"), body.tasks,
                   body.status && body.status.progressBudget,
-                  { runId, live: lastLive });
+                  { runId, live: lastLive, undeferAvailable: lastUndeferAvailable });
       renderTimeline(document.getElementById("timeline-box"), body.iterations || [], runId);
       lastCurrentIteration = body.currentIteration || null;
     }
     renderCurrentIteration(document.getElementById("current-iteration-box"),
-                           lastCurrentIteration, runId, lastLive);
+                           lastCurrentIteration, runId, lastLive, lastUndeferAvailable);
     // Task 049 (H.7): `loadLogs` (the transcript/log-tail poll,
     // `GET /api/runs/<id>/logs?tail=200`) already shares this SAME
     // `load()` call, which is itself scheduled through `scheduleRefresh`
@@ -3359,7 +3363,7 @@ function renderTasks(el, tasks, progressBudget, undefer) {
         ...(workerOrigin ? [" ", pill("worker-origin")] : []),
         ...(blockedBy ? [" ", pill("blocked by " + blockedBy.join(", "))] : []),
         ...(t.deferredUntil ? [" ", pill("deferred until " + String(t.deferredUntil))] : []),
-        ...(t.deferredUntil && undefer && undefer.live && undefer.runId
+        ...(t.deferredUntil && undefer && undefer.live && undefer.undeferAvailable === true && undefer.runId
             ? [" ", ...undeferButton(undefer.runId, t.id)] : []),
         ...(budget ? [" ", pill("budget " + budget.used + "/" + budget.budget)] : []),
       ]),
@@ -3572,7 +3576,7 @@ function iterationModelLabel(it) {
 // field comes from `ui_server.current_iteration_panel` (`body.
 // currentIteration`); the only thing computed here is elapsed time against
 // the browser's clock, so the bar keeps moving between payload refreshes.
-function renderCurrentIteration(el, cur, runId, live) {
+function renderCurrentIteration(el, cur, runId, live, undeferAvailable) {
   if (!el) return;
   el.innerHTML = "";
   if (!cur) {
@@ -3582,7 +3586,8 @@ function renderCurrentIteration(el, cur, runId, live) {
   const deferredLines = (cur.deferred || []).map((d) => h("div", { class: "ci-deferred" }, [
     "deferred: task " + String(d.taskId) + " until " + String(d.untilLocal || d.until) +
       (d.reason ? " \u2014 " + String(d.reason) : ""),
-    ...(live === true && runId ? [" ", ...undeferButton(runId, d.taskId)] : []),
+    ...(live === true && undeferAvailable === true && runId
+      ? [" ", ...undeferButton(runId, d.taskId)] : []),
   ]));
   const rateLine = cur.rateLimitWaitLine
     ? h("div", { class: "ci-wait" }, ["\u23F3 " + String(cur.rateLimitWaitLine)]) : null;

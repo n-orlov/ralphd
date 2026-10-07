@@ -184,11 +184,11 @@ def test_app_js_task_row_button_only_for_a_deferred_task_while_live():
     # the live run page passes the payload's own `live` flag in; the
     # approach archive's renderTasks call passes nothing, so it has no button
     assert "lastLive = body.live === true" in APP_JS
-    assert "{ runId, live: lastLive }" in APP_JS
+    assert "{ runId, live: lastLive, undeferAvailable: lastUndeferAvailable }" in APP_JS
 
 
 def test_app_js_current_iteration_deferred_entry_button_only_while_live():
     block = _block("renderCurrentIteration")
-    assert "live === true && runId" in block, block
+    assert "live === true && undeferAvailable === true && runId" in block, block
     assert "undeferButton(runId, d.taskId)" in block, block
-    assert "lastCurrentIteration, runId, lastLive)" in APP_JS
+    assert "lastCurrentIteration, runId, lastLive, lastUndeferAvailable)" in APP_JS
