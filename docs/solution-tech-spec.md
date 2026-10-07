@@ -264,9 +264,14 @@ recorded separately in `rateLimitWait`. `verdict` is the judgment of the work,
 separate from the lifecycle state: `verified`, `verified-with-residuals`,
 `unverified`, `unreviewed`, or `null`. A deadline that lands during review
 produces a `timed_out` hold with `verdict: null` and reason `"deadline during
-review"`, not a reviewed rejection. `unreviewed` is now written only when review
-ran but never produced a readable verdict and no budget remained; with budget
-left the run pauses on `review_contract_unrepaired` instead.
+review"`, not a reviewed rejection. `unreviewed` is written in two cases, both only when no
+budget remained: review ran but never produced a readable verdict (with budget
+left the run pauses on `review_contract_unrepaired` instead), or review said
+`verified` but the peer verdict gate produced no verdict after every
+`judge_retry_max` retry (with budget left the run pauses on
+`operator_input_needed` with `pauseDetail.reason: judge_no_verdict` instead).
+In the second case review's `verified` verdict stays on record and no rejection
+is recorded.
 
 An ordinary operator `pause` holds execution at the next boundary and emits a log
 event without changing `status.json` to `paused`. Engine-initiated escalation
@@ -1468,7 +1473,8 @@ history ([`run_record.py`](../src/ralphd/engine/run_record.py)).
 
 A successful verdict is `verified`, or `verified-with-residuals` when the findings
 channel carries residual findings. Other recorded endings are `rejected`,
-`unverified`, `unreviewed` (review never produced a usable contract payload), or
+`unverified`, `unreviewed` (review never produced a usable contract payload, or
+the peer verdict gate produced no verdict after every retry), or
 `null` (a deadline took review before it spoke). Running out of deadline or
 iteration budget is not a completion. It enters the `timed_out` hold described in
 section 12, which skips reflection and the completion hook.
