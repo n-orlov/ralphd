@@ -1289,6 +1289,17 @@ mid-run non-terminal value that is never written to `status.json` at all.
     `unresolvable_dependency_edge` all pause with none either); giving this
     branch the deadline's event to buy the routing would put "deadline
     during review" back on a run no deadline touched.
+  - **`unreviewed` also covers "the peer verdict gate never spoke" (#300).**
+    Review rendered `verified`, but the gate produced no verdict on its
+    first attempt or on any `judge_retry_max` retry (`output_truncated` or
+    `empty_reply`), and the iteration budget or the deadline is already
+    spent, so `_park_judge_no_verdict` has nothing to park into: it sets
+    `_judge_no_verdict_unreviewed` and `_finish_tail_unverified()` writes
+    `unreviewed` with a reason naming the gate. Review's own
+    `approach.verdict_recorded` entry stays `verified`, no `rejected` is
+    recorded, and `gateRejectionEnding` reads `no_verdict_output_truncated`.
+    With budget left the same outcome pauses `operator_input_needed`
+    (`pauseDetail.reason: "judge_no_verdict"`) instead.
 - **`"adjudicated"` (task 014, requirement F.1, #144) is a MID-RUN reply
   value, never a `status.json` verdict.** The bounded, off-budget petition
   adjudication episode (`_maybe_run_midrun_adjudication_episode`, next
