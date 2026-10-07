@@ -4222,6 +4222,17 @@ its prompt (the previous attempt ran out of output budget; emit the verdict
 within a bounded investigation) and its thinking level is one step lower
 (`high` to `medium`; the lowest level, or no level, is kept).
 
+**A gate with no verdict after every retry parks the run.** When the retries
+also fail, `_verdict_gate_verdict` reports the cause (`output_truncated` or
+`empty_reply`) as its third return value and `_step_verdict_gate` calls
+`_park_judge_no_verdict` instead of recording a rejection: nothing is archived,
+no composite PRD is written, review's `verified` record stays, and
+`gateRejectionEnding` takes its fourth value. With budget left the run pauses
+`operator_input_needed` with `pauseDetail.reason == "judge_no_verdict"` and parks
+in place (the shape the provider-refusal pause uses), and an unpause
+re-dispatches the gate. With the iteration budget or the deadline already
+spent it ends `unreviewed` through `_finish_tail_unverified`, never `rejected`.
+
 Three deliberate details:
 
 - **An error text is a failure signal in its own right** (task 001, #11). pi

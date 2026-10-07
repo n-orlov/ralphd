@@ -642,8 +642,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # smoke 5790/377.
     # #300 B (judge retry): +32 tests / +1 module (tests/test_judge_retry.py)
     # -> fast 7547/502, smoke 5822/378.
-    "fast": {"tests": 7547, "modules": 502},
-    "smoke": {"tests": 5822, "modules": 378},
+    # #300 B (no-verdict park): +8 tests / +1 module
+    # (tests/test_judge_no_verdict_park.py) -> fast 7555/503, smoke 5830/379.
+    "fast": {"tests": 7555, "modules": 503},
+    "smoke": {"tests": 5830, "modules": 379},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

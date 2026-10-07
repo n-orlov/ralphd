@@ -66,6 +66,7 @@ from ..engine.state import (
     GATE_REJECTION_ENDING_CURE_TAKEN,
     GATE_REJECTION_ENDING_CURE_UNAVAILABLE,
     GATE_REJECTION_ENDING_MERITS,
+    GATE_REJECTION_ENDING_NO_VERDICT,
     IMAGE_RECORD_KEYS,
     NO_ARTIFACTS,
     NO_ROUTER_CALLS,
@@ -3695,6 +3696,8 @@ _GATE_REJECTION_ENDING_WORDING = {
         "rejected, cure path taken",
     GATE_REJECTION_ENDING_CURE_UNAVAILABLE:
         "rejected, cure path unavailable (cure-pass budget exhausted)",
+    GATE_REJECTION_ENDING_NO_VERDICT:
+        "no verdict (output truncated)",
 }
 
 

@@ -124,3 +124,15 @@ def test_gate_rejection_ending_absent_still_renders(ctl: Ctl):
 
     res_json = ctl.run("--json", "status", run_id)
     assert "gateRejectionEnding" not in json.loads(res_json.stdout)
+
+
+def test_gate_rejection_ending_no_verdict_renders_distinct_wording(ctl: Ctl):
+    """#300: the fourth value, a gate with no verdict after every retry, reads
+    `no verdict (output truncated)` and is never worded as a rejection."""
+    run_id = "tst-gate-ending-no-verdict"
+    _seed_status(ctl, run_id, gateRejectionEnding="no_verdict_output_truncated")
+    res = ctl.run("status", run_id)
+    assert res.returncode == 0, res.stderr
+    assert "gate:      no verdict (output truncated)" in res.stdout, res.stdout
+    assert "rejected" not in res.stdout.split("gate:")[1].splitlines()[0]
+    assert "merits" not in res.stdout, res.stdout

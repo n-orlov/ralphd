@@ -206,17 +206,50 @@ def test_the_retry_iteration_is_not_charged_against_the_budget(tmp_path):
     assert trunc.iterations_used_charged == base.iterations_used_charged
 
 
+def _run_unparking(root: Path, gate_steps: list, **cfg):
+    """`_run`, with the no-verdict park (#300) released at once, as an
+    immediate `ralphctl unpause` would: returns the supervisor, the final
+    state and how many times the run parked."""
+    RunDir(root=root).update_status(state="starting")
+    sup = _supervisor(
+        root,
+        {"planning": [_plan], "worker": [_worker], "review": [_review],
+         "verdict_gate": gate_steps},
+        peer_verdict_gate=True, **cfg)
+    parks = []
+
+    async def park():
+        parks.append(sup.run.read_status().get("pauseDetail"))
+        sup.resume()
+        return 0.0
+
+    sup._park_until_resumed = park                       # type: ignore[method-assign]
+    final = asyncio.run(asyncio.wait_for(sup._run_job_core(), 30.0))
+    return sup, final, parks
+
+
 def test_the_retry_is_capped_by_judge_retry_max(tmp_path):
-    sup, _final = _run(tmp_path / "run", [_gate_truncated], judge_retry_max=1)
-    assert sup.runner.phases_seen.count("verdict_gate") == 2
+    # Covering node for the park this wave adds: the cap used to end the run
+    # on a rejection; it now ends the retries and parks, and an unpause asks
+    # the gate again.
+    sup, final, parks = _run_unparking(
+        tmp_path / "run", [_gate_truncated, _gate_truncated, _gate_approves],
+        judge_retry_max=1)
+    assert sup.runner.phases_seen.count("verdict_gate") == 3
     assert len(_retry_events(sup)) == 1
+    assert len(parks) == 1 and parks[0]["reason"] == "judge_no_verdict"
+    assert final == "succeeded"
 
 
 def test_judge_retry_max_zero_never_retries(tmp_path):
-    sup, _final = _run(tmp_path / "run", [_gate_truncated, _gate_approves],
-                       judge_retry_max=0)
-    assert sup.runner.phases_seen.count("verdict_gate") == 1
+    sup, final, parks = _run_unparking(
+        tmp_path / "run", [_gate_truncated, _gate_approves],
+        judge_retry_max=0)
+    # one attempt, a park with no retry, then the unpause's fresh dispatch
+    assert sup.runner.phases_seen.count("verdict_gate") == 2
     assert _retry_events(sup) == []
+    assert len(parks) == 1
+    assert final == "succeeded"
 
 
 def test_a_well_formed_rejection_is_not_retried(tmp_path):

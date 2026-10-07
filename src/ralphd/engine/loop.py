@@ -489,6 +489,10 @@ class LoopSupervisor:
         # (`_dispatch_verdict_gate`); `_run_iteration_once` then hands the
         # harness a thinking/effort level one step lower than the bundle's.
         self._judge_retry_step_down = False
+        # #300: set (to a short reason) when a judging hat had no verdict and
+        # no budget remained to park for; `_finish_tail_unverified` ends the
+        # run `unreviewed` on it.
+        self._judge_no_verdict_unreviewed: str | None = None
         # Task 012 (PRD requirement D.2, #184): the last steer pass's own
         # broker, read-only, kept around strictly for `_depends_on_refusal_
         # notes` after `_steer_tool_broker` itself has already been
@@ -4750,6 +4754,12 @@ class LoopSupervisor:
         # byte-for-byte unchanged. `_deadline_beat_verdict_extra` is `{}` on
         # this path, so passing it is the same documented no-op it is on
         # the ordinary branch below.
+        if self._judge_no_verdict_unreviewed and not self._abort_reason:
+            self._finish(final_state, "unreviewed",
+                        reason=self._terminal_reason_note,
+                        **self._unconsumed_steering_patch(),
+                        **self._deadline_beat_verdict_extra)
+            return final_state
         if self._review_contract_unrepaired and not self._abort_reason:
             self._finish(final_state, "unreviewed",
                         reason=("review never produced a parseable contract "
@@ -9387,7 +9397,24 @@ class LoopSupervisor:
             return ("tail",)
         self.run.emit("phase", phase="verdict_gate", approach=approach)
         result = await self._dispatch_verdict_gate()
-        approved, payload = await self._verdict_gate_verdict(result)
+        while True:
+            approved, payload, no_verdict = await self._verdict_gate_verdict(
+                result)
+            if no_verdict is None:
+                break
+            # #300: no usable verdict after every retry. Not a rejection --
+            # park (or, with no budget left to resume into, end `unreviewed`).
+            outcome = await self._park_judge_no_verdict("verdict_gate",
+                                                        approach, no_verdict)
+            if outcome == "resume":
+                # An unpause re-dispatches the gate as an ordinary first
+                # attempt (a fresh retry allowance).
+                self.run.update_status(gateRejectionEnding=None)
+                result = await self._dispatch_verdict_gate()
+                continue
+            self._advance("verdict_gate", "finishing",
+                         "verdict_gate_no_verdict")
+            return ("tail",)
         self._record_gate_approach_verdict(approach, approved, payload)
         self._record_verdict_gate_peek(approach)
         if approved:
@@ -9924,7 +9951,8 @@ class LoopSupervisor:
             self._notify_escalation_delivery(
                 digest, reason="verdict_gate_operator_input_needed")
 
-    async def _verdict_gate_verdict(self, result) -> tuple[bool, dict | None]:
+    async def _verdict_gate_verdict(
+            self, result) -> tuple[bool, dict | None, str | None]:
         """Task 020 (requirement L, #101): the ONE parser of a
         `verdict_gate` hat reply, consulted by the ordinary
         `_step_verdict_gate` state (the off-budget `_grace_verdict_gate`
@@ -9971,7 +9999,11 @@ class LoopSupervisor:
         ladder only ever gives a genuinely repaired payload a chance to be
         READ, it does not manufacture one.
 
-        Returns `(approved, payload)`. `approved` is True only for a
+        Returns `(approved, payload, no_verdict)`. `no_verdict` is `None`
+        unless the hat produced NO verdict at all -- `output_truncated` or
+        `empty_reply`, every `judge_retry_max` retry included -- in which
+        case `_step_verdict_gate` parks the run instead of recording a
+        rejection (`_park_judge_no_verdict`). `approved` is True only for a
         well-formed payload whose `verdict` is `verified`; an absent,
         unparseable or schema-violating reply, or a `rejected` verdict with
         no `reason` (`transitions.verdict_gate_report_errors`), is never a
@@ -9984,10 +10016,12 @@ class LoopSupervisor:
         cap = self.cfg.judge_retry_max
         while True:
             approved, payload, reason = await self._verdict_gate_read_reply(result)
-            if reason is None or attempt >= cap:
-                return approved, payload
+            if reason is None:
+                return approved, payload, None
+            if attempt >= cap:
+                return approved, payload, reason
             if self._abort_reason is not None or time.monotonic() >= self.deadline:
-                return approved, payload
+                return approved, payload, reason
             attempt += 1
             # The failed attempt is refunded (the same `infra` counter a
             # rate-limit wait or a refusal refunds into), so the retries are
@@ -10000,6 +10034,64 @@ class LoopSupervisor:
                         "iteration (attempt %d of %d)", reason, attempt, cap)
             result = await self._dispatch_verdict_gate(
                 retry_wording=self.prompt_text("judge_retry"), step_down=True)
+
+    JUDGE_NO_VERDICT_WORDING = {
+        "output_truncated": "no verdict: output truncated",
+        "empty_reply": "no verdict: empty reply",
+    }
+
+    async def _park_judge_no_verdict(self, hat: str, approach: int,
+                                     reason: str) -> str:
+        """#300: a judging hat has no verdict after every retry. This is not
+        a rejection, so nothing is archived, no composite PRD is written, no
+        `approach.verdict_recorded` is emitted and review's recorded verdict
+        stays as it is.
+
+        `gateRejectionEnding` is set to the no-verdict value. When the run
+        still has budget the run is paused (`operator_input_needed`,
+        `pauseDetail = {"reason": "judge_no_verdict", "hat", "cause",
+        "approach", "message"}`), the operator notified, and the loop parks in
+        place: returns "resume" on an unpause (the caller re-dispatches the
+        hat). When the budget or deadline is already spent there is nothing
+        to resume into: returns "budget" and the run ends `unreviewed`
+        (`_finish_tail_unverified`). Returns "abort" when the run is ending.
+        """
+        wording = self.JUDGE_NO_VERDICT_WORDING.get(
+            reason, "no verdict: " + reason.replace("_", " "))
+        self.run.update_status(
+            gateRejectionEnding=state.GATE_REJECTION_ENDING_NO_VERDICT)
+        log.warning("%s: %s after every retry; not recording a rejection",
+                    hat, wording)
+        if self._abort_reason is not None:
+            return "abort"
+        if not self.budget_left():
+            self._judge_no_verdict_unreviewed = f"{hat}: {wording}"
+            self._terminal_reason_note = (
+                f"{hat}: {wording}, and no budget or wall clock remained to ask "
+                "again; review's verdict is unchanged and no rejection was "
+                "recorded")
+            self.run.emit(f"{hat}.no_verdict", hat=hat, approach=approach,
+                          reason=reason, parked=False)
+            return "budget"
+        detail = {"reason": state.JUDGE_NO_VERDICT_REASON, "hat": hat,
+                  "cause": reason, "approach": approach,
+                  "message": f"{hat}: {wording}"}
+        self.pause(reason="operator_input_needed", detail=detail)
+        self.run.emit(f"{hat}.no_verdict", hat=hat, approach=approach,
+                      reason=reason, parked=True)
+        if self.notifier is not None:
+            text = (
+                f"ralphd {self.cfg.run_id}: the {hat} produced {wording} "
+                f"on approach {approach} after {self.cfg.judge_retry_max} "
+                "retries. It is not a rejection: nothing is archived and "
+                "review's verdict stands. The run is paused "
+                "(operator_input_needed, judge_no_verdict).\n"
+                f"ralphctl unpause {self.cfg.run_id} re-dispatches the {hat}")
+            self._notify_escalation_delivery(text, reason="operator_input_needed")
+        await self._gate()
+        if self._abort_reason is not None:
+            return "abort"
+        return "resume"
 
     async def _dispatch_verdict_gate(self, *, retry_wording: str = "",
                                      step_down: bool = False):

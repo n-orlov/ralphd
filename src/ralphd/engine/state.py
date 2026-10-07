@@ -1153,11 +1153,20 @@ TERMINATION_CLASSES: tuple[str, ...] = (TERMINATION_CLASS_OPERATOR,
 GATE_REJECTION_ENDING_MERITS = "rejected_on_the_merits"
 GATE_REJECTION_ENDING_CURE_TAKEN = "rejected_cure_taken"
 GATE_REJECTION_ENDING_CURE_UNAVAILABLE = "rejected_cure_unavailable"
+# #300: the fourth value is not a rejection at all -- the peer verdict gate
+# (or review) produced no verdict, every judge retry included, and the run is
+# parked (`operator_input_needed`, `pauseDetail.reason == "judge_no_verdict"`).
+# `ralphctl status` words it `gate: no verdict (output truncated)`.
+GATE_REJECTION_ENDING_NO_VERDICT = "no_verdict_output_truncated"
 GATE_REJECTION_ENDINGS: tuple[str, ...] = (
     GATE_REJECTION_ENDING_MERITS,
     GATE_REJECTION_ENDING_CURE_TAKEN,
     GATE_REJECTION_ENDING_CURE_UNAVAILABLE,
+    GATE_REJECTION_ENDING_NO_VERDICT,
 )
+# The `pauseDetail.reason` of the park a judging hat takes when it has no
+# verdict after every retry (#300).
+JUDGE_NO_VERDICT_REASON = "judge_no_verdict"
 # How much of a tool call's arguments the evidence keeps, and how much of a
 # transcript's tail is scanned for it: a transcript can be tens of MB, and
 # the last tool call is by construction at its end.
@@ -8648,6 +8657,11 @@ def format_pause_detail_line(detail) -> str | None:
                 f"window resets at {format_local_time(detail.get('resetsAt'))} "
                 "-- ralphctl unpause resets the count, ralphctl budget "
                 "--rate-limit-wait raises the ceiling")
+    if reason == JUDGE_NO_VERDICT_REASON:
+        message = _one_line(str(detail.get("message") or "").strip(),
+                            PAUSE_DETAIL_MESSAGE_MAX)
+        return (f"paused:    {message or 'a judging hat produced no verdict'} "
+                "-- ralphctl unpause re-dispatches it")
     return f"paused:    {reason.replace('_', ' ')}"
 
 
