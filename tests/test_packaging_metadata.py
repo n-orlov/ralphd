@@ -98,6 +98,17 @@ def test_the_declared_version_is_at_least_0_29_0():
     )
 
 
+def test_the_declared_version_is_at_least_0_32_3():
+    """The release that ships #299 and #300 is 0.32.3. A tuple comparison, so a
+    later bump keeps passing; the sites that must move with it are held equal
+    by the neighbouring pyproject/package-literal and doc-claim tests."""
+    v = tuple(int(part) for part in declared_version().split("."))
+    assert v >= (0, 32, 3), (
+        f"declared version {declared_version()!r} is below 0.32.3 -- the release "
+        "that ships #299 and #300 is 0.32.3"
+    )
+
+
 def test_the_api_version_handler_reports_the_package_literal():
     """`GET /version`'s body is built from `ralphd.__version__` -- the same
     literal the two tests above pin -- so it cannot report a third number."""

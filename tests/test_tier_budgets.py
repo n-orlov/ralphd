@@ -649,7 +649,9 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # #300 C (undefer missing route): +20 tests / +1 module
     # (tests/test_hub_undefer_route_missing.py) -> fast 7587/505,
     # smoke 5862/381.
-    "fast": {"tests": 7599, "modules": 506},
+    # Version floor (0.32.3): +1 test in tests/test_packaging_metadata.py ->
+    # fast 7600/506, smoke 5874/382.
+    "fast": {"tests": 7600, "modules": 506},
     "smoke": {"tests": 5874, "modules": 382},
 }
 
