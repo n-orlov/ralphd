@@ -427,6 +427,38 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+PORT_TAKEN_MARKERS = ("port is already allocated", "address already in use")
+PORT_PUBLISH_ATTEMPTS = 5
+
+
+def docker_run_publishing(cmd: list[str], name: str, port: int,
+                          api_bind: str, explicit_port: bool
+                          ) -> tuple[subprocess.CompletedProcess, int]:
+    """Run `docker run` and return `(result, port actually published)`.
+
+    `free_port()` probes 127.0.0.1 but docker publishes on `api_bind`, and
+    a sibling container on the same host can take that address's port
+    between the probe and the publish. When the engine port was chosen by
+    ralphctl (not `--port`), a refusal that names the port as taken is
+    retried on a fresh port; the half-created container is removed first.
+    An explicit `--port` is never replaced.
+    """
+    res = sh(cmd)
+    attempt = 1
+    published = f"{api_bind}:{port}:7777"
+    while (res.returncode != 0 and not explicit_port
+           and attempt < PORT_PUBLISH_ATTEMPTS
+           and published in cmd
+           and any(m in (res.stderr or "").lower() for m in PORT_TAKEN_MARKERS)):
+        sh([DOCKER, "rm", "-f", name])
+        port = free_port()
+        cmd = [f"{api_bind}:{port}:7777" if a == published else a for a in cmd]
+        published = f"{api_bind}:{port}:7777"
+        res = sh(cmd)
+        attempt += 1
+    return res, port
+
+
 def _network_args(network: str | None, api_bind: str, port: int,
                   docker_args: list[str], env_args: list[str]) -> list[str]:
     """Docker networking wiring shared by start/resume.
@@ -2611,7 +2643,8 @@ def cmd_start(args):
     cmd = [DOCKER, "run", "-d", "--name", job_container_name(run_id),
            "--init", "--ulimit", "core=0", *port_args,
            *docker_args, *mounts, *env_args, args.image]
-    res = sh(cmd)
+    res, port = docker_run_publishing(cmd, job_container_name(run_id), port,
+                                      args.api_bind, bool(args.port))
     if res.returncode != 0:
         shutil.rmtree(rdir, ignore_errors=True)
         shutil.rmtree(cdir, ignore_errors=True)
@@ -3346,7 +3379,8 @@ def cmd_resume(args):
 
     cmd = [DOCKER, "run", "-d", "--name", name, "--init", "--ulimit", "core=0", *port_args,
            *docker_args, *mounts, *env_args, args.image]
-    res = sh(cmd)
+    res, port = docker_run_publishing(cmd, name, port, args.api_bind,
+                                      bool(args.port))
     if res.returncode != 0:
         die(1, f"docker run failed: {res.stderr.strip()}")
     # Only an explicit flag re-records (and only once the container is up,

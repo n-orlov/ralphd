@@ -5068,7 +5068,7 @@ returns immediately.
 | `--iteration-timeout MINUTES` | `45` | per-iteration wall-clock budget |
 | `--infra-outage-budget SECONDS` | engine default `14400` (4h) | how long one LLM-endpoint outage may be ridden out |
 | `--auto-resume` / `--no-auto-resume` | on (§8.8) | opt this run in to or out of `doctor --fix` self-recovery |
-| `--port N` | free ephemeral port | host port for the run's API |
+| `--port N` | free ephemeral port | host port for the run's API; a ralphctl-chosen port that docker reports as already taken is replaced by a fresh one (up to five tries), an explicit one never |
 | `--api-bind ADDR` | `127.0.0.1` | address the API is published on |
 | `--network NET` | none (default bridge) | docker network; `host` shares the host netns |
 | `--api-token VALUE\|auto` | none | bearer token for the run's API; `auto` generates one |
