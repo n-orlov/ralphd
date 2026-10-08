@@ -1494,3 +1494,42 @@ def test_unreviewed_writers_in_code_match_the_documented_three():
     assert "_judge_no_verdict_unreviewed = f\"{hat}: {wording}\"" in src
     for wording in ("no verdict: output truncated", "no verdict: empty reply"):
         assert wording in src
+
+
+# --- review no-verdict routing in the technical spec (cure-01-01-2) ---------
+
+def _flat_tech() -> str:
+    return " ".join(
+        (REPO_ROOT / "docs" / "solution-tech-spec.md").read_text().split())
+
+
+def test_tech_spec_scopes_review_contract_unrepaired_to_a_non_empty_reply():
+    # the finding's own site: the status/verdict paragraph
+    flat = _flat_tech()
+    assert ("never produced a readable verdict from a reply that was not empty"
+            in flat)
+    assert ("its contract ladder was exhausted on replies that were all empty"
+            in flat)
+    # the old overbroad / length-only wording is gone
+    assert "review hat itself was cut off (`stopReason: length`, no text) on every attempt" not in flat
+    assert "the verdict claim itself is still unreadable. The approach verdict" not in flat
+
+
+def test_tech_spec_reading_the_verdict_routes_empty_replies_to_the_retry_and_park():
+    # the "Reading the verdict" bullet and the diagram
+    flat = _flat_tech()
+    assert "is not this hold: review is re-dispatched" in flat
+    assert "pauseDetail.reason: judge_no_verdict" in flat
+    assert "No approach verdict is recorded in that case." in flat
+    assert "verdict unreadable, reply not empty" in flat
+    assert "all replies empty" in flat
+
+
+def test_tech_spec_other_mentions_of_the_ladder_hold_and_unreviewed_agree():
+    # sites the finding did not list: the pause-reasons bullet and the
+    # final-outcomes list
+    flat = _flat_tech()
+    assert ("pause when review's contract ladder exhausts on a non-empty reply"
+            in flat)
+    assert "A ladder exhausted on empty replies is retried and then parks" in flat
+    assert "or no verdict at all after every retry, or the peer verdict gate" in flat

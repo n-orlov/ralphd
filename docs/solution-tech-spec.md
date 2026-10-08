@@ -265,14 +265,16 @@ separate from the lifecycle state: `verified`, `verified-with-residuals`,
 `unverified`, `unreviewed`, or `null`. A deadline that lands during review
 produces a `timed_out` hold with `verdict: null` and reason `"deadline during
 review"`, not a reviewed rejection. `unreviewed` is written in three cases, all only when no
-budget remained: review ran but never produced a readable verdict (with budget
-left the run pauses on `review_contract_unrepaired` instead); review said
-`verified` but the peer verdict gate produced no verdict after every
-`judge_retry_max` retry; or the review hat itself was cut off
-(`stopReason: length`, no text) on every attempt and every retry (in both of
-the last two, with budget left the run pauses on `operator_input_needed` with
-`pauseDetail.reason: judge_no_verdict` instead). In the last two cases the
-recorded review verdict stays as it is and no rejection is recorded.
+budget remained: review ran but never produced a readable verdict from a reply
+that was not empty (with budget left the run pauses on
+`review_contract_unrepaired` instead); review said `verified` but the peer
+verdict gate produced no verdict after every `judge_retry_max` retry; or the
+review hat itself had no verdict on every attempt and every retry, because it
+was cut off (`stopReason: length`, no text) or its contract ladder was exhausted
+on replies that were all empty (in both of the last two, with budget left the
+run pauses on `operator_input_needed` with `pauseDetail.reason:
+judge_no_verdict` instead). In the last two cases the recorded review verdict
+stays as it is and no rejection is recorded.
 
 An ordinary operator `pause` holds execution at the next boundary and emits a log
 event without changing `status.json` to `paused`. Engine-initiated escalation
@@ -388,7 +390,9 @@ Several pauses happen before an approach is archived:
   ruling or run a plain `ralphctl unpause`. A bare unpause grants a one-shot
   proceed, so the same rejection then archives instead of parking again.
 - **Contract failures.** `review_contract_unrepaired` and
-  `review_findings_unusable` pause when review's contract ladder exhausts.
+  `review_findings_unusable` pause when review's contract ladder exhausts on a
+  non-empty reply. A ladder exhausted on empty replies is retried and then parks
+  as `judge_no_verdict` under `operator_input_needed`.
 - **Gate cure ceiling.** The peer verdict gate's own mirror,
   `verdict_gate_operator_input_needed`, fires once the run-wide
   `cure_pass_ceiling` is spent.
@@ -671,8 +675,14 @@ or overlong `cured_when` enters the bounded review contract ladder (§8). A
 ladder exhaustions no longer score as a rejection. Each holds the run for the
 operator with the approach unarchived:
 
-- `review_contract_unrepaired`: the verdict claim itself is still unreadable. The
-  approach verdict is recorded as `unreviewed`.
+- `review_contract_unrepaired`: the verdict claim itself is still unreadable in a
+  reply that was not empty. The approach verdict is recorded as `unreviewed`. A
+  ladder exhausted on replies that were all empty (no text, or only whitespace)
+  is not this hold: review is re-dispatched as an uncharged fresh iteration up to
+  `judge_retry_max` times, as for a reply cut off at the output-token limit, and
+  when every retry also has no verdict the run parks on `operator_input_needed`
+  (`pauseDetail.reason: judge_no_verdict`), or with no budget left ends
+  `unreviewed`. No approach verdict is recorded in that case.
 - `review_findings_unusable`: the verdict word is legible but the findings channel
   or the rest of the payload is not.
 
@@ -702,7 +712,8 @@ flowchart TD
     Result["Review reply and findings"] --> Ladder{"Contract and sidecar valid?"}
     Ladder -->|no| Repair["Bounded contract repair"]
     Repair -->|repaired| Ladder
-    Repair -->|verdict unreadable| HoldU["Pause: review_contract_unrepaired"]
+    Repair -->|verdict unreadable, reply not empty| HoldU["Pause: review_contract_unrepaired"]
+    Repair -->|all replies empty| Retry["Retry review; if still none, pause: judge_no_verdict"]
     Repair -->|channel unusable| HoldF["Pause: review_findings_unusable"]
     Ladder -->|yes| Blocking{"Blocking findings after downgrades?"}
     Blocking -->|none| Pending{"Steering, steering-origin or cure-origin task open?"}
@@ -1475,7 +1486,7 @@ history ([`run_record.py`](../src/ralphd/engine/run_record.py)).
 A successful verdict is `verified`, or `verified-with-residuals` when the findings
 channel carries residual findings. Other recorded endings are `rejected`,
 `unverified`, `unreviewed` (review never produced a usable contract payload, or
-the peer verdict gate produced no verdict after every retry), or
+no verdict at all after every retry, or the peer verdict gate produced no verdict after every retry), or
 `null` (a deadline took review before it spoke). Running out of deadline or
 iteration budget is not a completion. It enters the `timed_out` hold described in
 section 12, which skips reflection and the completion hook.
