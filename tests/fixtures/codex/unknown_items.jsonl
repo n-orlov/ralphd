@@ -1,0 +1,8 @@
+{"type": "thread.started", "thread_id": "01a1-fake-thread"}
+{"type": "turn.started"}
+{"type": "item.started", "item": {"id": "item_1", "type": "web_search", "query": "fake query"}}
+{"type": "item.completed", "item": {"id": "item_1", "type": "web_search", "query": "fake query"}}
+{"type": "item.completed", "item": {"id": "item_2", "type": "todo_list", "items": [{"text": "step", "completed": false}]}}
+{"type": "item.completed", "item": {"id": "item_3", "type": "code_mode_exec", "code": "print(1)", "output": "1"}}
+{"type": "error", "message": "Reconnecting... 1/5"}
+{"type": "thread.future_event", "detail": {"anything": true}}

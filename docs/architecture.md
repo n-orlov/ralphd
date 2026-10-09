@@ -2084,6 +2084,33 @@ ends `toolUse`, one without ends `stop`. Every `message_end` carries
 | `turn.failed` | `message_end` with `stopReason: "error"` (`"length"` for `max_output_tokens`) and `errorMessage`, plus `ralphd.httpStatus` when the text names one |
 | `error` event, an unknown event or item type | none; a raw envelope only, and not stall traffic |
 
+Usage, failure and tolerance rules:
+
+- **Usage mapping.** From `usage` on `turn.completed`: `input` is
+  `input_tokens - cached_input_tokens - cache_write_input_tokens` (never below
+  0), `cacheRead` is `cached_input_tokens`, `cacheWrite` is
+  `cache_write_input_tokens`, `output` is `output_tokens` (reasoning tokens are
+  already inside it) and `totalTokens` is `input_tokens + output_tokens`. A
+  missing or non-integer field counts as 0. The `message_end` carries no `cost`
+  block: the engine prices the tokens (`PricingSource`) as for any other model.
+- **Delta rule.** Codex's `usage` is cumulative for the thread, so the
+  normaliser keeps the previous `turn.completed`'s counters and each
+  `message_end` reports the difference (a counter that went down is taken as
+  a fresh count). The per-message numbers therefore sum to the thread total.
+- **Failure mapping.** `turn.failed` closes the open group as `message_end`
+  with `stopReason: "error"` and `errorMessage` set to the failure message, plus
+  `ralphd.httpStatus` when a status code can be parsed from the message (Codex
+  has no structured one; with none parseable the field is absent). A message
+  that names `max_output_tokens` gives `stopReason: "length"`, keeping the
+  partial text already in the group; with no text, `_classify_result` gives
+  `output_truncated`. An `error` event such as `Reconnecting... n/5` is not
+  terminal and is not stall traffic.
+- **Tolerance rule.** An event or item type the normaliser does not know
+  (`web_search`, `todo_list`, code-mode items, future event types, a malformed
+  event) gives no pi event, raises nothing, and is not traffic, so it never
+  resets a stall watchdog. A stream that ends with no terminal event is closed
+  by `finish(error)`, which emits a `message_end` with `stopReason: "error"`.
+
 ### Diagnosability requirements
 
 Failures must be visible without digging into transcripts:
