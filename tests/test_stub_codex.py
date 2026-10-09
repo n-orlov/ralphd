@@ -219,11 +219,13 @@ def _spawn_hang(tmp_path, scenario, env=None):
 
 
 def _alive(pid):
+    """False once `pid` is gone; a zombie nobody reaped (an orphan under a PID 1 that
+    does not reap, as in the CI container) counts as gone."""
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
         return False
-    return True
+    return state not in ("Z", "X")
 
 
 def test_hang_exits_1_on_sigint_and_leaves_no_child(tmp_path):
