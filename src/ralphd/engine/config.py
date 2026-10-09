@@ -207,6 +207,10 @@ def normalize_billing(value: object) -> dict | None:
         log.warning("billing basis %r contradicts harness %r (always %r) -- "
                     "using %r", basis, harness, forced, forced)
         basis = forced
+    if basis in HARNESS_REFUSED_BASES.get(harness, ()):
+        log.warning("billing basis %r contradicts harness %r (never %r) -- "
+                    "using %r", basis, harness, basis, DEFAULT_BILLING_BASIS)
+        basis = DEFAULT_BILLING_BASIS
     return {"payer": payer, "basis": basis, "profile": profile,
             "harness": harness,
             "subscription_payer": (_text(value.get("subscription_payer"))
@@ -357,6 +361,7 @@ DEFAULT_HARNESS = "pi"
 # The harness that reports rate-limit state (v0.30 F): only its hats wait
 # on a rate limit or are preempted near one.
 CLAUDE_CODE_HARNESS = "claude-code"
+CODEX_HARNESS = "codex"
 
 # #298: who pays for a hat's tokens. `basis` is one of BILLING_BASES; the
 # zero-priced ones (subscription/free) bill nothing per token, so their
@@ -369,6 +374,13 @@ ZERO_PRICED_BASES: tuple[str, ...] = ("subscription", "free")
 # it. It is the data twin of `runner.ClaudeCodeRunner._mark_subscription`
 # (the cost-side code); a test pins the two together.
 HARNESS_FORCED_BASIS: dict[str, str] = {CLAUDE_CODE_HARNESS: "subscription"}
+# The codex harness is deliberately NOT in `HARNESS_FORCED_BASIS`: its hats
+# bill `metered` by default and a profile may still label them `chargeback`
+# or `free`, but no codex hat ever bills a subscription. A basis listed here
+# for a harness is refused by the profile validator and `ralphctl start`, and
+# repaired to `metered` by `normalize_billing` and `JobConfig.billing_for`.
+HARNESS_REFUSED_BASES: dict[str, tuple[str, ...]] = {
+    CODEX_HARNESS: ("subscription",)}
 # Derived from the harness name so no vendor/product name is spelled here;
 # the operator renames it through the registry `billing:` knob.
 DEFAULT_SUBSCRIPTION_PAYER = f"{CLAUDE_CODE_HARNESS} subscription"
@@ -1147,6 +1159,8 @@ class JobConfig:
             return (b["payer"] if b["harness"] == harness
                     else b["subscription_payer"], forced)
         if harness == b["harness"]:
+            if b["basis"] in HARNESS_REFUSED_BASES.get(harness, ()):
+                return (b["payer"], DEFAULT_BILLING_BASIS)
             return (b["payer"], b["basis"])
         return (b["profile"] or BILLING_UNLABELLED_PAYER, DEFAULT_BILLING_BASIS)
 

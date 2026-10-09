@@ -43,9 +43,11 @@ from ..engine.config import (
     BILLING_BASES,
     BILLING_LABEL_CONTROL_RE,
     CLAUDE_CODE_MIN_VERSION,
+    DEFAULT_BILLING_BASIS,
     DEFAULT_HARNESS,
     DEFAULT_SUBSCRIPTION_PAYER,
     HARNESS_FORCED_BASIS,
+    HARNESS_REFUSED_BASES,
     HOST_BILLING_PAYER,
     HARNESSES,
     MODEL_HATS,
@@ -2207,6 +2209,9 @@ def _job_billing(args, llm_profile, registry_billing: dict) -> dict | None:
     if forced and basis != forced:
         die(2, f"--billing-basis {basis!r} contradicts harness {harness!r}, "
                f"which always bills {forced!r}")
+    if basis in HARNESS_REFUSED_BASES.get(harness, ()):
+        die(2, f"--billing-basis {basis!r} contradicts harness {harness!r}, "
+               f"which bills {DEFAULT_BILLING_BASIS!r} and never {basis!r}")
     return {"payer": payer, "basis": basis, "profile": profile,
             "harness": harness,
             "subscription_payer": (registry_billing.get("subscription_payer")

@@ -657,8 +657,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.33 task 001 (codex registration): +15 tests / +1 module
     # (tests/test_codex_harness_registration.py), measured `-m fast
     # --collect-only` -> fast 7632, `-m smoke --collect-only` -> smoke 5900.
-    "fast": {"tests": 7632, "modules": 508},
-    "smoke": {"tests": 5900, "modules": 384},
+    # v0.33 task 002 (codex effort table, metered billing): +38 tests in
+    # tests/test_codex_harness_registration.py and +1 ingestion-lint test for
+    # src/ralphd/harness/codex.py, measured `-m fast --collect-only` -> fast
+    # 7671/508, `-m smoke --collect-only` -> smoke 5939/384.
+    "fast": {"tests": 7671, "modules": 508},
+    "smoke": {"tests": 5939, "modules": 384},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

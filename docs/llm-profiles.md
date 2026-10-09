@@ -103,7 +103,12 @@ Resolution rules:
   `subscription`/`free` report `$0` and keep the would-be price apart as the
   list-equivalent, for those rows only. Fallbacks: no block means payer = the
   profile name and basis = `metered`, and a `harness: claude-code` profile is
-  always `subscription` (any other basis is a `ProfileError`). In a mixed run
+  always `subscription` (any other basis is a `ProfileError`). A `harness:
+  codex` profile bills `metered` by default and refuses `subscription` (a
+  `ProfileError`, and `ralphctl start --billing-basis subscription` exits `2`
+  with `--billing-basis 'subscription' contradicts harness 'codex'`); a codex
+  hat is always stamped `metered` unless the profile labels it `chargeback`
+  or `free`, with the profile's payer. In a mixed run
   a `pi` hat under a `claude-code` profile is stamped with the profile name
   and `metered`, and a `claude-code` hat under any other profile (or `--llm
   host`) with the registry `config.yaml`'s `billing.subscription_payer`
@@ -502,3 +507,20 @@ model/provider without losing loop state.
   API-pushed creds) — never in `~/.ralphd/runs/` and never in API responses
   (`GET /config` redacts).
 - `ralphctl llm show` prints the resolved profile with values masked.
+
+## Codex reasoning effort
+
+A hat on the `codex` harness sends its bundle's level (`thinking`, else
+`effort`) to `codex` as `model_reasoning_effort`. The gateway accepts only
+`low`, `medium` and `high`, so `CODEX_EFFORT_TABLE` (in `ralphd.harness.codex`)
+maps the level:
+
+| Hat level | `model_reasoning_effort` |
+|-----------|--------------------------|
+| `off`, `minimal`, `low` | `low` |
+| `medium` | `medium` |
+| `high`, `xhigh` | `high` |
+
+An unset or unmapped level falls back to `medium`. The tier step-down of a
+codex hat's verify tier works unchanged on this table: whatever level the
+stepped-down rung carries maps to one of the three values.

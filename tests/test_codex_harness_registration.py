@@ -17,8 +17,10 @@ from test_cli_docker import Ctl
 from ralphd.cli import llm_profiles
 from ralphd.cli.ui_server import provisioning_table_cells, run_detail
 from ralphd.engine import hat_tools
-from ralphd.engine.config import (HARNESSES, MODEL_HATS, JobConfig,
-                                  _model_family)
+from ralphd.engine import tiers
+from ralphd.engine.config import (HARNESS_FORCED_BASIS, HARNESSES, MODEL_HATS,
+                                  HatBundle, JobConfig, _model_family)
+from ralphd.harness import codex as codex_harness
 from ralphd.engine.llm import UnroutableHatModel, check_hat_routes
 from ralphd.engine.runner import CodexRunner, IterationResult
 from ralphd.engine.state import format_provisioning_lines
@@ -222,3 +224,133 @@ def test_claude_code_hat_on_an_openai_model_is_still_refused():
     with pytest.raises(UnroutableHatModel) as err:
         _check(_cfg(OPENAI_MODEL, "claude-code"))
     assert "claude-code harness only serves anthropic models" in str(err.value)
+
+
+# -- A.5: reasoning effort ------------------------------------------------------
+
+@pytest.mark.parametrize("level,expected", [
+    ("off", "low"), ("minimal", "low"), ("low", "low"), ("medium", "medium"),
+    ("high", "high"), ("xhigh", "high")])
+def test_effort_table_rows(level, expected):
+    assert codex_harness.CODEX_EFFORT_TABLE[level] == expected
+    assert codex_harness.effort_options(level, None) == {
+        "model_reasoning_effort": expected}
+    assert codex_harness.effort_options(None, level) == {
+        "model_reasoning_effort": expected}
+
+
+@pytest.mark.parametrize("level", ["max", "ultra", "", None, "HIGH"])
+def test_unmapped_effort_falls_back_to_medium(level):
+    assert codex_harness.effort_options(level, None) == {
+        "model_reasoning_effort": "medium"}
+
+
+def test_effort_table_values_are_only_low_medium_high():
+    assert set(codex_harness.CODEX_EFFORT_TABLE.values()) <= {
+        "low", "medium", "high"}
+    assert {"off", "minimal", "low", "medium", "high", "xhigh"} == set(
+        codex_harness.CODEX_EFFORT_TABLE)
+
+
+def test_thinking_wins_over_effort():
+    assert codex_harness.effort_options("low", "high") == {
+        "model_reasoning_effort": "low"}
+
+
+def test_codex_module_does_not_load_the_sdk():
+    import subprocess
+    import sys
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import sys, ralphd.harness.codex; "
+         "print('claude_agent_sdk' in sys.modules, "
+         "'ralphd.harness.claude_code' in sys.modules)"],
+        capture_output=True, text=True, check=True)
+    assert out.stdout.split() == ["False", "False"]
+
+
+@pytest.mark.parametrize("tier", tiers.TIERS)
+@pytest.mark.parametrize("level", ["off", "minimal", "low", "medium", "high",
+                                   "xhigh"])
+def test_codex_hat_step_down_yields_a_mappable_effort(tier, level):
+    # a codex verify hat's ladder: each rung carries a level; the step-down
+    # tier resolves a bundle whose level effort_options maps without error.
+    ladder = {t: HatBundle(model=OPENAI_MODEL, thinking=level, harness="codex")
+              for t in tiers.TIERS}
+    host_map = {"verify": ladder, "planning": ladder}
+    stepped = tiers.step_down_tier(tier)
+    bundle = tiers.resolve_bundle("verify", stepped, host_map)
+    opts = codex_harness.effort_options(bundle.thinking, bundle.effort)
+    assert opts["model_reasoning_effort"] in {"low", "medium", "high"}
+    assert opts["model_reasoning_effort"] == codex_harness.CODEX_EFFORT_TABLE[level]
+
+
+def test_codex_hat_step_down_from_a_configured_job():
+    cfg = JobConfig(model_overrides={"verify": OPENAI_MODEL},
+                    harnesses={"verify": "codex"},
+                    thinking_overrides={"verify": "xhigh"})
+    host_map = tiers.default_host_map(cfg)
+    for tier in tiers.TIERS:
+        b = tiers.resolve_bundle("verify", tiers.step_down_tier(tier), host_map)
+        assert codex_harness.effort_options(b.thinking, b.effort)[
+            "model_reasoning_effort"] == "high"
+
+
+# -- A.6: billing ---------------------------------------------------------------
+
+def test_subscription_basis_on_a_codex_profile_exits_2(ctl):
+    d = ctl.registry / "llm-profiles"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "cxb.yaml").write_text(yaml.safe_dump(
+        {"model": OPENAI_MODEL, "harness": "codex"}))
+    res = _start(ctl, "tst-cx-bill", "--billing-basis", "subscription",
+                 llm="cxb")
+    assert res.returncode == 2
+    assert "--billing-basis" in res.stderr
+    assert "contradicts harness 'codex'" in res.stderr
+    assert not (ctl.registry / "configs" / "tst-cx-bill" / "job.yaml").exists()
+
+
+def test_metered_basis_on_a_codex_profile_is_accepted(ctl):
+    d = ctl.registry / "llm-profiles"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "cxb.yaml").write_text(yaml.safe_dump(
+        {"model": OPENAI_MODEL, "harness": "codex"}))
+    res = _start(ctl, "tst-cx-bill-ok", llm="cxb")
+    assert res.returncode == 0, res.stderr
+    billing = _job_yaml(ctl, "tst-cx-bill-ok")["billing"]
+    assert billing["harness"] == "codex" and billing["basis"] == "metered"
+
+
+def test_profile_billing_subscription_on_codex_is_refused(ctl):
+    d = ctl.registry / "llm-profiles"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "cxs.yaml").write_text(yaml.safe_dump(
+        {"model": OPENAI_MODEL, "harness": "codex",
+         "billing": {"basis": "subscription"}}))
+    with pytest.raises(llm_profiles.ProfileError) as err:
+        llm_profiles.resolve_profile("cxs", ctl.registry)
+    assert "contradicts harness 'codex'" in str(err.value)
+
+
+def test_billing_for_codex_is_metered_and_not_forced():
+    assert "codex" not in HARNESS_FORCED_BASIS
+    cfg = JobConfig(billing={"payer": "gw", "basis": "metered",
+                             "profile": "cx", "harness": "codex",
+                             "subscription_payer": "claude-code subscription"})
+    assert cfg.billing_for("codex") == ("gw", "metered")
+    other = JobConfig(billing={"payer": "p", "basis": "metered",
+                               "profile": "pi-prof", "harness": "pi",
+                               "subscription_payer": "claude-code subscription"})
+    assert other.billing_for("codex") == ("pi-prof", "metered")
+    assert other.billing_for("claude-code")[1] == "subscription"
+
+
+def test_a_hand_edited_subscription_basis_on_codex_bills_metered():
+    from ralphd.engine.config import normalize_billing
+    billing = normalize_billing({"payer": "gw", "basis": "subscription",
+                                 "profile": "cx", "harness": "codex"})
+    assert billing["basis"] == "metered"
+    assert JobConfig(billing=billing).billing_for("codex") == ("gw", "metered")
+    raw = dict(billing, basis="subscription")
+    assert JobConfig(billing=raw).billing_for("codex") == ("gw", "metered")

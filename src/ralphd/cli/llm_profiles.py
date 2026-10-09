@@ -25,6 +25,7 @@ from ..engine.config import (
     BILLING_LABEL_CONTROL_RE,
     DEFAULT_BILLING_BASIS,
     HARNESS_FORCED_BASIS,
+    HARNESS_REFUSED_BASES,
     HARNESSES,
     PRICE_STRATEGIES,
     normalize_price_strategy,
@@ -172,7 +173,7 @@ def resolve_billing(raw: object, *, label: str, harness: str,
     Values are literal (never resolved, never masked). Returns
     `{"payer", "basis", **extra keys present}`; raises `ProfileError`
     (`<label>: billing ...`) on a non-mapping, an unknown key, a blank payer
-    or one holding a control character, an unknown basis, or a basis that contradicts `HARNESS_FORCED_BASIS`.
+    or one holding a control character, an unknown basis, or a basis that contradicts `HARNESS_FORCED_BASIS` or `HARNESS_REFUSED_BASES`.
     """
     if raw is None:
         raw = {}
@@ -208,6 +209,11 @@ def resolve_billing(raw: object, *, label: str, harness: str,
         raise ProfileError(
             f"{label}: billing basis: {basis!r} contradicts harness "
             f"{harness!r}, which always bills {forced!r}")
+    if basis is not None and basis in HARNESS_REFUSED_BASES.get(harness, ()):
+        raise ProfileError(
+            f"{label}: billing basis: {basis!r} contradicts harness "
+            f"{harness!r}, which bills {DEFAULT_BILLING_BASIS!r} and never "
+            f"{basis!r}")
     payer = out.pop("payer", None)
     return {"payer": payer or default_payer,
             "basis": basis or forced or DEFAULT_BILLING_BASIS, **out}
