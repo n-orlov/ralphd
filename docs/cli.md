@@ -2926,6 +2926,7 @@ LLM profile inspection:
 ralphctl llm profiles                 # list profiles (~/.ralphd/llm-profiles)
 ralphctl llm show <profile>           # resolved (redacted) view
 ralphctl llm test <profile>           # ping each (harness, model) pair through the runner
+ralphctl llm test <profile> --harness codex   # ping the profile's model on the codex harness
 ```
 
 Mid-run rotation of a live job's endpoint/key is an **API-only** capability in
@@ -2974,7 +2975,13 @@ pair:
 ```
 ok  pi  acme/m1
 FAIL claude-code anthropic/claude-sonnet-5  refused: 400 invalid_request: ...
+ok  codex  aigw-openai/openai.gpt-5.6-sol
 ```
+
+A `codex` pair builds the same `CodexRunner` an iteration uses, so a ping
+without `AIGW_OPENAI_BASE_URL` or `AWS_BEARER_TOKEN_BEDROCK` fails as `refused:
+codex_gateway_not_configured: ...`, a Codex CLI below `CODEX_MIN_VERSION` as
+`codex_version_too_old`, and a missing one as `codex_cli_not_found`.
 
 The failure line carries the fault class (`refused`, `rate_limit`, `infra`,
 ...; `no-verdict` when the container printed none) and the scrubbed provider
@@ -2993,6 +3000,7 @@ error is `model_not_found` is `refused`, as `not_found_error` is; a pi gateway
 |--------|---------|---------|
 | `--image <ref>` | the run image | image to ping in; by default the one `start` would run (template, registry, `RALPHD_IMAGE`, else the content-hashed image, built on a cache miss) |
 | `--model <ref>` | the profile's `model` | model to ping; with `--hats`, the job's base `model` |
+| `--harness <name>` | the profile's `harness:` | ping the one pair on this harness (`pi`, `claude-code` or `codex`) instead of the profile's own, e.g. `--harness codex` to ping an OpenAI-gateway profile's model through the codex runner. Exits `2` with `--hats`; there use `--harness-for HAT=NAME` |
 | `--hats` | off | ping every hat's (harness, model) pair and every configured `model_tiers` leaf, merged as `start` merges them: registry `config.yaml` < `--template` < the flags below |
 | `--template <name>` | none | the template whose `job.yaml` `model:`/`models:`/`model_tiers:`/`harnesses:` (and image keys) `start --template` would use |
 | `--network <net>` | `--template` `job.yaml` `network:`, else the registry's `network`, else none | docker network for the ping container, resolved as `start` resolves it; every ping, including each `--hats` ping, gets `--network <net>`. None means no `--network` argument (the default bridge). Pass `host` for a gateway that resolves only on the host (a tailnet or VPN name) |
@@ -3530,6 +3538,22 @@ of them, exit code `0`/`1` accordingly):
   single tag, an unparseable answer) the check is report-only: the line
   `! claude_code_runtime: not probed (<why>)` appears and `checks` carries no
   `claude_code_runtime` key.
+- `codex_runtime` — the job image carries a Codex CLI at or above
+  `CODEX_MIN_VERSION` (`0.156.1`). `doctor` runs
+  `python -m ralphd.harness.codex --probe-version` in the image (`docker run
+  --rm --entrypoint python <image>`) and compares the CLI version it reports
+  with `ralphctl`'s shared version helper. A Codex that meets the minimum
+  passes. A missing or too-old Codex fails the check (the report line names
+  the minimum and the version found) when a registry job runs a hat on
+  `codex`: a non-terminal run's `job.yaml`, a template's `job.yaml`, the
+  registry `config.yaml`'s `harnesses:`, or the default LLM profile's
+  `harness:` names it. When no registry job uses `codex` the same finding is
+  advisory: the line `! codex_runtime: <problem> (advisory: no registry job
+  runs a hat on codex)` appears and `checks` carries no `codex_runtime` key,
+  so an operator who never uses `codex` is not failed for an image without
+  it. When the image cannot be probed (docker down, image absent, a derived
+  supply with no single tag, an unparseable answer) the check is report-only:
+  `! codex_runtime: not probed (<why>)`, and no `checks` key.
 
 Two dangling-container checks, in both directions — always **non-fatal**
 (report-only; never affect `ok`/the exit code):

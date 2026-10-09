@@ -700,8 +700,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 011 (codex pin in the image): +10 tests / +1 module
     # (tests/test_image_codex_pin.py), measured `-m fast --collect-only` ->
     # fast 7862/514, `-m smoke --collect-only` -> smoke 6127/390.
-    "fast": {"tests": 7862, "modules": 514},
-    "smoke": {"tests": 6127, "modules": 390},
+    # Task 012 (codex_runtime doctor check, llm test --harness): +31 tests /
+    # +1 module (tests/test_doctor_codex_runtime.py, 31), measured `-m fast
+    # --collect-only` -> fast 7893/515, `-m smoke --collect-only` -> smoke
+    # 6158/391.
+    "fast": {"tests": 7893, "modules": 515},
+    "smoke": {"tests": 6158, "modules": 391},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

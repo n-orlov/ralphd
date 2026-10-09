@@ -41,6 +41,7 @@ import yaml
 from .. import __version__
 from ..engine.config import (
     BILLING_BASES,
+    CODEX_MIN_VERSION,
     BILLING_LABEL_CONTROL_RE,
     CLAUDE_CODE_MIN_VERSION,
     DEFAULT_BILLING_BASIS,
@@ -148,6 +149,7 @@ from ..log_merge import NO_TRANSCRIPT, iteration_numbers
 from ..log_merge import iteration_lines as _iteration_lines
 from ..log_merge import merged_lines as _merged_lines
 from . import image, llm_profiles, patch, ui_server
+from .versions import compare_versions
 from .log_render import FULL_BACKLOG_TAIL as _FULL_BACKLOG_TAIL
 from .log_render import _ansi
 from .log_render import new_render_state as _new_render_state
@@ -5733,7 +5735,11 @@ def _llm_test_pairs(args, resolved: dict, job: JobConfig | None) -> list[tuple]:
     order. Without `--hats` (`job` is None): the profile's harness and model
     (`--model` wins). With `--hats`: every hat in `MODEL_HATS` and every
     configured `model_tiers` leaf of `job` (`_llm_test_job`), each on its
-    hat's harness."""
+    hat's harness. `--harness` replaces the profile's harness for the single
+    pair and is refused with `--hats` (use `--harness-for HAT=NAME`)."""
+    if job is not None and getattr(args, "harness", None):
+        die(2, "llm test: --harness pings one pair and conflicts with --hats "
+               "(use --harness-for HAT=NAME)")
     if job is None:
         for flag, value in (("--model-for", args.model_for),
                             ("--model-for-tier", args.model_for_tier),
@@ -5741,7 +5747,8 @@ def _llm_test_pairs(args, resolved: dict, job: JobConfig | None) -> list[tuple]:
             if value:
                 die(2, f"llm test: {flag} needs --hats (it names a hat, and only "
                         "--hats pings per hat)")
-        return [(resolved["harness"], args.model or resolved["model"])]
+        return [(getattr(args, "harness", None) or resolved["harness"],
+                 args.model or resolved["model"])]
     pairs: list[tuple] = []
     for hat in MODEL_HATS:
         harness = job.harness_for(hat)
@@ -8021,6 +8028,110 @@ def _doctor_claude_code_runtime(ref: str | None, docker_ok: bool,
     return True, ""
 
 
+def _probe_codex_runtime(ref: str) -> dict | None:
+    """Ask the job image for its Codex runtime: the wrapper's
+    `--probe-version`, run with the image's own `python`.
+
+    Returns `{"cli", "cliPath", "ok", "error"?}`, or `None` when nothing can
+    be said (docker down, image absent, the answer is not the wrapper's
+    JSON). An image whose interpreter cannot import the wrapper is an
+    answer: `{"error": ...}` with no version.
+    """
+    try:
+        res = sh([DOCKER, "run", "--rm", "--entrypoint", "python", ref,
+                  "-m", "ralphd.harness.codex", "--probe-version"],
+                 timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out_lines = (res.stdout or "").strip().splitlines()
+    if res.returncode == 0 and out_lines:
+        try:
+            doc = json.loads(out_lines[-1])
+        except ValueError:
+            return None
+        if isinstance(doc, dict) and "cli" in doc:
+            return doc
+        return None
+    err = (res.stderr or "")
+    if res.returncode == 1 and re.search(
+            r"(ModuleNotFoundError|ImportError|No module named)", err):
+        last = err.strip().splitlines()[-1] if err.strip() else "import failed"
+        return {"cli": None, "ok": False, "error": last[:300]}
+    return None
+
+
+def _harness_tables_name_codex(doc: object) -> bool:
+    """Whether a parsed job.yaml / template job.yaml / registry config
+    names `codex` as a hat's harness (its `harnesses:` table or a bare
+    `harness:`)."""
+    if not isinstance(doc, dict):
+        return False
+    table = doc.get("harnesses")
+    if isinstance(table, dict) and "codex" in table.values():
+        return True
+    return doc.get("harness") == "codex"
+
+
+def _registry_uses_codex(reg: Path, reg_cfg: dict) -> bool:
+    """Whether any job the registry knows about runs a hat on `codex`: a
+    non-terminal run's job.yaml, a template's job.yaml, the registry config's
+    own `harnesses:`, or the default LLM profile's `harness:`."""
+    def load(path: Path) -> object:
+        try:
+            return yaml.safe_load(path.read_text())
+        except (OSError, yaml.YAMLError):
+            return None
+    if _harness_tables_name_codex(reg_cfg):
+        return True
+    default_profile = reg_cfg.get("default_llm_profile")
+    if isinstance(default_profile, str) and default_profile not in ("host", "none"):
+        if _harness_tables_name_codex(
+                load(reg / "llm-profiles" / f"{default_profile}.yaml")):
+            return True
+    templates = reg / "templates"
+    if templates.is_dir():
+        for d in sorted(templates.iterdir()):
+            if _harness_tables_name_codex(load(d / "job.yaml")):
+                return True
+    runs = reg / "runs"
+    if runs.is_dir():
+        for d in sorted(runs.iterdir()):
+            status = _read_json(d / "status.json", {})
+            if not isinstance(status, dict) or status.get("state") not in NONTERMINAL_STATES:
+                continue
+            if _harness_tables_name_codex(load(config_root(d.name) / "job.yaml")):
+                return True
+    return False
+
+
+def _doctor_codex_runtime(ref: str | None, docker_ok: bool, in_use: bool,
+                          why_not: str | None = None
+                          ) -> tuple[bool | None, str]:
+    """`(verdict, report line)` for doctor's `codex_runtime` check.
+    `verdict is None` is report-only (not probed, or a Codex that is missing
+    or too old in an image no registry job needs it from); otherwise it
+    feeds `checks`. A runtime that meets `CODEX_MIN_VERSION` always passes."""
+    if ref is None:
+        return None, f"! codex_runtime: not probed ({why_not or 'no single image tag'})"
+    if not docker_ok:
+        return None, "! codex_runtime: not probed (docker is not reachable)"
+    probe = _probe_codex_runtime(ref)
+    if probe is None:
+        return None, f"! codex_runtime: not probed (no usable answer from {ref})"
+    if probe.get("error") or not probe.get("cli"):
+        problem = (f"the codex wrapper does not run in {ref}: "
+                   f"{probe.get('error') or 'no CLI version reported'}")
+    elif compare_versions(probe["cli"], CODEX_MIN_VERSION) in (-1, None):
+        problem = (f"Codex {probe['cli']} in {ref} is older than the "
+                   f"minimum {CODEX_MIN_VERSION}")
+    else:
+        return True, ""
+    if in_use:
+        return False, f"codex_runtime: {problem}"
+    return None, (f"! codex_runtime: {problem} (advisory: no registry job "
+                  "runs a hat on codex)")
+
+
 def _doctor_image_staleness(args, reg_cfg: dict,
                             source_hash: str | None) -> tuple[dict, bool]:
     """`doctor`'s job-image verdict, and whether the check passes (task 037).
@@ -8171,6 +8282,11 @@ def cmd_doctor(args):
         f"derived from {cc_base}" if cc_base else None)
     if cc_verdict is not None:
         checks["claude_code_runtime"] = cc_verdict
+    cx_verdict, cx_line = _doctor_codex_runtime(
+        cc_ref, checks["docker"], _registry_uses_codex(reg, reg_cfg),
+        f"derived from {cc_base}" if cc_base else None)
+    if cx_verdict is not None:
+        checks["codex_runtime"] = cx_verdict
     run_images = _run_image_staleness(source_hash)
     stale_runs = [e for e in run_images
                   if e["staleness"] == IMAGE_STALENESS_STALE]
@@ -8228,6 +8344,8 @@ def cmd_doctor(args):
     report = "\n".join(f"{'✓' if v else '✗'} {k}" for k, v in checks.items())
     if cc_line:
         report += "\n" + cc_line
+    if cx_line:
+        report += "\n" + cx_line
     # The staleness line is report-only, so it is marked `!` exactly when it is
     # news the operator has to act on (a stale or unrunnable image) and left
     # unmarked when it is not (fresh, or honestly unknowable).
@@ -9073,6 +9191,10 @@ def build_parser() -> argparse.ArgumentParser:
                           "run, resolved the same way)")
     te_.add_argument("--model", help="override the model used for the ping "
                                      "(with --hats: the job's base model)")
+    te_.add_argument("--harness", choices=HARNESSES, default=None,
+                     help="ping the profile's model on this harness instead "
+                          "of the profile's own (not with --hats; there use "
+                          "--harness-for)")
     te_.add_argument("--no-ping", action="store_true",
                       help="only validate resolution; skip the container ping "
                            "even if docker is available")

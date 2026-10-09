@@ -4636,6 +4636,14 @@ absent, a derived supply with no single tag, an unparseable answer) is
 report-only, with no `checks` key, because an unanswerable question is not a
 broken image.
 
+`doctor` likewise probes the job image's Codex CLI (`codex_runtime`) with
+`python -m ralphd.harness.codex --probe-version` and passes when it reports a
+version at or above `CODEX_MIN_VERSION`. A missing or too-old Codex fails the
+check when a registry job runs a hat on `codex` and is an advisory line, with
+no `checks` key, when none does. `ralphctl llm test --harness codex` pings the
+profile's model on the codex harness through `CodexRunner`
+(`ralphd-engine --llm-ping --harness codex`).
+
 `repair` is the guarded editor for the run dir. It refuses to touch a run
 whose container is actually running, exiting `5`, because editing state under
 a live engine produces a run dir that contradicts itself. `--set-state`

@@ -432,11 +432,29 @@ def _run(cfg: dict, prompt: str, norm: CodexNormaliser, out: _Out) -> int:
     return 1
 
 
+def probe() -> dict:
+    """`--probe-version`: the Codex CLI's version and path, whether that CLI
+    meets `CODEX_MIN_VERSION`, and the gate's message when it does not."""
+    cli = resolve_cli_path()
+    version = cli_version(cli)
+    gate = version_gate(cli, version)
+    doc = {"cli": version, "cliPath": cli, "ok": gate is None}
+    if gate is not None:
+        doc["error"] = gate["message"]
+    return doc
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m ralphd.harness.codex")
-    ap.add_argument("--config", required=True,
-                    help="path of the wrapper.json the runner wrote")
+    ap.add_argument("--config", help="path of the wrapper.json the runner wrote")
+    ap.add_argument("--probe-version", action="store_true",
+                    help="print the Codex CLI version as JSON and exit")
     args = ap.parse_args(argv)
+    if args.probe_version:
+        print(json.dumps(probe()))
+        return 0
+    if not args.config:
+        ap.error("--config is required")
     cfg = json.loads(Path(args.config).read_text())
     _redirect_stderr(cfg.get("stderr_log"))
     prompt = sys.stdin.read()
