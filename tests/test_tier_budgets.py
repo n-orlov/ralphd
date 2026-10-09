@@ -654,8 +654,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # #300 B.1 (review empty_reply retry): +7 tests in
     # tests/test_review_truncation_retry.py -> fast 7607/506, smoke 5881/382.
     # cure-01-01-2: +3 docs tests in tests/test_docs_semantics.py -> fast 7617.
-    "fast": {"tests": 7617, "modules": 507},
-    "smoke": {"tests": 5885, "modules": 383},
+    # v0.33 task 001 (codex registration): +15 tests / +1 module
+    # (tests/test_codex_harness_registration.py), measured `-m fast
+    # --collect-only` -> fast 7632, `-m smoke --collect-only` -> smoke 5900.
+    "fast": {"tests": 7632, "modules": 508},
+    "smoke": {"tests": 5900, "modules": 384},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

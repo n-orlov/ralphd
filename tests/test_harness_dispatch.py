@@ -50,7 +50,9 @@ def _sup(tmp_path, **cfg):
 
 
 def test_harness_constants():
-    assert HARNESSES == ("pi", "claude-code")
+    # codex is the third harness; its exact tuple is pinned by
+    # tests/test_codex_harness_registration.py::test_codex_is_the_third_harness.
+    assert HARNESSES == ("pi", "claude-code", "codex")
     assert DEFAULT_HARNESS == "pi"
     assert HatBundle().harness == "pi"
 

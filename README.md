@@ -121,7 +121,7 @@ operator ruling (`ralphctl rule`, or `unpause`). See
   and `router`. Override with `--model-for HAT=REF` and
   `--model-for-tier HAT:TIER=REF` (tiers `trivial|normal|hard`).
 - **Harnesses.** `pi` is the default; `claude-code` drives the Claude Code SDK and
-  always bills as a subscription. Choose per hat with `--harness-for HAT=NAME` or a
+  always bills as a subscription; `codex` runs an OpenAI-family hat on the Codex CLI. Choose per hat with `--harness-for HAT=NAME` or a
   profile's `harness:`.
 - **Payer and basis.** `--billing-payer TEXT` and `--billing-basis
   metered|subscription|chargeback|free` override the profile's `billing:` block for

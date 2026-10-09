@@ -350,9 +350,9 @@ MODEL_HATS: tuple[str, ...] = (
 
 # The agent harnesses a hat can run on. `pi` is the default and the only one
 # every hat has always used; `claude-code` runs the hat on the Claude Code
-# CLI. A hat's harness is resolved by `JobConfig.harness_for` and carried on
+# CLI; `codex` runs an OpenAI-family hat on the Codex CLI. A hat's harness is resolved by `JobConfig.harness_for` and carried on
 # its `HatBundle`.
-HARNESSES: tuple[str, ...] = ("pi", "claude-code")
+HARNESSES: tuple[str, ...] = ("pi", "claude-code", "codex")
 DEFAULT_HARNESS = "pi"
 # The harness that reports rate-limit state (v0.30 F): only its hats wait
 # on a rate limit or are preempted near one.

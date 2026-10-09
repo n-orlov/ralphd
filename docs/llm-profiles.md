@@ -19,7 +19,7 @@ fast_model: provider/cheap-model-id # profile's own second model ref (task 006:
                                     # job.yaml)
 price_strategy: aws                 # optional: none|aws — built-in rate table for
                                     # routes this gateway does not price itself
-harness: pi                         # optional: pi|claude-code — agent harness for every
+harness: pi                         # optional: pi|claude-code|codex — agent harness for every
                                     # hat (default pi; see "Claude subscription" below)
 billing:                            # optional (#298): who pays for this profile's tokens
   payer: My gateway                 # free-text label [default: the profile name]

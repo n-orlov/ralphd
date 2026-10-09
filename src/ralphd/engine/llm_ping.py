@@ -31,7 +31,7 @@ from pathlib import Path
 from .config import DEFAULT_HARNESS, HARNESSES
 from .faults import explain_fault
 from .redact import refresh_redaction_map, scrub_text
-from .runner import ClaudeCodeRunner, IterationResult, PiRunner
+from .runner import ClaudeCodeRunner, CodexRunner, IterationResult, PiRunner
 from .state import billable_tokens
 
 PING_PROMPT = "Reply with exactly the single word: ok"
@@ -48,6 +48,8 @@ def build_runner(harness: str, workspace: Path):
     """The runner an iteration on `harness` uses, over `workspace`."""
     if harness == "claude-code":
         return ClaudeCodeRunner(workspace)
+    if harness == "codex":
+        return CodexRunner(workspace)
     return PiRunner(workspace)
 
 

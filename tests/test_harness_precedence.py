@@ -111,16 +111,16 @@ def test_flag_beats_template(ctl):
 
 
 def test_unknown_profile_harness_is_a_profile_error_at_start(ctl, tmp_path):
-    _profile(ctl, harness="codex", name="bad")
+    _profile(ctl, harness="nonsense", name="bad")
     res = _start(ctl, "tst-h-badprof", llm="bad")
     assert res.returncode == 2
-    assert "bad" in res.stderr and "codex" in res.stderr
-    assert "pi|claude-code" in res.stderr
+    assert "bad" in res.stderr and "nonsense" in res.stderr
+    assert "pi|claude-code|codex" in res.stderr
     with pytest.raises(llm_profiles.ProfileError):
         llm_profiles.resolve_profile("bad", ctl.registry)
 
 
-@pytest.mark.parametrize("spec", ["nohat=pi", "worker=codex", "worker", "=pi", "worker="])
+@pytest.mark.parametrize("spec", ["nohat=pi", "worker=nonsense", "worker", "=pi", "worker="])
 def test_bad_harness_for_exits_2(ctl, spec):
     res = _start(ctl, "tst-h-badflag", "--harness-for", spec)
     assert res.returncode == 2, res.stderr
@@ -128,10 +128,10 @@ def test_bad_harness_for_exits_2(ctl, spec):
 
 
 def test_unknown_registry_or_template_entry_exits_2(ctl):
-    _registry_harnesses(ctl, {"worker": "codex"})
+    _registry_harnesses(ctl, {"worker": "nonsense"})
     res = _start(ctl, "tst-h-badreg")
     assert res.returncode == 2
-    assert "codex" in res.stderr
+    assert "nonsense" in res.stderr
 
 
 def test_resume_replays_harnesses_unchanged(ctl):
@@ -167,4 +167,6 @@ def test_provisioning_lines_name_each_hats_harness(ctl):
 
 
 def test_harnesses_constant():
-    assert HARNESSES == ("pi", "claude-code")
+    # codex joined in v0.33; tests/test_codex_harness_registration.py::
+    # test_codex_is_the_third_harness covers the full tuple.
+    assert HARNESSES == ("pi", "claude-code", "codex")

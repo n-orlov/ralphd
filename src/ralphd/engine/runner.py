@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.util
 import json
 import logging
 import os
@@ -161,7 +162,7 @@ class IterationResult:
     rate_limit_fresh: bool = False
     http_status: int | None = None
     error_type: str | None = None
-    # The harness that ran the iteration: `pi` or `claude-code`.
+    # The harness that ran the iteration: `pi`, `claude-code` or `codex`.
     harness: str = "pi"
     # True when the iteration's FINAL assistant message ended `stopReason:
     # "length"` (the provider cut the reply off at its output-token cap) and
@@ -1040,3 +1041,58 @@ def _accumulate_cost(usage: dict, result: IterationResult,
         result.usage["costDerivedUSD"] = round(
             result.usage.get("costDerivedUSD", 0.0) + derived, 6)
         result.usage.setdefault("costDerived", True)
+
+
+# The wrapper module `CodexRunner` spawns, and the in-band signature of the
+# refusal to start an iteration before the wrapper exists.
+CODEX_WRAPPER_MODULE = "ralphd.harness.codex"
+CODEX_WRAPPER_MISSING = "codex_wrapper_unavailable"
+
+
+class CodexRunner(_ChildProcessRunner):
+    """Runs one iteration on the Codex CLI, through the shared child path.
+
+    The runner is registered in `LoopSupervisor._runners` under `"codex"` and
+    takes the hat's tool names as `hat_tools` (not pi `extensions`), exactly
+    like `ClaudeCodeRunner`. It never imports the Claude Agent SDK. Its
+    wrapper (`ralphd.harness.codex`) is the child it spawns; while that
+    module is absent the call ends in-band with `CODEX_WRAPPER_MISSING`
+    instead of raising, so the loop records an ordinary failed iteration.
+    """
+
+    harness = "codex"
+
+    def __init__(self, workspace: Path, python_bin: str = sys.executable, *,
+                 run=None, config_dir=None,
+                 home_fn: Callable[[], Path] | None = None,
+                 pricing: PricingSource | None = None):
+        super().__init__(workspace, pricing=pricing)
+        self.python_bin = python_bin
+        self._run_dir = run
+        self._config_dir = config_dir
+        self._home_fn = home_fn
+
+    async def run(
+        self,
+        prompt: str,
+        transcript: Path,
+        model: str | None = None,
+        thinking: str | None = None,
+        effort: str | None = None,
+        timeout_s: int = 2700,
+        extra_env: dict | None = None,
+        startup_timeout_s: float | None = None,
+        extensions: list[str] | None = None,
+        hat_tools: list | None = None,
+    ) -> IterationResult:
+        result = IterationResult(harness=self.harness)
+        if importlib.util.find_spec(CODEX_WRAPPER_MODULE) is None:
+            result.error_message = (
+                f"{CODEX_WRAPPER_MISSING}: the {CODEX_WRAPPER_MODULE} wrapper "
+                "is not installed in this engine")
+            return result
+        cmd = [self.python_bin, "-m", CODEX_WRAPPER_MODULE]
+        env = self._child_env(extra_env)
+        return await self._run_child(cmd, env, prompt, transcript, result,
+                                     timeout_s, startup_timeout_s,
+                                     model=model)

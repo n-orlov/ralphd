@@ -1889,8 +1889,8 @@ The supervisor runs every hat invocation through one interface,
 `runner.AgentRunner`: an async `run(prompt, transcript, *, model, thinking,
 effort, timeout_s, extra_env, startup_timeout_s, extensions, hat_tools)` that
 returns an `IterationResult`, a `running` property, and `interrupt()`, which
-SIGINTs the iteration in flight. There are two implementations: `PiRunner`
-for the `pi` harness and `ClaudeCodeRunner` for `claude-code`
+SIGINTs the iteration in flight. There are three implementations: `PiRunner`
+for the `pi` harness, `ClaudeCodeRunner` for `claude-code` and `CodexRunner` for `codex`
 (`LoopSupervisor._runners`).
 
 Every runner spawns its agent through one shared child-process path,

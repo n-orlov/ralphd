@@ -58,7 +58,7 @@ invocation; it does not imply concurrent workers.
 | Bounded recovery | Separate handling for infrastructure outages, work failures, signal interruptions, malformed responses, lack of progress, provider refusals and, on `claude-code` hats, subscription rate-limit windows. An exhausted job deadline or iteration budget holds the run in the resumable `timed_out` state instead of failing it. |
 | Task deferral | A worker can defer a task to a later time (`deferredUntil`); repeated CI-wait re-polls back off in wall-clock time instead of spending iterations. The operator can release a deferred task early. |
 | Operator intervention | Durable steering, rulings (`ralphctl rule`), amendments, interrupt, pause/unpause, `operator_input_needed` escalation pauses (on by default), budget changes, retry-now, undefer, and abort. |
-| Provider flexibility | pi-supported providers, named LLM profiles, custom endpoints/headers, a per-hat harness (`pi` or `claude-code`), and model/thinking selection by role and difficulty tier. |
+| Provider flexibility | pi-supported providers, named LLM profiles, custom endpoints/headers, a per-hat harness (`pi`, `claude-code` or `codex`), and model/thinking selection by role and difficulty tier. |
 | Cost attribution | Per-iteration usage with provider, derived (host `pricing:` map or built-in Bedrock table) or unknown cost, grouped by phase, approach, tier and, for runs started with a `billing:` block, by payer and billing basis (metered, subscription, chargeback, free). |
 | Runtime provisioning | Inject and update skills, credentials, prompts, and LLM configuration; `ralphctl llm test --hats` pings every hat's route through the real runner before launch. |
 | Harness-owned state | The authoritative `tasks.json`, the control credential and the petition key store live where an iteration cannot replace them; the engine keeps root as its real and saved uid so an iteration, dropped fully to the agent uid, cannot signal it; the commits each worker iteration creates are scanned for known secret values at the task boundary (`commit_secret_scan`, on by default), and when `workspace_push_remote` hands the push to the engine it pushes only a clean range. |
@@ -418,7 +418,7 @@ Role prompts live in [`src/ralphd/prompts`](../src/ralphd/prompts). They specify
 JSON object on the final nonblank response line. The engine validates that object
 against `transitions.HAT_SCHEMAS` and applies additional semantic checks. Schema
 validation establishes response shape. Verification and review establish whether
-the work satisfies the PRD. A hat runs on the `pi` harness or the `claude-code`
+the work satisfies the PRD. A hat runs on the `pi`, `claude-code` or `codex`
 harness (`JobConfig.harness_for`). The contract is the same either way.
 
 | Hat | Main output | Harness action |
@@ -1108,10 +1108,11 @@ failure moves the task's effective tier up one rung, capped at `hard`.
 | Router and contract repair | Untiered: the router uses `router_model`, then `models.router`, then the worker's `trivial` rung, then `model`; a contract re-ask uses the failing hat's own model. |
 
 A bundle carries a model, a thinking level or an OpenAI-style effort (never
-both), and a harness. The harness (`pi` or `claude-code`) is chosen per hat, is
+both), and a harness. The harness (`pi`, `claude-code` or `codex`) is chosen per hat, is
 shared by all of that hat's tiers, and selects one runner per harness
-(`PiRunner` or `ClaudeCodeRunner` in
-[`runner.py`](../src/ralphd/engine/runner.py)).
+(`PiRunner`, `ClaudeCodeRunner` or `CodexRunner` in
+[`runner.py`](../src/ralphd/engine/runner.py)). A `codex` hat is served
+OpenAI-family models only; the start-time route check refuses any other.
 
 ```mermaid
 flowchart LR

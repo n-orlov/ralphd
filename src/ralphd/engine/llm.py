@@ -154,7 +154,7 @@ def check_hat_routes(cfg, *, home: Path,
     same refusal as `provider_keys()` itself (a caller that omits it gets
     a `TypeError` before `provider_keys()` ever reads a filesystem path).
     """
-    from .config import MODEL_HATS
+    from .config import MODEL_HATS, _model_family
     available = provider_keys(home=home)
     builtin = set(builtin_providers)
     # With nothing declared (no models.json providers, no builtins) the pi
@@ -174,6 +174,14 @@ def check_hat_routes(cfg, *, home: Path,
                     f"configured with model {ref!r}, whose provider "
                     f"{key!r} is not 'anthropic'; the claude-code harness "
                     f"only serves anthropic models")
+            return
+        if cfg.harness_for(hat) == "codex":
+            if _model_family(ref) != "openai":
+                raise UnroutableHatModel(
+                    f"{where} runs on the codex harness but is "
+                    f"configured with model {ref!r}, whose provider "
+                    f"{key!r} is not an OpenAI-family route; the codex "
+                    f"harness only serves OpenAI-family models")
             return
         if pi_checked and key not in routable:
             raise UnroutableHatModel(

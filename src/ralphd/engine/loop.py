@@ -73,6 +73,7 @@ from .pricing import resolve_pricing
 from .runner import (
     AgentRunner,
     ClaudeCodeRunner,
+    CodexRunner,
     IterationResult,
     PiRunner,
     last_nonblank_line,
@@ -336,6 +337,9 @@ class LoopSupervisor:
         self._runners: dict[str, AgentRunner] = {
             "pi": self.runner,
             "claude-code": ClaudeCodeRunner(
+                workspace, run=run, config_dir=lambda: CONFIG_DIR,
+                home_fn=ambient_home),
+            "codex": CodexRunner(
                 workspace, run=run, config_dir=lambda: CONFIG_DIR,
                 home_fn=ambient_home),
         }
@@ -3589,9 +3593,10 @@ class LoopSupervisor:
             # phase. Passed only when non-empty so every other phase's
             # runner call is byte-for-byte what it always was.
             extension_kw = {}
-            if bundle.harness == "claude-code":
+            if bundle.harness in ("claude-code", "codex"):
                 # The same live broker, handed over as tool names: the
-                # claude-code wrapper serves them as in-process SDK tools.
+                # claude-code wrapper serves them as in-process SDK tools,
+                # the codex wrapper through its stdio MCP relay.
                 if names := self._hat_tool_names(phase):
                     extension_kw["hat_tools"] = list(names)
             elif exts := self._hat_extensions(phase):
