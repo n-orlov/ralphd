@@ -37,10 +37,14 @@ verified gaps between intended protection and actual enforcement.
 ralphd runs one coding job per Docker container. A Python supervisor repeatedly
 launches a fresh agent process under a role-specific prompt, interprets its
 structured response, applies task and phase transitions, and records the result.
-Each role (a "hat") runs on one of two agent harnesses: `pi` (the default) or
-`claude-code`, which drives the Claude Code CLI through the Python Agent SDK
-([`harness/claude_code.py`](../src/ralphd/harness/claude_code.py)). Both feed the
-engine the same pi-shaped NDJSON event stream. The LLM performs planning,
+Each role (a "hat") runs on one of three agent harnesses (`config.HARNESSES`):
+`pi` (the default); `claude-code`, which drives the Claude Code CLI through the
+Python Agent SDK ([`harness/claude_code.py`](../src/ralphd/harness/claude_code.py));
+or `codex`, served OpenAI-family models only and dispatched to `CodexRunner`
+([`runner.py`](../src/ralphd/engine/runner.py)), whose child is the codex
+wrapper module; an engine without that module ends a `codex` iteration in-band
+with `codex_wrapper_unavailable` rather than raising. Every
+harness feeds the engine the same pi-shaped NDJSON event stream. The LLM performs planning,
 implementation, and judgment. The harness controls scheduling, budgets, retries,
 state updates, and the decision to publish an outcome.
 

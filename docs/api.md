@@ -1262,7 +1262,7 @@ can answer before that spend happens. Same `start`-time-only shape as
 
 `model.overrides` (`model_overrides:`/`models:` in `job.yaml`) is the per-hat
 model table keyed by `planning`/`worker`/`review`/`verify`/`reflect`/`router`
-(`MODEL_HATS`); `model.harnesses` (`harnesses:`) is the agent harness each hat in `MODEL_HATS` runs on (`pi` or `claude-code`); `model.thinking` is every hat's default `pi --thinking`
+(`MODEL_HATS`); `model.harnesses` (`harnesses:`) is the agent harness each hat in `MODEL_HATS` runs on (`pi`, `claude-code` or `codex`); `model.thinking` is every hat's default `pi --thinking`
 level and `model.thinkingOverrides` (`thinking_overrides:`) is the same
 per-hat table for thinking/reasoning settings — task 007's own field, kept
 separate from `model.overrides` because a model ref and its thinking setting
