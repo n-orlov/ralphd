@@ -65,6 +65,7 @@ from claude_agent_sdk import (
     tool as sdk_tool,
 )
 
+from ..cli.versions import compare_versions
 from ..engine import hat_tools as hat_tools_mod
 from ..engine.config import CLAUDE_CODE_MIN_VERSION
 from .normalise import RAW_ENVELOPE_TYPE, Normaliser
@@ -145,9 +146,12 @@ def scrub_environ(env: Any) -> list[str]:
     return sorted(removed)
 
 
-def parse_version(text: str | None) -> tuple[int, int, int] | None:
+def read_version(text: str | None) -> str | None:
+    """The leading `x.y.z` of `<cli> -v`'s output (`2.1.280 (Claude Code)` ->
+    `2.1.280`), or None. Extraction only: comparison is
+    `ralphd.cli.versions.compare_versions`."""
     m = _VERSION_RE.match(text or "")
-    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+    return f"{int(m[1])}.{int(m[2])}.{int(m[3])}" if m else None
 
 
 def bundled_cli_path() -> str:
@@ -166,12 +170,13 @@ def cli_version(cli: str) -> str | None:
                              timeout=30, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
-    v = parse_version(out.stdout)
-    return ".".join(map(str, v)) if v else None
+    return read_version(out.stdout)
 
 
 def version_gate(cli: str, version: str | None) -> dict | None:
-    """None when `version` meets the minimum, else the in-band error."""
+    """None when `version` meets the minimum, else the in-band error. The
+    comparison is `ralphd.cli.versions.compare_versions`, the helper the
+    `codex` gate shares; a version it cannot parse is refused."""
     if version is None:
         if not os.path.exists(cli):
             return {"type": CLI_NOT_FOUND,
@@ -179,7 +184,7 @@ def version_gate(cli: str, version: str | None) -> dict | None:
         return {"type": VERSION_TOO_OLD,
                 "message": f"could not read the Claude Code version from {cli} -v; "
                            f"ralphd needs {CLAUDE_CODE_MIN_VERSION} or later"}
-    if parse_version(version) < parse_version(CLAUDE_CODE_MIN_VERSION):
+    if compare_versions(version, CLAUDE_CODE_MIN_VERSION) in (-1, None):
         return {"type": VERSION_TOO_OLD,
                 "message": f"Claude Code {version} at {cli} is older than "
                            f"{CLAUDE_CODE_MIN_VERSION}, the minimum ralphd runs"}

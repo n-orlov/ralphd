@@ -683,9 +683,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 008: +23 tests (tests/test_codex_runner.py, +2 in
     # tests/test_fault_classifier.py) and no new module, measured `-m fast
     # --collect-only` -> fast 7817/512, `-m smoke --collect-only` -> smoke
-    # 6082/388.
-    "fast": {"tests": 7817, "modules": 512},
-    "smoke": {"tests": 6082, "modules": 388},
+    # 6082/388. Task 008 retry: +2 tests (both harness gates share
+    # compare_versions), measured `-m fast --collect-only` -> fast 7819/512,
+    # `-m smoke --collect-only` -> smoke 6084/388.
+    "fast": {"tests": 7819, "modules": 512},
+    "smoke": {"tests": 6084, "modules": 388},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

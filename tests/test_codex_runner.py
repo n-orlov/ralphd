@@ -439,6 +439,32 @@ def test_the_gate_uses_the_shared_comparison_helper():
     assert "def compare_versions" not in src
 
 
+def _gate_calls(module_file: Path) -> tuple[set[str], set[str], set[str]]:
+    """(names `version_gate` calls, names imported from `ralphd.cli.versions`,
+    functions the module defines), read from source so the SDK-importing
+    claude-code wrapper is never imported here."""
+    import ast
+    tree = ast.parse(module_file.read_text())
+    imported = {a.asname or a.name for n in ast.walk(tree)
+                if isinstance(n, ast.ImportFrom) and (n.module or "").endswith("cli.versions")
+                for a in n.names}
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    gate = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "version_gate")
+    called = {n.func.id for n in ast.walk(gate)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    return called, imported, defined
+
+
+@pytest.mark.parametrize("module", ["codex.py", "claude_code.py"])
+def test_both_harness_gates_compare_with_the_one_shared_helper(module):
+    called, imported, defined = _gate_calls(REPO / "src" / "ralphd" / "harness" / module)
+    assert "compare_versions" in imported
+    assert "compare_versions" in called
+    assert "parse_version" not in called
+    assert not {"parse_version", "compare_versions"} & defined
+
+
 # -- (4) the child path: agent uid and the startup watchdog (B.3) --------------
 
 def test_the_wrapper_runs_as_the_agent_uid_privsep_selects(tmp_path, monkeypatch):

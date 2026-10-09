@@ -1965,7 +1965,7 @@ unchanged, so a `pi` child keeps every one of these variables and a profile
 that carries a gateway for its pi hats (`aigw-claude`) keeps working. The
 wrapper logs the removed names, never values, to `stderr.log`. The SDK then sets `CLAUDE_CODE_ENTRYPOINT=sdk-py` itself. It runs
 `<cli> -v` and stops with an in-band `claude_code_version_too_old` error below
-`config.CLAUDE_CODE_MIN_VERSION` (`claude_code_cli_not_found` when there is no
+`config.CLAUDE_CODE_MIN_VERSION` (compared with `ralphd.cli.versions.compare_versions`) (`claude_code_cli_not_found` when there is no
 CLI). The CLI is `$RALPHD_CLAUDE_CLI_PATH`, else the SDK's bundled binary. Then
 it calls `query()` with:
 
@@ -2119,7 +2119,7 @@ that says to use an OpenAI-gateway LLM profile.
 Before it starts a turn the wrapper runs `<cli> --version` (the CLI is
 `$RALPHD_CODEX_CLI_PATH`, else `codex` on `PATH`) and compares the version to
 `config.CODEX_MIN_VERSION` with `ralphd.cli.versions.compare_versions`, the one
-comparison helper (no parser of its own). Below the minimum, or with no readable
+comparison helper the `claude-code` gate also uses (no parser of its own). Below the minimum, or with no readable
 version, it ends in-band with `codex_version_too_old`; with no binary,
 `codex_cli_not_found`. `engine/faults.py` classifies them as the `codex-version`
 and `codex-cli-missing` refusal families, like `cc-version` and `cc-cli-missing`.

@@ -975,7 +975,8 @@ line it writes.
   and normalises its events into pi events. Its `IterationResult.harness` is
   `codex`. It first runs `<cli> --version` (`$RALPHD_CODEX_CLI_PATH`, else
   `codex` on `PATH`) and compares it to `CODEX_MIN_VERSION` with
-  `ralphd.cli.versions.compare_versions`; a CLI below the minimum ends the
+  `ralphd.cli.versions.compare_versions`, the helper the `claude-code` gate
+  also uses; a CLI below the minimum ends the
   iteration in-band as `codex_version_too_old` and a missing one as
   `codex_cli_not_found`, both classified `refused`.
 
@@ -1178,7 +1179,7 @@ runs the iteration through the Python Agent SDK as a child of the same spawn pat
 as pi, with the agent uid and the agent's real `HOME`. It scrubs gateway and
 cloud routing variables so the CLI always uses `CLAUDE_CODE_OAUTH_TOKEN`, isolates
 `CLAUDE_CONFIG_DIR`, disables the CLI's bundled skills, refuses a CLI below
-`CLAUDE_CODE_MIN_VERSION`, and maps the hat's thinking level through
+`CLAUDE_CODE_MIN_VERSION` (compared with `ralphd.cli.versions.compare_versions`), and maps the hat's thinking level through
 `EFFORT_TABLE`. Its output is normalised into pi events, so the transcript,
 watchdog and contract machinery are shared. Hat tools reach it as in-process MCP
 tools (`mcp__ralphd__<name>`) over the same engine spool as pi's extension. A

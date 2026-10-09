@@ -177,7 +177,7 @@ def cli_version(cli: str) -> str | None:
 def version_gate(cli: str, version: str | None) -> dict | None:
     """None when `version` meets `CODEX_MIN_VERSION`, else the in-band error.
     The comparison is `ralphd.cli.versions.compare_versions`, the helper the
-    claude-code gate's operator surfaces share."""
+    claude-code gate shares; a version it cannot parse is refused."""
     if version is None:
         if not (os.path.isfile(cli) or shutil.which(cli)):
             return {"type": CLI_NOT_FOUND,
@@ -185,7 +185,7 @@ def version_gate(cli: str, version: str | None) -> dict | None:
         return {"type": VERSION_TOO_OLD,
                 "message": f"could not read the Codex version from {cli} --version; "
                            f"ralphd needs {CODEX_MIN_VERSION} or later"}
-    if compare_versions(version, CODEX_MIN_VERSION) == -1:
+    if compare_versions(version, CODEX_MIN_VERSION) in (-1, None):
         return {"type": VERSION_TOO_OLD,
                 "message": f"Codex {version} at {cli} is older than "
                            f"{CODEX_MIN_VERSION}, the minimum ralphd runs"}
