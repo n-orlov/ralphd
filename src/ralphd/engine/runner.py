@@ -1192,7 +1192,14 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
     def _after_child(self, pgid: int, result: IterationResult) -> None:
         """When the ladder or an interrupt ended the iteration, SIGKILL
         whatever is left of the wrapper's process group (the wrapper can exit
-        before the `codex` it started does)."""
+        before the `codex` it started does).
+
+        An `iteration_timeout_s` kill (`timed_out`) also discards the reply
+        text: a completion claim the agent streamed before the cap (a
+        `verdict` line or the whole-plan marker) belongs to an iteration that
+        never finished, so the engine never reads it. Workspace edits stay."""
+        if result.timed_out:
+            result.final_text = ""
         if not (result.timed_out or result.no_traffic_timeout or result.interrupted):
             return
         with contextlib.suppress(ProcessLookupError, PermissionError):

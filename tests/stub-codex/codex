@@ -45,6 +45,9 @@ STUB_CODEX_CHILD_PIDFILE  hang scenarios spawn a sleeping child in the same
                           process group and write its pid here.
 STUB_CODEX_WRITE_FILE     hang scenarios write this file (relative to cwd) before
                           sleeping (shows a cap kill keeps workspace edits).
+STUB_CODEX_HANG_CLAIM     set (non-empty) to make hang scenarios emit an
+                          agent_message carrying STUB_CODEX_TEXT (a completion
+                          claim) before sleeping (shows a cap kill discards it).
 STUB_RUN_DIR              directory used for the default observation file.
 """
 import json
@@ -154,6 +157,8 @@ def hang(ignore_sigint):
         started()
         emit({"type": "item.completed",
               "item": {"id": item_id(), "type": "reasoning", "text": "working"}})
+        if E("STUB_CODEX_HANG_CLAIM"):
+            message(TEXT)
     while True:
         time.sleep(1)
 

@@ -2149,9 +2149,12 @@ Success is `turn.completed` **and** exit 0. Exit 0 with no `turn.completed`
 (what SIGTERM produces) ends as an error `message_end` whose message names the
 missing `turn.completed` event; a non-zero exit with no `turn.failed` ends as an
 error carrying the last line of `codex`'s stderr. An `iteration_timeout_s` kill
-keeps the workspace edits and leaves no completion claim.
+keeps the workspace edits and leaves no completion claim: `CodexRunner._after_child`
+empties the result's reply text, so a `verdict` line or plan marker streamed
+before the cap is never read.
 
-`CodexRunner` takes the run's resolved `pricing` source and prices each
+`LoopSupervisor` builds `CodexRunner` with the run's resolved `pricing` source,
+the same object it hands `PiRunner`, and the runner prices each
 `message_end` that billed tokens, since `codex` quotes no cost: a rate in the
 operator's `pricing:` map gives `costUSD`; a rate only a built-in table has is
 derived through `PricingSource.derive` (`costDerivedUSD`), the path pi's

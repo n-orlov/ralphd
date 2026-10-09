@@ -2838,10 +2838,12 @@ exits 130 regardless, so no child of `codex` outlives the iteration. After a
 timeout, a no-traffic timeout or an interrupt `CodexRunner` also SIGKILLs
 whatever is left of the wrapper's group. An `iteration_timeout_s` kill keeps
 every file the agent wrote in the workspace and leaves no completion claim: the
-result is `timed_out`, its exit code is not 0 and no `turn.completed` exists.
+result is `timed_out`, its exit code is not 0, and `CodexRunner` discards the
+reply text, so a `verdict` line or the whole-plan marker the agent streamed
+before the cap is never read by the engine.
 
-`codex` quotes no price, so `CodexRunner` (built with the run's resolved
-`pricing` source) prices each `message_end` that billed tokens. A model with a
+`codex` quotes no price, so `CodexRunner` (which the engine builds with the run's
+resolved `pricing` source, the same one `PiRunner` gets) prices each `message_end` that billed tokens. A model with a
 rate in the operator's `pricing:` map gets `costUSD` (`costPriced: true`); a model
 only a built-in table in the `PricingChain` knows is priced by the same
 `PricingSource.derive` that prices pi's unpriced calls, into `costDerivedUSD`

@@ -279,6 +279,6 @@ event stream of the scenario `$STUB_CODEX_SCENARIO` selects: `text` (default),
 (prints `$AWS_BEARER_TOKEN_BEDROCK` on stdout and stderr). The other knobs
 (`STUB_CODEX_TEXT`, `STUB_CODEX_USAGE`, `STUB_CODEX_SILENT`,
 `STUB_CODEX_SLEEP_BEFORE`, `STUB_CODEX_CHILD_PIDFILE`, `STUB_CODEX_WRITE_FILE`,
-`STUB_RUN_DIR`) are documented in the script's module docstring, and
+`STUB_CODEX_HANG_CLAIM`, `STUB_RUN_DIR`) are documented in the script's module docstring, and
 `tests/test_stub_codex.py` covers each scenario and the observation file. The
 stub touches no network and needs no credential.

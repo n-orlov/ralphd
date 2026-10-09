@@ -797,10 +797,16 @@ def test_no_pricing_source_leaves_the_cost_unknown_not_zero(tmp_path, monkeypatc
 
 # -- the iteration_timeout_s cap kill ---------------------------------------------
 
+_CLAIM_TEXT = 'done\n<promise>COMPLETE</promise>\n{"verdict": "complete", "task_id": "001"}'
+
+
 def test_a_cap_kill_keeps_the_workspace_edit_and_discards_the_completion_claim(
         tmp_path, monkeypatch):
     pidfile = tmp_path / "child.pid"
+    # the stub streams a full completion claim (a verdict line AND the
+    # whole-plan marker), then hangs until the cap kills it
     observe = _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="hang",
+                     STUB_CODEX_HANG_CLAIM="1", STUB_CODEX_TEXT=_CLAIM_TEXT,
                      STUB_CODEX_WRITE_FILE="edit.txt",
                      STUB_CODEX_CHILD_PIDFILE=str(pidfile))
     monkeypatch.setattr(runner_mod, "SHUTDOWN_GRACE_S", 0.5)
@@ -808,12 +814,65 @@ def test_a_cap_kill_keeps_the_workspace_edit_and_discards_the_completion_claim(
     result, _, itdir = _run(tmp_path, timeout_s=4)
     assert result.timed_out
     assert time.monotonic() - t0 < 40
+    # the claim really reached the engine before the cap: both streams carry it
+    raw = (itdir / "output.codex.jsonl").read_text()
+    assert '"agent_message"' in raw and "<promise>COMPLETE</promise>" in raw
+    assert "turn.completed" not in raw
+    transcript = (itdir / "output.jsonl").read_text()
+    assert '\\"verdict\\": \\"complete\\"' in transcript
     # the edit the agent made before the cap stays in the workspace
     assert (tmp_path / "ws" / "edit.txt").read_text().startswith("written by stub-codex")
-    # no completion claim survives: no promise text, no clean exit, no terminal event
-    assert "<promise>COMPLETE</promise>" not in (result.final_text or "")
+    # ...and the claim is discarded: the engine reads the worker verdict from
+    # the last line of `final_text` and the plan marker from `final_text`
+    assert result.final_text == ""
+    assert "<promise>COMPLETE</promise>" not in result.final_text
+    assert runner_mod.last_nonblank_line(result.final_text) == ""
     assert result.exit_code != 0
-    raw = (itdir / "output.codex.jsonl").read_text()
-    assert "turn.completed" not in raw
     assert _gone(json.loads(observe.read_text())["pid"])
     assert _gone(int(pidfile.read_text()))
+
+
+def test_a_claim_on_a_finished_turn_is_kept(tmp_path, monkeypatch):
+    # the discard is the cap's alone: the same text on a completed turn stands
+    _setup(monkeypatch, tmp_path, STUB_CODEX_TEXT=_CLAIM_TEXT)
+    result, _, _ = _run(tmp_path)
+    assert not result.timed_out and result.exit_code == 0
+    assert json.loads(runner_mod.last_nonblank_line(result.final_text))["verdict"] == "complete"
+
+
+# -- the live loop builds CodexRunner with the resolved pricing source ------------
+
+def _supervisor(tmp_path, **cfg):
+    from ralphd.engine.loop import LoopSupervisor
+    from ralphd.engine.state import RunDir
+    return LoopSupervisor(JobConfig(run_id="unit", infra_retry_backoff_s=[0.0],
+                                    infra_retry_backoff_max_s=0.0, **cfg),
+                          RunDir(root=tmp_path / "run"), tmp_path / "ws")
+
+
+def test_the_supervisor_hands_codex_the_same_pricing_source_as_pi(tmp_path):
+    sup = _supervisor(tmp_path, pricing={"models": {MODEL_REF: {"input": 2.0}}})
+    codex = sup._runner_for("codex")
+    assert isinstance(codex, CodexRunner)
+    assert codex.pricing is not None
+    assert codex.pricing is sup.runner.pricing
+    aws = _supervisor(tmp_path, price_strategy="aws")
+    assert isinstance(aws._runner_for("codex").pricing, PricingChain)
+    assert aws._runner_for("codex").pricing is aws.runner.pricing
+    assert _supervisor(tmp_path)._runner_for("codex").pricing is None
+
+
+def test_the_supervisor_codex_runner_prices_a_live_call_from_the_operator_map(
+        tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    (tmp_path / "ws").mkdir(exist_ok=True)
+    (tmp_path / "it").mkdir()
+    sup = _supervisor(tmp_path, pricing={"models": {
+        MODEL_REF: {"input": 2.0, "output": 8.0, "cacheRead": 0.5}}})
+    codex = sup._runner_for("codex")
+    result = asyncio.run(codex.run("p", tmp_path / "it" / "output.jsonl",
+                                   model=MODEL_REF, timeout_s=60))
+    assert not result.error_message and result.exit_code == 0
+    assert result.usage["costUSD"] == pytest.approx(0.0026)
+    assert result.usage["costPriced"] is True
+    assert result.usage["costBasis"] == "metered"

@@ -265,6 +265,22 @@ def test_hang_writes_marker_file_and_can_be_silent(tmp_path):
             proc.kill()
 
 
+def test_hang_can_stream_a_completion_claim_before_sleeping(tmp_path):
+    proc = _spawn_hang(tmp_path, "hang", {"STUB_CODEX_HANG_CLAIM": "1",
+                                          "STUB_CODEX_TEXT": "claimed <promise>COMPLETE</promise>"})
+    try:
+        events = [json.loads(proc.stdout.readline()) for _ in range(4)]
+        assert [e["type"] for e in events] == [
+            "thread.started", "turn.started", "item.completed", "item.completed"]
+        assert events[-1]["item"] == {"id": events[-1]["item"]["id"], "type": "agent_message",
+                                      "text": "claimed <promise>COMPLETE</promise>"}
+        time.sleep(0.3)
+        assert proc.poll() is None  # still hanging: no terminal event follows
+    finally:
+        proc.kill()
+        proc.wait()
+
+
 def test_ignore_sigint_survives_sigint_until_killed(tmp_path):
     proc = _spawn_hang(tmp_path, "ignore_sigint")
     try:

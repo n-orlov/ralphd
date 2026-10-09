@@ -689,8 +689,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 009 (codex B.4): +13 tests / +0 modules (tests/test_codex_runner.py,
     # tests/test_codex_normaliser.py), measured `-m fast --collect-only` ->
     # fast 7832/512, `-m smoke --collect-only` -> smoke 6097/388.
-    "fast": {"tests": 7832, "modules": 512},
-    "smoke": {"tests": 6097, "modules": 388},
+    # Task 009 retry: +4 tests / +0 modules (cap-kill claim discard, live
+    # codex pricing wiring, stub claim knob), measured `-m fast
+    # --collect-only` -> fast 7836/512, `-m smoke --collect-only` -> smoke
+    # 6101/388.
+    "fast": {"tests": 7836, "modules": 512},
+    "smoke": {"tests": 6101, "modules": 388},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

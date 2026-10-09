@@ -326,9 +326,8 @@ class LoopSupervisor:
         # Task 011 (#14): `resolve_pricing` also layers the built-in AWS
         # Bedrock table behind it when `price_strategy: aws`; with the default
         # `none` it returns exactly the operator map (or None) as before.
-        self.runner = PiRunner(workspace,
-                               pricing=resolve_pricing(cfg.pricing,
-                                                       cfg.price_strategy))
+        pricing = resolve_pricing(cfg.pricing, cfg.price_strategy)
+        self.runner = PiRunner(workspace, pricing=pricing)
         # One runner per harness. A test that assigns a double to
         # `self.runner` overrides every harness (`_runner_for`). The
         # claude-code runner links the skill sources `place_skills()` uses
@@ -339,9 +338,11 @@ class LoopSupervisor:
             "claude-code": ClaudeCodeRunner(
                 workspace, run=run, config_dir=lambda: CONFIG_DIR,
                 home_fn=ambient_home),
+            # Codex quotes no price: it is metered from the same resolved
+            # source pi's unpriced calls use.
             "codex": CodexRunner(
                 workspace, run=run, config_dir=lambda: CONFIG_DIR,
-                home_fn=ambient_home),
+                home_fn=ambient_home, pricing=pricing),
         }
         # Seed from any already-completed iterations on disk (0 for a
         # fresh run dir) so a restarted engine numbers its next iteration
