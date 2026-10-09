@@ -1057,6 +1057,17 @@ def _accumulate_cost(usage: dict, result: IterationResult,
 CODEX_WRAPPER_MODULE = "ralphd.harness.codex"
 
 
+def _is_json_object(raw: bytes) -> bool:
+    """True iff the line decodes as one JSON object."""
+    stripped = raw.strip()
+    if not stripped.startswith(b"{"):
+        return False
+    try:
+        return isinstance(json.loads(stripped), dict)
+    except ValueError:
+        return False
+
+
 class CodexRunner(_SkillLinker, _ChildProcessRunner):
     """Runs one iteration on the Codex CLI: `python -m ralphd.harness.codex`
     as a child, through the same spawn path as pi and claude-code.
@@ -1145,7 +1156,6 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
                 "hat_tools": tool_names,
                 "run_root": run_root,
                 "skills": skills,
-                "stderr_log": str(scratch / "stderr.log"),
             }
             cfg_path = scratch / "wrapper.json"
             cfg_path.write_text(json.dumps(wrapper_cfg, indent=2) + "\n")
@@ -1157,11 +1167,12 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
                 env["RALPHD_HAT_TOOLS_RUN"] = run_root
             self._raw_path = transcript.with_name(transcript.stem + ".codex.jsonl")
             self._stderr_log = scratch / "stderr.log"
+            # The runner is the log's only writer (`_append_stderr`).
+            self._stderr_log.touch(mode=0o600)
             return await self._run_child(cmd, env, prompt, transcript, result,
                                          timeout_s, startup_timeout_s,
                                          model=model)
         finally:
-            self._scrub_stderr_log()
             shutil.rmtree(codex_home, ignore_errors=True)
             shutil.rmtree(skills_dir, ignore_errors=True)
 
@@ -1209,34 +1220,29 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
             os.killpg(pgid, signal.SIGKILL)
 
     def _append_stderr(self, text: str) -> None:
-        """One line of `codex`'s stderr, through `scrub_text` with the live
-        redaction map, onto the scratch `stderr.log`."""
+        """One stderr line (`codex`'s or the wrapper's own), through
+        `scrub_text` with the live redaction map, onto the scratch
+        `stderr.log`. Nothing else writes that file: the line is masked
+        before it reaches disk, never after."""
         if self._stderr_log is None:
             return
+        if text and not text.endswith("\n"):
+            text += "\n"
         with open(self._stderr_log, "a") as fh:
             fh.write(scrub_text(text))
-
-    def _scrub_stderr_log(self) -> None:
-        """Pass everything in `stderr.log` through `scrub_text` once more: the
-        wrapper's own stderr (a traceback, a diagnostic) is written to the
-        file directly and never travelled through the envelope."""
-        path = self._stderr_log
-        if path is None or not path.is_file():
-            return
-        try:
-            text = path.read_text(errors="replace")
-            clean = "".join(scrub_text(line) for line in text.splitlines(keepends=True))
-            if clean != text:
-                path.write_text(clean)
-        except OSError:
-            pass
 
     def _handle_line(self, raw: bytes, out, result: IterationResult,
                      live_index: render_index.LiveRenderIndex,
                      transcript: Path, *, model: str | None = None) -> bool:
         """A raw Codex envelope is scrubbed and appended, unwrapped, to
-        `<stem>.codex.jsonl`; it is traffic when `is_traffic` says so. Every
+        `<stem>.codex.jsonl`; it is traffic when `is_traffic` says so. A
+        stderr envelope's line, and any line that is not a JSON object (what
+        the wrapper's process wrote straight to fd 2, which the spawn merges
+        into stdout), goes to `stderr.log` through `_append_stderr`. Every
         other line is a pi event (the base hook)."""
+        if not _is_json_object(raw):
+            self._append_stderr(raw.decode("utf-8", errors="replace"))
+            return False
         if b'"ralphd.codex_' in raw:
             try:
                 event = json.loads(raw)

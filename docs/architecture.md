@@ -2088,8 +2088,8 @@ Per call the runner makes a scratch area beside the transcript,
 |---|---|
 | `codex-home/` | the wrapper's `CODEX_HOME`: an existing, empty directory that holds `config.toml` and nothing else (never an `AGENTS.md`); removed in a `finally` |
 | `skills/` | the effective skills, linked for the index in the prompt; removed in a `finally` |
-| `wrapper.json` | the wrapper config: `model`, `thinking`, `effort`, `workspace`, `codex_home`, `headers`, `hat_tools`, `run_root`, `skills`, `stderr_log` |
-| `stderr.log` | the wrapper's and `codex`'s stderr |
+| `wrapper.json` | the wrapper config: `model`, `thinking`, `effort`, `workspace`, `codex_home`, `headers`, `hat_tools`, `run_root`, `skills` |
+| `stderr.log` | the wrapper's and `codex`'s stderr, written only by `CodexRunner`, each line through `scrub_text` |
 
 `headers` is the header map pi's `models.json` carries for the model's
 provider (the LLM profile's headers and `--llm-header` ones, for example
@@ -2150,8 +2150,13 @@ masks the bearer token's value (as `[REDACTED:env:AWS_BEARER_TOKEN_BEDROCK]`) in
 every line it prints. `codex`'s stderr leaves the wrapper as `ralphd.codex_stderr`
 envelopes on stdout, and `CodexRunner` writes each line to `stderr.log` through
 `scrub_text` with the live redaction map, so any redaction-map value is masked
-there, not only the token; after the child ends the runner scrubs the whole log
-once more, which covers what the wrapper wrote to its own stderr. The token is still in the environment of `codex` and of the shell
+there, not only the token. The wrapper never opens `stderr.log`: it replaces its
+own `sys.stderr` with a writer that sends each line (a traceback, a warning) as
+the same envelope, and anything its process writes straight to fd 2 reaches
+the runner on the merged stdout/stderr pipe as a line that is not a JSON
+object, which `CodexRunner._handle_line` also sends to `stderr.log` through
+`scrub_text`. The runner is the file's only writer, so each line is masked
+before it reaches disk, never after. The token is still in the environment of `codex` and of the shell
 `codex` runs commands in, so an agent that runs `env` sees it; the masks only
 keep it out of what ralphd writes.
 

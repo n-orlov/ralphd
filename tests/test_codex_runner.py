@@ -554,8 +554,7 @@ def _wrapper_config(tmp_path: Path, workspace: Path) -> Path:
     home.mkdir(exist_ok=True)
     cfg = {"model": MODEL_REF, "thinking": None, "effort": None,
            "workspace": str(workspace), "codex_home": str(home), "headers": {},
-           "hat_tools": [], "run_root": None, "skills": [],
-           "stderr_log": str(tmp_path / "stderr.log")}
+           "hat_tools": [], "run_root": None, "skills": []}
     path = tmp_path / "wrapper.json"
     path.write_text(json.dumps(cfg))
     return path
@@ -937,18 +936,100 @@ def test_stderr_lines_never_reach_the_transcript_or_the_raw_log(tmp_path, monkey
     assert "looks like an envelope" not in (itdir / "output.codex.jsonl").read_text()
 
 
-def test_the_wrapper_own_stderr_is_scrubbed_after_the_child_ends(tmp_path, monkeypatch):
-    """A line the wrapper itself writes to its stderr (not codex's) is masked
-    too: here a model ref nothing can resolve makes the wrapper write a
-    diagnostic straight to the log, simulated by seeding the log file."""
-    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="echo_stderr",
-           STUB_CODEX_STDERR_LINES="codex line")
-    scratch = tmp_path / "it" / "output.codex-scratch"
-    scratch.mkdir(parents=True)
-    (scratch / "stderr.log").write_text(f"wrapper trace {OTHER_SECRET}\n")
+class _ObservingRunner(CodexRunner):
+    """Records `stderr.log` as it stands on disk the moment the child is
+    reaped, before anything in `run`'s `finally` could touch it."""
+
+    on_disk_at_exit: str | None = None
+
+    def _after_child(self, pgid, result):
+        log = self._stderr_log
+        self.on_disk_at_exit = log.read_text() if log and log.is_file() else None
+        super()._after_child(pgid, result)
+
+
+def _observed_run(tmp_path: Path, name: str, **kw) -> tuple[IterationResult, _ObservingRunner, Path]:
+    itdir = tmp_path / name
+    itdir.mkdir(parents=True, exist_ok=True)
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    runner = _ObservingRunner(ws, home_fn=lambda: tmp_path / "home", **kw)
+    result = asyncio.run(runner.run("the prompt", itdir / "output.jsonl",
+                                    model=MODEL_REF, timeout_s=60))
+    return result, runner, itdir
+
+
+def test_a_wrapper_traceback_is_masked_before_it_reaches_stderr_log(tmp_path, monkeypatch):
+    """The wrapper's own traceback (not codex's stderr): `config.toml` is a
+    directory, so writing it raises IsADirectoryError naming a path that
+    carries a non-token redaction-map secret. The line is already masked when
+    the child exits -- nothing scrubs the file after the fact."""
+    _setup(monkeypatch, tmp_path)
+    name = f"it-{OTHER_SECRET}"
+    (tmp_path / name / "output.codex-scratch" / "codex-home" / "config.toml").mkdir(parents=True)
     with _with_map({OTHER_SECRET: "env:OTHER_KEY"}):
-        _run(tmp_path)
-    log = (scratch / "stderr.log").read_text()
-    assert OTHER_SECRET not in log
-    assert "wrapper trace [REDACTED:env:OTHER_KEY]" in log
-    assert "codex line" in log
+        result, runner, itdir = _observed_run(tmp_path, name)
+    at_exit = runner.on_disk_at_exit
+    assert at_exit is not None
+    assert "Traceback (most recent call last)" in at_exit
+    assert "IsADirectoryError" in at_exit
+    assert OTHER_SECRET not in at_exit
+    assert "it-[REDACTED:env:OTHER_KEY]" in at_exit
+    assert (itdir / "output.codex-scratch" / "stderr.log").read_text() == at_exit
+    assert result.exit_code != 0
+    assert "IsADirectoryError" not in (itdir / "output.jsonl").read_text()
+
+
+def test_raw_fd2_writes_of_the_wrapper_process_are_masked_before_they_reach_stderr_log(tmp_path, monkeypatch):
+    """What the wrapper's process writes straight to fd 2, below Python's
+    `sys.stderr` (an interpreter fatal error, a crash before `main`), reaches
+    the runner on the merged pipe as a line that is not a JSON object: a
+    plain line, a JSON scalar, a JSON array and a trailing partial line
+    without a newline all land in `stderr.log` masked, and none of them in
+    the transcript."""
+    _setup(monkeypatch, tmp_path)
+    fake = tmp_path / "fake-python"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f"printf 'Fatal Python error: key {OTHER_SECRET}\\n' >&2\n"
+        "printf '42\\n' >&2\n"
+        f"printf '[\"{THIRD_SECRET}\"]\\n' >&2\n"
+        f"printf 'tail {OTHER_SECRET}' >&2\n"
+        "exit 1\n")
+    fake.chmod(0o755)
+    with _with_map({OTHER_SECRET: "env:A", THIRD_SECRET: "env:B"}):
+        result, runner, itdir = _observed_run(tmp_path, "it", python_bin=str(fake))
+    at_exit = runner.on_disk_at_exit
+    assert at_exit is not None
+    assert at_exit.splitlines() == ["Fatal Python error: key [REDACTED:env:A]", "42",
+                                    '["[REDACTED:env:B]"]', "tail [REDACTED:env:A]"]
+    transcript = (itdir / "output.jsonl").read_text()
+    assert "Fatal Python error" not in transcript and "tail" not in transcript
+    for f in itdir.rglob("*"):
+        if f.is_file():
+            text = f.read_text(errors="replace")
+            assert OTHER_SECRET not in text and THIRD_SECRET not in text, f
+
+
+def test_the_wrapper_never_writes_its_own_stderr_outside_the_envelopes(tmp_path, monkeypatch):
+    """Run the wrapper directly: its Python-level traceback leaves only as
+    `ralphd.codex_stderr` envelopes on stdout (whole lines, each a JSON
+    object of its own), and its fd 2 stays empty."""
+    import subprocess
+    import sys
+    _setup(monkeypatch, tmp_path)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    cfg = _wrapper_config(tmp_path, ws)
+    (tmp_path / "codex-home" / "config.toml").mkdir()
+    proc = subprocess.run([sys.executable, "-m", "ralphd.harness.codex", "--config", str(cfg)],
+                          input="the prompt", capture_output=True, text=True, cwd=ws,
+                          env=dict(os.environ), timeout=60)
+    assert proc.returncode != 0
+    assert proc.stderr == ""
+    events = [json.loads(line) for line in proc.stdout.splitlines()]
+    lines = [e["line"] for e in events if e.get("type") == codex_mod.CODEX_STDERR_ENVELOPE_TYPE]
+    text = "".join(lines)
+    assert text.startswith("Traceback (most recent call last)")
+    assert "IsADirectoryError" in text
+    assert all(line.endswith("\n") for line in lines[:-1])

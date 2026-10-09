@@ -8,6 +8,7 @@ it without the Claude SDK installed.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
@@ -60,9 +61,12 @@ def effort_options(thinking: str | None, effort: str | None) -> dict[str, Any]:
 # shared child-process path: own session, agent uid, the prompt on stdin, NDJSON
 # on stdout. For each call it
 #
-# 1. redirects its own stderr to the config's `stderr_log` (stdout stays
-#    NDJSON-only; `codex`'s own stderr leaves as `ralphd.codex_stderr`
-#    envelopes the runner scrubs into the same log),
+# 1. never writes `stderr.log` itself: its own Python-level stderr
+#    (`sys.stderr`: a traceback, a warning) and `codex`'s stderr both leave as
+#    `ralphd.codex_stderr` envelopes on stdout, and anything written below
+#    Python straight to fd 2 reaches the runner on the same merged pipe as a
+#    non-JSON line; `CodexRunner` is the log's only writer and passes every
+#    line through `scrub_text` first,
 # 2. writes exactly one file into the scratch `CODEX_HOME` the runner made,
 #    `config.toml` (never an `AGENTS.md`), from `build_config`,
 # 3. runs `<cli> exec --json --skip-git-repo-check --ephemeral -C <workspace>
@@ -306,15 +310,48 @@ class _Out:
             self._buf.flush()
 
 
-def _redirect_stderr(path: str | None) -> None:
-    if not path:
-        return
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    except OSError:
-        return
-    os.dup2(fd, 2)
-    os.close(fd)
+class _StderrEnvelopes(io.TextIOBase):
+    """`sys.stderr` for the wrapper: each complete line leaves as a
+    `ralphd.codex_stderr` envelope through `_Out` (under its lock, so it never
+    splits a stdout line), and `flush` sends a trailing partial line. The
+    wrapper never opens `stderr.log`; the runner writes each envelope's line
+    there through `scrub_text`."""
+
+    def __init__(self, out: "_Out") -> None:
+        super().__init__()
+        self._out = out
+        self._buf = ""
+
+    @property
+    def encoding(self) -> str:  # traceback/warnings consult it
+        return "utf-8"
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text) -> int:
+        text = str(text)
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            self._emit(line + "\n")
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buf:
+            line, self._buf = self._buf, ""
+            self._emit(line)
+
+    def _emit(self, line: str) -> None:
+        try:
+            self._out.emit({"type": CODEX_STDERR_ENVELOPE_TYPE, "line": line})
+        except (OSError, ValueError):
+            pass
+
+
+def _capture_stderr(out: "_Out") -> None:
+    """Route the wrapper's own Python-level stderr into envelopes."""
+    sys.stderr = _StderrEnvelopes(out)
 
 
 def _pump_stderr(src, token: str | None, last: list | None = None,
@@ -323,7 +360,8 @@ def _pump_stderr(src, token: str | None, last: list | None = None,
     `out`, each line leaves as a stderr envelope on stdout, and the runner
     writes it to `stderr.log` through the engine's `scrub_text` (the only
     place the live redaction map exists). Without `out` it is copied to this
-    process's own stderr. The last non-blank (masked) line lands in `last[0]`
+    process's fd 2, which the runner reads on the same merged pipe and
+    scrubs the same way. The last non-blank (masked) line lands in `last[0]`
     when a list is given."""
     try:
         for chunk in iter(src.readline, b""):
@@ -467,11 +505,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not args.config:
         ap.error("--config is required")
+    out = _Out()
+    _capture_stderr(out)
     cfg = json.loads(Path(args.config).read_text())
-    _redirect_stderr(cfg.get("stderr_log"))
     prompt = sys.stdin.read()
     norm = CodexNormaliser(model_ref=cfg.get("model") or "")
-    return _run(cfg, prompt, norm, _Out())
+    return _run(cfg, prompt, norm, out)
 
 
 if __name__ == "__main__":

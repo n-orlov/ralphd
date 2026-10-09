@@ -710,8 +710,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # cure-01-01 (stderr.log through scrub_text): +4 tests in
     # tests/test_codex_runner.py, measured `-m fast --collect-only` -> fast
     # 7899/515, `-m smoke --collect-only` -> smoke 6162/391.
-    "fast": {"tests": 7899, "modules": 515},
-    "smoke": {"tests": 6162, "modules": 391},
+    # cure-01-01 retry (the wrapper never writes stderr.log): the seeded-log
+    # test is replaced by 3 tests in tests/test_codex_runner.py (+2), measured
+    # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 7901/515,
+    # `-m smoke --collect-only` -> 6164/391.
+    "fast": {"tests": 7901, "modules": 515},
+    "smoke": {"tests": 6164, "modules": 391},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
