@@ -456,6 +456,12 @@ _REFUSAL_TEXT_CASES = [
      "cc-root"),
     ("cc-cli-missing", "claude_code_cli_not_found: /usr/bin/claude",
      "cc-cli-missing"),
+    ("codex-gateway-url", "codex_gateway_not_configured: AIGW_OPENAI_BASE_URL is not "
+                          "set; the codex harness needs an OpenAI-gateway LLM profile",
+     "codex-gateway"),
+    ("codex-gateway-token", "codex_gateway_not_configured: AWS_BEARER_TOKEN_BEDROCK is "
+                            "not set; the codex harness needs an OpenAI-gateway LLM profile",
+     "codex-gateway"),
 ]
 
 
@@ -552,3 +558,21 @@ def test_every_refusal_family_has_a_text_case():
     assert ({c[2] for c in _REFUSAL_TEXT_CASES}
             == {f for f, _ in REFUSED_SIGNATURES}
             - REFUSAL_FAMILIES_STRUCTURED_STATUS_ONLY)
+
+
+def test_a_missing_codex_gateway_is_a_configuration_refusal_not_a_provider_one():
+    text = ("codex_gateway_not_configured: AIGW_OPENAI_BASE_URL is not set; "
+            "the codex harness needs an OpenAI-gateway LLM profile")
+    # No HTTP status and no traffic: nothing reached any provider.
+    exp = explain_fault(error_text=text, exit_code=1, produced_traffic=False)
+    assert exp["faultClass"] == FAULT_CLASS_REFUSED
+    sig = exp["signature"]
+    assert sig["family"] == "codex-gateway"
+    assert sig["httpStatus"] is None
+    assert "OpenAI-gateway LLM profile" in sig["description"]
+    assert "configuration" in sig["description"]
+    assert "codex" in exp["reason"]
+    # An unrelated codex failure text is not swallowed by the family.
+    other = explain_fault(error_text="codex exited 2", exit_code=1,
+                          produced_traffic=True)
+    assert (other["signature"] or {}).get("family") != "codex-gateway"

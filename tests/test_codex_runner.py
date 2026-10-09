@@ -239,9 +239,11 @@ def test_token_reaches_codex_only_through_its_environment_variable(one_run):
 
 # -- the wrapper's own seams ---------------------------------------------------
 
-def test_gateway_variable_missing_ends_in_band_without_launching_codex(tmp_path, monkeypatch):
+@pytest.mark.parametrize("missing", ["AIGW_OPENAI_BASE_URL", "AWS_BEARER_TOKEN_BEDROCK"])
+def test_gateway_variable_missing_ends_in_band_without_launching_codex(
+        tmp_path, monkeypatch, missing):
     _setup(monkeypatch, tmp_path)
-    monkeypatch.delenv("AIGW_OPENAI_BASE_URL")
+    monkeypatch.delenv(missing)
     itdir = tmp_path / "it"
     itdir.mkdir()
     (tmp_path / "ws").mkdir(exist_ok=True)
@@ -249,8 +251,83 @@ def test_gateway_variable_missing_ends_in_band_without_launching_codex(tmp_path,
         "p", itdir / "output.jsonl", model=MODEL_REF, timeout_s=60))
     assert not (tmp_path / "observed.json").exists()
     assert (result.error_message or "").startswith("codex_gateway_not_configured")
-    assert "AIGW_OPENAI_BASE_URL" in result.error_message
+    assert missing in result.error_message
     assert FAKE_TOKEN not in result.error_message
+    ends = [json.loads(l) for l in (itdir / "output.jsonl").read_text().splitlines()
+            if '"message_end"' in l]
+    assert ends[-1]["message"]["stopReason"] == "error"
+    assert ends[-1]["message"]["errorMessage"].startswith("codex_gateway_not_configured")
+
+
+# -- B.2: the child environment and the secret --------------------------------
+
+def test_child_environment_is_scrubbed_and_keeps_the_gateway(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    for name in ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "CODEX_FOO",
+                 "OPENAI_ORG_ID", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+                 "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.setenv(name, "fake-" + name.lower())
+    _, obs, _ = _run(tmp_path)
+    env = obs["env"]
+    for name in ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "CODEX_FOO",
+                 "OPENAI_ORG_ID", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+                 "CLAUDE_CODE_OAUTH_TOKEN"):
+        assert name not in env, name
+    assert env["AWS_BEARER_TOKEN_BEDROCK"] == FAKE_TOKEN
+    assert env["AIGW_OPENAI_BASE_URL"] == FAKE_BASE_URL
+    assert env["CODEX_HOME"] == obs["codex_home"]
+    assert not any(k.startswith(("CODEX_", "OPENAI_")) and k != "CODEX_HOME" for k in env)
+
+
+def test_scrub_list_covers_the_claude_code_gateway_routing():
+    """The claude-code wrapper's strip list, minus the gateway token codex
+    needs, is a subset of codex's (data mirrored, not imported)."""
+    from ralphd.harness import claude_code, codex
+    cc = set(claude_code.STRIPPED_ENV) - {"AWS_BEARER_TOKEN_BEDROCK"}
+    assert cc <= set(codex.STRIPPED_ENV)
+    assert set(claude_code.STRIPPED_ENV_PREFIXES) <= set(codex.STRIPPED_ENV_PREFIXES)
+    env = {n: "x" for n in codex.STRIPPED_ENV | {"CODEX_X", "OPENAI_X", "CLAUDE_CODE_USE_BEDROCK",
+                                                  "PATH", "AIGW_OPENAI_BASE_URL",
+                                                  "AWS_BEARER_TOKEN_BEDROCK"}}
+    codex.scrub_environ(env)
+    assert sorted(env) == ["AIGW_OPENAI_BASE_URL", "AWS_BEARER_TOKEN_BEDROCK", "PATH"]
+
+
+def test_the_token_is_masked_in_every_artifact_the_runner_leaves(tmp_path, monkeypatch):
+    from ralphd.engine import redact
+    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="echo_token")
+    saved = redact.live_redaction_map()
+    redact.refresh_redaction_map(tmp_path / "home")
+    assert FAKE_TOKEN in redact.live_redaction_map()
+    try:
+        _, obs, itdir = _run(tmp_path)
+    finally:
+        with redact._lock:
+            redact._map.clear()
+            redact._map.update(saved)
+    assert obs["env"]["AWS_BEARER_TOKEN_BEDROCK"] == FAKE_TOKEN
+    files = [itdir / "output.jsonl", itdir / "output.codex.jsonl",
+             itdir / "output.codex-scratch" / "stderr.log"]
+    for f in files:
+        assert f.is_file(), f
+        text = f.read_text()
+        assert FAKE_TOKEN not in text, f
+        assert "[REDACTED:env:AWS_BEARER_TOKEN_BEDROCK]" in text, f
+    for f in itdir.rglob("*"):
+        if f.is_file():
+            assert FAKE_TOKEN not in f.read_text(errors="replace"), f
+
+
+def test_the_wrapper_masks_the_token_itself_when_the_engine_map_is_empty(tmp_path, monkeypatch):
+    """The wrapper's own mask is the second layer: with no engine redaction
+    map live, the artifacts still hold no token."""
+    from ralphd.engine import redact
+    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="echo_token")
+    monkeypatch.setattr(redact, "_map", {})
+    _, _, itdir = _run(tmp_path)
+    for f in itdir.rglob("*"):
+        if f.is_file():
+            assert FAKE_TOKEN not in f.read_text(errors="replace"), f
 
 
 def test_raw_events_go_to_output_codex_jsonl_and_pi_events_to_output_jsonl(one_run):

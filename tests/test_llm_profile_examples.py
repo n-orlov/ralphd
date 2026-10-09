@@ -176,8 +176,39 @@ def test_gateway_example_resolves_given_stubbed_cmd_and_placeholder_env(tmp_path
     assert [m["id"] for m in pi["models"]] == ["big-model", "small-model"]
 
 
+def test_codex_example_matches_docs_shape():
+    doc = yaml.safe_load((EXAMPLES_DIR / "codex-aigw.yaml").read_text())
+    assert doc["harness"] == "codex"
+    assert doc["model"] == "aigw-openai/openai.gpt-5.6-sol"
+    # The two variables the codex wrapper requires, both references.
+    assert doc["env"] == {
+        "AIGW_OPENAI_BASE_URL": "${env:AIGW_OPENAI_BASE_URL}",
+        "AWS_BEARER_TOKEN_BEDROCK": "${env:AWS_BEARER_TOKEN_BEDROCK}",
+    }
+    assert doc["billing"]["basis"] != "subscription"
+    from ralphd.cli.llm_profiles import resolve_billing
+    assert resolve_billing(doc["billing"], label="codex-aigw", harness=doc["harness"],
+                           default_payer="codex-aigw") == doc["billing"]
+
+
+def test_codex_example_resolves_given_placeholder_env(tmp_path, monkeypatch):
+    reg = _registry_with(tmp_path, ["codex-aigw.yaml"])
+    monkeypatch.setenv("AIGW_OPENAI_BASE_URL", "https://aigw.example.com/api/openai/v1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "placeholder-bearer-token")
+    resolved = llm_profiles.resolve_profile("codex-aigw", reg)
+    assert resolved["harness"] == "codex"
+    assert resolved["env"] == {
+        "AIGW_OPENAI_BASE_URL": "https://aigw.example.com/api/openai/v1",
+        "AWS_BEARER_TOKEN_BEDROCK": "placeholder-bearer-token",
+    }
+    assert resolved["model"] == "aigw-openai/openai.gpt-5.6-sol"
+    provider = resolved["pi"]["providers"]["aigw-openai"]
+    assert provider["api"] == "openai-responses"
+    assert provider["apiKey"] == "placeholder-bearer-token"
+
+
 @pytest.mark.parametrize("fn", ["bedrock.yaml", "gateway.yaml", "aigw-cross-family.yaml",
-                                "claude-sub.yaml"])
+                                "claude-sub.yaml", "codex-aigw.yaml"])
 def test_example_has_no_real_endpoints_or_org_specific_values(fn):
     text = (EXAMPLES_DIR / fn).read_text()
     lower = text.lower()

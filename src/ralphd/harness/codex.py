@@ -13,10 +13,12 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
 from .codex_normalise import CODEX_RAW_ENVELOPE_TYPE, CodexNormaliser
+from ..engine.redact import MIN_SECRET_LEN
 from .skills_index import skills_index
 
 # A hat's thinking/effort level (pi's vocabulary) to the `model_reasoning_effort`
@@ -160,6 +162,45 @@ def build_argv(cli: str, workspace: str) -> list[str]:
             "-C", workspace, "--dangerously-bypass-approvals-and-sandbox", "-"]
 
 
+# Environment the `codex` child must not inherit: the OpenAI credentials and
+# routing (`codex` would prefer them to the gateway), every `CODEX_*` and
+# `OPENAI_*` variable (the wrapper sets `CODEX_HOME` itself after the scrub),
+# and the claude-code gateway routing, mirrored from the claude-code wrapper's
+# list as data because that module imports the Claude SDK. The bearer token
+# `AWS_BEARER_TOKEN_BEDROCK` and `AIGW_OPENAI_BASE_URL` are kept: they are the
+# gateway.
+STRIPPED_ENV = frozenset({
+    "OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE", "CLAUDE_EFFORT",
+    "CLAUDE_PID", "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL",
+})
+STRIPPED_ENV_PREFIXES = ("CODEX_", "OPENAI_", "CLAUDE_CODE_",
+                         "ANTHROPIC_BEDROCK_", "ANTHROPIC_VERTEX_")
+KEPT_ENV = frozenset({TOKEN_ENV, BASE_URL_ENV})
+
+
+def scrub_environ(env: Any) -> list[str]:
+    """Remove from `env` (in place) what the `codex` child must not inherit.
+    Returns the removed names, sorted."""
+    removed = []
+    for name in list(env):
+        if name in KEPT_ENV:
+            continue
+        if name in STRIPPED_ENV or name.startswith(STRIPPED_ENV_PREFIXES):
+            del env[name]
+            removed.append(name)
+    return sorted(removed)
+
+
+def mask_token(text: str, token: str | None) -> str:
+    """`text` with the bearer token's value replaced by the label the engine's
+    own `scrub_text` uses for it. A no-op for an empty or short token (the
+    engine's `MIN_SECRET_LEN`)."""
+    if token and len(token) >= MIN_SECRET_LEN and token in text:
+        return text.replace(token, f"[REDACTED:env:{TOKEN_ENV}]")
+    return text
+
+
 def gateway_missing(env: Any) -> str | None:
     """The name of the first gateway variable `env` lacks, else None."""
     for name in (BASE_URL_ENV, TOKEN_ENV):
@@ -175,7 +216,8 @@ class _Out:
         self._buf = sys.stdout.buffer
 
     def emit(self, obj: dict) -> None:
-        data = json.dumps(obj, default=str, ensure_ascii=False) + "\n"
+        data = mask_token(json.dumps(obj, default=str, ensure_ascii=False),
+                          os.environ.get(TOKEN_ENV)) + "\n"
         self._buf.write(data.encode("utf-8", errors="replace"))
         self._buf.flush()
 
@@ -191,12 +233,24 @@ def _redirect_stderr(path: str | None) -> None:
     os.close(fd)
 
 
+def _pump_stderr(src, token: str | None) -> None:
+    """Copy `codex`'s stderr to this process's stderr (the runner's
+    `stderr.log`), masking the bearer token on the way."""
+    try:
+        for chunk in iter(src.readline, b""):
+            text = mask_token(chunk.decode("utf-8", errors="replace"), token)
+            os.write(2, text.encode("utf-8", errors="replace"))
+    except (OSError, ValueError):
+        pass
+
+
 def _finish(norm: CodexNormaliser, out: _Out, error: dict | None) -> None:
     for ev in norm.finish(error):
         out.emit(ev)
 
 
 def _run(cfg: dict, prompt: str, norm: CodexNormaliser, out: _Out) -> int:
+    scrub_environ(os.environ)
     missing = gateway_missing(os.environ)
     if missing:
         _finish(norm, out, {"type": GATEWAY_NOT_CONFIGURED,
@@ -212,12 +266,16 @@ def _run(cfg: dict, prompt: str, norm: CodexNormaliser, out: _Out) -> int:
     argv = build_argv(resolve_cli_path(), cfg["workspace"])
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=2, cwd=cfg["workspace"], env=os.environ.copy(),
+                                stderr=subprocess.PIPE, cwd=cfg["workspace"], env=os.environ.copy(),
                                 start_new_session=True)
     except OSError as e:
         _finish(norm, out, {"type": "codex_cli_not_found", "message": str(e)})
         return 1
 
+    pump = threading.Thread(target=_pump_stderr,
+                            args=(proc.stderr, os.environ.get(TOKEN_ENV)),
+                            daemon=True)
+    pump.start()
     state = {"interrupted": False}
 
     def _abort_group(sig: int) -> None:
@@ -259,6 +317,7 @@ def _run(cfg: dict, prompt: str, norm: CodexNormaliser, out: _Out) -> int:
         for ev in norm.feed(event):
             out.emit(ev)
     code = proc.wait()
+    pump.join(timeout=2.0)
     if state["interrupted"]:
         _abort_group(signal.SIGKILL)
         _finish(norm, out, {"message": "aborted"})

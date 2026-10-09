@@ -1462,7 +1462,7 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   family means, the pattern, and the exact substring it matched in the error.
   For a `refused` fault it is the row of `REFUSED_SIGNATURES` that matched,
   printed the same way (`extra-usage` · `invalid-request` · `authentication` ·
-  `permission` · `not-found` · `model-not-found` · `cc-version` · `cc-cli-missing` · `cc-root`):
+  `permission` · `not-found` · `model-not-found` · `cc-version` · `cc-cli-missing` · `cc-root` · `codex-gateway`):
   `signature: authentication -- the provider rejected the credentials
   (pattern authentication_(?:error|failed), matched "authentication_error")`.
   `(no signature matched)` for a work fault or a watchdog kill — never a guess.

@@ -1,0 +1,31 @@
+# examples/llm-profiles/codex-aigw.yaml
+#
+# A hat on the `codex` harness, routed through an OpenAI-shaped AI gateway.
+# Copy this file to ~/.ralphd/llm-profiles/codex-aigw.yaml and use
+# `--llm codex-aigw` on `ralphctl start`.
+#
+# The codex wrapper reads exactly two variables from its environment:
+#   AIGW_OPENAI_BASE_URL       the gateway's OpenAI-shaped base URL
+#   AWS_BEARER_TOKEN_BEDROCK   the gateway bearer token
+# It starts no `codex` and ends the iteration with `codex_gateway_not_configured`
+# when either is missing. `OPENAI_*` and `CODEX_*` variables never reach
+# `codex` (docs/llm-profiles.md, "Codex through an OpenAI gateway").
+#
+# The codex harness is metered: `billing.basis: subscription` is refused.
+description: the codex harness through an OpenAI-shaped gateway, one bearer token
+harness: codex
+model: aigw-openai/openai.gpt-5.6-sol
+billing:
+  payer: AIGW gateway
+  basis: chargeback
+env:
+  AIGW_OPENAI_BASE_URL: ${env:AIGW_OPENAI_BASE_URL}
+  AWS_BEARER_TOKEN_BEDROCK: ${env:AWS_BEARER_TOKEN_BEDROCK}
+pi:
+  providers:
+    aigw-openai:
+      baseUrl: https://aigw.example.com/api/openai/v1
+      api: openai-responses
+      apiKey: ${env:AWS_BEARER_TOKEN_BEDROCK}
+      models:
+        - id: openai.gpt-5.6-sol

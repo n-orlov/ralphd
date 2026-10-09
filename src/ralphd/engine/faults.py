@@ -232,6 +232,9 @@ REFUSED_SIGNATURES: tuple[tuple[str, str], ...] = (
     ("cc-cli-missing", r"claude_code_cli_not_found"),
     # The agent uid resolved to root, so the wrapper was never spawned.
     ("cc-root", r"claude_code_runs_as_root"),
+    # The codex wrapper found no OpenAI gateway to talk to and never started
+    # `codex`: a configuration fault, not a provider one.
+    ("codex-gateway", r"codex_gateway_not_configured"),
     # A subscription token sent from a third-party client (#284).
     ("extra-usage", r"Third-party apps now draw from your extra usage"),
     # The API's own error types (and the Agent SDK's names for them).
@@ -253,6 +256,10 @@ REFUSED_FAMILY_DESCRIPTIONS = {
     "cc-version": "the Claude Code CLI is below the minimum version ralphd runs",
     "cc-cli-missing": "the Claude Code CLI was not found",
     "cc-root": "the claude-code harness refuses to run the agent as root",
+    "codex-gateway": ("the codex harness found no OpenAI gateway configured "
+                      "(AIGW_OPENAI_BASE_URL or AWS_BEARER_TOKEN_BEDROCK is "
+                      "missing); configuration, not the provider: use an "
+                      "OpenAI-gateway LLM profile for this hat"),
     "extra-usage": ("the subscription refused a third-party client: it would "
                     "draw from extra usage, not the plan limits"),
     "invalid-request": "the provider rejected the request as invalid",
@@ -266,7 +273,7 @@ REFUSED_FAMILY_DESCRIPTIONS = {
 # The families that need no HTTP status: the harness refused before any
 # request was sent.
 REFUSAL_FAMILIES_WITHOUT_STATUS = frozenset(
-    {"cc-version", "cc-cli-missing", "cc-root"})
+    {"cc-version", "cc-cli-missing", "cc-root", "codex-gateway"})
 
 # The families that count only with the structured `http_status` a runner
 # reported (claude-code), never with a status token read out of the error
@@ -395,7 +402,7 @@ FAULT_REASON_RATE_LIMIT = (
 # v0.30 G.1: a refusal that waiting does not fix.
 FAULT_REASON_REFUSED = (
     "the provider refused the call with a non-transient 4xx (or the "
-    "claude-code harness refused to start) -- it is not retried; the run "
+    "claude-code or codex harness refused to start) -- it is not retried; the run "
     "pauses for the operator, and an unpause re-runs the same work")
 
 # A final reply the provider cut off at its output-token cap, with no text.

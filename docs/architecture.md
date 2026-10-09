@@ -2096,9 +2096,33 @@ read the prompt from stdin, so no prompt is ever an argument. The prompt on
 stdin is the skills index (when there are skills) followed by the prompt. The
 bearer token reaches `codex` only through the environment variable named by
 `env_key`; neither `config.toml` nor the argv nor any wrapper file holds its
-value. When `AIGW_OPENAI_BASE_URL` or `AWS_BEARER_TOKEN_BEDROCK` is absent the
-wrapper does not start `codex` and ends in-band with
-`codex_gateway_not_configured` naming the variable.
+value.
+
+The wrapper scrubs its environment before it does anything else
+(`scrub_environ`). `codex` never sees `OPENAI_API_KEY`, `CODEX_API_KEY`,
+`OPENAI_BASE_URL`, any other `CODEX_*` or `OPENAI_*` variable, or the
+claude-code gateway routing (`ANTHROPIC_*` credentials and routing,
+`CLAUDE_CODE_*`, `CLAUDE_CONFIG_DIR`, `CLAUDECODE`, `CLAUDE_EFFORT`,
+`CLAUDE_PID`), and the control-plane variables
+`_ChildProcessRunner._child_env` strips for every harness are already gone. It
+keeps `AWS_BEARER_TOKEN_BEDROCK` and `AIGW_OPENAI_BASE_URL`, and sets
+`CODEX_HOME` to the scratch directory.
+
+When `AIGW_OPENAI_BASE_URL` or `AWS_BEARER_TOKEN_BEDROCK` is absent the wrapper
+does not start `codex` and ends in-band with a `message_end` of
+`stopReason: "error"` whose `errorMessage` begins `codex_gateway_not_configured`
+and names the missing variable, never a value. `engine/faults.py` classifies
+that signature as the `codex-gateway` refusal family: a configuration fault,
+not a provider one, which pauses the run for the operator with a description
+that says to use an OpenAI-gateway LLM profile.
+
+Every artifact is masked. The engine's `scrub_text` runs over each stdout line
+of the wrapper, `<stem>.codex.jsonl` and `output.jsonl`. The wrapper itself
+masks the bearer token's value (as `[REDACTED:env:AWS_BEARER_TOKEN_BEDROCK]`) in
+every line it prints and routes `codex`'s stderr through the same mask into
+`stderr.log`. The token is still in the environment of `codex` and of the shell
+`codex` runs commands in, so an agent that runs `env` sees it; the masks only
+keep it out of what ralphd writes.
 
 The wrapper prints each Codex event as a raw envelope
 (`{"type": "ralphd.codex_raw", "raw": <event>}`) followed by the pi events
@@ -4328,7 +4352,7 @@ event:
 | `"work"` | the agent reached the model and then genuinely failed — or the *operator* terminated it |
 | `"signal"` | a signal ended an iteration that had reached the model, with no abort recorded (below) — not retried |
 | `"rate_limit"` | the provider reported its rate-limit window exhausted, in structured form — waited out until the window resets, then the same work re-runs (below) |
-| `"refused"` | the provider refused the call in a way waiting does not fix (a 400/401/403/404), or the `claude-code` harness refused to start — not retried; the run pauses for the operator (below) |
+| `"refused"` | the provider refused the call in a way waiting does not fix (a 400/401/403/404), or the `claude-code` or `codex` harness refused to start — not retried; the run pauses for the operator (below) |
 | `"output_truncated"` | the final assistant message ended `stopReason: "length"` with no text — the provider cut the reply off at its output-token limit; not a work failure; a worker, verify or planning iteration gets no retry or refund of its own, and the peer `verdict_gate` retries it (below) |
 
 Because both the recorded field and the retry decision come from that one
@@ -4460,10 +4484,11 @@ Three deliberate details:
   (`model_not_found`, only with the structured `http_status` a `claude-code`
   runner reports, so pi's text-only gateway 404 stays `infra`, in a run and in
   `llm test`), and the `claude-code` harness's own pre-flight
-  refusals `cc-version`, `cc-cli-missing` and `cc-root`. `matched_refusal()`
+  refusals `cc-version`, `cc-cli-missing` and `cc-root`, and the `codex`
+  harness's `codex-gateway` (`codex_gateway_not_configured`). `matched_refusal()`
   needs a provider family to come with an HTTP 400, 401, 403 or 404 (the
   structured `http_status`, else the first status token of pi's `<status>
-  <body>` text); the `cc-*` families need none. Its rung sits right after the
+  <body>` text); the `cc-*` families and `codex-gateway` need none. Its rung sits right after the
   rate-limit rung, so a 429 is never `"refused"`, and before the watchdog and
   the signature table, so a refusal is never retried as `"infra"`. The
   wrapper refunds the attempt and calls `_pause_for_provider_refusal()`: the

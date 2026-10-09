@@ -524,3 +524,62 @@ maps the level:
 An unset or unmapped level falls back to `medium`. The tier step-down of a
 codex hat's verify tier works unchanged on this table: whatever level the
 stepped-down rung carries maps to one of the three values.
+
+## Codex through an OpenAI gateway
+
+A hat on the `codex` harness runs the Codex CLI against an OpenAI-shaped AI
+gateway. It needs an OpenAI-gateway profile, such as
+`examples/llm-profiles/codex-aigw.yaml`:
+
+```yaml
+# examples/llm-profiles/codex-aigw.yaml
+harness: codex
+model: aigw-openai/openai.gpt-5.6-sol
+billing:
+  payer: AIGW gateway
+  basis: chargeback
+env:
+  AIGW_OPENAI_BASE_URL: ${env:AIGW_OPENAI_BASE_URL}
+  AWS_BEARER_TOKEN_BEDROCK: ${env:AWS_BEARER_TOKEN_BEDROCK}
+pi:
+  providers:
+    aigw-openai:
+      baseUrl: https://aigw.example.com/api/openai/v1
+      api: openai-responses
+      apiKey: ${env:AWS_BEARER_TOKEN_BEDROCK}
+      models:
+        - id: openai.gpt-5.6-sol
+```
+
+The wrapper needs exactly two variables: `AIGW_OPENAI_BASE_URL` (the base URL
+written into `config.toml`) and `AWS_BEARER_TOKEN_BEDROCK` (the bearer token,
+passed to `codex` only as the environment variable its config names). When
+either is missing the wrapper does not start `codex`. The iteration ends with
+a `message_end` of `stopReason` `error` whose `errorMessage` begins
+`codex_gateway_not_configured` and names the missing variable, and the fault
+classifier reports it as a configuration fault (the `codex-gateway` refusal
+family): use an OpenAI-gateway LLM profile for the hat. A model on any other
+route is refused earlier, at the route check.
+
+**What `codex` does not inherit.** The wrapper scrubs the environment `codex`
+runs with:
+
+| Dropped | Why |
+|---|---|
+| `OPENAI_API_KEY`, `CODEX_API_KEY`, `OPENAI_BASE_URL` | `codex` would prefer them to the gateway |
+| every other `CODEX_*` and `OPENAI_*` variable | the engine sets none for a call |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_BEDROCK_*`, `ANTHROPIC_VERTEX_*`, `CLAUDE_CODE_*`, `CLAUDE_CONFIG_DIR`, `CLAUDECODE`, `CLAUDE_EFFORT`, `CLAUDE_PID` | the claude-code gateway routing |
+| the engine control-plane coordinates | stripped for every harness |
+
+It keeps `AWS_BEARER_TOKEN_BEDROCK` and `AIGW_OPENAI_BASE_URL`, and sets
+`CODEX_HOME` to a per-call scratch directory.
+
+**What is masked.** The token's value is replaced by
+`[REDACTED:env:AWS_BEARER_TOKEN_BEDROCK]` in `output.jsonl`, in
+`output.codex.jsonl` and in the wrapper's `stderr.log`.
+
+**Known limit.** The token is visible to the agent's shell. `codex` receives it
+in its environment and runs the agent's commands as its children, so an agent
+that runs `env` or `printenv` reads it. The masks keep the value out of the
+files ralphd writes; they do not hide it from the agent. Use a gateway token
+that is scoped to the run and revocable.
