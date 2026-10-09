@@ -246,6 +246,10 @@ def gateway_missing(env: Any) -> str | None:
     return None
 
 
+# The terminal `message_end` of an interrupted iteration.
+ABORTED = {"message": "aborted", "stopReason": "aborted"}
+
+
 class _Out:
     """NDJSON writer for stdout: one object per line, flushed per line."""
 
@@ -270,12 +274,15 @@ def _redirect_stderr(path: str | None) -> None:
     os.close(fd)
 
 
-def _pump_stderr(src, token: str | None) -> None:
+def _pump_stderr(src, token: str | None, last: list | None = None) -> None:
     """Copy `codex`'s stderr to this process's stderr (the runner's
-    `stderr.log`), masking the bearer token on the way."""
+    `stderr.log`), masking the bearer token on the way. The last non-blank
+    (masked) line lands in `last[0]` when a list is given."""
     try:
         for chunk in iter(src.readline, b""):
             text = mask_token(chunk.decode("utf-8", errors="replace"), token)
+            if last is not None and text.strip():
+                last[:] = [text.strip()]
             os.write(2, text.encode("utf-8", errors="replace"))
     except (OSError, ValueError):
         pass
@@ -314,8 +321,9 @@ def _run(cfg: dict, prompt: str, norm: CodexNormaliser, out: _Out) -> int:
         _finish(norm, out, {"type": CLI_NOT_FOUND, "message": str(e)})
         return 1
 
+    last_stderr: list[str] = []
     pump = threading.Thread(target=_pump_stderr,
-                            args=(proc.stderr, os.environ.get(TOKEN_ENV)),
+                            args=(proc.stderr, os.environ.get(TOKEN_ENV), last_stderr),
                             daemon=True)
     pump.start()
     state = {"interrupted": False}
@@ -335,7 +343,7 @@ def _run(cfg: dict, prompt: str, norm: CodexNormaliser, out: _Out) -> int:
         signal.setitimer(signal.ITIMER_REAL, INTERRUPT_GRACE_S)
 
     def _force() -> None:
-        _finish(norm, out, {"message": "aborted"})
+        _finish(norm, out, ABORTED)
         os._exit(130)
 
     signal.signal(signal.SIGINT, _on_sigint)
@@ -362,7 +370,7 @@ def _run(cfg: dict, prompt: str, norm: CodexNormaliser, out: _Out) -> int:
     pump.join(timeout=2.0)
     if state["interrupted"]:
         _abort_group(signal.SIGKILL)
-        _finish(norm, out, {"message": "aborted"})
+        _finish(norm, out, ABORTED)
         return 130
     if completed and code == 0:
         _finish(norm, out, None)
@@ -370,8 +378,17 @@ def _run(cfg: dict, prompt: str, norm: CodexNormaliser, out: _Out) -> int:
     if failed:
         _finish(norm, out, None)
         return 1
-    _finish(norm, out, {"message": (f"codex exited {code} without a turn.completed event"
-                                    if code == 0 else f"codex exited {code}")})
+    if completed:
+        # a turn.completed followed by a non-zero exit is not a clean iteration
+        message = f"codex exited {code} after turn.completed"
+    elif code == 0:
+        # what SIGTERM produces: exit 0 and no terminal event
+        message = "codex exited 0 without a turn.completed event"
+    else:
+        message = f"codex exited {code} without a turn.failed event"
+    if code != 0 and last_stderr:
+        message = f"{message}: {last_stderr[0]}"
+    _finish(norm, out, {"message": message})
     return 1
 
 

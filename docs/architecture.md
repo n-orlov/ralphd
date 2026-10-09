@@ -2138,6 +2138,27 @@ The wrapper prints each Codex event as a raw envelope
 envelope and appends the unwrapped event to `<stem>.codex.jsonl`; every other
 line is a pi event handled as pi's. `output.codex.jsonl` is never a transcript.
 
+**Abort, exit codes and cost.** The wrapper starts `codex` in its own process
+group and installs a SIGINT handler. On SIGINT it signals the `codex` group,
+emits a terminal `message_end` with `stopReason: "aborted"` and exits 130; if
+`codex` is still alive after `INTERRUPT_GRACE_S` (5 s) the group is SIGKILLed
+and the wrapper exits 130 regardless, so no child of `codex` survives.
+`CodexRunner._after_child` SIGKILLs what is left of the wrapper's group after a
+timeout, a no-traffic timeout or an interrupt, as `ClaudeCodeRunner` does.
+Success is `turn.completed` **and** exit 0. Exit 0 with no `turn.completed`
+(what SIGTERM produces) ends as an error `message_end` whose message names the
+missing `turn.completed` event; a non-zero exit with no `turn.failed` ends as an
+error carrying the last line of `codex`'s stderr. An `iteration_timeout_s` kill
+keeps the workspace edits and leaves no completion claim.
+
+`CodexRunner` takes the run's resolved `pricing` source and prices each
+`message_end` that billed tokens, since `codex` quotes no cost: a rate in the
+operator's `pricing:` map gives `costUSD`; a rate only a built-in table has is
+derived through `PricingSource.derive` (`costDerivedUSD`), the path pi's
+unpriced calls use; no rate leaves the message unpriced (`costPriced: false`,
+no `costUSD`), never free. `costBasis` is `metered` and the loop stamps the
+payer and basis from `JobConfig.billing_for("codex")`.
+
 ### The `codex` normaliser
 
 `harness/codex_normalise.py` holds `CodexNormaliser(model_ref=...)`, the pure

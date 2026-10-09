@@ -9117,6 +9117,9 @@ COST_BUCKET_DERIVED_KEYS = ("key", "tokens", "tokensDisplay", "tokensTotalDispla
 # whose contributors are not all subscription is "mixed".
 COST_BASIS_SUBSCRIPTION = "subscription"
 COST_BASIS_MIXED = "mixed"
+# A codex iteration is metered: tokens are billed at the gateway's rates, so
+# its usage is priced from the host-side `pricing:` source, never free.
+COST_BASIS_METERED = "metered"
 # #298: the billing vocabulary as this module sees it. `engine.config` owns
 # the operator-facing set (BILLING_BASES); state.py keeps its own literals so
 # the renderers never import config. A payer bucket whose iterations carried

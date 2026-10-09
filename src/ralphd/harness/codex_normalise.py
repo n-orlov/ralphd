@@ -166,7 +166,8 @@ class CodexNormaliser:
         body = str(error["message"]) if error.get("message") not in (None, "") else ""
         message = f"{head}: {body}" if head and body else (head or body or "unknown agent error")
         hints = {k: v for k, v in (("httpStatus", status), ("errorType", etype)) if v not in (None, "")}
-        return self._error_end(message, "error", hints)
+        stop = error.get("stopReason")
+        return self._error_end(message, stop if isinstance(stop, str) and stop else "error", hints)
 
     # -- items -------------------------------------------------------------
 

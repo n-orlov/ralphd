@@ -530,3 +530,290 @@ def test_output_jsonl_parses_through_log_render_and_collapse_index(tools_run):
     index = collapse_index.compute_collapse_index(out)
     assert index["transcriptBytes"] == out.stat().st_size
     assert index["segments"]
+
+
+# -- (6) abort, exit codes, cost and the cap kill (B.4) ---------------------------
+
+import signal  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+from ralphd.engine import state as state_mod  # noqa: E402
+from ralphd.engine.config import JobConfig  # noqa: E402
+from ralphd.engine.pricing import PricingChain, PricingMap  # noqa: E402
+
+
+def _pi_events(stdout: str) -> list[dict]:
+    """The wrapper's stdout lines that are pi events (not raw envelopes)."""
+    events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+    return [e for e in events if e.get("type") != codex_mod.CODEX_RAW_ENVELOPE_TYPE]
+
+
+def _wrapper_config(tmp_path: Path, workspace: Path) -> Path:
+    home = tmp_path / "codex-home"
+    home.mkdir(exist_ok=True)
+    cfg = {"model": MODEL_REF, "thinking": None, "effort": None,
+           "workspace": str(workspace), "codex_home": str(home), "headers": {},
+           "hat_tools": [], "run_root": None, "skills": [],
+           "stderr_log": str(tmp_path / "stderr.log")}
+    path = tmp_path / "wrapper.json"
+    path.write_text(json.dumps(cfg))
+    return path
+
+
+def _spawn_wrapper(tmp_path: Path, grace_s: float | None = None) -> subprocess.Popen:
+    """The real wrapper as a child of the test. The disposition of SIGINT is
+    reset first (runners ignore it and children inherit that)."""
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    cfg = _wrapper_config(tmp_path, ws)
+    if grace_s is None:
+        cmd = [sys.executable, "-m", "ralphd.harness.codex", "--config", str(cfg)]
+    else:
+        code = ("import sys, ralphd.harness.codex as c; "
+                f"c.INTERRUPT_GRACE_S = {grace_s!r}; sys.exit(c.main(sys.argv[1:]))")
+        cmd = [sys.executable, "-c", code, "--config", str(cfg)]
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True, cwd=ws, env=dict(os.environ),
+        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+    proc.stdin.write("the prompt")
+    proc.stdin.close()
+    proc.stdin = None  # closed: `communicate` must not flush it again
+    return proc
+
+
+def _gone(pid: int, timeout_s: float = 15.0) -> bool:
+    """True once `pid` no longer exists (a zombie nobody has reaped counts as gone)."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except (OSError, IndexError):
+            return True
+        if state in ("Z", "X"):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _first_event_seen(proc: subprocess.Popen) -> str:
+    return proc.stdout.readline()
+
+
+def test_sigint_during_a_stream_aborts_with_exit_130_and_leaves_no_orphan(tmp_path, monkeypatch):
+    pidfile = tmp_path / "child.pid"
+    observe = _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="hang",
+                     STUB_CODEX_CHILD_PIDFILE=str(pidfile))
+    proc = _spawn_wrapper(tmp_path)
+    try:
+        assert _first_event_seen(proc)
+        child, stub = int(pidfile.read_text()), json.loads(observe.read_text())["pid"]
+        assert not _gone(child, 0.2)
+        proc.send_signal(signal.SIGINT)
+        rest, _ = proc.communicate(timeout=30)
+        assert proc.returncode == 130
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    last = [e for e in _pi_events(rest) if e.get("type") == "message_end"][-1]
+    assert last["message"]["stopReason"] == "aborted"
+    assert _gone(stub), "the codex stub outlived the abort"
+    assert _gone(child), "the stub's child is an orphan"
+
+
+def test_a_codex_that_ignores_sigint_is_killed_after_the_grace_and_the_wrapper_exits_130(
+        tmp_path, monkeypatch):
+    pidfile = tmp_path / "child.pid"
+    observe = _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="ignore_sigint",
+                     STUB_CODEX_CHILD_PIDFILE=str(pidfile))
+    proc = _spawn_wrapper(tmp_path, grace_s=1.0)
+    try:
+        assert _first_event_seen(proc)
+        child, stub = int(pidfile.read_text()), json.loads(observe.read_text())["pid"]
+        t0 = time.monotonic()
+        proc.send_signal(signal.SIGINT)
+        with pytest.raises(subprocess.TimeoutExpired):
+            proc.wait(timeout=0.4)  # still inside the grace: the stub survived SIGINT
+        rest, _ = proc.communicate(timeout=30)
+        assert proc.returncode == 130
+        assert time.monotonic() - t0 >= 0.9
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    last = [e for e in _pi_events(rest) if e.get("type") == "message_end"][-1]
+    assert last["message"]["stopReason"] == "aborted"
+    assert _gone(stub) and _gone(child)
+
+
+def test_runner_interrupt_ends_the_iteration_aborted(tmp_path, monkeypatch):
+    observe = _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="hang")
+    runner = CodexRunner(tmp_path / "ws", home_fn=lambda: tmp_path / "home")
+    (tmp_path / "ws").mkdir()
+    (tmp_path / "it").mkdir()
+    transcript = tmp_path / "it" / "output.jsonl"
+
+    async def go():
+        task = asyncio.ensure_future(runner.run(
+            "the prompt", transcript, model=MODEL_REF, timeout_s=60))
+        deadline = time.monotonic() + 30
+        while not observe.exists() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.5)
+        assert runner.interrupt()
+        return await task
+
+    result = asyncio.run(go())
+    assert result.interrupted
+    assert result.exit_code == 130
+    ends = [json.loads(line) for line in transcript.read_text().splitlines()
+            if '"message_end"' in line]
+    assert ends[-1]["message"]["stopReason"] == "aborted"
+    assert _gone(json.loads(observe.read_text())["pid"])
+
+
+def test_exit_0_without_turn_completed_is_an_error_naming_the_missing_event(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="no_terminal")
+    result, _, itdir = _run(tmp_path)
+    assert result.exit_code == 1
+    assert "turn.completed" in result.error_message
+    assert "without" in result.error_message
+    ends = [json.loads(line) for line in (itdir / "output.jsonl").read_text().splitlines()
+            if '"message_end"' in line]
+    assert ends[-1]["message"]["stopReason"] == "error"
+
+
+def test_exit_1_without_turn_failed_carries_the_last_stderr_line(tmp_path, monkeypatch):
+    # a codex that dies with a crash message and no JSON terminal event
+    crash = tmp_path / "crashing-codex"
+    crash.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "if '--version' in sys.argv: print('codex-cli 0.156.1'); sys.exit(0)\n"
+        "sys.stdin.read()\n"
+        "print('first complaint', file=sys.stderr)\n"
+        "print('fatal: model gateway refused the handshake', file=sys.stderr)\n"
+        "sys.exit(1)\n")
+    crash.chmod(0o755)
+    _setup(monkeypatch, tmp_path)
+    monkeypatch.setenv("RALPHD_CODEX_CLI_PATH", str(crash))
+    result, _, _ = _run(tmp_path)
+    assert result.exit_code == 1
+    assert "exited 1" in result.error_message
+    assert "turn.failed" in result.error_message
+    assert result.error_message.endswith("fatal: model gateway refused the handshake")
+    assert "first complaint" not in result.error_message
+
+
+def test_a_turn_failed_keeps_its_own_message_and_exit_1(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="failed",
+           STUB_CODEX_FAILED_MESSAGE="quota exceeded for stub")
+    result, _, _ = _run(tmp_path)
+    assert result.exit_code == 1
+    assert "quota exceeded for stub" in result.error_message
+
+
+# -- cost: three models, one metered basis ----------------------------------------
+
+_STUB_USAGE_TOKENS = {"input": 400, "cacheRead": 2000, "output": 100}
+
+
+def _pricing() -> PricingChain:
+    operator = PricingMap.from_config({"models": {
+        MODEL_REF: {"input": 2.0, "output": 8.0, "cacheRead": 0.5}}})
+    builtin = PricingMap(models={
+        "aigw-openai/openai.gpt-6.1-mini":
+            PricingMap.from_config({"m": {"input": 1.0, "output": 4.0}}).models["m"]},
+        name="builtin-test-table")
+    return PricingChain((operator, builtin))
+
+
+def _priced_run(tmp_path, monkeypatch, model: str, pricing, name: str):
+    _setup(monkeypatch, tmp_path)
+    (tmp_path / "ws").mkdir(exist_ok=True)
+    (tmp_path / name).mkdir(exist_ok=True)
+    runner = CodexRunner(tmp_path / "ws", home_fn=lambda: tmp_path / "home", pricing=pricing)
+    result = asyncio.run(runner.run("p", tmp_path / name / "output.jsonl",
+                                    model=model, timeout_s=60))
+    assert not result.error_message
+    cfg = JobConfig(billing={"payer": "gw-team", "basis": "metered", "profile": "cx",
+                             "harness": "codex",
+                             "subscription_payer": "claude-code subscription"})
+    state_mod.stamp_billing(result.usage, *cfg.billing_for("codex"))
+    return result.usage
+
+
+def test_a_model_in_the_pricing_map_gets_costusd(tmp_path, monkeypatch):
+    usage = _priced_run(tmp_path, monkeypatch, MODEL_REF, _pricing(), "a")
+    assert usage["costUSD"] == pytest.approx(0.0026)  # 400*2 + 100*8 + 2000*0.5 per Mtok
+    assert usage["costPriced"] is True
+    assert "costDerivedUSD" not in usage
+    assert usage["costBasis"] == "metered"
+    assert (usage["payer"], usage["basis"]) == ("gw-team", "metered")
+    assert usage["costUSD"] > 0 and not usage.get("costFree")
+    for key, tokens in _STUB_USAGE_TOKENS.items():
+        assert usage[key] == tokens
+
+
+def test_a_model_only_a_built_in_table_knows_is_derived_like_a_pi_call(tmp_path, monkeypatch):
+    pricing = _pricing()
+    model = "aigw-openai/openai.gpt-6.1-mini"
+    expected = pricing.derive({"input": 400, "output": 100, "cacheRead": 2000}, model)
+    assert expected is not None and pricing.table_for(model) == "builtin-test-table"
+    usage = _priced_run(tmp_path, monkeypatch, model, pricing, "b")
+    assert usage["costDerivedUSD"] == pytest.approx(expected)
+    assert usage["costDerived"] is True
+    assert usage["costPriced"] is False
+    assert "costUSD" not in usage
+    assert usage["costBasis"] == "metered"
+    assert (usage["payer"], usage["basis"]) == ("gw-team", "metered")
+
+
+def test_a_model_with_no_rate_is_unpriced_not_free(tmp_path, monkeypatch):
+    usage = _priced_run(tmp_path, monkeypatch, "aigw-openai/openai.no-such-model",
+                        _pricing(), "c")
+    assert usage["costPriced"] is False
+    assert usage["costDerived"] is False
+    assert "costUSD" not in usage and "costDerivedUSD" not in usage
+    assert not usage.get("costFree")
+    assert state_mod.cost_status(usage) == "unknown"
+    assert usage["costBasis"] == "metered"
+    assert (usage["payer"], usage["basis"]) == ("gw-team", "metered")
+
+
+def test_a_plain_pricing_map_prices_through_the_same_path(tmp_path, monkeypatch):
+    operator = PricingMap.from_config({"models": {MODEL_REF: {"input": 1.0, "output": 1.0}}})
+    usage = _priced_run(tmp_path, monkeypatch, MODEL_REF, operator, "d")
+    assert usage["costUSD"] == pytest.approx(operator.derive(_STUB_USAGE_TOKENS, MODEL_REF))
+    assert usage["costBasis"] == "metered"
+
+
+def test_no_pricing_source_leaves_the_cost_unknown_not_zero(tmp_path, monkeypatch):
+    usage = _priced_run(tmp_path, monkeypatch, MODEL_REF, None, "e")
+    assert usage["costPriced"] is False
+    assert "costUSD" not in usage
+    assert usage["costBasis"] == "metered"
+
+
+# -- the iteration_timeout_s cap kill ---------------------------------------------
+
+def test_a_cap_kill_keeps_the_workspace_edit_and_discards_the_completion_claim(
+        tmp_path, monkeypatch):
+    pidfile = tmp_path / "child.pid"
+    observe = _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="hang",
+                     STUB_CODEX_WRITE_FILE="edit.txt",
+                     STUB_CODEX_CHILD_PIDFILE=str(pidfile))
+    monkeypatch.setattr(runner_mod, "SHUTDOWN_GRACE_S", 0.5)
+    t0 = time.monotonic()
+    result, _, itdir = _run(tmp_path, timeout_s=4)
+    assert result.timed_out
+    assert time.monotonic() - t0 < 40
+    # the edit the agent made before the cap stays in the workspace
+    assert (tmp_path / "ws" / "edit.txt").read_text().startswith("written by stub-codex")
+    # no completion claim survives: no promise text, no clean exit, no terminal event
+    assert "<promise>COMPLETE</promise>" not in (result.final_text or "")
+    assert result.exit_code != 0
+    raw = (itdir / "output.codex.jsonl").read_text()
+    assert "turn.completed" not in raw
+    assert _gone(json.loads(observe.read_text())["pid"])
+    assert _gone(int(pidfile.read_text()))

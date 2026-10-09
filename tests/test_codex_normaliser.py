@@ -386,3 +386,11 @@ def test_finish_error_with_no_open_group_still_emits_an_error_message_end():
     assert _types(out) == ["message_start", "message_end"]
     (end,) = _ends(out)
     assert end["stopReason"] == "error" and end["errorMessage"] == "stream ended"
+
+
+def test_finish_with_a_stop_reason_ends_the_stream_with_that_reason():
+    norm = CodexNormaliser(model_ref="aigw-openai/openai.gpt-6.1-sol")
+    (end,) = [e for e in norm.finish({"message": "aborted", "stopReason": "aborted"})
+              if e["type"] == "message_end"]
+    assert end["message"]["stopReason"] == "aborted"
+    assert end["message"]["errorMessage"] == "aborted"

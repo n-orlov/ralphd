@@ -33,7 +33,7 @@ from ..harness.codex_normalise import is_traffic as codex_is_traffic
 from ..harness.normalise import RAW_ENVELOPE_TYPE, RAW_TRAFFIC_KINDS
 from . import state
 from .config import CONTROL_PLANE_ENV_VARS
-from .pricing import PricingSource
+from .pricing import OPERATOR_TABLE, PricingSource
 from .privsep import agent_child_kwargs
 from .redact import scrub_text
 from .skills import ambient_home, link_skills, skill_description, verify_placement_and_report
@@ -1161,6 +1161,33 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
         finally:
             shutil.rmtree(codex_home, ignore_errors=True)
             shutil.rmtree(skills_dir, ignore_errors=True)
+
+    def _account_cost(self, usage: dict, result: IterationResult,
+                      pricing: PricingSource | None = None,
+                      model: str | None = None) -> None:
+        """Metered cost. `codex` quotes no price, so a message's tokens are
+        priced from the host-side source: a rate in the operator's `pricing:`
+        map gives `costUSD` (`costPriced`); a rate only a built-in table knows
+        is derived through `derive` (`costDerivedUSD`, `costDerived`) exactly
+        as pi's unpriced calls are; a model with no rate stays unpriced
+        (`costPriced: false`, no `costUSD`), never free; a route the operator
+        declared `free:` is a priced `$0`. `costBasis` is `metered`; the payer
+        is stamped by the loop from `billing_for("codex")`."""
+        result.usage["costBasis"] = state.COST_BASIS_METERED
+        billed = sum(int(usage.get(k) or 0) for k in state.COST_TOKEN_KEYS)
+        if billed and pricing is not None:
+            amount = None
+            if pricing.is_free(model):
+                amount = 0.0
+                result.usage["costFree"] = True
+            elif pricing.table_for(model) == OPERATOR_TABLE:
+                amount = pricing.derive(usage, model)
+            if amount is not None:
+                result.usage["costUSD"] = round(
+                    result.usage.get("costUSD", 0) + amount, 6)
+                result.usage.setdefault("costPriced", True)
+                return
+        _accumulate_cost(usage, result, pricing=pricing, model=model)
 
     def _after_child(self, pgid: int, result: IterationResult) -> None:
         """When the ladder or an interrupt ended the iteration, SIGKILL
