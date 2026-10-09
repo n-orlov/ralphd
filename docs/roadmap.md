@@ -26,7 +26,7 @@ in [docs/prds/](prds/README.md).
 - **Remote/daemon mode.** The token and bind options make running ralphd on a
   server with the CLI over the network possible; making it pleasant (TLS,
   discovery) is not yet done.
-- **Alternative agent runtimes** (Codex, opencode) behind an interface.
+- **Alternative agent runtimes** (opencode) behind an interface.
 - **Named env-wiring profiles.** Reusable `--forward-env`/`--llm-env`/`--env`/creds
   bundles referenced by name at `start`, analogous to LLM profiles. Today a run
   records the wiring it resolved for its own resume, but an operator cannot name
@@ -36,6 +36,7 @@ in [docs/prds/](prds/README.md).
 
 ## Shipped
 
+- v0.33.0 — the codex harness — `codex` is a third agent harness beside `pi` and `claude-code`, selectable per hat or per run, with its own effort table, metered-only billing, an SDK-free wrapper and normaliser, and a fake CLI for tests (#301).
 - v0.32.3 — a truncated judge no longer reads as a rejection — a gate or review reply cut off at the output-token limit is classified as an `output_truncated` fault, retried at a lower tier and thinking level up to `judge_retry_max`, and parks the run for the operator (instead of recording a rejection) when the retries are spent, and the hub's undefer button is hidden for an engine too old to serve the route (#299, #300).
 - v0.32.2 — docker access survives every container restart — `start --allow-docker` records it for the run (in the read-only config dir, never the agent-writable run dir), a bare `resume` and a `doctor --fix` auto-resume re-apply it with the socket re-validated, `resume --no-allow-docker` drops it for good, a recorded socket that has gone missing refuses the resume instead of silently dropping it, and `ralphctl status` and the hub show a `docker:` line (#297).
 - v0.32.1 — cost grouped by payer — a profile's `billing:` block names who pays and how (metered, subscription, chargeback, free), every iteration is stamped with it, and `ralphctl cost`/`status`, the hub and the run record show a `spend:` headline and a by-payer table with per-model rows; runs recorded before it keep their layout (#298).

@@ -704,7 +704,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # +1 module (tests/test_doctor_codex_runtime.py, 31), measured `-m fast
     # --collect-only` -> fast 7893/515, `-m smoke --collect-only` -> smoke
     # 6158/391.
-    "fast": {"tests": 7893, "modules": 515},
+    # Task 013 (version 0.33.0): +2 tests in tests/test_packaging_metadata.py,
+    # measured `-m fast --collect-only` -> fast 7895/515, `-m smoke
+    # --collect-only` -> smoke 6158/391.
+    "fast": {"tests": 7895, "modules": 515},
     "smoke": {"tests": 6158, "modules": 391},
 }
 

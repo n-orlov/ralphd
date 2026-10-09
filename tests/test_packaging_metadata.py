@@ -109,6 +109,29 @@ def test_the_declared_version_is_at_least_0_32_3():
     )
 
 
+def test_the_declared_version_is_at_least_0_33_0():
+    """The release that ships the codex harness is 0.33.0. A tuple comparison,
+    so a later bump keeps passing; the sites that must move with it are held
+    equal by the neighbouring tests."""
+    v = tuple(int(part) for part in declared_version().split("."))
+    assert v >= (0, 33, 0), (
+        f"declared version {declared_version()!r} is below 0.33.0 -- the release "
+        "that ships the codex harness is 0.33.0"
+    )
+
+
+def test_the_api_doc_get_version_example_reads_the_declared_version():
+    """docs/api.md's `GET /version` example is a literal claim: it must read
+    the pyproject version, which `src/ralphd/__init__.py` is held equal to."""
+    text = (REPO_ROOT / "docs" / "api.md").read_text()
+    m = re.search(r"`GET /version` \u2192 `\{\"ralphd\": \"([^\"]+)\"", text)
+    assert m, "docs/api.md has no `GET /version` example body"
+    assert m.group(1) == declared_version(), (
+        f"docs/api.md's GET /version example reads {m.group(1)!r}, "
+        f"pyproject says {declared_version()!r}"
+    )
+
+
 def test_the_api_version_handler_reports_the_package_literal():
     """`GET /version`'s body is built from `ralphd.__version__` -- the same
     literal the two tests above pin -- so it cannot report a third number."""
