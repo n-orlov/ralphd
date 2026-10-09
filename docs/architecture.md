@@ -1996,7 +1996,7 @@ thinking off (`--thinking disabled`) and sets no effort, `minimal` and `low`
 are `low`, and `medium`, `high` and `xhigh` map to themselves. No level means
 no flag.
 
-**Hat tools.** A hat's tools are the same on both harnesses. The engine's
+**Hat tools.** A hat's tools are the same on all harnesses. The engine's
 `LoopSupervisor._hat_tool_names(phase)` is the sorted tool names of the same
 live broker `_hat_extensions` reads, so the scope is identical: steer gets its
 table and context tools plus `notify`, worker `notify`, review `record-verdict`,
@@ -2012,6 +2012,26 @@ as pi's extension does. The `SteerToolBroker` in the engine executes the call,
 so every applier guarantee and the `steer.tool_call` audit event are unchanged.
 The model sees the tools as `mcp__ralphd__<name>`; the system prompt says so,
 and the normaliser strips the prefix so transcripts match pi's.
+
+A `codex` hat gets the same tools through a stdio MCP relay. `CodexRunner`
+passes the names in `wrapper.json` (`hat_tools`, `run_root`) and sets
+`RALPHD_HAT_TOOLS_RUN` for the wrapper. When the hat has tools, the wrapper
+writes `[mcp_servers.ralphd]` into `config.toml`: `command` is the wrapper's
+Python, `args` is `-m ralphd.harness.codex_mcp --tools <names>`, `env` names the
+run root (`RALPHD_HAT_TOOLS_RUN`) and `tool_timeout_sec` exceeds
+`hat_tools.CLIENT_TIMEOUT_S`, so the spool client's own timeout answer arrives
+first. A hat with no tools gets no `mcp_servers` table. `codex` starts the relay;
+it speaks newline-delimited JSON-RPC 2.0, answers `initialize`, `ping`,
+`tools/list` (`hat_tools.sdk_tool_specs`, so the names and input schemas equal
+the `claude-code` server's) and `tools/call`, which runs `hat_tools.call` against
+the run root and returns the response JSON as one text content block, never
+flagged as an error, so the broker, its applier guarantees and the
+`steer.tool_call` audit event are unchanged. The relay imports no
+`claude_agent_sdk` and no engine module other than `hat_tools`. The model sees
+the tools as `ralphd` namespace tools, which the line at the head of the prompt
+says; the instructions name them without the namespace, and the normaliser
+turns an `mcp_tool_call` item for server `ralphd` into a pair with the bare
+tool name, so transcripts match pi's.
 
 **The stdout protocol.** stdout is NDJSON, one object per line, flushed per
 line, and nothing is printed before the first SDK message. For each SDK
@@ -2093,7 +2113,7 @@ provider (the LLM profile's headers and `--llm-header` ones, for example
 The argv is `exec --json --skip-git-repo-check --ephemeral -C <workspace>
 --dangerously-bypass-approvals-and-sandbox -`: the trailing `-` makes `codex`
 read the prompt from stdin, so no prompt is ever an argument. The prompt on
-stdin is the skills index (when there are skills) followed by the prompt. The
+stdin is the hat-tool line (when the hat has tools, see Hat tools above), the skills index (when there are skills) and the prompt. The
 bearer token reaches `codex` only through the environment variable named by
 `env_key`; neither `config.toml` nor the argv nor any wrapper file holds its
 value.

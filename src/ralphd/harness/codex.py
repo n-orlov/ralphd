@@ -110,6 +110,8 @@ def _toml_value(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     return _toml_str(str(value))
 
 
@@ -123,6 +125,41 @@ def _toml_table(path: list[str], table: dict[str, Any]) -> list[str]:
         if isinstance(v, dict):
             lines += [""] + _toml_table(path + [k], v)
     return lines
+
+
+MCP_SERVER_NAME = "ralphd"
+MCP_MODULE = "ralphd.harness.codex_mcp"
+# Longer than `hat_tools.CLIENT_TIMEOUT_S` (120 s), so the relay's own timeout
+# answer reaches the model before codex gives up on the call.
+MCP_TOOL_TIMEOUT_S = 150
+
+
+def mcp_servers(cfg: dict) -> dict[str, Any]:
+    """The `mcp_servers` table for the hat's tools: one `ralphd` server, the
+    stdio relay `ralphd.harness.codex_mcp`, or nothing when the hat has no
+    tools (or no run root to relay through)."""
+    names = [str(n) for n in (cfg.get("hat_tools") or ())]
+    root = cfg.get("run_root")
+    if not names or not root:
+        return {}
+    env = {"RALPHD_HAT_TOOLS_RUN": str(root)}
+    if os.environ.get("PYTHONPATH"):
+        env["PYTHONPATH"] = os.environ["PYTHONPATH"]
+    return {MCP_SERVER_NAME: {
+        "command": sys.executable,
+        "args": ["-m", MCP_MODULE, "--tools", ",".join(names)],
+        "tool_timeout_sec": MCP_TOOL_TIMEOUT_S,
+        "env": env,
+    }}
+
+
+def hat_tool_prompt(names: list[str]) -> str:
+    """The prompt line naming the hat's tools: `ralphd` namespace tools."""
+    if not names:
+        return ""
+    return ("ralphd's tools for this hat (" + ", ".join(names) + ") are `ralphd` "
+            "namespace tools (the MCP server `ralphd`); the instructions name "
+            "them without the namespace.")
 
 
 def build_config(cfg: dict, base_url: str) -> str:
@@ -151,6 +188,7 @@ def build_config(cfg: dict, base_url: str) -> str:
     lines = [f"{k} = {_toml_value(v)}" for k, v in top.items()]
     for path, table in (
         (["model_providers", PROVIDER_ID], provider),
+        *((["mcp_servers", n], t) for n, t in mcp_servers(cfg).items()),
         (["skills"], {"include_instructions": False, "bundled": {"enabled": False}}),
         (["features"], {"multi_agent": False, "goals": False, "view_image": False}),
     ):
@@ -312,6 +350,8 @@ def _run(cfg: dict, prompt: str, norm: CodexNormaliser, out: _Out) -> int:
     index = skills_index(list(cfg.get("skills") or []))
     if index:
         prompt = f"{index}\n\n{prompt}"
+    if mcp_servers(cfg):
+        prompt = f"{hat_tool_prompt(list(cfg['hat_tools']))}\n\n{prompt}"
     argv = build_argv(cli, cfg["workspace"])
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
