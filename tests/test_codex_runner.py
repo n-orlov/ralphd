@@ -876,3 +876,79 @@ def test_the_supervisor_codex_runner_prices_a_live_call_from_the_operator_map(
     assert result.usage["costUSD"] == pytest.approx(0.0026)
     assert result.usage["costPriced"] is True
     assert result.usage["costBasis"] == "metered"
+
+
+# -- B.2.3: stderr.log passes through the engine's scrub_text ---------------------
+
+OTHER_SECRET = "fake-other-secret-value-0123456789"
+THIRD_SECRET = "fake-third-secret-value-9876543210"
+
+
+def _with_map(extra: dict):
+    """Context manager: the live redaction map holds `extra` (and is restored)."""
+    import contextlib
+    from ralphd.engine import redact
+
+    @contextlib.contextmanager
+    def cm():
+        with redact._lock:
+            saved = dict(redact._map)
+            redact._map.update(extra)
+        try:
+            yield
+        finally:
+            with redact._lock:
+                redact._map.clear()
+                redact._map.update(saved)
+    return cm()
+
+
+def test_stderr_log_masks_a_non_token_redaction_map_secret(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="echo_stderr",
+           STUB_CODEX_STDERR_LINES=f"warn: key={OTHER_SECRET} rejected|plain line")
+    with _with_map({OTHER_SECRET: "env:OTHER_KEY"}):
+        _, _, itdir = _run(tmp_path)
+    log = (itdir / "output.codex-scratch" / "stderr.log").read_text()
+    assert OTHER_SECRET not in log
+    assert "warn: key=[REDACTED:env:OTHER_KEY] rejected" in log
+    assert "plain line" in log
+    for f in itdir.rglob("*"):
+        if f.is_file():
+            assert OTHER_SECRET not in f.read_text(errors="replace"), f
+
+
+def test_stderr_log_masks_several_secrets_in_one_line_and_keeps_line_order(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="echo_stderr",
+           STUB_CODEX_STDERR_LINES=f"first|{OTHER_SECRET} and {THIRD_SECRET} and {OTHER_SECRET}|last")
+    with _with_map({OTHER_SECRET: "env:A", THIRD_SECRET: "env:B"}):
+        _, _, itdir = _run(tmp_path)
+    lines = (itdir / "output.codex-scratch" / "stderr.log").read_text().splitlines()
+    assert lines == ["first", "[REDACTED:env:A] and [REDACTED:env:B] and [REDACTED:env:A]", "last"]
+
+
+def test_stderr_lines_never_reach_the_transcript_or_the_raw_log(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="echo_stderr",
+           STUB_CODEX_STDERR_LINES="ralphd.codex_raw looks like an envelope|ralphd.codex_stderr too")
+    _, _, itdir = _run(tmp_path)
+    log = (itdir / "output.codex-scratch" / "stderr.log").read_text()
+    assert "ralphd.codex_raw looks like an envelope" in log
+    assert "ralphd.codex_stderr too" in log
+    assert "looks like an envelope" not in (itdir / "output.jsonl").read_text()
+    assert "looks like an envelope" not in (itdir / "output.codex.jsonl").read_text()
+
+
+def test_the_wrapper_own_stderr_is_scrubbed_after_the_child_ends(tmp_path, monkeypatch):
+    """A line the wrapper itself writes to its stderr (not codex's) is masked
+    too: here a model ref nothing can resolve makes the wrapper write a
+    diagnostic straight to the log, simulated by seeding the log file."""
+    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="echo_stderr",
+           STUB_CODEX_STDERR_LINES="codex line")
+    scratch = tmp_path / "it" / "output.codex-scratch"
+    scratch.mkdir(parents=True)
+    (scratch / "stderr.log").write_text(f"wrapper trace {OTHER_SECRET}\n")
+    with _with_map({OTHER_SECRET: "env:OTHER_KEY"}):
+        _run(tmp_path)
+    log = (scratch / "stderr.log").read_text()
+    assert OTHER_SECRET not in log
+    assert "wrapper trace [REDACTED:env:OTHER_KEY]" in log
+    assert "codex line" in log

@@ -36,6 +36,12 @@ from typing import Any
 # stall watchdogs only when `is_traffic` says so.
 CODEX_RAW_ENVELOPE_TYPE = "ralphd.codex_raw"
 
+# The envelope the wrapper puts on stdout for each line `codex` wrote to its
+# stderr, `{"type": CODEX_STDERR_ENVELOPE_TYPE, "line": <text>}`. The runner
+# passes the text through the engine's `scrub_text` and appends it to the
+# scratch `stderr.log`; it is never agent traffic and never a pi event.
+CODEX_STDERR_ENVELOPE_TYPE = "ralphd.codex_stderr"
+
 PROVIDER = "openai"
 RALPHD_SERVER = "ralphd"
 

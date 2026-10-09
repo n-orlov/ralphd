@@ -33,7 +33,11 @@ STUB_CODEX_SCENARIO       text (default) | tools (command_execution started and
                           unknown_items (item and event types never seen
                           before, then a normal completion) |
                           echo_token (prints $AWS_BEARER_TOKEN_BEDROCK on stdout
-                          inside events and as a bare line, and on stderr).
+                          inside events and as a bare line, and on stderr) |
+                          echo_stderr (writes each "|"-separated line of
+                          STUB_CODEX_STDERR_LINES to stderr, then a normal
+                          completion).
+STUB_CODEX_STDERR_LINES   the stderr lines of the echo_stderr scenario.
 STUB_CODEX_TEXT           agent_message text (default "done\\n<promise>COMPLETE</promise>").
 STUB_CODEX_FAILED_MESSAGE turn.failed error.message (failed scenario; default
                           "stream disconnected before completion: stub failure").
@@ -225,6 +229,12 @@ elif scenario == "unknown_items":
     emit({"type": "future.event", "data": [1, 2, 3]})
     emit({"type": "item.completed", "item": {"id": item_id(), "type": "error",
                                               "message": "unknown model slug, using fallback"}})
+    message(TEXT)
+    completed()
+elif scenario == "echo_stderr":
+    # STUB_CODEX_STDERR_LINES: "|"-separated lines written to stderr verbatim.
+    for line in E("STUB_CODEX_STDERR_LINES", "").split("|"):
+        print(line, file=sys.stderr, flush=True)
     message(TEXT)
     completed()
 elif scenario == "echo_token":

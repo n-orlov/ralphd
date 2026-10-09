@@ -19,7 +19,9 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from .codex_normalise import CODEX_RAW_ENVELOPE_TYPE, CodexNormaliser
+from .codex_normalise import (
+    CODEX_RAW_ENVELOPE_TYPE, CODEX_STDERR_ENVELOPE_TYPE, CodexNormaliser,
+)
 from ..cli.versions import compare_versions
 from ..engine.config import CODEX_MIN_VERSION
 from ..engine.redact import MIN_SECRET_LEN
@@ -59,7 +61,8 @@ def effort_options(thinking: str | None, effort: str | None) -> dict[str, Any]:
 # on stdout. For each call it
 #
 # 1. redirects its own stderr to the config's `stderr_log` (stdout stays
-#    NDJSON-only),
+#    NDJSON-only; `codex`'s own stderr leaves as `ralphd.codex_stderr`
+#    envelopes the runner scrubs into the same log),
 # 2. writes exactly one file into the scratch `CODEX_HOME` the runner made,
 #    `config.toml` (never an `AGENTS.md`), from `build_config`,
 # 3. runs `<cli> exec --json --skip-git-repo-check --ephemeral -C <workspace>
@@ -293,12 +296,14 @@ class _Out:
 
     def __init__(self) -> None:
         self._buf = sys.stdout.buffer
+        self._lock = threading.Lock()  # the stderr pump emits from a thread
 
     def emit(self, obj: dict) -> None:
         data = mask_token(json.dumps(obj, default=str, ensure_ascii=False),
                           os.environ.get(TOKEN_ENV)) + "\n"
-        self._buf.write(data.encode("utf-8", errors="replace"))
-        self._buf.flush()
+        with self._lock:
+            self._buf.write(data.encode("utf-8", errors="replace"))
+            self._buf.flush()
 
 
 def _redirect_stderr(path: str | None) -> None:
@@ -312,16 +317,23 @@ def _redirect_stderr(path: str | None) -> None:
     os.close(fd)
 
 
-def _pump_stderr(src, token: str | None, last: list | None = None) -> None:
-    """Copy `codex`'s stderr to this process's stderr (the runner's
-    `stderr.log`), masking the bearer token on the way. The last non-blank
-    (masked) line lands in `last[0]` when a list is given."""
+def _pump_stderr(src, token: str | None, last: list | None = None,
+                 out: "_Out | None" = None) -> None:
+    """Hand `codex`'s stderr on, masking the bearer token on the way. With
+    `out`, each line leaves as a stderr envelope on stdout, and the runner
+    writes it to `stderr.log` through the engine's `scrub_text` (the only
+    place the live redaction map exists). Without `out` it is copied to this
+    process's own stderr. The last non-blank (masked) line lands in `last[0]`
+    when a list is given."""
     try:
         for chunk in iter(src.readline, b""):
             text = mask_token(chunk.decode("utf-8", errors="replace"), token)
             if last is not None and text.strip():
                 last[:] = [text.strip()]
-            os.write(2, text.encode("utf-8", errors="replace"))
+            if out is not None:
+                out.emit({"type": CODEX_STDERR_ENVELOPE_TYPE, "line": text})
+            else:
+                os.write(2, text.encode("utf-8", errors="replace"))
     except (OSError, ValueError):
         pass
 
@@ -363,7 +375,7 @@ def _run(cfg: dict, prompt: str, norm: CodexNormaliser, out: _Out) -> int:
 
     last_stderr: list[str] = []
     pump = threading.Thread(target=_pump_stderr,
-                            args=(proc.stderr, os.environ.get(TOKEN_ENV), last_stderr),
+                            args=(proc.stderr, os.environ.get(TOKEN_ENV), last_stderr, out),
                             daemon=True)
     pump.start()
     state = {"interrupted": False}

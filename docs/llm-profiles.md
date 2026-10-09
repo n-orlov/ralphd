@@ -576,7 +576,9 @@ It keeps `AWS_BEARER_TOKEN_BEDROCK` and `AIGW_OPENAI_BASE_URL`, and sets
 
 **What is masked.** The token's value is replaced by
 `[REDACTED:env:AWS_BEARER_TOKEN_BEDROCK]` in `output.jsonl`, in
-`output.codex.jsonl` and in the wrapper's `stderr.log`.
+`output.codex.jsonl` and in the wrapper's `stderr.log`. The engine's `scrub_text`
+masks every line of `stderr.log` with the live redaction map, so any secret the
+engine knows (not only the token) is masked there too.
 
 **Known limit.** The token is visible to the agent's shell. `codex` receives it
 in its environment and runs the agent's commands as its children, so an agent

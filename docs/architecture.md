@@ -2147,8 +2147,11 @@ and `codex-cli-missing` refusal families, like `cc-version` and `cc-cli-missing`
 Every artifact is masked. The engine's `scrub_text` runs over each stdout line
 of the wrapper, `<stem>.codex.jsonl` and `output.jsonl`. The wrapper itself
 masks the bearer token's value (as `[REDACTED:env:AWS_BEARER_TOKEN_BEDROCK]`) in
-every line it prints and routes `codex`'s stderr through the same mask into
-`stderr.log`. The token is still in the environment of `codex` and of the shell
+every line it prints. `codex`'s stderr leaves the wrapper as `ralphd.codex_stderr`
+envelopes on stdout, and `CodexRunner` writes each line to `stderr.log` through
+`scrub_text` with the live redaction map, so any redaction-map value is masked
+there, not only the token; after the child ends the runner scrubs the whole log
+once more, which covers what the wrapper wrote to its own stderr. The token is still in the environment of `codex` and of the shell
 `codex` runs commands in, so an agent that runs `env` sees it; the masks only
 keep it out of what ralphd writes.
 

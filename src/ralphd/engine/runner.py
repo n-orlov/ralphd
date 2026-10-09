@@ -28,7 +28,7 @@ from typing import Protocol, runtime_checkable
 from .. import (
     render_index,
 )
-from ..harness.codex_normalise import CODEX_RAW_ENVELOPE_TYPE
+from ..harness.codex_normalise import CODEX_RAW_ENVELOPE_TYPE, CODEX_STDERR_ENVELOPE_TYPE
 from ..harness.codex_normalise import is_traffic as codex_is_traffic
 from ..harness.normalise import RAW_ENVELOPE_TYPE, RAW_TRAFFIC_KINDS
 from . import state
@@ -1090,6 +1090,7 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
         self._config_dir = config_dir
         self._home_fn = home_fn
         self._raw_path: Path | None = None
+        self._stderr_log: Path | None = None
 
     def _provider_headers(self, model: str | None) -> dict[str, str]:
         """The headers pi's `models.json` carries for `model`'s provider."""
@@ -1155,10 +1156,12 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
             if tool_names and run_root:
                 env["RALPHD_HAT_TOOLS_RUN"] = run_root
             self._raw_path = transcript.with_name(transcript.stem + ".codex.jsonl")
+            self._stderr_log = scratch / "stderr.log"
             return await self._run_child(cmd, env, prompt, transcript, result,
                                          timeout_s, startup_timeout_s,
                                          model=model)
         finally:
+            self._scrub_stderr_log()
             shutil.rmtree(codex_home, ignore_errors=True)
             shutil.rmtree(skills_dir, ignore_errors=True)
 
@@ -1205,17 +1208,43 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pgid, signal.SIGKILL)
 
+    def _append_stderr(self, text: str) -> None:
+        """One line of `codex`'s stderr, through `scrub_text` with the live
+        redaction map, onto the scratch `stderr.log`."""
+        if self._stderr_log is None:
+            return
+        with open(self._stderr_log, "a") as fh:
+            fh.write(scrub_text(text))
+
+    def _scrub_stderr_log(self) -> None:
+        """Pass everything in `stderr.log` through `scrub_text` once more: the
+        wrapper's own stderr (a traceback, a diagnostic) is written to the
+        file directly and never travelled through the envelope."""
+        path = self._stderr_log
+        if path is None or not path.is_file():
+            return
+        try:
+            text = path.read_text(errors="replace")
+            clean = "".join(scrub_text(line) for line in text.splitlines(keepends=True))
+            if clean != text:
+                path.write_text(clean)
+        except OSError:
+            pass
+
     def _handle_line(self, raw: bytes, out, result: IterationResult,
                      live_index: render_index.LiveRenderIndex,
                      transcript: Path, *, model: str | None = None) -> bool:
         """A raw Codex envelope is scrubbed and appended, unwrapped, to
         `<stem>.codex.jsonl`; it is traffic when `is_traffic` says so. Every
         other line is a pi event (the base hook)."""
-        if CODEX_RAW_ENVELOPE_TYPE.encode() in raw:
+        if b'"ralphd.codex_' in raw:
             try:
                 event = json.loads(raw)
             except json.JSONDecodeError:
                 event = None
+            if isinstance(event, dict) and event.get("type") == CODEX_STDERR_ENVELOPE_TYPE:
+                self._append_stderr(str(event.get("line") or ""))
+                return False
             if isinstance(event, dict) and event.get("type") == CODEX_RAW_ENVELOPE_TYPE:
                 payload = event.get("raw")
                 raw_path = self._raw_path or transcript.with_name(

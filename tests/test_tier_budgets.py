@@ -707,8 +707,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 013 (version 0.33.0): +2 tests in tests/test_packaging_metadata.py,
     # measured `-m fast --collect-only` -> fast 7895/515, `-m smoke
     # --collect-only` -> smoke 6158/391.
-    "fast": {"tests": 7895, "modules": 515},
-    "smoke": {"tests": 6158, "modules": 391},
+    # cure-01-01 (stderr.log through scrub_text): +4 tests in
+    # tests/test_codex_runner.py, measured `-m fast --collect-only` -> fast
+    # 7899/515, `-m smoke --collect-only` -> smoke 6162/391.
+    "fast": {"tests": 7899, "modules": 515},
+    "smoke": {"tests": 6162, "modules": 391},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
