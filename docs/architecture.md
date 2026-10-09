@@ -2053,6 +2053,59 @@ follows.
 directory names `output.jsonl` explicitly (`log_merge.OUTPUT_FILENAME`), and a
 guard test fails if a source file globs `*.jsonl` over one.
 
+### The `codex` wrapper and `CodexRunner`
+
+`CodexRunner` spawns the `codex` wrapper, `python -m ralphd.harness.codex
+--config <scratch>/wrapper.json`, through `_ChildProcessRunner._run_child`: own
+session, agent uid, the prompt on stdin, NDJSON on stdout. Neither the runner
+nor the wrapper imports the Claude Agent SDK. The wrapper runs the `codex` CLI
+(`$RALPHD_CODEX_CLI_PATH`, else `codex` on `PATH`) in its own process group.
+
+Per call the runner makes a scratch area beside the transcript,
+`<stem>.codex-scratch/`:
+
+| Path | Role |
+|---|---|
+| `codex-home/` | the wrapper's `CODEX_HOME`: an existing, empty directory that holds `config.toml` and nothing else (never an `AGENTS.md`); removed in a `finally` |
+| `skills/` | the effective skills, linked for the index in the prompt; removed in a `finally` |
+| `wrapper.json` | the wrapper config: `model`, `thinking`, `effort`, `workspace`, `codex_home`, `headers`, `hat_tools`, `run_root`, `skills`, `stderr_log` |
+| `stderr.log` | the wrapper's and `codex`'s stderr |
+
+`headers` is the header map pi's `models.json` carries for the model's
+provider (the LLM profile's headers and `--llm-header` ones, for example
+`X-Jira-ID`).
+
+`config.toml` holds:
+
+- `model`: the model ref with its provider prefix removed and the rest
+  verbatim (`aigw-openai/openai.gpt-6.1-sol` gives `openai.gpt-6.1-sol`),
+  `model_provider = "aigw"`, `service_tier = "auto"`, `model_reasoning_effort`
+  from `CODEX_EFFORT_TABLE`, `web_search = "disabled"`.
+- `[model_providers.aigw]`: `name`, `base_url` (from `AIGW_OPENAI_BASE_URL`),
+  `env_key = "AWS_BEARER_TOKEN_BEDROCK"`, `wire_api = "responses"`,
+  `request_max_retries` and `stream_max_retries` both 2, so the engine's fault
+  ladder owns retrying, and `[model_providers.aigw.http_headers]` with the
+  `headers` map.
+- Isolation: `project_doc_max_bytes = 0`, `skills.bundled.enabled = false`,
+  `skills.include_instructions = false`, `features.multi_agent`,
+  `features.goals` and `features.view_image` all `false`.
+
+The argv is `exec --json --skip-git-repo-check --ephemeral -C <workspace>
+--dangerously-bypass-approvals-and-sandbox -`: the trailing `-` makes `codex`
+read the prompt from stdin, so no prompt is ever an argument. The prompt on
+stdin is the skills index (when there are skills) followed by the prompt. The
+bearer token reaches `codex` only through the environment variable named by
+`env_key`; neither `config.toml` nor the argv nor any wrapper file holds its
+value. When `AIGW_OPENAI_BASE_URL` or `AWS_BEARER_TOKEN_BEDROCK` is absent the
+wrapper does not start `codex` and ends in-band with
+`codex_gateway_not_configured` naming the variable.
+
+The wrapper prints each Codex event as a raw envelope
+(`{"type": "ralphd.codex_raw", "raw": <event>}`) followed by the pi events
+`CodexNormaliser.feed` makes of it. `CodexRunner._handle_line` scrubs each
+envelope and appends the unwrapped event to `<stem>.codex.jsonl`; every other
+line is a pi event handled as pi's. `output.codex.jsonl` is never a transcript.
+
 ### The `codex` normaliser
 
 `harness/codex_normalise.py` holds `CodexNormaliser(model_ref=...)`, the pure

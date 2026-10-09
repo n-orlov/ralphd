@@ -42,8 +42,7 @@ Each role (a "hat") runs on one of three agent harnesses (`config.HARNESSES`):
 Python Agent SDK ([`harness/claude_code.py`](../src/ralphd/harness/claude_code.py));
 or `codex`, served OpenAI-family models only and dispatched to `CodexRunner`
 ([`runner.py`](../src/ralphd/engine/runner.py)), whose child is the codex
-wrapper module; an engine without that module ends a `codex` iteration in-band
-with `codex_wrapper_unavailable` rather than raising. Every
+wrapper ([`harness/codex.py`](../src/ralphd/harness/codex.py)). Every
 harness feeds the engine the same pi-shaped NDJSON event stream. The LLM performs planning,
 implementation, and judgment. The harness controls scheduling, budgets, retries,
 state updates, and the decision to publish an outcome.

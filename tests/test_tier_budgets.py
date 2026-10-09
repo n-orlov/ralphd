@@ -672,8 +672,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # tests/test_codex_normaliser.py and +33 tests / +1 module
     # (tests/test_codex_transcript_parity.py), measured `-m fast
     # --collect-only` -> fast 7753, `-m smoke --collect-only` -> smoke 6021.
-    "fast": {"tests": 7753, "modules": 511},
-    "smoke": {"tests": 6021, "modules": 387},
+    # v0.33 task 006 (codex wrapper and CodexRunner config/argv): +26 tests /
+    # +1 module (tests/test_codex_runner.py) and +1 ingestion-lint test for
+    # src/ralphd/harness/skills_index.py, measured `-m fast --collect-only`
+    # -> fast 7780, `-m smoke --collect-only` -> smoke 6048.
+    "fast": {"tests": 7780, "modules": 512},
+    "smoke": {"tests": 6048, "modules": 388},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

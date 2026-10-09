@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import importlib.util
 import json
 import logging
 import os
@@ -29,13 +28,15 @@ from typing import Protocol, runtime_checkable
 from .. import (
     render_index,
 )
+from ..harness.codex_normalise import CODEX_RAW_ENVELOPE_TYPE
+from ..harness.codex_normalise import is_traffic as codex_is_traffic
 from ..harness.normalise import RAW_ENVELOPE_TYPE, RAW_TRAFFIC_KINDS
 from . import state
 from .config import CONTROL_PLANE_ENV_VARS
 from .pricing import PricingSource
 from .privsep import agent_child_kwargs
 from .redact import scrub_text
-from .skills import link_skills, skill_description, verify_placement_and_report
+from .skills import ambient_home, link_skills, skill_description, verify_placement_and_report
 
 COMPLETE = "<promise>COMPLETE</promise>"
 VERIFIED = "<promise>VERIFIED</promise>"
@@ -681,7 +682,39 @@ CLAUDE_CODE_ROOT_REFUSAL = "claude_code_runs_as_root"
 _ANTHROPIC_PREFIX = "anthropic/"
 
 
-class ClaudeCodeRunner(_ChildProcessRunner):
+class _SkillLinker:
+    """Skill linking shared by the wrapper runners (`ClaudeCodeRunner`,
+    `CodexRunner`): the effective skills are linked into a scratch directory
+    and reported as `{name, description, path}` entries for the wrapper.
+    Expects `harness`, `_run_dir`, `_config_dir` and `_home_fn` on `self`."""
+
+    harness = ""
+
+    def _skill_roots(self) -> tuple[Path | None, Path | None]:
+        cfg = self._config_dir() if callable(self._config_dir) else self._config_dir
+        home = self._home_fn() if self._home_fn is not None else None
+        return cfg, home
+
+    def _link_skills(self, target: Path) -> list[dict]:
+        """Link the effective skills into `target` and report the check on
+        both roots. Never raises: a failure here costs the skills, not the
+        iteration."""
+        config_dir, home = self._skill_roots()
+        if config_dir is None or home is None:
+            return []
+        try:
+            names = link_skills(Path(config_dir), home=Path(home), target=target)
+        except Exception as exc:
+            log.error("%s: linking skills into %s failed: %r", self.harness, target, exc)
+            return []
+        if self._run_dir is not None:
+            verify_placement_and_report(self._run_dir, Path(config_dir), Path(home),
+                                        extra_targets=[target])
+        return [{"name": n, "description": skill_description(target / n),
+                 "path": str(target / n / "SKILL.md")} for n in names]
+
+
+class ClaudeCodeRunner(_SkillLinker, _ChildProcessRunner):
     """Runs one iteration on Claude Code: `python -m ralphd.harness.claude_code`
     as a child, through the same spawn path as pi.
 
@@ -737,29 +770,6 @@ class ClaudeCodeRunner(_ChildProcessRunner):
             except KeyError:
                 return -1
         return int(user)
-
-    def _skill_roots(self) -> tuple[Path | None, Path | None]:
-        cfg = self._config_dir() if callable(self._config_dir) else self._config_dir
-        home = self._home_fn() if self._home_fn is not None else None
-        return cfg, home
-
-    def _link_skills(self, target: Path) -> list[dict]:
-        """Link the effective skills into `target` and report the check on
-        both roots. Never raises: a failure here costs the skills, not the
-        iteration."""
-        config_dir, home = self._skill_roots()
-        if config_dir is None or home is None:
-            return []
-        try:
-            names = link_skills(Path(config_dir), home=Path(home), target=target)
-        except Exception as exc:
-            log.error("claude-code: linking skills into %s failed: %r", target, exc)
-            return []
-        if self._run_dir is not None:
-            verify_placement_and_report(self._run_dir, Path(config_dir), Path(home),
-                                        extra_targets=[target])
-        return [{"name": n, "description": skill_description(target / n),
-                 "path": str(target / n / "SKILL.md")} for n in names]
 
     # -- run ---------------------------------------------------------------
 
@@ -1043,21 +1053,29 @@ def _accumulate_cost(usage: dict, result: IterationResult,
         result.usage.setdefault("costDerived", True)
 
 
-# The wrapper module `CodexRunner` spawns, and the in-band signature of the
-# refusal to start an iteration before the wrapper exists.
+# The wrapper module `CodexRunner` spawns.
 CODEX_WRAPPER_MODULE = "ralphd.harness.codex"
-CODEX_WRAPPER_MISSING = "codex_wrapper_unavailable"
 
 
-class CodexRunner(_ChildProcessRunner):
-    """Runs one iteration on the Codex CLI, through the shared child path.
+class CodexRunner(_SkillLinker, _ChildProcessRunner):
+    """Runs one iteration on the Codex CLI: `python -m ralphd.harness.codex`
+    as a child, through the same spawn path as pi and claude-code.
 
     The runner is registered in `LoopSupervisor._runners` under `"codex"` and
     takes the hat's tool names as `hat_tools` (not pi `extensions`), exactly
-    like `ClaudeCodeRunner`. It never imports the Claude Agent SDK. Its
-    wrapper (`ralphd.harness.codex`) is the child it spawns; while that
-    module is absent the call ends in-band with `CODEX_WRAPPER_MISSING`
-    instead of raising, so the loop records an ordinary failed iteration.
+    like `ClaudeCodeRunner`. It never imports the Claude Agent SDK.
+
+    Per call it builds a scratch area beside the transcript
+    (`<stem>.codex-scratch/`): `codex-home/` is the wrapper's `CODEX_HOME`
+    (an existing, empty directory; the wrapper writes `config.toml` into it
+    and nothing else), `skills/` holds the linked skills the wrapper lists in
+    the prompt's skills index, and `wrapper.json` and `stderr.log` stay. The
+    headers pi's `models.json` carries for the model's provider (a profile's
+    and `--llm-header` ones) ride in `wrapper.json` and land in the config's
+    `http_headers`. `codex-home/` and `skills/` are removed in a `finally`.
+    The wrapper's stdout carries pi events, handled exactly as pi's, and raw
+    Codex envelopes, which `_handle_line` scrubs and appends, unwrapped, to
+    `<stem>.codex.jsonl` beside the transcript.
     """
 
     harness = "codex"
@@ -1071,6 +1089,23 @@ class CodexRunner(_ChildProcessRunner):
         self._run_dir = run
         self._config_dir = config_dir
         self._home_fn = home_fn
+        self._raw_path: Path | None = None
+
+    def _provider_headers(self, model: str | None) -> dict[str, str]:
+        """The headers pi's `models.json` carries for `model`'s provider."""
+        if not model or "/" not in model:
+            return {}
+        home = self._home_fn() if self._home_fn is not None else ambient_home()
+        try:
+            doc = json.loads((Path(home) / ".pi" / "agent" / "models.json").read_text())
+        except (OSError, ValueError):
+            return {}
+        providers = doc.get("providers") if isinstance(doc, dict) else None
+        pcfg = providers.get(model.split("/", 1)[0]) if isinstance(providers, dict) else None
+        headers = pcfg.get("headers") if isinstance(pcfg, dict) else None
+        if not isinstance(headers, dict):
+            return {}
+        return {str(k): str(v) for k, v in headers.items()}
 
     async def run(
         self,
@@ -1085,14 +1120,75 @@ class CodexRunner(_ChildProcessRunner):
         extensions: list[str] | None = None,
         hat_tools: list | None = None,
     ) -> IterationResult:
+        # `extensions` are pi's `-e` files; this harness wires hat tools
+        # from `hat_tools` instead, so it ignores them.
         result = IterationResult(harness=self.harness)
-        if importlib.util.find_spec(CODEX_WRAPPER_MODULE) is None:
-            result.error_message = (
-                f"{CODEX_WRAPPER_MISSING}: the {CODEX_WRAPPER_MODULE} wrapper "
-                "is not installed in this engine")
-            return result
-        cmd = [self.python_bin, "-m", CODEX_WRAPPER_MODULE]
-        env = self._child_env(extra_env)
-        return await self._run_child(cmd, env, prompt, transcript, result,
-                                     timeout_s, startup_timeout_s,
-                                     model=model)
+        # Absolute: the wrapper runs with the workspace as its cwd.
+        scratch = Path(os.path.abspath(
+            transcript.with_name(transcript.stem + ".codex-scratch")))
+        codex_home = scratch / "codex-home"
+        skills_dir = scratch / "skills"
+        codex_home.mkdir(parents=True, exist_ok=True)
+        try:
+            skills = self._link_skills(skills_dir)
+            tool_names = [getattr(t, "name", t) for t in (hat_tools or ())]
+            root = getattr(self._run_dir, "root", None)
+            run_root = str(root) if root is not None else None
+            wrapper_cfg = {
+                "model": model,
+                "thinking": thinking,
+                "effort": effort,
+                "workspace": os.path.abspath(self.workspace),
+                "codex_home": str(codex_home),
+                "headers": self._provider_headers(model),
+                "hat_tools": tool_names,
+                "run_root": run_root,
+                "skills": skills,
+                "stderr_log": str(scratch / "stderr.log"),
+            }
+            cfg_path = scratch / "wrapper.json"
+            cfg_path.write_text(json.dumps(wrapper_cfg, indent=2) + "\n")
+            os.chmod(cfg_path, 0o600)
+            cmd = [self.python_bin, "-m", CODEX_WRAPPER_MODULE,
+                   "--config", str(cfg_path)]
+            env = self._child_env(extra_env)
+            if tool_names and run_root:
+                env["RALPHD_HAT_TOOLS_RUN"] = run_root
+            self._raw_path = transcript.with_name(transcript.stem + ".codex.jsonl")
+            return await self._run_child(cmd, env, prompt, transcript, result,
+                                         timeout_s, startup_timeout_s,
+                                         model=model)
+        finally:
+            shutil.rmtree(codex_home, ignore_errors=True)
+            shutil.rmtree(skills_dir, ignore_errors=True)
+
+    def _after_child(self, pgid: int, result: IterationResult) -> None:
+        """When the ladder or an interrupt ended the iteration, SIGKILL
+        whatever is left of the wrapper's process group (the wrapper can exit
+        before the `codex` it started does)."""
+        if not (result.timed_out or result.no_traffic_timeout or result.interrupted):
+            return
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGKILL)
+
+    def _handle_line(self, raw: bytes, out, result: IterationResult,
+                     live_index: render_index.LiveRenderIndex,
+                     transcript: Path, *, model: str | None = None) -> bool:
+        """A raw Codex envelope is scrubbed and appended, unwrapped, to
+        `<stem>.codex.jsonl`; it is traffic when `is_traffic` says so. Every
+        other line is a pi event (the base hook)."""
+        if CODEX_RAW_ENVELOPE_TYPE.encode() in raw:
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError:
+                event = None
+            if isinstance(event, dict) and event.get("type") == CODEX_RAW_ENVELOPE_TYPE:
+                payload = event.get("raw")
+                raw_path = self._raw_path or transcript.with_name(
+                    transcript.stem + ".codex.jsonl")
+                line = scrub_text(json.dumps(payload, ensure_ascii=False))
+                with open(raw_path, "a") as fh:
+                    fh.write(line + "\n")
+                return codex_is_traffic(payload)
+        return super()._handle_line(raw, out, result, live_index, transcript,
+                                    model=model)

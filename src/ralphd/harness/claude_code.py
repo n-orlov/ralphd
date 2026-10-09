@@ -68,6 +68,7 @@ from claude_agent_sdk import (
 from ..engine import hat_tools as hat_tools_mod
 from ..engine.config import CLAUDE_CODE_MIN_VERSION
 from .normalise import RAW_ENVELOPE_TYPE, Normaliser
+from .skills_index import skills_index  # noqa: F401  (re-exported)
 
 # The pi-parity built-in tool set (PRD B.3). Passed as the SDK's `tools`
 # list, so the CLI loads nothing else; ralphd's hat tools are added as an
@@ -192,18 +193,6 @@ def probe() -> dict:
     version = cli_version(cli)
     return {"sdk": claude_agent_sdk.__version__, "cli": version, "cliPath": cli,
             "ok": version_gate(cli, version) is None}
-
-
-def skills_index(skills: list[dict]) -> str:
-    if not skills:
-        return ""
-    lines = [("Skills are available for this task. Each is a directory with a "
-              "SKILL.md; when a skill's description fits what you are doing, "
-              "read its SKILL.md with the Read tool and follow it.")]
-    for s in skills:
-        desc = f": {s['description']}" if s.get("description") else ""
-        lines.append(f"- {s['name']}{desc} ({s['path']})")
-    return "\n".join(lines)
 
 
 def system_prompt(skills: list[dict], hat_tools: list[str]) -> str:
