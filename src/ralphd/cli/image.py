@@ -121,7 +121,10 @@ IMAGE_REPO = "ralphd"
 DERIVED_REPO = "ralphd-derived"
 
 # Hash-stream format for a derived tag, versioned like HASH_FORMAT.
-DERIVED_FORMAT = "ralphd-derived-image v1"
+# v2: the recipe installs the pinned `@openai/codex` next to pi, so a derived
+# image built by an older ralphd (no codex binary) must not be reused under a
+# tag whose meaning now includes one -- every derived tag changes with this bump.
+DERIVED_FORMAT = "ralphd-derived-image v2"
 
 # The repository a base image built from an operator's *own* Dockerfile (task
 # 035, requirement H3: `start --dockerfile <path>`, or the `dockerfile:` key in
@@ -166,6 +169,12 @@ PI_PIN = "PI_VERSION"
 # pi on top of a user-supplied base image, and installs the same SDK and
 # bundled CLI that the engine's own image carries.
 SDK_PIN = "CLAUDE_AGENT_SDK_VERSION"
+
+# The Codex CLI version pin (`@openai/codex`, the `codex` harness's binary).
+# Installed with npm next to pi, at the exact version `container/Dockerfile`
+# declares; the harness's own minimum (`config.CODEX_MIN_VERSION`) is the
+# same number.
+CODEX_PIN = "CODEX_VERSION"
 
 # The file that marks a directory as a ralphd source root worth hashing --
 # i.e. a checkout, or (task 038) the packaged copy of the same inputs inside a
@@ -658,7 +667,7 @@ RUN set -eu; \\
         fi; \\
     fi
 
-# 2. node, then pi at the version container/Dockerfile pins
+# 2. node, then pi and codex at the versions container/Dockerfile pins
 RUN set -eu; \\
     need_node=1; \\
     if command -v node >/dev/null 2>&1; then \\
@@ -677,7 +686,8 @@ RUN set -eu; \\
         fi; \\
     fi; \\
     npm install -g --registry https://registry.npmjs.org \\
-        "@earendil-works/pi-coding-agent@${PI_VERSION}"
+        "@earendil-works/pi-coding-agent@${PI_VERSION}" \\
+        "@openai/codex@${CODEX_VERSION}"
 
 # 3. the static docker client, only if the base has none (--allow-docker)
 RUN set -eu; \\
@@ -796,6 +806,15 @@ def render_derived_dockerfile(base: str, base_dockerfile: str) -> str:
         raise ImageInputError(
             f"{SOURCE_MARKER} declares ARG {SDK_PIN}={args[SDK_PIN]}, which is "
             "not an exact version (required format: digits.digits.digits)")
+    if CODEX_PIN not in args or not args[CODEX_PIN]:
+        raise ImageInputError(
+            f"{SOURCE_MARKER} declares no ARG {CODEX_PIN}=<version>, so the "
+            "derived image has no codex version to install (an unpinned "
+            "install would silently resolve some other version)")
+    if not VERSION_PIN_RE.match(args[CODEX_PIN]):
+        raise ImageInputError(
+            f"{SOURCE_MARKER} declares ARG {CODEX_PIN}={args[CODEX_PIN]}, which "
+            "is not an exact version (required format: digits.digits.digits)")
     node = NODE_MAJOR_RE.search(base_dockerfile)
     if not node:
         raise ImageInputError(

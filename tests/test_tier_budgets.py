@@ -697,8 +697,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # (tests/test_codex_hat_tools.py, 15, plus the ingestion lint for
     # src/ralphd/harness/codex_mcp.py), measured `-m fast --collect-only` ->
     # fast 7852/513, `-m smoke --collect-only` -> smoke 6117/389.
-    "fast": {"tests": 7852, "modules": 513},
-    "smoke": {"tests": 6117, "modules": 389},
+    # Task 011 (codex pin in the image): +10 tests / +1 module
+    # (tests/test_image_codex_pin.py), measured `-m fast --collect-only` ->
+    # fast 7862/514, `-m smoke --collect-only` -> smoke 6127/390.
+    "fast": {"tests": 7862, "modules": 514},
+    "smoke": {"tests": 6127, "modules": 390},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

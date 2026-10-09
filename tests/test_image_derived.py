@@ -68,6 +68,7 @@ def checkout(tmp_path):
         "FROM python:3.12-slim-bookworm\n"
         "ARG PI_VERSION=0.84.1\n"
         "ARG CLAUDE_AGENT_SDK_VERSION=0.2.163\n"
+        "ARG CODEX_VERSION=0.156.1\n"
         "RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -\n"
         "ARG DOCKER_VERSION=29.7.2\n")
     (root / "container/entrypoint.sh").write_text(
@@ -173,6 +174,7 @@ def test_the_recipe_copies_the_version_pins_instead_of_restating_them(tmp_path):
         "FROM python:3.12-slim\n"
         "ARG PI_VERSION=9.9.9\n"
         "ARG CLAUDE_AGENT_SDK_VERSION=0.2.123\n"
+        "ARG CODEX_VERSION=0.156.1\n"
         "ARG DOCKER_VERSION=1.2.3\n"
         "RUN curl -fsSL https://deb.nodesource.com/setup_44.x | bash -\n")
     (root / "pyproject.toml").write_text('[project]\nname = "ralphd"\n')
@@ -241,7 +243,8 @@ def test_a_source_root_that_cannot_answer_is_refused(tmp_path):
     (root / "container/Dockerfile").write_text(
         "FROM python:3.12-slim\n"
         "ARG PI_VERSION=0.84.1\n"
-        "ARG CLAUDE_AGENT_SDK_VERSION=0.2.163\n")
+        "ARG CLAUDE_AGENT_SDK_VERSION=0.2.163\n"
+        "ARG CODEX_VERSION=0.156.1\n")
     with pytest.raises(image.ImageInputError) as e:
         image.derive(root, BASE)
     assert "node" in str(e.value)
@@ -249,6 +252,7 @@ def test_a_source_root_that_cannot_answer_is_refused(tmp_path):
     (root / "container/Dockerfile").write_text(
         "FROM python:3.12-slim\nARG PI_VERSION=0.84.1\n"
         "ARG CLAUDE_AGENT_SDK_VERSION=0.2.163\n"
+        "ARG CODEX_VERSION=0.156.1\n"
         "RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash -\n")
     # Now it has all the required pins, so derive should work
     derived = image.derive(root, BASE)

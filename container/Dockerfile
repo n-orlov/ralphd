@@ -3,6 +3,7 @@ FROM python:3.12-slim-bookworm
 # system deps + node 22 (pi >=0.75 requires node >=22.19; with an older node,
 # npm silently resolves an ancient pi version — pin both to fail loudly instead)
 ARG PI_VERSION=0.84.1
+ARG CODEX_VERSION=0.156.1
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git curl ca-certificates jq ripgrep procps \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -10,7 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g --registry https://registry.npmjs.org \
-        "@earendil-works/pi-coding-agent@${PI_VERSION}"
+        "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+        "@openai/codex@${CODEX_VERSION}"
 
 # static docker CLI (client only — no daemon, no containerd, no buildx).
 # Used with `ralphctl start --allow-docker`, which mounts the host docker

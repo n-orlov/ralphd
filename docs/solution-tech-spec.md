@@ -151,7 +151,9 @@ own removal path.
 engine. An explicit image is used as supplied; otherwise the CLI can build/cache
 a content-hash-tagged image from packaged source inputs or derive one from a
 base image/custom Dockerfile. Every recipe installs the pinned Claude Agent SDK
-(`CLAUDE_AGENT_SDK_VERSION`) so any hat can run on the `claude-code` harness.
+(`CLAUDE_AGENT_SDK_VERSION`) so any hat can run on the `claude-code` harness, and install the pinned
+Codex CLI (`CODEX_VERSION`, `@openai/codex`) next to pi for the `codex` harness;
+a missing or unpinned `CODEX_VERSION` in `container/Dockerfile` is refused.
 The selected image and its recipe are recorded for later resume. Nothing is
 pushed to an image registry, so `--image` names a locally built tag.
 

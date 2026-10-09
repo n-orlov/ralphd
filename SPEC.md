@@ -189,7 +189,7 @@ rather than rejected, but no part of the current design may assume it arrives.
   suite substitute a stub `docker` on `PATH` with no in-product test hooks.
 - **Agent runtime: `pi`** (`@earendil-works/pi-coding-agent`), spawned once per
   iteration as a subprocess emitting NDJSON events on stdout. Both it and Node are
-  **pinned** in the image (`PI_VERSION=0.84.1`, Node 22 via NodeSource) because npm
+  **pinned** in the image (`PI_VERSION=0.84.1`, Node 22 via NodeSource; the `codex` harness's CLI `@openai/codex` is pinned the same way, `CODEX_VERSION=0.156.1`, installed by the same npm step, and the derived-image recipe copies that pin) because npm
   silently resolves an ancient `pi` when the node engine requirement is unmet — pin
   both and the failure is loud instead of subtle. Single NDJSON lines routinely
   exceed asyncio's 64 KiB default, so the reader is opened with
