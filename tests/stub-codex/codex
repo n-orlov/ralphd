@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""Stub Codex CLI for tests: speaks the `codex exec --json` NDJSON event stream
+(event shapes from the #301 spike comment, section 4) and replays scenarios.
+Point `RALPHD_CODEX_CLI_PATH` at this file.
+
+Nothing here touches the network and no credential is read or needed. stdout is
+NDJSON only; diagnostics go to stderr. The prompt is read from stdin (to EOF).
+Exit codes follow the real CLI: 0 after `turn.completed`, 1 after `turn.failed`
+and on SIGINT.
+
+Knobs (all environment variables):
+
+STUB_CODEX_VERSION        `--version` prints "codex-cli <value>" (default 0.156.1).
+STUB_CODEX_OBSERVE        path of the JSON observation dump (default
+                          $STUB_RUN_DIR/.stub-codex-observed.json, or
+                          ./.stub-codex-observed.json when STUB_RUN_DIR is
+                          unset). Written once the prompt arrives, before any
+                          event. Keys: argv, env, cwd, uid, pid, stdin,
+                          codex_home (the $CODEX_HOME value, null when unset),
+                          codex_home_exists, codex_home_entries (sorted names in
+                          it), config_toml (text of $CODEX_HOME/config.toml,
+                          null when absent).
+STUB_CODEX_SCENARIO       text (default) | tools (command_execution started and
+                          completed, a failing command_execution, file_change,
+                          mcp_tool_call, reasoning, agent_message) |
+                          failed (turn.failed, exit 1) |
+                          incomplete (partial agent_message, then turn.failed
+                          citing max_output_tokens, exit 1) |
+                          no_terminal (events, then exit 0 with no
+                          turn.completed) | hang (events, then sleeps; SIGINT
+                          exits 1 after killing its child) |
+                          ignore_sigint (hang that ignores SIGINT) |
+                          unknown_items (item and event types never seen
+                          before, then a normal completion) |
+                          echo_token (prints $AWS_BEARER_TOKEN_BEDROCK on stdout
+                          inside events and as a bare line, and on stderr).
+STUB_CODEX_TEXT           agent_message text (default "done\\n<promise>COMPLETE</promise>").
+STUB_CODEX_FAILED_MESSAGE turn.failed error.message (failed scenario; default
+                          "stream disconnected before completion: stub failure").
+STUB_CODEX_USAGE          JSON object overriding turn.completed `usage`.
+STUB_CODEX_SILENT         set (non-empty) to emit nothing at all in hang and
+                          ignore_sigint (trips the startup watchdog).
+STUB_CODEX_SLEEP_BEFORE   seconds slept before the first event.
+STUB_CODEX_CHILD_PIDFILE  hang scenarios spawn a sleeping child in the same
+                          process group and write its pid here.
+STUB_CODEX_WRITE_FILE     hang scenarios write this file (relative to cwd) before
+                          sleeping (shows a cap kill keeps workspace edits).
+STUB_RUN_DIR              directory used for the default observation file.
+"""
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+E = os.environ.get
+VERSION = E("STUB_CODEX_VERSION", "0.156.1")
+ARGV = sys.argv[1:]
+if "--version" in ARGV or "-V" in ARGV:
+    print(f"codex-cli {VERSION}")
+    sys.exit(0)
+
+stdin_text = sys.stdin.read()
+scenario = E("STUB_CODEX_SCENARIO", "text")
+
+
+def config_toml():
+    home = E("CODEX_HOME")
+    if not home:
+        return None
+    try:
+        with open(os.path.join(home, "config.toml")) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+home = E("CODEX_HOME")
+obs_path = E("STUB_CODEX_OBSERVE") or os.path.join(
+    E("STUB_RUN_DIR") or ".", ".stub-codex-observed.json")
+try:
+    with open(obs_path, "w") as f:
+        json.dump({
+            "argv": ARGV, "env": dict(os.environ), "cwd": os.getcwd(),
+            "uid": os.getuid(), "pid": os.getpid(), "stdin": stdin_text,
+            "codex_home": home,
+            "codex_home_exists": bool(home) and os.path.isdir(home),
+            "codex_home_entries": sorted(os.listdir(home)) if home and os.path.isdir(home) else [],
+            "config_toml": config_toml(),
+        }, f)
+except OSError as e:
+    print(f"stub-codex: cannot write observation: {e}", file=sys.stderr)
+
+if E("STUB_CODEX_SLEEP_BEFORE"):
+    time.sleep(float(E("STUB_CODEX_SLEEP_BEFORE")))
+
+TEXT = E("STUB_CODEX_TEXT", "done\n<promise>COMPLETE</promise>")
+USAGE = {"input_tokens": 2400, "cached_input_tokens": 2000, "cache_write_input_tokens": 0,
+         "output_tokens": 100, "reasoning_output_tokens": 40}
+if E("STUB_CODEX_USAGE"):
+    USAGE = json.loads(E("STUB_CODEX_USAGE"))
+_ids = iter(range(1, 1000))
+
+
+def emit(o):
+    sys.stdout.write(json.dumps(o) + "\n")
+    sys.stdout.flush()
+
+
+def item_id():
+    return f"item_{next(_ids)}"
+
+
+def started():
+    emit({"type": "thread.started", "thread_id": "01a1b2c3-stub-codex-thread"})
+    emit({"type": "turn.started"})
+
+
+def message(text, iid=None):
+    emit({"type": "item.completed",
+          "item": {"id": iid or item_id(), "type": "agent_message", "text": text}})
+
+
+def completed():
+    emit({"type": "turn.completed", "usage": USAGE})
+    sys.exit(0)
+
+
+def failed(msg, reconnects=True):
+    if reconnects:
+        emit({"type": "error", "message": "Reconnecting... 1/5 (stream disconnected)"})
+    emit({"type": "turn.failed", "error": {"message": msg}})
+    sys.exit(1)
+
+
+def hang(ignore_sigint):
+    child = None
+    if E("STUB_CODEX_CHILD_PIDFILE"):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3600)"])
+        with open(E("STUB_CODEX_CHILD_PIDFILE"), "w") as f:
+            f.write(str(child.pid))
+
+    def on_int(*_):
+        if child is not None:
+            child.kill()
+        os._exit(1)
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN if ignore_sigint else on_int)
+    if E("STUB_CODEX_WRITE_FILE"):
+        with open(E("STUB_CODEX_WRITE_FILE"), "w") as f:
+            f.write("written by stub-codex before hanging\n")
+    if not E("STUB_CODEX_SILENT"):
+        started()
+        emit({"type": "item.completed",
+              "item": {"id": item_id(), "type": "reasoning", "text": "working"}})
+    while True:
+        time.sleep(1)
+
+
+if scenario in ("hang", "ignore_sigint"):
+    hang(scenario == "ignore_sigint")
+
+started()
+
+if scenario == "text":
+    message(TEXT)
+    completed()
+elif scenario == "tools":
+    cmd = "/bin/bash -lc 'echo hello'"
+    emit({"type": "item.completed", "item": {"id": item_id(), "type": "reasoning",
+                                              "text": "plan the edit"}})
+    iid = item_id()
+    emit({"type": "item.started", "item": {
+        "id": iid, "type": "command_execution", "command": cmd,
+        "aggregated_output": "", "exit_code": None, "status": "in_progress"}})
+    emit({"type": "item.completed", "item": {
+        "id": iid, "type": "command_execution", "command": cmd,
+        "aggregated_output": "hello\n", "exit_code": 0, "status": "completed"}})
+    iid = item_id()
+    bad = "/bin/bash -lc 'echo err >&2; exit 3'"
+    emit({"type": "item.started", "item": {
+        "id": iid, "type": "command_execution", "command": bad,
+        "aggregated_output": "", "exit_code": None, "status": "in_progress"}})
+    emit({"type": "item.completed", "item": {
+        "id": iid, "type": "command_execution", "command": bad,
+        "aggregated_output": "err\n", "exit_code": 3, "status": "failed"}})
+    emit({"type": "item.completed", "item": {
+        "id": item_id(), "type": "file_change", "status": "completed",
+        "changes": [{"path": "/abs/patched.txt", "kind": "add"},
+                    {"path": "/abs/existing.txt", "kind": "update"}]}})
+    iid = item_id()
+    args = {"title": "stub task"}
+    emit({"type": "item.started", "item": {
+        "id": iid, "type": "mcp_tool_call", "server": "ralphd", "tool": "task-insert",
+        "arguments": args, "result": None, "error": None, "status": "in_progress"}})
+    emit({"type": "item.completed", "item": {
+        "id": iid, "type": "mcp_tool_call", "server": "ralphd", "tool": "task-insert",
+        "arguments": args, "status": "completed", "error": None,
+        "result": {"content": [{"type": "text", "text": "inserted stub task"}],
+                   "structured_content": None}}})
+    message(TEXT)
+    completed()
+elif scenario == "failed":
+    failed(E("STUB_CODEX_FAILED_MESSAGE", "stream disconnected before completion: stub failure"))
+elif scenario == "incomplete":
+    message("partial answer cut o")
+    failed("Incomplete response returned, reason: max_output_tokens", reconnects=False)
+elif scenario == "no_terminal":
+    message(TEXT)
+    sys.exit(0)
+elif scenario == "unknown_items":
+    emit({"type": "item.started", "item": {"id": item_id(), "type": "web_search",
+                                            "query": "stub", "status": "in_progress"}})
+    emit({"type": "item.completed", "item": {"id": item_id(), "type": "todo_list",
+                                              "items": [{"text": "a", "completed": False}]}})
+    emit({"type": "item.completed", "item": {"id": item_id(), "type": "future_widget",
+                                              "payload": {"x": 1}}})
+    emit({"type": "item.completed", "item": {"type": "no_id_item"}})
+    emit({"type": "future.event", "data": [1, 2, 3]})
+    emit({"type": "item.completed", "item": {"id": item_id(), "type": "error",
+                                              "message": "unknown model slug, using fallback"}})
+    message(TEXT)
+    completed()
+elif scenario == "echo_token":
+    tok = E("AWS_BEARER_TOKEN_BEDROCK", "")
+    print(f"stub-codex auth header: Bearer {tok}", file=sys.stderr, flush=True)
+    sys.stdout.write(f"stub-codex auth header: Bearer {tok}\n")
+    sys.stdout.flush()
+    iid = item_id()
+    emit({"type": "item.completed", "item": {
+        "id": iid, "type": "command_execution", "command": "/bin/bash -lc 'env'",
+        "aggregated_output": f"AWS_BEARER_TOKEN_BEDROCK={tok}\n", "exit_code": 0,
+        "status": "completed"}})
+    message(f"token is {tok}")
+    completed()
+else:
+    print(f"stub-codex: unknown scenario {scenario!r}", file=sys.stderr)
+    sys.exit(2)

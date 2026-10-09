@@ -262,3 +262,23 @@ real `claude_agent_sdk.query()` drives over the stream-json control protocol
 (`cli_path` or `RALPHD_CLAUDE_CLI_PATH`). Its scenarios and every `STUB_CLAUDE_*`
 knob are documented in the script's module docstring, and
 `tests/test_stub_claude.py` (smoke) covers each scenario.
+
+### The stub Codex CLI (`tests/stub-codex/codex`)
+
+`tests/stub-codex/codex` is a fake `codex` CLI for the codex harness
+(`RALPHD_CODEX_CLI_PATH`). It answers `--version` with `codex-cli
+$STUB_CODEX_VERSION` (default `0.156.1`), reads the prompt from stdin, writes
+its observations (argv, env, cwd, uid, pid, stdin, the `$CODEX_HOME/config.toml`
+text) as JSON to `$STUB_CODEX_OBSERVE`, and replays the `codex exec --json`
+event stream of the scenario `$STUB_CODEX_SCENARIO` selects: `text` (default),
+`tools` (command execution, file change and MCP call items), `failed` (a
+`turn.failed` carrying `$STUB_CODEX_FAILED_MESSAGE`), `incomplete` (a partial
+`agent_message`, then a `turn.failed` citing `max_output_tokens`),
+`no_terminal` (exit 0 without `turn.completed`), `hang`, `ignore_sigint`,
+`unknown_items` (item and event types no normaliser knows) and `echo_token`
+(prints `$AWS_BEARER_TOKEN_BEDROCK` on stdout and stderr). The other knobs
+(`STUB_CODEX_TEXT`, `STUB_CODEX_USAGE`, `STUB_CODEX_SILENT`,
+`STUB_CODEX_SLEEP_BEFORE`, `STUB_CODEX_CHILD_PIDFILE`, `STUB_CODEX_WRITE_FILE`,
+`STUB_RUN_DIR`) are documented in the script's module docstring, and
+`tests/test_stub_codex.py` covers each scenario and the observation file. The
+stub touches no network and needs no credential.
