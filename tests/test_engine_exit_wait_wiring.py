@@ -78,6 +78,21 @@ EXEMPT: dict[str, list[tuple[re.Pattern, str]]] = {
          "bare `proc` is the stub Claude Code CLI under a SIGINT test, "
          "never the engine"),
     ],
+    "test_stub_codex.py": [
+        (re.compile(r"(?<![.\w])proc\.wait\(timeout="),
+         "bare `proc` is the stub codex CLI under a SIGINT test, never "
+         "the engine"),
+    ],
+    "test_codex_runner.py": [
+        (re.compile(r"^\s*proc\.wait\(timeout=0\.4\)"),
+         "bare `proc` is the codex wrapper child under an abort-grace "
+         "test, never the engine"),
+    ],
+    "test_codex_hat_tools.py": [
+        (re.compile(r"self\.proc\.wait\(timeout=20\)"),
+         "_Relay.proc is the stdio MCP relay subprocess, never the "
+         "engine"),
+    ],
     "test_cli_logs_signal.py": [
         (re.compile(r"(?<![.\w])proc\.wait\(timeout="),
          "bare `proc` is the CLI subprocess under a signal-delivery test, "
