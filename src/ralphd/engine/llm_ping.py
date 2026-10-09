@@ -2,8 +2,8 @@
 
 `ralphctl llm test` runs this inside a throwaway container from the run
 image, as the agent uid, once per distinct (harness, model) pair. It builds
-the runner an iteration of that harness uses (`PiRunner` or
-`ClaudeCodeRunner`) over a scratch workspace, sends `PING_PROMPT`, and judges
+the runner an iteration of that harness uses (`PiRunner`,
+`ClaudeCodeRunner` or `CodexRunner`) over a scratch workspace, sends `PING_PROMPT`, and judges
 the `IterationResult` the way the loop does: `faults.explain_fault` over the
 same inputs `LoopSupervisor._classify_result` passes. It prints one JSON line:
 
@@ -14,8 +14,8 @@ text. `message` is the scrubbed error text, at most `MESSAGE_LIMIT`
 characters. The process exits 0 when `ok`, else 1; the caller reads the JSON
 line, not the exit status.
 
-This module never imports the Claude Agent SDK: `ClaudeCodeRunner` spawns the
-wrapper module as a child process.
+This module never imports the Claude Agent SDK: `ClaudeCodeRunner` and
+`CodexRunner` spawn their wrapper modules as child processes.
 """
 
 from __future__ import annotations
@@ -58,14 +58,16 @@ def runner_stderr_tail(transcript: Path) -> str:
 
     The runner merges the child's stderr into its stdout and records every
     line that is not an agent event (pi NDJSON) in the transcript, so those
-    lines, plus the claude-code wrapper's own `stderr.log` beside the
+    lines, plus the claude-code wrapper's `<stem>.claude-scratch/stderr.log` and
+    the codex wrapper's `<stem>.codex-scratch/stderr.log` beside the
     transcript, are the child's stderr. Lines are whitespace-collapsed and
     joined with ` | `; the result is scrubbed (`redact.scrub_text`) and at
     most `STDERR_TAIL_LIMIT` characters, keeping the END. Empty when there is
     nothing, or nothing readable."""
-    stderr_log = transcript.with_name(transcript.stem + ".claude-scratch") / "stderr.log"
+    stderr_logs = [transcript.with_name(transcript.stem + suffix) / "stderr.log"
+                   for suffix in (".claude-scratch", ".codex-scratch")]
     lines: list[str] = []
-    for path in (transcript, stderr_log):
+    for path in (transcript, *stderr_logs):
         try:
             with open(path, "rb") as fh:
                 fh.seek(0, 2)

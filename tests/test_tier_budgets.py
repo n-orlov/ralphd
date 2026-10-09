@@ -714,8 +714,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # test is replaced by 3 tests in tests/test_codex_runner.py (+2), measured
     # `.venv/bin/python -m pytest -q -m fast --collect-only` -> 7901/515,
     # `-m smoke --collect-only` -> 6164/391.
-    "fast": {"tests": 7901, "modules": 515},
-    "smoke": {"tests": 6164, "modules": 391},
+    # cure-01-02 (llm ping stderr tail reads the codex wrapper log): +5 tests
+    # in tests/test_llm_test_v031.py, measured `-m fast --collect-only` ->
+    # 7906/515, `-m smoke --collect-only` -> 6169/391.
+    "fast": {"tests": 7906, "modules": 515},
+    "smoke": {"tests": 6169, "modules": 391},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

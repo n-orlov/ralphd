@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import stat
+from pathlib import Path
 
 import pytest
 import yaml
@@ -235,3 +236,61 @@ def test_runner_stderr_tail_keeps_non_event_lines_and_scrubs(tmp_path):
     stderr_log.write_text("wrapper boom\n")
     assert runner_stderr_tail(transcript).endswith("wrapper boom")
     assert runner_stderr_tail(tmp_path / "missing.jsonl") == ""
+
+
+def test_runner_stderr_tail_includes_the_codex_wrapper_stderr_log(tmp_path):
+    from ralphd.engine.llm_ping import runner_stderr_tail
+
+    transcript = tmp_path / "ping.jsonl"
+    transcript.write_text('{"type":"session"}\n')
+    stderr_log = tmp_path / "ping.codex-scratch" / "stderr.log"
+    stderr_log.parent.mkdir()
+    stderr_log.write_text("codex   boom: getaddrinfo ENOTFOUND gw.example\n")
+    assert runner_stderr_tail(transcript) == "codex boom: getaddrinfo ENOTFOUND gw.example"
+
+
+def test_runner_stderr_tail_codex_log_is_scrubbed_bounded_and_keeps_the_end(tmp_path):
+    from ralphd.engine.llm_ping import STDERR_TAIL_LIMIT, runner_stderr_tail
+
+    transcript = tmp_path / "ping.jsonl"
+    transcript.write_text("transcript line\n")
+    stderr_log = tmp_path / "ping.codex-scratch" / "stderr.log"
+    stderr_log.parent.mkdir()
+    stderr_log.write_text("x" * 1000 + "\n{\"type\":\"event\"}\nLAST-codex-line\n")
+    tail = runner_stderr_tail(transcript)
+    assert len(tail) <= STDERR_TAIL_LIMIT
+    assert tail.endswith("LAST-codex-line")
+    assert "event" not in tail
+
+
+def test_runner_stderr_tail_reads_both_wrapper_logs(tmp_path):
+    from ralphd.engine.llm_ping import runner_stderr_tail
+
+    transcript = tmp_path / "ping.jsonl"
+    transcript.write_text("")
+    for scratch, text in (("ping.claude-scratch", "claude-side"),
+                          ("ping.codex-scratch", "codex-side")):
+        (tmp_path / scratch).mkdir()
+        (tmp_path / scratch / "stderr.log").write_text(text + "\n")
+    tail = runner_stderr_tail(transcript)
+    assert "claude-side" in tail and "codex-side" in tail
+
+
+def test_build_runner_for_a_codex_pair_is_a_codex_runner(tmp_path):
+    from ralphd.engine.llm_ping import build_runner
+    from ralphd.engine.runner import ClaudeCodeRunner, CodexRunner, PiRunner
+
+    assert type(build_runner("codex", tmp_path)) is CodexRunner
+    assert type(build_runner("claude-code", tmp_path)) is ClaudeCodeRunner
+    assert type(build_runner("pi", tmp_path)) is PiRunner
+
+
+def test_spec_and_profile_docs_name_codexrunner_for_the_ping():
+    root = Path(__file__).resolve().parent.parent
+    spec = (root / "SPEC.md").read_text()
+    row = next(l for l in spec.splitlines() if l.startswith("| `src/ralphd/engine/llm_ping.py`"))
+    assert "`CodexRunner`" in row
+    docs = (root / "docs" / "llm-profiles.md").read_text()
+    section = docs.split("## Verifying a profile", 1)[1].split("\n## ", 1)[0]
+    assert "CodexRunner" in section
+    assert ".codex-scratch" in spec

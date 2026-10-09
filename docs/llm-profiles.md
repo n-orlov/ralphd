@@ -445,7 +445,8 @@ To continue, fix the cause, then unpause:
 
 `ralphctl llm test <profile>` resolves the profile as `start` does, then pings
 every distinct (harness, model) pair the run would use. Each ping goes through
-the runner an iteration uses (`PiRunner` or `ClaudeCodeRunner`), in a throwaway
+the runner an iteration uses (`PiRunner`, `ClaudeCodeRunner` or, for a `codex` pair,
+`CodexRunner`), in a throwaway
 container from the run image, as the agent uid. It is judged by what the
 runner reports, not by the exit status, so an in-band provider error fails it:
 
