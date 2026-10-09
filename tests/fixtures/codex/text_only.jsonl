@@ -1,0 +1,5 @@
+{"type": "thread.started", "thread_id": "01a1-fake-thread"}
+{"type": "turn.started"}
+{"type": "item.completed", "item": {"id": "item_1", "type": "reasoning", "text": "thinking about it"}}
+{"type": "item.completed", "item": {"id": "item_2", "type": "agent_message", "text": "MOCK-DONE"}}
+{"type": "turn.completed", "usage": {"input_tokens": 2400, "cached_input_tokens": 2000, "cache_write_input_tokens": 0, "output_tokens": 100, "reasoning_output_tokens": 40}}

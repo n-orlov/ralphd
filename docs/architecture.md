@@ -2053,6 +2053,37 @@ follows.
 directory names `output.jsonl` explicitly (`log_merge.OUTPUT_FILENAME`), and a
 guard test fails if a source file globs `*.jsonl` over one.
 
+### The `codex` normaliser
+
+`harness/codex_normalise.py` holds `CodexNormaliser(model_ref=...)`, the pure
+translator from the `codex exec --json` event stream to the pi events every
+transcript consumer reads. `feed(event)` takes one decoded Codex event and
+returns a list of pi events; `finish(error)` closes the stream. The module does
+no I/O and imports neither `claude_agent_sdk` nor `ralphd.harness.claude_code`,
+so the engine process can import it
+(`tests/test_engine_never_imports_sdk.py`). `is_traffic(event)` says whether a
+Codex event counts as agent traffic for the stall watchdogs.
+
+Codex has no message ids, so `CodexNormaliser` groups items itself. A
+reasoning or agent message that follows a tool item starts a new assistant
+message; tool items join the open message. A group that holds a tool call
+ends `toolUse`, one without ends `stop`. Every `message_end` carries
+`provider: "openai"` and the model ref as `model`, which
+`state.model_ids` resolves like any other provider/model pair.
+
+| Codex event | pi events |
+|---|---|
+| `thread.started`, `turn.started` | none, and not stall traffic |
+| `reasoning` item | `message_update` `thinking_start`, then `thinking_delta` |
+| `agent_message` item | `message_update` `text_delta`, then `text_end` |
+| `command_execution` started | `tool_execution_start` (`toolName` `bash`, `args.command`) |
+| `command_execution` completed | `tool_execution_end` (`isError` when `exit_code` is non-zero, `result` the aggregated output) |
+| `file_change` item | one `tool_execution_start`/`_end` pair per change: `write` for kind `add`, `edit` otherwise, `args` `{path, kind}` |
+| `mcp_tool_call` on server `ralphd` | `tool_execution_start`/`_end` with the bare tool name (`mcp__<server>__<tool>` for any other server) |
+| `turn.completed` | `message_end` of the open group, with the mapped `usage` |
+| `turn.failed` | `message_end` with `stopReason: "error"` (`"length"` for `max_output_tokens`) and `errorMessage`, plus `ralphd.httpStatus` when the text names one |
+| `error` event, an unknown event or item type | none; a raw envelope only, and not stall traffic |
+
 ### Diagnosability requirements
 
 Failures must be visible without digging into transcripts:

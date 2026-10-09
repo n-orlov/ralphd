@@ -664,8 +664,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.33 task 003 (fake codex CLI): +18 tests / +1 module
     # (tests/test_stub_codex.py), measured `-m fast --collect-only` -> fast
     # 7689/509, `-m smoke --collect-only` -> smoke 5957/385.
-    "fast": {"tests": 7689, "modules": 509},
-    "smoke": {"tests": 5957, "modules": 385},
+    # v0.33 task 004 (codex normaliser): +15 tests / +1 module
+    # (tests/test_codex_normaliser.py) and +1 ingestion-lint test for
+    # src/ralphd/harness/codex_normalise.py, measured `-m fast --collect-only`
+    # -> fast 7705, `-m smoke --collect-only` -> smoke 5973.
+    "fast": {"tests": 7705, "modules": 510},
+    "smoke": {"tests": 5973, "modules": 386},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
