@@ -680,8 +680,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # in tests/test_codex_runner.py, +3 in tests/test_fault_classifier.py, +6
     # in tests/test_llm_profile_examples.py, no new module, measured `-m fast
     # --collect-only` -> fast 7794, `-m smoke --collect-only` -> smoke 6061.
-    "fast": {"tests": 7794, "modules": 512},
-    "smoke": {"tests": 6061, "modules": 388},
+    # Task 008: +23 tests (tests/test_codex_runner.py, +2 in
+    # tests/test_fault_classifier.py) and no new module, measured `-m fast
+    # --collect-only` -> fast 7817/512, `-m smoke --collect-only` -> smoke
+    # 6082/388.
+    "fast": {"tests": 7817, "modules": 512},
+    "smoke": {"tests": 6082, "modules": 388},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -18,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 from .codex_normalise import CODEX_RAW_ENVELOPE_TYPE, CodexNormaliser
+from ..cli.versions import compare_versions
+from ..engine.config import CODEX_MIN_VERSION
 from ..engine.redact import MIN_SECRET_LEN
 from .skills_index import skills_index
 
@@ -74,6 +78,9 @@ BASE_URL_ENV = "AIGW_OPENAI_BASE_URL"
 TOKEN_ENV = "AWS_BEARER_TOKEN_BEDROCK"
 PROVIDER_ID = "aigw"
 GATEWAY_NOT_CONFIGURED = "codex_gateway_not_configured"
+VERSION_TOO_OLD = "codex_version_too_old"
+CLI_NOT_FOUND = "codex_cli_not_found"
+_VERSION_RE = re.compile(r"\d+(?:\.\d+)*")
 
 # Codex's own retry loops are kept small so the engine's fault ladder owns
 # retrying (the default is about thirty requests).
@@ -153,6 +160,36 @@ def build_config(cfg: dict, base_url: str) -> str:
 
 def resolve_cli_path() -> str:
     return os.environ.get(CLI_PATH_ENV) or "codex"
+
+
+def cli_version(cli: str) -> str | None:
+    """`<cli> --version`'s dotted version (`codex-cli 0.156.1` -> `0.156.1`),
+    or None when the CLI cannot be run or prints no version."""
+    try:
+        out = subprocess.run([cli, "--version"], capture_output=True, text=True,
+                             timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = _VERSION_RE.search(out.stdout or "")
+    return m.group(0) if m else None
+
+
+def version_gate(cli: str, version: str | None) -> dict | None:
+    """None when `version` meets `CODEX_MIN_VERSION`, else the in-band error.
+    The comparison is `ralphd.cli.versions.compare_versions`, the helper the
+    claude-code gate's operator surfaces share."""
+    if version is None:
+        if not (os.path.isfile(cli) or shutil.which(cli)):
+            return {"type": CLI_NOT_FOUND,
+                    "message": f"Codex CLI not found at {cli}"}
+        return {"type": VERSION_TOO_OLD,
+                "message": f"could not read the Codex version from {cli} --version; "
+                           f"ralphd needs {CODEX_MIN_VERSION} or later"}
+    if compare_versions(version, CODEX_MIN_VERSION) == -1:
+        return {"type": VERSION_TOO_OLD,
+                "message": f"Codex {version} at {cli} is older than "
+                           f"{CODEX_MIN_VERSION}, the minimum ralphd runs"}
+    return None
 
 
 def build_argv(cli: str, workspace: str) -> list[str]:
@@ -257,19 +294,24 @@ def _run(cfg: dict, prompt: str, norm: CodexNormaliser, out: _Out) -> int:
                             "message": f"{missing} is not set; the codex harness "
                                        "needs an OpenAI-gateway LLM profile"})
         return 1
+    cli = resolve_cli_path()
+    refusal = version_gate(cli, cli_version(cli))
+    if refusal:
+        _finish(norm, out, refusal)
+        return 1
     home = Path(cfg["codex_home"])
     (home / "config.toml").write_text(build_config(cfg, os.environ[BASE_URL_ENV]))
     os.environ["CODEX_HOME"] = str(home)
     index = skills_index(list(cfg.get("skills") or []))
     if index:
         prompt = f"{index}\n\n{prompt}"
-    argv = build_argv(resolve_cli_path(), cfg["workspace"])
+    argv = build_argv(cli, cfg["workspace"])
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, cwd=cfg["workspace"], env=os.environ.copy(),
                                 start_new_session=True)
     except OSError as e:
-        _finish(norm, out, {"type": "codex_cli_not_found", "message": str(e)})
+        _finish(norm, out, {"type": CLI_NOT_FOUND, "message": str(e)})
         return 1
 
     pump = threading.Thread(target=_pump_stderr,

@@ -2116,6 +2116,14 @@ that signature as the `codex-gateway` refusal family: a configuration fault,
 not a provider one, which pauses the run for the operator with a description
 that says to use an OpenAI-gateway LLM profile.
 
+Before it starts a turn the wrapper runs `<cli> --version` (the CLI is
+`$RALPHD_CODEX_CLI_PATH`, else `codex` on `PATH`) and compares the version to
+`config.CODEX_MIN_VERSION` with `ralphd.cli.versions.compare_versions`, the one
+comparison helper (no parser of its own). Below the minimum, or with no readable
+version, it ends in-band with `codex_version_too_old`; with no binary,
+`codex_cli_not_found`. `engine/faults.py` classifies them as the `codex-version`
+and `codex-cli-missing` refusal families, like `cc-version` and `cc-cli-missing`.
+
 Every artifact is masked. The engine's `scrub_text` runs over each stdout line
 of the wrapper, `<stem>.codex.jsonl` and `output.jsonl`. The wrapper itself
 masks the bearer token's value (as `[REDACTED:env:AWS_BEARER_TOKEN_BEDROCK]`) in
@@ -4485,7 +4493,8 @@ Three deliberate details:
   runner reports, so pi's text-only gateway 404 stays `infra`, in a run and in
   `llm test`), and the `claude-code` harness's own pre-flight
   refusals `cc-version`, `cc-cli-missing` and `cc-root`, and the `codex`
-  harness's `codex-gateway` (`codex_gateway_not_configured`). `matched_refusal()`
+  harness's `codex-gateway` (`codex_gateway_not_configured`), `codex-version`
+  (`codex_version_too_old`) and `codex-cli-missing` (`codex_cli_not_found`). `matched_refusal()`
   needs a provider family to come with an HTTP 400, 401, 403 or 404 (the
   structured `http_status`, else the first status token of pi's `<status>
   <body>` text); the `cc-*` families and `codex-gateway` need none. Its rung sits right after the

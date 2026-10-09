@@ -970,6 +970,14 @@ line it writes.
   runs the Claude Agent SDK in an isolated config dir and normalises SDK messages
   into pi events. It also reports structured `rate_limit`, `http_status`, and
   `error_type` evidence.
+- `CodexRunner` spawns `python -m ralphd.harness.codex`
+  ([`harness/codex.py`](../src/ralphd/harness/codex.py)), which runs `codex exec --json`
+  and normalises its events into pi events. Its `IterationResult.harness` is
+  `codex`. It first runs `<cli> --version` (`$RALPHD_CODEX_CLI_PATH`, else
+  `codex` on `PATH`) and compares it to `CODEX_MIN_VERSION` with
+  `ralphd.cli.versions.compare_versions`; a CLI below the minimum ends the
+  iteration in-band as `codex_version_too_old` and a missing one as
+  `codex_cli_not_found`, both classified `refused`.
 
 On timeout or cancellation the group gets SIGINT, then SIGKILL after
 `SHUTDOWN_GRACE_S` (30 s). The startup watchdog detects missing traffic, and a
@@ -1353,7 +1361,7 @@ adjudication/evidence records. File names below are the constants in
 | `status.json` | Run state/phase, approach, budgets, health, usage (including the per-payer `byPayer` split, #298), pause reason/detail, cure-pass counters, rejection signatures, `firstStartedAt` plus each episode's `startedAt`, and prior endings (`previous-endings/`). |
 | Authoritative `tasks.json` | Current plan and harness-applied task lifecycle. Since v0.22 it lives in the root-owned, bind-mounted `/var/lib/ralphd/record/` (host `<registry>/configs/<run-id>/record/`); the run-dir `tasks.json` is a root-owned `0644` view refreshed by the same writer ([`privsep.py`](../src/ralphd/engine/privsep.py)). |
 | PRD, notes and standing-rule files | Durable instructions and context for fresh invocations (`prd.md`, `composite-prd.md`, `notes.md`, `standing-rules.md`). |
-| `iterations/<number>/` | Invocation metadata (model, harness, tier, thinking/effort, task, attempt, router link), captured `output.jsonl`/`prompt.md`, retry `attempts/`, and the incrementally maintained `render_index.json` used for bounded log tails ([`render_index.py`](../src/ralphd/render_index.py)). Interrupted attempts remain inspectable. |
+| `iterations/<number>/` | Invocation metadata (model, harness, tier, thinking/effort, task, attempt, router link), captured `output.jsonl`/`prompt.md` (plus `output.claude.jsonl` or `output.codex.jsonl`, the raw scrubbed stream of a `claude-code` or `codex` iteration, which no reader consumes), retry `attempts/`, and the incrementally maintained `render_index.json` used for bounded log tails ([`render_index.py`](../src/ralphd/render_index.py)). Interrupted attempts remain inspectable. |
 | `events.jsonl` | Ordered events for phases, task changes, contracts, retries, steering, pauses/unpauses, escalations, notifications and terminal transitions. |
 | `approaches/` | Archived plans, findings and approach metadata used by replan and history views. |
 | `steering/`, `rulings/` and their ledgers | Operator steering messages with delivery/consumption and settlement evidence, and run-scoped operator answer-channel rulings (`rulings/NNN-<name>.md`). |

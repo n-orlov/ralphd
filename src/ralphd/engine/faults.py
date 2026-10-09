@@ -235,6 +235,10 @@ REFUSED_SIGNATURES: tuple[tuple[str, str], ...] = (
     # The codex wrapper found no OpenAI gateway to talk to and never started
     # `codex`: a configuration fault, not a provider one.
     ("codex-gateway", r"codex_gateway_not_configured"),
+    # The Codex CLI is older than CODEX_MIN_VERSION (or its version cannot be
+    # read), or is not there at all: no request was sent.
+    ("codex-version", r"codex_version_too_old"),
+    ("codex-cli-missing", r"codex_cli_not_found"),
     # A subscription token sent from a third-party client (#284).
     ("extra-usage", r"Third-party apps now draw from your extra usage"),
     # The API's own error types (and the Agent SDK's names for them).
@@ -260,6 +264,8 @@ REFUSED_FAMILY_DESCRIPTIONS = {
                       "(AIGW_OPENAI_BASE_URL or AWS_BEARER_TOKEN_BEDROCK is "
                       "missing); configuration, not the provider: use an "
                       "OpenAI-gateway LLM profile for this hat"),
+    "codex-version": "the Codex CLI is below the minimum version ralphd runs",
+    "codex-cli-missing": "the Codex CLI was not found",
     "extra-usage": ("the subscription refused a third-party client: it would "
                     "draw from extra usage, not the plan limits"),
     "invalid-request": "the provider rejected the request as invalid",
@@ -273,7 +279,8 @@ REFUSED_FAMILY_DESCRIPTIONS = {
 # The families that need no HTTP status: the harness refused before any
 # request was sent.
 REFUSAL_FAMILIES_WITHOUT_STATUS = frozenset(
-    {"cc-version", "cc-cli-missing", "cc-root", "codex-gateway"})
+    {"cc-version", "cc-cli-missing", "cc-root", "codex-gateway",
+     "codex-version", "codex-cli-missing"})
 
 # The families that count only with the structured `http_status` a runner
 # reported (claude-code), never with a status token read out of the error

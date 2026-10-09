@@ -462,6 +462,10 @@ _REFUSAL_TEXT_CASES = [
     ("codex-gateway-token", "codex_gateway_not_configured: AWS_BEARER_TOKEN_BEDROCK is "
                             "not set; the codex harness needs an OpenAI-gateway LLM profile",
      "codex-gateway"),
+    ("codex-version", "codex_version_too_old: Codex 0.156.0 at /usr/bin/codex is "
+                      "older than 0.156.1, the minimum ralphd runs", "codex-version"),
+    ("codex-cli-missing", "codex_cli_not_found: Codex CLI not found at /usr/bin/codex",
+     "codex-cli-missing"),
 ]
 
 

@@ -12,15 +12,22 @@ URL below are obvious fakes.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import site
+import time
 import tomllib
 from pathlib import Path
 
 import pytest
 
+from ralphd import collapse_index
+from ralphd.cli import log_render
+from ralphd.engine import config as engine_config
+from ralphd.engine import runner as runner_mod
 from ralphd.engine.runner import CodexRunner, IterationResult
+from ralphd.harness import codex as codex_mod
 from ralphd.harness.codex import CODEX_EFFORT_TABLE
 
 REPO = Path(__file__).resolve().parents[1]
@@ -62,7 +69,8 @@ def _run(tmp_path: Path, name: str = "it", **kw) -> tuple[IterationResult, dict,
     kw.setdefault("timeout_s", 60)
     prompt = kw.pop("prompt", "the prompt")
     result = asyncio.run(runner.run(prompt, itdir / "output.jsonl", **kw))
-    observed = json.loads((tmp_path / "observed.json").read_text())
+    obs_path = tmp_path / "observed.json"
+    observed = json.loads(obs_path.read_text()) if obs_path.exists() else {}
     return result, observed, itdir
 
 
@@ -337,3 +345,162 @@ def test_raw_events_go_to_output_codex_jsonl_and_pi_events_to_output_jsonl(one_r
     pi = [json.loads(l) for l in (itdir / "output.jsonl").read_text().splitlines()]
     assert all(e["type"] != "ralphd.codex_raw" for e in pi)
     assert any(e["type"] == "message_end" for e in pi)
+
+
+# -- (3) the version gate (B.3) -----------------------------------------------
+
+def test_the_minimum_codex_version_is_pinned():
+    assert engine_config.CODEX_MIN_VERSION == "0.156.1"
+
+
+def test_a_codex_cli_below_the_minimum_ends_in_band_without_a_turn(tmp_path, monkeypatch):
+    observe = _setup(monkeypatch, tmp_path, STUB_CODEX_VERSION="0.156.0")
+    result, _, itdir = _run(tmp_path)
+    assert result.error_message.startswith("codex_version_too_old")
+    assert "0.156.0" in result.error_message
+    assert "0.156.1" in result.error_message
+    assert result.exit_code == 1
+    assert not observe.exists()  # no turn was ever started
+    ends = [json.loads(l) for l in (itdir / "output.jsonl").read_text().splitlines()
+            if '"message_end"' in l]
+    assert ends[-1]["message"]["stopReason"] == "error"
+
+
+def test_an_old_minor_with_big_patch_is_still_too_old(tmp_path, monkeypatch):
+    """Numeric, not textual: 0.99.9 < 0.156.1 although '9' > '1' as text."""
+    _setup(monkeypatch, tmp_path, STUB_CODEX_VERSION="0.99.9")
+    result, _, _ = _run(tmp_path)
+    assert result.error_message.startswith("codex_version_too_old")
+
+
+def test_a_missing_codex_binary_is_codex_cli_not_found(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    monkeypatch.setenv("RALPHD_CODEX_CLI_PATH", str(tmp_path / "no-such-dir" / "codex"))
+    result, obs, _ = _run(tmp_path)
+    assert result.error_message.startswith("codex_cli_not_found")
+    assert str(tmp_path / "no-such-dir" / "codex") in result.error_message
+    assert result.exit_code == 1
+    assert obs == {}
+
+
+@pytest.mark.parametrize("version", ["0.156.1", "0.156.2", "0.157.0", "1.0.0"])
+def test_exactly_the_minimum_and_newer_run(tmp_path, monkeypatch, version):
+    _setup(monkeypatch, tmp_path, STUB_CODEX_VERSION=version)
+    result, obs, _ = _run(tmp_path)
+    assert not result.error_message
+    assert result.exit_code == 0
+    assert obs["argv"][0] == "exec"
+
+
+def test_the_cli_path_defaults_to_codex_on_path(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "codex").symlink_to(STUB)
+    monkeypatch.delenv("RALPHD_CODEX_CLI_PATH")
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    assert codex_mod.resolve_cli_path() == "codex"
+    result, obs, _ = _run(tmp_path)
+    assert not result.error_message
+    assert obs["argv"][0] == "exec"
+
+
+def test_no_codex_anywhere_is_codex_cli_not_found(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path)
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.delenv("RALPHD_CODEX_CLI_PATH")
+    monkeypatch.setenv("PATH", str(empty))
+    result, _, _ = _run(tmp_path)
+    assert result.error_message.startswith("codex_cli_not_found")
+
+
+def test_the_version_prefix_and_suffix_are_tolerated():
+    gate = codex_mod.version_gate
+    assert codex_mod.cli_version("/nonexistent/codex") is None
+    assert gate("codex", "0.156.1") is None
+    assert gate("codex", "0.200.3") is None
+    assert gate("codex", "0.156.0")["type"] == "codex_version_too_old"
+
+
+def test_an_unreadable_version_is_refused_not_assumed_fine(tmp_path):
+    cli = tmp_path / "codex"
+    cli.write_text("#!/bin/sh\necho banner without a number\n")
+    cli.chmod(0o755)
+    assert codex_mod.cli_version(str(cli)) is None
+    assert codex_mod.version_gate(str(cli), None)["type"] == "codex_version_too_old"
+
+
+def test_the_gate_uses_the_shared_comparison_helper():
+    from ralphd.cli import versions
+    assert codex_mod.compare_versions is versions.compare_versions
+    src = inspect.getsource(codex_mod)
+    assert "def parse_version" not in src
+    assert "def compare_versions" not in src
+
+
+# -- (4) the child path: agent uid and the startup watchdog (B.3) --------------
+
+def test_the_wrapper_runs_as_the_agent_uid_privsep_selects(tmp_path, monkeypatch):
+    sentinel = {"user": os.getuid(), "group": os.getgid()}
+    spawned: list[dict] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def spy(*cmd, **kwargs):
+        spawned.append({"cmd": list(cmd), "kwargs": kwargs})
+        return await real_exec(*cmd, **kwargs)
+
+    _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(runner_mod, "agent_child_kwargs", lambda: dict(sentinel))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    result, obs, _ = _run(tmp_path)
+    assert not result.error_message
+    (spawn,) = spawned
+    assert spawn["cmd"][1:3] == ["-m", "ralphd.harness.codex"]
+    assert spawn["kwargs"]["user"] == sentinel["user"]
+    assert spawn["kwargs"]["group"] == sentinel["group"]
+    assert spawn["kwargs"]["start_new_session"] is True
+    assert obs["uid"] == sentinel["user"]
+
+
+def test_the_startup_watchdog_fires_on_a_silent_codex(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="hang", STUB_CODEX_SILENT="1")
+    monkeypatch.setattr(runner_mod, "SHUTDOWN_GRACE_S", 0.5)
+    t0 = time.monotonic()
+    result, _, _ = _run(tmp_path, timeout_s=120, startup_timeout_s=1.0)
+    assert result.no_traffic_timeout
+    assert not result.timed_out
+    assert time.monotonic() - t0 < 30
+
+
+# -- (5) the two output files (B.3) ---------------------------------------------
+
+@pytest.fixture
+def tools_run(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="tools")
+    return _run(tmp_path)
+
+
+def test_a_run_leaves_unwrapped_raw_events_and_pi_events(tools_run):
+    result, _, itdir = tools_run
+    assert not result.error_message
+    raw = [json.loads(l) for l in (itdir / "output.codex.jsonl").read_text().splitlines()]
+    pi = [json.loads(l) for l in (itdir / "output.jsonl").read_text().splitlines()]
+    assert raw and pi
+    # Codex's own event vocabulary, never the wrapper envelope.
+    assert all("raw" not in e and e["type"] != "ralphd.codex_raw" for e in raw)
+    assert raw[0]["type"] == "thread.started"
+    assert {"item.started", "item.completed", "turn.completed"} <= {e["type"] for e in raw}
+    # pi's vocabulary, never a codex event.
+    assert not {e["type"] for e in pi} & {"thread.started", "turn.completed", "item.completed"}
+    assert {"message_end", "tool_execution_start"} <= {e["type"] for e in pi}
+
+
+def test_output_jsonl_parses_through_log_render_and_collapse_index(tools_run):
+    _, _, itdir = tools_run
+    out = itdir / "output.jsonl"
+    text = log_render.render_to_text(out.read_text(), False, log_render.new_render_state())
+    assert text.strip()
+    index = collapse_index.compute_collapse_index(out)
+    assert index["transcriptBytes"] == out.stat().st_size
+    assert index["segments"]

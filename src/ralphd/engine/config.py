@@ -397,6 +397,11 @@ BILLING_LABEL_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
 # below it (requirement J.2).
 CLAUDE_CODE_MIN_VERSION = "2.1.280"
 
+# The minimum Codex CLI version required to run iterations on the codex
+# harness. The wrapper compares `codex --version` to it before it starts a
+# turn and ends in-band (`codex_version_too_old`) below it.
+CODEX_MIN_VERSION = "0.156.1"
+
 # "What ships": the ref a KNOWN hat resolves to when neither the per-hat
 # table (`models:`/`model_overrides:`) nor the bare `model` field configures
 # anything for it -- i.e. what a job that configures nothing at all gets.
