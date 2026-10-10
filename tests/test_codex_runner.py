@@ -460,9 +460,9 @@ def test_a_credential_with_json_special_characters_is_masked_in_every_decoded_st
         lines = (itdir / name).read_text().splitlines()
         assert lines
         assert not any(holds(json.loads(line)) for line in lines), name
-    rendered = log_render.render_to_text((itdir / "output.jsonl").read_text(), False,
+    log_text = log_render.render_to_text((itdir / "output.jsonl").read_text(), False,
                                          log_render.new_render_state())
-    assert secret not in rendered
+    assert secret not in log_text
     assert secret not in result.final_text
     assert "[REDACTED:" in result.final_text
     for f in _all_files(itdir):
