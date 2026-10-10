@@ -2158,9 +2158,12 @@ a backslash is escaped, and an agent's output can carry a JSON document inside a
 string inside another. The wrapper and `scrub_text` share `redact.mask_values`:
 it replaces every spelling `json.dumps` gives the value when escaped any number
 of times (`redact.secret_spellings`, bounded by the line's length), then decodes
-each JSON string literal that holds a backslash, masks inside it recursively and
-re-encodes it only when it changed. No nesting depth, and no escape `json.dumps`
-never writes (`\uXXXX`, `\/`), lets a decoded line give the value back. The
+each run of JSON string-body text that holds a valid escape, quoted or bare,
+masks inside it recursively and re-encodes it only when it changed. No nesting
+depth, no escape `json.dumps` never writes (`\uXXXX`, `\/`, surrogate pairs) and
+no bare escaped body without quotes lets a decoded line give the value back.
+`CodexRunner` also passes `final_text` through `scrub_text` with the live
+redaction map before the engine reads it. The
 engine's `scrub_text` runs over each stdout line
 of the wrapper, `<stem>.codex.jsonl` and `output.jsonl`. The wrapper itself
 masks the bearer token's value (as `[REDACTED:env:AWS_BEARER_TOKEN_BEDROCK]`) in

@@ -222,8 +222,14 @@ def scrub_text(text: str, extra: dict[str, str] | None = None) -> str:
                               for value, label in merged.items() if value})
 
 
-# A JSON string literal on one line: what `mask_values` decodes to look inside.
-_JSON_LITERAL_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+# A run of JSON string-body text holding at least one valid escape: what
+# `mask_values` decodes to look inside. It needs no enclosing quotes, so a
+# quoted literal's body, a bare escaped body in prose and a body nested inside
+# another body are all one shape. Linear: a run only starts where a plain
+# character does not precede it (it is maximal, so nothing is lost), and an
+# escape always starts with the one character the plain class excludes.
+_ESCAPED_RUN_RE = re.compile(
+    r'(?<![^"\\\x00-\x1f])(?:[^"\\\x00-\x1f]*\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))+[^"\\\x00-\x1f]*')
 
 
 def mask_values(text: str, replacements: dict[str, str]) -> str:
@@ -237,16 +243,19 @@ def mask_values(text: str, replacements: dict[str, str]) -> str:
     1. every spelling of the value that `json.dumps` produces when the value is
        escaped any number of times, `ensure_ascii` on or off at each level
        (`secret_spellings`, bounded by the length of `text`), replaced in place;
-    2. every JSON string literal that holds a backslash is decoded and masked
+    2. every run of JSON string-body text that holds a valid escape -- the body
+       of a quoted literal, or a bare body with no quotes around it, in a JSON
+       line or in prose -- is decoded as a JSON string body and masked
        recursively (so a document carried as a string inside a document, at
-       any depth, and escapes `json.dumps` never writes -- `\\u0022`, upper-case
-       hex, `\\/` -- are seen decoded), and is re-encoded only when the
-       decoded text changed, so the line stays valid JSON.
+       any depth, and escapes `json.dumps` never writes -- `\\u0022`, a `\\uXXXX`
+       for every character, upper-case hex, `\\/`, surrogate pairs -- are seen
+       decoded), and is re-encoded only when the decoded text changed, so a
+       JSON line stays valid JSON.
     """
     values = {v: r for v, r in replacements.items() if v}
     if not values or not text:
         return text
-    # Built once for the whole text: a decoded literal is never longer.
+    # Built once for the whole text: a decoded run is never longer.
     pairs = sorted(((spelling, repl) for value, repl in values.items()
                     for spelling in secret_spellings(value, len(text))),
                    key=lambda kv: -len(kv[0]))
@@ -258,21 +267,29 @@ def _mask(text: str, pairs: list[tuple[str, str]]) -> str:
         if spelling in text:
             text = text.replace(spelling, repl)
     if "\\" in text:
-        text = _JSON_LITERAL_RE.sub(lambda m: _mask_literal(m.group(0), pairs), text)
+        text = _ESCAPED_RUN_RE.sub(lambda m: _mask_run(m.group(0), pairs), text)
     return text
 
 
-def _mask_literal(literal: str, pairs: list[tuple[str, str]]) -> str:
-    if "\\" not in literal:
-        return literal  # decodes to itself: layer 1 already saw it
+def _mask_run(run: str, pairs: list[tuple[str, str]]) -> str:
     try:
-        decoded = json.loads(literal)
+        decoded = json.loads('"' + run + '"')
     except ValueError:
-        return literal
+        return run
+    # Every escape shortens the text, so the recursion ends.
     masked = _mask(decoded, pairs)
     if masked == decoded:
-        return literal
-    return json.dumps(masked, ensure_ascii=literal.isascii())
+        return run
+    if run.isascii():
+        return json.dumps(masked)[1:-1]
+    out = json.dumps(masked, ensure_ascii=False)[1:-1]
+    if _SURROGATE_RE.search(run):
+        return out  # already raw in the text: keep it so
+    # A lone surrogate the run spelled as an escape stays one, never raw.
+    return _SURROGATE_RE.sub(lambda m: f"\\u{ord(m.group(0)):04x}", out)
+
+
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
 
 
 def secret_spellings(value: str, max_len: int | None = None) -> tuple[str, ...]:

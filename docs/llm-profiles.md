@@ -599,8 +599,11 @@ masked however JSON escaping spells it, so a credential that contains a quote, a
 backslash, a control or a non-ASCII character is gone from the decoded
 `output.jsonl`, `output.codex.jsonl` and `stderr.log` lines, from the rendered
 log and from `final_text`, not only from the raw text. That holds when the agent
-nests the value in a JSON document inside a string, at any depth, and when it
-writes it with escapes such as `\u0022`.
+nests the value in a JSON document inside a string, at any depth, when it
+writes it with escapes such as `\u0022`, and when it echoes it as a bare escaped
+string body with no quotes round it. `final_text` is masked with the live
+redaction map too, so any secret the engine knows is masked there, not only the
+token and the header values.
 
 **Known limit.** The token is visible to the agent's shell. `codex` receives it
 in its environment and runs the agent's commands as its children, so an agent

@@ -731,8 +731,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # escapes json.dumps never writes): +41 tests in tests/test_codex_runner.py,
     # measured `-m fast --collect-only` -> 7974/515, `-m smoke --collect-only`
     # -> 6237/391.
-    "fast": {"tests": 7974, "modules": 515},
-    "smoke": {"tests": 6237, "modules": 391},
+    # cure-01-01-3 second retry (a bare escaped string body, and final_text
+    # with a map-only secret, are masked): +8 tests in
+    # tests/test_codex_runner.py, measured `-m fast --collect-only` ->
+    # 7982/515, `-m smoke --collect-only` -> 6245/391.
+    "fast": {"tests": 7982, "modules": 515},
+    "smoke": {"tests": 6245, "modules": 391},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

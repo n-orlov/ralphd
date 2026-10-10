@@ -1227,9 +1227,17 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
         An `iteration_timeout_s` kill (`timed_out`) also discards the reply
         text: a completion claim the agent streamed before the cap (a
         `verdict` line or the whole-plan marker) belongs to an iteration that
-        never finished, so the engine never reads it. Workspace edits stay."""
+        never finished, so the engine never reads it. Workspace edits stay.
+
+        Any other reply text is masked through `scrub_text` with the live
+        redaction map and the header secrets, the same call every file this
+        runner writes goes through: the wrapper masks only the values it
+        knows (the token and the header values), so a redaction-map secret
+        the agent echoed is masked here before the engine reads `final_text`."""
         if result.timed_out:
             result.final_text = ""
+        elif result.final_text:
+            result.final_text = scrub_text(result.final_text, self._header_secrets)
         if not (result.timed_out or result.no_traffic_timeout or result.interrupted):
             return
         with contextlib.suppress(ProcessLookupError, PermissionError):

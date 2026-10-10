@@ -526,7 +526,28 @@ def _recoverable(value, secret: str) -> bool:
                 continue
             if inner != value and _recoverable(inner, secret):
                 return True
+    # A bare string body (no quotes round it, in prose or in a body), read
+    # back by a tolerant decoder of its own: every escape decoded, surrogate
+    # pairs joined, whatever is around it.
+    for segment in re.split(r'["\n]', value):
+        if "\\" in segment:
+            inner = _decode_escapes(segment)
+            if inner != segment and _recoverable(inner, secret):
+                return True
     return False
+
+
+_SIMPLE_ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _decode_escapes(segment: str) -> str:
+    def one(m):
+        esc = m.group(1)
+        if esc[0] == "u" and len(esc) == 5:
+            return chr(int(esc[1:], 16))
+        return _SIMPLE_ESCAPES.get(esc, esc)
+    text = re.sub(r"\\(u[0-9a-fA-F]{4}|.)", one, segment)
+    return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
 
 
 def _nest(secret: str, depth: int, *, ascii_only: bool = False) -> str:
@@ -632,6 +653,92 @@ def test_a_credential_written_with_escapes_json_dumps_never_writes_is_not_recove
                                            text=text, stderr_line=stderr_line)
     leaks = _leaks(result, itdir, secret)
     assert not any(leaks.values()), leaks
+
+
+def _utf16_escaped(text: str) -> str:
+    """`text` as a bare JSON string body, every UTF-16 code unit `\\uxxxx` in
+    lower-case hex (a supplementary character becomes a surrogate pair)."""
+    units = text.encode("utf-16-be")
+    return "".join(f"\\u{int.from_bytes(units[i:i + 2], 'big'):04x}"
+                   for i in range(0, len(units), 2))
+
+
+_BARE_BODY_SECRETS = {
+    "quote-backslash": 'fake-ONLY-string-body-7249-"alpha"\\beta',
+    "astral-solidus": 'fake-ONLY-bare-body-"x"\\y/\U0001F9EA-\u00e9-0123',
+}
+
+
+@pytest.mark.parametrize("in_map", [True, False], ids=["in-live-map", "header-only"])
+@pytest.mark.parametrize("shape", sorted(_BARE_BODY_SECRETS))
+def test_a_credential_echoed_as_a_bare_escaped_string_body_is_not_recoverable(
+        tmp_path, monkeypatch, shape, in_map):
+    """The agent echoes the credential as a JSON string BODY with no quotes
+    round it, every character `\\uxxxx`: ordinary JSON decoding of that body
+    gives the value back, so every retained stream masks it."""
+    secret = _BARE_BODY_SECRETS[shape]
+    body = _utf16_escaped(secret)
+    assert json.loads('"' + body + '"') == secret
+    result, itdir = _referenced_apikey_run(tmp_path, monkeypatch, secret, in_map,
+                                           text=body, stderr_line=body)
+    leaks = _leaks(result, itdir, secret)
+    assert not any(leaks.values()), leaks
+    assert "[REDACTED:" in result.final_text
+
+
+@pytest.mark.parametrize("in_map", [True, False], ids=["in-live-map", "header-only"])
+def test_a_partly_escaped_bare_body_in_prose_is_not_recoverable(tmp_path, monkeypatch, in_map):
+    """Same rule, other spellings: a credential with no JSON-special character
+    at all, one letter written `\\u0066` amid prose; a quoted one written with
+    `\\"` and `\\/` and raw letters; and a body escaped twice by hand (the
+    body of a body), none in quotes. Text around each survives."""
+    secret = "fake-ONLY-plain-apikey/7741-0123456789"
+    quoted = 'fake-ONLY-quoted-"k"\\v-5518'
+    once = "\\u0066ake-ONLY-plain-apikey\\/7741-0123456789"
+    assert json.loads('"' + once + '"') == secret
+    twice = json.dumps(_utf16_escaped(secret))[1:-1]
+    text = f"key is {once} -- again {twice} -- end"
+    stderr_line = "codex: header " + once + " sent"
+    result, itdir = _referenced_apikey_run(tmp_path, monkeypatch, secret, in_map,
+                                           text=text, stderr_line=stderr_line)
+    leaks = _leaks(result, itdir, secret)
+    assert not any(leaks.values()), leaks
+    assert result.final_text.startswith("key is ") and result.final_text.endswith(" end")
+    from ralphd.engine import redact
+    hand = 'fake-ONLY-quoted-\\"k\\"\\\\v-5518'
+    assert json.loads('"' + hand + '"') == quoted
+    out = redact.mask_values("prose " + hand + " tail", {quoted: "[M]"})
+    assert out == "prose [M] tail"
+
+
+def test_a_map_only_secret_is_masked_in_final_text(tmp_path, monkeypatch):
+    """A live-map secret that is no header value (the wrapper does not know
+    it) is masked in `final_text` too, not only in the files: plain, quoted
+    and as a bare escaped body."""
+    from ralphd.engine import redact
+    secret = 'fake-ONLY-map-only-"m"\\n-0123456789'
+    text = f"plain {secret} body {_utf16_escaped(secret)} doc {_nest(secret, 2)}"
+    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="echo_stderr",
+           STUB_CODEX_TEXT=text, STUB_CODEX_STDERR_LINES="no secret here")
+    monkeypatch.setattr(redact, "_map", {secret: "env:MAP_ONLY_TOKEN"})
+    result, _obs, itdir = _run(tmp_path)
+    assert result.exit_code == 0 and not result.error_message
+    leaks = _leaks(result, itdir, secret)
+    assert not any(leaks.values()), leaks
+    assert result.final_text.count("[REDACTED:env:MAP_ONLY_TOKEN]") == 3
+
+
+def test_mask_values_leaves_unrelated_escapes_and_bad_escapes_alone():
+    """Only a run that decodes to a value changes: other escapes, an invalid
+    escape and a lone surrogate are left byte for byte, and a masked line
+    holding them still parses."""
+    from ralphd.engine import redact
+    secret = 'fake-ONLY-"lone"-0123456789'
+    other = json.dumps({"a": "\\ud800 \\q \\u00E9 \\/ x", "b": "\ud800"})
+    assert redact.mask_values(other, {secret: "[M]"}) == other
+    line = json.dumps({"a": "\ud800 " + _utf16_escaped(secret) + " \\q", "b": secret})
+    out = redact.mask_values(line, {secret: "[M]"})
+    assert json.loads(out) == {"a": "\ud800 [M] \\q", "b": "[M]"}
 
 
 @pytest.mark.parametrize("ascii_only", [False, True])
