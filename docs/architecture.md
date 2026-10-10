@@ -2088,7 +2088,7 @@ Per call the runner makes a scratch area beside the transcript,
 |---|---|
 | `codex-home/` | the wrapper's `CODEX_HOME`: an existing, empty directory that holds `config.toml` and nothing else (never an `AGENTS.md`); removed in a `finally` |
 | `skills/` | the effective skills, linked for the index in the prompt; removed in a `finally` |
-| `wrapper.json` | the wrapper config: `model`, `thinking`, `effort`, `workspace`, `codex_home`, `headers`, `hat_tools`, `run_root`, `skills` |
+| `wrapper.json` | the wrapper config: `model`, `thinking`, `effort`, `workspace`, `codex_home`, `headers` (header name -> the environment variable holding its value, never the value), `hat_tools`, `run_root`, `skills` |
 | `stderr.log` | the wrapper's and `codex`'s stderr, written only by `CodexRunner`, each line through `scrub_text` |
 
 `headers` is the header map pi's `models.json` carries for the model's
@@ -2104,8 +2104,13 @@ provider (the LLM profile's headers and `--llm-header` ones, for example
 - `[model_providers.aigw]`: `name`, `base_url` (from `AIGW_OPENAI_BASE_URL`),
   `env_key = "AWS_BEARER_TOKEN_BEDROCK"`, `wire_api = "responses"`,
   `request_max_retries` and `stream_max_retries` both 2, so the engine's fault
-  ladder owns retrying, and `[model_providers.aigw.http_headers]` with the
-  `headers` map.
+  ladder owns retrying, and `[model_providers.aigw.env_http_headers]`, which maps each header
+  name of the `headers` map to the environment variable
+  (`RALPHD_CODEX_HEADER_<n>`) that carries its value. A header can be a
+  credential (a `${env:}` reference, or one that embeds the gateway token), so
+  no header value is written to `config.toml` or `wrapper.json`; the runner
+  puts the values in the wrapper's environment, `scrub_environ` keeps them, and
+  `codex` reads them from its own.
 - Isolation: `project_doc_max_bytes = 0`, `skills.bundled.enabled = false`,
   `skills.include_instructions = false`, `features.multi_agent`,
   `features.goals` and `features.view_image` all `false`.
@@ -2116,7 +2121,10 @@ read the prompt from stdin, so no prompt is ever an argument. The prompt on
 stdin is the hat-tool line (when the hat has tools, see Hat tools above), the skills index (when there are skills) and the prompt. The
 bearer token reaches `codex` only through the environment variable named by
 `env_key`; neither `config.toml` nor the argv nor any wrapper file holds its
-value.
+value, and neither does any header value (see `env_http_headers` above). The
+wrapper and the runner also mask each header value, as
+`[REDACTED:codex-header:<name>]`, in every stream they keep (`output.jsonl`,
+`output.codex.jsonl`, `stderr.log`), beside the engine's own redaction map.
 
 The wrapper scrubs its environment before it does anything else
 (`scrub_environ`). `codex` never sees `OPENAI_API_KEY`, `CODEX_API_KEY`,

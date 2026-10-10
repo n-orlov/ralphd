@@ -172,7 +172,8 @@ def hat_tool_prompt(names: list[str]) -> str:
 def build_config(cfg: dict, base_url: str) -> str:
     """The `config.toml` text for one call. `cfg` is the wrapper config
     (`model`, `thinking`, `effort`, `headers`). Holds no secret: the token is
-    named by `env_key` and travels in the environment."""
+    named by `env_key` and each header value by an `env_http_headers` entry;
+    both travel in the environment."""
     top: dict[str, Any] = {
         "model": codex_model(cfg.get("model")),
         "model_provider": PROVIDER_ID,
@@ -189,9 +190,13 @@ def build_config(cfg: dict, base_url: str) -> str:
         "request_max_retries": MAX_RETRIES,
         "stream_max_retries": MAX_RETRIES,
     }
+    # `headers` maps a header NAME to the environment variable that carries
+    # its value (`header_env`); the value itself never enters this file. A
+    # header may come from a `${env:}`/`${file:}`/`${cmd:}` reference, so none
+    # is written as a literal `http_headers` entry.
     headers = {str(k): str(v) for k, v in (cfg.get("headers") or {}).items()}
     if headers:
-        provider["http_headers"] = headers
+        provider["env_http_headers"] = headers
     lines = [f"{k} = {_toml_value(v)}" for k, v in top.items()]
     for path, table in (
         (["model_providers", PROVIDER_ID], provider),
@@ -274,6 +279,44 @@ def scrub_environ(env: Any) -> list[str]:
     return sorted(removed)
 
 
+HEADER_ENV_PREFIX = "RALPHD_CODEX_HEADER_"
+
+
+def header_env(headers: dict) -> tuple[dict[str, str], dict[str, str]]:
+    """Split header NAME -> VALUE into (NAME -> env var name, env var name ->
+    VALUE). The first goes into `wrapper.json` and `config.toml`, the second
+    into the wrapper's environment only."""
+    names: dict[str, str] = {}
+    values: dict[str, str] = {}
+    for i, (name, value) in enumerate(headers.items()):
+        var = f"{HEADER_ENV_PREFIX}{i}"
+        names[str(name)] = var
+        values[var] = str(value)
+    return names, values
+
+
+# Values (beyond the bearer token) the wrapper masks in everything it emits:
+# the profile-header values the wrapper read from its environment.
+_extra_masks: dict[str, str] = {}
+
+
+def _load_header_masks(cfg: dict) -> None:
+    _extra_masks.clear()
+    for name, var in (cfg.get("headers") or {}).items():
+        value = os.environ.get(str(var))
+        if value and len(value) >= MIN_SECRET_LEN:
+            _extra_masks[value] = f"[REDACTED:codex-header:{name}]"
+
+
+def mask_all(text: str, token: str | None) -> str:
+    """`mask_token`, then every profile-header value in `_extra_masks`."""
+    text = mask_token(text, token)
+    for value, label in sorted(_extra_masks.items(), key=lambda kv: -len(kv[0])):
+        if value in text:
+            text = text.replace(value, label)
+    return text
+
+
 def mask_token(text: str, token: str | None) -> str:
     """`text` with the bearer token's value replaced by the label the engine's
     own `scrub_text` uses for it. A no-op for an empty or short token (the
@@ -303,8 +346,8 @@ class _Out:
         self._lock = threading.Lock()  # the stderr pump emits from a thread
 
     def emit(self, obj: dict) -> None:
-        data = mask_token(json.dumps(obj, default=str, ensure_ascii=False),
-                          os.environ.get(TOKEN_ENV)) + "\n"
+        data = mask_all(json.dumps(obj, default=str, ensure_ascii=False),
+                        os.environ.get(TOKEN_ENV)) + "\n"
         with self._lock:
             self._buf.write(data.encode("utf-8", errors="replace"))
             self._buf.flush()
@@ -365,7 +408,7 @@ def _pump_stderr(src, token: str | None, last: list | None = None,
     when a list is given."""
     try:
         for chunk in iter(src.readline, b""):
-            text = mask_token(chunk.decode("utf-8", errors="replace"), token)
+            text = mask_all(chunk.decode("utf-8", errors="replace"), token)
             if last is not None and text.strip():
                 last[:] = [text.strip()]
             if out is not None:
@@ -394,6 +437,7 @@ def _run(cfg: dict, prompt: str, norm: CodexNormaliser, out: _Out) -> int:
     if refusal:
         _finish(norm, out, refusal)
         return 1
+    _load_header_masks(cfg)
     home = Path(cfg["codex_home"])
     (home / "config.toml").write_text(build_config(cfg, os.environ[BASE_URL_ENV]))
     os.environ["CODEX_HOME"] = str(home)

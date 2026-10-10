@@ -28,6 +28,7 @@ from typing import Protocol, runtime_checkable
 from .. import (
     render_index,
 )
+from ..harness.codex import header_env as codex_header_env
 from ..harness.codex_normalise import CODEX_RAW_ENVELOPE_TYPE, CODEX_STDERR_ENVELOPE_TYPE
 from ..harness.codex_normalise import is_traffic as codex_is_traffic
 from ..harness.normalise import RAW_ENVELOPE_TYPE, RAW_TRAFFIC_KINDS
@@ -35,7 +36,7 @@ from . import state
 from .config import CONTROL_PLANE_ENV_VARS
 from .pricing import OPERATOR_TABLE, PricingSource
 from .privsep import agent_child_kwargs
-from .redact import scrub_text
+from .redact import MIN_SECRET_LEN, scrub_text
 from .skills import ambient_home, link_skills, skill_description, verify_placement_and_report
 
 COMPLETE = "<promise>COMPLETE</promise>"
@@ -1082,8 +1083,11 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
     and nothing else), `skills/` holds the linked skills the wrapper lists in
     the prompt's skills index, and `wrapper.json` and `stderr.log` stay. The
     headers pi's `models.json` carries for the model's provider (a profile's
-    and `--llm-header` ones) ride in `wrapper.json` and land in the config's
-    `http_headers`. `codex-home/` and `skills/` are removed in a `finally`.
+    and `--llm-header` ones) are credentials when they come from a `${env:}`
+    reference, so their values travel in the wrapper's environment
+    (`RALPHD_CODEX_HEADER_<n>`); `wrapper.json` and the config's
+    `env_http_headers` hold only header name -> variable name.
+    `codex-home/` and `skills/` are removed in a `finally`.
     The wrapper's stdout carries pi events, handled exactly as pi's, and raw
     Codex envelopes, which `_handle_line` scrubs and appends, unwrapped, to
     `<stem>.codex.jsonl` beside the transcript.
@@ -1102,6 +1106,7 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
         self._home_fn = home_fn
         self._raw_path: Path | None = None
         self._stderr_log: Path | None = None
+        self._header_secrets: dict[str, str] = {}
 
     def _provider_headers(self, model: str | None) -> dict[str, str]:
         """The headers pi's `models.json` carries for `model`'s provider."""
@@ -1146,13 +1151,23 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
             tool_names = [getattr(t, "name", t) for t in (hat_tools or ())]
             root = getattr(self._run_dir, "root", None)
             run_root = str(root) if root is not None else None
+            # A profile header's value may be a credential (a `${env:}` or
+            # `${file:}` reference, already resolved in models.json). It goes
+            # to the wrapper in the environment only; wrapper.json and
+            # config.toml carry the variable's name (`env_http_headers`).
+            header_names, header_values = codex_header_env(
+                self._provider_headers(model))
+            self._header_secrets = {
+                header_values[var]: f"codex-header:{name}"
+                for name, var in header_names.items()
+                if len(header_values[var]) >= MIN_SECRET_LEN}
             wrapper_cfg = {
                 "model": model,
                 "thinking": thinking,
                 "effort": effort,
                 "workspace": os.path.abspath(self.workspace),
                 "codex_home": str(codex_home),
-                "headers": self._provider_headers(model),
+                "headers": header_names,
                 "hat_tools": tool_names,
                 "run_root": run_root,
                 "skills": skills,
@@ -1163,6 +1178,7 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
             cmd = [self.python_bin, "-m", CODEX_WRAPPER_MODULE,
                    "--config", str(cfg_path)]
             env = self._child_env(extra_env)
+            env.update(header_values)
             if tool_names and run_root:
                 env["RALPHD_HAT_TOOLS_RUN"] = run_root
             self._raw_path = transcript.with_name(transcript.stem + ".codex.jsonl")
@@ -1229,7 +1245,7 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
         if text and not text.endswith("\n"):
             text += "\n"
         with open(self._stderr_log, "a") as fh:
-            fh.write(scrub_text(text))
+            fh.write(scrub_text(text, self._header_secrets))
 
     def _handle_line(self, raw: bytes, out, result: IterationResult,
                      live_index: render_index.LiveRenderIndex,
@@ -1255,7 +1271,8 @@ class CodexRunner(_SkillLinker, _ChildProcessRunner):
                 payload = event.get("raw")
                 raw_path = self._raw_path or transcript.with_name(
                     transcript.stem + ".codex.jsonl")
-                line = scrub_text(json.dumps(payload, ensure_ascii=False))
+                line = scrub_text(json.dumps(payload, ensure_ascii=False),
+                                  self._header_secrets)
                 with open(raw_path, "a") as fh:
                     fh.write(line + "\n")
                 return codex_is_traffic(payload)

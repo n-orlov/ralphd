@@ -175,24 +175,121 @@ def test_aigw_provider_table(one_run):
     assert 0 <= provider["stream_max_retries"] <= 2
 
 
-def test_profile_header_is_carried_in_http_headers(one_run):
+def _header_values(obs: dict, itdir_unused=None) -> dict:
+    """NAME -> value as `codex` sees them: `env_http_headers` names the
+    variable, the observed environment holds the value."""
+    table = _config(obs)["model_providers"]["aigw"]["env_http_headers"]
+    return {name: obs["env"][var] for name, var in table.items()}
+
+
+def test_profile_header_reaches_codex_through_env_http_headers(one_run):
     _, obs, _, _ = one_run
-    assert _config(obs)["model_providers"]["aigw"]["http_headers"] == {
-        "X-Jira-ID": "JIRA-123"}
+    provider = _config(obs)["model_providers"]["aigw"]
+    assert "http_headers" not in provider
+    assert list(provider["env_http_headers"]) == ["X-Jira-ID"]
+    assert _header_values(obs) == {"X-Jira-ID": "JIRA-123"}
+    assert "JIRA-123" not in obs["config_toml"]
 
 
-def test_no_headers_means_no_http_headers_table(tmp_path, monkeypatch):
+def test_no_headers_means_no_header_tables(tmp_path, monkeypatch):
     _setup(monkeypatch, tmp_path)
     _, obs, _ = _run(tmp_path)
-    assert "http_headers" not in _config(obs)["model_providers"]["aigw"]
+    provider = _config(obs)["model_providers"]["aigw"]
+    assert "http_headers" not in provider
+    assert "env_http_headers" not in provider
 
 
-def test_header_values_with_quotes_survive_the_toml_round_trip(tmp_path, monkeypatch):
+def test_header_values_with_quotes_survive_the_environment_round_trip(tmp_path, monkeypatch):
     tricky = 'a "quoted" \\ value, ünïcode'
     _setup(monkeypatch, tmp_path, headers={"X-Tricky": tricky, "X Odd.Name": "v"})
     _, obs, _ = _run(tmp_path)
-    assert _config(obs)["model_providers"]["aigw"]["http_headers"] == {
-        "X-Tricky": tricky, "X Odd.Name": "v"}
+    assert _header_values(obs) == {"X-Tricky": tricky, "X Odd.Name": "v"}
+
+
+# -- a header that carries a credential (the gateway token or any other) -------
+
+SECOND_SECRET = "fake-second-credential-FOR-TESTS-ONLY-9876"
+
+
+def _credential_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {FAKE_TOKEN}",          # the gateway token itself
+        "X-Api-Key": SECOND_SECRET,                         # an unrelated credential
+        "X-Signed": f"sig={SECOND_SECRET};tok={FAKE_TOKEN}",  # both in one value
+        "X-Org-Id": "acme-corp",
+    }
+
+
+def _all_files(itdir: Path):
+    return [f for f in itdir.rglob("*") if f.is_file()]
+
+
+def test_credential_headers_never_reach_config_argv_or_scratch_files(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path, headers=_credential_headers(),
+           STUB_CODEX_SCENARIO="echo_stderr",
+           STUB_CODEX_STDERR_LINES=f"sent {FAKE_TOKEN}|saw {SECOND_SECRET} twice {SECOND_SECRET}",
+           STUB_CODEX_TEXT=f"header was {SECOND_SECRET}\n<promise>COMPLETE</promise>")
+    result, obs, itdir = _run(tmp_path)
+    assert not result.error_message
+    for secret in (FAKE_TOKEN, SECOND_SECRET):
+        assert secret not in obs["config_toml"]
+        assert not any(secret in arg for arg in obs["argv"])
+        files = _all_files(itdir)
+        assert any(f.name == "wrapper.json" for f in files)
+        assert any(f.name == "stderr.log" for f in files)
+        for f in files:
+            assert secret not in f.read_text(errors="replace"), f
+    # codex still receives every value, by name, from its environment
+    assert _header_values(obs) == _credential_headers()
+    provider = _config(obs)["model_providers"]["aigw"]
+    assert provider["env_key"] == "AWS_BEARER_TOKEN_BEDROCK"
+    assert "http_headers" not in provider
+    wrapper = json.loads((itdir / "output.codex-scratch" / "wrapper.json").read_text())
+    assert set(wrapper["headers"]) == set(_credential_headers())
+    assert all(v.startswith("RALPHD_CODEX_HEADER_") for v in wrapper["headers"].values())
+
+
+def test_credential_header_values_are_masked_in_the_streams_the_runner_keeps(tmp_path, monkeypatch):
+    from ralphd.engine import redact
+    _setup(monkeypatch, tmp_path, headers=_credential_headers(),
+           STUB_CODEX_SCENARIO="echo_stderr",
+           STUB_CODEX_STDERR_LINES=f"saw {SECOND_SECRET}",
+           STUB_CODEX_TEXT=f"header was {SECOND_SECRET}\n<promise>COMPLETE</promise>")
+    monkeypatch.setattr(redact, "_map", {})  # the engine map knows neither value
+    _, _, itdir = _run(tmp_path)
+    log = (itdir / "output.codex-scratch" / "stderr.log").read_text()
+    assert "[REDACTED:codex-header:X-Api-Key]" in log
+    pi = (itdir / "output.jsonl").read_text()
+    assert "[REDACTED:codex-header:X-Api-Key]" in pi
+    raw = (itdir / "output.codex.jsonl").read_text()
+    assert "[REDACTED:codex-header:X-Api-Key]" in raw
+    for f in _all_files(itdir):
+        assert SECOND_SECRET not in f.read_text(errors="replace"), f
+
+
+def test_a_header_value_shorter_than_the_secret_floor_is_not_masked_but_still_not_written(
+        tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path, headers={"X-Tag": "t1"})
+    _, obs, itdir = _run(tmp_path)
+    assert "t1" not in obs["config_toml"]
+    assert _header_values(obs) == {"X-Tag": "t1"}
+    wrapper = json.loads((itdir / "output.codex-scratch" / "wrapper.json").read_text())
+    assert "t1" not in json.dumps(wrapper)
+
+
+def test_header_env_splits_names_from_values():
+    names, values = codex_mod.header_env({"A": "one", "B": "two"})
+    assert set(names) == {"A", "B"}
+    assert {values[v] for v in names.values()} == {"one", "two"}
+    assert all(not any(val in n for val in values.values()) for n in names.values())
+
+
+def test_the_wrapper_scrub_keeps_the_header_variables():
+    names, values = codex_mod.header_env({"A": "one"})
+    env = dict(values, PATH="/bin", CODEX_FOO="x")
+    codex_mod.scrub_environ(env)
+    assert all(v in env for v in values)
+    assert "CODEX_FOO" not in env
 
 
 # -- (4) argv, stdin, no secret on disk or in argv ------------------------------

@@ -562,6 +562,16 @@ classifier reports it as a configuration fault (the `codex-gateway` refusal
 family): use an OpenAI-gateway LLM profile for the hat. A model on any other
 route is refused earlier, at the route check.
 
+Profile headers (a profile's `headers:`, a provider's own, and `--llm-header`
+ones) reach `codex` the same way the token does. A header value can be a
+credential, for example `Authorization: Bearer ${env:AWS_BEARER_TOKEN_BEDROCK}`
+or an API key from a `${file:}` reference, so no header value is ever written to
+`config.toml` or `wrapper.json`: the config's `env_http_headers` names an
+environment variable per header and the runner puts the value in the wrapper's
+environment. The wrapper and the runner mask each header value as
+`[REDACTED:codex-header:<name>]` in `output.jsonl`, `output.codex.jsonl` and
+`stderr.log`.
+
 **What `codex` does not inherit.** The wrapper scrubs the environment `codex`
 runs with:
 

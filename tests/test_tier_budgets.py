@@ -717,8 +717,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # cure-01-02 (llm ping stderr tail reads the codex wrapper log): +5 tests
     # in tests/test_llm_test_v031.py, measured `-m fast --collect-only` ->
     # 7906/515, `-m smoke --collect-only` -> 6169/391.
-    "fast": {"tests": 7906, "modules": 515},
-    "smoke": {"tests": 6169, "modules": 391},
+    # cure-01-01-2 (codex profile headers travel in the environment, never in
+    # config.toml or wrapper.json): +5 tests in tests/test_codex_runner.py,
+    # measured `-m fast --collect-only` -> 7911/515, `-m smoke
+    # --collect-only` -> 6174/391.
+    "fast": {"tests": 7911, "modules": 515},
+    "smoke": {"tests": 6174, "modules": 391},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
