@@ -255,6 +255,43 @@ name that is not `ci-runner-<digits>`. Listing may filter, but it does so client
 on the name prefix. This is tested in `tests/test_runner_scaler_reaping.py` against
 an injected clock.
 
+### API failures and the backoff
+
+A GitHub call that fails does not stop the scaler. A connection error, a timeout,
+an unreadable reply, a 5xx, a 403 or a 429 makes that pass skip the call, and the
+next pass retries it; `run` never exits and never starts a job twice because of
+one. After a failed pass the loop waits longer: the wait doubles from
+`poll_interval_s` with each consecutive failed pass (5, 10, 20, 40 seconds at the
+default) and is capped at 60 seconds, and one clean pass returns it to
+`poll_interval_s`. A 403 or 429 that names a wait sets the next wait instead:
+`Retry-After` (seconds or an HTTP date) first, else `x-ratelimit-reset` (epoch
+seconds, so the wait is the time left until it). That wait is never shorter than
+`poll_interval_s` and is bounded at one hour, so a bad header cannot park the loop.
+Any other reply (a 404, say) and a docker failure do not back off.
+
+An unreachable API never removes a running container. Reaping needs a successful
+read of the container's job, so while the API is down, rate limited or erroring
+every `ci-runner-*` container stays exactly as it was, and the pass that sees the
+API again reaps what is then due. Likewise no start is missed or doubled: a job
+that has a container is skipped, and one that has none is started on the first
+pass that can read the queue. This is tested in
+`tests/test_runner_scaler_resilience.py` with an injected sleep and clock, so nothing
+really waits.
+
+### Whose jobs the scaler serves
+
+One function, `is_trusted(run)` in `ci/runner_scaler.py`, decides whether a run's
+jobs are served; nothing else in the scaler decides. The rule: the run's head
+repository must be the scaler's own repository, and its `event` must be `push`,
+`workflow_dispatch`, `schedule` or `pull_request` (so a `pull_request` counts only
+when it comes from the same repository, never from a fork). Everything else is
+skipped and logged as `skipping run <id>: not trusted`: a fork's pull request,
+`pull_request_target` (it runs with the base repository's secrets against the
+head's code, so it is never served), every other event, and any run whose
+repository fields are missing. A skipped run gets no JIT request and no container;
+its jobs stay queued for the standing runners or wait. Tightening the rule later is
+an edit to `is_trusted`. This is tested in `tests/test_runner_scaler_trust.py`.
+
 The config is read from `--config` (default `~/.config/ralphd-ci/scaler.yaml`).
 `repo` and `token_file` are required; the token is read from the file `token_file`
 names, and a config that holds an inline token is rejected. The other keys are
@@ -266,8 +303,9 @@ by space indentation. Lists, flow style, anchors and tabs are rejected with a
 line-numbered error.
 
 The scaler's tests (`tests/test_runner_scaler_commands.py`,
-`tests/test_runner_scaler_queue.py`, `tests/test_runner_scaler_jit.py` and
-`tests/test_runner_scaler_reaping.py`) run it against a local
+`tests/test_runner_scaler_queue.py`, `tests/test_runner_scaler_jit.py`,
+`tests/test_runner_scaler_reaping.py`, `tests/test_runner_scaler_resilience.py` and
+`tests/test_runner_scaler_trust.py`) run it against a local
 fake GitHub API and a fake `docker` first on `PATH`
 (`tests/_runner_scaler_fakes.py`); no test reaches the network or a docker daemon.
 

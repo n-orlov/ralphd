@@ -47,6 +47,7 @@ class FakeGitHub:
                 head_repo: str | None = None, status: str = "queued") -> None:
         self.runs.append({
             "id": run_id, "status": status, "event": event,
+            "repository": {"full_name": self.repo},
             "head_repository": {"full_name": head_repo or self.repo},
         })
         self.jobs.setdefault(run_id, [])
@@ -65,11 +66,17 @@ class FakeGitHub:
                     job["status"] = status
 
     def fail_next(self, count: int, status: int = 503,
-                  headers: dict[str, str] | None = None) -> None:
-        """Answer the next `count` requests with HTTP `status`."""
+                  headers: dict[str, str] | None = None,
+                  path_contains: str | None = None) -> None:
+        """Answer the next `count` requests with HTTP `status`, with `headers`.
+
+        With `path_contains`, only requests whose path contains it consume a
+        failure; others are served normally.
+        """
         with self._lock:
             self._failures.extend(
-                {"status": status, "headers": headers or {}} for _ in range(count))
+                {"status": status, "headers": headers or {},
+                 "path_contains": path_contains} for _ in range(count))
 
     def requests_to(self, method: str, path_prefix: str = "") -> list[dict[str, Any]]:
         return [r for r in self.requests
@@ -112,7 +119,12 @@ class FakeGitHub:
                         "authorized": self.headers.get("Authorization", "")
                         == f"Bearer {FAKE_TOKEN}",
                     })
-                    failure = fake._failures.pop(0) if fake._failures else None
+                    failure = None
+                    for i, candidate in enumerate(fake._failures):
+                        if candidate["path_contains"] in (None, ) or \
+                                candidate["path_contains"] in split.path:
+                            failure = fake._failures.pop(i)
+                            break
                 if failure:
                     self._reply(failure["status"], {"message": "fake failure"},
                                 failure["headers"])

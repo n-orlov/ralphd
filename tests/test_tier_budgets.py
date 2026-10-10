@@ -747,8 +747,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.34 task 004 (start deadline and reaping): +8 tests / +1 module
     # (tests/test_runner_scaler_reaping.py), measured `-m fast --collect-only`
     # -> 8024/519, `-m smoke --collect-only` -> 6287/395.
-    "fast": {"tests": 8024, "modules": 519},
-    "smoke": {"tests": 6287, "modules": 395},
+    # v0.34 task 005 (API resilience and the trust predicate): +32 tests / +2
+    # modules (tests/test_runner_scaler_resilience.py, tests/test_runner_scaler_
+    # trust.py), measured `-m fast --collect-only` -> 8056/521, `-m smoke
+    # --collect-only` -> 6319/397.
+    "fast": {"tests": 8056, "modules": 521},
+    "smoke": {"tests": 6319, "modules": 397},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

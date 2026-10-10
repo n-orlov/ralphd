@@ -16,6 +16,7 @@ issues none. The scaler serves only jobs whose labels include ``ci-pool``.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import re
 import sys
@@ -23,6 +24,7 @@ import time
 import urllib.error
 import urllib.request
 from calendar import timegm
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -32,6 +34,9 @@ RUNNER_NAME_PREFIX = "ci-"
 RUNNER_GROUP_ID = 1
 DEFAULT_CONFIG_PATH = "~/.config/ralphd-ci/scaler.yaml"
 API_TIMEOUT_S = 30
+BACKOFF_CAP_S = 60
+RATE_LIMIT_MAX_WAIT_S = 3600
+TRUSTED_EVENTS = ("push", "workflow_dispatch", "schedule", "pull_request")
 
 DEFAULTS: dict[str, Any] = {
     "api_url": "https://api.github.com",
@@ -55,6 +60,26 @@ class ScalerError(Exception):
 
 class ConfigError(ScalerError):
     """The config file is unreadable or invalid."""
+
+
+class ApiError(ScalerError):
+    """A failed GitHub API call. ``status`` is the HTTP status, or None when the
+    call never got a reply (connection error, timeout, unreadable body).
+    ``retry_after`` and ``ratelimit_reset`` carry the reply's rate-limit headers.
+    """
+
+    def __init__(self, message: str, status: int | None = None,
+                 retry_after: str | None = None,
+                 ratelimit_reset: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
+        self.ratelimit_reset = ratelimit_reset
+
+    @property
+    def retryable(self) -> bool:
+        """Outage-shaped: no reply, a 5xx, a 403 or a 429. The scaler backs off."""
+        return self.status is None or self.status >= 500 or self.status in (403, 429)
 
 
 # --------------------------------------------------------------------------
@@ -163,6 +188,9 @@ class GitHubApi:
         self.base = str(cfg["api_url"]).rstrip("/")
         self.repo = str(cfg["repo"])
         self.token_file = str(cfg["token_file"])
+        # The latest retryable failure; ``run_loop`` clears it before a pass and
+        # reads it after, to decide the next wait.
+        self.last_failure: ApiError | None = None
 
     def _token(self) -> str:
         try:
@@ -171,6 +199,14 @@ class GitHubApi:
             raise ScalerError(f"cannot read token file: {exc.strerror or exc}")
 
     def request(self, method: str, path: str, body: Any = None) -> Any:
+        try:
+            return self._request(method, path, body)
+        except ApiError as exc:
+            if exc.retryable:
+                self.last_failure = exc
+            raise
+
+    def _request(self, method: str, path: str, body: Any) -> Any:
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(
             self.base + path, data=data, method=method, headers={
@@ -183,10 +219,16 @@ class GitHubApi:
             with urllib.request.urlopen(req, timeout=API_TIMEOUT_S) as resp:
                 payload = resp.read()
         except urllib.error.HTTPError as exc:
-            raise ScalerError(f"GitHub API {method} {path}: HTTP {exc.code}")
-        except (urllib.error.URLError, OSError) as exc:
-            raise ScalerError(f"GitHub API {method} {path}: {exc}")
-        return json.loads(payload) if payload else None
+            raise ApiError(f"GitHub API {method} {path}: HTTP {exc.code}",
+                           status=exc.code,
+                           retry_after=exc.headers.get("Retry-After"),
+                           ratelimit_reset=exc.headers.get("x-ratelimit-reset"))
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            raise ApiError(f"GitHub API {method} {path}: {exc}")
+        try:
+            return json.loads(payload) if payload else None
+        except ValueError as exc:
+            raise ApiError(f"GitHub API {method} {path}: unreadable reply: {exc}")
 
     def get(self, path: str) -> Any:
         return self.request("GET", path)
@@ -319,10 +361,33 @@ def log(message: str) -> None:
     print(f"scaler: {message}", file=sys.stderr, flush=True)
 
 
+def is_trusted(run: dict[str, Any]) -> bool:
+    """The one trust decision: does the scaler serve this run's jobs?
+
+    A run is served only when its head repository is the repository the run
+    belongs to (the scaler's own repo) and its event is ``push``,
+    ``workflow_dispatch``, ``schedule`` or ``pull_request``. A fork's pull
+    request, ``pull_request_target`` and every other event are not, and a run
+    missing either repository field is not (fail closed). Tightening the rule
+    later is an edit to this function and nothing else.
+    """
+    if run.get("event") not in TRUSTED_EVENTS:
+        return False
+    head = (run.get("head_repository") or {}).get("full_name")
+    own = (run.get("repository") or {}).get("full_name")
+    return bool(head) and head == own
+
+
 def queued_pool_jobs(api: GitHubApi) -> list[dict[str, Any]]:
-    """Queued jobs whose labels include the ``ci-pool`` label, in job-id order."""
+    """Queued jobs of trusted runs whose labels include ``ci-pool``, in job-id
+    order. A run that fails ``is_trusted`` is skipped and logged."""
     jobs = []
     for run in api.queued_runs():
+        if not is_trusted(run):
+            head = (run.get("head_repository") or {}).get("full_name")
+            log(f"skipping run {run.get('id')}: not trusted "
+                f"(event {run.get('event')!r}, head repository {head!r})")
+            continue
         for job in api.run_jobs(int(run["id"])):
             if job.get("status") == "queued" and POOL_LABEL in (job.get("labels") or []):
                 jobs.append(job)
@@ -432,18 +497,77 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
     return started
 
 
+def _header_wait(failure: ApiError, now: float) -> float | None:
+    """Seconds a 403/429 reply asks us to wait: ``Retry-After`` (seconds or an
+    HTTP date), else ``x-ratelimit-reset`` (epoch seconds). None when absent."""
+    if failure.status not in (403, 429):
+        return None
+    if failure.retry_after:
+        text = failure.retry_after.strip()
+        try:
+            return max(0.0, float(text))
+        except ValueError:
+            try:
+                return max(0.0, parsedate_to_datetime(text).timestamp() - now)
+            except (TypeError, ValueError):
+                pass
+    if failure.ratelimit_reset:
+        try:
+            return max(0.0, float(failure.ratelimit_reset.strip()) - now)
+        except ValueError:
+            pass
+    return None
+
+
+def next_wait(poll_interval_s: float, failures: int,
+              failure: ApiError | None, now: float) -> float:
+    """Seconds to sleep before the next pass.
+
+    No failure: ``poll_interval_s``. After the ``failures``-th consecutive failed
+    pass: ``poll_interval_s * 2**(failures - 1)``, capped at ``BACKOFF_CAP_S``
+    (never below ``poll_interval_s``). A 403/429 that names a wait (``Retry-After``,
+    else ``x-ratelimit-reset``) sets the wait to that, bounded by
+    ``RATE_LIMIT_MAX_WAIT_S`` so a bad header cannot park the loop.
+    """
+    poll = float(poll_interval_s)
+    if failure is None:
+        return poll
+    hinted = _header_wait(failure, now)
+    if hinted is not None:
+        return max(poll, min(hinted, float(RATE_LIMIT_MAX_WAIT_S)))
+    backoff = min(float(BACKOFF_CAP_S), poll * 2 ** max(0, failures - 1))
+    return max(poll, backoff)
+
+
 def run_loop(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
              dry_run: bool = False, passes: int | None = None,
-             sleep: Callable[[float], None] = time.sleep) -> None:
+             sleep: Callable[[float], None] = time.sleep,
+             clock: Callable[[], float] = time.time) -> None:
+    """Run passes forever (or ``passes`` times); no failure ends the loop.
+
+    A pass whose GitHub call failed (no reply, timeout, 5xx, 403, 429) is
+    skipped as far as that call goes and retried after a longer wait, see
+    ``next_wait``. A running container is never removed because the API was
+    unreachable: reaping needs a job read that succeeded.
+    """
     done = 0
+    failures = 0
     while passes is None or done < passes:
+        api.last_failure = None
         try:
-            run_pass(cfg, api, docker, dry_run=dry_run)
+            run_pass(cfg, api, docker, dry_run=dry_run, clock=clock)
         except ScalerError as exc:
             log(f"pass failed: {exc}")
+        except Exception as exc:  # a daemon outlives an unexpected pass error
+            log(f"pass failed unexpectedly: {type(exc).__name__}: {exc}")
+        failure = api.last_failure
+        failures = failures + 1 if failure is not None else 0
+        wait = next_wait(float(cfg["poll_interval_s"]), failures, failure, clock())
+        if failure is not None:
+            log(f"GitHub API unavailable ({failure}); retrying in {wait:g}s")
         done += 1
         if passes is None or done < passes:
-            sleep(float(cfg["poll_interval_s"]))
+            sleep(wait)
 
 
 def status_entries(docker: Docker, now: float | None = None) -> list[dict[str, Any]]:
