@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import io
 import json
 import re
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -49,6 +51,10 @@ DEFAULTS: dict[str, Any] = {
     "host_cpus": 12,
     "profiles": {},
 }
+# The default profile (B.3). A ``profiles: default:`` entry overrides any field.
+DEFAULT_PROFILE: dict[str, Any] = {"cpus": 4, "memory": "12g", "pids_limit": 4096}
+PROFILE_KEYS = tuple(DEFAULT_PROFILE)
+RESERVED_CORES = 1
 REQUIRED = ("repo", "token_file")
 INT_KEYS = ("poll_interval_s", "max_concurrency", "start_deadline_s",
             "job_deadline_s", "host_cpus")
@@ -175,8 +181,63 @@ def load_config(path: str | Path) -> dict[str, Any]:
             raise ConfigError(f"config key {key!r} must be a positive integer")
     if not isinstance(merged["profiles"], dict):
         raise ConfigError("config key 'profiles' must be a map")
+    _check_profiles(merged)
     merged["token_file"] = str(Path(str(merged["token_file"])).expanduser())
     return merged
+
+
+def _check_profiles(cfg: dict[str, Any]) -> None:
+    """Validate every profile, then refuse a cap that oversubscribes the host."""
+    for label, entry in cfg["profiles"].items():
+        if not isinstance(entry, dict):
+            raise ConfigError(f"profile {label!r} must be a map of "
+                              f"{', '.join(PROFILE_KEYS)}")
+        for key, value in entry.items():
+            if key not in PROFILE_KEYS:
+                raise ConfigError(f"profile {label!r}: unknown key {key!r} "
+                                  f"(allowed: {', '.join(PROFILE_KEYS)})")
+            if key == "cpus":
+                ok = (isinstance(value, (int, float)) and not isinstance(value, bool)
+                      and value > 0)
+            elif key == "memory":
+                ok = isinstance(value, str) and re.fullmatch(
+                    r"[1-9]\d*[bkmgBKMG]", value) is not None
+            else:
+                ok = isinstance(value, int) and not isinstance(value, bool) and value > 0
+            if not ok:
+                raise ConfigError(f"profile {label!r}: bad value for {key!r}: "
+                                  f"{value!r}")
+    largest = max(float(profile["cpus"]) for profile in all_profiles(cfg))
+    total = int(cfg["max_concurrency"]) * largest
+    usable = int(cfg["host_cpus"]) - RESERVED_CORES
+    if total > usable:
+        raise ConfigError(
+            f"max_concurrency {cfg['max_concurrency']} x largest profile "
+            f"cpus {largest:g} = {total:g} CPUs exceeds {usable} usable CPUs "
+            f"(host_cpus {cfg['host_cpus']} minus {RESERVED_CORES} reserved core)")
+
+
+def default_profile(cfg: dict[str, Any]) -> dict[str, Any]:
+    """The default profile: the built-in one with ``profiles: default:`` on top."""
+    return {**DEFAULT_PROFILE, **(cfg["profiles"].get("default") or {})}
+
+
+def all_profiles(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """The default profile and every labelled profile, each fully resolved."""
+    base = default_profile(cfg)
+    return [base] + [{**base, **entry} for label, entry in cfg["profiles"].items()
+                     if label != "default"]
+
+
+def resolve_profile(cfg: dict[str, Any], labels: list[str]) -> dict[str, Any]:
+    """The profile for a job: the first of its labels (in the job's own label
+    order) that keys a ``profiles`` entry, else the default. A labelled profile
+    inherits any field it omits from the default profile."""
+    base = default_profile(cfg)
+    for label in labels:
+        if label != "default" and label in cfg["profiles"]:
+            return {**base, **cfg["profiles"][label]}
+    return base
 
 
 # --------------------------------------------------------------------------
@@ -289,23 +350,44 @@ class GitHubApi:
 # runner once with the JIT config read from this file. There is no registration
 # step (no ``config.sh``); the file's delivery into the container is separate.
 RUN_ONCE_COMMAND = ("/home/ubuntu/run-once.sh", "/run/ci-runner/jitconfig")
+JIT_PARENT_DIR = "/run"  # `docker cp -` extracts the tar below here
+JIT_RUNNER_UID = 1000
+
+
+def jit_tar(jit_config: str) -> bytes:
+    """A tar holding ``ci-runner/jitconfig`` (the JIT config), owned by the
+    runner's uid 1000, readable by it alone (dir 0500, file 0400)."""
+    data = jit_config.encode()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for path, mode, size in (("ci-runner", 0o500, 0),
+                                 ("ci-runner/jitconfig", 0o400, len(data))):
+            info = tarfile.TarInfo(path)
+            info.type = tarfile.REGTYPE if path.endswith("jitconfig") else tarfile.DIRTYPE
+            info.mode, info.size, info.mtime = mode, size, 0
+            info.uid = info.gid = JIT_RUNNER_UID
+            tar.addfile(info, io.BytesIO(data) if info.isreg() else None)
+    return buf.getvalue()
 
 
 class Docker:
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.binary = str(cfg["docker"])
 
-    def run(self, *args: str) -> str:
+    def run(self, *args: str, stdin: bytes | None = None) -> str:
         import subprocess
         try:
             proc = subprocess.run([self.binary, *args], capture_output=True,
-                                  text=True, timeout=120)
+                                  input=stdin,
+                                  timeout=120)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ScalerError(f"docker {args[0] if args else ''}: {exc}")
+        stdout = proc.stdout.decode(errors="replace")
         if proc.returncode != 0:
+            stderr = proc.stderr.decode(errors="replace")
             raise ScalerError(f"docker {args[0] if args else ''} failed: "
-                              f"{proc.stderr.strip() or proc.stdout.strip()}")
-        return proc.stdout
+                              f"{stderr.strip() or stdout.strip()}")
+        return stdout
 
     def containers(self) -> list[dict[str, Any]]:
         """The scaler's own containers, filtered client-side by name prefix."""
@@ -319,8 +401,33 @@ class Docker:
                 found.append(entry)
         return found
 
-    def start(self, name: str, image: str) -> None:
-        self.run("run", "-d", "--name", name, image, *RUN_ONCE_COMMAND)
+    def start(self, name: str, image: str, jit_config: str,
+              profile: dict[str, Any]) -> None:
+        """Create the container with its limits, deliver the JIT config, start it.
+
+        ``docker create`` carries ``--cpus``, ``--memory`` and ``--pids-limit``
+        from the job's profile (B.3). The JIT config is a credential (B.2): it
+        reaches the container as the file ``/run/ci-runner/jitconfig`` through a
+        tar stream on ``docker cp -`` stdin, so it is in no argv element, no
+        ``--env``/``--env-file`` value (which ``docker inspect`` shows), no log
+        line and no host-side file. If delivery or the start fails the container
+        is removed by its exact name, so the next pass starts clean.
+        """
+        self.run("create", "--name", name,
+                 "--cpus", f"{float(profile['cpus']):g}",
+                 "--memory", str(profile["memory"]),
+                 "--pids-limit", str(profile["pids_limit"]),
+                 image, *RUN_ONCE_COMMAND)
+        try:
+            self.run("cp", "-", f"{name}:{JIT_PARENT_DIR}",
+                     stdin=jit_tar(jit_config))
+            self.run("start", name)
+        except ScalerError:
+            try:
+                self.remove(name)
+            except ScalerError as exc:
+                log(f"cannot remove {name} after a failed start: {exc}")
+            raise
 
     def remove(self, name: str) -> None:
         """Remove ONE container by its exact name; never by filter or prune."""
@@ -490,12 +597,17 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
             out(f"would start {name} for job {job['id']}")
         else:
             try:
-                api.generate_jitconfig(job)
+                jit_config = api.generate_jitconfig(job)
             except ScalerError as exc:
                 # No container for this job; the next pass requests again.
                 log(f"no runner config for job {job['id']}: {exc}")
                 continue
-            docker.start(name, str(cfg["image"]))
+            profile = resolve_profile(cfg, list(job.get("labels") or []))
+            try:
+                docker.start(name, str(cfg["image"]), jit_config, profile)
+            except ScalerError as exc:
+                log(f"cannot start {name}: {exc}")
+                continue
             log(f"started {name}")
         names.add(name)
         free -= 1

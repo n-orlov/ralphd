@@ -241,18 +241,57 @@ both together. The image installs `git`, `curl`, `jq`, python3 with `venv` and t
 docker CLI (`docker-ce-cli`, the client only; no daemon is installed or started),
 and ends with `USER 1000`, the base image's `ubuntu` account.
 
-The image has no `ENTRYPOINT` or `CMD`: the scaler's `docker run` names the command,
+The image has no `ENTRYPOINT` or `CMD`: the scaler's `docker create` names the command,
 `/home/ubuntu/run-once.sh /run/ci-runner/jitconfig`. `ci/runner/run-once.sh` reads the
 encoded JIT config from that file and does `exec ./run.sh --jitconfig <config>`, so
 the runner starts once, takes the one job the config was requested for and exits when
 it ends; the container's exit status is the runner's. There is no `config.sh`
 registration step in the script or in the argv, because the JIT config already
 registered the single-use runner. The scaler removes the exited container by exact
-name (see the start deadline and reaping above). Putting the config file into the
-container is a separate step from naming the command. The recipe is checked by parsing,
+name (see the start deadline and reaping above). The config file is put into the
+container as described in the next section. The recipe is checked by parsing,
 never by a build: `tests/test_runner_image.py` asserts the digest base, the SHA-256
 check, no `latest` tag and `USER 1000` on the file, fails each assertion on a mutated
 copy that lacks it, and asserts the start argv.
+
+### The secret path and the container limits
+
+The JIT config is a credential, and the scaler starts a container in three docker
+calls, in this order: `docker create`, `docker cp -`, `docker start`. The config
+reaches the container as the file `/run/ci-runner/jitconfig` through a tar stream on
+the stdin of `docker cp - ci-runner-<job id>:/run`; the tar holds `ci-runner/jitconfig`
+owned by uid 1000, mode 0400, in a directory of mode 0500. The value therefore never
+appears in any docker argv element, in any `--env`, `-e` or `--env-file` value (an
+`--env-file` is visible in `docker inspect`, so none is used), in a scaler log line, in
+the `status` output, or in a host-side file: there is none, so there is nothing to
+chmod or delete. If `docker cp` or `docker start` fails, the scaler removes the
+created container by its exact name and logs the failure (without the value); the job
+keeps its queue place and the next pass starts it again.
+
+`docker create` carries `--cpus`, `--memory` and `--pids-limit` from the job's
+profile. The default profile is 4 CPUs, `12g` and 4096 pids. A `profiles` map in the
+config keys further profiles off a job label, for example:
+
+    profiles:
+      browser-runner:
+        cpus: 4
+        memory: 16g
+
+A job takes the profile of the first of its own labels that keys a `profiles` entry,
+else the default. A profile sets any of `cpus`, `memory` (an integer and one of
+`b`, `k`, `m`, `g`) and `pids_limit`, and inherits what it omits from the default
+profile; a `default` entry in `profiles` replaces the built-in default fields. An unknown
+key or a bad value is rejected at load.
+
+At load the scaler refuses a config that oversubscribes the host. With `host_cpus` the
+CPUs of the host (default 12), one core is reserved for the host itself, and
+`max_concurrency` times the largest `cpus` of the default profile and every profile must
+not exceed `host_cpus` minus 1. The error names both numbers: four containers of 4 CPUs
+is 16 against the 11 usable on a 12-CPU host, so that config exits 2 without touching
+docker or GitHub. Two containers of 4 CPUs load. Because the built-in `max_concurrency`
+is 4, a config that sets neither `max_concurrency` nor `host_cpus` is refused; set
+`max_concurrency: 2` (as on the 12-CPU host) or a larger `host_cpus`. This is tested in
+`tests/test_runner_scaler_secrets_limits.py`.
 
 ### The start deadline and reaping
 
@@ -322,7 +361,7 @@ The config is read from `--config` (default `~/.config/ralphd-ci/scaler.yaml`).
 `repo` and `token_file` are required; the token is read from the file `token_file`
 names, and a config that holds an inline token is rejected. The other keys are
 `api_url`, `poll_interval_s` (5), `max_concurrency` (4), `start_deadline_s` (120),
-`job_deadline_s` (7800), `image`, `docker`, `host_cpus` and a `profiles` map. The
+`job_deadline_s` (7800), `image`, `docker`, `host_cpus` (12) and a `profiles` map. The
 scaler imports no YAML library, so the file is a YAML subset: `key: value` scalars
 (strings, optionally quoted; integers; `true`/`false`), `#` comments and nested maps
 by space indentation. Lists, flow style, anchors and tabs are rejected with a
@@ -330,8 +369,8 @@ line-numbered error.
 
 The scaler's tests (`tests/test_runner_scaler_commands.py`,
 `tests/test_runner_scaler_queue.py`, `tests/test_runner_scaler_jit.py`,
-`tests/test_runner_scaler_reaping.py`, `tests/test_runner_scaler_resilience.py` and
-`tests/test_runner_scaler_trust.py`) run it against a local
+`tests/test_runner_scaler_reaping.py`, `tests/test_runner_scaler_resilience.py`,
+`tests/test_runner_scaler_secrets_limits.py` and `tests/test_runner_scaler_trust.py`) run it against a local
 fake GitHub API and a fake `docker` first on `PATH`
 (`tests/_runner_scaler_fakes.py`); no test reaches the network or a docker daemon.
 

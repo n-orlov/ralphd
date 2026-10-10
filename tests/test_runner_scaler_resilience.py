@@ -58,7 +58,7 @@ def rig(tmp_path, monkeypatch, scaler):
             monkeypatch.setenv(key, value)
     with FakeGitHub() as github:
         path = tmp_path / "scaler.yaml"
-        path.write_text(f"repo: {github.repo}\ntoken_file: {token}\n"
+        path.write_text(f"repo: {github.repo}\ntoken_file: {token}\nhost_cpus: 64\n"
                         f"api_url: {github.url}\nimage: ci-runner:test\n"
                         f"poll_interval_s: {POLL}\n")
         yield Rig(scaler, github, docker, path)
@@ -93,11 +93,11 @@ def test_four_failures_then_recovery_starts_each_queued_job_exactly_once(
 
     rig.run(passes=4)
     assert rig.docker.commands("rm") == []
-    assert rig.docker.commands("run") == []
+    assert rig.docker.commands("create") == []
     assert "ci-runner-101" in rig.docker.containers()
 
     rig.run(passes=3)  # recovered, then two idle passes
-    runs = rig.docker.commands("run")
+    runs = rig.docker.commands("create")
     started = sorted(argv[argv.index("--name") + 1] for argv in runs)
     assert started == ["ci-runner-102", "ci-runner-103"]  # one each, none doubled
     assert rig.docker.commands("rm") == []  # job 101 still runs: nothing reaped
@@ -172,4 +172,4 @@ def test_an_unreachable_api_never_lets_an_exception_out_of_the_loop(
     rig.run(passes=5)
     assert rig.waits == [5, 10, 20, 40]
     assert rig.docker.commands("rm") == []
-    assert rig.docker.commands("run") == []
+    assert rig.docker.commands("create") == []

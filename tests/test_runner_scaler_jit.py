@@ -36,7 +36,7 @@ def config(tmp_path, github):
     token = tmp_path / "token"
     token.write_text(FAKE_TOKEN + "\n")
     path = tmp_path / "scaler.yaml"
-    path.write_text(f"repo: {github.repo}\ntoken_file: {token}\n"
+    path.write_text(f"repo: {github.repo}\ntoken_file: {token}\nhost_cpus: 64\n"
                     f"api_url: {github.url}\nimage: ci-runner:test\n")
     return path
 
@@ -96,9 +96,9 @@ def test_the_request_is_made_before_the_container_starts(
     seen = []
 
     class Recording(scaler.Docker):
-        def start(self, name, image):
+        def start(self, name, image, jit_config, profile):
             seen.append((name, [p["body"]["name"] for p in jit_posts(github)]))
-            super().start(name, image)
+            super().start(name, image, jit_config, profile)
 
     scaler.run_pass(cfg, scaler.GitHubApi(cfg), Recording(cfg))
     assert seen == [("ci-runner-101", ["ci-101"]),
@@ -148,7 +148,7 @@ def test_a_failed_request_does_not_use_up_a_concurrency_slot(github, docker, tmp
     token = tmp_path / "token"
     token.write_text(FAKE_TOKEN + "\n")
     cfg = tmp_path / "capped.yaml"
-    cfg.write_text(f"repo: {github.repo}\ntoken_file: {token}\n"
+    cfg.write_text(f"repo: {github.repo}\ntoken_file: {token}\nhost_cpus: 64\n"
                    f"api_url: {github.url}\nimage: ci-runner:test\nmax_concurrency: 1\n")
     queue_job(github, 1, 101, ["ci-pool"])
     queue_job(github, 1, 102, ["ci-pool"])

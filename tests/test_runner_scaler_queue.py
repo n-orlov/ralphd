@@ -35,7 +35,7 @@ def write_config(tmp_path, github, extra=""):
     path = tmp_path / "scaler.yaml"
     path.write_text(
         f"repo: {github.repo}\n"
-        f"token_file: {token}\n"
+        f"token_file: {token}\nhost_cpus: 64\n"
         f"api_url: {github.url}\n"
         "image: ci-runner:test\n" + extra)
     return path

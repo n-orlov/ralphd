@@ -228,6 +228,8 @@ state = load()
 now = state.get("clock") or time.time()
 cmd = argv[0] if argv else ""
 rest = argv[1:]
+if cmd and cmd == os.environ.get("FAKE_DOCKER_FAIL"):
+    fail("injected failure of docker " + cmd)
 
 if cmd in ("run", "create"):
     name, image, i = None, None, 0
@@ -279,7 +281,10 @@ elif cmd == "rm":
     print("\n".join(names))
 elif cmd == "cp":
     if rest and rest[0] == "-":
-        sys.stdin.buffer.read()
+        payload = sys.stdin.buffer.read()
+        dest = rest[1]
+        with open(os.path.join(root, "cp-" + dest.split(":")[0] + ".tar"), "wb") as fh:
+            fh.write(payload)
 elif cmd == "ps":
     for entry in state["containers"].values():
         if "-a" in rest or entry["State"] == "running":
@@ -382,6 +387,10 @@ class FakeDocker:
 
     def volumes(self) -> list[str]:
         return self._read()["volumes"]
+
+    def cp_payload(self, container: str) -> bytes:
+        """The tar a `docker cp - <container>:<dir>` received on stdin."""
+        return (self.state_dir / f"cp-{container}.tar").read_bytes()
 
     def argv_log(self) -> list[list[str]]:
         text = (self.state_dir / "argv.jsonl").read_text()

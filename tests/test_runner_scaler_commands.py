@@ -45,7 +45,7 @@ def config(tmp_path, github):
     path = tmp_path / "scaler.yaml"
     path.write_text(
         f"repo: {github.repo}\n"
-        f"token_file: {token}\n"
+        f"token_file: {token}\nhost_cpus: 64\n"
         f"api_url: {github.url}\n"
         "image: ci-runner:test\n"
         "poll_interval_s: 1\n")
@@ -102,7 +102,7 @@ def test_once_starts_one_container_for_a_queued_ci_pool_job(github, docker, conf
     done = scaler(docker, config, "once")
     assert done.returncode == 0, done.stderr
     assert list(docker.containers()) == ["ci-runner-101"]
-    runs = docker.commands("run")
+    runs = docker.commands("create")
     assert len(runs) == 1 and "ci-runner-101" in runs[0]
 
 

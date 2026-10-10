@@ -150,8 +150,10 @@ def start_argv(scaler, tmp_path, monkeypatch):
     docker = FakeDocker(tmp_path / "fakedocker")
     monkeypatch.setenv("PATH", docker.env()["PATH"])
     monkeypatch.setenv("FAKE_DOCKER_DIR", docker.env()["FAKE_DOCKER_DIR"])
-    scaler.Docker({"docker": "docker"}).start("ci-runner-101", "ci-runner:test")
-    runs = docker.commands("run", "create")
+    scaler.Docker({"docker": "docker"}).start(
+        "ci-runner-101", "ci-runner:test", "FAKE_JIT_VALUE_ci-101",
+        {"cpus": 4, "memory": "12g", "pids_limit": 4096})
+    runs = docker.commands("create")
     assert len(runs) == 1
     return runs[0]
 

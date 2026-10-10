@@ -753,8 +753,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # --collect-only` -> 6319/397.
     # v0.34 runner image task: +12 tests / +1 module (tests/test_runner_image.py),
     # measured the same way -> fast 8068/522, smoke 6331/398.
-    "fast": {"tests": 8068, "modules": 522},
-    "smoke": {"tests": 6331, "modules": 398},
+    # v0.34 task 007 (secret delivery and limits): +10 tests / +1 module
+    # (tests/test_runner_scaler_secrets_limits.py), measured the same way ->
+    # fast 8078/523, smoke 6341/399.
+    "fast": {"tests": 8078, "modules": 523},
+    "smoke": {"tests": 6341, "modules": 399},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

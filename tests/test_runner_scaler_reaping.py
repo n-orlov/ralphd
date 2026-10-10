@@ -61,7 +61,7 @@ def rig(tmp_path, monkeypatch, scaler):
             monkeypatch.setenv(key, value)
     with FakeGitHub() as github:
         path = tmp_path / "scaler.yaml"
-        path.write_text(f"repo: {github.repo}\ntoken_file: {token}\n"
+        path.write_text(f"repo: {github.repo}\ntoken_file: {token}\nhost_cpus: 64\n"
                         f"api_url: {github.url}\nimage: ci-runner:test\n")
         yield Rig(scaler, github, docker, path)
 
@@ -80,7 +80,7 @@ def test_defaults_come_from_the_loaded_default_config(tmp_path, scaler):
     token = tmp_path / "token"
     token.write_text(FAKE_TOKEN + "\n")
     path = tmp_path / "scaler.yaml"
-    path.write_text(f"repo: n-orlov/ralphd\ntoken_file: {token}\n")
+    path.write_text(f"repo: n-orlov/ralphd\ntoken_file: {token}\nhost_cpus: 64\n")
     cfg = scaler.load_config(path)
     assert cfg["start_deadline_s"] == 120
     assert cfg["job_deadline_s"] == 7800
@@ -101,7 +101,7 @@ def test_a_job_queued_past_start_deadline_s_loses_its_container_and_is_restarted
 
     assert rig.run_pass() == 1  # the next pass starts a new container
     assert sorted(rig.docker.containers()) == ["ci-runner-101"]
-    runs = [argv for argv in rig.docker.commands("run") if "ci-runner-101" in argv]
+    runs = [argv for argv in rig.docker.commands("create") if "ci-runner-101" in argv]
     assert len(runs) == 2
 
 

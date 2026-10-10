@@ -45,7 +45,7 @@ def once(tmp_path, github, docker):
     token = tmp_path / "token"
     token.write_text(FAKE_TOKEN + "\n")
     config = tmp_path / "scaler.yaml"
-    config.write_text(f"repo: {github.repo}\ntoken_file: {token}\n"
+    config.write_text(f"repo: {github.repo}\ntoken_file: {token}\nhost_cpus: 64\n"
                       f"api_url: {github.url}\nimage: ci-runner:test\n")
     done = subprocess.run(
         [sys.executable, str(SCALER), "--config", str(config), "once"],
