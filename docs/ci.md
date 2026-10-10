@@ -199,6 +199,19 @@ A dry run prints each start a pass would make, as
 `would start ci-runner-<job id> for job <job id>`, and issues no `docker run` or
 `docker create`. An unknown command exits non-zero.
 
+### Selection, idempotence and the cap
+
+A pass serves a queued job only when its labels include `ci-pool`; a queued job
+without it is left to the standing runners. Jobs are served in ascending job-id
+order, so the oldest job is started first. Each started container is named
+`ci-runner-<job id>`, and that name is the scaler's only state: a job that
+already has a `ci-runner-<job id>` container, in any state, is skipped, so two
+passes over the same queue start one container per job. `max_concurrency` (default 4)
+caps the containers alive at once. A pass counts the `ci-runner-*` containers that
+have not exited and starts only as many jobs as free slots remain, so ten queued
+jobs at the default start four, and the next pass starts one job for each container
+that has since exited, again in job-id order. `--dry-run` applies the same rules.
+
 The config is read from `--config` (default `~/.config/ralphd-ci/scaler.yaml`).
 `repo` and `token_file` are required; the token is read from the file `token_file`
 names, and a config that holds an inline token is rejected. The other keys are
@@ -209,7 +222,8 @@ scaler imports no YAML library, so the file is a YAML subset: `key: value` scala
 by space indentation. Lists, flow style, anchors and tabs are rejected with a
 line-numbered error.
 
-The scaler's tests (`tests/test_runner_scaler_commands.py`) run it against a local
+The scaler's tests (`tests/test_runner_scaler_commands.py` and
+`tests/test_runner_scaler_queue.py`) run it against a local
 fake GitHub API and a fake `docker` first on `PATH`
 (`tests/_runner_scaler_fakes.py`); no test reaches the network or a docker daemon.
 

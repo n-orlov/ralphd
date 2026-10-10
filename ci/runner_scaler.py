@@ -293,18 +293,39 @@ def queued_pool_jobs(api: GitHubApi) -> list[dict[str, Any]]:
     return sorted(jobs, key=lambda job: int(job["id"]))
 
 
+def live_containers(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The scaler's containers that still occupy a slot (not exited or dead)."""
+    return [e for e in entries if str(e.get("State", "")) not in ("exited", "dead")]
+
+
 def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
              dry_run: bool = False, out: Callable[[str], None] = print) -> int:
     """One scaling pass. Returns the number of containers started (or that
-    ``dry_run`` would have started)."""
+    ``dry_run`` would have started).
+
+    Queued ``ci-pool`` jobs are served in ascending job-id order. A job that
+    already has a ``ci-runner-<job id>`` container (in any state) is skipped,
+    so repeated passes never start a second container for it. Starting stops
+    once the containers still alive reach ``max_concurrency``.
+    """
+    jobs = queued_pool_jobs(api)
+    existing = docker.containers()
+    names = {str(e["Names"]) for e in existing}
+    free = int(cfg["max_concurrency"]) - len(live_containers(existing))
     started = 0
-    for job in queued_pool_jobs(api):
+    for job in jobs:
         name = container_name(int(job["id"]))
+        if name in names:
+            continue
+        if free <= 0:
+            break
         if dry_run:
             out(f"would start {name} for job {job['id']}")
         else:
             docker.start(name, str(cfg["image"]))
             log(f"started {name}")
+        names.add(name)
+        free -= 1
         started += 1
     return started
 
