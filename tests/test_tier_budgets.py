@@ -735,8 +735,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # with a map-only secret, are masked): +8 tests in
     # tests/test_codex_runner.py, measured `-m fast --collect-only` ->
     # 7982/515, `-m smoke --collect-only` -> 6245/391.
-    "fast": {"tests": 7982, "modules": 515},
-    "smoke": {"tests": 6245, "modules": 391},
+    # v0.34 task 001 (runner scaler commands): +22 tests / +1 module
+    # (tests/test_runner_scaler_commands.py), measured `-m fast
+    # --collect-only` -> 8004/516, `-m smoke --collect-only` -> 6267/392.
+    "fast": {"tests": 8004, "modules": 516},
+    "smoke": {"tests": 6267, "modules": 392},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

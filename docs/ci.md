@@ -175,6 +175,44 @@ Nothing in this suite needs a credential — pi is stubbed (`tests/stub-pi`), an
 no test wants an LLM key, an AWS key or the gateway. So the runner holds no
 secrets, and a compromised job has nothing to steal.
 
+## The elastic runner pool
+
+`ci/runner_scaler.py` is the elastic runner pool's scaler: one stdlib-only Python
+module, run as `python3 ci/runner_scaler.py <command>`, that is not part of the
+installed `ralphd` package. It polls the GitHub API (`GET /repos/{repo}/actions/runs?status=queued`
+and each run's `/jobs?filter=latest`) and starts one container, named
+`ci-runner-<job id>`, for each queued job whose labels include the `ci-pool` label. It
+serves no job without that label, so the standing runners above keep working, and
+they remain until the operator retires them: the scaler never touches a standing
+runner and nothing in this repository removes one.
+
+Four commands exist, three subcommands and one mode:
+
+- `once` runs one pass and exits 0.
+- `run` runs passes in a loop, one every `poll_interval_s` seconds; `--passes N`
+  stops it after `N` passes.
+- `status` prints the scaler's containers (those named `ci-runner-*`) as a JSON
+  list, each entry carrying the container name, its job id and its age in seconds.
+- `--dry-run`, on `once` and `run`, makes a pass a rehearsal.
+
+A dry run prints each start a pass would make, as
+`would start ci-runner-<job id> for job <job id>`, and issues no `docker run` or
+`docker create`. An unknown command exits non-zero.
+
+The config is read from `--config` (default `~/.config/ralphd-ci/scaler.yaml`).
+`repo` and `token_file` are required; the token is read from the file `token_file`
+names, and a config that holds an inline token is rejected. The other keys are
+`api_url`, `poll_interval_s` (5), `max_concurrency` (4), `start_deadline_s` (120),
+`job_deadline_s` (7800), `image`, `docker`, `host_cpus` and a `profiles` map. The
+scaler imports no YAML library, so the file is a YAML subset: `key: value` scalars
+(strings, optionally quoted; integers; `true`/`false`), `#` comments and nested maps
+by space indentation. Lists, flow style, anchors and tabs are rejected with a
+line-numbered error.
+
+The scaler's tests (`tests/test_runner_scaler_commands.py`) run it against a local
+fake GitHub API and a fake `docker` first on `PATH`
+(`tests/_runner_scaler_fakes.py`); no test reaches the network or a docker daemon.
+
 ## Concurrency
 
 - `gate.yml` cancels an older run of the same ref: a superseded PR head is not
