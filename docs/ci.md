@@ -228,6 +228,32 @@ container for that job and takes no concurrency slot; the pass logs it, goes on 
 the next job, and the next pass requests again. The request is tested in
 `tests/test_runner_scaler_jit.py`.
 
+### The runner image and the run-once exit
+
+`ci/runner/Dockerfile` is the recipe for the image every scaler container runs (the
+`image` key of the config names the tag it is built to). It builds `FROM ubuntu@sha256:<digest>`,
+the multi-arch index digest of Ubuntu 24.04, so the base never moves under a rebuild,
+and no tag in the file is `latest`. The `actions/runner` release comes from the build
+`ARG` `RUNNER_VERSION`; the archive is downloaded from that release and verified with
+`sha256sum -c` against the 64-hex SHA-256 pinned in the `ARG` `RUNNER_SHA256`, the
+value the release notes publish for `actions-runner-linux-x64`. A bump changes
+both together. The image installs `git`, `curl`, `jq`, python3 with `venv` and the
+docker CLI (`docker-ce-cli`, the client only; no daemon is installed or started),
+and ends with `USER 1000`, the base image's `ubuntu` account.
+
+The image has no `ENTRYPOINT` or `CMD`: the scaler's `docker run` names the command,
+`/home/ubuntu/run-once.sh /run/ci-runner/jitconfig`. `ci/runner/run-once.sh` reads the
+encoded JIT config from that file and does `exec ./run.sh --jitconfig <config>`, so
+the runner starts once, takes the one job the config was requested for and exits when
+it ends; the container's exit status is the runner's. There is no `config.sh`
+registration step in the script or in the argv, because the JIT config already
+registered the single-use runner. The scaler removes the exited container by exact
+name (see the start deadline and reaping above). Putting the config file into the
+container is a separate step from naming the command. The recipe is checked by parsing,
+never by a build: `tests/test_runner_image.py` asserts the digest base, the SHA-256
+check, no `latest` tag and `USER 1000` on the file, fails each assertion on a mutated
+copy that lacks it, and asserts the start argv.
+
 ### The start deadline and reaping
 
 GitHub can assign a queued job to a runner that then never runs it: the container is

@@ -285,6 +285,12 @@ class GitHubApi:
 # Docker (the host CLI; tests put a fake first on PATH)
 # --------------------------------------------------------------------------
 
+# The container's command (B.4): the image's one-shot wrapper, which starts the
+# runner once with the JIT config read from this file. There is no registration
+# step (no ``config.sh``); the file's delivery into the container is separate.
+RUN_ONCE_COMMAND = ("/home/ubuntu/run-once.sh", "/run/ci-runner/jitconfig")
+
+
 class Docker:
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.binary = str(cfg["docker"])
@@ -314,7 +320,7 @@ class Docker:
         return found
 
     def start(self, name: str, image: str) -> None:
-        self.run("run", "-d", "--name", name, image)
+        self.run("run", "-d", "--name", name, image, *RUN_ONCE_COMMAND)
 
     def remove(self, name: str) -> None:
         """Remove ONE container by its exact name; never by filter or prune."""
