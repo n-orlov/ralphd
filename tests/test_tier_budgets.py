@@ -762,8 +762,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.34 task 009 (image retention): +12 tests / +1 module
     # (tests/test_runner_scaler_prune.py), measured the same way ->
     # fast 8100/525, smoke 6363/401.
-    "fast": {"tests": 8100, "modules": 525},
-    "smoke": {"tests": 6363, "modules": 401},
+    # v0.34 task 010 (unit, sample config, runbook): +16 tests / +1 module
+    # (tests/test_runner_scaler_unit_runbook.py), measured the same way ->
+    # fast 8116/526, smoke 6379/402.
+    "fast": {"tests": 8116, "modules": 526},
+    "smoke": {"tests": 6379, "modules": 402},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

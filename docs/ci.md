@@ -428,9 +428,101 @@ line-numbered error.
 The scaler's tests (`tests/test_runner_scaler_commands.py`,
 `tests/test_runner_scaler_queue.py`, `tests/test_runner_scaler_jit.py`,
 `tests/test_runner_scaler_reaping.py`, `tests/test_runner_scaler_resilience.py`,
-`tests/test_runner_scaler_secrets_limits.py`, `tests/test_runner_scaler_prune.py` and `tests/test_runner_scaler_trust.py`) run it against a local
+`tests/test_runner_scaler_secrets_limits.py`, `tests/test_runner_scaler_prune.py`, `tests/test_runner_scaler_unit_runbook.py` and `tests/test_runner_scaler_trust.py`) run it against a local
 fake GitHub API and a fake `docker` first on `PATH`
 (`tests/_runner_scaler_fakes.py`); no test reaches the network or a docker daemon.
+
+## Adopting the elastic pool
+
+This is the operator's runbook, in the order to do it. The scaler is run by hand
+first and by the unit afterwards; nothing here changes a workflow or a standing
+runner until its last step.
+
+**Host preconditions the scaler cannot fix.** The host's NIC and network fault
+recorded in #303 is an unresolved host-level problem: a runner container that cannot
+reach GitHub reliably never takes its job, so the scaler's start deadline reaps it
+and the job stays queued. The scaler backs off and retries (see "API failures and the
+backoff"), and it does not repair the link. Fix or rule out the network on the host
+before adopting the pool. Docker must run on the host, and the user running the unit
+must be in the `docker` group.
+
+**The per-job cost the profiles assume.** The default profile bounds one job at 4
+CPUs, `12g` of memory and 4096 pids, and the sample config's `browser-runner` profile
+raises the memory to `16g`. Those limits are the cost each job is budgeted. They are
+not measured by the scaler: compare them with `docker stats` on a live job before
+raising a profile. `max_concurrency` times the largest profile's `cpus` must fit in
+`host_cpus` minus one reserved core, which is why the sample config sets
+`max_concurrency: 2` on a 12-CPU host.
+
+1. **Build the image.** The scaler builds the runner image itself, tagged by a hash
+   of the recipe, on the first start of a pass, under a file lock. To find a broken
+   recipe or a blocked download before any job waits on it, build the recipe by hand
+   from the checkout; this fills the layer cache, so the scaler's own build is then
+   quick:
+
+   ```sh
+   docker build ci/runner
+   ```
+
+2. **Write the config.** Copy `ci/runner/scaler.sample.yaml` to
+   `~/.config/ralphd-ci/scaler.yaml`, then put the GitHub token alone in the file
+   `token_file` names, mode 0600. The sample config is:
+
+   ```yaml
+   repo: n-orlov/ralphd
+   token_file: ~/.config/ralphd-ci/github-token
+   max_concurrency: 2
+   host_cpus: 12
+   poll_interval_s: 5
+   profiles:
+     browser-runner:
+       cpus: 4
+       memory: 16g
+   ```
+
+3. **Rehearse one pass.** The dry run prints the starts a pass would make and issues
+   none:
+
+   ```sh
+   python3 ci/runner_scaler.py once --dry-run
+   ```
+
+4. **Enable the unit.** `ci/runner/ralphd-ci-scaler.service` runs
+   `ci/runner_scaler.py run` with `Restart=always` and reads
+   `~/.config/ralphd-ci/scaler.yaml`. Copy it to `~/.config/systemd/user/`, point its
+   `ExecStart` at the checkout, then:
+
+   ```sh
+   systemctl --user daemon-reload
+   systemctl --user enable --now ralphd-ci-scaler
+   ```
+
+5. **Verify with `status`.** While a `ci-pool` job runs, the scaler's containers are
+   listed with their job ids and ages:
+
+   ```sh
+   python3 ci/runner_scaler.py status
+   ```
+
+6. **Retire the standing runners one at a time.** For one standing runner, remove its
+   custom labels first (`ralphd-vps`, `docker-host`, `browser-runner` or `fast-lane`),
+   so no new job lands on it, and wait for the job it holds to finish. Then watch that
+   the pool takes the next jobs with `status` before removing the next runner. A
+   workflow moves to the pool by adding the `ci-pool` label to its `runs-on`, which is
+   a change to the workflow and is not part of this runbook.
+
+Housekeeping is a separate command, not part of the loop. Run the rehearsal first,
+then the removal:
+
+```sh
+python3 ci/runner_scaler.py prune-images --dry-run
+python3 ci/runner_scaler.py prune-images
+```
+
+The runbook is held to the code by `tests/test_runner_scaler_unit_runbook.py`: every
+command and config key named in this section must exist in `ci/runner_scaler.py`,
+the unit must parse and carry `Restart=always`, the sample config must load, and a
+config holding an inline token is refused.
 
 ## Concurrency
 
