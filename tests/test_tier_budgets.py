@@ -724,8 +724,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # cure-01-01-2 retry (a referenced credential header, end to end): +4
     # tests in tests/test_codex_runner.py, measured `-m fast --collect-only`
     # -> 7915/515, `-m smoke --collect-only` -> 6178/391.
-    "fast": {"tests": 7915, "modules": 515},
-    "smoke": {"tests": 6178, "modules": 391},
+    # cure-01-01-3 (JSON-escaped spellings of a secret are masked): +18 tests
+    # in tests/test_codex_runner.py, measured `-m fast --collect-only` ->
+    # 7933/515, `-m smoke --collect-only` -> 6196/391.
+    "fast": {"tests": 7933, "modules": 515},
+    "smoke": {"tests": 6196, "modules": 391},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

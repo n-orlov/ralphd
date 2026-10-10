@@ -417,6 +417,85 @@ def test_referenced_headers_from_shorthand_and_llm_header_flags_are_never_writte
     _assert_no_secret_written(obs, itdir, (REF_TOKEN, REF_KEY))
 
 
+_ESCAPED_SECRETS = {
+    "plain": "fake-ONLY-escape-credential-alpha-0123456789",
+    "quoted": 'fake-ONLY-escape-credential-"alpha"-0123456789',
+    "backslash": r"fake-ONLY-escape-credential-alpha\beta-0123456789",
+    "both": 'fake-ONLY-escape-"a\\b"-credential-0123456789',
+    "unicode": "fake-ONLY-escape-credential-ünï-0123456789",
+    "control": "fake-ONLY-escape-credential-tab\there-0123456789",
+}
+
+
+@pytest.mark.parametrize("in_map", [True, False], ids=["in-live-map", "header-only"])
+@pytest.mark.parametrize("shape", sorted(_ESCAPED_SECRETS))
+def test_a_credential_with_json_special_characters_is_masked_in_every_decoded_stream(
+        tmp_path, monkeypatch, shape, in_map):
+    """A quote, a backslash, a control or a non-ASCII character is written
+    escaped in serialized JSON, so the value must be masked there in its
+    escaped spelling too: after DECODING each retained stream, the credential
+    is gone, with or without the engine's live redaction map knowing it."""
+    from ralphd.engine import redact
+    secret = _ESCAPED_SECRETS[shape]
+    _setup(monkeypatch, tmp_path, headers={"X-Api-Key": secret, "X-Org-Id": "acme-corp"},
+           STUB_CODEX_SCENARIO="echo_stderr",
+           STUB_CODEX_STDERR_LINES=f"saw {secret}",
+           STUB_CODEX_TEXT=f"The credential is {secret}\n<promise>COMPLETE</promise>")
+    monkeypatch.setattr(redact, "_map", {secret: "peer:credential"} if in_map else {})
+    result, obs, itdir = _run(tmp_path)
+    assert not result.error_message
+    assert _header_values(obs)["X-Api-Key"] == secret  # delivery is preserved
+
+    def holds(value) -> bool:
+        if isinstance(value, str):
+            return secret in value
+        if isinstance(value, dict):
+            return any(holds(v) for v in value.values())
+        if isinstance(value, list):
+            return any(holds(v) for v in value)
+        return False
+
+    for name in ("output.jsonl", "output.codex.jsonl"):
+        lines = (itdir / name).read_text().splitlines()
+        assert lines
+        assert not any(holds(json.loads(line)) for line in lines), name
+    rendered = log_render.render_to_text((itdir / "output.jsonl").read_text(), False,
+                                         log_render.new_render_state())
+    assert secret not in rendered
+    assert secret not in result.final_text
+    assert "[REDACTED:" in result.final_text
+    for f in _all_files(itdir):
+        assert secret not in f.read_text(errors="replace"), f
+
+
+@pytest.mark.parametrize("value", [
+    'a"b-secret-value-123', r"a\b-secret-value-123", "tab\there-secret-123",
+    "ünï-secret-value-123", 'mix"\\-secret-value-123'])
+def test_scrub_text_masks_a_secret_in_every_json_spelling(value):
+    from ralphd.engine import redact
+    extra = {value: "lbl"}
+    for ascii_only in (False, True):
+        once = json.dumps({"k": value}, ensure_ascii=ascii_only)
+        twice = json.dumps({"k": once}, ensure_ascii=ascii_only)
+        for doc in (once, twice):
+            out = redact.scrub_text(doc, extra)
+            assert "[REDACTED:lbl]" in out
+            assert json.loads(out)  # still valid JSON
+            assert value not in json.dumps(json.loads(out), ensure_ascii=False)
+    assert redact.scrub_text(f"raw {value} text", extra) == "raw [REDACTED:lbl] text"
+
+
+def test_the_wrapper_mask_covers_json_spellings_of_the_token_and_headers(monkeypatch):
+    token = 'tok-"quoted"-\\-0123456789'
+    header = 'hdr-"x"-\\-0123456789'
+    monkeypatch.setattr(codex_mod, "_extra_masks", {header: "[REDACTED:codex-header:H]"})
+    doc = json.dumps({"a": token, "b": header})
+    out = codex_mod.mask_all(doc, token)
+    assert token not in out and header not in out
+    assert json.loads(out) == {"a": "[REDACTED:env:AWS_BEARER_TOKEN_BEDROCK]",
+                               "b": "[REDACTED:codex-header:H]"}
+
+
 def test_header_env_splits_names_from_values():
     names, values = codex_mod.header_env({"A": "one", "B": "two"})
     assert set(names) == {"A", "B"}

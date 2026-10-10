@@ -2152,7 +2152,10 @@ version, it ends in-band with `codex_version_too_old`; with no binary,
 `codex_cli_not_found`. `engine/faults.py` classifies them as the `codex-version`
 and `codex-cli-missing` refusal families, like `cc-version` and `cc-cli-missing`.
 
-Every artifact is masked. The engine's `scrub_text` runs over each stdout line
+Every artifact is masked, and a masked value is matched in its JSON-escaped
+spellings (`redact.secret_spellings`) as well as verbatim, since the lines being
+scrubbed are serialized JSON in which a quote or a backslash is escaped. The
+engine's `scrub_text` runs over each stdout line
 of the wrapper, `<stem>.codex.jsonl` and `output.jsonl`. The wrapper itself
 masks the bearer token's value (as `[REDACTED:env:AWS_BEARER_TOKEN_BEDROCK]`) in
 every line it prints. `codex`'s stderr leaves the wrapper as `ralphd.codex_stderr`

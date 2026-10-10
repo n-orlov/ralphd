@@ -25,7 +25,7 @@ from .codex_normalise import (
 )
 from ..cli.versions import compare_versions
 from ..engine.config import CODEX_MIN_VERSION
-from ..engine.redact import MIN_SECRET_LEN
+from ..engine.redact import MIN_SECRET_LEN, secret_spellings
 from .skills_index import skills_index
 
 # A hat's thinking/effort level (pi's vocabulary) to the `model_reasoning_effort`
@@ -309,20 +309,26 @@ def _load_header_masks(cfg: dict) -> None:
 
 
 def mask_all(text: str, token: str | None) -> str:
-    """`mask_token`, then every profile-header value in `_extra_masks`."""
+    """`mask_token`, then every profile-header value in `_extra_masks`. Each
+    value is masked in its JSON-escaped spellings too: the wrapper masks
+    serialized JSON, where a quote or backslash in a value is escaped."""
     text = mask_token(text, token)
-    for value, label in sorted(_extra_masks.items(), key=lambda kv: -len(kv[0])):
+    pairs = [(spelling, label) for value, label in _extra_masks.items()
+             for spelling in secret_spellings(value)]
+    for value, label in sorted(pairs, key=lambda kv: -len(kv[0])):
         if value in text:
             text = text.replace(value, label)
     return text
 
 
 def mask_token(text: str, token: str | None) -> str:
-    """`text` with the bearer token's value replaced by the label the engine's
-    own `scrub_text` uses for it. A no-op for an empty or short token (the
-    engine's `MIN_SECRET_LEN`)."""
-    if token and len(token) >= MIN_SECRET_LEN and token in text:
-        return text.replace(token, f"[REDACTED:env:{TOKEN_ENV}]")
+    """`text` with the bearer token's value (and its JSON-escaped spellings)
+    replaced by the label the engine's own `scrub_text` uses for it. A no-op
+    for an empty or short token (the engine's `MIN_SECRET_LEN`)."""
+    if token and len(token) >= MIN_SECRET_LEN:
+        for spelling in sorted(secret_spellings(token), key=len, reverse=True):
+            if spelling in text:
+                text = text.replace(spelling, f"[REDACTED:env:{TOKEN_ENV}]")
     return text
 
 

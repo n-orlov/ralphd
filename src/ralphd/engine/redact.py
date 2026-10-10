@@ -34,6 +34,7 @@ so short/common substrings (region codes, single words) are never mangled.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -215,13 +216,38 @@ def scrub_text(text: str, extra: dict[str, str] | None = None) -> str:
         merged = dict(_map)
     if extra:
         merged.update(extra)
-    items = sorted(merged.items(), key=lambda kv: -len(kv[0]))
-    if not items:
+    if not merged:
         return text
+    # A secret is also matched in its JSON-escaped spellings: callers scrub
+    # serialized JSON lines, where a quote or a backslash in the value is
+    # written escaped, so the raw value alone would never match there.
+    items = [(spelling, label) for value, label in merged.items() if value
+             for spelling in secret_spellings(value)]
+    items.sort(key=lambda kv: -len(kv[0]))
     for value, label in items:
-        if value and value in text:
+        if value in text:
             text = text.replace(value, f"[REDACTED:{label}]")
     return text
+
+
+@functools.lru_cache(maxsize=1024)
+def secret_spellings(value: str) -> tuple[str, ...]:
+    """`value` plus every way it is spelled inside a JSON string: escaped with
+    `ensure_ascii` off and on, and each of those escaped once more (a JSON
+    document carried as a string inside another). A value with no quote,
+    backslash, control or non-ASCII character has only the one spelling."""
+    seen = [value]
+    frontier = [value]
+    for _ in range(2):
+        nxt = []
+        for v in frontier:
+            for ascii_only in (False, True):
+                esc = json.dumps(v, ensure_ascii=ascii_only)[1:-1]
+                if esc not in seen:
+                    seen.append(esc)
+                    nxt.append(esc)
+        frontier = nxt
+    return tuple(seen)
 
 
 # ---------------------------------------------------------------------------

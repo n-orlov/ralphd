@@ -594,7 +594,11 @@ It keeps `AWS_BEARER_TOKEN_BEDROCK` and `AIGW_OPENAI_BASE_URL`, and sets
 `output.codex.jsonl` and in the wrapper's `stderr.log`. The engine's `scrub_text`
 masks every line of `stderr.log` with the live redaction map before the line is
 written (codex's stderr and the wrapper's own, a traceback included), so any
-secret the engine knows (not only the token) is masked there too.
+secret the engine knows (not only the token) is masked there too. A value is
+masked in its JSON-escaped spellings as well as verbatim, so a credential that
+contains a quote, a backslash, a control or a non-ASCII character is gone from
+the decoded `output.jsonl` and `output.codex.jsonl` lines, from the rendered log
+and from `final_text`, not only from the raw text.
 
 **Known limit.** The token is visible to the agent's shell. `codex` receives it
 in its environment and runs the agent's commands as its children, so an agent
