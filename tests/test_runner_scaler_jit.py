@@ -96,9 +96,9 @@ def test_the_request_is_made_before_the_container_starts(
     seen = []
 
     class Recording(scaler.Docker):
-        def start(self, name, image, jit_config, profile):
+        def start(self, name, image, jit_config, profile, **kwargs):
             seen.append((name, [p["body"]["name"] for p in jit_posts(github)]))
-            super().start(name, image, jit_config, profile)
+            super().start(name, image, jit_config, profile, **kwargs)
 
     scaler.run_pass(cfg, scaler.GitHubApi(cfg), Recording(cfg))
     assert seen == [("ci-runner-101", ["ci-101"]),

@@ -63,7 +63,7 @@ def write_config(tmp_path, github, extra="", cap=2):
     path = conf / "scaler.yaml"
     path.write_text(f"repo: {github.repo}\ntoken_file: {token}\n"
                     f"api_url: {github.url}\nimage: ci-runner:test\n"
-                    f"max_concurrency: {cap}\n{extra}")
+                    f"max_concurrency: {cap}\nlock_file: {conf / 'image.lock'}\n{extra}")
     return path
 
 

@@ -16,12 +16,16 @@ issues none. The scaler serves only jobs whose labels include ``ci-pool``.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import http.client
 import io
 import json
+import os
 import re
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -47,6 +51,8 @@ DEFAULTS: dict[str, Any] = {
     "start_deadline_s": 120,
     "job_deadline_s": 7800,
     "image": "ralphd-ci-runner:latest",
+    "runner_dir": str(Path(__file__).resolve().parent / "runner"),
+    "lock_file": str(Path(tempfile.gettempdir()) / f"ralphd-ci-image-build-{os.getuid()}.lock"),
     "docker": "docker",
     "host_cpus": 12,
     "profiles": {},
@@ -370,16 +376,40 @@ def jit_tar(jit_config: str) -> bytes:
     return buf.getvalue()
 
 
+# Shared caches and the docker socket (B.5). The pip volume is writable and is
+# pip's cache dir for the runner's user; Playwright's browsers are the host's
+# existing cache, read-only, only for a ``browser-runner`` job; the host docker
+# socket is mounted only for a ``docker-host`` job.
+PIP_CACHE_VOLUME = "ci-pip-cache"
+PIP_CACHE_DIR = "/home/ubuntu/.cache/pip"
+PLAYWRIGHT_DIR = "/opt/ms-playwright"
+DOCKER_SOCKET = "/var/run/docker.sock"
+BROWSER_LABEL = "browser-runner"
+DOCKER_LABEL = "docker-host"
+BUILD_TIMEOUT_S = 3600
+
+
+def mounts_for(labels: tuple[str, ...] | list[str]) -> list[str]:
+    """The ``-v`` options of a container for a job with ``labels``."""
+    mounts = ["-v", f"{PIP_CACHE_VOLUME}:{PIP_CACHE_DIR}"]
+    if BROWSER_LABEL in labels:
+        mounts += ["-v", f"{PLAYWRIGHT_DIR}:{PLAYWRIGHT_DIR}:ro"]
+    if DOCKER_LABEL in labels:
+        mounts += ["-v", f"{DOCKER_SOCKET}:{DOCKER_SOCKET}"]
+    return mounts
+
+
 class Docker:
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.binary = str(cfg["docker"])
 
-    def run(self, *args: str, stdin: bytes | None = None) -> str:
+    def run(self, *args: str, stdin: bytes | None = None,
+            timeout: float = 120) -> str:
         import subprocess
         try:
             proc = subprocess.run([self.binary, *args], capture_output=True,
                                   input=stdin,
-                                  timeout=120)
+                                  timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ScalerError(f"docker {args[0] if args else ''}: {exc}")
         stdout = proc.stdout.decode(errors="replace")
@@ -401,8 +431,28 @@ class Docker:
                 found.append(entry)
         return found
 
+    def has_image(self, ref: str) -> bool:
+        """Whether the exact ``name:tag`` is on the host."""
+        try:
+            self.run("image", "inspect", "--format", "{{.Id}}", ref)
+        except ScalerError:
+            return False
+        return True
+
+    def build(self, ref: str, context_dir: str) -> None:
+        """``docker build -t <ref> <context_dir>``; a build outlives the 120 s
+        every other call gets."""
+        self.run("build", "-t", ref, str(context_dir), timeout=BUILD_TIMEOUT_S)
+
+    def ensure_volume(self, name: str) -> None:
+        """Create the named volume if the host does not have it (by exact name)."""
+        try:
+            self.run("volume", "inspect", name)
+        except ScalerError:
+            self.run("volume", "create", name)
+
     def start(self, name: str, image: str, jit_config: str,
-              profile: dict[str, Any]) -> None:
+              profile: dict[str, Any], labels: tuple[str, ...] | list[str] = ()) -> None:
         """Create the container with its limits, deliver the JIT config, start it.
 
         ``docker create`` carries ``--cpus``, ``--memory`` and ``--pids-limit``
@@ -412,11 +462,18 @@ class Docker:
         ``--env``/``--env-file`` value (which ``docker inspect`` shows), no log
         line and no host-side file. If delivery or the start fails the container
         is removed by its exact name, so the next pass starts clean.
+
+        The shared caches and the docker socket (B.5) come from the job's
+        ``labels``: see ``mounts_for``. A named volume the host lacks is
+        created first.
         """
+        mounts = mounts_for(labels)
+        self.ensure_volume(PIP_CACHE_VOLUME)
         self.run("create", "--name", name,
                  "--cpus", f"{float(profile['cpus']):g}",
                  "--memory", str(profile["memory"]),
                  "--pids-limit", str(profile["pids_limit"]),
+                 *mounts,
                  image, *RUN_ONCE_COMMAND)
         try:
             self.run("cp", "-", f"{name}:{JIT_PARENT_DIR}",
@@ -438,6 +495,70 @@ class Docker:
 
 _CREATED_RE = re.compile(
     r"(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)(?:\.\d+)? ([+-])(\d\d)(\d\d)")
+
+
+# --------------------------------------------------------------------------
+# The runner image: one build per recipe, under a file lock (B.6)
+# --------------------------------------------------------------------------
+
+IMAGE_HASH_LEN = 12
+RECIPE_FILES = ("Dockerfile", "run-once.sh")
+
+
+def recipe_hash(runner_dir: str | Path) -> str:
+    """Content hash of the image recipe: ``Dockerfile`` and, as it is copied
+    into the image, ``run-once.sh``. Changing either changes the tag."""
+    digest = hashlib.sha256()
+    for name in RECIPE_FILES:
+        path = Path(runner_dir) / name
+        if not path.is_file():
+            if name == "Dockerfile":
+                raise ScalerError(f"no runner image recipe at {path}")
+            continue
+        data = path.read_bytes()
+        digest.update(f"{name}\0{len(data)}\0".encode() + data)
+    return digest.hexdigest()[:IMAGE_HASH_LEN]
+
+
+def image_ref(cfg: dict[str, Any]) -> str:
+    """``<repository>:<recipe hash>``: the config's ``image`` names the
+    repository (a tag on it is replaced by the hash)."""
+    image = str(cfg["image"])
+    head, sep, tail = image.rpartition("/")
+    repo = (head + sep) + tail.split(":", 1)[0]
+    return f"{repo}:{recipe_hash(cfg['runner_dir'])}"
+
+
+def ensure_image(cfg: dict[str, Any], docker: Docker, *,
+                 on_wait: Callable[[], None] | None = None) -> str:
+    """The tag every start in this pass uses, built if the host lacks it.
+
+    The tag is derived from the recipe's content hash, so a changed recipe is a
+    new tag and is built here, before the start that needs it. A missing tag is
+    built once: the build runs under an exclusive ``flock`` on ``lock_file``, and
+    a pass (or process) that finds the lock held waits for it, then looks again
+    and finds the tag built. ``on_wait`` runs when the lock is already held.
+    """
+    ref = image_ref(cfg)
+    if docker.has_image(ref):
+        return ref
+    lock_path = Path(str(cfg["lock_file"])).expanduser()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log(f"waiting for another build of {ref}")
+            if on_wait is not None:
+                on_wait()
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            if not docker.has_image(ref):
+                log(f"building {ref}")
+                docker.build(ref, str(cfg["runner_dir"]))
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    return ref
 
 
 def parse_created_at(text: str) -> float | None:
@@ -578,6 +699,10 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
     A pass first reaps (see ``reap_containers``). A job whose container was
     reaped is not restarted in the same pass: the next pass starts its new
     container.
+
+    Before the first start of a pass the runner image is ensured (see
+    ``ensure_image``): the tag is the recipe's content hash, built once under a
+    file lock if the host lacks it. A failed build raises, and starts nothing.
     """
     jobs = queued_pool_jobs(api)
     existing = docker.containers()
@@ -587,6 +712,7 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
     free = int(cfg["max_concurrency"]) - len(
         live_containers([e for e in existing if str(e["Names"]) not in reaped]))
     started = 0
+    image: str | None = None
     for job in jobs:
         name = container_name(int(job["id"]))
         if name in names:
@@ -596,6 +722,8 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
         if dry_run:
             out(f"would start {name} for job {job['id']}")
         else:
+            if image is None:
+                image = ensure_image(cfg, docker)  # built before the next start
             try:
                 jit_config = api.generate_jitconfig(job)
             except ScalerError as exc:
@@ -604,7 +732,8 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
                 continue
             profile = resolve_profile(cfg, list(job.get("labels") or []))
             try:
-                docker.start(name, str(cfg["image"]), jit_config, profile)
+                docker.start(name, image, jit_config, profile,
+                             labels=list(job.get("labels") or []))
             except ScalerError as exc:
                 log(f"cannot start {name}: {exc}")
                 continue

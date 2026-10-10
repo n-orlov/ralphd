@@ -10,8 +10,10 @@ Nothing here touches the network, a docker daemon or a real credential.
 * `FakeDocker` writes an executable `docker` into a directory that a test puts
   first on `PATH`. It appends each argv as one JSON line to a log and keeps
   container/image/volume state in a JSON file, so a test can seed state and
-  read back what the scaler did. It refuses any filter, wildcard or prune, so
-  a scaler that removes by pattern fails loudly.
+  read back what the scaler did. `FAKE_DOCKER_BUILD_GATE=<path>` holds every
+  `build` until that file exists, so a test can keep one build in flight. It
+  refuses any filter, wildcard or prune, so a scaler that removes by pattern
+  fails loudly.
 """
 
 from __future__ import annotations
@@ -299,6 +301,11 @@ elif cmd == "image" and rest[:1] == ["inspect"]:
         fail("No such image: " + rest[-1])
     print(json.dumps([{"RepoTags": [rest[-1]]}]))
 elif cmd == "build":
+    gate = os.environ.get("FAKE_DOCKER_BUILD_GATE")
+    deadline = time.time() + 60
+    while gate and not os.path.exists(gate) and time.time() < deadline:
+        time.sleep(0.01)  # a held build: the test releases it by creating the file
+    state = load()
     tags = [rest[j + 1] for j, a in enumerate(rest[:-1]) if a in ("-t", "--tag")]
     for tag in tags:
         if tag not in state["images"]:
@@ -377,6 +384,11 @@ class FakeDocker:
     def add_image(self, tag: str) -> None:
         data = self._read()
         data["images"].append(tag)
+        self._write(data)
+
+    def add_volume(self, name: str) -> None:
+        data = self._read()
+        data["volumes"].append(name)
         self._write(data)
 
     def containers(self) -> dict[str, dict[str, Any]]:

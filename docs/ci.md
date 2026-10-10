@@ -231,7 +231,7 @@ the next job, and the next pass requests again. The request is tested in
 ### The runner image and the run-once exit
 
 `ci/runner/Dockerfile` is the recipe for the image every scaler container runs (the
-`image` key of the config names the tag it is built to). It builds `FROM ubuntu@sha256:<digest>`,
+`image` key of the config names the repository it is built to; see the image refresh below). It builds `FROM ubuntu@sha256:<digest>`,
 the multi-arch index digest of Ubuntu 24.04, so the base never moves under a rebuild,
 and no tag in the file is `latest`. The `actions/runner` release comes from the build
 `ARG` `RUNNER_VERSION`; the archive is downloaded from that release and verified with
@@ -292,6 +292,39 @@ docker or GitHub. Two containers of 4 CPUs load. Because the built-in `max_concu
 is 4, a config that sets neither `max_concurrency` nor `host_cpus` is refused; set
 `max_concurrency: 2` (as on the 12-CPU host) or a larger `host_cpus`. This is tested in
 `tests/test_runner_scaler_secrets_limits.py`.
+
+### The shared caches, the docker socket and the image refresh
+
+Every container mounts the named docker volume `ci-pip-cache`, writable, at
+`/home/ubuntu/.cache/pip`, the runner user's pip cache directory, so pip downloads
+survive the container. A job whose labels include `browser-runner` also gets the host's
+existing `/opt/ms-playwright` bind-mounted at the same path, read-only (`:ro`); every
+other job has no such mount. The scaler checks the volume with `docker volume inspect`
+and creates it with `docker volume create ci-pip-cache` when the host lacks it; the
+volume is named exactly and no volume is ever removed.
+
+The docker socket follows the job's labels. A job whose labels include `docker-host`
+gets `-v /var/run/docker.sock:/var/run/docker.sock`, the same exposure the standing
+runners have; a job without that label gets no socket mount at all. A rootless or
+nested daemon is out of scope.
+
+The image tag is not the config's `image` verbatim. The `image` key names the
+repository; the tag is the first 12 hex digits of a SHA-256 over the recipe, which is
+`ci/runner/Dockerfile` and the `run-once.sh` it copies (`runner_dir` in the config
+points at that directory and defaults to `ci/runner` beside the scaler). A pass that is
+about to start a container asks the host for that exact `repository:hash` with
+`docker image inspect`. If the tag is missing it builds it with
+`docker build -t repository:hash <runner_dir>`, once, under an exclusive `flock` on the
+file named by `lock_file` (default: a per-user file in the temp directory). A second
+pass or a second scaler process that finds the lock held waits for it, looks again,
+finds the tag built and builds nothing. An edit to the recipe changes the hash and so
+the tag: the new tag is built before the next start, and the old tag stays for the
+retention command. A dry run builds nothing, and a failed build fails the pass before
+any start, leaving the jobs queued for the next pass. A build alone may take longer
+than the 120 s every other docker call gets, so its timeout is 3600 s.
+`tests/test_runner_scaler_caches_refresh.py` covers the mounts, the volume creation,
+the socket rule, the single build with a held lock (the fake `docker` holds a build
+until `FAKE_DOCKER_BUILD_GATE` exists) and the new tag for a changed recipe.
 
 ### The start deadline and reaping
 
