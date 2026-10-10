@@ -721,8 +721,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # config.toml or wrapper.json): +5 tests in tests/test_codex_runner.py,
     # measured `-m fast --collect-only` -> 7911/515, `-m smoke
     # --collect-only` -> 6174/391.
-    "fast": {"tests": 7911, "modules": 515},
-    "smoke": {"tests": 6174, "modules": 391},
+    # cure-01-01-2 retry (a referenced credential header, end to end): +4
+    # tests in tests/test_codex_runner.py, measured `-m fast --collect-only`
+    # -> 7915/515, `-m smoke --collect-only` -> 6178/391.
+    "fast": {"tests": 7915, "modules": 515},
+    "smoke": {"tests": 6178, "modules": 391},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -564,13 +564,17 @@ route is refused earlier, at the route check.
 
 Profile headers (a profile's `headers:`, a provider's own, and `--llm-header`
 ones) reach `codex` the same way the token does. A header value can be a
-credential, for example `Authorization: Bearer ${env:AWS_BEARER_TOKEN_BEDROCK}`
-or an API key from a `${file:}` reference, so no header value is ever written to
-`config.toml` or `wrapper.json`: the config's `env_http_headers` names an
-environment variable per header and the runner puts the value in the wrapper's
-environment. The wrapper and the runner mask each header value as
+credential resolved on the host from a reference that is the whole value, for
+example `Authorization: ${env:AWS_BEARER_TOKEN_BEDROCK}`, an API key from
+`${file:~/.creds/api-key}`, or `${cmd:printf 'Bearer %s' "$TOKEN"}` for a
+prefixed token (a reference inside a longer string is not resolved). No header
+value is ever written to `config.toml` or `wrapper.json`, and none appears in
+the `codex` argv: the config's `env_http_headers` names an environment variable
+per header and the runner puts the value in the wrapper's environment. The
+wrapper and the runner mask each header value of at least 8 characters as
 `[REDACTED:codex-header:<name>]` in `output.jsonl`, `output.codex.jsonl` and
-`stderr.log`.
+`stderr.log`; a shorter value is not masked, but it is still never written to
+`config.toml` or `wrapper.json`.
 
 **What `codex` does not inherit.** The wrapper scrubs the environment `codex`
 runs with:

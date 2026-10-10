@@ -277,6 +277,146 @@ def test_a_header_value_shorter_than_the_secret_floor_is_not_masked_but_still_no
     assert "t1" not in json.dumps(wrapper)
 
 
+# -- a credential header resolved from a profile reference, end to end --------
+#
+# The tests above hand the runner already-literal header values. These start
+# one step earlier: a codex LLM profile (and `--llm-header` specs) whose header
+# values are `${env:}`/`${file:}`/`${cmd:}` references, resolved by the same
+# `llm_profiles.resolve_profile`/`resolve_header_specs` calls `ralphctl start`
+# makes, merged and written as the container's pi `models.json` exactly as
+# `cmd_start` writes it, then run through the real `CodexRunner` against the
+# stub. The bearer token itself comes from a `${file:}` reference in the
+# profile's `env:` block.
+
+REF_TOKEN = "fake-referenced-bearer-FOR-TESTS-ONLY-4242"
+REF_KEY = "fake-referenced-apikey-FOR-TESTS-ONLY-5151"
+
+
+def _write(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def _ref_profile(tmp_path: Path, auth_ref: str, *, top_level: dict | None = None) -> Path:
+    """A codex profile in a scratch registry; returns the registry root."""
+    import yaml
+    tok = _write(tmp_path / "creds" / "gateway-token", REF_TOKEN + "\n")
+    doc = {
+        "harness": "codex",
+        "model": MODEL_REF,
+        "env": {"AWS_BEARER_TOKEN_BEDROCK": f"${{file:{tok}}}",
+                "AIGW_OPENAI_BASE_URL": FAKE_BASE_URL},
+        "pi": {"providers": {"aigw-openai": {
+            "baseUrl": FAKE_BASE_URL, "api": "openai-responses",
+            "headers": {"Authorization": auth_ref, "X-Org-Id": "acme-corp"}}}},
+    }
+    if top_level:
+        doc["headers"] = top_level
+    reg = tmp_path / "registry"
+    _write(reg / "llm-profiles" / "gw-codex.yaml", yaml.safe_dump(doc))
+    return reg
+
+
+def _resolve_into_home(mp, tmp_path: Path, reg: Path, specs: list[str] = (),
+                       host_env: dict | None = None) -> tuple[dict, set]:
+    """Resolve the profile and the `--llm-header` specs the way `cmd_start`
+    does, write the result as the fake home's pi `models.json` and export the
+    profile's `env:` (the container's `-e` flags). Returns the provider's
+    resolved header map and the names `resolve_profile` reports ref-derived."""
+    from ralphd.cli import llm_profiles
+    host = dict(os.environ, **(host_env or {}))
+    ref_names: set[str] = set()
+    prof = llm_profiles.resolve_profile("gw-codex", reg, host, header_ref_names=ref_names)
+    overrides = llm_profiles.resolve_header_specs(list(specs), host, ref_names=ref_names)
+    pi_doc = llm_profiles.merge_headers_into_pi_config(prof["pi"], overrides)
+    _setup(mp, tmp_path)  # stub wiring; models.json is replaced below
+    for k, v in prof["env"].items():
+        mp.setenv(k, v)
+    agent = tmp_path / "home" / ".pi" / "agent"
+    (agent / "models.json").write_text(json.dumps(pi_doc, indent=1))
+    return pi_doc["providers"]["aigw-openai"]["headers"], ref_names
+
+
+def _assert_no_secret_written(obs: dict, itdir: Path, secrets: tuple[str, ...]) -> None:
+    files = _all_files(itdir)
+    names = {f.name for f in files}
+    assert {"wrapper.json", "stderr.log", "output.jsonl", "output.codex.jsonl"} <= names
+    for secret in secrets:
+        assert secret not in obs["config_toml"]
+        assert not any(secret in arg for arg in obs["argv"])
+        for f in files:
+            assert secret not in f.read_text(errors="replace"), f
+
+
+def _ref_cases(tmp_path: Path) -> dict[str, str]:
+    key = _write(tmp_path / "creds" / "auth-header", f"Bearer {REF_TOKEN}\n")
+    return {
+        # the header carries the profile's own (file-resolved) token by env
+        "env": "${env:AWS_BEARER_TOKEN_BEDROCK}",
+        "file": f"${{file:{key}}}",
+        "cmd": f"${{cmd:printf 'Bearer %s' \"$(cat {tmp_path / 'creds' / 'gateway-token'})\"}}",
+    }
+
+
+@pytest.mark.parametrize("kind", ["env", "file", "cmd"])
+def test_referenced_credential_header_never_reaches_config_argv_or_scratch(
+        tmp_path, monkeypatch, kind):
+    from ralphd.engine import redact
+    auth_ref = _ref_cases(tmp_path)[kind]
+    reg = _ref_profile(tmp_path, auth_ref)
+    headers, ref_names = _resolve_into_home(monkeypatch, tmp_path, reg)
+    expected_auth = REF_TOKEN if kind == "env" else f"Bearer {REF_TOKEN}"
+    # the reference really resolved (to the bearer token), and is reported
+    # ref-derived, so the run's display surfaces mask it
+    assert headers == {"Authorization": expected_auth, "X-Org-Id": "acme-corp"}
+    assert ref_names == {"Authorization"}
+    monkeypatch.setenv("STUB_CODEX_SCENARIO", "echo_stderr")
+    monkeypatch.setenv("STUB_CODEX_STDERR_LINES", f"auth {expected_auth}|tok {REF_TOKEN}")
+    monkeypatch.setenv("STUB_CODEX_TEXT", f"sent {expected_auth}\n<promise>COMPLETE</promise>")
+    monkeypatch.setattr(redact, "_map", {})  # no help from the engine's map
+    result, obs, itdir = _run(tmp_path)
+    assert not result.error_message
+    # the resolved header reaches codex's environment, by variable name
+    assert _header_values(obs) == headers
+    assert obs["env"]["AWS_BEARER_TOKEN_BEDROCK"] == REF_TOKEN
+    provider = _config(obs)["model_providers"]["aigw"]
+    assert provider["env_key"] == "AWS_BEARER_TOKEN_BEDROCK"
+    assert "http_headers" not in provider
+    _assert_no_secret_written(obs, itdir, (REF_TOKEN, expected_auth))
+
+
+def test_referenced_headers_from_shorthand_and_llm_header_flags_are_never_written(
+        tmp_path, monkeypatch):
+    """The same rule for the two other places a header comes from: the
+    profile's top-level `headers:` shorthand (a `${file:}` API key) and
+    `--llm-header` specs (an `${env:}` host variable and a `${cmd:}`), with
+    a flag overriding the provider's own `Authorization`."""
+    from ralphd.engine import redact
+    keyfile = _write(tmp_path / "creds" / "api-key", REF_KEY + "\n")
+    reg = _ref_profile(tmp_path, "literal-auth-overridden-below",
+                       top_level={"X-Api-Key": f"${{file:{keyfile}}}"})
+    specs = ["Authorization: ${env:RALPHD_TEST_PROXY_TOKEN}",
+             "X-Signed=${cmd:printf 'sig=%s' \"$RALPHD_TEST_PROXY_TOKEN\"}",
+             "X-Ticket: JIRA-77"]
+    monkeypatch.setenv("RALPHD_TEST_PROXY_TOKEN", REF_TOKEN)
+    headers, ref_names = _resolve_into_home(monkeypatch, tmp_path, reg, specs)
+    assert headers == {"Authorization": REF_TOKEN, "X-Org-Id": "acme-corp",
+                       "X-Api-Key": REF_KEY, "X-Signed": f"sig={REF_TOKEN}",
+                       "X-Ticket": "JIRA-77"}
+    assert ref_names == {"Authorization", "X-Api-Key", "X-Signed"}
+    monkeypatch.setenv("STUB_CODEX_SCENARIO", "echo_stderr")
+    monkeypatch.setenv("STUB_CODEX_STDERR_LINES", f"key {REF_KEY}|sig=sig={REF_TOKEN}")
+    monkeypatch.setenv("STUB_CODEX_TEXT", f"used {REF_KEY}\n<promise>COMPLETE</promise>")
+    monkeypatch.setattr(redact, "_map", {})
+    result, obs, itdir = _run(tmp_path)
+    assert not result.error_message
+    assert _header_values(obs) == headers
+    wrapper = json.loads((itdir / "output.codex-scratch" / "wrapper.json").read_text())
+    assert set(wrapper["headers"]) == set(headers)
+    _assert_no_secret_written(obs, itdir, (REF_TOKEN, REF_KEY))
+
+
 def test_header_env_splits_names_from_values():
     names, values = codex_mod.header_env({"A": "one", "B": "two"})
     assert set(names) == {"A", "B"}
