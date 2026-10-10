@@ -15,6 +15,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import site
 import time
 import tomllib
@@ -494,6 +495,175 @@ def test_the_wrapper_mask_covers_json_spellings_of_the_token_and_headers(monkeyp
     assert token not in out and header not in out
     assert json.loads(out) == {"a": "[REDACTED:env:AWS_BEARER_TOKEN_BEDROCK]",
                                "b": "[REDACTED:codex-header:H]"}
+
+
+_JSON_LITERAL = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+
+
+def _recoverable(value, secret: str) -> bool:
+    """Can `secret` be read back out of `value` by JSON decoding, however
+    deep? A string holds it verbatim, or decodes (whole, or any JSON string
+    literal inside it) to something that does."""
+    if isinstance(value, dict):
+        return any(_recoverable(v, secret) for v in value.values())
+    if isinstance(value, list):
+        return any(_recoverable(v, secret) for v in value)
+    if not isinstance(value, str):
+        return False
+    if secret in value:
+        return True
+    try:
+        whole = json.loads(value)
+    except (ValueError, TypeError):
+        whole = None
+    if whole is not None and whole != value and _recoverable(whole, secret):
+        return True
+    for m in _JSON_LITERAL.finditer(value):
+        if "\\" in m.group(0):
+            try:
+                inner = json.loads(m.group(0))
+            except ValueError:
+                continue
+            if inner != value and _recoverable(inner, secret):
+                return True
+    return False
+
+
+def _nest(secret: str, depth: int, *, ascii_only: bool = False) -> str:
+    payload = secret
+    for _ in range(depth):
+        payload = json.dumps({"payload": payload}, ensure_ascii=ascii_only)
+    return payload
+
+
+def _u_escaped(text: str) -> str:
+    """`text` as a JSON string body with EVERY character written `\\uXXXX` in
+    upper-case hex -- an escape `json.dumps` never writes."""
+    return "".join(f"\\u{ord(c):04X}" for c in text)
+
+
+_NESTED_SECRETS = {
+    "plain": "fake-ONLY-nested-apikey-alpha-0123456789",
+    "quoted": 'fake-ONLY-nested-apikey-"alpha"-0123456789',
+    "backslash": "fake-ONLY-nested-apikey-alpha\\beta-0123456789",
+}
+
+
+def _referenced_apikey_run(tmp_path, monkeypatch, secret: str, in_map: bool, *,
+                           text: str, stderr_line: str):
+    """A codex profile whose X-Api-Key is a `${file:}` reference, resolved by
+    `resolve_profile`, run through `CodexRunner` against the shipped stub,
+    which echoes `text` as the agent message and `stderr_line` on stderr."""
+    import yaml
+    from ralphd.cli import llm_profiles
+    from ralphd.engine import redact
+    cred = _write(tmp_path / "creds" / "apikey", secret + "\n")
+    doc = {"harness": "codex", "model": MODEL_REF,
+           "env": {"AWS_BEARER_TOKEN_BEDROCK": FAKE_TOKEN, "AIGW_OPENAI_BASE_URL": FAKE_BASE_URL},
+           "pi": {"providers": {"aigw-openai": {
+               "baseUrl": FAKE_BASE_URL, "api": "openai-responses",
+               "headers": {"X-Api-Key": f"${{file:{cred}}}"}}}}}
+    reg = tmp_path / "registry"
+    _write(reg / "llm-profiles" / "gw-codex.yaml", yaml.safe_dump(doc))
+    ref_names: set[str] = set()
+    prof = llm_profiles.resolve_profile("gw-codex", reg, dict(os.environ),
+                                        header_ref_names=ref_names)
+    assert ref_names == {"X-Api-Key"}
+    assert prof["pi"]["providers"]["aigw-openai"]["headers"]["X-Api-Key"] == secret
+    assert "|" not in stderr_line  # the stub's line separator
+    _setup(monkeypatch, tmp_path, STUB_CODEX_SCENARIO="echo_stderr",
+           STUB_CODEX_TEXT=text, STUB_CODEX_STDERR_LINES=stderr_line)
+    for k, v in prof["env"].items():
+        monkeypatch.setenv(k, v)
+    (tmp_path / "home" / ".pi" / "agent" / "models.json").write_text(json.dumps(prof["pi"]))
+    monkeypatch.setattr(redact, "_map", {secret: "test:referenced-apikey"} if in_map else {})
+    result, obs, itdir = _run(tmp_path)
+    assert result.exit_code == 0 and not result.error_message
+    assert _header_values(obs)["X-Api-Key"] == secret  # delivery is preserved
+    assert secret not in obs["config_toml"]
+    assert not any(secret in arg for arg in obs["argv"])
+    return result, itdir
+
+
+def _leaks(result, itdir: Path, secret: str) -> dict[str, bool]:
+    leaks = {}
+    for name in ("output.jsonl", "output.codex.jsonl"):
+        lines = (itdir / name).read_text().splitlines()
+        assert lines
+        leaks[name] = _recoverable([json.loads(line) for line in lines], secret)
+    rendered = log_render.render_to_text((itdir / "output.jsonl").read_text(), False,
+                                         log_render.new_render_state())
+    leaks["log_render"] = _recoverable(rendered.splitlines(), secret)
+    leaks["final_text"] = _recoverable(result.final_text, secret)
+    stderr = (itdir / "output.codex-scratch" / "stderr.log").read_text()
+    leaks["stderr.log"] = _recoverable(stderr.splitlines(), secret)
+    return leaks
+
+
+@pytest.mark.parametrize("in_map", [True, False], ids=["in-live-map", "header-only"])
+@pytest.mark.parametrize("depth", [0, 1, 2, 3, 4, 5])
+@pytest.mark.parametrize("shape", sorted(_NESTED_SECRETS))
+def test_a_referenced_credential_is_not_recoverable_from_any_json_nesting_depth(
+        tmp_path, monkeypatch, shape, depth, in_map):
+    """However many JSON documents deep the agent nests a referenced
+    credential (a quote and a backslash double their escapes at every level),
+    decoding the retained streams never gives it back; the plain value is the
+    control."""
+    secret = _NESTED_SECRETS[shape]
+    payload = _nest(secret, depth)
+    result, itdir = _referenced_apikey_run(tmp_path, monkeypatch, secret, in_map,
+                                           text=payload, stderr_line=payload)
+    leaks = _leaks(result, itdir, secret)
+    assert not any(leaks.values()), leaks
+    assert "[REDACTED:" in result.final_text
+
+
+@pytest.mark.parametrize("in_map", [True, False], ids=["in-live-map", "header-only"])
+def test_a_credential_written_with_escapes_json_dumps_never_writes_is_not_recoverable(
+        tmp_path, monkeypatch, in_map):
+    """Beyond the canonical spellings: every character as upper-case
+    `\\uXXXX`, an escaped solidus, and a document nested as a string inside
+    free text (not a whole-string JSON value) still decode to nothing."""
+    secret = 'fake-ONLY-nonstandard-"key"/with\\slash-0123456789'
+    inner = '{"k": "' + _u_escaped(secret) + '", "url": "a\\/b"}'
+    text = "agent says " + json.dumps({"doc": inner}) + " and " + json.dumps(_nest(secret, 3))
+    stderr_line = "codex: " + json.dumps(inner)
+    result, itdir = _referenced_apikey_run(tmp_path, monkeypatch, secret, in_map,
+                                           text=text, stderr_line=stderr_line)
+    leaks = _leaks(result, itdir, secret)
+    assert not any(leaks.values()), leaks
+
+
+@pytest.mark.parametrize("ascii_only", [False, True])
+def test_scrub_text_masks_a_redaction_map_secret_at_any_depth_and_keeps_the_line_valid(
+        monkeypatch, ascii_only):
+    """A live-map secret (not a header) with every JSON-special kind of
+    character, nested eight deep with `ensure_ascii` alternating per level, is
+    masked, and the scrubbed line still parses; a line with no secret is left
+    byte for byte as it was."""
+    from ralphd.engine import redact
+    secret = 'fake-ONLY-map-"q"\\b\tü-0123456789'
+    monkeypatch.setattr(redact, "_map", {secret: "env:SOME_TOKEN"})
+    payload = secret
+    for level in range(8):
+        payload = json.dumps({"payload": payload}, ensure_ascii=(level % 2 == 0) == ascii_only)
+    line = json.dumps({"type": "message_end", "text": payload})
+    out = redact.scrub_text(line)
+    assert not _recoverable(json.loads(out), secret)
+    assert "[REDACTED:env:SOME_TOKEN]" in out
+    untouched = json.dumps({"k": "no secret \\/ here \u00e9 \"q\" " + _nest("other", 4)})
+    assert redact.scrub_text(untouched) == untouched
+
+
+def test_the_wrapper_mask_reaches_any_depth_for_the_token_and_headers(monkeypatch):
+    token = 'tok-"deep"-\\-0123456789'
+    header = 'hdr-"deep"-\\-0123456789'
+    monkeypatch.setattr(codex_mod, "_extra_masks", {header: "[REDACTED:codex-header:H]"})
+    doc = json.dumps({"a": _nest(token, 6), "b": _nest(header, 6)})
+    out = codex_mod.mask_all(doc, token)
+    parsed = json.loads(out)
+    assert not _recoverable(parsed, token) and not _recoverable(parsed, header)
+    assert "REDACTED:env:AWS_BEARER_TOKEN_BEDROCK" in out and "REDACTED:codex-header:H" in out
 
 
 def test_header_env_splits_names_from_values():

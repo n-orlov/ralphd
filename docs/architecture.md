@@ -2152,9 +2152,15 @@ version, it ends in-band with `codex_version_too_old`; with no binary,
 `codex_cli_not_found`. `engine/faults.py` classifies them as the `codex-version`
 and `codex-cli-missing` refusal families, like `cc-version` and `cc-cli-missing`.
 
-Every artifact is masked, and a masked value is matched in its JSON-escaped
-spellings (`redact.secret_spellings`) as well as verbatim, since the lines being
-scrubbed are serialized JSON in which a quote or a backslash is escaped. The
+Every artifact is masked, and a masked value is matched however JSON escaping
+spells it, since the lines being scrubbed are serialized JSON in which a quote or
+a backslash is escaped, and an agent's output can carry a JSON document inside a
+string inside another. The wrapper and `scrub_text` share `redact.mask_values`:
+it replaces every spelling `json.dumps` gives the value when escaped any number
+of times (`redact.secret_spellings`, bounded by the line's length), then decodes
+each JSON string literal that holds a backslash, masks inside it recursively and
+re-encodes it only when it changed. No nesting depth, and no escape `json.dumps`
+never writes (`\uXXXX`, `\/`), lets a decoded line give the value back. The
 engine's `scrub_text` runs over each stdout line
 of the wrapper, `<stem>.codex.jsonl` and `output.jsonl`. The wrapper itself
 masks the bearer token's value (as `[REDACTED:env:AWS_BEARER_TOKEN_BEDROCK]`) in

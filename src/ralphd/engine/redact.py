@@ -218,32 +218,91 @@ def scrub_text(text: str, extra: dict[str, str] | None = None) -> str:
         merged.update(extra)
     if not merged:
         return text
-    # A secret is also matched in its JSON-escaped spellings: callers scrub
-    # serialized JSON lines, where a quote or a backslash in the value is
-    # written escaped, so the raw value alone would never match there.
-    items = [(spelling, label) for value, label in merged.items() if value
-             for spelling in secret_spellings(value)]
-    items.sort(key=lambda kv: -len(kv[0]))
-    for value, label in items:
-        if value in text:
-            text = text.replace(value, f"[REDACTED:{label}]")
+    return mask_values(text, {value: f"[REDACTED:{label}]"
+                              for value, label in merged.items() if value})
+
+
+# A JSON string literal on one line: what `mask_values` decodes to look inside.
+_JSON_LITERAL_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+
+
+def mask_values(text: str, replacements: dict[str, str]) -> str:
+    """`text` with every value in `replacements` (value -> what replaces it)
+    masked however JSON escaping spells it, so the value cannot be recovered by
+    decoding the result, at any nesting depth. The one masking routine:
+    `scrub_text` and the `codex` wrapper both call it.
+
+    Two layers, longest value first in each:
+
+    1. every spelling of the value that `json.dumps` produces when the value is
+       escaped any number of times, `ensure_ascii` on or off at each level
+       (`secret_spellings`, bounded by the length of `text`), replaced in place;
+    2. every JSON string literal that holds a backslash is decoded and masked
+       recursively (so a document carried as a string inside a document, at
+       any depth, and escapes `json.dumps` never writes -- `\\u0022`, upper-case
+       hex, `\\/` -- are seen decoded), and is re-encoded only when the
+       decoded text changed, so the line stays valid JSON.
+    """
+    values = {v: r for v, r in replacements.items() if v}
+    if not values or not text:
+        return text
+    # Built once for the whole text: a decoded literal is never longer.
+    pairs = sorted(((spelling, repl) for value, repl in values.items()
+                    for spelling in secret_spellings(value, len(text))),
+                   key=lambda kv: -len(kv[0]))
+    return _mask(text, pairs)
+
+
+def _mask(text: str, pairs: list[tuple[str, str]]) -> str:
+    for spelling, repl in pairs:
+        if spelling in text:
+            text = text.replace(spelling, repl)
+    if "\\" in text:
+        text = _JSON_LITERAL_RE.sub(lambda m: _mask_literal(m.group(0), pairs), text)
     return text
 
 
-@functools.lru_cache(maxsize=1024)
-def secret_spellings(value: str) -> tuple[str, ...]:
-    """`value` plus every way it is spelled inside a JSON string: escaped with
-    `ensure_ascii` off and on, and each of those escaped once more (a JSON
-    document carried as a string inside another). A value with no quote,
+def _mask_literal(literal: str, pairs: list[tuple[str, str]]) -> str:
+    if "\\" not in literal:
+        return literal  # decodes to itself: layer 1 already saw it
+    try:
+        decoded = json.loads(literal)
+    except ValueError:
+        return literal
+    masked = _mask(decoded, pairs)
+    if masked == decoded:
+        return literal
+    return json.dumps(masked, ensure_ascii=literal.isascii())
+
+
+def secret_spellings(value: str, max_len: int | None = None) -> tuple[str, ...]:
+    """`value` plus every way `json.dumps` spells it inside a JSON string when
+    it is escaped once, twice or any number of times (a JSON document carried
+    as a string inside another, at any depth), `ensure_ascii` off or on at each
+    level. Escaping is per character, so each of these appears verbatim in a
+    document that nests the value that deep.
+
+    Every spelling that differs from its parent holds a backslash, and the next
+    level doubles it, so spellings grow without bound: `max_len` (the length of
+    the text being masked, since a longer spelling cannot occur in it) bounds
+    the expansion, and None means `len(value)` times 64. A value with no quote,
     backslash, control or non-ASCII character has only the one spelling."""
+    bound = max(max_len if max_len is not None else 64 * len(value), len(value), 1)
+    return _spellings_upto(value, 1 << (bound - 1).bit_length())
+
+
+@functools.lru_cache(maxsize=1024)
+def _spellings_upto(value: str, bound: int) -> tuple[str, ...]:
     seen = [value]
+    known = {value}
     frontier = [value]
-    for _ in range(2):
+    while frontier:
         nxt = []
         for v in frontier:
             for ascii_only in (False, True):
                 esc = json.dumps(v, ensure_ascii=ascii_only)[1:-1]
-                if esc not in seen:
+                if esc not in known and len(esc) <= bound:
+                    known.add(esc)
                     seen.append(esc)
                     nxt.append(esc)
         frontier = nxt
