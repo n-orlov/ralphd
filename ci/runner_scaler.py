@@ -8,6 +8,8 @@ of the installed ``ralphd`` package. Commands:
               each queued job that carries the ``ci-pool`` label.
 * ``run``     the same pass in a loop, one pass every ``poll_interval_s``.
 * ``status``  print the scaler's containers (name, job id, age) as a JSON list.
+* ``prune-images``  remove old runner-image tags and old CI job-image tags, each
+              by exact ``name:tag``, and nothing outside the scaler's scheme.
 
 ``--dry-run`` (on ``once`` and ``run``) prints the starts a pass would make and
 issues none. The scaler serves only jobs whose labels include ``ci-pool``.
@@ -54,6 +56,8 @@ DEFAULTS: dict[str, Any] = {
     "runner_dir": str(Path(__file__).resolve().parent / "runner"),
     "lock_file": str(Path(tempfile.gettempdir()) / f"ralphd-ci-image-build-{os.getuid()}.lock"),
     "docker": "docker",
+    "keep": 3,
+    "retain_days": 14,
     "host_cpus": 12,
     "profiles": {},
 }
@@ -63,7 +67,7 @@ PROFILE_KEYS = tuple(DEFAULT_PROFILE)
 RESERVED_CORES = 1
 REQUIRED = ("repo", "token_file")
 INT_KEYS = ("poll_interval_s", "max_concurrency", "start_deadline_s",
-            "job_deadline_s", "host_cpus")
+            "job_deadline_s", "host_cpus", "keep", "retain_days")
 
 
 class ScalerError(Exception):
@@ -444,6 +448,35 @@ class Docker:
         every other call gets."""
         self.run("build", "-t", ref, str(context_dir), timeout=BUILD_TIMEOUT_S)
 
+    def images(self) -> list[dict[str, Any]]:
+        """Every tagged image on the host: ``ref`` (``name:tag``) and ``created``
+        (epoch seconds, or None when docker gave none). Untagged images are left out."""
+        out = self.run("images", "--no-trunc", "--format", "{{json .}}")
+        found = []
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            repo, tag = str(entry.get("Repository", "")), str(entry.get("Tag", ""))
+            if not repo or not tag or "<none>" in (repo, tag):
+                continue
+            found.append({"ref": f"{repo}:{tag}",
+                          "created": parse_created_at(str(entry.get("CreatedAt", "")))})
+        return found
+
+    def container_images(self) -> set[str]:
+        """The image of every container on the host, in any state."""
+        out = self.run("ps", "-a", "--no-trunc", "--format", "{{json .}}")
+        return {str(json.loads(line).get("Image", ""))
+                for line in out.splitlines() if line.strip()}
+
+    def remove_image(self, cfg: dict[str, Any], ref: str) -> None:
+        """Remove ONE image by its exact ``name:tag``, and only one of the
+        scaler's own scheme; never by filter, wildcard or prune."""
+        if image_scheme(cfg, ref) is None:
+            raise ScalerError(f"refusing to remove {ref!r}: not a scaler image")
+        self.run("rmi", ref)
+
     def ensure_volume(self, name: str) -> None:
         """Create the named volume if the host does not have it (by exact name)."""
         try:
@@ -559,6 +592,74 @@ def ensure_image(cfg: dict[str, Any], docker: Docker, *,
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
     return ref
+
+
+# --------------------------------------------------------------------------
+# Retention (C.1): old runner-image tags and old CI job-image tags
+# --------------------------------------------------------------------------
+
+# The CI job image tags the heavy lane builds per run: ``ralphd:test-ci-<run id>-<attempt>``
+# and its ``-base`` twin. Nothing else is a job image of the scaler's scheme.
+JOB_IMAGE_RE = re.compile(r"ralphd:test-ci-\d+-\d+(?:-base)?")
+RUNNER_TAG_RE = re.compile(r"[0-9a-f]{12}")
+SECONDS_PER_DAY = 86400
+
+
+def runner_repository(cfg: dict[str, Any]) -> str:
+    """The repository of the runner image: the config's ``image`` without its tag."""
+    head, sep, tail = str(cfg["image"]).rpartition("/")
+    return (head + sep) + tail.split(":", 1)[0]
+
+
+def image_scheme(cfg: dict[str, Any], ref: str) -> str | None:
+    """``"runner"`` for ``<runner repository>:<12 hex>``, ``"job"`` for a CI job
+    image tag, None for every other image (which the scaler never touches)."""
+    if JOB_IMAGE_RE.fullmatch(ref):
+        return "job"
+    repo, sep, tag = ref.rpartition(":")
+    if sep and repo == runner_repository(cfg) and RUNNER_TAG_RE.fullmatch(tag):
+        return "runner"
+    return None
+
+
+def prune_images(cfg: dict[str, Any], docker: Docker, *, dry_run: bool = False,
+                 clock: Callable[[], float] = time.time) -> list[str]:
+    """Remove runner-image tags beyond the newest ``keep`` and job-image tags
+    older than ``retain_days`` that no container uses. Returns the refs removed
+    (or, in a dry run, the refs it would remove). An image without a creation
+    time is never removed, and neither is one a container still references or
+    the tag the current recipe builds."""
+    images = docker.images()
+    in_use = docker.container_images()
+    try:
+        current: str | None = image_ref(cfg)
+    except ScalerError:
+        current = None
+    cutoff = clock() - int(cfg["retain_days"]) * SECONDS_PER_DAY
+    runner = sorted((i for i in images if image_scheme(cfg, i["ref"]) == "runner"),
+                    key=lambda i: (-(i["created"] if i["created"] is not None
+                                     else float("inf")), i["ref"]))
+    doomed = [i["ref"] for i in runner[int(cfg["keep"]):] if i["created"] is not None]
+    doomed += [i["ref"] for i in images
+               if image_scheme(cfg, i["ref"]) == "job"
+               and i["created"] is not None and i["created"] < cutoff]
+    removed = []
+    for ref in doomed:
+        if ref == current or ref in in_use:
+            log(f"keeping {ref}: in use")
+            continue
+        if dry_run:
+            print(f"would remove image {ref}")
+            removed.append(ref)
+            continue
+        try:
+            docker.remove_image(cfg, ref)
+        except ScalerError as exc:
+            log(f"cannot remove image {ref}: {exc}")
+            continue
+        log(f"removed image {ref}")
+        removed.append(ref)
+    return removed
 
 
 def parse_created_at(text: str) -> float | None:
@@ -853,6 +954,12 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "run":
             cmd.add_argument("--passes", type=int, default=None,
                              help="stop after this many passes (default: forever)")
+    prune = sub.add_parser(
+        "prune-images", help="remove old runner and job images by exact name:tag",
+        description="remove runner-image tags beyond the newest 'keep' and CI "
+                    "job-image tags older than 'retain_days', each by exact name:tag")
+    prune.add_argument("--dry-run", action="store_true",
+                       help="print the images that would be removed; remove none")
     sub.add_parser("status", help="print the scaler's containers as JSON",
                    description="print the scaler's containers, their job ids "
                                "and ages as a JSON list")
@@ -866,6 +973,9 @@ def main(argv: list[str] | None = None) -> int:
         docker = Docker(cfg)
         if args.command == "status":
             print(json.dumps(status_entries(docker), indent=2))
+            return 0
+        if args.command == "prune-images":
+            prune_images(cfg, docker, dry_run=args.dry_run)
             return 0
         api = GitHubApi(cfg)
         if args.command == "once":

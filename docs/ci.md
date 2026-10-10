@@ -186,14 +186,15 @@ serves no job without that label, so the standing runners above keep working, an
 they remain until the operator retires them: the scaler never touches a standing
 runner and nothing in this repository removes one.
 
-Four commands exist, three subcommands and one mode:
+Five commands exist, four subcommands and one mode:
 
 - `once` runs one pass and exits 0.
 - `run` runs passes in a loop, one every `poll_interval_s` seconds; `--passes N`
   stops it after `N` passes.
 - `status` prints the scaler's containers (those named `ci-runner-*`) as a JSON
   list, each entry carrying the container name, its job id and its age in seconds.
-- `--dry-run`, on `once` and `run`, makes a pass a rehearsal.
+- `prune-images` removes old images by exact name (below).
+- `--dry-run`, on `once`, `run` and `prune-images`, makes a pass a rehearsal.
 
 A dry run prints each start a pass would make, as
 `would start ci-runner-<job id> for job <job id>`, and issues no `docker run` or
@@ -326,6 +327,30 @@ than the 120 s every other docker call gets, so its timeout is 3600 s.
 the socket rule, the single build with a held lock (the fake `docker` holds a build
 until `FAKE_DOCKER_BUILD_GATE` exists) and the new tag for a changed recipe.
 
+### Image retention
+
+`prune-images` keeps the host's image store from growing without bound. It lists the
+images with `docker images`, picks the ones that fall under the scaler's own naming
+scheme, and removes each with `docker rmi <name:tag>`, one exact `name:tag` per call.
+Its argv never carries `prune`, a `--filter` or a wildcard, and an image outside the
+scheme is never a candidate. Two kinds of tag are in the scheme, and nothing else is:
+
+- Runner-image tags: `<repository>:<12 hex digits>`, where the repository is the config's
+  `image` without its tag (the tag the image refresh builds). The newest `keep` of them
+  by creation time (default 3) stay; every older one is removed. The `latest` tag and any
+  other tag of that repository are not in the scheme.
+- CI job-image tags: `ralphd:test-ci-<run id>-<attempt>` and its `-base` twin, the
+  per-run tags `heavy.yml` builds. One is removed once it is more than `retain_days` days
+  old (default 14) and no container, in any state, uses it. Docker records no last-use
+  time, so the age is the image's creation time.
+
+A tag a container still uses, the tag the current recipe builds, and an image with no
+creation time are all kept. A failed `rmi` is logged and the rest go on. `--dry-run`
+prints `would remove image <name:tag>` for each and removes none. The command is run by
+hand or from a timer; the scaler's own loop never calls it.
+`tests/test_runner_scaler_prune.py` lists runner tags, job-image tags and unrelated
+images in the fake `docker` and asserts exactly which `rmi` calls are made.
+
 ### The start deadline and reaping
 
 GitHub can assign a queued job to a runner that then never runs it: the container is
@@ -394,7 +419,7 @@ The config is read from `--config` (default `~/.config/ralphd-ci/scaler.yaml`).
 `repo` and `token_file` are required; the token is read from the file `token_file`
 names, and a config that holds an inline token is rejected. The other keys are
 `api_url`, `poll_interval_s` (5), `max_concurrency` (4), `start_deadline_s` (120),
-`job_deadline_s` (7800), `image`, `docker`, `host_cpus` (12) and a `profiles` map. The
+`job_deadline_s` (7800), `image`, `docker`, `keep` (3), `retain_days` (14), `host_cpus` (12) and a `profiles` map. The
 scaler imports no YAML library, so the file is a YAML subset: `key: value` scalars
 (strings, optionally quoted; integers; `true`/`false`), `#` comments and nested maps
 by space indentation. Lists, flow style, anchors and tabs are rejected with a
@@ -403,7 +428,7 @@ line-numbered error.
 The scaler's tests (`tests/test_runner_scaler_commands.py`,
 `tests/test_runner_scaler_queue.py`, `tests/test_runner_scaler_jit.py`,
 `tests/test_runner_scaler_reaping.py`, `tests/test_runner_scaler_resilience.py`,
-`tests/test_runner_scaler_secrets_limits.py` and `tests/test_runner_scaler_trust.py`) run it against a local
+`tests/test_runner_scaler_secrets_limits.py`, `tests/test_runner_scaler_prune.py` and `tests/test_runner_scaler_trust.py`) run it against a local
 fake GitHub API and a fake `docker` first on `PATH`
 (`tests/_runner_scaler_fakes.py`); no test reaches the network or a docker daemon.
 

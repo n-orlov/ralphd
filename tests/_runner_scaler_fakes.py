@@ -294,8 +294,10 @@ elif cmd == "ps":
 elif cmd == "images":
     for tag in state["images"]:
         repo, _, version = tag.partition(":")
+        made = state.get("image_created", {}).get(tag)
         print(json.dumps({"Repository": repo, "Tag": version or "latest",
-                          "ID": "img" + str(abs(hash(tag)) % 10**6)}))
+                          "ID": "img" + str(abs(hash(tag)) % 10**6),
+                          "CreatedAt": stamp(now if made is None else made)}))
 elif cmd == "image" and rest[:1] == ["inspect"]:
     if rest[-1] not in state["images"]:
         fail("No such image: " + rest[-1])
@@ -310,6 +312,7 @@ elif cmd == "build":
     for tag in tags:
         if tag not in state["images"]:
             state["images"].append(tag)
+            state.setdefault("image_created", {})[tag] = now
     save(state)
 elif cmd == "rmi":
     for tag in [a for a in rest if not a.startswith("-")]:
@@ -381,9 +384,11 @@ class FakeDocker:
         }
         self._write(data)
 
-    def add_image(self, tag: str) -> None:
+    def add_image(self, tag: str, *, created_epoch: float | None = None) -> None:
         data = self._read()
         data["images"].append(tag)
+        if created_epoch is not None:
+            data.setdefault("image_created", {})[tag] = created_epoch
         self._write(data)
 
     def add_volume(self, name: str) -> None:
