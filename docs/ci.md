@@ -212,6 +212,22 @@ have not exited and starts only as many jobs as free slots remain, so ten queued
 jobs at the default start four, and the next pass starts one job for each container
 that has since exited, again in job-id order. `--dry-run` applies the same rules.
 
+### The JIT runner request
+
+Before a pass starts a container it asks GitHub for a just-in-time runner config
+for that job: `POST /repos/{repo}/actions/runners/generate-jitconfig`, with `repo`
+from the config and a JSON body of three fields. `name` is `ci-<job id>`, `labels`
+is the job's own `labels` list as the jobs API reported it, and `runner_group_id`
+is `1`. GitHub registers that one single-use runner and returns an
+`encoded_jit_config`, which is a secret: the scaler never logs it. The scaler never
+registers a standing runner and runs no `config.sh`; a runner exists only for the
+one job it was requested for. Each start is preceded by exactly one such request.
+A `--dry-run` pass issues none, and a pass over a queue whose jobs already have a
+container issues none either. A 5xx reply (or any failed request) starts no
+container for that job and takes no concurrency slot; the pass logs it, goes on to
+the next job, and the next pass requests again. The request is tested in
+`tests/test_runner_scaler_jit.py`.
+
 The config is read from `--config` (default `~/.config/ralphd-ci/scaler.yaml`).
 `repo` and `token_file` are required; the token is read from the file `token_file`
 names, and a config that holds an inline token is rejected. The other keys are
@@ -222,8 +238,8 @@ scaler imports no YAML library, so the file is a YAML subset: `key: value` scala
 by space indentation. Lists, flow style, anchors and tabs are rejected with a
 line-numbered error.
 
-The scaler's tests (`tests/test_runner_scaler_commands.py` and
-`tests/test_runner_scaler_queue.py`) run it against a local
+The scaler's tests (`tests/test_runner_scaler_commands.py`,
+`tests/test_runner_scaler_queue.py` and `tests/test_runner_scaler_jit.py`) run it against a local
 fake GitHub API and a fake `docker` first on `PATH`
 (`tests/_runner_scaler_fakes.py`); no test reaches the network or a docker daemon.
 

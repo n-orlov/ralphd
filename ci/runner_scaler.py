@@ -28,6 +28,8 @@ from typing import Any, Callable
 
 POOL_LABEL = "ci-pool"
 CONTAINER_PREFIX = "ci-runner-"
+RUNNER_NAME_PREFIX = "ci-"
+RUNNER_GROUP_ID = 1
 DEFAULT_CONFIG_PATH = "~/.config/ralphd-ci/scaler.yaml"
 API_TIMEOUT_S = 30
 
@@ -189,6 +191,24 @@ class GitHubApi:
     def get(self, path: str) -> Any:
         return self.request("GET", path)
 
+    def generate_jitconfig(self, job: dict[str, Any]) -> str:
+        """Request a just-in-time runner config for one job (Rule 3).
+
+        ``POST /repos/{repo}/actions/runners/generate-jitconfig`` registers a
+        single-use runner named ``ci-<job id>`` carrying the job's own labels in
+        runner group 1; the scaler never registers a standing runner. Returns
+        the ``encoded_jit_config`` value, which is a secret.
+        """
+        reply = self.request(
+            "POST", f"/repos/{self.repo}/actions/runners/generate-jitconfig",
+            {"name": runner_name(int(job["id"])),
+             "labels": list(job.get("labels") or []),
+             "runner_group_id": RUNNER_GROUP_ID})
+        encoded = (reply or {}).get("encoded_jit_config")
+        if not isinstance(encoded, str) or not encoded:
+            raise ScalerError("generate-jitconfig reply has no encoded_jit_config")
+        return encoded
+
     def queued_runs(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         page = 1
@@ -270,6 +290,11 @@ def container_name(job_id: int) -> str:
     return f"{CONTAINER_PREFIX}{job_id}"
 
 
+def runner_name(job_id: int) -> str:
+    """The GitHub-side name of the job's single-use runner."""
+    return f"{RUNNER_NAME_PREFIX}{job_id}"
+
+
 def job_id_of(name: str) -> int | None:
     tail = name[len(CONTAINER_PREFIX):]
     return int(tail) if name.startswith(CONTAINER_PREFIX) and tail.isdigit() else None
@@ -306,7 +331,9 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
     Queued ``ci-pool`` jobs are served in ascending job-id order. A job that
     already has a ``ci-runner-<job id>`` container (in any state) is skipped,
     so repeated passes never start a second container for it. Starting stops
-    once the containers still alive reach ``max_concurrency``.
+    once the containers still alive reach ``max_concurrency``. Before each
+    start the pass requests that job's JIT runner config; a failed request
+    skips the job (no container, no slot used) and the next pass retries it.
     """
     jobs = queued_pool_jobs(api)
     existing = docker.containers()
@@ -322,6 +349,12 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
         if dry_run:
             out(f"would start {name} for job {job['id']}")
         else:
+            try:
+                api.generate_jitconfig(job)
+            except ScalerError as exc:
+                # No container for this job; the next pass requests again.
+                log(f"no runner config for job {job['id']}: {exc}")
+                continue
             docker.start(name, str(cfg["image"]))
             log(f"started {name}")
         names.add(name)
