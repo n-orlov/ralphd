@@ -209,6 +209,11 @@ class GitHubApi:
             raise ScalerError("generate-jitconfig reply has no encoded_jit_config")
         return encoded
 
+    def job_status(self, job_id: int) -> str:
+        """The job's current ``status`` (``GET /repos/{repo}/actions/jobs/{id}``)."""
+        reply = self.get(f"/repos/{self.repo}/actions/jobs/{int(job_id)}")
+        return str((reply or {}).get("status", ""))
+
     def queued_runs(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         page = 1
@@ -269,6 +274,12 @@ class Docker:
     def start(self, name: str, image: str) -> None:
         self.run("run", "-d", "--name", name, image)
 
+    def remove(self, name: str) -> None:
+        """Remove ONE container by its exact name; never by filter or prune."""
+        if job_id_of(name) is None:
+            raise ScalerError(f"refusing to remove {name!r}: not a scaler container")
+        self.run("rm", "--force", name)
+
 
 _CREATED_RE = re.compile(
     r"(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)(?:\.\d+)? ([+-])(\d\d)(\d\d)")
@@ -323,8 +334,59 @@ def live_containers(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in entries if str(e.get("State", "")) not in ("exited", "dead")]
 
 
+def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
+                    entries: list[dict[str, Any]], *, now: float,
+                    dry_run: bool = False,
+                    out: Callable[[str], None] = print) -> set[str]:
+    """Remove, by exact name, the containers that are done or overdue.
+
+    A container goes when (a) it is older than ``job_deadline_s``, (b) its job
+    is ``completed``, or (c) its job is still ``queued`` after
+    ``start_deadline_s`` (GitHub assigned the job to the runner and it never
+    ran). Each removal is one ``docker rm --force ci-runner-<job id>``. A job
+    lookup that fails leaves its container for the next pass. Returns the names
+    removed (or, in a dry run, that would be).
+    """
+    reaped: set[str] = set()
+    for entry in sorted(entries, key=lambda e: str(e["Names"])):
+        name = str(entry["Names"])
+        job_id = job_id_of(name)
+        if job_id is None:
+            continue
+        created = parse_created_at(str(entry.get("CreatedAt", "")))
+        age = None if created is None else now - created
+        reason = None
+        if age is not None and age > float(cfg["job_deadline_s"]):
+            reason = "past job_deadline_s"
+        else:
+            try:
+                status = api.job_status(job_id)
+            except ScalerError as exc:
+                log(f"cannot read job {job_id}, keeping {name}: {exc}")
+                continue
+            if status == "completed":
+                reason = "job completed"
+            elif (status == "queued" and age is not None
+                  and age > float(cfg["start_deadline_s"])):
+                reason = "job still queued past start_deadline_s"
+        if reason is None:
+            continue
+        if dry_run:
+            out(f"would remove {name}: {reason}")
+        else:
+            try:
+                docker.remove(name)
+            except ScalerError as exc:
+                log(f"cannot remove {name}: {exc}")
+                continue
+            log(f"removed {name}: {reason}")
+        reaped.add(name)
+    return reaped
+
+
 def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
-             dry_run: bool = False, out: Callable[[str], None] = print) -> int:
+             dry_run: bool = False, out: Callable[[str], None] = print,
+             clock: Callable[[], float] = time.time) -> int:
     """One scaling pass. Returns the number of containers started (or that
     ``dry_run`` would have started).
 
@@ -334,11 +396,18 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
     once the containers still alive reach ``max_concurrency``. Before each
     start the pass requests that job's JIT runner config; a failed request
     skips the job (no container, no slot used) and the next pass retries it.
+
+    A pass first reaps (see ``reap_containers``). A job whose container was
+    reaped is not restarted in the same pass: the next pass starts its new
+    container.
     """
     jobs = queued_pool_jobs(api)
     existing = docker.containers()
+    reaped = reap_containers(cfg, api, docker, existing, now=clock(),
+                             dry_run=dry_run, out=out)
     names = {str(e["Names"]) for e in existing}
-    free = int(cfg["max_concurrency"]) - len(live_containers(existing))
+    free = int(cfg["max_concurrency"]) - len(
+        live_containers([e for e in existing if str(e["Names"]) not in reaped]))
     started = 0
     for job in jobs:
         name = container_name(int(job["id"]))

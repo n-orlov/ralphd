@@ -228,6 +228,33 @@ container for that job and takes no concurrency slot; the pass logs it, goes on 
 the next job, and the next pass requests again. The request is tested in
 `tests/test_runner_scaler_jit.py`.
 
+### The start deadline and reaping
+
+GitHub can assign a queued job to a runner that then never runs it: the container is
+up, the job stays `queued`, and nothing else ever frees the slot. The start deadline
+is the cure for that case, a job assigned and never run. A container whose job the
+API still reports `queued` more than `start_deadline_s` (default 120) after the
+container was created is removed, and since the job is still queued with no
+container, the next pass starts a new one for it (a fresh JIT request, a new
+`ci-runner-<job id>`). The same pass never restarts a job whose container it just
+removed, so the replacement is the next pass's.
+
+Every pass reaps before it starts anything. For each `ci-runner-*` container it reads
+the job (`GET /repos/{repo}/actions/jobs/{job id}`) and removes the container when
+the job is `completed`, when the job is still `queued` past `start_deadline_s`, or,
+whatever the job says, when the container is older than `job_deadline_s` (default
+7800: the longest workflow `timeout-minutes` is 120, which is 7200 seconds, plus
+margin). A job lookup that fails leaves its container for the next pass. A running
+job under the deadline, and any container not named `ci-runner-<job id>`, are never
+touched. A `--dry-run` pass prints `would remove ci-runner-<job id>` and removes
+nothing.
+
+Removal is always one exact name, `docker rm --force ci-runner-<job id>`: the scaler
+never removes by `--filter`, `prune`, a wildcard or a label selector, and refuses a
+name that is not `ci-runner-<digits>`. Listing may filter, but it does so client-side
+on the name prefix. This is tested in `tests/test_runner_scaler_reaping.py` against
+an injected clock.
+
 The config is read from `--config` (default `~/.config/ralphd-ci/scaler.yaml`).
 `repo` and `token_file` are required; the token is read from the file `token_file`
 names, and a config that holds an inline token is rejected. The other keys are
@@ -239,7 +266,8 @@ by space indentation. Lists, flow style, anchors and tabs are rejected with a
 line-numbered error.
 
 The scaler's tests (`tests/test_runner_scaler_commands.py`,
-`tests/test_runner_scaler_queue.py` and `tests/test_runner_scaler_jit.py`) run it against a local
+`tests/test_runner_scaler_queue.py`, `tests/test_runner_scaler_jit.py` and
+`tests/test_runner_scaler_reaping.py`) run it against a local
 fake GitHub API and a fake `docker` first on `PATH`
 (`tests/_runner_scaler_fakes.py`); no test reaches the network or a docker daemon.
 

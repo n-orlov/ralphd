@@ -1,0 +1,189 @@
+"""The runner scaler's start deadline and reaping: a container whose job the
+API keeps `queued` past `start_deadline_s`, a container whose job is
+`completed`, and one older than `job_deadline_s` are each removed by exact name
+(`docker rm --force ci-runner-<job id>`), never by filter, prune or pattern.
+Time is an injected clock: the fake docker stamps containers from it and the
+scaler's passes read it, so nothing really waits."""
+
+from __future__ import annotations
+
+import importlib.util
+import re
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _runner_scaler_fakes import FAKE_TOKEN, FakeDocker, FakeGitHub  # noqa: E402
+
+SCALER = Path(__file__).resolve().parents[1] / "ci" / "runner_scaler.py"
+T0 = 1_800_000_000.0
+
+
+@pytest.fixture(scope="module")
+def scaler():
+    spec = importlib.util.spec_from_file_location("runner_scaler_reaping", SCALER)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class Rig:
+    def __init__(self, scaler, github, docker, config_path):
+        self.scaler = scaler
+        self.github = github
+        self.docker = docker
+        self.cfg = scaler.load_config(config_path)
+        self.api = scaler.GitHubApi(self.cfg)
+        self.dock = scaler.Docker(self.cfg)
+        self.now = T0
+        self.docker.set_clock(self.now)
+
+    def advance(self, seconds):
+        self.now += seconds
+        self.docker.set_clock(self.now)
+
+    def run_pass(self, **kwargs):
+        return self.scaler.run_pass(self.cfg, self.api, self.dock,
+                                    clock=lambda: self.now, out=lambda _: None,
+                                    **kwargs)
+
+
+@pytest.fixture()
+def rig(tmp_path, monkeypatch, scaler):
+    token = tmp_path / "token"
+    token.write_text(FAKE_TOKEN + "\n")
+    docker = FakeDocker(tmp_path / "fakedocker")
+    for key, value in docker.env().items():
+        if key in ("PATH", "FAKE_DOCKER_DIR"):
+            monkeypatch.setenv(key, value)
+    with FakeGitHub() as github:
+        path = tmp_path / "scaler.yaml"
+        path.write_text(f"repo: {github.repo}\ntoken_file: {token}\n"
+                        f"api_url: {github.url}\nimage: ci-runner:test\n")
+        yield Rig(scaler, github, docker, path)
+
+
+def queue_job(github, run_id, job_id, status="queued"):
+    if not any(r["id"] == run_id for r in github.runs):
+        github.add_run(run_id)
+    github.add_job(run_id, job_id, ["ci-pool"], status=status)
+
+
+def removals(docker):
+    return docker.commands("rm")
+
+
+def test_defaults_come_from_the_loaded_default_config(tmp_path, scaler):
+    token = tmp_path / "token"
+    token.write_text(FAKE_TOKEN + "\n")
+    path = tmp_path / "scaler.yaml"
+    path.write_text(f"repo: n-orlov/ralphd\ntoken_file: {token}\n")
+    cfg = scaler.load_config(path)
+    assert cfg["start_deadline_s"] == 120
+    assert cfg["job_deadline_s"] == 7800
+
+
+def test_a_job_queued_past_start_deadline_s_loses_its_container_and_is_restarted(rig):
+    queue_job(rig.github, 1, 101)
+    assert rig.run_pass() == 1
+    assert sorted(rig.docker.containers()) == ["ci-runner-101"]
+    rig.advance(rig.cfg["start_deadline_s"] - 1)
+    rig.run_pass()
+    assert removals(rig.docker) == []
+
+    rig.advance(2)  # now past the start deadline, job still queued
+    rig.run_pass()
+    assert removals(rig.docker) == [["rm", "--force", "ci-runner-101"]]
+    assert rig.docker.containers() == {}
+
+    assert rig.run_pass() == 1  # the next pass starts a new container
+    assert sorted(rig.docker.containers()) == ["ci-runner-101"]
+    runs = [argv for argv in rig.docker.commands("run") if "ci-runner-101" in argv]
+    assert len(runs) == 2
+
+
+def test_a_container_whose_job_completed_is_removed_by_exact_name(rig):
+    queue_job(rig.github, 1, 101)
+    queue_job(rig.github, 1, 102)
+    rig.run_pass()
+    rig.github.set_job_status(101, "completed")
+    rig.github.set_job_status(102, "in_progress")
+    rig.advance(30)
+    rig.run_pass()
+    assert removals(rig.docker) == [["rm", "--force", "ci-runner-101"]]
+    assert sorted(rig.docker.containers()) == ["ci-runner-102"]
+
+
+def test_a_container_older_than_job_deadline_s_is_removed_whatever_its_job_says(rig):
+    queue_job(rig.github, 1, 101, status="in_progress")
+    rig.docker.add_container("ci-runner-101", created_epoch=T0)
+    rig.advance(rig.cfg["job_deadline_s"] - 1)
+    rig.run_pass()
+    assert removals(rig.docker) == []
+    rig.advance(2)
+    rig.run_pass()
+    assert removals(rig.docker) == [["rm", "--force", "ci-runner-101"]]
+    assert rig.docker.containers() == {}
+
+
+def test_a_running_job_and_foreign_containers_are_left_alone(rig):
+    queue_job(rig.github, 1, 101, status="in_progress")
+    rig.docker.add_container("ci-runner-101", created_epoch=T0)
+    rig.docker.add_container("standing-runner", created_epoch=T0 - 10**6)
+    rig.advance(rig.cfg["start_deadline_s"] * 5)
+    rig.run_pass()
+    assert removals(rig.docker) == []
+    assert sorted(rig.docker.containers()) == ["ci-runner-101", "standing-runner"]
+
+
+def test_a_failing_job_lookup_keeps_the_container(rig):
+    queue_job(rig.github, 1, 101)
+    rig.docker.add_container("ci-runner-101", created_epoch=T0)
+    rig.advance(rig.cfg["start_deadline_s"] + 10)
+    rig.github.jobs[1].clear()  # the API no longer knows the job: 404
+    rig.run_pass()
+    assert removals(rig.docker) == []
+
+
+def test_a_dry_run_names_the_removal_and_issues_none(rig):
+    queue_job(rig.github, 1, 101)
+    rig.docker.add_container("ci-runner-101", created_epoch=T0)
+    rig.advance(rig.cfg["start_deadline_s"] + 10)
+    lines = []
+    rig.scaler.run_pass(rig.cfg, rig.api, rig.dock, dry_run=True,
+                        clock=lambda: rig.now, out=lines.append)
+    assert any(line.startswith("would remove ci-runner-101") for line in lines)
+    assert removals(rig.docker) == []
+    assert sorted(rig.docker.containers()) == ["ci-runner-101"]
+
+
+def test_every_removal_argv_names_one_exact_container_and_no_selector(rig):
+    for job_id in (101, 102, 103):
+        queue_job(rig.github, 1, job_id)
+    rig.run_pass()
+    rig.github.set_job_status(101, "completed")
+    rig.advance(rig.cfg["start_deadline_s"] + 1)  # 102 and 103 are overdue starts
+    rig.run_pass()
+    rig.run_pass()  # restarts 102 and 103
+    rig.github.set_job_status(102, "in_progress")
+    rig.advance(rig.cfg["job_deadline_s"] + 1)  # 102 is over job_deadline_s
+    rig.run_pass()
+
+    argv_log = rig.docker.argv_log()
+    removed = [argv for argv in argv_log if argv[0] in ("rm", "stop", "kill", "rmi")
+               or argv[:2] in (["container", "rm"], ["container", "prune"])]
+    assert len(removed) >= 4
+    for argv in removed:
+        assert argv[0] == "rm"
+        operands = [a for a in argv[1:] if not a.startswith("-")]
+        assert len(operands) == 1
+        assert re.fullmatch(r"ci-runner-\d+", operands[0])
+        assert set(argv[1:]) - set(operands) <= {"--force"}
+    for argv in argv_log:
+        for arg in argv:
+            assert "--filter" not in arg and "*" not in arg
+            assert "prune" not in arg and "label" not in arg
+            assert arg != "-f"

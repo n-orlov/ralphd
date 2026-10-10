@@ -163,6 +163,13 @@ class FakeGitHub:
                 and parts[-1] == "jobs"):
             jobs = self.jobs.get(int(parts[-2]), [])
             return 200, {"total_count": len(jobs), "jobs": self._page(jobs, query)}
+        if (method == "GET" and parts[-2] == "jobs"
+                and path.startswith(f"{base}/jobs/")):
+            for jobs in self.jobs.values():
+                for job in jobs:
+                    if job["id"] == int(parts[-1]):
+                        return 200, job
+            return 404, {"message": "not found"}
         if method == "POST" and path == f"{base}/runners/generate-jitconfig":
             name = (body or {}).get("name", "unnamed")
             return 201, {"runner": {"id": 1, "name": name},
