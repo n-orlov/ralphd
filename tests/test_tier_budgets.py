@@ -774,7 +774,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.34 cure 01-01 (JIT file on a tmpfs-style mount, B.2): +9 tests, no new
     # module (tests/test_runner_scaler_secrets_limits.py), measured the same way
     # -> fast 8150/526, smoke 6413/402.
-    "fast": {"tests": 8150, "modules": 526},
+    # v0.34 cure 01-02 (host-wide admission lock and cap recheck): +9 tests, +1
+    # module (tests/test_runner_scaler_admission.py), measured the same way ->
+    # fast 8159/527, smoke 6413/402.
+    "fast": {"tests": 8159, "modules": 527},
     "smoke": {"tests": 6413, "modules": 402},
 }
 

@@ -54,6 +54,8 @@ DEFAULTS: dict[str, Any] = {
     "image": "ralphd-ci-runner:latest",
     "runner_dir": str(Path(__file__).resolve().parent / "runner"),
     "lock_file": str(Path(tempfile.gettempdir()) / f"ralphd-ci-image-build-{os.getuid()}.lock"),
+    "admission_lock_file": str(
+        Path(tempfile.gettempdir()) / f"ralphd-ci-admission-{os.getuid()}.lock"),
     "docker": "docker",
     "keep": 3,
     "retain_days": 14,
@@ -781,6 +783,21 @@ def queued_pool_jobs(api: GitHubApi) -> list[dict[str, Any]]:
 EXITED_STATES = ("exited", "dead")
 
 
+@contextlib.contextmanager
+def admission_lock(cfg: dict[str, Any]):
+    """Hold the host-wide admission lock: an exclusive ``flock`` on
+    ``admission_lock_file``. Every scaler process serving one pool shares that
+    file, so the cap recheck and the start that follows it are one step."""
+    lock_path = Path(str(cfg["admission_lock_file"])).expanduser()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def live_containers(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The scaler's containers that still occupy a slot (not exited or dead)."""
     return [e for e in entries if str(e.get("State", "")) not in EXITED_STATES]
@@ -894,19 +911,31 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
         else:
             if image is None:
                 image = ensure_image(cfg, docker)  # built before the next start
-            try:
-                jit_config = api.generate_jitconfig(job)
-            except ScalerError as exc:
-                # No container for this job; the next pass requests again.
-                log(f"no runner config for job {job['id']}: {exc}")
-                continue
-            profile = resolve_profile(cfg, list(job.get("labels") or []))
-            try:
-                docker.start(name, image, jit_config, profile,
-                             labels=list(job.get("labels") or []))
-            except ScalerError as exc:
-                log(f"cannot start {name}: {exc}")
-                continue
+            # Admission is one step under the host-wide lock: the snapshot above
+            # may be stale (an image build, another pass or another scaler
+            # process), so the containers are read again and the cap and the
+            # job's name are rechecked before anything is requested or started.
+            with admission_lock(cfg):
+                fresh = docker.containers()
+                free = int(cfg["max_concurrency"]) - len(live_containers(fresh))
+                if name in {str(e["Names"]) for e in fresh}:
+                    names.add(name)  # someone else admitted this job
+                    continue
+                if free <= 0:
+                    break
+                try:
+                    jit_config = api.generate_jitconfig(job)
+                except ScalerError as exc:
+                    # No container for this job; the next pass requests again.
+                    log(f"no runner config for job {job['id']}: {exc}")
+                    continue
+                profile = resolve_profile(cfg, list(job.get("labels") or []))
+                try:
+                    docker.start(name, image, jit_config, profile,
+                                 labels=list(job.get("labels") or []))
+                except ScalerError as exc:
+                    log(f"cannot start {name}: {exc}")
+                    continue
             log(f"started {name}")
         names.add(name)
         free -= 1

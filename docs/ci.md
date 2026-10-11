@@ -216,6 +216,23 @@ have not exited and starts only as many jobs as free slots remain, so ten queued
 jobs at the default start four, and the next pass starts one job for each container
 that has since exited, again in job-id order. `--dry-run` applies the same rules.
 
+The cap is a host-wide invariant, not a property of one pass's snapshot. Several passes
+or scaler processes can serve one pool on a host, and the container list a pass read at
+its start can be stale by the time it starts a job (an image build can take minutes,
+and another process may have started runners meanwhile). So each start is one step under
+an exclusive `flock` on `admission_lock_file` (default: a per-user file in the temp
+directory; every scaler process serving the same pool must use the same file). Under that
+lock the pass reads the containers again, skips the job if its `ci-runner-<job id>`
+container now exists (no JIT request, no `docker create`, so a name conflict never
+consumes a runner registration), stops if the live containers already reach
+`max_concurrency`, and otherwise requests the JIT config and starts the container
+before releasing the lock. The next job's start takes the lock and reads again, so
+no more than `max_concurrency` runner containers are admitted at once, and the job-id
+order and the one-container-per-job rule are unchanged. A job whose container was reaped
+earlier in the same pass is still not restarted in that pass. This is tested in
+`tests/test_runner_scaler_admission.py` with stale snapshots forced after the first read
+and after an image build, and with two scaler processes on one pool.
+
 ### The JIT runner request
 
 Before a pass starts a container it asks GitHub for a just-in-time runner config
@@ -458,7 +475,7 @@ The config is read from `--config` (default `~/.config/ralphd-ci/scaler.yaml`).
 `repo` and `token_file` are required; the token is read from the file `token_file`
 names, and a config that holds an inline token is rejected. The other keys are
 `api_url`, `poll_interval_s` (5), `max_concurrency` (4), `start_deadline_s` (120),
-`job_deadline_s` (7800), `image`, `docker`, `keep` (3), `retain_days` (14), `host_cpus` (12), `secret_dir`, `runner_uid` (1000) and a `profiles` map. The
+`job_deadline_s` (7800), `image`, `docker`, `keep` (3), `retain_days` (14), `host_cpus` (12), `secret_dir`, `runner_uid` (1000), `lock_file`, `admission_lock_file` and a `profiles` map. The
 scaler imports no YAML library, so the file is a YAML subset: `key: value` scalars
 (strings, optionally quoted; integers; `true`/`false`), `#` comments and nested maps
 by space indentation. Lists, flow style, anchors and tabs are rejected with a
