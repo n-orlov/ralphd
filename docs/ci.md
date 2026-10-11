@@ -263,17 +263,30 @@ copy that lacks it, and asserts the start argv.
 
 ### The secret path and the container limits
 
-The JIT config is a credential, and the scaler starts a container in three docker
-calls, in this order: `docker create`, `docker cp -`, `docker start`. The config
-reaches the container as the file `/run/ci-runner/jitconfig` through a tar stream on
-the stdin of `docker cp - ci-runner-<job id>:/run`; the tar holds `ci-runner/jitconfig`
-owned by uid 1000, mode 0400, in a directory of mode 0500. The value therefore never
-appears in any docker argv element, in any `--env`, `-e` or `--env-file` value (an
-`--env-file` is visible in `docker inspect`, so none is used), in a scaler log line, in
-the `status` output, or in a host-side file: there is none, so there is nothing to
-chmod or delete. If `docker cp` or `docker start` fails, the scaler removes the
+The JIT config is a credential, and the scaler starts a container in two docker
+calls, in this order: `docker create`, `docker start`. The config reaches the
+container as the file `/run/ci-runner/jitconfig`, a read-only bind mount
+(`-v <host file>:/run/ci-runner/jitconfig:ro` on the `docker create` argv) of a
+temporary host file; it is never copied into the container's filesystem, so no image
+or container layer holds it. The host file is created mode 0600, owned by the runner's
+uid, in a fresh private directory (mode 0700) made just for it under a tmpfs-style
+mount: the config key `secret_dir` if set, else `$XDG_RUNTIME_DIR`, else `/dev/shm`,
+else the temporary directory (the mode-0600 temporary-file alternative); a
+`secret_dir` that is not a directory is refused. The runner is uid 1000, the
+config key `runner_uid` (default 1000, the image's `USER`): when the scaler runs as
+another user it hands the empty file to that uid with `chown` before it writes the
+value, and if that is refused (the scaler is not root) it fails closed, starts no
+container and logs the refusal without the value. The scaler removes the file and its
+directory as soon as `docker start` returns, and also when `docker create` or
+`docker start` fails; the running container keeps its mount of the unlinked file, so
+the runner still reads it. The value therefore never appears in any docker argv
+element, in any `--env`, `-e` or `--env-file` value (an `--env-file` is visible in
+`docker inspect`, so none is used), in a scaler log line, in the `status` output, or
+in a host file that outlives the start. If `docker start` fails, the scaler removes the
 created container by its exact name and logs the failure (without the value); the job
-keeps its queue place and the next pass starts it again.
+keeps its queue place and the next pass starts it again. This is tested in
+`tests/test_runner_scaler_secrets_limits.py`, whose fake `docker` records the bind
+mount and the file's content, mode, owner and directory mode at the moment of start.
 
 `docker create` carries `--cpus`, `--memory` and `--pids-limit` from the job's
 profile. The default profile is 4 CPUs, `12g` and 4096 pids. A `profiles` map in the
@@ -445,7 +458,7 @@ The config is read from `--config` (default `~/.config/ralphd-ci/scaler.yaml`).
 `repo` and `token_file` are required; the token is read from the file `token_file`
 names, and a config that holds an inline token is rejected. The other keys are
 `api_url`, `poll_interval_s` (5), `max_concurrency` (4), `start_deadline_s` (120),
-`job_deadline_s` (7800), `image`, `docker`, `keep` (3), `retain_days` (14), `host_cpus` (12) and a `profiles` map. The
+`job_deadline_s` (7800), `image`, `docker`, `keep` (3), `retain_days` (14), `host_cpus` (12), `secret_dir`, `runner_uid` (1000) and a `profiles` map. The
 scaler imports no YAML library, so the file is a YAML subset: `key: value` scalars
 (strings, optionally quoted; integers; `true`/`false`), `#` comments and nested maps
 by space indentation. Lists, flow style, anchors and tabs are rejected with a

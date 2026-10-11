@@ -109,7 +109,11 @@ def test_the_pip_cache_volume_is_mounted_writable_and_the_playwright_dir_only_fo
     assert PIP_MOUNT in plain and PIP_MOUNT in browser       # writable: no ":ro"
     assert not any(m.startswith("/opt/ms-playwright") for m in plain)
     assert PLAYWRIGHT_MOUNT in browser                       # read-only bind
-    assert not any(m.endswith(":ro") for m in plain)
+    # The only read-only mount of a plain job is the JIT file (B.2), which is
+    # not a cache; covered by tests/test_runner_scaler_secrets_limits.py.
+    assert [m for m in plain if m.endswith(":ro")] == [
+        m for m in plain if m.endswith(":/run/ci-runner/jitconfig:ro")]
+    assert len([m for m in plain if m.endswith(":ro")]) == 1
 
 
 def test_a_missing_cache_volume_is_created_by_its_exact_name_and_an_existing_one_is_not(rig):

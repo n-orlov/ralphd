@@ -18,15 +18,14 @@ issues none. The scaler serves only jobs whose labels include ``ci-pool``.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import http.client
-import io
 import json
 import os
 import re
 import sys
-import tarfile
 import tempfile
 import time
 import urllib.error
@@ -59,6 +58,8 @@ DEFAULTS: dict[str, Any] = {
     "keep": 3,
     "retain_days": 14,
     "host_cpus": 12,
+    "secret_dir": "",
+    "runner_uid": 1000,
     "profiles": {},
 }
 # The default profile (B.3). A ``profiles: default:`` entry overrides any field.
@@ -67,7 +68,7 @@ PROFILE_KEYS = tuple(DEFAULT_PROFILE)
 RESERVED_CORES = 1
 REQUIRED = ("repo", "token_file")
 INT_KEYS = ("poll_interval_s", "max_concurrency", "start_deadline_s",
-            "job_deadline_s", "host_cpus", "keep", "retain_days")
+            "job_deadline_s", "host_cpus", "keep", "retain_days", "runner_uid")
 
 
 class ScalerError(Exception):
@@ -360,24 +361,67 @@ class GitHubApi:
 # runner once with the JIT config read from this file. There is no registration
 # step (no ``config.sh``); the file's delivery into the container is separate.
 RUN_ONCE_COMMAND = ("/home/ubuntu/run-once.sh", "/run/ci-runner/jitconfig")
-JIT_PARENT_DIR = "/run"  # `docker cp -` extracts the tar below here
-JIT_RUNNER_UID = 1000
+JIT_PATH = RUN_ONCE_COMMAND[1]  # where the runner finds the file in the container
+JIT_RUNNER_UID = 1000  # the image's USER: the file must be readable by it
+SECRET_DIR_PREFIX = "ci-runner-jit-"
 
 
-def jit_tar(jit_config: str) -> bytes:
-    """A tar holding ``ci-runner/jitconfig`` (the JIT config), owned by the
-    runner's uid 1000, readable by it alone (dir 0500, file 0400)."""
-    data = jit_config.encode()
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tar:
-        for path, mode, size in (("ci-runner", 0o500, 0),
-                                 ("ci-runner/jitconfig", 0o400, len(data))):
-            info = tarfile.TarInfo(path)
-            info.type = tarfile.REGTYPE if path.endswith("jitconfig") else tarfile.DIRTYPE
-            info.mode, info.size, info.mtime = mode, size, 0
-            info.uid = info.gid = JIT_RUNNER_UID
-            tar.addfile(info, io.BytesIO(data) if info.isreg() else None)
-    return buf.getvalue()
+def secret_root(configured: str = "") -> Path:
+    """The host directory that holds a JIT file for the few moments between
+    its creation and the container's start (B.2): the configured ``secret_dir``,
+    else a tmpfs-style directory (``$XDG_RUNTIME_DIR``, then ``/dev/shm``),
+    else the temporary directory (the permitted mode-0600 temporary file)."""
+    candidates = [configured, os.environ.get("XDG_RUNTIME_DIR", ""), "/dev/shm",
+                  tempfile.gettempdir()]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_dir():
+            return Path(candidate)
+        if candidate and candidate == configured:
+            raise ScalerError(f"secret_dir {configured!r} is not a directory")
+    raise ScalerError("no directory for the JIT file")
+
+
+@contextlib.contextmanager
+def jit_file(jit_config: str, configured_dir: str = "",
+             runner_uid: int = JIT_RUNNER_UID):
+    """Hold the JIT config in a mode-0600 file, in a private (0700) directory
+    made just for it, for the duration of the ``with`` block, and yield its path.
+
+    The file is owned by ``runner_uid`` (chowned when the scaler runs as another
+    user; a refusal fails closed, nothing is written first) and is removed with
+    its directory when the block exits, on success and on failure alike.
+    """
+    root = secret_root(configured_dir)
+    try:
+        workdir = Path(tempfile.mkdtemp(prefix=SECRET_DIR_PREFIX, dir=root))
+    except OSError as exc:
+        raise ScalerError(f"cannot create the JIT directory in {root}: "
+                          f"{exc.strerror or exc}")
+    path = workdir / "jitconfig"
+    try:
+        try:
+            if os.getuid() != runner_uid:
+                # Nothing is written until the runner's uid owns an empty file.
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.close(fd)
+                os.chown(path, runner_uid, -1)
+                fd = os.open(path, os.O_WRONLY | os.O_TRUNC)
+            else:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(jit_config.encode())
+        except OSError as exc:
+            raise ScalerError(f"cannot write the JIT file readable by uid "
+                              f"{runner_uid}: {exc.strerror or exc}")
+        yield path
+    finally:
+        for target, remove in ((path, os.unlink), (workdir, os.rmdir)):
+            try:
+                remove(target)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                log(f"cannot remove {target}: {exc.strerror or exc}")
 
 
 # Shared caches and the docker socket (B.5). The pip volume is writable and is
@@ -406,6 +450,8 @@ def mounts_for(labels: tuple[str, ...] | list[str]) -> list[str]:
 class Docker:
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.binary = str(cfg["docker"])
+        self.secret_dir = str(cfg.get("secret_dir") or "")
+        self.runner_uid = int(cfg.get("runner_uid", JIT_RUNNER_UID))
 
     def run(self, *args: str, stdin: bytes | None = None,
             timeout: float = 120) -> str:
@@ -490,11 +536,15 @@ class Docker:
 
         ``docker create`` carries ``--cpus``, ``--memory`` and ``--pids-limit``
         from the job's profile (B.3). The JIT config is a credential (B.2): it
-        reaches the container as the file ``/run/ci-runner/jitconfig`` through a
-        tar stream on ``docker cp -`` stdin, so it is in no argv element, no
-        ``--env``/``--env-file`` value (which ``docker inspect`` shows), no log
-        line and no host-side file. If delivery or the start fails the container
-        is removed by its exact name, so the next pass starts clean.
+        is written to a mode-0600 file owned by the runner's uid in a private
+        directory on a tmpfs-style mount (see ``jit_file``), bind-mounted
+        read-only at ``/run/ci-runner/jitconfig``, and the host file is removed
+        as soon as ``docker start`` has returned (the running container keeps its
+        mount of the unlinked file), or when create or start fails. So the value
+        is in no argv element, no ``--env``/``--env-file`` value (which
+        ``docker inspect`` shows), no log line and no image or container layer.
+        If the start fails the container is removed by its exact name, so the
+        next pass starts clean.
 
         The shared caches and the docker socket (B.5) come from the job's
         ``labels``: see ``mounts_for``. A named volume the host lacks is
@@ -502,22 +552,21 @@ class Docker:
         """
         mounts = mounts_for(labels)
         self.ensure_volume(PIP_CACHE_VOLUME)
-        self.run("create", "--name", name,
-                 "--cpus", f"{float(profile['cpus']):g}",
-                 "--memory", str(profile["memory"]),
-                 "--pids-limit", str(profile["pids_limit"]),
-                 *mounts,
-                 image, *RUN_ONCE_COMMAND)
-        try:
-            self.run("cp", "-", f"{name}:{JIT_PARENT_DIR}",
-                     stdin=jit_tar(jit_config))
-            self.run("start", name)
-        except ScalerError:
+        with jit_file(jit_config, self.secret_dir, self.runner_uid) as path:
+            self.run("create", "--name", name,
+                     "--cpus", f"{float(profile['cpus']):g}",
+                     "--memory", str(profile["memory"]),
+                     "--pids-limit", str(profile["pids_limit"]),
+                     *mounts, "-v", f"{path}:{JIT_PATH}:ro",
+                     image, *RUN_ONCE_COMMAND)
             try:
-                self.remove(name)
-            except ScalerError as exc:
-                log(f"cannot remove {name} after a failed start: {exc}")
-            raise
+                self.run("start", name)
+            except ScalerError:
+                try:
+                    self.remove(name)
+                except ScalerError as exc:
+                    log(f"cannot remove {name} after a failed start: {exc}")
+                raise
 
     def remove(self, name: str) -> None:
         """Remove ONE container by its exact name; never by filter or prune."""

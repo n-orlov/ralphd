@@ -234,7 +234,7 @@ if cmd and cmd == os.environ.get("FAKE_DOCKER_FAIL"):
     fail("injected failure of docker " + cmd)
 
 if cmd in ("run", "create"):
-    name, image, i = None, None, 0
+    name, image, i, binds = None, None, 0, []
     flags_with_value = {"--name", "--cpus", "--memory", "--pids-limit", "-v",
                         "--volume", "--env-file", "-e", "--env", "--user",
                         "--label", "--entrypoint", "--network", "--tmpfs",
@@ -245,6 +245,11 @@ if cmd in ("run", "create"):
             name = rest[i + 1]; i += 2; continue
         if a.startswith("--name="):
             name = a.split("=", 1)[1]; i += 1; continue
+        if a in ("-v", "--volume"):
+            parts = rest[i + 1].split(":")
+            binds.append({"src": parts[0], "dst": parts[1],
+                          "ro": "ro" in parts[2:]})
+            i += 2; continue
         if a in flags_with_value:
             i += 2; continue
         if a.startswith("-"):
@@ -258,7 +263,7 @@ if cmd in ("run", "create"):
     state["containers"][name] = {
         "Names": name, "Image": image, "ID": "fake" + str(len(state["containers"])),
         "State": "running" if cmd == "run" else "created",
-        "CreatedAt": stamp(now), "created_epoch": now,
+        "CreatedAt": stamp(now), "created_epoch": now, "binds": binds,
     }
     save(state)
     print(state["containers"][name]["ID"])
@@ -267,6 +272,20 @@ elif cmd == "start":
         if name not in state["containers"]:
             fail("No such container: " + name)
         state["containers"][name]["State"] = "running"
+        # A bind-mounted host FILE is held by its inode from this moment: the
+        # container still reads it after the host path is unlinked. Snapshot what
+        # the container will see, and the host-side owner and mode.
+        for bind in state["containers"][name].get("binds", []):
+            if os.path.isfile(bind["src"]):
+                st = os.stat(bind["src"])
+                with open(bind["src"], "rb") as fh:
+                    content = fh.read().decode()
+                state.setdefault("mounted", {}).setdefault(name, {})[bind["dst"]] = {
+                    "content": content, "mode": st.st_mode & 0o7777,
+                    "uid": st.st_uid, "gid": st.st_gid, "ro": bind["ro"],
+                    "src": bind["src"],
+                    "dir_mode": os.stat(os.path.dirname(bind["src"])).st_mode & 0o7777,
+                }
     save(state)
 elif cmd in ("stop", "kill"):
     for name in [a for a in rest if not a.startswith("-")]:
@@ -290,7 +309,8 @@ elif cmd == "cp":
 elif cmd == "ps":
     for entry in state["containers"].values():
         if "-a" in rest or entry["State"] == "running":
-            print(json.dumps({k: v for k, v in entry.items() if k != "created_epoch"}))
+            print(json.dumps({k: v for k, v in entry.items()
+                              if k not in ("created_epoch", "binds")}))
 elif cmd == "images":
     for tag in state["images"]:
         repo, _, version = tag.partition(":")
@@ -408,6 +428,12 @@ class FakeDocker:
     def cp_payload(self, container: str) -> bytes:
         """The tar a `docker cp - <container>:<dir>` received on stdin."""
         return (self.state_dir / f"cp-{container}.tar").read_bytes()
+
+    def mounted_file(self, container: str, dest: str) -> dict[str, Any] | None:
+        """What the container sees at `dest` once it started: the bind-mounted
+        host file's content, mode, owner and its directory's mode as they were AT
+        START (None if no file was mounted there then)."""
+        return self._read().get("mounted", {}).get(container, {}).get(dest)
 
     def argv_log(self) -> list[list[str]]:
         text = (self.state_dir / "argv.jsonl").read_text()

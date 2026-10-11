@@ -1,9 +1,11 @@
 """The runner scaler's secret delivery (B.2) and per-container limits (B.3).
 
 * The JIT config is a credential. It reaches the container as the file
-  `/run/ci-runner/jitconfig`, through a tar stream on `docker cp -` stdin; it
-  appears in no docker argv element, no `--env`/`-e`/`--env-file` value, no
-  scaler log line, no `status` output and no host-side file.
+  `/run/ci-runner/jitconfig`, a read-only bind mount of a mode-0600 file (owned
+  by the runner's uid, in a private 0700 directory on a tmpfs-style mount) that
+  the scaler removes once `docker start` returns, or when create or start fails;
+  it appears in no docker argv element, no `--env`/`-e`/`--env-file` value, no
+  scaler log line, no `status` output and no image or container layer.
 * `docker create` carries `--cpus`, `--memory` and `--pids-limit` from the
   job's profile: the default profile (4 CPUs, 12 GB) or the `profiles` entry
   keyed by one of the job's labels.
@@ -18,12 +20,10 @@ Driven against the fake GitHub API and the fake `docker` in
 from __future__ import annotations
 
 import importlib.util
-import io
 import json
 import os
 import subprocess
 import sys
-import tarfile
 from pathlib import Path
 
 import pytest
@@ -89,25 +89,43 @@ def option(argv, flag):
 
 
 def files_containing(root, needle):
+    """Host files under `root` holding `needle`, leaving out the fake docker's own
+    state dir (that is the simulated container's view, where the file belongs)."""
     hits = []
     for path in Path(root).rglob("*"):
+        if "fakedocker" in path.parts:
+            continue
         if path.is_file() and needle.encode() in path.read_bytes():
             hits.append(path)
     return hits
 
 
-# ---- (1) the JIT config never leaves the container's file ------------------
+# ---- (1) the JIT config reaches the container through a 0600 file ----------
 
-def test_the_jit_value_is_in_no_argv_env_log_status_or_host_file(
+JIT_DEST = "/run/ci-runner/jitconfig"
+
+
+def secret_dir(tmp_path):
+    path = tmp_path / "secret-root"
+    path.mkdir(exist_ok=True)
+    return path
+
+
+def secret_config(tmp_path, github, extra="", cap=2):
+    """A config whose JIT files go to an inspectable directory, owned by the
+    uid the tests run as (so the runner_uid check does not need root)."""
+    return write_config(
+        tmp_path, github,
+        f"secret_dir: {secret_dir(tmp_path)}\nrunner_uid: {os.getuid()}\n{extra}", cap)
+
+
+def test_the_jit_value_is_in_no_argv_env_log_status_or_leftover_file(
         github, docker, tmp_path):
-    scratch = tmp_path / "scratch-tmp"
-    scratch.mkdir()
-    config = write_config(tmp_path, github)
+    config = secret_config(tmp_path, github)
     queue_job(github, 1, 101, ["ci-pool"])
-    done = run_scaler(docker, config, "once", tmpdir=scratch)
+    done = run_scaler(docker, config, "once")
     assert done.returncode == 0, done.stderr
     assert "ci-runner-101" in docker.containers()
-    # The value was generated and used: the file inside the container has it.
     assert github.requests_to("POST", "/repos/n-orlov/ralphd/actions/runners")
     # No docker argv element (any verb) carries it; no env flag exists at all.
     for argv in docker.argv_log():
@@ -116,49 +134,159 @@ def test_the_jit_value_is_in_no_argv_env_log_status_or_host_file(
                        part.startswith(("--env=", "--env-file=")) for part in argv), argv
     # No scaler log line or output.
     assert FAKE_JIT not in done.stderr and FAKE_JIT not in done.stdout
-    status = run_scaler(docker, config, "status", tmpdir=scratch)
+    status = run_scaler(docker, config, "status")
     assert status.returncode == 0, status.stderr
     assert "ci-runner-101" in status.stdout
     assert FAKE_JIT not in status.stdout and FAKE_JIT not in status.stderr
-    # No host-side file: the scratch dir is empty, and nothing under the scaler's
-    # config dir carries it. Any file that did carry it would have to be 0600
-    # and gone, so a leftover is a failure either way.
-    assert files_containing(scratch, FAKE_JIT) == []
-    assert files_containing(config.parent, FAKE_JIT) == []
-    assert list(scratch.iterdir()) == []
+    # The container was started, and nothing on the host keeps the value.
+    assert files_containing(tmp_path, FAKE_JIT) == []
+    assert list(secret_dir(tmp_path).iterdir()) == []
 
 
-def test_the_jit_value_reaches_the_container_as_a_0400_file_via_docker_cp_stdin(
+def test_the_container_sees_a_private_read_only_file_that_is_gone_from_the_host_after_start(
         github, docker, tmp_path):
-    config = write_config(tmp_path, github)
+    config = secret_config(tmp_path, github)
     queue_job(github, 1, 101, ["ci-pool"])
     assert run_scaler(docker, config, "once").returncode == 0
-    verbs = [argv[0] for argv in docker.argv_log() if argv[0] in ("create", "cp", "start")]
-    assert verbs == ["create", "cp", "start"]  # delivered before the runner starts
-    (cp,) = docker.commands("cp")
-    assert cp == ["cp", "-", "ci-runner-101:/run"]
-    with tarfile.open(fileobj=io.BytesIO(docker.cp_payload("ci-runner-101"))) as tar:
-        members = {m.name: m for m in tar.getmembers()}
-        assert sorted(members) == ["ci-runner", "ci-runner/jitconfig"]
-        jit = members["ci-runner/jitconfig"]
-        assert tar.extractfile(jit).read() == FAKE_JIT.encode()
-        assert jit.mode == 0o400 and jit.uid == 1000 and jit.gid == 1000
-        assert members["ci-runner"].isdir() and members["ci-runner"].mode == 0o500
+    # Not an image layer: no `docker cp`, no `commit`, a bind mount at the path
+    # the run-once command reads.
+    assert docker.commands("cp", "commit") == []
+    verbs = [argv[0] for argv in docker.argv_log() if argv[0] in ("create", "start")]
+    assert verbs == ["create", "start"]
+    (create,) = docker.commands("create")
+    binds = [create[i + 1] for i, part in enumerate(create) if part == "-v"
+             and create[i + 1].endswith(f":{JIT_DEST}:ro")]
+    assert len(binds) == 1, create
+    host_path = binds[0].split(":")[0]
+    assert host_path.startswith(str(secret_dir(tmp_path)) + os.sep)
+    assert create[-2:] == ["/home/ubuntu/run-once.sh", JIT_DEST]
+    # At the moment of start the file held the value, readable only by the
+    # runner's uid (0600 owner), in a directory only that uid can enter (0700).
+    seen = docker.mounted_file("ci-runner-101", JIT_DEST)
+    assert seen is not None, "the file did not exist when the container started"
+    assert seen["content"] == FAKE_JIT
+    assert seen["mode"] == 0o600 and seen["uid"] == os.getuid() and seen["ro"]
+    assert seen["dir_mode"] == 0o700
+    assert seen["src"] == host_path
+    # ...and the removal the bind mount tolerates already happened.
+    assert not Path(host_path).exists() and not Path(host_path).parent.exists()
 
 
-def test_a_failed_delivery_removes_the_container_by_exact_name_and_leaks_nothing(
+def test_each_job_of_a_pass_gets_its_own_file_and_none_survives(
         github, docker, tmp_path):
-    config = write_config(tmp_path, github)
+    config = secret_config(tmp_path, github)
     queue_job(github, 1, 101, ["ci-pool"])
-    failed = run_scaler(docker, config, "once", extra_env={"FAKE_DOCKER_FAIL": "cp"})
+    queue_job(github, 1, 102, ["ci-pool"])
+    assert run_scaler(docker, config, "once").returncode == 0
+    first = docker.mounted_file("ci-runner-101", JIT_DEST)
+    second = docker.mounted_file("ci-runner-102", JIT_DEST)
+    assert first["src"] != second["src"]
+    assert first["content"] == "FAKE_JIT_VALUE_ci-101"
+    assert second["content"] == "FAKE_JIT_VALUE_ci-102"
+    assert list(secret_dir(tmp_path).iterdir()) == []
+
+
+@pytest.mark.parametrize("verb", ["create", "start"])
+def test_a_failed_create_or_start_leaves_no_file_no_container_and_no_leak(
+        github, docker, tmp_path, verb):
+    config = secret_config(tmp_path, github)
+    queue_job(github, 1, 101, ["ci-pool"])
+    failed = run_scaler(docker, config, "once", extra_env={"FAKE_DOCKER_FAIL": verb})
     assert failed.returncode == 0, failed.stderr
-    assert docker.containers() == {}  # created, then removed: no half-started runner
-    assert docker.commands("start") == []
-    assert docker.commands("rm") == [["rm", "--force", "ci-runner-101"]]
+    assert docker.containers() == {}  # no half-started runner
+    assert list(secret_dir(tmp_path).iterdir()) == []
+    assert files_containing(tmp_path, FAKE_JIT) == []
+    if verb == "start":
+        assert docker.commands("rm") == [["rm", "--force", "ci-runner-101"]]
     assert FAKE_JIT not in failed.stderr and FAKE_JIT not in failed.stdout
+    for argv in docker.argv_log():
+        assert not any(FAKE_JIT in part for part in argv), argv
     retried = run_scaler(docker, config, "once")  # the next pass starts it cleanly
     assert retried.returncode == 0, retried.stderr
     assert docker.containers()["ci-runner-101"]["State"] == "running"
+    assert list(secret_dir(tmp_path).iterdir()) == []
+
+
+def test_a_file_the_runner_uid_cannot_own_fails_closed_before_any_container(
+        github, docker, tmp_path):
+    # Not root, and not the configured uid: chown is refused, so the scaler
+    # starts nothing rather than mount a file the runner cannot read.
+    other = 0 if os.getuid() != 0 else 1
+    config = write_config(tmp_path, github,
+                          f"secret_dir: {secret_dir(tmp_path)}\nrunner_uid: {other or 1}\n")
+    if os.getuid() == 0:
+        pytest.skip("root can chown to any uid")
+    queue_job(github, 1, 101, ["ci-pool"])
+    done = run_scaler(docker, config, "once")
+    assert done.returncode == 0
+    assert "uid" in done.stderr and FAKE_JIT not in done.stderr
+    assert docker.commands("create", "start") == []
+    assert docker.containers() == {}
+    assert list(secret_dir(tmp_path).iterdir()) == []
+
+
+def test_a_missing_secret_dir_is_refused_and_starts_nothing(github, docker, tmp_path):
+    config = write_config(tmp_path, github,
+                          f"secret_dir: {tmp_path / 'nope'}\nrunner_uid: {os.getuid()}\n")
+    queue_job(github, 1, 101, ["ci-pool"])
+    done = run_scaler(docker, config, "once")
+    assert done.returncode == 0
+    assert "secret_dir" in done.stderr
+    assert docker.commands("create") == [] and docker.containers() == {}
+
+
+# ---- in-process: the file helper itself --------------------------------------
+
+def test_jit_file_is_0600_in_a_0700_dir_and_removed_on_normal_exit(scaler, tmp_path):
+    with scaler.jit_file(FAKE_JIT, str(tmp_path), os.getuid()) as path:
+        assert path.read_text() == FAKE_JIT
+        assert (path.stat().st_mode & 0o7777) == 0o600
+        assert (path.parent.stat().st_mode & 0o7777) == 0o700
+        assert path.parent.parent == tmp_path
+    assert not path.exists() and not path.parent.exists()
+
+
+def test_jit_file_is_removed_when_the_block_raises(scaler, tmp_path):
+    with pytest.raises(RuntimeError):
+        with scaler.jit_file(FAKE_JIT, str(tmp_path), os.getuid()) as path:
+            raise RuntimeError("start failed")
+    assert not path.exists() and list(tmp_path.iterdir()) == []
+
+
+def test_jit_file_hands_the_file_to_the_runner_uid_1000_by_default(
+        scaler, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(scaler.os, "getuid", lambda: 4242)
+    monkeypatch.setattr(scaler.os, "chown", lambda p, u, g: calls.append((Path(p), u, g)))
+    assert scaler.JIT_RUNNER_UID == 1000
+    with scaler.jit_file(FAKE_JIT, str(tmp_path)) as path:
+        assert calls == [(path, 1000, -1)]
+        assert path.read_text() == FAKE_JIT  # written only after the chown
+
+
+def test_jit_file_writes_nothing_when_the_chown_is_refused(scaler, tmp_path, monkeypatch):
+    def refuse(path, uid, gid):
+        raise PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(scaler.os, "getuid", lambda: 4242)
+    monkeypatch.setattr(scaler.os, "chown", refuse)
+    with pytest.raises(scaler.ScalerError) as err:
+        with scaler.jit_file(FAKE_JIT, str(tmp_path)):
+            raise AssertionError("must not be reached")
+    assert FAKE_JIT not in str(err.value) and "1000" in str(err.value)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_secret_root_prefers_the_configured_dir_then_a_tmpfs_style_one(
+        scaler, tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    assert scaler.secret_root("") == runtime
+    assert scaler.secret_root(str(tmp_path)) == tmp_path
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "absent"))
+    assert str(scaler.secret_root("")) in ("/dev/shm", scaler.tempfile.gettempdir())
+    with pytest.raises(scaler.ScalerError):
+        scaler.secret_root(str(tmp_path / "absent"))
 
 
 # ---- (2) the start carries the job's profile limits --------------------------
