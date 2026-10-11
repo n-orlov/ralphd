@@ -225,7 +225,9 @@ def test_an_unavailable_job_read_alone_never_removes_a_container_under_the_deadl
     # Past start_deadline_s and job 103 is completed, but job_deadline_s is far off.
     rig.advance(rig.cfg["job_deadline_s"] - 1)
     rig.github.fail_next(100, status, headers, path_contains="/actions/jobs/")
-    rig.run_pass()
+    with pytest.raises(rig.scaler.ApiError):
+        rig.run_pass()
+    assert len(job_reads(rig.github)) == 1  # the pass ended at the failed read
     assert removals(rig.docker) == []
     assert sorted(rig.docker.containers()) == [
         "ci-runner-101", "ci-runner-102", "ci-runner-103"]
@@ -261,8 +263,9 @@ def test_a_dry_run_during_a_job_read_outage_names_only_the_overdue_container(rig
     rig.advance(10)
     rig.github.fail_next(100, 503, path_contains="/actions/jobs/")
     lines = []
-    rig.scaler.run_pass(rig.cfg, rig.api, rig.dock, dry_run=True,
-                        clock=lambda: rig.now, out=lines.append)
+    with pytest.raises(rig.scaler.ApiError):
+        rig.scaler.run_pass(rig.cfg, rig.api, rig.dock, dry_run=True,
+                            clock=lambda: rig.now, out=lines.append)
     assert [ln for ln in lines if ln.startswith("would remove")] == [
         "would remove ci-runner-101: past job_deadline_s"]
     assert removals(rig.docker) == []
@@ -294,7 +297,8 @@ def test_exit_cleanup_holds_while_job_reads_fail_and_reads_no_job(
     rig.docker.add_container("ci-runner-102", created_epoch=T0)  # running, young
     rig.advance(1)
     rig.github.fail_next(100, status, headers, path_contains="/actions/jobs/")
-    rig.run_pass()
+    with pytest.raises(rig.scaler.ApiError):
+        rig.run_pass()
     assert removals(rig.docker) == [["rm", "--force", "ci-runner-101"]]
     assert sorted(rig.docker.containers()) == ["ci-runner-102"]
     # The only job read was for the running container, and it failed: exit
@@ -332,7 +336,8 @@ def test_a_container_that_has_not_exited_is_kept_through_a_job_read_outage(
     rig.docker.add_container("ci-runner-101", created_epoch=T0, state=container_state)
     rig.advance(rig.cfg["job_deadline_s"] - 1)
     rig.github.fail_next(100, 503, path_contains="/actions/jobs/")
-    rig.run_pass()
+    with pytest.raises(rig.scaler.ApiError):
+        rig.run_pass()
     assert removals(rig.docker) == []
     assert sorted(rig.docker.containers()) == ["ci-runner-101"]
 
@@ -357,8 +362,9 @@ def test_a_dry_run_names_the_exit_cleanup_during_an_outage_and_issues_none(rig):
     rig.advance(1)
     rig.github.fail_next(100, 429, {"Retry-After": "7"}, path_contains="/actions/jobs/")
     lines = []
-    rig.scaler.run_pass(rig.cfg, rig.api, rig.dock, dry_run=True,
-                        clock=lambda: rig.now, out=lines.append)
+    with pytest.raises(rig.scaler.ApiError):
+        rig.scaler.run_pass(rig.cfg, rig.api, rig.dock, dry_run=True,
+                            clock=lambda: rig.now, out=lines.append)
     assert [ln for ln in lines if ln.startswith("would remove")] == [
         "would remove ci-runner-101: exited"]
     assert removals(rig.docker) == []

@@ -49,11 +49,11 @@ def scaler():
     return module
 
 
-def once(docker, config, *flags):
+def once(docker, config, *flags, expect=0):
     done = subprocess.run(
         [sys.executable, str(SCALER), "--config", str(config), "once", *flags],
         capture_output=True, text=True, env=docker.env(), timeout=60)
-    assert done.returncode == 0, done.stderr
+    assert done.returncode == expect, done.stderr
     return done
 
 
@@ -119,29 +119,21 @@ def test_a_dry_run_and_a_pass_over_a_served_queue_request_no_jit_config(
     assert started_names(docker) == ["ci-runner-101"]
 
 
-def test_a_5xx_from_generate_jitconfig_starts_nothing_and_the_next_pass_retries(
-        github, docker, config):
+@pytest.mark.parametrize("status,headers", [
+    (500, {}), (502, {}), (403, {"Retry-After": "30"}), (429, {"Retry-After": "7"})])
+def test_a_failed_generate_jitconfig_ends_the_pass_and_the_next_pass_retries(
+        github, docker, config, status, headers):
     queue_job(github, 1, 101, ["ci-pool"])
     queue_job(github, 1, 102, ["ci-pool"])
-    # Fail only the first generate-jitconfig POST (fail_next counts any request).
-    original = github._route
-    state = {"failed": False}
-
-    def route(method, path, query, body):
-        if method == "POST" and not state["failed"]:
-            state["failed"] = True
-            return 502, {"message": "fake failure"}
-        return original(method, path, query, body)
-
-    github._route = route
-    done = once(docker, config)
-    assert "ci-runner-101" not in docker.containers()
-    assert started_names(docker) == ["ci-runner-102"]
+    github.fail_next(1, status, headers, path_contains="generate-jitconfig")
+    done = once(docker, config, expect=1)
+    # The pass ended at the failed call: no container, no second request.
+    assert started_names(docker) == []
+    assert [p["body"]["name"] for p in jit_posts(github)] == ["ci-101"]
     assert "job 101" in done.stderr
     once(docker, config)
-    assert started_names(docker) == ["ci-runner-102", "ci-runner-101"]
-    bodies = [p["body"]["name"] for p in jit_posts(github)]
-    assert bodies == ["ci-101", "ci-102", "ci-101"]
+    assert started_names(docker) == ["ci-runner-101", "ci-runner-102"]
+    assert [p["body"]["name"] for p in jit_posts(github)] == ["ci-101", "ci-101", "ci-102"]
 
 
 def test_a_failed_request_does_not_use_up_a_concurrency_slot(github, docker, tmp_path):
@@ -152,18 +144,22 @@ def test_a_failed_request_does_not_use_up_a_concurrency_slot(github, docker, tmp
                    f"api_url: {github.url}\nimage: ci-runner:test\nmax_concurrency: 1\n")
     queue_job(github, 1, 101, ["ci-pool"])
     queue_job(github, 1, 102, ["ci-pool"])
-    original = github._route
-    state = {"failed": False}
+    github.fail_next(1, 500, path_contains="generate-jitconfig")
+    once(docker, cfg, expect=1)
+    assert started_names(docker) == []
+    once(docker, cfg)  # the slot was free: the oldest job starts
+    assert started_names(docker) == ["ci-runner-101"]
 
-    def route(method, path, query, body):
-        if method == "POST" and not state["failed"]:
-            state["failed"] = True
-            return 500, {"message": "fake failure"}
-        return original(method, path, query, body)
 
-    github._route = route
-    once(docker, cfg)
+def test_a_request_specific_rejection_skips_only_that_job(github, docker, config):
+    # A 422 (say, the runner name is taken) is about this job alone, not an
+    # outage: the other jobs of the pass are still served.
+    queue_job(github, 1, 101, ["ci-pool"])
+    queue_job(github, 1, 102, ["ci-pool"])
+    github.fail_next(1, 422, path_contains="generate-jitconfig")
+    done = once(docker, config)
     assert started_names(docker) == ["ci-runner-102"]
+    assert "job 101" in done.stderr
 
 
 def test_the_request_goes_to_the_generate_jitconfig_endpoint_of_the_configured_repo(

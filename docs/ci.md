@@ -244,9 +244,10 @@ is `1`. GitHub registers that one single-use runner and returns an
 registers a standing runner and runs no `config.sh`; a runner exists only for the
 one job it was requested for. Each start is preceded by exactly one such request.
 A `--dry-run` pass issues none, and a pass over a queue whose jobs already have a
-container issues none either. A 5xx reply (or any failed request) starts no
-container for that job and takes no concurrency slot; the pass logs it, goes on to
-the next job, and the next pass requests again. The request is tested in
+container issues none either. A failed or timed-out request (no reply, a 5xx, a
+403 or a 429) starts no container for that job and takes no concurrency slot, and
+it ends the pass (see "API failures and the backoff"): the next pass requests again.
+A rejection that concerns that one job alone (a 422, say) skips only that job. The request is tested in
 `tests/test_runner_scaler_jit.py`.
 
 ### The runner image and the run-once exit
@@ -433,17 +434,26 @@ read, or the queue read, fails.
 
 ### API failures and the backoff
 
-A GitHub call that fails does not stop the scaler. A connection error, a timeout,
-an unreadable reply, a 5xx, a 403 or a 429 makes that pass skip the call, and the
-next pass retries it; `run` never exits and never starts a job twice because of
-one. After a failed pass the loop waits longer: the wait doubles from
+A GitHub call that fails does not stop the scaler, but it ends the pass. A
+connection error, a timeout, an unreadable reply, a 5xx, a 403 or a 429 ends the
+current scaling pass at that call, wherever it falls: the queue discovery (the run
+listing and each run's job list), a job read for reaping, or the JIT request. The
+pass then makes no further API request and starts no further container; containers
+that were already running, or that this pass had already started, are kept. The
+loop retries on the next pass, after the failure backoff below, and that pass
+serves every queued job once, so no job is missed or started twice; `run` never
+exits. The pass-level retry rule is the same for all of these calls, and the
+unconditional removals (the hard deadline and the exit cleanup) have already run
+before any call is made. A reply that concerns one request only (a 404 on a job
+read, a 422 on a JIT request) is not an outage: it skips that container or job and
+the pass goes on, with no backoff. After a failed pass the loop waits longer: the wait doubles from
 `poll_interval_s` with each consecutive failed pass (5, 10, 20, 40 seconds at the
 default) and is capped at 60 seconds, and one clean pass returns it to
 `poll_interval_s`. A 403 or 429 that names a wait sets the next wait instead:
 `Retry-After` (seconds or an HTTP date) first, else `x-ratelimit-reset` (epoch
 seconds, so the wait is the time left until it). That wait is never shorter than
 `poll_interval_s` and is bounded at one hour, so a bad header cannot park the loop.
-Any other reply (a 404, say) and a docker failure do not back off.
+Any other reply (a 404, say) and a docker failure do not back off and do not end the pass.
 
 An unreachable API never removes a running container. Removal other than the
 hard deadline and exit cleanup needs a successful read of the container's job, so
@@ -455,7 +465,9 @@ outage is never the reason for either removal. Likewise no start is missed or do
 that has a container is skipped, and one that has none is started on the first
 pass that can read the queue. This is tested in
 `tests/test_runner_scaler_resilience.py` with an injected sleep and clock, so nothing
-really waits.
+really waits, and the pass-level stop for each failing call (queue discovery, job
+reads, JIT generation, over a multi-job queue) in
+`tests/test_runner_scaler_pass_failures.py`.
 
 ### Whose jobs the scaler serves
 

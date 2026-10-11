@@ -168,14 +168,24 @@ def test_oldest_first_holds_when_a_rival_takes_a_slot(make):
     assert rig.created() == ["ci-runner-101"]  # not 102 or 103
 
 
-def test_a_failed_jit_request_still_leaves_the_recheck_in_force(make):
+def test_a_request_specific_jit_rejection_still_leaves_the_recheck_in_force(make):
+    rig = make(2, 101, 102, 103)
+    rig.docker.add_image(rig.scaler.image_ref(rig.cfg))
+    rig.github.fail_next(1, 422, path_contains="generate-jitconfig")
+    rig.after_first_snapshot(lambda: rig.rival(900))
+    rig.run_pass()
+    assert rig.created() == ["ci-runner-102"]  # 101 was rejected, then the cap
+    assert len(rig.live()) == 2
+
+
+def test_an_outage_at_the_jit_request_ends_the_pass_and_starts_nothing(make, scaler):
     rig = make(2, 101, 102, 103)
     rig.docker.add_image(rig.scaler.image_ref(rig.cfg))
     rig.github.fail_next(1, 500, path_contains="generate-jitconfig")
-    rig.after_first_snapshot(lambda: rig.rival(900))
-    rig.run_pass()
-    assert rig.created() == ["ci-runner-102"]  # 101's request failed, then the cap
-    assert len(rig.live()) == 2
+    with pytest.raises(scaler.ApiError):
+        rig.run_pass()
+    assert rig.created() == []
+    assert len(rig.jit_requests()) == 1  # job 102 was never asked about
 
 
 def test_an_exited_container_does_not_hold_a_slot_at_the_recheck(make):

@@ -777,8 +777,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.34 cure 01-02 (host-wide admission lock and cap recheck): +9 tests, +1
     # module (tests/test_runner_scaler_admission.py), measured the same way ->
     # fast 8159/527, smoke 6413/402.
-    "fast": {"tests": 8159, "modules": 527},
-    "smoke": {"tests": 6413, "modules": 402},
+    # v0.34 cure 01-03 (a failed API call ends the pass): +43 tests, +1 module
+    # (tests/test_runner_scaler_pass_failures.py), measured the same way ->
+    # fast 8202/528, smoke 6455/403.
+    "fast": {"tests": 8202, "modules": 528},
+    "smoke": {"tests": 6455, "modules": 403},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

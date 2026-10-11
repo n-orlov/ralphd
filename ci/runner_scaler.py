@@ -803,6 +803,13 @@ def live_containers(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in entries if str(e.get("State", "")) not in EXITED_STATES]
 
 
+def _ends_pass(exc: ScalerError) -> bool:
+    """True for a failed API call of the retryable kind (no reply, a timeout, a
+    5xx, a 403 or a 429): the pass ends there and the loop retries on the next
+    pass after its failure backoff."""
+    return isinstance(exc, ApiError) and exc.retryable
+
+
 def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
                     entries: list[dict[str, Any]], *, now: float,
                     dry_run: bool = False,
@@ -841,6 +848,9 @@ def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
             try:
                 status = api.job_status(job_id)
             except ScalerError as exc:
+                if _ends_pass(exc):
+                    log(f"cannot read job {job_id}, keeping {name}: {exc}")
+                    raise  # an outage ends the pass: no further API work
                 log(f"cannot read job {job_id}, keeping {name}: {exc}")
                 continue
             if status == "completed":
@@ -875,6 +885,12 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
     once the containers still alive reach ``max_concurrency``. Before each
     start the pass requests that job's JIT runner config; a failed request
     skips the job (no container, no slot used) and the next pass retries it.
+
+    A failed or timed-out API call (no reply, 5xx, 403, 429) ends the pass at
+    once by raising its ``ApiError``: nothing further is read, requested or
+    started, containers already running are kept, and ``run_loop`` retries on
+    the next pass after the failure backoff. A reply that is not outage-shaped
+    (a 404 on one job read, a 422 on one JIT request) skips only that job.
 
     A pass first reaps (see ``reap_containers``). A job whose container was
     reaped is not restarted in the same pass: the next pass starts its new
@@ -928,6 +944,8 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
                 except ScalerError as exc:
                     # No container for this job; the next pass requests again.
                     log(f"no runner config for job {job['id']}: {exc}")
+                    if _ends_pass(exc):
+                        raise  # an outage ends the pass: no more API or starts
                     continue
                 profile = resolve_profile(cfg, list(job.get("labels") or []))
                 try:
