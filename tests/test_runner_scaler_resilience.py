@@ -366,3 +366,55 @@ def test_a_header_wait_does_not_restart_the_failure_streak(rig):
     rig.run(passes=4)
     # failures 1 (header: 27), 2 (plain: 2 * POLL), 3 (plain: 4 * POLL)
     assert rig.waits == [27, 2 * POLL, 4 * POLL]  # no sleep after the last pass
+
+
+def test_a_malformed_retry_after_falls_through_to_a_valid_long_reset(rig):
+    rig.github.fail_next(1, 429, {"Retry-After": "soon",
+                                  "x-ratelimit-reset": str(int(T0) + 4 * HOUR),
+                                  "x-ratelimit-remaining": "0"})
+    rig.run(passes=2)
+    assert rig.waits == [4 * HOUR]  # the bad header is ignored, the good one is not
+
+
+def test_a_fractional_retry_after_is_waited_out_unrounded(rig):
+    rig.github.fail_next(1, 503, {"Retry-After": "12.5"})
+    rig.run(passes=2)
+    assert rig.waits == [12.5]
+
+
+def test_an_http_date_retry_after_in_the_past_waits_the_poll_interval(rig):
+    from email.utils import formatdate
+    rig.github.fail_next(1, 503, {"Retry-After": formatdate(T0 - 7 * DAY, usegmt=True)})
+    rig.run(passes=2)
+    assert rig.waits == [POLL]  # a past date is no wait, not a negative or lost one
+
+
+def test_an_http_date_without_a_zone_is_read_as_gmt(rig):
+    from email.utils import formatdate
+    stamp = formatdate(T0 + 2 * DAY, usegmt=True).replace("GMT", "-0000")
+    rig.github.fail_next(1, 429, {"Retry-After": stamp})
+    rig.run(passes=2)
+    assert rig.waits == [2 * DAY]
+
+
+def test_an_unreadable_remaining_count_still_honours_the_reset(rig):
+    rig.github.fail_next(1, 403, {"x-ratelimit-reset": str(int(T0) + 3 * HOUR),
+                                  "x-ratelimit-remaining": "lots"})
+    rig.run(passes=2)
+    assert rig.waits == [3 * HOUR]
+
+
+def test_sleep_for_at_exactly_one_chunk_is_a_single_call(scaler):
+    slept: list[float] = []
+    scaler.sleep_for(scaler.MAX_SLEEP_CHUNK_S, slept.append)
+    assert slept == [scaler.MAX_SLEEP_CHUNK_S]
+    slept.clear()
+    scaler.sleep_for(0, slept.append)
+    assert slept == [0]
+
+
+def test_a_long_header_wait_does_not_lengthen_the_next_plain_backoff(rig):
+    rig.github.fail_next(1, 503, {"Retry-After": str(DAY)})
+    rig.github.fail_next(2, 503)
+    rig.run(passes=4)
+    assert rig.waits == [DAY, 2 * POLL, 4 * POLL]  # the day is not carried into the doubling
