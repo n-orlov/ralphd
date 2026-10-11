@@ -143,7 +143,10 @@ def test_run_dry_run_loops_without_starting(github, docker, config):
 
 
 def test_run_loop_sleeps_poll_interval_between_passes_on_an_injected_clock(
-        github, docker, config):
+        github, docker, config, monkeypatch):
+    for key, value in docker.env().items():
+        if key in ("PATH", "FAKE_DOCKER_DIR"):
+            monkeypatch.setenv(key, value)  # the pass lists containers first
     module = _load_module()
     cfg = module.load_config(config)
     sleeps = []

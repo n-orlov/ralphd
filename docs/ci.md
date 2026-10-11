@@ -248,8 +248,9 @@ encoded JIT config from that file and does `exec ./run.sh --jitconfig <config>`,
 the runner starts once, takes the one job the config was requested for and exits when
 it ends; the container's exit status is the runner's. There is no `config.sh`
 registration step in the script or in the argv, because the JIT config already
-registered the single-use runner. The scaler removes the exited container by exact
-name (see the start deadline and reaping above). The config file is put into the
+registered the single-use runner. The exited container is removed by exact
+name by the reaping described in the start deadline and reaping section, once its
+job reads `completed` or the container passes `job_deadline_s`. The config file is put into the
 container as described in the next section. The recipe is checked by parsing,
 never by a build: `tests/test_runner_image.py` asserts the digest base, the SHA-256
 check, no `latest` tag and `USER 1000` on the file, fails each assertion on a mutated
@@ -362,21 +363,33 @@ container, the next pass starts a new one for it (a fresh JIT request, a new
 `ci-runner-<job id>`). The same pass never restarts a job whose container it just
 removed, so the replacement is the next pass's.
 
-Every pass reaps before it starts anything. For each `ci-runner-*` container it reads
-the job (`GET /repos/{repo}/actions/jobs/{job id}`) and removes the container when
-the job is `completed`, when the job is still `queued` past `start_deadline_s`, or,
-whatever the job says, when the container is older than `job_deadline_s` (default
-7800: the longest workflow `timeout-minutes` is 120, which is 7200 seconds, plus
-margin). A job lookup that fails leaves its container for the next pass. A running
-job under the deadline, and any container not named `ci-runner-<job id>`, are never
-touched. A `--dry-run` pass prints `would remove ci-runner-<job id>` and removes
-nothing.
+Every pass reaps before it starts anything, in two kinds that differ in what they
+need from the API.
+
+- **Unconditional removal.** A container older than `job_deadline_s` (default 7800:
+  the longest workflow `timeout-minutes` is 120, which is 7200 seconds, plus margin)
+  is removed whatever its job says. This rule reads no job and asks the API nothing,
+  so it holds while the API is down, rate limited or erroring, and it is applied
+  first, before the queue is read: an overdue container goes even in a pass that then
+  cannot read the queue.
+- **Removal that needs a job read.** For every other `ci-runner-*` container the
+  scaler reads the job (`GET /repos/{repo}/actions/jobs/{job id}`) and removes the
+  container when the job is `completed`, or when it is still `queued` past
+  `start_deadline_s`. This kind needs a successful read. A job lookup that fails
+  (a timeout, a 5xx, a 403, a 429 or an unknown job) leaves its container for the
+  next pass, however old it is short of `job_deadline_s`; an unavailable API is
+  never itself a reason to remove a running container.
+
+A running job under the deadline, and any container not named
+`ci-runner-<job id>`, are never touched. A `--dry-run` pass prints
+`would remove ci-runner-<job id>` with the reason and removes nothing.
 
 Removal is always one exact name, `docker rm --force ci-runner-<job id>`: the scaler
 never removes by `--filter`, `prune`, a wildcard or a label selector, and refuses a
 name that is not `ci-runner-<digits>`. Listing may filter, but it does so client-side
 on the name prefix. This is tested in `tests/test_runner_scaler_reaping.py` against
-an injected clock.
+an injected clock, including the hard deadline while every job read, or the queue
+read, fails.
 
 ### API failures and the backoff
 
@@ -392,10 +405,12 @@ seconds, so the wait is the time left until it). That wait is never shorter than
 `poll_interval_s` and is bounded at one hour, so a bad header cannot park the loop.
 Any other reply (a 404, say) and a docker failure do not back off.
 
-An unreachable API never removes a running container. Reaping needs a successful
-read of the container's job, so while the API is down, rate limited or erroring
-every `ci-runner-*` container stays exactly as it was, and the pass that sees the
-API again reaps what is then due. Likewise no start is missed or doubled: a job
+An unreachable API never removes a running container. Removal other than the
+hard deadline needs a successful read of the container's job, so while the API is
+down, rate limited or erroring every `ci-runner-*` container younger than
+`job_deadline_s` stays exactly as it was, and the pass that sees the API again reaps
+what is then due. A container past `job_deadline_s` is removed regardless, because
+that rule reads nothing. Likewise no start is missed or doubled: a job
 that has a container is skipped, and one that has none is started on the first
 pass that can read the queue. This is tested in
 `tests/test_runner_scaler_resilience.py` with an injected sleep and clock, so nothing

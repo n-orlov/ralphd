@@ -737,8 +737,12 @@ def live_containers(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
                     entries: list[dict[str, Any]], *, now: float,
                     dry_run: bool = False,
-                    out: Callable[[str], None] = print) -> set[str]:
+                    out: Callable[[str], None] = print,
+                    hard_only: bool = False) -> set[str]:
     """Remove, by exact name, the containers that are done or overdue.
+
+    ``hard_only`` applies only the unconditional rule (older than
+    ``job_deadline_s``), which reads no job and so needs the API not at all.
 
     A container goes when (a) it is older than ``job_deadline_s``, (b) its job
     is ``completed``, or (c) its job is still ``queued`` after
@@ -758,6 +762,8 @@ def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
         reason = None
         if age is not None and age > float(cfg["job_deadline_s"]):
             reason = "past job_deadline_s"
+        elif hard_only:
+            continue
         else:
             try:
                 status = api.job_status(job_id)
@@ -805,10 +811,16 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
     ``ensure_image``): the tag is the recipe's content hash, built once under a
     file lock if the host lacks it. A failed build raises, and starts nothing.
     """
-    jobs = queued_pool_jobs(api)
     existing = docker.containers()
+    # The hard deadline needs no API read, so it comes first and holds even
+    # while the queue cannot be read; reaping that needs a job read follows.
     reaped = reap_containers(cfg, api, docker, existing, now=clock(),
-                             dry_run=dry_run, out=out)
+                             dry_run=dry_run, out=out, hard_only=True)
+    jobs = queued_pool_jobs(api)
+    reaped |= reap_containers(
+        cfg, api, docker,
+        [e for e in existing if str(e["Names"]) not in reaped], now=clock(),
+        dry_run=dry_run, out=out)
     names = {str(e["Names"]) for e in existing}
     free = int(cfg["max_concurrency"]) - len(
         live_containers([e for e in existing if str(e["Names"]) not in reaped]))

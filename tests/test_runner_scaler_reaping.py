@@ -187,3 +187,81 @@ def test_every_removal_argv_names_one_exact_container_and_no_selector(rig):
             assert "--filter" not in arg and "*" not in arg
             assert "prune" not in arg and "label" not in arg
             assert arg != "-f"
+
+
+# ---- the hard deadline when job-status reads are unavailable ---------------
+
+OUTAGES = [(503, {}), (403, {"x-ratelimit-reset": "1"}), (429, {"Retry-After": "7"})]
+
+
+def job_reads(github):
+    return github.requests_to("GET", f"/repos/{github.repo}/actions/jobs/")
+
+
+@pytest.mark.parametrize("status,headers", OUTAGES)
+def test_job_deadline_s_removes_an_overdue_container_while_job_reads_fail(
+        rig, status, headers):
+    queue_job(rig.github, 1, 101, status="in_progress")
+    queue_job(rig.github, 1, 102, status="queued")
+    rig.docker.add_container("ci-runner-101", created_epoch=T0)
+    rig.advance(rig.cfg["job_deadline_s"] + 1)
+    rig.docker.add_container("ci-runner-102", created_epoch=T0)  # same age: overdue too
+    rig.github.fail_next(100, status, headers, path_contains="/actions/jobs/")
+    rig.run_pass()
+    assert removals(rig.docker) == [["rm", "--force", "ci-runner-101"],
+                                    ["rm", "--force", "ci-runner-102"]]
+    assert job_reads(rig.github) == []  # the hard deadline asked the API nothing
+
+
+@pytest.mark.parametrize("status,headers", OUTAGES)
+def test_an_unavailable_job_read_alone_never_removes_a_container_under_the_deadline(
+        rig, status, headers):
+    queue_job(rig.github, 1, 101, status="in_progress")
+    queue_job(rig.github, 1, 102, status="queued")
+    queue_job(rig.github, 1, 103, status="completed")
+    for job in (101, 102, 103):
+        rig.docker.add_container(f"ci-runner-{job}", created_epoch=T0)
+    # Past start_deadline_s and job 103 is completed, but job_deadline_s is far off.
+    rig.advance(rig.cfg["job_deadline_s"] - 1)
+    rig.github.fail_next(100, status, headers, path_contains="/actions/jobs/")
+    rig.run_pass()
+    assert removals(rig.docker) == []
+    assert sorted(rig.docker.containers()) == [
+        "ci-runner-101", "ci-runner-102", "ci-runner-103"]
+    # The API returns: the same containers are then reaped on the read.
+    rig.github._failures.clear()
+    rig.run_pass()
+    assert removals(rig.docker) == [["rm", "--force", "ci-runner-102"],
+                                    ["rm", "--force", "ci-runner-103"]]
+    assert sorted(rig.docker.containers()) == ["ci-runner-101"]
+
+
+def test_the_hard_deadline_holds_when_the_queue_itself_cannot_be_read(rig, scaler):
+    queue_job(rig.github, 1, 101, status="in_progress")
+    queue_job(rig.github, 1, 102, status="in_progress")
+    rig.docker.add_container("ci-runner-101", created_epoch=T0)
+    rig.advance(rig.cfg["job_deadline_s"] - 5)
+    rig.docker.add_container("ci-runner-102", created_epoch=T0 + 100)  # younger
+    rig.advance(10)
+    rig.github.fail_next(100, 503)
+    with pytest.raises(scaler.ScalerError):
+        rig.run_pass()
+    assert removals(rig.docker) == [["rm", "--force", "ci-runner-101"]]
+    assert sorted(rig.docker.containers()) == ["ci-runner-102"]
+    assert rig.docker.commands("create") == []  # an outage starts nothing
+
+
+def test_a_dry_run_during_a_job_read_outage_names_only_the_overdue_container(rig):
+    queue_job(rig.github, 1, 101, status="in_progress")
+    queue_job(rig.github, 1, 102, status="in_progress")
+    rig.docker.add_container("ci-runner-101", created_epoch=T0)
+    rig.advance(rig.cfg["job_deadline_s"] - 5)
+    rig.docker.add_container("ci-runner-102", created_epoch=T0 + 100)
+    rig.advance(10)
+    rig.github.fail_next(100, 503, path_contains="/actions/jobs/")
+    lines = []
+    rig.scaler.run_pass(rig.cfg, rig.api, rig.dock, dry_run=True,
+                        clock=lambda: rig.now, out=lines.append)
+    assert [ln for ln in lines if ln.startswith("would remove")] == [
+        "would remove ci-runner-101: past job_deadline_s"]
+    assert removals(rig.docker) == []
