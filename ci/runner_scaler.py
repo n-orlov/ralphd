@@ -8,8 +8,9 @@ of the installed ``ralphd`` package. Commands:
               each queued job that carries the ``ci-pool`` label.
 * ``run``     the same pass in a loop, one pass every ``poll_interval_s``.
 * ``status``  print the scaler's containers (name, job id, age) as a JSON list.
-* ``prune-images``  remove old runner-image tags and old CI job-image tags, each
-              by exact ``name:tag``, and nothing outside the scaler's scheme.
+* ``prune-images``  remove old runner-image tags and CI job-image tags unreferenced
+              for ``retain_days``, each by exact ``name:tag``, and nothing outside
+              the scaler's scheme.
 
 ``--dry-run`` (on ``once`` and ``run``) prints the starts a pass would make and
 issues none. The scaler serves only jobs whose labels include ``ci-pool``.
@@ -57,6 +58,9 @@ DEFAULTS: dict[str, Any] = {
     "lock_file": str(Path(tempfile.gettempdir()) / f"ralphd-ci-image-build-{os.getuid()}.lock"),
     "admission_lock_file": str(
         Path(tempfile.gettempdir()) / f"ralphd-ci-admission-{os.getuid()}.lock"),
+    "prune_state_file": str(
+        Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+        / "ralphd-ci" / "prune-state.json"),
     "docker": "docker",
     "keep": 3,
     "retain_days": 14,
@@ -680,27 +684,99 @@ def image_scheme(cfg: dict[str, Any], ref: str) -> str | None:
     return None
 
 
+def load_prune_state(path: Path) -> dict[str, dict[str, float]]:
+    """The reference history ``prune-images`` keeps between invocations: per job
+    image tag, the image's creation time and ``unreferenced_since``, the time of
+    the first invocation that saw it with no container using it. A missing,
+    unreadable or malformed file is an empty history, so every clock restarts
+    (the conservative reading); so is any single malformed entry."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    entries = data.get("unreferenced") if isinstance(data, dict) else None
+    if not isinstance(entries, dict):
+        return {}
+    state: dict[str, dict[str, float]] = {}
+    for ref, entry in entries.items():
+        try:
+            state[str(ref)] = {"created": float(entry["created"]),
+                               "unreferenced_since": float(entry["unreferenced_since"])}
+        except (KeyError, TypeError, ValueError):
+            continue
+    return state
+
+
+def save_prune_state(path: Path, state: dict[str, dict[str, float]]) -> None:
+    """Write the history atomically (a temp file in the same directory, renamed)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"unreferenced": state}, sort_keys=True))
+    os.replace(tmp, path)
+
+
 def prune_images(cfg: dict[str, Any], docker: Docker, *, dry_run: bool = False,
                  clock: Callable[[], float] = time.time) -> list[str]:
     """Remove runner-image tags beyond the newest ``keep`` and job-image tags
-    older than ``retain_days`` that no container uses. Returns the refs removed
-    (or, in a dry run, the refs it would remove). An image without a creation
-    time is never removed, and neither is one a container still references or
-    the tag the current recipe builds."""
+    that have been unreferenced for ``retain_days``. Returns the refs removed
+    (or, in a dry run, the refs it would remove).
+
+    A job image's age is the time since it was last known to be in use, never
+    its creation time (docker records no last-use time, and a week-old image a
+    sibling container used an hour ago is not stale). Each invocation observes
+    which job tags a container, in any state, references. A referenced tag has
+    its clock cleared. An unreferenced tag's clock starts at the first
+    invocation that saw it unreferenced, is kept in ``prune_state_file`` across
+    invocations, and the tag becomes removable only once that clock is at least
+    ``retain_days`` old. A tag seen for the first time, an image re-created
+    under the same tag (a new creation time), a lost or malformed state file and
+    a clock that went backwards all restart the clock: reference history the
+    scaler did not observe is assumed to be recent. A dry run reads the history
+    and writes nothing. An image without a creation time is never removed, and
+    neither is one a container still references or the tag the current recipe
+    builds."""
+    now = clock()
+    state_path = Path(str(cfg["prune_state_file"])).expanduser()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(state_path.with_name(state_path.name + ".lock"), "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            return _prune_locked(cfg, docker, dry_run, now, state_path)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _prune_locked(cfg: dict[str, Any], docker: Docker, dry_run: bool, now: float,
+                  state_path: Path) -> list[str]:
     images = docker.images()
     in_use = docker.container_images()
     try:
         current: str | None = image_ref(cfg)
     except ScalerError:
         current = None
-    cutoff = clock() - int(cfg["retain_days"]) * SECONDS_PER_DAY
+    retain = int(cfg["retain_days"]) * SECONDS_PER_DAY
+    history = load_prune_state(state_path)
+    updated: dict[str, dict[str, float]] = {}
+    stale_jobs: list[str] = []
+    for image in images:
+        ref = image["ref"]
+        if image_scheme(cfg, ref) != "job" or image["created"] is None:
+            continue
+        if ref == current or ref in in_use:
+            continue                                   # referenced: the clock is cleared
+        seen = history.get(ref)
+        since = now
+        if seen is not None and seen["created"] == image["created"] \
+                and seen["unreferenced_since"] <= now:
+            since = seen["unreferenced_since"]
+        updated[ref] = {"created": image["created"], "unreferenced_since": since}
+        if now - since >= retain:
+            stale_jobs.append(ref)
     runner = sorted((i for i in images if image_scheme(cfg, i["ref"]) == "runner"),
                     key=lambda i: (-(i["created"] if i["created"] is not None
                                      else float("inf")), i["ref"]))
     doomed = [i["ref"] for i in runner[int(cfg["keep"]):] if i["created"] is not None]
-    doomed += [i["ref"] for i in images
-               if image_scheme(cfg, i["ref"]) == "job"
-               and i["created"] is not None and i["created"] < cutoff]
+    doomed += stale_jobs
     removed = []
     for ref in doomed:
         if ref == current or ref in in_use:
@@ -717,6 +793,9 @@ def prune_images(cfg: dict[str, Any], docker: Docker, *, dry_run: bool = False,
             continue
         log(f"removed image {ref}")
         removed.append(ref)
+        updated.pop(ref, None)
+    if not dry_run:
+        save_prune_state(state_path, updated)
     return removed
 
 

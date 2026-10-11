@@ -379,16 +379,39 @@ scheme is never a candidate. Two kinds of tag are in the scheme, and nothing els
   by creation time (default 3) stay; every older one is removed. The `latest` tag and any
   other tag of that repository are not in the scheme.
 - CI job-image tags: `ralphd:test-ci-<run id>-<attempt>` and its `-base` twin, the
-  per-run tags `heavy.yml` builds. One is removed once it is more than `retain_days` days
-  old (default 14) and no container, in any state, uses it. Docker records no last-use
-  time, so the age is the image's creation time.
+  per-run tags `heavy.yml` builds. One is removed once it has been **unreferenced for
+  `retain_days` days** (default 14), where unreferenced means no container, in any state,
+  uses it. Its creation time never authorizes a removal: docker records no last-use time,
+  so a month-old image a sibling container used an hour ago is not stale.
+
+The reference age of a job tag is therefore the scaler's own record. Each `prune-images`
+invocation reads the containers (`docker ps -a`) and keeps, in the file `prune_state_file`
+(default `$XDG_STATE_HOME/ralphd-ci/prune-state.json`, else under `~/.local/state`), for
+each job tag it found unreferenced the time of the *first* invocation that saw it so.
+A later invocation removes the tag once that time is at least `retain_days` old. History
+across separate invocations is read conservatively, so a missing fact only ever delays a
+removal:
+
+- the first invocation that sees a tag (or finds no history file) removes no job tag;
+- a tag a container uses in an invocation loses its record, and the clock restarts at the
+  first later invocation that sees it unused, because a reference the scaler did not see
+  between two invocations is assumed recent;
+- an image re-created under the same tag (a new creation time), a removed tag that comes
+  back, a malformed history file and a clock that has gone backwards all restart the clock;
+- a failed `rmi` keeps the record, so the next invocation tries again;
+- `--dry-run` reads the history, prints what it would remove and writes nothing, so it
+  starts no clock.
+
+The runner-image rule needs no history: the newest `keep` tags stay, and the rest go.
 
 A tag a container still uses, the tag the current recipe builds, and an image with no
 creation time are all kept. A failed `rmi` is logged and the rest go on. `--dry-run`
 prints `would remove image <name:tag>` for each and removes none. The command is run by
-hand or from a timer; the scaler's own loop never calls it.
+hand or from a timer, at an interval well inside `retain_days`; the scaler's own loop never
+calls it.
 `tests/test_runner_scaler_prune.py` lists runner tags, job-image tags and unrelated
-images in the fake `docker` and asserts exactly which `rmi` calls are made.
+images in the fake `docker`, runs `prune_images` at injected times, and asserts exactly which
+`rmi` calls are made: an old image used recently stays, one unreferenced for the interval goes.
 
 ### The start deadline and reaping
 
@@ -514,7 +537,7 @@ The config is read from `--config` (default `~/.config/ralphd-ci/scaler.yaml`).
 `repo` and `token_file` are required; the token is read from the file `token_file`
 names, and a config that holds an inline token is rejected. The other keys are
 `api_url`, `poll_interval_s` (5), `max_concurrency` (4), `start_deadline_s` (120),
-`job_deadline_s` (7800), `image`, `docker`, `keep` (3), `retain_days` (14), `host_cpus` (12), `secret_dir`, `runner_uid` (1000), `lock_file`, `admission_lock_file` and a `profiles` map. The
+`job_deadline_s` (7800), `image`, `docker`, `keep` (3), `retain_days` (14), `prune_state_file`, `host_cpus` (12), `secret_dir`, `runner_uid` (1000), `lock_file`, `admission_lock_file` and a `profiles` map. The
 scaler imports no YAML library, so the file is a YAML subset: `key: value` scalars
 (strings, optionally quoted; integers; `true`/`false`), `#` comments and nested maps
 by space indentation. Lists, flow style, anchors and tabs are rejected with a
