@@ -1,8 +1,9 @@
 """A failed or timed-out GitHub API call ends the scaler's current pass (A.6).
 
 Whatever the call is -- the queue discovery, one run's job list, a job read for
-reaping, or the JIT request -- and whatever the failure is (a timeout, a 5xx, a
-403 or a 429), the pass stops there: it makes no further API request, starts no
+reaping, or the JIT request -- and whatever the failure is (a timeout, no reply,
+an incomplete reply, a 5xx, a 403, a 429, or any other HTTP error such as a 400,
+401, 404 or 422), the pass stops there: it makes no further API request, starts no
 further container, and keeps every container already running. The loop retries
 on its next pass after the failure backoff, and that pass serves the whole queue
 once each. These tests assert the stop and the retry, never work after the
@@ -12,6 +13,7 @@ failed call. Driven in-process against the fake GitHub API and the fake
 from __future__ import annotations
 
 import importlib.util
+import os
 import socket
 import sys
 from pathlib import Path
@@ -26,7 +28,7 @@ T0 = 1_800_000_000.0
 POLL = 5
 JIT = "generate-jitconfig"
 FAILURES = [(500, {}), (502, {}), (503, {}), (403, {"x-ratelimit-reset": "1"}),
-            (429, {"Retry-After": "7"})]
+            (429, {"Retry-After": "7"}), (400, {}), (401, {}), (404, {}), (422, {})]
 
 
 @pytest.fixture(scope="module")
@@ -107,6 +109,7 @@ def assert_next_pass_serves_everything_once(rig, jobs):
 def test_a_failed_run_listing_ends_the_pass_with_no_job_work(
         rig, scaler, status, headers):
     queue(rig.github, (1, 101), (2, 102), (3, 103))
+    queue(rig.github, (9, 900), status="in_progress")
     rig.docker.add_container("ci-runner-900", created_epoch=T0)
     rig.github.fail_next(100, status, headers, path_contains="/actions/runs")
     with pytest.raises(scaler.ApiError):
@@ -227,7 +230,8 @@ def test_a_timeout_at_any_call_of_a_pass_ends_it_with_no_further_api_work(
     monkeypatch.setattr(scaler.urllib.request, "urlopen", flaky)
     with pytest.raises(scaler.ApiError) as caught:
         rig.run_pass()
-    assert caught.value.status is None and caught.value.retryable
+    assert caught.value.status is None
+    assert rig.api.last_failure is caught.value  # the loop will back off
     assert state["calls"] == after_calls + 1  # the timed-out call was the last
     assert rig.created() == []
     monkeypatch.setattr(scaler.urllib.request, "urlopen", real)
@@ -256,15 +260,80 @@ def test_a_rate_limit_at_a_job_read_makes_the_loop_wait_as_long_as_the_reply_say
     assert sorted(rig.docker.containers()) == ["ci-runner-101"]
 
 
-# ---- a reply that is about one request only does not end the pass ----------
+# ---- a 4xx is a failed call too: it ends the pass and backs the loop off ---
 
-def test_a_404_on_one_job_read_keeps_that_container_and_is_not_an_outage(rig):
+def test_a_404_on_one_job_read_ends_the_pass_and_keeps_every_container(rig, scaler):
     queue(rig.github, (9, 101), (9, 102), status="completed")
     queue(rig.github, (1, 201))
     for job in (101, 102):
         rig.docker.add_container(f"ci-runner-{job}", created_epoch=T0)
     rig.github.fail_next(1, 404, path_contains="/actions/jobs/")
+    with pytest.raises(scaler.ApiError):
+        rig.run_pass()
+    assert rig.api.last_failure is not None and rig.api.last_failure.status == 404
+    assert rig.docker.commands("rm") == []  # 102's job was never read
+    assert rig.created() == []
+    assert len([p for _, p in rig.calls() if "/actions/jobs/" in p]) == 1
     rig.run_pass()
-    assert rig.api.last_failure is None  # not outage-shaped: no backoff
-    assert rig.docker.commands("rm") == [["rm", "--force", "ci-runner-102"]]
+    assert sorted(argv[-1] for argv in rig.docker.commands("rm")) == [
+        "ci-runner-101", "ci-runner-102"]
     assert rig.created() == ["ci-runner-201"]
+    rig.run_pass()  # idempotent: nothing is started twice
+    assert rig.created() == ["ci-runner-201"]
+
+
+def test_a_404_on_one_runs_job_list_ends_the_pass_with_no_start(rig, scaler):
+    queue(rig.github, (1, 101), (2, 102), (3, 103))
+    rig.github.fail_next(1, 404, path_contains="/actions/runs/2/jobs")
+    with pytest.raises(scaler.ApiError):
+        rig.run_pass()
+    assert not any("/actions/runs/3/jobs" in p for _, p in rig.calls())
+    assert rig.created() == []
+    assert rig.github.requests_to("POST") == []
+    assert_next_pass_serves_everything_once(rig, [101, 102, 103])
+
+
+@pytest.mark.parametrize("status", [401, 422])
+def test_a_4xx_jit_reply_in_the_loop_backs_off_and_retries_the_same_job(rig, status):
+    queue(rig.github, (1, 811), (1, 812), (2, 813))
+    rig.github.fail_next(1, status, path_contains=JIT)
+    rig.loop(passes=2)
+    assert rig.waits == [POLL]  # the failure backoff after the failed pass
+    assert [p["body"]["name"] for p in rig.github.requests_to("POST")] == [
+        "ci-811", "ci-811", "ci-812", "ci-813"]
+    assert rig.created() == ["ci-runner-811", "ci-runner-812", "ci-runner-813"]
+
+
+def test_a_jit_reply_without_a_config_is_a_failed_call(rig, scaler):
+    queue(rig.github, (1, 101), (1, 102))
+    original = rig.github._route
+    seen = {"posts": 0}
+
+    def route(method, path, query, body):
+        if method == "POST":
+            seen["posts"] += 1
+            if seen["posts"] == 1:
+                return 201, {"runner": {"id": 1}}  # no encoded_jit_config
+        return original(method, path, query, body)
+
+    rig.github._route = route
+    with pytest.raises(scaler.ApiError):
+        rig.run_pass()
+    assert rig.api.last_failure is not None
+    assert seen["posts"] == 1 and rig.created() == []
+    rig.run_pass()
+    assert rig.created() == ["ci-runner-101", "ci-runner-102"]
+
+
+def test_an_unreadable_token_file_fails_the_pass_and_backs_the_loop_off(rig):
+    queue(rig.github, (1, 101))
+    token = rig.cfg["token_file"]
+    saved = open(token).read()
+    os.unlink(token)
+    rig.loop(passes=3)
+    assert rig.waits == [POLL, 2 * POLL]
+    assert rig.github.requests == [] and rig.created() == []
+    with open(token, "w") as fh:
+        fh.write(saved)
+    rig.loop(passes=1)
+    assert rig.created() == ["ci-runner-101"]

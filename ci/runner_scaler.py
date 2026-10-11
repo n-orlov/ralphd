@@ -82,9 +82,12 @@ class ConfigError(ScalerError):
 
 
 class ApiError(ScalerError):
-    """A failed GitHub API call. ``status`` is the HTTP status, or None when the
-    call never got a reply (connection error, timeout, unreadable body).
-    ``retry_after`` and ``ratelimit_reset`` carry the reply's rate-limit headers.
+    """A failed GitHub API call: any HTTP error status (a 4xx as much as a 5xx),
+    no reply (connection error, timeout), an unreadable or incomplete reply, or
+    a token file that cannot be read. ``status`` is the HTTP status, or None
+    when there was no usable status. ``retry_after`` and ``ratelimit_reset``
+    carry the reply's rate-limit headers. Every one of them ends the scaling
+    pass, and the loop backs off before the next one.
     """
 
     def __init__(self, message: str, status: int | None = None,
@@ -94,11 +97,6 @@ class ApiError(ScalerError):
         self.status = status
         self.retry_after = retry_after
         self.ratelimit_reset = ratelimit_reset
-
-    @property
-    def retryable(self) -> bool:
-        """Outage-shaped: no reply, a 5xx, a 403 or a 429. The scaler backs off."""
-        return self.status is None or self.status >= 500 or self.status in (403, 429)
 
 
 # --------------------------------------------------------------------------
@@ -262,23 +260,26 @@ class GitHubApi:
         self.base = str(cfg["api_url"]).rstrip("/")
         self.repo = str(cfg["repo"])
         self.token_file = str(cfg["token_file"])
-        # The latest retryable failure; ``run_loop`` clears it before a pass and
-        # reads it after, to decide the next wait.
+        # The latest failed call, of any kind; ``run_loop`` clears it before a
+        # pass and reads it after, to decide the next wait.
         self.last_failure: ApiError | None = None
 
     def _token(self) -> str:
         try:
             return Path(self.token_file).read_text().strip()
         except OSError as exc:
-            raise ScalerError(f"cannot read token file: {exc.strerror or exc}")
+            raise ApiError(f"cannot read token file: {exc.strerror or exc}")
+
+    def fail(self, exc: ApiError) -> ApiError:
+        """Record ``exc`` as this pass's failed call and return it to raise."""
+        self.last_failure = exc
+        return exc
 
     def request(self, method: str, path: str, body: Any = None) -> Any:
         try:
             return self._request(method, path, body)
         except ApiError as exc:
-            if exc.retryable:
-                self.last_failure = exc
-            raise
+            raise self.fail(exc)
 
     def _request(self, method: str, path: str, body: Any) -> Any:
         data = None if body is None else json.dumps(body).encode()
@@ -322,7 +323,8 @@ class GitHubApi:
              "runner_group_id": RUNNER_GROUP_ID})
         encoded = (reply or {}).get("encoded_jit_config")
         if not isinstance(encoded, str) or not encoded:
-            raise ScalerError("generate-jitconfig reply has no encoded_jit_config")
+            raise self.fail(ApiError(
+                "generate-jitconfig reply has no encoded_jit_config"))
         return encoded
 
     def job_status(self, job_id: int) -> str:
@@ -803,13 +805,6 @@ def live_containers(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in entries if str(e.get("State", "")) not in EXITED_STATES]
 
 
-def _ends_pass(exc: ScalerError) -> bool:
-    """True for a failed API call of the retryable kind (no reply, a timeout, a
-    5xx, a 403 or a 429): the pass ends there and the loop retries on the next
-    pass after its failure backoff."""
-    return isinstance(exc, ApiError) and exc.retryable
-
-
 def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
                     entries: list[dict[str, Any]], *, now: float,
                     dry_run: bool = False,
@@ -826,7 +821,9 @@ def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
     ``completed``, or (d) its job is still ``queued`` after
     ``start_deadline_s`` (GitHub assigned the job to the runner and it never
     ran). Each removal is one ``docker rm --force ci-runner-<job id>``. A job
-    lookup that fails leaves a running container for the next pass. Returns
+    lookup that fails (any ``ApiError``, a 404 as much as a 503) ends the pass
+    by raising: that container and every one not yet read are kept, and the
+    next pass reads them again. Returns
     the names removed (or, in a dry run, that would be).
     """
     reaped: set[str] = set()
@@ -848,11 +845,8 @@ def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
             try:
                 status = api.job_status(job_id)
             except ScalerError as exc:
-                if _ends_pass(exc):
-                    log(f"cannot read job {job_id}, keeping {name}: {exc}")
-                    raise  # an outage ends the pass: no further API work
                 log(f"cannot read job {job_id}, keeping {name}: {exc}")
-                continue
+                raise  # a failed call ends the pass: no further API work
             if status == "completed":
                 reason = "job completed"
             elif (status == "queued" and age is not None
@@ -883,14 +877,13 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
     already has a ``ci-runner-<job id>`` container (in any state) is skipped,
     so repeated passes never start a second container for it. Starting stops
     once the containers still alive reach ``max_concurrency``. Before each
-    start the pass requests that job's JIT runner config; a failed request
-    skips the job (no container, no slot used) and the next pass retries it.
+    start the pass requests that job's JIT runner config.
 
-    A failed or timed-out API call (no reply, 5xx, 403, 429) ends the pass at
-    once by raising its ``ApiError``: nothing further is read, requested or
-    started, containers already running are kept, and ``run_loop`` retries on
-    the next pass after the failure backoff. A reply that is not outage-shaped
-    (a 404 on one job read, a 422 on one JIT request) skips only that job.
+    Any failed or timed-out API call (no reply, a timeout, an unreadable reply,
+    any HTTP error status: a 4xx such as 401, 404 or 422 as much as a 5xx, 403
+    or 429) ends the pass at once by raising its ``ApiError``: nothing further
+    is read, requested or started, containers already running are kept, and
+    ``run_loop`` retries on the next pass after the failure backoff.
 
     A pass first reaps (see ``reap_containers``). A job whose container was
     reaped is not restarted in the same pass: the next pass starts its new
@@ -944,9 +937,7 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
                 except ScalerError as exc:
                     # No container for this job; the next pass requests again.
                     log(f"no runner config for job {job['id']}: {exc}")
-                    if _ends_pass(exc):
-                        raise  # an outage ends the pass: no more API or starts
-                    continue
+                    raise  # a failed call ends the pass: no more API or starts
                 profile = resolve_profile(cfg, list(job.get("labels") or []))
                 try:
                     docker.start(name, image, jit_config, profile,
@@ -1009,9 +1000,8 @@ def run_loop(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
              clock: Callable[[], float] = time.time) -> None:
     """Run passes forever (or ``passes`` times); no failure ends the loop.
 
-    A pass whose GitHub call failed (no reply, timeout, 5xx, 403, 429) is
-    skipped as far as that call goes and retried after a longer wait, see
-    ``next_wait``. A running container is never removed because the API was
+    A pass whose GitHub call failed (any ``ApiError``) ended at that call and
+    is retried after a longer wait, see ``next_wait``. A running container is never removed because the API was
     unreachable: reaping needs a job read that succeeded.
     """
     done = 0
@@ -1028,7 +1018,7 @@ def run_loop(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
         failures = failures + 1 if failure is not None else 0
         wait = next_wait(float(cfg["poll_interval_s"]), failures, failure, clock())
         if failure is not None:
-            log(f"GitHub API unavailable ({failure}); retrying in {wait:g}s")
+            log(f"GitHub API call failed ({failure}); retrying in {wait:g}s")
         done += 1
         if passes is None or done < passes:
             sleep(wait)

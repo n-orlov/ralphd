@@ -140,12 +140,13 @@ def test_a_running_job_and_foreign_containers_are_left_alone(rig):
     assert sorted(rig.docker.containers()) == ["ci-runner-101", "standing-runner"]
 
 
-def test_a_failing_job_lookup_keeps_the_container(rig):
+def test_a_failing_job_lookup_keeps_the_container_and_ends_the_pass(rig):
     queue_job(rig.github, 1, 101)
     rig.docker.add_container("ci-runner-101", created_epoch=T0)
     rig.advance(rig.cfg["start_deadline_s"] + 10)
     rig.github.jobs[1].clear()  # the API no longer knows the job: 404
-    rig.run_pass()
+    with pytest.raises(rig.scaler.ApiError):
+        rig.run_pass()
     assert removals(rig.docker) == []
 
 

@@ -142,10 +142,11 @@ def test_a_bogus_huge_rate_limit_header_cannot_park_the_loop(rig, scaler):
     assert rig.waits == [scaler.RATE_LIMIT_MAX_WAIT_S]
 
 
-def test_a_non_retryable_reply_does_not_back_off(rig):
-    rig.github.fail_next(2, 404)
-    rig.run(passes=3)
-    assert rig.waits == [POLL, POLL]
+@pytest.mark.parametrize("status", [400, 401, 404, 422])
+def test_a_4xx_reply_backs_off_like_any_failed_call(rig, status):
+    rig.github.fail_next(2, status)
+    rig.run(passes=4)
+    assert rig.waits == [POLL, 2 * POLL, POLL]  # one clean pass resets it
 
 
 def test_a_failed_job_read_never_removes_a_running_container(rig):

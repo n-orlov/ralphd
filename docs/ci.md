@@ -244,10 +244,12 @@ is `1`. GitHub registers that one single-use runner and returns an
 registers a standing runner and runs no `config.sh`; a runner exists only for the
 one job it was requested for. Each start is preceded by exactly one such request.
 A `--dry-run` pass issues none, and a pass over a queue whose jobs already have a
-container issues none either. A failed or timed-out request (no reply, a 5xx, a
-403 or a 429) starts no container for that job and takes no concurrency slot, and
-it ends the pass (see "API failures and the backoff"): the next pass requests again.
-A rejection that concerns that one job alone (a 422, say) skips only that job. The request is tested in
+container issues none either. A failed or timed-out request (no reply, a reply
+without an `encoded_jit_config`, or any HTTP error: a 5xx, a 403, a 429, and a 4xx
+such as a 401 or a 422 alike) starts no container for that job and takes no
+concurrency slot, and it ends the pass (see "API failures and the backoff"): no
+other job is asked about or started, and the next pass, after the failure backoff,
+requests again. The request is tested in
 `tests/test_runner_scaler_jit.py`.
 
 ### The runner image and the run-once exit
@@ -417,8 +419,9 @@ need from the API.
   that has not exited and is younger than `job_deadline_s`) the scaler reads the job (`GET /repos/{repo}/actions/jobs/{job id}`) and removes the
   container when the job is `completed`, or when it is still `queued` past
   `start_deadline_s`. This kind needs a successful read. A job lookup that fails
-  (a timeout, a 5xx, a 403, a 429 or an unknown job) leaves its container for the
-  next pass, however old it is short of `job_deadline_s`; an unavailable API is
+  (a timeout, a 5xx, a 403, a 429, or a 4xx such as a 404 for an unknown job) ends
+  the pass there and leaves its container, and every container not yet read, for
+  the next pass, however old it is short of `job_deadline_s`; an unavailable API is
   never itself a reason to remove a running container.
 
 A running job under the deadline, and any container not named
@@ -434,9 +437,11 @@ read, or the queue read, fails.
 
 ### API failures and the backoff
 
-A GitHub call that fails does not stop the scaler, but it ends the pass. A
-connection error, a timeout, an unreadable reply, a 5xx, a 403 or a 429 ends the
-current scaling pass at that call, wherever it falls: the queue discovery (the run
+A GitHub call that fails does not stop the scaler, but it ends the pass. Every
+failed call does: a connection error, a timeout, an unreadable or incomplete reply,
+an unreadable token file, and any HTTP error status, a 5xx, a 403 or a 429 as much
+as a 400, 401, 404 or 422. Such a failure ends the current scaling pass at that
+call, wherever it falls: the queue discovery (the run
 listing and each run's job list), a job read for reaping, or the JIT request. The
 pass then makes no further API request and starts no further container; containers
 that were already running, or that this pass had already started, are kept. The
@@ -444,16 +449,19 @@ loop retries on the next pass, after the failure backoff below, and that pass
 serves every queued job once, so no job is missed or started twice; `run` never
 exits. The pass-level retry rule is the same for all of these calls, and the
 unconditional removals (the hard deadline and the exit cleanup) have already run
-before any call is made. A reply that concerns one request only (a 404 on a job
-read, a 422 on a JIT request) is not an outage: it skips that container or job and
-the pass goes on, with no backoff. After a failed pass the loop waits longer: the wait doubles from
+before any call is made. No failed call is skipped over to serve another job in the
+same pass. One consequence: a job read that keeps failing (a 404 for a job GitHub
+no longer knows, say) holds every pass at that read until its container exits or
+passes `job_deadline_s`, when the unconditional removals take it with no read.
+After a failed pass the loop waits longer: the wait doubles from
 `poll_interval_s` with each consecutive failed pass (5, 10, 20, 40 seconds at the
 default) and is capped at 60 seconds, and one clean pass returns it to
 `poll_interval_s`. A 403 or 429 that names a wait sets the next wait instead:
 `Retry-After` (seconds or an HTTP date) first, else `x-ratelimit-reset` (epoch
 seconds, so the wait is the time left until it). That wait is never shorter than
 `poll_interval_s` and is bounded at one hour, so a bad header cannot park the loop.
-Any other reply (a 404, say) and a docker failure do not back off and do not end the pass.
+A docker failure is not an API call: it does not back off, and a failed start
+skips only that container.
 
 An unreachable API never removes a running container. Removal other than the
 hard deadline and exit cleanup needs a successful read of the container's job, so

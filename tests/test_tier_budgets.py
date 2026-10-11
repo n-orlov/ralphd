@@ -780,8 +780,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.34 cure 01-03 (a failed API call ends the pass): +43 tests, +1 module
     # (tests/test_runner_scaler_pass_failures.py), measured the same way ->
     # fast 8202/528, smoke 6455/403.
-    "fast": {"tests": 8202, "modules": 528},
-    "smoke": {"tests": 6455, "modules": 403},
+    # v0.34 cure 01-03 retry (every failed API call, a 4xx too, ends the pass):
+    # +29 tests, no new module (4xx cases in tests/test_runner_scaler_pass_
+    # failures.py, _resilience.py, _jit.py), measured the same way -> fast
+    # 8231/528, smoke 6484/403.
+    "fast": {"tests": 8231, "modules": 528},
+    "smoke": {"tests": 6484, "modules": 403},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

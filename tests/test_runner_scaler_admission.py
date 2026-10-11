@@ -168,13 +168,21 @@ def test_oldest_first_holds_when_a_rival_takes_a_slot(make):
     assert rig.created() == ["ci-runner-101"]  # not 102 or 103
 
 
-def test_a_request_specific_jit_rejection_still_leaves_the_recheck_in_force(make):
+def test_a_rejected_jit_request_ends_the_pass_and_the_next_pass_rechecks_the_cap(
+        make, scaler):
+    # A 422 is a failed call like any other: the pass ends at it, with no
+    # request or start for 102 or 103. The next pass admits under the recheck.
     rig = make(2, 101, 102, 103)
     rig.docker.add_image(rig.scaler.image_ref(rig.cfg))
+    rig.github.add_job(1, 900, ["ci-pool"], status="in_progress")
     rig.github.fail_next(1, 422, path_contains="generate-jitconfig")
+    with pytest.raises(scaler.ApiError):
+        rig.run_pass()
+    assert rig.created() == []
+    assert len(rig.jit_requests()) == 1
     rig.after_first_snapshot(lambda: rig.rival(900))
     rig.run_pass()
-    assert rig.created() == ["ci-runner-102"]  # 101 was rejected, then the cap
+    assert rig.created() == ["ci-runner-101"]  # the rival took the other slot
     assert len(rig.live()) == 2
 
 
@@ -191,6 +199,7 @@ def test_an_outage_at_the_jit_request_ends_the_pass_and_starts_nothing(make, sca
 def test_an_exited_container_does_not_hold_a_slot_at_the_recheck(make):
     rig = make(2, 101, 102)
     rig.docker.add_image(rig.scaler.image_ref(rig.cfg))
+    rig.github.add_job(1, 900, ["ci-pool"], status="in_progress")
     rig.docker.add_container("ci-runner-900", created_epoch=T0)
     rig.docker.add_container("ci-runner-901", created_epoch=T0, state="exited")
     rig.run_pass()

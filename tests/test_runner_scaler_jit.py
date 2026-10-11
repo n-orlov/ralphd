@@ -151,15 +151,20 @@ def test_a_failed_request_does_not_use_up_a_concurrency_slot(github, docker, tmp
     assert started_names(docker) == ["ci-runner-101"]
 
 
-def test_a_request_specific_rejection_skips_only_that_job(github, docker, config):
-    # A 422 (say, the runner name is taken) is about this job alone, not an
-    # outage: the other jobs of the pass are still served.
+@pytest.mark.parametrize("status", [401, 422])
+def test_a_rejected_request_ends_the_pass_like_any_failed_call(
+        github, docker, config, status):
+    # A 4xx (a 422 when the runner name is taken, a 401 for a bad token) is a
+    # failed call: the pass ends there, with no request or start for job 102.
     queue_job(github, 1, 101, ["ci-pool"])
     queue_job(github, 1, 102, ["ci-pool"])
-    github.fail_next(1, 422, path_contains="generate-jitconfig")
-    done = once(docker, config)
-    assert started_names(docker) == ["ci-runner-102"]
+    github.fail_next(1, status, path_contains="generate-jitconfig")
+    done = once(docker, config, expect=1)
+    assert started_names(docker) == []
+    assert [p["body"]["name"] for p in jit_posts(github)] == ["ci-101"]
     assert "job 101" in done.stderr
+    once(docker, config)
+    assert started_names(docker) == ["ci-runner-101", "ci-runner-102"]
 
 
 def test_the_request_goes_to_the_generate_jitconfig_endpoint_of_the_configured_repo(
