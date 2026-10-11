@@ -803,8 +803,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # way -> fast 8295/528, smoke 6548/403.
     # v0.34 re-take of tests/test_runner_image.py: +5 tests, no new module,
     # measured the same way -> fast 8300/528, smoke 6553/403.
-    "fast": {"tests": 8300, "modules": 528},
-    "smoke": {"tests": 6553, "modules": 403},
+    # v0.34 re-take of tests/test_runner_scaler_queue.py: +5 tests, no new
+    # module, measured the same way -> fast 8305/528, smoke 6558/403.
+    "fast": {"tests": 8305, "modules": 528},
+    "smoke": {"tests": 6558, "modules": 403},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -123,3 +123,63 @@ def test_a_dry_run_honours_the_cap_and_existing_containers(github, docker, confi
     lines = done.stdout.splitlines()
     assert lines == [f"would start ci-runner-{n} for job {n}" for n in (2, 3, 4)]
     assert docker.commands("run", "create") == []
+
+
+def test_only_jobs_still_queued_get_a_container(github, docker, config):
+    queue_job(github, 1, 101, ["ci-pool"])
+    github.add_job(1, 102, ["ci-pool"], status="in_progress")
+    github.add_job(1, 103, ["ci-pool"], status="completed")
+    github.add_job(1, 104, ["ci-pool"], status="waiting")
+    once(docker, config)
+    assert started_names(docker) == ["ci-runner-101"]
+
+
+def test_a_label_must_be_exactly_ci_pool(github, docker, config):
+    queue_job(github, 1, 101, ["ci-pool-extra"])
+    queue_job(github, 1, 102, ["CI-POOL"])
+    queue_job(github, 1, 103, ["pool"])
+    queue_job(github, 1, 104, [])
+    queue_job(github, 1, 105, ["x86", "ci-pool", "linux"])
+    once(docker, config)
+    assert started_names(docker) == ["ci-runner-105"]
+
+
+def test_a_full_pool_starts_nothing_and_requests_no_runner_config(github, docker, config):
+    for job_id in range(1, 5):
+        docker.add_container(f"ci-runner-{job_id}", created_epoch=time.time())
+        queue_job(github, 1, job_id, ["ci-pool"])
+    queue_job(github, 1, 5, ["ci-pool"])
+    once(docker, config)
+    assert docker.commands("run", "create") == []
+    assert github.requests_to("POST") == []
+
+
+def test_an_exited_container_frees_its_slot_and_is_replaced_by_the_next_pass(
+        github, docker, config):
+    for job_id in range(1, 7):
+        queue_job(github, 1, job_id, ["ci-pool"])
+    once(docker, config)
+    assert started_names(docker) == [f"ci-runner-{n}" for n in (1, 2, 3, 4)]
+    docker.set_state("ci-runner-1", "exited")
+    once(docker, config)
+    # The exited container is removed, its job (still queued) is not started in
+    # the same pass, and the freed slot goes to the next job in order.
+    assert started_names(docker)[4:] == ["ci-runner-5"]
+    assert "ci-runner-1" not in docker.containers()
+    once(docker, config)
+    assert started_names(docker)[5:] == []  # 2-5 are alive: the pool is full
+    docker.set_state("ci-runner-5", "exited")
+    once(docker, config)
+    assert started_names(docker)[5:] == ["ci-runner-1"]  # oldest job without one
+
+
+def test_an_exited_container_docker_refuses_to_remove_does_not_hold_a_slot(
+        tmp_path, github, docker, monkeypatch):
+    queue_job(github, 1, 101, ["ci-pool"])
+    github.set_job_status(101, "in_progress")
+    queue_job(github, 1, 102, ["ci-pool"])
+    docker.add_container("ci-runner-101", created_epoch=time.time(), state="exited")
+    monkeypatch.setenv("FAKE_DOCKER_FAIL", "rm")
+    once(docker, write_config(tmp_path, github, "max_concurrency: 1\n"))
+    assert started_names(docker) == ["ci-runner-102"]
+    assert sorted(docker.containers()) == ["ci-runner-101", "ci-runner-102"]
