@@ -217,6 +217,11 @@ def fail(message, code=1):
     sys.exit(code)
 
 
+def image_id(tag):
+    import hashlib
+    return "sha256:" + hashlib.sha256(tag.encode()).hexdigest()
+
+
 def stamp(epoch):
     return time.strftime("%Y-%m-%d %H:%M:%S +0000 UTC", time.gmtime(epoch))
 
@@ -228,6 +233,27 @@ for arg in argv:
 
 state = load()
 now = state.get("clock") or time.time()
+
+
+def emit(state, typ, action, actor_id, attrs=None):
+    """Append one event to the daemon's bounded event log, stamped strictly
+    after the previous one; the oldest are dropped past ``events_limit``."""
+    ns = max(int(now * 1e9), state.get("last_event_ns", 0) + 1)
+    state["last_event_ns"] = ns
+    events = state.setdefault("events", [])
+    events.append({"Type": typ, "Action": action,
+                   "Actor": {"ID": actor_id, "Attributes": dict(attrs or {})},
+                   "time": ns // 10**9, "timeNano": ns})
+    del events[:max(0, len(events) - state.get("events_limit", 256))]
+
+
+def daemon_ns(state):
+    return max(int(now * 1e9), state.get("last_event_ns", 0))
+
+
+def parse_ns(text):
+    sec, _, frac = text.partition(".")
+    return int(sec) * 10**9 + int((frac or "0").ljust(9, "0")[:9])
 cmd = argv[0] if argv else ""
 rest = argv[1:]
 if cmd and cmd == os.environ.get("FAKE_DOCKER_FAIL"):
@@ -265,6 +291,9 @@ if cmd in ("run", "create"):
         "State": "running" if cmd == "run" else "created",
         "CreatedAt": stamp(now), "created_epoch": now, "binds": binds,
     }
+    emit(state, "container", "create", name, {"image": image, "name": name})
+    if cmd == "run":
+        emit(state, "container", "start", name, {"image": image, "name": name})
     save(state)
     print(state["containers"][name]["ID"])
 elif cmd == "start":
@@ -272,6 +301,8 @@ elif cmd == "start":
         if name not in state["containers"]:
             fail("No such container: " + name)
         state["containers"][name]["State"] = "running"
+        emit(state, "container", "start", name,
+             {"image": state["containers"][name]["Image"], "name": name})
         # A bind-mounted host FILE is held by its inode from this moment: the
         # container still reads it after the host path is unlinked. Snapshot what
         # the container will see, and the host-side owner and mode.
@@ -291,12 +322,16 @@ elif cmd in ("stop", "kill"):
     for name in [a for a in rest if not a.startswith("-")]:
         if name in state["containers"]:
             state["containers"][name]["State"] = "exited"
+            emit(state, "container", "die", name,
+                 {"image": state["containers"][name]["Image"], "name": name})
     save(state)
 elif cmd == "rm":
     names = [a for a in rest if not a.startswith("-")]
     for name in names:
         if name not in state["containers"]:
             fail("No such container: " + name)
+        emit(state, "container", "destroy", name,
+             {"image": state["containers"][name]["Image"], "name": name})
         del state["containers"][name]
     save(state)
     print("\n".join(names))
@@ -316,7 +351,7 @@ elif cmd == "images":
         repo, _, version = tag.partition(":")
         made = state.get("image_created", {}).get(tag)
         print(json.dumps({"Repository": repo, "Tag": version or "latest",
-                          "ID": "img" + str(abs(hash(tag)) % 10**6),
+                          "ID": state.get("image_ids", {}).get(tag) or image_id(tag),
                           "CreatedAt": stamp(now if made is None else made)}))
 elif cmd == "image" and rest[:1] == ["inspect"]:
     if rest[-1] not in state["images"]:
@@ -344,8 +379,30 @@ elif cmd == "volume" and rest[:1] == ["create"]:
     name = rest[-1]
     if name not in state["volumes"]:
         state["volumes"].append(name)
+        emit(state, "volume", "create", name, {"driver": "local"})
     save(state)
     print(name)
+elif cmd == "volume" and rest[:1] == ["rm"]:
+    for name in [a for a in rest[1:] if not a.startswith("-")]:
+        if name not in state["volumes"]:
+            fail("No such volume: " + name)
+        state["volumes"].remove(name)
+        emit(state, "volume", "destroy", name, {"driver": "local"})
+        print(name)
+    save(state)
+elif cmd == "events":
+    opts = {rest[j]: rest[j + 1] for j in range(len(rest) - 1) if rest[j].startswith("--")}
+    if "--until" not in opts:
+        fail("the fake streams no events: --until is required")
+    since = parse_ns(opts["--since"]) if "--since" in opts else 0
+    until = parse_ns(opts["--until"])
+    for event in state.get("events", []):
+        if since <= event["timeNano"] <= until:
+            print(json.dumps(event))
+elif cmd == "info" and "{{json .SystemTime}}" in rest:
+    ns = daemon_ns(state)
+    print(json.dumps(time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ns // 10**9))
+                     + ".%09dZ" % (ns % 10**9)))
 elif cmd == "volume" and rest[:1] == ["inspect"]:
     if rest[-1] not in state["volumes"]:
         fail("No such volume: " + rest[-1])
@@ -385,7 +442,32 @@ class FakeDocker:
         return json.loads((self.state_dir / "state.json").read_text())
 
     def _write(self, state: dict[str, Any]) -> None:
-        (self.state_dir / "state.json").write_text(json.dumps(state))
+        """Save ``state``. A container added, removed or moved to another state
+        here (a sibling job's container, as the daemon would see it) is logged in
+        the daemon's event log, as the real daemon logs every container event."""
+        path = self.state_dir / "state.json"
+        if path.exists():
+            import time
+            old = json.loads(path.read_text()).get("containers", {})
+            new = state.get("containers", {})
+            moves = [(name, "destroy", entry) for name, entry in old.items()
+                     if name not in new]
+            moves += [(name, "create", entry) for name, entry in new.items()
+                      if name not in old]
+            moves += [(name, "die" if entry.get("State") in ("exited", "dead") else "start",
+                       entry) for name, entry in new.items()
+                      if name in old and old[name].get("State") != entry.get("State")]
+            now = state.get("clock") or time.time()
+            for name, action, entry in moves:
+                ns = max(int(now * 1e9), state.get("last_event_ns", 0) + 1)
+                state["last_event_ns"] = ns
+                events = state.setdefault("events", [])
+                events.append({"Type": "container", "Action": action,
+                               "Actor": {"ID": name, "Attributes": {
+                                   "image": entry.get("Image", ""), "name": name}},
+                               "time": ns // 10**9, "timeNano": ns})
+                del events[:max(0, len(events) - state.get("events_limit", 256))]
+        path.write_text(json.dumps(state))
 
     def set_clock(self, epoch: float | None) -> None:
         state = self._read()
@@ -421,6 +503,34 @@ class FakeDocker:
         data = self._read()
         data["volumes"].append(name)
         self._write(data)
+
+    def remove_container(self, name: str) -> None:
+        """A container that goes away outside the scaler (a sibling job's)."""
+        data = self._read()
+        del data["containers"][name]
+        self._write(data)
+
+    def set_events_limit(self, limit: int) -> None:
+        """How many events the daemon's log holds (the oldest drop first)."""
+        data = self._read()
+        data["events_limit"] = limit
+        del data.setdefault("events", [])[:max(0, len(data["events"]) - limit)]
+        self._write(data)
+
+    def restart_daemon(self) -> None:
+        """A daemon restart: its in-memory event log starts empty."""
+        data = self._read()
+        data["events"] = []
+        self._write(data)
+
+    def set_image_id(self, tag: str, image_id: str) -> None:
+        """Give ``tag`` the image id ``image_id`` (two tags of one image)."""
+        data = self._read()
+        data.setdefault("image_ids", {})[tag] = image_id
+        self._write(data)
+
+    def events(self) -> list[dict[str, Any]]:
+        return self._read().get("events", [])
 
     def containers(self) -> dict[str, dict[str, Any]]:
         return self._read()["containers"]

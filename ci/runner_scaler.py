@@ -519,7 +519,7 @@ class Docker:
             repo, tag = str(entry.get("Repository", "")), str(entry.get("Tag", ""))
             if not repo or not tag or "<none>" in (repo, tag):
                 continue
-            found.append({"ref": f"{repo}:{tag}",
+            found.append({"ref": f"{repo}:{tag}", "id": str(entry.get("ID", "")),
                           "created": parse_created_at(str(entry.get("CreatedAt", "")))})
         return found
 
@@ -528,6 +528,41 @@ class Docker:
         out = self.run("ps", "-a", "--no-trunc", "--format", "{{json .}}")
         return {str(json.loads(line).get("Image", ""))
                 for line in out.splitlines() if line.strip()}
+
+    def daemon_time_ns(self) -> int:
+        """The daemon's own clock (``docker info`` ``SystemTime``), in epoch
+        nanoseconds: the clock its event log is stamped with."""
+        out = self.run("info", "--format", "{{json .SystemTime}}")
+        try:
+            ns = parse_rfc3339_ns(json.loads(out))
+        except ValueError:
+            ns = None
+        if ns is None:
+            raise ScalerError(f"docker info gave no usable SystemTime: {out.strip()[:80]!r}")
+        return ns
+
+    def events(self, since_ns: int, until_ns: int) -> list[dict[str, Any]]:
+        """The daemon's stored events stamped in [since_ns, until_ns], oldest first.
+        Bounded by ``--until``, so the call returns instead of streaming."""
+        out = self.run("events", "--since", format_event_ns(since_ns),
+                       "--until", format_event_ns(until_ns), "--format", "{{json .}}")
+        found = []
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError as exc:
+                raise ScalerError(f"docker events: unreadable line: {exc}")
+            if isinstance(entry, dict):
+                found.append(entry)
+        return found
+
+    def emit_marker(self, name: str) -> None:
+        """Put a uniquely named event into the daemon's event log: create the
+        volume ``name`` and remove it again, both by that exact name."""
+        self.run("volume", "create", name)
+        self.run("volume", "rm", name)
 
     def remove_image(self, cfg: dict[str, Any], ref: str) -> None:
         """Remove ONE image by its exact ``name:tag``, and only one of the
@@ -684,17 +719,24 @@ def image_scheme(cfg: dict[str, Any], ref: str) -> str | None:
     return None
 
 
-def load_prune_state(path: Path) -> dict[str, dict[str, float]]:
-    """The reference history ``prune-images`` keeps between invocations: per job
-    image tag, the image's creation time and ``unreferenced_since``, the time of
-    the first invocation that saw it with no container using it. A missing,
-    unreadable or malformed file is an empty history, so every clock restarts
-    (the conservative reading); so is any single malformed entry."""
+RETENTION_MARKER_PREFIX = "ralphd-ci-retention-mark-"
+
+
+def _read_prune_file(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
-    entries = data.get("unreferenced") if isinstance(data, dict) else None
+    return data if isinstance(data, dict) else {}
+
+
+def load_prune_state(path: Path) -> dict[str, dict[str, float]]:
+    """The reference history ``prune-images`` keeps between invocations: per job
+    image tag, the image's creation time and ``unreferenced_since``, the time from
+    which it is known to have been unreferenced. A missing, unreadable or
+    malformed file is an empty history, so every clock restarts (the conservative
+    reading); so is any single malformed entry."""
+    entries = _read_prune_file(path).get("unreferenced")
     if not isinstance(entries, dict):
         return {}
     state: dict[str, dict[str, float]] = {}
@@ -707,12 +749,92 @@ def load_prune_state(path: Path) -> dict[str, dict[str, float]]:
     return state
 
 
-def save_prune_state(path: Path, state: dict[str, dict[str, float]]) -> None:
+def load_prune_marker(path: Path) -> dict[str, Any] | None:
+    """The marker the previous invocation put into the daemon's event log: its
+    volume name and its stamp (``time_ns``, daemon clock), or None."""
+    marker = _read_prune_file(path).get("marker")
+    if not isinstance(marker, dict):
+        return None
+    name, stamp = marker.get("name"), marker.get("time_ns")
+    if not isinstance(name, str) or not name.startswith(RETENTION_MARKER_PREFIX) \
+            or not isinstance(stamp, int) or isinstance(stamp, bool):
+        return None
+    return {"name": name, "time_ns": stamp}
+
+
+def save_prune_state(path: Path, state: dict[str, dict[str, float]],
+                     marker: dict[str, Any] | None = None) -> None:
     """Write the history atomically (a temp file in the same directory, renamed)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps({"unreferenced": state}, sort_keys=True))
+    data: dict[str, Any] = {"unreferenced": state}
+    if marker is not None:
+        data["marker"] = marker
+    tmp.write_text(json.dumps(data, sort_keys=True))
     os.replace(tmp, path)
+
+
+def _normal_id(value: str) -> str:
+    value = value.strip().lower()
+    return value[len("sha256:"):] if value.startswith("sha256:") else value
+
+
+def resolve_image_refs(images: list[dict[str, Any]], names: set[str]) -> set[str]:
+    """The tags ``names`` (what a container or an event says it uses: a
+    ``name:tag``, a bare name meaning ``:latest``, or an image id, full or short)
+    point at, widened to every tag of the same image id. A name that matches no
+    image on the host refers to nothing the host still holds."""
+    by_ref = {i["ref"]: _normal_id(str(i.get("id") or "")) for i in images}
+    by_id: dict[str, set[str]] = {}
+    for ref, image_id in by_ref.items():
+        if image_id:
+            by_id.setdefault(image_id, set()).add(ref)
+    found: set[str] = set()
+    for raw in names:
+        name = str(raw).strip()
+        if not name:
+            continue
+        ids: set[str] = set()
+        candidates = [name]
+        if ":" not in name.rpartition("/")[2]:
+            candidates.append(name + ":latest")
+        for candidate in candidates:
+            if candidate in by_ref:
+                found.add(candidate)
+                if by_ref[candidate]:
+                    ids.add(by_ref[candidate])
+        wanted = _normal_id(name)
+        if len(wanted) >= 12 and re.fullmatch(r"[0-9a-f]+", wanted):
+            ids.update(i for i in by_id if i.startswith(wanted) or
+                       (len(i) >= 12 and wanted.startswith(i)))
+        for image_id in ids:
+            found |= by_id.get(image_id, set())
+    return found
+
+
+def _container_event_images(events: list[dict[str, Any]]) -> set[str]:
+    """What every container event in ``events`` names as its image: each such
+    event (create, start, die, destroy, ...) means a container used it then."""
+    names = set()
+    for event in events:
+        if str(event.get("Type", event.get("type", ""))) != "container":
+            continue
+        actor = event.get("Actor") if isinstance(event.get("Actor"), dict) else {}
+        attrs = actor.get("Attributes") if isinstance(actor.get("Attributes"), dict) else {}
+        for value in (attrs.get("image"), event.get("from")):
+            if value:
+                names.add(str(value))
+    return names
+
+
+def _marker_ns(events: list[dict[str, Any]], name: str) -> int | None:
+    """The stamp of the marker volume ``name``'s creation event, if present."""
+    for event in events:
+        actor = event.get("Actor") if isinstance(event.get("Actor"), dict) else {}
+        if str(event.get("Type", "")) == "volume" and actor.get("ID") == name \
+                and str(event.get("Action", "")) == "create":
+            return event_ns(event)
+    return None
 
 
 def prune_images(cfg: dict[str, Any], docker: Docker, *, dry_run: bool = False,
@@ -723,18 +845,28 @@ def prune_images(cfg: dict[str, Any], docker: Docker, *, dry_run: bool = False,
 
     A job image's age is the time since it was last known to be in use, never
     its creation time (docker records no last-use time, and a week-old image a
-    sibling container used an hour ago is not stale). Each invocation observes
-    which job tags a container, in any state, references. A referenced tag has
-    its clock cleared. An unreferenced tag's clock starts at the first
-    invocation that saw it unreferenced, is kept in ``prune_state_file`` across
-    invocations, and the tag becomes removable only once that clock is at least
-    ``retain_days`` old. A tag seen for the first time, an image re-created
-    under the same tag (a new creation time), a lost or malformed state file and
-    a clock that went backwards all restart the clock: reference history the
-    scaler did not observe is assumed to be recent. A dry run reads the history
+    sibling container used an hour ago is not stale). Two sources say a tag was
+    in use: a container, in any state, that references it now (``docker ps -a``),
+    and a container that existed at any moment since the previous invocation,
+    read from the daemon's event log (``docker events``) over exactly that
+    interval. The event log is a bounded buffer the daemon empties on restart,
+    so each invocation first puts a uniquely named marker into it (a volume
+    created and removed by exact name) and records it in ``prune_state_file``;
+    the next invocation trusts the log only if that marker is still in it,
+    because the buffer drops its oldest entries first, so every event after a
+    surviving marker survives too. When the log does not provably cover the
+    whole interval (no marker, a lost or rolled-over log, a failed read), every
+    job tag's clock restarts: use the scaler did not observe is assumed recent.
+
+    A tag referenced now has no clock. A tag a container used between the two
+    invocations restarts its clock at this invocation. An unreferenced tag's
+    clock otherwise runs from the first invocation that saw it unreferenced, and
+    the tag becomes removable once that clock is ``retain_days`` old. A tag seen
+    for the first time, an image re-created under the same tag (a new creation
+    time), a lost or malformed state file and a clock that went backwards also
+    restart the clock. A dry run puts no marker into the log, reads the history
     and writes nothing. An image without a creation time is never removed, and
-    neither is one a container still references or the tag the current recipe
-    builds."""
+    neither is one a container references or the tag the current recipe builds."""
     now = clock()
     state_path = Path(str(cfg["prune_state_file"])).expanduser()
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -746,10 +878,57 @@ def prune_images(cfg: dict[str, Any], docker: Docker, *, dry_run: bool = False,
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
+def _observe_start(docker: Docker, dry_run: bool) -> tuple[int | None, str | None]:
+    """Read the daemon clock, then (not in a dry run) put this invocation's
+    marker into the event log. Done BEFORE the container snapshot, so a container
+    that comes and goes after the snapshot is in the next invocation's window."""
+    try:
+        start_ns = docker.daemon_time_ns()
+        if dry_run:
+            return start_ns, None
+        name = RETENTION_MARKER_PREFIX + os.urandom(8).hex()
+        docker.emit_marker(name)
+        return start_ns, name
+    except ScalerError as exc:
+        log(f"cannot mark the event log: {exc}; every job-image clock restarts")
+        return None, None
+
+
+def _observe_window(docker: Docker, start_ns: int | None, previous: dict[str, Any] | None,
+                    new_name: str | None) -> tuple[set[str], bool, dict[str, Any] | None]:
+    """The images containers used since the previous invocation's marker,
+    whether the log provably covers that whole interval, and this invocation's
+    marker record (None when it is not in the log)."""
+    if start_ns is None:
+        return set(), False, None
+    try:
+        until_ns = docker.daemon_time_ns()
+        since_ns = start_ns
+        if previous is not None and previous["time_ns"] <= start_ns:
+            since_ns = previous["time_ns"]
+        events = docker.events(since_ns, until_ns)
+    except ScalerError as exc:
+        log(f"cannot read the event log: {exc}; every job-image clock restarts")
+        return set(), False, None
+    covered = previous is not None and _marker_ns(events, previous["name"]) is not None
+    if previous is not None and not covered:
+        log("the event log no longer holds the previous marker; every job-image clock restarts")
+    marker = None
+    if new_name is not None:
+        stamp = _marker_ns(events, new_name)
+        if stamp is not None:
+            marker = {"name": new_name, "time_ns": stamp}
+    return _container_event_images(events), covered, marker
+
+
 def _prune_locked(cfg: dict[str, Any], docker: Docker, dry_run: bool, now: float,
                   state_path: Path) -> list[str]:
+    previous = load_prune_marker(state_path)
+    start_ns, new_name = _observe_start(docker, dry_run)
     images = docker.images()
-    in_use = docker.container_images()
+    in_use = resolve_image_refs(images, docker.container_images())
+    used_names, covered, marker = _observe_window(docker, start_ns, previous, new_name)
+    used_between = resolve_image_refs(images, used_names)
     try:
         current: str | None = image_ref(cfg)
     except ScalerError:
@@ -763,11 +942,11 @@ def _prune_locked(cfg: dict[str, Any], docker: Docker, dry_run: bool, now: float
         if image_scheme(cfg, ref) != "job" or image["created"] is None:
             continue
         if ref == current or ref in in_use:
-            continue                                   # referenced: the clock is cleared
+            continue                                   # referenced now: no clock
         seen = history.get(ref)
         since = now
-        if seen is not None and seen["created"] == image["created"] \
-                and seen["unreferenced_since"] <= now:
+        if covered and ref not in used_between and seen is not None \
+                and seen["created"] == image["created"] and seen["unreferenced_since"] <= now:
             since = seen["unreferenced_since"]
         updated[ref] = {"created": image["created"], "unreferenced_since": since}
         if now - since >= retain:
@@ -795,8 +974,43 @@ def _prune_locked(cfg: dict[str, Any], docker: Docker, dry_run: bool, now: float
         removed.append(ref)
         updated.pop(ref, None)
     if not dry_run:
-        save_prune_state(state_path, updated)
+        save_prune_state(state_path, updated, marker)
     return removed
+
+
+_RFC3339_RE = re.compile(
+    r"(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,9}))?(Z|([+-])(\d\d):(\d\d))$")
+
+
+def parse_rfc3339_ns(text: Any) -> int | None:
+    """Epoch nanoseconds from an RFC 3339 time with up to 9 fraction digits
+    (docker's ``SystemTime``), or None."""
+    match = _RFC3339_RE.match(str(text).strip())
+    if not match:
+        return None
+    y, mo, d, h, mi, s = (int(match.group(i)) for i in range(1, 7))
+    frac = int((match.group(7) or "0").ljust(9, "0"))
+    offset = 0
+    if match.group(8) != "Z":
+        offset = int(match.group(10)) * 3600 + int(match.group(11)) * 60
+        if match.group(9) == "-":
+            offset = -offset
+    return (timegm((y, mo, d, h, mi, s, 0, 0, 0)) - offset) * 10**9 + frac
+
+
+def format_event_ns(ns: int) -> str:
+    """``<seconds>.<9 digits>``: the exact-nanosecond form ``docker events
+    --since``/``--until`` read, so no float rounding moves a bound."""
+    return f"{ns // 10**9}.{ns % 10**9:09d}"
+
+
+def event_ns(event: dict[str, Any]) -> int | None:
+    """An event's stamp in epoch nanoseconds (``timeNano``, else ``time``)."""
+    for key, scale in (("timeNano", 1), ("time", 10**9)):
+        value = event.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(value) * scale
+    return None
 
 
 def parse_created_at(text: str) -> float | None:

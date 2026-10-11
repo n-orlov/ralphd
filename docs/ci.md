@@ -384,34 +384,65 @@ scheme is never a candidate. Two kinds of tag are in the scheme, and nothing els
   uses it. Its creation time never authorizes a removal: docker records no last-use time,
   so a month-old image a sibling container used an hour ago is not stale.
 
-The reference age of a job tag is therefore the scaler's own record. Each `prune-images`
-invocation reads the containers (`docker ps -a`) and keeps, in the file `prune_state_file`
-(default `$XDG_STATE_HOME/ralphd-ci/prune-state.json`, else under `~/.local/state`), for
-each job tag it found unreferenced the time of the *first* invocation that saw it so.
-A later invocation removes the tag once that time is at least `retain_days` old. History
-across separate invocations is read conservatively, so a missing fact only ever delays a
-removal:
+The reference age of a job tag is therefore the scaler's own record, kept in the file
+`prune_state_file` (default `$XDG_STATE_HOME/ralphd-ci/prune-state.json`, else under
+`~/.local/state`). Two sources tell an invocation that a tag was in use:
+
+- a container, in any state, that uses it now (`docker ps -a`);
+- a container that existed at any moment since the previous invocation, even one that
+  was created and removed between the two, read from the daemon's event log
+  (`docker events --since <previous marker> --until <daemon time>`, bounded, so it never
+  streams). Every container event (create, start, die, destroy) names its image, as a
+  `name:tag` or an image id; an id counts for every tag of that image.
+
+The daemon's event log is a bounded in-memory buffer: it drops its oldest events first
+and starts empty after a daemon restart. So each invocation, before it lists the
+containers, puts a uniquely named marker into the log (a volume named
+`ralphd-ci-retention-mark-<random hex>`, created and removed by that exact name, see
+`RETENTION_MARKER_PREFIX`) and records the marker's name and stamp in the history file.
+The next invocation trusts the log only when that marker is still in it: since the
+buffer drops oldest first, every event after a surviving marker survives too, so the log
+then covers the whole interval. Otherwise, use the scaler did not observe is assumed
+recent, and every job tag's clock restarts.
+
+For each job tag no container uses now, the history holds the time from which it is
+known to have been unreferenced, and an invocation removes the tag once that time is at
+least `retain_days` old. History across separate invocations is read conservatively, so
+a missing fact only ever delays a removal:
 
 - the first invocation that sees a tag (or finds no history file) removes no job tag;
-- a tag a container uses in an invocation loses its record, and the clock restarts at the
-  first later invocation that sees it unused, because a reference the scaler did not see
-  between two invocations is assumed recent;
+- a tag a container uses now has no clock; the clock starts at the first later
+  invocation that sees it unused;
+- a tag a container used at any time between the previous invocation and this one
+  (the event log shows it) has its clock restarted at this invocation;
+- when the event log does not provably cover the interval since the previous
+  invocation (its marker is gone because the buffer rolled over or the daemon restarted,
+  the history holds no marker, or reading the daemon time, writing the marker or reading
+  the log failed), every job tag's clock restarts;
 - an image re-created under the same tag (a new creation time), a removed tag that comes
   back, a malformed history file and a clock that has gone backwards all restart the clock;
 - a failed `rmi` keeps the record, so the next invocation tries again;
-- `--dry-run` reads the history, prints what it would remove and writes nothing, so it
-  starts no clock.
+- `--dry-run` reads the history and the log, prints what it would remove, and writes
+  nothing: no marker, no history, so it starts no clock and breaks no coverage.
+
+Because the buffer is bounded, an invocation interval long enough for the daemon to log
+more events than it keeps never proves coverage, and then no job tag is ever removed. Run
+`prune-images` often enough that the log between two invocations stays inside the
+daemon's buffer: on a busy CI host, hourly rather than daily.
 
 The runner-image rule needs no history: the newest `keep` tags stay, and the rest go.
 
 A tag a container still uses, the tag the current recipe builds, and an image with no
 creation time are all kept. A failed `rmi` is logged and the rest go on. `--dry-run`
 prints `would remove image <name:tag>` for each and removes none. The command is run by
-hand or from a timer, at an interval well inside `retain_days`; the scaler's own loop never
-calls it.
+hand or from a timer, at an interval short enough for the event log to cover it (above);
+the scaler's own loop never calls it.
 `tests/test_runner_scaler_prune.py` lists runner tags, job-image tags and unrelated
 images in the fake `docker`, runs `prune_images` at injected times, and asserts exactly which
 `rmi` calls are made: an old image used recently stays, one unreferenced for the interval goes.
+Its fake `docker` keeps a bounded event log of every container and volume event, so the
+tests also run a container that comes and goes between two invocations (by tag and by
+image id), a log that rolls over, a daemon restart and a failed log read.
 
 ### The start deadline and reaping
 

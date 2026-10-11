@@ -384,3 +384,145 @@ def test_the_history_file_is_a_config_key_with_a_state_dir_default(scaler, write
     assert cfg["prune_state_file"].endswith("prune-state.json")
     assert "prune_state_file" in scaler.DEFAULTS
     assert scaler.DEFAULTS["prune_state_file"].endswith("ralphd-ci/prune-state.json")
+
+
+# ---- (4) use that begins and ends between two invocations ---------------------
+#
+# A container a sibling job creates and removes between two `prune-images`
+# invocations is never in any `docker ps -a` snapshot. The daemon's event log is
+# the record of it; the log is trusted only when it provably covers the whole
+# interval, and otherwise every clock restarts.
+
+CONTROL = "ralphd:test-ci-400-1"
+
+
+def come_and_go(docker, image, name="sibling-between", at=None):
+    """A container that exists only between two invocations."""
+    if at is not None:
+        docker.set_clock(at)
+    docker.add_container(name, created_epoch=at or NOW, image=image)
+    docker.remove_container(name)
+
+
+def test_use_entirely_between_daily_invocations_restarts_the_clock(
+        scaler, docker, write_config):
+    # The review probe: daily separate invocations, day 0..13; a container uses
+    # JOB after the day-13 run and is gone one second before the day-14 run.
+    docker.add_image(JOB, created_epoch=NOW - 400 * DAY)
+    docker.add_image(CONTROL, created_epoch=NOW - 400 * DAY)
+    for day in range(14):
+        assert prune(scaler, docker, write_config, at=NOW + day * DAY) == []
+    come_and_go(docker, JOB, at=NOW + 14 * DAY - 1)
+    assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == [CONTROL]
+    assert JOB in docker.images()
+    assert rmi_args(docker) == [[CONTROL]]
+    # its clock now runs from the day-14 invocation, not from day 0
+    for day in range(15, 28):
+        assert prune(scaler, docker, write_config, at=NOW + day * DAY) == []
+    assert prune(scaler, docker, write_config, at=NOW + 28 * DAY) == [JOB]
+
+
+def test_use_between_invocations_seen_by_a_separate_cli_process(tmp_path, docker,
+                                                                 write_config):
+    import json
+    import time
+    docker.add_image(JOB, created_epoch=time.time() - 400 * DAY)
+    docker.add_image(CONTROL, created_epoch=time.time() - 400 * DAY)
+    path = write_config()
+    cmd = [sys.executable, str(SCALER), "--config", str(path), "prune-images"]
+    first = subprocess.run(cmd, env=docker.env(), capture_output=True, text=True, timeout=60)
+    assert first.returncode == 0, first.stderr
+    state = tmp_path / "prune-state.json"
+    data = json.loads(state.read_text())
+    for entry in data["unreferenced"].values():          # 15 days unreferenced so far
+        entry["unreferenced_since"] = time.time() - 15 * DAY
+    state.write_text(json.dumps(data))
+    come_and_go(docker, JOB)
+    second = subprocess.run(cmd, env=docker.env(), capture_output=True, text=True,
+                            timeout=60)
+    assert second.returncode == 0, second.stderr
+    assert rmi_args(docker) == [[CONTROL]]
+    assert JOB in docker.images()
+
+
+def test_use_by_image_id_between_invocations_protects_every_tag_of_that_image(
+        scaler, docker, write_config):
+    twin = "ralphd:test-ci-300-1-base"
+    for ref in (JOB, twin, CONTROL):
+        docker.add_image(ref, created_epoch=NOW - 90 * DAY)
+    docker.set_image_id(JOB, "sha256:" + "ab" * 32)
+    docker.set_image_id(twin, "sha256:" + "ab" * 32)
+    assert prune(scaler, docker, write_config) == []
+    come_and_go(docker, "abababababab")                  # run by short image id
+    assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == [CONTROL]
+    assert prune(scaler, docker, write_config, at=NOW + 27 * DAY) == []
+    assert set(prune(scaler, docker, write_config, at=NOW + 28 * DAY)) == {JOB, twin}
+
+
+def test_an_event_log_that_rolled_over_restarts_every_clock(scaler, docker, write_config):
+    docker.add_image(JOB, created_epoch=NOW - 90 * DAY)
+    docker.add_image(CONTROL, created_epoch=NOW - 90 * DAY)
+    docker.set_events_limit(8)
+    assert prune(scaler, docker, write_config) == []
+    come_and_go(docker, JOB)                              # pushed out of the log by ...
+    for n in range(6):                                    # ... later unrelated events
+        come_and_go(docker, "ubuntu:24.04", name=f"other-{n}")
+    assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == []
+    assert not docker.commands("rmi")                     # neither tag: coverage unproven
+    assert prune(scaler, docker, write_config, at=NOW + 27 * DAY) == []
+    assert set(prune(scaler, docker, write_config, at=NOW + 28 * DAY)) == {JOB, CONTROL}
+
+
+def test_a_daemon_restart_between_invocations_restarts_every_clock(
+        scaler, docker, write_config):
+    docker.add_image(JOB, created_epoch=NOW - 90 * DAY)
+    assert prune(scaler, docker, write_config) == []
+    docker.restart_daemon()
+    assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == []
+    assert prune(scaler, docker, write_config, at=NOW + 28 * DAY) == [JOB]
+
+
+@pytest.mark.parametrize("verb", ["events", "info", "volume"])
+def test_an_unreadable_event_log_removes_no_job_tag(scaler, docker, write_config,
+                                                    monkeypatch, verb):
+    docker.add_image(JOB, created_epoch=NOW - 90 * DAY)
+    for n in range(1, 5):
+        docker.add_image(f"ci-runner:{hexid(n)}", created_epoch=NOW - n * DAY)
+    assert prune(scaler, docker, write_config) == [f"ci-runner:{hexid(4)}"]
+    monkeypatch.setenv("FAKE_DOCKER_FAIL", verb)
+    assert prune(scaler, docker, write_config, at=NOW + 30 * DAY) == []
+    monkeypatch.delenv("FAKE_DOCKER_FAIL")
+    # the failed invocation left no marker, so the next one cannot prove coverage
+    assert prune(scaler, docker, write_config, at=NOW + 31 * DAY) == []
+    assert prune(scaler, docker, write_config, at=NOW + 45 * DAY) == [JOB]
+
+
+def test_a_history_without_a_marker_restarts_every_clock(scaler, docker, write_config,
+                                                         tmp_path):
+    import json
+    docker.add_image(JOB, created_epoch=NOW - 90 * DAY)
+    prune(scaler, docker, write_config)
+    state = tmp_path / "prune-state.json"
+    data = json.loads(state.read_text())
+    assert data["marker"]["name"].startswith(scaler.RETENTION_MARKER_PREFIX)
+    del data["marker"]                                    # e.g. a history written before markers
+    state.write_text(json.dumps(data))
+    assert prune(scaler, docker, write_config, at=NOW + 20 * DAY) == []
+    assert prune(scaler, docker, write_config, at=NOW + 34 * DAY) == [JOB]
+
+
+def test_the_marker_is_removed_by_exact_name_and_a_dry_run_sets_none(
+        scaler, docker, write_config):
+    docker.add_image(JOB, created_epoch=NOW - 90 * DAY)
+    prune(scaler, docker, write_config)
+    prune(scaler, docker, write_config, at=NOW + 7 * DAY, dry_run=True)
+    assert len(docker.commands("volume")) == 2           # the real run only
+    created, removed = docker.commands("volume")
+    assert created[:2] == ["volume", "create"] and removed[:2] == ["volume", "rm"]
+    assert created[2] == removed[2] and created[2].startswith(scaler.RETENTION_MARKER_PREFIX)
+    assert len(created) == 3 and len(removed) == 3
+    assert docker.volumes() == []
+    # the dry run in between did not break coverage
+    assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == [JOB]
+    for argv in docker.commands("events"):
+        assert "--until" in argv                          # bounded: it never streams
