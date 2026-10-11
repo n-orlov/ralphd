@@ -1,6 +1,7 @@
 """The runner scaler's start deadline and reaping: a container whose job the
 API keeps `queued` past `start_deadline_s`, a container whose job is
-`completed`, and one older than `job_deadline_s` are each removed by exact name
+`completed`, one older than `job_deadline_s` and one that has exited are each
+removed by exact name
 (`docker rm --force ci-runner-<job id>`), never by filter, prune or pattern.
 Time is an injected clock: the fake docker stamps containers from it and the
 scaler's passes read it, so nothing really waits."""
@@ -265,3 +266,100 @@ def test_a_dry_run_during_a_job_read_outage_names_only_the_overdue_container(rig
     assert [ln for ln in lines if ln.startswith("would remove")] == [
         "would remove ci-runner-101: past job_deadline_s"]
     assert removals(rig.docker) == []
+
+
+# ---- exit cleanup: unconditional, needs no job read (B.4) -------------------
+
+ALL_JOB_STATES = ["queued", "in_progress", "completed"]
+
+
+@pytest.mark.parametrize("job_state", ALL_JOB_STATES)
+@pytest.mark.parametrize("container_state", ["exited", "dead"])
+def test_an_exited_container_is_removed_at_once_whatever_its_job_says(
+        rig, job_state, container_state):
+    queue_job(rig.github, 1, 101, status=job_state)
+    rig.docker.add_container("ci-runner-101", created_epoch=T0, state=container_state)
+    rig.advance(1)  # far below start_deadline_s and job_deadline_s
+    rig.run_pass()
+    assert removals(rig.docker)[0] == ["rm", "--force", "ci-runner-101"]
+    assert all(argv[-1] != "ci-runner-101" for argv in removals(rig.docker)[1:])
+
+
+@pytest.mark.parametrize("status,headers", OUTAGES)
+def test_exit_cleanup_holds_while_job_reads_fail_and_reads_no_job(
+        rig, status, headers):
+    queue_job(rig.github, 1, 101, status="in_progress")
+    queue_job(rig.github, 1, 102, status="in_progress")
+    rig.docker.add_container("ci-runner-101", created_epoch=T0, state="exited")
+    rig.docker.add_container("ci-runner-102", created_epoch=T0)  # running, young
+    rig.advance(1)
+    rig.github.fail_next(100, status, headers, path_contains="/actions/jobs/")
+    rig.run_pass()
+    assert removals(rig.docker) == [["rm", "--force", "ci-runner-101"]]
+    assert sorted(rig.docker.containers()) == ["ci-runner-102"]
+    # The only job read was for the running container, and it failed: exit
+    # cleanup itself read nothing, and the outage removed nothing.
+    assert [r["path"].rsplit("/", 1)[-1] for r in job_reads(rig.github)] == ["102"]
+
+
+@pytest.mark.parametrize("status,headers", OUTAGES)
+def test_a_queue_outage_removes_overdue_and_exited_containers_and_keeps_running_ones(
+        rig, scaler, status, headers):
+    for job in (801, 802, 803):
+        queue_job(rig.github, 8, job, status="in_progress")
+    rig.docker.add_container("ci-runner-803", created_epoch=T0)  # will be overdue
+    rig.advance(rig.cfg["job_deadline_s"] + 1)
+    rig.docker.add_container("ci-runner-801", created_epoch=rig.now, state="exited")
+    rig.docker.add_container("ci-runner-802", created_epoch=rig.now)  # running, young
+    rig.docker.add_container("ci-runner-foreign", created_epoch=T0, state="exited")
+    rig.docker.add_container("buildkit", created_epoch=T0, state="exited")
+    rig.advance(1)
+    rig.github.fail_next(100, status, headers)  # every API call fails
+    with pytest.raises(scaler.ScalerError):
+        rig.run_pass()
+    assert removals(rig.docker) == [["rm", "--force", "ci-runner-801"],
+                                    ["rm", "--force", "ci-runner-803"]]
+    assert sorted(rig.docker.containers()) == [
+        "buildkit", "ci-runner-802", "ci-runner-foreign"]
+    assert job_reads(rig.github) == []
+    assert rig.docker.commands("create") == []
+
+
+@pytest.mark.parametrize("container_state", ["created", "paused", "restarting"])
+def test_a_container_that_has_not_exited_is_kept_through_a_job_read_outage(
+        rig, container_state):
+    queue_job(rig.github, 1, 101, status="completed")
+    rig.docker.add_container("ci-runner-101", created_epoch=T0, state=container_state)
+    rig.advance(rig.cfg["job_deadline_s"] - 1)
+    rig.github.fail_next(100, 503, path_contains="/actions/jobs/")
+    rig.run_pass()
+    assert removals(rig.docker) == []
+    assert sorted(rig.docker.containers()) == ["ci-runner-101"]
+
+
+def test_an_exited_container_of_a_queued_job_is_replaced_on_the_next_pass(rig):
+    queue_job(rig.github, 1, 101, status="queued")
+    rig.docker.add_container("ci-runner-101", created_epoch=T0, state="exited")
+    rig.advance(1)
+    assert rig.run_pass() == 0  # removed, but never restarted in the same pass
+    assert removals(rig.docker) == [["rm", "--force", "ci-runner-101"]]
+    assert rig.docker.containers() == {}
+    assert rig.run_pass() == 1
+    assert sorted(rig.docker.containers()) == ["ci-runner-101"]
+    assert len(rig.docker.commands("create")) == 1
+
+
+def test_a_dry_run_names_the_exit_cleanup_during_an_outage_and_issues_none(rig):
+    queue_job(rig.github, 1, 101, status="in_progress")
+    queue_job(rig.github, 1, 102, status="in_progress")
+    rig.docker.add_container("ci-runner-101", created_epoch=T0, state="exited")
+    rig.docker.add_container("ci-runner-102", created_epoch=T0)
+    rig.advance(1)
+    rig.github.fail_next(100, 429, {"Retry-After": "7"}, path_contains="/actions/jobs/")
+    lines = []
+    rig.scaler.run_pass(rig.cfg, rig.api, rig.dock, dry_run=True,
+                        clock=lambda: rig.now, out=lines.append)
+    assert [ln for ln in lines if ln.startswith("would remove")] == [
+        "would remove ci-runner-101: exited"]
+    assert removals(rig.docker) == []
+    assert sorted(rig.docker.containers()) == ["ci-runner-101", "ci-runner-102"]

@@ -729,9 +729,12 @@ def queued_pool_jobs(api: GitHubApi) -> list[dict[str, Any]]:
     return sorted(jobs, key=lambda job: int(job["id"]))
 
 
+EXITED_STATES = ("exited", "dead")
+
+
 def live_containers(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The scaler's containers that still occupy a slot (not exited or dead)."""
-    return [e for e in entries if str(e.get("State", "")) not in ("exited", "dead")]
+    return [e for e in entries if str(e.get("State", "")) not in EXITED_STATES]
 
 
 def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
@@ -741,15 +744,17 @@ def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
                     hard_only: bool = False) -> set[str]:
     """Remove, by exact name, the containers that are done or overdue.
 
-    ``hard_only`` applies only the unconditional rule (older than
-    ``job_deadline_s``), which reads no job and so needs the API not at all.
+    ``hard_only`` applies only the unconditional rules, which read no job and
+    so need the API not at all: (a) the container is older than
+    ``job_deadline_s``, or (b) it has exited (state ``exited`` or ``dead``:
+    the run-once runner is finished, so its slot and name are free).
 
-    A container goes when (a) it is older than ``job_deadline_s``, (b) its job
-    is ``completed``, or (c) its job is still ``queued`` after
+    Reaping that needs a successful job read follows: (c) its job is
+    ``completed``, or (d) its job is still ``queued`` after
     ``start_deadline_s`` (GitHub assigned the job to the runner and it never
     ran). Each removal is one ``docker rm --force ci-runner-<job id>``. A job
-    lookup that fails leaves its container for the next pass. Returns the names
-    removed (or, in a dry run, that would be).
+    lookup that fails leaves a running container for the next pass. Returns
+    the names removed (or, in a dry run, that would be).
     """
     reaped: set[str] = set()
     for entry in sorted(entries, key=lambda e: str(e["Names"])):
@@ -762,6 +767,8 @@ def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
         reason = None
         if age is not None and age > float(cfg["job_deadline_s"]):
             reason = "past job_deadline_s"
+        elif str(entry.get("State", "")) in EXITED_STATES:
+            reason = "exited"
         elif hard_only:
             continue
         else:
@@ -812,8 +819,9 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
     file lock if the host lacks it. A failed build raises, and starts nothing.
     """
     existing = docker.containers()
-    # The hard deadline needs no API read, so it comes first and holds even
-    # while the queue cannot be read; reaping that needs a job read follows.
+    # The hard deadline and exit cleanup need no API read, so they come first
+    # and hold even while the queue cannot be read; reaping that needs a job
+    # read follows.
     reaped = reap_containers(cfg, api, docker, existing, now=clock(),
                              dry_run=dry_run, out=out, hard_only=True)
     jobs = queued_pool_jobs(api)

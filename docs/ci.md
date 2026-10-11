@@ -207,7 +207,10 @@ without it is left to the standing runners. Jobs are served in ascending job-id
 order, so the oldest job is started first. Each started container is named
 `ci-runner-<job id>`, and that name is the scaler's only state: a job that
 already has a `ci-runner-<job id>` container, in any state, is skipped, so two
-passes over the same queue start one container per job. `max_concurrency` (default 4)
+passes over the same queue start one container per job. A container that has
+exited is removed at the start of the next pass (see the reaping section), and that
+pass still skips its job; a job still `queued` after that is started again by the
+pass after it. `max_concurrency` (default 4)
 caps the containers alive at once. A pass counts the `ci-runner-*` containers that
 have not exited and starts only as many jobs as free slots remain, so ten queued
 jobs at the default start four, and the next pass starts one job for each container
@@ -249,8 +252,10 @@ the runner starts once, takes the one job the config was requested for and exits
 it ends; the container's exit status is the runner's. There is no `config.sh`
 registration step in the script or in the argv, because the JIT config already
 registered the single-use runner. The exited container is removed by exact
-name by the reaping described in the start deadline and reaping section, once its
-job reads `completed` or the container passes `job_deadline_s`. The config file is put into the
+name by the next pass, as described in the start deadline and reaping section:
+exit cleanup is unconditional, so it reads no job and holds whatever the job's
+status is (`queued`, `in_progress` or `completed`) and while the API is unreachable.
+The config file is put into the
 container as described in the next section. The recipe is checked by parsing,
 never by a build: `tests/test_runner_image.py` asserts the digest base, the SHA-256
 check, no `latest` tag and `USER 1000` on the file, fails each assertion on a mutated
@@ -366,14 +371,19 @@ removed, so the replacement is the next pass's.
 Every pass reaps before it starts anything, in two kinds that differ in what they
 need from the API.
 
-- **Unconditional removal.** A container older than `job_deadline_s` (default 7800:
-  the longest workflow `timeout-minutes` is 120, which is 7200 seconds, plus margin)
-  is removed whatever its job says. This rule reads no job and asks the API nothing,
-  so it holds while the API is down, rate limited or erroring, and it is applied
-  first, before the queue is read: an overdue container goes even in a pass that then
-  cannot read the queue.
-- **Removal that needs a job read.** For every other `ci-runner-*` container the
-  scaler reads the job (`GET /repos/{repo}/actions/jobs/{job id}`) and removes the
+- **Unconditional removal.** Two rules read no job and ask the API nothing. The
+  hard deadline: a container older than `job_deadline_s` (default 7800: the longest
+  workflow `timeout-minutes` is 120, which is 7200 seconds, plus margin) is removed
+  whatever its job says. Exit cleanup: a container whose docker state is `exited` or
+  `dead` is removed however young it is and whatever its job says, because the
+  run-once runner inside it has finished (it ran its job, crashed, or never
+  connected), so this is the `--rm`-equivalent cleanup after exit. Both hold while
+  the API is down, rate limited or erroring, and both are applied first, before the
+  queue is read: an overdue or exited container goes even in a pass that then
+  cannot read the queue. A job whose exited container is removed while the job is
+  still `queued` is started again by the next pass, like any job with no container.
+- **Removal that needs a job read.** For every other `ci-runner-*` container (one
+  that has not exited and is younger than `job_deadline_s`) the scaler reads the job (`GET /repos/{repo}/actions/jobs/{job id}`) and removes the
   container when the job is `completed`, or when it is still `queued` past
   `start_deadline_s`. This kind needs a successful read. A job lookup that fails
   (a timeout, a 5xx, a 403, a 429 or an unknown job) leaves its container for the
@@ -388,8 +398,8 @@ Removal is always one exact name, `docker rm --force ci-runner-<job id>`: the sc
 never removes by `--filter`, `prune`, a wildcard or a label selector, and refuses a
 name that is not `ci-runner-<digits>`. Listing may filter, but it does so client-side
 on the name prefix. This is tested in `tests/test_runner_scaler_reaping.py` against
-an injected clock, including the hard deadline while every job read, or the queue
-read, fails.
+an injected clock, including the hard deadline and exit cleanup while every job
+read, or the queue read, fails.
 
 ### API failures and the backoff
 
@@ -406,11 +416,12 @@ seconds, so the wait is the time left until it). That wait is never shorter than
 Any other reply (a 404, say) and a docker failure do not back off.
 
 An unreachable API never removes a running container. Removal other than the
-hard deadline needs a successful read of the container's job, so while the API is
-down, rate limited or erroring every `ci-runner-*` container younger than
-`job_deadline_s` stays exactly as it was, and the pass that sees the API again reaps
-what is then due. A container past `job_deadline_s` is removed regardless, because
-that rule reads nothing. Likewise no start is missed or doubled: a job
+hard deadline and exit cleanup needs a successful read of the container's job, so
+while the API is down, rate limited or erroring every `ci-runner-*`
+container that has not exited and is younger than `job_deadline_s` stays exactly as it was, and the pass that
+sees the API again reaps what is then due. A container past `job_deadline_s`, or one
+that has exited, is removed regardless, because those rules read nothing; the
+outage is never the reason for either removal. Likewise no start is missed or doubled: a job
 that has a container is skipped, and one that has none is started on the first
 pass that can read the queue. This is tested in
 `tests/test_runner_scaler_resilience.py` with an injected sleep and clock, so nothing
