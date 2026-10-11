@@ -801,8 +801,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.34 cure 01-06 retries (event-log coverage, then tag-to-image identity
     # across invocations): +10 and +9 tests, no new module, measured the same
     # way -> fast 8295/528, smoke 6548/403.
-    "fast": {"tests": 8295, "modules": 528},
-    "smoke": {"tests": 6548, "modules": 403},
+    # v0.34 re-take of tests/test_runner_image.py: +5 tests, no new module,
+    # measured the same way -> fast 8300/528, smoke 6553/403.
+    "fast": {"tests": 8300, "modules": 528},
+    "smoke": {"tests": 6553, "modules": 403},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

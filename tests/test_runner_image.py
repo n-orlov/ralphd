@@ -183,3 +183,27 @@ def test_the_run_once_script_runs_the_runner_with_jitconfig_and_never_registers(
     assert (RUN_ONCE.stat().st_mode & 0o111) != 0
     assert any(w == "COPY" and "run-once.sh" in r
                for w, r in instructions(DOCKERFILE.read_text()))
+
+
+def check_no_entrypoint_or_cmd(text: str) -> None:
+    found = [word for word, _ in instructions(text) if word in ("ENTRYPOINT", "CMD")]
+    assert not found, f"the image sets {found}; the scaler's argv must name the command"
+
+
+def test_the_image_has_no_entrypoint_or_cmd(dockerfile):
+    check_no_entrypoint_or_cmd(dockerfile)
+
+
+@pytest.mark.parametrize("extra", ['ENTRYPOINT ["/bin/sh"]\n', 'CMD ["./run.sh"]\n',
+                                   "ENTRYPOINT /home/ubuntu/run-once.sh\n"])
+def test_a_mutated_copy_with_an_entrypoint_or_cmd_fails_the_check(dockerfile, extra):
+    with pytest.raises(AssertionError):
+        check_no_entrypoint_or_cmd(dockerfile + extra)
+
+
+def test_the_jit_value_never_appears_in_the_start_argv_or_the_command(
+        scaler, tmp_path, monkeypatch):
+    argv = start_argv(scaler, tmp_path, monkeypatch)
+    assert not any("FAKE_JIT_VALUE" in part for part in argv)
+    assert "-e" not in argv and "--env" not in argv
+    assert not any(part.startswith("--env") for part in argv)

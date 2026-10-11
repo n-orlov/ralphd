@@ -47,6 +47,6 @@ RUN curl -fsSL -o runner.tar.gz \
 COPY --chown=1000:1000 run-once.sh /home/ubuntu/run-once.sh
 RUN chmod 0755 /home/ubuntu/run-once.sh
 
-# No ENTRYPOINT or CMD: the scaler's `docker run` argv names the command, so the
+# No ENTRYPOINT or CMD: the scaler's `docker create` argv names the command, so the
 # one-job invocation is visible in (and tested from) that argv.
 USER 1000
