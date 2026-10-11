@@ -174,3 +174,81 @@ def test_an_unreachable_api_never_lets_an_exception_out_of_the_loop(
     assert rig.waits == [5, 10, 20, 40]
     assert rig.docker.commands("rm") == []
     assert rig.docker.commands("create") == []
+
+
+def test_retry_after_on_a_503_sets_the_next_wait(rig):
+    rig.github.fail_next(1, 503, {"Retry-After": "27"})
+    rig.run(passes=2)
+    assert rig.waits == [27]
+
+
+@pytest.mark.parametrize("status", [500, 502, 504])
+def test_retry_after_on_any_5xx_sets_the_next_wait(rig, status):
+    rig.github.fail_next(1, status, {"Retry-After": "13"})
+    rig.run(passes=2)
+    assert rig.waits == [13]
+
+
+def test_ratelimit_reset_on_a_5xx_sets_the_next_wait_when_the_limit_is_spent(rig):
+    rig.github.fail_next(1, 502, {"x-ratelimit-reset": str(int(T0) + 33),
+                                  "x-ratelimit-remaining": "0"})
+    rig.run(passes=2)
+    assert rig.waits == [33]
+
+
+def test_a_5xx_ignores_a_reset_while_requests_remain(rig):
+    rig.github.fail_next(1, 503, {"x-ratelimit-reset": str(int(T0) + 900),
+                                  "x-ratelimit-remaining": "4000"})
+    rig.run(passes=2)
+    assert rig.waits == [POLL]  # plain backoff, not the unrelated reset
+
+
+def test_retry_after_as_an_http_date_on_a_503(rig):
+    from email.utils import formatdate
+    rig.github.fail_next(1, 503, {"Retry-After": formatdate(T0 + 21, usegmt=True)})
+    rig.run(passes=2)
+    assert rig.waits == [21]
+
+
+@pytest.mark.parametrize("value", ["nan", "-5", "soon", ""])
+def test_an_unusable_retry_after_falls_back_to_the_backoff(rig, value):
+    rig.github.fail_next(2, 503, {"Retry-After": value})
+    rig.run(passes=3)
+    assert rig.waits == [POLL, 2 * POLL]
+
+
+def test_a_4xx_other_than_403_429_ignores_retry_after(rig):
+    rig.github.fail_next(1, 404, {"Retry-After": "50"})
+    rig.run(passes=2)
+    assert rig.waits == [POLL]
+
+
+def test_a_503_with_retry_after_then_recovery_starts_the_queued_job(rig):
+    rig.github.add_run(1)
+    rig.github.add_job(1, 101, ["ci-pool"])
+    rig.github.fail_next(1, 503, {"Retry-After": "19"})
+    rig.run(passes=3)
+    assert rig.waits == [19, POLL]
+    assert len(rig.docker.commands("create")) == 1
+
+
+def test_a_sustained_failure_streak_recovers_with_the_wait_capped_at_60(rig):
+    rig.github.fail_next(40, 503)
+    rig.run(passes=42)
+    assert rig.waits[:4] == [5, 10, 20, 40]
+    assert set(rig.waits[4:40]) == {60}
+    assert rig.waits[40] == POLL
+
+
+@pytest.mark.parametrize("failures", [10, 100, 1023, 1024, 5000, 10**9])
+def test_next_wait_is_capped_for_arbitrarily_long_streaks(scaler, failures):
+    err = scaler.ApiError("down", status=503)
+    assert scaler.next_wait(POLL, failures, err, T0) == 60
+    assert scaler.next_wait(0.5, failures, None, T0) == 0.5
+    assert scaler.next_wait(1, failures, scaler.ApiError("x"), T0) == 60
+
+
+def test_next_wait_never_exceeds_the_cap_nor_drops_below_the_poll(scaler):
+    for failures in range(1, 30):
+        wait = scaler.next_wait(POLL, failures, scaler.ApiError("x"), T0)
+        assert POLL <= wait <= 60

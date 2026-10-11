@@ -456,10 +456,17 @@ passes `job_deadline_s`, when the unconditional removals take it with no read.
 After a failed pass the loop waits longer: the wait doubles from
 `poll_interval_s` with each consecutive failed pass (5, 10, 20, 40 seconds at the
 default) and is capped at 60 seconds, and one clean pass returns it to
-`poll_interval_s`. A 403 or 429 that names a wait sets the next wait instead:
+`poll_interval_s`. A reply that names a wait sets the next wait instead:
 `Retry-After` (seconds or an HTTP date) first, else `x-ratelimit-reset` (epoch
-seconds, so the wait is the time left until it). That wait is never shorter than
-`poll_interval_s` and is bounded at one hour, so a bad header cannot park the loop.
+seconds, so the wait is the time left until it). That applies to a 403, a 429
+and any 5xx, so a 503 with `Retry-After` is waited out as asked; `x-ratelimit-reset`
+is skipped when the reply's `x-ratelimit-remaining` is above 0, because the limit
+is then not what failed. A header that is not a finite, non-negative number or an
+HTTP date is ignored, and the plain backoff applies. A named wait is never shorter
+than `poll_interval_s` and is bounded at one hour, so a bad header cannot park the
+loop. The 60-second backoff cap holds for a failure streak of any length: the
+doubling stops at the cap, so no exception, an arithmetic overflow included, can
+leave `run_loop`.
 A docker failure is not an API call: it does not back off, and a failed start
 skips only that container.
 

@@ -784,8 +784,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # +29 tests, no new module (4xx cases in tests/test_runner_scaler_pass_
     # failures.py, _resilience.py, _jit.py), measured the same way -> fast
     # 8231/528, smoke 6484/403.
-    "fast": {"tests": 8231, "modules": 528},
-    "smoke": {"tests": 6484, "modules": 403},
+    # v0.34 cure 01-04 (Retry-After and reset on a 5xx, backoff cap for any
+    # streak): +21 tests, no new module (tests/test_runner_scaler_resilience.py),
+    # measured the same way -> fast 8252/528, smoke 6505/403.
+    "fast": {"tests": 8252, "modules": 528},
+    "smoke": {"tests": 6505, "modules": 403},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

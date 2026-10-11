@@ -31,6 +31,7 @@ import time
 import urllib.error
 import urllib.request
 from calendar import timegm
+from datetime import timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -92,11 +93,13 @@ class ApiError(ScalerError):
 
     def __init__(self, message: str, status: int | None = None,
                  retry_after: str | None = None,
-                 ratelimit_reset: str | None = None) -> None:
+                 ratelimit_reset: str | None = None,
+                 ratelimit_remaining: str | None = None) -> None:
         super().__init__(message)
         self.status = status
         self.retry_after = retry_after
         self.ratelimit_reset = ratelimit_reset
+        self.ratelimit_remaining = ratelimit_remaining
 
 
 # --------------------------------------------------------------------------
@@ -297,7 +300,9 @@ class GitHubApi:
             raise ApiError(f"GitHub API {method} {path}: HTTP {exc.code}",
                            status=exc.code,
                            retry_after=exc.headers.get("Retry-After"),
-                           ratelimit_reset=exc.headers.get("x-ratelimit-reset"))
+                           ratelimit_reset=exc.headers.get("x-ratelimit-reset"),
+                           ratelimit_remaining=exc.headers.get(
+                               "x-ratelimit-remaining"))
         except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
             raise ApiError(f"GitHub API {method} {path}: {exc}")
         try:
@@ -952,25 +957,44 @@ def run_pass(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
     return started
 
 
+def _seconds(text: str) -> float | None:
+    """``text`` as a finite, non-negative number of seconds, else None."""
+    try:
+        value = float(text.strip())
+    except ValueError:
+        return None
+    return value if 0 <= value < float("inf") else None  # not NaN, < 0 or inf
+
+
 def _header_wait(failure: ApiError, now: float) -> float | None:
-    """Seconds a 403/429 reply asks us to wait: ``Retry-After`` (seconds or an
-    HTTP date), else ``x-ratelimit-reset`` (epoch seconds). None when absent."""
-    if failure.status not in (403, 429):
+    """Seconds a rate-limited or erroring reply asks us to wait.
+
+    Applies to a 403, a 429 and any 5xx (a 503 may carry ``Retry-After`` too):
+    ``Retry-After`` (seconds or an HTTP date) first, else ``x-ratelimit-reset``
+    (epoch seconds). The reset is skipped when the reply says requests remain
+    (``x-ratelimit-remaining`` above 0), because the limit is then not what
+    failed. None when nothing usable is present.
+    """
+    status = failure.status
+    if status is None or not (status in (403, 429) or status >= 500):
         return None
     if failure.retry_after:
         text = failure.retry_after.strip()
+        seconds = _seconds(text)
+        if seconds is not None:
+            return seconds
         try:
-            return max(0.0, float(text))
-        except ValueError:
-            try:
-                return max(0.0, parsedate_to_datetime(text).timestamp() - now)
-            except (TypeError, ValueError):
-                pass
-    if failure.ratelimit_reset:
-        try:
-            return max(0.0, float(failure.ratelimit_reset.strip()) - now)
-        except ValueError:
+            when = parsedate_to_datetime(text)
+            if when.tzinfo is None:  # HTTP dates are GMT
+                when = when.replace(tzinfo=timezone.utc)
+            return max(0.0, when.timestamp() - now)
+        except (TypeError, ValueError, OverflowError):
             pass
+    if failure.ratelimit_reset:
+        left = _seconds(failure.ratelimit_remaining or "0")
+        reset = _seconds(failure.ratelimit_reset)
+        if reset is not None and (left is None or left == 0):
+            return max(0.0, reset - now)
     return None
 
 
@@ -980,9 +1004,10 @@ def next_wait(poll_interval_s: float, failures: int,
 
     No failure: ``poll_interval_s``. After the ``failures``-th consecutive failed
     pass: ``poll_interval_s * 2**(failures - 1)``, capped at ``BACKOFF_CAP_S``
-    (never below ``poll_interval_s``). A 403/429 that names a wait (``Retry-After``,
-    else ``x-ratelimit-reset``) sets the wait to that, bounded by
-    ``RATE_LIMIT_MAX_WAIT_S`` so a bad header cannot park the loop.
+    (never below ``poll_interval_s``), for any streak length. A 403/429/5xx
+    that names a wait (``Retry-After``, else ``x-ratelimit-reset``) sets the wait
+    to that, bounded by ``RATE_LIMIT_MAX_WAIT_S`` so a bad header cannot park
+    the loop.
     """
     poll = float(poll_interval_s)
     if failure is None:
@@ -990,8 +1015,14 @@ def next_wait(poll_interval_s: float, failures: int,
     hinted = _header_wait(failure, now)
     if hinted is not None:
         return max(poll, min(hinted, float(RATE_LIMIT_MAX_WAIT_S)))
-    backoff = min(float(BACKOFF_CAP_S), poll * 2 ** max(0, failures - 1))
-    return max(poll, backoff)
+    # Doubling stops at the cap, so a streak of any length never builds a huge
+    # number (float * 2**1100 overflows).
+    backoff = poll
+    for _ in range(min(max(0, failures - 1), 64)):
+        if backoff >= BACKOFF_CAP_S:
+            break
+        backoff *= 2
+    return max(poll, min(float(BACKOFF_CAP_S), backoff))
 
 
 def run_loop(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
