@@ -798,8 +798,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.34 cure 01-06 (job-image prune by reference age): +13 tests, no new
     # module (tests/test_runner_scaler_prune.py), measured the same way -> fast
     # 8276/528, smoke 6529/403.
-    "fast": {"tests": 8286, "modules": 528},
-    "smoke": {"tests": 6539, "modules": 403},
+    # v0.34 cure 01-06 retries (event-log coverage, then tag-to-image identity
+    # across invocations): +10 and +9 tests, no new module, measured the same
+    # way -> fast 8295/528, smoke 6548/403.
+    "fast": {"tests": 8295, "modules": 528},
+    "smoke": {"tests": 6548, "modules": 403},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

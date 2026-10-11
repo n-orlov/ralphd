@@ -526,3 +526,182 @@ def test_the_marker_is_removed_by_exact_name_and_a_dry_run_sets_none(
     assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == [JOB]
     for argv in docker.commands("events"):
         assert "--until" in argv                          # bounded: it never streams
+
+
+# ---- (5) tag-to-image identity across invocations ------------------------------
+#
+# A container event names the image as the container was created with it. When
+# that tag is gone by the next invocation, the saved history (and the window's
+# `image tag` events) still map it to its image id, so every surviving tag of the
+# same image restarts its clock. A name nothing maps restarts every clock.
+
+TWIN = JOB + "-base"
+OTHER = "ralphd:test-ci-301-1"
+
+
+def two_tags_of_one_image(docker):
+    for ref in (JOB, TWIN, CONTROL):
+        docker.add_image(ref, created_epoch=NOW - 90 * DAY)
+    docker.set_image_id(TWIN, docker.image_id_of(JOB))
+
+
+def use_then_untag(docker, image, *, used_at, gone_at, name="sibling-gone"):
+    """A container uses ``image``; then the container and the tag both go."""
+    docker.set_clock(used_at)
+    docker.add_container(name, created_epoch=used_at, image=image)
+    docker.set_clock(gone_at)
+    docker.remove_container(name)
+    docker.untag_image(image)
+
+
+def test_a_removed_referencing_tag_still_protects_a_surviving_tag_of_its_image(
+        scaler, docker, write_config):
+    # The review probe, retain_days 3: the referencing tag and its container are
+    # gone one second before the run, and the twin tag of the same image stays.
+    two_tags_of_one_image(docker)
+    docker.set_clock(NOW)
+    assert prune(scaler, docker, write_config, "retain_days: 3\n") == []
+    use_then_untag(docker, JOB, used_at=NOW + 3 * DAY - 2, gone_at=NOW + 3 * DAY - 1)
+    docker.set_clock(NOW + 3 * DAY)
+    assert prune(scaler, docker, write_config, "retain_days: 3\n", at=NOW + 3 * DAY) \
+        == [CONTROL]
+    assert TWIN in docker.images()
+    assert rmi_args(docker) == [[CONTROL]]
+    docker.set_clock(NOW + 6 * DAY - 1)
+    assert prune(scaler, docker, write_config, "retain_days: 3\n",
+                 at=NOW + 6 * DAY - 1) == []
+    docker.set_clock(NOW + 6 * DAY)
+    assert prune(scaler, docker, write_config, "retain_days: 3\n", at=NOW + 6 * DAY) \
+        == [TWIN]
+
+
+def test_a_removed_referencing_tag_is_resolved_by_a_separate_cli_process(
+        tmp_path, docker, write_config):
+    import json
+    import time
+    for ref in (JOB, TWIN, CONTROL):
+        docker.add_image(ref, created_epoch=time.time() - 400 * DAY)
+    docker.set_image_id(TWIN, docker.image_id_of(JOB))
+    path = write_config("retain_days: 3\n")
+    cmd = [sys.executable, str(SCALER), "--config", str(path), "prune-images"]
+    first = subprocess.run(cmd, env=docker.env(), capture_output=True, text=True, timeout=60)
+    assert first.returncode == 0, first.stderr
+    state = tmp_path / "prune-state.json"
+    data = json.loads(state.read_text())
+    for entry in data["unreferenced"].values():          # 4 days unreferenced so far
+        entry["unreferenced_since"] = time.time() - 4 * DAY
+    state.write_text(json.dumps(data))
+    docker.add_container("sibling-gone", created_epoch=time.time(), image=JOB)
+    docker.remove_container("sibling-gone")
+    docker.untag_image(JOB)
+    second = subprocess.run(cmd, env=docker.env(), capture_output=True, text=True,
+                            timeout=60)
+    assert second.returncode == 0, second.stderr
+    assert rmi_args(docker) == [[CONTROL]]
+    assert TWIN in docker.images()
+
+
+def test_a_tag_set_and_removed_between_invocations_is_resolved_by_its_tag_event(
+        scaler, docker, write_config):
+    # Never in any image list: only the window's `image tag` event names its image.
+    for ref in (JOB, CONTROL):
+        docker.add_image(ref, created_epoch=NOW - 90 * DAY)
+    assert prune(scaler, docker, write_config) == []
+    docker.set_clock(NOW + 13 * DAY)
+    docker.tag_image(JOB, "localhost:5000/mirror:copy")
+    use_then_untag(docker, "localhost:5000/mirror:copy",
+                   used_at=NOW + 14 * DAY - 2, gone_at=NOW + 14 * DAY - 1)
+    assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == [CONTROL]
+    assert JOB in docker.images()
+    assert prune(scaler, docker, write_config, at=NOW + 28 * DAY - 1) == []
+    assert prune(scaler, docker, write_config, at=NOW + 28 * DAY) == [JOB]
+
+
+def test_a_tag_moved_to_another_image_before_its_use_protects_that_image(
+        scaler, docker, write_config):
+    # The history maps the alias to JOB's image; inside the window it is moved to
+    # OTHER's image, used and removed. OTHER's clock restarts (JOB's may too).
+    for ref in (JOB, OTHER, CONTROL):
+        docker.add_image(ref, created_epoch=NOW - 90 * DAY)
+    docker.tag_image(JOB, "mirror:alias")
+    assert prune(scaler, docker, write_config) == []
+    docker.set_clock(NOW + 13 * DAY)
+    docker.tag_image(OTHER, "mirror:alias")
+    use_then_untag(docker, "mirror:alias", used_at=NOW + 14 * DAY - 2,
+                   gone_at=NOW + 14 * DAY - 1)
+    removed = prune(scaler, docker, write_config, at=NOW + 14 * DAY)
+    assert CONTROL in removed and OTHER not in removed
+    assert OTHER in docker.images()
+    assert prune(scaler, docker, write_config, at=NOW + 28 * DAY - 1) == []
+    assert OTHER in prune(scaler, docker, write_config, at=NOW + 28 * DAY)
+
+
+def test_a_removed_tag_of_an_image_now_gone_restarts_no_other_clock(
+        scaler, docker, write_config):
+    # The identity resolves the name, and no surviving tag shares its image: the
+    # unrelated clocks run on.
+    gone = "ralphd:test-ci-600-1"
+    for ref in (JOB, CONTROL, gone):
+        docker.add_image(ref, created_epoch=NOW - 90 * DAY)
+    assert prune(scaler, docker, write_config) == []
+    use_then_untag(docker, gone, used_at=NOW + 14 * DAY - 2, gone_at=NOW + 14 * DAY - 1)
+    assert set(prune(scaler, docker, write_config, at=NOW + 14 * DAY)) == {JOB, CONTROL}
+
+
+def test_a_used_name_nothing_maps_restarts_every_clock(scaler, docker, write_config):
+    # A pulled name (no `image tag` event) for JOB's image, used and removed
+    # between invocations: no list knows which tags it denoted.
+    for ref in (JOB, CONTROL):
+        docker.add_image(ref, created_epoch=NOW - 90 * DAY)
+    assert prune(scaler, docker, write_config) == []
+    docker.add_image("localhost:5000/pulled:1", created_epoch=NOW - 90 * DAY)
+    docker.set_image_id("localhost:5000/pulled:1", docker.image_id_of(JOB))
+    use_then_untag(docker, "localhost:5000/pulled:1", used_at=NOW + 14 * DAY - 2,
+                   gone_at=NOW + 14 * DAY - 1)
+    assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == []
+    assert not docker.commands("rmi")
+    assert prune(scaler, docker, write_config, at=NOW + 28 * DAY - 1) == []
+    assert set(prune(scaler, docker, write_config, at=NOW + 28 * DAY)) == {JOB, CONTROL}
+
+
+def test_a_history_without_the_identity_restarts_every_clock_on_a_removed_tag(
+        scaler, docker, write_config, tmp_path):
+    import json
+    two_tags_of_one_image(docker)
+    assert prune(scaler, docker, write_config) == []
+    state = tmp_path / "prune-state.json"
+    data = json.loads(state.read_text())
+    assert set(data["names"][JOB]) == {scaler._normal_id(docker.image_id_of(JOB))}
+    del data["names"]                                     # e.g. written by an older scaler
+    state.write_text(json.dumps(data))
+    use_then_untag(docker, JOB, used_at=NOW + 14 * DAY - 2, gone_at=NOW + 14 * DAY - 1)
+    assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == []
+    assert not docker.commands("rmi")
+    assert set(prune(scaler, docker, write_config, at=NOW + 28 * DAY)) == {TWIN, CONTROL}
+
+
+def test_a_container_naming_an_unknown_image_now_restarts_every_clock(
+        scaler, docker, write_config):
+    for ref in (JOB, CONTROL):
+        docker.add_image(ref, created_epoch=NOW - 90 * DAY)
+    assert prune(scaler, docker, write_config) == []
+    docker.add_container("sibling-odd", created_epoch=NOW, image="localhost:5000/unknown:1")
+    assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == []
+    assert not docker.commands("rmi")
+
+
+def test_a_tag_removed_while_its_container_lives_on_still_maps_a_window_later(
+        scaler, docker, write_config):
+    # The identity outlives the tag: the container goes two windows after the tag,
+    # and its events still lead to the twin, and to nothing else.
+    two_tags_of_one_image(docker)
+    assert prune(scaler, docker, write_config) == []
+    docker.set_clock(NOW + DAY)
+    docker.add_container("sibling-long", created_epoch=NOW + DAY, image=JOB)
+    docker.untag_image(JOB)
+    assert prune(scaler, docker, write_config, at=NOW + 2 * DAY) == []
+    docker.set_clock(NOW + 14 * DAY - 1)
+    docker.remove_container("sibling-long")
+    assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == [CONTROL]
+    assert TWIN in docker.images()
+    assert prune(scaler, docker, write_config, at=NOW + 28 * DAY) == [TWIN]

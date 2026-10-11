@@ -762,14 +762,38 @@ def load_prune_marker(path: Path) -> dict[str, Any] | None:
     return {"name": name, "time_ns": stamp}
 
 
+def load_prune_names(path: Path) -> dict[str, dict[str, float]]:
+    """The tag-to-image identity ``prune-images`` keeps between invocations: per
+    ``name:tag`` it ever saw (in the image list, or in an ``image tag`` event),
+    the image ids it pointed at and when each was last seen. A missing or
+    malformed file, or entry, is no identity: a name it cannot map is then
+    unresolvable, and an unresolvable use restarts every clock."""
+    entries = _read_prune_file(path).get("names")
+    if not isinstance(entries, dict):
+        return {}
+    names: dict[str, dict[str, float]] = {}
+    for ref, ids in entries.items():
+        if not isinstance(ids, dict):
+            continue
+        for image_id, seen in ids.items():
+            try:
+                names.setdefault(str(ref), {})[_normal_id(str(image_id))] = float(seen)
+            except (TypeError, ValueError):
+                continue
+    return names
+
+
 def save_prune_state(path: Path, state: dict[str, dict[str, float]],
-                     marker: dict[str, Any] | None = None) -> None:
+                     marker: dict[str, Any] | None = None,
+                     names: dict[str, dict[str, float]] | None = None) -> None:
     """Write the history atomically (a temp file in the same directory, renamed)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
     data: dict[str, Any] = {"unreferenced": state}
     if marker is not None:
         data["marker"] = marker
+    if names:
+        data["names"] = names
     tmp.write_text(json.dumps(data, sort_keys=True))
     os.replace(tmp, path)
 
@@ -779,37 +803,75 @@ def _normal_id(value: str) -> str:
     return value[len("sha256:"):] if value.startswith("sha256:") else value
 
 
-def resolve_image_refs(images: list[dict[str, Any]], names: set[str]) -> set[str]:
-    """The tags ``names`` (what a container or an event says it uses: a
-    ``name:tag``, a bare name meaning ``:latest``, or an image id, full or short)
-    point at, widened to every tag of the same image id. A name that matches no
-    image on the host refers to nothing the host still holds."""
+_HEX_RE = re.compile(r"[0-9a-f]+")
+
+
+def resolve_image_names(images: list[dict[str, Any]], names: set[str],
+                        known: dict[str, set[str]] | None = None
+                        ) -> tuple[set[str], set[str]]:
+    """The tags on the host that ``names`` (what a container or an event says it
+    uses: a ``name:tag``, a bare name meaning ``:latest``, or an image id, full
+    or short) may denote, widened to every tag of the same image id, and the
+    names that cannot be resolved at all.
+
+    A name is mapped to image ids through the current image list AND through
+    ``known``: the ids a name pointed at earlier (the saved history and the
+    window's ``image tag`` events), so a tag removed since a container used it
+    still leads to the surviving tags of the same image. An image id is always
+    resolved (one matching no image on the host denotes an image that is gone).
+    Anything else -- a name neither list knows, a digest reference -- is
+    returned as unresolvable: the caller cannot tell which tags it protects."""
+    known = known or {}
     by_ref = {i["ref"]: _normal_id(str(i.get("id") or "")) for i in images}
     by_id: dict[str, set[str]] = {}
     for ref, image_id in by_ref.items():
         if image_id:
             by_id.setdefault(image_id, set()).add(ref)
+    known_ids = {i for ids in known.values() for i in ids}
     found: set[str] = set()
+    unresolved: set[str] = set()
     for raw in names:
         name = str(raw).strip()
         if not name:
             continue
+        resolved = False
         ids: set[str] = set()
         candidates = [name]
-        if ":" not in name.rpartition("/")[2]:
+        if "@" not in name and ":" not in name.rpartition("/")[2]:
             candidates.append(name + ":latest")
         for candidate in candidates:
             if candidate in by_ref:
+                resolved = True
                 found.add(candidate)
                 if by_ref[candidate]:
                     ids.add(by_ref[candidate])
+            if known.get(candidate):
+                resolved = True
+                ids |= {_normal_id(i) for i in known[candidate]}
         wanted = _normal_id(name)
-        if len(wanted) >= 12 and re.fullmatch(r"[0-9a-f]+", wanted):
-            ids.update(i for i in by_id if i.startswith(wanted) or
-                       (len(i) >= 12 and wanted.startswith(i)))
+        if "@" not in name and len(wanted) >= 12 and _HEX_RE.fullmatch(wanted):
+            matches = {i for i in set(by_id) | known_ids
+                       if i.startswith(wanted) or (len(i) >= 12 and wanted.startswith(i))}
+            ids |= matches
+            if matches or len(wanted) == 64 or name.lower().startswith("sha256:"):
+                resolved = True
         for image_id in ids:
             found |= by_id.get(image_id, set())
-    return found
+        if not resolved:
+            unresolved.add(name)
+    return found, unresolved
+
+
+def resolve_image_refs(images: list[dict[str, Any]], names: set[str],
+                       known: dict[str, set[str]] | None = None) -> set[str]:
+    """The tags :func:`resolve_image_names` maps ``names`` to."""
+    return resolve_image_names(images, names, known)[0]
+
+
+def _event_attrs(event: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    actor = event.get("Actor") if isinstance(event.get("Actor"), dict) else {}
+    attrs = actor.get("Attributes") if isinstance(actor.get("Attributes"), dict) else {}
+    return actor, attrs
 
 
 def _container_event_images(events: list[dict[str, Any]]) -> set[str]:
@@ -819,11 +881,29 @@ def _container_event_images(events: list[dict[str, Any]]) -> set[str]:
     for event in events:
         if str(event.get("Type", event.get("type", ""))) != "container":
             continue
-        actor = event.get("Actor") if isinstance(event.get("Actor"), dict) else {}
-        attrs = actor.get("Attributes") if isinstance(actor.get("Attributes"), dict) else {}
+        _, attrs = _event_attrs(event)
         for value in (attrs.get("image"), event.get("from")):
             if value:
                 names.add(str(value))
+    return names
+
+
+def _tag_event_names(events: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """The ``name:tag`` -> image ids that ``image tag`` events in ``events`` record
+    (the daemon logs one per tag a build, ``docker tag`` or load sets)."""
+    names: dict[str, set[str]] = {}
+    for event in events:
+        if str(event.get("Type", event.get("type", ""))) != "image" \
+                or str(event.get("Action", event.get("status", ""))) != "tag":
+            continue
+        actor, attrs = _event_attrs(event)
+        image_id, name = str(actor.get("ID") or event.get("id") or ""), attrs.get("name")
+        if not image_id or not name:
+            continue
+        name = str(name)
+        if ":" not in name.rpartition("/")[2]:
+            name += ":latest"
+        names.setdefault(name, set()).add(_normal_id(image_id))
     return names
 
 
@@ -895,12 +975,14 @@ def _observe_start(docker: Docker, dry_run: bool) -> tuple[int | None, str | Non
 
 
 def _observe_window(docker: Docker, start_ns: int | None, previous: dict[str, Any] | None,
-                    new_name: str | None) -> tuple[set[str], bool, dict[str, Any] | None]:
-    """The images containers used since the previous invocation's marker,
-    whether the log provably covers that whole interval, and this invocation's
-    marker record (None when it is not in the log)."""
+                    new_name: str | None
+                    ) -> tuple[set[str], dict[str, set[str]], bool, dict[str, Any] | None]:
+    """The images containers used since the previous invocation's marker, the
+    ``name:tag`` -> image ids the window's ``image tag`` events record, whether
+    the log provably covers that whole interval, and this invocation's marker
+    record (None when it is not in the log)."""
     if start_ns is None:
-        return set(), False, None
+        return set(), {}, False, None
     try:
         until_ns = docker.daemon_time_ns()
         since_ns = start_ns
@@ -909,7 +991,7 @@ def _observe_window(docker: Docker, start_ns: int | None, previous: dict[str, An
         events = docker.events(since_ns, until_ns)
     except ScalerError as exc:
         log(f"cannot read the event log: {exc}; every job-image clock restarts")
-        return set(), False, None
+        return set(), {}, False, None
     covered = previous is not None and _marker_ns(events, previous["name"]) is not None
     if previous is not None and not covered:
         log("the event log no longer holds the previous marker; every job-image clock restarts")
@@ -918,17 +1000,46 @@ def _observe_window(docker: Docker, start_ns: int | None, previous: dict[str, An
         stamp = _marker_ns(events, new_name)
         if stamp is not None:
             marker = {"name": new_name, "time_ns": stamp}
-    return _container_event_images(events), covered, marker
+    return _container_event_images(events), _tag_event_names(events), covered, marker
+
+
+def _merge_names(history: dict[str, dict[str, float]], tagged: dict[str, set[str]],
+                 images: list[dict[str, Any]], now: float,
+                 retain: float) -> dict[str, dict[str, float]]:
+    """The identity to save: every current tag and every tag the window's events
+    set, seen ``now``, plus the saved identity of names last seen less than
+    ``retain`` ago (a name dropped later is unresolvable, which is conservative)."""
+    names: dict[str, dict[str, float]] = {}
+    for ref, ids in history.items():
+        for image_id, seen in ids.items():
+            if now - seen < retain:
+                names.setdefault(ref, {})[image_id] = seen
+    current = [(i["ref"], {_normal_id(str(i.get("id") or ""))}) for i in images]
+    for ref, ids in list(tagged.items()) + current:
+        for image_id in ids:
+            if image_id:
+                names.setdefault(ref, {})[image_id] = now
+    return names
 
 
 def _prune_locked(cfg: dict[str, Any], docker: Docker, dry_run: bool, now: float,
                   state_path: Path) -> list[str]:
     previous = load_prune_marker(state_path)
+    history_names = load_prune_names(state_path)
     start_ns, new_name = _observe_start(docker, dry_run)
     images = docker.images()
-    in_use = resolve_image_refs(images, docker.container_images())
-    used_names, covered, marker = _observe_window(docker, start_ns, previous, new_name)
-    used_between = resolve_image_refs(images, used_names)
+    ps_names = docker.container_images()
+    used_names, tagged, covered, marker = _observe_window(docker, start_ns, previous, new_name)
+    known: dict[str, set[str]] = {ref: set(ids) for ref, ids in history_names.items()}
+    for ref, ids in tagged.items():
+        known.setdefault(ref, set()).update(ids)
+    in_use, unresolved = resolve_image_names(images, ps_names, known)
+    used_between, unresolved_between = resolve_image_names(images, used_names, known)
+    unresolved |= unresolved_between
+    if unresolved and covered:
+        log("cannot tell which images " + ", ".join(sorted(unresolved)) +
+            " denote; every job-image clock restarts")
+        covered = False
     try:
         current: str | None = image_ref(cfg)
     except ScalerError:
@@ -974,7 +1085,8 @@ def _prune_locked(cfg: dict[str, Any], docker: Docker, dry_run: bool, now: float
         removed.append(ref)
         updated.pop(ref, None)
     if not dry_run:
-        save_prune_state(state_path, updated, marker)
+        save_prune_state(state_path, updated, marker,
+                         _merge_names(history_names, tagged, images, now, retain))
     return removed
 
 

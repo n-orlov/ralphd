@@ -529,6 +529,49 @@ class FakeDocker:
         data.setdefault("image_ids", {})[tag] = image_id
         self._write(data)
 
+    def _image_event(self, data: dict[str, Any], action: str, image_id: str,
+                     name: str) -> None:
+        """Log an image event as the daemon does: ``tag`` carries the image id as
+        Actor.ID and the new ``name:tag`` as its name; ``untag`` names only the id."""
+        import time
+        now = data.get("clock") or time.time()
+        ns = max(int(now * 1e9), data.get("last_event_ns", 0) + 1)
+        data["last_event_ns"] = ns
+        events = data.setdefault("events", [])
+        events.append({"Type": "image", "Action": action,
+                       "Actor": {"ID": image_id, "Attributes": {"name": name}},
+                       "time": ns // 10**9, "timeNano": ns})
+        del events[:max(0, len(events) - data.get("events_limit", 256))]
+
+    def image_id_of(self, tag: str) -> str:
+        """The image id the fake reports for ``tag``."""
+        import hashlib
+        return self._read().get("image_ids", {}).get(tag) or \
+            "sha256:" + hashlib.sha256(tag.encode()).hexdigest()
+
+    def tag_image(self, source: str, tag: str) -> None:
+        """``docker tag source tag``: a second name for the same image (same id
+        and creation time), logged as an ``image tag`` event."""
+        image_id = self.image_id_of(source)
+        data = self._read()
+        if tag not in data["images"]:
+            data["images"].append(tag)
+        data.setdefault("image_ids", {})[tag] = image_id
+        made = data.get("image_created", {}).get(source)
+        if made is not None:
+            data.setdefault("image_created", {})[tag] = made
+        self._image_event(data, "tag", image_id, tag)
+        self._write(data)
+
+    def untag_image(self, tag: str) -> None:
+        """``docker rmi tag`` from outside the scaler (a sibling job's cleanup),
+        logged as the daemon logs it: an ``untag`` naming only the image id."""
+        image_id = self.image_id_of(tag)
+        data = self._read()
+        data["images"].remove(tag)
+        self._image_event(data, "untag", image_id, image_id)
+        self._write(data)
+
     def events(self) -> list[dict[str, Any]]:
         return self._read().get("events", [])
 

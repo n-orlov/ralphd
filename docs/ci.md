@@ -395,6 +395,23 @@ The reference age of a job tag is therefore the scaler's own record, kept in the
   streams). Every container event (create, start, die, destroy) names its image, as a
   `name:tag` or an image id; an id counts for every tag of that image.
 
+A container event names the image as the container was created with it, and that tag may
+be gone by the next invocation (a sibling job removes its own tags after its containers).
+So a used name is mapped to image ids through three lists, and the use counts for every
+tag on the host that now carries any of those ids:
+
+- the current `docker images` list;
+- the tag-to-image identity the history file keeps: every `name:tag` an invocation saw,
+  with the image ids it pointed at, kept for `retain_days` after it was last seen;
+- the `image tag` events in the same covered window (the daemon logs one, with the image
+  id, for every tag a build or `docker tag` sets), so a tag set and removed between
+  two invocations still leads to its image.
+
+A name none of these maps (a pulled name used and removed in between, a digest reference,
+a history without that identity) could denote any job image, so every job tag's clock
+restarts, exactly as for a log that does not cover the interval. A removed tag whose image
+is gone from the host restarts no other clock. An image id always resolves.
+
 The daemon's event log is a bounded in-memory buffer: it drops its oldest events first
 and starts empty after a daemon restart. So each invocation, before it lists the
 containers, puts a uniquely named marker into the log (a volume named
@@ -414,7 +431,9 @@ a missing fact only ever delays a removal:
 - a tag a container uses now has no clock; the clock starts at the first later
   invocation that sees it unused;
 - a tag a container used at any time between the previous invocation and this one
-  (the event log shows it) has its clock restarted at this invocation;
+  (the event log shows it) has its clock restarted at this invocation, and so has every
+  other tag of the same image, even when the tag the container named is gone by then;
+- a used name that cannot be mapped to an image restarts every job tag's clock;
 - when the event log does not provably cover the interval since the previous
   invocation (its marker is gone because the buffer rolled over or the daemon restarted,
   the history holds no marker, or reading the daemon time, writing the marker or reading
