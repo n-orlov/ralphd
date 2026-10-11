@@ -807,8 +807,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # module, measured the same way -> fast 8305/528, smoke 6558/403.
     # v0.34 re-take of tests/test_runner_scaler_prune.py: +4 tests, no new
     # module, measured the same way -> fast 8309/528, smoke 6562/403.
-    "fast": {"tests": 8309, "modules": 528},
-    "smoke": {"tests": 6562, "modules": 403},
+    # v0.34 cure 01-01-2 (server-directed waits are never shortened): +76
+    # tests, no new module, measured the same way -> fast 8385/528, smoke
+    # 6638/403.
+    "fast": {"tests": 8385, "modules": 528},
+    "smoke": {"tests": 6638, "modules": 403},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

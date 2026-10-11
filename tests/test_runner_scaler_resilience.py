@@ -136,10 +136,96 @@ def test_retry_after_wins_over_ratelimit_reset(rig):
     assert rig.waits == [9]
 
 
-def test_a_bogus_huge_rate_limit_header_cannot_park_the_loop(rig, scaler):
-    rig.github.fail_next(1, 429, {"Retry-After": "999999"})
+HOUR = 3600
+DAY = 24 * HOUR
+
+
+@pytest.mark.parametrize("status", [403, 429, 500, 503, 504])
+@pytest.mark.parametrize("seconds", [HOUR - 1, HOUR, HOUR + 1, 2 * HOUR, DAY,
+                                     7 * DAY, 400 * DAY])
+def test_a_valid_long_numeric_retry_after_is_waited_out_in_full(rig, status, seconds):
+    # No internal ceiling shortens a valid server-directed wait; the 60 s cap
+    # bounds the computed backoff only.
+    rig.github.fail_next(1, status, {"Retry-After": str(seconds)})
     rig.run(passes=2)
-    assert rig.waits == [scaler.RATE_LIMIT_MAX_WAIT_S]
+    assert rig.waits == [seconds]
+
+
+@pytest.mark.parametrize("status", [403, 429, 502, 503])
+@pytest.mark.parametrize("seconds", [2 * HOUR, DAY + 17, 30 * DAY])
+def test_a_valid_long_http_date_retry_after_is_waited_out_in_full(rig, status, seconds):
+    from email.utils import formatdate
+    rig.github.fail_next(1, status, {"Retry-After": formatdate(T0 + seconds, usegmt=True)})
+    rig.run(passes=2)
+    assert rig.waits == [seconds]
+
+
+@pytest.mark.parametrize("status", [403, 429, 500, 503])
+@pytest.mark.parametrize("seconds", [HOUR + 1, 3 * HOUR, 2 * DAY])
+def test_a_valid_long_ratelimit_reset_is_waited_out_in_full(rig, status, seconds):
+    rig.github.fail_next(1, status, {"x-ratelimit-reset": str(int(T0) + seconds),
+                                     "x-ratelimit-remaining": "0"})
+    rig.run(passes=2)
+    assert rig.waits == [seconds]
+
+
+def test_a_long_wait_after_a_streak_then_recovers_to_the_poll_interval(rig):
+    rig.github.fail_next(70, 503)
+    rig.run(passes=70)
+    assert set(rig.waits[4:]) == {60}
+    rig.github.fail_next(1, 429, {"Retry-After": str(5 * HOUR)})
+    rig.run(passes=3)
+    assert rig.waits[-2:] == [5 * HOUR, POLL]  # not the doubled backoff; then normal
+
+
+def test_a_long_server_wait_keeps_the_job_unstarted_until_it_ends(rig):
+    rig.github.add_run(1)
+    rig.github.add_job(1, 101, ["ci-pool"])
+    rig.github.fail_next(1, 429, {"Retry-After": str(DAY)})
+    rig.run(passes=2)
+    assert rig.waits == [DAY]
+    assert len(rig.docker.commands("create")) == 1  # started by the pass after it
+
+
+@pytest.mark.parametrize("value", ["inf", "-inf", "1e999", "nan", "-1", "-86400",
+                                   "1h", "tomorrow", "Mon, 99 Foo 2026 99:99:99 GMT"])
+def test_a_malformed_negative_or_non_finite_long_header_is_still_ignored(rig, value):
+    rig.github.fail_next(2, 429, {"Retry-After": value})
+    rig.run(passes=3)
+    assert rig.waits == [POLL, 2 * POLL]
+
+
+@pytest.mark.parametrize("value", ["inf", "-3600", "nan", "later"])
+def test_a_malformed_ratelimit_reset_is_still_ignored(rig, value):
+    rig.github.fail_next(1, 403, {"x-ratelimit-reset": value,
+                                  "x-ratelimit-remaining": "0"})
+    rig.run(passes=2)
+    assert rig.waits == [POLL]
+
+
+def test_next_wait_has_no_ceiling_on_a_valid_header(scaler):
+    err = scaler.ApiError("limited", status=429, retry_after=str(10 * DAY))
+    assert scaler.next_wait(POLL, 1, err, T0) == 10 * DAY
+    assert scaler.next_wait(POLL, 10**6, err, T0) == 10 * DAY
+    hdr = scaler.ApiError("limited", status=403, ratelimit_reset=str(int(T0) + 9 * HOUR))
+    assert scaler.next_wait(POLL, 3, hdr, T0) == 9 * HOUR
+
+
+def test_sleep_for_never_shortens_a_wait_the_platform_cannot_sleep_in_one_call(scaler):
+    slept: list[float] = []
+    scaler.sleep_for(2.5 * scaler.MAX_SLEEP_CHUNK_S, slept.append)
+    assert all(piece <= scaler.MAX_SLEEP_CHUNK_S for piece in slept)
+    assert sum(slept) == 2.5 * scaler.MAX_SLEEP_CHUNK_S
+    slept.clear()
+    scaler.sleep_for(2 * HOUR, slept.append)
+    assert slept == [2 * HOUR]
+
+
+def test_a_year_9999_retry_after_date_is_slept_through_in_pieces(rig, scaler):
+    rig.github.fail_next(1, 503, {"Retry-After": "Fri, 31 Dec 9999 23:59:59 GMT"})
+    rig.run(passes=2)
+    assert all(piece <= scaler.MAX_SLEEP_CHUNK_S for piece in rig.waits)
+    assert sum(rig.waits) > 200 * 365 * DAY  # waited out, not clamped
 
 
 @pytest.mark.parametrize("status", [400, 401, 404, 422])

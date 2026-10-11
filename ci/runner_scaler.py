@@ -44,7 +44,7 @@ RUNNER_GROUP_ID = 1
 DEFAULT_CONFIG_PATH = "~/.config/ralphd-ci/scaler.yaml"
 API_TIMEOUT_S = 30
 BACKOFF_CAP_S = 60
-RATE_LIMIT_MAX_WAIT_S = 3600
+MAX_SLEEP_CHUNK_S = 10 ** 9  # one real sleep call; longer waits are slept in pieces
 TRUSTED_EVENTS = ("push", "workflow_dispatch", "schedule", "pull_request")
 
 DEFAULTS: dict[str, Any] = {
@@ -1410,16 +1410,17 @@ def next_wait(poll_interval_s: float, failures: int,
     No failure: ``poll_interval_s``. After the ``failures``-th consecutive failed
     pass: ``poll_interval_s * 2**(failures - 1)``, capped at ``BACKOFF_CAP_S``
     (never below ``poll_interval_s``), for any streak length. A 403/429/5xx
-    that names a wait (``Retry-After``, else ``x-ratelimit-reset``) sets the wait
-    to that, bounded by ``RATE_LIMIT_MAX_WAIT_S`` so a bad header cannot park
-    the loop.
+    that names a valid wait (``Retry-After``, else ``x-ratelimit-reset``) sets
+    the wait to that, never shortened: the cap bounds the computed backoff
+    only, not a longer wait the server asked for. A malformed, negative or
+    non-finite header is ignored (``_header_wait``).
     """
     poll = float(poll_interval_s)
     if failure is None:
         return poll
     hinted = _header_wait(failure, now)
     if hinted is not None:
-        return max(poll, min(hinted, float(RATE_LIMIT_MAX_WAIT_S)))
+        return max(poll, hinted)
     # Doubling stops at the cap, so a streak of any length never builds a huge
     # number (float * 2**1100 overflows).
     backoff = poll
@@ -1428,6 +1429,19 @@ def next_wait(poll_interval_s: float, failures: int,
             break
         backoff *= 2
     return max(poll, min(float(BACKOFF_CAP_S), backoff))
+
+
+def sleep_for(seconds: float, sleep: Callable[[float], None]) -> None:
+    """Sleep the whole of ``seconds``, however long.
+
+    One real sleep call has a platform limit, so a wait past ``MAX_SLEEP_CHUNK_S``
+    is slept in pieces of that size; the total is never shortened.
+    """
+    remaining = float(seconds)
+    while remaining > MAX_SLEEP_CHUNK_S:
+        sleep(float(MAX_SLEEP_CHUNK_S))
+        remaining -= MAX_SLEEP_CHUNK_S
+    sleep(remaining)
 
 
 def run_loop(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
@@ -1457,7 +1471,7 @@ def run_loop(cfg: dict[str, Any], api: GitHubApi, docker: Docker, *,
             log(f"GitHub API call failed ({failure}); retrying in {wait:g}s")
         done += 1
         if passes is None or done < passes:
-            sleep(wait)
+            sleep_for(wait, sleep)
 
 
 def status_entries(docker: Docker, now: float | None = None) -> list[dict[str, Any]]:

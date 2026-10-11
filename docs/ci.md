@@ -547,11 +547,15 @@ seconds, so the wait is the time left until it). That applies to a 403, a 429
 and any 5xx, so a 503 with `Retry-After` is waited out as asked; `x-ratelimit-reset`
 is skipped when the reply's `x-ratelimit-remaining` is above 0, because the limit
 is then not what failed. A header that is not a finite, non-negative number or an
-HTTP date is ignored, and the plain backoff applies. A named wait is never shorter
-than `poll_interval_s` and is bounded at one hour, so a bad header cannot park the
-loop. The 60-second backoff cap holds for a failure streak of any length: the
+HTTP date is ignored, and the plain backoff applies. A valid header is a
+not-before time and no internal ceiling shortens it: a `Retry-After` or reset of
+two hours, a day or a month is waited out in full, and the wait is never shorter
+than `poll_interval_s`. The 60-second cap bounds only the computed exponential
+backoff, never a longer wait the server asked for. A wait too long for one
+platform sleep call is slept in pieces (`sleep_for`) that add up to the whole
+wait. The 60-second backoff cap holds for a failure streak of any length: the
 doubling stops at the cap, so no exception, an arithmetic overflow included, can
-leave `run_loop`.
+leave `run_loop`. One clean pass after the wait returns the loop to `poll_interval_s`.
 A docker failure is not an API call: it does not back off, and a failed start
 skips only that container.
 
