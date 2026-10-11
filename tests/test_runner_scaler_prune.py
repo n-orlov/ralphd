@@ -705,3 +705,56 @@ def test_a_tag_removed_while_its_container_lives_on_still_maps_a_window_later(
     assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == [CONTROL]
     assert TWIN in docker.images()
     assert prune(scaler, docker, write_config, at=NOW + 28 * DAY) == [TWIN]
+
+
+# ---- (4) re-take after cure-01-06: more of the same rule -------------------
+
+def test_a_container_naming_a_digest_reference_restarts_every_clock(
+        scaler, docker, write_config):
+    # A digest reference cannot be mapped to a tag: no job clock may keep running.
+    for ref in (JOB, CONTROL):
+        docker.add_image(ref, created_epoch=NOW - 90 * DAY)
+    assert prune(scaler, docker, write_config) == []
+    digest = "ralphd@sha256:" + "cd" * 32
+    come_and_go(docker, digest, at=NOW + 14 * DAY - 1)
+    assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == []
+    assert not docker.commands("rmi")
+    assert prune(scaler, docker, write_config, at=NOW + 28 * DAY - 1) == []     # clock from day 14
+    assert set(prune(scaler, docker, write_config, at=NOW + 28 * DAY)) == {JOB, CONTROL}
+
+
+def test_an_image_without_a_creation_time_is_never_removed_however_long_unreferenced(
+        scaler, docker, write_config, monkeypatch):
+    for ref in (JOB, CONTROL):
+        docker.add_image(ref, created_epoch=NOW - 90 * DAY)
+    real = scaler.Docker.images
+
+    def images(self):                                      # JOB's CreatedAt is unreadable
+        return [dict(i, created=None) if i["ref"] == JOB else i for i in real(self)]
+    monkeypatch.setattr(scaler.Docker, "images", images)
+    assert prune(scaler, docker, write_config) == []
+    assert prune(scaler, docker, write_config, at=NOW + 400 * DAY) == [CONTROL]
+    assert rmi_args(docker) == [[CONTROL]]
+    assert JOB in docker.images()
+
+
+def test_use_by_image_id_leaves_the_clock_of_an_unrelated_image_running(
+        scaler, docker, write_config):
+    for ref in (JOB, CONTROL):
+        docker.add_image(ref, created_epoch=NOW - 90 * DAY)
+    assert prune(scaler, docker, write_config) == []
+    come_and_go(docker, scaler._normal_id(docker.image_id_of(JOB))[:12], at=NOW + 14 * DAY - 1)
+    assert prune(scaler, docker, write_config, at=NOW + 14 * DAY) == [CONTROL]
+    assert rmi_args(docker) == [[CONTROL]]
+    assert prune(scaler, docker, write_config, at=NOW + 28 * DAY - 1) == []
+    assert prune(scaler, docker, write_config, at=NOW + 28 * DAY) == [JOB]
+
+
+def test_an_old_runner_tag_beyond_keep_is_removed_without_any_unreferenced_history(
+        scaler, docker, write_config):
+    # Keep retention is rank-based and needs neither history nor a waiting interval,
+    # while a job tag unreferenced for the same first invocation is untouched.
+    seed(docker)
+    removed = prune(scaler, docker, write_config)
+    assert removed == [f"ci-runner:{hexid(4)}", f"ci-runner:{hexid(5)}"]
+    assert not [r for r in removed if r.startswith("ralphd:")]
