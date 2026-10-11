@@ -335,7 +335,7 @@ jobs:
       contents: read
       packages: read
     container:
-      image: ghcr.io/n-orlov/ralphd-browser-ci@sha256:d760ffa130f503b19c7c260f3840222504ba7baa7fa172a76dbc0652a119b0c9
+      image: ghcr.io/n-orlov/ralphd-browser-ci@sha256:2311f2f375f35762e57de5c564c43b30cd5fe7cf7dae9e991370a05100596b7c
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -432,7 +432,7 @@ jobs:
       # nothing here can see the runner host's own provisioning any more.
       - name: Assert the browser toolchain is present
         run: |
-          echo "container image: ghcr.io/n-orlov/ralphd-browser-ci@sha256:d760ffa130f503b19c7c260f3840222504ba7baa7fa172a76dbc0652a119b0c9"
+          echo "container image: ghcr.io/n-orlov/ralphd-browser-ci@sha256:2311f2f375f35762e57de5c564c43b30cd5fe7cf7dae9e991370a05100596b7c"
           command -v playwright-cli
           playwright-cli --version
           command -v google-chrome
