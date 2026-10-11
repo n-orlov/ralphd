@@ -321,7 +321,7 @@ def test_task_042_fixture_embeds_the_clause_that_survives_in_git_history():
     import subprocess
 
     blob = subprocess.check_output(
-        ["git", "show", "5f6b6d9^:docs/prds/README.md"],
+        ["git", "show", "5b86159^:docs/prds/README.md"],
         cwd=Path(__file__).resolve().parents[1],
     ).decode()
     normalised = re.sub(r"\s+", " ", blob)
