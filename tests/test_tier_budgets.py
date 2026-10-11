@@ -792,8 +792,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.34 cure 01-05 (exit cleanup lifecycle): +4 tests, no new module
     # (tests/test_runner_scaler_reaping.py), measured the same way -> fast
     # 8262/528, smoke 6515/403.
-    "fast": {"tests": 8262, "modules": 528},
-    "smoke": {"tests": 6515, "modules": 403},
+    # v0.34 retake of tests/test_runner_scaler_secrets_limits.py: +1 test (the
+    # exact-boundary load check), no new module, measured the same way -> fast
+    # 8263/528, smoke 6516/403.
+    "fast": {"tests": 8263, "modules": 528},
+    "smoke": {"tests": 6516, "modules": 403},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

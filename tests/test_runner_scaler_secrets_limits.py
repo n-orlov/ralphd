@@ -355,6 +355,17 @@ def test_two_by_four_cpus_on_a_twelve_cpu_host_loads(scaler, tmp_path):
     assert cfg["max_concurrency"] == 2 and cfg["host_cpus"] == 12
 
 
+def test_a_total_exactly_equal_to_the_usable_cpus_loads_and_one_more_is_refused(
+        scaler, tmp_path):
+    # 11 x 1 CPU is exactly the 11 usable on a 12-CPU host: allowed.
+    one = "profiles:\n  default:\n    cpus: 1\n"
+    cfg = load(scaler, tmp_path, "max_concurrency: 11\nhost_cpus: 12\n" + one)
+    assert cfg["max_concurrency"] == 11
+    with pytest.raises(scaler.ConfigError) as err:
+        load(scaler, tmp_path, "max_concurrency: 12\nhost_cpus: 12\n" + one)
+    assert "12" in str(err.value) and "11" in str(err.value)
+
+
 def test_the_largest_profile_not_just_the_default_counts_toward_the_check(
         scaler, tmp_path):
     big = "profiles:\n  big:\n    cpus: 8\n"
