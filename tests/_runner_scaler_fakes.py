@@ -404,6 +404,12 @@ class FakeDocker:
         }
         self._write(data)
 
+    def set_state(self, name: str, state: str) -> None:
+        """Move an existing container to ``state`` (e.g. the runner exited)."""
+        data = self._read()
+        data["containers"][name]["State"] = state
+        self._write(data)
+
     def add_image(self, tag: str, *, created_epoch: float | None = None) -> None:
         data = self._read()
         data["images"].append(tag)

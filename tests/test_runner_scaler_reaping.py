@@ -370,3 +370,69 @@ def test_a_dry_run_names_the_exit_cleanup_during_an_outage_and_issues_none(rig):
         "would remove ci-runner-101: exited"]
     assert removals(rig.docker) == []
     assert sorted(rig.docker.containers()) == ["ci-runner-101", "ci-runner-102"]
+
+
+# ---- exit cleanup lifecycle: retry, slot reuse, the loop --------------------
+
+
+def test_a_failed_removal_of_an_exited_container_is_retried_on_the_next_pass(
+        rig, monkeypatch):
+    queue_job(rig.github, 1, 101, status="in_progress")
+    rig.docker.add_container("ci-runner-101", created_epoch=T0, state="exited")
+    rig.advance(1)
+    monkeypatch.setenv("FAKE_DOCKER_FAIL", "rm")
+    rig.run_pass()  # docker refuses: the container stays, the pass goes on
+    assert sorted(rig.docker.containers()) == ["ci-runner-101"]
+    monkeypatch.delenv("FAKE_DOCKER_FAIL")
+    rig.advance(rig.cfg["poll_interval_s"])
+    rig.run_pass()
+    assert rig.docker.containers() == {}
+    assert removals(rig.docker)[-1] == ["rm", "--force", "ci-runner-101"]
+
+
+def test_an_exited_container_frees_its_slot_for_another_job_in_the_same_pass(
+        rig, tmp_path):
+    rig.cfg["max_concurrency"] = 1
+    queue_job(rig.github, 1, 101, status="in_progress")
+    queue_job(rig.github, 1, 102, status="queued")
+    rig.docker.add_container("ci-runner-101", created_epoch=T0, state="exited")
+    rig.advance(1)
+    assert rig.run_pass() == 1
+    assert sorted(rig.docker.containers()) == ["ci-runner-102"]
+    assert removals(rig.docker) == [["rm", "--force", "ci-runner-101"]]
+
+
+def test_every_exited_container_goes_and_only_ci_runner_names_are_touched(rig):
+    for job in (201, 202, 203):
+        queue_job(rig.github, 2, job, status="in_progress")
+    rig.docker.add_container("ci-runner-201", created_epoch=T0, state="exited")
+    rig.docker.add_container("ci-runner-202", created_epoch=T0, state="dead")
+    rig.docker.add_container("ci-runner-203", created_epoch=T0, state="running")
+    rig.docker.add_container("ci-runner-x", created_epoch=T0, state="exited")
+    rig.docker.add_container("other", created_epoch=T0, state="exited")
+    rig.advance(1)
+    rig.run_pass()
+    assert removals(rig.docker) == [["rm", "--force", "ci-runner-201"],
+                                    ["rm", "--force", "ci-runner-202"]]
+    assert sorted(rig.docker.containers()) == [
+        "ci-runner-203", "ci-runner-x", "other"]
+
+
+def test_the_loop_removes_an_exited_runner_within_one_poll_interval(rig):
+    """The lifecycle: the scaler starts the runner, the runner exits while its
+    job is still in_progress, and the very next pass removes the container."""
+    queue_job(rig.github, 1, 101, status="queued")
+    poll = float(rig.cfg["poll_interval_s"])
+    seen = []
+
+    def sleep(seconds):
+        seen.append(seconds)
+        rig.advance(seconds)
+        if len(seen) == 1:  # the runner takes the job and then exits
+            rig.github.set_job_status(101, "in_progress")
+            rig.docker.set_state("ci-runner-101", "exited")
+    rig.scaler.run_loop(rig.cfg, rig.api, rig.dock, passes=3, sleep=sleep,
+                        clock=lambda: rig.now)
+    assert seen == [poll, poll]
+    assert len(rig.docker.commands("create")) >= 1
+    assert removals(rig.docker) == [["rm", "--force", "ci-runner-101"]]

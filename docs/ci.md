@@ -424,6 +424,18 @@ need from the API.
   the next pass, however old it is short of `job_deadline_s`; an unavailable API is
   never itself a reason to remove a running container.
 
+The lifecycle of one runner container, as `tests/test_runner_scaler_reaping.py`
+exercises it with an injected clock and the fake docker: a pass starts
+`ci-runner-<job id>` for a `queued` job; the run-once runner takes the job and
+exits when it ends (or crashes, or never connects), and docker reports the
+container `exited`; the next pass, at most one `poll_interval_s` later, removes
+it by exact name at the start of that pass while its job is still `queued` or
+`in_progress`, without waiting for the job to become `completed` and without a
+job read; its slot is free in that same pass for another job. A removal docker
+refuses leaves the container, the pass goes on, and the next pass tries again.
+These timings come from the tests' injected clock, not from a live docker host,
+where the scaler has not been run.
+
 A running job under the deadline, and any container not named
 `ci-runner-<job id>`, are never touched. A `--dry-run` pass prints
 `would remove ci-runner-<job id>` with the reason and removes nothing.
