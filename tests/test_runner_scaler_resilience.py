@@ -252,3 +252,31 @@ def test_next_wait_never_exceeds_the_cap_nor_drops_below_the_poll(scaler):
     for failures in range(1, 30):
         wait = scaler.next_wait(POLL, failures, scaler.ApiError("x"), T0)
         assert POLL <= wait <= 60
+
+
+def test_a_503_retry_after_longer_than_the_backoff_cap_is_honoured(rig):
+    rig.github.fail_next(1, 503, {"Retry-After": "300"})
+    rig.run(passes=2)
+    assert rig.waits == [300]  # the 60 s cap bounds the doubling, not the server's ask
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+def test_a_retry_after_shorter_than_the_poll_never_shortens_the_wait(rig, status):
+    rig.github.fail_next(1, status, {"Retry-After": "0"})
+    rig.run(passes=2)
+    assert rig.waits == [POLL]
+
+
+def test_a_reset_already_in_the_past_on_a_5xx_waits_the_poll_interval(rig):
+    rig.github.fail_next(1, 504, {"x-ratelimit-reset": str(int(T0) - 500),
+                                  "x-ratelimit-remaining": "0"})
+    rig.run(passes=2)
+    assert rig.waits == [POLL]
+
+
+def test_a_header_wait_does_not_restart_the_failure_streak(rig):
+    rig.github.fail_next(1, 503, {"Retry-After": "27"})
+    rig.github.fail_next(2, 503)
+    rig.run(passes=4)
+    # failures 1 (header: 27), 2 (plain: 2 * POLL), 3 (plain: 4 * POLL)
+    assert rig.waits == [27, 2 * POLL, 4 * POLL]  # no sleep after the last pass
