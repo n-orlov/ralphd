@@ -26,10 +26,12 @@ everything below.
 (a push or a dispatch) has the group `ci-main-<sha>` and is never cancelled by a later
 one, so a regression on a superseded sha is not hidden.
 
-**Runner labels.** Every job runs on `[self-hosted, linux, x64, ci-pool]` plus, only
-where it needs one, a capability label: `docker-host` (the runner gets the host docker
-socket, which a job with `container:` needs because the runner starts that container
-itself) or `browser-runner`. No job names a standing `int21h-ws-N` slot or `fast-lane`.
+**Runner labels.** Every job but `required` runs on `[self-hosted, linux, x64, ci-pool]`
+plus, only where it needs one, a capability label: `docker-host` (the runner gets the host
+docker socket, which a job with `container:` needs because the runner starts that
+container itself) or `browser-runner`. No job names a standing `int21h-ws-N` slot or
+`fast-lane`. `required` is the one named exception: it runs on `ubuntu-latest`, a
+GitHub-hosted runner, and the guard asserts it is the only job off the pool.
 
 **The trust gate.** The job `trusted` carries the trust expression as its own job-level
 `if:`:
@@ -40,8 +42,21 @@ so GitHub never schedules it for a fork pull request. It checks out nothing and 
 one output, `trusted`. The jobs `lint`, `fast`, `docker` and `browser` `need` it and are
 conditioned on that output, so a skipped `trusted` skips them: a fork pull request
 schedules nothing on a self-hosted runner. A same-repository pull request, a push to
-`main` and a dispatch schedule all five. Tightening trust later is an edit to that one expression. The guard
+`main` and a dispatch schedule all of them. Tightening trust later is an edit to that one expression. The guard
 evaluates each job's `if:` for those four events, with skipped-dependency propagation.
+
+**`ci / required`: the single check.** The job `required` is the one check to require on
+`main` (branch protection names `ci / required` and nothing else). It `needs` `trusted`,
+`lint`, `fast`, `docker` and `browser`, has the job-level `if: always()` with no trust
+condition, and its one inline script exits non-zero unless every needed result is exactly
+`success`: a `failure`, a `cancelled` and a `skipped` all fail it, so a tier that never
+ran cannot pass. It runs on a GitHub-hosted runner (`ubuntu-latest`) with no checkout, no
+secrets and no `uses:` step, so it holds no code of the head under test. Because it needs
+no pool runner, a fork pull request schedules only `required`: `trusted` is skipped, so
+every other job is skipped, and `required` concludes failure because every needed job is
+skipped. A fork PR is therefore never green by itself and nothing of it reaches a
+self-hosted runner. The guard runs `required`'s script against a table of results and
+evaluates the scheduled set for each of the four events.
 
 **`lint`** builds a throwaway venv from the runner image's own `python3`, installs
 `ruff` and runs `ruff check . --select E9,F63,F7,F821` (syntax errors and undefined

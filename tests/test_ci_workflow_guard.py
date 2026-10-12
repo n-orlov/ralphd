@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import copy
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -37,13 +38,15 @@ POOL_LABELS = ["self-hosted", "linux", "x64", "ci-pool"]
 CAPABILITY_LABELS = {"docker-host", "browser-runner"}
 # The single named exception to the runner-label rule: the verdict job runs on
 # a GitHub-hosted runner (no checkout, no secrets) so that a fork pull request
-# schedules nothing on a self-hosted one. It does not exist until the task that
-# adds it; when it does, it must be exactly this and nothing else may be.
+# schedules nothing on a self-hosted one. It must exist, be exactly this, and
+# nothing else may be off the pool.
 HOSTED_EXCEPTION_JOB = "required"
 HOSTED_RUNNER = "ubuntu-latest"
 FORBIDDEN_LABEL_RE = re.compile(r"int21h|fast-lane|ralphd-vps")
 
 TRUST_GATED_JOBS = ("lint", "fast", "docker", "browser")
+VERDICT_NEEDS = ("trusted", "lint", "fast", "docker", "browser")
+EXPECTED_JOBS = {"trusted", "lint", "fast", "docker", "browser", "required"}
 
 WORKFLOW_DIR = CI_PATH.parent
 BROWSER_IMAGE_PATH = WORKFLOW_DIR / "browser-image.yml"
@@ -358,7 +361,13 @@ def check_concurrency(workflow: dict) -> list[str]:
 
 
 def check_runner_labels(workflow: dict) -> list[str]:
+    """Every job is on the ci-pool labels plus only docker-host/browser-runner,
+    except `required`, which is exactly `ubuntu-latest` -- the one job off the
+    pool (operator steer 001). Covered by
+    test_the_runner_label_check_fails_for_each_broken_label_set."""
     problems: list[str] = []
+    if HOSTED_EXCEPTION_JOB not in (workflow.get("jobs") or {}):
+        problems.append(f"no job named {HOSTED_EXCEPTION_JOB!r}, the one job allowed off the ci-pool")
     for name, job in (workflow.get("jobs") or {}).items():
         labels = _runs_on(job)
         if name == HOSTED_EXCEPTION_JOB:
@@ -430,10 +439,83 @@ def check_scheduling(workflow: dict) -> list[str]:
                     f"{scenario}: {name} is {'scheduled' if got else 'not scheduled'}, "
                     f"expected {'scheduled' if want else 'not scheduled'}"
                 )
+        if result.get(HOSTED_EXCEPTION_JOB) != "success":
+            problems.append(f"{scenario}: {HOSTED_EXCEPTION_JOB} is not scheduled, expected scheduled")
+        if not want:
+            scheduled = {n for n, r in result.items() if r == "success"}
+            if scheduled != {HOSTED_EXCEPTION_JOB}:
+                problems.append(
+                    f"fork PR: scheduled jobs are {sorted(scheduled)}, not exactly ['required']"
+                )
         if not want:
             for name, outcome in result.items():
                 if outcome == "success" and _runs_on(jobs[name]) != [HOSTED_RUNNER]:
                     problems.append(f"{scenario}: {name} is scheduled on a self-hosted runner")
+    return problems
+
+
+def _needs(job: dict) -> list[str]:
+    needs = job.get("needs") or []
+    return [needs] if isinstance(needs, str) else list(needs)
+
+
+def check_required_job(workflow: dict) -> list[str]:
+    problems: list[str] = []
+    jobs = workflow.get("jobs") or {}
+    if set(jobs) != EXPECTED_JOBS:
+        problems.append(f"jobs are {sorted(jobs)}, not {sorted(EXPECTED_JOBS)}")
+    for name in TRUST_GATED_JOBS:
+        if name in jobs and _needs(jobs[name]) != ["trusted"]:
+            problems.append(f"{name} needs {_needs(jobs[name])!r}, not ['trusted']")
+    if "trusted" in jobs and _needs(jobs["trusted"]):
+        problems.append("trusted needs another job")
+    job = jobs.get("required")
+    if job is None:
+        return problems + ["no job named 'required'"]
+    if _runs_on(job) != [HOSTED_RUNNER]:
+        problems.append(f"required runs on {_runs_on(job)!r}, not {HOSTED_RUNNER!r}")
+    if sorted(_needs(job)) != sorted(VERDICT_NEEDS):
+        problems.append(f"required needs {_needs(job)!r}, not each of {list(VERDICT_NEEDS)}")
+    condition = re.sub(r"^\$\{\{\s*|\s*\}\}$", "", str(job.get("if") or "").strip())
+    if condition != "always()":
+        problems.append(f"required's job-level if: is {job.get('if')!r}, not exactly always()")
+    for step in job.get("steps") or []:
+        if "uses" in step:
+            problems.append(f"required has a uses: step ({step['uses']!r})")
+    if "secrets." in yaml.safe_dump(job) or "secrets" in job:
+        problems.append("required references the secrets context")
+    if not isinstance(job.get("timeout-minutes"), int) or job["timeout-minutes"] > 5:
+        problems.append(f"required timeout-minutes is {job.get('timeout-minutes')!r}, over 5")
+    if _grants(job):
+        problems.append(f"required carries a permissions block: {_grants(job)!r}")
+    if len(job.get("steps") or []) != 1 or not (job["steps"][0].get("run") or "").strip():
+        problems.append("required is not exactly one run: step")
+    return problems
+
+
+def run_required_script(workflow: dict, results: dict[str, str]) -> int:
+    """Run `required`'s script body under bash with its env filled from
+    `results` ({needed job: result}); return the exit status."""
+    step = workflow["jobs"]["required"]["steps"][0]
+    env = {"PATH": "/usr/bin:/bin"}
+    for key, expr in (step.get("env") or {}).items():
+        m = re.fullmatch(r"\$\{\{\s*needs\.([\w-]+)\.result\s*\}\}", str(expr).strip())
+        assert m, f"required env {key} is not a needs result: {expr!r}"
+        env[key] = results[m.group(1)]
+    return subprocess.run(["bash", "-c", step["run"]], env=env, capture_output=True, timeout=30).returncode
+
+
+def check_required_script(workflow: dict) -> list[str]:
+    problems: list[str] = []
+    ok = {name: "success" for name in VERDICT_NEEDS}
+    if run_required_script(workflow, ok) != 0:
+        problems.append("required fails when every needed job succeeded")
+    for index, name in enumerate(VERDICT_NEEDS):
+        for bad in ("failure", "skipped", "cancelled"):
+            if run_required_script(workflow, {**ok, name: bad}) == 0:
+                problems.append(f"required passes when {name} is {bad}")
+    if run_required_script(workflow, {name: "skipped" for name in VERDICT_NEEDS}) == 0:
+        problems.append("required passes when every needed job is skipped")
     return problems
 
 
@@ -578,6 +660,41 @@ def test_a_fork_pr_schedules_nothing_on_a_self_hosted_runner():
     result = schedule(workflow, SCENARIOS["fork PR"])
     on_pool = [n for n, r in result.items() if r == "success" and _runs_on(workflow["jobs"][n]) != [HOSTED_RUNNER]]
     assert on_pool == []
+
+
+def test_required_is_the_hosted_verdict_job_needing_every_tier_with_no_checkout_or_secret():
+    assert check_required_job(_load(CI_PATH)) == []
+
+
+def test_required_script_exits_zero_only_when_every_needed_result_is_success():
+    assert check_required_script(_load(CI_PATH)) == []
+
+
+def test_required_result_table_explicitly():
+    workflow = _load(CI_PATH)
+    ok = {name: "success" for name in VERDICT_NEEDS}
+    assert run_required_script(workflow, ok) == 0
+    for name in VERDICT_NEEDS:
+        for bad in ("failure", "skipped", "cancelled"):
+            assert run_required_script(workflow, {**ok, name: bad}) != 0, (name, bad)
+    assert run_required_script(workflow, {name: "skipped" for name in VERDICT_NEEDS}) != 0
+
+
+def test_scheduled_set_is_exactly_required_for_a_fork_pr_and_all_six_otherwise():
+    workflow = _load(CI_PATH)
+    fork = schedule(workflow, SCENARIOS["fork PR"])
+    assert {n for n, r in fork.items() if r == "success"} == {"required"}
+    for scenario in ("same-repo PR", "push to main", "dispatch"):
+        result = schedule(workflow, SCENARIOS[scenario])
+        assert {n for n, r in result.items() if r == "success"} == EXPECTED_JOBS, scenario
+
+
+def test_required_script_fails_on_the_fork_pr_needs_results():
+    workflow = _load(CI_PATH)
+    fork = schedule(workflow, SCENARIOS["fork PR"])
+    results = {name: ("skipped" if fork[name] != "success" else "success") for name in VERDICT_NEEDS}
+    assert set(results.values()) == {"skipped"}
+    assert run_required_script(workflow, results) != 0
 
 
 # --- tests: the evaluator itself ----------------------------------------------
@@ -763,6 +880,90 @@ def test_a_trusted_output_that_is_false_skips_lint_and_fast_for_every_event(tmp_
     problems = check_scheduling(broken)
     assert any("same-repo PR: lint is not scheduled" in p for p in problems), problems
     assert any("push to main: fast is not scheduled" in p for p in problems), problems
+
+
+def test_the_required_check_fails_for_each_broken_verdict_job(tmp_path):
+    def drop_need(wf):
+        wf["jobs"]["required"]["needs"].remove("browser")
+
+    def drop_always(wf):
+        del wf["jobs"]["required"]["if"]
+
+    def success_only(wf):
+        wf["jobs"]["required"]["if"] = "success()"
+
+    def trust_condition(wf):
+        wf["jobs"]["required"]["if"] = "always() && needs.trusted.outputs.trusted == 'true'"
+
+    def checkout(wf):
+        wf["jobs"]["required"]["steps"].insert(0, {"uses": "actions/checkout@v7"})
+
+    def other_action(wf):
+        wf["jobs"]["required"]["steps"].append({"uses": "actions/github-script@v7"})
+
+    def secret(wf):
+        wf["jobs"]["required"]["steps"][0]["env"]["TOKEN"] = "${{ secrets.GITHUB_TOKEN }}"
+
+    def on_pool(wf):
+        wf["jobs"]["required"]["runs-on"] = POOL_LABELS
+
+    def lint_hosted(wf):
+        wf["jobs"]["lint"]["runs-on"] = "ubuntu-latest"
+
+    def job_dropped(wf):
+        del wf["jobs"]["docker"]
+        wf["jobs"]["required"]["needs"].remove("docker")
+
+    def extra_job(wf):
+        wf["jobs"]["extra"] = {"runs-on": POOL_LABELS, "steps": [{"run": "true"}]}
+
+    for name, edit in {
+        "drop-need": drop_need,
+        "drop-always": drop_always,
+        "success-only": success_only,
+        "trust-condition": trust_condition,
+        "checkout": checkout,
+        "other-action": other_action,
+        "secret": secret,
+        "on-pool": on_pool,
+        "lint-hosted": lint_hosted,
+        "job-dropped": job_dropped,
+        "extra-job": extra_job,
+    }.items():
+        broken = _mutate(tmp_path, f"required-{name}.yml", edit)
+        assert check_required_job(broken) + check_runner_labels(broken), name
+
+
+def test_a_required_script_that_lets_a_bad_result_through_is_rejected(tmp_path):
+    def ignore_lint(wf):
+        wf["jobs"]["required"]["steps"][0]["run"] = wf["jobs"]["required"]["steps"][0]["run"].replace(
+            '"lint=$RESULT_LINT" ', ""
+        )
+
+    def only_failure(wf):
+        wf["jobs"]["required"]["steps"][0]["run"] = (
+            'test "$RESULT_FAST" != failure && test "$RESULT_LINT" != failure'
+        )
+
+    def always_pass(wf):
+        wf["jobs"]["required"]["steps"][0]["run"] = "exit 0"
+
+    for name, edit in {"ignore-lint": ignore_lint, "failure-only": only_failure, "always-pass": always_pass}.items():
+        assert check_required_script(_mutate(tmp_path, f"script-{name}.yml", edit)), name
+
+
+def test_a_required_that_runs_without_always_is_not_scheduled_for_a_fork_pr(tmp_path):
+    def success_only(wf):
+        wf["jobs"]["required"]["if"] = "success()"
+
+    problems = check_scheduling(_mutate(tmp_path, "required-success.yml", success_only))
+    assert any("fork PR: required is not scheduled" in p for p in problems), problems
+
+    def trusted_everywhere(wf):
+        del wf["jobs"]["trusted"]["if"]
+
+    problems = check_scheduling(_mutate(tmp_path, "trusted-open.yml", trusted_everywhere))
+    assert any("scheduled jobs are" in p for p in problems), problems
 
 
 # --- tests: the docker and browser jobs, and browser-image.yml ------------------

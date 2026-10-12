@@ -718,6 +718,13 @@ CONTAINER_ALLOWLIST: dict[tuple[str, str], str] = {
         "and a container around the client costs the wall-clock margin the "
         "fixed-window tests depend on."
     ),
+    ("ci.yml", "required"): (
+        "v0.35: the verdict job checks out nothing, reads no secret and uses no "
+        "action: its one script compares the five `needs` results. It runs on "
+        "a GitHub-hosted runner so that a fork pull request schedules nothing "
+        "on a self-hosted one, and there is no code of the head under test for "
+        "a container to isolate."
+    ),
     ("ci.yml", "lint"): (
         "v0.35: one ruff syntax/undefined-name check in a throwaway venv built "
         "from the runner image's own python3 on the elastic ci-pool runner. It "

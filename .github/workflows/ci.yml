@@ -1,15 +1,15 @@
-# The one CI workflow (v0.35). Every job runs on the elastic runner pool
-# (`ci-pool`), in parallel after the trust gate. docs/ci.md describes it.
+# The one CI workflow (v0.35). Every job but `required` runs on the elastic
+# runner pool (`ci-pool`), in parallel after the trust gate. docs/ci.md describes it.
 #
-# Jobs: `trusted` (the trust gate), `lint`, `fast`, `docker`, `browser`. Later
-# tasks add `report`, `publish` and the single verdict job `required`.
+# Jobs: `trusted` (the trust gate), `lint`, `fast`, `docker`, `browser` and the
+# single verdict job `required`. Later tasks add `report` and `publish`.
 #
 # RUNNER LABELS. Every job asks for `self-hosted, linux, x64, ci-pool` plus,
 # only where it needs one, a capability label: `docker-host` (the runner gets
 # the host docker socket -- a job with `container:` needs it, because the
 # runner starts that container itself) or `browser-runner`. No job names a
-# standing `int21h-ws-N` slot or `fast-lane`. The one future exception is the
-# verdict job, which runs on a GitHub-hosted runner (docs/ci.md).
+# standing `int21h-ws-N` slot or `fast-lane`. The one exception is the
+# verdict job `required`, which runs on a GitHub-hosted runner (docs/ci.md).
 #
 # TRUST. A fork pull request must never reach a self-hosted runner. `trusted`
 # carries the trust expression as its OWN job-level `if:`, so GitHub never
@@ -539,3 +539,35 @@ jobs:
       - name: Classify a job-level timeout kill
         if: always()
         run: scripts/job_timeout_marker.sh 60 "ci browser tier" "${{ job.status }}"
+
+  # The single verdict: the check `ci / required`. It is the one job that runs on
+  # a GitHub-hosted runner, because a fork pull request must schedule nothing on
+  # a self-hosted one (docs/ci.md). It checks nothing out, reads no secret and
+  # uses no action, so it holds no code of the head under test. `if: always()`
+  # schedules it for every event and lets it report when a tier is red. On a
+  # fork pull request every needed job is skipped, so it fails: a fork PR is
+  # never green without a maintainer's review. Its script is exercised by
+  # tests/test_ci_workflow_guard.py against a table of results.
+  required:
+    name: required
+    needs: [trusted, lint, fast, docker, browser]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every needed job succeeded
+        env:
+          RESULT_TRUSTED: ${{ needs.trusted.result }}
+          RESULT_LINT: ${{ needs.lint.result }}
+          RESULT_FAST: ${{ needs.fast.result }}
+          RESULT_DOCKER: ${{ needs.docker.result }}
+          RESULT_BROWSER: ${{ needs.browser.result }}
+        run: |
+          status=0
+          for pair in "trusted=$RESULT_TRUSTED" "lint=$RESULT_LINT" "fast=$RESULT_FAST" "docker=$RESULT_DOCKER" "browser=$RESULT_BROWSER"; do
+            echo "${pair%%=*}: ${pair#*=}"
+            if [ "${pair#*=}" != "success" ]; then
+              status=1
+            fi
+          done
+          exit "$status"
