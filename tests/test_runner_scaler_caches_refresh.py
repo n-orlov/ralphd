@@ -388,13 +388,13 @@ def test_a_runner_busy_with_another_job_is_not_reaped_for_a_stale_job(rig):
     queue_job(rig.github, 1, 101, ["ci-pool"])
     assert rig.pass_() == 1
     rig.github.set_job_status(101, "completed")     # another runner took job 101
-    rig.github.set_runner_busy("ci-runner-101")     # this one is mid-way through job 202
+    rig.github.set_runner_busy("ci-101")     # this one is mid-way through job 202
     entries = rig.dock.containers()
     for _ in range(2):
         gone = rig.scaler.reap_containers(rig.cfg, rig.api, rig.dock, entries, now=time.time() + 600)
         assert gone == set()
     assert not rig.docker.commands("rm")
-    rig.github.set_runner_busy("ci-runner-101", busy=False)
+    rig.github.set_runner_busy("ci-101", busy=False)
     assert rig.scaler.reap_containers(rig.cfg, rig.api, rig.dock, entries,
                                       now=time.time() + 600) == {"ci-runner-101"}
 
@@ -402,7 +402,7 @@ def test_a_runner_busy_with_another_job_is_not_reaped_for_a_stale_job(rig):
 def test_a_queued_job_past_the_start_deadline_spares_a_busy_runner(rig):
     queue_job(rig.github, 1, 101, ["ci-pool"])
     assert rig.pass_() == 1
-    rig.github.set_runner_busy("ci-runner-101")
+    rig.github.set_runner_busy("ci-101")
     entries = rig.dock.containers()
     assert rig.scaler.reap_containers(rig.cfg, rig.api, rig.dock, entries,
                                       now=time.time() + 600) == set()

@@ -1443,7 +1443,8 @@ def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
                     except ScalerError as exc:
                         log(f"cannot read the runners, keeping {name}: {exc}")
                         raise
-                if name in busy:
+                # GitHub knows the runner as ci-<job id>, not by the container name.
+                if runner_name(job_id) in busy:
                     log(f"keeping {name}: its runner is busy ({reason})")
                     reason = None
         if reason is None:
