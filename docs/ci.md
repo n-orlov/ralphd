@@ -11,6 +11,55 @@ fix.
 The tiers themselves — what they cover and what they cost — are
 `docs/testing.md`. This file is only about *who runs them and when*.
 
+## `ci.yml`: the one workflow
+
+`ci.yml` is the workflow that replaces `gate.yml` and `heavy.yml`; until those two are
+retired they keep running beside it. Its jobs run on the elastic runner pool, in
+parallel, after a trust gate. `tests/test_ci_workflow_guard.py` parses it and pins
+everything below.
+
+**Triggers.** A `push` to `main`, a `pull_request` against any base, and
+`workflow_dispatch`. A push to any other branch runs nothing.
+
+**Concurrency.** A pull request's runs share the group `ci-<ref>` with
+`cancel-in-progress: true`, so a newer push supersedes the older run. A run on `main`
+(a push or a dispatch) has the group `ci-main-<sha>` and is never cancelled by a later
+one, so a regression on a superseded sha is not hidden.
+
+**Runner labels.** Every job runs on `[self-hosted, linux, x64, ci-pool]` plus, only
+where it needs one, a capability label: `docker-host` (the runner gets the host docker
+socket, which a job with `container:` needs because the runner starts that container
+itself) or `browser-runner`. No job names a standing `int21h-ws-N` slot or `fast-lane`.
+
+**The trust gate.** The job `trusted` carries the trust expression as its own job-level
+`if:`:
+
+    github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+
+so GitHub never schedules it for a fork pull request. It checks out nothing and exposes
+one output, `trusted`. The jobs `lint` and `fast` `need` it and are conditioned on that
+output, so a skipped `trusted` skips them: a fork pull request schedules nothing on a
+self-hosted runner. A same-repository pull request, a push to `main` and a dispatch
+schedule all three. Tightening trust later is an edit to that one expression. The guard
+evaluates each job's `if:` for those four events, with skipped-dependency propagation.
+
+**`lint`** builds a throwaway venv from the runner image's own `python3`, installs
+`ruff` and runs `ruff check . --select E9,F63,F7,F821` (syntax errors and undefined
+names), which exits 0 on the tree.
+
+**`fast`** runs the steps `gate.yml`'s `fast` job runs, in the same digest-pinned
+`python:3.12.3` container (`--cpus=4`): a clean venv, the non-root `ci` account,
+`su -p ci -c 'scripts/run_bounded.sh 1800 "fast tier" -- python -m pytest -q -m fast -n 4
+--dist loadfile --durations=15'`, inside `timeout-minutes: 45`. `-n 4` on a 4-CPU job
+container is the one raise over the old gate's `-n 2`: the earlier `-n 4` failures were
+host contention between jobs, which the per-job CPU limit removes. The count is a fixed
+integer, never `auto` (`tests/test_gate_pinned_worker_count_guard.py`).
+
+**Precondition: the runner scaler serves `ci-pool`.** The jobs wait for a runner started
+by the scaler described under "The elastic runner pool" below. If that scaler is not
+running on the host, a `ci.yml` job stays queued; nothing in the workflow relabels it onto
+a standing runner.
+
 ## The three workflows
 
 | workflow | lanes | runner | trigger | budget |

@@ -704,6 +704,19 @@ CONTAINER_ALLOWLIST: dict[tuple[str, str], str] = {
         "pins supplies. Dispatch-gated (publish_browser_image), so it runs on "
         "no push and no pull request."
     ),
+    ("ci.yml", "trusted"): (
+        "v0.35: the trust gate checks out nothing and runs one `echo` into "
+        "$GITHUB_OUTPUT on the elastic runner itself; there is no code of the "
+        "head under test for a container to isolate, and its job-level `if:` "
+        "keeps a fork pull request from ever scheduling it."
+    ),
+    ("ci.yml", "lint"): (
+        "v0.35: one ruff syntax/undefined-name check in a throwaway venv built "
+        "from the runner image's own python3 on the elastic ci-pool runner. It "
+        "needs no pinned interpreter patch level, no docker socket and no "
+        "browser; asking for `docker-host` only to wrap a ruff run in a "
+        "container would hold one of the pool's scarce socket-bearing slots."
+    ),
     ("heavy.yml", "docker-tier"): (
         "task 012 (requirement I, branch b -- exit ramp, decided 2026-09-17 "
         "~09:50Z, docker tier not green by the 12:30Z decision point so "

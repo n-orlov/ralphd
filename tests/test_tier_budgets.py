@@ -812,8 +812,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # 6638/403.
     # v0.34 re-take of tests/test_runner_scaler_resilience.py: +7 tests, no new
     # module, measured the same way -> fast 8392/528, smoke 6645/403.
-    "fast": {"tests": 8392, "modules": 528},
-    "smoke": {"tests": 6645, "modules": 403},
+    # v0.35 ci.yml (tests/test_ci_workflow_guard.py, new module; the gate
+    # worker-count guard gains two nodes): +19 tests / +1 module, measured the
+    # same way -> fast 8411/529, smoke 6664/404.
+    "fast": {"tests": 8411, "modules": 529},
+    "smoke": {"tests": 6664, "modules": 404},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
