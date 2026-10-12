@@ -701,7 +701,7 @@ def test_the_classifier_claims_nothing_when_it_has_no_evidence_directory(tmp_pat
 # non-vacuity discipline tests/test_ci_dev_layout_matrix_guard.py uses.
 
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
-WORKFLOW_NAMES = ("gate.yml", "heavy.yml", "nightly.yml")
+WORKFLOW_NAMES = ("gate.yml", "heavy.yml", "nightly.yml", "browser-image.yml")
 
 START_STAMP_STEP = "Record the job start time"
 CLASSIFIER_STEP = "Classify a job-level timeout kill"
@@ -753,14 +753,15 @@ EXEMPT_RUN_STEPS = {
     ("heavy.yml", "browser-tier", "Prepare the browser tier's non-root account"),
     ("heavy.yml", "browser-tier", "Close stray browser sessions"),
     ("heavy.yml", "browser-tier", CLASSIFIER_STEP),
-    # Task 011 (requirement H): the image-publishing job. Its own payload --
+    # Task 011 (requirement H): the image-publishing job (now its own
+    # workflow, browser-image.yml). Its own payload --
     # the docker build and the push -- IS wrapped (1800s); these two are the
     # same start-stamp/classifier/pre-checkout-reaper shapes already exempt
     # for both tiers above, for the same reasons.
-    ("heavy.yml", "browser-image", "Record the job start time"),
-    ("heavy.yml", "browser-image",
+    ("browser-image.yml", "browser-image", "Record the job start time"),
+    ("browser-image.yml", "browser-image",
      "Reap root-owned test litter left in the runner workspace"),
-    ("heavy.yml", "browser-image", CLASSIFIER_STEP),
+    ("browser-image.yml", "browser-image", CLASSIFIER_STEP),
     ("nightly.yml", "dev-layout", "Record the job start time"),
     ("nightly.yml", "dev-layout", "Report the host environment"),
     ("nightly.yml", "dev-layout", CLASSIFIER_STEP),

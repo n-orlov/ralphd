@@ -37,10 +37,10 @@ itself) or `browser-runner`. No job names a standing `int21h-ws-N` slot or `fast
     github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
 
 so GitHub never schedules it for a fork pull request. It checks out nothing and exposes
-one output, `trusted`. The jobs `lint` and `fast` `need` it and are conditioned on that
-output, so a skipped `trusted` skips them: a fork pull request schedules nothing on a
-self-hosted runner. A same-repository pull request, a push to `main` and a dispatch
-schedule all three. Tightening trust later is an edit to that one expression. The guard
+one output, `trusted`. The jobs `lint`, `fast`, `docker` and `browser` `need` it and are
+conditioned on that output, so a skipped `trusted` skips them: a fork pull request
+schedules nothing on a self-hosted runner. A same-repository pull request, a push to
+`main` and a dispatch schedule all five. Tightening trust later is an edit to that one expression. The guard
 evaluates each job's `if:` for those four events, with skipped-dependency propagation.
 
 **`lint`** builds a throwaway venv from the runner image's own `python3`, installs
@@ -55,6 +55,32 @@ container is the one raise over the old gate's `-n 2`: the earlier `-n 4` failur
 host contention between jobs, which the per-job CPU limit removes. The count is a fixed
 integer, never `auto` (`tests/test_gate_pinned_worker_count_guard.py`).
 
+**`docker`** runs the steps `heavy.yml`'s `docker-tier` runs, unchanged: the root-owned
+litter reaper ahead of checkout, a clean venv, and `scripts/run_bounded.sh 6000 "docker
+tier" -- .venv/bin/python -m pytest -q -m docker --durations=15`, inside
+`timeout-minutes: 120`. It runs on `[self-hosted, linux, x64, ci-pool, docker-host]` on the
+host runner, not in a container: it builds the real job image and drives sibling
+containers over the runner's own docker socket. It needs only `trusted`, so it starts
+beside `lint` and `fast`, not after them. No bound is raised over the lane it replaces.
+
+**`browser`** runs the steps `heavy.yml`'s `browser-tier` runs, unchanged, inside
+`timeout-minutes: 60` with the tier bounded at 2400 s. Its labels add `docker-host` (the
+runner starts the container) and `browser-runner`. `playwright-cli` and real Google
+Chrome come from `container.image`, pinned by digest to
+`ghcr.io/n-orlov/ralphd-browser-ci@sha256:2311f2f3...6b7c` (the full reference is in
+`ci.yml`, the only place a digest is pinned), pulled with `credentials:` from the job's own
+`GITHUB_TOKEN` under `permissions: packages: read`. Nothing in `ci.yml` builds that
+image, and `ci.yml` holds no `packages: write` grant. The package is private; it is
+readable by that token because a workflow of this repository published it.
+
+**`browser-image.yml`** is the publisher of that image: one `browser-image` job, triggered
+by `workflow_dispatch` only, so no push and no pull request ever builds or pushes an
+image. It builds `ci/browser/Dockerfile`, pushes it and prints the new digest, which is
+then pinned in `ci.yml`'s `browser` job by hand in a commit of its own. It is the only
+workflow with a `packages: write` grant, and it runs on `[self-hosted, linux, x64,
+ci-pool, docker-host]` for its docker build. The guard asserts the dispatch-only trigger,
+the single grant, and that `heavy.yml` carries neither the job nor its old input.
+
 **Precondition: the runner scaler serves `ci-pool`.** The jobs wait for a runner started
 by the scaler described under "The elastic runner pool" below. If that scaler is not
 running on the host, a `ci.yml` job stays queued; nothing in the workflow relabels it onto
@@ -65,7 +91,7 @@ a standing runner.
 | workflow | lanes | runner | trigger | budget |
 |---|---|---|---|---|
 | `gate.yml` | `-m fast` (which is a superset of `-m smoke`) | self-hosted `fast-lane` (`int21h-ws-5`/`-6`, exclusively) | every pull request, every push to `main` | 45 min |
-| `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs, plus a third `browser-image` job that publishes the browser tier's pinned image and runs on nothing but an explicit dispatch with `publish_browser_image: true`, which in turn skips the two tiers (task 011) | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min (40 for the dispatch-only publisher) |
+| `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs (the browser-image publisher moved to `browser-image.yml`, a `workflow_dispatch`-only workflow) | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min |
 | `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running `scripts/host_like_dev_layout.sh` with no override inside a plain upstream container (task 077, steer 008) -- the `fast` tier plus (task cure-01-01-2) a supplemental pass over every node that leaves outside `fast`/`smoke`/`docker`/`browser` (the `nightly`-marked nodes and the script's own test module), which `-m fast` alone never selected | self-hosted `ralphd-vps` + `docker-host` (`int21h-ws-1` only, so the cells run one at a time -- see below) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis); unchanged by cure-01-01-2, whose supplemental pass adds real wall time inside this same ceiling rather than raising it |
 
 `gate.yml` was on GitHub's own runners until 14 September 2026, when being the
@@ -190,9 +216,9 @@ host's Node/CLI/Chrome are still there and still what an operator uses by hand,
 but a drift in them can no longer change what the lane measures — which is the
 point: this ambient provisioning drifted once already, silently losing
 python3.12.3 in the VPS-to-workstation move (#205's own motivation). Republishing
-the image is a dispatch of `heavy` with `publish_browser_image: true`; that job
-prints the new digest, which is then pinned in `heavy.yml` by hand in a commit of
-its own. The package is private, is linked to this repository because the
+the image is a dispatch of `browser-image.yml`; that job prints the new digest, which
+is then pinned in `ci.yml`'s `browser` job (and in `heavy.yml`'s `browser-tier` until
+that is retired) by hand in a commit of its own. The package is private, is linked to this repository because the
 workflow (not a personal access token) published it, and is pulled with
 `credentials:` from `${{ secrets.GITHUB_TOKEN }}` — the registry has no API that
 makes a package public, only its web UI does.

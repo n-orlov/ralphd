@@ -695,20 +695,28 @@ def test_dev_layout_cell_hardening_guard_fires_on_each_mutation(tmp_path):
 # addressed -- see that entry's own reason and the docker-tier job's own
 # comment in heavy.yml for the measurement.
 CONTAINER_ALLOWLIST: dict[tuple[str, str], str] = {
-    ("heavy.yml", "browser-image"): (
+    ("browser-image.yml", "browser-image"): (
         "task 011 (requirement H): this job BUILDS the pinned image the "
         "browser tier runs in, over the runner's own docker socket. It cannot "
         "run in that image -- it is what produces it -- and a container: of "
         "its own would have to carry both a docker CLI and the glibc the "
         "runner's JS actions need, which no image this repository already "
-        "pins supplies. Dispatch-gated (publish_browser_image), so it runs on "
-        "no push and no pull request."
+        "pins supplies. browser-image.yml is triggered by workflow_dispatch "
+        "only, so it runs on no push and no pull request."
     ),
     ("ci.yml", "trusted"): (
         "v0.35: the trust gate checks out nothing and runs one `echo` into "
         "$GITHUB_OUTPUT on the elastic runner itself; there is no code of the "
         "head under test for a container to isolate, and its job-level `if:` "
         "keeps a fork pull request from ever scheduling it."
+    ),
+    ("ci.yml", "docker"): (
+        "v0.35: the docker tier moved from heavy.yml's `docker-tier` with its "
+        "steps unchanged, and it keeps the host-run shape for the reason "
+        "recorded on the heavy.yml entry below: it builds real images and "
+        "drives real sibling containers over the runner's own docker socket, "
+        "and a container around the client costs the wall-clock margin the "
+        "fixed-window tests depend on."
     ),
     ("ci.yml", "lint"): (
         "v0.35: one ruff syntax/undefined-name check in a throwaway venv built "

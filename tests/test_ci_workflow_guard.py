@@ -43,6 +43,22 @@ HOSTED_EXCEPTION_JOB = "required"
 HOSTED_RUNNER = "ubuntu-latest"
 FORBIDDEN_LABEL_RE = re.compile(r"int21h|fast-lane|ralphd-vps")
 
+TRUST_GATED_JOBS = ("lint", "fast", "docker", "browser")
+
+WORKFLOW_DIR = CI_PATH.parent
+BROWSER_IMAGE_PATH = WORKFLOW_DIR / "browser-image.yml"
+HEAVY_PATH = WORKFLOW_DIR / "heavy.yml"
+BROWSER_IMAGE_DIGEST = (
+    "ghcr.io/n-orlov/ralphd-browser-ci"
+    "@sha256:2311f2f375f35762e57de5c564c43b30cd5fe7cf7dae9e991370a05100596b7c"
+)
+# The predecessor lanes' bounds (heavy.yml's docker-tier and browser-tier);
+# a moved job may never raise them.
+MAX_TIMEOUT_MINUTES = {"docker": 120, "browser": 60}
+RUN_BOUNDED_RE = re.compile(r"scripts/run_bounded\.sh\s+(\d+)\b")
+MAX_RUN_BOUNDED_TOTAL = {"docker": 6600, "browser": 3000}
+IMAGE_BUILD_RE = re.compile(r"docker\s+(build|push|buildx)|build-push-action|docker/login-action")
+
 REPO = "n-orlov/ralphd"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
@@ -379,7 +395,7 @@ def check_trust_gate(workflow: dict) -> list[str]:
     outputs = trusted.get("outputs") or {}
     if list(outputs) != ["trusted"]:
         problems.append(f"trusted exposes {sorted(outputs)}, not exactly one output named 'trusted'")
-    for name in ("lint", "fast"):
+    for name in TRUST_GATED_JOBS:
         job = jobs.get(name)
         if job is None:
             problems.append(f"no job named {name!r}")
@@ -407,7 +423,7 @@ def check_scheduling(workflow: dict) -> list[str]:
     for scenario, github in SCENARIOS.items():
         result = schedule(workflow, github)
         want = EXPECTED_SCHEDULE[scenario]
-        for name in ("trusted", "lint", "fast"):
+        for name in ("trusted", *TRUST_GATED_JOBS):
             got = result.get(name) == "success"
             if got != want:
                 problems.append(
@@ -419,6 +435,97 @@ def check_scheduling(workflow: dict) -> list[str]:
                 if outcome == "success" and _runs_on(jobs[name]) != [HOSTED_RUNNER]:
                     problems.append(f"{scenario}: {name} is scheduled on a self-hosted runner")
     return problems
+
+
+def _grants(job_or_workflow: dict) -> dict:
+    perms = job_or_workflow.get("permissions")
+    return perms if isinstance(perms, dict) else {}
+
+
+def check_docker_and_browser_jobs(workflow: dict) -> list[str]:
+    problems: list[str] = []
+    jobs = workflow.get("jobs") or {}
+    for name in ("docker", "browser"):
+        job = jobs.get(name)
+        if job is None:
+            problems.append(f"no job named {name!r}")
+            continue
+        labels = _runs_on(job)
+        want = POOL_LABELS + ["docker-host"] + (["browser-runner"] if name == "browser" else [])
+        if labels != want:
+            problems.append(f"{name} runs on {labels!r}, not {want!r}")
+        minutes = job.get("timeout-minutes")
+        if not isinstance(minutes, int) or minutes > MAX_TIMEOUT_MINUTES[name]:
+            problems.append(f"{name} timeout-minutes is {minutes!r}, over {MAX_TIMEOUT_MINUTES[name]}")
+        bounds = [
+            int(m)
+            for step in job.get("steps") or []
+            for m in RUN_BOUNDED_RE.findall(step.get("run") or "")
+        ]
+        if not bounds:
+            problems.append(f"{name} has no scripts/run_bounded.sh bound")
+        if sum(bounds) > MAX_RUN_BOUNDED_TOTAL[name]:
+            problems.append(
+                f"{name}'s run_bounded bounds sum to {sum(bounds)}s, over {MAX_RUN_BOUNDED_TOTAL[name]}s"
+            )
+        for step in job.get("steps") or []:
+            if IMAGE_BUILD_RE.search(step.get("run") or "") or IMAGE_BUILD_RE.search(str(step.get("uses") or "")):
+                problems.append(f"{name} step {step.get('name')!r} builds or pushes an image")
+    for name, job in jobs.items():
+        for step in job.get("steps") or []:
+            if re.search(r"docker\s+(build|push)\b", step.get("run") or ""):
+                problems.append(f"ci.yml job {name} step {step.get('name')!r} builds or pushes an image")
+    if "packages" in _grants(workflow) or _grants(workflow).get("packages") == "write":
+        problems.append("ci.yml grants packages at the workflow level")
+    for name, job in jobs.items():
+        granted = _grants(job).get("packages")
+        want_grant = "read" if name == "browser" else None
+        if granted != want_grant:
+            problems.append(f"{name} grants packages: {granted!r}, expected {want_grant!r}")
+    browser = jobs.get("browser") or {}
+    container = browser.get("container")
+    if not isinstance(container, dict):
+        problems.append("browser has no container: mapping")
+    else:
+        if container.get("image") != BROWSER_IMAGE_DIGEST:
+            problems.append(f"browser container.image is {container.get('image')!r}, not the pinned digest")
+        credentials = container.get("credentials") or {}
+        if credentials.get("password") != "${{ secrets.GITHUB_TOKEN }}" or not credentials.get("username"):
+            problems.append("browser container.credentials are not the job's own GITHUB_TOKEN login")
+    if "container" in (jobs.get("docker") or {}):
+        problems.append("docker declares a container: (the tier drives the runner's own docker socket)")
+    return problems
+
+
+def check_browser_image_workflow(workflow: dict, others: dict[str, dict]) -> list[str]:
+    problems: list[str] = []
+    triggers = _triggers(workflow)
+    if set(triggers) != {"workflow_dispatch"}:
+        problems.append(f"browser-image.yml triggers are {sorted(map(str, triggers))}, not workflow_dispatch only")
+    jobs = workflow.get("jobs") or {}
+    if list(jobs) != ["browser-image"]:
+        problems.append(f"browser-image.yml jobs are {list(jobs)}, not exactly ['browser-image']")
+    elif _grants(jobs["browser-image"]).get("packages") != "write":
+        problems.append("the browser-image job does not hold packages: write")
+    if workflow.get("permissions") not in ({"contents": "read"},):
+        problems.append(f"browser-image.yml workflow-level permissions are {workflow.get('permissions')!r}")
+    for fname, other in others.items():
+        grants = [_grants(other)] + [_grants(j) for j in (other.get("jobs") or {}).values()]
+        if any(g.get("packages") == "write" for g in grants):
+            problems.append(f"{fname} holds a packages: write grant")
+        if "browser-image" in (other.get("jobs") or {}):
+            problems.append(f"{fname} still carries a browser-image job")
+        if "publish_browser_image" in str(_triggers(other)):
+            problems.append(f"{fname} still carries the publish_browser_image input")
+    return problems
+
+
+def _other_workflows() -> dict[str, dict]:
+    return {
+        path.name: _load(path)
+        for path in sorted(WORKFLOW_DIR.glob("*.yml"))
+        if path.name != "browser-image.yml"
+    }
 
 
 def _fixture(tmp_path: Path, name: str, workflow: dict) -> dict:
@@ -654,3 +761,165 @@ def test_a_trusted_output_that_is_false_skips_lint_and_fast_for_every_event(tmp_
     problems = check_scheduling(broken)
     assert any("same-repo PR: lint is not scheduled" in p for p in problems), problems
     assert any("push to main: fast is not scheduled" in p for p in problems), problems
+
+
+# --- tests: the docker and browser jobs, and browser-image.yml ------------------
+
+
+def test_ci_docker_and_browser_jobs_keep_their_lanes_labels_bounds_digest_and_grants():
+    assert check_docker_and_browser_jobs(_load(CI_PATH)) == []
+
+
+def test_docker_and_browser_need_trusted_and_are_not_scheduled_for_a_fork_pr():
+    workflow = _load(CI_PATH)
+    for name in ("docker", "browser"):
+        job = workflow["jobs"][name]
+        needs = [job["needs"]] if isinstance(job["needs"], str) else job["needs"]
+        assert "trusted" in needs, name
+        assert "needs.trusted.outputs.trusted" in str(job["if"]), name
+    fork = schedule(workflow, SCENARIOS["fork PR"])
+    assert (fork["docker"], fork["browser"]) == ("skipped", "skipped")
+    for scenario in ("same-repo PR", "push to main", "dispatch"):
+        result = schedule(workflow, SCENARIOS[scenario])
+        assert (result["docker"], result["browser"]) == ("success", "success"), scenario
+    # They wait on `trusted` alone, so they start beside lint and fast.
+    for name in ("docker", "browser"):
+        assert workflow["jobs"][name]["needs"] in ("trusted", ["trusted"])
+
+
+def test_browser_image_workflow_is_dispatch_only_and_the_only_packages_write_holder():
+    others = _other_workflows()
+    assert "ci.yml" in others and "heavy.yml" in others
+    assert check_browser_image_workflow(_load(BROWSER_IMAGE_PATH), others) == []
+
+
+def test_heavy_yml_no_longer_publishes_the_browser_image():
+    heavy = _load(HEAVY_PATH)
+    assert "browser-image" not in heavy["jobs"]
+    assert "publish_browser_image" not in str(_triggers(heavy))
+    assert "packages" not in str(heavy.get("permissions"))
+
+
+def test_the_docker_and_browser_check_fails_for_each_broken_job(tmp_path):
+    def wrong_label(wf):
+        wf["jobs"]["docker"]["runs-on"] = ["self-hosted", "linux", "x64", "ci-pool"]
+
+    def browser_without_runner(wf):
+        wf["jobs"]["browser"]["runs-on"] = POOL_LABELS + ["docker-host"]
+
+    def raised_docker_timeout(wf):
+        wf["jobs"]["docker"]["timeout-minutes"] = 121
+
+    def raised_browser_timeout(wf):
+        wf["jobs"]["browser"]["timeout-minutes"] = 61
+
+    def raised_run_bounded(wf):
+        step = next(s for s in wf["jobs"]["browser"]["steps"] if s.get("name") == "Browser tier")
+        step["run"] = step["run"].replace("run_bounded.sh 2400", "run_bounded.sh 2700")
+
+    def unpinned_image(wf):
+        wf["jobs"]["browser"]["container"]["image"] = "ghcr.io/n-orlov/ralphd-browser-ci:latest"
+
+    def other_digest(wf):
+        wf["jobs"]["browser"]["container"]["image"] = BROWSER_IMAGE_DIGEST[:-1] + "0"
+
+    def no_credentials(wf):
+        del wf["jobs"]["browser"]["container"]["credentials"]
+
+    def packages_write(wf):
+        wf["jobs"]["browser"]["permissions"]["packages"] = "write"
+
+    def no_packages_read(wf):
+        del wf["jobs"]["browser"]["permissions"]["packages"]
+
+    def docker_gets_packages(wf):
+        wf["jobs"]["docker"]["permissions"] = {"contents": "read", "packages": "read"}
+
+    def ci_builds_the_image(wf):
+        wf["jobs"]["browser"]["steps"].insert(
+            0, {"name": "Build", "run": "docker build -t x ci/browser"}
+        )
+
+    def docker_in_container(wf):
+        wf["jobs"]["docker"]["container"] = {"image": "python:3.12"}
+
+    for name, edit in {
+        "docker-label": wrong_label,
+        "browser-label": browser_without_runner,
+        "docker-timeout": raised_docker_timeout,
+        "browser-timeout": raised_browser_timeout,
+        "browser-run-bounded": raised_run_bounded,
+        "tag-not-digest": unpinned_image,
+        "other-digest": other_digest,
+        "no-credentials": no_credentials,
+        "packages-write": packages_write,
+        "no-packages-read": no_packages_read,
+        "docker-packages": docker_gets_packages,
+        "ci-builds-image": ci_builds_the_image,
+        "docker-container": docker_in_container,
+    }.items():
+        assert check_docker_and_browser_jobs(_mutate(tmp_path, f"{name}.yml", edit)), name
+
+
+def test_dropping_a_trust_condition_from_docker_or_browser_is_rejected(tmp_path):
+    for name in ("docker", "browser"):
+        def free(wf, name=name):
+            del wf["jobs"][name]["needs"]
+            del wf["jobs"][name]["if"]
+
+        broken = _mutate(tmp_path, f"{name}-free.yml", free)
+        assert any(f"{name} does not need trusted" in p for p in check_trust_gate(broken))
+        assert any(f"fork PR: {name} is scheduled" in p for p in check_scheduling(broken))
+
+
+def test_the_browser_image_check_fails_for_each_broken_workflow(tmp_path):
+    def load(edit):
+        broken = copy.deepcopy(_load(BROWSER_IMAGE_PATH))
+        edit(broken)
+        return _fixture(tmp_path, "browser-image-broken.yml", broken)
+
+    others = _other_workflows()
+
+    def add_push(wf):
+        _triggers(wf)["push"] = {"branches": ["main"]}
+
+    def add_pr(wf):
+        _triggers(wf)["pull_request"] = None
+
+    def drop_write(wf):
+        wf["jobs"]["browser-image"]["permissions"] = {"contents": "read"}
+
+    def extra_job(wf):
+        wf["jobs"]["other"] = {"runs-on": "x", "steps": [{"run": "true"}]}
+
+    def workflow_write(wf):
+        wf["permissions"] = {"contents": "read", "packages": "write"}
+
+    for name, edit in {
+        "push-trigger": add_push,
+        "pr-trigger": add_pr,
+        "no-write-grant": drop_write,
+        "second-job": extra_job,
+        "workflow-level-write": workflow_write,
+    }.items():
+        assert check_browser_image_workflow(load(edit), others), name
+
+    # A second packages: write holder among the other workflows is rejected.
+    ci_with_write = copy.deepcopy(others["ci.yml"])
+    ci_with_write["jobs"]["browser"]["permissions"]["packages"] = "write"
+    assert check_browser_image_workflow(
+        _load(BROWSER_IMAGE_PATH), {**others, "ci.yml": ci_with_write}
+    )
+    # heavy.yml carrying the job or the input again is rejected.
+    heavy_with_job = copy.deepcopy(others["heavy.yml"])
+    heavy_with_job["jobs"]["browser-image"] = {"runs-on": "x", "steps": []}
+    assert check_browser_image_workflow(
+        _load(BROWSER_IMAGE_PATH), {**others, "heavy.yml": heavy_with_job}
+    )
+    heavy_with_input = copy.deepcopy(others["heavy.yml"])
+    _triggers(heavy_with_input)["workflow_dispatch"] = {
+        "inputs": {"publish_browser_image": {"type": "boolean"}}
+    }
+    assert check_browser_image_workflow(
+        _load(BROWSER_IMAGE_PATH), {**others, "heavy.yml": heavy_with_input}
+    )

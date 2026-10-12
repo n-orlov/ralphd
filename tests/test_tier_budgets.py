@@ -815,8 +815,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.35 ci.yml (tests/test_ci_workflow_guard.py, new module; the gate
     # worker-count guard gains two nodes): +19 tests / +1 module, measured the
     # same way -> fast 8411/529, smoke 6664/404.
-    "fast": {"tests": 8411, "modules": 529},
-    "smoke": {"tests": 6664, "modules": 404},
+    # v0.35 docker and browser jobs plus browser-image.yml (guard nodes in
+    # tests/test_ci_workflow_guard.py, one more run_bounded workflow
+    # parametrization): +8 tests, no new module, measured the same way ->
+    # fast 8419/529, smoke 6672/404.
+    "fast": {"tests": 8419, "modules": 529},
+    "smoke": {"tests": 6672, "modules": 404},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
