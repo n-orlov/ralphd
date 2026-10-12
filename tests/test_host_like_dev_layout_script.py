@@ -33,6 +33,9 @@ _PIP_CACHE_ENV = {
 def _run(args, extra_env=None, timeout=180):
     env = dict(os.environ)
     env.update(_PIP_CACHE_ENV)
+    # nightly.yml sets the results directory for the whole cell; a nested run
+    # of the script under test must not write its own results into it.
+    env.pop("HOST_LIKE_DEV_LAYOUT_ALLURE_DIR", None)
     if extra_env:
         env.update(extra_env)
     return subprocess.run(

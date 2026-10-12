@@ -849,8 +849,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # fast 8477/534, smoke 6722/408.
     # v0.35 nightly result capture: 6 nodes in tests/test_ci_dev_layout_matrix_
     # guard.py and 2 in tests/test_host_like_dev_layout_supplemental_run.py
-    # (no new module) -> fast 8485/534, smoke 6722/408.
-    "fast": {"tests": 8485, "modules": 534},
+    # (no new module), plus 1 curl-install node -> fast 8486/534, smoke 6722/408.
+    "fast": {"tests": 8486, "modules": 534},
     "smoke": {"tests": 6722, "modules": 408},
 }
 

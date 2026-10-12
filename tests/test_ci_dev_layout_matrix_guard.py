@@ -395,6 +395,12 @@ def _check_result_capture(workflow: dict) -> list[str]:
                 f"matrix cell {cell!r}: slug is not the image with ':' replaced by '-'"
             )
 
+    if not re.search(r"apt-get\s+install[^\n]*\bgit\b[^\n]*\bcurl\b", cell_run):
+        problems.append(
+            "the cell does not install curl beside git -- the fast tier's allure_report.sh "
+            "checksum node fetches its archive through curl"
+        )
+
     rendered = json.dumps(workflow)
     hit = REPORT_GENERATION_RE.search(rendered)
     if hit:
@@ -1271,3 +1277,10 @@ def test_result_capture_guard_fires_when_the_workflow_generates_a_report(tmp_pat
         broken = _mutate_steps(workflow, lambda steps, extra=extra: steps.insert(-1, extra))
         problems = check_nightly_matrix(_load(_dump_fixture(tmp_path, "report.yml", broken)))
         assert any("report generation" in p for p in problems), (extra, problems)
+
+
+def test_cell_curl_guard_fires_when_the_cell_stops_installing_curl(tmp_path):
+    workflow = _load(NIGHTLY_PATH)
+    broken = _mutate_cell_run(workflow, "install -y -qq git curl", "install -y -qq git")
+    problems = check_nightly_matrix(_load(_dump_fixture(tmp_path, "no-curl.yml", broken)))
+    assert any("install curl" in p for p in problems), problems

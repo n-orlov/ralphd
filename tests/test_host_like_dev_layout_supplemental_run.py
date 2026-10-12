@@ -50,6 +50,10 @@ def _run(args, extra_env=None, timeout=60):
     # started with -- a caller that wants a specific mode says so
     # explicitly via `extra_env`, which re-applies below and always wins.
     env.pop("HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE", None)
+    # Likewise the results directory: nightly.yml sets it for the whole cell,
+    # so this process inherits it, and the nested script runs under test must
+    # start from a clean slate unless a case names it in `extra_env`.
+    env.pop("HOST_LIKE_DEV_LAYOUT_ALLURE_DIR", None)
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
