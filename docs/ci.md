@@ -849,12 +849,17 @@ both keyed on one of two fixed, greppable, mutually exclusive prefixes —
 So: **a `cancelled` conclusion carrying `RALPHD_TIMEOUT_KILL:` is a timeout,
 and one carrying `RALPHD_CANCEL_NOT_TIMEOUT:` is a cancel, however close to
 the job's bound it arrived.** `tests/test_run_bounded_timeout_marker.py` holds
-both scripts to that behaviour and holds every job in all three workflows to
-using them — the stamp step first (start time, declared bound, a freshly
+both scripts to that behaviour and holds every job in every workflow it lists (including
+`ci.yml` and `browser-image.yml`) to using them — the stamp step first (start time, declared bound, a freshly
 cleared evidence directory), the classifier last with the job's status, every
 long step bounded, and the inner bounds summing under `timeout-minutes` less a
 reserve for the steps no wrapper owns (`actions/checkout` and the environment
-reports).
+reports). There is one reserve, `JOB_RESERVE_S` (300 s), for every workflow. The
+two jobs that run no payload, `trusted` and `required`, are a named exempt list
+with a reason each: they check out nothing, call no `scripts/run_bounded.sh`,
+name every `run:` step as exempt and declare at most 5 minutes. The inherited
+lane bounds (fast 45 min / 2100 s wrapped, docker 120 / 6600, browser 60 / 3000,
+browser-image 40 / 1800) are pinned and never raised.
 
 ## The sweep-sha practice: retired outright (task 003, v0.20.2, requirement A.1, #113 step 4)
 

@@ -822,8 +822,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.35 `required` verdict job (guard nodes in
     # tests/test_ci_workflow_guard.py): +8 tests, no new module -> fast
     # 8427/529, smoke 6680/404.
-    "fast": {"tests": 8427, "modules": 529},
-    "smoke": {"tests": 6680, "modules": 404},
+    # v0.35 run_bounded guard over ci.yml (exempt jobs, inherited bounds,
+    # tests/test_run_bounded_timeout_marker.py): +9 tests, no new module -> fast
+    # 8436/529, smoke 6689/404.
+    "fast": {"tests": 8436, "modules": 529},
+    "smoke": {"tests": 6689, "modules": 404},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
