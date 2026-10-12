@@ -460,6 +460,23 @@ def mounts_for(labels: tuple[str, ...] | list[str]) -> list[str]:
     return mounts
 
 
+def docker_socket_gid() -> int | None:
+    """The group that owns the host docker socket, or None if it is not there."""
+    try:
+        return os.stat(DOCKER_SOCKET).st_gid
+    except OSError:
+        return None
+
+
+def group_options_for(labels: tuple[str, ...] | list[str]) -> list[str]:
+    """``--group-add`` for a ``docker-host`` job. The runner is uid 1000 and the
+    socket is ``root:docker 0660``, so a mount alone gives "permission denied"."""
+    if DOCKER_LABEL not in labels:
+        return []
+    gid = docker_socket_gid()
+    return [] if gid is None else ["--group-add", str(gid)]
+
+
 class Docker:
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.binary = str(cfg["docker"])
@@ -605,6 +622,7 @@ class Docker:
                      "--cpus", f"{float(profile['cpus']):g}",
                      "--memory", str(profile["memory"]),
                      "--pids-limit", str(profile["pids_limit"]),
+                     *group_options_for(labels),
                      *mounts, "-v", f"{path}:{JIT_PATH}:ro",
                      image, *RUN_ONCE_COMMAND)
             try:

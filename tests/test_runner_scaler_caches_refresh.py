@@ -147,6 +147,23 @@ def test_the_docker_socket_is_mounted_for_docker_host_jobs_only(rig):
     assert not any("docker.sock" in a for a in create_argv(rig.docker, 103))
 
 
+def test_a_docker_host_job_joins_the_socket_group_and_other_jobs_do_not(rig, scaler, monkeypatch):
+    monkeypatch.setattr(scaler, "docker_socket_gid", lambda: 971)
+    queue_job(rig.github, 1, 101, ["ci-pool", "docker-host"])
+    queue_job(rig.github, 2, 102, ["ci-pool"])
+    assert rig.pass_() == 2
+    argv = create_argv(rig.docker, 101)
+    assert argv[argv.index("--group-add") + 1] == "971"
+    assert "--group-add" not in create_argv(rig.docker, 102)
+
+
+def test_a_missing_docker_socket_adds_no_group(rig, scaler, monkeypatch):
+    monkeypatch.setattr(scaler, "docker_socket_gid", lambda: None)
+    queue_job(rig.github, 1, 101, ["ci-pool", "docker-host"])
+    assert rig.pass_() == 1
+    assert "--group-add" not in create_argv(rig.docker, 101)
+
+
 # ---- B.6: build once, under a lock; a changed recipe is a new tag ----------
 
 def test_a_missing_runner_image_is_built_exactly_once_across_passes(rig, scaler):
