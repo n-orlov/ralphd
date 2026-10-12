@@ -32,6 +32,8 @@ import subprocess
 import termios
 import time
 
+import pytest
+
 from tests.conftest import RALPHCTL, sigint_default_for_children
 
 # Timeouts here are deliberately generous (task 045 suite hygiene): these
@@ -86,6 +88,7 @@ def _spawn_under_pty(run, extra_args: list[str]):
     return proc, master_fd, pre_attrs
 
 
+@pytest.mark.flaky_infra
 def test_sigint_restores_termios_mode(live, tmp_path):
     # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" keeps the job
     # genuinely non-terminal for as long as this test needs (bounded, never

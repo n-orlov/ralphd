@@ -26,6 +26,11 @@ everything below.
 (a push or a dispatch) has the group `ci-main-<sha>` and is never cancelled by a later
 one, so a regression on a superseded sha is not hidden.
 
+**Reruns.** No lane reruns failures globally: there is no `--reruns` in
+`pyproject.toml` or in any workflow. The one policy is per node: a test marked
+`flaky_infra` (a host-only pty or signal race, see `docs/testing.md`) gets exactly
+one rerun through `pytest-rerunfailures`, and a node that fails twice fails the lane.
+
 **Runner labels.** Every job but `required` runs on `[self-hosted, linux, x64, ci-pool]`
 plus, only where it needs one, a capability label: `docker-host` (the runner gets the host
 docker socket, which a job with `container:` needs because the runner starts that

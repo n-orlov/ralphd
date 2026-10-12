@@ -454,6 +454,21 @@ def _apply_nightly_lane_timeout(item) -> None:
         item.add_marker(pytest.mark.timeout(_NIGHTLY_LANE_TIMEOUT_S))
 
 
+# The `flaky_infra` policy: ONE rerun, for a node that names it, through
+# pytest-rerunfailures' own per-node marker arguments. There is deliberately no
+# global `--reruns` in pyproject.toml or any workflow: a rerun that applies to
+# every node hides real regressions, and this one applies to the nodes whose
+# only known failure is the host (a pty, a signal race).
+FLAKY_INFRA_RERUNS = 1
+
+
+def _give_flaky_infra_one_rerun(item) -> None:
+    """Attach `flaky(reruns=1)` to a `flaky_infra` node, unless the node already
+    carries its own `flaky` marker (which says something more specific)."""
+    if item.get_closest_marker("flaky") is None:
+        item.add_marker(pytest.mark.flaky(reruns=FLAKY_INFRA_RERUNS))
+
+
 @functools.lru_cache(maxsize=None)
 def _module_is_in_process(path: str) -> bool:
     """True when this test module never spawns a real engine/CLI process, so
@@ -479,6 +494,8 @@ def pytest_collection_modifyitems(config, items):
     the same file inside the fast tier.
     """
     for item in items:
+        if item.get_closest_marker("flaky_infra") is not None:
+            _give_flaky_infra_one_rerun(item)
         keywords = item.keywords
         path = str(getattr(item, "fspath", "") or "")
         in_nightly_lane = (

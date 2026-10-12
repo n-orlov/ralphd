@@ -825,8 +825,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.35 run_bounded guard over ci.yml (exempt jobs, inherited bounds,
     # tests/test_run_bounded_timeout_marker.py): +9 tests, no new module -> fast
     # 8436/529, smoke 6689/404.
-    "fast": {"tests": 8436, "modules": 529},
-    "smoke": {"tests": 6689, "modules": 404},
+    # v0.35 flaky_infra marker (tests/test_flaky_infra_marker.py): +6 tests, +1
+    # module, measured `-m fast --collect-only` -> fast 8442/530, `-m smoke`
+    # -> smoke 6695/405.
+    "fast": {"tests": 8442, "modules": 530},
+    "smoke": {"tests": 6695, "modules": 405},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

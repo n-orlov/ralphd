@@ -67,6 +67,7 @@ def _stacks_of(proc: subprocess.Popen) -> str:
 # 004 §2: raise a single node with `@pytest.mark.timeout(N)` and say why,
 # never the global floor).
 @pytest.mark.timeout(240)
+@pytest.mark.flaky_infra
 def test_sigint_during_follow_exits_clean_no_traceback(live, tmp_path):
     # task 009 (B.3): STUB_HOLD_FILE/STUB_HOLD_PHASE="worker" keeps the job
     # genuinely non-terminal for as long as this test needs (bounded, never

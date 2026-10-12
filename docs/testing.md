@@ -63,6 +63,23 @@ per-task tier affordable at all.
 Nested `pytest --collect-only` children are deliberately *not* in that list, so
 a module that only collects (never runs) a nested suite stays in smoke.
 
+## The `flaky_infra` marker: one rerun, for named nodes only
+
+`flaky_infra` marks a node whose only known failure is the host it runs on (a
+pty, a signal race), not the product. `pytest-rerunfailures` is in the `dev`
+extra, and `pytest_collection_modifyitems` in `tests/conftest.py` gives a marked
+node exactly one rerun through the plugin's own marker arguments
+(`flaky(reruns=1)`). A node that already carries its own `flaky` marker keeps it.
+A node that fails twice fails; an unmarked node is never rerun. There is no
+global `--reruns` in `pyproject.toml` or in any workflow, and a guard in
+`tests/test_flaky_infra_marker.py` pins that. Two nodes carry it:
+`test_cli_logs_pty_termios.py::test_sigint_restores_termios_mode` and
+`test_cli_logs_signal.py::test_sigint_during_follow_exits_clean_no_traceback`.
+Do not apply it to a node that can fail for a product reason: a rerun would hide
+the regression. `tests/test_flaky_infra_marker.py` shows, through pytester, that
+a fail-once marked node passes on its second attempt and is reported as rerun,
+the same node unmarked fails, and a fail-twice marked node fails.
+
 ## Running the suite inside a ralphd job container
 
 This repository is developed by ralphd runs of its own, so the suite is often
