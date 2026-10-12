@@ -455,6 +455,8 @@ IMAGE_RUNNER_ROOT = "/home/ubuntu/actions-runner"
 RUNNER_ROOT_ENV = "RUNNER_ROOT"
 TEMPLATE_PREFIX = "_template-"
 POST_MORTEM_LINES = 50
+DIAG_DIR_PREFIX = "_diag-"
+DIAG_KEEP = 8
 
 
 def mounts_for(labels: tuple[str, ...] | list[str]) -> list[str]:
@@ -501,6 +503,7 @@ class Docker:
         self.job_root = Path(str(cfg.get("job_root") or DEFAULTS["job_root"])
                              ).expanduser().absolute()
         self.image: str | None = None
+        self.last_image: str | None = None
         self.secret_dir = str(cfg.get("secret_dir") or "")
         self.runner_uid = int(cfg.get("runner_uid", JIT_RUNNER_UID))
 
@@ -650,17 +653,35 @@ class Docker:
             link_tree(self.runner_template(image), root)
         return ["-v", f"{root}:{root}", "-e", f"{RUNNER_ROOT_ENV}={root}"]
 
+    def keep_diag(self, root: Path, name: str) -> None:
+        """Move the runner's own ``_diag`` logs out of a root that is about to be
+        deleted, so a job that lost its runner can be explained afterwards. The
+        newest ``DIAG_KEEP`` are kept."""
+        diag = root / "_diag"
+        if not diag.is_dir():
+            return
+        try:
+            diag.rename(self.job_root / (DIAG_DIR_PREFIX + name))
+            old = sorted(self.job_root.glob(DIAG_DIR_PREFIX + "*"),
+                         key=lambda d: d.stat().st_mtime)
+            for stale in old[:-DIAG_KEEP]:
+                shutil.rmtree(stale, ignore_errors=True)
+        except OSError as exc:
+            log(f"cannot keep the runner logs of {name}: {exc}")
+
     def clean_job_root(self, name: str) -> None:
         """Delete a job's runner root. A job container running as root leaves files
         the scaler's user cannot unlink; a root container removes those."""
         root = self.job_root / name
         if not root.exists():
             return
+        self.keep_diag(root, name)
         shutil.rmtree(root, ignore_errors=True)
-        if root.exists() and self.image:
+        image = self.image or self.last_image
+        if root.exists() and image:
             try:
                 self.run("run", "--rm", "--user", "0", "-v", f"{self.job_root}:/jobs",
-                         "--entrypoint", "rm", self.image, "-rf", f"/jobs/{name}")
+                         "--entrypoint", "rm", image, "-rf", f"/jobs/{name}")
             except ScalerError as exc:
                 log(f"cannot clear {root}: {exc}")
         if root.exists():
@@ -715,6 +736,12 @@ class Docker:
         """Log how a container ended before it is deleted with its logs: state,
         exit code, OOM flag and daemon error on one line, and the last log lines
         unless it exited cleanly. Best effort: it never stops the removal."""
+        try:
+            image = self.run("inspect", "--format", "{{.Config.Image}}", name).strip()
+            if image:
+                self.last_image = image
+        except ScalerError:
+            pass
         try:
             fields = self.run(
                 "inspect", "--format",

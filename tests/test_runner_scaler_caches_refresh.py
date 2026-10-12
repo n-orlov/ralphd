@@ -17,6 +17,8 @@ has to know that a pass is waiting on the lock.
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
 import sys
 import threading
 import time
@@ -343,3 +345,40 @@ def test_a_failing_inspect_does_not_stop_the_removal(rig):
     assert rig.pass_() == 1
     rig.dock.remove("ci-runner-101")
     assert rig.docker.commands("rm")
+
+
+def test_a_removed_job_keeps_its_runner_diag_logs_and_only_the_newest_few(rig):
+    for n in range(10):
+        queue_job(rig.github, 1, 200 + n, ["ci-pool", "docker-host"])
+    assert rig.pass_() == 4  # max_concurrency
+    first = rig.tmp / "jobs" / "ci-runner-200"
+    (first / "_diag").mkdir()
+    (first / "_diag" / "Runner_1.log").write_text("lost communication")
+    rig.dock.remove("ci-runner-200")
+    kept = rig.tmp / "jobs" / "_diag-ci-runner-200" / "Runner_1.log"
+    assert kept.read_text() == "lost communication"
+    assert not first.exists()
+    jobs = rig.tmp / "jobs"
+    for n in range(9):
+        d = jobs / f"_diag-ci-runner-9{n}"
+        d.mkdir()
+        os.utime(d, (1000 + n, 1000 + n))
+    for name in ("ci-runner-201",):
+        (jobs / name / "_diag").mkdir()
+        rig.dock.remove(name)
+    assert len(list(jobs.glob("_diag-*"))) == 8
+
+
+def test_a_root_the_scaler_cannot_delete_is_cleared_by_a_root_container(rig, monkeypatch):
+    queue_job(rig.github, 1, 101, ["ci-pool", "docker-host"])
+    assert rig.pass_() == 1
+    rig.dock.image = None
+    rig.dock.last_image = "ci-runner:x"
+    calls = []
+    real_rmtree = shutil.rmtree
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+    monkeypatch.setattr(rig.dock, "run", lambda *a, **k: calls.append(a) or "")
+    rig.dock.clean_job_root("ci-runner-101")
+    assert any(a[:4] == ("run", "--rm", "--user", "0") and a[-2:] == ("-rf", "/jobs/ci-runner-101")
+               for a in calls)
+    real_rmtree(rig.tmp / "jobs" / "ci-runner-101", ignore_errors=True)
