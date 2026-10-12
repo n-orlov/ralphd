@@ -162,7 +162,19 @@ jobs:
       # `su -p ci` keeps the job's exported variables across the user switch.
       - name: Fast tier
         run: |
-          su -p ci -c 'scripts/run_bounded.sh 1800 "fast tier" -- python -m pytest -q -m fast -n 4 --dist loadfile --durations=15'
+          su -p ci -c 'scripts/run_bounded.sh 1800 "fast tier" -- python -m pytest -q -m fast -n 4 --dist loadfile --durations=15 --alluredir allure-results-fast'
+
+      # The Allure results of this tier (docs/testing.md, "Allure results"),
+      # kept even when the tier is red. The name carries the tier and the run
+      # id (and the attempt, so a rerun does not collide with attempt 1).
+      - name: Upload the fast tier's Allure results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: allure-results-fast-${{ github.run_id }}-${{ github.run_attempt }}
+          path: allure-results-fast
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Classify a job-level timeout kill
         if: always()
@@ -316,7 +328,19 @@ jobs:
       # itself, not as a `cancelled` indistinguishable from the push
       # collapse this workflow does on purpose.
       - name: Docker tier
-        run: scripts/run_bounded.sh 6000 "docker tier" -- .venv/bin/python -m pytest -q -m docker --durations=15
+        run: scripts/run_bounded.sh 6000 "docker tier" -- .venv/bin/python -m pytest -q -m docker --durations=15 --alluredir allure-results-docker
+
+      # The Allure results of this tier (docs/testing.md, "Allure results"),
+      # kept even when the tier is red. The name carries the tier and the run
+      # id (and the attempt, so a rerun does not collide with attempt 1).
+      - name: Upload the docker tier's Allure results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: allure-results-docker-${{ github.run_id }}-${{ github.run_attempt }}
+          path: allure-results-docker
+          if-no-files-found: error
+          retention-days: 14
 
       # Exact tags only -- never a wildcard or label filter (see the repo's
       # cleanup discipline: a ralphd host runs other people's containers).
@@ -507,7 +531,19 @@ jobs:
       # trusting it here. `su` without `-l` keeps the caller's cwd
       # ($GITHUB_WORKSPACE), so no explicit `cd` is needed.
       - name: Browser tier
-        run: su -p ubuntu -c 'scripts/run_bounded.sh 2400 "browser tier" -- .venv/bin/python -m pytest -q -m browser --durations=15'
+        run: su -p ubuntu -c 'scripts/run_bounded.sh 2400 "browser tier" -- .venv/bin/python -m pytest -q -m browser --durations=15 --alluredir allure-results-browser'
+
+      # The Allure results of this tier (docs/testing.md, "Allure results"),
+      # kept even when the tier is red. The name carries the tier and the run
+      # id (and the attempt, so a rerun does not collide with attempt 1).
+      - name: Upload the browser tier's Allure results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: allure-results-browser-${{ github.run_id }}-${{ github.run_attempt }}
+          path: allure-results-browser
+          if-no-files-found: error
+          retention-days: 14
 
       # A playwright-cli session is a daemon that outlives a killed pytest.
       # The suite force-closes its own sessions; this catches a cancelled job.

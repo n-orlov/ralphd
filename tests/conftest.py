@@ -480,6 +480,40 @@ def _module_is_in_process(path: str) -> bool:
     return _PROCESS_BOUNDARY_RE.search(source) is None
 
 
+def _tier_of(item) -> str:
+    """The tier a collected item reports under: `smoke`, `fast`, `docker` or
+    `browser` (the CI jobs' own names). A node in the nightly lane that is
+    neither docker nor browser (a `nightly` marker, a nightly module) reports
+    as `nightly`."""
+    keywords = item.keywords
+    if "docker" in keywords:
+        return "docker"
+    if "browser" in keywords:
+        return "browser"
+    if item.get_closest_marker("smoke") is not None:
+        return "smoke"
+    if item.get_closest_marker("fast") is not None:
+        return "fast"
+    return "nightly"
+
+
+def _label_for_allure(item) -> None:
+    """Label the item's Allure result: its tier is the parent suite and its
+    test module is the suite (docs/testing.md, "Allure results").
+
+    allure-pytest reads `allure_label` markers into the result's labels and
+    only fills the default suites in for a label that is not already present,
+    so these two win. The markers are added only while the plugin is loaded,
+    which keeps a run without `allure-pytest` free of unknown-marker noise.
+    """
+    if not item.config.pluginmanager.hasplugin("allure_pytest"):
+        return
+    module = os.path.splitext(os.path.basename(str(getattr(item, "fspath", "") or "")))[0]
+    item.add_marker(pytest.mark.allure_label(_tier_of(item), label_type="parentSuite"))
+    if module:
+        item.add_marker(pytest.mark.allure_label(module, label_type="suite"))
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
     """Stamp every collected item with its tier (`smoke`/`fast`), before the
@@ -508,6 +542,8 @@ def pytest_collection_modifyitems(config, items):
         item.add_marker(pytest.mark.fast)
         if _module_is_in_process(path):
             item.add_marker(pytest.mark.smoke)
+    for item in items:
+        _label_for_allure(item)
 
 
 def free_port() -> int:

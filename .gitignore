@@ -19,3 +19,6 @@ build/
 
 # JetBrains IDE settings
 .idea/
+
+# per-tier Allure results a CI job writes (ci.yml --alluredir)
+allure-results*/

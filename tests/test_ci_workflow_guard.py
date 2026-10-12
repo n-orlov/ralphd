@@ -581,6 +581,59 @@ def check_docker_and_browser_jobs(workflow: dict) -> list[str]:
     return problems
 
 
+ALLURE_TIERS = {"fast": "Fast tier", "docker": "Docker tier", "browser": "Browser tier"}
+
+
+def check_allure_results(workflow: dict) -> list[str]:
+    """The fast, docker and browser steps each write Allure results to their own
+    directory, and an `if: always()` upload step follows each, named with the
+    tier and the run id."""
+    problems: list[str] = []
+    jobs = workflow.get("jobs") or {}
+    seen_dirs: dict[str, str] = {}
+    for tier, step_name in ALLURE_TIERS.items():
+        steps = (jobs.get(tier) or {}).get("steps") or []
+        index = next((i for i, st in enumerate(steps) if st.get("name") == step_name), None)
+        if index is None:
+            problems.append(f"{tier} has no step named {step_name!r}")
+            continue
+        found = re.findall(r"--alluredir[ =](\S+?)['\"]?(?:\s|$)", steps[index].get("run") or "")
+        if len(found) != 1:
+            problems.append(f"{tier}'s pytest step passes --alluredir {len(found)} times, not once")
+            continue
+        directory = found[0]
+        if directory in seen_dirs:
+            problems.append(f"{tier} and {seen_dirs[directory]} share the --alluredir {directory!r}")
+        seen_dirs[directory] = tier
+        uploads = [
+            st for st in steps[index + 1:]
+            if str(st.get("uses") or "").startswith("actions/upload-artifact@")
+        ]
+        if len(uploads) != 1:
+            problems.append(f"{tier} has {len(uploads)} upload steps after its tier step, not one")
+            continue
+        upload = uploads[0]
+        if not re.fullmatch(r"actions/upload-artifact@[0-9a-f]{40}", upload["uses"]):
+            problems.append(f"{tier}'s upload step is not pinned by a full sha ({upload['uses']!r})")
+        if str(upload.get("if") or "").strip() != "always()":
+            problems.append(f"{tier}'s upload step is not `if: always()` ({upload.get('if')!r})")
+        with_ = upload.get("with") or {}
+        if with_.get("path") != directory:
+            problems.append(f"{tier}'s upload path is {with_.get('path')!r}, not its --alluredir {directory!r}")
+        artifact = str(with_.get("name") or "")
+        if tier not in artifact or "github.run_id" not in artifact:
+            problems.append(f"{tier}'s artifact name {artifact!r} does not carry the tier and the run id")
+    names = [
+        str((st.get("with") or {}).get("name"))
+        for tier in ALLURE_TIERS
+        for st in (jobs.get(tier) or {}).get("steps") or []
+        if str(st.get("uses") or "").startswith("actions/upload-artifact@")
+    ]
+    if len(set(names)) != len(names):
+        problems.append(f"the upload artifact names are not distinct: {names!r}")
+    return problems
+
+
 def check_browser_image_workflow(workflow: dict, others: dict[str, dict]) -> list[str]:
     problems: list[str] = []
     triggers = _triggers(workflow)
@@ -1130,3 +1183,68 @@ def test_the_browser_image_check_fails_for_each_broken_workflow(tmp_path):
     assert check_browser_image_workflow(
         _load(BROWSER_IMAGE_PATH), {**others, "heavy.yml": heavy_with_input}
     )
+
+
+def test_ci_fast_docker_and_browser_write_and_upload_allure_results():
+    assert check_allure_results(_load(CI_PATH)) == []
+
+
+def test_the_allure_check_fails_for_each_broken_tier_step(tmp_path):
+    def pytest_step(wf, tier):
+        return next(s for s in wf["jobs"][tier]["steps"] if s.get("name") == ALLURE_TIERS[tier])
+
+    def upload_step(wf, tier):
+        return next(s for s in wf["jobs"][tier]["steps"]
+                    if str(s.get("uses") or "").startswith("actions/upload-artifact@"))
+
+    def no_alluredir(tier):
+        def edit(wf):
+            step = pytest_step(wf, tier)
+            step["run"] = step["run"].replace(f" --alluredir allure-results-{tier}", "")
+        return edit
+
+    def no_upload(tier):
+        def edit(wf):
+            wf["jobs"][tier]["steps"].remove(upload_step(wf, tier))
+        return edit
+
+    def upload_not_always(tier):
+        def edit(wf):
+            del upload_step(wf, tier)["if"]
+        return edit
+
+    def wrong_path(tier):
+        def edit(wf):
+            upload_step(wf, tier)["with"]["path"] = "elsewhere"
+        return edit
+
+    def name_without_run_id(tier):
+        def edit(wf):
+            upload_step(wf, tier)["with"]["name"] = f"allure-results-{tier}"
+        return edit
+
+    def name_without_tier(tier):
+        def edit(wf):
+            upload_step(wf, tier)["with"]["name"] = "allure-results-${{ github.run_id }}"
+        return edit
+
+    def unpinned(tier):
+        def edit(wf):
+            upload_step(wf, tier)["uses"] = "actions/upload-artifact@v7"
+        return edit
+
+    def shared_dir(wf):
+        step = pytest_step(wf, "docker")
+        step["run"] = step["run"].replace("allure-results-docker", "allure-results-fast")
+        upload_step(wf, "docker")["with"]["path"] = "allure-results-fast"
+
+    cases = {"shared-dir": shared_dir}
+    for tier in ALLURE_TIERS:
+        for label, make in {
+            "no-alluredir": no_alluredir, "no-upload": no_upload, "not-always": upload_not_always,
+            "wrong-path": wrong_path, "no-run-id": name_without_run_id,
+            "no-tier": name_without_tier, "unpinned": unpinned,
+        }.items():
+            cases[f"{tier}-{label}"] = make(tier)
+    for name, edit in cases.items():
+        assert check_allure_results(_mutate(tmp_path, f"{name}.yml", edit)), name

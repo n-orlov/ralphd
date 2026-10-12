@@ -80,6 +80,29 @@ the regression. `tests/test_flaky_infra_marker.py` shows, through pytester, that
 a fail-once marked node passes on its second attempt and is reported as rerun,
 the same node unmarked fails, and a fail-twice marked node fails.
 
+## Allure results: `--alluredir`, one directory per tier
+
+`allure-pytest` is in the `dev` extra, so `pip install -e '.[dev]'` brings the
+plugin. It writes nothing until you pass `--alluredir`:
+
+```
+.venv/bin/python -m pytest -q -m fast -n 4 --dist loadfile --alluredir allure-results-fast
+```
+
+`tests/conftest.py` labels every result in the collection hook: its tier
+(`smoke`, `fast`, `docker` or `browser`; a node of the nightly lane that is
+neither docker nor browser reports as `nightly`) is the Allure parent suite and
+its test module is the suite. A `-m fast` run is a superset of `-m smoke`, and a
+node that is both reports under `smoke`. The labels only attach while the
+plugin is loaded, so a run without `allure-pytest` is unchanged.
+`tests/test_allure_tier_labels.py` reads the labels back out of a child run's
+result files, one node per tier.
+
+`ci.yml`'s `fast`, `docker` and `browser` steps pass `--alluredir
+allure-results-<tier>`, and an `if: always()` step uploads that directory as the
+artifact `allure-results-<tier>-<run id>-<attempt>`, so a red tier still keeps
+its results. The directories are ignored by git.
+
 ## Running the suite inside a ralphd job container
 
 This repository is developed by ralphd runs of its own, so the suite is often
