@@ -38,6 +38,7 @@ class FakeGitHub:
         self.repo = repo
         self.runs: list[dict[str, Any]] = []
         self.jobs: dict[int, list[dict[str, Any]]] = {}
+        self.runners: list[dict[str, Any]] = []
         self.requests: list[dict[str, Any]] = []
         self._failures: list[dict[str, Any]] = []
         self._lock = threading.Lock()
@@ -60,6 +61,12 @@ class FakeGitHub:
             "id": job_id, "run_id": run_id, "status": status,
             "labels": list(labels), "name": f"job-{job_id}",
         })
+
+    def set_runner_busy(self, name: str, busy: bool = True) -> None:
+        """A registered runner of this name, working a job (or idle)."""
+        self.runners = [r for r in self.runners if r["name"] != name]
+        self.runners.append({"id": len(self.runners) + 1, "name": name,
+                             "status": "online", "busy": busy})
 
     def set_job_status(self, job_id: int, status: str) -> None:
         for jobs in self.jobs.values():
@@ -172,6 +179,9 @@ class FakeGitHub:
             runs = [r for r in self.runs if wanted in (None, r["status"])]
             return 200, {"total_count": len(runs),
                          "workflow_runs": self._page(runs, query)}
+        if method == "GET" and path == f"{base}/runners":
+            return 200, {"total_count": len(self.runners),
+                         "runners": self._page(self.runners, query)}
         parts = path.split("/")
         if (method == "GET" and path.startswith(f"{base}/runs/")
                 and parts[-1] == "jobs"):

@@ -382,3 +382,38 @@ def test_a_root_the_scaler_cannot_delete_is_cleared_by_a_root_container(rig, mon
     assert any(a[:4] == ("run", "--rm", "--user", "0") and a[-2:] == ("-rf", "/jobs/ci-runner-101")
                for a in calls)
     real_rmtree(rig.tmp / "jobs" / "ci-runner-101", ignore_errors=True)
+
+
+def test_a_runner_busy_with_another_job_is_not_reaped_for_a_stale_job(rig):
+    queue_job(rig.github, 1, 101, ["ci-pool"])
+    assert rig.pass_() == 1
+    rig.github.set_job_status(101, "completed")     # another runner took job 101
+    rig.github.set_runner_busy("ci-runner-101")     # this one is mid-way through job 202
+    entries = rig.dock.containers()
+    for _ in range(2):
+        gone = rig.scaler.reap_containers(rig.cfg, rig.api, rig.dock, entries, now=time.time() + 600)
+        assert gone == set()
+    assert not rig.docker.commands("rm")
+    rig.github.set_runner_busy("ci-runner-101", busy=False)
+    assert rig.scaler.reap_containers(rig.cfg, rig.api, rig.dock, entries,
+                                      now=time.time() + 600) == {"ci-runner-101"}
+
+
+def test_a_queued_job_past_the_start_deadline_spares_a_busy_runner(rig):
+    queue_job(rig.github, 1, 101, ["ci-pool"])
+    assert rig.pass_() == 1
+    rig.github.set_runner_busy("ci-runner-101")
+    entries = rig.dock.containers()
+    assert rig.scaler.reap_containers(rig.cfg, rig.api, rig.dock, entries,
+                                      now=time.time() + 600) == set()
+
+
+def test_a_failing_runner_lookup_keeps_the_container_and_ends_the_pass(rig):
+    queue_job(rig.github, 1, 101, ["ci-pool"])
+    assert rig.pass_() == 1
+    rig.github.set_job_status(101, "completed")
+    rig.github.fail_next(1, path_contains="/actions/runners")
+    entries = rig.dock.containers()
+    with pytest.raises(rig.scaler.ScalerError):
+        rig.scaler.reap_containers(rig.cfg, rig.api, rig.dock, entries, now=time.time() + 600)
+    assert not rig.docker.commands("rm")

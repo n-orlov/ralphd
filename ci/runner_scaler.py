@@ -343,6 +343,20 @@ class GitHubApi:
         reply = self.get(f"/repos/{self.repo}/actions/jobs/{int(job_id)}")
         return str((reply or {}).get("status", ""))
 
+    def busy_runners(self) -> set[str]:
+        """The names of the registered runners that are working a job right now
+        (``GET /repos/{repo}/actions/runners``, ``busy``)."""
+        busy: set[str] = set()
+        page = 1
+        while True:
+            reply = self.get(f"/repos/{self.repo}/actions/runners"
+                             f"?per_page=100&page={page}")
+            runners = (reply or {}).get("runners", [])
+            busy.update(str(r.get("name")) for r in runners if r.get("busy"))
+            if len(runners) < 100:
+                return busy
+            page += 1
+
     def queued_runs(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         page = 1
@@ -661,7 +675,9 @@ class Docker:
         if not diag.is_dir():
             return
         try:
-            diag.rename(self.job_root / (DIAG_DIR_PREFIX + name))
+            kept = self.job_root / (DIAG_DIR_PREFIX + name)
+            shutil.rmtree(kept, ignore_errors=True)  # a rerun of the same job id
+            diag.rename(kept)
             old = sorted(self.job_root.glob(DIAG_DIR_PREFIX + "*"),
                          key=lambda d: d.stat().st_mtime)
             for stale in old[:-DIAG_KEEP]:
@@ -1383,13 +1399,15 @@ def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
     Reaping that needs a successful job read follows: (c) its job is
     ``completed``, or (d) its job is still ``queued`` after
     ``start_deadline_s`` (GitHub assigned the job to the runner and it never
-    ran). Each removal is one ``docker rm --force ci-runner-<job id>``. A job
+    ran). A container whose runner GitHub reports busy is kept under (c) and (d):
+    the runner may be working another job. Each removal is one ``docker rm --force ci-runner-<job id>``. A job
     lookup that fails (any ``ApiError``, a 404 as much as a 503) ends the pass
     by raising: that container and every one not yet read are kept, and the
     next pass reads them again. Returns
     the names removed (or, in a dry run, that would be).
     """
     reaped: set[str] = set()
+    busy: set[str] | None = None
     for entry in sorted(entries, key=lambda e: str(e["Names"])):
         name = str(entry["Names"])
         job_id = job_id_of(name)
@@ -1415,6 +1433,19 @@ def reap_containers(cfg: dict[str, Any], api: GitHubApi, docker: Docker,
             elif (status == "queued" and age is not None
                   and age > float(cfg["start_deadline_s"])):
                 reason = "job still queued past start_deadline_s"
+            if reason is not None:
+                # A just-in-time runner takes ANY queued job with its labels, not
+                # the one it is named after: this one may be mid-way through
+                # another. Removing it then kills that job ("lost communication").
+                if busy is None:
+                    try:
+                        busy = api.busy_runners()
+                    except ScalerError as exc:
+                        log(f"cannot read the runners, keeping {name}: {exc}")
+                        raise
+                if name in busy:
+                    log(f"keeping {name}: its runner is busy ({reason})")
+                    reason = None
         if reason is None:
             continue
         if dry_run:

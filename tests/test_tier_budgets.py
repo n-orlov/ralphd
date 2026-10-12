@@ -841,8 +841,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.35 runner scaler removal diagnostics (tests/test_runner_scaler_caches_
     # refresh.py, +5 tests, no new module), measured `--collect-only` -> fast
     # 8468/533, smoke 6713/407.
-    "fast": {"tests": 8468, "modules": 533},
-    "smoke": {"tests": 6713, "modules": 407},
+    # v0.35 runner scaler busy-runner reap guard (tests/test_runner_scaler_
+    # caches_refresh.py, +3 tests, no new module) -> fast 8471/533, smoke
+    # 6716/407.
+    "fast": {"tests": 8471, "modules": 533},
+    "smoke": {"tests": 6716, "modules": 407},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
