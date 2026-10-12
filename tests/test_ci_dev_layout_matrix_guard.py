@@ -46,6 +46,7 @@ all three original assertions -- net -2 there, +2 here, net zero overall.
 from __future__ import annotations
 
 import copy
+import json
 import re
 from pathlib import Path
 
@@ -260,6 +261,7 @@ def check_nightly_matrix(workflow: dict) -> list[str]:
     problems.extend(_check_concurrency(workflow))
     problems.extend(_check_readonly_workspace_mount(run_scripts))
     problems.extend(_check_pip_resilience(run_scripts))
+    problems.extend(_check_result_capture(workflow))
     problems.extend(_check_cell_hardening(run_scripts))
 
     for run in run_scripts:
@@ -313,6 +315,92 @@ def _check_image_pull(steps: list[dict]) -> list[str]:
         problems.append(
             f"the image pull retries {attempts} times, outside the bound "
             f"{PULL_ATTEMPTS_MIN}..{PULL_ATTEMPTS_MAX}"
+        )
+    return problems
+
+
+RESULTS_DIR = "allure-results-nightly"
+RESULTS_MOUNT_TARGET = "/allure-results"
+REPORT_GENERATION_RE = re.compile(
+    r"allure_report\.sh|allure_summary\.py|\ballure\s+(?:generate|serve|open)\b|"
+    r"allure-commandline|configure-pages|upload-pages-artifact|deploy-pages|gh-pages",
+    re.IGNORECASE,
+)
+
+
+def _check_result_capture(workflow: dict) -> list[str]:
+    """Each cell's pytest passes write Allure result files into a directory the
+    cell container mounts from the job, an `if: always()` upload step after
+    the cell publishes it under a name carrying image, mode and run id, and no
+    report is generated anywhere in the workflow."""
+    problems: list[str] = []
+    job = (workflow.get("jobs") or {}).get("dev-layout") or {}
+    steps = job.get("steps") or []
+
+    cell_idx = [
+        i
+        for i, step in enumerate(steps)
+        if "docker run --rm" in str(step.get("run") or "") and "--cpus" in str(step.get("run") or "")
+    ]
+    cell_run = str(steps[cell_idx[0]].get("run")) if cell_idx else ""
+    if f"-e HOST_LIKE_DEV_LAYOUT_ALLURE_DIR={RESULTS_MOUNT_TARGET}" not in cell_run:
+        problems.append(
+            "the cell's docker run does not set HOST_LIKE_DEV_LAYOUT_ALLURE_DIR="
+            f"{RESULTS_MOUNT_TARGET} -- the dev-layout script's pytest passes are given no results directory"
+        )
+    mount = re.search(
+        r"-v\s+\"\$RALPHD_HOST_WORKSPACE/(?P<dir>[^:\"\s]+):" + re.escape(RESULTS_MOUNT_TARGET) + r"\"?(?=\s)",
+        cell_run,
+    )
+    if not mount:
+        problems.append(
+            "the cell's docker run does not mount a job directory writable at "
+            f"{RESULTS_MOUNT_TARGET} (result capture mount)"
+        )
+    elif mount.group("dir") != RESULTS_DIR:
+        problems.append(f"the result capture mount names {mount.group('dir')!r}, not {RESULTS_DIR!r}")
+    elif f"mkdir -p {RESULTS_DIR}" not in cell_run:
+        problems.append(f"the cell step never creates the {RESULTS_DIR} directory it mounts")
+
+    uploads = [
+        (i, step)
+        for i, step in enumerate(steps)
+        if str(step.get("uses") or "").startswith("actions/upload-artifact@")
+    ]
+    if not uploads:
+        problems.append("no actions/upload-artifact step uploads the cell's result files")
+    else:
+        idx, upload = uploads[0]
+        if cell_idx and idx <= cell_idx[0]:
+            problems.append("the result upload step does not come after the cell step")
+        if str(upload.get("if") or "").strip() != "always()":
+            problems.append(
+                f"the result upload step's if is {upload.get('if')!r}, not 'always()' "
+                "-- a red cell would upload nothing"
+            )
+        name = str((upload.get("with") or {}).get("name") or "")
+        for needed, why in (
+            ("matrix.slug", "the cell's image"),
+            ("matrix.mode", "its PYTHONUSERBASE mode"),
+            ("github.run_id", "the run id"),
+        ):
+            if needed not in name:
+                problems.append(f"the result artifact name {name!r} does not carry {why} ({needed})")
+        if str((upload.get("with") or {}).get("path") or "") != RESULTS_DIR:
+            problems.append(f"the result upload step does not upload {RESULTS_DIR!r}")
+
+    for cell in (job.get("strategy") or {}).get("matrix", {}).get("include") or []:
+        if cell.get("slug") != str(cell.get("image")).replace(":", "-"):
+            problems.append(
+                f"matrix cell {cell!r}: slug is not the image with ':' replaced by '-'"
+            )
+
+    rendered = json.dumps(workflow)
+    hit = REPORT_GENERATION_RE.search(rendered)
+    if hit:
+        problems.append(
+            f"the workflow references report generation ({hit.group(0)!r}) -- "
+            "the nightly lane only uploads raw result files"
         )
     return problems
 
@@ -1112,3 +1200,74 @@ def test_container_allowlist_guard_fires_on_a_fixture_workflow(tmp_path):
             unusable_container,
             problems,
         )
+
+
+def _mutate_steps(workflow: dict, fn) -> dict:
+    broken = copy.deepcopy(workflow)
+    fn(broken["jobs"]["dev-layout"]["steps"])
+    return broken
+
+
+def _upload_step(steps: list[dict]) -> dict:
+    return next(s for s in steps if str(s.get("uses") or "").startswith("actions/upload-artifact@"))
+
+
+def test_nightly_workflow_captures_and_uploads_each_cells_results():
+    workflow = _load(NIGHTLY_PATH)
+    assert _check_result_capture(workflow) == []
+    name = _upload_step(workflow["jobs"]["dev-layout"]["steps"])["with"]["name"]
+    assert "matrix.slug" in name and "matrix.mode" in name and "github.run_id" in name
+
+
+def test_result_capture_guard_fires_when_the_results_directory_is_not_handed_to_the_cell(tmp_path):
+    workflow = _load(NIGHTLY_PATH)
+    for old, expect in (
+        ("-e HOST_LIKE_DEV_LAYOUT_ALLURE_DIR=/allure-results", "HOST_LIKE_DEV_LAYOUT_ALLURE_DIR"),
+        ('-v "$RALPHD_HOST_WORKSPACE/allure-results-nightly:/allure-results"', "result capture mount"),
+    ):
+        broken = _mutate_cell_run(workflow, old, "")
+        fixture = _dump_fixture(tmp_path, "broken-capture.yml", broken)
+        problems = check_nightly_matrix(_load(fixture))
+        assert any(expect in p for p in problems), (old, problems)
+    broken = _mutate_cell_run(workflow, "mkdir -p allure-results-nightly", "true")
+    problems = check_nightly_matrix(_load(_dump_fixture(tmp_path, "broken-mkdir.yml", broken)))
+    assert any("never creates" in p for p in problems), problems
+
+
+def test_result_capture_guard_fires_when_the_upload_step_is_missing_or_not_always(tmp_path):
+    workflow = _load(NIGHTLY_PATH)
+
+    broken = _mutate_steps(workflow, lambda steps: steps.remove(_upload_step(steps)))
+    problems = check_nightly_matrix(_load(_dump_fixture(tmp_path, "no-upload.yml", broken)))
+    assert any("no actions/upload-artifact" in p for p in problems), problems
+
+    broken = _mutate_steps(workflow, lambda steps: _upload_step(steps).pop("if"))
+    problems = check_nightly_matrix(_load(_dump_fixture(tmp_path, "no-always.yml", broken)))
+    assert any("always()" in p for p in problems), problems
+
+    broken = _mutate_steps(workflow, lambda steps: _upload_step(steps).update({"if": "success()"}))
+    problems = check_nightly_matrix(_load(_dump_fixture(tmp_path, "success-only.yml", broken)))
+    assert any("always()" in p for p in problems), problems
+
+
+def test_result_capture_guard_fires_when_the_artifact_name_drops_a_part(tmp_path):
+    workflow = _load(NIGHTLY_PATH)
+    for part in ("matrix.slug", "matrix.mode", "github.run_id"):
+        def drop(steps, part=part):
+            with_ = _upload_step(steps)["with"]
+            with_["name"] = with_["name"].replace("${{ " + part + " }}", "x")
+        broken = _mutate_steps(workflow, drop)
+        problems = check_nightly_matrix(_load(_dump_fixture(tmp_path, "name.yml", broken)))
+        assert any(part in p for p in problems), (part, problems)
+
+
+def test_result_capture_guard_fires_when_the_workflow_generates_a_report(tmp_path):
+    workflow = _load(NIGHTLY_PATH)
+    for extra in (
+        {"name": "Report", "run": "scripts/allure_report.sh allure-results-nightly report"},
+        {"name": "Report", "run": "allure generate allure-results-nightly"},
+        {"name": "Pages", "uses": "actions/deploy-pages@" + "0" * 40},
+    ):
+        broken = _mutate_steps(workflow, lambda steps, extra=extra: steps.insert(-1, extra))
+        problems = check_nightly_matrix(_load(_dump_fixture(tmp_path, "report.yml", broken)))
+        assert any("report generation" in p for p in problems), (extra, problems)

@@ -162,16 +162,22 @@ jobs:
       matrix:
         include:
           - image: ubuntu:24.04
+            slug: ubuntu-24.04
             mode: exported
           - image: ubuntu:24.04
+            slug: ubuntu-24.04
             mode: unset
           - image: python:3.11-slim
+            slug: python-3.11-slim
             mode: exported
           - image: python:3.11-slim
+            slug: python-3.11-slim
             mode: unset
           - image: python:3.14-slim
+            slug: python-3.14-slim
             mode: exported
           - image: python:3.14-slim
+            slug: python-3.14-slim
             mode: unset
     steps:
       # Task 054 (K.3): stamp this cell's start, its declared bound and a
@@ -349,8 +355,18 @@ jobs:
           # script reads HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR, its default being
           # a per-container /tmp path that every cell would lose. A fresh
           # volume is root-owned, so the cell chowns it before the drop.
+          #
+          # Allure results: `allure-results-nightly` in the job's workspace is
+          # mounted writable into the cell and handed to the dev-layout script
+          # through its results-directory env
+          # var, so both of its pytest passes write result files there. The
+          # `if: always()` upload step after this one publishes the directory
+          # as the cell's run artifact even when the cell is red.
+          mkdir -p allure-results-nightly
           scripts/run_bounded.sh 6300 "dev-layout cell" -- docker run --rm \
             --cpus="2" \
+            -e HOST_LIKE_DEV_LAYOUT_ALLURE_DIR=/allure-results \
+            -v "$RALPHD_HOST_WORKSPACE/allure-results-nightly:/allure-results" \
             -e PIP_DEFAULT_TIMEOUT=60 \
             -e PIP_RETRIES=10 \
             -e HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR=/pip-cache \
@@ -373,12 +389,27 @@ jobs:
               CELL_HOME="$(getent passwd 1000 | cut -d: -f6)"
               CELL_GID="$(getent passwd 1000 | cut -d: -f4)"
               mkdir -p "$CELL_HOME"
-              chown -R 1000:"$CELL_GID" "$CELL_HOME" /src /pip-cache
+              chown -R 1000:"$CELL_GID" "$CELL_HOME" /src /pip-cache /allure-results
 
               cd /src
               setpriv --reuid=1000 --regid="$CELL_GID" --init-groups \
                 env HOME="$CELL_HOME" scripts/host_like_dev_layout.sh
             '
+
+      # The cell's Allure result files, uploaded even when the cell failed.
+      # The name carries the cell's image (matrix.slug is the image with the
+      # `:` an artifact name cannot hold replaced), its PYTHONUSERBASE mode and
+      # the run id (plus the attempt, so a rerun of a failed cell does not
+      # collide with the first attempt's artifact). No report is generated
+      # here: the nightly lane only publishes the raw result files.
+      - name: Upload the cell's Allure result files
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: allure-results-nightly-${{ matrix.slug }}-${{ matrix.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: allure-results-nightly
+          if-no-files-found: error
+          retention-days: 14
 
       # Task 054 (K.3), the classifier half: runs even when this cell is
       # cancelled. It prints RALPHD_TIMEOUT_KILL only when a bounded step

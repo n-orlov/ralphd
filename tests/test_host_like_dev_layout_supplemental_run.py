@@ -352,3 +352,42 @@ def test_the_supplemental_expression_selects_exactly_what_fast_docker_and_browse
     heavy_text = HEAVY_WORKFLOW.read_text()
     assert "-m docker" in heavy_text
     assert "-m browser" in heavy_text
+
+
+@pytest.mark.parametrize(
+    "mode_env",
+    [
+        pytest.param(None, id="exported-default-mode"),
+        pytest.param(
+            {"HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE": "unset"}, id="unset-mode"
+        ),
+    ],
+)
+def test_the_results_directory_is_given_to_both_pytest_invocations(tmp_path, mode_env):
+    """`nightly.yml` sets HOST_LIKE_DEV_LAYOUT_ALLURE_DIR to the directory its
+    cell container mounts from the job: the primary pass and the supplemental
+    pass must each be handed it, as the single token `--alluredir=<dir>`."""
+    stub, log = _stub_interpreter(tmp_path)
+    results = "/allure-results-probe"
+    extra_env = {"PYTHON": str(stub), "HOST_LIKE_DEV_LAYOUT_ALLURE_DIR": results}
+    if mode_env:
+        extra_env.update(mode_env)
+
+    result = _run([], extra_env=extra_env, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    calls = _pytest_invocations(log)
+    assert len(calls) == 2, calls
+    for call in calls:
+        assert f"--alluredir={results}" in call["ARGS"].split(), call
+
+
+def test_no_results_directory_means_no_alluredir_argument(tmp_path):
+    stub, log = _stub_interpreter(tmp_path)
+
+    result = _run([], extra_env={"PYTHON": str(stub)}, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    calls = _pytest_invocations(log)
+    assert len(calls) == 2, calls
+    assert all("--alluredir" not in call["ARGS"] for call in calls), calls

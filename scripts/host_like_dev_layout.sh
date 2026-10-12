@@ -189,6 +189,15 @@
 #                        fixture fix, passes with it) that only the `unset`
 #                        mode can produce.
 #
+#   HOST_LIKE_DEV_LAYOUT_ALLURE_DIR
+#                        Optional. A directory every pytest invocation of this
+#                        script (the primary pass and the supplemental pass)
+#                        writes its Allure result files into, via one
+#                        `--alluredir=<dir>` argument. nightly.yml mounts a
+#                        job directory here so each cell's results survive the
+#                        cell container and are uploaded as a run artifact.
+#                        Unset (the default) adds no argument.
+#
 #   HOST_LIKE_DEV_LAYOUT_TIER
 #                        Task 076 (steer 008): which pytest marker selection
 #                        this script's own `pytest` invocation carries, ADDED
@@ -491,6 +500,18 @@ esac
 # the primary run, rather than a second, driftable copy of it -- both calls
 # below share the same two branches this function's own text carries once.
 _run_pytest_tier() {
+  # HOST_LIKE_DEV_LAYOUT_ALLURE_DIR (see the header): when set, EVERY pytest
+  # invocation of this script -- the primary pass and the supplemental pass --
+  # writes its Allure result files into that directory, as ONE token
+  # (`--alluredir=<dir>`; a two-token form with an out-of-tree dir is read by
+  # pytest's early scan as a path argument and drops the pyproject settings).
+  # A per-invocation argument, never PYTEST_ADDOPTS, which would leak into the
+  # nested pytest runs this suite's own tests start.
+  local allure_args=()
+  if [ -n "${HOST_LIKE_DEV_LAYOUT_ALLURE_DIR:-}" ]; then
+    allure_args=("--alluredir=$HOST_LIKE_DEV_LAYOUT_ALLURE_DIR")
+  fi
+  set -- "$@" "${allure_args[@]}"
   if [ "$PYTHONUSERBASE_MODE" = "unset" ]; then
     # `unset` mode is ONLY about which env var decides the pytest
     # subprocess's own IMPORT path ($HOME alone, via env -u PYTHONUSERBASE,

@@ -847,7 +847,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.35 scripts/allure_env.sh: 4 nodes in tests/test_allure_env_script.py
     # (new module) and 2 guard nodes in tests/test_ci_workflow_guard.py ->
     # fast 8477/534, smoke 6722/408.
-    "fast": {"tests": 8477, "modules": 534},
+    # v0.35 nightly result capture: 6 nodes in tests/test_ci_dev_layout_matrix_
+    # guard.py and 2 in tests/test_host_like_dev_layout_supplemental_run.py
+    # (no new module) -> fast 8485/534, smoke 6722/408.
+    "fast": {"tests": 8485, "modules": 534},
     "smoke": {"tests": 6722, "modules": 408},
 }
 

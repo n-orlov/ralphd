@@ -45,6 +45,20 @@ that user before dropping privileges). `tests/test_ci_dev_layout_matrix_guard.py
 axes, the absent `max-parallel`, the labels, both variables and the mount, each against a
 mutated fixture.
 
+**Per-cell result artifacts.** Each cell writes the Allure result files of both of its pytest
+passes (the `fast` tier and the supplemental pass) into `allure-results-nightly` in the job's
+workspace. The cell's `docker run` mounts that directory writable at `/allure-results` and
+sets `HOST_LIKE_DEV_LAYOUT_ALLURE_DIR=/allure-results`, which makes
+`scripts/host_like_dev_layout.sh` give both pytest invocations `--alluredir=/allure-results`;
+the cell chowns the mount to the user that runs the suite. An `if: always()`
+`actions/upload-artifact` step after the cell uploads the directory as
+`allure-results-nightly-<image slug>-<mode>-<run id>-<attempt>` (the slug is the image with its
+`:` replaced by `-`, so six cells give six artifacts, and a rerun of a failed cell does not
+collide with the first attempt). `nightly.yml` generates no report and uses no Pages action: the
+raw result files are the nightly lane's output. `tests/test_ci_dev_layout_matrix_guard.py`
+asserts the capture, the upload with its `if: always()` and its name, and the absence of report
+generation, each against a mutated fixture.
+
 Each cell pulls its image in a step of its own, `Pull the cell image with a bounded retry`,
 which runs before the step that starts the cell's container. The pull is tried up to three
 times, ten seconds apart, inside one `scripts/run_bounded.sh` call of 300 s, so a registry
