@@ -454,6 +454,7 @@ BUILD_TIMEOUT_S = 3600
 IMAGE_RUNNER_ROOT = "/home/ubuntu/actions-runner"
 RUNNER_ROOT_ENV = "RUNNER_ROOT"
 TEMPLATE_PREFIX = "_template-"
+POST_MORTEM_LINES = 50
 
 
 def mounts_for(labels: tuple[str, ...] | list[str]) -> list[str]:
@@ -710,10 +711,40 @@ class Docker:
                     log(f"cannot remove {name} after a failed start: {exc}")
                 raise
 
+    def post_mortem(self, name: str) -> None:
+        """Log how a container ended before it is deleted with its logs: state,
+        exit code, OOM flag and daemon error on one line, and the last log lines
+        unless it exited cleanly. Best effort: it never stops the removal."""
+        try:
+            fields = self.run(
+                "inspect", "--format",
+                "{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}} {{.State.Error}}",
+                name).split(None, 3)
+            status, code, oom = fields[0], fields[1], fields[2] == "true"
+            error = fields[3].strip() if len(fields) > 3 else ""
+        except (ScalerError, IndexError) as exc:
+            log(f"no post-mortem for {name}: {exc}")
+            return
+        log(f"{name} ended: status={status} exit={code} oom={str(oom).lower()}"
+            + (f" error={error}" if error else ""))
+        if status == "exited" and code == "0" and not oom:
+            return
+        import subprocess
+        try:
+            proc = subprocess.run([self.binary, "logs", "--tail", str(POST_MORTEM_LINES), name],
+                                  capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log(f"no logs for {name}: {exc}")
+            return
+        text = (proc.stdout + proc.stderr).decode(errors="replace")
+        for line in text.splitlines()[-POST_MORTEM_LINES:]:
+            log(f"  {name}| {line[:300]}")
+
     def remove(self, name: str) -> None:
         """Remove ONE container by its exact name; never by filter or prune."""
         if job_id_of(name) is None:
             raise ScalerError(f"refusing to remove {name!r}: not a scaler container")
+        self.post_mortem(name)
         self.run("rm", "--force", name)
         self.clean_job_root(name)
 

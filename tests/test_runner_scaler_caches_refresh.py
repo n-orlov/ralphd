@@ -307,3 +307,39 @@ def test_an_unchanged_recipe_keeps_its_tag(rig, scaler):
     assert scaler.recipe_hash(rig.recipe) == first
     (rig.recipe / "run-once.sh").write_text("#!/bin/sh\n")
     assert scaler.recipe_hash(rig.recipe) != first           # a copied file counts too
+
+
+def test_a_removal_logs_how_the_container_ended_and_its_last_log_lines(rig, capsys, monkeypatch):
+    queue_job(rig.github, 1, 101, ["ci-pool"])
+    assert rig.pass_() == 1
+    real = rig.dock.run
+
+    def run(*args, **kw):
+        if args[0] == "inspect":
+            return "exited 137 true killed by the daemon\n"
+        return real(*args, **kw)
+
+    monkeypatch.setattr(rig.dock, "run", run)
+    rig.dock.remove("ci-runner-101")
+    err = capsys.readouterr().err
+    assert "ci-runner-101 ended: status=exited exit=137 oom=true error=killed by the daemon" in err
+    assert rig.docker.commands("rm")
+
+
+def test_a_clean_exit_logs_one_line_and_no_log_tail(rig, capsys, monkeypatch):
+    queue_job(rig.github, 1, 101, ["ci-pool"])
+    assert rig.pass_() == 1
+    real = rig.dock.run
+    monkeypatch.setattr(rig.dock, "run", lambda *a, **k: "exited 0 false \n"
+                        if a[0] == "inspect" else real(*a, **k))
+    rig.dock.remove("ci-runner-101")
+    err = capsys.readouterr().err
+    assert "ended: status=exited exit=0 oom=false" in err
+    assert "ci-runner-101|" not in err
+
+
+def test_a_failing_inspect_does_not_stop_the_removal(rig):
+    queue_job(rig.github, 1, 101, ["ci-pool"])
+    assert rig.pass_() == 1
+    rig.dock.remove("ci-runner-101")
+    assert rig.docker.commands("rm")
