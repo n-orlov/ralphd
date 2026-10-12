@@ -81,9 +81,9 @@ beside `lint` and `fast`, not after them. No bound is raised over the lane it re
 **`browser`** runs the steps `heavy.yml`'s `browser-tier` runs, unchanged, inside
 `timeout-minutes: 60` with the tier bounded at 2400 s. Its labels add `docker-host` (the
 runner starts the container) and `browser-runner`. `playwright-cli` and real Google
-Chrome come from `container.image`, pinned by digest to
-`ghcr.io/n-orlov/ralphd-browser-ci@sha256:2311f2f3...6b7c` (the full reference is in
-`ci.yml`, the only place a digest is pinned), pulled with `credentials:` from the job's own
+Chrome come from `container.image`, pinned by digest to this repository's own GitHub
+Packages container package `n-orlov/ralphd-browser-ci` (the literal registry reference
+lives in `ci.yml`, the only place a digest is pinned), pulled with `credentials:` from the job's own
 `GITHUB_TOKEN` under `permissions: packages: read`. Nothing in `ci.yml` builds that
 image, and `ci.yml` holds no `packages: write` grant. The package is private; it is
 readable by that token because a workflow of this repository published it.
