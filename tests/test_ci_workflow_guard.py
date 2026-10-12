@@ -469,6 +469,8 @@ def check_docker_and_browser_jobs(workflow: dict) -> list[str]:
                 f"{name}'s run_bounded bounds sum to {sum(bounds)}s, over {MAX_RUN_BOUNDED_TOTAL[name]}s"
             )
         for step in job.get("steps") or []:
+            if not step.get("run") and not step.get("uses"):
+                problems.append(f"{name} step {step.get('name')!r} has neither run: nor uses:")
             if IMAGE_BUILD_RE.search(step.get("run") or "") or IMAGE_BUILD_RE.search(str(step.get("uses") or "")):
                 problems.append(f"{name} step {step.get('name')!r} builds or pushes an image")
     for name, job in jobs.items():
@@ -840,6 +842,9 @@ def test_the_docker_and_browser_check_fails_for_each_broken_job(tmp_path):
             0, {"name": "Build", "run": "docker build -t x ci/browser"}
         )
 
+    def step_without_run(wf):
+        del wf["jobs"]["docker"]["steps"][-1]["run"]
+
     def docker_in_container(wf):
         wf["jobs"]["docker"]["container"] = {"image": "python:3.12"}
 
@@ -857,6 +862,7 @@ def test_the_docker_and_browser_check_fails_for_each_broken_job(tmp_path):
         "docker-packages": docker_gets_packages,
         "ci-builds-image": ci_builds_the_image,
         "docker-container": docker_in_container,
+        "step-without-run": step_without_run,
     }.items():
         assert check_docker_and_browser_jobs(_mutate(tmp_path, f"{name}.yml", edit)), name
 

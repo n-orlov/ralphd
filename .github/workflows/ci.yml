@@ -336,6 +336,7 @@ jobs:
       # it can never change this tier's outcome.
       - name: Classify a job-level timeout kill
         if: always()
+        run: scripts/job_timeout_marker.sh 120 "ci docker tier" "${{ job.status }}"
 
   # The browser tier (moved from heavy.yml's `browser-tier`; the steps are
   # unchanged). `playwright-cli` and real Google Chrome come from the pinned
