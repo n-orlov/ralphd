@@ -106,6 +106,16 @@ token: pytest's early argument scan reads a bare `--alluredir <dir>` whose
 directory already exists outside the repository as a path to collect, and the
 run then loses the repository's `pyproject.toml` settings.
 
+`scripts/allure_env.sh <results-dir>` describes the run to the report. It writes
+`environment.properties` (`sha`, `ref`, `run_id`, `run_attempt`, `python` and
+`runner_image`) and `executor.json` (the run URL, as `buildUrl` and `url`) into
+the directory it is given, creating it if the tier left none. Each of
+`ci.yml`'s `fast`, `docker` and `browser` jobs runs it with `if: always()` on
+its `--alluredir` directory right before the upload, so the report shows the
+commit and the run beside the results. A variable GitHub Actions does not set is
+written as `unknown`; `tests/test_allure_env_script.py` pins both files' exact
+contents.
+
 ## Running the suite inside a ralphd job container
 
 This repository is developed by ralphd runs of its own, so the suite is often

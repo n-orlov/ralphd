@@ -164,6 +164,16 @@ jobs:
         run: |
           su -p ci -c 'scripts/run_bounded.sh 1800 "fast tier" -- python -m pytest -q -m fast -n 4 --dist loadfile --durations=15 --alluredir=allure-results-fast'
 
+      # Describe the run to the Allure report (scripts/allure_env.sh, docs/testing.md):
+      # the sha, ref, run id, python version and runner image, and the run URL.
+      # One local write of two small files, so it is an exempt step
+      # (tests/test_run_bounded_timeout_marker.py's EXEMPT_RUN_STEPS).
+      - name: Describe the fast tier's run for Allure
+        if: always()
+        env:
+          ALLURE_RUNNER_IMAGE: ${{ job.container.image || format('{0} {1} host runner', runner.os, runner.arch) }}
+        run: scripts/allure_env.sh allure-results-fast
+
       # The Allure results of this tier (docs/testing.md, "Allure results"),
       # kept even when the tier is red. The name carries the tier and the run
       # id (and the attempt, so a rerun does not collide with attempt 1).
@@ -329,6 +339,16 @@ jobs:
       # collapse this workflow does on purpose.
       - name: Docker tier
         run: scripts/run_bounded.sh 6000 "docker tier" -- .venv/bin/python -m pytest -q -m docker --durations=15 --alluredir=allure-results-docker
+
+      # Describe the run to the Allure report (scripts/allure_env.sh, docs/testing.md):
+      # the sha, ref, run id, python version and runner image, and the run URL.
+      # One local write of two small files, so it is an exempt step
+      # (tests/test_run_bounded_timeout_marker.py's EXEMPT_RUN_STEPS).
+      - name: Describe the docker tier's run for Allure
+        if: always()
+        env:
+          ALLURE_RUNNER_IMAGE: ${{ job.container.image || format('{0} {1} host runner', runner.os, runner.arch) }}
+        run: scripts/allure_env.sh allure-results-docker
 
       # The Allure results of this tier (docs/testing.md, "Allure results"),
       # kept even when the tier is red. The name carries the tier and the run
@@ -532,6 +552,16 @@ jobs:
       # ($GITHUB_WORKSPACE), so no explicit `cd` is needed.
       - name: Browser tier
         run: su -p ubuntu -c 'scripts/run_bounded.sh 2400 "browser tier" -- .venv/bin/python -m pytest -q -m browser --durations=15 --alluredir=allure-results-browser'
+
+      # Describe the run to the Allure report (scripts/allure_env.sh, docs/testing.md):
+      # the sha, ref, run id, python version and runner image, and the run URL.
+      # One local write of two small files, so it is an exempt step
+      # (tests/test_run_bounded_timeout_marker.py's EXEMPT_RUN_STEPS).
+      - name: Describe the browser tier's run for Allure
+        if: always()
+        env:
+          ALLURE_RUNNER_IMAGE: ${{ job.container.image || format('{0} {1} host runner', runner.os, runner.arch) }}
+        run: scripts/allure_env.sh allure-results-browser
 
       # The Allure results of this tier (docs/testing.md, "Allure results"),
       # kept even when the tier is red. The name carries the tier and the run

@@ -844,8 +844,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.35 runner scaler busy-runner reap guard (tests/test_runner_scaler_
     # caches_refresh.py, +3 tests, no new module) -> fast 8471/533, smoke
     # 6716/407.
-    "fast": {"tests": 8471, "modules": 533},
-    "smoke": {"tests": 6716, "modules": 407},
+    # v0.35 scripts/allure_env.sh: 4 nodes in tests/test_allure_env_script.py
+    # (new module) and 2 guard nodes in tests/test_ci_workflow_guard.py ->
+    # fast 8477/534, smoke 6722/408.
+    "fast": {"tests": 8477, "modules": 534},
+    "smoke": {"tests": 6722, "modules": 408},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

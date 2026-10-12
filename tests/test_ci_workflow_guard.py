@@ -634,6 +634,43 @@ def check_allure_results(workflow: dict) -> list[str]:
     return problems
 
 
+def check_allure_env_steps(workflow: dict) -> list[str]:
+    """Each of fast, docker and browser calls scripts/allure_env.sh on its own
+    results directory, `if: always()`, after the tier step and before the upload."""
+    problems: list[str] = []
+    jobs = workflow.get("jobs") or {}
+    for tier, step_name in ALLURE_TIERS.items():
+        steps = (jobs.get(tier) or {}).get("steps") or []
+        names = [st.get("name") for st in steps]
+        if step_name not in names:
+            problems.append(f"{tier} has no step named {step_name!r}")
+            continue
+        tier_index = names.index(step_name)
+        upload_index = next(
+            (i for i, st in enumerate(steps)
+             if str(st.get("uses") or "").startswith("actions/upload-artifact@")),
+            None,
+        )
+        calls = [
+            (i, st) for i, st in enumerate(steps)
+            if re.search(r"(^|\s)scripts/allure_env\.sh\s", (st.get("run") or "") + " ")
+        ]
+        if len(calls) != 1:
+            problems.append(f"{tier} calls scripts/allure_env.sh {len(calls)} times, not once")
+            continue
+        index, call = calls[0]
+        if upload_index is None or not tier_index < index < upload_index:
+            problems.append(f"{tier}'s allure_env step is not between its tier step and its upload")
+        if str(call.get("if") or "").strip() != "always()":
+            problems.append(f"{tier}'s allure_env step is not `if: always()` ({call.get('if')!r})")
+        expected = f"allure-results-{tier}"
+        if not re.fullmatch(rf"scripts/allure_env\.sh {re.escape(expected)}", (call.get("run") or "").strip()):
+            problems.append(f"{tier}'s allure_env step does not run on {expected!r}: {call.get('run')!r}")
+        if not (call.get("env") or {}).get("ALLURE_RUNNER_IMAGE"):
+            problems.append(f"{tier}'s allure_env step sets no ALLURE_RUNNER_IMAGE")
+    return problems
+
+
 def check_browser_image_workflow(workflow: dict, others: dict[str, dict]) -> list[str]:
     problems: list[str] = []
     triggers = _triggers(workflow)
@@ -1187,6 +1224,47 @@ def test_the_browser_image_check_fails_for_each_broken_workflow(tmp_path):
 
 def test_ci_fast_docker_and_browser_write_and_upload_allure_results():
     assert check_allure_results(_load(CI_PATH)) == []
+
+
+def test_ci_fast_docker_and_browser_describe_their_run_for_allure():
+    assert check_allure_env_steps(_load(CI_PATH)) == []
+
+
+def test_the_allure_env_check_fails_for_each_broken_tier_step(tmp_path):
+    def env_step(wf, tier):
+        return next(s for s in wf["jobs"][tier]["steps"] if "allure_env.sh" in (s.get("run") or ""))
+
+    def missing(tier):
+        return lambda wf: wf["jobs"][tier]["steps"].remove(env_step(wf, tier))
+
+    def not_always(tier):
+        return lambda wf: env_step(wf, tier).pop("if")
+
+    def wrong_dir(tier):
+        def edit(wf):
+            env_step(wf, tier)["run"] = "scripts/allure_env.sh elsewhere"
+        return edit
+
+    def no_image(tier):
+        return lambda wf: env_step(wf, tier).pop("env")
+
+    def after_upload(tier):
+        def edit(wf):
+            steps = wf["jobs"][tier]["steps"]
+            step = env_step(wf, tier)
+            steps.remove(step)
+            steps.append(step)
+        return edit
+
+    cases = {}
+    for tier in ALLURE_TIERS:
+        for label, make in {
+            "missing": missing, "not-always": not_always, "wrong-dir": wrong_dir,
+            "no-image": no_image, "after-upload": after_upload,
+        }.items():
+            cases[f"{tier}-{label}"] = make(tier)
+    for name, edit in cases.items():
+        assert check_allure_env_steps(_mutate(tmp_path, f"env-{name}.yml", edit)), name
 
 
 def test_the_allure_check_fails_for_each_broken_tier_step(tmp_path):
