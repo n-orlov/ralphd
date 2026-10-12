@@ -138,12 +138,16 @@ def test_default_host_map_needs_no_io_no_clock(monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("tiers module performed I/O or read the clock")
 
-    monkeypatch.setattr(pathlib.Path, "read_text", _boom)
-    monkeypatch.setattr(time_mod, "time", _boom)
-
     cfg = JobConfig(model="acme/model")
-    host_map = T.default_host_map(cfg)
-    assert T.resolve_bundle("worker", "hard", host_map).model == "acme/model"
+    # The poison is scoped to the two calls under test: a plugin that stamps
+    # the clock in its own hooks (allure-pytest does, mid-test) must not trip
+    # it, and the calls themselves stay exactly as poisoned as before.
+    with monkeypatch.context() as poisoned:
+        poisoned.setattr(pathlib.Path, "read_text", _boom)
+        poisoned.setattr(time_mod, "time", _boom)
+        host_map = T.default_host_map(cfg)
+        resolved = T.resolve_bundle("worker", "hard", host_map)
+    assert resolved.model == "acme/model"
 
 
 def test_resolver_falls_back_to_unrecognised_hat_ladder():

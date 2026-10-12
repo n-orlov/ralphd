@@ -193,10 +193,13 @@ def test_default_host_map_still_needs_no_io_no_clock_with_model_tiers_set(monkey
     def _boom(*a, **k):
         raise AssertionError("tiers module performed I/O or read the clock")
 
-    monkeypatch.setattr(pathlib.Path, "read_text", _boom)
-    monkeypatch.setattr(time_mod, "time", _boom)
-
     cfg = JobConfig(model="acme/model",
                      model_tiers={"worker": {"hard": "acme/worker-hard"}})
-    host_map = T.default_host_map(cfg)
-    assert T.resolve_bundle("worker", "hard", host_map).model == "acme/worker-hard"
+    # Poison scoped to the calls under test: allure-pytest stamps the clock in
+    # its own hooks mid-test, and those must not trip it.
+    with monkeypatch.context() as poisoned:
+        poisoned.setattr(pathlib.Path, "read_text", _boom)
+        poisoned.setattr(time_mod, "time", _boom)
+        host_map = T.default_host_map(cfg)
+        resolved = T.resolve_bundle("worker", "hard", host_map)
+    assert resolved.model == "acme/worker-hard"

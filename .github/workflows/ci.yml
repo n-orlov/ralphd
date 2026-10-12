@@ -162,7 +162,7 @@ jobs:
       # `su -p ci` keeps the job's exported variables across the user switch.
       - name: Fast tier
         run: |
-          su -p ci -c 'scripts/run_bounded.sh 1800 "fast tier" -- python -m pytest -q -m fast -n 4 --dist loadfile --durations=15 --alluredir allure-results-fast'
+          su -p ci -c 'scripts/run_bounded.sh 1800 "fast tier" -- python -m pytest -q -m fast -n 4 --dist loadfile --durations=15 --alluredir=allure-results-fast'
 
       # The Allure results of this tier (docs/testing.md, "Allure results"),
       # kept even when the tier is red. The name carries the tier and the run
@@ -328,7 +328,7 @@ jobs:
       # itself, not as a `cancelled` indistinguishable from the push
       # collapse this workflow does on purpose.
       - name: Docker tier
-        run: scripts/run_bounded.sh 6000 "docker tier" -- .venv/bin/python -m pytest -q -m docker --durations=15 --alluredir allure-results-docker
+        run: scripts/run_bounded.sh 6000 "docker tier" -- .venv/bin/python -m pytest -q -m docker --durations=15 --alluredir=allure-results-docker
 
       # The Allure results of this tier (docs/testing.md, "Allure results"),
       # kept even when the tier is red. The name carries the tier and the run
@@ -531,7 +531,7 @@ jobs:
       # trusting it here. `su` without `-l` keeps the caller's cwd
       # ($GITHUB_WORKSPACE), so no explicit `cd` is needed.
       - name: Browser tier
-        run: su -p ubuntu -c 'scripts/run_bounded.sh 2400 "browser tier" -- .venv/bin/python -m pytest -q -m browser --durations=15 --alluredir allure-results-browser'
+        run: su -p ubuntu -c 'scripts/run_bounded.sh 2400 "browser tier" -- .venv/bin/python -m pytest -q -m browser --durations=15 --alluredir=allure-results-browser'
 
       # The Allure results of this tier (docs/testing.md, "Allure results"),
       # kept even when the tier is red. The name carries the tier and the run

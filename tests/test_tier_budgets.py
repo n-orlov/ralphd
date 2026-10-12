@@ -835,8 +835,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.35 history carry-forward + scripts/allure_summary.py: 4 history nodes in
     # tests/test_allure_report_script.py, 2 in tests/test_allure_summary.py (new
     # module) -> fast 8459/533, smoke 6704/407.
-    "fast": {"tests": 8459, "modules": 533},
-    "smoke": {"tests": 6704, "modules": 407},
+    # v0.35 runner scaler job-root nodes (tests/test_runner_scaler_caches_
+    # refresh.py, +4 tests), measured `--collect-only` -> fast 8463/533, smoke
+    # 6708/407.
+    "fast": {"tests": 8463, "modules": 533},
+    "smoke": {"tests": 6708, "modules": 407},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

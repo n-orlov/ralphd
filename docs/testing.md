@@ -86,7 +86,7 @@ the same node unmarked fails, and a fail-twice marked node fails.
 plugin. It writes nothing until you pass `--alluredir`:
 
 ```
-.venv/bin/python -m pytest -q -m fast -n 4 --dist loadfile --alluredir allure-results-fast
+.venv/bin/python -m pytest -q -m fast -n 4 --dist loadfile --alluredir=allure-results-fast
 ```
 
 `tests/conftest.py` labels every result in the collection hook: its tier
@@ -98,10 +98,13 @@ plugin is loaded, so a run without `allure-pytest` is unchanged.
 `tests/test_allure_tier_labels.py` reads the labels back out of a child run's
 result files, one node per tier.
 
-`ci.yml`'s `fast`, `docker` and `browser` steps pass `--alluredir
-allure-results-<tier>`, and an `if: always()` step uploads that directory as the
+`ci.yml`'s `fast`, `docker` and `browser` steps pass
+`--alluredir=allure-results-<tier>`, and an `if: always()` step uploads that directory as the
 artifact `allure-results-<tier>-<run id>-<attempt>`, so a red tier still keeps
-its results. The directories are ignored by git.
+its results. The directories are ignored by git. Write the flag as `--alluredir=<dir>`, one
+token: pytest's early argument scan reads a bare `--alluredir <dir>` whose
+directory already exists outside the repository as a path to collect, and the
+run then loses the repository's `pyproject.toml` settings.
 
 ## Running the suite inside a ralphd job container
 

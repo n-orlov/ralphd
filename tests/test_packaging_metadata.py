@@ -282,6 +282,9 @@ DEPENDENCY_EVIDENCE = {
     "pytest-timeout": _Literal("pyproject.toml", "timeout_method"),
     "httpx": _Import("httpx", ("tests",)),
     "ruff": _Literal("pyproject.toml", "[tool.ruff]"),
+    # #303: the flaky_infra rerun (tests/conftest.py) and the Allure labels.
+    "pytest-rerunfailures": _Literal("tests/conftest.py", "pytest.mark.flaky(reruns="),
+    "allure-pytest": _Literal("tests/conftest.py", "allure_pytest"),
     "build": _Literal("tests/test_image_packaged_inputs.py", '"-m", "build"'),
     "hatchling": _Literal("pyproject.toml", 'build-backend = "hatchling.build"'),
     "claude-agent-sdk": _Import("claude_agent_sdk", ("src", "tests")),

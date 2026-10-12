@@ -1200,7 +1200,7 @@ def test_the_allure_check_fails_for_each_broken_tier_step(tmp_path):
     def no_alluredir(tier):
         def edit(wf):
             step = pytest_step(wf, tier)
-            step["run"] = step["run"].replace(f" --alluredir allure-results-{tier}", "")
+            step["run"] = step["run"].replace(f" --alluredir=allure-results-{tier}", "")
         return edit
 
     def no_upload(tier):

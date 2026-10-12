@@ -96,15 +96,15 @@ names), which exits 0 on the tree.
 **`fast`** runs the steps `gate.yml`'s `fast` job runs, in the same digest-pinned
 `python:3.12.3` container (`--cpus=4`): a clean venv, the non-root `ci` account,
 `su -p ci -c 'scripts/run_bounded.sh 1800 "fast tier" -- python -m pytest -q -m fast -n 4
---dist loadfile --durations=15 --alluredir allure-results-fast'`, inside `timeout-minutes: 45`. `-n 4` on a 4-CPU job
+--dist loadfile --durations=15 --alluredir=allure-results-fast'`, inside `timeout-minutes: 45`. `-n 4` on a 4-CPU job
 container is the one raise over the old gate's `-n 2`: the earlier `-n 4` failures were
 host contention between jobs, which the per-job CPU limit removes. The count is a fixed
 integer, never `auto` (`tests/test_gate_pinned_worker_count_guard.py`).
 
 **`docker`** runs the steps `heavy.yml`'s `docker-tier` runs, unchanged: the root-owned
 litter reaper ahead of checkout, a clean venv, and `scripts/run_bounded.sh 6000 "docker
-tier" -- .venv/bin/python -m pytest -q -m docker --durations=15 --alluredir
-allure-results-docker`, inside
+tier" -- .venv/bin/python -m pytest -q -m docker --durations=15
+--alluredir=allure-results-docker`, inside
 `timeout-minutes: 120`. It runs on `[self-hosted, linux, x64, ci-pool, docker-host]` on the
 host runner, not in a container: it builds the real job image and drives sibling
 containers over the runner's own docker socket. It needs only `trusted`, so it starts
@@ -120,8 +120,8 @@ lives in `ci.yml`, the only place a digest is pinned), pulled with `credentials:
 image, and `ci.yml` holds no `packages: write` grant. The package is private; it is
 readable by that token because a workflow of this repository published it.
 
-**Allure results.** `fast`, `docker` and `browser` each pass `--alluredir
-allure-results-<tier>` to their pytest step and follow it with an `if: always()`
+**Allure results.** `fast`, `docker` and `browser` each pass
+`--alluredir=allure-results-<tier>` to their pytest step and follow it with an `if: always()`
 `actions/upload-artifact` step (pinned by sha) naming the artifact
 `allure-results-<tier>-<run id>-<attempt>`, so a red tier keeps its results.
 `tests/conftest.py` labels each result with its tier as the parent suite and its test
