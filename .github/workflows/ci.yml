@@ -1,8 +1,8 @@
 # The one CI workflow (v0.35). Every job but `required` runs on the elastic
 # runner pool (`ci-pool`), in parallel after the trust gate. docs/ci.md describes it.
 #
-# Jobs: `trusted` (the trust gate), `lint`, `fast`, `docker`, `browser` and the
-# single verdict job `required`. Later tasks add `report` and `publish`.
+# Jobs: `trusted` (the trust gate), `lint`, `fast`, `docker`, `browser`, `report`
+# (the Allure report), `publish` (Pages) and the single verdict job `required`.
 #
 # RUNNER LABELS. Every job asks for `self-hosted, linux, x64, ci-pool` plus,
 # only where it needs one, a capability label: `docker-host` (the runner gets
@@ -606,6 +606,185 @@ jobs:
         if: always()
         run: scripts/job_timeout_marker.sh 60 "ci browser tier" "${{ job.status }}"
 
+  # The Allure report (docs/ci.md, "The Allure report"). It runs after the three
+  # tiers have finished, red or green, and needs `trusted` so that its `if:` can
+  # combine `always()` with the trust decision: a red tier still gets a report, a
+  # fork pull request (where `trusted` is skipped) gets none. It collects every
+  # tier's results into one directory, builds the report with the pinned CLI
+  # (scripts/allure_report.sh), writes the per-tier table to the job summary and
+  # uploads the report as an artifact. On `main` it also carries the previous
+  # report's `history/` over from the `gh-pages` branch and pushes the new site
+  # tree to it. It holds `contents: write` for that push and neither Pages
+  # permission: `publish` is the only job that deploys.
+  report:
+    name: allure report
+    needs: [trusted, fast, docker, browser]
+    if: always() && needs.trusted.result == 'success'
+    runs-on: [self-hosted, linux, x64, ci-pool, docker-host]
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    # The same pinned image as the fast tier: it has bash, curl, tar, git and
+    # python3, which is all scripts/allure_report.sh and allure_summary.py need.
+    container:
+      image: python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6
+    steps:
+      - name: Record the job start time
+        run: |
+          echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          echo "RALPHD_JOB_BOUND_MINUTES=30" >> "$GITHUB_ENV"
+          evidence="${RUNNER_TEMP:-/tmp}/ralphd-timeout-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          rm -rf "$evidence"
+          mkdir -p "$evidence"
+          echo "RALPHD_TIMEOUT_EVIDENCE_DIR=$evidence" >> "$GITHUB_ENV"
+
+      - name: Check out the commit under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Trust the checked-out workspace (container root != host checkout owner)
+        run: git config --global --add safe.directory "${{ github.workspace }}"
+
+      # Every tier's artifact into ONE directory. A tier that never reached its
+      # upload (skipped or cancelled) contributes nothing; the report is then
+      # built from what exists, and the run fails if nothing exists at all.
+      - name: Download every tier's Allure results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: allure-results-*
+          path: allure-results
+          merge-multiple: true
+
+      # `exists` says whether the `gh-pages` branch is there yet (the first run
+      # on a repository has none, and then the report has no trend). Only `main`
+      # reads or writes the branch.
+      - name: Look for the gh-pages branch
+        id: pages
+        if: github.ref == 'refs/heads/main'
+        run: |
+          scripts/run_bounded.sh 60 "look for gh-pages" -- bash -euo pipefail -c '
+            rc=0
+            git ls-remote --exit-code --heads origin gh-pages > /dev/null || rc=$?
+            case "$rc" in
+              0) echo "exists=true" >> "$GITHUB_OUTPUT" ;;
+              2) echo "exists=false" >> "$GITHUB_OUTPUT" ;;
+              *) exit "$rc" ;;
+            esac
+          '
+
+      # The branch itself when it exists; the commit under test otherwise (the
+      # push step then starts an orphan branch from it).
+      - name: Check out the gh-pages branch
+        if: github.ref == 'refs/heads/main'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pages.outputs.exists == 'true' && 'gh-pages' || github.sha }}
+          path: gh-pages-work
+
+      - name: Build the Allure report
+        run: |
+          scripts/run_bounded.sh 600 "allure report" -- scripts/allure_report.sh allure-results allure-report gh-pages-work/history
+
+      - name: Write the per-tier table to the job summary
+        run: |
+          scripts/run_bounded.sh 60 "allure summary" -- python3 scripts/allure_summary.py allure-results --output "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the Allure report
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: allure-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: allure-report
+          if-no-files-found: error
+          retention-days: 14
+
+      # One local write of one line to the job summary, so it is an exempt step.
+      - name: Link the report artifact in the job summary
+        env:
+          REPORT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: echo "[Allure report (download the artifact and serve it)]($REPORT_URL)" >> "$GITHUB_STEP_SUMMARY"
+
+      # The site tree is the report itself: the new report replaces the branch's
+      # contents, and its `history/` is what the next run reads. Another run on
+      # `main` may have pushed meanwhile; a rejected push is retried from the
+      # branch's new tip, three times, and then fails the job.
+      - name: Push the site tree to gh-pages
+        if: github.ref == 'refs/heads/main'
+        run: |
+          scripts/run_bounded.sh 300 "push gh-pages" -- bash -euo pipefail -c '
+            cd gh-pages-work
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            if [ "${{ steps.pages.outputs.exists }}" != "true" ]; then
+              git checkout -q --orphan gh-pages
+            fi
+            for attempt in 1 2 3; do
+              git rm -rq --ignore-unmatch . > /dev/null
+              find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+              cp -a ../allure-report/. .
+              touch .nojekyll
+              git add -A
+              if git diff --cached --quiet; then
+                echo "the site tree is unchanged"
+                exit 0
+              fi
+              git commit -q -m "Allure report for ${GITHUB_SHA}"
+              if git push origin HEAD:gh-pages; then
+                exit 0
+              fi
+              echo "push rejected (attempt $attempt); retrying from the branch tip"
+              git fetch -q origin gh-pages
+              git reset -q --hard origin/gh-pages
+            done
+            exit 1
+          '
+
+      # The container runs as root over a checkout the runner's own account owns;
+      # hand it back so the next job on this runner can clean the workspace.
+      - name: Hand the workspace back to the runner's account
+        if: always()
+        run: chown -R 1000:1000 "$GITHUB_WORKSPACE" "$RALPHD_TIMEOUT_EVIDENCE_DIR" "$HOME"
+
+      - name: Classify a job-level timeout kill
+        if: always()
+        run: scripts/job_timeout_marker.sh 30 "ci allure report" "${{ job.status }}"
+
+  # Deploys the report to GitHub Pages. This is the only job holding
+  # `pages: write` and `id-token: write`; it runs for the trusted `main` only,
+  # checks out nothing and runs no script of its own (every step is an action),
+  # so the repository's code never executes beside the deployment token.
+  # Pages must be enabled with source "GitHub Actions" (docs/ci.md).
+  publish:
+    name: publish report
+    needs: [trusted, report]
+    if: needs.trusted.outputs.trusted == 'true' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, ci-pool]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download the report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: allure-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: allure-report
+
+      - name: Configure Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Package the report for Pages
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: allure-report
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
   # The single verdict: the check `ci / required`. It is the one job that runs on
   # a GitHub-hosted runner, because a fork pull request must schedule nothing on
   # a self-hosted one (docs/ci.md). It checks nothing out, reads no secret and
@@ -616,7 +795,7 @@ jobs:
   # tests/test_ci_workflow_guard.py against a table of results.
   required:
     name: required
-    needs: [trusted, lint, fast, docker, browser]
+    needs: [trusted, lint, fast, docker, browser, report]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -628,9 +807,10 @@ jobs:
           RESULT_FAST: ${{ needs.fast.result }}
           RESULT_DOCKER: ${{ needs.docker.result }}
           RESULT_BROWSER: ${{ needs.browser.result }}
+          RESULT_REPORT: ${{ needs.report.result }}
         run: |
           status=0
-          for pair in "trusted=$RESULT_TRUSTED" "lint=$RESULT_LINT" "fast=$RESULT_FAST" "docker=$RESULT_DOCKER" "browser=$RESULT_BROWSER"; do
+          for pair in "trusted=$RESULT_TRUSTED" "lint=$RESULT_LINT" "fast=$RESULT_FAST" "docker=$RESULT_DOCKER" "browser=$RESULT_BROWSER" "report=$RESULT_REPORT"; do
             echo "${pair%%=*}: ${pair#*=}"
             if [ "${pair#*=}" != "success" ]; then
               status=1

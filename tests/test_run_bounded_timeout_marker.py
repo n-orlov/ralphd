@@ -797,7 +797,21 @@ EXEMPT_RUN_STEPS = {
     ("ci.yml", "browser", "Close stray browser sessions"),
     ("ci.yml", "browser", "Describe the browser tier's run for Allure"),
     ("ci.yml", "browser", CLASSIFIER_STEP),
-    # The two exempt jobs' single run step each (see EXEMPT_JOBS below).
+    # The `report` job (a run_bounded job): the same start-stamp, trust and
+    # classifier shapes as the fast tier, plus two single local writes -- one
+    # `echo` of one line into the job summary, and one recursive `chown` of
+    # this job's own checkout, evidence directory and `$HOME` (the container
+    # runs as root over the runner account's checkout). Its network and
+    # compute steps (the gh-pages lookup, the report build, the summary table,
+    # the gh-pages push) are wrapped.
+    ("ci.yml", "report", "Record the job start time"),
+    ("ci.yml", "report",
+     "Trust the checked-out workspace (container root != host checkout owner)"),
+    ("ci.yml", "report", "Link the report artifact in the job summary"),
+    ("ci.yml", "report", "Hand the workspace back to the runner's account"),
+    ("ci.yml", "report", CLASSIFIER_STEP),
+    # The two exempt jobs' single run step each (see EXEMPT_JOBS below);
+    # `publish` has no run step at all: it is three pinned actions.
     ("ci.yml", "trusted", "Publish the trust decision"),
     ("ci.yml", "required", "Every needed job succeeded"),
     ("nightly.yml", "dev-layout", "Record the job start time"),
@@ -812,10 +826,19 @@ EXEMPT_RUN_STEPS = {
 # kill needs disambiguating, and `check_exempt_job` fails the moment it becomes
 # one. Every other job keeps the full rule under the single JOB_RESERVE_S.
 EXEMPT_JOB_MAX_MINUTES = 5
+# `publish` waits on the Pages deployment, which polls for its completion, so
+# its ceiling is 10; it is still not a lane job.
+EXEMPT_JOB_MAX_MINUTES_BY_JOB = {("ci.yml", "publish"): 10}
 EXEMPT_JOBS = {
     ("ci.yml", "trusted"): (
         "evaluates the trust expression and publishes one output; a single "
         "local echo on the pool runner, no checkout, no payload"
+    ),
+    ("ci.yml", "publish"): (
+        "the Pages deployment: three pinned actions (download the report, "
+        "package it, deploy it) and no run: step, no checkout and no "
+        "scripts/run_bounded.sh; the deployment itself is bounded by the "
+        "service, and the job by a timeout-minutes of at most 10"
     ),
     ("ci.yml", "required"): (
         "the aggregate verdict on a GitHub-hosted runner: reads the needed "
@@ -844,10 +867,13 @@ def check_exempt_job(workflow_name: str, job_name: str, job: dict) -> list[str]:
     where = f"{workflow_name}:{job_name}"
     problems: list[str] = []
     bound = job.get("timeout-minutes")
-    if not isinstance(bound, int) or bound > EXEMPT_JOB_MAX_MINUTES:
+    ceiling = EXEMPT_JOB_MAX_MINUTES_BY_JOB.get(
+        (workflow_name, job_name), EXEMPT_JOB_MAX_MINUTES
+    )
+    if not isinstance(bound, int) or bound > ceiling:
         problems.append(
             f"{where} is exempt but declares timeout-minutes {bound!r}, past the "
-            f"{EXEMPT_JOB_MAX_MINUTES} an exempt job may declare"
+            f"{ceiling} an exempt job may declare"
         )
     for step in job.get("steps") or []:
         uses = str(step.get("uses") or "")
@@ -1176,30 +1202,41 @@ def test_the_inherited_bounds_check_fires_when_a_bound_is_raised(tmp_path):
 def test_the_ci_jobs_share_the_single_job_reserve():
     """One reserve constant for every workflow in WORKFLOW_NAMES: each
     run_bounded job's wrapped total plus JOB_RESERVE_S fits its timeout."""
+    held = set()
     for workflow_name in ("ci.yml", "browser-image.yml"):
         workflow = _load_workflow(WORKFLOW_DIR / workflow_name)
         for job_name, job in workflow["jobs"].items():
             if (workflow_name, job_name) in EXEMPT_JOBS:
                 continue
+            held.add((workflow_name, job_name))
             assert (
                 _wrapped_total(job) <= job["timeout-minutes"] * 60 - JOB_RESERVE_S
             ), (workflow_name, job_name)
+    # `report` is a run_bounded job held to the same reserve (it is not exempt).
+    assert ("ci.yml", "report") in held
+    assert _wrapped_total(_load_workflow(WORKFLOW_DIR / "ci.yml")["jobs"]["report"]) > 0
 
 
 def test_exempt_jobs_are_named_with_a_reason_and_hold_to_it():
-    assert set(EXEMPT_JOBS) == {("ci.yml", "trusted"), ("ci.yml", "required")}
+    assert set(EXEMPT_JOBS) == {
+        ("ci.yml", "trusted"),
+        ("ci.yml", "required"),
+        ("ci.yml", "publish"),
+    }
     assert all(reason.strip() for reason in EXEMPT_JOBS.values())
     workflow = _load_workflow(WORKFLOW_DIR / "ci.yml")
     for (workflow_name, job_name) in EXEMPT_JOBS:
         job = workflow["jobs"][job_name]
-        assert job["timeout-minutes"] <= EXEMPT_JOB_MAX_MINUTES
+        assert job["timeout-minutes"] <= EXEMPT_JOB_MAX_MINUTES_BY_JOB.get(
+            (workflow_name, job_name), EXEMPT_JOB_MAX_MINUTES
+        )
         assert check_exempt_job(workflow_name, job_name, job) == []
         for step in job["steps"]:
             assert not str(step.get("uses") or "").startswith("actions/checkout")
             assert "scripts/run_bounded.sh" not in (step.get("run") or "")
 
 
-@pytest.mark.parametrize("job_name", ["trusted", "required"])
+@pytest.mark.parametrize("job_name", ["trusted", "required", "publish"])
 def test_an_exempt_job_that_gains_a_bounded_step_or_a_long_timeout_fails(
     tmp_path, job_name
 ):
@@ -1220,7 +1257,10 @@ def test_an_exempt_job_that_gains_a_bounded_step_or_a_long_timeout_fails(
     assert any(f"ci.yml:{job_name} is exempt but calls" in p for p in problems), problems
 
     slow = copy.deepcopy(base)
-    slow["jobs"][job_name]["timeout-minutes"] = EXEMPT_JOB_MAX_MINUTES + 1
+    slow["jobs"][job_name]["timeout-minutes"] = (
+        EXEMPT_JOB_MAX_MINUTES_BY_JOB.get(("ci.yml", job_name), EXEMPT_JOB_MAX_MINUTES)
+        + 1
+    )
     fixture = tmp_path / f"exempt-{job_name}-slow.yml"
     fixture.write_text(yaml.safe_dump(slow, sort_keys=False), encoding="utf-8")
     problems = check_timeout_marker_coverage("ci.yml", _load_workflow(fixture))

@@ -45,8 +45,18 @@ HOSTED_RUNNER = "ubuntu-latest"
 FORBIDDEN_LABEL_RE = re.compile(r"int21h|fast-lane|ralphd-vps")
 
 TRUST_GATED_JOBS = ("lint", "fast", "docker", "browser")
-VERDICT_NEEDS = ("trusted", "lint", "fast", "docker", "browser")
-EXPECTED_JOBS = {"trusted", "lint", "fast", "docker", "browser", "required"}
+VERDICT_NEEDS = ("trusted", "lint", "fast", "docker", "browser", "report")
+EXPECTED_JOBS = {"trusted", "lint", "fast", "docker", "browser", "report", "publish", "required"}
+REPORT_NEEDS = {"trusted", "fast", "docker", "browser"}
+# Scheduled (True) or not, per scenario: `report` runs for every trusted event,
+# `publish` only for the trusted `main`.
+EXPECTED_REPORT_PUBLISH = {
+    "same-repo PR": (True, False),
+    "fork PR": (False, False),
+    "push to main": (True, True),
+    "dispatch": (True, True),
+}
+PAGES_PERMISSIONS = {"pages", "id-token"}
 
 WORKFLOW_DIR = CI_PATH.parent
 BROWSER_IMAGE_PATH = WORKFLOW_DIR / "browser-image.yml"
@@ -439,6 +449,13 @@ def check_scheduling(workflow: dict) -> list[str]:
                     f"{scenario}: {name} is {'scheduled' if got else 'not scheduled'}, "
                     f"expected {'scheduled' if want else 'not scheduled'}"
                 )
+        want_report, want_publish = EXPECTED_REPORT_PUBLISH[scenario]
+        for name, expected in (("report", want_report), ("publish", want_publish)):
+            if (result.get(name) == "success") != expected:
+                problems.append(
+                    f"{scenario}: {name} is {'not scheduled' if expected else 'scheduled'}, "
+                    f"expected {'scheduled' if expected else 'not scheduled'}"
+                )
         if result.get(HOSTED_EXCEPTION_JOB) != "success":
             problems.append(f"{scenario}: {HOSTED_EXCEPTION_JOB} is not scheduled, expected scheduled")
         if not want:
@@ -476,6 +493,8 @@ def check_required_job(workflow: dict) -> list[str]:
         problems.append(f"required runs on {_runs_on(job)!r}, not {HOSTED_RUNNER!r}")
     if sorted(_needs(job)) != sorted(VERDICT_NEEDS):
         problems.append(f"required needs {_needs(job)!r}, not each of {list(VERDICT_NEEDS)}")
+    if "publish" in _needs(job):
+        problems.append("required needs publish: a Pages outage would fail the verdict")
     condition = re.sub(r"^\$\{\{\s*|\s*\}\}$", "", str(job.get("if") or "").strip())
     if condition != "always()":
         problems.append(f"required's job-level if: is {job.get('if')!r}, not exactly always()")
@@ -578,6 +597,100 @@ def check_docker_and_browser_jobs(workflow: dict) -> list[str]:
             problems.append("browser container.credentials are not the job's own GITHUB_TOKEN login")
     if "container" in (jobs.get("docker") or {}):
         problems.append("docker declares a container: (the tier drives the runner's own docker socket)")
+    return problems
+
+
+def _condition(job: dict) -> str:
+    text = re.sub(r"\s+", " ", str(job.get("if") or "")).strip()
+    return re.sub(r"^\$\{\{\s*|\s*\}\}$", "", text)
+
+
+def _uses(job: dict, action: str) -> list[dict]:
+    return [s for s in job.get("steps") or [] if str(s.get("uses") or "").startswith(action + "@")]
+
+
+def check_report_and_publish(workflow: dict) -> list[str]:
+    """The `report` and `publish` jobs: needs edges, conditions, the permission
+    placement and the steps that make them what docs/ci.md says. Covered by
+    test_the_report_and_publish_check_fails_for_each_broken_job."""
+    problems: list[str] = []
+    jobs = workflow.get("jobs") or {}
+    report, publish = jobs.get("report"), jobs.get("publish")
+    if report is None or publish is None:
+        return [f"missing job: report={report is not None} publish={publish is not None}"]
+
+    # --- report
+    if set(_needs(report)) != REPORT_NEEDS:
+        problems.append(f"report needs {_needs(report)!r}, not {sorted(REPORT_NEEDS)}")
+    condition = _condition(report)
+    if "always()" not in condition or "needs.trusted.result == 'success'" not in condition:
+        problems.append(f"report's if: is {condition!r}, not always() combined with trusted's success")
+    if _runs_on(report)[: len(POOL_LABELS)] != POOL_LABELS:
+        problems.append(f"report does not run on the ci-pool: {_runs_on(report)!r}")
+    grants = _grants(report)
+    if PAGES_PERMISSIONS & set(grants):
+        problems.append(f"report holds {sorted(PAGES_PERMISSIONS & set(grants))}: only publish may")
+    if grants.get("contents") != "write":
+        problems.append(f"report's contents grant is {grants.get('contents')!r}, not write (the gh-pages push)")
+    runs = "\n".join(s.get("run") or "" for s in report.get("steps") or [])
+    if "scripts/allure_report.sh" not in runs:
+        problems.append("report does not run scripts/allure_report.sh")
+    elif not re.search(r"allure_report\.sh\s+allure-results\s+\S+\s+gh-pages-work/history", runs):
+        problems.append("report does not pass the gh-pages history to scripts/allure_report.sh")
+    if not re.search(r"scripts/allure_summary\.py\s+allure-results\s+--output\s+\"?\$GITHUB_STEP_SUMMARY", runs):
+        problems.append("report does not write scripts/allure_summary.py's table to $GITHUB_STEP_SUMMARY")
+    downloads = _uses(report, "actions/download-artifact")
+    if len(downloads) != 1 or downloads[0].get("with", {}).get("pattern") != "allure-results-*" or (
+        downloads[0]["with"].get("path") != "allure-results"
+        or downloads[0]["with"].get("merge-multiple") is not True
+    ):
+        problems.append("report does not download every tier's allure-results-* into one directory")
+    uploads = [s for s in _uses(report, "actions/upload-artifact") if s.get("id")]
+    if len(uploads) != 1 or uploads[0].get("with", {}).get("path") != "allure-report":
+        problems.append("report does not upload the allure-report directory as an artifact")
+    elif f"steps.{uploads[0]['id']}.outputs.artifact-url" not in yaml.safe_dump(report):
+        problems.append("report's job summary does not link the uploaded artifact")
+    push = [s for s in report.get("steps") or [] if "git push" in (s.get("run") or "")]
+    if len(push) != 1 or "refs/heads/main" not in str(push[0].get("if") or ""):
+        problems.append("report does not push to gh-pages only on refs/heads/main")
+    elif "HEAD:gh-pages" not in push[0]["run"]:
+        problems.append("report's push does not target the gh-pages branch")
+    history = [s for s in _uses(report, "actions/checkout") if s.get("with", {}).get("path") == "gh-pages-work"]
+    if len(history) != 1 or "gh-pages" not in str(history[0]["with"].get("ref")):
+        problems.append("report does not check out the gh-pages branch to carry history/")
+    elif "refs/heads/main" not in str(history[0].get("if") or ""):
+        problems.append("report reads gh-pages outside refs/heads/main")
+
+    # --- publish
+    if not {"trusted", "report"} <= set(_needs(publish)):
+        problems.append(f"publish needs {_needs(publish)!r}, not trusted and report")
+    condition = _condition(publish)
+    if "needs.trusted.outputs.trusted == 'true'" not in condition:
+        problems.append("publish is not conditioned on trusted's output")
+    if "github.ref == 'refs/heads/main'" not in condition:
+        problems.append("publish is not conditioned on refs/heads/main")
+    if "always()" in condition:
+        problems.append("publish's if: names always(): a red report would still deploy")
+    if _runs_on(publish)[: len(POOL_LABELS)] != POOL_LABELS:
+        problems.append(f"publish does not run on the ci-pool: {_runs_on(publish)!r}")
+    pgrants = _grants(publish)
+    if pgrants.get("pages") != "write" or pgrants.get("id-token") != "write":
+        problems.append(f"publish does not hold pages: write and id-token: write: {pgrants!r}")
+    for name, job in jobs.items():
+        if name != "publish" and PAGES_PERMISSIONS & set(_grants(job)):
+            problems.append(f"{name} holds {sorted(PAGES_PERMISSIONS & set(_grants(job)))}: only publish may")
+    if PAGES_PERMISSIONS & set(_grants(workflow)):
+        problems.append("the workflow grants a Pages permission at the top level")
+    if not isinstance(publish.get("timeout-minutes"), int) or publish["timeout-minutes"] > 10:
+        problems.append(f"publish timeout-minutes is {publish.get('timeout-minutes')!r}, over 10")
+    for step in publish.get("steps") or []:
+        if step.get("run"):
+            problems.append(f"publish has a run: step ({step.get('name')!r})")
+        if str(step.get("uses") or "").startswith("actions/checkout"):
+            problems.append("publish checks out the repository")
+    for action in ("actions/download-artifact", "actions/configure-pages", "actions/upload-pages-artifact", "actions/deploy-pages"):
+        if len(_uses(publish, action)) != 1:
+            problems.append(f"publish does not use {action} exactly once")
     return problems
 
 
@@ -770,13 +883,14 @@ def test_required_result_table_explicitly():
     assert run_required_script(workflow, {name: "skipped" for name in VERDICT_NEEDS}) != 0
 
 
-def test_scheduled_set_is_exactly_required_for_a_fork_pr_and_all_six_otherwise():
+def test_scheduled_set_is_exactly_required_for_a_fork_pr_and_every_job_otherwise():
     workflow = _load(CI_PATH)
     fork = schedule(workflow, SCENARIOS["fork PR"])
     assert {n for n, r in fork.items() if r == "success"} == {"required"}
     for scenario in ("same-repo PR", "push to main", "dispatch"):
         result = schedule(workflow, SCENARIOS[scenario])
-        assert {n for n, r in result.items() if r == "success"} == EXPECTED_JOBS, scenario
+        want = EXPECTED_JOBS - ({"publish"} if scenario == "same-repo PR" else set())
+        assert {n for n, r in result.items() if r == "success"} == want, scenario
 
 
 def test_required_script_fails_on_the_fork_pr_needs_results():
@@ -1326,3 +1440,155 @@ def test_the_allure_check_fails_for_each_broken_tier_step(tmp_path):
             cases[f"{tier}-{label}"] = make(tier)
     for name, edit in cases.items():
         assert check_allure_results(_mutate(tmp_path, f"{name}.yml", edit)), name
+
+
+# --- tests: the report and publish jobs ---------------------------------------
+
+
+def test_report_and_publish_hold_their_needs_conditions_and_permissions():
+    workflow = _load(CI_PATH)
+    assert check_report_and_publish(workflow) == []
+    jobs = workflow["jobs"]
+    assert set(_needs(jobs["report"])) == {"trusted", "fast", "docker", "browser"}
+    assert "report" in _needs(jobs["required"]) and "publish" not in _needs(jobs["required"])
+    holders = {n for n, j in jobs.items() if PAGES_PERMISSIONS & set(_grants(j))}
+    assert holders == {"publish"}
+    assert _grants(jobs["publish"]).get("pages") == "write"
+    assert _grants(jobs["publish"]).get("id-token") == "write"
+    assert not PAGES_PERMISSIONS & set(_grants(jobs["report"]))
+
+
+def test_report_is_scheduled_for_a_same_repo_pr_publish_only_for_main_and_neither_for_a_fork():
+    workflow = _load(CI_PATH)
+    got = {
+        scenario: (
+            schedule(workflow, github).get("report") == "success",
+            schedule(workflow, github).get("publish") == "success",
+        )
+        for scenario, github in SCENARIOS.items()
+    }
+    assert got == EXPECTED_REPORT_PUBLISH
+    fork = schedule(workflow, SCENARIOS["fork PR"])
+    assert {n for n, r in fork.items() if r == "success"} == {"required"}
+    assert check_scheduling(workflow) == []
+
+
+def test_the_report_and_publish_check_fails_for_each_broken_job(tmp_path):
+    def step_named(wf, job, text):
+        return next(s for s in wf["jobs"][job]["steps"] if text in (s.get("name") or ""))
+
+    def report_drops_need(wf):
+        wf["jobs"]["report"]["needs"].remove("browser")
+
+    def report_without_always(wf):
+        wf["jobs"]["report"]["if"] = "needs.trusted.result == 'success'"
+
+    def report_without_trust(wf):
+        wf["jobs"]["report"]["if"] = "always()"
+
+    def report_holds_pages(wf):
+        wf["jobs"]["report"]["permissions"]["pages"] = "write"
+
+    def report_holds_id_token(wf):
+        wf["jobs"]["report"]["permissions"]["id-token"] = "write"
+
+    def report_cannot_push(wf):
+        wf["jobs"]["report"]["permissions"]["contents"] = "read"
+
+    def report_skips_summary(wf):
+        step = step_named(wf, "report", "per-tier table")
+        step["run"] = step["run"].replace("--output", "--quiet")
+
+    def report_drops_history(wf):
+        step = step_named(wf, "report", "Build the Allure report")
+        step["run"] = step["run"].replace(" gh-pages-work/history", "")
+
+    def report_pushes_everywhere(wf):
+        del step_named(wf, "report", "Push the site tree")["if"]
+
+    def report_one_tier_only(wf):
+        step_named(wf, "report", "Download")["with"]["pattern"] = "allure-results-fast-*"
+
+    def report_no_artifact(wf):
+        wf["jobs"]["report"]["steps"] = [
+            s for s in wf["jobs"]["report"]["steps"] if "upload-artifact" not in str(s.get("uses"))
+        ]
+
+    def publish_everywhere(wf):
+        wf["jobs"]["publish"]["if"] = "needs.trusted.outputs.trusted == 'true'"
+
+    def publish_untrusted(wf):
+        wf["jobs"]["publish"]["if"] = "github.ref == 'refs/heads/main'"
+
+    def publish_after_red_report(wf):
+        wf["jobs"]["publish"]["if"] = "always() && " + wf["jobs"]["publish"]["if"]
+
+    def publish_without_report(wf):
+        wf["jobs"]["publish"]["needs"] = ["trusted"]
+
+    def publish_loses_pages(wf):
+        del wf["jobs"]["publish"]["permissions"]["pages"]
+
+    def pages_at_top(wf):
+        wf["permissions"]["pages"] = "write"
+
+    def third_holder(wf):
+        wf["jobs"]["lint"]["permissions"] = {"id-token": "write"}
+
+    def publish_runs_code(wf):
+        wf["jobs"]["publish"]["steps"].append({"name": "x", "run": "true"})
+
+    def publish_checks_out(wf):
+        wf["jobs"]["publish"]["steps"].insert(0, {"uses": "actions/checkout@v7"})
+
+    def publish_slow(wf):
+        wf["jobs"]["publish"]["timeout-minutes"] = 11
+
+    def publish_no_deploy(wf):
+        wf["jobs"]["publish"]["steps"] = [
+            s for s in wf["jobs"]["publish"]["steps"] if "deploy-pages" not in str(s.get("uses"))
+        ]
+
+    def required_needs_publish(wf):
+        wf["jobs"]["required"]["needs"].append("publish")
+
+    def required_drops_report(wf):
+        wf["jobs"]["required"]["needs"].remove("report")
+
+    for name, edit in {
+        "report-drops-need": report_drops_need,
+        "report-without-always": report_without_always,
+        "report-without-trust": report_without_trust,
+        "report-holds-pages": report_holds_pages,
+        "report-holds-id-token": report_holds_id_token,
+        "report-cannot-push": report_cannot_push,
+        "report-skips-summary": report_skips_summary,
+        "report-drops-history": report_drops_history,
+        "report-pushes-everywhere": report_pushes_everywhere,
+        "report-one-tier-only": report_one_tier_only,
+        "report-no-artifact": report_no_artifact,
+        "publish-everywhere": publish_everywhere,
+        "publish-untrusted": publish_untrusted,
+        "publish-after-red-report": publish_after_red_report,
+        "publish-without-report": publish_without_report,
+        "publish-loses-pages": publish_loses_pages,
+        "pages-at-top": pages_at_top,
+        "third-holder": third_holder,
+        "publish-runs-code": publish_runs_code,
+        "publish-checks-out": publish_checks_out,
+        "publish-slow": publish_slow,
+        "publish-no-deploy": publish_no_deploy,
+        "required-needs-publish": required_needs_publish,
+        "required-drops-report": required_drops_report,
+    }.items():
+        broken = _mutate(tmp_path, f"report-{name}.yml", edit)
+        problems = (
+            check_report_and_publish(broken) + check_required_job(broken) + check_scheduling(broken)
+        )
+        assert problems, name
+
+    # The scheduling half fails on its own for a weakened `publish` or `report` condition.
+    problems = check_scheduling(_mutate(tmp_path, "publish-open.yml", publish_everywhere))
+    assert any("same-repo PR: publish is scheduled" in p for p in problems), problems
+    problems = check_scheduling(_mutate(tmp_path, "report-open.yml", report_without_trust))
+    assert any("fork PR: report is scheduled" in p for p in problems), problems

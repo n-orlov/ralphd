@@ -92,7 +92,7 @@ evaluates each job's `if:` for those four events, with skipped-dependency propag
 
 **`ci / required`: the single check.** The job `required` is the one check to require on
 `main` (branch protection names `ci / required` and nothing else). It `needs` `trusted`,
-`lint`, `fast`, `docker` and `browser`, has the job-level `if: always()` with no trust
+`lint`, `fast`, `docker`, `browser` and `report` (not `publish`: a Pages outage does not fail the verdict), has the job-level `if: always()` with no trust
 condition, and its one inline script exits non-zero unless every needed result is exactly
 `success`: a `failure`, a `cancelled` and a `skipped` all fail it, so a tier that never
 ran cannot pass. It runs on a GitHub-hosted runner (`ubuntu-latest`) with no checkout, no
@@ -176,6 +176,32 @@ than one attempt appears under "Rerun nodes" with its final status (a node that 
 as failed, not flaky). `--output` appends, so it can be `$GITHUB_STEP_SUMMARY`; without it the markdown goes
 to stdout. `tests/test_allure_summary.py` runs it over a fixture of one failure, one skip, one
 rerun-then-pass and one double failure and asserts the exact counts.
+
+**The Allure report.** The job `report` `needs` `trusted`, `fast`, `docker` and `browser`; its
+`if:` combines `always()` with `needs.trusted.result == 'success'`, so a red tier still gets a
+report and a fork pull request (where `trusted` is skipped) gets none. It runs in the fast tier's
+pinned `python:3.12.3` container on a `docker-host` pool runner. It downloads every tier's
+`allure-results-*` artifact into one directory, builds the report with `scripts/allure_report.sh`,
+appends `scripts/allure_summary.py`'s per-tier table to `$GITHUB_STEP_SUMMARY`, and uploads the report
+directory as the artifact `allure-report-<run id>-<attempt>`, whose link the summary carries (on a pull
+request that artifact is the report; download it and serve the directory). On `main` (a push or a
+dispatch) it also checks out the `gh-pages` branch (an orphan branch is started on the first run),
+passes that branch's `history/` to `scripts/allure_report.sh` so the trend carries forward, replaces
+the branch's contents with the new site tree and pushes it, retrying a rejected push from the
+branch's new tip up to three times. `report` holds `contents: write` for that push and neither
+Pages permission.
+
+**Publication.** The job `publish` `needs` `trusted` and `report` and is conditioned on `trusted`'s
+output and on `github.ref == 'refs/heads/main'`, so a pull request (same-repo or fork) never runs it and
+a red `report` skips it. It is the only job holding `pages: write` and `id-token: write`. It checks out
+nothing and runs no script: it downloads the report artifact, packages it with
+`actions/upload-pages-artifact` and deploys it with `actions/deploy-pages` (all pinned by sha) into
+the `github-pages` environment. **Precondition: GitHub Pages is enabled for the repository with its
+source set to "GitHub Actions"** (Settings, Pages); without it `publish` fails at the deployment while
+`report` and `required` are unaffected. `tests/test_ci_workflow_guard.py` asserts the `needs` edges, the
+conditions, the permission placement and the scheduled set for the four events (a same-repo pull request
+schedules `report` but not `publish`; a fork pull request schedules only `required`), each against a
+mutated fixture.
 
 **`browser-image.yml`** is the publisher of that image: one `browser-image` job, triggered
 by `workflow_dispatch` only, so no push and no pull request ever builds or pushes an
@@ -942,9 +968,11 @@ cleared evidence directory), the classifier last with the job's status, every
 long step bounded, and the inner bounds summing under `timeout-minutes` less a
 reserve for the steps no wrapper owns (`actions/checkout` and the environment
 reports). There is one reserve, `JOB_RESERVE_S` (300 s), for every workflow. The
-two jobs that run no payload, `trusted` and `required`, are a named exempt list
+three jobs that run no payload, `trusted`, `required` and `publish`, are a named exempt list
 with a reason each: they check out nothing, call no `scripts/run_bounded.sh`,
-name every `run:` step as exempt and declare at most 5 minutes. The inherited
+name every `run:` step as exempt (`publish` has none) and declare at most 5 minutes
+(`publish`, which waits on the Pages deployment, at most 10). `report` is a run_bounded
+job held to the same reserve. The inherited
 lane bounds (fast 45 min / 2100 s wrapped, docker 120 / 6600, browser 60 / 3000,
 browser-image 40 / 1800) are pinned and never raised.
 
