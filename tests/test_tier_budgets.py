@@ -829,8 +829,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # module, measured `-m fast --collect-only` -> fast 8442/530, `-m smoke`
     # -> smoke 6695/405.
     # v0.35 nightly image pull + non-cancelling group (3 guard nodes) -> fast 8452/531.
-    "fast": {"tests": 8452, "modules": 531},
-    "smoke": {"tests": 6697, "modules": 406},
+    # v0.35 scripts/allure_report.sh (tests/test_allure_report_script.py): +1 fast
+    # node (the wrong-checksum one; the report node is docker) -> fast 8453/532,
+    # smoke 6698/406.
+    "fast": {"tests": 8453, "modules": 532},
+    "smoke": {"tests": 6698, "modules": 406},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

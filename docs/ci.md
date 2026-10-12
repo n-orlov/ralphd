@@ -129,6 +129,20 @@ module as the suite (docs/testing.md, "Allure results"). The upload steps are `u
 steps: `tests/test_run_bounded_timeout_marker.py` counts only `run:` steps, so the three
 jobs keep their wrapped bounds under the single 300 s `JOB_RESERVE_S`.
 
+**The pinned Allure CLI.** `scripts/allure_report.sh <results-dir> <report-dir>` generates an
+Allure report from a results directory with a pinned Allure CLI (a version and a SHA-256 written
+in the script itself, not overridable from the environment). It downloads the CLI archive, compares
+its SHA-256 with the pin **before** unpacking or running anything, and on a mismatch exits with
+status 3 having unpacked nothing and written no report. A verified copy is kept in the runner tool
+cache (`$RUNNER_TOOL_CACHE`, else `~/.cache`) under a marker naming the checksum, and the next run
+reuses it without downloading. The CLI needs Java: a `java` on `PATH` is used as it is, otherwise
+the script fetches a pinned JRE and verifies it against its own pinned SHA-256 the same way, so
+nothing but bash, curl and tar is assumed. `tests/test_allure_report_script.py` runs the script
+over a two-test fixture directory and finds both names in the report (a `docker`-tier node, so
+the `docker` job of `ci.yml` runs it with network and a tool cache and it passes there), reruns
+it with both download URLs unreachable to prove the cached copy is reused, and serves an archive
+with the wrong checksum (fast tier, no network) to prove the non-zero exit, no unpacking and no report.
+
 **`browser-image.yml`** is the publisher of that image: one `browser-image` job, triggered
 by `workflow_dispatch` only, so no push and no pull request ever builds or pushes an
 image. It builds `ci/browser/Dockerfile`, pushes it and prints the new digest, which is
