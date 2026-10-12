@@ -106,15 +106,13 @@ on:
 # and docs/ci.md repeats it for this exact pair) but it is exactly the right
 # tool WITHIN one workflow, which this is. Keyed on `github.ref` rather than
 # a fixed literal so a `workflow_dispatch` against a branch does not queue
-# behind main's own nightly run; `cancel-in-progress: true` because a newer
-# dispatch or the next night's cron superseding an older, still-running
-# nightly on the same ref is the right outcome -- nothing reads an
-# intermediate nightly result the way a running task reads `gate` at task
-# start (gate.yml's own asymmetry note makes the same distinction for a
-# different pair of lanes).
+# behind main's own nightly run; `cancel-in-progress: false` because an
+# in-flight nightly is never cancelled by a newer one: the newer run waits in
+# the group instead, so a nightly that has used hours of pool time is not
+# thrown away by a later dispatch or the next night's cron.
 concurrency:
   group: nightly-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -293,10 +291,10 @@ jobs:
       # trim, #113 step 4): there is no guard module left, and nothing to
       # deselect for that reason -- see scripts/host_like_dev_layout.sh's
       # own header.
-      # Bounded at 6600s in scripts/run_bounded.sh (task 054, K.3): with the
+      # Bounded at 6300s in scripts/run_bounded.sh (task 054, K.3): with the
       # docker-client install's 90, the merged host-path resolution-and-
-      # assertion step's 30 and this cell's own host-path resolution's 10
-      # (task 012, requirement I) that is 6730 of this job's 7200s
+      # assertion step's 30, the image pull's 300 and this cell's own
+      # host-path resolution's 10 (task 012, requirement I) that is 6730 of this job's 7200s
       # `timeout-minutes` budget, leaving the reserve tests/
       # test_run_bounded_timeout_marker.py requires for the steps no wrapper
       # owns (checkout and the host-environment report). A cell that wedges
@@ -311,6 +309,29 @@ jobs:
       # `$GITHUB_ENV` (see the "Resolve and assert..." step's header above
       # for why: that write does not reliably reach a later step's own
       # `docker exec` on this self-hosted runner).
+      # Explicit, bounded pull of THIS cell's image, before the step that runs
+      # the cell's container. A pool runner starts with a cold image cache, so
+      # the implicit pull inside `docker run` used to be where a registry blip
+      # failed a whole cell (or spent the cell's own bound unseen). Up to three
+      # attempts, ten seconds apart, all inside one 300 s run_bounded call; a
+      # pull that never succeeds fails THIS step, by name.
+      - name: Pull the cell image with a bounded retry
+        env:
+          CELL_IMAGE: ${{ matrix.image }}
+        run: |
+          scripts/run_bounded.sh 300 "cell image pull" -- bash -euo pipefail -c '
+            for attempt in 1 2 3; do
+              if docker pull "$CELL_IMAGE"; then
+                exit 0
+              fi
+              echo "pull attempt $attempt of 3 failed for $CELL_IMAGE"
+              if [ "$attempt" -lt 3 ]; then
+                sleep 10
+              fi
+            done
+            exit 1
+          '
+
       - name: Dev-layout mode (containerized)
         env:
           CELL_IMAGE: ${{ matrix.image }}
@@ -328,7 +349,7 @@ jobs:
           # script reads HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR, its default being
           # a per-container /tmp path that every cell would lose. A fresh
           # volume is root-owned, so the cell chowns it before the drop.
-          scripts/run_bounded.sh 6600 "dev-layout cell" -- docker run --rm \
+          scripts/run_bounded.sh 6300 "dev-layout cell" -- docker run --rm \
             --cpus="2" \
             -e PIP_DEFAULT_TIMEOUT=60 \
             -e PIP_RETRIES=10 \

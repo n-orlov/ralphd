@@ -45,6 +45,18 @@ that user before dropping privileges). `tests/test_ci_dev_layout_matrix_guard.py
 axes, the absent `max-parallel`, the labels, both variables and the mount, each against a
 mutated fixture.
 
+Each cell pulls its image in a step of its own, `Pull the cell image with a bounded retry`,
+which runs before the step that starts the cell's container. The pull is tried up to three
+times, ten seconds apart, inside one `scripts/run_bounded.sh` call of 300 s, so a registry
+blip is retried and a pull that never works fails that step by name instead of consuming the
+cell's own bound. The cell's `run_bounded` bound is 6300 s so the wrapped bounds still leave
+the 300 s reserve of the job's 120 minutes. The nightly concurrency group
+(`nightly-<ref>`) sets `cancel-in-progress: false`: an in-flight nightly is not cancelled by
+a newer one (a later dispatch or the next night's cron); the newer run waits in the group.
+The schedule stays `0 2 * * *` plus `workflow_dispatch`, and the guard asserts the pull step's
+position and retry bound, the cron, the dispatch trigger and the non-cancelling group, each
+against a mutated fixture.
+
 **Runner labels.** Every job but `required` runs on `[self-hosted, linux, x64, ci-pool]`
 plus, only where it needs one, a capability label: `docker-host` (the runner gets the host
 docker socket, which a job with `container:` needs because the runner starts that

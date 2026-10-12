@@ -256,6 +256,8 @@ def check_nightly_matrix(workflow: dict) -> list[str]:
 
     run_scripts = [step.get("run", "") for step in steps if step.get("run")]
 
+    problems.extend(_check_image_pull(steps))
+    problems.extend(_check_concurrency(workflow))
     problems.extend(_check_readonly_workspace_mount(run_scripts))
     problems.extend(_check_pip_resilience(run_scripts))
     problems.extend(_check_cell_hardening(run_scripts))
@@ -270,6 +272,60 @@ def check_nightly_matrix(workflow: dict) -> list[str]:
                 )
 
     return problems
+
+
+PULL_ATTEMPTS_MIN, PULL_ATTEMPTS_MAX = 2, 5
+
+
+def _check_image_pull(steps: list[dict]) -> list[str]:
+    """The cell's image is pulled by its own step, bounded and retried, and
+    that step precedes the step that runs the cell's container."""
+    problems: list[str] = []
+    pull_idx = [
+        i for i, step in enumerate(steps) if "docker pull" in str(step.get("run") or "")
+    ]
+    run_idx = [
+        i
+        for i, step in enumerate(steps)
+        if "docker run --rm" in str(step.get("run") or "")
+        and "--cpus" in str(step.get("run") or "")
+    ]
+    if not pull_idx:
+        return ["no step pulls the cell image with an explicit docker pull"]
+    if not run_idx:
+        return ["no step runs the cell's container"]
+    if pull_idx[0] >= run_idx[0]:
+        problems.append(
+            "the image pull step does not precede the step that runs the cell's container"
+        )
+    pull = steps[pull_idx[0]]
+    run = str(pull.get("run") or "")
+    if not re.search(r"scripts/run_bounded\.sh\s+\d+\b", run):
+        problems.append("the image pull is not wrapped in scripts/run_bounded.sh")
+    env_image = str((pull.get("env") or {}).get("CELL_IMAGE") or "")
+    if "matrix.image" not in env_image or 'docker pull "$CELL_IMAGE"' not in run:
+        problems.append("the image pull does not pull the cell's matrix.image")
+    loop = re.search(r"for\s+\w+\s+in\s+((?:\d+\s*)+);", run)
+    attempts = len(loop.group(1).split()) if loop else None
+    if attempts is None:
+        problems.append("the image pull has no bounded retry loop")
+    elif not PULL_ATTEMPTS_MIN <= attempts <= PULL_ATTEMPTS_MAX:
+        problems.append(
+            f"the image pull retries {attempts} times, outside the bound "
+            f"{PULL_ATTEMPTS_MIN}..{PULL_ATTEMPTS_MAX}"
+        )
+    return problems
+
+
+def _check_concurrency(workflow: dict) -> list[str]:
+    group = workflow.get("concurrency") or {}
+    if not isinstance(group, dict) or group.get("cancel-in-progress") is not False:
+        return [
+            "concurrency.cancel-in-progress is "
+            f"{group.get('cancel-in-progress') if isinstance(group, dict) else group!r}"
+            ", not False -- an in-flight nightly must not be cancelled by a newer one"
+        ]
+    return []
 
 
 def _check_pip_resilience(run_scripts: list[str]) -> list[str]:
@@ -579,6 +635,65 @@ def test_nightly_matrix_guard_fires_when_a_pip_setting_or_the_cache_mount_is_wro
         fixture = _dump_fixture(tmp_path, "broken-pip.yml", broken)
         problems = check_nightly_matrix(_load(fixture))
         assert any(expect in p for p in problems), (old, new, problems)
+
+
+def _pull_step_index(workflow: dict) -> int:
+    steps = workflow["jobs"]["dev-layout"]["steps"]
+    return next(i for i, st in enumerate(steps) if "docker pull" in str(st.get("run") or ""))
+
+
+def test_nightly_matrix_guard_fires_when_the_pull_does_not_precede_the_container_run(tmp_path):
+    workflow = _load(NIGHTLY_PATH)
+    assert check_nightly_matrix(workflow) == []
+    broken = copy.deepcopy(workflow)
+    steps = broken["jobs"]["dev-layout"]["steps"]
+    pull = steps.pop(_pull_step_index(broken))
+    steps.append(pull)
+    problems = check_nightly_matrix(_load(_dump_fixture(tmp_path, "pull-last.yml", broken)))
+    assert any("precede" in p for p in problems), problems
+    gone = copy.deepcopy(workflow)
+    gone["jobs"]["dev-layout"]["steps"].pop(_pull_step_index(gone))
+    problems = check_nightly_matrix(_load(_dump_fixture(tmp_path, "no-pull.yml", gone)))
+    assert any("pulls the cell image" in p for p in problems), problems
+
+
+def test_nightly_matrix_guard_fires_when_the_pull_retry_bound_is_wrong(tmp_path):
+    workflow = _load(NIGHTLY_PATH)
+    for old, new, expect in [
+        ("for attempt in 1 2 3;", "for attempt in 1;", "retries 1 times"),
+        ("for attempt in 1 2 3;", "for attempt in 1 2 3 4 5 6 7 8;", "retries 8 times"),
+        ("for attempt in 1 2 3;", "while true;", "no bounded retry loop"),
+        ("scripts/run_bounded.sh 300 ", "", "run_bounded"),
+        ('docker pull "$CELL_IMAGE"', "docker pull ubuntu:24.04", "matrix.image"),
+    ]:
+        broken = copy.deepcopy(workflow)
+        step = broken["jobs"]["dev-layout"]["steps"][_pull_step_index(broken)]
+        assert old in step["run"], old
+        step["run"] = step["run"].replace(old, new)
+        problems = check_nightly_matrix(_load(_dump_fixture(tmp_path, "pull-bound.yml", broken)))
+        assert any(expect in p for p in problems), (old, new, problems)
+
+
+def test_nightly_workflow_keeps_its_cron_dispatch_and_non_cancelling_group(tmp_path):
+    workflow = _load(NIGHTLY_PATH)
+    assert check_nightly_matrix(workflow) == []
+    assert workflow["concurrency"]["cancel-in-progress"] is False
+    cases = []
+    broken = copy.deepcopy(workflow)
+    broken["concurrency"]["cancel-in-progress"] = True
+    cases.append((broken, "cancel-in-progress"))
+    broken = copy.deepcopy(workflow)
+    del broken["concurrency"]
+    cases.append((broken, "cancel-in-progress"))
+    broken = copy.deepcopy(workflow)
+    _on_block(broken)["schedule"] = [{"cron": "0 3 * * *"}]
+    cases.append((broken, "cron"))
+    broken = copy.deepcopy(workflow)
+    del _on_block(broken)["workflow_dispatch"]
+    cases.append((broken, "workflow_dispatch"))
+    for broken, expect in cases:
+        problems = check_nightly_matrix(_load(_dump_fixture(tmp_path, "trigger.yml", broken)))
+        assert any(expect in p for p in problems), (expect, problems)
 
 
 def test_nightly_matrix_guard_fires_when_fail_fast_is_enabled(tmp_path):
