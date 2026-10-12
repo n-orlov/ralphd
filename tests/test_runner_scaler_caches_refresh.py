@@ -67,7 +67,8 @@ def rig(tmp_path, github, docker, monkeypatch, scaler):
         f"repo: {github.repo}\ntoken_file: {token}\nhost_cpus: 64\n"
         f"api_url: {github.url}\nimage: ci-runner:test\nmax_concurrency: 4\n"
         f"docker: {docker.bin_dir / 'docker'}\nrunner_dir: {recipe}\n"
-        f"lock_file: {tmp_path / 'build.lock'}\n")
+        f"lock_file: {tmp_path / 'build.lock'}\n"
+        f"job_root: {tmp_path / 'jobs'}\n")
     cfg = scaler.load_config(path)
 
     class Rig:
@@ -75,8 +76,10 @@ def rig(tmp_path, github, docker, monkeypatch, scaler):
 
     r = Rig()
     r.cfg, r.recipe, r.github, r.docker, r.tmp = cfg, recipe, github, docker, tmp_path
+    r.scaler = scaler
     r.api, r.dock = scaler.GitHubApi(cfg), scaler.Docker(cfg)
     r.pass_ = lambda **kw: scaler.run_pass(cfg, r.api, r.dock, **kw)
+    monkeypatch.setattr(r.dock, "runner_template", lambda image: seed_template(r, image))
     return r
 
 
@@ -162,6 +165,40 @@ def test_a_missing_docker_socket_adds_no_group(rig, scaler, monkeypatch):
     queue_job(rig.github, 1, 101, ["ci-pool", "docker-host"])
     assert rig.pass_() == 1
     assert "--group-add" not in create_argv(rig.docker, 101)
+
+
+def seed_template(rig, image):
+    """Stand in for unpacking the image: the runner install the scaler would copy."""
+    template = rig.tmp / "jobs" / ("_template-" + image.rsplit(":", 1)[-1])
+    if not template.is_dir():
+        (template / "externals").mkdir(parents=True)
+        (template / "externals" / "node").write_text("node")
+        (template / "run.sh").write_text("run")
+    return template
+
+
+def test_a_docker_host_job_gets_its_own_runner_root_at_the_same_host_and_container_path(rig):
+    queue_job(rig.github, 1, 101, ["ci-pool", "docker-host"])
+    queue_job(rig.github, 2, 102, ["ci-pool"])
+    assert rig.pass_() == 2
+    root = rig.tmp / "jobs" / "ci-runner-101"
+    argv = create_argv(rig.docker, 101)
+    assert f"{root}:{root}" in mounts(argv)
+    assert f"RUNNER_ROOT={root}" in argv
+    assert (root / "externals" / "node").read_text() == "node"
+    assert not (rig.tmp / "jobs" / "ci-runner-102").exists()
+    assert not any(a.startswith("RUNNER_ROOT=") for a in create_argv(rig.docker, 102))
+
+
+def test_removing_a_job_container_deletes_its_runner_root_and_keeps_the_template(rig):
+    template = seed_template(rig, "ci-runner:" + rig.scaler.recipe_hash(rig.recipe))
+    queue_job(rig.github, 1, 101, ["ci-pool", "docker-host"])
+    assert rig.pass_() == 1
+    root = rig.tmp / "jobs" / "ci-runner-101"
+    assert root.is_dir()
+    rig.dock.remove("ci-runner-101")
+    assert not root.exists()
+    assert (template / "run.sh").read_text() == "run"
 
 
 # ---- B.6: build once, under a lock; a changed recipe is a new tag ----------

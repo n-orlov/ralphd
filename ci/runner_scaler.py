@@ -26,6 +26,7 @@ import http.client
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -66,6 +67,7 @@ DEFAULTS: dict[str, Any] = {
     "retain_days": 14,
     "host_cpus": 12,
     "secret_dir": "",
+    "job_root": "~/.cache/ralphd-ci/jobs",
     "runner_uid": 1000,
     "profiles": {},
 }
@@ -448,6 +450,10 @@ DOCKER_SOCKET = "/var/run/docker.sock"
 BROWSER_LABEL = "browser-runner"
 DOCKER_LABEL = "docker-host"
 BUILD_TIMEOUT_S = 3600
+# The runner's install dir in the image, and the env var that moves it (B.5).
+IMAGE_RUNNER_ROOT = "/home/ubuntu/actions-runner"
+RUNNER_ROOT_ENV = "RUNNER_ROOT"
+TEMPLATE_PREFIX = "_template-"
 
 
 def mounts_for(labels: tuple[str, ...] | list[str]) -> list[str]:
@@ -477,9 +483,23 @@ def group_options_for(labels: tuple[str, ...] | list[str]) -> list[str]:
     return [] if gid is None else ["--group-add", str(gid)]
 
 
+def link_tree(src: Path, dst: Path) -> None:
+    """Copy ``src`` to ``dst`` with hard links (a plain copy where the two are on
+    different filesystems), so a runner root costs no space and no time."""
+    def link_or_copy(a: str, b: str) -> None:
+        try:
+            os.link(a, b)
+        except OSError:
+            shutil.copy2(a, b)
+    shutil.copytree(src, dst, symlinks=True, copy_function=link_or_copy)
+
+
 class Docker:
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.binary = str(cfg["docker"])
+        self.job_root = Path(str(cfg.get("job_root") or DEFAULTS["job_root"])
+                             ).expanduser().absolute()
+        self.image: str | None = None
         self.secret_dir = str(cfg.get("secret_dir") or "")
         self.runner_uid = int(cfg.get("runner_uid", JIT_RUNNER_UID))
 
@@ -595,6 +615,56 @@ class Docker:
         except ScalerError:
             self.run("volume", "create", name)
 
+    def runner_template(self, image: str) -> Path:
+        """The image's runner install, unpacked once on the host per image tag.
+
+        A job that starts a ``container:`` through the host socket makes the host
+        daemon bind-mount ``<runner root>/_work`` and ``/externals`` by the runner's
+        own paths, so those paths must exist on the host with the same content.
+        """
+        template = self.job_root / (TEMPLATE_PREFIX + image.rsplit(":", 1)[-1])
+        if template.is_dir():
+            return template
+        self.job_root.mkdir(parents=True, exist_ok=True)
+        part = Path(tempfile.mkdtemp(prefix=".part-", dir=self.job_root))
+        try:
+            self.run("run", "--rm", "--user", str(self.runner_uid),
+                     "-v", f"{part}:/out", "--entrypoint", "sh", image,
+                     "-c", f"cp -a {IMAGE_RUNNER_ROOT}/. /out/", timeout=300)
+            os.rename(part, template)
+        except (ScalerError, OSError):
+            shutil.rmtree(part, ignore_errors=True)
+            if not template.is_dir():
+                raise
+        return template
+
+    def job_options(self, name: str, image: str,
+                    labels: tuple[str, ...] | list[str]) -> list[str]:
+        """For a ``docker-host`` job: its own runner root, mounted at the same path
+        on the host and in the container, and the runner told to use it."""
+        if DOCKER_LABEL not in labels:
+            return []
+        root = self.job_root / name
+        if not root.exists():
+            link_tree(self.runner_template(image), root)
+        return ["-v", f"{root}:{root}", "-e", f"{RUNNER_ROOT_ENV}={root}"]
+
+    def clean_job_root(self, name: str) -> None:
+        """Delete a job's runner root. A job container running as root leaves files
+        the scaler's user cannot unlink; a root container removes those."""
+        root = self.job_root / name
+        if not root.exists():
+            return
+        shutil.rmtree(root, ignore_errors=True)
+        if root.exists() and self.image:
+            try:
+                self.run("run", "--rm", "--user", "0", "-v", f"{self.job_root}:/jobs",
+                         "--entrypoint", "rm", self.image, "-rf", f"/jobs/{name}")
+            except ScalerError as exc:
+                log(f"cannot clear {root}: {exc}")
+        if root.exists():
+            log(f"left {root} behind")
+
     def start(self, name: str, image: str, jit_config: str,
               profile: dict[str, Any], labels: tuple[str, ...] | list[str] = ()) -> None:
         """Create the container with its limits, deliver the JIT config, start it.
@@ -616,7 +686,13 @@ class Docker:
         created first.
         """
         mounts = mounts_for(labels)
+        self.image = image
         self.ensure_volume(PIP_CACHE_VOLUME)
+        try:
+            mounts += self.job_options(name, image, labels)
+        except (ScalerError, OSError) as exc:
+            self.clean_job_root(name)
+            raise ScalerError(f"cannot prepare the runner root for {name}: {exc}")
         with jit_file(jit_config, self.secret_dir, self.runner_uid) as path:
             self.run("create", "--name", name,
                      "--cpus", f"{float(profile['cpus']):g}",
@@ -639,6 +715,7 @@ class Docker:
         if job_id_of(name) is None:
             raise ScalerError(f"refusing to remove {name!r}: not a scaler container")
         self.run("rm", "--force", name)
+        self.clean_job_root(name)
 
 
 _CREATED_RE = re.compile(

@@ -755,7 +755,7 @@ The config is read from `--config` (default `~/.config/ralphd-ci/scaler.yaml`).
 `repo` and `token_file` are required; the token is read from the file `token_file`
 names, and a config that holds an inline token is rejected. The other keys are
 `api_url`, `poll_interval_s` (5), `max_concurrency` (4), `start_deadline_s` (120),
-`job_deadline_s` (7800), `image`, `docker`, `keep` (3), `retain_days` (14), `prune_state_file`, `host_cpus` (12), `secret_dir`, `runner_uid` (1000), `lock_file`, `admission_lock_file` and a `profiles` map. The
+`job_deadline_s` (7800), `image`, `docker`, `keep` (3), `retain_days` (14), `prune_state_file`, `host_cpus` (12), `secret_dir`, `job_root` (`~/.cache/ralphd-ci/jobs`: a `docker-host` job's runner root, mounted at the same path on host and container so its `container:` mounts resolve), `runner_uid` (1000), `lock_file`, `admission_lock_file` and a `profiles` map. The
 scaler imports no YAML library, so the file is a YAML subset: `key: value` scalars
 (strings, optionally quoted; integers; `true`/`false`), `#` comments and nested maps
 by space indentation. Lists, flow style, anchors and tabs are rejected with a

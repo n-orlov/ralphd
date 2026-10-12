@@ -7,5 +7,6 @@
 # runner takes one job and the container exits with the runner's status.
 set -eu
 jit_file="${1:?usage: run-once.sh <jit config file>}"
-cd /home/ubuntu/actions-runner
+# RUNNER_ROOT puts the runner in a host-visible dir (docker-host jobs).
+cd "${RUNNER_ROOT:-/home/ubuntu/actions-runner}"
 exec ./run.sh --jitconfig "$(cat "$jit_file")"
