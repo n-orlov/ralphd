@@ -55,6 +55,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 NIGHTLY_PATH = REPO_ROOT / ".github" / "workflows" / "nightly.yml"
 HEAVY_PATH = REPO_ROOT / ".github" / "workflows" / "heavy.yml"
 
+# The nightly job's runner labels: the pool plus capability labels only.
+POOL_LABELS = ["self-hosted", "linux", "x64", "ci-pool"]
+CAPABILITY_LABELS = {"docker-host", "browser-runner"}
+
 EXPECTED_CELLS = {
     ("ubuntu:24.04", "exported"),
     ("ubuntu:24.04", "unset"),
@@ -199,9 +203,24 @@ def check_nightly_matrix(workflow: dict) -> list[str]:
         problems.append(
             f"strategy.fail-fast is {strategy.get('fail-fast')!r}, not False"
         )
-    if strategy.get("max-parallel") != 2:
+    # The six cells run in parallel on the ci-pool: ANY max-parallel, however
+    # high, is a serial ceiling the pool does not need.
+    if "max-parallel" in strategy:
         problems.append(
-            f"strategy.max-parallel is {strategy.get('max-parallel')!r}, not 2"
+            f"strategy.max-parallel is present ({strategy.get('max-parallel')!r}) "
+            "-- the six cells run in parallel and the key must be absent"
+        )
+
+    runs_on = list(dev_layout.get("runs-on") or [])
+    if runs_on[: len(POOL_LABELS)] != POOL_LABELS:
+        problems.append(
+            f"runs-on is {runs_on!r}, not led by the pool labels {POOL_LABELS!r}"
+        )
+    extra = [label for label in runs_on[len(POOL_LABELS) :] if label not in CAPABILITY_LABELS]
+    if extra:
+        problems.append(
+            f"runs-on carries labels {extra!r} that are not capability labels "
+            f"{sorted(CAPABILITY_LABELS)!r}"
         )
 
     matrix = strategy.get("matrix") or {}
@@ -238,6 +257,7 @@ def check_nightly_matrix(workflow: dict) -> list[str]:
     run_scripts = [step.get("run", "") for step in steps if step.get("run")]
 
     problems.extend(_check_readonly_workspace_mount(run_scripts))
+    problems.extend(_check_pip_resilience(run_scripts))
     problems.extend(_check_cell_hardening(run_scripts))
 
     for run in run_scripts:
@@ -249,6 +269,37 @@ def check_nightly_matrix(workflow: dict) -> list[str]:
                     "docker run command -- a host-level invocation"
                 )
 
+    return problems
+
+
+def _check_pip_resilience(run_scripts: list[str]) -> list[str]:
+    """Each cell's `docker run` receives PIP_DEFAULT_TIMEOUT=60 and
+    PIP_RETRIES=10 and mounts the `ci-pip-cache` volume at the directory the
+    script uses as its pip cache (HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR)."""
+    problems: list[str] = []
+    commands = []
+    for run in run_scripts:
+        for start, _ in _docker_payload_spans(run):
+            marker = run.find("bash -c", start)
+            commands.append(run[start : marker if marker != -1 else len(run)])
+    header = "\n".join(commands)
+    if not header:
+        return ["no `docker run` command launches a cell"]
+    for name, value in (("PIP_DEFAULT_TIMEOUT", "60"), ("PIP_RETRIES", "10")):
+        if not re.search(rf"-e\s+{name}={value}(?!\d)", header):
+            problems.append(f"the cell's docker run does not pass {name}={value}")
+    mount = re.search(r"-v\s+ci-pip-cache:(?P<dir>/[^\s:\"]+)(?!\S)", header)
+    if mount is None:
+        problems.append("the cell's docker run does not mount the ci-pip-cache volume")
+    elif not re.search(
+        rf"-e\s+HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR={re.escape(mount.group('dir'))}(?!\S)",
+        header,
+    ):
+        problems.append(
+            f"the ci-pip-cache mount {mount.group('dir')} is not the pip cache "
+            "directory (HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR) of the user running "
+            "scripts/host_like_dev_layout.sh"
+        )
     return problems
 
 
@@ -468,11 +519,66 @@ def test_nightly_matrix_guard_fires_when_a_cell_is_dropped(tmp_path):
 
 
 def test_nightly_matrix_guard_fires_when_max_parallel_is_raised(tmp_path):
-    broken = copy.deepcopy(_load(NIGHTLY_PATH))
-    broken["jobs"]["dev-layout"]["strategy"]["max-parallel"] = 3
-    fixture = _dump_fixture(tmp_path, "broken-max-parallel.yml", broken)
-    problems = check_nightly_matrix(_load(fixture))
-    assert any("max-parallel" in p for p in problems), problems
+    """Rewritten by the parallel-cells task (it used to pin `max-parallel: 2`):
+    the cells run in parallel on the ci-pool, so the guard fires when ANY
+    `max-parallel` is present -- lower, equal to the old 2, or raised."""
+    assert "max-parallel" not in _load(NIGHTLY_PATH)["jobs"]["dev-layout"]["strategy"]
+    for value in (1, 2, 3, 6):
+        broken = copy.deepcopy(_load(NIGHTLY_PATH))
+        broken["jobs"]["dev-layout"]["strategy"]["max-parallel"] = value
+        fixture = _dump_fixture(tmp_path, f"broken-max-parallel-{value}.yml", broken)
+        problems = check_nightly_matrix(_load(fixture))
+        assert any("max-parallel" in p for p in problems), (value, problems)
+
+
+def test_nightly_matrix_guard_fires_when_the_labels_leave_the_pool(tmp_path):
+    for labels in (
+        ["self-hosted", "linux", "x64", "ralphd-vps", "docker-host"],
+        ["self-hosted", "linux", "x64", "ci-pool", "int21h-ws-1"],
+        ["self-hosted", "linux", "x64", "docker-host"],
+    ):
+        broken = copy.deepcopy(_load(NIGHTLY_PATH))
+        broken["jobs"]["dev-layout"]["runs-on"] = labels
+        fixture = _dump_fixture(tmp_path, "broken-labels.yml", broken)
+        problems = check_nightly_matrix(_load(fixture))
+        assert any("runs-on" in p for p in problems), (labels, problems)
+
+
+def _mutate_cell_run(workflow: dict, old: str, new: str) -> dict:
+    broken = copy.deepcopy(workflow)
+    hit = False
+    for step in broken["jobs"]["dev-layout"]["steps"]:
+        if "docker run --rm" in str(step.get("run") or "") and "--cpus" in step["run"]:
+            assert old in step["run"], old
+            step["run"] = step["run"].replace(old, new)
+            hit = True
+    assert hit
+    return broken
+
+
+def test_nightly_matrix_guard_fires_when_a_pip_setting_or_the_cache_mount_is_wrong(
+    tmp_path,
+):
+    workflow = _load(NIGHTLY_PATH)
+    assert check_nightly_matrix(workflow) == []
+    cases = [
+        ("-e PIP_DEFAULT_TIMEOUT=60", "-e PIP_DEFAULT_TIMEOUT=15", "PIP_DEFAULT_TIMEOUT=60"),
+        ("-e PIP_DEFAULT_TIMEOUT=60", "", "PIP_DEFAULT_TIMEOUT=60"),
+        ("-e PIP_RETRIES=10", "-e PIP_RETRIES=5", "PIP_RETRIES=10"),
+        ("-e PIP_RETRIES=10", "", "PIP_RETRIES=10"),
+        ("-v ci-pip-cache:/pip-cache", "-v other-cache:/pip-cache", "ci-pip-cache volume"),
+        ("-v ci-pip-cache:/pip-cache", "", "ci-pip-cache volume"),
+        (
+            "-e HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR=/pip-cache",
+            "-e HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR=/tmp/elsewhere",
+            "pip cache",
+        ),
+    ]
+    for old, new, expect in cases:
+        broken = _mutate_cell_run(workflow, old, new)
+        fixture = _dump_fixture(tmp_path, "broken-pip.yml", broken)
+        problems = check_nightly_matrix(_load(fixture))
+        assert any(expect in p for p in problems), (old, new, problems)
 
 
 def test_nightly_matrix_guard_fires_when_fail_fast_is_enabled(tmp_path):

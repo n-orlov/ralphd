@@ -31,6 +31,20 @@ one, so a regression on a superseded sha is not hidden.
 `flaky_infra` (a host-only pty or signal race, see `docs/testing.md`) gets exactly
 one rerun through `pytest-rerunfailures`, and a node that fails twice fails the lane.
 
+**Nightly cells.** `nightly.yml`'s `dev-layout` job runs on
+`[self-hosted, linux, x64, ci-pool, docker-host]` (`docker-host` because the job has a
+`container:` and issues a nested `docker run` per cell). Its six cells
+(`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim`, each with `PYTHONUSERBASE`
+`exported` and `unset`) run in parallel, one pool runner each: the matrix keeps
+`fail-fast: false` and has no `max-parallel` key. Each cell's container receives
+`PIP_DEFAULT_TIMEOUT=60` and `PIP_RETRIES=10`, so a slow package index is retried instead of
+failing the cell, and mounts the `ci-pip-cache` docker volume as the pip cache directory of
+the user that runs `scripts/host_like_dev_layout.sh` (the script's
+`HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR`, set to the mount point; the cell chowns the volume to
+that user before dropping privileges). `tests/test_ci_dev_layout_matrix_guard.py` asserts the
+axes, the absent `max-parallel`, the labels, both variables and the mount, each against a
+mutated fixture.
+
 **Runner labels.** Every job but `required` runs on `[self-hosted, linux, x64, ci-pool]`
 plus, only where it needs one, a capability label: `docker-host` (the runner gets the host
 docker socket, which a job with `container:` needs because the runner starts that
@@ -122,7 +136,7 @@ a standing runner.
 |---|---|---|---|---|
 | `gate.yml` | `-m fast` (which is a superset of `-m smoke`) | self-hosted `fast-lane` (`int21h-ws-5`/`-6`, exclusively) | every pull request, every push to `main` | 45 min |
 | `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs (the browser-image publisher moved to `browser-image.yml`, a `workflow_dispatch`-only workflow) | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min |
-| `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running `scripts/host_like_dev_layout.sh` with no override inside a plain upstream container (task 077, steer 008) -- the `fast` tier plus (task cure-01-01-2) a supplemental pass over every node that leaves outside `fast`/`smoke`/`docker`/`browser` (the `nightly`-marked nodes and the script's own test module), which `-m fast` alone never selected | self-hosted `ralphd-vps` + `docker-host` (`int21h-ws-1` only, so the cells run one at a time -- see below) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis); unchanged by cure-01-01-2, whose supplemental pass adds real wall time inside this same ceiling rather than raising it |
+| `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running `scripts/host_like_dev_layout.sh` with no override inside a plain upstream container (task 077, steer 008) -- the `fast` tier plus (task cure-01-01-2) a supplemental pass over every node that leaves outside `fast`/`smoke`/`docker`/`browser` (the `nightly`-marked nodes and the script's own test module), which `-m fast` alone never selected | self-hosted `ci-pool` + `docker-host`, all six cells in parallel (see "Nightly cells" above) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis); unchanged by cure-01-01-2, whose supplemental pass adds real wall time inside this same ceiling rather than raising it |
 
 `gate.yml` was on GitHub's own runners until 14 September 2026, when being the
 lane that runs most often stopped being an argument for hosted runners and
@@ -152,7 +166,7 @@ partition survived the move; only its halves changed machines:
 | slots | labels | takes |
 |---|---|---|
 | `int21h-ws-5`, `int21h-ws-6` | `fast-lane` only | `gate.yml` only |
-| `int21h-ws-1` | `ralphd-vps`, `docker-host`, `browser-runner` | `heavy.yml`, `nightly.yml` only |
+| `int21h-ws-1` | `ralphd-vps`, `docker-host`, `browser-runner` | `heavy.yml` only |
 | `int21h-ws-2` .. `int21h-ws-4` | none (parked) | nothing |
 
 Slots 5 and 6 are a **reservation, not spare capacity**, and that is why they
@@ -170,7 +184,7 @@ timing-sensitive nodes failed once each across ten runs and none reproduced.
 
 Two naming consequences. **`ralphd-vps` is now doubly a misnomer** — it names
 workstation slots and there is no VPS in the fleet at all; renaming it means
-editing `heavy.yml`, `nightly.yml` and
+editing `heavy.yml` and
 `tests/test_ci_dev_layout_matrix_guard.py` together, still #189's subject. And
 **this table is a snapshot, not the source of truth** — it has been overtaken
 within a day of being written twice now. Read the live shape from
@@ -206,8 +220,8 @@ The live placement belongs to `GET /repos/n-orlov/ralphd/actions/runners`; this 
 what it holds:
 
 - `int21h-ws-1` carries `ralphd-vps`, `docker-host` and `browser-runner`. It is the
-  **only** slot `heavy.yml` and `nightly.yml` can take, so every heavy job and every
-  nightly cell runs one at a time, and never beside another heavy or nightly job.
+  **only** slot `heavy.yml` can take, so every heavy job runs one at a time.
+  `nightly.yml` no longer uses it: its cells run on `ci-pool`.
 - `int21h-ws-2` .. `int21h-ws-4` are registered and online with no custom labels, so
   they take nothing.
 - `int21h-ws-5` and `int21h-ws-6` carry `fast-lane` only and run `gate.yml`.
@@ -218,9 +232,8 @@ All `int21h-ws-*` slots are registrations on one physical 12-core host. A label 
 only placement control that works across workflows: a `concurrency:` group only
 serialises within one workflow. So one labelled slot per physical host is what keeps
 `heavy` and `nightly` from sharing a machine, and what keeps browser-tier work
-globally serial. The cost is throughput: a full `nightly` run is its six cells back to
-back. To add capacity, put `ralphd-vps` + `docker-host` on a slot on another physical
-host, not on a second slot of this one.
+globally serial. To add capacity for `heavy.yml`, put `ralphd-vps` + `docker-host` on a
+slot on another physical host, not on a second slot of this one.
 
 Host (measured on the retired VPS; not yet re-measured on the current
 workstation, so treated as history rather than a current spec): 4 x86_64
@@ -809,9 +822,8 @@ config holding an inline token is refused.
   group** with `cancel-in-progress`. When several merges land in a row the newest
   `main` is the one that gets attested; intermediate shas keep the check runs
   they earned on their own pull requests.
-- `nightly.yml` runs its six matrix cells at `max-parallel: 2` and `fail-fast:
-  false`. With one eligible slot (`## The self-hosted runner` above) the cells
-  run one at a time whatever `max-parallel` says; one red cell must not cancel
+- `nightly.yml` runs its six matrix cells in parallel on `ci-pool` (no
+  `max-parallel`) with `fail-fast: false`; one red cell must not cancel
   another's claim.
 
 ## Reading a `cancelled` conclusion: which of the three causes it was

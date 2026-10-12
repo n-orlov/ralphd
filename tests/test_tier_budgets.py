@@ -828,7 +828,7 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.35 flaky_infra marker (tests/test_flaky_infra_marker.py): +6 tests, +1
     # module, measured `-m fast --collect-only` -> fast 8442/530, `-m smoke`
     # -> smoke 6695/405.
-    "fast": {"tests": 8447, "modules": 531},
+    "fast": {"tests": 8449, "modules": 531},
     "smoke": {"tests": 6697, "modules": 406},
 }
 
