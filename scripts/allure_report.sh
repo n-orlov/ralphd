@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Generate an Allure report from a directory of Allure results.
 #
-#   scripts/allure_report.sh <results-dir> <report-dir>
+#   scripts/allure_report.sh <results-dir> <report-dir> [<history-dir>]
+#
+# History: when a <history-dir> is given and exists, its contents are copied
+# into <results-dir>/history before the report is generated, which is where
+# Allure reads the previous report's trend data from. A missing, empty or
+# absent history (the first run on a branch) is not an error: the report is
+# generated without a trend and the script still exits 0.
 #
 # The Allure CLI is a pinned download. Its archive is checked against a pinned
 # SHA-256 BEFORE anything in it is unpacked or run; a mismatch exits non-zero
@@ -43,9 +49,11 @@ SCRATCH=()
 cleanup() { [ "${#SCRATCH[@]}" -eq 0 ] || rm -rf "${SCRATCH[@]}"; }
 trap cleanup EXIT
 
-[ "$#" -eq 2 ] || die "usage: allure_report.sh <results-dir> <report-dir>" 2
+{ [ "$#" -eq 2 ] || [ "$#" -eq 3 ]; } \
+  || die "usage: allure_report.sh <results-dir> <report-dir> [<history-dir>]" 2
 RESULTS="$1"
 REPORT="$2"
+HISTORY="${3:-}"
 [ -d "$RESULTS" ] || die "results directory not found: $RESULTS" 2
 [ -n "$(ls -A "$RESULTS")" ] || die "results directory is empty: $RESULTS" 2
 
@@ -88,6 +96,14 @@ if ! command -v java >/dev/null 2>&1; then
     "$JRE_SHA256" "$CACHE_BASE/temurin-jre/${JRE_VERSION}/x64"
   export JAVA_HOME="$CACHE_BASE/temurin-jre/${JRE_VERSION}/x64"
   export PATH="$JAVA_HOME/bin:$PATH"
+fi
+
+if [ -n "$HISTORY" ] && [ -d "$HISTORY" ] && [ -n "$(ls -A "$HISTORY")" ]; then
+  mkdir -p "$RESULTS/history"
+  cp -R "$HISTORY"/. "$RESULTS/history/"
+  echo "allure_report.sh: carried history forward from $HISTORY" >&2
+else
+  echo "allure_report.sh: no history to carry forward (${HISTORY:-none given})" >&2
 fi
 
 "$CACHE_BASE/allure/${ALLURE_VERSION}/x64/bin/allure" generate "$RESULTS" -o "$REPORT" --clean

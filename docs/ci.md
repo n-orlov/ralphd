@@ -143,6 +143,26 @@ the `docker` job of `ci.yml` runs it with network and a tool cache and it passes
 it with both download URLs unreachable to prove the cached copy is reused, and serves an archive
 with the wrong checksum (fast tier, no network) to prove the non-zero exit, no unpacking and no report.
 
+**History carry-forward.** `scripts/allure_report.sh <results-dir> <report-dir> [<history-dir>]`
+takes an optional third argument: the `history/` directory of the previous report (on a `main` run, the
+one on the `gh-pages` branch). When it exists and is not empty the script copies it into
+`<results-dir>/history` before it calls the CLI, which is where Allure reads trend data from. A missing,
+empty or never-given history (the first run, before any report was published) is not an error: the
+script says so on stderr, generates the report without a trend and exits 0, so absent history never fails
+the build. `tests/test_allure_report_script.py` covers both cases against a stand-in CLI planted in the
+verified tool cache, and asserts the history is in place when the CLI runs.
+
+**The per-tier summary.** `scripts/allure_summary.py <results-dir>... [--output FILE]` reads every
+`*-result.json` under the given directories and writes a markdown table of passed, failed, skipped and
+flaky totals per tier (the tier is the `parentSuite` label), followed by the list of rerun nodes. A test is
+one `historyId`; the attempt that stopped last decides its status, so totals count tests, not attempts, and
+`broken` counts as failed. A test whose last attempt passed after an earlier attempt did not is **flaky**: it
+is counted in `passed` as well, the column says how many of those passes needed a rerun. Every test with more
+than one attempt appears under "Rerun nodes" with its final status (a node that failed twice is listed there
+as failed, not flaky). `--output` appends, so it can be `$GITHUB_STEP_SUMMARY`; without it the markdown goes
+to stdout. `tests/test_allure_summary.py` runs it over a fixture of one failure, one skip, one
+rerun-then-pass and one double failure and asserts the exact counts.
+
 **`browser-image.yml`** is the publisher of that image: one `browser-image` job, triggered
 by `workflow_dispatch` only, so no push and no pull request ever builds or pushes an
 image. It builds `ci/browser/Dockerfile`, pushes it and prints the new digest, which is

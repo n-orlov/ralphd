@@ -832,8 +832,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.35 scripts/allure_report.sh (tests/test_allure_report_script.py): +1 fast
     # node (the wrong-checksum one; the report node is docker) -> fast 8453/532,
     # smoke 6698/406.
-    "fast": {"tests": 8453, "modules": 532},
-    "smoke": {"tests": 6698, "modules": 406},
+    # v0.35 history carry-forward + scripts/allure_summary.py: 4 history nodes in
+    # tests/test_allure_report_script.py, 2 in tests/test_allure_summary.py (new
+    # module) -> fast 8459/533, smoke 6704/407.
+    "fast": {"tests": 8459, "modules": 533},
+    "smoke": {"tests": 6704, "modules": 407},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

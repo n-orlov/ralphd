@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tarfile
 from pathlib import Path
@@ -100,3 +101,76 @@ def test_wrong_checksum_exits_non_zero_and_writes_no_report(tmp_path):
     assert not report.exists()
     assert not marker.exists(), "the unverified archive's contents ran"
     assert not (cache / "allure").exists(), "the unverified archive was unpacked"
+
+
+# --- history carry-forward (v0.35 E.2) ------------------------------------
+
+def _seed_tool_cache(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+    """A tool cache already holding a 'verified' fake CLI, plus a fake `java`.
+
+    The script reuses a cache entry whose `.verified` marker names the pinned
+    checksum, so the test reads the pin out of the script and plants a fake
+    `allure` there. The fake records what sits in `<results>/history` at the
+    moment it is asked to generate, which is the behaviour under test.
+    """
+    text = SCRIPT.read_text()
+    version = re.search(r'^ALLURE_VERSION="([^"]+)"', text, re.M).group(1)
+    sha = re.search(r'^ALLURE_SHA256="([0-9a-f]+)"', text, re.M).group(1)
+    cache = tmp_path / "cache"
+    cli = cache / "allure" / version / "x64"
+    (cli / "bin").mkdir(parents=True)
+    (cli / ".verified").write_text(sha)
+    fake = cli / "bin" / "allure"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "# generate <results> -o <report> --clean ($1=generate $2=results $4=report)\n"
+        'mkdir -p "$4"\n'
+        'echo ok > "$4/index.html"\n'
+        'if [ -d "$2/history" ]; then (cd "$2/history" && find . -type f | sort) > "$4/history-seen.txt"; '
+        'else echo none > "$4/history-seen.txt"; fi\n')
+    fake.chmod(0o755)
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir()
+    java = bindir / "java"
+    java.write_text("#!/bin/sh\nexit 0\n")
+    java.chmod(0o755)
+    return cache, {"ALLURE_TOOL_CACHE": str(cache),
+                   "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
+
+
+def _history_dir(tmp_path: Path) -> Path:
+    hist = tmp_path / "gh-pages-history"
+    hist.mkdir()
+    (hist / "history.json").write_text("[]")
+    (hist / "history-trend.json").write_text("[]")
+    return hist
+
+
+def test_history_directory_is_copied_into_the_results_before_generation(tmp_path):
+    results = _fixture_results(tmp_path)
+    _, env = _seed_tool_cache(tmp_path)
+    hist = _history_dir(tmp_path)
+    report = tmp_path / "report"
+    proc = _run([str(results), str(report), str(hist)], env, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    seen = (report / "history-seen.txt").read_text().split()
+    assert seen == ["./history-trend.json", "./history.json"]
+    assert (results / "history" / "history.json").is_file()
+
+
+@pytest.mark.parametrize("variant", ["none-given", "absent", "empty"])
+def test_missing_history_still_exits_zero_and_generates_the_report(tmp_path, variant):
+    results = _fixture_results(tmp_path)
+    _, env = _seed_tool_cache(tmp_path)
+    report = tmp_path / "report"
+    args = [str(results), str(report)]
+    if variant == "absent":
+        args.append(str(tmp_path / "no-such-history"))
+    elif variant == "empty":
+        (tmp_path / "empty-history").mkdir()
+        args.append(str(tmp_path / "empty-history"))
+    proc = _run(args, env, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert (report / "index.html").is_file()
+    assert (report / "history-seen.txt").read_text().strip() == "none"
+    assert not (results / "history").exists()
