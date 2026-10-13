@@ -233,11 +233,15 @@ _STATUS_FN_RE = re.compile(r"\b(always|success|failure|cancelled)\s*\(")
 # --- scenarios ---------------------------------------------------------------
 
 
+RUN_ID = "38445323827"
+
+
 def _github(event_name: str, *, fork: bool = False) -> dict:
     github = {
         "event_name": event_name,
         "repository": REPO,
         "sha": SHA,
+        "run_id": RUN_ID,
         "ref": "refs/heads/main",
         "event": {},
     }
@@ -356,8 +360,11 @@ def check_concurrency(workflow: dict) -> list[str]:
     expect = {
         "same-repo PR": ("ci-refs/pull/7/merge", True),
         "fork PR": ("ci-refs/pull/7/merge", True),
-        "push to main": (f"ci-main-{SHA}", False),
-        "dispatch": (f"ci-main-{SHA}", False),
+        # one group shared by every push to main: GitHub keeps the in-flight run
+        # and holds only the newest pending one
+        "push to main": ("ci-main", False),
+        # a dispatch has a group unique per run, never the push group
+        "dispatch": (f"ci-dispatch-{RUN_ID}", False),
     }
     for scenario, (group, cancel) in expect.items():
         ctx = {"github": SCENARIOS[scenario]}
@@ -367,6 +374,12 @@ def check_concurrency(workflow: dict) -> list[str]:
             problems.append(f"{scenario}: concurrency group is {got_group!r}, not {group!r}")
         if got_cancel != cancel:
             problems.append(f"{scenario}: cancel-in-progress is {got_cancel}, not {cancel}")
+    other_run = {**SCENARIOS["dispatch"], "run_id": "1"}
+    other = evaluate(conc.get("group"), {"github": other_run})
+    if other == evaluate(conc.get("group"), {"github": SCENARIOS["dispatch"]}):
+        problems.append(f"dispatch: two runs share the concurrency group {other!r}")
+    if other == evaluate(conc.get("group"), {"github": SCENARIOS["push to main"]}):
+        problems.append("dispatch: shares the push group")
     return problems
 
 
@@ -1032,11 +1045,33 @@ def test_the_concurrency_check_fails_for_each_broken_group(tmp_path):
     def sha_group(wf):
         wf["concurrency"]["group"] = "ci-main-${{ github.sha }}"
 
+    def per_sha_main_group(wf):
+        # the 0.35 shape: a group per sha for push and dispatch
+        wf["concurrency"]["group"] = (
+            "${{ github.event_name == 'pull_request' && format('ci-{0}', github.ref)"
+            " || format('ci-main-{0}', github.sha) }}"
+        )
+
+    def dispatch_shares_push_group(wf):
+        wf["concurrency"]["group"] = (
+            "${{ github.event_name == 'pull_request' && format('ci-{0}', github.ref)"
+            " || 'ci-main' }}"
+        )
+
+    def push_group_per_run(wf):
+        wf["concurrency"]["group"] = (
+            "${{ github.event_name == 'pull_request' && format('ci-{0}', github.ref)"
+            " || format('ci-dispatch-{0}', github.run_id) }}"
+        )
+
     for name, edit in {
         "pr-not-cancelled": no_cancel,
         "main-cancelled": always_cancel,
         "main-shares-ref-group": ref_group,
         "pr-uses-sha-group": sha_group,
+        "main-per-sha-group": per_sha_main_group,
+        "dispatch-shares-push-group": dispatch_shares_push_group,
+        "push-group-per-run": push_group_per_run,
     }.items():
         assert check_concurrency(_mutate(tmp_path, f"{name}.yml", edit)), name
 

@@ -22,9 +22,14 @@ everything below.
 `workflow_dispatch`. A push to any other branch runs nothing.
 
 **Concurrency.** A pull request's runs share the group `ci-<ref>` with
-`cancel-in-progress: true`, so a newer push supersedes the older run. A run on `main`
-(a push or a dispatch) has the group `ci-main-<sha>` and is never cancelled by a later
-one, so a regression on a superseded sha is not hidden.
+`cancel-in-progress: true`, so a newer push supersedes the older run. Every push to
+`main` shares one group, `ci-main`, with `cancel-in-progress: false`: the run in flight is
+never cancelled, and GitHub holds at most one pending run, replacing an older pending one
+with the newest push. So at most one run is in flight and one pending, and only the newest
+pending sha runs; skipped intermediate shas on `main` are expected. A pending run replaced
+by a newer push shows as `cancelled` and is not a verdict on that sha. A `workflow_dispatch`
+run has its own group, `ci-dispatch-<run_id>`, never shared with a push, so a dispatched
+run is never replaced by a later push and is the verdict to wait for.
 
 **Reruns.** No lane reruns failures globally: there is no `--reruns` in
 `pyproject.toml` or in any workflow. The one policy is per node: a test marked
@@ -838,9 +843,12 @@ config holding an inline token is refused.
 ## Concurrency
 
 - `ci.yml`: a pull request's runs share a group per ref with `cancel-in-progress`, so a
-  superseded PR head is not worth a runner; every run on `main` has its own group and is
-  never cancelled by a later one, so a regression on a superseded sha is not hidden (see
-  "Concurrency" under `ci.yml` above).
+  superseded PR head is not worth a runner; every push to `main` shares the one group
+  `ci-main` (`cancel-in-progress: false`), so at most one run is in flight and one pending,
+  the in-flight run is never cancelled, and only the newest pending sha runs (skipped
+  intermediate shas on `main` are expected). A dispatched run has its own group
+  `ci-dispatch-<run_id>` and is never replaced by a push (see "Concurrency" under `ci.yml`
+  above).
 - `nightly.yml` runs its six matrix cells in parallel on `ci-pool` (no
   `max-parallel`) with `fail-fast: false`; one red cell must not cancel
   another's claim.
@@ -851,7 +859,10 @@ A job's `conclusion` is `cancelled` for three unrelated causes, and the
 Checks/Actions API exposes no field that separates them: a human pressed
 Cancel, a `cancel-in-progress` group superseded this run, or the job hit its
 own `timeout-minutes`. Only the third is a statement about the commit, and it
-is the one a judging hat most needs to not mistake for a verdict. Two
+is the one a judging hat most needs to not mistake for a verdict. A fourth shape needs
+no marker: a pending push run on `main` replaced by a newer push (the shared `ci-main`
+group holds one pending run) shows as `cancelled` having started no job, and is not a
+verdict on that sha; the in-flight run is never cancelled this way. Two
 mechanisms make it legible, both printing to the step log **and** appending to
 `$GITHUB_STEP_SUMMARY`, which are surfaces a fresh `GET` already returns, and
 both keyed on one of two fixed, greppable, mutually exclusive prefixes —

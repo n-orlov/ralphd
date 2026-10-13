@@ -25,11 +25,16 @@ on:
   workflow_dispatch:
 
 # A pull request's runs share `ci-<ref>` and a newer push cancels the older run.
-# A run on `main` (a push or a dispatch) gets a group of its own per sha and is
-# never cancelled by a later one, so a regression on a superseded sha is not
-# hidden.
+# Every push to `main` shares ONE group, `ci-main`, with `cancel-in-progress:
+# false`: GitHub never kills the run in flight and holds at most one pending run,
+# replacing an older pending one with the newest push. So at most one run is in
+# flight and one pending, always the newest sha; skipped intermediate shas on
+# main are expected. A pending run replaced by a newer push shows as `cancelled`,
+# which is not a verdict on that sha. A `workflow_dispatch` run has a group of its
+# own per run (`ci-dispatch-<run_id>`), never shared with a push, so a dispatched
+# sweep is never replaced by a later push's pending run.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('ci-{0}', github.ref) || format('ci-main-{0}', github.sha) }}
+  group: ${{ github.event_name == 'pull_request' && format('ci-{0}', github.ref) || github.event_name == 'push' && 'ci-main' || format('ci-dispatch-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
