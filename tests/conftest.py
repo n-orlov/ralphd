@@ -521,6 +521,62 @@ def _label_for_allure(item) -> None:
         item.add_marker(pytest.mark.allure_label(module, label_type="suite"))
 
 
+class _AllureFlakyStamp:
+    """Mark a passing rerun attempt as flaky in its Allure result.
+
+    allure-pytest writes one result per attempt, all sharing a historyId, but
+    never sets `statusDetails.flaky`, which is the only thing the pinned
+    report generator reads to call a test case flaky (it derives retries from
+    the shared historyId, not flakiness). pytest-rerunfailures numbers each
+    attempt in `item.execution_count`, so an attempt that PASSED with a count
+    above one is a pass that needed a rerun. The stamp is applied in
+    `pytest_runtest_logfinish`, before allure-pytest's own wrapper closes and
+    writes the result; the attempts that failed, and passes on the first try,
+    are left untouched."""
+
+    def __init__(self):
+        self._attempt = {}
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_runtest_makereport(self, item, call):
+        self._attempt[item.nodeid] = getattr(item, "execution_count", 1)
+        yield
+
+    @pytest.hookimpl(hookwrapper=True)
+    def pytest_runtest_logfinish(self, nodeid, location):
+        attempt = self._attempt.pop(nodeid, 1)
+        listener = self._listener
+        if attempt > 1 and listener is not None:
+            uuid = listener._cache.get(nodeid)
+            result = listener.allure_logger.get_test(uuid) if uuid else None
+            if result is not None and result.status == "passed":
+                from allure_commons.model2 import StatusDetails
+                if result.statusDetails is None:
+                    result.statusDetails = StatusDetails()
+                result.statusDetails.flaky = True
+        yield
+
+    @property
+    def _listener(self):
+        return self._config.pluginmanager.get_plugin("allure_listener")
+
+    def attach(self, config):
+        self._config = config
+        return self
+
+
+_ALLURE_FLAKY_PLUGIN = "ralphd_allure_flaky_stamp"
+
+
+def _stamp_flaky_in_allure(config) -> None:
+    """Register `_AllureFlakyStamp` once per session, only while the
+    allure-pytest listener is loaded (a run without it has no results)."""
+    pm = config.pluginmanager
+    if pm.get_plugin("allure_listener") is None or pm.has_plugin(_ALLURE_FLAKY_PLUGIN):
+        return
+    pm.register(_AllureFlakyStamp().attach(config), _ALLURE_FLAKY_PLUGIN)
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config, items):
     """Stamp every collected item with its tier (`smoke`/`fast`), before the
@@ -551,6 +607,7 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.smoke)
     for item in items:
         _label_for_allure(item)
+    _stamp_flaky_in_allure(config)
 
 
 def free_port() -> int:

@@ -86,6 +86,17 @@ the same node unmarked fails, a fail-twice marked node fails, and a marked node
 that also carries a conflicting `flaky` marker (direct, class or module) still gets
 exactly one rerun while an ordinary `flaky` node keeps its own count.
 
+A rerun that passes is also flaky in Allure. allure-pytest writes one result per attempt
+(same `historyId`) but never sets `statusDetails.flaky`, the field the pinned report generator
+reads to call a test case flaky. `tests/conftest.py` therefore registers a small plugin from the
+collection hook (only while allure-pytest is loaded) that sets `statusDetails.flaky` on an attempt
+that passed with `item.execution_count` above one, before the result is written; first-attempt
+passes and final failures are left alone, so the step summary, the results and the report agree.
+`tests/test_flaky_allure_pipeline.py` drives the real hook, pytest-rerunfailures, allure-pytest and
+`scripts/allure_summary.py` over a mixed child run (fail-once and fail-twice `flaky_infra` nodes, a
+plain `flaky(reruns=2)` node, ordinary passes and failures); its `docker` node runs the pinned
+report generator over the same results and asserts the rerun node's case is `flaky` with a retry.
+
 ## Allure results: `--alluredir`, one directory per tier
 
 `allure-pytest` is in the `dev` extra, so `pip install -e '.[dev]'` brings the

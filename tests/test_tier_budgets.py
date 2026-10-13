@@ -856,8 +856,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.35 flaky_infra policy enforcement: 11 conflicting-marker nodes in
     # tests/test_flaky_infra_marker.py (no new module), measured `--collect-only`
     # -> fast 8500/534, smoke 6724/408.
-    "fast": {"tests": 8500, "modules": 534},
-    "smoke": {"tests": 6724, "modules": 408},
+    # v0.35 flaky in Allure: 3 fast nodes in the new tests/test_flaky_allure_
+    # pipeline.py (its report-generator node is `docker`), measured
+    # `--collect-only` -> fast 8503/535, smoke 6727/409.
+    "fast": {"tests": 8503, "modules": 535},
+    "smoke": {"tests": 6727, "modules": 409},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).
