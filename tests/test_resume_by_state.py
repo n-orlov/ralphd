@@ -350,13 +350,16 @@ def test_killed_between_review_rejection_and_the_approach_bump_then_resume_repla
     assert replan_logs, "expected a log event naming the crashed-approach-boundary resume"
 
 
-def test_last_approach_rejected_and_crashed_before_finishing_still_fails_terminally(
+def test_last_approach_rejected_and_crashed_before_finishing_holds_exhausted_approaches(
         engine_factory, tmp_path):
     """The other half of the same defect: the rejected approach was the
     LAST one available. Resuming must not grant an extra approach beyond
-    `max_approaches` by silently re-planning it -- it must go straight to
-    the run's real terminal outcome (`failed`, no approaches left), exactly
-    as the crashed episode was always going to settle on."""
+    `max_approaches` by silently re-planning it -- it goes straight to where
+    the crashed episode was always going to settle: the approach budget is
+    spent, so the run holds `exhausted` with `exhaustedBudget: approaches`
+    (v0.36 requirement G; it ended `failed` on 0.35). Covering node for the
+    hold itself: tests/test_exhausted_hold.py::
+    test_a_replan_with_no_approach_left_holds_exhausted_approaches."""
     run_dir = tmp_path / "run"
     _fabricate_rejected_approach_crash(run_dir, rejected_approach=1)
 
@@ -367,7 +370,9 @@ def test_last_approach_rejected_and_crashed_before_finishing_still_fails_termina
     assert wait_engine_exit(e, timeout=60) == 1
 
     status = json.loads((e.run_dir / "status.json").read_text())
-    assert status["state"] == "failed"
+    assert status["state"] == "exhausted"
+    assert status["exhaustedBudget"] == "approaches"
+    assert status["verdict"] is None
     assert status["approach"] == 1, "no approach was ever granted beyond the budget"
     tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]
     assert len(tasks) == 1 and tasks[0]["title"] == "rejected approach's task", \

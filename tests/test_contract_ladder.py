@@ -471,7 +471,7 @@ def test_an_unrecognised_verdict_value_exhausts_the_ladder_and_still_refuses_the
     all, exactly like an ordinary `"no_verdict"` reply) rather than
     aborting outright. With the run's own iteration budget already spent
     by the one charged attempt below (`iterations=2`, one already seeded
-    used), the run ends `timed_out`/`verdict: null` (task 011, v0.24
+    used), the run ends `exhausted`/`verdict: null` (task 011, v0.24
     requirement C.1, #169 -- budget genuinely exhausted, the plain shape)
     via the ordinary tail, never `"failed"`/`"aborted"`.
     """
@@ -498,14 +498,14 @@ def test_an_unrecognised_verdict_value_exhausts_the_ladder_and_still_refuses_the
 
     # agent-fault continuation, NEVER a contract-violation abort: no
     # `_abort_reason`, no "contract violation" log message. Task 011
-    # (v0.24 requirement C.1, #169): the run ends `timed_out`/`verdict:
+    # (v0.24 requirement C.1, #169): the run ends `exhausted`/`verdict:
     # null` (budget genuinely exhausted, the plain shape) through the
-    # same `_finish_timed_out()` path task 010 established, never
+    # same `_finish_exhausted()` path task 010 established, never
     # `"failed"`/`"aborted"`.
     assert sup._abort_reason is None
     msgs = _log_messages(root)
     assert "contract violation" not in msgs
-    assert state == "timed_out", sup.run.read_status()
+    assert state == "exhausted", sup.run.read_status()
     assert sup.run.read_status()["verdict"] is None
 
 

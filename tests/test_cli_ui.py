@@ -417,14 +417,19 @@ def test_live_nonterminal_run_is_not_flagged_container_gone(tmp_path, ui):
 
 def test_hub_and_cli_share_one_nonterminal_state_set(tmp_path):
     """Task 024 (#8): the hub's zombie condition and the CLI's must be built
-    on the same `NONTERMINAL_STATES` tuple -- one definition, no drift."""
+    on the same `LOADABLE_NONTERMINAL_STATES` tuple -- one definition, no
+    drift. (v0.36: that tuple is `NONTERMINAL_STATES` plus the 0.35
+    spelling of the budget hold, so a run directory 0.35 left at `timed_out`
+    still counts as owned by an engine.)"""
     from ralphd.cli import main as cli_main
     from ralphd.cli import ui_server as ui_mod
-    from ralphd.engine.state import NONTERMINAL_STATES
+    from ralphd.engine.state import (LOADABLE_NONTERMINAL_STATES,
+                                     NONTERMINAL_STATES)
 
-    assert cli_main._NONTERMINAL_STATUS_STATES is NONTERMINAL_STATES
-    assert ui_mod.NONTERMINAL_STATES is NONTERMINAL_STATES
-    for state in NONTERMINAL_STATES:
+    assert LOADABLE_NONTERMINAL_STATES == NONTERMINAL_STATES + ("timed_out",)
+    assert cli_main._NONTERMINAL_STATUS_STATES is LOADABLE_NONTERMINAL_STATES
+    assert ui_mod.LOADABLE_NONTERMINAL_STATES is LOADABLE_NONTERMINAL_STATES
+    for state in LOADABLE_NONTERMINAL_STATES:
         assert ui_mod.container_gone({"state": state}, api_reachable=False) is True
         assert ui_mod.container_gone({"state": state}, api_reachable=True) is False
     for state in ("succeeded", "failed", "aborted", None):

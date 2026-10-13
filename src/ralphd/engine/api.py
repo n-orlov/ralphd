@@ -43,7 +43,7 @@ from .skills import (
 )
 from .state import (
     STEERING_GLOB,
-    TIMED_OUT_STATE,
+    EXHAUSTED_STATE,
     RunDir,
     image_record,
     prd_path,
@@ -149,7 +149,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         return await call_next(request)
 
     def finished() -> bool:
-        # Task 011 (v0.24 requirement C.1, #169): `timed_out` is deliberately
+        # Task 011 (v0.24 requirement C.1, #169): `exhausted` is deliberately
         # NOT one of `state.TERMINAL_STATES` -- a future `resume` can still
         # revive the run dir -- but *this* process's job is over the moment
         # it lands there (task 010, requirement B.3: the whole `run_job()`
@@ -162,7 +162,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # a state that will never again change in this process, which is
         # exactly the live hang this task's own new coverage caught.
         return run.read_status().get("state") in ("succeeded", "failed",
-                                                    "aborted", TIMED_OUT_STATE)
+                                                    "aborted", EXHAUSTED_STATE)
 
     # -- observation -----------------------------------------------------
     @app.get("/healthz")
@@ -825,7 +825,7 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # `deck-phase4c` was `run.add_steering` landing here and THEN this
         # handler refusing with a 409 that told the caller the message
         # never landed. The only refusal left is a genuinely finished run
-        # (`state` already `succeeded`/`failed`/`aborted`/`timed_out`),
+        # (`state` already `succeeded`/`failed`/`aborted`/`exhausted`),
         # which enqueues nothing -- "a refusal leaves no enqueued steering
         # message behind" is true by construction, not by a second check.
         # While the loop is alive but idle (between iterations, in a

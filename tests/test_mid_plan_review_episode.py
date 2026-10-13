@@ -342,9 +342,9 @@ def test_no_mid_plan_review_episode_starts_at_an_already_expired_boundary(
     worker iteration that just spent the last of the budget and this call.
     Requirement A.1 forbids starting a new iteration there: an
     already-expired boundary must dispatch NO mid-plan review iteration --
-    and the pass must still land in the shared `timed_out` freeze path
+    and the pass must still land in the shared `exhausted` freeze path
     (`_budget_exhausted_tail` -> `_finish_tail_unverified` ->
-    `_finish_timed_out`, task 010/011's own C.1 path) with a null verdict.
+    `_finish_exhausted`, task 010/011's own C.1 path) with a null verdict.
 
     Driven through the REAL `_step_worker` call site, with the worker
     iteration itself spending the last of the budget -- the exact ordering
@@ -422,13 +422,13 @@ def test_no_mid_plan_review_episode_starts_at_an_already_expired_boundary(
 
     # 3. the pass ends in the SHARED freeze path -- the same `("tail",)`
     # outcome and C.1 flag every other budget boundary sets -- and that
-    # tail holds `timed_out` with a null verdict, never a second freeze
+    # tail holds `exhausted` with a null verdict, never a second freeze
     # implementation of its own.
     assert outcome == ("tail",)
     assert sup._budget_exhausted_tail is True
-    assert sup._finish_tail_unverified() == "timed_out"
+    assert sup._finish_tail_unverified() == "exhausted"
     status = run.read_status()
-    assert status["state"] == "timed_out"
+    assert status["state"] == "exhausted"
     assert status["verdict"] is None
     assert status.get("endedAt") is None, "a held run has not ended"
     assert status.get("pendingTerminalState") is None

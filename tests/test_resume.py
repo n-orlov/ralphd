@@ -19,11 +19,11 @@ __all__ = ["engine_factory"]
 
 
 def test_resume_stale_running_status_skips_planning_and_completes(engine_factory):
-    """A held (iteration-budget-exhausted, `timed_out`) run dir, restarted
+    """A held (iteration-budget-exhausted, `exhausted`) run dir, restarted
     with a bumped iteration budget, must: skip planning, continue
     iteration numbering from N+1, and finish the job (verdict verified)."""
     # First process: deliberately exhaust the iteration budget so the job
-    # holds `timed_out` (task 011, v0.24 requirement C.1, #169) with
+    # holds `exhausted` (task 011, v0.24 requirement C.1, #169) with
     # tasks.json partially done and left on disk (mirrors a stale/killed
     # prior engine).
     e1 = engine_factory(job={"on_complete": "exit", "iterations": 2,
@@ -32,11 +32,11 @@ def test_resume_stale_running_status_skips_planning_and_completes(engine_factory
     assert wait_engine_exit(e1, timeout=60) == 1
     status1 = json.loads((e1.run_dir / "status.json").read_text())
     # Task 011 (v0.24 requirement C.1, #169): a plain out-of-budget ending
-    # now holds `timed_out` (verdict null) through the same `_finish_
-    # timed_out()` path task 010 established -- a NON-terminal, resumable
+    # now holds `exhausted` (verdict null) through the same `_finish_
+    # exhausted()` path task 010 established -- a NON-terminal, resumable
     # freeze, exactly what this test's second process below resumes from,
     # not the `"failed"` this pinned before this task.
-    assert status1["state"] == "timed_out"
+    assert status1["state"] == "exhausted"
     assert status1["verdict"] is None
     assert status1["iterationsUsed"] == 2
 

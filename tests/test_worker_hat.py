@@ -1632,10 +1632,10 @@ def test_an_unearned_plan_complete_claim_exhausts_the_ladder_and_is_refused(tmp_
     # (the undeclared `worker` self-loop) exactly as the docstring above
     # says -- so what actually ends it is the run's own ITERATION budget
     # running out on the very next `while self.budget_left():` check,
-    # the plain shape C.1 now routes into `timed_out`/`verdict: null`
-    # through the same `_finish_timed_out()` path task 010 established,
+    # the plain shape C.1 now routes into `exhausted`/`verdict: null`
+    # through the same `_finish_exhausted()` path task 010 established,
     # never `failed`/`unverified`.
-    assert state == "timed_out", sup.run.read_status()
+    assert state == "exhausted", sup.run.read_status()
     assert sup.run.read_status()["verdict"] is None
 
 
@@ -1664,7 +1664,7 @@ def test_a_schema_malformed_plan_complete_line_also_reaches_the_ladder(tmp_path)
     # semantic-refusal sibling above -- the ladder exhausted, the run
     # kept going per the table, and the ITERATION budget is what actually
     # ended it.
-    assert state == "timed_out", sup.run.read_status()
+    assert state == "exhausted", sup.run.read_status()
     assert sup.run.read_status()["verdict"] is None
 
 
@@ -2134,10 +2134,10 @@ def test_7_stagnation_counter_excludes_an_operator_interrupted_work_classified_i
     # Budget ran out mid-worker-loop (4 iterations: 1 planning + 3 worker),
     # none of which counted as stagnation evidence -- Task 011 (v0.24
     # requirement C.1, #169): this plain out-of-budget ending now holds
-    # `timed_out`/`verdict: null` through the same `_finish_timed_out()`
+    # `exhausted`/`verdict: null` through the same `_finish_exhausted()`
     # path task 010 established, never `failed`/`unverified` -- it is
     # NOT the stagnation guard (guarded above) and NOT `succeeded`.
-    assert state == "timed_out"
+    assert state == "exhausted"
     assert sup.run.read_status()["verdict"] is None
 
 

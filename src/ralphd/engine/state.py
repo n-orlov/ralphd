@@ -711,17 +711,58 @@ def read_json(path: Path, default: Any = None) -> Any:
 # no destructive action may open on it. An OPERATOR pause (`POST /pause`)
 # still records no state at all -- see `LoopSupervisor.pause`.
 PAUSED_STATE = "paused"
-# Task 008 (v0.24 requirement B.1, #169): `timed_out` -- the deadline hold,
-# entered when a run's job deadline expires (or a rejecting verdict holds
-# it, D.2) and the current iteration/hat call has finished. A live engine
-# still owns the run's on-disk position (task/iteration to resume from), so
-# it belongs beside `paused`/`finishing` here, never in `TERMINAL_STATES`
-# below -- see `engine.transitions.TIMED_OUT_STATE`/`ALL_STATES` for the
-# same state declared in the transition table, and `cli/web/app.js`'s
-# `RUN_STATE_ORDER` for the third spelling this PRD requirement names.
-TIMED_OUT_STATE = "timed_out"
+# v0.36 requirement G: `exhausted` -- THE one budget hold. Entered when the
+# iteration budget, the job deadline or the approach budget is spent and the
+# step in flight has finished; `status.json`'s `exhaustedBudget` names which
+# one (`iterations`, `time` or `approaches`) and `verdict` is `null`. A live
+# engine still owns the run's on-disk position (task/iteration to resume
+# from), so it belongs beside `paused`/`finishing` here, never in
+# `TERMINAL_STATES` below -- see `engine.transitions.EXHAUSTED_STATE`/
+# `ALL_STATES` for the same state declared in the transition table, and
+# `cli/web/app.js`'s `RUN_STATE_ORDER` for the third spelling. `resume`
+# leaves it only with a top-up of the named budget.
+EXHAUSTED_STATE = "exhausted"
+EXHAUSTED_BUDGETS = ("iterations", "time", "approaches")
+# The 0.35 spelling of the same hold. Nothing in the engine enters it any
+# more; a run directory written by 0.35 and still recorded with it loads as
+# `exhausted` (`exhausted_budget_of` / `normalise_legacy_state` below).
+LEGACY_TIMED_OUT_STATE = "timed_out"
 NONTERMINAL_STATES = ("starting", "running", PAUSED_STATE, "finishing",
-                      TIMED_OUT_STATE)
+                      EXHAUSTED_STATE)
+# Every non-terminal state a run directory can be RECORDED with on this build:
+# the engine's own plus the 0.35 spelling of the budget hold, so a run
+# directory 0.35 left at `timed_out` still counts as owned (zombie/liveness
+# checks, stop/rm, the hub's delete gate) and loads as `exhausted`.
+LOADABLE_NONTERMINAL_STATES = NONTERMINAL_STATES + (LEGACY_TIMED_OUT_STATE,)
+
+
+def exhausted_budget_of(status: dict) -> str | None:
+    """The budget a held run ran out of: `status["exhaustedBudget"]` for an
+    `exhausted` run, derived from the recorded `reason` for a run directory
+    0.35 left at `timed_out` (a reason naming the iteration budget reads as
+    `iterations`, anything else as `time`), `None` for any other state."""
+    if not isinstance(status, dict):
+        return None
+    state_value = status.get("state")
+    if state_value == EXHAUSTED_STATE:
+        budget = status.get("exhaustedBudget")
+        return budget if budget in EXHAUSTED_BUDGETS else None
+    if state_value == LEGACY_TIMED_OUT_STATE:
+        reason = str(status.get("reason") or "").lower()
+        return "iterations" if "iteration" in reason and "wall" not in reason \
+            and "deadline" not in reason else "time"
+    return None
+
+
+def format_state_display(status: dict) -> str:
+    """The state as every surface shows it: `exhausted (<budget>)` for the
+    budget hold (a 0.35 `timed_out` hold included), the plain `state`
+    otherwise."""
+    state_value = status.get("state") if isinstance(status, dict) else None
+    budget = exhausted_budget_of(status)
+    if budget is not None:
+        return f"{EXHAUSTED_STATE} ({budget})"
+    return str(state_value)
 
 # v0.23 requirement A.7, resolved tension 3 (task 017, #224): the ONE shared
 # marker text `ralphctl runs` and the hub run list both render for a run

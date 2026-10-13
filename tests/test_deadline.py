@@ -707,15 +707,15 @@ def test_ordinary_path_interrupted_review_at_budget_end_carries_a_null_verdict(t
 #    budget/deadline cuts it short, so the grace review's own bonus
 #    attempt is gone -- this exact scenario (worker completes the LAST
 #    task on the LAST budgeted iteration, so review's own state is never
-#    even entered) now holds `timed_out` instead, pinned below.
+#    even entered) now holds `exhausted` instead, pinned below.
 # ---------------------------------------------------------------------------
 
-def test_worker_budget_exhaustion_with_all_tasks_complete_holds_timed_out(tmp_path):
+def test_worker_budget_exhaustion_with_all_tasks_complete_holds_exhausted(tmp_path):
     """What replaced the retired off-budget grace review's own
     review-interrupted branch: a worker that completes the LAST task on
     the LAST budgeted iteration never even reaches review's own state --
     `_step_worker`'s own `budget_left()` check fires first and the run
-    holds `timed_out` (task 011, requirement C.1, #169's own pre-existing
+    holds `exhausted` (task 011, requirement C.1, #169's own pre-existing
     freeze path), never a review verdict of any kind, never the retired
     `unreviewed`/"deadline during review" outcome this scenario used to
     produce through the grace review's own interrupted attempt."""
@@ -728,7 +728,7 @@ def test_worker_budget_exhaustion_with_all_tasks_complete_holds_timed_out(tmp_pa
     sup = _review_supervisor(tmp_path / "run", handlers, iterations=2)
     state = asyncio.run(sup._run_job_core())
 
-    assert state == "timed_out"
+    assert state == "exhausted"
     status = sup.run.read_status()
     assert status["verdict"] is None
     assert status["approach"] == 1
@@ -781,16 +781,16 @@ def test_resume_after_unreviewed_lands_on_review_same_approach_and_succeeds(tmp_
     assert sup2.runner.calls == 1
 
 
-def test_resume_of_a_timed_out_budget_exhaustion_run_does_not_reenter_review(tmp_path):
+def test_resume_of_a_exhausted_budget_exhaustion_run_does_not_reenter_review(tmp_path):
     """RETIRED/replaced (task 015, requirement E.1, #169): this used to pin
     that a resume after the retired off-budget grace review's own
     interrupted attempt lands back on `review`, same as an ordinary
     unreviewed ending does (`test_resume_after_unreviewed_lands_on_review_
     same_approach_and_succeeds` above). That scenario -- worker completes
-    the LAST task on the LAST budgeted iteration -- now holds `timed_out`
+    the LAST task on the LAST budgeted iteration -- now holds `exhausted`
     with NO `review_deadline_unreviewed` event at all (review's own state
     is never entered, see `test_worker_budget_exhaustion_with_all_tasks_
-    complete_holds_timed_out` above), so there is nothing `_unreviewed_
+    complete_holds_exhausted` above), so there is nothing `_unreviewed_
     awaiting_resume` could find here: this is a different terminal shape
     now, not one this file's resume family covers."""
     root = tmp_path / "run"
@@ -800,7 +800,7 @@ def test_resume_of_a_timed_out_budget_exhaustion_run_does_not_reenter_review(tmp
     }
     sup1 = _review_supervisor(root, handlers1, iterations=2)
     state1 = asyncio.run(sup1._run_job_core())
-    assert state1 == "timed_out"
+    assert state1 == "exhausted"
     assert sup1.run.read_status()["verdict"] is None
 
     sup2 = _review_supervisor(root, {}, iterations=6)
@@ -830,21 +830,21 @@ def test_an_iteration_since_the_unreviewed_ending_stops_the_predicate(tmp_path):
 
 # ===========================================================================
 # Section F -- task 010 (v0.24 requirement B.3, #169): freeze on the spot
-# when entering the `timed_out` hold.
+# when entering the `exhausted` hold.
 #
-# `_finish_timed_out()` is the one call path that enters TIMED_OUT_STATE
+# `_finish_exhausted()` is the one call path that enters EXHAUSTED_STATE
 # (later tasks -- C.1's budget exhaustion, D.2's deadline-during-review
 # rejection -- wire real triggers onto it; this section proves the path
 # itself, built on `make_supervisor`, never this run's own directory).
 # ===========================================================================
 
-def test_timed_out_freezes_on_the_spot_no_reflect_no_accounting(tmp_path):
-    """Entering `timed_out` goes through `_finish()` with the reflect
+def test_exhausted_freezes_on_the_spot_no_reflect_no_accounting(tmp_path):
+    """Entering `exhausted` goes through `_finish()` with the reflect
     iteration, the terminal accounting (`endedAt`, `pendingTerminalState`)
     skipped -- `reflect: true` is configured here specifically so a
     reflect iteration that fired would be caught."""
     sup = make_supervisor(
-        tmp_path, run_id="task010-timed-out", reflect=True,
+        tmp_path, run_id="task010-exhausted", reflect=True,
         tasks=[{"id": "T1", "title": "do the thing",
                 "successCriteria": "done", "status": "in-progress"}])
     # Position a mid-flight episode the way a real deadline expiring
@@ -868,7 +868,7 @@ def test_timed_out_freezes_on_the_spot_no_reflect_no_accounting(tmp_path):
         # call site (C.1/D.2) that decides the ending IS the hold -- the
         # decision itself is out of this task's scope; only the entry
         # mechanism through `_finish()` is.
-        return sup._finish_timed_out(reason="deadline expired between iterations")
+        return sup._finish_exhausted("time", reason="deadline expired between iterations")
 
     sup._run_job_core = _fake_run_job_core  # type: ignore[method-assign]
 
@@ -877,9 +877,9 @@ def test_timed_out_freezes_on_the_spot_no_reflect_no_accounting(tmp_path):
 
     state = asyncio.run(asyncio.wait_for(sup.run_job(), 30.0))
 
-    assert state == "timed_out"
+    assert state == "exhausted"
     assert reflect_calls == [], (
-        "no reflect iteration may run on the way into the timed_out hold")
+        "no reflect iteration may run on the way into the exhausted hold")
 
     after = sorted(p.name for p in iterations_dir.glob("*")) if iterations_dir.exists() else []
     assert after == before, (
@@ -887,7 +887,7 @@ def test_timed_out_freezes_on_the_spot_no_reflect_no_accounting(tmp_path):
         "iterations/ tree for this ending")
 
     status = sup.run.read_status()
-    assert status["state"] == "timed_out"
+    assert status["state"] == "exhausted"
     assert status["verdict"] is None
     assert status.get("pendingTerminalState") is None
     assert status.get("endedAt") is None, (
@@ -898,36 +898,36 @@ def test_timed_out_freezes_on_the_spot_no_reflect_no_accounting(tmp_path):
     assert status.get("approach") == 1
 
     state_events = _events(sup.run, "state")
-    assert state_events[-1]["state"] == "timed_out"
+    assert state_events[-1]["state"] == "exhausted"
     # events.jsonl is flushed synchronously by `RunDir.emit` on every call
     # (task 010's own criterion: readable back immediately, not buffered).
     raw = (sup.run.root / "events.jsonl").read_text()
-    assert json.loads(raw.splitlines()[-1])["state"] == "timed_out"
+    assert json.loads(raw.splitlines()[-1])["state"] == "exhausted"
 
     assert (sup.run.artifacts_dir / "run-record.json").exists()
     assert (sup.run.artifacts_dir / "run-record.md").exists()
     record = json.loads((sup.run.artifacts_dir / "run-record.json").read_text())
-    assert record.get("state") == "timed_out"
+    assert record.get("state") == "exhausted"
 
 
-def test_finish_timed_out_never_runs_the_two_phase_finishing_dance(tmp_path):
-    """`_finish_timed_out()` calling `_finish()` directly (not through
+def test_finish_exhausted_never_runs_the_two_phase_finishing_dance(tmp_path):
+    """`_finish_exhausted()` calling `_finish()` directly (not through
     `run_job()`) never leaves the non-terminal `finishing` state on disk
     even with `reflect: true` -- `_finish()`'s own `state ==
-    TIMED_OUT_STATE` branch is checked first and returns immediately,
+    EXHAUSTED_STATE` branch is checked first and returns immediately,
     which is the mechanism `run_job()`'s reflect-skip in the sibling test
     above builds on."""
     sup = make_supervisor(tmp_path, run_id="task010-finish-direct",
                           reflect=True)
-    result = sup._finish_timed_out(reason="deadline expired")
+    result = sup._finish_exhausted("time", reason="deadline expired")
 
-    assert result == "timed_out"
+    assert result == "exhausted"
     status = sup.run.read_status()
-    assert status["state"] == "timed_out"
+    assert status["state"] == "exhausted"
     assert status["verdict"] is None
     assert status.get("pendingTerminalState") is None
     assert sup._pending_terminal is None, (
-        "the timed_out branch must never arm the reflect-promotion "
+        "the exhausted branch must never arm the reflect-promotion "
         "machinery -- there is nothing to promote later")
 
 
@@ -935,7 +935,7 @@ def test_finish_timed_out_never_runs_the_two_phase_finishing_dance(tmp_path):
 # Section G -- task 011 (v0.24 requirement C.1, #169): an exhausted
 # iteration budget holds through B.3's path.
 #
-# Section F above proved `_finish_timed_out()`'s own entry mechanism by
+# Section F above proved `_finish_exhausted()`'s own entry mechanism by
 # calling it directly / stubbing `_run_job_core`; this section proves the
 # REAL trigger this task wires onto it -- `_step_worker`'s ordinary
 # `while self.budget_left():` loop running dry with tasks still
@@ -955,7 +955,7 @@ def _task011_no_verdict_worker(sup, prompt):
     return r
 
 
-def test_iteration_budget_exhaustion_holds_timed_out_through_the_real_worker_loop(tmp_path):
+def test_iteration_budget_exhaustion_holds_exhausted_through_the_real_worker_loop(tmp_path):
     """A tracked probe: `iterations=2`, one already spent (simulating a
     completed planning attempt via `iterations_used=1`, which also makes
     `_resuming_existing_run_dir()`/`_resume_point()` skip straight to
@@ -964,7 +964,7 @@ def test_iteration_budget_exhaustion_holds_timed_out_through_the_real_worker_loo
     iteration (spending the last unit of budget), the loop condition then
     reads false with the sole task still incomplete, and
     `_finish_tail_unverified` (this task's own new branch, checked ahead of
-    the ordinary `unverified` fallback) routes through `_finish_timed_out`
+    the ordinary `unverified` fallback) routes through `_finish_exhausted`
     -- task 010's B.3 path -- instead of ending `failed`/`unverified`.
     `reflect=True` here specifically so a reflect iteration that fired
     would be caught, exactly like Section F's own no-reflect node."""
@@ -988,12 +988,12 @@ def test_iteration_budget_exhaustion_holds_timed_out_through_the_real_worker_loo
 
     state = asyncio.run(asyncio.wait_for(sup.run_job(), 30.0))
 
-    assert state == "timed_out"
+    assert state == "exhausted"
     assert sup._budget_exhausted_tail is True, (
         "the plain out-of-budget worker-loop tail must set the C.1 flag "
         "_finish_tail_unverified reads")
     assert reflect_calls == [], (
-        "no reflect iteration may run on the way into the timed_out hold")
+        "no reflect iteration may run on the way into the exhausted hold")
 
     # The real worker iteration this last unit of budget bought DOES leave
     # an iteration directory behind (this is a genuine budget-exhaustion
@@ -1002,7 +1002,7 @@ def test_iteration_budget_exhaustion_holds_timed_out_through_the_real_worker_loo
     phases = [json.loads((d / "meta.json").read_text()).get("phase")
              for d in iterations_dir.glob("*")] if iterations_dir.exists() else []
     assert "reflect" not in phases, (
-        f"no reflect iteration may run on the way into the timed_out hold, "
+        f"no reflect iteration may run on the way into the exhausted hold, "
         f"got phases={phases!r}")
     # Exactly the one real worker iteration the remaining budget afforded
     # ran -- this is a genuine iteration-count exhaustion, not a fixture
@@ -1010,7 +1010,7 @@ def test_iteration_budget_exhaustion_holds_timed_out_through_the_real_worker_loo
     assert sup.iterations_used == 2
 
     status = sup.run.read_status()
-    assert status["state"] == "timed_out"
+    assert status["state"] == "exhausted"
     assert status["verdict"] is None
     assert status.get("pendingTerminalState") is None
     assert status.get("endedAt") is None, (
@@ -1022,7 +1022,7 @@ def test_iteration_budget_exhaustion_holds_timed_out_through_the_real_worker_loo
         "hold, not a disguised grace-review success")
 
     state_events = _events(sup.run, "state")
-    assert state_events[-1]["state"] == "timed_out"
+    assert state_events[-1]["state"] == "exhausted"
 
 
 # ===========================================================================
@@ -1076,7 +1076,7 @@ def _task012_review_rejects(reason):
     return handler
 
 
-def test_step_replans_own_check_exhausts_max_approaches_to_failed(tmp_path):
+def test_step_replans_own_check_exhausts_max_approaches_to_exhausted(tmp_path):
     """`_step_replan`'s OWN read of the live budget (docstring site 1).
 
     Reachable at this state only because the run already arrived at
@@ -1084,18 +1084,18 @@ def test_step_replans_own_check_exhausts_max_approaches_to_failed(tmp_path):
     moment (`_step_review`'s/`_step_verdict_gate`'s own approach-left
     edges both check `approach < self.cfg.max_approaches` before ever
     transitioning to `replan`; the worker stagnation guard's uncured
-    `stagnation_exhausted` edge, `loop.py:9584`, transitions to `replan`
-    with no approach check of its own at all, relying on `_step_replan`
-    to be the one that actually decides) -- a live `PATCH /config/budget`
-    lowering `maxApproaches` between that earlier decision and this
-    dispatch is exactly why two separate reads of one live field exist.
+    `stagnation_exhausted` edge transitions to `replan` with no approach
+    check of its own at all, relying on `_step_replan` to be the one that
+    actually decides) -- a live `PATCH /config/budget` lowering
+    `maxApproaches` between that earlier decision and this dispatch is
+    exactly why two separate reads of one live field exist.
     Seeded directly at `approach == max_approaches` (the post-PATCH
     shape), `_step_replan()` must read the CURRENT value, not one carried
     from whichever edge put the run in `replan`, and take `budget_or_
-    approach_exhausted` straight to the ordinary `failed` tail through
-    `_finish_tail_unverified()` -- never `_finish_timed_out()`, which is
-    what task 011's `_budget_exhausted_tail` flag would route it through
-    if this edge ever started setting it."""
+    approach_exhausted` to the `exhausted` hold (v0.36 requirement G.1:
+    `exhaustedBudget: approaches`, `verdict: null`) through
+    `_finish_tail_unverified()` -- the approach budget is a budget, so it
+    holds instead of ending the run `failed` (the 0.35 ending)."""
     sup = make_supervisor(tmp_path, run_id="task012-step-replan-exhausted",
                           max_approaches=2, approach=2)
 
@@ -1103,15 +1103,18 @@ def test_step_replans_own_check_exhausts_max_approaches_to_failed(tmp_path):
 
     assert outcome == ("tail",)
     assert sup._budget_exhausted_tail is False, (
-        "max_approaches exhaustion must never set the C.1 budget-boundary "
-        "flag -- it is a structural tail, not a budget one")
+        "approach exhaustion is not the iteration/time boundary flag; it "
+        "holds through its own `approaches` flag")
+    assert sup._approaches_exhausted_tail is True
 
     state = sup._finish_tail_unverified()
 
-    assert state == "failed"
+    assert state == "exhausted"
     status = sup.run.read_status()
-    assert status["state"] == "failed"
-    assert status["verdict"] == "unverified"
+    assert status["state"] == "exhausted"
+    assert status["exhaustedBudget"] == "approaches"
+    assert status["verdict"] is None
+    assert "endedAt" not in status or status["endedAt"] is None
 
 
 def test_review_post_rejection_tail_exhausts_max_approaches_to_failed(tmp_path):
@@ -1164,7 +1167,7 @@ def test_review_post_rejection_tail_exhausts_max_approaches_to_failed(tmp_path):
 # still reach `_finish("succeeded", ...)` -- loop.py's `_finish(self,
 # state, verdict, **fields)` (the one call site that decides `state` and
 # `verdict` together) -- exactly like an in-budget pass does: never the
-# `timed_out` hold task 010/011 built, and no resume-position marker
+# `exhausted` hold task 010/011 built, and no resume-position marker
 # (`review_deadline_unreviewed` / `_unreviewed_awaiting_resume`) either,
 # since review positively DID render a judgement this approach.
 # ===========================================================================
@@ -1219,7 +1222,7 @@ def test_a_passing_verdict_after_the_deadline_concludes_the_run_normally(tmp_pat
     iteration itself, the same boundary a real deadline expiring while
     review is already running would cross. Review still renders an
     ordinary `verified` verdict, and the run must still reach `succeeded`,
-    never the `timed_out` hold, and must leave no resume position behind.
+    never the `exhausted` hold, and must leave no resume position behind.
     """
     sup = make_supervisor(
         tmp_path, run_id="task013-passing-verdict-past-deadline",
@@ -1246,7 +1249,7 @@ def test_a_passing_verdict_after_the_deadline_concludes_the_run_normally(tmp_pat
         f"normally, got state={state!r}")
     status = sup.run.read_status()
     assert status["state"] == "succeeded"
-    assert status["state"] != "timed_out"
+    assert status["state"] != "exhausted"
     assert status["verdict"] in ("verified", "verified-with-residuals")
 
     # Never entered the hold: no pause reason, no terminal-write left
@@ -1272,7 +1275,7 @@ def test_a_passing_verdict_after_the_deadline_concludes_the_run_normally(tmp_pat
 # run's ending is chosen") was checked again for this sibling task and NOT
 # filed: `_finish(self, state, verdict, **fields)` (loop.py:3537) is still
 # the one call site that decides `state` and `verdict` together, reached
-# here through `_finish_tail_unverified` -> `_finish_timed_out` exactly as
+# here through `_finish_tail_unverified` -> `_finish_exhausted` exactly as
 # it is for the plain budget-exhaustion tail (task 011, C.1). Re-checked
 # again at cure-01-04's landing sha (01e6c2d5): still not filed -- the
 # call site moved (loop.py:3376 -> :3537, from intervening tasks 015-024
@@ -1295,7 +1298,7 @@ def test_a_passing_verdict_after_the_deadline_concludes_the_run_normally(tmp_pat
 # tail` sites, task 011) never runs its body -- the deadline is already
 # past -- and the freshly-inserted cure task is still `pending`, so
 # `_all_tasks_completed()` is False and `_maybe_grace_review` never even
-# attempts a second review: the run holds `timed_out` with the rejection's
+# attempts a second review: the run holds `exhausted` with the rejection's
 # findings and cure task intact on disk, exactly as requirement D.2 asks.
 # ===========================================================================
 
@@ -1342,7 +1345,7 @@ def test_a_rejecting_verdict_after_the_deadline_holds_the_run(tmp_path):
     still ordinarily in the future, so review is dispatched normally; the
     deadline is then pushed into the past from INSIDE the running review
     iteration itself. This time review renders a REJECTING verdict over
-    one blocking, curable finding -- the run must hold `timed_out` with a
+    one blocking, curable finding -- the run must hold `exhausted` with a
     null verdict, and the rejection's findings and the cure task it opened
     must both still be on disk, with the ordinary cure-pass counter exactly
     as it would read for an in-budget rejection.
@@ -1367,15 +1370,15 @@ def test_a_rejecting_verdict_after_the_deadline_holds_the_run(tmp_path):
     assert sup.budget_left() is False, (
         "precondition actually exercised: the deadline really is in the "
         "past by the time review renders its verdict")
-    assert state == "timed_out", (
+    assert state == "exhausted", (
         f"a rejecting verdict after the deadline must hold the run in "
         f"B.1's state, got state={state!r}")
     assert sup._budget_exhausted_tail is True, (
-        "the hold must reach TIMED_OUT_STATE through the same C.1 flag "
+        "the hold must reach EXHAUSTED_STATE through the same C.1 flag "
         "the plain budget-exhaustion tail sets, never a second freeze path")
 
     status = sup.run.read_status()
-    assert status["state"] == "timed_out"
+    assert status["state"] == "exhausted"
     assert status["verdict"] is None
     assert status.get("pendingTerminalState") is None
     assert status.get("endedAt") is None, "a held run has not ended"
@@ -1405,7 +1408,7 @@ def test_a_rejecting_verdict_after_the_deadline_holds_the_run(tmp_path):
     assert sup._cure_passes_for_approach(1) == 1
 
     state_events = _events(sup.run, "state")
-    assert state_events[-1]["state"] == "timed_out"
+    assert state_events[-1]["state"] == "exhausted"
 
 
 # ===========================================================================
@@ -1422,7 +1425,7 @@ def test_a_rejecting_verdict_after_the_deadline_holds_the_run(tmp_path):
 # This section is the NO-DISPATCH case: the boundary is ALREADY expired
 # when `_step_review` is entered, so requirement A.1 forbids starting a new
 # iteration at all -- no review hat process is launched, and the run holds
-# `timed_out` with a null verdict through the SAME shared freeze path
+# `exhausted` with a null verdict through the SAME shared freeze path
 # (`_budget_exhausted_tail` -> `_finish_tail_unverified` -> `_finish_timed_
 # out`, task 010/011's own C.1 path) every other `_step_*` boundary already
 # uses, never review's own `deadline during review` branch.
@@ -1441,7 +1444,7 @@ def test_no_new_review_iteration_starts_at_an_already_expired_boundary(
         tmp_path, boundary):
     """A supervisor entering `review` with its budget already spent
     dispatches NO review iteration (the scripted agent is never called at
-    all) and holds `timed_out` with a null verdict through the shared C.1
+    all) and holds `exhausted` with a null verdict through the shared C.1
     freeze path.
 
     Episode 1 is Section C's own resume shape (plan, worker COMPLETE,
@@ -1500,21 +1503,21 @@ def test_no_new_review_iteration_starts_at_an_already_expired_boundary(
     assert len(read_events(root, types=("iteration.start",))) == iterations_before
     assert state != "succeeded"
 
-    # 2. ... and the run held `timed_out` with a null verdict.
-    assert state == "timed_out"
+    # 2. ... and the run held `exhausted` with a null verdict.
+    assert state == "exhausted"
     status = sup2.run.read_status()
-    assert status["state"] == "timed_out"
+    assert status["state"] == "exhausted"
     assert status["verdict"] is None
     assert status.get("endedAt") is None, "a held run has not ended"
     assert status.get("pendingTerminalState") is None
 
     # 3. ... through the SHARED freeze path (task 011's own C.1 flag into
-    # `_finish_timed_out`), never review's own deadline-during-review
+    # `_finish_exhausted`), never review's own deadline-during-review
     # branch and never a second freeze implementation.
     assert sup2._budget_exhausted_tail is True
     assert sup2._review_deadline_unreviewed is False
     assert status["reason"] != "deadline during review"
-    assert _events(sup2.run, "state")[-1]["state"] == "timed_out"
+    assert _events(sup2.run, "state")[-1]["state"] == "exhausted"
 
 
 # ===========================================================================
@@ -1533,12 +1536,12 @@ def test_no_new_review_iteration_starts_at_an_already_expired_boundary(
 # input_needed` gate (condition 1: no cure pass available, no ruling, no
 # repeated signature) after the deadline already passed while review ran
 # therefore stayed `state: "paused"`, process alive, blocked indefinitely
-# on `self._pause` -- never `timed_out`, never exited, straight against
+# on `self._pause` -- never `exhausted`, never exited, straight against
 # operator ruling 3 ("it persists where it stopped and exits") and D.2
 # ("holds the run in B.1's state"). `_step_paused` now checks `budget_
 # left()` before the park and holds through the shared C.1 freeze path
 # instead -- see its own docstring. The two probes below pin the SAME two
-# ends -- broken before the fix, `timed_out`/null verdict/durable findings
+# ends -- broken before the fix, `exhausted`/null verdict/durable findings
 # after -- by driving the real `_step_paused` code path, never a stub.
 #
 # D.1 -- peer-verdict gate: NOT resolved the same way, and this is the one
@@ -1565,7 +1568,7 @@ def test_no_new_review_iteration_starts_at_an_already_expired_boundary(
 # wave, and task 011 before it, hold as absolute). Per this task's own
 # instructions, that is reported as a petition rather than silently
 # resolved either way; the THIRD and FOURTH probes below pin the behaviour
-# the petition leaves in place -- the run holds `timed_out` with a null
+# the petition leaves in place -- the run holds `exhausted` with a null
 # verdict, exactly like an ordinary out-of-budget tail, and peer
 # verification is DEFERRED rather than lost: a resumed run with a fresh
 # window does genuinely reach `verdict_gate` and render the peer's own
@@ -1574,7 +1577,7 @@ def test_no_new_review_iteration_starts_at_an_already_expired_boundary(
 # HOW it gets there is measured by the fourth probe rather than assumed,
 # and it is NOT "the still-pending `verdict_gate` step is resumed" (the
 # first attempt at this task asserted that in prose and it is false:
-# `_finish_timed_out` writes `phase=None`, and no `_resume_point()` bucket
+# `_finish_exhausted` writes `phase=None`, and no `_resume_point()` bucket
 # claims a held-at-the-gate run, so `_resume_point()` returns the ordinary
 # `(approach, skip_planning=True, ENTRY_STATE)` default -- measured as
 # `(1, True, "planning")`). The route it actually takes, end to end, is:
@@ -1630,7 +1633,7 @@ def test_operator_input_gate_rejection_after_the_deadline_holds_never_parks(tmp_
     finding cannot take the cure-pass edge and instead reaches the plain,
     unbudgeted `operator_input_needed` gate (condition 1) -- the exact
     branch that used to park `_step_paused` indefinitely, unconditioned on
-    the clock, rather than holding `timed_out`.
+    the clock, rather than holding `exhausted`.
     """
     sup = make_supervisor(
         tmp_path, run_id="cure0104-operator-gate-rejecting-past-deadline",
@@ -1651,13 +1654,13 @@ def test_operator_input_gate_rejection_after_the_deadline_holds_never_parks(tmp_
     state = asyncio.run(asyncio.wait_for(sup.run_job(), 5.0))
 
     assert sup.budget_left() is False
-    assert state == "timed_out", (
+    assert state == "exhausted", (
         "an operator-input-gate rejection after the deadline must hold the "
         f"run in B.1's state, never park in `paused`, got state={state!r}")
     assert sup._budget_exhausted_tail is True
 
     status = sup.run.read_status()
-    assert status["state"] == "timed_out"
+    assert status["state"] == "exhausted"
     assert status["verdict"] is None
     assert status.get("pendingTerminalState") is None
     assert status.get("endedAt") is None, "a held run has not ended"
@@ -1674,7 +1677,7 @@ def test_operator_input_gate_pause_still_parks_normally_in_budget(tmp_path):
     before -- an operator answering `ralphctl rule`/`POST /resume` while
     the process is still alive and the window is not spent must still
     work. Resumes immediately (this test's own runner releases the gate
-    right away) and finishes normally, never `timed_out`.
+    right away) and finishes normally, never `exhausted`.
     """
     sup = make_supervisor(
         tmp_path, run_id="cure0104-operator-gate-in-budget-pause",
@@ -1748,7 +1751,7 @@ def test_operator_input_gate_pause_still_parks_normally_in_budget(tmp_path):
 # `test_peer_verdict_gate_hold_resumes_and_the_peer_gate_still_renders_a_
 # verdict`) pinned the CONFIRMED contradiction petition above as the
 # behaviour it left standing: a peer-gate-on post-deadline PASSING verdict
-# held `timed_out` with a null verdict, and the peer gate itself only ever
+# held `exhausted` with a null verdict, and the peer gate itself only ever
 # ran on a resumed episode with a fresh window. PRD requirement H.5 (task
 # 027, #264) grants the way out that did not exist when this task filed
 # that petition -- see the "Section Jc" comment block above, whose
@@ -1777,7 +1780,7 @@ def test_operator_input_gate_pause_still_parks_normally_in_budget(tmp_path):
 
 # ===========================================================================
 # Section K -- task 017 (v0.24 requirement F.1, #169): a bare `ralphctl
-# resume` grants a held (`timed_out`) run a fresh full window.
+# resume` grants a held (`exhausted`) run a fresh full window.
 #
 # The PRD (F.1) is explicit that no engine code changes here: `self.deadline`
 # / `self._deadline_epoch` are computed once, unconditionally, in
@@ -1803,15 +1806,15 @@ def _task017_status_with_stale_deadline(state: str, *, approach: int = 1) -> dic
            "deadlineAt": "2020-01-01T00:00:00+00:00"}
 
 
-def test_bare_resume_of_a_timed_out_run_grants_a_fresh_full_window(tmp_path):
+def test_bare_resume_of_a_exhausted_run_grants_a_fresh_full_window(tmp_path):
     job_timeout_s = 100
     before_monotonic = real_time.monotonic()
     before_epoch = real_time.time()
 
     sup = make_supervisor(
-        tmp_path, run_id="task017-timedout-fresh-window",
+        tmp_path, run_id="task017-exhausted-fresh-window",
         job_timeout_s=job_timeout_s,
-        status=_task017_status_with_stale_deadline("timed_out"))
+        status=_task017_status_with_stale_deadline("exhausted"))
 
     # A full job_timeout_s from THIS engine start -- not from the stale,
     # already-past `deadlineAt` the held run dir carried on disk.
@@ -1829,7 +1832,7 @@ def test_bare_resume_of_any_other_state_is_unaffected_still_gets_a_fresh_window(
         tmp_path, state):
     """The control: F.1 adds nothing new for `failed`/`succeeded`/`aborted`/
     `paused` -- a bare resume of any of these keeps today's exact behaviour,
-    which is the SAME unconditional fresh-window construction `timed_out`
+    which is the SAME unconditional fresh-window construction `exhausted`
     now relies on too (there is no per-state branch to add or remove)."""
     job_timeout_s = 100
     before_monotonic = real_time.monotonic()
@@ -1863,7 +1866,7 @@ def _task017_reviews_verified():
     return handler
 
 
-def test_resumed_timed_out_run_continues_at_the_task_and_iteration_it_stopped_at(
+def test_resumed_exhausted_run_continues_at_the_task_and_iteration_it_stopped_at(
         tmp_path):
     """A held run dir with T1 already `completed` and one iteration already
     recorded must resume straight into `worker` over T2 -- never replanning
@@ -1871,9 +1874,9 @@ def test_resumed_timed_out_run_continues_at_the_task_and_iteration_it_stopped_at
     (the worker script below only ever answers for T2; a re-ask for T1 would
     raise `StopIteration` from the exhausted script)."""
     sup = make_supervisor(
-        tmp_path, run_id="task017-timedout-continues", job_timeout_s=100,
+        tmp_path, run_id="task017-exhausted-continues", job_timeout_s=100,
         prd=True, iterations_used=1,
-        status=_task017_status_with_stale_deadline("timed_out", approach=1),
+        status=_task017_status_with_stale_deadline("exhausted", approach=1),
         tasks=[
             {"id": "T1", "title": "already done", "successCriteria": "done",
              "status": "completed"},

@@ -198,7 +198,7 @@ def test_v09_iteration_185_regression_reflect_past_the_deadline_still_reports(
     a real report.
 
     Task 011 (v0.24 requirement C.1, #169) repointed that exact guard at
-    `_finish_timed_out()` -- a hold, not a terminal outcome, so no reflect
+    `_finish_exhausted()` -- a hold, not a terminal outcome, so no reflect
     iteration follows it at all now (by design, task 010, requirement
     B.3). A pre-recorded operator abort (`self._abort_reason` set before
     `run_job()`) is layered on top so this scenario still lands on an
@@ -212,8 +212,8 @@ def test_v09_iteration_185_regression_reflect_past_the_deadline_still_reports(
     # Task 011 (v0.24 requirement C.1, #169) changed what the SAME
     # `_step_planning` guard this reproduction exploits (a deadline
     # already gone before the job even starts) now does: it holds
-    # `timed_out` through `_finish_timed_out()` instead of ending the run
-    # -- and `_finish_timed_out()` is deliberately NOT a terminal outcome
+    # `exhausted` through `_finish_exhausted()` instead of ending the run
+    # -- and `_finish_exhausted()` is deliberately NOT a terminal outcome
     # (task 010, requirement B.3), so no reflect iteration follows it at
     # all, by design. To keep reproducing the actual v0.9 regression
     # (reflect still gets a real, unstarved attempt once the deadline is

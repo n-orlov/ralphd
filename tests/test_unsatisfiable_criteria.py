@@ -369,14 +369,14 @@ def test_a_report_with_no_reason_is_a_contract_violation_with_the_move_still_ref
 
     # agent-fault continuation, NEVER a contract-violation abort: no
     # `_abort_reason`, no "contract violation" log message. Task 011
-    # (v0.24 requirement C.1, #169): the run ends `timed_out`/`verdict:
+    # (v0.24 requirement C.1, #169): the run ends `exhausted`/`verdict:
     # null` (budget genuinely exhausted, the plain shape) through the
-    # same `_finish_timed_out()` path task 010 established, never
+    # same `_finish_exhausted()` path task 010 established, never
     # `"failed"`/`"aborted"`.
     assert sup._abort_reason is None
     msgs = _log_messages(root)
     assert "contract violation" not in msgs
-    assert state == "timed_out", sup.run.read_status()
+    assert state == "exhausted", sup.run.read_status()
     assert sup.run.read_status()["verdict"] is None
 
 

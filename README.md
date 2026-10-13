@@ -103,8 +103,9 @@ approach 1..max_approaches (shared iteration budget)
 budget or approaches exhausted -> job fails (state preserved)
 ```
 
-Run states are `starting`, `running`, `paused`, `finishing` and `timed_out`
-(non-terminal; a paused or timed-out run waits for the operator and can be resumed),
+Run states are `starting`, `running`, `paused`, `finishing` and `exhausted`
+(non-terminal; a paused run waits for the operator, an exhausted run names the
+budget it spent -- iterations, time or approaches -- and resumes with a top-up of it),
 then `succeeded`, `failed` or `aborted`. Optional gates: `--peer-plan-review`,
 `--peer-verdict-gate`, `--mid-plan-review`, and `--reflect` for a post-mortem
 iteration. By default a rejection that would archive the approach pauses the run for an

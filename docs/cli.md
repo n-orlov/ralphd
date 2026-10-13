@@ -400,7 +400,7 @@ a missing/invalid docker socket with `--allow-docker`).
 List all runs (live and historical) from the registry, **newest first**.
 
 ```
-ralphctl runs [--state starting|running|paused|finishing|timed_out|succeeded|failed|aborted]
+ralphctl runs [--state starting|running|paused|finishing|exhausted|succeeded|failed|aborted]
               [--sort runId|state|verdict|phase|approach|tasks|iterationsUsed|startedAt|cost]
               [--reverse]
 ```
@@ -409,6 +409,13 @@ ralphctl runs [--state starting|running|paused|finishing|timed_out|succeeded|fai
 dir can hold, `starting` included — and not a constrained choice set: an
 unrecognised value simply matches nothing (exit `0`, empty table), whereas an
 unrecognised `--sort` key is a usage error (exit `2`, below).
+
+A run that spent a budget is `exhausted`, and the state column names it:
+`exhausted (iterations)`, `exhausted (time)` or `exhausted (approaches)` (the
+`--json` rows carry `exhaustedBudget` beside the rendered `stateDisplay`).
+`ralphctl status` prints the same text on its `state:` line, and the hub run
+list and run page show it too. `ralphctl resume` leaves the hold only with a
+top-up of that budget, see below.
 
 Columns: run ID, state, verdict, phase, approach, tasks, iterations
 used/budget, started (absolute local time via the shared formatter, see
@@ -2397,9 +2404,9 @@ Terminate the job (state `aborted`, honors on-complete mode).
 
 Shut down an **idle finished** container (calls `/shutdown`, then `docker rm`).
 For a running job, refuses with exit `5` — use `abort` first, or `--force` to
-abort+stop in one step. A `timed_out` run (the deadline hold, v0.24
-requirement B.1) is accepted with no `--force` and no `abort`, exactly as a
-stopped run in a terminal state is: the hold means the deadline expired and the
+abort+stop in one step. An `exhausted` run (the budget hold, v0.36
+requirement G) is accepted with no `--force` and no `abort`, exactly as a
+stopped run in a terminal state is: the hold means a budget ran out and the
 iteration in flight already finished, so there is nothing live to interrupt.
 Run dir is never deleted by `stop`.
 
@@ -2420,8 +2427,8 @@ label discipline is the same one `stop` uses.
 
 `--force` is a shortcut past a **stale** container, not a way to kill live work:
 it deletes only when the run's recorded state is terminal (`succeeded`,
-`failed`, `aborted`) **or `finishing`** (task 014, #56) **or `timed_out`**
-(v0.24 requirement B.1 — the deadline hold has no iteration in flight at all,
+`failed`, `aborted`) **or `finishing`** (task 014, #56) **or `exhausted`**
+(v0.36 requirement G — the budget hold has no iteration in flight at all,
 so it is accepted like a stopped run; plain `rm` gives it no refusal of its own
 either, only the generic container-still-exists one). Anything else —
 `starting`/`running`, an unrecognized state, or a `status.json` that is
@@ -3093,6 +3100,27 @@ continues the job instead of re-planning; `resume` just has to reproduce
   `env-wiring.json`) resumes exactly as before — no error, no extra `-e`
   flags. `resume` has no override flags of its own for these yet; only the
   recorded values are replayed.
+
+**An `exhausted` run needs a top-up of the budget it names (v0.36 requirement
+G).** When a run spends its iteration budget, its job deadline or its approach
+budget it holds in the non-terminal `exhausted` state (`verdict: null`,
+`exhaustedBudget` = `iterations`, `time` or `approaches`). `resume` refuses it
+without a top-up of that budget, exits `2` and prints the budget and the exact
+command:
+
+```console
+$ ralphctl resume my-run
+ralphctl: resume refused -- exhausted: approaches 3/3 — ralphctl resume my-run --approaches +1
+```
+
+The named flag is `--iterations` for `iterations`, `--timeout` for `time` and
+`--approaches` for `approaches`. Any other top-up passed alongside is still
+applied to `job.yaml`, so after `resume my-run --iterations +5` on an
+approaches hold the next resume needs only `--approaches +1`. With the top-up
+the run continues where it held: at the step it held at for `iterations` and
+`time`, at the replan on the next approach number for `approaches`. A run
+directory written by 0.35 and recorded `timed_out` reads as `exhausted` (the
+budget is taken from its recorded reason) and resumes the same way.
 
 `--iterations +10` adds 10 to the *effective* budget -- `max(status.json's
 iterationsBudget, job.yaml's iterations)`, the same number the engine's own

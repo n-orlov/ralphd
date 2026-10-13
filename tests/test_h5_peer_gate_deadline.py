@@ -2,7 +2,7 @@
 contradiction petition cure-01-04): with `peer_verdict_gate` enabled, a
 post-deadline PASSING review verdict must reach a decisive conclusion
 without dispatching a new iteration past the boundary, instead of holding
-`timed_out` with a null verdict the way v0.24 shipped it.
+`exhausted` with a null verdict the way v0.24 shipped it.
 
 v0.24's own two D.1 probes -- `tests/test_deadline.py::
 test_peer_verdict_gate_verified_review_after_the_deadline_holds_pending_the_gate`
@@ -94,7 +94,7 @@ def test_peer_gate_on_post_deadline_pass_concludes_instead_of_holding(tmp_path):
     (`test_peer_verdict_gate_verified_review_after_the_deadline_holds_
     pending_the_gate`): same fixture shape (`peer_verdict_gate=True`,
     review renders `verified` after the deadline expired mid-flight), but
-    the run must now conclude `succeeded` -- never `timed_out` -- with the
+    the run must now conclude `succeeded` -- never `exhausted` -- with the
     peer gate's own handler never called (deferred, not rubber-stamped),
     and a named residual disclosing exactly that in the terminal record.
     """
@@ -173,7 +173,7 @@ def test_peer_gate_on_post_deadline_rejection_still_holds_unchanged(tmp_path):
     branch of `_step_review` (`transitions.py`'s own comment: "this check
     runs entirely on the VERIFIED branch, ahead of the peer verdict gate
     itself"), so a REJECTING post-deadline verdict must be completely
-    unaffected by the gate being on: still `timed_out`, still a null
+    unaffected by the gate being on: still `exhausted`, still a null
     verdict, still the rejection's findings and cure task intact on disk.
     """
     sup = make_supervisor(
@@ -194,13 +194,13 @@ def test_peer_gate_on_post_deadline_rejection_still_holds_unchanged(tmp_path):
     state = asyncio.run(asyncio.wait_for(sup.run_job(), 30.0))
 
     assert sup.budget_left() is False
-    assert state == "timed_out", (
+    assert state == "exhausted", (
         "a rejecting verdict after the deadline must hold the run in "
         f"B.1's state, unchanged by the peer gate being on, got state={state!r}")
     assert sup._budget_exhausted_tail is True
 
     status = sup.run.read_status()
-    assert status["state"] == "timed_out"
+    assert status["state"] == "exhausted"
     assert status["verdict"] is None
     assert status.get("pendingTerminalState") is None
     assert status.get("endedAt") is None, "a held run has not ended"

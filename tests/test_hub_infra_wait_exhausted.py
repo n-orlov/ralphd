@@ -2,12 +2,12 @@
 promoted into the tree.
 
 `app.js`'s `renderInfraWait` had a hardcoded `TERMINAL_STATES` tuple
-(`["succeeded", "failed", "aborted"]`) that never grew a `timed_out` entry --
-so a HELD run (`state: "timed_out"`, `health: "degraded"`, `infraWait: null`,
+(`["succeeded", "failed", "aborted"]`) that never grew a `exhausted` entry --
+so a HELD run (`state: "exhausted"`, `health: "degraded"`, `infraWait: null`,
 task 008's deadline/budget hold) fell through into the generic "a retry
 attempt is running, no backoff wait pending" sentence, which is exactly
 backwards: nothing is running, the hold is why nothing is happening.
-Membership-only tests (`test_timed_out_state.py`'s tuple checks) cannot catch
+Membership-only tests (`test_exhausted_state.py`'s tuple checks) cannot catch
 this -- the tuple itself is untouched; only the *fallback* that fires when a
 state is absent from it changed shape. This module instead loads the actual
 clone's `app.js`, extracts `renderInfraWait`'s real source and evaluates it
@@ -67,19 +67,23 @@ console.log(JSON.stringify({ nodes, degraded: addedClasses.indexOf('degraded') !
 
 
 def test_hub_does_not_describe_held_degraded_run_as_retry_running():
-    """B.1/DoD 3: `timed_out` + `health: degraded` + `infraWait: null` is the
+    """B.1/DoD 3: `exhausted` + `health: degraded` + `infraWait: null` is the
     HOLD -- no retry attempt is running, no backoff wait is pending, and the
     card must say so, never the generic "a retry attempt is running" line
     the running-outage branch owns.
     """
     _, out = _render({
-        "state": "timed_out", "health": "degraded", "infraWait": None,
+        "state": "exhausted", "exhaustedBudget": "time",
+        "health": "degraded", "infraWait": None,
         "reason": "deadline reached mid-iteration",
     })
     payload = json.loads(out)
     nodes_text = json.dumps(payload["nodes"])
     assert "retry attempt is running" not in nodes_text
-    assert "held" in nodes_text.lower()
+    # v0.36 requirement G.4: the hold names its budget; the 0.24 label
+    # "held at the deadline" no longer exists.
+    assert "exhausted (time)" in nodes_text
+    assert "held at the deadline" not in nodes_text
     assert "deadline reached mid-iteration" in nodes_text
     # health=degraded still gets the degraded treatment (the card itself)
     assert payload["degraded"] is True
@@ -88,10 +92,11 @@ def test_hub_does_not_describe_held_degraded_run_as_retry_running():
 
 
 def test_held_run_with_no_reason_still_reads_as_held_not_retrying():
-    _, out = _render({"state": "timed_out", "health": "degraded", "infraWait": None})
+    _, out = _render({"state": "exhausted", "exhaustedBudget": "approaches",
+                      "health": "degraded", "infraWait": None})
     nodes_text = json.dumps(json.loads(out)["nodes"])
     assert "retry attempt is running" not in nodes_text
-    assert "held" in nodes_text.lower()
+    assert "exhausted (approaches)" in nodes_text
 
 
 def test_running_outage_between_attempts_keeps_its_existing_wording():
@@ -119,13 +124,13 @@ def test_terminal_degraded_run_still_quotes_its_own_terminal_reason():
     assert "held at the deadline" not in nodes_text
 
 
-def test_timed_out_stays_outside_the_terminal_tuple():
+def test_exhausted_stays_outside_the_terminal_tuple():
     """The membership half, kept alongside the rendering probe so a future
-    edit that folds `timed_out` INTO the hardcoded terminal tuple (instead
+    edit that folds `exhausted` INTO the hardcoded terminal tuple (instead
     of giving it its own branch) is caught here too, not only in
-    test_timed_out_state.py.
+    test_exhausted_state.py.
     """
     source = APP_JS.read_text()
     body = source[source.index("function renderInfraWait("):source.index("\nfunction nextAttemptText(")]
     tuple_line = next(line for line in body.splitlines() if "TERMINAL_STATES = [" in line)
-    assert "timed_out" not in tuple_line
+    assert "exhausted" not in tuple_line

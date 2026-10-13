@@ -46,7 +46,7 @@ def test_fresh_run_opens_with_a_running_state_event(engine_factory):
 def test_resume_appends_a_running_state_event_after_the_stale_terminal_marker(
         engine_factory):
     """The real scenario: process 1 exhausts its budget and records a
-    `timed_out` state event (task 011, v0.24 requirement C.1, #169 --
+    `exhausted` state event (task 011, v0.24 requirement C.1, #169 --
     the plain out-of-budget shape); process 2 (same run dir, bumped
     budget -- what `ralphctl resume` does) must append a `running` state
     event with a higher id, so the historical marker is no longer the
@@ -55,10 +55,10 @@ def test_resume_appends_a_running_state_event_after_the_stale_terminal_marker(
                              "max_approaches": 1},
                         stub_env={"STUB_TASKS": "5"})
     assert wait_engine_exit(e1, timeout=60) == 1
-    assert json.loads((e1.run_dir / "status.json").read_text())["state"] == "timed_out"
+    assert json.loads((e1.run_dir / "status.json").read_text())["state"] == "exhausted"
 
     first_episode = _state_events(e1.run_dir)
-    assert [ev["state"] for ev in first_episode] == ["running", "timed_out"]
+    assert [ev["state"] for ev in first_episode] == ["running", "exhausted"]
     stale_marker = first_episode[-1]
 
     e2 = engine_factory(job={"on_complete": "exit", "iterations": 20,
@@ -69,7 +69,7 @@ def test_resume_appends_a_running_state_event_after_the_stale_terminal_marker(
 
     states = _state_events(e2.run_dir)
     assert [ev["state"] for ev in states] == [
-        "running", "timed_out", "running", "succeeded"]
+        "running", "exhausted", "running", "succeeded"]
     resumed_event = states[2]
     assert resumed_event["resumed"] is True, "the second process knows it resumed"
     assert resumed_event["id"] > stale_marker["id"], (

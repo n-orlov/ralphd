@@ -76,7 +76,7 @@ from ..engine.state import (
     run_timing,
     NO_ARTIFACTS,
     NO_ROUTER_CALLS,
-    NONTERMINAL_STATES,
+    LOADABLE_NONTERMINAL_STATES,
     STEERING_APPLIED,
     STEERING_PENDING,
     TASK_BLOCKED_FIELD,
@@ -99,6 +99,8 @@ from ..engine.state import (
     cost_breakdown,
     cost_breakdown_text,
     escalation_pause_markers,
+    exhausted_budget_of,
+    format_state_display,
     fault_explanation,
     fault_text,
     format_approach,
@@ -234,11 +236,11 @@ API_PROBE_TIMEOUT_S = 0.3
 DELETE_REFUSED_ACTIVE = ("run is still active (state: {state}) — abort or stop "
                          "it first")
 # Task 013 (#56): the `finishing` window (engine/state.py's
-# NONTERMINAL_STATES) is NOT "still working the plan" -- the verdict is
+# LOADABLE_NONTERMINAL_STATES) is NOT "still working the plan" -- the verdict is
 # already settled and on disk, only the post-terminal reflect iteration is
 # still unwinding. `DELETE_REFUSED_ACTIVE`'s "abort or stop it first" is the
 # wrong instruction here (there is nothing left to abort), so this state gets
-# its own sentence, checked BEFORE the generic NONTERMINAL_STATES branch in
+# its own sentence, checked BEFORE the generic LOADABLE_NONTERMINAL_STATES branch in
 # `deletion_refusal` -- one constant, read by both the endpoint's 409 and
 # `deletion_fields`' disabled button, so they can never say two different
 # things about the same refusal.
@@ -326,7 +328,7 @@ def _api_reachable(reg: Path, run_id: str, timeout: float = API_PROBE_TIMEOUT_S)
 
 def container_gone(status: dict, api_reachable: bool) -> bool:
     """Task 024 (#8): the hub's form of the zombie condition -- status.json
-    still records a non-terminal state (`NONTERMINAL_STATES`, the same set
+    still records a non-terminal state (`LOADABLE_NONTERMINAL_STATES`, the same set
     `ralphctl status`/`doctor`/`repair` use) while the run's API does not
     answer. The engine never got to write a terminal state, so without this
     the hub renders such a run EXACTLY like a healthy running one.
@@ -336,7 +338,7 @@ def container_gone(status: dict, api_reachable: bool) -> bool:
     so the UI wording says "appears gone" and points at `ralphctl repair` for
     the authoritative diagnosis instead of claiming certainty it lacks.
     """
-    return not api_reachable and status.get("state") in NONTERMINAL_STATES
+    return not api_reachable and status.get("state") in LOADABLE_NONTERMINAL_STATES
 
 
 def _row_tasks(run_dir: Path) -> dict:
@@ -413,6 +415,11 @@ def run_list(reg: Path) -> list[dict]:
                 # only (no proxy call), the same discipline `_row_tasks`
                 # below already follows.
                 **escalation_pause_markers(d, status),
+                # v0.36 requirement G.4: the budget an `exhausted` hold ran
+                # out of and the `exhausted (<budget>)` text, the same
+                # facts `ralphctl runs` carries.
+                "exhaustedBudget": exhausted_budget_of(status),
+                "stateDisplay": format_state_display(status),
                 # Task 008 (#16): the raw counter stays exactly as it was (the
                 # hub sorts the APPROACH column numerically on it) and the
                 # denominator travels alongside it, rendered once here by the
@@ -438,7 +445,7 @@ def run_list(reg: Path) -> list[dict]:
                 # read each -- see `_row_tasks`.
                 **_row_tasks(d),
             })
-    maybe_zombies = [r for r in rows if r["state"] in NONTERMINAL_STATES]
+    maybe_zombies = [r for r in rows if r["state"] in LOADABLE_NONTERMINAL_STATES]
     if maybe_zombies:
         with ThreadPoolExecutor(max_workers=min(8, len(maybe_zombies))) as pool:
             for row, reachable in zip(
@@ -1606,6 +1613,7 @@ def _with_pause_markers(doc: dict, run_dir: Path) -> dict:
     return {
         **doc,
         **escalation_pause_markers(run_dir, doc),
+        "stateDisplay": format_state_display(doc),
     }
 
 
@@ -2274,8 +2282,9 @@ def current_iteration_panel(status: dict, iterations: list, tasks: dict,
         elif state == "paused":
             reason = status.get("pauseReason")
             text = "no iteration running — paused" + (f" ({reason})" if reason else "")
-        elif state == "timed_out":
-            text = "no iteration running — timed out (resumable hold)"
+        elif state in ("exhausted", "timed_out"):
+            text = ("no iteration running — "
+                    f"{format_state_display(status)} (resumable hold)")
         elif deferred and not any(
                 isinstance(t, dict) and t.get("status") in ("pending", "in-progress")
                 and not any(d["taskId"] == t.get("id") for d in deferred)
@@ -2627,13 +2636,13 @@ def deletion_refusal(status: dict) -> str | None:
     state = status.get("state")
     if state in TERMINAL_STATES:
         return None
-    # Task 013 (#56): checked before the generic NONTERMINAL_STATES branch --
+    # Task 013 (#56): checked before the generic LOADABLE_NONTERMINAL_STATES branch --
     # `finishing` gets its own wording (settled verdict, unwinding reflect),
     # not the "abort or stop it first" instruction that applies to a run
     # still actively working the plan.
     if state == "finishing":
         return DELETE_REFUSED_FINISHING
-    if state in NONTERMINAL_STATES:
+    if state in LOADABLE_NONTERMINAL_STATES:
         return DELETE_REFUSED_ACTIVE.format(state=state)
     return DELETE_REFUSED_UNKNOWN.format(
         state=state if isinstance(state, str) and state else UNKNOWN_STATE)

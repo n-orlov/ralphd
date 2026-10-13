@@ -64,7 +64,7 @@ def test_hook_nonzero_exit_logged_but_state_verdict_and_exit_code_unaffected(
         engine_factory, tmp_path):
     # Task 011/cure-01-02 (v0.24 requirement B.3/C.1, #169): this node used
     # to force the job itself to fail (STUB_TASKS=5 with iterations=2), but
-    # that plain out-of-budget ending now HOLDS (`timed_out`/verdict null)
+    # that plain out-of-budget ending now HOLDS (`exhausted`/verdict null)
     # rather than reaching a real terminal state -- and B.3/operator ruling
     # 3 forbid running `on_complete_cmd` at all on a hold (see
     # `test_hold_does_not_run_completion_hook` below). So this node now
@@ -96,7 +96,7 @@ def test_hook_nonzero_exit_logged_but_state_verdict_and_exit_code_unaffected(
 
 def test_hold_does_not_run_completion_hook(engine_factory, tmp_path):
     """B.3/operator ruling 3 (v0.24, #169, cure-01-02): a real engine that
-    enters `timed_out` (the hold) must skip `on_complete_cmd` entirely --
+    enters `exhausted` (the hold) must skip `on_complete_cmd` entirely --
     running the operator's completion hook on a hold would falsely tell it
     the job is over -- and must exit through its ordinary shutdown cleanup
     (release the protected dirs, close the lock, return) even with
@@ -109,8 +109,8 @@ def test_hold_does_not_run_completion_hook(engine_factory, tmp_path):
                             "on_complete": "idle",
                             "max_approaches": 1, "iterations": 2},
                        stub_env={"STUB_TASKS": "5"})
-    status = e.wait_state(("timed_out",), timeout=30)
-    assert status["state"] == "timed_out"
+    status = e.wait_state(("exhausted",), timeout=30)
+    assert status["state"] == "exhausted"
     assert status["verdict"] is None
 
     # `on_complete: idle` would ordinarily keep the process alive waiting on

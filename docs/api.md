@@ -89,7 +89,7 @@ The one-call summary. Response:
   "engineVersion": "0.21.0",       // the running engine's own ralphd.__version__, written every process start (v0.21 requirement F.4, task 030), drift or not
   "workspaceVersion": "0.20.9",    // present whenever the workspace's own __version__ literal is readable, matching or not (v0.21 requirement G.3, task 035); absent only when the workspace names no version at all
   "schemaVersion": 1,              // run-dir schema this state was written under
-  "state": "running",              // starting|running|paused|finishing|timed_out|succeeded|failed|aborted
+  "state": "running",              // starting|running|paused|finishing|exhausted|succeeded|failed|aborted
   "phase": "worker",               // planning|worker|verify|review|null; never "paused"
   "pauseReason": null,             // why an ENGINE-recorded pause is held, task 036; null unless `state` is `paused`
   "pauseDetail": null,             // the pause's sub-reason (a provider refusal, the rate-limit ceiling); null otherwise
@@ -107,8 +107,9 @@ The one-call summary. Response:
   "iterationsBudget": 50,
   "iterationsUsed": 7,
   "iterationsRefunded": {"infra": 2, "steer": 0, "adjudication": 0},  // earned refunds; survives a resume
-  "verdict": null,                 // "verified" | "verified-with-residuals" | "unverified" | "unreviewed" | null while running -- also null for a non-terminal `timed_out` hold (v0.24 requirement B.3, #169); settled (non-null, or the `timed_out` null) once `state` leaves `running`/`worker` for a hold or reaches `finishing`, task 012/#56; "verified-with-residuals" (requirement D.3) is a review VERIFIED verdict whose structured findings channel still carries one or more `severity: "residual"` entries; "unreviewed" is the narrower negative for an approach whose judging never produced a verdict, written in exactly three cases, all reached only when the iteration budget or the deadline is also exhausted at that point: (a) review never rendered a judgement at all -- review's own contract ladder exhausted with no readable verdict claim out of the hat (#209 defect 2, `reason`: "review never produced a parseable contract payload; no verdict was ever scored"); (b) review DID render `verified` (its `approach.verdict_recorded` entry stays `verified`), but the peer verdict gate produced no verdict on its first attempt or on any `judge_retry_max` retry (#300, `reason` names the gate: "verdict_gate: no verdict: output truncated, ..." or "no verdict: empty reply"), so `gateRejectionEnding` reads "no_verdict_output_truncated" and no `rejected` is recorded -- with budget left that case parks `operator_input_needed` (`pauseDetail.reason`: "judge_no_verdict") instead; (c) the review hat itself produced no verdict -- `stopReason: length` with no text, or its contract ladder exhausted on empty replies -- on its first attempt and on every `judge_retry_max` retry (#300, `reason` names review: "review: no verdict: output truncated, ..." or "review: no verdict: empty reply"), nothing is recorded for the approach (no `approach.verdict_recorded`) and `gateRejectionEnding` reads "no_verdict_output_truncated"; with budget left it parks on the same `operator_input_needed` / "judge_no_verdict" pause with `pauseDetail.hat: "review"`. A deadline landing mid-review (self-loop exhaustion) carries `null` instead (v0.24 requirement B.2, #169, `reason`: "deadline during review"), not "unreviewed" -- the run holds `timed_out` and stays resumable. No writer overrides an operator abort, which keeps "unverified" -- SPEC.md §5.2 carries the full rule
-  "reason": null,                  // why a non-succeeded run ended, including the `timed_out` hold's own note
+  "verdict": null,                 // "verified" | "verified-with-residuals" | "unverified" | "unreviewed" | null while running -- also null for a non-terminal `exhausted` hold (v0.36 requirement G); settled (non-null, or the `exhausted` null) once `state` leaves `running`/`worker` for a hold or reaches `finishing`, task 012/#56; "verified-with-residuals" (requirement D.3) is a review VERIFIED verdict whose structured findings channel still carries one or more `severity: "residual"` entries; "unreviewed" is the narrower negative for an approach whose judging never produced a verdict, written in exactly three cases, all reached only when the iteration budget or the deadline is also exhausted at that point: (a) review never rendered a judgement at all -- review's own contract ladder exhausted with no readable verdict claim out of the hat (#209 defect 2, `reason`: "review never produced a parseable contract payload; no verdict was ever scored"); (b) review DID render `verified` (its `approach.verdict_recorded` entry stays `verified`), but the peer verdict gate produced no verdict on its first attempt or on any `judge_retry_max` retry (#300, `reason` names the gate: "verdict_gate: no verdict: output truncated, ..." or "no verdict: empty reply"), so `gateRejectionEnding` reads "no_verdict_output_truncated" and no `rejected` is recorded -- with budget left that case parks `operator_input_needed` (`pauseDetail.reason`: "judge_no_verdict") instead; (c) the review hat itself produced no verdict -- `stopReason: length` with no text, or its contract ladder exhausted on empty replies -- on its first attempt and on every `judge_retry_max` retry (#300, `reason` names review: "review: no verdict: output truncated, ..." or "review: no verdict: empty reply"), nothing is recorded for the approach (no `approach.verdict_recorded`) and `gateRejectionEnding` reads "no_verdict_output_truncated"; with budget left it parks on the same `operator_input_needed` / "judge_no_verdict" pause with `pauseDetail.hat: "review"`. A deadline landing mid-review (self-loop exhaustion) carries `null` instead (v0.24 requirement B.2, #169, `reason`: "deadline during review"), not "unreviewed" -- the run holds `exhausted` and stays resumable. No writer overrides an operator abort, which keeps "unverified" -- SPEC.md §5.2 carries the full rule
+  "exhaustedBudget": null,         // only while `state` is `exhausted`: "iterations" | "time" | "approaches" -- the budget `resume` must top up
+  "reason": null,                  // why a non-succeeded run ended, including the `exhausted` hold's own note
   "onComplete": "idle",
   "createdAt": "2026-08-08T13:08:09Z",
   "startedAt": "2026-08-08T13:08:11Z",
@@ -167,7 +168,8 @@ keys with no section of their own below:
 | `updatedAt` | last write of any field — every `update_status` stamps it |
 | `endedAt` | this **episode**'s terminal write; `null` while the run is still going, and reset when a resumed episode starts (so it can never predate `startedAt`). Written the moment the outcome is settled, which with `reflect: true` is *before* `state` becomes terminal -- see `pendingTerminalState` |
 | `pendingTerminalState` | present only while `state` is `finishing` (task 012, #56): the terminal state (`succeeded`\|`failed`\|`aborted`) this run is going to become the moment the post-terminal `reflect` iteration is over. `verdict` is already the settled value at that point too -- nothing after `state` becomes `finishing` can change either one |
-| `reason` | why a non-succeeded run ended, including the `timed_out` hold's own note (v0.24 requirement B.3, #169); also episode-scoped, so a resumed run never reports the previous engine's reason |
+| `reason` | why a non-succeeded run ended, including the `exhausted` hold's own note (v0.36 requirement G); also episode-scoped, so a resumed run never reports the previous engine's reason |
+| `exhaustedBudget` | present only while `state` is `exhausted` (v0.36 requirement G): `iterations`, `time` or `approaches`, the budget that ran out. `ralphctl resume` is refused unless it tops up exactly that budget (`--iterations`, `--timeout`, `--approaches`); the key is removed when the run resumes. A run directory written by 0.35 and recorded `timed_out` reads as `exhausted` with `iterations` or `time`, taken from its recorded `reason` |
 | `previousEndings` | earlier episodes' endings, oldest first — `{startedAt, endedAt, reason, verdict}` per superseded ending (`startedAt` is the start of the episode that ending closes; optional, absent on an entry recorded before the field existed), `[]` for a run still in its first episode, capped at the 50 most recent. Kept because the terminal `state` event in `events.jsonl` records the state but not the reason or verdict |
 | `termination` | present once the run was told to stop — see below |
 | `iterationsUsed` | the **charged** iteration count: raw attempts minus infra AND steer refunds (task 014, #98). `iteration` (the raw number of the attempt running now) is the higher figure whenever anything was refunded, and `iterationsUsed` is what every budget surface prints and what `PATCH /config/budget` validates against |
@@ -439,12 +441,12 @@ engine mid-run (see docs/cli.md).
 #### `health` and `infraWait`
 
 `state`'s values are
-`starting|running|paused|finishing|timed_out|succeeded|failed|aborted` (task 012, #56,
+`starting|running|paused|finishing|exhausted|succeeded|failed|aborted` (task 012, #56,
 adds `finishing`; task 036, #142, adds `paused` for the engine's own
 `rejected_last_approach` escalation hold — never for an operator `POST /pause`;
-v0.24 task 008, requirement B.1, #169 adds `timed_out` — the iteration/wall-clock
-budget exhausted without an operator abort and without review ever rendering a
-verdict, `verdict: null`, resume-eligible and never a member of the terminal set)
+v0.36 requirement G adds `exhausted` — the iteration, wall-clock or approach
+budget spent without an operator abort, `verdict: null`, resume-eligible and
+never a member of the terminal set; `exhaustedBudget` names which budget ran out)
 — there is **no** `degraded` state value, because that would break every consumer's
 terminal-state logic (`ralphctl watch` included). A run that is sitting out an
 infra outage says so with two dedicated fields instead:
@@ -808,7 +810,7 @@ then follows. Event types:
 
 | type | payload highlights |
 |------|--------------------|
-| `state` | lifecycle transition: `state` is `running` (emitted by every engine process as it starts the job loop, resume included -- except a process that resumes a run dir already recorded `finishing`, task 012/#56 below, which has no job loop left to start and promotes straight to the terminal event), `finishing` (task 012, #56: the verdict is settled but the post-terminal `reflect` iteration has not run yet -- see status.json's `pendingTerminalState`), the non-terminal `timed_out` hold (v0.24 task 010, requirement B.3, #169: the deadline/budget hold froze on the spot, `verdict: null`, resume-eligible, skips the `finishing`/reflect dance entirely) or the terminal `succeeded`/`failed`/`aborted`; the startup event also carries `resumed` (`true` when this process picked up a run dir that already held recorded work) |
+| `state` | lifecycle transition: `state` is `running` (emitted by every engine process as it starts the job loop, resume included -- except a process that resumes a run dir already recorded `finishing`, task 012/#56 below, which has no job loop left to start and promotes straight to the terminal event), `finishing` (task 012, #56: the verdict is settled but the post-terminal `reflect` iteration has not run yet -- see status.json's `pendingTerminalState`), the non-terminal `exhausted` hold (v0.36 requirement G: a spent budget froze the run on the spot, `verdict: null`, resume-eligible, skips the `finishing`/reflect dance entirely; the event carries `exhaustedBudget`) or the terminal `succeeded`/`failed`/`aborted`; the startup event also carries `resumed` (`true` when this process picked up a run dir that already held recorded work) |
 | `phase` | phase entered (planning/worker/verify/review), approach number |
 | `iteration.start` / `iteration.end` | number, phase, model / exit, sentinel, error, `faultClass` (`null` \| `"infra"` \| `"work"` \| `"signal"` \| `"rate_limit"` \| `"refused"` \| `"output_truncated"`, identical to the iteration's `meta.json` — see `GET /iterations`) |
 | `iteration.attempt_archived` | a reused iteration number's earlier, crashed attempt was archived before the new one wrote: `number`, `attempt` (`1` for the oldest), `path` (`iterations/NNNN/attempts/NN`), `files` |
@@ -979,7 +981,7 @@ The handler never writes `tasks.json`; it checks, queues the release and rings
 the loop's wake bell. Every refusal is decided before anything is queued:
 
 - `409` when the job has finished (`state` is `succeeded`/`failed`/`aborted`/
-  `timed_out`).
+  `exhausted`).
 - `404` when the plan has no task with that id.
 - `409`, with a message saying the task is not deferred, when the task carries
   no `deferredUntil`.
@@ -1037,7 +1039,7 @@ a message that had, in fact, landed. Now:
   signalled, `{"interrupted": true, "target": "idle", "signalled": false,
   "woken": true}` when an idle loop was woken.
 - `409` is returned ONLY when the job has already finished (`state` is
-  `succeeded`/`failed`/`aborted`/`timed_out`) — there is nothing left to
+  `succeeded`/`failed`/`aborted`/`exhausted`) — there is nothing left to
   interrupt, running or idle, and this is checked BEFORE any steering in
   the request body is enqueued, so a refusal never leaves an enqueued
   message behind either.

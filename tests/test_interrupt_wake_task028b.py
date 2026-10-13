@@ -142,7 +142,7 @@ async def test_interrupt_wakes_an_idle_loop_between_iterations(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["succeeded", "failed", "aborted",
-                                    "timed_out"])
+                                    "exhausted"])
 async def test_409_is_returned_only_for_a_finished_run(tmp_path, state):
     sup = _supervisor(tmp_path, state=state)
     async with _client(sup) as client:

@@ -22,7 +22,7 @@ from .loop import LoopSupervisor
 from .privsep import agent_child_kwargs, separate_engine_identity
 from .redact import refresh_redaction_map
 from .skills import ambient_home, place_skills, verify_placement_and_report
-from .state import (CURRENT_SCHEMA_VERSION, TIMED_OUT_STATE, RunDir, RunDirLocked,
+from .state import (CURRENT_SCHEMA_VERSION, EXHAUSTED_STATE, RunDir, RunDirLocked,
                     SchemaVersionTooNew, utcnow)
 
 log = logging.getLogger("ralphd")
@@ -394,7 +394,7 @@ async def amain() -> int:
     # order. Emitting it again here would double it.
 
     # Operator ruling 3 (v0.24 requirement B.3, #169, cure-01-02): a hold
-    # (`timed_out`) is not a terminal outcome at all -- it is the run
+    # (`exhausted`) is not a terminal outcome at all -- it is the run
     # frozen exactly where it stands, immediately resumable -- so neither
     # half of the ordinary completion dance below applies to it. The
     # operator-supplied `on_complete_cmd` hook is a "the job is over, do
@@ -407,7 +407,7 @@ async def amain() -> int:
     # written. So a hold skips `_run_on_complete_cmd` entirely and falls
     # straight through to the ordinary shutdown-funnel cleanup below,
     # whatever `cfg.on_complete` says.
-    if final_state != TIMED_OUT_STATE:
+    if final_state != EXHAUSTED_STATE:
         await _run_on_complete_cmd(cfg, run, final_state)
 
         if cfg.on_complete == "idle" and not stop.is_set():

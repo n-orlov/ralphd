@@ -88,7 +88,7 @@ from .state import (
     TERMINATION_CLASS_OPERATOR,
     TERMINATION_CLASS_SELF,
     TERMINAL_STATES,
-    TIMED_OUT_STATE,
+    EXHAUSTED_STATE,
     VALIDATION_ATTEMPT_LIMIT,
     REMOVE_STATUS_KEY,
     RunDir,
@@ -637,13 +637,20 @@ class LoopSupervisor:
         # into this one because its terminal reason/verdict wording is a
         # distinct, already-shipped mechanism (task 009/016) this task
         # must not touch. `_finish_tail_unverified` reads this to route
-        # through `_finish_timed_out()` (task 010's B.3 freeze path)
+        # through `_finish_exhausted()` (the one freeze path)
         # instead of ending `failed`/`unverified` -- never set by any of
         # the genuinely structural tails (`max_approaches` exhaustion,
         # a repeated blocker signature, a verdict-gate merits rejection),
         # which end regardless of `budget_left()` and so keep requirement
         # C.2's "still fails, unchanged" by construction.
         self._budget_exhausted_tail: bool = False
+        # v0.36 requirement G: True iff `_step_replan` found no approach
+        # left; the tail then holds `exhausted` (`exhaustedBudget:
+        # approaches`) instead of ending the run `failed`.
+        self._approaches_exhausted_tail: bool = False
+        # The budget the PRIOR episode held at (`exhausted_budget_of` over
+        # the status.json this episode opened on), or None.
+        self._opening_exhausted_budget: str | None = None
         # GH #209 defect 2: True iff the LAST ordinary (non-`mid_run`) run
         # of `_review_contract_ladder` EXHAUSTED `contract_enforcement.
         # enforce_contract`'s ladder WITHOUT ever getting a readable verdict
@@ -4544,6 +4551,14 @@ class LoopSupervisor:
         if not self._resuming_existing_run_dir():
             return 1, False, transitions.ENTRY_STATE
         approach = self.run.read_status().get("approach") or 1
+        if self._opening_exhausted_budget == "approaches":
+            self.run.emit(
+                "log",
+                message=(
+                    f"resuming an exhausted run (approaches): approach "
+                    f"{approach} was the last one; continuing at the replan "
+                    f"on approach {approach + 1}"))
+            return approach, False, "replan"
         if self._archived_approach_awaiting_replan(approach):
             self.run.emit(
                 "log",
@@ -4630,7 +4645,7 @@ class LoopSupervisor:
         """Runs the job to a terminal state, then (if `reflect: true`) one
         extra 'reflect' iteration analyzing the run for prompt/skill
         improvements (PRD req 24). Returns final state: succeeded | failed |
-        aborted | timed_out -- unaffected by the reflect iteration, which
+        aborted | exhausted -- unaffected by the reflect iteration, which
         runs strictly after the outcome below is already settled (though,
         with `reflect: true`, status.json's `state` field itself reads the
         non-terminal `finishing` until reflect is over -- see `_finish()`).
@@ -4645,7 +4660,7 @@ class LoopSupervisor:
         _promote_recorded_finishing_state().
 
         Task 010 (v0.24 requirement B.3, #169): `_run_job_core()` returning
-        `TIMED_OUT_STATE` is the one other case besides the `finishing`
+        `EXHAUSTED_STATE` is the one other case besides the `finishing`
         early-return above where nothing after `_finish()` may run --
         `_finish()` itself never sets `self._pending_terminal` for this
         state (see its own docstring), so `_promote_finishing_state()` is
@@ -4659,7 +4674,7 @@ class LoopSupervisor:
         if status.get("state") == "finishing":
             return self._promote_recorded_finishing_state(status)
         state = await self._run_job_core()
-        if self.cfg.reflect and state != TIMED_OUT_STATE:
+        if self.cfg.reflect and state != EXHAUSTED_STATE:
             await self._run_reflection()
         self._promote_finishing_state()
         return state
@@ -4715,8 +4730,8 @@ class LoopSupervisor:
         review-
         specific flag above. Requirement C.1 reads this as "running out of
         iterations enters B.1's state, by the same code path" -- so this
-        branch calls `self._finish_timed_out()` (task 010's THE one call
-        path into `TIMED_OUT_STATE`) instead of `self._finish()` directly,
+        branch calls `self._finish_exhausted()` (THE one call
+        path into `EXHAUSTED_STATE`) instead of `self._finish()` directly,
         never a second implementation of the freeze. `max_approaches`
         exhaustion (`_step_replan`'s `budget_or_approach_exhausted`,
         `_step_review`'s/`_step_verdict_gate`'s `..._no_approach_left`) and
@@ -4782,42 +4797,69 @@ class LoopSupervisor:
             return final_state
         # Task 011 (v0.24 requirement C.1, #169): the plain budget/wall-
         # clock exhaustion tail -- no abort, no review-specific hold above
-        # -- holds through B.3's own freeze path (`_finish_timed_out`)
+        # -- holds through B.3's own freeze path (`_finish_exhausted`)
         # rather than ending `failed`/`unverified`. Checked after both
         # review-specific branches (mutually exclusive with each by
         # construction: neither call site that sets either flag above ever
         # also sets this one) and before the ordinary fallback below.
+        if self._approaches_exhausted_tail and not self._abort_reason:
+            return self._finish_exhausted(
+                "approaches", reason=self._terminal_reason_note)
         if self._budget_exhausted_tail and not self._abort_reason:
-            return self._finish_timed_out(
+            return self._finish_exhausted(
+                self._spent_run_budget(),
                 reason=(self._terminal_reason_note
                         or "the run holds: no iteration budget or wall "
-                           "clock remained to continue (requirement C.1, "
-                           "#169)"))
+                           "clock remained to continue"))
         self._finish(final_state, "unverified",
                     reason=self._abort_reason or self._terminal_reason_note,
                     **self._unconsumed_steering_patch(),
                     **self._deadline_beat_verdict_extra)
         return final_state
 
-    def _finish_timed_out(self, *, reason: str) -> str:
-        """THE one call path that enters TIMED_OUT_STATE (task 010, v0.24
-        requirement B.3, #169) -- every future caller that decides the
-        run's ending is the deadline hold rather than a genuine terminal
-        outcome (an exhausted iteration budget through the same path,
-        C.1; a rejecting verdict landing after the deadline, D.2) calls
-        THIS, never self._finish(TIMED_OUT_STATE, ...) directly, so there
-        is exactly one place that decides what accompanies the freeze.
+    def _spent_run_budget(self) -> str:
+        """Which of the two run-level budgets is spent right now:
+        `iterations` when the charged iterations reached `cfg.iterations`,
+        `time` otherwise (the deadline passed)."""
+        charged = (self.iterations_used - self._infra_refunded
+                   - self._steer_refunded - self._adjudication_refunded)
+        return "iterations" if charged >= self.cfg.iterations else "time"
 
-        Delegates straight to _finish(), which already special-cases
-        state == TIMED_OUT_STATE to skip the terminal two-phase finishing
-        dance (no endedAt, no pendingTerminalState) -- see its own
-        docstring. verdict is always None here (v0.24 requirement
-        B.2/task 009's same reasoning: a held run carries no verdict,
-        because a verdict is what the operator resumed in order to get)
-        and is not a caller-supplied argument, so nothing calling this
-        can accidentally smuggle one in.
+    def _exhausted_reason(self, budget: str) -> str:
+        """The one-line `exhausted: <budget> n/m` account every hold
+        carries in front of whatever the call site added."""
+        if budget == "approaches":
+            return (f"exhausted: approaches {self._approach}/"
+                    f"{self.cfg.max_approaches}")
+        if budget == "iterations":
+            charged = (self.iterations_used - self._infra_refunded
+                       - self._steer_refunded - self._adjudication_refunded)
+            return f"exhausted: iterations {charged}/{self.cfg.iterations}"
+        return "exhausted: time (the job deadline passed)"
+
+    def _finish_exhausted(self, budget: str, *, reason: str = "") -> str:
+        """THE one call path that enters EXHAUSTED_STATE (v0.36 requirement
+        G; it replaces the 0.24 deadline hold) -- every
+        place that decides the run's ending is a spent budget rather than a
+        genuine terminal outcome calls THIS, never `self._finish(
+        EXHAUSTED_STATE, ...)` directly, so there is exactly one place that
+        decides what accompanies the freeze.
+
+        `budget` is `iterations`, `time` or `approaches` and lands on
+        status.json's `exhaustedBudget`; `reason` is the call site's own
+        note, appended to the `exhausted: <budget> n/m` account. Delegates
+        to `_finish()`, which special-cases `state == EXHAUSTED_STATE` to
+        skip the terminal two-phase finishing dance (no endedAt, no
+        pendingTerminalState). verdict is always None here (a held run
+        carries no verdict, because a verdict is what the operator resumed
+        in order to get) and is not a caller-supplied argument.
         """
-        return self._finish(TIMED_OUT_STATE, None, reason=reason,
+        if budget not in state.EXHAUSTED_BUDGETS:
+            raise ValueError(f"unknown exhausted budget {budget!r}")
+        head = self._exhausted_reason(budget)
+        note = f"{head} -- {reason}" if reason else head
+        return self._finish(EXHAUSTED_STATE, None, reason=note,
+                            exhaustedBudget=budget,
                             **self._unconsumed_steering_patch())
 
     def _finish(self, state: str, verdict: str | None, **fields) -> str:
@@ -4848,7 +4890,7 @@ class LoopSupervisor:
         real terminal state; both read `self._pending_terminal`/status.json
         rather than re-deciding anything.
 
-        Task 010 (v0.24 requirement B.3, #169): `state == TIMED_OUT_STATE` is
+        Task 010 (v0.24 requirement B.3, #169): `state == EXHAUSTED_STATE` is
         a THIRD branch, checked first, that skips the two-phase dance above
         entirely -- entering the deadline hold is not a terminal outcome at
         all (it stays in `NONTERMINAL_STATES`), so there is no reflect
@@ -4860,13 +4902,14 @@ class LoopSupervisor:
         run_record()` sequence the non-reflect branch below already uses --
         B.3's own retained write is this existing method entered on this
         existing path, not a new writer -- so a caller that reaches
-        `_finish("timed_out", None, ...)` (any budget-
+        `_finish("exhausted", None, ...)` (any budget-
         exhaustion call site that chooses to, later tasks) gets the freeze
         for free with no further branching of its own.
         """
-        if state == TIMED_OUT_STATE:
+        if state == EXHAUSTED_STATE:
             fields.pop("endedAt", None)
-            self.run.emit("state", state=state)
+            self.run.emit("state", state=state,
+                          exhaustedBudget=fields.get("exhaustedBudget"))
             self.run.update_status(state=state, verdict=verdict, phase=None,
                                    pendingTerminalState=None, **fields)
             self._write_run_record()
@@ -5792,6 +5835,8 @@ class LoopSupervisor:
         # #291: status.json as this episode found it, read before anything
         # below trims or re-bases it.
         opening_status = self.run.read_status()
+        self._opening_exhausted_budget = state.exhausted_budget_of(
+            opening_status)
         # Task 022 (#30): read the ending fields before overwriting them.
         previous_endings = self._previous_endings()
         # #291: `firstStartedAt` is written once, by the run's first episode,
@@ -5827,6 +5872,8 @@ class LoopSupervisor:
                                # still routes this episode back into review
                                # over the same approach.)
                                pauseReason=None,
+                               # The hold's budget goes with the hold.
+                               exhaustedBudget=REMOVE_STATUS_KEY,
                                # v0.30 G.2: the pause's sub-reason goes with
                                # it; the refused work re-runs from here.
                                pauseDetail=None,
@@ -10330,6 +10377,10 @@ class LoopSupervisor:
             self._approach += 1
             self._advance("replan", "planning", "budget_and_approach_left")
             return ("advance", "planning", "budget_and_approach_left")
+        self._terminal_reason_note = (
+            f"every approach is spent ({self._approach}/"
+            f"{self.cfg.max_approaches}) and the plan is not done")
+        self._approaches_exhausted_tail = True
         self._advance("replan", "finishing", "budget_or_approach_exhausted")
         return ("tail",)
 
@@ -13876,7 +13927,7 @@ class LoopSupervisor:
             # left():` loop) already declines to dispatch a NEW iteration
             # once the deadline or the iteration budget is spent, holding
             # instead through the same `_budget_exhausted_tail` flag /
-            # `_finish_timed_out` freeze path (task 011, requirement
+            # `_finish_exhausted` freeze path (task 011, requirement
             # C.1). `_step_review` was the one handler in this family
             # missing that check: `_run_review_iteration`'s own self-loop
             # only consulted `budget_left()` AFTER an interrupted attempt,
@@ -14023,7 +14074,7 @@ class LoopSupervisor:
                     # 011, requirement C.1) forbids absolute for every
                     # fresh-dispatch site in this engine, this one included.
                     # v0.24 shipped the only choice that existed then --
-                    # holding `timed_out` with a null verdict, pinned as
+                    # holding the run with a null verdict, pinned as
                     # history by `tests/test_deadline.py::
                     # test_peer_verdict_gate_verified_review_after_the_deadline_holds_pending_the_gate`
                     # and confirmed via the pre-named contradiction petition
@@ -14053,7 +14104,7 @@ class LoopSupervisor:
                             "was still in flight, before the peer verdict "
                             "gate could be dispatched; review's own "
                             "verified verdict decided the outcome instead "
-                            "of holding timed_out with a null verdict"),
+                            "of holding the run with a null verdict"),
                         "recordedAt": utcnow(),
                     }
                     self.run.emit("verdict_gate_deferred_past_deadline",
@@ -14685,7 +14736,7 @@ class LoopSupervisor:
         gate`, `_step_worker`'s own loop, and -- since cure-01-03 --
         `_step_review` itself) already declines to do its own next thing
         once `budget_left()` is False, holding through the shared
-        `_budget_exhausted_tail`/`_finish_timed_out` freeze path instead.
+        `_budget_exhausted_tail`/`_finish_exhausted` freeze path instead.
         `_step_paused` was the one member of that family that still did
         its own next thing -- `await self._gate()`, an INDEFINITE
         in-process park on `self._pause`, wholly unconditioned on the
@@ -14694,7 +14745,7 @@ class LoopSupervisor:
         needed` gate (PRD requirement D.2's own enabled-operator-input-
         gate case) after the deadline had already passed while review
         ran therefore stayed `state: "paused"`, `verdict: null`, process
-        alive and blocked on `self._pause` -- never `timed_out`, never
+        alive and blocked on `self._pause` -- never `exhausted`, never
         exited -- straight against operator ruling 3 ("it persists where
         it stopped and exits") and D.2 ("holds the run in B.1's state").
         Continuing to park makes no sense once there is no budget left to
@@ -18904,7 +18955,7 @@ class LoopSupervisor:
             # eligible again after an operator resume: `_petition_
             # adjudication_seen` is untouched, and `_step_worker`'s own
             # end-of-body `if not self.budget_left():` check is what still
-            # lands the run in the shared `timed_out`/null-verdict freeze
+            # lands the run in the shared `exhausted`/null-verdict freeze
             # path this same pass.
             return
         open_petitions = petitions.open_unconfirmed_petitions(
@@ -19141,7 +19192,7 @@ class LoopSupervisor:
             # `if not self.budget_left(): self._budget_exhausted_tail = 
             # True; return ("tail",)` check (a few dozen lines below this
             # method's own call site) is what still lands the run in the
-            # shared `timed_out` freeze path this same pass.
+            # shared `exhausted` freeze path this same pass.
             return
         approach = self._approach
         if self._mid_plan_review_done_for_approach(approach):

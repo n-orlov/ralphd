@@ -162,9 +162,12 @@ async function getJSON(path, headers) {
   return { ok: resp.ok, status: resp.status, body, etag: resp.headers.get("ETag") };
 }
 
-function pill(text) {
+// `label`, when given, is the text shown while `text` still picks the CSS
+// class -- the `exhausted (<budget>)` hold keeps the `pill-exhausted` look.
+function pill(text, label) {
   const cls = "pill pill-" + String(text || "unknown").toLowerCase().replace(/[^a-z0-9-]/g, "-");
-  return h("span", { class: cls }, [String(text == null ? "unknown" : text)]);
+  const shown = label != null && label !== "" ? label : text;
+  return h("span", { class: cls }, [String(shown == null ? "unknown" : shown)]);
 }
 
 // Task 005 (PRD requirement A.5, #269): the two markers that can ride
@@ -214,7 +217,7 @@ function stateMarkerSpans(pauseMarker, escalationUndeliveredMarker, runId) {
 // Task 008 (v0.26, #269): `r.runId` rides along too, so the parked-for-
 // input marker on THIS row can link straight to that run's own panel.
 function runRowStateChildren(r) {
-  const children = [pill(r.state)];
+  const children = [pill(r.state, r.stateDisplay)];
   if (r.containerGone === true) {
     children.push(h("span", { class: "container-gone-marker" }, [" \u26A0 container gone"]));
   }
@@ -287,7 +290,7 @@ let runSort = { key: "startedAt", dir: -1 };
 // Mirrors `main.py`'s `_STATUS_STATES` / the verdict progression in
 // docs/api.md (no verdict yet -> unverified -> verified -> verified-with-
 // residuals, requirement D.3).
-const RUN_STATE_ORDER = ["starting", "running", "paused", "finishing", "timed_out", "succeeded", "failed", "aborted"];
+const RUN_STATE_ORDER = ["starting", "running", "paused", "finishing", "exhausted", "succeeded", "failed", "aborted"];
 const RUN_VERDICT_ORDER = ["", "unverified", "verified", "verified-with-residuals"];
 
 function lifecycleRank(order, value) {
@@ -2536,7 +2539,7 @@ const FAULT_BADGE_STATES = new Set(["failed", "aborted"]);
 // _with_pause_markers`) -- both empty strings for the ordinary case, so
 // nothing changes for a run that is neither.
 function stateCell(detail, s) {
-  const pillEl = pill(s.state);
+  const pillEl = pill(s.state, s.stateDisplay);
   if (FAULT_BADGE_STATES.has(String(s.state || ""))) {
     return faultBadge(detail.runId, "state", pillEl) || pillEl;
   }
@@ -2831,19 +2834,22 @@ function renderInfraWait(el, s, runId, live) {
       ]));
       return;
     }
-    // Cure-01-05 (v0.24 requirement B.1, DoD 3, #169): `timed_out` is the
-    // deadline/budget HOLD (task 008) -- resume-eligible, nothing in
+    // Cure-01-05 (v0.24 requirement B.1, DoD 3, #169): `exhausted` is the
+    // budget HOLD (v0.36 requirement G) -- resume-eligible, nothing in
     // flight, no retry attempt actually running and no backoff wait
     // pending. It is not in TERMINAL_STATES above (a hold is not an
     // outcome) but it must not fall into the generic "a retry attempt is
     // running" sentence below either -- that is exactly the
     // still-working misreading B.1 forbids. `s.reason` is the hold's own
-    // note (`_finish_timed_out`, docs/api.md), quoted the same way the
+    // note (`_finish_exhausted`, docs/api.md), quoted the same way the
     // terminal branch above quotes its own reason.
-    if (s.state === "timed_out") {
+    if (s.state === "exhausted" || s.state === "timed_out") {
       const reason = String(s.reason == null ? "" : s.reason).trim();
+      const held = s.stateDisplay ||
+        (s.state === "exhausted" && s.exhaustedBudget
+          ? "exhausted (" + s.exhaustedBudget + ")" : s.state);
       el.appendChild(h("p", { class: "infra-wait" }, [
-        "\u26A0 degraded: held at the deadline " +
+        "\u26A0 degraded: held: " + held + " " +
         (reason ? "(" + reason + ")" : "(no reason recorded)"),
         faultBadge(runId, "infra-wait", " explain"),
       ]));

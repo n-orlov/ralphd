@@ -101,7 +101,7 @@ def test_three_uncorroborated_no_verdict_claims_now_back_off_instead_of_tripping
     harness's `asyncio.sleep` patched instant (`make_supervisor`'s
     default), the run spins through its own 20-iteration budget
     (`_spw010_supervisor`'s own `iterations=20`) in increasingly
-    backed-off re-polls and ends `timed_out` (budget exhausted, task never
+    backed-off re-polls and ends `exhausted` (budget exhausted, task never
     completed, never paused) rather than ever reaching the old
     `paused`/`stagnation` outcome
     `tests/test_worker_hat.py::test_a_plan_with_work_left_is_never_
@@ -131,7 +131,7 @@ def test_three_uncorroborated_no_verdict_claims_now_back_off_instead_of_tripping
     assert "routing to review" not in msgs, msgs
 
     status = sup.run.read_status()
-    assert status.get("state") == "timed_out", status
+    assert status.get("state") == "exhausted", status
     assert "iteration budget" in status.get("reason", ""), status
 
     assert _worker_iteration_count(root) == 19, _worker_iteration_count(root)

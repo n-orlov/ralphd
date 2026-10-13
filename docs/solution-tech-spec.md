@@ -58,7 +58,7 @@ invocation; it does not imply concurrent workers.
 | Autonomous delivery | Plan, execute tasks, review the entire result, cure findings (bounded by `cure_pass_ceiling`, default 3) or start another approach. |
 | Task verification | Optional vigilant mode independently verifies each completion claim. |
 | Peer checks | Optional plan review before work, an optional one-off mid-plan review once a fixed fraction of the plan is done (`mid_plan_review`), and an optional blind verdict gate after the main reviewer approves. |
-| Bounded recovery | Separate handling for infrastructure outages, work failures, signal interruptions, malformed responses, lack of progress, provider refusals and, on `claude-code` hats, subscription rate-limit windows. An exhausted job deadline or iteration budget holds the run in the resumable `timed_out` state instead of failing it. |
+| Bounded recovery | Separate handling for infrastructure outages, work failures, signal interruptions, malformed responses, lack of progress, provider refusals and, on `claude-code` hats, subscription rate-limit windows. An exhausted job deadline or iteration budget holds the run in the resumable `exhausted` state instead of failing it. |
 | Task deferral | A worker can defer a task to a later time (`deferredUntil`); repeated CI-wait re-polls back off in wall-clock time instead of spending iterations. The operator can release a deferred task early. |
 | Operator intervention | Durable steering, rulings (`ralphctl rule`), amendments, interrupt, pause/unpause, `operator_input_needed` escalation pauses (on by default), budget changes, retry-now, undefer, and abort. |
 | Provider flexibility | pi-supported providers, named LLM profiles, custom endpoints/headers, a per-hat harness (`pi`, `claude-code` or `codex`), and model/thinking selection by role and difficulty tier. |
@@ -227,7 +227,7 @@ Engine startup order is in [`engine/main.py`](../src/ralphd/engine/main.py):
 cure-pass ceiling and rate-limit wait ceiling, migrates `tasks.json` into the
 protected record directory, protects the run-secrets mount, places credentials
 and skills, builds the redaction map, copies the PRD, checks hat routes, writes
-the first status and starts the API and the job. A deadline hold (`timed_out`)
+the first status and starts the API and the job. A deadline hold (`exhausted`)
 skips the `on_complete` command and exits instead of idling.
 
 The normal bridge deployment publishes the job API on host loopback. Host
@@ -241,7 +241,7 @@ Keep these records distinct when integrating with the API or adding features:
 
 | Model | Meaning | Examples |
 |---|---|---|
-| Run lifecycle | Whether the job is executing, parked, finalizing, held, or terminal. | `starting`, `running`, `paused`, `finishing`, `timed_out`, `succeeded`, `failed`, `aborted`. |
+| Run lifecycle | Whether the job is executing, parked, finalizing, held, or terminal. | `starting`, `running`, `paused`, `finishing`, `exhausted`, `succeeded`, `failed`, `aborted`. |
 | Execution phase | Which harness step owns the next action. | `planning`, `worker`, `verify`, `review`, `cure`, `steer`, `replan`, `paused`, peer gates (`plan_review`, `verdict_gate`), `reflect`. |
 | Task lifecycle | What has been established about one planned task. | `pending`, `in-progress`, `awaiting-validation`, `validated`, `completed`, `validation-failed`, `failed`, `skipped`, `superseded`, `petitioned`. |
 
@@ -257,18 +257,20 @@ at all: the router's constrained question (accounted as `usage.byPhase.router`),
 the mid-plan review episode and the mid-run petition adjudication episode run
 without a transition-table state.
 
-`timed_out` is the deadline hold. When the job deadline or the iteration budget
-is exhausted, the engine lets the current iteration finish and freezes the run
-in this non-terminal, resume-eligible state with `verdict: null`, instead of
-ending it `failed`. A hold skips the `on_complete` command, and `ralphctl resume`
-continues the run from its recorded position.
+`exhausted` is the one budget hold. When the iteration budget, the job deadline
+or the approach budget is spent, the engine lets the current iteration finish and
+freezes the run in this non-terminal, resume-eligible state with `verdict: null`
+and `exhaustedBudget` set to `iterations`, `time` or `approaches`, instead of
+ending it `failed`. A hold skips the `on_complete` command. `ralphctl resume`
+refuses it without a top-up of the named budget and then continues the run from
+its recorded position (the replan on the next approach number for `approaches`).
 
 `health` is another dimension: a running job can be `degraded` while waiting for
 an infrastructure outage to clear. A `claude-code` hat's rate-limit wait is
 recorded separately in `rateLimitWait`. `verdict` is the judgment of the work,
 separate from the lifecycle state: `verified`, `verified-with-residuals`,
 `unverified`, `unreviewed`, or `null`. A deadline that lands during review
-produces a `timed_out` hold with `verdict: null` and reason `"deadline during
+produces an `exhausted` hold with `verdict: null` and reason `"deadline during
 review"`, not a reviewed rejection. `unreviewed` is written in three cases, all only when no
 budget remained: review ran but never produced a readable verdict from a reply
 that was not empty (with budget left the run pauses on
@@ -371,7 +373,7 @@ flowchart TD
     Gate -->|"rejected, approach available"| Replan
     Gate -->|"non-curable finding or exhausted"| Finish
     Review -->|"rejected, no approach left"| Finish
-    Work -. "budget or deadline at a step boundary" .-> Held["timed_out hold"]
+    Work -. "budget or deadline at a step boundary" .-> Held["exhausted hold"]
     Held -->|resume with a fresh window| Work
     Work -. abort .-> Finish
     Finish --> Reflect{"Reflection enabled?"}
@@ -408,8 +410,8 @@ Two harness episodes run in the worker step but have no state in the table:
 - the opt-in `--mid-plan-review` episode, once per approach.
 
 **Run endings.** Running out of iterations or reaching the job deadline at a step
-boundary no longer ends the run `failed`. Instead, `_finish_timed_out` holds it in
-the non-terminal `timed_out` state with a `null` verdict. Reflection is skipped,
+boundary no longer ends the run `failed`. Instead, `_finish_exhausted` holds it in
+the non-terminal `exhausted` state with a `null` verdict. Reflection is skipped,
 and `ralphctl resume` continues it into `worker`. An operator abort still ends
 the run `aborted`. Exhausting `max_approaches` and the structural endings still
 end the run. These endings are `repeated_blocker_signature`, a repeated planning
@@ -800,7 +802,7 @@ whichever edge it takes, including the cure edge. Every escalation pause posts a
 bounded digest (at most `MAX_NOTIFY_CHARS`) to the notifier. Delivery is retried
 up to three times with 60/120 s backoff and is recorded as undelivered after the
 last failure. If the deadline has already passed when a pause would park, the run
-enters the resumable `timed_out` hold instead of parking in-process.
+enters the resumable `exhausted` hold instead of parking in-process.
 
 ### Cure passes
 
@@ -1048,9 +1050,9 @@ job configuration, or supported runtime overrides. Source:
 
 | Limit or feature | Default | Semantics |
 |---|---|---|
-| Iteration budget | 25 | Charged work allowance; raw iteration numbering is retained for history. Exhaustion holds the run in the resumable `timed_out` state rather than ending it. |
+| Iteration budget | 25 | Charged work allowance; raw iteration numbering is retained for history. Exhaustion holds the run in the resumable `exhausted` state rather than ending it. |
 | Approaches | 3 | Maximum plan/review approaches. A planning attempt that yields no usable plan retries on the same approach number; two consecutive attempts failing the same ingestion lint end the run. |
-| Job timeout | 8 hours | Useful-work deadline; accounted infra, rate-limit and pause waits extend it. Reaching it holds the run in `timed_out`. |
+| Job timeout | 8 hours | Useful-work deadline; accounted infra, rate-limit and pause waits extend it. Reaching it holds the run in `exhausted`. |
 | Iteration timeout | 45 minutes | Individual invocation cap, read once per dispatch. The deadline is a boundary checked before dispatch, not a clamp on a started iteration. Reflection runs under `min(iteration timeout, 600 s)`. |
 | Startup traffic window | 150 seconds | Watchdog input, with CPU-progress discrimination. |
 | Infra outage wait | 4 hours | Separate allowance per outage episode; reflection has a 300-second cap. |
@@ -1099,7 +1101,7 @@ Startup seeds the iteration budget, the cure-pass ceiling and the rate-limit
 ceiling from the greater of the configured and persisted values, so an operator
 top-up survives a container restart; the other three are process-only. The
 off-budget grace review is retired. An exhausted deadline or iteration budget
-now holds the run in `timed_out` with no verdict, and `ralphctl resume` continues
+now holds the run in `exhausted` with no verdict, and `ralphctl resume` continues
 the ordinary loop; it is not an unlimited permission to keep dispatching.
 
 ### Role and tier dispatch
@@ -1466,17 +1468,18 @@ without rerunning implementation or duplicating reflection work. `firstStartedAt
 keeps the run's earliest recorded start across episodes, while `startedAt` and
 `previousEndings` describe each episode.
 
-Since v0.24, an exhausted job deadline or iteration budget does not end the run.
-It enters the nonterminal `timed_out` hold: no verdict, no `endedAt`, no
-reflection and no `on_complete_cmd` ([`_finish_timed_out`](../src/ralphd/engine/loop.py),
-[`engine/main.py`](../src/ralphd/engine/main.py)). A held run continues through an
-ordinary `resume`, normally with a `--timeout` or `--iterations` top-up.
+Since v0.24 (named `exhausted` since v0.36), a spent job deadline, iteration budget or approach budget does not end the run.
+It enters the nonterminal `exhausted` hold: no verdict, no `endedAt`, no
+reflection and no `on_complete_cmd` ([`_finish_exhausted`](../src/ralphd/engine/loop.py),
+[`engine/main.py`](../src/ralphd/engine/main.py)). A held run continues through
+`resume` with a top-up of the budget it names (`--iterations`, `--timeout` or
+`--approaches`); a resume without it is refused.
 
 The host self-recovery sweep is `ralphctl doctor --fix`. It resumes a run recorded
 nonterminal whose container has vanished, if that run's `auto_resume` setting is
 on (the default). It applies a progress-keyed crash-loop guard: five attempts with
 30 s to 1 h backoff, then a recorded give-up. Operator-initiated termination
-(`abort`/`stop`) is excluded, and so is a run held in `timed_out`, so an unattended
+(`abort`/`stop`) is excluded, and so is a run held in `exhausted`, so an unattended
 sweep never grants a new budget window. Automatic recovery requires someone to
 invoke or schedule that sweep; enabling a run's eligibility does not install a
 daemon.
@@ -1503,7 +1506,7 @@ channel carries residual findings. Other recorded endings are `rejected`,
 `unverified`, `unreviewed` (review never produced a usable contract payload, or
 no verdict at all after every retry, or the peer verdict gate produced no verdict after every retry), or
 `null` (a deadline took review before it spoke). Running out of deadline or
-iteration budget is not a completion. It enters the `timed_out` hold described in
+iteration budget is not a completion. It enters the `exhausted` hold described in
 section 12, which skips reflection and the completion hook.
 
 With reflection enabled, the outcome is settled while status reads the
@@ -1635,7 +1638,7 @@ For changes to the harness:
 - Apply task changes through the shared status applier and the single
   `RunDir.write_tasks` writer (AST-audited by `tests/test_task_state_writer.py`),
   and preserve provenance, criteria fingerprints and dependency semantics.
-- Keep infrastructure faults, work failures, interruptions, holds (`timed_out`,
+- Keep infrastructure faults, work failures, interruptions, holds (`exhausted`,
   recorded pauses) and contract failures distinct in both accounting and recovery.
 - Test restart behavior through the actual bootstrap path as well as directly
   constructed supervisors.

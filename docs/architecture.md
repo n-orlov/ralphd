@@ -217,7 +217,8 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `finishing` | — | both | `succeeded` | `reflect_disabled_outcome_succeeded` |
 | `finishing` | — | both | `failed` | `reflect_disabled_outcome_failed` |
 | `finishing` | — | both | `aborted` | `reflect_disabled_outcome_aborted` |
-| `timed_out` | — | both | `worker` | `resume_timed_out` |
+| `exhausted` | — | both | `worker` | `resume_exhausted` |
+| `exhausted` | — | both | `replan` | `resume_exhausted_approaches` |
 | `succeeded` | — | — | `— (terminal)` | `—` |
 | `failed` | — | — | `— (terminal)` | `—` |
 | `aborted` | — | — | `— (terminal)` | `—` |
@@ -292,7 +293,8 @@ stateDiagram-v2
     finishing --> succeeded : reflect_disabled_outcome_succeeded
     finishing --> failed : reflect_disabled_outcome_failed
     finishing --> aborted : reflect_disabled_outcome_aborted
-    timed_out --> worker : resume_timed_out
+    exhausted --> worker : resume_exhausted
+    exhausted --> replan : resume_exhausted_approaches
     succeeded --> [*]
     failed --> [*]
     aborted --> [*]

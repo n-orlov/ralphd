@@ -112,7 +112,7 @@ async def test_undefer_accepts_a_deferred_task_queues_it_and_rings_the_bell(tmp_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["succeeded", "failed", "aborted",
-                                    "timed_out"])
+                                    "exhausted"])
 async def test_undefer_on_a_finished_run_is_409_and_enqueues_nothing(tmp_path, state):
     sup = _api_sup(tmp_path, [_deferred_task()], state=state)
     async with _client(sup) as client:

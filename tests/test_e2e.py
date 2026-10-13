@@ -83,9 +83,9 @@ def test_budget_exhaustion_fails_job(engine_factory):
     assert wait_engine_exit(e, timeout=60) == 1
     status = json.loads((e.run_dir / "status.json").read_text())
     # Task 011 (v0.24 requirement C.1, #169): a plain out-of-budget ending
-    # now holds `timed_out` (verdict null) through the same `_finish_
-    # timed_out()` path task 010 established, never `"failed"`.
-    assert status["state"] == "timed_out"
+    # now holds `exhausted` (verdict null) through the same `_finish_
+    # exhausted()` path task 010 established, never `"failed"`.
+    assert status["state"] == "exhausted"
     assert status["verdict"] is None
     assert status["iterationsUsed"] == 2
     # Negative case retained after task 015 (requirement E.1, #169) removed
@@ -95,14 +95,14 @@ def test_budget_exhaustion_fails_job(engine_factory):
     assert not status.get("graceReview")
 
 
-def test_budget_exhausted_with_all_tasks_completed_holds_timed_out(engine_factory):
+def test_budget_exhausted_with_all_tasks_completed_holds_exhausted(engine_factory):
     """Task 015 (requirement E.1, #169), inverting the old `test_grace_
     review_when_budget_exhausts_with_all_tasks_completed`/`test_grace_
     review_not_granted_twice_and_can_fail`: budget sized so the worker
     iteration that completes the LAST task is also the iteration that
     exhausts the budget (planning=1, worker=2, worker=3 == the whole
     3-iteration budget). The off-budget grace review this used to grant
-    is gone -- the run now holds `timed_out`/`verdict: null` through the
+    is gone -- the run now holds `exhausted`/`verdict: null` through the
     same plain out-of-budget path C.1 (task 011) established, with no
     review iteration ever dispatched, REGARDLESS of what the stub review
     would have said -- proved by running the exact same budget/task shape
@@ -118,7 +118,7 @@ def test_budget_exhausted_with_all_tasks_completed_holds_timed_out(engine_factor
                            stub_env=stub_env)
         assert wait_engine_exit(e, timeout=60) == 1
         status = json.loads((e.run_dir / "status.json").read_text())
-        assert status["state"] == "timed_out", stub_review_fails
+        assert status["state"] == "exhausted", stub_review_fails
         assert status["verdict"] is None, stub_review_fails
         assert not status.get("graceReview"), stub_review_fails
         tasks = json.loads((e.run_dir / "tasks.json").read_text())["tasks"]

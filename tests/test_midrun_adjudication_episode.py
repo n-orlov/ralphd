@@ -211,7 +211,7 @@ def test_no_adjudication_episode_starts_at_an_already_expired_boundary(
     iteration; the petition stays open (unsettled, eligible again after
     an operator resume -- `_petition_adjudication_seen` is never touched
     by the early return); and the pass still lands in the shared
-    `timed_out`/null-verdict freeze path (task 010/011's C.1 path), never
+    `exhausted`/null-verdict freeze path (task 010/011's C.1 path), never
     a second freeze implementation of its own.
     """
     sup, run, workspace = _worker_supervisor(tmp_path)
@@ -266,13 +266,13 @@ def test_no_adjudication_episode_starts_at_an_already_expired_boundary(
         workspace, run, tasks=run.read_tasks()["tasks"])
     assert open_after
 
-    # 3. the pass ends in the SHARED freeze path -- `timed_out`, null
+    # 3. the pass ends in the SHARED freeze path -- `exhausted`, null
     # verdict, no second freeze mechanism of its own.
     assert outcome == ("tail",)
     assert sup._budget_exhausted_tail is True
-    assert sup._finish_tail_unverified() == "timed_out"
+    assert sup._finish_tail_unverified() == "exhausted"
     status = run.read_status()
-    assert status["state"] == "timed_out"
+    assert status["state"] == "exhausted"
     assert status["verdict"] is None
     assert status.get("endedAt") is None, "a held run has not ended"
 

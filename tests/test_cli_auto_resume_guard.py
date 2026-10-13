@@ -229,22 +229,22 @@ def test_opted_out_run_is_never_recorded_by_the_guard(ctl):
     assert not _guard_path(ctl, "tst-guard-off").exists()
 
 
-# --------------------------------------------------- held (timed_out)
+# --------------------------------------------------- held (exhausted)
 def _hold_container(ctl: Ctl, run_id: str) -> None:
     """The run is HELD, not dangling in the crash sense: status.json
-    records the deadline hold (`timed_out`) and no container exists for it
+    records the deadline hold (`exhausted`) and no container exists for it
     -- the same on-disk shape `_dangling_run_entry` matches (so doctor still
     reports it), but the operator, not `doctor --fix`, owns what happens
     next (task 018, v0.24 requirement F.2, #46)."""
     (ctl.registry / "runs" / run_id / "status.json").write_text(
-        json.dumps({"state": "timed_out", "schemaVersion": 1,
+        json.dumps({"state": "exhausted", "schemaVersion": 1,
                     "iterationsUsed": 3}))
 
 
-def test_auto_resume_never_resumes_a_held_timed_out_run(ctl):
+def test_auto_resume_never_resumes_a_held_exhausted_run(ctl):
     """Task 018 (v0.24 requirement F.2, #46): the hold exists so a human
     decides to spend another window -- an `auto_resume`-enabled run left
-    `timed_out` must be reported (still `dangling`, so an operator sees it)
+    `exhausted` must be reported (still `dangling`, so an operator sees it)
     but never resumed, and it never touches the crash-loop guard's own
     bookkeeping (no `auto-resume.json` is written for it at all)."""
     _start(ctl, "tst-guard-held", "--auto-resume")

@@ -476,14 +476,14 @@ def test_real_engine_iteration_dir_renders_end_to_end(live, capsys):
                                    "on_complete": "idle"}), capsys)
     # Task 011 (v0.24 requirement C.1, #169): a bare 2-iteration budget is
     # not enough for the stub worker/reviewer to reach a verdict, so this
-    # run now freezes on the exhausted-budget `timed_out` ending (task 010's
-    # `_finish_timed_out` path) rather than the `failed` this used to land
+    # run now freezes on the exhausted-budget `exhausted` ending (task 010's
+    # `_finish_exhausted` path) rather than the `failed` this used to land
     # on before that path existed -- `wait_terminal` (succeeded/failed/
-    # aborted) never fires for it, so wait on `timed_out` by name instead.
+    # aborted) never fires for it, so wait on `exhausted` by name instead.
     # The iteration dir under test was written before the budget ran out
     # either way, so this rendering assertion is unaffected by which ending
     # the run reaches.
-    r.wait_state(("timed_out",), timeout=90)
+    r.wait_state(("exhausted",), timeout=90)
     r.stop()  # container gone: nothing live to ask
 
     meta = json.loads((r.run_dir / "iterations" / "0001" / "meta.json").read_text())

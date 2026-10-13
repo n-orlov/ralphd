@@ -73,7 +73,7 @@ from ..engine.state import (
     IMAGE_RECORD_KEYS,
     NO_ARTIFACTS,
     NO_ROUTER_CALLS,
-    NONTERMINAL_STATES,
+    LOADABLE_NONTERMINAL_STATES,
     RUN_DOCUMENT_ABSENT,
     AMENDMENT_MODE_STATUS,
     AMENDMENT_WAVE_TARGET,
@@ -82,7 +82,8 @@ from ..engine.state import (
     TASK_STATUS_LABELS,
     TERMINAL_STATES,
     TERMINATION_CLASS_SELF,
-    TIMED_OUT_STATE,
+    EXHAUSTED_STATE,
+    LEGACY_TIMED_OUT_STATE,
     amendment_entries,
     archived_approach_dir,
     archived_approach_numbers,
@@ -115,6 +116,8 @@ from ..engine.state import (
     format_pause_detail_line,
     format_provisioning_lines,
     escalation_pause_markers,
+    exhausted_budget_of,
+    format_state_display,
     format_router_calls_listing,
     format_run_document_listing,
     format_task_counts,
@@ -907,7 +910,7 @@ def _read_auto_resume_setting(run_id: str) -> bool:
     all) or one whose config dir is gone.
 
     Task 018 (v0.24 requirement F.2, issue #46): also False while the run
-    is currently recorded `timed_out` -- the hold exists so a human decides
+    is currently recorded `exhausted` -- the hold exists so a human decides
     to spend another window, and an unattended `doctor --fix` sweep that
     keeps granting one back defeats the point (the budget stops being a
     budget). This is the ONE call site `_auto_resume_dangling` consults to
@@ -922,7 +925,7 @@ def _read_auto_resume_setting(run_id: str) -> bool:
     while it stays held, matching the PRD's "only the hold is excluded".
     """
     status = _read_json(run_root(run_id) / "status.json", {}) or {}
-    if status.get("state") == TIMED_OUT_STATE:
+    if status.get("state") in (EXHAUSTED_STATE, LEGACY_TIMED_OUT_STATE):
         return False
     doc = _read_json(_auto_resume_path(config_root(run_id)), {}) or {}
     if "auto_resume" not in doc:
@@ -2700,7 +2703,7 @@ def cmd_start(args):
 
 # Recorded states that mean the job is over, so `stop`/`rm --force` may take
 # its containers and directories away. Defined ONCE in engine/state.py beside
-# `NONTERMINAL_STATES` (task 030) because the hub's delete endpoint gates on
+# `LOADABLE_NONTERMINAL_STATES` (task 030) because the hub's delete endpoint gates on
 # exactly the same tuple; re-exported here under its historical name.
 
 
@@ -2748,7 +2751,7 @@ def _engine_is_live(run_id: str) -> bool:
     except (urllib.error.URLError, TimeoutError, ConnectionError, OSError,
             json.JSONDecodeError):
         return False
-    return isinstance(status, dict) and status.get("state") in NONTERMINAL_STATES
+    return isinstance(status, dict) and status.get("state") in LOADABLE_NONTERMINAL_STATES
 
 
 def _terminal_event_ends_stream(run_id: str, ev: dict) -> bool:
@@ -3194,6 +3197,35 @@ def _dangling_phrase(entry: dict, key: str) -> str:
                                 _DANGLING_PHRASE[CONTAINER_ABSENT])[key]
 
 
+_EXHAUSTED_TOPUP_FLAG = {"iterations": ("iterations", "--iterations +10"),
+                         "time": ("timeout", "--timeout +3600"),
+                         "approaches": ("approaches", "--approaches +1")}
+
+
+def _exhausted_resume_refusal(run_id: str, status: dict, args) -> str | None:
+    """v0.36 requirement G.2: the refusal text for a `resume` of an
+    `exhausted` run that carries no top-up of the budget that ran out, e.g.
+    `exhausted: approaches 3/3 -- ralphctl resume <run> --approaches +1`;
+    `None` when the run is not exhausted or the named budget was topped up.
+    """
+    budget = exhausted_budget_of(status)
+    if budget is None:
+        return None
+    attr, example = _EXHAUSTED_TOPUP_FLAG[budget]
+    if getattr(args, attr, None):
+        return None
+    if budget == "approaches":
+        progress = (f"{status.get('approach', '?')}/"
+                    f"{status.get('maxApproaches', '?')}")
+    elif budget == "iterations":
+        progress = (f"{status.get('iterationsUsed', '?')}/"
+                    f"{status.get('iterationsBudget', '?')}")
+    else:
+        progress = "deadline passed"
+    return (f"exhausted: {budget} {progress} \u2014 "
+            f"ralphctl resume {run_id} {example}")
+
+
 def cmd_resume(args):
     """PRD req 16: start a fresh container over an *existing* run dir. The
     engine side (task 028, src/ralphd/engine/loop.py:_resume_point) detects
@@ -3244,10 +3276,6 @@ def cmd_resume(args):
     allow_docker, docker_src = _resolve_resume_docker_access(args, cdir)
     if allow_docker:
         _validated_docker_sock(docker_src, cdir)
-    if running is False:
-        # exited/stopped container occupying the name -- `docker run --name`
-        # refuses to reuse a name already in use by any container.
-        sh([DOCKER, "rm", "-f", name])
 
     job_path = cdir / "job.yaml"
     job = _read_job_yaml(job_path)
@@ -3262,6 +3290,18 @@ def cmd_resume(args):
         _apply_iteration_timeout_topup(job, args.iteration_timeout)
     if args.iterations or args.approaches or args.timeout or args.iteration_timeout:
         _write_job_yaml(job_path, job)
+    # v0.36 requirement G.2: an `exhausted` run resumes only with a top-up
+    # of the budget it ran out of. Checked AFTER the write above, so any
+    # OTHER top-up passed alongside is still applied (the next resume then
+    # needs only the named one).
+    refusal = _exhausted_resume_refusal(
+        run_id, _read_json(rdir / "status.json", {}) or {}, args)
+    if refusal:
+        die(2, f"resume refused -- {refusal}")
+    if running is False:
+        # exited/stopped container occupying the name -- `docker run --name`
+        # refuses to reuse a name already in use by any container.
+        sh([DOCKER, "rm", "-f", name])
     prev_meta = host_meta(run_id)
     # `--image` on resume pins as always; with no flag, reproduce the image this
     # run started on from its own run state (task 036, H4), falling back to the
@@ -3427,7 +3467,7 @@ def cmd_resume(args):
 # same key names, same lifecycle orders, same missing-value and tie-break
 # rules -- so an operator who sorts the table in the browser and then types
 # `ralphctl runs --sort <key>` gets the same order, not a second dialect.
-RUN_STATE_ORDER = ["starting", "running", "paused", "finishing", "timed_out",
+RUN_STATE_ORDER = ["starting", "running", "paused", "finishing", "exhausted",
                   "succeeded", "failed", "aborted"]
 RUN_VERDICT_ORDER = ["", "unverified", "verified", "verified-with-residuals"]
 # Keys whose *natural* first direction is descending (biggest/newest first),
@@ -3564,6 +3604,11 @@ def cmd_runs(args):
                          # `pauseMarker` is `""` for every other reason
                          # (including every OTHER `paused` run).
                          "pauseReason": status.get("pauseReason"),
+                         # v0.36 requirement G: the budget an `exhausted`
+                         # hold ran out of (null for every other state) and
+                         # the `exhausted (<budget>)` text both surfaces show.
+                         "exhaustedBudget": exhausted_budget_of(status),
+                         "stateDisplay": format_state_display(status),
                          # Task 005 (#269): the in-memory
                          # `rejected_incurable` hold gets its own marker
                          # too (`state.escalation_pause_markers`), the same
@@ -3618,7 +3663,7 @@ def cmd_runs(args):
                          iterations="ITER", startedAt="STARTED",
                          cost="COST"))
         for r in rows:
-            state_display = str(r["state"])
+            state_display = str(r["stateDisplay"])
             if r.get("pauseMarker"):
                 state_display = f"{state_display} {r['pauseMarker']}"
             print(fmt.format(
@@ -3931,21 +3976,22 @@ def _format_degraded_lines(status: dict) -> list[str]:
                 lines.extend(f"           {extra}" for extra in wrapped[1:])
                 return lines
             return ["degraded:  run ended degraded (no reason recorded)"]
-        # Cure-01-02-2 (v0.24 requirement B.1, #169): `timed_out` is the
-        # deadline/budget HOLD (task 008) -- resume-eligible, nothing in
+        # Cure-01-02-2 (v0.24 requirement B.1, #169): `exhausted` is the
+        # budget HOLD (v0.36 requirement G) -- resume-eligible, nothing in
         # flight, no retry attempt actually running and no backoff wait
         # pending. It is not in TERMINAL_STATES above (a hold is not an
-        # outcome, `timed_out` never joins that tuple) but it must not fall
+        # outcome, `exhausted` never joins that tuple) but it must not fall
         # into the generic "a retry attempt is running" sentence below
         # either -- that is exactly the still-working misreading B.1
         # forbids (the same bug cure-01-05 already fixed in app.js's
         # `renderInfraWait`). `reason` is the hold's own note
-        # (`_finish_timed_out`, docs/api.md), quoted the same way the
+        # (`_finish_exhausted`, docs/api.md), quoted the same way the
         # terminal branch above quotes its own reason.
-        if status.get("state") == TIMED_OUT_STATE:
+        if status.get("state") in (EXHAUSTED_STATE, LEGACY_TIMED_OUT_STATE):
             reason = str(status.get("reason") or "").strip()
-            note = (f"held at the deadline ({reason})" if reason
-                    else "held at the deadline (no reason recorded)")
+            held = format_state_display(status)
+            note = (f"held: {held} ({reason})" if reason
+                    else f"held: {held} (no reason recorded)")
             wrapped = textwrap.wrap(note, width=64) or [note]
             lines = [f"degraded:  {wrapped[0]}"]
             lines.extend(f"           {extra}" for extra in wrapped[1:])
@@ -4297,7 +4343,9 @@ def cmd_status(args):
     # fallback above already does for `tasks`/`provisioning`. `--json`
     # carries the same three facts the hub's run payloads do
     # (`ui_server._with_pause_markers`), under the same key names.
-    state_display = str(status.get('state'))
+    state_display = format_state_display(status)
+    if exhausted_budget_of(status) is not None:
+        status["exhaustedBudget"] = exhausted_budget_of(status)
     _markers = escalation_pause_markers(run_root(args.run_id), status)
     status.update(_markers)
     for _marker in (_markers["pauseMarker"],
@@ -6657,7 +6705,7 @@ def _teardown_container(run_id: str, reason: str) -> None:
 def cmd_stop(args):
     status = _read_json(run_root(args.run_id) / "status.json", {})
     state = status.get("state")
-    # Task 008 (v0.24 requirement B.1, #169): a `timed_out` run is HELD, not
+    # Task 008 (v0.24 requirement B.1, #169): an `exhausted` run is HELD, not
     # working -- its job deadline (or iteration budget) expired, the
     # iteration that was in flight finished on its own, and the engine wrote
     # the position a later `resume` starts from. There is nothing in flight
@@ -6668,7 +6716,8 @@ def cmd_stop(args):
     # reading it as still-holding) -- this gate is the one place the hold and
     # a stopped run are deliberately treated alike, which is what B.1 asks
     # for. `rm`'s own guard (cmd_rm) carries the same carve-out.
-    if state not in TERMINAL_STATES and state != TIMED_OUT_STATE:
+    if (state not in TERMINAL_STATES
+            and state not in (EXHAUSTED_STATE, LEGACY_TIMED_OUT_STATE)):
         if not args.force:
             die(5, "job still running — use `abort` first or `stop --force`")
         try:
@@ -6732,7 +6781,7 @@ def cmd_rm(args):
     explicit -- `abort`, or `stop --force`.
 
     Task 014 (#56): the reflect unwind's `finishing` state (engine/state.py's
-    `NONTERMINAL_STATES`, task 012) is neither of those two things -- the
+    `LOADABLE_NONTERMINAL_STATES`, task 012) is neither of those two things -- the
     verdict is already settled, nothing is "still running" that `abort`
     could stop, but the terminal state is not yet on disk either. Plain `rm`
     refuses it with a reason naming the unwind (checked BEFORE the generic
@@ -6762,7 +6811,8 @@ def cmd_rm(args):
     if container_exists and not args.force:
         die(5, "container still exists — `stop` first (or `rm --force`)")
     if (container_exists and state not in TERMINAL_STATES
-            and state not in ("finishing", TIMED_OUT_STATE)):
+            and state not in ("finishing", EXHAUSTED_STATE,
+                              LEGACY_TIMED_OUT_STATE)):
         die(5, f"job still running (state: {state or 'unknown'}) — `abort` "
                "first, then `rm --force`")
     if not args.yes and sys.stdin.isatty():
@@ -6815,12 +6865,12 @@ _TASK_STATUSES = ("pending", "in-progress", "awaiting-validation", "validated",
 # (engine/state.py's `TASK_FAILURE_KINDS`), never by a sixth status, which
 # is what keeps every surface that counts statuses adding up.
 # `_diagnose_tasks_json` below validates both halves together.
-_STATUS_STATES = ("starting", "running", "paused", "finishing", "timed_out",
+_STATUS_STATES = ("starting", "running", "paused", "finishing", "exhausted",
                   "succeeded", "failed", "aborted")
 # Recorded states that mean "a live engine still owns this run": if no
 # container exists for one of these, the run is a zombie (task 021). Defined
 # once in engine/state.py (task 024) -- the hub server needs the same set.
-_NONTERMINAL_STATUS_STATES = NONTERMINAL_STATES
+_NONTERMINAL_STATUS_STATES = LOADABLE_NONTERMINAL_STATES
 
 
 def _diagnose_status_json(rdir: Path) -> list[str]:
@@ -6841,7 +6891,7 @@ def _diagnose_status_json(rdir: Path) -> list[str]:
     state = doc.get("state")
     if state is None:
         issues.append("status.json: missing 'state' field")
-    elif state not in _STATUS_STATES:
+    elif state not in _STATUS_STATES and state != LEGACY_TIMED_OUT_STATE:
         issues.append(f"status.json: unrecognized state {state!r}")
     sv = doc.get("schemaVersion")
     if sv is not None and not isinstance(sv, int):
@@ -7399,7 +7449,7 @@ def _suggestions_midflight(root: Path, source_hash: str) -> list[dict]:
     for d in sorted(runs_dir.iterdir()):
         status = _read_json(d / "status.json", {})
         if not isinstance(status, dict) or \
-                status.get("state") not in NONTERMINAL_STATES:
+                status.get("state") not in LOADABLE_NONTERMINAL_STATES:
             continue
         reasons = _suggestions_tree_ties(d, root, source_hash)
         if not reasons:
@@ -8097,7 +8147,7 @@ def _registry_uses_codex(reg: Path, reg_cfg: dict) -> bool:
     if runs.is_dir():
         for d in sorted(runs.iterdir()):
             status = _read_json(d / "status.json", {})
-            if not isinstance(status, dict) or status.get("state") not in NONTERMINAL_STATES:
+            if not isinstance(status, dict) or status.get("state") not in LOADABLE_NONTERMINAL_STATES:
                 continue
             if _harness_tables_name_codex(load(config_root(d.name) / "job.yaml")):
                 return True
@@ -8183,7 +8233,7 @@ def _run_image_staleness(source_hash: str | None) -> list[dict]:
     entries = []
     for d in sorted(runs_dir.iterdir()):
         status = _read_json(d / "status.json", {})
-        if not isinstance(status, dict) or status.get("state") not in NONTERMINAL_STATES:
+        if not isinstance(status, dict) or status.get("state") not in LOADABLE_NONTERMINAL_STATES:
             continue
         rec = image_record(d)
         entries.append({"runId": d.name,
@@ -8246,7 +8296,7 @@ def _run_notifier_configuration() -> list[str]:
     unconfigured = []
     for d in sorted(runs_dir.iterdir()):
         status = _read_json(d / "status.json", {})
-        if not isinstance(status, dict) or status.get("state") not in NONTERMINAL_STATES:
+        if not isinstance(status, dict) or status.get("state") not in LOADABLE_NONTERMINAL_STATES:
             continue
         if not _run_notifier_url_configured(d.name):
             unconfigured.append(d.name)

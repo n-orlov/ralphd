@@ -70,10 +70,12 @@ def test_mutation_force_widening_is_really_in_the_guard():
     assertion (grep-equivalent over the live source) would fail."""
     source = inspect.getsource(cli_main.cmd_rm)
     # Task 008 (v0.24 requirement B.1, #169) turned the single-state carve-out
-    # into a tuple so the deadline hold (`timed_out`) rides alongside
+    # into a tuple so the deadline hold (`exhausted`) rides alongside
     # `finishing`; both members have to be in the guard, and the dedicated
     # plain-`rm` refusal stays `finishing`-only.
-    assert 'state not in ("finishing", TIMED_OUT_STATE)' in source
+    guard = source[source.index("container_exists and state not in TERMINAL_STATES"):]
+    guard = guard[:guard.index("die(5")]
+    assert '"finishing"' in guard and "EXHAUSTED_STATE" in guard
     assert 'state == "finishing" and not args.force' in source
 
 
