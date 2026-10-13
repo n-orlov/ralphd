@@ -5,7 +5,7 @@
 #
 # Task 012 (requirement I.2): GitHub Actions' self-hosted `container:`
 # runtime does NOT bind-mount `$GITHUB_WORKSPACE` at an identical host path
-# -- measured directly (heavy.yml run 35163222049, job 105018454092: the
+# -- measured directly (a CI run 35163222049, job 105018454092: the
 # runner mounts its own `_work` directory at `/__w` inside the job's
 # container regardless of the runner host's own absolute path, so
 # `docker run -v "$GITHUB_WORKSPACE":/check:ro ...` mounted an empty

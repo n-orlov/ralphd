@@ -4,7 +4,7 @@ name = "ralphd"
 # string is spelled in src/ralphd/__init__.py (__version__, served by
 # `GET /version` and both --version flags); tests/test_packaging_metadata.py
 # holds the two in agreement and checks the docs' claims against them.
-version = "0.33.0"
+version = "0.35.0"
 description = "Locally runnable, dockerized autonomous coding loop (Ralph technique) driven by pi"
 readme = "README.md"
 license = "Apache-2.0"
@@ -82,7 +82,7 @@ testpaths = ["tests"]
 # Without this setting the only backstops are sized for whole phases: the
 # worker's bash tool abandons the command WITHOUT killing it, the engine's
 # `iteration_timeout_s` costs a whole iteration with no task completed, and
-# `gate.yml`'s `timeout-minutes: 45` concludes as `cancelled`, which is not a
+# ci.yml's fast job `timeout-minutes: 45` concludes as `cancelled`, which is not a
 # verdict (#189). Each turns a ten-second authoring mistake into a ten- to
 # forty-five-minute loss carrying no diagnosis.
 #

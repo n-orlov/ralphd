@@ -17,7 +17,7 @@ dir's own files -- strictly black-box, per the PRD's testing rules.
 
 This test file is itself executed *inside* a container whose own filesystem
 is a bind mount of some real host directory -- this repo's own selfdev job
-container normally, but also (task 012, requirement I) heavy.yml's own
+container normally, but also (task 012, requirement I) the retired heavy workflow's own
 docker-tier job, containerized the same way and mounted at a DIFFERENT
 in-container path (`$GITHUB_WORKSPACE`, e.g. `/__w/ralphd/ralphd`, not
 `/workspace`). Two consequences follow directly from running inside some
@@ -30,7 +30,7 @@ such container, both solved without touching any non-test source file:
    be a real host path -- but this container's own filesystem only exposes
    this repo's own checkout (bind-mounted from ``$RALPHD_HOST_WORKSPACE`` at
    whatever path ``REPO`` resolves to here -- ``/workspace`` in this repo's
-   own selfdev job, ``$GITHUB_WORKSPACE`` under heavy.yml's containerized
+   own selfdev job, ``$GITHUB_WORKSPACE`` under the retired heavy workflow's containerized
    docker-tier) and ``/run/ralphd`` (from ``$RALPHD_HOST_RUN_DIR``).
    ``RALPHD_DOCKER`` (an env var ``ralphctl`` already reads everywhere it
    shells out to ``docker``, used elsewhere for the recording stub) is
@@ -138,7 +138,7 @@ def _host_path(path: Path) -> str:
     """`path`'s spelling on the REAL host, which is what a sibling
     container's `-v` source must be. Identical to `path` on a bare host;
     inside a container whose own checkout is itself a bind mount (this
-    repo's own selfdev job container at `/workspace`, or heavy.yml's own
+    repo's own selfdev job container at `/workspace`, or the retired heavy workflow's own
     containerized docker-tier job at `$GITHUB_WORKSPACE`), the same
     translation the hostpath-wrapper applies to `ralphctl`'s mounts applies
     here too (see this module's docstring)."""
@@ -202,7 +202,7 @@ def test_resolve_container_host_path_recovers_a_relocated_ancestor_mount():
     that path's own mount has no `Destination` entry of its own -- only an
     ANCESTOR of it does. This is exactly GitHub Actions' own
     `container:` shape (`$GITHUB_WORKSPACE` is a subdirectory of the
-    single `/__w` bind, measured directly on heavy.yml run 35163222049 --
+    single `/__w` bind, measured directly on the retired heavy workflow run 35163222049 --
     see that script's own header) and the reason a naive
     `docker run -v "$GITHUB_WORKSPACE":...` mounted an empty directory the
     first time this task ran it for real.
@@ -214,7 +214,7 @@ def test_resolve_container_host_path_recovers_a_relocated_ancestor_mount():
     sibling mounts whatever host path the script printed and must find this
     repo's own `pyproject.toml` there."""
     host_repo = _host_path(REPO)
-    # The SAME pinned digest heavy.yml's docker-tier and nightly.yml's
+    # The SAME pinned digest the retired heavy workflow's docker-tier and nightly.yml's
     # dev-layout job now run in (task 012, requirement I) -- not
     # `_reap_image()` (container/Dockerfile's `-slim` base has no curl).
     image = (

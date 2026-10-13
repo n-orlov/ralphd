@@ -1,9 +1,9 @@
 """Task 077 (steer 008 task A + steer 009): the nightly dev-layout lane is a
-six-cell dockerized image x PYTHONUSERBASE matrix, and heavy.yml's browser
-tier is pinned to the operator's `browser-runner` runner label.
+six-cell dockerized image x PYTHONUSERBASE matrix, and ci.yml's browser
+job is pinned to the operator's `browser-runner` runner label.
 
 This module parses `.github/workflows/nightly.yml` and
-`.github/workflows/heavy.yml` with PyYAML and checks the shape steer 008 and
+`.github/workflows/ci.yml` with PyYAML and checks the shape steer 008 and
 009 committed to, rather than trusting that a future edit keeps it -- the
 same "read what the assertion actually reads" discipline notes.md rule 10
 names for a rendered prompt applies to a workflow file: this module reads
@@ -54,7 +54,11 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 NIGHTLY_PATH = REPO_ROOT / ".github" / "workflows" / "nightly.yml"
-HEAVY_PATH = REPO_ROOT / ".github" / "workflows" / "heavy.yml"
+CI_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+
+# ci.yml's two tiers that carry the docker/browser coverage the retired heavy
+# workflow held, and so the reap-before-checkout rule (task 004).
+HEAVY_JOBS = ("docker", "browser")
 
 # The nightly job's runner labels: the pool plus capability labels only.
 POOL_LABELS = ["self-hosted", "linux", "x64", "ci-pool"]
@@ -457,7 +461,7 @@ def _check_cell_hardening(run_scripts: list[str]) -> list[str]:
     """Task 079 (steer 011 defects 1 and 2): every cell's docker payload must
     install `git`, must drop privileges to a non-root uid before the suite
     runs, and must never gain a reachable docker daemon of its own (`-m
-    docker` coverage stays in heavy.yml)."""
+    docker` coverage stays in ci.yml's `docker` job)."""
     problems: list[str] = []
     payloads = [
         "".join(run[start:end] for start, end in _docker_payload_spans(run))
@@ -539,38 +543,39 @@ def check_no_browser_runner_label(workflow: dict, *, job_names: list[str]) -> li
     return problems
 
 
-def check_heavy_browser_runner(workflow: dict) -> list[str]:
+def check_ci_browser_runner(workflow: dict) -> list[str]:
     problems: list[str] = []
     jobs = workflow.get("jobs") or {}
-    docker_tier = jobs.get("docker-tier") or {}
-    browser_tier = jobs.get("browser-tier") or {}
-    if "browser-runner" in (docker_tier.get("runs-on") or []):
-        problems.append("docker-tier's runs-on carries browser-runner")
-    if "browser-runner" not in (browser_tier.get("runs-on") or []):
-        problems.append("browser-tier's runs-on is missing browser-runner")
+    for job_name, job in jobs.items():
+        labels = job.get("runs-on") or []
+        if job_name != "browser" and "browser-runner" in labels:
+            problems.append(f"{job_name}'s runs-on carries browser-runner")
+    if "browser-runner" not in ((jobs.get("browser") or {}).get("runs-on") or []):
+        problems.append("browser's runs-on is missing browser-runner")
     return problems
 
 
-def check_heavy_litter_reap(workflow: dict) -> list[str]:
-    """Task 004 (requirement B, #202): every heavy job must reap root-owned
+def check_ci_litter_reap(workflow: dict) -> list[str]:
+    """Task 004 (requirement B, #202): every ci.yml docker/browser job must reap root-owned
     `.docker-e2e-tmp-*` litter from the runner's reused workspace BEFORE its
     `actions/checkout` step, with root. Without it a hard-killed docker-tier
     container leaves the root-owned authoritative task record inside the
     checkout, `git clean` cannot remove it and the next job on that
-    workspace dies in checkout (heavy 35108739999/35108738499). An empty
+    workspace dies in checkout (CI runs 35108739999/35108738499). An empty
     list means the order holds.
 
     Root comes from one of two places: a nested `docker run --user 0:0 ...`
     when the job itself still runs unprivileged on the bare runner
-    (docker-tier, until task 012), or -- task 011 (requirement H) -- the
+    (the docker job), or -- task 011 (requirement H) -- the
     job's own pinned `container:`, whose default user already IS root, so a
-    plain `rm -rf` needs no nested privilege escalation (browser-tier, from
-    task 011 on). Only the first shape is held to the nested-docker pattern;
+    plain `rm -rf` needs no nested privilege escalation (the browser job). Only the first shape is held to the nested-docker pattern;
     a containerized job reaping with a bare `rm -rf` is correct, not a
     defect this function should flag.
     """
     problems: list[str] = []
     for job_name, job in (workflow.get("jobs") or {}).items():
+        if job_name not in HEAVY_JOBS:
+            continue
         steps = job.get("steps") or []
         containerized = "container" in (job or {})
         reap_at = None
@@ -615,16 +620,16 @@ def test_nightly_workflow_carries_no_browser_runner_label_anywhere():
     assert problems == [], problems
 
 
-def test_heavy_workflow_pins_the_browser_tier_and_reaps_litter_before_checkout(
+def test_ci_workflow_pins_the_browser_job_and_reaps_litter_before_checkout(
     tmp_path,
 ):
     """Two properties of the same file, checked in one node on purpose: the
     fast tier is at its declared collection ceiling, so task 004's reap guard
     lands as assertions inside this existing node (with its own broken
     fixture, so it is non-vacuous) rather than as new nodes."""
-    heavy = _load(HEAVY_PATH)
-    assert check_heavy_browser_runner(heavy) == []
-    assert check_heavy_litter_reap(heavy) == []
+    heavy = _load(CI_PATH)
+    assert check_ci_browser_runner(heavy) == []
+    assert check_ci_litter_reap(heavy) == []
 
     dropped = copy.deepcopy(heavy)
     for job in dropped["jobs"].values():
@@ -633,8 +638,8 @@ def test_heavy_workflow_pins_the_browser_tier_and_reaps_litter_before_checkout(
             for step in job["steps"]
             if ".docker-e2e-tmp-" not in str(step.get("run") or "")
         ]
-    fixture = _dump_fixture(tmp_path, "broken-heavy-no-reap.yml", dropped)
-    problems = check_heavy_litter_reap(_load(fixture))
+    fixture = _dump_fixture(tmp_path, "broken-ci-no-reap.yml", dropped)
+    problems = check_ci_litter_reap(_load(fixture))
     assert [p for p in problems if "no litter-reaping step" in p], problems
 
     late = copy.deepcopy(heavy)
@@ -642,8 +647,8 @@ def test_heavy_workflow_pins_the_browser_tier_and_reaps_litter_before_checkout(
         steps = job["steps"]
         reap = [s for s in steps if ".docker-e2e-tmp-" in str(s.get("run") or "")]
         job["steps"] = [s for s in steps if s not in reap] + reap
-    fixture = _dump_fixture(tmp_path, "broken-heavy-late-reap.yml", late)
-    problems = check_heavy_litter_reap(_load(fixture))
+    fixture = _dump_fixture(tmp_path, "broken-ci-late-reap.yml", late)
+    problems = check_ci_litter_reap(_load(fixture))
     assert [p for p in problems if "AFTER its" in p], problems
 
     unprivileged = copy.deepcopy(heavy)
@@ -652,8 +657,8 @@ def test_heavy_workflow_pins_the_browser_tier_and_reaps_litter_before_checkout(
             run = str(step.get("run") or "")
             if ".docker-e2e-tmp-" in run:
                 step["run"] = run.replace("--user 0:0 ", "")
-    fixture = _dump_fixture(tmp_path, "broken-heavy-unprivileged-reap.yml", unprivileged)
-    problems = check_heavy_litter_reap(_load(fixture))
+    fixture = _dump_fixture(tmp_path, "broken-ci-unprivileged-reap.yml", unprivileged)
+    problems = check_ci_litter_reap(_load(fixture))
     assert [p for p in problems if "without a root" in p], problems
 
 
@@ -914,25 +919,25 @@ def test_nightly_browser_runner_guard_fires_when_a_cell_carries_the_label(tmp_pa
     assert problems, problems
 
 
-def test_heavy_browser_runner_guard_fires_when_the_label_is_on_docker_tier(tmp_path):
-    broken = copy.deepcopy(_load(HEAVY_PATH))
-    broken["jobs"]["docker-tier"]["runs-on"] = list(
-        broken["jobs"]["docker-tier"]["runs-on"]
+def test_ci_browser_runner_guard_fires_when_the_label_is_on_docker_job(tmp_path):
+    broken = copy.deepcopy(_load(CI_PATH))
+    broken["jobs"]["docker"]["runs-on"] = list(
+        broken["jobs"]["docker"]["runs-on"]
     ) + ["browser-runner"]
-    fixture = _dump_fixture(tmp_path, "broken-heavy-docker-label.yml", broken)
-    problems = check_heavy_browser_runner(_load(fixture))
-    assert any("docker-tier" in p for p in problems), problems
+    fixture = _dump_fixture(tmp_path, "broken-ci-docker-label.yml", broken)
+    problems = check_ci_browser_runner(_load(fixture))
+    assert any("docker" in p for p in problems), problems
 
 
-def test_heavy_browser_runner_guard_fires_when_missing_from_browser_tier(tmp_path):
-    broken = copy.deepcopy(_load(HEAVY_PATH))
-    runs_on = broken["jobs"]["browser-tier"]["runs-on"]
-    broken["jobs"]["browser-tier"]["runs-on"] = [
+def test_ci_browser_runner_guard_fires_when_missing_from_browser_job(tmp_path):
+    broken = copy.deepcopy(_load(CI_PATH))
+    runs_on = broken["jobs"]["browser"]["runs-on"]
+    broken["jobs"]["browser"]["runs-on"] = [
         label for label in runs_on if label != "browser-runner"
     ]
-    fixture = _dump_fixture(tmp_path, "broken-heavy-missing-label.yml", broken)
-    problems = check_heavy_browser_runner(_load(fixture))
-    assert any("browser-tier" in p for p in problems), problems
+    fixture = _dump_fixture(tmp_path, "broken-ci-missing-label.yml", broken)
+    problems = check_ci_browser_runner(_load(fixture))
+    assert any("browser" in p for p in problems), problems
 
 
 def _replace_docker_step_run(broken: dict, transform) -> None:
@@ -999,16 +1004,10 @@ def test_dev_layout_cell_hardening_guard_fires_on_each_mutation(tmp_path):
 
 # Filenames must match exactly what `_load_all_workflows` (and the CI system
 # itself) sees: the basename of each file under `.github/workflows/`.
-# gate.yml's `fast` job needs no entry -- task 009 already gave it a
-# `container:`. heavy.yml's `browser-tier` needs no entry either -- task 011
-# (requirement H) gave it one too. nightly.yml's `dev-layout` needs no entry
-# either -- task 012 (requirement I) gave IT a `container:` and that half of
-# I is KEPT. heavy.yml's `docker-tier` is the one entry below: task 012 tried
-# containerizing it too (commits b1f3fb80..8daf54f8) and reverted (branch b,
-# its own exit ramp) when the newest run at the reverting decision still
-# showed live failures with a different shape than every fix already tried
-# addressed -- see that entry's own reason and the docker-tier job's own
-# comment in heavy.yml for the measurement.
+# ci.yml's `fast` and `browser` jobs and nightly.yml's `dev-layout` need no
+# entry: each declares a pinned `container:` (task 009, task 011 and task 012,
+# requirement I). ci.yml's `docker` job is the one containerless tier whose
+# reason is recorded below.
 CONTAINER_ALLOWLIST: dict[tuple[str, str], str] = {
     ("browser-image.yml", "browser-image"): (
         "task 011 (requirement H): this job BUILDS the pinned image the "
@@ -1026,12 +1025,16 @@ CONTAINER_ALLOWLIST: dict[tuple[str, str], str] = {
         "keeps a fork pull request from ever scheduling it."
     ),
     ("ci.yml", "docker"): (
-        "v0.35: the docker tier moved from heavy.yml's `docker-tier` with its "
-        "steps unchanged, and it keeps the host-run shape for the reason "
-        "recorded on the heavy.yml entry below: it builds real images and "
-        "drives real sibling containers over the runner's own docker socket, "
-        "and a container around the client costs the wall-clock margin the "
-        "fixed-window tests depend on."
+        "v0.35: the docker tier keeps the host-run shape the retired heavy "
+        "workflow gave it (task 012, requirement I, branch b -- the exit "
+        "ramp): containerizing it was tried and reverted after live runs "
+        "showed the tier's fixed-window tests (30s/60s hold windows racing an "
+        "iteration's child spawn) losing wall-clock margin once the docker "
+        "client lived one container layer deeper than its daemon. It builds "
+        "real images and drives real sibling containers over the runner's "
+        "own docker socket; the container changes nothing the tests assert, "
+        "only the margin they depend on. nightly.yml's dev-layout "
+        "containerization (the other half of requirement I) is unaffected."
     ),
     ("ci.yml", "required"): (
         "v0.35: the verdict job checks out nothing, reads no secret and uses no "
@@ -1053,48 +1056,6 @@ CONTAINER_ALLOWLIST: dict[tuple[str, str], str] = {
         "needs no pinned interpreter patch level, no docker socket and no "
         "browser; asking for `docker-host` only to wrap a ruff run in a "
         "container would hold one of the pool's scarce socket-bearing slots."
-    ),
-    ("heavy.yml", "docker-tier"): (
-        "task 012 (requirement I, branch b -- exit ramp, decided 2026-09-17 "
-        "~09:50Z, docker tier not green by the 12:30Z decision point so "
-        "decided early rather than burning more of the clock): containerized "
-        "at b1f3fb80, then five rounds of live fixes over commits ab55dfe3, "
-        "52d4972d, 3ff44c93, c71e0105, 8daf54f8 cut the tier's own failure "
-        "count from 20 failed to 10 failed to, on run 35202282423 at 8daf54f8 "
-        "(the newest concluded run at the containerized commit), 6 failed + "
-        "3 errors: 3x test_steer.py spool tests ERRORED at setup "
-        "(tests/test_steer.py::test_the_hat_uid_cannot_write_tasks_json_and_"
-        "the_engine_owns_it, ::test_the_spooled_request_is_applied_by_the_"
-        "engine_not_by_the_agent_uid, ::test_a_malformed_spool_request_is_"
-        "refused_without_ending_the_run) because the stub pi worker child's "
-        "own hold-entered marker (.hold-spool-steer.stub-hold-entered) never "
-        "appeared within 30s -- the held phase never ran; "
-        "tests/test_engine_uid_docker.py::test_the_engine_can_still_stop_its_"
-        "own_iteration failed the identical way on a different hold file "
-        "(.hold-interrupt-boundary); "
-        "tests/test_docker_sibling_e2e.py::test_resume_continues_after_"
-        "container_stop and tests/test_tasks_record_docker.py::test_a_"
-        "resumed_container_still_reads_the_protected_record both landed "
-        "state: aborted again, unchanged from the prior (10-failed) run; and "
-        "tests/test_control_plane_auth_docker.py's three A.6 probes failed a "
-        "find /config exit-status race the test's own comment already names "
-        "as pre-existing at b48489cd, before task 012 started. None of that "
-        "failure set is the shape any of the five live fixes above targeted, "
-        "and the ones that ARE new (the hold-never-entered timeouts) share "
-        "one property: every one is a test whose margin is a fixed "
-        "wall-clock hold window (30s/60s) racing an iteration's own child "
-        "spawn, and the client process issuing every sibling docker "
-        "run/exec now lives one container layer deeper than the daemon it "
-        "talks to, on a 4-core/7GB box this workflow's own header documents "
-        "as running the browser tier concurrently by design (job 105139628612 "
-        "of the same run confirms the browser tier ran alongside). The "
-        "client's container-ness costs the wall-clock margin those "
-        "fixed-window tests depend on; it does not change what the tests "
-        "assert. Reverted to the host-run shape in the same commit as this "
-        "entry. nightly.yml's dev-layout containerization (the other half "
-        "of requirement I) is unaffected and stays containerized -- see "
-        "artifacts/reports/v0.22-petitions.md for the petition against this "
-        "docker-tier half only."
     ),
 }
 

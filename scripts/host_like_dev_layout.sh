@@ -68,14 +68,14 @@
 # cells of that would be ~5 h of runner time across two slots. The content a
 # `-m fast` selection drops relative to unfiltered -- the `docker` and
 # `browser` tiers -- is already run at the gate-blocking level by
-# `.github/workflows/heavy.yml` and does not vary with the interpreter or
+# `.github/workflows/ci.yml` and does not vary with the interpreter or
 # libc a dev-layout cell is exercising, so the matrix loses no coverage that
 # varies with the axis under test by dropping it here. That is REASON ONE the
 # default is `fast`.
 #
 # REASON TWO (steer 009): `-m fast` EXCLUDES `-m browser` (tests/conftest.py
 # never stamps a `browser`-marked node with `fast`), so no matrix cell ever
-# drives a browser -- `.github/workflows/heavy.yml`'s `browser tier` job stays
+# drives a browser -- `.github/workflows/ci.yml`'s `browser` job stays
 # the ONLY browser-bearing job on the self-hosted box. That is what makes the
 # single `browser-runner` label the operator placed on exactly one of the
 # VPS's two runner slots sufficient to serialise browser work across
@@ -114,7 +114,7 @@
 # exact shape task 018 found leaving the `nightly`-marked nodes and the 27
 # dev-layout nodes in `tests/test_host_like_dev_layout_script.py` (both
 # outside `fast`/`smoke`, and neither `docker` nor `browser`, so neither one
-# is covered by `.github/workflows/heavy.yml` either) uncovered by every CI
+# is covered by `.github/workflows/ci.yml` either) uncovered by every CI
 # lane. THIS EXACT invocation shape -- no HOST_LIKE_DEV_LAYOUT_TIER override
 # AND no pytest args of its own ($# -eq 0) -- now also runs a SECOND pytest
 # invocation, in the same already-built $HOME/user base, selecting every
@@ -126,7 +126,7 @@
 # complement of `fast`/`docker`/`browser` is precisely the `nightly`-marked
 # nodes and the dev-layout module's own nodes -- nothing more, nothing less
 # -- so this one supplemental pass is what makes nightly's own dev-layout
-# cells the sole remaining coverage for that set, alongside heavy.yml's
+# cells the sole remaining coverage for that set, alongside ci.yml's
 # `-m docker` and `-m browser` jobs for the other two tiers. A caller that
 # supplies EITHER an explicit HOST_LIKE_DEV_LAYOUT_TIER OR any pytest
 # argument of its own (a node id, a path, `--collect-only`, ...) gets its
@@ -245,7 +245,7 @@
 #                        built $HOME/user base, selecting
 #                        `-m "not fast and not smoke and not docker and not
 #                        browser"`: every collected node the primary run
-#                        left out that `.github/workflows/heavy.yml`'s
+#                        left out that `.github/workflows/ci.yml`'s
 #                        `docker`/`browser` jobs do not cover either (the
 #                        `nightly`-marked nodes and
 #                        `tests/test_host_like_dev_layout_script.py`'s own

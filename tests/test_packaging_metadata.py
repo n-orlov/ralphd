@@ -120,6 +120,16 @@ def test_the_declared_version_is_at_least_0_33_0():
     )
 
 
+def test_the_declared_version_is_at_least_0_35_0():
+    """The release that retires the gate and heavy workflows for the one
+    `ci.yml` is 0.35.0. A tuple comparison, so a later bump keeps passing."""
+    v = tuple(int(part) for part in declared_version().split("."))
+    assert v >= (0, 35, 0), (
+        f"declared version {declared_version()!r} is below 0.35.0 -- the release "
+        "that retires the per-tier workflows for ci.yml is 0.35.0"
+    )
+
+
 def test_the_api_doc_get_version_example_reads_the_declared_version():
     """docs/api.md's `GET /version` example is a literal claim: it must read
     the pyproject version, which `src/ralphd/__init__.py` is held equal to."""

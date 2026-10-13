@@ -1,6 +1,6 @@
 """Task cure-01-01-2 (Task 018 criterion 3): the `browser`, `docker`,
 dev-layout and `nightly`-marked nodes were covered by NOTHING -- neither the
-fast/smoke sweep (task 018) nor `.github/workflows/heavy.yml`'s `docker`/
+fast/smoke sweep (task 018) nor `.github/workflows/ci.yml`'s `docker`/
 `browser` jobs nor `nightly.yml`'s dev-layout cells, since every cell calls
 `scripts/host_like_dev_layout.sh` with no override at all, and that script's
 own default (`fast`) selection never touched them.
@@ -26,7 +26,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "host_like_dev_layout.sh"
-HEAVY_WORKFLOW = REPO / ".github" / "workflows" / "heavy.yml"
+CI_WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 
 _PIP_CACHE_ENV = {
     "HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR": "/tmp/host-like-dev-layout-pip-cache-supp-test",
@@ -288,7 +288,7 @@ def test_the_header_documents_the_supplemental_default_run():
     assert "SECOND pytest" in prose, prose[-3000:]
     assert _SUPPLEMENTAL_MARKER_EXPR in prose, prose[-3000:]
     assert "nightly.yml" in prose
-    assert "heavy.yml" in prose
+    assert "ci.yml" in prose
     assert "disables the" in prose and "supplemental pass" in prose, prose[-3000:]
 
 
@@ -296,7 +296,7 @@ def test_the_supplemental_expression_selects_exactly_what_fast_docker_and_browse
     """Criterion (2)'s collection proof: every collected node belongs to
     exactly one of fast/docker/browser/"the supplemental leftover" (`smoke`
     is a subset of `fast`, so it adds nothing to the partition) -- so the
-    unchanged `heavy.yml` (`-m docker`, `-m browser`) plus this script's own
+    `ci.yml` (`-m docker`, `-m browser`) plus this script's own
     `-m fast` plus its new supplemental pass leaves nothing uncovered, with
     no double-count either."""
 
@@ -353,9 +353,9 @@ def test_the_supplemental_expression_selects_exactly_what_fast_docker_and_browse
         total,
     )
 
-    heavy_text = HEAVY_WORKFLOW.read_text()
-    assert "-m docker" in heavy_text
-    assert "-m browser" in heavy_text
+    ci_text = CI_WORKFLOW.read_text()
+    assert "-m docker" in ci_text
+    assert "-m browser" in ci_text
 
 
 @pytest.mark.parametrize(

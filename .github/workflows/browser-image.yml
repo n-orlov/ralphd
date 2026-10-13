@@ -1,4 +1,4 @@
-# Publishes the browser tier's pinned image (moved from heavy.yml's
+# Publishes the browser tier's pinned image (moved from the retired heavy workflow's
 # `browser-image` job; the steps are unchanged).
 #
 # Why it exists at all: the browser tier wants `playwright-cli` and real Google

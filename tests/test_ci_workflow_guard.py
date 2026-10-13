@@ -60,12 +60,11 @@ PAGES_PERMISSIONS = {"pages", "id-token"}
 
 WORKFLOW_DIR = CI_PATH.parent
 BROWSER_IMAGE_PATH = WORKFLOW_DIR / "browser-image.yml"
-HEAVY_PATH = WORKFLOW_DIR / "heavy.yml"
 BROWSER_IMAGE_DIGEST = (
     "ghcr.io/n-orlov/ralphd-browser-ci"
     "@sha256:2311f2f375f35762e57de5c564c43b30cd5fe7cf7dae9e991370a05100596b7c"
 )
-# The predecessor lanes' bounds (heavy.yml's docker-tier and browser-tier);
+# The predecessor lanes' bounds (the retired heavy workflow's docker and browser tiers);
 # a moved job may never raise them.
 MAX_TIMEOUT_MINUTES = {"docker": 120, "browser": 60}
 RUN_BOUNDED_RE = re.compile(r"scripts/run_bounded\.sh\s+(\d+)\b")
@@ -1205,15 +1204,20 @@ def test_docker_and_browser_need_trusted_and_are_not_scheduled_for_a_fork_pr():
 
 def test_browser_image_workflow_is_dispatch_only_and_the_only_packages_write_holder():
     others = _other_workflows()
-    assert "ci.yml" in others and "heavy.yml" in others
+    assert "ci.yml" in others and "nightly.yml" in others
     assert check_browser_image_workflow(_load(BROWSER_IMAGE_PATH), others) == []
 
 
-def test_heavy_yml_no_longer_publishes_the_browser_image():
-    heavy = _load(HEAVY_PATH)
-    assert "browser-image" not in heavy["jobs"]
-    assert "publish_browser_image" not in str(_triggers(heavy))
-    assert "packages" not in str(heavy.get("permissions"))
+def test_the_retired_workflows_are_gone_and_no_other_workflow_publishes_the_browser_image():
+    assert sorted(p.name for p in WORKFLOW_DIR.glob("*.yml")) == [
+        "browser-image.yml",
+        "ci.yml",
+        "nightly.yml",
+    ]
+    for name, other in _other_workflows().items():
+        assert "browser-image" not in other["jobs"], name
+        assert "publish_browser_image" not in str(_triggers(other)), name
+        assert "packages" not in str(other.get("permissions")), name
 
 
 def test_the_docker_and_browser_check_fails_for_each_broken_job(tmp_path):
@@ -1330,18 +1334,18 @@ def test_the_browser_image_check_fails_for_each_broken_workflow(tmp_path):
     assert check_browser_image_workflow(
         _load(BROWSER_IMAGE_PATH), {**others, "ci.yml": ci_with_write}
     )
-    # heavy.yml carrying the job or the input again is rejected.
-    heavy_with_job = copy.deepcopy(others["heavy.yml"])
-    heavy_with_job["jobs"]["browser-image"] = {"runs-on": "x", "steps": []}
+    # Another workflow carrying the job or the input again is rejected.
+    nightly_with_job = copy.deepcopy(others["nightly.yml"])
+    nightly_with_job["jobs"]["browser-image"] = {"runs-on": "x", "steps": []}
     assert check_browser_image_workflow(
-        _load(BROWSER_IMAGE_PATH), {**others, "heavy.yml": heavy_with_job}
+        _load(BROWSER_IMAGE_PATH), {**others, "nightly.yml": nightly_with_job}
     )
-    heavy_with_input = copy.deepcopy(others["heavy.yml"])
-    _triggers(heavy_with_input)["workflow_dispatch"] = {
+    nightly_with_input = copy.deepcopy(others["nightly.yml"])
+    _triggers(nightly_with_input)["workflow_dispatch"] = {
         "inputs": {"publish_browser_image": {"type": "boolean"}}
     }
     assert check_browser_image_workflow(
-        _load(BROWSER_IMAGE_PATH), {**others, "heavy.yml": heavy_with_input}
+        _load(BROWSER_IMAGE_PATH), {**others, "nightly.yml": nightly_with_input}
     )
 
 

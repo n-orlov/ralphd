@@ -203,7 +203,7 @@ def test_engine_binds_its_api_when_the_config_dir_owner_is_not_the_agent_uid(
         # This outer process cannot read *into* that 0700-owned-by-4321
         # directory either -- the same permission this test's whole premise
         # rests on, from this side of the mismatch -- UNLESS this outer
-        # process is itself root. Task 012 (requirement I): heavy.yml's
+        # process is itself root. Task 012 (requirement I): the retired heavy workflow's
         # docker-tier job runs every step, this pytest process included, as
         # uid 0 (its own header explains why: the plain `docker` client
         # needs no `--group-add` gymnastics to reach the mounted socket),

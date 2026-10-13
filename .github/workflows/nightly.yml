@@ -102,7 +102,7 @@ on:
 # dispatch fired while the 02:00 UTC cron run was still in flight landed on
 # the pool as a SEVENTH and EIGHTH concurrent claim on top of the matrix's
 # own six, with no mechanism stopping it. A `concurrency:` group is blind
-# across *workflows* (heavy.yml's own comment on the browser tier says so,
+# across *workflows* (the retired heavy workflow's own comment on the browser tier says so,
 # and docs/ci.md repeats it for this exact pair) but it is exactly the right
 # tool WITHIN one workflow, which this is. Keyed on `github.ref` rather than
 # a fixed literal so a `workflow_dispatch` against a branch does not queue
@@ -121,21 +121,21 @@ jobs:
   dev-layout:
     name: dev-layout (${{ matrix.image }}, PYTHONUSERBASE ${{ matrix.mode }})
     runs-on: [self-hosted, linux, x64, ci-pool, docker-host]
-    # Task 012 (requirement I): pinned to the SAME digest heavy.yml's
-    # docker-tier and gate.yml's fast job already use -- python:3.12.3,
+    # Task 012 (requirement I): pinned to the SAME digest the retired heavy workflow's
+    # docker-tier and the retired gate workflow's fast job already use -- python:3.12.3,
     # ships curl+tar for the docker-client fetch below, defaults to uid 0
     # (this job's own steps never need a non-root switch: they only
     # ORCHESTRATE the per-cell nested `docker run`, whose OWN payload
     # already drops to uid 1000 via `setpriv` -- unchanged below). `options:`
     # mounts the host's own docker socket, the identical
-    # `-v /var/run/docker.sock:/var/run/docker.sock` shape heavy.yml's
+    # `-v /var/run/docker.sock:/var/run/docker.sock` shape the retired heavy workflow's
     # docker-tier and `docs/architecture.md`'s `--allow-docker` section both
     # use, for the same reason: this job's own steps issue `docker run` for
     # each cell and need a client and a reachable daemon to do it.
     #
     # Host-path translation (I.2): GitHub Actions' own self-hosted
     # `container:` runtime does NOT bind-mount `$GITHUB_WORKSPACE` at an
-    # identical host path (measured, not assumed -- see heavy.yml's docker-
+    # identical host path (measured, not assumed -- see the retired heavy workflow's docker-
     # tier header and `scripts/resolve_container_host_path.sh`'s own header
     # for the run that caught it). Each step below that needs the real host
     # path resolves it FRESH, in its own running shell, by asking the docker
@@ -204,7 +204,7 @@ jobs:
       # Task 012 (requirement I.1): the docker CLIENT this job's own steps
       # need to reach the socket `options:` above mounted -- the base image
       # ships neither. Static, pinned binary: the identical recipe and
-      # version `container/Dockerfile` and heavy.yml's docker-tier already
+      # version `container/Dockerfile` and the retired heavy workflow's docker-tier already
       # use, so no apt/network-repo dependency and no version drift.
       - name: Install the docker client for this pinned container
         run: |
@@ -216,7 +216,7 @@ jobs:
 
       # Task 012 (requirement I.2): THE HOST-PATH TRANSLATION.
       #
-      # MEASURED, not assumed (heavy.yml run 35163222049, job 105018454092):
+      # MEASURED, not assumed (the retired heavy workflow run 35163222049, job 105018454092):
       # GitHub Actions' self-hosted `container:` runtime does NOT bind-mount
       # `$GITHUB_WORKSPACE` at an identical host path -- it mounts the
       # runner's own `_work` directory at the fixed in-container path `/__w`
@@ -234,7 +234,7 @@ jobs:
       # own path, then appends whatever tail of `$GITHUB_WORKSPACE` falls
       # past the closest-covering `Destination`.
       #
-      # MEASURED AGAIN (task 012, attempt 2, live evidence -- see heavy.yml's
+      # MEASURED AGAIN (task 012, attempt 2, live evidence -- see the retired heavy workflow's
       # own copy of this header for the full account): a two-step shape (one
       # step resolving the path into `$GITHUB_ENV`, a later step reading
       # `$RALPHD_HOST_WORKSPACE` back) failed on this self-hosted runner --
@@ -294,7 +294,7 @@ jobs:
       # root's supplementary groups over.
       # No cell installs a docker client, mounts /var/run/docker.sock, or
       # otherwise gains a reachable daemon -- `-m docker` coverage stays in
-      # heavy.yml's docker tier.
+      # the retired heavy workflow's docker tier.
       # The sweep-sha guard module and its one surviving lint are retired
       # entire (requirement A.1, v0.20.2, superseding task 053's earlier
       # trim, #113 step 4): there is no guard module left, and nothing to

@@ -190,7 +190,7 @@ jobs:
         if: always()
         run: scripts/job_timeout_marker.sh 45 "ci fast tier" "${{ job.status }}"
 
-  # The docker tier (moved from heavy.yml's `docker-tier`; the steps are
+  # The docker tier (moved from the retired heavy workflow's `docker-tier`; the steps are
   # unchanged). It runs on the host runner, not in a container: it builds the
   # real job image and drives real sibling containers over the runner's docker
   # socket, which is why it needs `docker-host`. It needs `trusted` and runs
@@ -382,7 +382,7 @@ jobs:
         if: always()
         run: scripts/job_timeout_marker.sh 120 "ci docker tier" "${{ job.status }}"
 
-  # The browser tier (moved from heavy.yml's `browser-tier`; the steps are
+  # The browser tier (moved from the retired heavy workflow's `browser-tier`; the steps are
   # unchanged). `playwright-cli` and real Google Chrome come from the pinned
   # image below, never from the runner. The image is published by
   # `.github/workflows/browser-image.yml` (a deliberate dispatch, never a side
@@ -511,7 +511,7 @@ jobs:
           google-chrome --version
           echo "PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-<unset>}"
 
-      # Task 011 (requirement H) fallout, the same shape gate.yml's `fast`
+      # Task 011 (requirement H) fallout, the same shape the retired gate workflow's `fast`
       # job uses (task 009, requirement F): give the browser tier a real,
       # non-root process uid before it runs -- launching real Chrome as this
       # container's root default user fails even with the sandbox config
@@ -519,14 +519,14 @@ jobs:
       # new namespace ... Operation not permitted", verified against this
       # exact image). `ubuntu` is this image's own preexisting uid-1000
       # account (its base is `ubuntu:24.04`, which ships one) -- no `useradd`
-      # needed, unlike gate.yml's python-slim image which has none. The
+      # needed, unlike the retired gate workflow's python-slim image which has none. The
       # `chown` hands this job's own checkout, its timeout-evidence
       # directory and `$HOME` (GitHub's own per-job bind mount, never the
-      # runner service account's real home -- see gate.yml's `container:`
+      # runner service account's real home -- see the retired gate workflow's `container:`
       # comment for why that distinction matters) to that account. Exempt
       # from the inner-bound wrapper (tests/test_run_bounded_timeout_marker.
       # py's EXEMPT_RUN_STEPS): local, no network fetch, a handful of
-      # seconds even over this tree, same shape as gate.yml's own copy.
+      # seconds even over this tree, same shape as the retired gate workflow's own copy.
       - name: Prepare the browser tier's non-root account
         run: |
           chown -R ubuntu:ubuntu "$GITHUB_WORKSPACE" "$RALPHD_TIMEOUT_EVIDENCE_DIR" "$HOME"
@@ -541,7 +541,7 @@ jobs:
       # waiting on a dead session, and a job that dies that way used to be
       # indistinguishable from this workflow's own push collapse.
       #
-      # `su -p ubuntu -c '...'` (task 011, same shape as gate.yml's `su -p
+      # `su -p ubuntu -c '...'` (task 011, same shape as the retired gate workflow's `su -p
       # ci`, task 009): runs the whole recipe -- run_bounded.sh included --
       # as the non-root account the previous step prepared, `-p` so
       # `$RALPHD_JOB_STARTED_AT`, `$RALPHD_JOB_BOUND_MINUTES`,

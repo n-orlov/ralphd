@@ -7,11 +7,9 @@ both found under exactly that kind of oversubscription). Pinning the worker
 count is not a cure for those defects and is not claimed to be one here --
 see the commit message for which commits (tasks 005-011) are.
 
-This module parses `.github/workflows/ci.yml` (and, while it still exists,
-the retired-to-be `gate.yml`, whose `-n 2` the generic check still covers)
-with PyYAML, the same
+This module parses `.github/workflows/ci.yml` with PyYAML, the same
 discipline `tests/test_ci_dev_layout_matrix_guard.py` uses for
-`nightly.yml`/`heavy.yml`: check the real file, then show the guard is
+`nightly.yml`: check the real file, then show the guard is
 non-vacuous by mutating a deep copy back to `-n auto` in a scratch fixture
 under `tmp_path` (never under `.github/`) and confirming it fires there.
 
@@ -19,7 +17,7 @@ Task 009 (requirement F, #205 step 1) added a second, independent concern to
 this same module rather than a new file: job `fast` declares a
 `container:` with a pinned image reference, and the interpreter's patch
 level it names must be 3.12.3 -- the exact interpreter #182 needed and the
-fleet lost when the lane moved off the VPS (see gate.yml's own header).
+fleet lost when the lane moved off the VPS (see ci.yml's `fast` job).
 `check_pinned_worker_count` covers it, so the pass/fail node covers it too,
 and `test_guard_fires_when_the_container_pin_is_removed` is its mutation
 test.
@@ -34,7 +32,6 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-GATE_PATH = REPO_ROOT / ".github" / "workflows" / "gate.yml"
 CI_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 # v0.35 (decision 9, A.5): ci.yml's `fast` job runs inside a 4-CPU job
@@ -160,13 +157,12 @@ def test_ci_fast_tier_pins_n_4_dist_loadfile_in_the_pinned_container():
     assert problems == [], problems
 
 
-def test_gate_fast_tier_pins_a_numeric_worker_count():
-    """The generic check (numeric `-n`, never `auto`, pinned container) still
-    holds for gate.yml while that workflow exists; ci.yml is covered by
-    `test_ci_fast_tier_pins_n_4_dist_loadfile_in_the_pinned_container`."""
-    if not GATE_PATH.exists():
-        return
-    problems = check_pinned_worker_count(_load(GATE_PATH))
+def test_ci_fast_tier_pins_a_numeric_worker_count():
+    """The generic check (numeric `-n`, never `auto`, pinned container) holds
+    for ci.yml's `fast` job, the workflow that replaced the retired gate
+    workflow; `test_ci_fast_tier_pins_n_4_dist_loadfile_in_the_pinned_container`
+    pins the exact value on top of it."""
+    problems = check_pinned_worker_count(_load(CI_PATH))
     assert problems == [], problems
 
 
@@ -176,7 +172,7 @@ def test_guard_fires_when_mutated_back_to_n_auto(tmp_path):
     assert step is not None
     step["run"] = re.sub(r"-n\s*\d+\b", "-n auto", step["run"])
 
-    fixture = tmp_path / "broken-gate.yml"
+    fixture = tmp_path / "broken-ci.yml"
     fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
 
     problems = check_ci_fast_job(_load(fixture))
@@ -190,7 +186,7 @@ def test_guard_fires_when_the_n_flag_is_dropped(tmp_path):
     assert step is not None
     step["run"] = re.sub(r"-n\s*\d+\b", "", step["run"])
 
-    fixture_no_n = tmp_path / "broken-gate-no-n.yml"
+    fixture_no_n = tmp_path / "broken-ci-no-n.yml"
     fixture_no_n.write_text(yaml.safe_dump(broken_no_n, sort_keys=False), encoding="utf-8")
 
     problems = check_pinned_worker_count(_load(fixture_no_n))
@@ -202,7 +198,7 @@ def test_guard_fires_when_the_container_pin_is_removed(tmp_path):
     fast_job = broken["jobs"]["fast"]
     del fast_job["container"]
 
-    fixture = tmp_path / "broken-gate-no-container.yml"
+    fixture = tmp_path / "broken-ci-no-container.yml"
     fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
 
     problems = check_pinned_worker_count(_load(fixture))
@@ -211,7 +207,7 @@ def test_guard_fires_when_the_container_pin_is_removed(tmp_path):
     mistagged = copy.deepcopy(_load(CI_PATH))
     mistagged["jobs"]["fast"]["container"] = {"image": "python:3.14.5-slim"}
 
-    fixture2 = tmp_path / "broken-gate-wrong-patch.yml"
+    fixture2 = tmp_path / "broken-ci-wrong-patch.yml"
     fixture2.write_text(yaml.safe_dump(mistagged, sort_keys=False), encoding="utf-8")
 
     problems = check_pinned_worker_count(_load(fixture2))

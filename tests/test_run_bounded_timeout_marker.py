@@ -702,8 +702,6 @@ def test_the_classifier_claims_nothing_when_it_has_no_evidence_directory(tmp_pat
 
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 WORKFLOW_NAMES = (
-    "gate.yml",
-    "heavy.yml",
     "nightly.yml",
     "ci.yml",
     "browser-image.yml",
@@ -721,44 +719,6 @@ JOB_STATUS_EXPR = "job.status"
 # state: no network fetch, no test tier, no container payload. The reserve in
 # JOB_RESERVE_S is what pays for them plus `actions/checkout`.
 EXEMPT_RUN_STEPS = {
-    ("gate.yml", "fast", "Record the job start time"),
-    ("gate.yml", "fast", "Report the environment"),
-    # Task 009 (requirement F): one `git config --global --add
-    # safe.directory` write against this job's own checkout path -- local,
-    # no network fetch, sub-second, same shape as the other exemptions here.
-    ("gate.yml", "fast",
-     "Trust the checked-out workspace (container root != host checkout owner)"),
-    # Task 009 (requirement F): `useradd` plus one recursive `chown` of this
-    # job's own checkout and evidence directory -- local, no network fetch,
-    # a handful of seconds even over this tree.
-    ("gate.yml", "fast", "Create the fast tier's non-root account"),
-    ("gate.yml", "fast", CLASSIFIER_STEP),
-    ("heavy.yml", "docker-tier", "Record the job start time"),
-    # Task 004 (requirement B, #202): the pre-checkout litter reaper. It runs
-    # BEFORE anything is checked out, so `scripts/run_bounded.sh` does not
-    # exist yet to wrap it; its payload is a local `rm -rf` of at most a
-    # handful of directories in a throwaway root container.
-    ("heavy.yml", "docker-tier",
-     "Reap root-owned test litter left in the runner workspace"),
-    ("heavy.yml", "docker-tier", "Report the environment"),
-    ("heavy.yml", "docker-tier", "Remove this run's test images"),
-    ("heavy.yml", "docker-tier", CLASSIFIER_STEP),
-    ("heavy.yml", "browser-tier", "Record the job start time"),
-    ("heavy.yml", "browser-tier",
-     "Reap root-owned test litter left in the runner workspace"),
-    # Task 011 (requirement H): one `mkdir` and one `printf` writing Chrome's
-    # `--no-sandbox` launch option into the checkout -- local, no network
-    # fetch, sub-second. It is not a toolchain install: `playwright-cli` and
-    # Chrome come from the job's pinned image.
-    ("heavy.yml", "browser-tier", "Configure Chrome's launch options for this container"),
-    ("heavy.yml", "browser-tier", "Assert the browser toolchain is present"),
-    # Task 011 (requirement H): `chown -R` of this job's own checkout,
-    # evidence directory and `$HOME` -- local, no network fetch, a handful
-    # of seconds even over this tree, the same shape as gate.yml's own
-    # "Create the fast tier's non-root account" above (task 009).
-    ("heavy.yml", "browser-tier", "Prepare the browser tier's non-root account"),
-    ("heavy.yml", "browser-tier", "Close stray browser sessions"),
-    ("heavy.yml", "browser-tier", CLASSIFIER_STEP),
     # Task 011 (requirement H): the image-publishing job (now its own
     # workflow, browser-image.yml). Its own payload --
     # the docker build and the push -- IS wrapped (1800s); these two are the
@@ -768,9 +728,9 @@ EXEMPT_RUN_STEPS = {
     ("browser-image.yml", "browser-image",
      "Reap root-owned test litter left in the runner workspace"),
     ("browser-image.yml", "browser-image", CLASSIFIER_STEP),
-    # ci.yml (the one workflow that replaces gate.yml and heavy.yml): the same
-    # start-stamp, local-write and classifier shapes already exempt above, for
-    # the same reasons, in the jobs that inherited them. `lint` has none beyond
+    # ci.yml (the one workflow that replaced the retired per-tier workflows): the
+    # start-stamp, local-write and classifier shapes, each exempt for the reason
+    # that it is a handful of local writes with no network fetch or test tier. `lint` has none beyond
     # the stamp and the classifier: its venv build and its ruff run are wrapped.
     ("ci.yml", "lint", "Record the job start time"),
     ("ci.yml", "lint", CLASSIFIER_STEP),
@@ -1010,31 +970,31 @@ def test_every_lane_job_can_report_its_own_timeout_kill(workflow_name):
 
 
 def test_the_coverage_guard_fires_when_a_long_step_is_left_unwrapped(tmp_path):
-    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "heavy.yml"))
+    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "ci.yml"))
     step = next(
         s
-        for s in broken["jobs"]["docker-tier"]["steps"]
+        for s in broken["jobs"]["docker"]["steps"]
         if s.get("name") == "Docker tier"
     )
     step["run"] = ".venv/bin/python -m pytest -q -m docker --durations=15"
 
-    fixture = tmp_path / "broken-heavy-unwrapped.yml"
+    fixture = tmp_path / "broken-ci-unwrapped.yml"
     fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
 
-    problems = check_timeout_marker_coverage("heavy.yml", _load_workflow(fixture))
+    problems = check_timeout_marker_coverage("ci.yml", _load_workflow(fixture))
     assert any("runs unwrapped" in p for p in problems), problems
 
 
 def test_the_coverage_guard_fires_when_the_classifier_step_is_dropped(tmp_path):
-    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "gate.yml"))
+    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "ci.yml"))
     steps = broken["jobs"]["fast"]["steps"]
     assert steps[-1]["name"] == CLASSIFIER_STEP
     del steps[-1]
 
-    fixture = tmp_path / "broken-gate-no-classifier.yml"
+    fixture = tmp_path / "broken-ci-no-classifier.yml"
     fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
 
-    problems = check_timeout_marker_coverage("gate.yml", _load_workflow(fixture))
+    problems = check_timeout_marker_coverage("ci.yml", _load_workflow(fixture))
     assert any("not 'Classify a job-level timeout kill'" in p for p in problems), (
         problems
     )
@@ -1052,42 +1012,42 @@ def test_the_coverage_guard_fires_when_the_classifier_is_skipped_on_cancel(tmp_p
 
 
 def test_the_coverage_guard_fires_when_the_inner_bounds_outgrow_the_job(tmp_path):
-    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "gate.yml"))
+    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "ci.yml"))
     step = next(
         s for s in broken["jobs"]["fast"]["steps"] if s.get("name") == "Fast tier"
     )
     step["run"] = BOUNDED_CALL_RE.sub("scripts/run_bounded.sh 2700", step["run"])
 
-    fixture = tmp_path / "broken-gate-oversized.yml"
+    fixture = tmp_path / "broken-ci-oversized.yml"
     fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
 
-    problems = check_timeout_marker_coverage("gate.yml", _load_workflow(fixture))
+    problems = check_timeout_marker_coverage("ci.yml", _load_workflow(fixture))
     assert any("past the" in p for p in problems), problems
 
 
 def test_the_coverage_guard_fires_when_the_start_stamp_step_is_dropped(tmp_path):
-    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "heavy.yml"))
-    steps = broken["jobs"]["browser-tier"]["steps"]
+    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "ci.yml"))
+    steps = broken["jobs"]["browser"]["steps"]
     assert steps[0]["name"] == START_STAMP_STEP
     del steps[0]
 
-    fixture = tmp_path / "broken-heavy-no-stamp.yml"
+    fixture = tmp_path / "broken-ci-no-stamp.yml"
     fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
 
-    problems = check_timeout_marker_coverage("heavy.yml", _load_workflow(fixture))
+    problems = check_timeout_marker_coverage("ci.yml", _load_workflow(fixture))
     assert any("does not stamp" in p for p in problems), problems
 
 
 def test_the_coverage_guard_fires_when_the_evidence_directory_is_not_exported(tmp_path):
-    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "gate.yml"))
+    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "ci.yml"))
     step = broken["jobs"]["fast"]["steps"][0]
     assert step["name"] == START_STAMP_STEP
     step["run"] = 'echo "RALPHD_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"\n'
 
-    fixture = tmp_path / "broken-gate-no-evidence-dir.yml"
+    fixture = tmp_path / "broken-ci-no-evidence-dir.yml"
     fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
 
-    problems = check_timeout_marker_coverage("gate.yml", _load_workflow(fixture))
+    problems = check_timeout_marker_coverage("ci.yml", _load_workflow(fixture))
     assert any(f"does not export {EVIDENCE_VAR}" in p for p in problems), problems
     assert any(f"does not stamp {BOUND_VAR}" in p for p in problems), problems
 
@@ -1106,14 +1066,14 @@ def test_the_coverage_guard_fires_when_the_classifier_gets_no_job_status(tmp_pat
 
 
 def test_the_coverage_guard_fires_when_the_stamped_bound_drifts_from_the_job(tmp_path):
-    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "heavy.yml"))
-    step = broken["jobs"]["docker-tier"]["steps"][0]
+    broken = copy.deepcopy(_load_workflow(WORKFLOW_DIR / "ci.yml"))
+    step = broken["jobs"]["docker"]["steps"][0]
     step["run"] = STAMPED_BOUND_RE.sub(f"{BOUND_VAR}=999", step["run"])
 
-    fixture = tmp_path / "broken-heavy-bound-drift.yml"
+    fixture = tmp_path / "broken-ci-bound-drift.yml"
     fixture.write_text(yaml.safe_dump(broken, sort_keys=False), encoding="utf-8")
 
-    problems = check_timeout_marker_coverage("heavy.yml", _load_workflow(fixture))
+    problems = check_timeout_marker_coverage("ci.yml", _load_workflow(fixture))
     assert any(f"stamps {BOUND_VAR}=999" in p for p in problems), problems
 
 
@@ -1125,18 +1085,18 @@ def _wrapped_total(job: dict) -> int:
     )
 
 
-# The lanes ci.yml and browser-image.yml replaced, as (timeout-minutes, wrapped
-# seconds). gate.yml and heavy.yml are deleted when ci.yml goes live, so the
+# The bounds the lanes ci.yml and browser-image.yml replaced carried, as
+# (timeout-minutes, wrapped seconds). The retired workflows are gone, so the
 # numbers are pinned here rather than read from them. They fit JOB_RESERVE_S as
 # they are; a bound is never raised to use the slack.
 INHERITED_BOUNDS = {
-    # ci.yml fast  <- gate.yml fast
+    # ci.yml fast: the former gate workflow's fast job
     ("ci.yml", "fast"): (45, 2100),
-    # ci.yml docker <- heavy.yml docker-tier
+    # ci.yml docker: the former heavy workflow's docker tier
     ("ci.yml", "docker"): (120, 6600),
-    # ci.yml browser <- heavy.yml browser-tier
+    # ci.yml browser: the former heavy workflow's browser tier
     ("ci.yml", "browser"): (60, 3000),
-    # browser-image.yml <- heavy.yml's publish job
+    # browser-image.yml: the former heavy workflow's publish job
     ("browser-image.yml", "browser-image"): (40, 1800),
 }
 

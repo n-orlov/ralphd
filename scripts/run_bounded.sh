@@ -7,7 +7,7 @@
 # `cancelled` for THREE different causes -- a human clicking "Cancel
 # workflow", a `cancel-in-progress: true` group superseding an older run,
 # and the job exceeding its `timeout-minutes` -- and the Checks API gives no
-# field that tells them apart. `gate.yml`'s own comment already names the
+# field that tells them apart. ci.yml's own comment already names the
 # consequence ("A `timeout-minutes` kill reports as `cancelled`, which is
 # not a verdict"); this script is the half of the mechanism that produces
 # the POSITIVE fact the other half classifies on.

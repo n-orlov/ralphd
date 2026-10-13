@@ -225,7 +225,7 @@ invocation; they are labelled as retired rather than deleted or rewritten to
 a recipe they were never run against. The lane itself (task 077's container
 matrix) now runs each cell under the `fast` selection: the docker and
 browser tiers that selection drops are already covered at the gate-blocking
-level by `.github/workflows/heavy.yml` and do not vary with the interpreter
+level by `.github/workflows/ci.yml` and do not vary with the interpreter
 a dev-layout cell varies, so the six cells lose no coverage that varies with
 the axis under test. No fresh dev-layout wall-clock measurement exists yet
 for the `-m fast` selection; task 077's own container matrix cells are the
@@ -248,7 +248,7 @@ runs.
 `nightly`-marked nodes and `tests/test_host_like_dev_layout_script.py`'s own
 nodes -- neither `fast` nor `smoke` nor `docker` nor `browser` -- uncovered
 by any CI lane: not this cell (it never selected them), not
-`.github/workflows/heavy.yml` (its `docker`/`browser` jobs do not select
+`.github/workflows/ci.yml` (its `docker`/`browser` jobs do not select
 them either). The script now runs a second pytest invocation afterwards, in
 the same already-built `$HOME`/user base (no re-install), selecting `-m
 "not fast and not smoke and not docker and not browser"` -- exactly that

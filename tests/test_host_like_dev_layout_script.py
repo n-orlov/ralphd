@@ -473,9 +473,9 @@ def test_the_header_states_both_reasons_the_fast_tier_is_the_default():
     """Task 076: the default is not self-evident, so the script's own header
     must carry BOTH reasons for it -- (i) what `-m fast` drops relative to
     unfiltered (the `docker` and `browser` tiers) is already gate-blocking in
-    heavy.yml and does not vary with the interpreter axis a cell varies, and
+    ci.yml and does not vary with the interpreter axis a cell varies, and
     (ii) `-m fast` excludes `-m browser`, so no matrix cell ever drives a
-    browser and heavy.yml's browser tier stays the only browser-bearing job
+    browser and ci.yml's browser job stays the only browser-bearing job
     on the self-hosted box -- which is what makes the single `browser-runner`
     label (steer 009) enough to serialise browser work across workflows."""
     header = SCRIPT.read_text()
@@ -489,7 +489,7 @@ def test_the_header_states_both_reasons_the_fast_tier_is_the_default():
     prose = " ".join(prose.split())
 
     # (i)
-    assert "heavy.yml" in prose
+    assert "ci.yml" in prose
     assert "does not vary with the interpreter" in prose, prose[-2000:]
     # (ii)
     assert "-m fast` EXCLUDES `-m browser" in prose, prose[-2000:]

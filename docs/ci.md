@@ -13,9 +13,9 @@ The tiers themselves — what they cover and what they cost — are
 
 ## `ci.yml`: the one workflow
 
-`ci.yml` is the workflow that replaces `gate.yml` and `heavy.yml`; until those two are
-retired they keep running beside it. Its jobs run on the elastic runner pool, in
-parallel, after a trust gate. `tests/test_ci_workflow_guard.py` parses it and pins
+`ci.yml` is the one workflow that runs the project's tiers on a pull request and on `main`
+(it replaced the separate per-tier workflows, which no longer exist). Its jobs run on the
+elastic runner pool, in parallel, after a trust gate. `tests/test_ci_workflow_guard.py` parses it and pins
 everything below.
 
 **Triggers.** A `push` to `main`, a `pull_request` against any base, and
@@ -107,7 +107,7 @@ evaluates the scheduled set for each of the four events.
 `ruff` and runs `ruff check . --select E9,F63,F7,F821` (syntax errors and undefined
 names), which exits 0 on the tree.
 
-**`fast`** runs the steps `gate.yml`'s `fast` job runs, in the same digest-pinned
+**`fast`** runs the fast tier in a digest-pinned
 `python:3.12.3` container (`--cpus=4`): a clean venv, the non-root `ci` account,
 `su -p ci -c 'scripts/run_bounded.sh 1800 "fast tier" -- python -m pytest -q -m fast -n 4
 --dist loadfile --durations=15 --alluredir=allure-results-fast'`, inside `timeout-minutes: 45`. `-n 4` on a 4-CPU job
@@ -115,7 +115,7 @@ container is the one raise over the old gate's `-n 2`: the earlier `-n 4` failur
 host contention between jobs, which the per-job CPU limit removes. The count is a fixed
 integer, never `auto` (`tests/test_gate_pinned_worker_count_guard.py`).
 
-**`docker`** runs the steps `heavy.yml`'s `docker-tier` runs, unchanged: the root-owned
+**`docker`** runs the docker tier: the root-owned
 litter reaper ahead of checkout, a clean venv, and `scripts/run_bounded.sh 6000 "docker
 tier" -- .venv/bin/python -m pytest -q -m docker --durations=15
 --alluredir=allure-results-docker`, inside
@@ -124,7 +124,7 @@ host runner, not in a container: it builds the real job image and drives sibling
 containers over the runner's own docker socket. It needs only `trusted`, so it starts
 beside `lint` and `fast`, not after them. No bound is raised over the lane it replaces.
 
-**`browser`** runs the steps `heavy.yml`'s `browser-tier` runs, unchanged, inside
+**`browser`** runs the browser tier inside
 `timeout-minutes: 60` with the tier bounded at 2400 s. Its labels add `docker-host` (the
 runner starts the container) and `browser-runner`. `playwright-cli` and real Google
 Chrome come from `container.image`, pinned by digest to this repository's own GitHub
@@ -209,117 +209,53 @@ image. It builds `ci/browser/Dockerfile`, pushes it and prints the new digest, w
 then pinned in `ci.yml`'s `browser` job by hand in a commit of its own. It is the only
 workflow with a `packages: write` grant, and it runs on `[self-hosted, linux, x64,
 ci-pool, docker-host]` for its docker build. The guard asserts the dispatch-only trigger,
-the single grant, and that `heavy.yml` carries neither the job nor its old input.
+the single grant, and that no other workflow carries the job or an input that publishes it.
 
 **Precondition: the runner scaler serves `ci-pool`.** The jobs wait for a runner started
 by the scaler described under "The elastic runner pool" below. If that scaler is not
 running on the host, a `ci.yml` job stays queued; nothing in the workflow relabels it onto
 a standing runner.
 
-## The three workflows
+## The workflows
 
-| workflow | lanes | runner | trigger | budget |
-|---|---|---|---|---|
-| `gate.yml` | `-m fast` (which is a superset of `-m smoke`) | self-hosted `fast-lane` (`int21h-ws-5`/`-6`, exclusively) | every pull request, every push to `main` | 45 min |
-| `heavy.yml` | `-m docker` (24 tests), `-m browser` (45 tests), as two separate jobs (the browser-image publisher moved to `browser-image.yml`, a `workflow_dispatch`-only workflow) | self-hosted `ralphd-vps` | every pull request, every push to `main` | 120 / 60 min |
-| `nightly.yml` | a six-cell dev-layout matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset), each cell running `scripts/host_like_dev_layout.sh` with no override inside a plain upstream container (task 077, steer 008) -- the `fast` tier plus (task cure-01-01-2) a supplemental pass over every node that leaves outside `fast`/`smoke`/`docker`/`browser` (the `nightly`-marked nodes and the script's own test module), which `-m fast` alone never selected | self-hosted `ci-pool` + `docker-host`, all six cells in parallel (see "Nightly cells" above) | 02:00 UTC, plus manual dispatch | 120 min per cell (`nightly.yml`'s own `timeout-minutes: 120`, raised from 60 by task 035 -- steer 026 §4 -- because 60 was already marginal at 58 min observed at `bd284e79` with no interference, and task 035's own cure adds real per-attempt wall time to any cell whose startup watchdog has to re-arm under contention) -- sized to the `fast` tier's ~80 s parallel wall clock plus the cell's own image pull and, for the `ubuntu:24.04` cell only, its `apt-get install python3 python3-pip` step, never to the retired unfiltered whole-suite invocation `docs/testing.md`'s two retired dev-layout rows measured (2047-2147 s each, no per-cell axis); unchanged by cure-01-01-2, whose supplemental pass adds real wall time inside this same ceiling rather than raising it |
+There are three, and the guard tests parse each one.
 
-`gate.yml` was on GitHub's own runners until 14 September 2026, when being the
-lane that runs most often stopped being an argument for hosted runners and
-became the argument against them: it was the only hosted lane left, and 258 runs
-/ 1718 minutes of wall clock in the first two weeks of September put the account
-at 90 % of its 2000 included Actions minutes on its own. `heavy.yml` and
-`nightly.yml` are self-hosted and cost nothing. So the fast tier moved to the
-VPS and the account's hosted-minute bill went to zero.
+- **`ci.yml`** runs every pull request and every push to `main` (and a dispatch): the
+  trust gate, `lint`, the `fast`, `docker` and `browser` tiers, the Allure `report`, the
+  Pages `publish` and the `required` verdict, as described above. Budgets: `fast` 45
+  minutes, `docker` 120, `browser` 60.
+- **`nightly.yml`** runs at 02:00 UTC and on manual dispatch: a six-cell dev-layout
+  matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE`
+  exported/unset), each cell running `scripts/host_like_dev_layout.sh` with no override
+  inside a plain upstream container -- the `fast` tier plus a supplemental pass over every
+  node that leaves outside `fast`/`smoke`/`docker`/`browser` (the `nightly`-marked nodes
+  and the script's own test module). Each cell has `timeout-minutes: 120`, sized to the
+  `fast` tier's wall clock plus the cell's image pull and, for the `ubuntu:24.04` cell
+  only, its `apt-get install python3 python3-pip` step; the supplemental pass runs inside
+  that ceiling.
+- **`browser-image.yml`** publishes the browser tier's image, on dispatch only.
 
-The two properties that made hosted runners attractive are unaffected. A check
-run is created and signed by GitHub's Actions app wherever the runner executes,
-so it is still an attestation this repository cannot fabricate — the property
-#113 is buying — and the lane still needs neither a docker socket nor a browser,
-which is why it asks for neither label.
+Jobs are placed by runner label, never by the name of a machine: every job asks for the
+pool label `ci-pool` plus only the capability labels it needs (`docker-host` for a job
+that talks to the docker socket, `browser-runner` for the browser tier), and the single
+exception is `required`, which runs on a GitHub-hosted runner. The live runner fleet is
+`GET /repos/n-orlov/ralphd/actions/runners`; this document does not snapshot it.
 
-**The fleet is partitioned, and the VPS is gone** (operator decision, later on
-14 September 2026, superseding the VPS partition described earlier that day).
-The VPS was a 4-core / 7 GB box and that, not the workflow, was why this lane
-took ~12 minutes: the identical `-n 2` recipe is 592 s on the workstation. Both
-VPS slots had their labels and their packages removed, so they are eligible for
-nothing and no lane can land on them; the two registrations themselves
-(`vmi3245594`, `vmi3245594-2`) are still present and online, which is why
-`## The self-hosted runner` below still lists them (re-read live at task 014:
-eight registrations, six labelled as partitioned below, two label-free). The
-partition survived the move; only its halves changed machines:
-
-| slots | labels | takes |
-|---|---|---|
-| `int21h-ws-5`, `int21h-ws-6` | `fast-lane` only | `gate.yml` only |
-| `int21h-ws-1` | `ralphd-vps`, `docker-host`, `browser-runner` | `heavy.yml` only |
-| `int21h-ws-2` .. `int21h-ws-4` | none (parked) | nothing |
-
-Slots 5 and 6 are a **reservation, not spare capacity**, and that is why they
-were registered instead of simply adding `fast-lane` to the four that already
-existed. `nightly.yml`'s six-cell matrix runs `fail-fast: false` for 67-89
-minutes and `heavy.yml` holds two slots for 14-21 minutes at a time; sharing
-would let a push's `gate` run queue behind all of it. It remains a pair of
-exclusions and neither half is safe to change alone.
-
-**All six slots are on one 12-core host.** They never contend for a slot but
-they do contend for CPU, which is priced into `gate.yml`'s worker count (`-n 4`,
-not `-n 8`) and into leaving its `timeout-minutes: 45` untrimmed. Contention is
-now the main remaining source of a red `gate`: on 14 September, four distinct
-timing-sensitive nodes failed once each across ten runs and none reproduced.
-
-Two naming consequences. **`ralphd-vps` is now doubly a misnomer** — it names
-workstation slots and there is no VPS in the fleet at all; renaming it means
-editing `heavy.yml` and
-`tests/test_ci_dev_layout_matrix_guard.py` together, still #189's subject. And
-**this table is a snapshot, not the source of truth** — it has been overtaken
-within a day of being written twice now. Read the live shape from
-`GET /repos/n-orlov/ralphd/actions/runners`.
-
-The interpreter is pinned: `python3.12` explicitly, not `heavy.yml`'s
-`python3 -m venv` idiom, because that idiom follows the host default (3.14.5 on
-this host). Measured at `d37733c` on the VPS, throwaway full-history clone:
-`-m fast -n 2` 5681 passed / 4 skipped in
-710 s. On the workstation the same recipe is **592 s at `-n 2` and 378 s at
-`-n 4`**. The worker count was raised to 4 with the move (`9899016`) and put
-back to 2 immediately after (`f122e9c`), because `-n 4` failed both of its
-runs on two SIGINT-driving nodes while `-n 2` was green on three consecutive
-runs across both hosts. The lane is fast enough without it: a whole job,
-including the venv build, measured **7:45** and **8:51** on slots 5 and 6
-against the VPS's **12:29** on the same commit.
-
-**What the pin does not do is fix the patch level, and the move cost the fleet
-real coverage.** The VPS ran Ubuntu 24.04, whose `python3.12` is **3.12.3**;
-the workstation runs Fedora 44, whose `python3.12` is **3.12.14**. Those two
-disagree about `argparse` leftover-positional handling — the fix landed in a
-3.12 patch after 3.12.3 — and that disagreement is what exposed #182 and kept
-this lane red for 14 commits and 3 h 15 m on 14 September 2026, on a host no
-container and no developer machine in this project could reproduce. With the
-VPS gone, no lane runs 3.12.3. That loss is accepted deliberately and is the
-direct motivation for #205: a lane's interpreter should be a property of an
-image named in the workflow file, not of whichever host answered the
-dispatch.
+The interpreter is a property of an image named in the workflow file, not of whichever
+host answers: `fast` runs in a container pinned by digest to Python 3.12.3, and the
+guard asserts the pin. Two hosts that disagree on a Python patch release once kept a lane
+red for hours on a host nothing else could reproduce; the pinned image is what rules
+that out.
 
 ## The self-hosted runner
 
-The live placement belongs to `GET /repos/n-orlov/ralphd/actions/runners`; this is
-what it holds:
-
-- `int21h-ws-1` carries `ralphd-vps`, `docker-host` and `browser-runner`. It is the
-  **only** slot `heavy.yml` can take, so every heavy job runs one at a time.
-  `nightly.yml` no longer uses it: its cells run on `ci-pool`.
-- `int21h-ws-2` .. `int21h-ws-4` are registered and online with no custom labels, so
-  they take nothing.
-- `int21h-ws-5` and `int21h-ws-6` carry `fast-lane` only and run `gate.yml`.
-- `vmi3245594` and `vmi3245594-2` (the VPS) are registered and online with no custom
-  labels, so they take nothing.
-
-All `int21h-ws-*` slots are registrations on one physical 12-core host. A label is the
-only placement control that works across workflows: a `concurrency:` group only
-serialises within one workflow. So one labelled slot per physical host is what keeps
-`heavy` and `nightly` from sharing a machine, and what keeps browser-tier work
-globally serial. To add capacity for `heavy.yml`, put `ralphd-vps` + `docker-host` on a
-slot on another physical host, not on a second slot of this one.
+The live placement belongs to `GET /repos/n-orlov/ralphd/actions/runners`. Every
+`ci.yml`, `nightly.yml` and `browser-image.yml` job except `required` runs on the elastic
+`ci-pool` runners (the pool is described below); a standing, label-free registration takes
+nothing. A label is the only placement control that works across workflows: a
+`concurrency:` group only serialises within one workflow. The `browser-runner` label is
+what keeps browser-tier work from sharing a runner with another browser-bearing job, and
+`nightly.yml` carries none of it.
 
 Host (measured on the retired VPS; not yet re-measured on the current
 workstation, so treated as history rather than a current spec): 4 x86_64
@@ -332,10 +268,10 @@ shared browser cache at `/opt/ms-playwright` exported to the runner through its
 `.env`.
 
 **That host provisioning is no longer what the browser tier runs against (task
-011, requirement H, #205 step 3).** `heavy.yml`'s `browser-tier` declares a
+011, requirement H, #205 step 3).** `ci.yml`'s `browser` job declares a
 `container:` pinned by digest to this repository's own GitHub Packages container
 package `n-orlov/ralphd-browser-ci` (the literal registry reference lives in
-`heavy.yml`, which is also the only place a digest should be pinned; note this is
+`ci.yml`, which is also the only place a digest should be pinned; note this is
 a CI *toolchain* image and has nothing to do with the job image `ralphd:<hash>`,
 which is still built from a checkout and published nowhere). It is built from
 `ci/browser/Dockerfile` (`mcr.microsoft.com/playwright:v1.62.1-noble` + the same
@@ -346,8 +282,7 @@ but a drift in them can no longer change what the lane measures — which is the
 point: this ambient provisioning drifted once already, silently losing
 python3.12.3 in the VPS-to-workstation move (#205's own motivation). Republishing
 the image is a dispatch of `browser-image.yml`; that job prints the new digest, which
-is then pinned in `ci.yml`'s `browser` job (and in `heavy.yml`'s `browser-tier` until
-that is retired) by hand in a commit of its own. The package is private, is linked to this repository because the
+is then pinned in `ci.yml`'s `browser` job by hand in a commit of its own. The package is private, is linked to this repository because the
 workflow (not a personal access token) published it, and is pulled with
 `credentials:` from `${{ secrets.GITHUB_TOKEN }}` — the registry has no API that
 makes a package public, only its web UI does.
@@ -583,7 +518,7 @@ scheme is never a candidate. Two kinds of tag are in the scheme, and nothing els
   by creation time (default 3) stay; every older one is removed. The `latest` tag and any
   other tag of that repository are not in the scheme.
 - CI job-image tags: `ralphd:test-ci-<run id>-<attempt>` and its `-base` twin, the
-  per-run tags `heavy.yml` builds. One is removed once it has been **unreferenced for
+  per-run tags `ci.yml`'s `docker` job builds. One is removed once it has been **unreferenced for
   `retain_days` days** (default 14), where unreferenced means no container, in any state,
   uses it. Its creation time never authorizes a removal: docker records no last-use time,
   so a month-old image a sibling container used an hour ago is not stale.
@@ -902,12 +837,10 @@ config holding an inline token is refused.
 
 ## Concurrency
 
-- `gate.yml` cancels an older run of the same ref: a superseded PR head is not
-  worth a runner.
-- `heavy.yml`'s jobs are grouped per PR ref, and **all `main` pushes share one
-  group** with `cancel-in-progress`. When several merges land in a row the newest
-  `main` is the one that gets attested; intermediate shas keep the check runs
-  they earned on their own pull requests.
+- `ci.yml`: a pull request's runs share a group per ref with `cancel-in-progress`, so a
+  superseded PR head is not worth a runner; every run on `main` has its own group and is
+  never cancelled by a later one, so a regression on a superseded sha is not hidden (see
+  "Concurrency" under `ci.yml` above).
 - `nightly.yml` runs its six matrix cells in parallel on `ci-pool` (no
   `max-parallel`) with `fail-fast: false`; one red cell must not cancel
   another's claim.
@@ -1014,6 +947,6 @@ finds nothing.
   is something the run structurally cannot bypass.
 - **Measured numbers for the self-hosted lanes.** The budgets in
   `docs/testing.md` were measured on a 28-core box. The first green run of
-  `heavy.yml` is what supplies the real figures for four cores; the `docker`
+  `ci.yml`'s `docker` job is what supplies the real figures for four cores; the `docker`
   lane runs serially until then, and `-n 2 --dist loadfile` is the next thing to
   try.
