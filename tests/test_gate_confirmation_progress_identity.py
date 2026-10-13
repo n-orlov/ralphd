@@ -121,6 +121,10 @@ def test_b4_gate_origin_pass_also_counts_for_confirmation_progress(
     reviewer.sup = sup  # type: ignore[attr-defined]
     sup.runner.run = reviewer  # type: ignore[method-assign]
 
+    # v0.36 C.2: the gate's one granted round is the approach's whole
+    # allowance, so the round count refuses the next pass (a no-progress
+    # rejection with a round left cures: tests/test_cure_rounds_per_approach.py).
+    sup.cfg.cure_pass_ceiling = 1
     outcome = _bounded(sup._step_review())
 
     # Refused: NOT another cure pass. The old, unfixed order granted

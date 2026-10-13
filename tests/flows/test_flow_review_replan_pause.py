@@ -139,10 +139,12 @@ def test_the_last_approach_pauses_for_the_operator_and_a_resume_verifies(
     # nowhere to replan to -- the `rejected_last_approach` pause.
     run = engine_factory(
         job={"run_id": "flow-last-approach-pause", "on_complete": "exit",
-             "max_approaches": 1, "iterations": 30},
+             "max_approaches": 1, "iterations": 30,
+             # v0.36 C.2: one cure round per approach.
+             "cure_pass_ceiling": 1},
         stub_env={"STUB_REVIEW_CURABLE_REJECT_COUNT": "2"})
 
-    paused = run.wait_state(("paused",), timeout=ENGINE_EXIT_WAIT_S)
+    paused = run.wait_state(("awaiting_input",), timeout=ENGINE_EXIT_WAIT_S)  # v0.36: findings parks land in awaiting_input
     assert paused.get("pauseReason") == "rejected_last_approach", (
         f"flow last-approach pause: status.json must name the pause reason "
         f"'rejected_last_approach', got {paused.get('pauseReason')!r}")

@@ -142,7 +142,10 @@ def test_the_second_curable_rejection_finds_the_cure_pass_spent_and_replans(
     # no barrier is added ahead of the wait (F.4/non-negotiable 2).
     run = engine_factory(
         job={"run_id": "flow-cure-spent", "on_complete": "exit",
-             "max_approaches": 2, "iterations": 30},
+             "max_approaches": 2, "iterations": 30,
+             # v0.36 C.2: one cure round per approach, so the second
+             # rejection finds the approach's allowance spent.
+             "cure_pass_ceiling": 1},
         stub_env={"STUB_REVIEW_CURABLE_REJECT_COUNT": "2"})
     # task 017 (F.2/F.4): this specific `proc.wait(timeout=60)` -- the node
     # task 002 (A.2) measured -- keeps its bare shape deliberately. No

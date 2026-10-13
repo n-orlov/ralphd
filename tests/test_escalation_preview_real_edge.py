@@ -330,10 +330,13 @@ def test_gate_escalation_never_fires_with_a_pass_left(tmp_path):
 # ===========================================================================
 
 
-def _no_progress_confirmation_rejection(tmp_path, *, cure_pass_ceiling: int):
+def _no_progress_confirmation_rejection(tmp_path, *, cure_pass_ceiling: int,
+                                        expected_second: tuple):
     """Pass 1 targets ONE finding over a fresh approach; pass 2 is a
     CONFIRMATION review reopening that EXACT SAME finding (by `reopens`
-    identity), worded differently -- the no-progress superset case. Both
+    identity), worded differently -- the no-progress superset case. A
+    no-progress rejection with rounds left spends one and cures (v0.36
+    C.2); with the approach's rounds spent it parks. Both
     passes drive a REAL `_step_review()`, never a hand-built lineage
     fixture, so `_is_confirmation_review()` reads the identical on-disk
     record production code writes. Returns `(sup, root)` parked on the
@@ -361,42 +364,31 @@ def _no_progress_confirmation_rejection(tmp_path, *, cure_pass_ceiling: int):
     findings.write_findings_json(sup.run.findings_json_file, second)
     sup.runner.run = _rejecting_runner("still broken")  # type: ignore[method-assign]
     outcome2 = _bounded(sup._step_review())
-    assert outcome2 == ("advance", "paused", "operator_input_needed")
+    assert outcome2 == expected_second
     return sup, root
 
 
-def test_c4_no_progress_rejection_does_not_preview_a_cure_ceiling_unspent(
+def test_c4_no_progress_rejection_with_rounds_left_cures_without_parking(
         tmp_path):
-    # cure_pass_ceiling=3, only 1 pass taken -- the ceiling is NOT what
-    # refuses pass 2; the no-progress comparison alone does.
+    # cure_pass_ceiling=3, only 1 round taken: the identical wall restated
+    # spends round 2 and cures; nothing parks, so no escalation fires.
     sup, root = _no_progress_confirmation_rejection(
-        tmp_path, cure_pass_ceiling=3)
+        tmp_path, cure_pass_ceiling=3,
+        expected_second=("advance", "cure", "rejected_curable_pass_available"))
     assert not sup._cure_pass_ceiling_spent()
-
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
-    ev = escalations[0]
-    assert ev["reason"] == "operator_input_needed"
-    # never a cure pass preview: review correctly refuses another pass
-    # over the identical wall it already cured once -- the preview must
-    # read the archive-and-replan edge that will ACTUALLY be taken, never
-    # a real-looking reopen/insert count no cure pass will ever produce.
-    assert ev["taskIdsValidatedToPending"] == []
-    assert ev["insertCount"] == 0
-    assert ev["nextStepIfUnanswered"] == NEXT_STEP_ARCHIVE_AND_REPLAN
-    # raising the ceiling would not change this refusal, so no such note.
-    assert "--cure-passes" not in ev["escalation"]
+    assert sup._cure_rounds_used(1) == 2
+    assert _events(root, "operator_escalation") == []
 
 
 def test_c4_no_progress_rejection_does_not_preview_a_cure_ceiling_spent(
         tmp_path):
-    # cure_pass_ceiling=1, already spent by pass 1 -- BOTH the ceiling
-    # AND the no-progress comparison would refuse pass 2 here; the
-    # preview must still read zero (never a ceiling-only note either,
-    # since the no-progress comparison refuses it independently of the
-    # ceiling).
+    # cure_pass_ceiling=1, already spent by pass 1: the approach's round
+    # count refuses pass 2, the preview reads zero (no cure runs now), and
+    # the escalation names `--cure-passes` because topping up the
+    # approach's allowance is exactly what would let the cure run.
     sup, root = _no_progress_confirmation_rejection(
-        tmp_path, cure_pass_ceiling=1)
+        tmp_path, cure_pass_ceiling=1,
+        expected_second=("advance", "paused", "operator_input_needed"))
     assert sup._cure_pass_ceiling_spent()
 
     escalations = _events(root, "operator_escalation")
@@ -405,7 +397,7 @@ def test_c4_no_progress_rejection_does_not_preview_a_cure_ceiling_spent(
     assert ev["taskIdsValidatedToPending"] == []
     assert ev["insertCount"] == 0
     assert ev["nextStepIfUnanswered"] == NEXT_STEP_ARCHIVE_AND_REPLAN
-    assert "--cure-passes" not in ev["escalation"]
+    assert "--cure-passes" in ev["escalation"]
 
 
 # ===========================================================================

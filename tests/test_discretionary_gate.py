@@ -740,7 +740,8 @@ def test_A3_repeated_insert_only_is_still_explicit_nontrigger(tmp_path):
        considered this rejection a candidate, repeated or not.
     """
     root = tmp_path / "run"
-    sup1 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
+    sup1 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
+                       cure_pass_ceiling=1)
     sup1._approach = 1
     findings.write_findings_json(sup1.run.findings_json_file,
                                  _CURE_INSERT_ONLY_FINDING)
@@ -754,7 +755,8 @@ def test_A3_repeated_insert_only_is_still_explicit_nontrigger(tmp_path):
     assert status1.get("curePasses") == {"1": 1}
     sup1.resume()
 
-    sup2 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
+    sup2 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
+                       cure_pass_ceiling=1)
     sup2._approach = 1
     # Episode 2 is a CONFIRMATION review (episode 1's cure pass was
     # granted): the IDENTICAL finding, re-filed as still open, names the

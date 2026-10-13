@@ -2330,19 +2330,21 @@ already running). Same `+N|N` grammar as `--iterations` for every one of
 them.
 
 Task 010 (v0.27 requirement C.3) adds a fifth flag, `--cure-passes`, mapped
-to `curePassCeiling` — the run-wide cure-pass ceiling both cure channels
-(review's own and the peer verdict gate's) spend from a single shared pot
-(see `curePasses`/`gateCurePasses` in [api.md](api.md)):
+to `curePassCeiling` — the CURRENT approach's cure-round allowance, which
+both cure channels (review's own and the peer verdict gate's) draw on
+together; cure rounds are counted per approach (see
+`curePasses`/`gateCurePasses`/`cureRoundTopUps` in [api.md](api.md)):
 
 ```console
-$ ralphctl budget my-run --cure-passes +1       # top up the run-wide cure-pass ceiling
+$ ralphctl budget my-run --cure-passes +1       # add a cure round to the current approach
 ```
 
-Refused with `5` if the resolved value is below the cure passes this run
-has already taken (`curePasses`' and `gateCurePasses`' combined total).
-Same `+N|N` grammar as every other knob. Unlike the three knobs above,
-this one PERSISTS across a resume, exactly like `iterations` (see the
-table below).
+Refused with `5` if the resolved value is below the rounds the current
+approach has already spent (its `curePasses` and `gateCurePasses` entries
+combined). The top-up lands on the current approach only: a later approach
+starts at `cure_pass_ceiling` again. Same `+N|N` grammar as every other knob.
+Unlike the three knobs above, this one PERSISTS across a resume (it is
+recorded on disk under `cureRoundTopUps`; see the table below).
 
 `--rate-limit-wait` maps to `rateLimitMaxWaitS`, the ceiling in seconds on
 the run's total rate-limit waiting (`rate_limit_max_wait_s`, default 86400).
@@ -2368,14 +2370,14 @@ requirement C.3 adds the cure-pass row):**
 | approaches budget | `--approaches` | `max_approaches` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--approaches` |
 | job deadline | `--timeout` | `job_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--timeout` |
 | iteration timeout | `--iteration-timeout` | `iteration_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--iteration-timeout` |
-| cure-pass ceiling | `--cure-passes` | `cure_pass_ceiling` | **live**: persists across a resume — the engine's own startup seeds it from `max(status.json's curePassCeiling, job.yaml's cure_pass_ceiling)`, mirroring `iterations`' own seeding (task 010, v0.27 requirement C.3) |
+| cure rounds (current approach) | `--cure-passes` | `cure_pass_ceiling` | **live**: persists across a resume — the top-up is recorded in status.json's `cureRoundTopUps` for the current approach and read back from disk |
 | rate-limit wait ceiling | `--rate-limit-wait` | `rate_limit_max_wait_s` | **live**: persists across a resume — the engine's own startup seeds it from `max(status.json's rateLimitMaxWaitS, job.yaml's rate_limit_max_wait_s)` |
 
-`iterations` and `curePassCeiling` are seeded from the LIVE-set value on
-every resume because the engine's own startup already reads
+`iterations` is seeded from the LIVE-set value on every resume because the
+engine's own startup already reads
 `max(status.json's iterationsBudget, job.yaml's iterations)` (task
-010/#51) and, since v0.27 requirement C.3,
-`max(status.json's curePassCeiling, job.yaml's cure_pass_ceiling)`. The
+010/#51); the cure-round top-up survives because it is read from status.json
+(`cureRoundTopUps`). The
 other three have no such seeding: they are read from
 `cfg.max_approaches`/`cfg.job_timeout_s`
 (indirectly, via `loop.deadline_epoch`, which `job_timeout_s` only seeds at

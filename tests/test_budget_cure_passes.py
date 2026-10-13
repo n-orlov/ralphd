@@ -40,7 +40,6 @@ from ralphd.engine import findings
 from ralphd.engine.api import create_app
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
-from ralphd.engine.main import _seed_cure_pass_ceiling
 from ralphd.engine.runner import IterationResult
 from ralphd.engine.state import RunDir, atomic_write_json
 from test_cli_budget import _seed as _cli_seed
@@ -66,7 +65,7 @@ def test_cure_pass_ceiling_grant_lands_in_status_json(tmp_path):
     root = tmp_path / "run"
     root.mkdir(parents=True, exist_ok=True)
     run = RunDir(root=root)
-    run.update_status(state="running")
+    run.update_status(state="running", approach=2)
     atomic_write_json(run.tasks_file, {"version": 1, "tasks": []})
     cfg = JobConfig(run_id="task010-cure-passes", iterations=5,
                     cure_pass_ceiling=3)
@@ -74,44 +73,25 @@ def test_cure_pass_ceiling_grant_lands_in_status_json(tmp_path):
 
     sup.set_cure_pass_ceiling(4)
 
-    assert sup.cfg.cure_pass_ceiling == 4
-    assert run.read_status().get("curePassCeiling") == 4
+    assert sup.cfg.cure_pass_ceiling == 3, "the base is not rewritten"
+    assert run.read_status().get("cureRoundTopUps") == {"2": 1}
+    assert sup.cure_pass_allowance == 4
 
 
-def test_cure_pass_ceiling_grant_survives_a_resumed_engine_seed(tmp_path):
-    """A fresh `JobConfig` -- job.yaml's own default, `cure_pass_ceiling`'s
-    literal `3` unchanged (`engine/config.py`) -- must NOT undo the earlier
-    live grant: `_seed_cure_pass_ceiling` (called once at engine startup,
-    mirroring `_seed_iteration_budget`) reads status.json's `curePassCeiling`
-    and wins when it is higher, exactly the winner rule task 010/#51
-    already applies to `iterations`.
-    """
+def test_cure_pass_ceiling_grant_survives_a_resumed_engine(tmp_path):
+    """The top-up is disk-backed: a fresh supervisor over the same run
+    directory (job.yaml's own default base, `3`) reads the same allowance
+    with no startup seeding."""
     root = tmp_path / "run"
     root.mkdir(parents=True, exist_ok=True)
     run = RunDir(root=root)
-    run.update_status(state="running", curePassCeiling=5)
+    run.update_status(state="running", approach=1, cureRoundTopUps={"1": 2})
+    atomic_write_json(run.tasks_file, {"version": 1, "tasks": []})
 
-    fresh_cfg = JobConfig(run_id="task010-cure-passes")
-    assert fresh_cfg.cure_pass_ceiling == 3  # engine/config.py's own default
+    fresh = LoopSupervisor(JobConfig(run_id="task010-cure-passes"), run, root)
+    assert fresh.cfg.cure_pass_ceiling == 3  # engine/config.py's own default
 
-    _seed_cure_pass_ceiling(fresh_cfg, run)
-
-    assert fresh_cfg.cure_pass_ceiling == 5, "the live grant must win over job.yaml"
-
-
-def test_cure_pass_ceiling_seed_never_lowers_job_yaml(tmp_path):
-    """The complement task 010/#51's own three-case matrix pins for
-    `iterations`: job.yaml is allowed to RAISE the floor -- a status.json
-    figure below job.yaml's own configured value must never win."""
-    root = tmp_path / "run"
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    run.update_status(state="running", curePassCeiling=2)
-
-    cfg = JobConfig(run_id="task010-cure-passes", cure_pass_ceiling=6)
-    _seed_cure_pass_ceiling(cfg, run)
-
-    assert cfg.cure_pass_ceiling == 6
+    assert fresh.cure_pass_allowance == 5, "the live grant must survive"
 
 
 # -- 2. park (ceiling spent) -> budget --cure-passes +1 -> unpause -> cure --
@@ -178,8 +158,8 @@ def test_park_then_budget_cure_passes_then_unpause_takes_the_cure_pass(
     resp = _bounded(_patch())
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"curePassCeiling": 1, "previousCurePassCeiling": 0}
-    assert sup.cfg.cure_pass_ceiling == 1
-    assert sup.run.read_status().get("curePassCeiling") == 1
+    assert sup.cfg.cure_pass_ceiling == 0, "the base is not rewritten"
+    assert sup.run.read_status().get("cureRoundTopUps") == {"1": 1}
 
     # `ralphctl unpause <run>` -> POST /resume.
     sup.resume()

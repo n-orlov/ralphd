@@ -166,6 +166,10 @@ def test_one_finding_reopened_twice_with_reworded_clauses_is_refused_a_third_pas
     outcome1 = _bounded(sup._step_review())
     assert outcome1 == ("advance", "cure", "rejected_curable_pass_available")
     assert sup.run.read_status().get("curePasses") == {"1": 2}
+    # v0.36 C.2: two rounds taken, two allowed -- the third is refused by
+    # the approach's round count (a no-progress rejection with a round left
+    # cures: tests/test_cure_rounds_per_approach.py).
+    sup.cfg.cure_pass_ceiling = 2
 
     cure_a_2 = next(t["id"] for t in _cure_tasks(sup.run)
                     if t.get("reopensCureTaskId") == cure_a)

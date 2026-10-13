@@ -1330,7 +1330,7 @@ task is unfinished (`_terminal_success_blockers`). The run then defers once to
 
 When an ordinary rejection would archive the approach, the default
 `operator_input_needed` pause stops first. The verdict gate has a matching pause
-once the run-wide cure ceiling is spent. Either pause names
+once the approach's cure-round allowance is spent. Either pause names
 `ralphctl rule ... --file` and `ralphctl unpause` as the two live levers. A bare
 unpause grants a one-shot proceed for that rejection signature
 (`noRulingProceed`).

@@ -376,12 +376,13 @@ def _rejects_with(findings_list: list[dict]):
     return _review
 
 
-def _cure_once(root: Path, approach: int = 1, max_approaches: int = 3
-              ) -> LoopSupervisor:
+def _cure_once(root: Path, approach: int = 1, max_approaches: int = 3,
+               **cfg_overrides) -> LoopSupervisor:
     """Episode 1: drive a real `_step_review()` to the cure-pass edge,
     exactly like the task 009 fixture above -- the starting point every
     test below builds its SECOND rejection on top of."""
-    sup = _supervisor_bounded(root, max_approaches=max_approaches)
+    sup = _supervisor_bounded(root, max_approaches=max_approaches,
+                              **cfg_overrides)
     sup._approach = approach
     atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": []})
 
@@ -417,7 +418,8 @@ def _first_cure_id(run: RunDir) -> str:
 def test_second_rejection_same_approach_takes_the_ordinary_replan_edge(
         tmp_path):
     root = tmp_path / "run"
-    sup = _cure_once(root, approach=1, max_approaches=3)
+    sup = _cure_once(root, approach=1, max_approaches=3,
+                    cure_pass_ceiling=1)
     before_cure_tasks = _cure_tasks(sup.run)
     assert len(before_cure_tasks) == 1
 
@@ -451,7 +453,8 @@ def test_second_rejection_with_no_approach_left_takes_task011s_pause_edge(
     last_approach` pause-and-escalate edge instead (never a second cure
     pass, never the ordinary mid-run replan edge either)."""
     root = tmp_path / "run"
-    sup = _cure_once(root, approach=1, max_approaches=1)
+    sup = _cure_once(root, approach=1, max_approaches=1,
+                    cure_pass_ceiling=1)
 
     still_curable = [_finding("blocking", True, "requirement C.1 (#141)",
                               "still not fixed",
@@ -510,7 +513,8 @@ def test_incurable_precedence_wins_on_the_second_rejection_too(tmp_path):
 
 def test_resume_mid_cure_never_appends_the_cure_tasks_twice(tmp_path):
     root = tmp_path / "run"
-    sup1 = _cure_once(root, approach=1, max_approaches=3)
+    sup1 = _cure_once(root, approach=1, max_approaches=3,
+                     cure_pass_ceiling=1)
     cure_tasks_before = _cure_tasks(sup1.run)
     assert len(cure_tasks_before) == 1
     # mark the appended cure task `completed`, the way the ordinary
@@ -529,7 +533,7 @@ def test_resume_mid_cure_never_appends_the_cure_tasks_twice(tmp_path):
     # counter, its cure-task list) is passed to it in memory; everything
     # this episode knows comes from a fresh `RunDir.read_status()`/
     # `read_tasks()`.
-    sup2 = _supervisor_bounded(root, max_approaches=3)
+    sup2 = _supervisor_bounded(root, max_approaches=3, cure_pass_ceiling=1)
     sup2._approach = 1
 
     assert sup2._cure_passes_for_approach(1) == 1, (
@@ -571,7 +575,7 @@ def test_resume_mid_cure_also_keeps_the_incurable_precedence(tmp_path):
             t["status"] = "completed"
     sup1.run.write_tasks(tasks_doc)
 
-    sup2 = _supervisor_bounded(root, max_approaches=3)
+    sup2 = _supervisor_bounded(root, max_approaches=3, cure_pass_ceiling=1)
     sup2._approach = 1
     assert sup2._cure_passes_for_approach(1) == 1
 
@@ -638,12 +642,16 @@ def test_a_non_superset_second_rejection_grants_a_second_cure_pass(tmp_path):
     assert second["blockingAfter"] == ["requirement D (#167)"]
 
 
-def test_a_superset_second_rejection_is_refused_and_replans(tmp_path):
+def test_a_superset_second_rejection_with_the_round_spent_replans(tmp_path):
     """The second rejection's blocking set is {A, B} -- a strict superset
-    of pass 1's {A} -- so it is refused: the ordinary replan edge, no
-    second cure pass, even though a NEW clause (B) is also present."""
+    of pass 1's {A}. With the approach's one round already spent it takes
+    the ordinary replan edge and no second cure pass runs (v0.36 C.2: the
+    round count, not the superset, is what refuses it; the superset
+    spending a round when one is left is pinned in
+    tests/test_cure_rounds_per_approach.py)."""
     root = tmp_path / "run"
-    sup = _cure_once(root, approach=1, max_approaches=3)
+    sup = _cure_once(root, approach=1, max_approaches=3,
+                     cure_pass_ceiling=1)
 
     superset = [
         _finding("blocking", True, "requirement C.1 (#141)", "still broken",
@@ -814,11 +822,10 @@ def test_a_configured_run_wide_ceiling_stops_a_repeated_reject_then_cure_cycle_a
     assert len(_cure_tasks(sup.run)) == 2  # passes 1-2's tasks, no third batch
 
     # Rejection 4, over the freshly replanned approach 2 -- its own two
-    # counters read `0`, so a PER-APPROACH cap would grant a cure pass here
-    # and the cure -> reject -> cure cycle would carry on. The run-wide
-    # ceiling refuses it on both channels; raising the ceiling on this same
-    # supervisor flips the refusal back to a grant, which pins the ceiling
-    # (not the findings, the approach or the superset test) as the reason.
+    # counters read `0`, and cure rounds are counted PER APPROACH (v0.36
+    # C.2), so the new approach's first rejection cures although approach 1
+    # spent every round. The run-wide total (`_cure_passes_for_run`, kept
+    # for display) still reads 2 and gates nothing.
     sup._approach = 2
     assert sup._cure_passes_for_approach(2) == 0
     assert sup._gate_cure_passes_for_approach(2) == 0
@@ -826,14 +833,15 @@ def test_a_configured_run_wide_ceiling_stops_a_repeated_reject_then_cure_cycle_a
                                 _curable("requirement D (#192)"))
     findings.write_findings_json(sup.run.verdict_gate_findings_json_file,
                                 _curable("requirement D (#192)"))
+    assert sup._review_cure_pass_available(2) is True
+    assert sup._gate_cure_pass_available(2) is True
+    assert sup._cure_passes_for_run() == 2
+
+    # Once approach 2 spends its own two rounds the ceiling refuses again.
+    sup.run.update_status(curePasses={"1": 1, "2": 1},
+                          gateCurePasses={"1": 1, "2": 1})
     assert sup._review_cure_pass_available(2) is False
     assert sup._gate_cure_pass_available(2) is False
-    sup.cfg.cure_pass_ceiling = 3
-    try:
-        assert sup._review_cure_pass_available(2) is True
-        assert sup._gate_cure_pass_available(2) is True
-    finally:
-        sup.cfg.cure_pass_ceiling = 2
 
     # Approach 2 is the LAST approach: the gate's refused-cure rejection has
     # no approach left to replan into, so the run leaves the cure cycle for
@@ -841,7 +849,8 @@ def test_a_configured_run_wide_ceiling_stops_a_repeated_reject_then_cure_cycle_a
     # every blocking finding still curable.
     outcome = _gate_rejects_once(sup, _curable("requirement D (#192)"))
     assert outcome == ("tail",)
-    assert sup._cure_passes_for_run() == 2  # never exceeded the ceiling
+    # approach 2 never exceeded its own ceiling
+    assert sup._cure_rounds_used(2) == 2 == sup.cfg.cure_pass_ceiling
 
     final_state = sup._finish_tail_unverified()
     assert final_state == "failed"

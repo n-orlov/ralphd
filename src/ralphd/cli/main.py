@@ -6602,8 +6602,9 @@ def cmd_budget(args):
     mount, so the engine cannot persist any of the five knobs there itself.
     `iterations`, `--cure-passes`/`curePassCeiling` and
     `--rate-limit-wait`/`rateLimitMaxWaitS` still PERSIST across a plain
-    resume (the engine's own startup seeding, `main._seed_iteration_budget`/
-    `main._seed_cure_pass_ceiling`/`main._seed_rate_limit_max_wait`). Task 004/#94 (d)'s decision for the
+    resume (`main._seed_iteration_budget`/`main._seed_rate_limit_max_wait`
+    seed the first and last; `--cure-passes` is a per-approach top-up
+    recorded in status.json's `cureRoundTopUps`, read from disk). Task 004/#94 (d)'s decision for the
     other three is the opposite: they are PROCESS-ONLY and a plain `resume`
     with no `--approaches`/`--timeout`/`--iteration-timeout` flag of its
     own REVERTS them to job.yaml's own value -- see `cmd_resume`'s
@@ -9386,9 +9387,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "`resume` unless that resume itself passes "
                         "`--iteration-timeout` (docs/cli.md's budget table)")
     s.add_argument("--cure-passes", metavar="+N|N", default=None,
-                   help="run-wide cure-pass ceiling top-up/absolute "
-                        "(v0.27 requirement C.3); refused with `5` if below "
-                        "the cure passes already taken this run. PERSISTS "
+                   help="top-up/absolute for the CURRENT approach's cure-round "
+                        "allowance (review and the peer gate share it); "
+                        "refused with `5` if below the rounds this approach "
+                        "already spent. PERSISTS "
                         "across a plain resume, unlike --approaches/"
                         "--timeout/--iteration-timeout (docs/cli.md's "
                         "budget table)")

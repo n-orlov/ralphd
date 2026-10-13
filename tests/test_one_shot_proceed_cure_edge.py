@@ -81,7 +81,7 @@ def test_review_budget_grant_unpause_takes_cure_even_with_operator_request(
     assert first == ("advance", "paused", "operator_input_needed")
 
     _grant_and_unpause(sup)
-    assert sup.run.read_status()["curePassCeiling"] == 1
+    assert sup.run.read_status()["cureRoundTopUps"] == {"1": 1}
     assert _proceeds(sup).get("operator_input_needed")
 
     second = _bounded(sup._step_review())

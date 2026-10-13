@@ -1479,7 +1479,7 @@ class LoopSupervisor:
         question = state.build_input_question(
             judge=judge, trigger=trigger, blocking=blocking,
             cure_rounds_used=used,
-            cure_rounds_allowed=self.cfg.cure_pass_ceiling,
+            cure_rounds_allowed=self._cure_rounds_allowed(approach),
             approach=approach, max_approaches=self.cfg.max_approaches,
             parked_at_epoch=self._now_epoch(),
             timeout_min=getattr(self.cfg, "input_timeout_min", None))
@@ -4150,15 +4150,22 @@ class LoopSupervisor:
 
     @property
     def cure_passes_used(self) -> int:
-        """Public accessor for `_cure_passes_for_run()` (task 010, v0.27
-        requirement C.3): the run-wide cure-pass total already taken across
-        both channels and every approach -- the figure `PATCH /config/budget`'s
-        `curePassCeiling` knob validates a new ceiling against, the same way
-        `iterations_used_charged` above wraps the count `iterations` is
-        validated against. A public wrapper so api.py never has to reach for
-        the underscore-named `_cure_passes_for_run` directly.
+        """Public accessor for the cure rounds the CURRENT approach has
+        spent (`_cure_rounds_used`, review plus peer gate): the figure
+        `PATCH /config/budget`'s `curePassCeiling` knob validates a new
+        allowance against. Cure rounds are counted per approach (v0.36
+        C.2); the run-wide total stays readable for display through
+        `_cure_passes_for_run`, which no ceiling reads.
         """
-        return self._cure_passes_for_run()
+        return self._cure_rounds_used(self._current_approach())
+
+    @property
+    def cure_pass_allowance(self) -> int:
+        """Public accessor for the CURRENT approach's cure-round allowance
+        (`_cure_rounds_allowed`): `cure_pass_ceiling` plus the operator's
+        top-ups for this approach. `PATCH /config/budget` resolves a
+        `curePassCeiling` `+N|N` spec against it."""
+        return self._cure_rounds_allowed(self._current_approach())
 
     def set_iteration_budget(self, value: int) -> None:
         """Task 045 (#3): change the iteration budget of a LIVE run.
@@ -4175,25 +4182,22 @@ class LoopSupervisor:
         self.run.update_status(iterationsBudget=value)
 
     def set_cure_pass_ceiling(self, value: int) -> None:
-        """Task 010 (v0.27 requirement C.3): change the run-wide cure-pass
-        ceiling of a LIVE run, same shape as `set_iteration_budget`
-        immediately above -- and, like `iterations`, PERSISTS across a
-        resume rather than reverting the way `max_approaches`/
-        `iteration_timeout_s`/the job deadline do (task 004/#94 (d)).
+        """v0.36 C.2: set the CURRENT approach's cure-round allowance of a
+        LIVE run to `value` (`ralphctl budget <run> --cure-passes +N|N`).
 
-        `self.cfg.cure_pass_ceiling` is read at every cure-pass eligibility
-        check (`_review_cure_pass_available`/`_gate_cure_pass_available`,
-        both via `_cure_passes_for_run()`) -- rebinding the field is the
-        whole mechanism, exactly like `iterations`/`budget_left()`.
-        status.json's `curePassCeiling` is rewritten here too, so a fresh
-        container's own startup can seed `cfg.cure_pass_ceiling` from it
-        (`main._seed_cure_pass_ceiling`, mirroring `main._seed_iteration_
-        budget`) the same way `iterations` survives a resume. The caller
-        (api.py) owns validation (refusing a value below the run's own
-        cure passes already taken) and the audit event.
+        Cure rounds are counted per approach: `cfg.cure_pass_ceiling` is the
+        base every approach starts with, and an operator top-up lands in
+        status.json's `cureRoundTopUps["<approach>"]` for the approach that
+        is current now -- never on a later approach, which starts back at
+        the base. The top-up is disk-backed, so it survives a resume with
+        no startup seeding. The caller (api.py) owns validation (refusing a
+        value below the rounds this approach already spent) and the audit
+        event.
         """
-        self.cfg.cure_pass_ceiling = value
-        self.run.update_status(curePassCeiling=value)
+        approach = self._current_approach()
+        topups = dict(self._cure_round_topups())
+        topups[str(approach)] = int(value) - int(self.cfg.cure_pass_ceiling)
+        self.run.update_status(cureRoundTopUps=topups)
 
     def set_rate_limit_max_wait(self, value: int) -> None:
         """v0.30 F.3: change the rate-limit wait ceiling of a LIVE run, same
@@ -15013,23 +15017,56 @@ class LoopSupervisor:
             return False
         return not self._cure_pass_ceiling_spent()
 
-    def _cure_pass_ceiling_spent(self) -> bool:
-        """Task 011 (v0.27 requirement C.4, #275): is the run-wide `cure_
-        pass_ceiling` itself the reason a rejection that would otherwise
-        earn a cure pass cannot take one -- as opposed to the findings'
-        own curability, a criteria-tamper finding, or the progress-based
-        superset check, every one of which `_review_rejection_curable_
-        ignoring_ceiling`/`_gate_rejection_curable_ignoring_ceiling` decide
-        on their own? A named predicate (rather than the inline comparison
-        every caller used to repeat) is what lets an A.7 escalation tell
-        "a cure pass would run once the ceiling is topped up" apart from
-        "no cure pass will ever run for this rejection, budget or not" --
-        exactly the distinction C.4's own preview fix needs before it can
-        zero `insertCount`/`taskIdsValidatedToPending` and name `ralphctl
-        budget ... --cure-passes` ONLY when raising the ceiling is what
-        would actually change the outcome.
+    def _current_approach(self) -> int:
+        """The approach the run is on now (`_approach`, else status.json
+        `approach`)."""
+        if self._approach:
+            return int(self._approach)
+        try:
+            return int(self.run.read_status().get("approach") or 1)
+        except (TypeError, ValueError):
+            return 1
+
+    def _cure_round_topups(self) -> dict[str, int]:
+        """status.json `cureRoundTopUps`: `{"<approach>": N}`, the cure
+        rounds an operator added to one approach's allowance
+        (`set_cure_pass_ceiling`). Absent reads as empty."""
+        raw = self.run.read_status().get("cureRoundTopUps") or {}
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, int] = {}
+        for key, value in raw.items():
+            try:
+                out[str(key)] = int(value)
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _cure_rounds_used(self, approach: int) -> int:
+        """Cure rounds `approach` has spent: review's `curePasses` plus the
+        peer gate's `gateCurePasses`, one shared count (v0.36 C.2)."""
+        return (self._cure_passes_for_approach(approach)
+                + self._gate_cure_passes_for_approach(approach))
+
+    def _cure_rounds_allowed(self, approach: int) -> int:
+        """`approach`'s own allowance: the configured `cure_pass_ceiling`
+        plus this approach's operator top-ups. A new approach starts back at
+        the base, whatever an earlier one spent or was granted."""
+        return max(0, int(self.cfg.cure_pass_ceiling)
+                   + self._cure_round_topups().get(str(approach), 0))
+
+    def _cure_pass_ceiling_spent(self, approach: int | None = None) -> bool:
+        """Is the current approach's cure-round allowance spent? The
+        ceiling bounds ONE approach's own count (review and the peer gate
+        drawing on it together), not a run-wide total, so a fresh approach
+        cures although an earlier one spent every round. A named predicate
+        lets an escalation tell "a cure round would run once the allowance
+        is topped up" apart from "no cure ever runs for this rejection".
         """
-        return self._cure_passes_for_run() >= self.cfg.cure_pass_ceiling
+        if approach is None:
+            approach = self._current_approach()
+        return (self._cure_rounds_used(approach)
+                >= self._cure_rounds_allowed(approach))
 
     def _review_rejection_curable_findings(self, approach: int) -> bool:
         """Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): the
@@ -15100,7 +15137,6 @@ class LoopSupervisor:
         """
         if not self._review_rejection_curable_findings(approach):
             return False
-        findings_list = self._review_findings()
         # cure-01-04 (PRD v0.27 requirement B.4/B.5, DoD 2): a CONFIRMATION
         # review compares reopened root cure-task identities against the
         # previous granted pass's own targeted set irrespective of WHICH
@@ -15118,18 +15154,11 @@ class LoopSupervisor:
         # review's own `curePasses[approach]` at `0`, so a confirmation
         # review following it took the shortcut and granted a no-progress
         # pass even when every previously targeted root was reopened.
-        if self._is_confirmation_review():
-            tasks = self.run.read_tasks().get("tasks") or []
-            current_roots = findings.reopened_root_finding_ids(
-                findings_list, tasks)
-            previous_roots = self._cure_pass_targeted_roots(approach)
-            return not current_roots.issuperset(previous_roots)
-        passes_taken = self._cure_passes_for_approach(approach)
-        if passes_taken == 0:
-            return True
-        current_blocking = findings.blocking_finding_clauses(findings_list)
-        previous_blocking = self._cure_pass_blocking_clauses(approach)
-        return not current_blocking.issuperset(previous_blocking)
+        # v0.36 C.2: a same-set or superset (no-progress) rejection --
+        # clause text on an ordinary review, reopened root identities on a
+        # confirmation review -- with rounds left spends one round and
+        # cures. The approach's round count is the only bound.
+        return True
 
     def _cure_pass_targeted_roots(self, approach: int) -> set[str]:
         """Task 007 (PRD v0.27 requirement B.4, #274): the set of ROOT

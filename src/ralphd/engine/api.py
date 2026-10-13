@@ -475,21 +475,17 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
           `"+N"` extends the run's remaining wall-clock time by N seconds and
           an absolute value sets the deadline to that Unix epoch second.
           Refused with 409 if the resolved value is at or before "now".
-        * `{"curePassCeiling": "+1"}` / `{"curePassCeiling": 5}` -- task 010
-          (v0.27 requirement C.3): raises the RUN-WIDE `cure_pass_ceiling`
-          both cure channels (`_review_cure_pass_available`/`_gate_cure_
-          pass_available`, via `_cure_passes_for_run()`) read; applied via
-          `loop.set_cure_pass_ceiling`, live at the next rejection either
-          channel classifies. Refused with 409 if the new value is below
-          the run's own cure passes already taken
-          (`loop.cure_passes_used`). Unlike `maxApproaches`/
-          `iterationTimeoutS`/`jobDeadlineEpochS`, this one PERSISTS across
-          a resume, the same way `iterations` does: status.json's
-          `curePassCeiling` is rewritten here, and a fresh container's own
-          startup seeds `cfg.cure_pass_ceiling` from
-          max(status.json's `curePassCeiling`, job.yaml's own
-          `cure_pass_ceiling`) (`main._seed_cure_pass_ceiling`, mirroring
-          `main._seed_iteration_budget`).
+        * `{"curePassCeiling": "+1"}` / `{"curePassCeiling": 5}` -- v0.36
+          C.2 (was task 010, v0.27 C.3): sets the CURRENT approach's
+          cure-round allowance, which review and the peer verdict gate draw
+          on together (`loop.cure_pass_allowance` is the figure a `+N|N` spec
+          resolves against); applied via `loop.set_cure_pass_ceiling`, which
+          records the top-up under status.json's `cureRoundTopUps` for this
+          approach only -- a later approach starts back at
+          `cure_pass_ceiling`. Refused with 409 if the new value is below
+          the rounds this approach already spent (`loop.cure_passes_used`).
+          Unlike `maxApproaches`/`iterationTimeoutS`/`jobDeadlineEpochS`,
+          this one PERSISTS across a resume, because it is disk-backed.
         * `{"rateLimitMaxWaitS": "+3600"}` / `{"rateLimitMaxWaitS": 172800}`
           -- v0.30 F.3: the ceiling, in seconds, on the run's total
           rate-limit waiting; applied via `loop.set_rate_limit_max_wait`,
@@ -599,17 +595,17 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         if has_cure_pass_ceiling:
             try:
                 value = resolve_iterations_spec(body["curePassCeiling"],
-                                                cfg.cure_pass_ceiling,
+                                                loop.cure_pass_allowance,
                                                 label="cure pass ceiling")
             except BudgetSpecError as exc:
                 raise problem(422, "invalid curePassCeiling", str(exc)) from exc
             used = loop.cure_passes_used
             if value < used:
                 raise problem(409, "cure pass ceiling below cure passes used",
-                             f"{value} is below the {used} cure pass(es) already "
-                             "taken this run; a ceiling can only be set to the "
-                             "current usage or above")
-            previous = cfg.cure_pass_ceiling
+                             f"{value} is below the {used} cure pass(es) the "
+                             "current approach has already taken; an allowance "
+                             "can only be set to the current usage or above")
+            previous = loop.cure_pass_allowance
             loop.set_cure_pass_ceiling(value)
             run.emit("budget_changed", field="curePassCeiling", previous=previous,
                      curePassCeiling=value, delta=value - previous, source="api")

@@ -132,41 +132,10 @@ def _seed_iteration_budget(cfg: JobConfig, run: RunDir) -> None:
              source=source)
 
 
-def _seed_cure_pass_ceiling(cfg: JobConfig, run: RunDir) -> None:
-    """Task 010 (v0.27 requirement C.3): the effective run-wide cure-pass
-    ceiling at startup is max(status.json's recorded `curePassCeiling`,
-    job.yaml's `cure_pass_ceiling`), never job.yaml's alone -- the same
-    winner rule `_seed_iteration_budget` above already applies to the
-    iteration budget, and for the identical reason: without it, an
-    operator top-up (`PATCH /config/budget` `curePassCeiling` /
-    `ralphctl budget <run> --cure-passes +N`) is silently undone the
-    moment the container restarts, because the engine re-reads the
-    read-only-mounted job.yaml from scratch. A status.json figure below
-    job.yaml's (the ordinary case: no top-up ever happened, or an operator
-    raised job.yaml's own `cure_pass_ceiling` for a resume) must not win --
-    job.yaml is allowed to raise the floor, never to lower a ceiling the
-    run already earned.
-
-    Called once, before the loop starts, so `cfg.cure_pass_ceiling` (and
-    thus every `_cure_passes_for_run()`-gated check) sees the winner from
-    the very first iteration.
-    """
-    status_ceiling = run.read_status().get("curePassCeiling")
-    job_ceiling = cfg.cure_pass_ceiling
-    if isinstance(status_ceiling, int) and status_ceiling > job_ceiling:
-        cfg.cure_pass_ceiling = status_ceiling
-        source = "status.json"
-    else:
-        source = "job.yaml"
-    log.info("cure-pass ceiling seeded from %s: status.json=%s job.yaml=%s "
-             "-> effective=%s", source, status_ceiling, job_ceiling,
-             cfg.cure_pass_ceiling)
-
-
 def _seed_rate_limit_max_wait(cfg: JobConfig, run: RunDir) -> None:
     """v0.30 F.3: the effective rate-limit wait ceiling at startup is
     max(status.json's recorded `rateLimitMaxWaitS`, job.yaml's
-    `rate_limit_max_wait_s`) -- `_seed_cure_pass_ceiling`'s winner rule, for
+    `rate_limit_max_wait_s`) -- `_seed_iteration_budget`'s winner rule, for
     the same reason: an in-flight raise (`PATCH /config/budget`
     `rateLimitMaxWaitS` / `ralphctl budget <run> --rate-limit-wait +N`)
     survives a container restart, and job.yaml may raise the floor but never
@@ -242,7 +211,6 @@ async def amain() -> int:
         return EXIT_SCHEMA_TOO_NEW
 
     _seed_iteration_budget(cfg, run)
-    _seed_cure_pass_ceiling(cfg, run)
     _seed_rate_limit_max_wait(cfg, run)
     # Task 004 (requirement B, #202): lift an existing run's authoritative
     # task record into the ancestor-protected, bind-mounted record

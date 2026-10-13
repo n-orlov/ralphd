@@ -204,6 +204,7 @@ def test_last_approach_all_curable_with_cure_spent_pauses_and_escalates(
     notifier = _StubNotifier()
     sup.notifier = notifier
     # simulate the one cure pass this approach already spent (task 009).
+    sup.cfg.cure_pass_ceiling = 1  # v0.36 C.2: the approach's one round is spent
     sup.run.update_status(curePasses={"1": 1})
 
     still_curable = [
@@ -272,6 +273,7 @@ def test_the_review_escalation_is_emitted_to_events_jsonl_with_no_notifier(
     sup = _supervisor_review(root, max_approaches=1)
     sup._approach = 1
     assert sup.notifier is None
+    sup.cfg.cure_pass_ceiling = 1  # v0.36 C.2: the approach's one round is spent
     sup.run.update_status(curePasses={"1": 1})
 
     still_curable = [_finding("blocking", True, "requirement C.1 (#141)",
@@ -413,6 +415,7 @@ def test_resume_detects_the_last_approach_pause_and_re_enters_review(
     root = tmp_path / "run"
     sup1 = _supervisor_review(root, max_approaches=1)
     sup1._approach = 1
+    sup1.cfg.cure_pass_ceiling = 1  # v0.36 C.2: the approach's one round is spent
     sup1.run.update_status(curePasses={"1": 1})
     atomic_write_json(sup1.run.tasks_file, {"version": 1, "tasks": [
         {"id": "001", "title": "do the thing", "status": "completed",
@@ -455,6 +458,7 @@ def test_paused_awaiting_last_approach_ruling_is_false_once_a_new_iteration_star
     root = tmp_path / "run"
     sup = _supervisor_review(root, max_approaches=1)
     sup._approach = 1
+    sup.cfg.cure_pass_ceiling = 1  # v0.36 C.2: the approach's one round is spent
     sup.run.update_status(curePasses={"1": 1})
 
     still_curable = [_finding("blocking", True, "requirement C.1 (#141)",
@@ -484,6 +488,7 @@ def _drive_the_persisted_pause_edge(root: Path) -> LoopSupervisor:
     pass already spent."""
     sup = _supervisor_persisted(root, max_approaches=1)
     sup._approach = 1
+    sup.cfg.cure_pass_ceiling = 1  # v0.36 C.2: the approach's one round is spent
     sup.run.update_status(curePasses={"1": 1})
     findings.write_findings_json(sup.run.findings_json_file, [
         _finding("blocking", True, "requirement D.1 (#142)",
@@ -545,6 +550,7 @@ def test_the_persisted_pause_is_recorded_before_the_escalation_is_notified(
     sup = _supervisor_persisted(root, max_approaches=1)
     sup._approach = 1
     sup.notifier = lambda text: seen.append(_host_status(root))
+    sup.cfg.cure_pass_ceiling = 1  # v0.36 C.2: the approach's one round is spent
     sup.run.update_status(curePasses={"1": 1})
     findings.write_findings_json(sup.run.findings_json_file, [
         _finding("blocking", True, "requirement D.1 (#142)", "still open")])
@@ -730,6 +736,7 @@ def _drive_the_resume_pause_edge(sup: LoopSupervisor) -> None:
     isolation: last (only) approach, one blocking-but-curable finding, this
     approach's own cure pass already spent."""
     sup._approach = 1
+    sup.cfg.cure_pass_ceiling = 1  # v0.36 C.2: the approach's one round is spent
     sup.run.update_status(curePasses={"1": 1})
     findings.write_findings_json(sup.run.findings_json_file, [
         _finding("blocking", True, "requirement D.1/D.2 (#142)",
@@ -1449,6 +1456,7 @@ def test_budget_exhaustion_drives_a_forced_split_a_superseded_parent_a_picked_ch
 
 def _trigger_notifier_wiring_pause(sup: LoopSupervisor):
     sup._approach = 1
+    sup.cfg.cure_pass_ceiling = 1  # v0.36 C.2: the approach's one round is spent
     sup.run.update_status(curePasses={"1": 1})
     still_curable = [_finding("blocking", True, "requirement D.1 (#142)",
                               "the notifier is still not wired in")]

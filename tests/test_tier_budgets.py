@@ -871,8 +871,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # modules).
     # v0.36 clause-bound waiver store: the new tests/test_waiver_store_prompts.py,
     # measured `--collect-only` -> fast 8543/538, smoke 6765/411.
-    "fast": {"tests": 8543, "modules": 538},
-    "smoke": {"tests": 6765, "modules": 411},
+    # v0.36 per-approach cure rounds: the new tests/test_cure_rounds_per_
+    # approach.py (+7), measured `--collect-only` -> fast 8550/539, smoke
+    # 6772/412.
+    "fast": {"tests": 8550, "modules": 539},
+    "smoke": {"tests": 6772, "modules": 412},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

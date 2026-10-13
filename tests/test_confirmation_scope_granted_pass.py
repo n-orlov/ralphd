@@ -282,6 +282,10 @@ def test_b4_still_refuses_a_pass_reopening_both_granted_targets_after_a_remedy(
         tmp_path, "b4-no-progress")
 
     assert sup._cure_pass_targeted_roots(1) == {"cure-01-01", "cure-01-02"}
+    # v0.36 C.2: the refusal is the approach's round count -- one granted
+    # round against an allowance of one; a no-progress rejection with a
+    # round left cures instead (tests/test_cure_rounds_per_approach.py).
+    sup.cfg.cure_pass_ceiling = 1
 
     reopen_both = [
         _finding("the first gap is still present, reworded",
