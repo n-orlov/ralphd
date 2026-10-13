@@ -1,0 +1,12 @@
+WARNING  ralphd.loop:loop.py:2809 iteration worker classified infra fault (attempt 1, 0s of the 14400s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2809 iteration worker classified infra fault (attempt 2, 2s of the 14400s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2809 iteration worker classified infra fault (attempt 3, 7s of the 14400s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2809 iteration worker classified infra fault (attempt 4, 22s of the 14400s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2809 iteration worker classified infra fault (attempt 5, 52s of the 14400s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2809 iteration worker classified infra fault (attempt 6, 112s of the 14400s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2809 iteration worker classified infra fault (attempt 7, 232s of the 14400s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2809 iteration worker classified infra fault (attempt 8, 532s of the 14400s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2809 iteration worker classified infra fault (attempt 9, 832s of the 14400s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2809 iteration worker classified infra fault (attempt 10, 1132s of the 14400s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2809 iteration worker classified infra fault (attempt 11, 1432s of the 14400s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2809 iteration worker classified infra fault (attempt 12, 1732s of the 14400s outage budget waited): Connection error.

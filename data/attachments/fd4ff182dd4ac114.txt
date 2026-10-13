@@ -1,0 +1,1 @@
+WARNING  ralphd.loop:loop.py:2809 iteration verify classified infra fault (attempt 1, 0s of the 0s outage budget waited): Connection error.

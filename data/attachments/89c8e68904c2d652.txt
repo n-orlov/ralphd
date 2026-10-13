@@ -1,0 +1,3 @@
+WARNING  ralphd.loop:loop.py:3151 iteration worker rate-limited (five_hour): waiting 600s until 2026-09-21T14:23:20Z
+WARNING  ralphd.loop:loop.py:3213 iteration worker: a 600s rate-limit wait would pass the 1000s ceiling (600s waited): pausing for the operator
+WARNING  ralphd.loop:loop.py:3151 iteration worker rate-limited (five_hour): waiting 600s until 2026-09-21T14:23:20Z

@@ -1,0 +1,3 @@
+WARNING  ralphd.loop:loop.py:5738 the job ended on an infra fault (Connection error.); waiting 0s before the first reflect attempt
+WARNING  ralphd.loop:loop.py:2809 iteration reflect classified infra fault (attempt 1, 0s of the 10s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:5557 reflect iteration failed (degraded): the reflect iteration wrote no artifacts/reflection/report.md

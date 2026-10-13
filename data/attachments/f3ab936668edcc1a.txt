@@ -1,1 +1,0 @@
-WARNING  ralphd.loop:loop.py:5218 reflect phase not attempted: signal 15 ended the engine before the reflect phase could start, so no reflect iteration was attempted

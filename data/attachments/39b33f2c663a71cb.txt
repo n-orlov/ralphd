@@ -1,0 +1,1 @@
+WARNING  ralphd.privsep:privsep.py:651 no uid boundary: /tmp/pytest-of-ci/pytest-0/popen-gw4/test_routed_dispatch_event_car0/registry/runs/task002-routing/.tasks-protected/tasks.json is being written owned by the agent's own uid, not root (#202) -- this is the documented degrade (privsep.separated() is False here), not a second code path
