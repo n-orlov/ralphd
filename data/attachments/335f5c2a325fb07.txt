@@ -1,2 +1,0 @@
-ERROR    ralphd.loop:loop.py:8132 refusing to push: commit 8b3f68a40804's message matches a known secret value for variable 'SYNTHETIC_HOOKS_API_TOKEN'
-WARNING  ralphd.loop:loop.py:10999 task-boundary commit scan flagged 8b3f68a40804's message (variable SYNTHETIC_HOOKS_API_TOKEN) -- nothing pushed
