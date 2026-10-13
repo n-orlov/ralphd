@@ -3164,7 +3164,18 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   `tests/test_e2e.py::test_criteria_edited_after_validation_failure_is_refused`
   end to end.
 - **A cure is not a replan: a progress-based cure budget past the original
-  one-per-approach cap (v0.20 requirement E.1, #167, task 030).** The
+  one-per-approach cap (v0.20 requirement E.1, #167, task 030).** Since
+  v0.36 requirement C.2 the budget is per approach and progress no longer
+  gates it: `_cure_rounds_used(approach)` (`curePasses` plus
+  `gateCurePasses` for that approach) is compared against
+  `_cure_rounds_allowed(approach)` (`cure_pass_ceiling` plus the
+  approach's `cureRoundTopUps` entry), a new approach starts at zero, and
+  a same-set or superset rejection -- by clause or by reopened root --
+  spends one round and cures while rounds remain
+  (`tests/test_cure_rounds_per_approach.py`). The history below records
+  the comparison as it stood before that change; the clause and root sets
+  it describes are still recorded (`cureBlocking`, `blockingBefore`,
+  `cure-lineage.json`), but no longer refuse a cure. The
   one-per-approach bound task 010 pinned above is no longer absolute:
   `_review_cure_pass_available` grants a SECOND (or third) cure pass in the
   same approach when the run's own cure-pass budget is not yet spent (v0.21

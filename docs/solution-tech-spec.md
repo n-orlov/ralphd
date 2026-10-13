@@ -314,7 +314,8 @@ another episode without creating a different run. `startedAt` and `endedAt` are
 episode-scoped, `previousEndings` keeps earlier episodes' endings, and
 `firstStartedAt` keeps the run's earliest recorded start across every resume. A
 **cure pass** repairs findings within the same approach; review and verdict-gate
-cure passes are bounded by the run-wide `cure_pass_ceiling`.
+cure passes draw on one per-approach count of cure rounds, bounded by
+`cure_pass_ceiling`.
 
 ## 5. End-to-end harness flow
 
@@ -771,8 +772,8 @@ rejection in this order. The first matching rule wins.
    *discretionary gate* is unspent, and not when a ruled re-park is due. It applies
    on the last approach too.
 3. **Cure pass available**: all blocking findings are curable, no criteria-tamper
-   finding is present, the run-wide ceiling is not spent, and the rejection shows
-   progress (below). Even then, the run first parks as `operator_input_needed` in
+   finding is present, and the current approach still has cure rounds left
+   (below). Even then, the run first parks as `operator_input_needed` in
    three cases: a ruling matching this signature is due its one re-park, the
    reviewer set `raise_operator_gate: true`, or the cure would reopen `validated`
    tasks while the discretionary gate is unspent. Otherwise the engine takes the
@@ -821,16 +822,21 @@ task lands, `_reconcile_pre_cure_heads` diffs the recorded `preCureHead` against
 HEAD. A reopened record that the real diff did not touch returns to its prior
 status. A sweep is never restored this way.
 
-The ceiling is `cure_pass_ceiling`, which defaults to **3**. It is run-wide: it
-counts review passes (`curePasses`) plus peer-gate passes (`gateCurePasses`) across
-every approach, so a replan does not reset it. `ralphctl budget <run>
---cure-passes +N` raises it while the run is live. Each granted pass is appended to
+The ceiling is `cure_pass_ceiling`, which defaults to **3**. It bounds each
+approach's own count of cure rounds: review passes (`curePasses[approach]`) plus
+peer-gate passes (`gateCurePasses[approach]`), one count both channels draw on. A
+new approach starts at zero, whatever an earlier approach spent.
+`ralphctl budget <run> --cure-passes +N` adds N rounds to the current approach's
+allowance only (`cureRoundTopUps`), while the run is live. The run-wide totals of
+both counters stay readable for display and gate nothing. Each granted pass is appended to
 `cure-lineage.json` with its findings keyed by cure task id and its `preCureHead`.
 Remedy insertions are tagged `remedy` and never count as a pass.
 
-The first rejection of an approach is granted a pass, ceiling permitting. A later
-rejection of an ordinary review must show progress: its blocking-clause set must
-not be a superset of the previous granted pass's set (`cureBlocking`).
+Any all-curable rejection is granted a pass while the approach has rounds left.
+A rejection that shows no progress -- its blocking-clause set (`cureBlocking`) or,
+on a confirmation review, its reopened root findings are the same as or a superset
+of the previous granted pass's -- is not refused: it spends one round and cures,
+and the round count alone bounds it.
 
 **Confirmation review.** Once an approach has a granted pass, the next review gets
 a `## Confirmation review` section. It lists the previous pass's findings and the
@@ -841,9 +847,9 @@ requirements. Every blocking finding must link to that pass in one of two ways:
 `reopens` naming one of the listed cure task ids, or `regression: true`. A blocking
 finding that does neither is downgraded to residual (`review.finding_downgraded`)
 unless it claims an `always_blocking_exception`. Progress on a confirmation review
-is compared by identity, not text. The reopened findings are traced back to their
-root cure tasks, and a pass is refused when those roots are a superset of the
-roots the previous pass targeted.
+is tracked by identity, not text: the reopened findings are traced back to their
+root cure tasks. Reopening every root the previous pass targeted still spends one
+round and cures while rounds remain.
 
 Optionally, `--mid-plan-review` (off by default) runs one review per approach once
 a declared fraction of the plan has reached terminal success. Its blocking findings
@@ -863,9 +869,9 @@ dispatched. The run succeeds on review's verdict and records a
 flowchart TD
     Gate["Verdict gate reply"] --> Approved{"Approved?"}
     Approved -->|yes| Success["Succeeded"]
-    Approved -->|no or unusable| CurableG{"All blocking curable and ceiling not spent?"}
+    Approved -->|no or unusable| CurableG{"All blocking curable and approach has rounds left?"}
     CurableG -->|yes| CureG["Gate cure pass, then worker"]
-    CurableG -->|no| Spent{"Findings present, ceiling spent, pause enabled?"}
+    CurableG -->|no| Spent{"Findings present, rounds spent, pause enabled?"}
     Spent -->|yes| PauseG["Pause: verdict_gate_operator_input_needed"]
     PauseG -->|unpause| Gate
     Spent -->|no| Merits{"Structured findings, not curable?"}
@@ -876,8 +882,8 @@ flowchart TD
 ```
 
 A peer rejection that is fully curable now takes a cure pass. It shares the
-run-wide ceiling and lineage, so the next review is a confirmation review. When
-the ceiling is spent, a rejection of any blocking-set shape pauses for the
+approach's cure-round count and lineage with review, so the next review is a
+confirmation review. When the approach's rounds are spent, a rejection of any blocking-set shape pauses for the
 operator and resumes back into `verdict_gate`. A mixed or incurable rejection with
 structured findings ends the run unverified at once, without archive, composite
 PRD, or replan, even when approaches remain. Only an unstructured rejection (no
@@ -1494,7 +1500,8 @@ file not yet processed, a steering-origin task not yet terminal, or a
 routes the run back to `worker` (`steering_pending_at_verified` and its sibling
 guard in [`transitions.py`](../src/ralphd/engine/transitions.py)).
 A curable rejection can take a bounded cure pass over the same approach. Review and
-the verdict gate draw on one run-wide `cure_pass_ceiling`, which defaults to 3.
+the verdict gate draw on one per-approach count of cure rounds, bounded by
+`cure_pass_ceiling` (default 3); a new approach starts at zero.
 An ordinary rejection that would archive the approach can hold in an
 operator-answerable pause instead. When a result is decided, the engine writes the
 terminal accounting itself rather than relying on the LLM's closing prose to

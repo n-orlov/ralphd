@@ -9876,15 +9876,12 @@ class LoopSupervisor:
         rejection is curable at all (`_gate_rejection_curable_ignoring_
         ceiling` above, task 004's own extraction of everything this
         method used to compute inline -- same checks, same order, no
-        behaviour change) AND the RUN's own cure-pass ceiling
-        (`self.cfg.cure_pass_ceiling`, the same configured ceiling
-        review's own channel is bounded by -- task 002, PRD requirement
-        A.2, replaced the module-level `CURE_PASS_CEILING` literal both
-        channels used to read directly) is not already spent. The ceiling
-        is compared against `_cure_passes_for_run()`, the run-wide total
-        over both channels and every approach, not against this
-        approach's own `gateCurePasses` entry -- a fresh approach does not
-        buy a fresh cure budget.
+        behaviour change) AND the current approach's cure rounds are not
+        already spent (`_cure_pass_ceiling_spent`, v0.36 C.2): review's
+        `curePasses` plus this channel's `gateCurePasses` for the approach,
+        one shared count, against `cfg.cure_pass_ceiling` plus the
+        approach's `cureRoundTopUps` entry. A fresh approach starts at
+        zero.
 
         Task 003 (PRD requirement A.3) covers the complement this method
         keeps open: a rejection carrying any non-curable blocking finding
@@ -15117,7 +15114,7 @@ class LoopSupervisor:
 
     def _review_rejection_curable_ignoring_ceiling(self, approach: int) -> bool:
         """Task 011 (v0.27 requirement C.4, #275): every check `_review_
-        cure_pass_available` makes EXCEPT the run-wide ceiling comparison --
+        cure_pass_available` makes EXCEPT the cure-round comparison --
         the review-side sibling of `_gate_rejection_curable_ignoring_
         ceiling`, extracted for the identical reason: telling a rejection
         that was never curable at all (mixed/incurable findings, a
