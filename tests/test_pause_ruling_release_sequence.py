@@ -92,18 +92,15 @@ def _sup(tmp_path, monkeypatch, **cfg):
 
 
 def _raise_pause(sup, reason: str):
-    if reason == "rejected_last_approach":
-        sup._pause_and_escalate_last_approach_rejection(1)
-    elif reason == "rejected_incurable":
-        sup._pause_and_escalate_incurable_rejection(1)
+    if reason == "verdict_gate_operator_input_needed":
+        sup._pause_and_escalate_gate_operator_input_needed(
+            1, [_finding()], True, all_curable=False, trigger="incurable")
     elif reason == "stagnation":
         sup._pause_and_escalate_stagnation_last_approach(
             1, [{"id": "t1", "status": "pending"}])
     elif reason == "operator_input_needed":
         sup._pause_and_escalate_operator_input_needed(
             1, [_finding()], replan_available=True, signature="sig-x")
-    elif reason == "rejected_repeated_signature":
-        sup._pause_and_escalate_repeated_rejection_signature(1, "sig-y")
     else:
         raise AssertionError(reason)
     assert sup._pause.is_set() is False, "the pause did not close the gate"
@@ -146,9 +143,8 @@ def _unpause_cmd(sup) -> str:
 
 
 NOT_RULING_RELEASED_REASONS = [
-    "rejected_last_approach", "rejected_incurable", "stagnation"]
-RULING_RELEASED_REASONS = [
-    "operator_input_needed", "rejected_repeated_signature"]
+    "verdict_gate_operator_input_needed", "stagnation"]
+RULING_RELEASED_REASONS = ["operator_input_needed"]
 
 
 @pytest.mark.parametrize("reason", NOT_RULING_RELEASED_REASONS)
@@ -320,20 +316,18 @@ def test_full_pause_instructions_rule_then_unpause_route_holds_then_opens(
     assert sup._pause.is_set() is True, variant
 
 
-def test_repeated_signature_full_instructions_rule_alone_opens_the_gate(
+def test_operator_input_needed_full_instructions_rule_alone_opens_the_gate(
         tmp_path, monkeypatch):
-    """Preserved control on the full text: `rejected_repeated_signature`
+    """Preserved control on the full text: `operator_input_needed`
     genuinely is ruling-answerable, so its full instructions say a ruling
     releases it on its own -- executing that advertised `rule` command
     ALONE must open the gate."""
     sup = _sup(tmp_path, monkeypatch)
-    _raise_pause(sup, "rejected_repeated_signature")
+    _raise_pause(sup, "operator_input_needed")
     text = _escalation_event_text(sup)
     assert "will not proceed until" not in text
-    assert "releases it on its own" in text
     rule_cmd = next(c for c in _advertised(text)
                     if c.startswith("ralphctl rule "))
-    assert f"`{_unpause_cmd(sup)}` resumes with none recorded" in text
 
     with TestClient(create_app(sup.cfg, sup.run, sup)) as client:
         _run_command(rule_cmd, tmp_path, monkeypatch, client)

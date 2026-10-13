@@ -82,7 +82,7 @@ ralphctl start --prd <file|-> [options]
 | `--peer-plan-review` | off | opt-in peer plan-review gate (task 018, PRD requirement K, #101): a peer model approves or objects to the plan before `worker` starts, bounded by `peer_plan_review_max_revisions` revision round trips. Written to the run's `job.yaml` as `peer_plan_review` and visible in `GET /config` (`flags.peerPlanReview`); no `resume` equivalent -- like `--vigilant`/`--reflect`, it is a `start`-time choice only, replayed unchanged by `job.yaml` on every later `resume` |
 | `--peer-verdict-gate` | off | opt-in, genuinely blind peer verdict gate (task 020, PRD requirement L, #101): a second, independent peer model re-verifies completed work before terminal success. Written to the run's `job.yaml` as `peer_verdict_gate` and visible in `GET /config` (`flags.peerVerdictGate`); no `resume` equivalent, for the same reason `--peer-plan-review` has none |
 | `--mid-plan-review` | off | opt-in mid-plan review episode (task 022, PRD requirement K.2, #169): once per approach, once a declared fraction (`loop.MID_PLAN_REVIEW_FRACTION`) of the plan has already reached terminal-success, run one review iteration scoped to those requirements, opening a cure task per blocking finding through the existing cure machinery (`state.insert_cure_tasks`, the same path an ordinary review's own cure pass takes). Written to the run's `job.yaml` as `mid_plan_review` and visible in `GET /config` (`flags.midPlanReview`); no `resume` equivalent, for the same reason the two peer gates above have none |
-| `--no-operator-input-needed-pause` | on (this is the disable flag) | task 014's pause-before-archive gate (PRD requirement A.1, #224): ON by default, unlike the two peer gates above -- a rejection that would otherwise archive the approach (whether the next step would have been a fresh `replan` or the terminal `rejected_no_approach_left` outcome) holds instead, with `pauseReason: "operator_input_needed"`, so an operator can answer -- with a ruling (`ralphctl rule <run-id> --file <ruling.md> --name <slug>`, task 013) or a plain `ralphctl unpause <run-id>` -- before that spend happens. This flag restores the pre-014 behaviour of archiving immediately. The SAME flag also gates the peer verdict gate's own mirror (v0.27 requirement C.1, task 008; widened by cure task 002, this wave, to every blocking-set shape): a `verdict_gate` rejection holds instead with `pauseReason: "verdict_gate_operator_input_needed"` whenever the current approach's cure rounds (`cure_pass_ceiling` plus any `budget --cure-passes` top-up, shared with review) are already spent -- whether the rejection's blocking findings are all curable, mixed, or all non-curable -- disabled by this same flag; a parked mixed/all-incurable rejection's own unanswered resume still ends the run on the merits immediately, never a fresh `replan`, whatever approaches remain. Written to the run's `job.yaml` as `operator_input_needed_pause` (always an explicit `true`/`false`, unlike the two peer gates) and visible in `GET /config` (`flags.operatorInputNeededPause`); a `--template`'s own `operator_input_needed_pause:` key (SPEC.md §6.7) supplies the default when the flag is absent; no `resume` equivalent, for the same reason `--peer-plan-review`/`--peer-verdict-gate` have none |
+| `--no-operator-input-needed-pause` | on (this is the disable flag) | the rejection ladder's park (v0.36 requirement B; PRD A.1, #224): ON by default, unlike the two peer gates above -- a rejection with an incurable blocking finding, a reviewer escalation or spent cure rounds holds in `awaiting_input` with `pauseReason: "operator_input_needed"`, so an operator can answer -- with a ruling (`ralphctl rule <run-id> --file <ruling.md> --name <slug>`, task 013) or a plain `ralphctl unpause <run-id>` -- before that spend happens. This flag resolves the park at once with the outcome an unanswered park takes (archive and replan while an approach is left, else the `exhausted` (`approaches`) hold). The SAME flag also gates the peer verdict gate's own mirror (v0.27 requirement C.1, task 008; widened by cure task 002, this wave, to every blocking-set shape): a `verdict_gate` rejection parks with `pauseReason: "verdict_gate_operator_input_needed"` when a blocking finding is incurable or the current approach's cure rounds (`cure_pass_ceiling` plus any `budget --cure-passes` top-up, shared with review) are already spent -- whether the rejection's blocking findings are all curable, mixed, or all non-curable -- disabled by this same flag. Written to the run's `job.yaml` as `operator_input_needed_pause` (always an explicit `true`/`false`, unlike the two peer gates) and visible in `GET /config` (`flags.operatorInputNeededPause`); a `--template`'s own `operator_input_needed_pause:` key (SPEC.md §6.7) supplies the default when the flag is absent; no `resume` equivalent, for the same reason `--peer-plan-review`/`--peer-verdict-gate` have none |
 | `--model <id>` | profile default | model used by any hat with no per-hat override; falls back to the `--template`'s value, then the registry's `model` (`ralphctl config`), then the `--llm` profile's own `model:`. `router` (task 018, requirement E; rung order corrected task 003, #278 B.6) resolves `router_model` first, then the dedicated per-hat table entry (`model_overrides["router"]`/`models.router`), then the worker hat's own `trivial` tier (`model_tiers["worker"]["trivial"]`) when configured, then `model`; see `routerModel`/`routerTimeoutS` under `GET /config` (`docs/api.md`). `--fast-model` and `--model-strategy` (and `ralphctl config set model_strategy`/`fast_model`) are retired (task 006): the parser still recognises the flag names (hidden from `--help`) only so `start` can refuse them with exit `2` naming this `models:`/`model_overrides:` replacement, never a silent no-op; a job.yaml still carrying either legacy key from before task 006 is translated into an equivalent per-hat table at engine load time, never ignored |
 | `--no-route-tasks` | on (this is the disable flag) | task 003's router-assisted task-selection opt-out (#278 B.5): by default, once `engine.scheduler.pending_candidates` finds 2+ runnable tasks, the router picks which one to work next (`LoopSupervisor._route_task_selection`); this flag (or a `job.yaml` `route_task_selection: false` key) restores the fully deterministic pick, `engine.scheduler.select_next_task`'s own order, unconditionally. Written to the run's `job.yaml` as `route_task_selection` (always an explicit `true`/`false`) and visible in `GET /config`; no `resume` equivalent -- `resume` never rewrites this key, so the value a run started with is replayed unchanged on every later resume |
 | `--model-for HAT=REF` | — | per-hat model override (task 008, #60 pillar 4 requirement A), repeatable — e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`. Known hats: `planning\|worker\|verify\|review\|reflect\|router` (`MODEL_HATS`; an unrecognised name still resolves via `model_for`'s anti-downgrade rule rather than erroring). Writes/merges into the run's `job.yaml` `models:` table — the mechanism `model_overrides`/`models:` always was ([llm-profiles.md](llm-profiles.md) unaffected, `docs/api.md`'s `GET /config` `model.overrides`) — the ONLY thing this flag adds is a way to *reach* that table from `start` without hand-editing `job.yaml` and `resume`-ing. Unlike every other `start` scalar above, the table is **merged key by key across levels, not replaced whole**: explicit `--model-for` flags (last one wins for a repeated hat) > the `--template`'s own `job.yaml` `models:`/`model_overrides:` key > `<registry>/config.yaml`'s own `models:`/`model_overrides:` key (a nested mapping, edited directly like `pricing:` below — there is no scalar `ralphctl config set` for a table) > (a named LLM profile has no per-hat table of its own yet, so this rung is presently always empty) > absent, i.e. each hat falls through to `model_for`'s other rungs exactly as before. A malformed value (no `=`) exits `2` naming the expected `HAT=REF` shape |
@@ -538,18 +538,17 @@ run straight back into `review` over the EXACT SAME approach with
 nothing new to go on — likely to re-raise the identical rejection rather
 than progress (a plain unpause DOES release this pause; it just does not
 change the underlying determination). `⏸ held on rejected_incurable
-escalation` marks a run the engine is holding on a `rejected_incurable`
-escalation — a pause kept in memory only, so its `state` still reads
-`running` and it records no `pauseReason`; a ruling filed against this
-hold is recorded but never releases it on its own (cure task cure-01-01-9)
-— only `ralphctl unpause`/`POST /resume` does. The second, `❗ escalation
+escalation` marks a run directory written by 0.35 that was holding on a
+`rejected_incurable` escalation — a pause kept in memory only, so its `state`
+still reads `running` and it records no `pauseReason`; 0.36 parks every
+incurable finding in `awaiting_input` like the other ladder triggers. The second, `❗ escalation
 undelivered`, names a run whose most recently recorded engine escalation
 never reached the operator at all — every bounded delivery retry failed —
 and which is still paused on that exact escalation, persisted or held in
 memory. Both disappear once `ralphctl unpause`/`POST /resume` releases the
-hold — for `operator_input_needed`/`rejected_repeated_signature` a `ralphctl
+hold — for `operator_input_needed` a `ralphctl
 rule` alone does too, but for every other reason that waits on a ruling
-(`rejected_last_approach`, `rejected_incurable`, `stagnation`) a rule
+(`verdict_gate_operator_input_needed`, `stagnation`) a rule
 alone leaves the hold in place; it takes a separate unpause afterward. `--json` carries the same facts
 as `pauseMarker` (the pause marker string, `""` when none applies),
 `escalationUndelivered` (boolean) and `escalationUndeliveredMarker` (the
@@ -2159,15 +2158,15 @@ Hold/release the loop at the next iteration boundary.
 (`pauseReason` in `status.json`): it POSTs `/resume` to the live engine and
 clears the reason, and it ALWAYS releases the pause on its own, whichever
 reason set it. Whether a ruling should come first depends on the reason:
-for `operator_input_needed`/`rejected_repeated_signature`, `ralphctl rule
+for `operator_input_needed`, `ralphctl rule
 <run-id> --file <ruling.md> --name <slug>` ALONE already releases the run
 (the two commands are interchangeable single-step alternatives); for every
-other reason that waits on a ruling (`rejected_last_approach`, `rejected_
-incurable`, `stagnation`), a `rule` alone records the ruling but leaves the
+other reason that waits on a ruling (`verdict_gate_operator_input_needed`,
+`stagnation`), a `rule` alone records the ruling but leaves the
 run paused -- it takes the explicit sequence, `ralphctl rule <run-id>
 --file <ruling.md> --name <slug>` then `ralphctl unpause <run-id>`, to
 record a ruling before resuming; `ralphctl unpause <run-id>` alone still
-works too, resuming with no ruling recorded. The full `operator_escalation.escalation` text follows the same rule (cure task cure-01-01-9): for `rejected_last_approach`, `rejected_incurable` and `stagnation` (both variants) it says only `ralphctl unpause <run>` releases the pause, that filing a ruling records it but leaves the run paused, and gives the `ralphctl rule ... then ralphctl unpause ...` sequence beside the unpause-alone alternative, and for `rejected_repeated_signature` it says a ruling releases the pause on its own, or `ralphctl unpause <run>` resumes with none recorded to accept the default. Every pause and escalation
+works too, resuming with no ruling recorded. The full `operator_escalation.escalation` text follows the same rule (cure task cure-01-01-9): for `verdict_gate_operator_input_needed` and `stagnation` (both variants) it says only `ralphctl unpause <run>` releases the pause, that filing a ruling records it but leaves the run paused, and gives the `ralphctl rule ... then ralphctl unpause ...` sequence beside the unpause-alone alternative, and for `operator_input_needed` it says a ruling releases the pause on its own, or `ralphctl unpause <run>` resumes with none recorded to accept the default. Every pause and escalation
 text the engine produces names both live-run levers, never `ralphctl
 resume` -- `resume` starts a fresh container over an existing run dir
 (crash recovery, budget top-up) and is not for a run that is still alive.
@@ -2208,7 +2207,7 @@ into `worker`, not `review`): its digest names the offending commit's
 `unavailable` for the findings and reopen/insert fields it has no channel
 for, and its own answer command depends on whether the CURRENT approach
 already carries a recorded rejection signature from an EARLIER `operator_
-input_needed`/`rejected_repeated_signature` pause on that same approach,
+input_needed` park on that same approach,
 already answered by a ruling before this hold ever landed: with none (the
 common case), a `ralphctl rule` filed against it does not release it, so it
 names only `ralphctl unpause <run>`; with one, `resume_if_ruling_answers_
@@ -2229,15 +2228,11 @@ raises no same-signature operator gate while doing so. After a
 cure edge and the proceed is spent there: it never survives the cure to
 authorise a later archive, so the next same-signature rejection after the
 cure parks afresh. With no cure pass available, it takes the ordinary
-archive-and-replan edge (or finishes, when no approach is left) --
-or, for the gate's own mixed/all-incurable blocking-set rejection (cure
-task 002, this wave), that rejection's own immediate terminal tail, never
-a fresh replan, whatever approaches remain -- instead of parking a second
-time, mirroring the one-re-park bound a filed ruling already gets
-(`rulingReparked`). A DIFFERENT rejection never
+archive-and-replan edge (or holds the run `exhausted`, when no approach is
+left) instead of parking a second time. A DIFFERENT rejection never
 matches the grant and still parks; filing a ruling that
-answers the signature (review's own pause only) takes the existing
-re-park path instead of granting this proceed at all. Without a matching
+answers the signature (review's own pause only) releases the park instead of
+granting this proceed at all. Without a matching
 grant, a bare unpause with no ruling re-enters `review`/`verdict_gate` over
 the SAME approach with nothing new to go on and is likely to re-raise the
 identical rejection and re-park forever.
@@ -3985,9 +3980,8 @@ JSON endpoints served under `/api/`:
   than a port probe. `iterations` is always read from disk
   (`iterations/*/meta.json`). `404` for an unknown run id. Task 007 (v0.26,
   #269) adds `parkedQuestion` — `null`/absent unless the (possibly live-
-  proxied) `status.pauseReason` is `operator_input_needed` or
-  `rejected_repeated_signature`, the two pause reasons a ruling can actually
-  answer; built entirely on disk (`ralphd.engine.state.parked_question`, off
+  proxied) `status.pauseReason` is `operator_input_needed`, the one pause reason a
+  ruling can actually answer; built entirely on disk (`ralphd.engine.state.parked_question`, off
   the most recent matching `operator_escalation` event NOT YET ANSWERED by a
   later resume with no fresher matching escalation since, in `events.jsonl`
   plus the on-disk structured findings sidecar), never a second live-only

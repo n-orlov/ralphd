@@ -638,7 +638,7 @@ def test_archived_rejected_approach_history_survives_a_missing_sidecar(
 def test_verdict_gate_rejection_is_recorded_as_its_own_channel(tmp_path, monkeypatch):
     root = tmp_path / "run"
     sup = _rram035_supervisor(root, monkeypatch, max_approaches=2,
-                      peer_verdict_gate=True)
+                      peer_verdict_gate=True, operator_input_needed_pause=True)
     sup._approach = 1
     findings_mod.write_findings_json(sup.run.verdict_gate_findings_json_file, [
         {"severity": "blocking", "curable": False, "clause": "gate req",
@@ -647,10 +647,10 @@ def test_verdict_gate_rejection_is_recorded_as_its_own_channel(tmp_path, monkeyp
     _stub_runner(sup, {"verdict": "rejected", "reason": "gate says no"})
 
     outcome = asyncio.run(sup._step_verdict_gate())
-    # v0.21.1 requirement A.1/A.2 (task 001): a non-curable blocking
-    # finding ends the run right here, whatever approaches remain --
-    # never a replan, even though `max_approaches=2` leaves one available.
-    assert outcome == ("tail",)
+    # v0.36 requirement B: a non-curable blocking finding parks the run
+    # (awaiting_input), whatever approaches remain -- never a replan, even
+    # though `max_approaches=2` leaves one available.
+    assert outcome == ("advance", "paused", "verdict_gate_operator_input_needed")
 
     entry = state_mod.approach_metadata_channel(root, 1, "verdictGate")
     assert entry["verdict"] == "rejected"

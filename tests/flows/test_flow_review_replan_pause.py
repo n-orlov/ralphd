@@ -10,13 +10,13 @@ point of the module:
   * **an approach is left** -> the approach is ARCHIVED under `approaches/`,
     a composite PRD is written, the loop replans and the next approach's own
     review verifies (`test_a_rejection_with_an_approach_left_replans...`);
-  * **no approach is left, and the rejection is not curable** -> the run ends
-    `failed`/`unverified` without ever pausing: nothing an operator could
-    release would change the verdict
-    (`test_a_rejection_on_the_last_approach_with_nothing_curable_fails`);
+  * **no approach is left, and the rejection is not curable (park disabled)**
+    -> the unanswered park holds the run `exhausted` (`exhaustedBudget:
+    approaches`), never `failed`
+    (`test_a_rejection_on_the_last_approach_with_nothing_curable_holds_exhausted`);
   * **no approach is left, the rejection IS curable, and this approach's one
     cure pass is already spent** -> the run does NOT fail: it pauses for the
-    operator (`pauseReason: "rejected_last_approach"`, an
+    operator (`pauseReason: "operator_input_needed"`, an
     `operator_escalation` event), leaves the approach UNARCHIVED, and a
     `POST /resume` re-enters review over that same approach, where the next
     review verifies (`test_the_last_approach_pauses_for_the_operator...`).
@@ -28,8 +28,8 @@ through the engine's real HTTP API, and the resumed run is followed all the
 way to `succeeded`.
 
 Note on the step vocabulary: a pause is NOT a `state` event -- it is recorded
-on `status.json` (`state: "paused"`, `pauseReason`) plus the
-`operator_escalation` event, so `escalation:rejected_last_approach@1` is the
+on `status.json` (`state: "awaiting_input"`, `pauseReason`) plus the
+`operator_escalation` event, so `escalation:operator_input_needed@1` is the
 step the sequence carries and the persisted pair is asserted separately.
 """
 
@@ -106,7 +106,7 @@ def test_a_rejection_with_an_approach_left_replans_and_the_next_approach_verifie
         "the operator")
 
 
-def test_a_rejection_on_the_last_approach_with_nothing_curable_fails(engine_factory):
+def test_a_rejection_on_the_last_approach_with_nothing_curable_holds_exhausted(engine_factory):
     run = engine_factory(
         job={"run_id": "flow-exhausted", "on_complete": "exit",
              "max_approaches": 1, "iterations": 30},
@@ -120,13 +120,15 @@ def test_a_rejection_on_the_last_approach_with_nothing_curable_fails(engine_fact
         "phase:review@1",
         "iteration:review",
         "verdict:review:rejected@1",
-        "state:failed",
+        "state:exhausted",
     ], flow="flow exhaustion")
 
     st = status(run)
-    assert (st.get("state"), st.get("verdict")) == ("failed", "unverified"), (
-        f"flow exhaustion: the run must end failed/unverified, got state="
+    assert (st.get("state"), st.get("verdict")) == ("exhausted", None), (
+        f"flow exhaustion: with the park disabled and no approach left the "
+        f"rejection holds the run exhausted (approaches), got state="
         f"{st.get('state')!r} verdict={st.get('verdict')!r}")
+    assert st.get("exhaustedBudget") == "approaches"
     assert st.get("pauseReason") is None, (
         f"flow exhaustion: an incurable last-approach rejection must never "
         f"pause, but pauseReason is {st.get('pauseReason')!r}")
@@ -136,18 +138,18 @@ def test_the_last_approach_pauses_for_the_operator_and_a_resume_verifies(
         engine_factory):
     # Two curable rejections on a single-approach run: the first spends this
     # approach's one cure pass, the second has nothing left to spend and
-    # nowhere to replan to -- the `rejected_last_approach` pause.
+    # nowhere to replan to -- the ladder park (`cure_rounds_spent`).
     run = engine_factory(
         job={"run_id": "flow-last-approach-pause", "on_complete": "exit",
              "max_approaches": 1, "iterations": 30,
              # v0.36 C.2: one cure round per approach.
-             "cure_pass_ceiling": 1},
+             "cure_pass_ceiling": 1, "operator_input_needed_pause": True},
         stub_env={"STUB_REVIEW_CURABLE_REJECT_COUNT": "2"})
 
     paused = run.wait_state(("awaiting_input",), timeout=ENGINE_EXIT_WAIT_S)  # v0.36: findings parks land in awaiting_input
-    assert paused.get("pauseReason") == "rejected_last_approach", (
+    assert paused.get("pauseReason") == "operator_input_needed", (
         f"flow last-approach pause: status.json must name the pause reason "
-        f"'rejected_last_approach', got {paused.get('pauseReason')!r}")
+        f"'operator_input_needed', got {paused.get('pauseReason')!r}")
     assert paused.get("approach") == 1, (
         f"flow last-approach pause: the paused run must still be on approach 1, "
         f"got {paused.get('approach')!r}")
@@ -156,9 +158,9 @@ def test_the_last_approach_pauses_for_the_operator_and_a_resume_verifies(
         "resume re-enters review over the same approach")
 
     escalations = events_of(run, "operator_escalation")
-    assert len(escalations) == 1 and escalations[0].get("reason") == "rejected_last_approach", (
+    assert len(escalations) == 1 and escalations[0].get("reason") == "operator_input_needed", (
         f"flow last-approach pause: exactly one operator_escalation with reason "
-        f"'rejected_last_approach' is expected, got "
+        f"'operator_input_needed' is expected, got "
         f"{[(e.get('reason')) for e in escalations]}")
 
     # The operator releases the pause through the engine's own API.
@@ -186,7 +188,7 @@ def test_the_last_approach_pauses_for_the_operator_and_a_resume_verifies(
         "phase:review@1",
         "iteration:review",
         "verdict:review:rejected@1",
-        "escalation:rejected_last_approach@1",
+        "escalation:operator_input_needed@1",
         # the resume lands back on review over the SAME approach
         "phase:review@1",
         "iteration:review",

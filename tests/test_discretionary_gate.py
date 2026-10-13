@@ -1,24 +1,13 @@
-"""Task 017 (PRD requirements A.3/A.7, #224): trigger conditions 2 and 3
-over their SHARED discretionary gate, the six-item A.7 escalation payload,
-and `state.cure_pass_preview` (task 005's own pure predicate, task 006's
-`invalidates_reopen_walk`) that both feed off.
+"""The six-item A.7 escalation payload and `state.cure_pass_preview` (task
+005's pure predicate, task 006's `invalidates_reopen_walk`) that feeds it.
 
-Trigger condition 2 -- a cure pass that would re-open task(s) already
-`validated` -- and trigger condition 3 -- a rejection whose blocking-clause
-signature repeats the immediately preceding approach's own recorded
-signature -- draw from ONE `status.json`-backed counter per approach
-(`LoopSupervisor._discretionary_gate_available`/`_spend_discretionary_
-gate`): whichever fires first in an approach spends it, the other (should
-it also fire later in the SAME approach) falls through to its ordinary
-edge instead, and a fresh approach reads the budget unspent again.
-Condition 1's own `operator_input_needed` gate (task 014) is a SEPARATE,
-unbudgeted pause and is unaffected either way.
-
-Modelled on `tests/test_ruling_re_park_bound.py`'s own multi-episode shape
-for the "condition 2 then condition 3" (and its reverse) probes: a FRESH
-`LoopSupervisor` per rejection episode over the SAME on-disk run dir,
-never shared Python state across episodes.
-"""
+Task 017 (PRD requirements A.3/A.7, #224) once also pinned trigger conditions
+2 and 3 over a SHARED per-approach discretionary gate
+(`discretionaryGateSpent`). v0.36 requirement B removed that gate, the
+repeated-signature park and the one-re-park-per-ruling park: section 2 below
+pins what each old trigger does now (an ordinary rejection of the one ladder,
+`tests/test_rejection_ladder.py`), and that the reviewer's own escalation still
+carries the full payload."""
 
 from __future__ import annotations
 
@@ -244,13 +233,26 @@ def test_a_retake_row_behind_a_dead_dependency_is_counted_again(tmp_path):
 
 
 # ===========================================================================
-# 2. Trigger condition 2 over `_step_review`: fires only when the cure
-#    pass would re-open an already-`validated` task, never for the
-#    not-a-trigger case of a cure pass that only inserts new tasks.
+# 2. v0.36 requirement B retired the discretionary pre-archive gate, the
+#    repeated-signature park and the one-re-park-per-ruling park. What each
+#    old trigger does now: a cure that would reopen validated tasks, and a
+#    rejection repeating the preceding approach's signature, are ordinary
+#    rejections -- they cure while the approach has cure rounds left and park
+#    (`cure_rounds_spent`) when it has none. The reviewer's own
+#    `raise_operator_gate` still parks, and its payload still carries the six
+#    A.7 items. Covering nodes for the ladder itself:
+#    `tests/test_rejection_ladder.py`.
 # ===========================================================================
 
 
-def test_condition_2_holds_before_any_spend_and_carries_the_six_a7_items(
+def _escalating_runner(reason: str):
+    async def _run(prompt, transcript, **kw):
+        return _result(json.dumps({"verdict": "rejected", "reason": reason,
+                                   "raise_operator_gate": True}))
+    return _run
+
+
+def test_a_reviewer_escalation_over_a_reopening_cure_carries_the_six_a7_items(
         tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(
@@ -261,20 +263,21 @@ def test_condition_2_holds_before_any_spend_and_carries_the_six_a7_items(
                                                "totalTokens": 321}}}})
     sup._approach = 1
     findings.write_findings_json(sup.run.findings_json_file, _CURE_REOPEN_FINDING)
-    sup.runner.run = _rejecting_runner("lanes moved")  # type: ignore[method-assign]
+    sup.runner.run = _escalating_runner("lanes moved")  # type: ignore[method-assign]
 
     outcome = _bounded(sup._step_review())
 
     assert outcome == ("advance", "paused", "operator_input_needed")
     status = sup.run.read_status()
     assert status["pauseReason"] == "operator_input_needed"
+    assert status["inputQuestion"]["trigger"] == "reviewer_escalation"
     assert status["approach"] == 1
     # never actually taken: no cure pass spent, no reopen landed on disk.
     assert status.get("curePasses") in (None, {})
     tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
     assert tasks["057"]["status"] == "validated"
     assert tasks["058"]["status"] == "validated"
-    assert status.get("discretionaryGateSpent") == {"1": True}
+    assert "discretionaryGateSpent" not in status
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
@@ -333,7 +336,7 @@ def test_condition_2_holds_before_any_spend_and_carries_the_six_a7_items(
             hub_base_url=f"http://127.0.0.1:{hub_port}")
         sup2._approach = 1
         findings.write_findings_json(sup2.run.findings_json_file, _CURE_REOPEN_FINDING)
-        sup2.runner.run = _rejecting_runner("lanes moved")  # type: ignore[method-assign]
+        sup2.runner.run = _escalating_runner("lanes moved")  # type: ignore[method-assign]
         outcome2 = _bounded(sup2._step_review())
         assert outcome2 == ("advance", "paused", "operator_input_needed")
         ev2 = _events(tmp_path / "run2", "operator_escalation")[-1]
@@ -351,7 +354,32 @@ def test_condition_2_holds_before_any_spend_and_carries_the_six_a7_items(
         server.server_close()
 
 
-def test_a_cure_pass_that_only_inserts_tasks_is_not_a_trigger(tmp_path):
+def test_a_cure_that_would_reopen_validated_tasks_cures_without_parking(
+        tmp_path):
+    """Was trigger condition 2 (a cure pass that would re-open a `validated`
+    task parked once per approach, the shared discretionary gate). It is an
+    ordinary curable rejection now: with rounds left it cures."""
+    root = tmp_path / "run"
+    sup = _supervisor(
+        root, max_approaches=2, operator_input_needed_pause=True,
+        tasks=_lane_fixture_tasks())
+    sup._approach = 1
+    findings.write_findings_json(sup.run.findings_json_file, _CURE_REOPEN_FINDING)
+    sup.runner.run = _rejecting_runner("lanes moved")  # type: ignore[method-assign]
+
+    outcome = _bounded(sup._step_review())
+
+    assert outcome == ("advance", "cure", "rejected_curable_pass_available")
+    status = sup.run.read_status()
+    assert "discretionaryGateSpent" not in status
+    assert status.get("curePasses") == {"1": 1}
+    assert _events(root, "operator_escalation") == []
+    tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
+    assert tasks["057"]["status"] == "pending"  # the cure reopened it
+
+
+def test_a_cure_pass_that_only_inserts_tasks_cures_and_a_reviewer_gate_still_parks(
+        tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
     sup._approach = 1
@@ -363,531 +391,75 @@ def test_a_cure_pass_that_only_inserts_tasks_is_not_a_trigger(tmp_path):
 
     assert outcome == ("advance", "cure", "rejected_curable_pass_available")
     status = sup.run.read_status()
-    # the discretionary gate is UNTOUCHED for the not-a-trigger case.
-    assert status.get("discretionaryGateSpent") in (None, {})
     assert status.get("curePasses") == {"1": 1}
     assert _events(root, "operator_escalation") == []
     tasks = sup.run.read_tasks()["tasks"]
     assert len(tasks) == 2  # the cure task, plus the one new retake task
 
-    # Cure task cure-01-03 (PRD requirement A.6, F03): the independent
-    # reviewer path is needed PRECISELY in this same mechanical
-    # not-a-trigger case -- an all-curable rejection whose cure pass would
-    # only insert fresh tasks (never `_review_cure_pass_available`'s own
-    # mechanical `reopenedTaskIds` gate) used to reach `_take_cure_pass`/
-    # the `cure` edge in the SAME rejection without ever consulting this
-    # reply's own `raise_operator_gate: true` -- that field was only read
-    # later, on a line the cure-pass-available branch's own `return`
-    # already made unreachable. A SECOND, FRESH supervisor over its own
-    # tmp subdir -- zero fast-tier headroom (5997/5997) means this is
-    # folded into the sibling test above rather than collected as its own
-    # node -- differing from it in exactly one thing: the reviewer's own
-    # request.
+    # The reviewer's own `raise_operator_gate: true` parks this same
+    # rejection (the ladder's step 4b) before any cure is inserted.
     root2 = tmp_path / "run2"
     sup2 = _supervisor(root2, max_approaches=2, operator_input_needed_pause=True)
     sup2._approach = 1
     findings.write_findings_json(sup2.run.findings_json_file,
                                  _CURE_INSERT_ONLY_FINDING)
-
-    async def _review_raises_the_gate(prompt, transcript, **kw):
-        return _result(json.dumps({
-            "verdict": "rejected", "reason": "requires operator",
-            "raise_operator_gate": True,
-        }))
-    sup2.runner.run = _review_raises_the_gate  # type: ignore[method-assign]
+    sup2.runner.run = _escalating_runner("requires operator")  # type: ignore[method-assign]
 
     outcome2 = _bounded(sup2._step_review())
 
     assert outcome2 == ("advance", "paused", "operator_input_needed")
     status2 = sup2.run.read_status()
     assert status2["pauseReason"] == "operator_input_needed"
-    # NO cure insertion for this reply: no cure pass recorded, no fresh
-    # retake task appended, and the shared discretionary gate untouched --
-    # this override is unbudgeted, exactly like condition 1's own gate.
+    assert status2["inputQuestion"]["trigger"] == "reviewer_escalation"
     assert status2.get("curePasses") in (None, {})
-    assert status2.get("discretionaryGateSpent") in (None, {})
-    tasks2 = sup2.run.read_tasks().get("tasks") or []
-    assert len(tasks2) == 0
+    assert len(sup2.run.read_tasks().get("tasks") or []) == 0
     assert not (root2 / "approaches" / "01").exists()
 
 
-# ===========================================================================
-# 3. Trigger condition 3 over `_step_review`: a repeated blocking-clause
-#    signature raises the SAME shared gate, and carries the six A.7 items
-#    too, exactly like condition 2.
-# ===========================================================================
-
-
 def _mixed_signature() -> str:
-    """The exact signature `_MIXED_FINDINGS` produces -- a scratch
-    supervisor's own `_review_rejection_signature` is a pure function of
-    its two arguments (`findings.blocking_finding_clauses` plus a text
-    normaliser), so this never has to duplicate that logic by hand."""
+    """The exact signature `_MIXED_FINDINGS` produces."""
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         scratch = _supervisor(Path(d) / "scratch")
         return scratch._review_rejection_signature(_MIXED_FINDINGS, None)
 
 
-def test_condition_3_holds_before_any_spend_and_carries_the_six_a7_items(
+def test_a_rejection_repeating_the_preceding_signature_is_just_a_rejection(
         tmp_path):
-    root = tmp_path / "run"
+    """Was trigger condition 3 (`rejected_repeated_signature`: park once per
+    approach when the blocking-clause signature repeated the preceding
+    approach's). Now an all-curable repeat cures while rounds are left, and
+    parks as `cure_rounds_spent` when they are not; an incurable repeat parks
+    as `incurable` (`tests/test_rejection_ladder.py` pins each step)."""
     signature = _mixed_signature()
-    sup = _supervisor(
-        root, max_approaches=2, operator_input_needed_pause=True,
+    repeated = [dict(f, curable=True, cured_when="Fix " + f["clause"])
+                for f in _MIXED_FINDINGS]
+
+    roomy = _supervisor(
+        tmp_path / "roomy", max_approaches=2, operator_input_needed_pause=True,
         status={"state": "running", "phase": "review", "approach": 1,
                 "rejectionSignatures": {"0": signature}})
-    sup._approach = 1
-    findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
-    sup.runner.run = _rejecting_runner("mixed curability")  # type: ignore[method-assign]
+    roomy._approach = 1
+    findings.write_findings_json(roomy.run.findings_json_file, repeated)
+    roomy.runner.run = _rejecting_runner("same wall")  # type: ignore[method-assign]
+    assert _bounded(roomy._step_review()) == (
+        "advance", "cure", "rejected_curable_pass_available")
+    assert "discretionaryGateSpent" not in roomy.run.read_status()
 
-    outcome = _bounded(sup._step_review())
-
-    assert outcome == ("advance", "paused", "rejected_repeated_signature")
-    status = sup.run.read_status()
-    assert status["pauseReason"] == "rejected_repeated_signature"
-    assert status.get("discretionaryGateSpent") == {"1": True}
-    # never archived -- the ordinary archive/replan tail never ran.
-    assert not (root / "approaches" / "01").exists()
-
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
-    ev = escalations[0]
-    assert ev["reason"] == "rejected_repeated_signature"
-    assert ev["signature"] == signature
-    assert ev["taskIdsValidatedToPending"] == []
-    # Task 003 (this wave): `_MIXED_FINDINGS` is never curable at all (one
-    # incurable finding) -- a cure pass never runs over it, ceiling spent
-    # or not, so the preview reads zero here too, covered by `tests/test_
-    # escalation_preview_real_edge.py::test_review_rejection_preview_
-    # matches_cure_availability[mixed_1c_1i_ceiling_spent]`.
-    assert ev["insertCount"] == 0
-    assert ev["approachOfMax"] == "approach 1 of 2"
-    assert ev["hubLink"] == f"http://127.0.0.1/#/run/{sup.cfg.run_id}"
-
-    # Task 003 (PRD finding F01): a SECOND episode, over a REAL archive/
-    # replan (never a seeded `rejectionSignatures` map), where the repeat
-    # rejection's own cure pass would be mechanically AVAILABLE (all
-    # findings now curable, each naming an `invalidates` path) and would
-    # reopen only `completed` -- never `validated` -- records, so
-    # condition 2 itself never fires. F01: `_step_review` used to return
-    # `("advance", "cure", "rejected_curable_pass_available")` here,
-    # spending `curePasses` and moving 057/058 back to `pending`, because
-    # the cure-pass branch ran before this comparison was ever reached.
-    sup2 = _supervisor(tmp_path / "run2", max_approaches=3, operator_input_needed_pause=True)
-    sup2._approach = 1
-    findings.write_findings_json(sup2.run.findings_json_file, _MIXED_FINDINGS)
-    sup2.runner.run = _rejecting_runner("mixed curability, second episode")  # type: ignore[method-assign]
-    outcome2a = _bounded(sup2._step_review())
-    assert outcome2a[1] == "paused"  # condition 1's own unbudgeted gate
-    sup2.resume()
-    sup2._archive_approach(1)
-    sup2._step_replan()
-    assert sup2._approach == 2
-
-    sup2.run.write_tasks({"version": 1,
-                         "tasks": _lane_fixture_tasks(record_status="completed",
-                                                      verify_status="completed")})
-    repeated = [dict(f, curable=True, cured_when="Fix " + f["clause"],
-                     invalidates=[RECORD_PATH]) for f in _MIXED_FINDINGS]
-    assert (sup2._review_rejection_signature(repeated, None)
-            == sup2.run.read_status()["rejectionSignatures"]["1"])
-    findings.write_findings_json(sup2.run.findings_json_file, repeated)
-
-    outcome2b = _bounded(sup2._step_review())
-
-    assert outcome2b == ("advance", "paused", "rejected_repeated_signature")
-    status2 = sup2.run.read_status()
-    assert status2["pauseReason"] == "rejected_repeated_signature"
-    assert status2.get("discretionaryGateSpent") == {"2": True}
-    # no cure task inserted, and the completed records untouched.
-    assert status2.get("curePasses", {}).get("2", 0) == 0
-    tasks2 = {t["id"]: t for t in sup2.run.read_tasks()["tasks"]}
-    assert tasks2["057"]["status"] == "completed"
-    assert tasks2["058"]["status"] == "completed"
-    # the approach is left unarchived -- `resume` re-reviews the same one.
-    assert not (sup2.run.root / "approaches" / "02").exists()
-    assert sup2._approach == 2
-
-
-# ===========================================================================
-# 4. The shared budget: one gate for conditions 2 and 3 together, in
-#    either order, within one approach; condition 1's own pause is
-#    separate/unbudgeted; a fresh approach's own budget is unspent again.
-# ===========================================================================
-
-
-def test_condition_2_then_condition_3_in_one_approach_share_one_gate(
-        tmp_path):
-    root = tmp_path / "run"
-    signature = _mixed_signature()
-    # A ficticious approach 0 already recorded this rejection's own
-    # signature, so episode B's rejection -- still over approach 1 -- reads
-    # as "the same wall as the immediately preceding approach".
-    sup_a = _supervisor(
-        root, max_approaches=2, operator_input_needed_pause=True,
-        tasks=_lane_fixture_tasks(),
-        status={"state": "running", "phase": "review", "approach": 1,
-                "rejectionSignatures": {"0": signature}})
-    sup_a._approach = 1
-    findings.write_findings_json(sup_a.run.findings_json_file, _CURE_REOPEN_FINDING)
-    sup_a.runner.run = _rejecting_runner("lanes moved")  # type: ignore[method-assign]
-
-    outcome_a = _bounded(sup_a._step_review())
-    assert outcome_a == ("advance", "paused", "operator_input_needed")
-    assert sup_a.run.read_status().get("discretionaryGateSpent") == {"1": True}
-    sup_a.resume()
-
-    # Episode B: fresh supervisor, same run dir, same approach -- a MIXED
-    # rejection whose signature matches approach 0's recorded one, driven
-    # under the DEFAULT `operator_input_needed_pause=True`, because that is
-    # the configuration every run ships with: a shared budget that only
-    # holds while condition 1's own gate is switched off would be no budget
-    # at all. A condition-3 match refused its pause by the spent shared gate
-    # does not then take condition 1's gate for the SAME rejection -- it
-    # reaches the ordinary archive/replan tail.
-    sup_b = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
-    sup_b._approach = 1
-    findings.write_findings_json(sup_b.run.findings_json_file, _MIXED_FINDINGS)
-    sup_b.runner.run = _rejecting_runner("still mixed")  # type: ignore[method-assign]
-
-    outcome_b = _bounded(sup_b._step_review())
-
-    # condition 3 would otherwise fire here -- the gate is already spent
-    # for approach 1, so this falls through to the ordinary archive/replan
-    # tail instead of a second pause.
-    assert outcome_b == ("advance", "replan", "rejected_approach_left")
-    status = sup_b.run.read_status()
-    assert status["pauseReason"] is None
-    assert (root / "approaches" / "01").exists()
-    # exactly ONE escalation total across both episodes.
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
-    assert escalations[0]["reason"] == "operator_input_needed"
-
-
-def test_condition_3_then_condition_2_in_one_approach_share_the_same_gate(
-        tmp_path):
-    root = tmp_path / "run"
-    signature = _mixed_signature()
-    sup_a = _supervisor(
-        root, max_approaches=2, operator_input_needed_pause=True,
-        status={"rejectionSignatures": {"0": signature}})
-    sup_a._approach = 1
-    findings.write_findings_json(sup_a.run.findings_json_file, _MIXED_FINDINGS)
-    sup_a.runner.run = _rejecting_runner("mixed curability")  # type: ignore[method-assign]
-
-    outcome_a = _bounded(sup_a._step_review())
-    assert outcome_a == ("advance", "paused", "rejected_repeated_signature")
-    assert sup_a.run.read_status().get("discretionaryGateSpent") == {"1": True}
-    sup_a.resume()
-
-    # Episode B: a cure pass that would re-open validated tasks -- the
-    # gate is already spent, so it is taken silently instead of pausing.
-    sup_b = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
-                        tasks=_lane_fixture_tasks())
-    sup_b._approach = 1
-    findings.write_findings_json(sup_b.run.findings_json_file, _CURE_REOPEN_FINDING)
-    sup_b.runner.run = _rejecting_runner("lanes moved")  # type: ignore[method-assign]
-
-    outcome_b = _bounded(sup_b._step_review())
-
-    assert outcome_b == ("advance", "cure", "rejected_curable_pass_available")
-    tasks = {t["id"]: t for t in sup_b.run.read_tasks()["tasks"]}
-    assert tasks["057"]["status"] == "pending"
-    assert tasks["058"]["status"] == "pending"
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
-    assert escalations[0]["reason"] == "rejected_repeated_signature"
-
-
-def test_a_reviewer_raised_gate_still_pauses_once_the_shared_gate_is_spent(
-        tmp_path):
-    # A.6's reviewer field is a fresh per-verdict decision, never subject to
-    # the shared discretionary budget: a repeated-signature rejection that
-    # the spent gate refuses still pauses when THIS verdict asked for it.
-    root = tmp_path / "run"
-    signature = _mixed_signature()
-    sup = _supervisor(
-        root, max_approaches=2, operator_input_needed_pause=True,
+    spent = _supervisor(
+        tmp_path / "spent", max_approaches=2, operator_input_needed_pause=True,
+        cure_pass_ceiling=1,
         status={"state": "running", "phase": "review", "approach": 1,
                 "rejectionSignatures": {"0": signature},
-                "discretionaryGateSpent": {"1": True}})
-    sup._approach = 1
-    findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
-
-    async def _review_raises_the_gate(prompt, transcript, **kw):
-        return _result(json.dumps({
-            "verdict": "rejected", "reason": "the predicate cannot count this",
-            "raise_operator_gate": True,
-        }))
-    sup.runner.run = _review_raises_the_gate  # type: ignore[method-assign]
-
-    outcome = _bounded(sup._step_review())
-
-    assert outcome == ("advance", "paused", "operator_input_needed")
-    assert sup.run.read_status()["pauseReason"] == "operator_input_needed"
-    assert not (root / "approaches" / "01").exists()
-
-
-def test_a_condition_2_gate_early_leaves_condition_1_raised_later(
-        tmp_path):
-    root = tmp_path / "run"
-    sup_a = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
-                        tasks=_lane_fixture_tasks())
-    sup_a._approach = 1
-    findings.write_findings_json(sup_a.run.findings_json_file, _CURE_REOPEN_FINDING)
-    sup_a.runner.run = _rejecting_runner("lanes moved")  # type: ignore[method-assign]
-
-    outcome_a = _bounded(sup_a._step_review())
-    assert outcome_a == ("advance", "paused", "operator_input_needed")
-    assert sup_a.run.read_status().get("discretionaryGateSpent") == {"1": True}
-    sup_a.resume()
-
-    # Episode B: an ordinary mixed rejection with NO repeated signature
-    # (no approach 0 ever recorded one) -- condition 1's own unbudgeted
-    # gate still raises, even though the shared discretionary budget for
-    # approach 1 is already spent.
-    sup_b = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
-    sup_b._approach = 1
-    findings.write_findings_json(sup_b.run.findings_json_file, _MIXED_FINDINGS)
-    sup_b.runner.run = _rejecting_runner("still mixed")  # type: ignore[method-assign]
-
-    outcome_b = _bounded(sup_b._step_review())
-
-    assert outcome_b == ("advance", "paused", "operator_input_needed")
-    status = sup_b.run.read_status()
+                "curePasses": {"1": 1}})
+    spent._approach = 1
+    findings.write_findings_json(spent.run.findings_json_file, repeated)
+    spent.runner.run = _rejecting_runner("same wall")  # type: ignore[method-assign]
+    assert _bounded(spent._step_review()) == (
+        "advance", "paused", "operator_input_needed")
+    status = spent.run.read_status()
+    assert status["inputQuestion"]["trigger"] == "cure_rounds_spent"
     assert status["pauseReason"] == "operator_input_needed"
-    assert status["approach"] == 1
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 2
-    assert [e["reason"] for e in escalations] == [
-        "operator_input_needed", "operator_input_needed"]
-    # Cure task cure-01-04 (PRD requirement A.7, F04): condition 1's own
-    # escalation is NOT a driven discretionary gate (nothing was spent for
-    # it, and `taskIdsValidatedToPending`/`insertCount` read empty/zero --
-    # this rejection's own cure-pass preview has nothing to reopen), but
-    # the review found its payload missing outright rather than merely
-    # empty; it now carries the full six-item A.7 payload every other
-    # `operator_input_needed` pause does.
-    condition_1_event = escalations[1]
-    assert condition_1_event["taskIdsValidatedToPending"] == []
-    # Task 003 (this wave): same fix as the sibling pin above -- a mixed
-    # rejection never earns a cure pass, so `insertCount` reads zero,
-    # covered by `tests/test_escalation_preview_real_edge.py::test_
-    # review_rejection_preview_matches_cure_availability[mixed_1c_1i_
-    # ceiling_spent]`.
-    assert condition_1_event["insertCount"] == 0
-    assert condition_1_event["approachOfMax"] == "approach 1 of 2"
-    assert condition_1_event["hubLink"] == f"http://127.0.0.1/#/run/{sup_b.cfg.run_id}"
-
-
-def test_the_gate_is_available_again_once_the_approach_is_crossed(tmp_path):
-    root = tmp_path / "run"
-    sup = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
-    sup._approach = 1
-    sup._spend_discretionary_gate(1)
-    assert sup._discretionary_gate_available(1) is False
-    assert sup._discretionary_gate_available(2) is True
-
-
-# ===========================================================================
-# 5. Task 005 (J.2, PRD requirement A.3, #224): the two A.3 trigger
-# questions the v0.23 review's own probes (`_review_new_edges.py`/
-# `_review_positive.py`, not present on this host -- reconstructed here from
-# the v0.24 PRD's own descriptions of them) raised against this file's
-# shipped code.
-# ===========================================================================
-
-
-def test_A3_repeated_insert_only_is_still_explicit_nontrigger(tmp_path):
-    """Probe 3 (reconstructed): "A.3 explicitly excludes findings that
-    merely insert tasks without a replan or reopen." Judged PROBE-RIGHT,
-    and already true of shipped code -- this test pins the ALREADY-CORRECT
-    behaviour rather than changing anything, settling the tracked-test half
-    of the question the same way probe 2 of J.1 did.
-
-    The deciding source line is `mechanical_reopen_trigger`'s own
-    `cure_preview["reopenedTaskIds"]` conjunct (:11020) -- an insert-only
-    finding's preview (`state.cure_pass_preview`) always returns an EMPTY
-    `reopenedTaskIds` (nothing walked from its `invalidates` path is
-    currently `validated`; `_CURE_INSERT_ONLY_FINDING`'s own path names no
-    lane-evidence record chain at all), so this conjunct is false and
-    condition 2 never fires -- `test_a_cure_pass_that_only_inserts_tasks_
-    is_not_a_trigger` above already pins this for ONE such rejection. The
-    named question is whether REPEATING the identical insert-only
-    rejection manufactures a trigger the single occurrence does not --
-    it does not, because `mechanical_reopen_trigger` reads the SAME
-    per-rejection `cure_preview`, never an accumulated count, and
-    `discretionaryGateSpent` (trigger conditions 2/3's own shared budget)
-    stays completely untouched across both episodes below even though the
-    SECOND episode does end up pausing -- via condition 1's own separate,
-    unbudgeted `operator_input_needed` gate (:11217-11221), once this
-    approach's own one cure pass is already spent and the rejection falls
-    through to the ordinary archive-before-pause tail. That pause is real
-    but orthogonal to A.3's own discretionary-gate exclusion, which this
-    test's `discretionaryGateSpent` assertions isolate.
-
-    Two episodes, one on-disk run dir, a fresh `LoopSupervisor` each time:
-
-    1. the insert-only finding rejects for the first time -- taken as an
-       ungated, ungated cure pass (`rejected_curable_pass_available`),
-       spending this approach's one cure pass but no discretionary gate.
-    2. the IDENTICAL finding rejects again -- this approach's cure pass is
-       already spent, so it falls to the ordinary archive-before-pause
-       tail and pauses via condition 1 (`operator_input_needed`) -- but
-       `discretionaryGateSpent` is STILL untouched: condition 2 never even
-       considered this rejection a candidate, repeated or not.
-    """
-    root = tmp_path / "run"
-    sup1 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
-                       cure_pass_ceiling=1)
-    sup1._approach = 1
-    findings.write_findings_json(sup1.run.findings_json_file,
-                                 _CURE_INSERT_ONLY_FINDING)
-    sup1.runner.run = _rejecting_runner("record went stale")  # type: ignore[method-assign]
-
-    outcome1 = _bounded(sup1._step_review())
-
-    assert outcome1 == ("advance", "cure", "rejected_curable_pass_available")
-    status1 = sup1.run.read_status()
-    assert status1.get("discretionaryGateSpent") in (None, {})
-    assert status1.get("curePasses") == {"1": 1}
-    sup1.resume()
-
-    sup2 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
-                       cure_pass_ceiling=1)
-    sup2._approach = 1
-    # Episode 2 is a CONFIRMATION review (episode 1's cure pass was
-    # granted): the IDENTICAL finding, re-filed as still open, names the
-    # cure task episode 1 built for it in `reopens` -- an unlinked one
-    # would be downgraded to residual (B.3, task 006, tests/
-    # test_confirmation_downgrade.py) and never reach this edge at all.
-    cure_id = next(t["id"] for t in sup2.run.read_tasks()["tasks"]
-                   if t.get("origin") == "review-cure")
-    findings.write_findings_json(
-        sup2.run.findings_json_file,
-        [dict(f, reopens=cure_id) for f in _CURE_INSERT_ONLY_FINDING])
-    sup2.runner.run = _rejecting_runner("record went stale again")  # type: ignore[method-assign]
-
-    outcome2 = _bounded(sup2._step_review())
-
-    # the repeat DOES pause -- this approach's one cure pass is already
-    # spent -- but through condition 1's own separate, unbudgeted gate,
-    # never through trigger condition 2's discretionary one.
-    assert outcome2 == ("advance", "paused", "operator_input_needed")
-    status2 = sup2.run.read_status()
-    assert status2["pauseReason"] == "operator_input_needed"
-    # unchanged from episode 1 -- still no cure task inserted for this
-    # repeat, and the discretionary gate never spent by either episode.
-    assert status2.get("curePasses") == {"1": 1}
-    assert status2.get("discretionaryGateSpent") in (None, {})
-    tasks = sup2.run.read_tasks()["tasks"]
-    assert len(tasks) == 2  # the one cure task episode 1 inserted, unchanged
-    escalations = _events(root, "operator_escalation")
+    assert not (tmp_path / "spent" / "approaches" / "01").exists()
+    escalations = _events(tmp_path / "spent", "operator_escalation")
     assert [e["reason"] for e in escalations] == ["operator_input_needed"]
-
-
-def test_A3_discretionary_gate_renews_after_actual_replan(tmp_path):
-    """Probe 4 (reconstructed): observed `('advance', 'paused',
-    'rejected_repeated_signature')`, expected `('advance', 'paused',
-    'operator_input_needed')`. Judged PROBE-OVER-REACHES against A.3's own
-    text.
-
-    A.3 gives trigger conditions 2 and 3 exactly ONE shared discretionary
-    gate per approach (this file's own module docstring; `docs/api.md`'s
-    `discretionaryGateSpent` field description: "whichever of the two
-    fires FIRST in an approach spends the entry for that approach's own
-    string key"), and `_step_review`'s own dispatch order is what decides
-    which one that is: trigger condition 3's repeated-signature check
-    (:10895-10903) runs strictly BEFORE the cure-pass branch that houses
-    trigger condition 2's `mechanical_reopen_trigger` (:11018-11022) --
-    already exercised for a SEEDED signature map by
-    `test_condition_3_then_condition_2_in_one_approach_share_the_same_
-    gate` above. Nothing in A.3's text gives condition 2 precedence over
-    condition 3 when both predicates hold for the identical rejection, or
-    ties either one to whether the discretionary gate happens to have just
-    renewed across a replan -- the gate renewing is real (proved below,
-    `_discretionary_gate_available(2)` reads `True` going into this
-    rejection) but orthogonal to WHICH condition spends it once it fires,
-    which the code's own dispatch order alone decides. The probe's
-    expectation that a freshly-renewed gate should redirect the outcome to
-    condition 2's own `operator_input_needed` pauseReason has no basis in
-    A.3's text and is not what the shared-budget design it names
-    describes.
-
-    Drives an ACTUAL archive/replan (never a seeded approach field, task
-    004/J.1's own precedent) and constructs a SINGLE rejection in the
-    fresh approach whose blocking-clause signature repeats the
-    immediately preceding approach's own recorded one (condition 3's own
-    predicate) AND whose cure-pass preview would reopen an already-
-    `validated` task (condition 2's own predicate) -- both true at once,
-    on the identical rejection, to settle which one the shared gate
-    actually answers.
-    """
-    root = tmp_path / "run"
-
-    # Approach 1: an ordinary MIXED rejection matching no prior signature
-    # -- condition 1's own unbudgeted gate pauses it (the default-enabled
-    # `operator_input_needed_pause`), which records ITS OWN signature via
-    # `_pause_and_escalate_operator_input_needed` exactly as the ordinary
-    # archive tail would. Resuming and driving `_archive_approach`/`_step_
-    # replan` by hand (this module's own precedent, `test_condition_3_
-    # holds_before_any_spend_and_carries_the_six_a7_items`'s second
-    # episode) is what makes this an ACTUAL replan, not a seeded field.
-    sup1 = _supervisor(root, max_approaches=3, operator_input_needed_pause=True)
-    sup1._approach = 1
-    findings.write_findings_json(sup1.run.findings_json_file, _MIXED_FINDINGS)
-    sup1.runner.run = _rejecting_runner("mixed curability")  # type: ignore[method-assign]
-
-    outcome1 = _bounded(sup1._step_review())
-
-    assert outcome1 == ("advance", "paused", "operator_input_needed")
-    signature = sup1._review_rejection_signature(_MIXED_FINDINGS, None)
-    assert signature is not None
-    assert sup1.run.read_status()["rejectionSignatures"]["1"] == signature
-    sup1.resume()
-    sup1._archive_approach(1)
-    replan_outcome = sup1._step_replan()
-    assert replan_outcome[0] == "advance"
-    assert sup1._approach == 2
-
-    # Approach 2 (an ACTUAL fresh approach): the shared gate has renewed.
-    sup2 = _supervisor(root, max_approaches=3, operator_input_needed_pause=True,
-                       tasks=_lane_fixture_tasks())
-    sup2._approach = 2
-    assert sup2._discretionary_gate_available(2) is True
-
-    # The SAME wall recurs -- identical blocking-clause signature to
-    # approach 1's -- but this time it is ALL curable and would reopen a
-    # `validated` task: condition 2's own predicate is also true on this
-    # very rejection.
-    repeated = [dict(f, curable=True, cured_when=f"{f['clause']} is discharged",
-                     invalidates=[RECORD_PATH])
-                for f in _MIXED_FINDINGS]
-    assert sup2._review_rejection_signature(repeated, None) == signature
-    findings.write_findings_json(sup2.run.findings_json_file, repeated)
-    sup2.runner.run = _rejecting_runner("same wall recurs in approach 2")  # type: ignore[method-assign]
-
-    outcome2 = _bounded(sup2._step_review())
-
-    # condition 3 (checked FIRST in `_step_review`'s own dispatch order)
-    # wins the shared gate -- exactly the "observed" tuple the probe
-    # itself names, and the CORRECT one: never `operator_input_needed`,
-    # even though condition 2's own mechanical reopen trigger would
-    # plainly apply to this identical rejection.
-    assert outcome2 == ("advance", "paused", "rejected_repeated_signature")
-    status2 = sup2.run.read_status()
-    assert status2["pauseReason"] == "rejected_repeated_signature"
-    assert status2.get("discretionaryGateSpent") == {"2": True}
-    # no cure pass taken, and the validated task never reopened -- the
-    # rejection paused before the cure-pass branch (and condition 2's own
-    # check inside it) ever ran.
-    assert status2.get("curePasses") in (None, {})
-    tasks2 = {t["id"]: t for t in sup2.run.read_tasks()["tasks"]}
-    assert tasks2["058"]["status"] == "validated"
-    assert not (root / "approaches" / "02").exists()
-
-    escalations = _events(root, "operator_escalation")
-    assert [e["reason"] for e in escalations] == [
-        "operator_input_needed", "rejected_repeated_signature"]

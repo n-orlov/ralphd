@@ -155,15 +155,18 @@ def test_review_proceed_spent_on_cure_does_not_authorise_a_later_archive(
     assert len(_events(sup.run.root, "operator_escalation")) == 2
 
 
-def test_review_proceed_spent_by_an_incurable_edge_is_gone_afterwards(
+def test_review_proceed_spent_by_an_incurable_rejection_is_gone_afterwards(
         tmp_path):
-    """The matching rejection spends the grant even when it takes the
-    `rejected_incurable` edge (same clause set, curability flipped), so
-    the next same-signature rejection parks rather than archiving."""
+    """The matching rejection spends the grant even when its curability
+    flipped (same clause set, now incurable): the bare unpause is the park's
+    unanswered outcome, so that rejection archives and replans (v0.36
+    requirement B -- there is no `rejected_incurable` edge any more) and the
+    next same-signature rejection parks rather than archiving again."""
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=2,
                       operator_input_needed_pause=True)
     sup._approach = 1
+    (root / "prd.md").write_text("# test PRD\n\nDo the thing.\n")
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     _review_rejects(sup, raise_gate=False)
 
@@ -176,11 +179,9 @@ def test_review_proceed_spent_by_an_incurable_edge_is_gone_afterwards(
                  for f in _MIXED_FINDINGS]
     findings.write_findings_json(sup.run.findings_json_file, incurable)
     assert _bounded(sup._step_review()) == (
-        "advance", "review", "rejected_incurable")
+        "advance", "replan", "rejected_approach_left")
     assert "operator_input_needed" not in _proceeds(sup)
-    sup.resume()  # releases the incurable hold; grants nothing new
 
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     third = _bounded(sup._step_review())
     assert third == ("advance", "paused", "operator_input_needed")
-    assert not (root / "approaches" / "01").exists()

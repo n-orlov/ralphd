@@ -63,34 +63,40 @@ def _always_failing(monkeypatch):
     monkeypatch.setattr(hat_tools, "_http_post_text", failing_poster)
 
 
+_CURABLE_BLOCKING = [{"severity": "blocking", "curable": True, "clause": "C.1",
+                      "evidence": "still not fixed", "cured_when": "C.1 is fixed"}]
+_INCURABLE_BLOCKING = [{"severity": "blocking", "curable": False,
+                        "clause": "C.1", "evidence": "needs missing hardware"}]
+
+
 def _trigger_undelivered_escalation(sup):
-    """Drives the real `rejected_last_approach` pause + escalation path with
-    a permanently-failing notifier -- leaving `status.json` at `state:
-    "paused"`, `pauseReason: "rejected_last_approach"`, and exactly one
+    """Drives the real ladder park (cure rounds spent on the last approach)
+    + escalation path with a permanently-failing notifier -- leaving
+    `status.json` at `state: "awaiting_input"`, `pauseReason:
+    "operator_input_needed"`, and exactly one
     `notification.escalation_undelivered` event on `events.jsonl` (see
     `tests/test_escalation_delivery.py`, task 004, for the delivery path
     itself -- this module only needs the OUTCOME as a fixture)."""
     sup._sleep_before_escalation_retry = lambda seconds: None
     sup._approach = 1
-    sup._pause_and_escalate_last_approach_rejection(1)
+    sup._pause_and_escalate_operator_input_needed(
+        1, _CURABLE_BLOCKING, False, trigger="cure_rounds_spent")
 
 
 def _trigger_undelivered_incurable_escalation(sup):
-    """Drives the real `rejected_incurable` pause + escalation path
-    (`_pause_and_escalate_incurable_rejection`) with a permanently-failing
-    notifier. That site's pause is the reason-less in-memory hold: status.json
-    keeps `pauseReason: null` and never reads `state: "paused"` (SPEC.md
-    4.6), yet the run IS paused on this escalation until it is answered --
-    so every surface must still show the marker."""
+    """The same park for an incurable finding. Before v0.36 that site held
+    in memory only (status.json kept `pauseReason: null`); every findings
+    park is `awaiting_input` now, so every surface shows the marker the same
+    way."""
     sup._sleep_before_escalation_retry = lambda seconds: None
-    sup._review_findings = list
     sup._approach = 1
-    sup._pause_and_escalate_incurable_rejection(1)
+    sup._pause_and_escalate_operator_input_needed(
+        1, _INCURABLE_BLOCKING, True, trigger="incurable")
 
 
 _TRIGGERS = {
-    "rejected_last_approach": _trigger_undelivered_escalation,
-    "rejected_incurable": _trigger_undelivered_incurable_escalation,
+    "cure_rounds_spent": _trigger_undelivered_escalation,
+    "incurable": _trigger_undelivered_incurable_escalation,
 }
 
 
@@ -141,7 +147,8 @@ def test_escalation_undelivered_is_false_when_delivery_actually_succeeded(
     sup = _supervisor(root, notifier_url="http://notifier.example/notify")
     sup._sleep_before_escalation_retry = lambda seconds: None
     sup._approach = 1
-    sup._pause_and_escalate_last_approach_rejection(1)
+    sup._pause_and_escalate_operator_input_needed(
+        1, _CURABLE_BLOCKING, False, trigger="cure_rounds_spent")
 
     # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
     status = sup.run.read_status()
@@ -149,10 +156,10 @@ def test_escalation_undelivered_is_false_when_delivery_actually_succeeded(
     assert escalation_undelivered(root, status) is False
 
 
-def test_escalation_undelivered_is_true_while_held_on_the_in_memory_incurable_pause(
+def test_escalation_undelivered_is_true_while_held_on_the_incurable_park(
         tmp_path, monkeypatch):
-    """`rejected_incurable` used to pause in memory only; v0.36 persists it as
-    `state: "awaiting_input"` (`pauseReason: rejected_incurable`). The engine
+    """An incurable finding used to pause in memory only; v0.36 persists it as
+    `state: "awaiting_input"` (`pauseReason: operator_input_needed`). The engine
     IS parked on that escalation, and it went undelivered: the predicate must
     say so, and the hold keeps its own pause marker for the undelivered
     marker to sit next to."""
@@ -163,17 +170,15 @@ def test_escalation_undelivered_is_true_while_held_on_the_in_memory_incurable_pa
     _trigger_undelivered_incurable_escalation(sup)
 
     status = sup.run.read_status()
-    assert status.get("pauseReason") == "rejected_incurable"
+    assert status.get("pauseReason") == "operator_input_needed"
     assert status.get("state") == "awaiting_input"
     assert not sup._pause.is_set()  # the engine really is holding
     assert escalation_undelivered(root, status) is True
     assert format_escalation_undelivered_marker(root, status) == (
         ESCALATION_UNDELIVERED_MARKER)
-    assert escalation_pause_markers(root, status)["pauseMarker"] == (
-        ESCALATION_HOLD_MARKER)
 
 
-def test_escalation_undelivered_is_false_once_the_in_memory_incurable_pause_is_answered(
+def test_escalation_undelivered_is_false_once_the_incurable_park_is_answered(
         tmp_path, monkeypatch):
     _always_failing(monkeypatch)
     root = tmp_path / "run"
@@ -190,8 +195,8 @@ def test_escalation_undelivered_is_false_once_the_in_memory_incurable_pause_is_a
         "escalationUndeliveredMarker": ""}
 
 
-def test_in_memory_incurable_hold_is_answered_by_a_later_iteration_start(tmp_path):
-    """A restarted episode resumes a `rejected_incurable` hold straight into
+def test_legacy_0_35_incurable_hold_is_answered_by_a_later_iteration_start(tmp_path):
+    """A 0.35 run dir's in-memory `rejected_incurable` hold: a restarted episode resumes it straight into
     review (`_paused_awaiting_incurable_ruling`), so the run is no longer
     held once a later iteration has started -- no marker from then on."""
     root = tmp_path / "run"
@@ -237,12 +242,7 @@ def test_ralphctl_status_shows_the_marker_next_to_the_pause_marker(
 
     out = _ralphctl_status(capsys)
     state_line = next(l for l in out.splitlines() if l.startswith("state:"))
-    if kind == "rejected_incurable":
-        # the in-memory hold's own pause marker, then the undelivered one
-        assert (state_line.index(ESCALATION_HOLD_MARKER)
-                < state_line.index(ESCALATION_UNDELIVERED_MARKER))
-    else:
-        assert "awaiting_input" in state_line
+    assert "awaiting_input" in state_line
     assert ESCALATION_UNDELIVERED_MARKER in state_line
 
 
@@ -287,8 +287,6 @@ def test_ralphctl_status_json_carries_the_marker_fields(
     assert doc["escalationUndelivered"] is True
     assert "escalation undelivered" in doc["escalationUndeliveredMarker"]
     assert "pauseMarker" in doc
-    if kind == "rejected_incurable":
-        assert doc["pauseMarker"] == ESCALATION_HOLD_MARKER
 
 
 @pytest.mark.parametrize("kind", sorted(_TRIGGERS))
@@ -314,16 +312,17 @@ def test_ralphctl_status_json_drops_the_marker_once_the_pause_is_answered(
 # surface 2: the hub's runs-list row
 # --------------------------------------------------------------------------
 def _write_undelivered_run(registry: Path, run_id: str,
-                           kind: str = "rejected_last_approach",
+                           kind: str = "operator_input_needed",
                            **status_fields) -> Path:
-    """On-disk snapshot of a run still paused on an undelivered escalation:
-    `rejected_last_approach` persists `state: "paused"` + its `pauseReason`;
-    `rejected_incurable` is the in-memory hold, so status.json keeps
-    `state: "running"` and a null `pauseReason` (SPEC.md 4.6)."""
+    """On-disk snapshot of a run still parked on an undelivered escalation:
+    `operator_input_needed` persists `state: "awaiting_input"` + its
+    `pauseReason`; `rejected_incurable` is a 0.35 run dir's in-memory hold,
+    so status.json keeps `state: "running"` and a null `pauseReason`
+    (SPEC.md 4.6)."""
     if kind == "rejected_incurable":
         fields = {"state": "running", "pauseReason": None}
     else:
-        fields = {"state": "paused", "pauseReason": kind}
+        fields = {"state": "awaiting_input", "pauseReason": kind}
     run_dir = _write_dead_run(registry, run_id, **{**fields, **status_fields})
     rd = RunDir(root=run_dir)
     rd.emit("iteration.start", iteration=3, phase="review")
@@ -345,7 +344,8 @@ def _mark_answered(run_dir: Path) -> None:
     RunDir(root=run_dir).emit("log", message=RESUMED_LOG_MESSAGE)
 
 
-KINDS = pytest.mark.parametrize("kind", sorted(_TRIGGERS))
+KINDS = pytest.mark.parametrize(
+    "kind", ["operator_input_needed", "rejected_incurable"])
 
 
 @KINDS

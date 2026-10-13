@@ -179,10 +179,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `review` | review | both | `worker` | `review_cure_pending_at_verified` |
 | `review` | review | both | `finishing` | `verified` |
 | `review` | review | both | `replan` | `rejected_approach_left` |
-| `review` | review | both | `review` | `rejected_incurable` |
 | `review` | review | both | `cure` | `rejected_curable_pass_available` |
-| `review` | review | both | `paused` | `rejected_last_approach` |
-| `review` | review | both | `paused` | `rejected_repeated_signature` |
 | `review` | review | both | `paused` | `review_contract_unrepaired` |
 | `review` | review | both | `paused` | `review_findings_unusable` |
 | `review` | review | both | `paused` | `operator_input_needed` |
@@ -267,10 +264,7 @@ stateDiagram-v2
     review --> worker : review_cure_pending_at_verified
     review --> finishing : verified
     review --> replan : rejected_approach_left
-    review --> review : rejected_incurable
     review --> cure : rejected_curable_pass_available
-    review --> paused : rejected_last_approach
-    review --> paused : rejected_repeated_signature
     review --> paused : review_contract_unrepaired
     review --> paused : review_findings_unusable
     review --> paused : operator_input_needed
@@ -1287,7 +1281,7 @@ mid-run non-terminal value that is never written to `status.json` at all.
     worker iteration over an all-completed plan before review is asked
     again. That is the same precedented cost the `review_contract_
     unrepaired` PAUSE already pays for having no `_resume_point` bucket
-    (`rejected_repeated_signature`, `unschedulable_dependency_cycle` and
+    (`unschedulable_dependency_cycle` and
     `unresolvable_dependency_edge` all pause with none either); giving this
     branch the deadline's event to buy the routing would put "deadline
     during review" back on a run no deadline touched.
@@ -3087,7 +3081,11 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   since that field is unconditionally overwritten to `"running"` at the top
   of `run_job()` before the resume decision is made.
 - **Resuming a run paused by `rejected_incurable` (task 007, requirement B,
-  #111).** The `review -> review` `rejected_incurable` edge (task 006) parks
+  #111).** *(v0.36 requirement B folded this edge into the one rejection ladder:
+  an incurable finding now parks as `operator_input_needed` in `awaiting_input`,
+  and `_paused_awaiting_operator_input_needed_ruling` routes its resume. What
+  follows describes the 0.35 edge, which a 0.35 run directory can still hold.)*
+  The `review -> review` `rejected_incurable` edge (task 006) parks
   the run on `self._pause` awaiting an operator ruling, and that pause is an
   in-memory `asyncio.Event`: a container restart while it is held loses it
   entirely. `_resume_point()` therefore has a fifth case,
@@ -3517,7 +3515,10 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   several cure/re-take tasks staying in finding order, and the
   append-at-the-end ordering used when the plan names no such task).
 - **Resuming a run paused by `rejected_last_approach`, and seeing that pause
-  from the host (v0.18 requirement D.1/D.2, #142, tasks 011 and 036).** The
+  from the host (v0.18 requirement D.1/D.2, #142, tasks 011 and 036).**
+  *(v0.36 requirement B: this is the `cure_rounds_spent` trigger of the one
+  ladder park, `operator_input_needed`, written as `awaiting_input`; the
+  passage below describes the 0.35 edge.)* The
   final approach's all-curable rejection takes `rejected_last_approach` into
   the dedicated `paused` step state (v0.18 task 004, finding 4 --
   previously a `review -> review` self-loop) and parks the run on the same
@@ -3569,10 +3570,9 @@ The POSTed text is never the full diagnostic: two builders produce the same
 bounded header -- run id, `pauseReason`, `approach n of m`, blocking and
 residual counts, tasks reopened/inserted, spend this approach, the hub URL
 when `hub_base_url` is configured, and the answer commands -- capped at
-`MAX_NOTIFY_CHARS`. `_operator_escalation_digest_text` serves the four
-finding-bearing reasons (`operator_input_needed` from review,
-`rejected_repeated_signature`, `rejected_last_approach`,
-`rejected_incurable`) and lists each blocking finding by id and `clause`,
+`MAX_NOTIFY_CHARS`. `_operator_escalation_digest_text` serves the two
+finding-bearing reasons (`operator_input_needed` from review and
+`verdict_gate_operator_input_needed`) and lists each blocking finding by id and `clause`,
 never its evidence. `_pause_escalation_digest_text` serves every other
 pause -- `stagnation`, the two review-contract faults, the two dependency
 faults and the task-boundary commit-secret-scan hold
@@ -3581,14 +3581,14 @@ findings and preview fields those pauses have no channel for. Every
 answer line for a reason that waits on a ruling names both live-run
 levers, but the phrasing differs with what `resume_if_ruling_answers_
 pause` actually does (cure task cure-01-01-9, PRD A.1/A.6, D.1; DoD 1/4):
-`operator_input_needed`/`rejected_repeated_signature` release the instant
-the ruling is filed, so their line reads `rule ..., or unpause ... to
+`operator_input_needed` releases the instant
+the ruling is filed, so its line reads `rule ..., or unpause ... to
 accept the default`, two interchangeable single-step alternatives;
-`rejected_last_approach`/`rejected_incurable`/`stagnation` are excluded
+`verdict_gate_operator_input_needed`/`stagnation` are excluded
 from that check's own reason allow-list, so their line instead spells out
 an explicit two-step sequence (`rule ... then unpause ...`) beside the
 working unpause-alone alternative, never an `or` that would falsely claim
-`rule` alone resolves them. The full `operator_escalation.escalation` text follows the same rule (cure task cure-01-01-9): for `rejected_last_approach`, `rejected_incurable` and `stagnation` (both variants) it says only `ralphctl unpause <run>` releases the pause, that filing a ruling records it but leaves the run paused, and gives the `ralphctl rule ... then ralphctl unpause ...` sequence beside the unpause-alone alternative, and for `rejected_repeated_signature` it says a ruling releases the pause on its own, or `ralphctl unpause <run>` resumes with none recorded to accept the default.
+`rule` alone resolves them. The full `operator_escalation.escalation` text follows the same rule (cure task cure-01-01-9): for `verdict_gate_operator_input_needed` and `stagnation` (both variants) it says only `ralphctl unpause <run>` releases the pause, that filing a ruling records it but leaves the run paused, and gives the `ralphctl rule ... then ralphctl unpause ...` sequence beside the unpause-alone alternative, and for `operator_input_needed` it says a ruling releases the pause on its own, or `ralphctl unpause <run>` resumes with none recorded to accept the default.
 The commit-scan hold's fault lines are the `sha`, `part` and variable NAME read
 back off its own `commit_secret_scan` event, never the matched value, and
 it deliberately emits no `operator_escalation` event, so a crashed episode's
@@ -3601,7 +3601,7 @@ lets a ruling release it, so the line names only `ralphctl unpause`
 (`POST /resume`); but this hold shares the `operator_input_needed` reason
 STRING with review's own pause, and that check reads only the pause
 reason and the approach's own signature, never which pause raised it --
-so an EARLIER `operator_input_needed`/`rejected_repeated_signature` pause
+so an EARLIER `operator_input_needed` park
 on the SAME approach, already answered by a ruling before this hold ever
 landed, leaves a signature behind that a LATER commit-scan hold inherits,
 and then a `ralphctl rule` filed against it releases it too, so the line

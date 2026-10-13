@@ -185,7 +185,8 @@ def test_incurable_review_rejection_parks_in_awaiting_input(tmp_path):
         _finding(False, "requirement B.2 (#111)", "a second fact"),
     ]
     sup = _review_supervisor(
-        tmp_path / "run", max_approaches=3, cure_pass_ceiling=3)
+        tmp_path / "run", max_approaches=3, cure_pass_ceiling=3,
+        operator_input_needed_pause=True)
     sup._approach = 1
     _fix_clock(sup)
     findings.write_findings_json(sup.run.findings_json_file, blocking)
@@ -193,8 +194,8 @@ def test_incurable_review_rejection_parks_in_awaiting_input(tmp_path):
 
     outcome = _bounded(sup._step_review())
 
-    # the old in-memory hold: a self-loop back into review, state `running`.
-    assert outcome == ("advance", "review", "rejected_incurable")
+    # the one ladder park (the old in-memory `rejected_incurable` hold is gone).
+    assert outcome == ("advance", "paused", "operator_input_needed")
     _assert_question(
         sup, judge="review", trigger="incurable", approach=1,
         max_approaches=3, used=0, allowed=3,
@@ -203,8 +204,7 @@ def test_incurable_review_rejection_parks_in_awaiting_input(tmp_path):
 
 def test_incurable_review_rejection_on_the_last_approach_reads_exhausted(
         tmp_path):
-    """`rejected_last_approach` (curable findings, the last approach, cure
-    rounds spent) also parks in `awaiting_input`; with no approach left the
+    """Curable findings on the last approach with the cure rounds spent also park in `awaiting_input`; with no approach left the
     timeout outcome is the `approaches` hold."""
     blocking = [_finding(True, "requirement D.1 (#142)", "a curable gap")]
     sup = _review_supervisor(

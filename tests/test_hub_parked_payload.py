@@ -296,11 +296,13 @@ def test_an_event_without_a7_fields_still_reports_approach_and_spend(tmp_path):
 
 
 # ===========================================================================
-# 2. `rejected_repeated_signature` -- same shape, `replanAvailable` absent.
+# 2. The ladder park's payload carries the approach, the spend and the
+#    consequence of an unanswered park (the retired repeated-signature park
+#    had the same shape, minus `replanAvailable`).
 # ===========================================================================
 
 
-def test_repeated_signature_payload_has_no_replan_available(tmp_path):
+def test_ladder_park_payload_carries_approach_spend_and_consequence(tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=3,
                       status={"state": "running", "phase": "review",
@@ -309,22 +311,23 @@ def test_repeated_signature_payload_has_no_replan_available(tmp_path):
                                   "costUSD": 0.1, "totalTokens": 77}}}})
     sup._approach = 2
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
-    sup._pause_and_escalate_repeated_rejection_signature(2, "sig-abc")
+    sup._pause_and_escalate_operator_input_needed(
+        2, _MIXED_FINDINGS, True, "sig-abc", trigger="incurable")
 
     status = sup.run.read_status()
-    assert status["pauseReason"] == "rejected_repeated_signature"
+    assert status["pauseReason"] == "operator_input_needed"
     pq = parked_question(root, status)
-    assert pq["reason"] == "rejected_repeated_signature"
+    assert pq["reason"] == "operator_input_needed"
     assert pq["approachOfMax"] == "approach 2 of 3"
     assert pq["parkedAt"]
-    assert pq["replanAvailable"] is None
+    assert pq["replanAvailable"] is True
     assert pq["blockingCount"] == 2
     assert pq["consequence"]["costSpentThisApproach"] == "$0.10"
     assert pq["consequence"]["tokensSpentThisApproach"] == 77
     assert pq["consequence"]["nextStepIfUnanswered"] == NEXT_STEP_ARCHIVE_AND_REPLAN
 
 
-def test_repeated_signature_can_also_predict_a_cure_pass(tmp_path):
+def test_a_reviewer_escalation_park_can_predict_a_cure_pass(tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=3,
                       status={"state": "running", "phase": "review",
@@ -332,8 +335,9 @@ def test_repeated_signature_can_also_predict_a_cure_pass(tmp_path):
     sup._approach = 2
     findings.write_findings_json(sup.run.findings_json_file, _CURE_REOPEN_FINDING)
     preview = cure_pass_preview(_LANE_TASKS, _CURE_REOPEN_FINDING)
-    sup._pause_and_escalate_repeated_rejection_signature(
-        2, "sig-xyz", cure_preview=preview)
+    sup._pause_and_escalate_operator_input_needed(
+        2, _CURE_REOPEN_FINDING, True, "sig-xyz", cure_preview=preview,
+        trigger="reviewer_escalation", reviewer_escalation=True)
 
     status = sup.run.read_status()
     pq = parked_question(root, status)
@@ -351,10 +355,10 @@ def test_no_pause_reason_is_no_parked_question():
                            {"state": "running", "pauseReason": None}) is None
 
 
-def test_rejected_last_approach_now_parks_with_a_panel(tmp_path):
-    """v0.36 moved `rejected_last_approach` from a plain `paused` (no panel,
-    outside `PARKED_QUESTION_REASONS`) into `awaiting_input`: it carries an
-    `inputQuestion` and, like every `awaiting_input` run, the panel.
+def test_a_last_approach_cure_rounds_spent_park_has_a_panel(tmp_path):
+    """The last-approach park (cure rounds spent, no approach left) is an
+    `awaiting_input` run: it carries an `inputQuestion` and, like every
+    `awaiting_input` run, the panel.
     Covering node for the stagnation exclusion:
     `test_stagnation_pause_has_no_parked_question`."""
     root = tmp_path / "run"
@@ -363,10 +367,11 @@ def test_rejected_last_approach_now_parks_with_a_panel(tmp_path):
                               "approach": 1})
     sup._approach = 1
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
-    sup._pause_and_escalate_last_approach_rejection(1)
+    sup._pause_and_escalate_operator_input_needed(
+        1, _MIXED_FINDINGS, False, trigger="cure_rounds_spent")
     status = sup.run.read_status()
     assert status["state"] == "awaiting_input"
-    assert status["pauseReason"] == "rejected_last_approach"
+    assert status["pauseReason"] == "operator_input_needed"
     pq = parked_question(root, status)
     assert pq is not None
     assert pq["inputQuestion"] == status["inputQuestion"]

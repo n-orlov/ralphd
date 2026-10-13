@@ -381,12 +381,16 @@ def test_a_gate_rejection_with_a_reason_still_replans_with_no_retry(tmp_path):
     assert ("verdictGate", "rejected") in _recorded_verdicts(sup)
 
 
-def test_a_gate_rejection_with_no_approach_left_still_ends_unverified(tmp_path):
+def test_a_gate_rejection_with_no_approach_left_holds_exhausted(tmp_path):
+    """v0.36 requirement B: with the park disabled the gate rejection is an
+    unanswered park, and with no approach left it holds `exhausted`
+    (approaches) -- never `failed`/`unverified` on the spot."""
     sup, final = _run(tmp_path / "run", [_review_verifies],
                       gate_steps=[_gate_rejects])
     status = sup.run.read_status()
-    assert final == "failed", status
-    assert status["verdict"] == "unverified", status
+    assert final == "exhausted", status
+    assert status["exhaustedBudget"] == "approaches", status
+    assert status["verdict"] is None, status
     assert _events(sup, "verdict_gate.retry") == []
     assert status["gateRejectionEnding"] != state.GATE_REJECTION_ENDING_NO_VERDICT
 
@@ -433,8 +437,9 @@ def test_a_malformed_non_empty_gate_reply_takes_the_ladder_then_the_safe_default
     sup, final = _run(tmp_path / "run", [_review_verifies],
                       gate_steps=[_gate_prose])
     status = sup.run.read_status()
-    assert final == "failed", status
-    assert status["verdict"] == "unverified", status
+    assert final == "exhausted", status
+    assert status["exhaustedBudget"] == "approaches", status
+    assert status["verdict"] is None, status
     assert _events(sup, "verdict_gate.retry") == []
     assert _events(sup, "verdict_gate.no_verdict") == []
     assert ("verdictGate", "rejected") in _recorded_verdicts(sup)

@@ -149,27 +149,22 @@ def test_a_plan_review_objection_spends_a_revision_then_approves(engine_factory)
     assert ts and all(t["status"] == "completed" for t in ts), ts
 
 
-def test_a_verdict_gate_rejection_with_a_non_curable_finding_ends_the_run_even_with_an_approach_left(
+def test_a_verdict_gate_rejection_with_a_non_curable_finding_parks_the_run_even_with_an_approach_left(
         engine_factory):
-    """v0.21.1 requirement A (task 001, #192): the exact defect the
-    requirement's own `Cured when:` clause names -- a verdict_gate
-    rejection carrying a genuinely non-curable blocking finding (the
-    stub's `STUB_VERDICT_GATE_REJECT_COUNT` knob writes `curable: False`)
-    must end the run failed/unverified right there, whatever `max_
-    approaches` leaves available -- no archive, no composite PRD, no
-    fresh approach, no cure task. Before task 001's fix this same fixture
-    folded the rejection into a fresh approach 2 and reached the run's
-    real success edge once THAT approach's own gate invocation approved;
-    the corrected engine never gets that far -- there is no second
-    `verdict_gate` invocation at all."""
+    """v0.21.1 requirement A (task 001, #192), re-pinned for v0.36
+    requirement B: a verdict_gate rejection carrying a genuinely non-curable
+    blocking finding (the stub's `STUB_VERDICT_GATE_REJECT_COUNT` knob writes
+    `curable: False`) is never folded into a fresh approach and never cured.
+    It used to end the run failed/unverified on the spot; the one rejection
+    ladder parks it in `awaiting_input` (trigger `incurable`) instead, with an
+    approach left or not -- no archive, no composite PRD, no fresh approach,
+    no cure task, and no second `verdict_gate` invocation."""
     run = engine_factory(
         job={"run_id": "flow-verdict-gate-reject", "on_complete": "exit",
-             "peer_verdict_gate": True, "max_approaches": 2},
+             "peer_verdict_gate": True, "max_approaches": 2,
+             "operator_input_needed_pause": True},
         stub_env={"STUB_TASKS": "1", "STUB_VERDICT_GATE_REJECT_COUNT": "1"})
-    code = wait_engine_exit(run, timeout=60)
-    assert code != 0, (
-        "flow peer gates (verdict gate reject): a run ended by a "
-        "non-curable verdict_gate rejection must not exit 0")
+    parked = run.wait_state(("awaiting_input",), timeout=60)
 
     assert_step_sequence(flow_steps(run), [
         "state:running",
@@ -183,18 +178,16 @@ def test_a_verdict_gate_rejection_with_a_non_curable_finding_ends_the_run_even_w
         "phase:verdict_gate@1",
         "iteration:verdict_gate",          # rejects a non-curable finding
         "verdict:verdictGate:rejected@1",
-        "state:failed",
+        "escalation:verdict_gate_operator_input_needed@1",
     ], flow="flow peer gates (verdict gate reject)")
 
-    st = status(run)
-    assert (st.get("state"), st.get("verdict"), st.get("approach")) == (
-        "failed", "unverified", 1), (
-        f"flow peer gates (verdict gate reject): expected failed/unverified "
-        f"on approach 1, got state={st.get('state')!r} verdict="
-        f"{st.get('verdict')!r} approach={st.get('approach')!r}")
+    assert parked.get("pauseReason") == "verdict_gate_operator_input_needed"
+    assert parked["inputQuestion"]["judge"] == "verdict_gate"
+    assert parked["inputQuestion"]["trigger"] == "incurable"
+    assert parked.get("verdict") is None
+    assert parked.get("approach") == 1
 
-    # requirement A.2: no archive, no replan, no second approach -- the
-    # rejection ended the run right where it was found.
+    # no archive, no replan, no second approach.
     approaches_dir = run.run_dir / "approaches"
     assert not approaches_dir.exists() or not list(approaches_dir.iterdir()), (
         f"flow peer gates (verdict gate reject): no approach archive "
@@ -303,10 +296,10 @@ def test_both_peer_gates_compose_in_one_run(engine_factory):
     blocking finding (the stub's `STUB_VERDICT_GATE_REJECT_COUNT` knob,
     same shape `test_a_verdict_gate_rejection_with_a_non_curable_finding_
     ends_the_run_even_with_an_approach_left` drives alone). v0.21.1
-    requirement A (task 001) means that rejection ends the run failed/
-    unverified RIGHT THERE, even with `max_approaches=2` leaving a second
-    approach available -- no archive, no fresh approach, no second
-    `verdict_gate` invocation. This is the composition `tests/test_e2e_
+    requirement A (task 001) means that rejection parks the run in
+    `awaiting_input` RIGHT THERE (v0.36 requirement B), even with
+    `max_approaches=2` leaving a second approach available -- no archive,
+    no fresh approach, no second `verdict_gate` invocation. This is the composition `tests/test_e2e_
     composed_gates_task032.py::test_both_peer_gates_enabled_in_the_same_
     run` used to own (task 020, C.9), updated for requirement A: both
     gates are still observably exercised for real (plan_review's full
@@ -316,13 +309,10 @@ def test_both_peer_gates_compose_in_one_run(engine_factory):
     run = engine_factory(
         job={"run_id": "flow-both-peer-gates", "on_complete": "exit",
              "peer_plan_review": True, "peer_verdict_gate": True,
-             "max_approaches": 2},
+             "max_approaches": 2, "operator_input_needed_pause": True},
         stub_env={"STUB_TASKS": "1", "STUB_PLAN_REVIEW_OBJECTIONS": "1",
                   "STUB_VERDICT_GATE_REJECT_COUNT": "1"})
-    code = wait_engine_exit(run, timeout=60)
-    assert code != 0, (
-        "flow peer gates (both gates): a run ended by a non-curable "
-        "verdict_gate rejection must not exit 0")
+    parked = run.wait_state(("awaiting_input",), timeout=60)
 
     assert_step_sequence(flow_steps(run), [
         "state:running",
@@ -346,13 +336,13 @@ def test_both_peer_gates_compose_in_one_run(engine_factory):
         "phase:verdict_gate@1",
         "iteration:verdict_gate",          # rejects -- non-curable, ends it
         "verdict:verdictGate:rejected@1",
-        "state:failed",
+        "escalation:verdict_gate_operator_input_needed@1",
     ], flow="flow peer gates (both gates)")
 
     st = status(run)
     assert (st.get("state"), st.get("verdict"), st.get("approach")) == (
-        "failed", "unverified", 1), (
-        f"flow peer gates (both gates): expected failed/unverified on "
+        "awaiting_input", None, 1), (
+        f"flow peer gates (both gates): expected awaiting_input on "
         f"approach 1, got state={st.get('state')!r} "
         f"verdict={st.get('verdict')!r} approach={st.get('approach')!r}")
     # plan_review's own mechanism fired for real: one revision recorded
@@ -395,17 +385,19 @@ def test_a_malformed_verdict_gate_reply_defaults_to_rejected_and_fails_open(
         "iteration:verdict_gate",          # unparseable -- ladder exhausts,
                                            # defaults to the safe rejected choice
         "verdict:verdictGate:rejected@1",
-        "state:failed",
+        "state:exhausted",
     ], flow="flow peer gates (verdict gate malformed)")
 
     st = status(run)
-    assert (st.get("state"), st.get("verdict")) == ("failed", "unverified"), (
+    assert (st.get("state"), st.get("verdict")) == ("exhausted", None), (
         f"flow peer gates (verdict gate malformed): a peer rejection is "
-        f"never a terminal success, budget or not, got state="
+        f"never a terminal success, budget or not; with the park disabled "
+        f"and no approach left it holds exhausted (approaches), got state="
         f"{st.get('state')!r} verdict={st.get('verdict')!r}")
+    assert st.get("exhaustedBudget") == "approaches"
     assert st.get("pauseReason") is None, (
-        f"flow peer gates (verdict gate malformed): an incurable last-"
-        f"approach rejection must never pause, got "
+        f"flow peer gates (verdict gate malformed): the unanswered park "
+        f"resolves at once and never pauses, got "
         f"{st.get('pauseReason')!r}")
 
 

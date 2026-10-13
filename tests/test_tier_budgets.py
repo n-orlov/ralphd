@@ -874,8 +874,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.36 per-approach cure rounds: the new tests/test_cure_rounds_per_
     # approach.py (+7), measured `--collect-only` -> fast 8550/539, smoke
     # 6772/412.
-    "fast": {"tests": 8550, "modules": 539},
-    "smoke": {"tests": 6772, "modules": 412},
+    # v0.36 one rejection ladder: the new tests/test_rejection_ladder.py (+25)
+    # and the rewritten ladder tests of the retired discretionary-gate,
+    # repeated-signature and ruling-re-park modules, measured `--collect-only`
+    # -> fast 8555/540, smoke 6777/413.
+    "fast": {"tests": 8555, "modules": 540},
+    "smoke": {"tests": 6777, "modules": 413},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

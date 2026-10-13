@@ -288,13 +288,11 @@ event without changing `status.json` to `paused`. Engine-initiated escalation
 pauses persist `state: paused` and a `pauseReason`, plus a `pauseDetail` for
 sub-reasons such as a provider refusal or a rate-limit wait that would exceed
 `rate_limit_max_wait_s`. They preserve the last phase and current approach. The
-persisted reasons are `operator_input_needed`, `verdict_gate_operator_input_needed`,
-`rejected_last_approach`, `rejected_repeated_signature`, `review_contract_unrepaired`,
-`review_findings_unusable`, `stagnation`, `unschedulable_dependency_cycle` and
-`unresolvable_dependency_edge`. One escalation, `rejected_incurable`, still
-uses the in-memory pause: `state` keeps reading `running`, and the hold is
-derived from `events.jsonl`. Consumers must not infer that every boundary hold
-appears as a paused lifecycle state. An `operator_input_needed` pause (on by
+persisted reasons are `operator_input_needed`, `verdict_gate_operator_input_needed`
+(the two rejection-ladder parks, which write `state: awaiting_input`),
+`review_contract_unrepaired`, `review_findings_unusable`, `stagnation`,
+`unschedulable_dependency_cycle` and `unresolvable_dependency_edge`. Consumers
+must not infer that every boundary hold appears as a paused lifecycle state. An `operator_input_needed` pause (on by
 default) is answered in the live engine: `ralphctl rule` records a ruling and
 by itself releases it, and `ralphctl unpause` releases it without one.
 `ralphctl resume` is for a stopped container, not for a pause.
@@ -733,22 +731,14 @@ flowchart TD
     Gate -->|no| Finish["Succeeded"]
     Gate -->|yes, budget left| Peer["Blind verdict gate"]
     Gate -->|yes, deadline passed| Finish
-    Blocking -->|yes| Incurable{"All incurable and another approach remains?"}
-    Incurable -->|yes| Pause["Pause and escalate to operator"]
-    Incurable -->|no| Repeat{"Same signature as previous approach and discretionary gate unspent?"}
-    Repeat -->|yes| Pause
-    Repeat -->|no| Curable{"Cure pass available?"}
-    Curable -->|yes| OpGate{"Ruling re-park, reviewer gate, or cure would reopen validated tasks?"}
-    OpGate -->|yes| Pause
-    OpGate -->|no| Cure["Cure state: insert cure and retake tasks"]
+    Blocking -->|yes| Budget{"Budget spent?"}
+    Budget -->|yes| Exhausted["Exhausted hold"]
+    Budget -->|no| Waived{"Every blocking finding waived?"}
+    Waived -->|yes| Gate
+    Waived -->|no| Park{"Incurable finding, reviewer gate, or cure rounds spent?"}
+    Park -->|yes| Pause["Park in awaiting_input"]
+    Park -->|no| Cure["Cure state: insert cure and retake tasks, count one round"]
     Cure --> Work
-    Curable -->|no| Last{"Last approach and all curable?"}
-    Last -->|yes| Pause
-    Last -->|no| Input{"operator_input_needed pause due?"}
-    Input -->|yes| Pause
-    Input -->|no| Remaining{"Another approach available?"}
-    Remaining -->|yes| Replan["Archive and replan"]
-    Remaining -->|no| Failed["Finish without verification"]
     Work --> Result
     Pause -->|unpause or ruling| Result
 ```
@@ -764,38 +754,29 @@ edge.
 
 ### Rejection ladder
 
-[`LoopSupervisor._step_review`](../src/ralphd/engine/loop.py) evaluates a
-rejection in this order. The first matching rule wins.
+[`LoopSupervisor._run_rejection_ladder`](../src/ralphd/engine/loop.py) evaluates a
+rejection, from review and from the peer verdict gate alike, in this order
+(`ladder.decide` in [`ladder.py`](../src/ralphd/engine/ladder.py) names the step).
+The first matching rule wins.
 
-1. **All blocking findings incurable**, with another approach remaining: pause
-   (`rejected_incurable`) and re-review the same approach on resume.
-2. **Repeated rejection signature**: the blocking-clause signature (or the
-   channel-error signature) equals the previous approach's recorded signature.
-   This rule pauses (`rejected_repeated_signature`) only while the approach's single
-   *discretionary gate* is unspent, and not when a ruled re-park is due. It applies
-   on the last approach too.
-3. **Cure pass available**: all blocking findings are curable, no criteria-tamper
-   finding is present, and the current approach still has cure rounds left
-   (below). Even then, the run first parks as `operator_input_needed` in
-   three cases: a ruling matching this signature is due its one re-park, the
-   reviewer set `raise_operator_gate: true`, or the cure would reopen `validated`
-   tasks while the discretionary gate is unspent. Otherwise the engine takes the
-   cure pass and moves to the `cure` state.
-4. **Last approach, all curable, no cure pass left**: pause (`rejected_last_approach`).
-5. **`operator_input_needed`** (on by default; disabled with
-   `--no-operator-input-needed-pause`): before any archive, the run holds so the
-   operator can answer. A matching ruling's one re-park, or the reviewer's
-   `raise_operator_gate: true`, also lands here. The hold is skipped in three
-   cases: the signature repeated but the discretionary gate is already spent, the
-   ruling's one re-park has been used, or a one-shot no-ruling *proceed* matches
-   this signature.
-6. Otherwise the signature is recorded and the approach is archived. The run
-   replans when an approach remains and finishes unverified when none does.
+1. **Budget spent** (iterations or time): the run holds `exhausted`. No cure task
+   is inserted and no round is counted.
+2. **Every blocking finding waived**: each blocking finding's `clause` falls under
+   a stored waiver (`<run_root>/waivers/`). The rejection is treated as verified
+   and takes the verified edge (the peer gate for review, success for the gate).
+3. **Park** in `awaiting_input` when a blocking finding is `curable: false` (a
+   rejection with no structured findings counts too), the reviewer set
+   `raise_operator_gate: true`, or the current approach's cure rounds are spent.
+   The approach stays unarchived and a resume re-enters the judge that parked.
+4. **Cure** otherwise: insert one cure task per blocking finding, count one round
+   against the current approach and move to the `cure` state.
 
-The discretionary gate is one per approach, shared by rule 2 and the
-reopen-validated trigger in rule 3. Whichever fires first spends it, and the other
-falls through to its ordinary edge. The generic `operator_input_needed` gate in
-rule 5 is separate and is not budgeted.
+Nothing else archives an approach, and a gate rejection never ends the run
+`failed` on the spot. With `operator_input_needed_pause: false`, or when a one-shot
+no-ruling *proceed* matches the rejection's signature, a park resolves at once with
+the outcome an unanswered park takes: a reviewer escalation with rounds left cures
+now, every other park records the signature, archives the approach and replans
+while one remains, and holds the run `exhausted` (`approaches`) when none does.
 
 Operators answer a parked run with `ralphctl rule <run> --file <ruling.md>`.
 Rulings are keyed to the rejection signature, so they survive a replan, and they
@@ -1332,7 +1313,7 @@ task is unfinished (`_terminal_success_blockers`). The run then defers once to
 | Mechanism | Authority and behavior |
 |---|---|
 | Steering | Requests work or plan/context changes. Applied steering informs review, but does not itself waive an obligation. |
-| Operator ruling | `ralphctl rule <run> --file <f>`, `POST /rule` or the hub's parked-question textarea writes `rulings/NNN-<name>.md` under the run root. A ruling is keyed to the current rejection signature, not to a task id, so it survives a replan. It reaches both review and per-task verify. It releases a current `operator_input_needed` or `rejected_repeated_signature` pause, and each ruling buys at most one re-park on the same signature. |
+| Operator ruling | `ralphctl rule <run> --file <f>`, `POST /rule` or the hub's parked-question textarea writes `rulings/NNN-<name>.md` under the run root. A ruling is keyed to the current rejection signature, not to a task id, so it survives a replan. It reaches both review and per-task verify. It releases a current `operator_input_needed` park; it buys no re-park and bounds nothing on the rejection ladder. |
 | Operator amendment | A host-side `ralphctl amend` record under read-only `/config/amendments`. Three kinds: `replace` and `waive` change the effective criterion presented to review and the peer verdict gate, but not to per-task verify; `--status` is applied by the engine to `tasks.json` at load and at every worker and review step boundary. Rulings are task-scoped (stamped with an approach) or wave-scoped (`--wave`). A task-scoped ruling whose target a replan removed is reported `ORPHANED`, emits `amendment_target_not_in_plan`, and can be moved with `--repoint`. |
 | Impossibility petition | Worker declares an obligation impossible with a type and evidence. The engine files it in the run-scope `petitions.md`, never in the workspace (pre-committed workspace `artifacts/reports/*-petitions.md` files are still read), and refuses a duplicate or an out-of-vocabulary type. Independent adjudication must decide it. The types are `environmental`, `temporal`, `contradictory-clauses`, `external`, and `self-referential`. When the PRD declares a petition protocol, validation exhaustion files one too and moves the task to `petitioned` instead of `failed`. |
 | Confirmed petition | Removes the adjudicated obligation from the blocking set and accepts the matching `petitioned` task. It is persisted across approaches and episodes with MAC-backed integrity records. |
@@ -1455,7 +1436,7 @@ flowchart TD
     Finishing -->|no| Seed["Restore budgets, refunds, firstStartedAt and approach context; clear recorded pause"]
     Seed --> Archived{"Rejected approach already archived?"}
     Archived -->|yes| Replan["Resume at replan"]
-    Archived -->|no| Judge{"Crashed mid-review, deadline-unreviewed, or paused on rejected_incurable, rejected_last_approach or operator_input_needed?"}
+    Archived -->|no| Judge{"Crashed mid-review, deadline-unreviewed, or parked on operator_input_needed?"}
     Judge -->|yes| Review["Resume same approach at review"]
     Judge -->|no| Stagnation{"Last-approach stagnation pause?"}
     Stagnation -->|yes| Worker["Resume same approach at worker"]

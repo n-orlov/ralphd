@@ -101,11 +101,12 @@ def test_operator_input_needed_notification_is_bounded_and_names_run_reason_coun
 
 
 # ===========================================================================
-# 2. `rejected_repeated_signature`: same bound, same named fields.
+# 2. The same bound and named fields on a later approach (the retired
+#    `rejected_repeated_signature` park is an ordinary ladder park now).
 # ===========================================================================
 
 
-def test_repeated_signature_notification_is_bounded_and_names_run_reason_counts(
+def test_later_approach_notification_is_bounded_and_names_run_reason_counts(
         tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=3)
@@ -116,13 +117,14 @@ def test_repeated_signature_notification_is_bounded_and_names_run_reason_counts(
     findings_list = _many_findings(100)
     findings.write_findings_json(sup.run.findings_json_file, findings_list)
 
-    sup._pause_and_escalate_repeated_rejection_signature(2, "sig-abc")
+    sup._pause_and_escalate_operator_input_needed(
+        2, findings_list, replan_available=True, signature="sig-abc")
 
     assert len(notifier.messages) == 1
     text = notifier.messages[0]
     assert len(text) <= MAX_NOTIFY_CHARS
     assert sup.cfg.run_id in text
-    assert "rejected_repeated_signature" in text
+    assert "operator_input_needed" in text
     assert "blocking: 100" in text
     assert "residual: 1" in text
     assert "approach 2 of 3" in text
@@ -170,7 +172,7 @@ def test_event_keeps_full_findings_while_notification_carries_no_evidence(
         assert f["evidence"] not in text
 
 
-def test_repeated_signature_event_keeps_full_findings_too(tmp_path):
+def test_later_approach_event_keeps_full_findings_too(tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=3)
     sup._approach = 2
@@ -180,7 +182,8 @@ def test_repeated_signature_event_keeps_full_findings_too(tmp_path):
     findings_list = _many_findings(100)
     findings.write_findings_json(sup.run.findings_json_file, findings_list)
 
-    sup._pause_and_escalate_repeated_rejection_signature(2, "sig-xyz")
+    sup._pause_and_escalate_operator_input_needed(
+        2, findings_list, replan_available=True, signature="sig-xyz")
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
@@ -279,7 +282,8 @@ def test_last_approach_rejection_notification_is_bounded_too(tmp_path):
     huge_findings = _many_findings(200, evidence_len=5000)
     findings.write_findings_json(sup.run.findings_json_file, huge_findings)
 
-    sup._pause_and_escalate_last_approach_rejection(1)
+    sup._pause_and_escalate_operator_input_needed(
+        1, huge_findings, replan_available=False, trigger="cure_rounds_spent")
 
     assert len(notifier.messages) == 1
     assert len(notifier.messages[0]) <= MAX_NOTIFY_CHARS
@@ -323,13 +327,11 @@ def test_no_builder_repeats_a_findings_evidence_in_its_own_text(tmp_path):
     blocking = _distinct_evidence_findings(3)
 
     texts = {
-        "last_approach": sup._last_approach_rejection_escalation_text(
-            2, blocking),
-        "repeated_signature": sup._repeated_rejection_signature_escalation_text(
-            2, blocking, "sig-1"),
         "operator_input_needed": sup._operator_input_needed_escalation_text(
             2, blocking, replan_available=True),
-        "incurable": sup._incurable_rejection_escalation_text(2, blocking),
+        "verdict_gate_operator_input_needed":
+            sup._gate_operator_input_needed_escalation_text(
+                2, blocking, replan_available=True),
     }
 
     for name, text in texts.items():
@@ -375,7 +377,8 @@ def test_last_approach_notification_is_an_evidence_free_digest(tmp_path):
     data = [_finding("requirement C.1 (#141)", evidence_len=200)]
     findings.write_findings_json(sup.run.findings_json_file, data)
 
-    sup._pause_and_escalate_last_approach_rejection(1)
+    sup._pause_and_escalate_operator_input_needed(
+        1, data, replan_available=False, trigger="cure_rounds_spent")
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
@@ -408,7 +411,8 @@ def test_incurable_notification_is_an_evidence_free_digest(tmp_path):
     }]
     findings.write_findings_json(sup.run.findings_json_file, data)
 
-    sup._pause_and_escalate_incurable_rejection(1)
+    sup._pause_and_escalate_operator_input_needed(
+        1, data, replan_available=True, trigger="incurable")
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
@@ -424,11 +428,11 @@ def test_incurable_notification_is_an_evidence_free_digest(tmp_path):
     assert f"ralphctl unpause {sup.cfg.run_id}" in text
 
 
-def test_repeated_signature_digest_names_the_ruling_command_too(tmp_path):
+def test_gate_digest_names_the_ruling_command_too(tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=2)
     text = sup._operator_escalation_digest_text(
-        "rejected_repeated_signature", 1, [_finding("clause Z", 50)])
+        "verdict_gate_operator_input_needed", 1, [_finding("clause Z", 50)])
     assert (f"ralphctl rule {sup.cfg.run_id} --file <ruling.md> "
             "--name <slug>") in text
     assert f"ralphctl unpause {sup.cfg.run_id}" in text
@@ -479,32 +483,8 @@ def test_operator_input_needed_digest_carries_the_passed_preview_numbers(
     assert _preview_line(ev) in text
 
 
-def test_repeated_signature_digest_carries_the_passed_preview_numbers(
-        tmp_path):
-    root = tmp_path / "run"
-    sup = _supervisor(root, max_approaches=3)
-    sup._approach = 2
-    notifier = _StubNotifier()
-    sup.notifier = notifier
-
-    findings.write_findings_json(
-        sup.run.findings_json_file, [_finding("clause Q", 100)])
-    preview = {"reopenedTaskIds": ["t-x"], "insertCount": 4}
-    sup._pause_and_escalate_repeated_rejection_signature(
-        2, "sig-preview", cure_preview=preview)
-
-    ev = _events(root, "operator_escalation")[-1]
-    assert ev["taskIdsValidatedToPending"] == ["t-x"]
-    assert ev["insertCount"] == 4
-    text = notifier.messages[0]
-    assert "tasks reopened: 1  tasks inserted: 4" in text
-    assert _preview_line(ev) in text
-
-
-@pytest.mark.parametrize(
-    "reason", ["operator_input_needed", "rejected_repeated_signature"])
 def test_digest_preview_agrees_with_event_when_no_preview_is_passed(
-        tmp_path, reason):
+        tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=3)
     sup._approach = 1
@@ -513,11 +493,8 @@ def test_digest_preview_agrees_with_event_when_no_preview_is_passed(
 
     data = [_finding("clause R", 100)]
     findings.write_findings_json(sup.run.findings_json_file, data)
-    if reason == "operator_input_needed":
-        sup._pause_and_escalate_operator_input_needed(
-            1, data, replan_available=True)
-    else:
-        sup._pause_and_escalate_repeated_rejection_signature(1, "sig-none")
+    sup._pause_and_escalate_operator_input_needed(
+        1, data, replan_available=True)
 
     ev = _events(root, "operator_escalation")[-1]
     # one curable blocking finding and no task in the plan: the event's own
@@ -530,7 +507,7 @@ def test_digest_preview_agrees_with_event_when_no_preview_is_passed(
 
 @pytest.mark.parametrize("kind", ["last_approach", "incurable"])
 def test_non_cure_pause_digest_previews_no_cure_pass(tmp_path, kind):
-    """Neither `rejected_last_approach` nor `rejected_incurable` previews a
+    """Neither a cure-rounds-spent park nor an incurable park previews a
     cure pass that will run, so the digest's A.7 numbers read zero."""
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=2)
@@ -543,9 +520,12 @@ def test_non_cure_pause_digest_previews_no_cure_pass(tmp_path, kind):
         data[0]["curable"] = False
     findings.write_findings_json(sup.run.findings_json_file, data)
     if kind == "last_approach":
-        sup._pause_and_escalate_last_approach_rejection(1)
+        sup.run.update_status(curePasses={"1": sup.cfg.cure_pass_ceiling})
+        sup._pause_and_escalate_operator_input_needed(
+            1, data, replan_available=False, trigger="cure_rounds_spent")
     else:
-        sup._pause_and_escalate_incurable_rejection(1)
+        sup._pause_and_escalate_operator_input_needed(
+            1, data, replan_available=True, trigger="incurable")
 
     text = notifier.messages[0]
     assert "tasks reopened: 0  tasks inserted: 0" in text
@@ -567,10 +547,11 @@ def test_incurable_rejection_notification_is_bounded_too(tmp_path):
     huge.append(_residual("a disclosed residual"))
     findings.write_findings_json(sup.run.findings_json_file, huge)
 
-    sup._pause_and_escalate_incurable_rejection(1)
+    sup._pause_and_escalate_operator_input_needed(
+        1, huge, replan_available=True, trigger="incurable")
 
     ev = _events(root, "operator_escalation")[-1]
-    assert ev["reason"] == "rejected_incurable"
+    assert ev["reason"] == "operator_input_needed"
     # the event keeps every finding's full evidence.
     assert huge[0]["evidence"] in ev["escalation"]
     assert len(ev["escalation"]) > MAX_NOTIFY_CHARS
@@ -611,10 +592,10 @@ def test_full_escalation_text_names_each_findings_cured_when(tmp_path, reason):
     }]
     findings.write_findings_json(sup.run.findings_json_file, data)
 
-    if reason == "last_approach":
-        sup._pause_and_escalate_last_approach_rejection(1)
-    else:
-        sup._pause_and_escalate_incurable_rejection(1)
+    sup._pause_and_escalate_operator_input_needed(
+        1, data, replan_available=reason != "last_approach",
+        trigger="cure_rounds_spent" if reason == "last_approach"
+        else "incurable")
 
     ev = _events(root, "operator_escalation")[-1]
     assert f"  cured_when: {cured}" in ev["escalation"]
@@ -639,7 +620,8 @@ def test_incurable_full_text_omits_cured_when_line_when_finding_has_none(
     }]
     findings.write_findings_json(sup.run.findings_json_file, data)
 
-    sup._pause_and_escalate_incurable_rejection(1)
+    sup._pause_and_escalate_operator_input_needed(
+        1, data, replan_available=True, trigger="incurable")
 
     ev = _events(root, "operator_escalation")[-1]
     assert "cured_when:" not in ev["escalation"]

@@ -84,13 +84,15 @@ def test_gate_notifier_does_not_offer_an_unavailable_cure(
         tmp_path, monkeypatch, shape):
     sup, escalation, digest = _park_gate(tmp_path, monkeypatch, shape)
     assert escalation["insertCount"] == 0
-    assert escalation["nextStepIfUnanswered"] == "finishing"
+    # an unanswered park of an uncurable gate rejection moves to the next
+    # approach (v0.36 requirement B), never a cure it cannot take.
+    assert escalation["nextStepIfUnanswered"] == "archive_and_replan"
     assert "--cure-passes" not in escalation["escalation"]
     assert "--cure-passes" not in digest
 
     # Following a ceiling grant cannot cure these findings.
     _grant_one_cure_pass_and_resume(sup)
-    assert _bounded(sup._step_verdict_gate()) == ("tail",)
+    assert _bounded(sup._step_verdict_gate())[1] != "cure"
     assert sup.run.read_status().get(
         "gateRejectionEnding") == "rejected_on_the_merits"
 
@@ -178,12 +180,11 @@ def test_review_mixed_ceiling_spent_surfaces_offer_no_ceiling_grant(tmp_path):
 def test_review_last_approach_ceiling_spent_names_the_grant_that_cures(
         tmp_path):
     # All-curable on the last approach with the run-wide ceiling spent:
-    # the `rejected_last_approach` pause's own text and digest name the
+    # the last-approach park's own text and digest name the
     # ceiling grant, contrasted with finishing the run, and following it
     # takes the cure edge.
     sup, escalation, digest = _park_review(
-        tmp_path, _REVIEW_CURABLE, max_approaches=1,
-        reason="rejected_last_approach")
+        tmp_path, _REVIEW_CURABLE, max_approaches=1)
     for surface in (escalation["escalation"], digest):
         assert "--cure-passes" in surface
         assert "instead of finishing the run" in surface

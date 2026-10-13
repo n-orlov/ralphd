@@ -274,13 +274,15 @@ def test_mutation_stops_discriminating_interrupt_is_read_as_ordinary_verdict(
     state = asyncio.run(sup._run_job_core())
 
     # With the discrimination removed, the same interrupted iteration is
-    # scored as an ordinary rejected verdict: the approach IS archived, the
-    # rejection event IS emitted, and (approach 1 < max_approaches=2) the
-    # run replans onto approach 2 rather than going straight to `finishing`.
-    assert (sup.run.root / "approaches" / "01").exists()
+    # scored as an ordinary rejected verdict: the `review rejected approach
+    # N` event IS emitted. The iteration budget is spent by that point, so
+    # the one rejection ladder's first step (v0.36 requirement B) holds the
+    # run `exhausted` rather than archiving and replanning.
     assert _rejected_events(sup.run) != []
+    assert not (sup.run.root / "approaches" / "01").exists()
     status = sup.run.read_status()
-    assert status["approach"] == 2
+    assert status["approach"] == 1
+    assert state == "exhausted"
     # this asserts the MUTATED behaviour differs from the fixed test above --
     # a real assertion that would FAIL against the fix, proving test 2 is
     # not vacuous.

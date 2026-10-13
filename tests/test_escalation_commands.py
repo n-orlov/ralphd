@@ -63,7 +63,7 @@ def _sup(tmp_path):
 
 def test_persist_pause_message_names_unpause(tmp_path):
     sup = _sup(tmp_path)
-    sup._persist_pause("rejected_last_approach")
+    sup._persist_pause("stagnation")
     # `_persist_pause` emits its own `log` event with the message; read it
     # back the same way every other consumer of `events.jsonl` does.
     import json
@@ -75,19 +75,6 @@ def test_persist_pause_message_names_unpause(tmp_path):
     assert any("ralphctl rule task003-escalation-commands --file" in m
                and "--name" in m for m in messages)
     assert not any("ralphctl resume" in m for m in messages)
-
-
-def test_last_approach_rejection_escalation_text_names_rule_and_unpause(tmp_path):
-    sup = _sup(tmp_path)
-    text = sup._last_approach_rejection_escalation_text(1, [_finding()])
-    _assert_names_rule_and_unpause(text)
-
-
-def test_repeated_rejection_signature_escalation_text_names_rule_and_unpause(tmp_path):
-    sup = _sup(tmp_path)
-    text = sup._repeated_rejection_signature_escalation_text(
-        2, [_finding()], "sig-1")
-    _assert_names_rule_and_unpause(text)
 
 
 def test_operator_input_needed_escalation_text_names_rule_and_unpause(tmp_path):
@@ -138,12 +125,6 @@ def test_petition_held_escalation_text_names_rule_and_unpause(tmp_path):
     assert "--file <ruling.md> --name <slug>" in text
 
 
-def test_incurable_rejection_escalation_text_names_rule_and_unpause(tmp_path):
-    sup = _sup(tmp_path)
-    text = sup._incurable_rejection_escalation_text(1, [_finding(curable=False)])
-    _assert_names_rule_and_unpause(text)
-
-
 def test_unschedulable_cycle_escalation_text_names_unpause(tmp_path):
     sup = _sup(tmp_path)
     text = sup._unschedulable_cycle_escalation_text({
@@ -169,18 +150,10 @@ def test_operator_escalation_digest_text_names_rule_and_unpause(tmp_path):
     text = sup._operator_escalation_digest_text(
         "operator_input_needed", 1, [_finding()])
     _assert_names_rule_and_unpause(text)
-    # Cure task cure-01-02 (PRD requirement A.6, #269): repeated-signature
-    # is a rejection pause too, and every rejection pause waits on an
-    # operator ruling -- its own digest names BOTH live-run levers, not
-    # unpause alone.
+    # The gate's park waits on an operator ruling too: its digest names
+    # BOTH live-run levers. (The retired last-approach / incurable /
+    # repeated-signature texts are one text now -- the operator-input-needed
+    # builder above, whichever trigger parked the run.)
     text2 = sup._operator_escalation_digest_text(
-        "rejected_repeated_signature", 2, [_finding()])
+        "verdict_gate_operator_input_needed", 1, [_finding()])
     _assert_names_rule_and_unpause(text2)
-    # And so does an incurable/last-approach digest -- widened to this
-    # same helper by cure-01-02.
-    text3 = sup._operator_escalation_digest_text(
-        "rejected_incurable", 1, [_finding()])
-    _assert_names_rule_and_unpause(text3)
-    text4 = sup._operator_escalation_digest_text(
-        "rejected_last_approach", 1, [_finding()])
-    _assert_names_rule_and_unpause(text4)

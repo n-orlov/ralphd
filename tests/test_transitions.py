@@ -710,7 +710,8 @@ def test_review_cure_and_review_paused_edges_appear():
     finding 4 must show up in the diagram, not just be table entries."""
     rendered = rtd.render()
     assert "review --> cure : rejected_curable_pass_available" in rendered
-    assert "review --> paused : rejected_last_approach" in rendered
+    assert "review --> paused : operator_input_needed" in rendered
+    assert "rejected_last_approach" not in rendered
 
 
 def test_staleness_is_caught_when_a_required_edge_is_missing():
@@ -1022,20 +1023,25 @@ class _StubNotifier:
 # ---------------------------------------------------------------------------
 
 def test_the_edge_is_declared_in_both_variants():
+    """v0.36 requirement B: an incurable rejection no longer has an edge of
+    its own (`review -> review` on `rejected_incurable`); it is a trigger of
+    the one ladder park, `review -> paused` on `operator_input_needed`.
+    Covering node for the park itself: `tests/test_rejection_ladder.py::
+    test_step_4a_an_incurable_blocking_finding_parks`."""
     for vigilant in (True, False):
-        assert transitions.is_legal("review", "review", vigilant)
         guards = transitions.guard_names("review", vigilant)
-        assert "rejected_incurable" in guards
+        assert "rejected_incurable" not in guards
         by_guard = {e.guard: e.target for e in
                    transitions.successors("review", vigilant)}
-        assert by_guard["rejected_incurable"] == "review"
+        assert by_guard["operator_input_needed"] == "paused"
 
 
 def test_the_edge_is_also_declared_under_the_peer_verdict_gate_delta():
     edges = transitions.successors("review", vigilant=False,
                                    peer_verdict_gate=True)
     by_guard = {e.guard: e.target for e in edges}
-    assert by_guard["rejected_incurable"] == "review"
+    assert "rejected_incurable" not in by_guard
+    assert by_guard["operator_input_needed"] == "paused"
 
 
 def test_the_review_contract_unrepaired_edge_is_declared_in_both_variants_and_under_the_gate():
@@ -1062,7 +1068,8 @@ def test_the_review_contract_unrepaired_edge_is_declared_in_both_variants_and_un
 
 def test_all_incurable_blocking_findings_pause_and_escalate(tmp_path):
     root = tmp_path / "run"
-    sup = _supervisor_rejected_incurable(root, max_approaches=3)
+    sup = _supervisor_rejected_incurable(root, max_approaches=3,
+                                         operator_input_needed_pause=True)
     sup._approach = 1
     notifier = _StubNotifier()
     sup.notifier = notifier
@@ -1089,7 +1096,7 @@ def test_all_incurable_blocking_findings_pause_and_escalate(tmp_path):
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "review", "rejected_incurable")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     # the run is paused through the EXISTING pause machinery -- the same
     # asyncio.Event POST /pause's loop.pause() clears.
     assert sup._pause.is_set() is False
@@ -1174,7 +1181,8 @@ def test_the_escalation_is_also_emitted_to_events_jsonl_with_no_notifier(tmp_pat
     """Even with no notifier wired in (production's default), the
     escalation is never silently lost -- it lands in events.jsonl too."""
     root = tmp_path / "run"
-    sup = _supervisor_rejected_incurable(root, max_approaches=3)
+    sup = _supervisor_rejected_incurable(root, max_approaches=3,
+                                         operator_input_needed_pause=True)
     sup._approach = 1
     assert sup.notifier is None
 
@@ -1188,14 +1196,14 @@ def test_the_escalation_is_also_emitted_to_events_jsonl_with_no_notifier(tmp_pat
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
 
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "review", "rejected_incurable")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False
 
     events = [json.loads(l) for l in
              (root / "events.jsonl").read_text().splitlines()]
     escalations = [e for e in events if e.get("type") == "operator_escalation"]
     assert len(escalations) == 1
-    assert escalations[0]["reason"] == "rejected_incurable"
+    assert escalations[0]["reason"] == "operator_input_needed"
     assert escalations[0]["findings"][0]["clause"] == "requirement B (#111)"
 
 

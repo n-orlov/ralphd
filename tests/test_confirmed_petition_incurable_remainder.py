@@ -52,7 +52,8 @@ def _result(text: str) -> IterationResult:
 
 
 _supervisor = supervisor_factory(run_id="task013-confirmed-then-incurable",
-                                 cfg_defaults=False, status={"state": "running"})
+                                 cfg_defaults=False, status={"state": "running"},
+                                 operator_input_needed_pause=True)
 
 
 class _StubNotifier:
@@ -120,9 +121,9 @@ def test_confirmed_obligation_removed_then_unrelated_incurable_remainder_pauses(
     outcome = asyncio.run(sup._step_review())
 
     # Requirement B: what remains blocking (just the unrelated finding) is
-    # entirely incurable, so the run takes rejected_incurable -- NOT the
+    # entirely incurable, so the run parks on the ladder (`operator_input_needed`) -- NOT the
     # ordinary replan edge -- and pauses through the existing machinery.
-    assert outcome == ("advance", "review", "rejected_incurable")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False
     assert not (root / "approaches" / "01").exists()
     assert sup._approach == 1
@@ -198,7 +199,7 @@ def test_without_the_confirmation_the_same_pair_would_still_be_all_incurable(
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
 
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "review", "rejected_incurable")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False
 
     events_log = json.loads("[" + ",".join(

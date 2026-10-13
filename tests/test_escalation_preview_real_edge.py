@@ -130,6 +130,13 @@ def _rejecting_runner(reason: str):
     return _run
 
 
+def _escalating_runner(reason: str):
+    async def _run(prompt, transcript, **kw):
+        return _result(json.dumps({"verdict": "rejected", "reason": reason,
+                                   "raise_operator_gate": True}))
+    return _run
+
+
 _supervisor = supervisor_factory(
     run_id="task011-escalation-preview-real-edge", cfg_defaults=False,
     prd="# task 011 fixture PRD\n\nDo the thing.\n",
@@ -200,7 +207,9 @@ def test_review_escalation_with_a_pass_left_keeps_the_real_preview(
         status={"state": "running", "phase": "review", "approach": 1})
     sup._approach = 1
     findings.write_findings_json(sup.run.findings_json_file, _CURE_REOPEN_FINDING)
-    sup.runner.run = _rejecting_runner("lanes moved")  # type: ignore[method-assign]
+    # the reviewer's own escalation is what parks a rejection with cure
+    # rounds left (an ordinary curable rejection simply cures).
+    sup.runner.run = _escalating_runner("lanes moved")  # type: ignore[method-assign]
 
     outcome = _bounded(sup._step_review())
 
@@ -494,10 +503,10 @@ _REJECTION_PREVIEW_FIXTURES = {
         ("advance", "paused", "operator_input_needed"), True),
     "all_incurable_2i_ceiling_spent": (
         _all_incurable_2i_findings, 0,
-        ("advance", "review", "rejected_incurable"), True),
+        ("advance", "paused", "operator_input_needed"), True),
     "all_incurable_2i_pass_available": (
         _all_incurable_2i_findings, 3,
-        ("advance", "review", "rejected_incurable"), True),
+        ("advance", "paused", "operator_input_needed"), True),
     "all_curable_2c_pass_available": (
         _all_curable_2c_findings, 3,
         ("advance", "cure", "rejected_curable_pass_available"), False),
@@ -605,8 +614,6 @@ def test_gate_escalation_mixed_with_ceiling_spent_previews_zero(tmp_path):
     assert ev["reason"] == "verdict_gate_operator_input_needed"
     assert ev["taskIdsValidatedToPending"] == []
     assert ev["insertCount"] == 0
-    # the gate's own A.1/A.2 removal-specific rule: a mixed/all-incurable
-    # rejection's `replanAvailable` is always `False` (never `all_
-    # curable`), whatever approaches remain, so an unanswered resume takes
-    # the terminal `finishing` tail, never a fresh replan.
-    assert ev["nextStepIfUnanswered"] == NEXT_STEP_FINISH
+    # v0.36 requirement B: an unanswered park of a mixed/all-incurable gate
+    # rejection moves to the next approach while one is left (here 1 of 2).
+    assert ev["nextStepIfUnanswered"] == NEXT_STEP_ARCHIVE_AND_REPLAN

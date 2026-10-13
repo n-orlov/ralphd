@@ -1,15 +1,12 @@
-"""E.5 -- a second identical findings-channel rejection signature in one run
-pauses the run and notifies, rather than consuming a fresh approach (task
-016, PRD requirement E.5, #190).
+"""A second identical findings-channel rejection signature in one run (task
+016, PRD requirement E.5, #190) and the rejection-signature bookkeeping.
 
-Mirrors `tests/test_last_approach.py`'s shape: a real `LoopSupervisor`
-(`_step_review()`) over a real run dir, never a mock of the guard itself.
-The new edge, `rejected_repeated_signature`, self-loops `review -> paused`
-exactly like `rejected_incurable`/`rejected_last_approach` already do --
-`LoopSupervisor._pause_and_escalate_repeated_rejection_signature` pauses
-through the EXISTING pause machinery (`self.pause()`, `self.notifier`, an
-`operator_escalation` event) instead of archiving the approach and spending
-a fresh one on a wall the run has already lost one approach to.
+v0.36 requirement B removed the dedicated `rejected_repeated_signature` park:
+a repeated signature is an ordinary rejection of the one ladder
+(`tests/test_rejection_ladder.py`). This module keeps pinning that it is
+parked or cured by the ladder's own steps -- never by a signature comparison
+-- and that the per-approach signature is still recorded (a ruling filed
+against a park resolves its signature from it).
 """
 
 from __future__ import annotations
@@ -96,33 +93,33 @@ _supervisor = supervisor_factory(
 # ===========================================================================
 
 
-def test_the_edge_is_declared_in_both_variants():
+def test_the_retired_edge_is_declared_nowhere():
     for vigilant in (True, False):
-        assert transitions.is_legal("review", "paused", vigilant)
-        guards = transitions.guard_names("review", vigilant)
-        assert "rejected_repeated_signature" in guards
+        assert "rejected_repeated_signature" not in transitions.guard_names(
+            "review", vigilant)
         by_guard = {e.guard: e.target for e in
                    transitions.successors("review", vigilant)}
-        assert by_guard["rejected_repeated_signature"] == "paused"
+        assert by_guard["operator_input_needed"] == "paused"
 
 
-def test_the_edge_is_also_declared_under_the_peer_verdict_gate_delta():
+def test_the_retired_edge_is_also_absent_under_the_peer_verdict_gate_delta():
     edges = transitions.successors("review", vigilant=False,
                                    peer_verdict_gate=True)
     by_guard = {e.guard: e.target for e in edges}
-    assert by_guard["rejected_repeated_signature"] == "paused"
+    assert "rejected_repeated_signature" not in by_guard
+    assert by_guard["operator_input_needed"] == "paused"
 
 
 # ===========================================================================
-# 2. Two identical rejection signatures across consecutive approaches pause
-#    the run (existing pause machinery) instead of archiving/replanning.
+# 2. Two identical rejection signatures across consecutive approaches park
+#    the run only through the ladder (here: an incurable finding).
 # ===========================================================================
 
 
-def test_a_second_identical_rejection_signature_pauses_instead_of_replanning(
+def test_a_second_identical_rejection_signature_parks_on_the_ladder_instead_of_replanning(
         tmp_path):
     root = tmp_path / "run"
-    sup = _supervisor(root, max_approaches=3)
+    sup = _supervisor(root, max_approaches=3, operator_input_needed_pause=True)
     sup._approach = 2
     notifier = _StubNotifier()
     sup.notifier = notifier
@@ -156,10 +153,11 @@ def test_a_second_identical_rejection_signature_pauses_instead_of_replanning(
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "paused", "rejected_repeated_signature")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False
     status = sup.run.read_status()
-    assert status.get("pauseReason") == "rejected_repeated_signature"
+    assert status.get("pauseReason") == "operator_input_needed"
+    assert status["inputQuestion"]["trigger"] == "incurable"
     assert status.get("state") not in ("succeeded", "failed")
 
     # never archived, never a composite PRD for a fresh approach -- the
@@ -171,7 +169,7 @@ def test_a_second_identical_rejection_signature_pauses_instead_of_replanning(
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
-    assert escalations[0]["reason"] == "rejected_repeated_signature"
+    assert escalations[0]["reason"] == "operator_input_needed"
     assert escalations[0]["approach"] == 2
     assert escalations[0]["findings"][0]["clause"] == same_clause
 
@@ -180,11 +178,9 @@ def test_a_second_identical_rejection_signature_pauses_instead_of_replanning(
     assert same_clause in text
     assert "ralphctl unpause task016-repeated-rejection-signature" in text
 
-    # Cure cure-01-01-3 (PRD A.3/A.4, #224): trigger condition 3's own
-    # pause -- `rejected_repeated_signature` -- releases through the SAME
-    # `/rule` route the sibling `operator_input_needed` pause already does
-    # (condition 1, `tests/test_operator_ruling_reask.py`), no separate
-    # `POST /resume`/`ralphctl resume` call anywhere in this test. Folded
+    # The park releases through the `/rule` route
+    # (`tests/test_operator_ruling_reask.py`; retired by the answer task),
+    # no separate `POST /resume`/`ralphctl resume` call anywhere in this test. Folded
     # into this existing test rather than a fresh collected node -- task
     # 024's own fast-tier ceiling stands at zero headroom.
     signature = status.get("rejectionSignatures", {}).get("2")
@@ -224,7 +220,7 @@ def test_a_second_identical_rejection_signature_pauses_instead_of_replanning(
     # against it -- this is the one that must release it, in the same
     # request, with no separate resume command.
     sup.run.update_status(state="awaiting_input",
-                          pauseReason="rejected_repeated_signature")
+                          pauseReason="operator_input_needed")
     resp = _post_rule({"text": "These clauses are residuals; ship."})
     assert resp.status_code == 202, resp.text
     released = sup.run.read_status()
@@ -236,7 +232,7 @@ def test_a_second_identical_rejection_signature_pauses_instead_of_replanning(
 
 def test_the_escalation_is_emitted_to_events_jsonl_with_no_notifier(tmp_path):
     root = tmp_path / "run"
-    sup = _supervisor(root, max_approaches=3)
+    sup = _supervisor(root, max_approaches=3, operator_input_needed_pause=True)
     sup._approach = 2
     assert sup.notifier is None
 
@@ -257,12 +253,12 @@ def test_the_escalation_is_emitted_to_events_jsonl_with_no_notifier(tmp_path):
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
 
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "paused", "rejected_repeated_signature")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
-    assert escalations[0]["reason"] == "rejected_repeated_signature"
+    assert escalations[0]["reason"] == "operator_input_needed"
 
 
 # ===========================================================================

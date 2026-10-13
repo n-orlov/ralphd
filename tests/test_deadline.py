@@ -1117,12 +1117,14 @@ def test_step_replans_own_check_exhausts_max_approaches_to_exhausted(tmp_path):
     assert "endedAt" not in status or status["endedAt"] is None
 
 
-def test_review_post_rejection_tail_exhausts_max_approaches_to_failed(tmp_path):
+def test_review_post_rejection_tail_exhausts_max_approaches_to_the_exhausted_hold(tmp_path):
     """`_step_review`'s post-rejection twin (docstring site 2): an
     ordinary, bare-reason rejection (no findings.json written, so none of
     the curable/incurable/repeated-signature/ruled branches above the
-    bottom tail ever fire) on the LAST approach falls straight through to
-    `rejected_no_approach_left`, driven through a real `run_job()` over
+    bottom tail ever fire) on the LAST approach, with the park disabled,
+    resolves as an unanswered park (v0.36 requirement B) that holds the run
+    `exhausted` (`exhaustedBudget: approaches`) instead of ending it
+    `failed`; driven through a real `run_job()` over
     `make_supervisor` (never this run's own directory) -- the in-process
     sibling of `tests/flows/test_flow_review_replan_pause.py::test_a_
     rejection_on_the_last_approach_with_nothing_curable_fails`, which
@@ -1141,14 +1143,16 @@ def test_review_post_rejection_tail_exhausts_max_approaches_to_failed(tmp_path):
 
     state = asyncio.run(asyncio.wait_for(sup.run_job(), 30.0))
 
-    assert state == "failed"
+    assert state == "exhausted"
     assert sup._budget_exhausted_tail is False, (
         "an ordinary review rejection with no approach left must never set "
-        "the C.1 budget-boundary flag -- it is a structural tail, not a "
-        "budget one")
+        "the iteration/time boundary flag -- it holds through its own "
+        "`approaches` flag")
+    assert sup._approaches_exhausted_tail is True
     status = sup.run.read_status()
-    assert status["state"] == "failed"
-    assert status["verdict"] == "unverified"
+    assert status["state"] == "exhausted"
+    assert status["exhaustedBudget"] == "approaches"
+    assert status["verdict"] is None
 
 
 # ===========================================================================
@@ -1346,9 +1350,9 @@ def test_a_rejecting_verdict_after_the_deadline_holds_the_run(tmp_path):
     deadline is then pushed into the past from INSIDE the running review
     iteration itself. This time review renders a REJECTING verdict over
     one blocking, curable finding -- the run must hold `exhausted` with a
-    null verdict, and the rejection's findings and the cure task it opened
-    must both still be on disk, with the ordinary cure-pass counter exactly
-    as it would read for an in-budget rejection.
+    null verdict, and the rejection's findings
+    must still be on disk; no cure task is opened and no cure round is spent
+    (the ladder's first step is the budget).
     """
     sup = make_supervisor(
         tmp_path, run_id="task014-rejecting-verdict-past-deadline",
@@ -1391,21 +1395,13 @@ def test_a_rejecting_verdict_after_the_deadline_holds_the_run(tmp_path):
     assert findings_list[0]["clause"] == "requirement D.2 fixture clause unmet"
     assert findings_list[0]["severity"] == "blocking"
 
-    # The cure task the rejection opened is present on disk, still pending
-    # -- it is what left `_all_tasks_completed()` False and so kept the
-    # (pre-E) grace-review mechanism from ever firing a second review.
+    # v0.36 requirement B, ladder step 1: a spent budget is `exhausted`
+    # BEFORE any cure is opened, so the rejection inserts no cure task and
+    # spends no round -- the findings stay on disk for the resumed review.
     tasks = sup.run.read_tasks()["tasks"]
-    cure_tasks = [t for t in tasks if str(t.get("id", "")).startswith("cure-")]
-    assert len(cure_tasks) == 1, (
-        f"the rejection's own cure task must be present on disk, got "
-        f"tasks={tasks!r}")
-    assert cure_tasks[0]["status"] == "pending"
-
-    # The cure-pass counter reads exactly the value it would for an
-    # in-budget rejection: one cure pass spent on approach 1, same shape
-    # `_take_cure_pass`/`_cure_passes_for_approach` always persist.
-    assert status.get("curePasses", {}).get("1") == 1
-    assert sup._cure_passes_for_approach(1) == 1
+    assert [t for t in tasks if str(t.get("id", "")).startswith("cure-")] == []
+    assert status.get("curePasses") in (None, {})
+    assert sup._cure_passes_for_approach(1) == 0
 
     state_events = _events(sup.run, "state")
     assert state_events[-1]["state"] == "exhausted"

@@ -320,7 +320,7 @@ def _mixed_1c_1i_gate_findings() -> list[dict]:
     ]
 
 
-def test_gate_park_unpause_mixed_rejection_takes_its_own_terminal_edge(
+def test_gate_park_unpause_mixed_rejection_proceeds_to_the_unanswered_outcome(
         tmp_path):
     root = tmp_path / "run"
     sup1 = _gate_fixture(root, gate_findings=_mixed_1c_1i_gate_findings())
@@ -352,17 +352,16 @@ def test_gate_park_unpause_mixed_rejection_takes_its_own_terminal_edge(
     finally:
         LoopSupervisor.run_iteration = orig
 
-    # A.1/A.2's own removal-specific rule: a non-curable rejection ends
-    # the run RIGHT HERE, never a fresh replan, whatever approaches are
-    # left -- the consumed no-ruling proceed falls through to that SAME
-    # immediate tail, not to `verdict_gate_rejected_approach_left`.
-    assert outcome2 == ("tail",)
+    # v0.36 requirement B: the consumed no-ruling proceed is the park's
+    # unanswered outcome -- the mixed (non-curable) rejection archives and
+    # replans while an approach is left; it never ends the run on the spot.
+    assert outcome2 == ("advance", "replan", "verdict_gate_rejected_approach_left")
     status2 = sup2.run.read_status()
     assert status2["state"] == "running"
     assert status2.get("gateRejectionEnding") == "rejected_on_the_merits"
     assert not status2.get("noRulingProceed", {}).get(
         "verdict_gate_operator_input_needed")
-    assert not (root / "approaches" / "01").exists()
+    assert (root / "approaches" / "01").exists()
 
     # no SECOND escalation -- the one from the first parked rejection is
     # still the only one on this run.

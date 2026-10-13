@@ -2120,20 +2120,10 @@ async function renderRunDetail(runId, myGen) {
   if (myGen === renderGeneration) refreshTimer = scheduleRefresh(load, pollIntervalMs);
 }
 
-// Task 008 (v0.26, #269): human labels for `parkedQuestion.reason` -- the
-// two `pauseReason` values a ruling can actually answer (task 007's own
-// `PARKED_QUESTION_REASONS`). An if/else, deliberately never an object
-// literal keyed by the reason string -- an object key spelled from
-// `"rejected_repeated_signature"` would land the word naming what
-// repeated right against the object literal's own colon, and
-// `test_hub_fault_dialog.py::test_app_js_words_no_fault_fact_of_its_own`
-// forbids that exact adjacency ANYWHERE in the bundle (the fault dialog's
-// own field label is worded server-side, never respelled here) -- an
-// unrelated collision this function avoids by construction rather than by
-// carving an exception into that guard.
+// Human label for `parkedQuestion.reason` -- the `pauseReason` value a
+// rejection-ladder park carries (`PARKED_QUESTION_REASONS`).
 function parkedReasonText(reason) {
   if (reason === "operator_input_needed") return "operator input needed";
-  if (reason === "rejected_repeated_signature") return "rejected \u2014 repeated rejection signature";
   return String(reason || "unknown");
 }
 

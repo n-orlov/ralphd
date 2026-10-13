@@ -174,7 +174,7 @@ def test_peer_gate_on_post_deadline_rejection_still_holds_unchanged(tmp_path):
     runs entirely on the VERIFIED branch, ahead of the peer verdict gate
     itself"), so a REJECTING post-deadline verdict must be completely
     unaffected by the gate being on: still `exhausted`, still a null
-    verdict, still the rejection's findings and cure task intact on disk.
+    verdict, still the rejection's findings intact on disk (and no cure task opened).
     """
     sup = make_supervisor(
         tmp_path, run_id="task027-peer-gate-rejecting-past-deadline-unchanged",
@@ -212,10 +212,10 @@ def test_peer_gate_on_post_deadline_rejection_still_holds_unchanged(tmp_path):
     assert findings_list is not None and len(findings_list) == 1
     assert findings_list[0]["clause"] == "task 027 fixture clause unmet"
 
+    # v0.36 requirement B, ladder step 1: the budget is spent, so the
+    # rejection opens no cure task (the findings above stay on disk).
     tasks = sup.run.read_tasks()["tasks"]
-    cure_tasks = [t for t in tasks if str(t.get("id", "")).startswith("cure-")]
-    assert len(cure_tasks) == 1
-    assert cure_tasks[0]["status"] == "pending"
+    assert [t for t in tasks if str(t.get("id", "")).startswith("cure-")] == []
 
     # The peer gate's own handler was never dispatched here either -- the
     # rejection ladder runs entirely before the gate is ever consulted.

@@ -1,5 +1,7 @@
-"""Task 007 (deferred out of task 006, requirement B.2, #111): resuming a
-run that was paused by the `rejected_incurable` self-loop must land BACK at
+"""Task 007 (deferred out of task 006, requirement B.2, #111), re-pinned for
+v0.36 requirement B (the incurable rejection is a trigger of the one ladder
+park, `operator_input_needed`): resuming a
+run that was parked by an incurable rejection must land BACK at
 `review` -- never at a fresh approach (`replan`) and never at a throwaway
 `worker` iteration first -- and the operator ruling recorded while it sat
 paused must still be visible to that review iteration.
@@ -7,13 +9,13 @@ paused must still be visible to that review iteration.
 Two supervisors drive the same on-disk run dir, standing in for two engine
 episodes over one `ralphctl resume` the way `tests/test_resume.py` uses two
 `ralphd-engine` processes: episode 1 reaches the pause exactly the way
-`tests/test_rejected_incurable_edge.py` already pins (a real `_step_review()`
+`tests/test_rejection_ladder.py` pins (a real `_step_review()`
 call, all blocking findings incurable); episode 2 is a FRESH `LoopSupervisor`
 constructed over the very same `RunDir` root -- exactly what a killed and
 restarted container leaves behind, since `self._pause` is an in-memory
 `asyncio.Event` that a process restart cannot carry over.
 
-1. `LoopSupervisor._paused_awaiting_incurable_ruling(approach)` is True right
+1. `LoopSupervisor._paused_awaiting_operator_input_needed_ruling(approach)` is True right
    after episode 1's pause, and `_resume_point()` returns `(approach, False,
    "review")` for episode 2 -- never `"replan"`, never the ordinary
    skip-planning default that would land at `worker`.
@@ -75,7 +77,7 @@ def _pause_via_incurable_rejection(root: Path) -> LoopSupervisor:
     `tests/test_rejected_incurable_edge.py` already pins in isolation."""
     root.mkdir(parents=True, exist_ok=True)
     (root / "prd.md").write_text("# test PRD\n\nDo the thing.\n")
-    sup1 = _supervisor(root, "task007-resume")
+    sup1 = _supervisor(root, "task007-resume", operator_input_needed_pause=True)
     sup1.run.update_status(state="running")
     _write_tasks(sup1.run)
     sup1._approach = 1
@@ -97,7 +99,7 @@ def _pause_via_incurable_rejection(root: Path) -> LoopSupervisor:
     sup1.runner.run = _review_rejects  # type: ignore[method-assign]
 
     outcome = asyncio.run(sup1._step_review())
-    assert outcome == ("advance", "review", "rejected_incurable")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup1._pause.is_set() is False  # paused, exactly as task 006 left it
     return sup1
 
@@ -109,7 +111,7 @@ def _pause_via_incurable_rejection(root: Path) -> LoopSupervisor:
 def test_paused_awaiting_incurable_ruling_is_true_right_after_the_pause(tmp_path):
     root = tmp_path / "run"
     sup1 = _pause_via_incurable_rejection(root)
-    assert sup1._paused_awaiting_incurable_ruling(1) is True
+    assert sup1._paused_awaiting_operator_input_needed_ruling(1) is True
 
 
 def test_resume_point_routes_straight_to_review_not_worker_not_replan(tmp_path):
@@ -143,7 +145,7 @@ def test_a_completed_iteration_since_the_escalation_stops_the_predicate(tmp_path
     sup1 = _pause_via_incurable_rejection(root)
     # Simulate the in-process resume actually running another iteration:
     sup1.run.emit("iteration.start", number=99, phase="review")
-    assert sup1._paused_awaiting_incurable_ruling(1) is False
+    assert sup1._paused_awaiting_operator_input_needed_ruling(1) is False
 
 
 # ---------------------------------------------------------------------------
@@ -217,11 +219,12 @@ def test_resume_without_any_ruling_still_lands_on_review_and_rejects_again(
             "verdict": "rejected", "reason": "still no operator ruling",
             "findings_path": "review-findings.md"}))
 
-    sup2 = _supervisor(root, "task007-resume", max_approaches=1)
+    sup2 = _supervisor(root, "task007-resume", max_approaches=1,
+                       operator_input_needed_pause=False)
     # Re-seed the same all-incurable finding so this second episode's
-    # review self-loops right back onto `rejected_incurable` again --
-    # with only one approach available, the budget check makes
-    # `rejected_no_approach_left` win, which is fine: the point pinned
+    # review rejects it again -- with the park disabled and only one
+    # approach available the rejection ends the run
+    # (`rejected_no_approach_left`), which is fine: the point pinned
     # here is that resume reached `review` at all, on the SAME approach.
     findings.write_findings_json(
         sup2.run.findings_json_file,
@@ -231,7 +234,9 @@ def test_resume_without_any_ruling_still_lands_on_review_and_rejects_again(
 
     state = asyncio.run(sup2._run_job_core())
 
-    assert state == "failed"
+    # no approach left and the park disabled: the unanswered park holds
+    # the run `exhausted` (approaches) rather than ending it `failed`.
+    assert state == "exhausted"
     assert len(calls) == 1
     status = sup2.run.read_status()
     # never bumped to a fresh approach: `_resume_point()` kept it at 1.

@@ -97,32 +97,7 @@ def test_gate_off_by_default_table_is_byte_identical_to_today(vigilant):
         tr.T("worker", "review_cure_pending_at_verified"),
         tr.T("finishing", "verified"),
         tr.T("replan", "rejected_approach_left"),
-        # Task 006 (PRD requirement B.2, #111): the incurable-rejection
-        # edge, added to the base table beside `rejected_approach_left` --
-        # present here too since gate-off is byte-identical to TODAY's
-        # table (now including this edge), not to a pre-task-006 snapshot
-        # of it.
-        tr.T("review", "rejected_incurable"),
-        # Task 009 (PRD requirement C.1, #141): the cure-pass edge, added
-        # to the base table beside `rejected_incurable` -- present here
-        # too for the same reason: gate-off is byte-identical to TODAY's
-        # table (now including this edge), not to a pre-task-009 snapshot
-        # of it.
         tr.T("cure", "rejected_curable_pass_available"),
-        # Task 011 (PRD requirement D.1, #142): the last-approach pause
-        # edge, added to the base table beside `rejected_curable_pass_
-        # available` -- present here too for the same reason: gate-off is
-        # byte-identical to TODAY's table (now including this edge), not
-        # to a pre-task-011 snapshot of it. Task 004 (finding 4)
-        # retargeted this at `paused`, and the cure-pass edge above at
-        # `cure`, in the base table -- both carried over here unchanged.
-        tr.T("paused", "rejected_last_approach"),
-        # Task 016 (PRD requirement E.5, #190): the repeated-rejection-
-        # signature pause edge, added to the base table beside `rejected_
-        # last_approach` -- present here too for the same reason: gate-off
-        # is byte-identical to TODAY's table (now including this edge),
-        # not to a pre-task-016 snapshot of it.
-        tr.T("paused", "rejected_repeated_signature"),
         # GH #209 defect 2: the exhausted-review-contract hold edge, added
         # to the base table beside `rejected_repeated_signature` -- present
         # here too for the same reason every edge above is: gate-off is
@@ -928,118 +903,69 @@ def _mixed_gate_findings() -> list[dict]:
     ]
 
 
-def test_a_mix_of_curable_and_incurable_gate_findings_still_ends_the_run(
-        tmp_path):
-    """Task 003 (PRD requirement A.3): the complement `_gate_cure_pass_
-    available`'s own docstring names -- a rejection carrying even one
-    non-curable blocking finding beside an otherwise-curable one never
-    takes the cure-pass edge (`findings.all_blocking_findings_curable`
-    requires the WHOLE blocking set, review's own mirror is
-    `test_a_mix_of_curable_and_incurable_findings_never_takes_the_cure_
-    pass` in `tests/test_cure_pass.py`), so this falls straight through to
-    the ordinary archive/replan-or-finish edges below, ending the run
-    exactly as it always has -- A.1 is never a claim that the gate can no
-    longer fail a run. Driven end to end through `_run_job_core()` (never
-    `_step_verdict_gate` in isolation) on the `test020-verdict-gate`
-    fixture (`_supervisor` above) with `max_approaches=1` -- the LAST
-    approach -- so a wrongly-taken cure pass would be the only thing
-    standing between this mixed rejection and a terminal `failed` state.
+async def _drive_until_parked(sup: LoopSupervisor) -> None:
+    """Start `_run_job_core()` in the background, poll status.json for
+    `awaiting_input`, then cancel the task still parked at the gate."""
+    task = asyncio.ensure_future(sup._run_job_core())
+    for _ in range(500):
+        if sup.run.read_status().get("state") == "awaiting_input":
+            break
+        if task.done():
+            break
+        await asyncio.sleep(0.01)
+    else:
+        task.cancel()
+        raise AssertionError("run never reached `awaiting_input`")
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
-    Task cure-01-01-3 (PRD requirement A.3's removal-specific review
-    rule): this last-approach case must reach that terminal state by the
-    SAME `verdict_gate_rejected_on_merits` edge the approach-left case
-    takes (`..._ends_the_run_with_an_approach_left` below), so the
-    archive/composite-PRD absences are asserted here too. Before that
-    task's fix the `approach < max_approaches` guard let the last approach
-    alone fall through to the ordinary archive/replan-or-finish edges,
-    which archived approach 1 under `approaches/01/` and wrote a
-    `composite-prd.md` nothing downstream ever read -- this test passed
-    anyway, because it never looked."""
+
+@pytest.mark.parametrize("max_approaches", [1, 2])
+def test_a_mix_of_curable_and_incurable_gate_findings_parks_the_run(
+        tmp_path, max_approaches):
+    """v0.36 requirement B (was: the run ended `failed` on the spot,
+    `verdict_gate_rejected_on_merits`). A gate rejection carrying one curable
+    and one non-curable blocking finding never takes the cure-pass edge and
+    never ends the run: the one ladder parks it in `awaiting_input`
+    (trigger `incurable`), with an approach left or not, and archives
+    nothing. Driven end to end through `_run_job_core()` on the
+    `test020-verdict-gate` fixture."""
     root = tmp_path / "run"
     root.mkdir(parents=True, exist_ok=True)
     run = RunDir(root=root)
     findings.write_findings_json(run.verdict_gate_findings_json_file,
                                  _mixed_gate_findings())
-    sup, final_state = _run_job(
+    RunDir(root=root).update_status(state="starting")
+    sup = _supervisor(
         root,
         {"planning": [_plan()], "worker": [_worker_completes(TASK_1)],
          "review": [_review_verifies()],
          "verdict_gate": [_verdict_gate_rejects(
              "one blocking finding is curable, the other is not")]},
-        peer_verdict_gate=True, max_approaches=1)
+        peer_verdict_gate=True, max_approaches=max_approaches,
+        operator_input_needed_pause=True)
+    _bounded(_drive_until_parked(sup))
 
     agent = sup.runner
     assert agent.phases_seen == ["planning", "worker", "review", "verdict_gate"]
-    # a mixed rejection never takes the cure-pass edge -- it ends the run
-    # exactly like an all-incurable one does (`test_gate_on_rejection_
-    # with_no_approach_left_fails_open_to_finishing` above).
-    assert final_state == "failed", sup.run.read_status()
-    assert sup.run.read_status().get("verdict") == "unverified"
-    assert sup.run.read_status().get("gateCurePasses") is None
+    status = sup.run.read_status()
+    assert status["state"] == "awaiting_input", status
+    assert status["inputQuestion"]["judge"] == "verdict_gate"
+    assert status["inputQuestion"]["trigger"] == "incurable"
+    assert status.get("verdict") is None
+    assert status.get("approach") == 1
+    assert status.get("gateCurePasses") is None
     # Task 004 (PRD requirement A.4): a mixed rejection is "on the merits",
     # never mistaken for a cure taken or a budget-exhausted cure.
-    assert (sup.run.read_status().get("gateRejectionEnding")
-            == "rejected_on_the_merits")
-    # A.3: no approach archive and no composite PRD on the LAST approach
-    # either -- the ordinary archive/replan machinery this rejection now
-    # bypasses unconditionally never ran.
-    assert not (root / "approaches" / "01").exists()
-    assert sorted((root / "approaches").iterdir()) == []
-    assert not (root / "composite-prd.md").exists()
-    tasks = sup.run.read_tasks()["tasks"]
-    cure_tasks = [t for t in tasks if t.get("origin") == "review-cure"]
-    assert cure_tasks == []
-
-
-def test_a_mix_of_curable_and_incurable_gate_findings_ends_the_run_with_an_approach_left(
-        tmp_path):
-    """Task 001 (PRD requirement A.1/A.2, #192, this wave's v0.21.1
-    requirement A): the exact scenario the requirement's own `Cured when:`
-    clause names -- "a real cloned supervisor at approach 1 of 2, given a
-    verdict-gate rejection carrying one curable AND one non-curable
-    blocking finding" -- but this time with an approach still available
-    (`max_approaches=2`, approach 1 of 2), the case v0.21's own shipped
-    `test_a_mix_of_curable_and_incurable_gate_findings_still_ends_the_run`
-    above never drove because it fixed `max_approaches=1`. Before task
-    001's fix this returned `('advance', 'replan', 'verdict_gate_
-    rejected_approach_left')` -- it archived approach 1 and started a
-    fresh planning phase over a non-curable finding no fresh approach can
-    change. After the fix it must end `failed`/`unverified` right there,
-    with no approach archive, no `replan` phase and no appended cure
-    task -- exactly A.1 and A.2's own wording."""
-    root = tmp_path / "run"
-    root.mkdir(parents=True, exist_ok=True)
-    run = RunDir(root=root)
-    findings.write_findings_json(run.verdict_gate_findings_json_file,
-                                 _mixed_gate_findings())
-    sup, final_state = _run_job(
-        root,
-        {"planning": [_plan()], "worker": [_worker_completes(TASK_1)],
-         "review": [_review_verifies()],
-         "verdict_gate": [_verdict_gate_rejects(
-             "one blocking finding is curable, the other is not")]},
-        peer_verdict_gate=True, max_approaches=2)
-
-    agent = sup.runner
-    # A.2: no `replan` (hence no second `planning`/`worker`/`review`/
-    # `verdict_gate` cycle) -- the run ends right after the ONE verdict_
-    # gate phase, even though a second approach was available.
-    assert agent.phases_seen == ["planning", "worker", "review", "verdict_gate"]
-    # A.1: ends failed/unverified, not a fresh approach.
-    assert final_state == "failed", sup.run.read_status()
-    assert sup.run.read_status().get("verdict") == "unverified"
-    assert sup.run.read_status().get("approach") == 1
-    assert sup.run.read_status().get("gateCurePasses") is None
-    assert (sup.run.read_status().get("gateRejectionEnding")
-            == "rejected_on_the_merits")
-    # A.2: no approach archive and no composite PRD -- the ordinary
-    # archive/replan machinery this rejection now bypasses never ran.
+    assert status.get("gateRejectionEnding") == "rejected_on_the_merits"
+    # no approach archive, no composite PRD, no cure task.
     assert not (root / "approaches" / "01").exists()
     assert not (root / "composite-prd.md").exists()
-    # A.2: no cure task appended for this rejection.
     tasks = sup.run.read_tasks()["tasks"]
-    cure_tasks = [t for t in tasks if t.get("origin") == "review-cure"]
-    assert cure_tasks == []
+    assert [t for t in tasks if t.get("origin") == "review-cure"] == []
 
 
 def test_the_gate_cure_pass_edge_is_declared_only_under_the_peer_delta():

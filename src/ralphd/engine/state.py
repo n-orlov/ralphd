@@ -950,10 +950,10 @@ def format_escalation_undelivered_marker(run_root: Path, status: dict) -> str:
 # actually answer -- `ralphctl rule <run> --file <ruling.md> --name <slug>`
 # or a plain `ralphctl unpause <run>` -- as opposed to a plain operator pause
 # (no `pauseReason` at all) or a pause a ruling has no vocabulary for
-# (`stagnation`, `rejected_last_approach`, and the other five reasons the
+# (`stagnation` and the other reasons the
 # `operator_escalation` docs list). `parked_question` below returns `None`
 # for every OTHER pause reason, this pair being the only two it shapes.
-PARKED_QUESTION_REASONS = ("operator_input_needed", "rejected_repeated_signature")
+PARKED_QUESTION_REASONS = ("operator_input_needed",)
 
 # The three answers `parked_question`'s own `consequence.
 # nextStepIfUnanswered` can report -- "if this pause is resumed with no
@@ -1094,8 +1094,7 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
     of <N>"` text), `parkedAt` (the event's own `ts` -- the moment the
     pause was recorded, never re-derived from `status.json`, which carries
     no timestamp of its own for this), `replanAvailable` (the event's own
-    field, `None` when absent -- `rejected_repeated_signature` never
-    carries it), `blockingCount`/`residualCount` and `findings` (EVERY
+    field, `None` when absent), `blockingCount`/`residualCount` and `findings` (EVERY
     finding, blocking and residual alike: first each blocking finding, in
     the SAME order the escalation text and its `ralphctl amend`
     invocations enumerate them, tagged `id: "F<n>"`, 1-based; then each

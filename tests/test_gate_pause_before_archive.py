@@ -288,19 +288,20 @@ def test_gate_rejection_mixed_with_ceiling_spent_on_last_approach_parks(
     assert len(escalations) == 1
 
 
-def test_gate_rejection_mixed_with_ceiling_spent_disabled_pause_takes_32352c15_ending(
+def test_gate_rejection_mixed_with_ceiling_spent_disabled_pause_takes_the_unanswered_outcome(
         tmp_path):
     """With `operator_input_needed_pause` disabled
-    (`--no-operator-input-needed-pause`), the mixed fixture with the
-    ceiling spent takes the EXACT ending it took at 32352c15 -- the
-    ordinary merits tail (`("tail",)`), no pause, no escalation -- this
-    task's widened pause is gated by the SAME flag review's own sibling
-    edge is, never unconditional.
+    (`--no-operator-input-needed-pause`) the park resolves at once with the
+    outcome an unanswered park takes (v0.36 requirement D.3): the mixed
+    fixture with the ceiling spent archives the approach and replans while an
+    approach is left -- no park, no escalation. (It used to end the run on
+    the merits tail, `verdict_gate_rejected_on_merits`, which is gone.)
     """
     sup = _fixture(tmp_path, cure_pass_ceiling=0, max_approaches=2,
                    gate_findings=_mixed_1c_1i_gate_findings(),
                    operator_input_needed_pause=False)
     root = sup.run.root
+    (root / "prd.md").write_text("# test PRD\n\nDo the thing.\n")
 
     orig = LoopSupervisor.run_iteration
     LoopSupervisor.run_iteration = _gate_rejects(
@@ -310,12 +311,12 @@ def test_gate_rejection_mixed_with_ceiling_spent_disabled_pause_takes_32352c15_e
     finally:
         LoopSupervisor.run_iteration = orig
 
-    assert outcome == ("tail",)
+    assert outcome == ("advance", "replan", "verdict_gate_rejected_approach_left")
     status = sup.run.read_status()
-    assert status.get("state") != "paused"
+    assert status.get("state") not in ("paused", "awaiting_input")
     assert status.get("gateRejectionEnding") == "rejected_on_the_merits"
-    assert not (root / "approaches" / "01").exists()
-    assert not sup.run.composite_prd_file.exists()
+    assert (root / "approaches" / "01").exists()
+    assert sup.run.composite_prd_file.exists()
     assert _escalations(root) == []
 
 

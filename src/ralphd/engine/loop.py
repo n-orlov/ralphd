@@ -38,6 +38,7 @@ from . import contract_enforcement
 from . import contracts
 from . import findings
 from . import hat_tools
+from . import ladder
 from . import petitions
 from . import plan_ingestion
 from . import privsep
@@ -1011,7 +1012,7 @@ class LoopSupervisor:
         `MAX_NOTIFY_CHARS` (below) is the cap; a `text` already under it
         passes through unedited. The two `operator_escalation` reasons
         whose body scales with an unbounded finding/evidence count
-        (`operator_input_needed`, `rejected_repeated_signature`) never
+        (`operator_input_needed`, ...) never
         reach this method with an oversized `text` in the first place --
         `_operator_escalation_digest_text` builds a proper digest for
         those before either call site gets here. This truncation is the
@@ -1590,9 +1591,7 @@ class LoopSupervisor:
         repeats the identical signature (`_take_matching_no_ruling_
         proceed`), whichever edge that rejection takes: the cure edge when
         a pass is available, else the archive-and-replan (or finish) edge,
-        never parking again on that signature -- this mirrors the
-        one-re-park bound a ruling already has (`_ruling_already_
-        reparked`/`_record_ruling_reparked`).
+        never parking again on that signature.
 
         Called from `resume()` itself, BEFORE `_clear_persisted_pause`
         wipes `pauseReason` back to `None` -- reading it after would
@@ -1720,9 +1719,7 @@ class LoopSupervisor:
         classified here):
 
         * the run must be recorded PAUSED with `pauseReason` one of
-          `"operator_input_needed"` (PRD A.3 trigger condition 1, task 014)
-          or `"rejected_repeated_signature"` (PRD A.3 trigger condition 3,
-          task 017) right now -- any other pause (an operator's plain
+          `"operator_input_needed"` (the rejection ladder's park) right now -- any other pause (an operator's plain
           `POST /pause`, `rejected_last_approach`, `stagnation`, ...) is
           left exactly as it was. Cure task cure-01-01-3 (PRD A.3/A.4,
           #224): condition 3's own pause records `rejectionSignatures[str(
@@ -1750,8 +1747,7 @@ class LoopSupervisor:
             # v0.30 G.2: a provider refusal is not answered by a ruling; only
             # an unpause (after fixing the profile or credentials) releases it.
             return False
-        if status.get("pauseReason") not in (
-                "operator_input_needed", "rejected_repeated_signature"):
+        if status.get("pauseReason") != "operator_input_needed":
             return False
         if not self._approach_has_rejection_signature(status.get("approach")):
             return False
@@ -1762,8 +1758,8 @@ class LoopSupervisor:
         """Whether `approach`'s own entry in status.json's `rejectionSignatures`
         map is a real, non-`None` signature -- the exact fact `resume_if_
         ruling_answers_pause` (just above) checks before letting a freshly
-        filed ruling release an `operator_input_needed`/`rejected_repeated_
-        signature` pause. Factored out here (cure task cure-01-01-9, PRD
+        filed ruling release an `operator_input_needed`
+        pause. Factored out here (cure task cure-01-01-9, PRD
         A.1/A.6, D.1) so a caller that must DESCRIBE, ahead of time, whether
         filing a ruling right now would release a LIVE pause reads the
         identical fact `resume_if_ruling_answers_pause` will apply once a
@@ -1776,8 +1772,8 @@ class LoopSupervisor:
         commit-scan hold shares the `operator_input_needed` reason STRING
         with review's own pause but is raised from `worker` with no
         rejection of its own behind it -- so it never records a signature
-        itself, but an EARLIER `operator_input_needed`/`rejected_repeated_
-        signature` pause answered by a ruling on the SAME approach leaves
+        itself, but an EARLIER `operator_input_needed`
+        pause answered by a ruling on the SAME approach leaves
         that approach's own entry on status.json, and a commit-scan hold
         raised later in that same approach inherits it -- a ruling filed
         against THIS hold then releases it too, exactly like the earlier
@@ -1804,9 +1800,9 @@ class LoopSupervisor:
         alone through the real CLI/engine route left the run paused).
         Phrased as an explicit two-step sequence (`then`), with the
         working unpause-ALONE alternative named right after it, never the
-        `operator_input_needed`/`rejected_repeated_signature` reasons' own
+        `operator_input_needed` reason's own
         `or ... to accept the default` phrasing, which stays correct only
-        for those two (`_operator_escalation_digest_text` keeps it there).
+        for that one (`_operator_escalation_digest_text` keeps it there).
         """
         return (
             f"ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
@@ -4831,8 +4827,7 @@ class LoopSupervisor:
         never a second implementation of the freeze. `max_approaches`
         exhaustion (`_step_replan`'s `budget_or_approach_exhausted`,
         `_step_review`'s/`_step_verdict_gate`'s `..._no_approach_left`) and
-        the genuinely structural tails (`repeated_blocker_signature`,
-        `verdict_gate_rejected_on_merits`, the contract-violation-once-
+        the genuinely structural tails (`repeated_blocker_signature`, the contract-violation-once-
         budget-is-also-gone branch in `_step_generic_hat`) never set this
         flag -- they end regardless of `budget_left()`, so requirement
         C.2's "still fails, unchanged" holds by construction, not by an
@@ -8406,7 +8401,7 @@ class LoopSupervisor:
         from `worker` with no review rejection behind it, never has one"
         -- false whenever this hold lands on an approach that ALREADY
         carries a `rejectionSignatures` entry: an earlier `operator_input_
-        needed`/`rejected_repeated_signature` pause on the SAME approach,
+        needed` pause on the SAME approach,
         answered by a ruling, leaves that approach's own signature on
         status.json, and this hold -- raised later in that same approach,
         sharing the `operator_input_needed` reason STRING with review's
@@ -9574,172 +9569,29 @@ class LoopSupervisor:
         self._record_gate_approach_verdict(approach, approved, payload)
         self._record_verdict_gate_peek(approach)
         if approved:
-            self._advance("verdict_gate", "finishing", "verdict_gate_approved")
-            self.run.emit("signal", signal="VERIFIED")
-            self._finish("succeeded", self._review_success_verdict_label(),
-                        **self._unconsumed_steering_patch())
-            return ("done", "succeeded")
+            return self._verdict_gate_approved_edge()
         reason = (payload or {}).get("reason") if payload else None
         self.run.emit(
             "log",
             message=(f"peer verdict gate rejected approach {approach}"
                      + (f": {reason}" if reason else
                         " (no usable verdict_gate payload)")))
-        # Task 001 (PRD requirement A.1, #192): a rejection whose blocking
-        # findings are ALL curable is a cure pass, not a replan -- checked
-        # BEFORE the ordinary archive/replan-or-finish below, exactly the
-        # precedence `_step_review`'s own `_review_cure_pass_available`
-        # check already has over ITS archive/replan branch. This is the
-        # gap v0.20's approach 8 fell into (#192): review returned
-        # `verified`, the peer gate returned 4 curable blocking findings,
-        # each with its own `Cured when:` clause, and there was no cure
-        # path for the peer gate to take -- only the ordinary `replan`/
-        # `finishing` edges below, which either burns a fresh approach's
-        # replan on findings a fresh approach cannot even fix faster than
-        # a cure task can, or ends the run holding cures it never spent.
-        # Extends `state.insert_cure_tasks`, the SAME append-cure-tasks
-        # path `_take_cure_pass` already uses for review's own cure pass
-        # (`_take_gate_cure_pass` below) -- no second cure mechanism.
-        # Task 004 (PRD requirement A.4, #192): classify and persist this
-        # rejection's own ending BEFORE deciding which of the three edges
-        # below it takes -- `_gate_rejection_ending` needs to know whether
-        # the cure-pass edge is actually taken (computed once, here, and
-        # reused for both the classification and the branch itself so the
-        # two can never disagree about which happened), and the write must
-        # land on status.json before any of the three edges (cure/replan/
-        # tail) so it survives into whichever terminal record eventually
-        # results -- `gateRejectionEnding` is overwritten by each later
-        # gate rejection, and read back by `ralphctl status`'s own
-        # `_format_gate_rejection_ending_lines`.
-        cured = self._gate_cure_pass_available(approach)
-        ending = self._gate_rejection_ending(approach, cured)
-        self.run.update_status(gateRejectionEnding=ending)
-        # PRD v0.27 C.2/C.3 (#274, VG-01): a bare unpause of this exact
-        # signature's C.1 pause granted a one-shot 'proceed'. This
-        # rejection spends it NOW, before any edge is chosen, so it is
-        # gone whichever edge follows -- the cure edge the operator
-        # granted budget for included -- and a later same-signature
-        # rejection after that cure parks afresh instead of archiving on
-        # a stale answer.
-        gate_findings_list = self._gate_findings()
-        no_ruling_proceed_consumed = (
-            gate_findings_list is not None
-            and self._take_matching_no_ruling_proceed(
-                "verdict_gate_operator_input_needed",
-                self._gate_rejection_signature(gate_findings_list)))
-        if cured:
-            self._take_gate_cure_pass(approach)
-            self._advance("verdict_gate", "cure",
-                         "verdict_gate_rejected_curable_pass_available")
-            return ("advance", "cure",
-                    "verdict_gate_rejected_curable_pass_available")
-        # Task 008 (v0.27 requirement C.1), widened by task 002 (this
-        # wave) to every blocking-set shape: a rejection this run's own
-        # cure-pass ceiling is already spent for holds for an operator
-        # instead of falling through to the ordinary archive/replan-or-
-        # finish edges below -- the SAME "before the spend, not after"
-        # reasoning `TABLE["review"]`'s own `operator_input_needed` edge
-        # documents, ON by default through the SAME `JobConfig.operator_
-        # input_needed_pause` flag (`--no-operator-input-needed-pause`
-        # disables both). Before task 002 this checked `ending ==
-        # GATE_REJECTION_ENDING_CURE_UNAVAILABLE` alone -- true only when
-        # EVERY blocking finding was curable -- so a mixed or all-
-        # incurable rejection (`ending == GATE_REJECTION_ENDING_MERITS`)
-        # fell straight through to the merits/archive branches below even
-        # with the ceiling spent, ending the run with no pause at all. The
-        # ceiling being spent is itself the trigger now, independent of
-        # curability: `_cure_pass_ceiling_spent()` alone (never `ending`)
-        # decides whether this pause fires, since `cured` already being
-        # `False` at this point means the ceiling being spent is either
-        # the WHOLE reason (CURE_UNAVAILABLE) or simply true alongside a
-        # non-curable finding that would have ended the run regardless of
-        # the ceiling (MERITS) -- either way, an operator gets to see this
-        # rejection before an approach is thrown away or the run ends,
-        # rather than the engine deciding unilaterally that no cure budget
-        # is left to even ask about. `all_curable` (== `ending ==
-        # GATE_REJECTION_ENDING_CURE_UNAVAILABLE`) is threaded through so
-        # the escalation text/`nextStepIfUnanswered` never claims a cure
-        # pass or a fresh replan that a non-curable rejection can never
-        # actually take. Checked BEFORE the merits/archive branches below,
-        # mirroring the cure-pass check's own precedence just above.
-        # Task 009 (PRD requirement C.2, #274): a bare `ralphctl unpause`
-        # of THIS exact pause, with no ruling ever possible for the gate's
-        # own channel, recorded a one-shot 'proceed' for this rejection's
-        # own signature (`LoopSupervisor.resume`'s `_record_unpaused_no_
-        # ruling_proceed`). When it was spent above, this rejection falls
-        # through to the ordinary merits/archive/replan-or-finish edges
-        # below instead of parking again, mirroring review's own sibling
-        # rule.
-        if (gate_findings_list is not None
-                and self._cure_pass_ceiling_spent()
-                and self.cfg.operator_input_needed_pause
-                and not no_ruling_proceed_consumed):
-            all_curable = ending == state.GATE_REJECTION_ENDING_CURE_UNAVAILABLE
-            # A non-curable (or mixed) rejection ends the run RIGHT HERE
-            # regardless of approaches left (A.1/A.2's own removal-
-            # specific rule, above) -- an unanswered resume of THIS pause
-            # takes that same immediate tail, never a fresh replan,
-            # whatever `approach < cfg.max_approaches` says. Only an
-            # all-curable rejection's unanswered resume can still replan.
-            replan_available = (
-                all_curable and approach < self.cfg.max_approaches)
-            self._pause_and_escalate_gate_operator_input_needed(
-                approach, gate_findings_list or [], replan_available,
-                all_curable=all_curable)
-            self._advance("verdict_gate", "paused",
-                         "verdict_gate_operator_input_needed")
-            return ("advance", "paused",
-                    "verdict_gate_operator_input_needed")
-        # Task 001 (PRD requirement A.1/A.2): a rejection carrying a
-        # genuinely non-curable blocking finding (or a criteria-tamper
-        # finding, which blocks the cure edge exactly the same way --
-        # `_gate_rejection_curable_ignoring_ceiling`'s own checks) ends the
-        # run failed/unverified RIGHT HERE -- no archive, no composite
-        # PRD, no replan and no cure task, exactly A.1/A.2's own wording
-        # ("even when max_approaches leaves another approach available"),
-        # and (task cure-01-01-3, PRD requirement A.3's removal-specific
-        # review rule) on the LAST approach exactly the same way: A.3's own
-        # `Cured when:` clause draws no last-approach exception, and
-        # letting the run's LAST approach alone fall through to the
-        # ordinary archive/replan-or-finish edges below was the one
-        # remaining gap A.1/A.2 left open (`review3_gate.py::test_mixed_
-        # gate_terminates_without_archiving[last-approach]`,
-        # `artifacts/review4-gate-probe.log`). `tests/test_verdict_gate.
-        # py::test_review_verified_with_residuals_then_gate_rejects_
-        # yields_two_distinguishable_artifacts` (a last-approach, non-
-        # curable single-finding rejection) previously required this
-        # archive to exist; it is rewritten in this same commit to assert
-        # the same review/gate distinguishability at RUN scope
-        # (`run.findings_file`/`run.verdict_gate_findings_file` and their
-        # `.json` sidecars) instead, since no archive is written for that
-        # scenario any more -- its surviving cover is `tests/test_peer_
-        # verdict_gate.py::test_a_mix_of_curable_and_incurable_gate_
-        # findings_still_ends_the_run` (last approach) and `..._ends_the_
-        # run_with_an_approach_left` (approach left), both of which
-        # already assert the no-archive/no-composite/no-cure-task shape
-        # this edge now takes unconditionally. Deliberately narrower than
-        # "ending == MERITS": that label also covers an UNSTRUCTURED
-        # rejection (no `_gate_findings()` channel at all, e.g. a bare
-        # `reason` string with no findings.json) where the run has no
-        # basis to call any finding non-curable -- that case keeps the
-        # ordinary archive/replan-or-finish edges below exactly as
-        # before, out of this requirement's scope (its `Cured when:`
-        # clause names "a rejection containing a non-curable blocking
-        # finding", not an unstructured one).
-        if (ending == state.GATE_REJECTION_ENDING_MERITS
-                and self._gate_findings() is not None):
-            self._advance("verdict_gate", "finishing",
-                         "verdict_gate_rejected_on_merits")
-            return ("tail",)
-        self._archive_approach(approach)
-        self._write_composite_prd(approach)
-        if approach < self.cfg.max_approaches:
-            self._advance("verdict_gate", "replan",
-                         "verdict_gate_rejected_approach_left")
-            return ("advance", "replan", "verdict_gate_rejected_approach_left")
-        self._advance("verdict_gate", "finishing",
-                     "verdict_gate_rejected_no_approach_left")
-        return ("tail",)
+        gate_findings = self._gate_findings()
+        outcome = self._run_rejection_ladder(
+            "verdict_gate", approach, gate_findings,
+            signature=self._gate_rejection_signature(gate_findings))
+        if outcome is None:
+            return self._verdict_gate_approved_edge()
+        return outcome
+
+    def _verdict_gate_approved_edge(self) -> tuple:
+        """The peer gate's success edge (also taken when the ladder treats a
+        rejection whose blocking findings are all waived as approved)."""
+        self._advance("verdict_gate", "finishing", "verdict_gate_approved")
+        self.run.emit("signal", signal="VERIFIED")
+        self._finish("succeeded", self._review_success_verdict_label(),
+                    **self._unconsumed_steering_patch())
+        return ("done", "succeeded")
 
     def _gate_findings(self) -> list[dict] | None:
         """Task 001 (PRD requirement A.1, #192): the valid findings list
@@ -9996,23 +9848,19 @@ class LoopSupervisor:
         taken here, ever, by this edge's own construction, curable or
         not).
         """
-        if not all_curable:
-            outcome = "end the run on the merits"
-            finding_desc = "findings that are not all curable"
-        elif replan_available:
+        finding_desc = ("findings that are all curable" if all_curable
+                        else "findings that are not all curable")
+        if replan_available:
             outcome = "replan a fresh approach"
-            finding_desc = "findings that are all curable"
         else:
-            outcome = "end the run with no approach left"
-            finding_desc = "findings that are all curable"
+            outcome = ("end the run with no approach left (held as "
+                       "exhausted: approaches)")
         lines = [
             f"Run {self.cfg.run_id} approach {approach}: the peer verdict "
-            f"gate rejected this approach on {finding_desc}, "
-            "and the run's own cure-pass ceiling is already spent as well"
-            ". Before this task, the engine "
-            f"would now {outcome} -- the "
-            "run has been paused instead so an operator can answer before "
-            "that happens; "
+            f"gate rejected this approach on {finding_desc}, and the run is "
+            "parked in awaiting_input instead of archiving it (a blocking "
+            "finding is incurable, or this approach's cure rounds are "
+            f"spent). An unanswered park would {outcome}; "
             + self._ruling_then_unpause_escalation_sentences(),
             "",
         ]
@@ -10026,16 +9874,17 @@ class LoopSupervisor:
                 lines.append(f"  cured_when: {cured_when}")
             lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
             lines.append("")
-        fields = self._discretionary_gate_escalation_fields(approach, {})
+        fields = self._escalation_preview_fields(approach, {})
         grant_note = (self._cure_pass_ceiling_grant_note(replan_available)
                       if all_curable else None)
-        lines.extend(self._discretionary_gate_escalation_text_lines(
+        lines.extend(self._escalation_preview_text_lines(
             fields, grant_note))
         return "\n".join(lines).rstrip() + "\n"
 
     def _pause_and_escalate_gate_operator_input_needed(
         self, approach: int, findings_list: list[dict],
         replan_available: bool, all_curable: bool = True,
+        trigger: str | None = None,
     ) -> None:
         """Task 008 (v0.27 requirement C.1): pause the run through the
         EXISTING pause machinery -- the same seam every sibling in this
@@ -10052,8 +9901,7 @@ class LoopSupervisor:
         no `rejectionSignatures`/ruling-re-park bookkeeping, only the
         findings channel and the archive it defers -- so `resume_if_
         ruling_answers_pause` never releases it on a ruling filing alone
-        (its own reason allow-list names only `operator_input_needed`/
-        `rejected_repeated_signature`); releasing it always needs a
+        (its own reason allow-list names only `operator_input_needed`); releasing it always needs a
         separate `ralphctl unpause`, exactly like `rejected_last_
         approach`/`rejected_incurable` (`_ruling_then_unpause_answer_
         cmd`, reused by `_operator_escalation_digest_text` below since
@@ -10081,7 +9929,7 @@ class LoopSupervisor:
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         text = self._gate_operator_input_needed_escalation_text(
             approach, blocking, replan_available, all_curable=all_curable)
-        extra_fields = self._discretionary_gate_escalation_fields(approach, {})
+        extra_fields = self._escalation_preview_fields(approach, {})
         next_step = (state.NEXT_STEP_ARCHIVE_AND_REPLAN if replan_available
                     else state.NEXT_STEP_FINISH)
         self.run.emit(
@@ -10092,8 +9940,8 @@ class LoopSupervisor:
             **extra_fields)
         self._park_for_input(
             reason="verdict_gate_operator_input_needed", judge="verdict_gate",
-            trigger=self._input_trigger(blocking), blocking=blocking,
-            approach=approach)
+            trigger=trigger or self._input_trigger(blocking),
+            blocking=blocking, approach=approach)
         if self.notifier is not None:
             # The delivered digest names the `--cure-passes` lever on
             # exactly the condition the full escalation text does: only an
@@ -13985,13 +13833,7 @@ class LoopSupervisor:
         `("done", "succeeded")`, reached only once
         `_terminal_success_blockers()` is empty); `rejected_approach_left`
         (-> replan); `rejected_no_approach_left` (-> finishing, i.e.
-        `("tail",)`); `rejected_repeated_signature` (task 016, PRD
-        requirement E.5, #190: -> paused, self-loop back to `review` over
-        the SAME unarchived approach, taken when this rejection's own
-        blocking-clause signature repeats the immediately preceding
-        approach's own recorded rejection signature -- pausing rather than
-        spending a fresh approach on a wall the run has already lost one
-        approach to); `review_contract_unrepaired` (GH #209 defect 2: ->
+        `("tail",)`, the ladder's unanswered outcome); `review_contract_unrepaired` (GH #209 defect 2: ->
         paused, checked BEFORE every rejection edge above because there is
         no rejection to classify -- review's own contract ladder exhausted
         with the hat's own verdict claim still unreadable, so the approach
@@ -14003,15 +13845,13 @@ class LoopSupervisor:
         exhausted over instead, so the approach is left unarchived, no
         composite PRD is written, no cure pass is opened, and `resume`
         re-enters `review` over the SAME approach); `operator_input_needed`
-        (task 014, PRD requirement A.1, #224: -> paused, checked LAST among
-        the rejection edges above -- ON by default
-        (`JobConfig.operator_input_needed_pause`), any ORDINARY rejection
-        that would otherwise reach `_archive_approach` below, whether the
-        next step would have been a fresh `replan` or the terminal
-        `rejected_no_approach_left` tail, holds instead so an operator can
-        answer -- with a ruling (task 013's `ralphctl rule`) or a plain
-        `resume` -- before the approach is thrown away; `resume` re-enters
-        `review` over the SAME approach, exactly like every sibling in this
+        (v0.36 requirement B: -> paused, a ladder park -- the rejection
+        carries a `curable: false` blocking finding, the reviewer raised
+        `raise_operator_gate`, or the approach's cure rounds are spent; the
+        run holds in `awaiting_input` before the approach is thrown away).
+        Every rejection goes through `_run_rejection_ladder`, which the peer
+        verdict gate shares; `resume` re-enters `review` over the SAME
+        approach, exactly like every sibling in this
         family).
         """
         approach = self._approach
@@ -14046,10 +13886,8 @@ class LoopSupervisor:
         # This is the boundary the run re-enters after an in-process
         # pause-clear for every escalation that resumes into `review`, i.e.
         # precisely the moment an operator who was asked for a ruling has
-        # just given one. Only the `rejected_incurable` self-loop actually
-        # parks on `self._gate()` just above; `rejected_last_approach`,
-        # `rejected_repeated_signature` and (unit 4) `review_contract_
-        # unrepaired` all advance to `paused` and park on `_step_paused`'s
+        # just given one. Every ladder park and (unit 4) `review_contract_
+        # unrepaired` advance to `paused` and park on `_step_paused`'s
         # own `_gate()`, arriving here over its `paused_resumed` edge with
         # this gate already cleared. Either route runs the applier before
         # review is asked anything. Placed AFTER the `phase` emit so the
@@ -14091,135 +13929,7 @@ class LoopSupervisor:
                     rulingFile=honoured.get("file"),
                     verdict=(payload or {}).get("verdict"))
         if verified:
-            # Task 013 (requirement I, #98): ONE exit gate, asked once.
-            # It REPLACES the pre-013 mechanism -- `while verified and
-            # self.run.pending_steering():`, which discarded the verdict
-            # and dispatched a no-task `worker` iteration from inside this
-            # method, looping in place until every steering FILE was
-            # consumed -- with `_terminal_success_blockers()` plus a
-            # return through the declared `steering_pending_at_verified`
-            # edge to the ordinary dispatch loop. Two things change, both
-            # strictly stronger than the loop they replace:
-            #
-            #   * unsettled steering is no longer consumed by a worker
-            #     iteration THIS method dispatches by hand: control goes
-            #     back to `_step_worker`, whose absolute-top-priority
-            #     check (task 012) routes the very next pass to the
-            #     `steer` hat -- the hat that exists to process operator
-            #     messages, handed all of them in arrival order, marking
-            #     them consumed only on a clean exit
-            #     (`_run_iteration_once`, task 018/#34). The at-least-once
-            #     property across a dying iteration is therefore exactly
-            #     the one that always guarded them, unchanged; what the
-            #     mid-review race (`tests/test_e2e.py::test_steering_
-            #     during_review_iteration_never_silently_dropped`,
-            #     `::test_verified_review_refused_while_steering_pending`)
-            #     is protected by is no longer a hand-rolled loop here.
-            #   * a steering-ORIGIN TASK that is not terminal
-            #     (`state.is_steering_origin` / `state.task_is_terminal`)
-            #     blocks terminal success too. `settled` is not `done` --
-            #     the PRD's own diagnosis: "steer 003 was `consumed` at
-            #     iteration 87 with three quarters of it undone."
-            #
-            # Returning instead of looping in place is what makes the
-            # second half expressible at all: a FILE was consumable in
-            # exactly one more actionable iteration, but finishing a TASK
-            # takes an unbounded number of ordinary worker iterations, and
-            # the worker's own scheduler must pick it up like any other
-            # pending task. Review is asked again the ordinary way, once
-            # the worker signals COMPLETE again.
-            blockers = self._terminal_success_blockers()
-            if blockers:
-                # Task 019 (requirement D.2, #220): WHICH of the two
-                # declared `*_pending_at_verified` edges this deferral
-                # takes. Both route to `worker` and defer identically; they
-                # differ only in what the event log says held the run, and
-                # task 018 declared the second one precisely so a
-                # `review-cure`-origin blocker is not recorded under
-                # steering's name (PRD requirement D: reusing that name for
-                # a different blocker would lie in the event log).
-                guard = self._pending_at_verified_guard()
-                self.run.emit(
-                    "log", level="warning",
-                    message=("VERIFIED verdict deferring: "
-                             + "; ".join(blockers)
-                             + " -- routing back to worker so the ordinary "
-                               "lifecycle settles and finishes it before the "
-                               "run can go terminal-succeeded"))
-                self._advance("review", "worker", guard)
-                return ("advance", "worker", guard)
-            # Task 020 (requirement L, #101): the opt-in, genuinely BLIND
-            # peer verdict gate. `transitions.PEER_VERDICT_GATE_DELTA` is
-            # what actually declares this alternate edge legal -- this
-            # `if` is just which of the two ALREADY-legal targets this run
-            # takes, decided from the SAME config flag `transitions.
-            # table_for`'s caller (`TransitionExecutor` construction,
-            # `__init__`) was built with, so the two can never disagree
-            # about which table variant is in force (the same shape
-            # `_step_planning`'s `peer_plan_review` check already uses).
-            if self.cfg.peer_verdict_gate:
-                if not self.budget_left():
-                    # Task 027 (PRD requirement H.5, #264, v0.24's own D.1
-                    # CONFIRMED contradiction petition, cure-01-04): review
-                    # is in-flight-protected (task cure-01-03/C.1) so it can
-                    # still return `verified` after the deadline has
-                    # already passed while it was running. Dispatching
-                    # `verdict_gate` at THIS point would be a brand new
-                    # iteration started past the boundary -- exactly what
-                    # `_step_verdict_gate`'s own `budget_left()` guard (task
-                    # 011, requirement C.1) forbids absolute for every
-                    # fresh-dispatch site in this engine, this one included.
-                    # v0.24 shipped the only choice that existed then --
-                    # holding the run with a null verdict, pinned as
-                    # history by `tests/test_deadline.py::
-                    # test_peer_verdict_gate_verified_review_after_the_deadline_holds_pending_the_gate`
-                    # and confirmed via the pre-named contradiction petition
-                    # -- which is exactly the defect H.5 closes. This wave
-                    # chooses mechanism (b): conclude on review's own
-                    # verdict alone, with the gate's non-dispatch disclosed
-                    # in the record as a named residual
-                    # (`verdictGateResidual`) rather than as a null verdict.
-                    # Mechanism (a) -- running the gate inside the same
-                    # boundary -- would need merging two genuinely separate
-                    # blind hat calls (review, then the peer gate) into one
-                    # dispatch, which does not fit this engine's existing
-                    # one-hat-per-iteration shape without a much larger
-                    # restructuring than this task's own scope; (b) reuses
-                    # the transition table's existing fail-open shape
-                    # (`verdict_gate_rejected_no_approach_left` already
-                    # concludes rather than holding hostage once ITS OWN
-                    # budget is spent) and costs one new declared edge.
-                    self._advance(
-                        "review", "finishing",
-                        "verified_peer_verdict_gate_deferred_past_deadline")
-                    self.run.emit("signal", signal="VERIFIED")
-                    residual = {
-                        "gate": "peer_verdict_gate",
-                        "reason": (
-                            "the run's own deadline passed while review "
-                            "was still in flight, before the peer verdict "
-                            "gate could be dispatched; review's own "
-                            "verified verdict decided the outcome instead "
-                            "of holding the run with a null verdict"),
-                        "recordedAt": utcnow(),
-                    }
-                    self.run.emit("verdict_gate_deferred_past_deadline",
-                                 approach=approach,
-                                 reason=residual["reason"])
-                    self._finish(
-                        "succeeded", self._review_success_verdict_label(),
-                        verdictGateResidual=residual,
-                        **self._unconsumed_steering_patch())
-                    return ("done", "succeeded")
-                self._advance("review", "verdict_gate",
-                             "verified_peer_verdict_gate_enabled")
-                return ("advance", "verdict_gate",
-                        "verified_peer_verdict_gate_enabled")
-            self._advance("review", "finishing", "verified")
-            self.run.emit("signal", signal="VERIFIED")
-            self._finish("succeeded", self._review_success_verdict_label(),
-                        **self._unconsumed_steering_patch())
-            return ("done", "succeeded")
+            return self._review_verified_edge(approach)
         # GH #209 defect 2: review's own contract ladder exhausted with the
         # hat's verdict claim still unreadable across every attempt the
         # ladder grants, witnessed by the `contract.agent_fault` `enforce_
@@ -14260,514 +13970,272 @@ class LoopSupervisor:
             self._advance("review", "paused", "review_findings_unusable")
             return ("advance", "paused", "review_findings_unusable")
         self.run.emit("log", message=f"review rejected approach {approach}")
-        # Task 017 (PRD requirement A.3/A.7, #224): the findings channel and
-        # this rejection's own signature, read ONCE here -- earlier than
-        # every branch below now needs them, not just the repeated-
-        # signature check that used to be the first reader -- so trigger
-        # condition 2's cure-reopen preview (just below) and every
-        # `operator_input_needed`-family escalation this rejection might
-        # take all judge the SAME post-downgrade list, never a second,
-        # possibly different read of the sidecar.
         findings_list, channel_errors = self._review_findings_channel()
         signature = self._review_rejection_signature(
             findings_list, channel_errors)
-        # Task 017 (PRD requirement A.3/A.7, #224): the cure-reopen preview
-        # itself -- computed ONCE, off the SAME `findings_list` just read,
-        # so trigger condition 2 below and trigger condition 3 further
-        # down (whose own A.7 escalation payload names the same `preview`)
-        # both judge -- and report -- the identical prediction, never two
-        # independent walks that could disagree.
         blocking_for_preview = [f for f in (findings_list or [])
                                 if f.get("severity") == "blocking"]
         cure_preview = state.cure_pass_preview(
             self.run.read_tasks().get("tasks") or [], blocking_for_preview)
-        # Cure task cure-01-02 (PRD requirement A.5, #224): the MECHANICAL
-        # ruling-match re-park decision, computed ONCE here -- before EVERY
-        # branch below it must pre-empt, not just the ordinary archive/
-        # replan tail at the very bottom. The pre-cure-01-02 shape computed
-        # this only right before that bottom combined check, so a rejection
-        # whose own signature a ruling already addressed span straight past
-        # this decision whenever the cure-pass-available branch just below
-        # or the repeated-signature branch further down fired first --
-        # observed as `_review_v023_probe.py::test_A5_ruled_cure_rejection_
-        # reparks_before_reopening` (a curable rejection matching a ruled
-        # signature silently took the cure pass, `curePasses {1: 1}`, never
-        # re-parking) and `::test_A5_ruled_repeat_signature_reparks_before_
-        # archiving` (a ruled signature that also repeated the previous
-        # approach's own recorded one fell through to the ordinary archive/
-        # replan tail, `archived=True`, because that tail's OWN combined
-        # check ANDs `not repeated_signature` and never got a chance to
-        # apply the ruling first). Computing the decision here and
-        # consulting it at each of those two branches (immediately below,
-        # and again just before the repeated-signature gate further down)
-        # closes both.
+        outcome = self._run_rejection_ladder(
+            "review", approach, findings_list, signature=signature,
+            reviewer_escalation=self._review_reviewer_requested_operator_gate(
+                payload),
+            cure_preview=cure_preview)
+        if outcome is None:
+            return self._review_verified_edge(approach)
+        return outcome
+
+    def _review_verified_edge(self, approach: int) -> tuple:
+        """review's `verified` edge (also taken when the ladder treats a
+        rejection whose blocking findings are all waived as verified): the
+        terminal-success blockers, then the peer verdict gate or finish."""
+        # Task 013 (requirement I, #98): ONE exit gate, asked once.
+        # It REPLACES the pre-013 mechanism -- `while verified and
+        # self.run.pending_steering():`, which discarded the verdict
+        # and dispatched a no-task `worker` iteration from inside this
+        # method, looping in place until every steering FILE was
+        # consumed -- with `_terminal_success_blockers()` plus a
+        # return through the declared `steering_pending_at_verified`
+        # edge to the ordinary dispatch loop. Two things change, both
+        # strictly stronger than the loop they replace:
         #
-        # Task 002 (PRD finding F02): looked up by THIS rejection's OWN
-        # signature (`signature`, read just above), never by `_ruling_
-        # honoured_for_approach`'s `status["rejectionSignatures"][approach]`
-        # -- that map holds only the approach's LAST recorded rejection
-        # signature, so an intervening rejection on a different signature
-        # (which overwrites it, `_record_rejection_signature`) would make
-        # this lookup silently miss a still-unspent ruling on the ORIGINAL
-        # signature once it recurs, and could instead hand a ruling that
-        # never matched this rejection at all a spurious re-park once the
-        # map happened to be overwritten back. `_ruling_honoured_for_
-        # signature` reads the cumulative `state.ruling_entries()` record
-        # directly by the signature being judged, so it is unaffected by
-        # whatever an intervening rejection on another signature did to
-        # that per-approach map. `_ruling_honoured_for_approach` itself is
-        # unchanged and still used for the audit-only `operator_ruling_
-        # honoured` event above, where "the ruling that answered THIS
-        # approach's last recorded pause" is exactly the right question.
-        ruled = self._ruling_honoured_for_signature(signature)
-        ruling_matches_this_rejection = ruled is not None and signature is not None
-        ruling_re_park_exhausted = (
-            ruling_matches_this_rejection
-            and self._ruling_already_reparked(ruled["seq"]))
-        mechanical_ruled_park_due = (
-            self.cfg.operator_input_needed_pause
-            and ruling_matches_this_rejection
-            and not ruling_re_park_exhausted)
-        # Cure task cure-01-03 (PRD requirement A.6, F03): read the
-        # reviewer's own optional escalation request ONCE, here -- before
-        # ANY rejection edge below can return, including the cure-pass-
-        # available branch just below, which is exactly the case F03 named
-        # ("the mechanical not-a-trigger case is precisely where the
-        # independent reviewer path is needed"): a legible rejected reply
-        # carrying `raise_operator_gate: true` must pause even when this
-        # cure pass would reopen nothing, i.e. when the ordinary mechanical
-        # trigger (`cure_preview["reopenedTaskIds"]`) never fires at all.
-        # The field's own backward-compatible default (absent payload,
-        # absent field, or present-but-not-`True`) is unchanged --
-        # `_review_reviewer_requested_operator_gate`'s docstring still
-        # names it. This single read is reused by every branch below that
-        # used to read it again near the end of this method; it is never
-        # read a second time off a possibly-stale payload. It is also
-        # threaded through `mechanical_ruled_park_due`'s two consulting
-        # branches above/below (cure task cure-01-03's own fix for F03): a
-        # ruling re-park still takes precedence when it applies, but a
-        # reviewer-requested gate on a rejection the ruling does NOT match
-        # still pauses through its own branch below.
-        reviewer_requested_gate = self._review_reviewer_requested_operator_gate(payload)
-        # PRD v0.27 C.2/C.3 (#274, VG-01): a bare unpause of this exact
-        # signature's `operator_input_needed` pause granted a one-shot
-        # 'proceed'. This rejection spends it NOW, before any edge is
-        # chosen, so it is gone whichever edge follows (a cure pass the
-        # operator granted budget for included) and can never authorise a
-        # later archive. While it is being spent, none of the operator
-        # gates that pause answered (reviewer request, mechanical reopen
-        # trigger, pause-before-archive) parks again on this signature. A
-        # ruling's own re-park keeps its own bound, and the repeated-
-        # signature pause (a DIFFERENT pause reason, comparing against the
-        # PRECEDING approach) keeps its own discretionary budget.
-        no_ruling_proceed_consumed = self._take_matching_no_ruling_proceed(
-            "operator_input_needed", signature)
-        if no_ruling_proceed_consumed:
-            reviewer_requested_gate = False
-        # Task 006 (PRD requirement B.2, #111): a rejection whose BLOCKING
-        # findings are ALL incurable takes `rejected_incurable` instead of
-        # spending (and losing) a fresh approach on findings a fresh
-        # approach cannot change -- checked BEFORE the ordinary archive/
-        # replan below, but only once an approach is actually available
-        # (requirement B.3: `rejected_no_approach_left` still wins once the
-        # budget is spent -- see `_review_incurable_rejection` for why that
-        # order is load-bearing, not merely convenient).
-        if approach < self.cfg.max_approaches and self._review_incurable_rejection():
-            self._pause_and_escalate_incurable_rejection(approach)
-            self._advance("review", "review", "rejected_incurable")
-            return ("advance", "review", "rejected_incurable")
-        # Task 003 (PRD finding F01, A.3 condition 3): "already an edge,
-        # but it fires after the approach is spent; pull the same
-        # comparison forward" -- computed here, before the cure-pass
-        # branch below, so a rejection whose own blocking-clause signature
-        # already repeats the immediately preceding approach's recorded
-        # one takes this gate BEFORE `_review_cure_pass_available`'s own
-        # branch can reopen already-`completed` (not merely `validated`)
-        # records or insert a fresh cure task on the identical wall this
-        # run already lost one approach to. F01: `_step_review` used to
-        # return `("advance", "cure", "rejected_curable_pass_available")`
-        # here, spending `curePasses` and moving evidence tasks back to
-        # `pending`, without ever reaching this comparison. Pure and
-        # read-only (`_repeated_rejection_signature` only reads `status.
-        # json`'s `rejectionSignatures` map); the actual record
-        # (`_record_rejection_signature`) still happens only in the
-        # ordinary archive/replan tail below, unchanged. `mechanical_
-        # ruled_park_due` still wins first -- an operator-filed ruling
-        # against this exact signature is a stronger answer than the
-        # mechanical repeat check -- and is re-checked at its own two
-        # existing call sites (top of the cure-pass branch below, and the
-        # archive/replan tail) for the cases this early gate does not
-        # reach.
-        repeated_signature = self._repeated_rejection_signature(
-            approach, signature)
-        if (not mechanical_ruled_park_due and repeated_signature
-                and self._discretionary_gate_available(approach)):
-            self._spend_discretionary_gate(approach)
-            # Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): the
-            # same `approach < cfg.max_approaches` every other pause site
-            # in this method already computes, so this pause's own
-            # `next_step` can tell an archive that replans apart from one
-            # that ends the run on this approach's last try.
-            self._pause_and_escalate_repeated_rejection_signature(
-                approach, signature, cure_preview,
-                replan_available=approach < self.cfg.max_approaches)
-            self._advance("review", "paused", "rejected_repeated_signature")
-            return ("advance", "paused", "rejected_repeated_signature")
-        # Task 009 (PRD requirement C.1, #141): a rejection whose blocking
-        # findings are ALL curable, with this approach's own cure pass
-        # still unspent, is a cure pass -- not a replan. Checked AFTER the
-        # incurable branch above (requirement C.2: an all-incurable
-        # rejection keeps its pause-and-escalate precedence) and BEFORE
-        # the ordinary archive/replan below, so a curable rejection never
-        # burns the approach it could instead be cured inside of.
+        #   * unsettled steering is no longer consumed by a worker
+        #     iteration THIS method dispatches by hand: control goes
+        #     back to `_step_worker`, whose absolute-top-priority
+        #     check (task 012) routes the very next pass to the
+        #     `steer` hat -- the hat that exists to process operator
+        #     messages, handed all of them in arrival order, marking
+        #     them consumed only on a clean exit
+        #     (`_run_iteration_once`, task 018/#34). The at-least-once
+        #     property across a dying iteration is therefore exactly
+        #     the one that always guarded them, unchanged; what the
+        #     mid-review race (`tests/test_e2e.py::test_steering_
+        #     during_review_iteration_never_silently_dropped`,
+        #     `::test_verified_review_refused_while_steering_pending`)
+        #     is protected by is no longer a hand-rolled loop here.
+        #   * a steering-ORIGIN TASK that is not terminal
+        #     (`state.is_steering_origin` / `state.task_is_terminal`)
+        #     blocks terminal success too. `settled` is not `done` --
+        #     the PRD's own diagnosis: "steer 003 was `consumed` at
+        #     iteration 87 with three quarters of it undone."
         #
-        # Task 004 (PRD requirement C.1, finding 4): the target is the
-        # dedicated `cure` step state (`transitions.TABLE`), not `worker`
-        # directly -- `_step_cure` takes the run the rest of the way to
-        # `worker`, immediately, in the same dispatch pass, so the worker
-        # still runs the appended cure tasks exactly as before.
-        if self._review_cure_pass_available(approach):
-            # Cure task cure-01-02 (PRD requirement A.5, #224): a rejection
-            # whose own signature matches a ruling not yet spent re-parks
-            # HERE, before either of condition 2's own two outcomes below
-            # (its driven escalation, or the plain `_take_cure_pass` a
-            # not-a-trigger cure pass would otherwise reach) can act on
-            # findings a ruling already addressed -- see the docstring on
-            # `mechanical_ruled_park_due`'s own computation above for why
-            # this has to be checked before this branch, not only at the
-            # bottom archive/replan tail.
-            if mechanical_ruled_park_due:
-                self._record_ruling_reparked(ruled["seq"])
-                replan_available = approach < self.cfg.max_approaches
-                # Cure task cure-01-03-3 (PRD requirement A.7, #224): this
-                # re-park is itself a driven gate over the SAME rejection
-                # `cure_preview` was computed for above -- an operator
-                # parked here needs the identical predicted reopen/spend/
-                # link every other driven gate on this rejection already
-                # carries, so `cure_preview` is passed here too, never
-                # left `None`.
+        # Returning instead of looping in place is what makes the
+        # second half expressible at all: a FILE was consumable in
+        # exactly one more actionable iteration, but finishing a TASK
+        # takes an unbounded number of ordinary worker iterations, and
+        # the worker's own scheduler must pick it up like any other
+        # pending task. Review is asked again the ordinary way, once
+        # the worker signals COMPLETE again.
+        blockers = self._terminal_success_blockers()
+        if blockers:
+            # Task 019 (requirement D.2, #220): WHICH of the two
+            # declared `*_pending_at_verified` edges this deferral
+            # takes. Both route to `worker` and defer identically; they
+            # differ only in what the event log says held the run, and
+            # task 018 declared the second one precisely so a
+            # `review-cure`-origin blocker is not recorded under
+            # steering's name (PRD requirement D: reusing that name for
+            # a different blocker would lie in the event log).
+            guard = self._pending_at_verified_guard()
+            self.run.emit(
+                "log", level="warning",
+                message=("VERIFIED verdict deferring: "
+                         + "; ".join(blockers)
+                         + " -- routing back to worker so the ordinary "
+                           "lifecycle settles and finishes it before the "
+                           "run can go terminal-succeeded"))
+            self._advance("review", "worker", guard)
+            return ("advance", "worker", guard)
+        # Task 020 (requirement L, #101): the opt-in, genuinely BLIND
+        # peer verdict gate. `transitions.PEER_VERDICT_GATE_DELTA` is
+        # what actually declares this alternate edge legal -- this
+        # `if` is just which of the two ALREADY-legal targets this run
+        # takes, decided from the SAME config flag `transitions.
+        # table_for`'s caller (`TransitionExecutor` construction,
+        # `__init__`) was built with, so the two can never disagree
+        # about which table variant is in force (the same shape
+        # `_step_planning`'s `peer_plan_review` check already uses).
+        if self.cfg.peer_verdict_gate:
+            if not self.budget_left():
+                # Task 027 (PRD requirement H.5, #264, v0.24's own D.1
+                # CONFIRMED contradiction petition, cure-01-04): review
+                # is in-flight-protected (task cure-01-03/C.1) so it can
+                # still return `verified` after the deadline has
+                # already passed while it was running. Dispatching
+                # `verdict_gate` at THIS point would be a brand new
+                # iteration started past the boundary -- exactly what
+                # `_step_verdict_gate`'s own `budget_left()` guard (task
+                # 011, requirement C.1) forbids absolute for every
+                # fresh-dispatch site in this engine, this one included.
+                # v0.24 shipped the only choice that existed then --
+                # holding the run with a null verdict, pinned as
+                # history by `tests/test_deadline.py::
+                # test_peer_verdict_gate_verified_review_after_the_deadline_holds_pending_the_gate`
+                # and confirmed via the pre-named contradiction petition
+                # -- which is exactly the defect H.5 closes. This wave
+                # chooses mechanism (b): conclude on review's own
+                # verdict alone, with the gate's non-dispatch disclosed
+                # in the record as a named residual
+                # (`verdictGateResidual`) rather than as a null verdict.
+                # Mechanism (a) -- running the gate inside the same
+                # boundary -- would need merging two genuinely separate
+                # blind hat calls (review, then the peer gate) into one
+                # dispatch, which does not fit this engine's existing
+                # one-hat-per-iteration shape without a much larger
+                # restructuring than this task's own scope; (b) reuses
+                # the transition table's existing fail-open shape
+                # (`verdict_gate_rejected_no_approach_left` already
+                # concludes rather than holding hostage once ITS OWN
+                # budget is spent) and costs one new declared edge.
+                self._advance(
+                    "review", "finishing",
+                    "verified_peer_verdict_gate_deferred_past_deadline")
+                self.run.emit("signal", signal="VERIFIED")
+                residual = {
+                    "gate": "peer_verdict_gate",
+                    "reason": (
+                        "the run's own deadline passed while review "
+                        "was still in flight, before the peer verdict "
+                        "gate could be dispatched; review's own "
+                        "verified verdict decided the outcome instead "
+                        "of holding the run with a null verdict"),
+                    "recordedAt": utcnow(),
+                }
+                self.run.emit("verdict_gate_deferred_past_deadline",
+                             approach=approach,
+                             reason=residual["reason"])
+                self._finish(
+                    "succeeded", self._review_success_verdict_label(),
+                    verdictGateResidual=residual,
+                    **self._unconsumed_steering_patch())
+                return ("done", "succeeded")
+            self._advance("review", "verdict_gate",
+                         "verified_peer_verdict_gate_enabled")
+            return ("advance", "verdict_gate",
+                    "verified_peer_verdict_gate_enabled")
+        self._advance("review", "finishing", "verified")
+        self.run.emit("signal", signal="VERIFIED")
+        self._finish("succeeded", self._review_success_verdict_label(),
+                    **self._unconsumed_steering_patch())
+        return ("done", "succeeded")
+
+    def _run_rejection_ladder(
+        self, judge: str, approach: int, findings_list: list[dict] | None, *,
+        signature: str | None = None, reviewer_escalation: bool = False,
+        cure_preview: dict | None = None,
+    ) -> tuple | None:
+        """v0.36 requirement B: the ONE rejection ladder, used by review
+        (`judge="review"`) and the peer verdict gate (`judge="verdict_gate"`)
+        alike. `ladder.decide` names the step -- budget spent -> `exhausted`;
+        every blocking finding under a stored waiver -> treated as verified
+        (returns `None`, the caller takes its own verified edge); a blocking
+        finding that is `curable: false`, the reviewer's `raise_operator_gate`
+        or this approach's cure rounds spent -> park in `awaiting_input`;
+        otherwise cure and count one round against the approach. Nothing
+        else archives an approach: a park leaves the approach unarchived and
+        a gate rejection never ends the run `failed` on the spot.
+
+        With `operator_input_needed_pause: false` (or the one-shot proceed a
+        bare unpause recorded) the park resolves at once with the outcome an
+        unanswered park takes: a reviewer escalation with rounds left cures
+        now; every other park archives and replans while an approach is left.
+        """
+        review = judge == "review"
+        park_reason = ("operator_input_needed" if review
+                       else "verdict_gate_operator_input_needed")
+        blocking = [f for f in (findings_list or [])
+                    if f.get("severity") == "blocking"]
+        curable = (self._review_rejection_curable_ignoring_ceiling(approach)
+                   if review
+                   else self._gate_rejection_curable_ignoring_ceiling(approach))
+        rounds_spent = self._cure_pass_ceiling_spent(approach)
+        waivers = self.run.waiver_entries()
+        probe = ladder.decide(
+            budget_left=self.budget_left(), blocking=blocking,
+            waivers=waivers, incurable=not curable,
+            reviewer_escalation=reviewer_escalation,
+            rounds_spent=rounds_spent)
+        if probe.step == ladder.STEP_EXHAUSTED:
+            self._budget_exhausted_tail = True
+            return ("tail",)
+        if probe.step == ladder.STEP_WAIVED:
+            self.run.emit("rejection.waived", judge=judge, approach=approach,
+                          findings=blocking)
+            return None
+        # A bare unpause of this exact park recorded a one-shot proceed for
+        # its rejection signature: spend it now, before any step is chosen,
+        # so a later same-signature rejection parks afresh.
+        proceeded = self._take_matching_no_ruling_proceed(
+            park_reason, signature)
+        if proceeded:
+            reviewer_escalation = False
+        decision = ladder.decide(
+            budget_left=True, blocking=blocking, waivers=waivers,
+            incurable=not curable, reviewer_escalation=reviewer_escalation,
+            rounds_spent=rounds_spent)
+        if not review:
+            self.run.update_status(gateRejectionEnding=self._gate_rejection_ending(
+                approach, decision.step == ladder.STEP_CURE))
+        if decision.step == ladder.STEP_PARK:
+            if proceeded or not self.cfg.operator_input_needed_pause:
+                return self._rejection_unanswered_outcome(
+                    judge, approach, decision.trigger, curable=curable,
+                    rounds_spent=rounds_spent, signature=signature)
+            replan_available = approach < self.cfg.max_approaches
+            if review:
                 self._pause_and_escalate_operator_input_needed(
                     approach, findings_list, replan_available, signature,
-                    cure_preview=cure_preview)
-                self._advance("review", "paused", "operator_input_needed")
-                return ("advance", "paused", "operator_input_needed")
-            # Task 017 (PRD requirement A.3, #224): trigger condition 2 --
-            # a cure pass that would re-open already-`validated` tasks
-            # (`state.cure_pass_preview`, task 005's own pure predicate)
-            # holds for an operator instead of silently re-opening the
-            # ladder tasks 002-008 measured going `validated -> pending`
-            # four times in the reference run. Shares ONE discretionary
-            # gate per approach with trigger condition 3 below
-            # (`_discretionary_gate_available`/`_spend_discretionary_gate`)
-            # -- condition 1's own `operator_input_needed` gate further
-            # below is UNBUDGETED and never reads this counter. A cure pass
-            # that reopens nothing (the ordinary, explicitly-NOT-a-trigger
-            # case: findings that only insert fresh cure/re-take tasks)
-            # never even calls `_spend_discretionary_gate` -- the budget is
-            # untouched for the not-a-trigger case, exactly as required.
-            # Gated on the SAME `operator_input_needed_pause` flag condition
-            # 1 already reads (task 014) -- this pauses under the identical
-            # `operator_input_needed` pauseReason, so the ONE flag that lets
-            # an operator opt out of that whole pause family (`ralphctl
-            # start --no-operator-input-needed-pause`) opts out of this
-            # trigger too. Trigger condition 3 below is a SEPARATE
-            # pauseReason (`rejected_repeated_signature`) and reads no such
-            # flag, unchanged from task 016.
-            # Cure task cure-01-03 (PRD requirement A.6, F03): the
-            # reviewer's own request (read once, above) is a fresh,
-            # unbudgeted, per-verdict decision, exactly like condition 1's
-            # own `operator_input_needed` gate further below -- it never
-            # spends the discretionary gate by itself, and it fires even
-            # when this cure pass would reopen nothing at all (the
-            # explicitly-NOT-a-trigger case F03 names). The mechanical
-            # trigger keeps its own precedence and its own budget spend
-            # exactly as before; the two conditions are independent ORs,
-            # never mutually exclusive, so a verdict that happens to match
-            # both still only pauses once.
-            # Cure task cure-01-02-3 (PRD requirement A.5, #224): the
-            # reviewer's own request is a fresh per-verdict decision
-            # against every OTHER signature, but it is not a second door
-            # into the SAME ruling's already-spent re-park -- a rejection
-            # whose signature matches a ruling that already spent its one
-            # re-park (`ruling_matches_this_rejection and ruling_re_park_
-            # exhausted`) proceeds here exactly as it would with the field
-            # absent, even though the reply repeats `raise_operator_gate:
-            # true`. A rejection on a genuinely different signature (no
-            # match, or a match that has not yet spent its re-park -- the
-            # latter already returned above, at `mechanical_ruled_park_
-            # due`) is untouched.
-            # Task 004 (v0.24 PRD requirement J.1, A.5, #224): the SAME
-            # door, for the MECHANICAL reopen trigger. cure-01-02-3 above
-            # closed the reviewer's own field as a second way into an
-            # already-spent ruling re-park, but left trigger condition 2's
-            # mechanical gate open: a re-rejection on a ruled signature
-            # whose one re-park is spent, arriving while THIS approach's
-            # shared discretionary gate is still UNSPENT (a ruling filed
-            # against a signature whose first re-park went through
-            # `mechanical_ruled_park_due`, which spends no gate at all --
-            # or any fresh approach, since `discretionaryGateSpent` is
-            # keyed per approach while `rulingReparked` is not), paused a
-            # SECOND time under the identical `operator_input_needed`
-            # pauseReason and spent the gate doing it -- observed as
-            # `('advance', 'paused', 'operator_input_needed')` with
-            # `discretionaryGateSpent {1: True}` where A.5 requires "the
-            # second rejection on the same ruling to proceed" (the v0.23
-            # review's own `test_A5_second_ruled_rejection_cannot_use_
-            # unspent_reopen_gate`, now tracked in
-            # `tests/test_ruling_re_park_bound.py`). A.5's own text is a
-            # "one-re-park-per-ruling refusal on a re-rejection the ruling
-            # already addressed" (`docs/roadmap.md`'s v0.23 block), and
-            # that bound is on the RE-PARK, not on one branch's route to
-            # it: the ruling decision already pre-empts this very branch
-            # while it is unspent, so once it IS spent this rejection
-            # proceeds to the ordinary cure pass exactly as an unruled one
-            # would -- and the gate it could not use stays unspent for a
-            # genuinely different rejection later.
-            ruling_bound_spent_here = (
-                ruling_matches_this_rejection and ruling_re_park_exhausted)
-            reviewer_requested_gate_applies = (
-                reviewer_requested_gate and not ruling_bound_spent_here)
-            mechanical_reopen_trigger = (
-                self.cfg.operator_input_needed_pause
-                and cure_preview["reopenedTaskIds"]
-                and not ruling_bound_spent_here
-                and not no_ruling_proceed_consumed
-                and self._discretionary_gate_available(approach))
-            if reviewer_requested_gate_applies or mechanical_reopen_trigger:
-                if mechanical_reopen_trigger:
-                    self._spend_discretionary_gate(approach)
-                replan_available = approach < self.cfg.max_approaches
-                self._pause_and_escalate_operator_input_needed(
-                    approach, findings_list, replan_available, signature,
-                    cure_preview=cure_preview,
-                    reviewer_escalation=reviewer_requested_gate_applies)
-                self._advance("review", "paused", "operator_input_needed")
-                return ("advance", "paused", "operator_input_needed")
+                    cure_preview=cure_preview, trigger=decision.trigger,
+                    reviewer_escalation=(
+                        decision.trigger == ladder.TRIGGER_REVIEWER_ESCALATION))
+            else:
+                self._pause_and_escalate_gate_operator_input_needed(
+                    approach, findings_list or [], replan_available,
+                    all_curable=curable, trigger=decision.trigger)
+            self._advance(judge, "paused", park_reason)
+            return ("advance", "paused", park_reason)
+        return self._rejection_cure_outcome(judge, approach)
+
+    def _rejection_cure_outcome(self, judge: str, approach: int) -> tuple:
+        """Ladder step 5: insert the cure tasks, count one round, go to the
+        worker over the SAME, unarchived approach."""
+        if judge == "review":
             self._take_cure_pass(approach)
-            self._advance("review", "cure", "rejected_curable_pass_available")
-            return ("advance", "cure", "rejected_curable_pass_available")
-        # Task 011 (PRD requirement D.1, #142): on the FINAL approach, a
-        # rejection whose blocking findings are ALL curable but whose one
-        # cure pass for this approach is already spent (the branch just
-        # above already took it while it was still available) must not
-        # end the run `failed` on paperwork a fresh approach cannot even
-        # be granted to fix -- checked AFTER the cure-pass branch (so a
-        # still-available cure pass always wins, requirement D.1's own
-        # "if a cure pass is available, take it") and BEFORE the ordinary
-        # archive/replan-or-fail below, so the approach is never archived
-        # on this branch (`resume` re-reviews the SAME approach).
-        #
-        # Task 004 (PRD requirement D.1, finding 4): the target is the
-        # dedicated `paused` step state, not a `review -> review` self-
-        # loop -- `_step_paused` parks the run on the same `self._pause`
-        # `asyncio.Event` this self-loop always relied on, then lands back
-        # on `review` over the SAME approach once resumed.
-        if (approach == self.cfg.max_approaches
-                and self._review_last_approach_curable_rejection(approach)):
-            self._pause_and_escalate_last_approach_rejection(approach)
-            self._advance("review", "paused", "rejected_last_approach")
-            return ("advance", "paused", "rejected_last_approach")
-        # Task 016 (PRD requirement E.5, #190): a findings-channel rejection
-        # whose own blocking-clause signature repeats the IMMEDIATELY
-        # PRECEDING approach's own rejection signature pauses the run
-        # (existing pause machinery, approach left unarchived) instead of
-        # spending -- and, on this wall, almost certainly losing -- a fresh
-        # approach on the identical wall. Checked AFTER every other
-        # rejection edge above (an incurable, curable-with-a-cure-pass, or
-        # last-approach-curable rejection keeps its own precedence exactly
-        # as it already does over the ordinary archive/replan below).
-        #
-        # Cure task cure-01-03 (PRD requirement F.1, definition of done 12,
-        # #198): this used to be guarded by `approach < self.cfg.max_
-        # approaches`, on the theory that the budget ceiling's own
-        # `rejected_no_approach_left` tail below already ends the run
-        # without an approach left to protect. That reasoning does not
-        # hold: the guard did not merely skip the ADDED protection, it
-        # skipped the check (and the signature *record*) entirely on the
-        # run's own LAST approach, so the second of two identical
-        # findings-channel rejections at `max_approaches=2` fell straight
-        # through to `_archive_approach`/`rejected_no_approach_left`
-        # (`("tail",)`, approach 02 archived, no pause, no notification)
-        # instead of pausing on the repeated signature the way every
-        # earlier approach already does. Requirement F.1's own text names
-        # no last-approach exemption for the second-rejection pause, so the
-        # check (and the record it depends on for the NEXT rejection) now
-        # runs unconditionally, before the archive/replan-or-fail tail.
-        # Task 015 (PRD requirement F.1, #198): `findings_list`/`signature`
-        # were already read once, above (task 017, PRD requirement A.3,
-        # #224 -- trigger condition 2's own preview needed them before this
-        # point ever runs), off the SAME channel read
-        # `_review_findings_channel()`/`_review_rejection_signature` this
-        # branch always used -- never a second, possibly different read.
-        #
-        # Task 017 (PRD requirement A.3, #224)/Task 003 (F01): `repeated_
-        # signature` was already computed once, above -- before the
-        # cure-pass branch -- and, together with `_discretionary_gate_
-        # available`, already returned there whenever it matched with the
-        # shared gate still unspent. Reaching this point means either it
-        # never matched at all, or it matched with the gate already spent
-        # (by condition 2 inside the cure-pass branch above, or by an
-        # earlier rejection over the same approach) -- in the latter case
-        # this falls through to the ordinary archive/replan tail below
-        # instead of pausing a second time, the shared budget being ONE
-        # discretionary gate per approach, not one per trigger.
-        # `_repeated_rejection_signature` itself, and its own persisted
-        # `rejectionSignatures` record, are unchanged: a match the gate
-        # happens to refuse is still recorded exactly as before, so the
-        # NEXT approach's own first rejection still compares against it.
-        #
-        # Cure task cure-01-02 (PRD requirement A.5, #224): a ruling
-        # addressing this rejection's own signature, not yet spent, still
-        # re-parks HERE, for the one case the early gate above does not
-        # reach -- a rejection whose cure pass was not available at all
-        # (so the early gate's own `not mechanical_ruled_park_due` guard
-        # never even faced a live cure-pass branch to pre-empt).
-        if mechanical_ruled_park_due:
-            self._record_ruling_reparked(ruled["seq"])
-            replan_available = approach < self.cfg.max_approaches
-            # Cure task cure-01-03-3 (PRD requirement A.7, #224): same fix
-            # as the sibling `mechanical_ruled_park_due` branch above --
-            # `cure_preview` was left `None` here too, so a ruled-signature
-            # re-park's own `operator_escalation` event omitted all six
-            # A.7 fields (`test_A7_ruled_signature_repark_payload_is_
-            # complete`). Passed through now, unconditionally, exactly as
-            # every other `operator_input_needed`-family pause on this
-            # rejection already does.
-            self._pause_and_escalate_operator_input_needed(
-                approach, findings_list, replan_available, signature,
-                cure_preview=cure_preview)
-            self._advance("review", "paused", "operator_input_needed")
-            return ("advance", "paused", "operator_input_needed")
-        # Task 014 (PRD requirement A.1, #224): the pause-before-archive
-        # gate itself -- checked LAST among the rejection edges, after every
-        # other special-case pause above keeps its own precedence exactly
-        # as documented at each of their own call sites, and strictly
-        # BEFORE `_record_rejection_signature`/`_archive_approach`/
-        # `_write_composite_prd` below ever run. ON by default
-        # (`JobConfig.operator_input_needed_pause`); `ralphctl start
-        # --no-operator-input-needed-pause` restores the pre-014 behaviour
-        # of archiving immediately. Unbudgeted (PRD A.3 trigger condition
-        # 1, "an approach can only be archived once") -- unlike the
-        # discretionary gate A.3/A.7 add later for the OTHER two trigger
-        # conditions, this one is not bounded per approach or per run: an
-        # operator gets exactly one chance to answer before EVERY archive,
-        # on every approach, including the run's last. Task 016 (PRD
-        # requirement A.5, #224) narrows that "unbounded" claim in exactly
-        # ONE case: a rejection whose own signature matches a ruling the
-        # operator already filed against THIS approach's recorded
-        # signature gets exactly one re-park for THAT ruling, never two --
-        # see the re-park block just below, which is what actually decides
-        # whether this branch fires or falls through to the ordinary
-        # archive/replan tail.
-        # Task 016 (PRD requirement A.6, #224): the reviewer's own
-        # OPTIONAL escalation request -- read once, here, from THIS
-        # verdict's own payload (`_review_reviewer_requested_operator_
-        # gate`'s own docstring names absence as the backward-compatible
-        # default). Combined with the mechanical flag below, never a
-        # second independent pause branch.
-        # Task 016 (PRD requirement A.5, #224, #224's resolved tension 2):
-        # bounded at one re-park per ruling -- `engine/redact.py`'s own
-        # documented lesson, "the bound has to be mechanical, not
-        # advisory." `_ruling_honoured_for_approach` (task 015's own
-        # reader) names the newest ruling addressing THIS approach's
-        # recorded rejection signature; when this FRESH rejection's own
-        # signature is that SAME signature, the ruling the operator just
-        # filed is the one review just re-rejected against, and this
-        # mechanical gate below re-parks for it exactly once
-        # (`_ruling_already_reparked`/`_record_ruling_reparked`, keyed on
-        # the ruling's own `seq` -- a fresh ruling filed later against the
-        # identical signature is a DIFFERENT ruling and earns its own
-        # fresh re-park). A second such rejection on the SAME ruling
-        # proceeds to the ordinary archive/replan tail below instead of
-        # re-parking again. A reviewer-requested gate (just above) is a
-        # fresh, per-verdict decision and is never subject to this bound.
-        #
-        # Cure task cure-01-02 (PRD requirement A.5, #224): `ruled`/
-        # `ruling_matches_this_rejection`/`ruling_re_park_exhausted` are NOT
-        # recomputed here any more -- they were already computed once,
-        # above (right after `cure_preview`), so the cure and repeated-
-        # signature branches above could consult the SAME decision this
-        # tail's own combined check below still reads. By the time control
-        # reaches here, either the ruling never matched this rejection at
-        # all, or it did and was ALREADY spent before this call (never
-        # inside it -- either earlier branch above would have returned),
-        # so re-reading them fresh here would only ever reproduce the
-        # identical values already held.
-        # Task 017 (PRD requirement A.3, #224): `repeated_signature` (read
-        # just above, for trigger condition 3's own shared-gate branch) also
-        # bounds THIS branch, and it is the one place where the "condition 1
-        # is unbudgeted" rule yields: a rejection that matched trigger
-        # condition 3 and was refused its pause because the approach's ONE
-        # discretionary gate is already spent must not then take condition
-        # 1's gate for the very same rejection. The budget is one
-        # discretionary gate per approach for conditions 2 and 3 TOGETHER
-        # (PRD A.3, "conditions 2 and 3 compete for one discretionary gate
-        # per approach"), so without this a spent condition-3 match fell
-        # straight through into an unbudgeted condition-1 pause and an
-        # approach paid for two gates -- the shared budget would have been
-        # a no-op under the default-enabled flag, observable as two
-        # `operator_escalation` events for one approach's condition-2-then-
-        # condition-3 pair. A rejection that never matched condition 3 (the
-        # ordinary case: a fresh blocking-clause signature, or none at all)
-        # is untouched and still raises condition 1's gate however many
-        # times it happens over an approach, spent discretionary budget or
-        # not. SPEC.md's own `operator_escalation` row already states this
-        # tail ("the repeated signature recorded and the approach archived/
-        # replanned"). A.6's reviewer-requested gate is a fresh per-verdict
-        # decision and, exactly as it already overrides the flag, it
-        # overrides this too -- EXCEPT for the one case cure task
-        # cure-01-02-3 (PRD requirement A.5, #224) fixes: a rejection whose
-        # signature matches a ruling that already spent its one re-park.
-        # That bound is mechanical, not advisory (`engine/redact.py`'s own
-        # documented lesson), so the reviewer's own optional field cannot
-        # buy the SAME ruling a second re-park just by repeating `raise_
-        # operator_gate: true` on the identical rejection -- see the
-        # matching guard on `reviewer_requested_gate_applies` above, for
-        # trigger condition 2. A rejection on a different signature (no
-        # match at all) is untouched: `reviewer_requested_gate` there is
-        # still a fresh, unbounded, per-verdict decision.
-        reviewer_requested_gate_applies = reviewer_requested_gate and not (
-            ruling_matches_this_rejection and ruling_re_park_exhausted)
-        pause_before_archive_due = reviewer_requested_gate_applies or (
-            self.cfg.operator_input_needed_pause
-            and not ruling_re_park_exhausted
-            and not repeated_signature)
-        # Task 009 (PRD requirement C.2, #274): a bare `ralphctl unpause`
-        # of THIS exact pause, with no ruling filed against it, recorded a
-        # one-shot 'proceed' for this rejection's own signature
-        # (`LoopSupervisor.resume`'s `_record_unpaused_no_ruling_proceed`).
-        # `no_ruling_proceed_consumed` (spent above, before any edge was
-        # chosen) is what stops the pause/re-review/re-park loop #274
-        # named: the operator already answered once, so this rejection
-        # takes the archive-and-replan (or finish) edge instead of parking
-        # again. A DIFFERENT signature never matches, so it still pauses.
-        if pause_before_archive_due and not no_ruling_proceed_consumed:
-            if ruling_matches_this_rejection and not ruling_re_park_exhausted:
-                self._record_ruling_reparked(ruled["seq"])
-            replan_available = approach < self.cfg.max_approaches
-            # Cure task cure-01-04 (PRD requirement A.7, F04): this branch
-            # is the plain archive-before-pause edge (condition 1) and the
-            # reviewer-requested gate taken with no cure pass available --
-            # F04 named both as needing the SAME six-item payload/hub link
-            # the driven discretionary gate already carried, so `cure_
-            # preview` (already computed once, above, for every rejection)
-            # is passed here too, never left `None` -- an unanswered
-            # archive/reviewer pause is exactly the moment an operator
-            # needs the predicted reopen/spend/link, whether or not the
-            # mechanical trigger itself fired.
-            self._pause_and_escalate_operator_input_needed(
-                approach, findings_list, replan_available, signature,
-                cure_preview=cure_preview,
-                reviewer_escalation=reviewer_requested_gate_applies)
-            self._advance("review", "paused", "operator_input_needed")
-            return ("advance", "paused", "operator_input_needed")
-        self._record_rejection_signature(approach, signature)
+            edge = "rejected_curable_pass_available"
+        else:
+            self._take_gate_cure_pass(approach)
+            edge = "verdict_gate_rejected_curable_pass_available"
+        self._advance(judge, "cure", edge)
+        return ("advance", "cure", edge)
+
+    def _rejection_unanswered_outcome(
+        self, judge: str, approach: int, trigger: str | None, *,
+        curable: bool, rounds_spent: bool, signature: str | None,
+    ) -> tuple:
+        """What a park resolves to when nobody is asked: a reviewer
+        escalation over curable findings with rounds left cures now; any other
+        park archives the approach and replans while one is left (the last
+        approach ends the run the way it always has)."""
+        if (trigger == ladder.TRIGGER_REVIEWER_ESCALATION and curable
+                and not rounds_spent):
+            return self._rejection_cure_outcome(judge, approach)
+        if judge == "review":
+            self._record_rejection_signature(approach, signature)
         self._archive_approach(approach)
         self._write_composite_prd(approach)
+        prefix = "" if judge == "review" else "verdict_gate_"
         if approach < self.cfg.max_approaches:
-            self._advance("review", "replan", "rejected_approach_left")
-            return ("advance", "replan", "rejected_approach_left")
-        self._advance("review", "finishing", "rejected_no_approach_left")
+            edge = f"{prefix}rejected_approach_left"
+            self._advance(judge, "replan", edge)
+            return ("advance", "replan", edge)
+        # No approach left: the run holds `exhausted` (approaches) -- resumable
+        # with `--approaches +N` -- rather than ending `failed`.
+        self._terminal_reason_note = (
+            f"every approach is spent ({approach}/{self.cfg.max_approaches}) "
+            f"and the {judge.replace('_', ' ')} rejection was not answered")
+        self._approaches_exhausted_tail = True
+        self._advance(judge, "finishing", f"{prefix}rejected_no_approach_left")
         return ("tail",)
 
     async def _step_cure(self) -> tuple:
@@ -14821,7 +14289,6 @@ class LoopSupervisor:
         Cure task cure-01-04 (v0.24 requirement D.2, #169): a budget
         check BEFORE the park, missing until now. `_pause_and_escalate_*`
         (whichever one fired -- `operator_input_needed`,
-        `rejected_last_approach`, `rejected_repeated_signature`,
         `review_contract_unrepaired`'s and `review_findings_unusable`'s
         own escalation writes) already recorded `pauseReason` and
         notified BEFORE `_step_review`/`_step_worker` ever advanced here,
@@ -15258,128 +14725,6 @@ class LoopSupervisor:
                       blockingAfter=blocking_after, passNumber=new_count)
         return inserted
 
-    def _review_last_approach_curable_rejection(self, approach: int) -> bool:
-        """Task 011 (PRD requirement D.1, #142): does this rejection,
-        already established to be on the FINAL approach
-        (`approach == self.cfg.max_approaches`, checked by the caller), and
-        already established to have exhausted this approach's own cure
-        pass (`_review_cure_pass_available` already returned `False`, also
-        checked by the caller, ahead of this call), deserve the `rejected_
-        last_approach` pause-and-escalate edge rather than falling through
-        to the ordinary archive/`rejected_no_approach_left` branch? True
-        only when a structured findings channel exists (`_review_
-        findings`, `None` falls back to the ordinary path exactly like
-        `_review_incurable_rejection`/`_review_cure_pass_available` already
-        do), the findings actually compute to `"rejected"` (`findings.
-        compute_verdict`), AND every blocking finding in it is curable
-        (`findings.all_blocking_findings_curable` -- requirement D.2's own
-        complement: ANY `curable: false` blocking finding here means this
-        returns `False` and the caller falls through to `rejected_no_
-        approach_left` -> `failed` instead, exactly as it does today).
-        """
-        findings_list = self._review_findings()
-        if findings_list is None:
-            return False
-        if findings.compute_verdict(findings_list) != "rejected":
-            return False
-        return findings.all_blocking_findings_curable(findings_list)
-
-    def _last_approach_rejection_escalation_text(
-        self, approach: int, blocking: list[dict],
-        cure_pass_ceiling_spent: bool = False,
-    ) -> str:
-        """The operator-facing escalation body for a `rejected_last_
-        approach` pause -- the same shape as `_incurable_rejection_
-        escalation_text` (each blocking finding plus the exact `ralphctl
-        amend` invocation that would resolve it), worded for the case this
-        edge actually covers: every finding IS curable, but there is no
-        approach budget left to spend a fresh worker pass on them, so the
-        run pauses for an operator ruling instead of failing on paperwork.
-
-        `cure_pass_ceiling_spent` (the same predicate `_pause_and_escalate_
-        operator_input_needed` computes) appends `_cure_pass_ceiling_grant_
-        note`'s line when the run-wide ceiling is what refuses the cure
-        pass: a ceiling grant followed by `ralphctl unpause` takes the cure
-        edge over this same approach.
-        """
-        lines = [
-            f"Run {self.cfg.run_id} approach {approach}: review rejected "
-            "this, the LAST available approach, and every blocking finding "
-            "is curable -- but this approach's own cure pass is already "
-            "spent and there is no fresh approach left to grant. The run "
-            "has been paused (existing pause machinery) rather than ended "
-            "`failed` on paperwork; "
-            + self._ruling_then_unpause_escalation_sentences(),
-            "",
-        ]
-        for index, finding in enumerate(blocking, start=1):
-            lines.append(f"Finding {index} (blocking, curable):")
-            lines.append(f"  clause: {finding.get('clause', '')}")
-            lines.append(f"  evidence: {finding.get('evidence', '')}")
-            # Cure task cure-01-02 (PRD requirement A.1, #269): the full
-            # text keeps each finding's own `cured_when` verbatim beside
-            # `clause`/`evidence`, the same as the operator_input_needed/
-            # repeated-signature builders -- SPEC.md 4.6 names it for all
-            # four digested reasons. Rendered only when the finding
-            # carries one (an incurable finding may have none).
-            cured_when = finding.get("cured_when")
-            if isinstance(cured_when, str) and cured_when.strip():
-                lines.append(f"  cured_when: {cured_when}")
-            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
-            lines.append("")
-        if cure_pass_ceiling_spent:
-            lines.append(self._cure_pass_ceiling_grant_note(
-                replan_available=False))
-        return "\n".join(lines).rstrip() + "\n"
-
-    def _pause_and_escalate_last_approach_rejection(self, approach: int) -> None:
-        """Task 011 (PRD requirement D.1, #142): pause the run through the
-        EXISTING pause machinery, generalising `_pause_and_escalate_
-        incurable_rejection` to this edge's own reason -- same seam
-        (`self.pause()`, `self.notifier`, an `operator_escalation` event
-        always emitted to `events.jsonl` regardless of whether a notifier
-        is wired in), just a different `reason` and escalation body.
-
-        Cure task cure-01-02 (PRD requirement A.1/A.2, #269, review probe
-        `test_all_finding_escalations_are_evidence_free_digests[last_
-        approach]`): the `operator_escalation` EVENT's own `escalation`
-        field keeps this FULL text -- every blocking finding's `clause`/
-        `evidence`/`resolve with:` invocation, unedited -- but the
-        notification actually POSTED goes through the SAME evidence-free
-        `_operator_escalation_digest_text` digest `operator_input_needed`/
-        `rejected_repeated_signature` already use, never the full text
-        directly: this edge's own blocking findings still carry a real
-        `evidence` clause (the finding IS curable -- only the cure pass is
-        spent), so posting `text` unbounded/un-digested is exactly the
-        #269 incident this digest exists to prevent, reason or no reason.
-        """
-        findings_list = self._review_findings() or []
-        blocking = [f for f in findings_list if f.get("severity") == "blocking"]
-        cure_pass_ceiling_spent = (
-            self._review_rejection_curable_ignoring_ceiling(approach)
-            and self._cure_pass_ceiling_spent())
-        text = self._last_approach_rejection_escalation_text(
-            approach, blocking, cure_pass_ceiling_spent)
-        self.run.emit("operator_escalation", approach=approach,
-                      reason="rejected_last_approach", findings=blocking,
-                      escalation=text)
-        # Task 036 (requirement D.1/D.2, #142): the reason argument is what
-        # makes this pause observable from the host -- status.json carries
-        # `state: "paused"` / `pauseReason: "rejected_last_approach"` from
-        # this moment until an operator's `resume` clears it. The edge name
-        # and the `pauseReason` are deliberately the same string: the
-        # `operator_escalation` event above and the persisted status agree
-        # without a second vocabulary to map between.
-        self._park_for_input(
-            reason="rejected_last_approach", judge="review",
-            trigger="cure_rounds_spent", blocking=blocking, approach=approach)
-        if self.notifier is not None:
-            digest = self._operator_escalation_digest_text(
-                "rejected_last_approach", approach, findings_list,
-                cure_pass_ceiling_spent=cure_pass_ceiling_spent,
-                replan_available=False)
-            self._notify_escalation_delivery(digest, reason="rejected_last_approach")
-
     def _review_rejection_signature(
         self, findings_list: list[dict] | None,
         channel_errors: list[str] | None = None,
@@ -15462,253 +14807,6 @@ class LoopSupervisor:
         signatures[str(approach)] = signature
         self.run.update_status(rejectionSignatures=signatures)
 
-    def _repeated_rejection_signature(
-        self, approach: int, signature: str | None
-    ) -> bool:
-        """Task 016 (PRD requirement E.5, #190): does THIS rejection's own
-        signature equal the IMMEDIATELY PRECEDING approach's recorded
-        rejection signature (`rejectionSignatures[str(approach - 1)]`)?
-        `None` never matches, including another `None` -- a content-free
-        rejection (no channel, or an empty blocking-clause set) never
-        falsely reads as "the same wall twice".
-        """
-        if signature is None:
-            return False
-        status = self.run.read_status()
-        signatures = status.get("rejectionSignatures") or {}
-        previous = signatures.get(str(approach - 1))
-        return previous is not None and previous == signature
-
-    def _repeated_rejection_signature_escalation_text(
-        self, approach: int, blocking: list[dict], signature: str | None,
-        channel_errors: list[str] | None = None,
-        cure_preview: dict | None = None,
-        cure_pass_ceiling_spent: bool = False,
-        replan_available: bool = True,
-    ) -> str:
-        """The operator-facing escalation body for a `rejected_repeated_
-        signature` pause -- the same shape as `_last_approach_rejection_
-        escalation_text`/`_incurable_rejection_escalation_text` (each
-        blocking finding plus the exact `ralphctl amend` invocation that
-        would resolve it), worded for the case this edge covers: the same
-        blocking-clause signature rejected the immediately preceding
-        approach too, so a fresh approach would almost certainly repeat
-        the identical wall rather than make progress on it.
-
-        Task 015 (PRD requirement F.1, #198): `channel_errors`, when
-        non-empty, IS the wall this pause is naming -- an unreadable
-        findings channel has no blocking findings to list at all
-        (`blocking` is always empty for that case), so without this the
-        escalation would show a signature and zero findings, telling the
-        operator nothing about what actually repeated. Printed instead of
-        the per-finding loop below, never alongside it -- the two cases
-        (a readable rejection with a repeating blocking-clause set, an
-        unreadable channel with a repeating error) are mutually exclusive
-        by construction (`_review_rejection_signature`).
-        Task 017 (PRD requirement A.3/A.7, #224): this pause now fires
-        ONLY as trigger condition 3's own driven discretionary gate --
-        `cure_preview` is `state.cure_pass_preview`'s own result for this
-        SAME rejection, and `_discretionary_gate_escalation_text_lines`
-        appends the six A.7 items after the per-finding listing below,
-        every time this text is built (unlike condition 1's own text
-        method, where the block is conditional -- this pause edge is
-        NEVER reached except through the shared gate now).
-        """
-        lines = [
-            f"Run {self.cfg.run_id} approach {approach}: review rejected "
-            "this with the SAME findings-channel rejection signature as "
-            f"approach {approach - 1} (PRD requirement E.5, #190) -- a "
-            "fresh approach would most likely repeat the identical wall "
-            "rather than make progress on it. The run has been paused "
-            "(existing pause machinery) instead of consuming a fresh "
-            "approach on it. Filing a ruling (`ralphctl rule "
-            f"{self.cfg.run_id} --file <ruling.md> --name <slug>`) "
-            "releases it on its own, or `ralphctl unpause "
-            f"{self.cfg.run_id}` resumes with none recorded to accept the "
-            "default.",
-            f"signature: {signature}",
-            "",
-        ]
-        if channel_errors:
-            lines.append(
-                "the findings channel itself is unreadable (PRD requirement "
-                "F.1, #198) -- the same channel error repeated:")
-            for error in channel_errors:
-                lines.append(f"  {error}")
-            lines.append("")
-        for index, finding in enumerate(blocking, start=1):
-            lines.append(f"Finding {index} (blocking):")
-            lines.append(f"  clause: {finding.get('clause', '')}")
-            lines.append(f"  evidence: {finding.get('evidence', '')}")
-            # Cure task cure-01-03-3 (PRD requirement A.7, #224): the
-            # finding's own `cured_when` text, verbatim -- the sibling
-            # `_operator_input_needed_escalation_text` already carries this
-            # beside `clause`/`evidence` (cure task cure-01-04's own fix
-            # for F04); this text omitted it (`test_A7_condition3_notifier_
-            # carries_full_finding`), the one place a curable finding's own
-            # "what resolved would look like" sentence was missing from a
-            # driven gate's delivered body even though `findings` on the
-            # event already carried it unedited.
-            lines.append(f"  cured_when: {finding.get('cured_when', '')}")
-            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
-            lines.append("")
-        if cure_preview is not None:
-            lines.append(
-                "PRD requirement A.3 trigger condition 3 (#224): this "
-                "rejection's own blocking-clause signature repeats the "
-                "previous approach's -- held for an operator instead of "
-                "spending a fresh approach on the same wall:")
-            fields = self._discretionary_gate_escalation_fields(
-                approach, cure_preview)
-            lines.extend(self._discretionary_gate_escalation_text_lines(
-                fields,
-                self._cure_pass_ceiling_grant_note(replan_available)
-                if cure_pass_ceiling_spent else None))
-        return "\n".join(lines).rstrip() + "\n"
-
-    def _pause_and_escalate_repeated_rejection_signature(
-        self, approach: int, signature: str | None,
-        cure_preview: dict | None = None, replan_available: bool = True,
-    ) -> None:
-        """Task 016 (PRD requirement E.5, #190): pause the run through the
-        EXISTING pause machinery -- the same seam `_pause_and_escalate_
-        last_approach_rejection`/`_pause_and_escalate_incurable_rejection`
-        already use (`self.pause()`, `self.notifier`, an `operator_
-        escalation` event always emitted to `events.jsonl` regardless of
-        whether a notifier is wired in -- requirement E.5's "notify" through
-        the engine's own alert path, never only through a notifier that
-        might not be configured).
-
-        Task 015 (PRD requirement F.1, #198): re-reads the channel
-        independently (`_review_findings_channel`, not `_review_
-        findings()`) so an UNREADABLE channel's own error text is
-        available to name in the escalation -- `blocking` stays empty for
-        that case (there is no findings list to draw it from), but
-        `channel_errors` fills the gap instead of leaving the operator an
-        escalation naming zero findings for zero visible reason.
-
-        Task 017 (PRD requirement A.3/A.7, #224): `_step_review` now calls
-        this ONLY once trigger condition 3's own shared discretionary gate
-        is confirmed available (and already spends it before this runs) --
-        `cure_preview` is that same rejection's `state.cure_pass_preview`
-        result, carried through so the event and text both gain the six
-        A.7 items (`_discretionary_gate_escalation_fields`), camelCase to
-        match the sibling fields already on this event line.
-
-        Cure task cure-01-02 (PRD requirement A.5, #224, F02): records
-        `signature` on `rejectionSignatures[str(approach)]`, the SAME call
-        `_pause_and_escalate_operator_input_needed` already makes before
-        returning (the sibling this pause is otherwise modelled on,
-        `_pause_and_escalate_last_approach_rejection`/`_pause_and_escalate_
-        incurable_rejection`, do not make it either -- fixing THAT gap for
-        those two edges is a separate defect, not this one's). Without it,
-        an operator ruling filed while parked on THIS pause
-        (`RunDir.add_ruling`, which resolves its own `signature` from this
-        exact map keyed on the CURRENT approach) always read back
-        unscoped -- indistinguishable from a ruling filed ahead of any
-        rejection at all -- so `_ruling_honoured_for_approach` could never
-        match a rejection whose only intercept was this branch, and a
-        ruled repeat-signature rejection fell straight through to the
-        ordinary archive/replan tail on its very next pass instead of
-        re-parking once for the ruling that addressed it.
-
-        Task 011 (v0.27 requirement C.4, #275): when this rejection's own
-        findings WERE curable ignoring the ceiling (`_review_rejection_
-        curable_ignoring_ceiling`) but the run-wide ceiling is what is
-        actually spent, the escalation TEXT still names `ralphctl budget
-        ... --cure-passes` as the lever that would change that outcome.
-
-        Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3), widened by
-        task 003 (this wave): the preview fed to both the event's A.7
-        fields and the delivered digest is zeroed (`{}`, never the real
-        nonzero `cure_preview`/`_effective_cure_preview` the caller
-        computed) exactly when `_review_cure_pass_available` says no --
-        ceiling spent, this approach's own no-progress/superset comparison
-        finding nothing new to reopen (a repeated confirmation-review
-        re-file of the SAME previously-targeted finding), OR the findings
-        were never curable AT ALL (mixed, all-incurable, a criteria-tamper
-        finding) -- `insertCount`/`taskIdsValidatedToPending` must name
-        the edge that will ACTUALLY be taken (archive-and-replan or
-        finish, `next_step` already computed below off the SAME `_review_
-        cure_pass_available` plus `replan_available`), never a cure pass's
-        own prediction (real or the findings' own "one slot per finding"
-        count) for an edge this rejection will not take. `budget --cure-
-        passes` is named in the TEXT only for the ceiling-spent cause
-        (`cure_pass_ceiling_spent` above, unaffected by this widening) --
-        raising the ceiling cannot cure a mixed/all-incurable rejection or
-        make progress where there was none, so no such note is appended
-        for either.
-
-        `replan_available` mirrors the caller's own `approach < cfg.max_
-        approaches` (default `True` -- the ordinary case, and what every
-        existing direct caller/test not yet passing it means): whether
-        this rejection's approach still has budget for a fresh replan, so
-        `next_step` below can tell an archive that replans apart from one
-        that ends the run.
-        """
-        self._record_rejection_signature(approach, signature)
-        findings_list, channel_errors = self._review_findings_channel()
-        blocking = [f for f in (findings_list or [])
-                   if f.get("severity") == "blocking"]
-        cure_pass_ceiling_spent = (
-            self._review_rejection_curable_ignoring_ceiling(approach)
-            and self._cure_pass_ceiling_spent())
-        # Task 003 (this wave): zero the preview whenever no cure pass
-        # will actually run, full stop -- `_review_cure_pass_available`
-        # already IS that answer (ceiling spent, no-progress, OR the
-        # findings were never curable at all: mixed/all-incurable/tamper).
-        # Before this task the mixed/incurable case was carved out and kept
-        # its own honest partial `cure_pass_preview` (`insertCount ==
-        # len(blocking)`, counting incurable findings as if a cure task
-        # would be inserted for each) even though a cure pass never runs
-        # for it either -- the exact same contradiction C.4 fixed for the
-        # ceiling/no-progress causes.
-        zero_preview = not self._review_cure_pass_available(approach)
-        effective_preview = (
-            {} if zero_preview
-            else self._effective_cure_preview(blocking, cure_preview))
-        text = self._repeated_rejection_signature_escalation_text(
-            approach, blocking, signature, channel_errors, effective_preview,
-            cure_pass_ceiling_spent,
-            replan_available=replan_available)
-        # Cure task cure-01-02 (PRD requirement A.1/A.7): the event's A.7
-        # fields and the POSTED digest's preview line are built off the
-        # SAME effective preview, so the notification's "tasks reopened"/
-        # "tasks inserted" numbers always agree with the escalation event
-        # it announces -- including a pause handed no `cure_preview`.
-        extra_fields = self._discretionary_gate_escalation_fields(
-            approach, effective_preview)
-        # Task 007 (v0.26, #269): the hub's parked-question payload needs to
-        # know whether, absent this pause, the run would have taken a cure
-        # pass over this approach's own blocking findings (curable, cure
-        # pass unspent -- the ordinary route this early gate pre-empted) or
-        # fallen straight to the archive/replan-or-end tail -- computed
-        # fresh here off the SAME pure predicate `_step_review`'s own
-        # cure-pass branch reads, never guessed from `cure_preview`'s
-        # reopen/insert counts alone (a curable-but-nothing-reopened
-        # rejection would misreport as "archive" under that guess). Cure
-        # task cure-01-05: on this approach's own last try, the actual
-        # fallback edge is `NEXT_STEP_FINISH`, never `ARCHIVE_AND_REPLAN`.
-        next_step = (state.NEXT_STEP_CURE_PASS
-                    if self._review_cure_pass_available(approach)
-                    else (state.NEXT_STEP_ARCHIVE_AND_REPLAN
-                          if replan_available else state.NEXT_STEP_FINISH))
-        self.run.emit("operator_escalation", approach=approach,
-                      reason="rejected_repeated_signature", findings=blocking,
-                      channelErrors=channel_errors, signature=signature,
-                      escalation=text, nextStepIfUnanswered=next_step,
-                      **extra_fields)
-        self._park_for_input(
-            reason="rejected_repeated_signature", judge="review",
-            trigger=self._input_trigger(blocking), blocking=blocking,
-            approach=approach)
-        if self.notifier is not None:
-            self._notify_escalation_delivery(self._operator_escalation_digest_text(
-                "rejected_repeated_signature", approach, findings_list,
-                effective_preview, cure_pass_ceiling_spent,
-                replan_available=replan_available),
-                reason="rejected_repeated_signature")
-
     def _approach_spend_text(self, approach: int) -> tuple[str | None, int | None]:
         """Task 017 (PRD requirement A.7, #224): the "dollars and tokens
         spent on this approach" escalation item -- read from `status.
@@ -15762,7 +14860,7 @@ class LoopSupervisor:
             return base.rstrip("/") + run_path
         return f"http://127.0.0.1{run_path}"
 
-    def _discretionary_gate_escalation_fields(
+    def _escalation_preview_fields(
         self, approach: int, cure_preview: dict
     ) -> dict:
         """Task 017 (PRD requirement A.7, #224): the six-item escalation
@@ -15831,7 +14929,7 @@ class LoopSupervisor:
             f"{unanswered_edge}.")
 
     @staticmethod
-    def _discretionary_gate_escalation_text_lines(
+    def _escalation_preview_text_lines(
         fields: dict, cure_pass_ceiling_spent_note: str | None = None,
     ) -> list[str]:
         """Task 017 (PRD requirement A.7, #224): render `_discretionary_
@@ -15872,9 +14970,9 @@ class LoopSupervisor:
         replan_available: bool = True,
     ) -> str:
         """Task 001 (PRD requirement A, #269): the notification body an
-        `operator_input_needed`/`rejected_repeated_signature` escalation
+        `operator_input_needed` escalation
         actually POSTS -- unlike the sibling `_operator_input_needed_
-        escalation_text`/`_repeated_rejection_signature_escalation_text`
+        escalation_text`
         (unchanged: still every finding's full clause/evidence/cured_when,
         still what `events.jsonl`'s own `escalation` field carries), this
         digest names each blocking finding by id and `clause` ONLY, and is
@@ -15899,7 +14997,7 @@ class LoopSupervisor:
         caller's own `operator_escalation` event built its A.7 fields from
         (`_effective_cure_preview`), so the digest's reopen/insert numbers
         agree with the event it announces; `None` reads back as all-zero/
-        `unavailable` counts through `_discretionary_gate_escalation_fields`
+        `unavailable` counts through `_escalation_preview_fields`
         (which tolerates an empty dict) rather than omitting the A.7
         preview line entirely.
         `rejected_last_approach`/`rejected_incurable` never pass a
@@ -15921,8 +15019,8 @@ class LoopSupervisor:
         order) is local to this digest; nothing else reads it back.
 
         Every reason this digest renders for waits on an operator ruling
-        (D.1's own `rejected_last_approach`/`rejected_incurable` included,
-        exactly like `operator_input_needed`/`rejected_repeated_signature`)
+        (the gate's `verdict_gate_operator_input_needed` included,
+        exactly like `operator_input_needed`)
         -- SPEC.md's own rule ("every live-run pause and escalation text
         names the two live-run levers") -- so `answer_cmd` always names
         BOTH `ralphctl rule ... --file <ruling.md> --name <slug>` and
@@ -15931,11 +15029,11 @@ class LoopSupervisor:
         (cure task cure-01-01-9, PRD A.1/A.6, D.1; DoD 1/4 -- review ran
         every one of the four through the real `/rule` route and found the
         prior, single shared phrasing false for half of them): for
-        `operator_input_needed`/`rejected_repeated_signature`,
+        `operator_input_needed`,
         `resume_if_ruling_answers_pause` releases the pause the instant
         the ruling is filed, so `rule`/`unpause` are genuinely two
         INTERCHANGEABLE single-step alternatives ("or ... to accept the
-        default"); for `rejected_last_approach`/`rejected_incurable`, that
+        default"); for `verdict_gate_operator_input_needed`, that
         same check never applies (its own reason allow-list excludes both),
         so filing `rule` alone leaves the run paused -- releasing it always
         needs a SEPARATE `unpause` afterward, whether or not a ruling was
@@ -15947,9 +15045,9 @@ class LoopSupervisor:
         findings_list = findings_list or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         residual = [f for f in findings_list if f.get("severity") == "residual"]
-        fields = self._discretionary_gate_escalation_fields(
+        fields = self._escalation_preview_fields(
             approach, cure_preview or {})
-        if reason in ("operator_input_needed", "rejected_repeated_signature"):
+        if reason == "operator_input_needed":
             answer_cmd = (
                 f"ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
                 f"<slug>, or ralphctl unpause {self.cfg.run_id} to accept "
@@ -16034,7 +15132,7 @@ class LoopSupervisor:
         the `operator_escalation` EVENT and in `events.jsonl`/`status.
         json` -- never sent here (criterion 2).
         """
-        fields = self._discretionary_gate_escalation_fields(approach, {})
+        fields = self._escalation_preview_fields(approach, {})
         header_lines = [
             f"run {self.cfg.run_id} escalation: {reason}",
             f"pauseReason: {reason}",
@@ -16088,7 +15186,7 @@ class LoopSupervisor:
         those outcomes ever happens.
 
         Task 017 (PRD requirement A.7, #224): `cure_preview`, when NOT
-        `None`, means `_discretionary_gate_escalation_fields`/`_
+        `None`, means `_escalation_preview_fields`/`_
         discretionary_gate_escalation_text_lines` append the six A.7 items
         after the ordinary per-finding listing below.
 
@@ -16109,13 +15207,15 @@ class LoopSupervisor:
         caller (a test) that wants the payload omitted.
         """
         outcome = ("replan a fresh approach" if replan_available else
-                  "end the run with no approach left")
+                  "end the run with no approach left (held as exhausted: "
+                  "approaches)")
         lines = [
             f"Run {self.cfg.run_id} approach {approach}: review rejected "
-            f"this approach. Before this task, the engine would now archive "
-            f"approach {approach} and {outcome} -- the run has been paused "
-            "instead (PRD requirement A.1, #224) so an operator can answer "
-            "before that spend happens: record a ruling "
+            f"this approach and the run is parked in awaiting_input "
+            f"instead of archiving it: a blocking finding is incurable, the "
+            f"reviewer asked for an operator, or this approach's cure rounds "
+            f"are spent. An unanswered park would archive approach "
+            f"{approach} and {outcome}. Answer it first: record a ruling "
             f"(`ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
             "<slug>`) and resume, or resume with none to let the archive "
             f"proceed (`ralphctl unpause {self.cfg.run_id}`). The approach "
@@ -16135,7 +15235,9 @@ class LoopSupervisor:
             # finding's `cured_when` is the one sentence that tells an
             # operator what "resolved" would look like, and it belongs
             # beside `clause`/`evidence`, not only inside the raw event.
-            lines.append(f"  cured_when: {finding.get('cured_when', '')}")
+            cured_when = finding.get("cured_when")
+            if isinstance(cured_when, str) and cured_when.strip():
+                lines.append(f"  cured_when: {cured_when}")
             lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
             lines.append("")
         if cure_preview is not None:
@@ -16144,9 +15246,9 @@ class LoopSupervisor:
                 "the predicted task-reopen and approach spend if this "
                 "pause is not answered (empty/zero when this pause was "
                 "not itself a cure-reopen trigger):")
-            fields = self._discretionary_gate_escalation_fields(
+            fields = self._escalation_preview_fields(
                 approach, cure_preview)
-            lines.extend(self._discretionary_gate_escalation_text_lines(
+            lines.extend(self._escalation_preview_text_lines(
                 fields,
                 self._cure_pass_ceiling_grant_note(replan_available)
                 if cure_pass_ceiling_spent else None))
@@ -16157,6 +15259,7 @@ class LoopSupervisor:
         replan_available: bool, signature: str | None = None,
         cure_preview: dict | None = None,
         reviewer_escalation: bool = False,
+        trigger: str | None = None,
     ) -> None:
         """Task 014 (PRD requirement A.1, #224): pause the run through the
         EXISTING pause machinery -- the same seam every sibling in this
@@ -16191,7 +15294,7 @@ class LoopSupervisor:
         re-asked -- `_ruling_honoured_for_approach` is the reader.
 
         Task 017 (PRD requirement A.7, #224): the event carries the same
-        six `_discretionary_gate_escalation_fields` the escalation text
+        six `_escalation_preview_fields` the escalation text
         appends for a passed `cure_preview` -- always, since task 007
         (v0.26, #269): with no `cure_preview` passed they are built off
         `_effective_cure_preview`'s own fresh walk -- camelCase to match every
@@ -16253,7 +15356,7 @@ class LoopSupervisor:
             approach, blocking, replan_available,
             cure_preview=effective_preview,
             cure_pass_ceiling_spent=cure_pass_ceiling_spent)
-        extra_fields = self._discretionary_gate_escalation_fields(
+        extra_fields = self._escalation_preview_fields(
             approach, effective_preview)
         # Task 007 (v0.26, #269): same `nextStepIfUnanswered` derivation as
         # `_pause_and_escalate_repeated_rejection_signature`'s own -- see
@@ -16280,7 +15383,7 @@ class LoopSupervisor:
                       nextStepIfUnanswered=next_step, **extra_fields)
         self._park_for_input(
             reason="operator_input_needed", judge="review",
-            trigger=self._input_trigger(
+            trigger=trigger or self._input_trigger(
                 blocking, reviewer_escalation=reviewer_escalation),
             blocking=blocking, approach=approach)
         if self.notifier is not None:
@@ -16289,36 +15392,6 @@ class LoopSupervisor:
                 effective_preview, cure_pass_ceiling_spent,
                 replan_available=replan_available),
                 reason="operator_input_needed")
-
-    def _ruling_honoured_for_approach(self, approach: int) -> dict | None:
-        """Task 015 (PRD requirement A.4, #224): does a recorded operator
-        ruling (`state.ruling_entries`, task 013's `ralphctl rule`/`POST
-        /rule`/hub textarea) carry the SAME signature `_pause_and_
-        escalate_operator_input_needed` persisted for THIS approach the
-        moment its own `operator_input_needed` pause intercepted a
-        rejection? Plain equality on the same content-derived signature
-        text `_repeated_rejection_signature` already compares elsewhere --
-        no ruling TEXT is read, parsed, or classified here, only its own
-        `signature` field, which is exactly the property the PRD text ("no
-        new... parser or classifier for ruling text") requires.
-
-        Returns the newest matching entry -- an operator may file more than
-        one ruling against the same signature, and the latest is the one
-        this fresh review pass was actually re-asked with -- or `None` when
-        either no rejection signature was ever recorded for `approach` (the
-        gate never fired, or fired with `operator_input_needed_pause`
-        disabled) or no ruling has been filed against it yet -- the common
-        "resumed with no ruling at all" case, still handled unaffected by
-        `_step_review`'s ordinary archive/replan tail.
-        """
-        status = self.run.read_status()
-        signatures = status.get("rejectionSignatures") or {}
-        signature = signatures.get(str(approach))
-        if signature is None:
-            return None
-        matches = [e for e in state.ruling_entries(self.run.root)
-                  if e.get("signature") == signature]
-        return matches[-1] if matches else None
 
     def _ruling_honoured_for_signature(self, signature: str | None) -> dict | None:
         """Task 002 (PRD finding F02): the mechanical re-park's own
@@ -16351,78 +15424,35 @@ class LoopSupervisor:
                   if e.get("signature") == signature]
         return matches[-1] if matches else None
 
-    def _ruling_already_reparked(self, ruling_seq: int) -> bool:
-        """Task 016 (PRD requirement A.5, #224): has THIS ruling (named by
-        its own `state.ruling_entries` `seq`, never by its signature --
-        the same signature may be shared by more than one ruling filed
-        against it, and each such ruling earns its OWN one-time re-park)
-        already spent the one re-park `_step_review`'s rejection ladder
-        grants it? Read from `status.json`'s own `rulingReparked` list --
-        disk, not memory, the same reasoning every sibling counter in this
-        family (`curePasses`, `rejectionSignatures`) already documents, so
-        the bound survives a resume and a fresh `LoopSupervisor` process.
+    def _ruling_honoured_for_approach(self, approach: int) -> dict | None:
+        """Task 015 (PRD requirement A.4, #224): does a recorded operator
+        ruling (`state.ruling_entries`, task 013's `ralphctl rule`/`POST
+        /rule`/hub textarea) carry the SAME signature `_pause_and_
+        escalate_operator_input_needed` persisted for THIS approach the
+        moment its own `operator_input_needed` pause intercepted a
+        rejection? Plain equality on the same content-derived signature
+        text `_repeated_rejection_signature` already compares elsewhere --
+        no ruling TEXT is read, parsed, or classified here, only its own
+        `signature` field, which is exactly the property the PRD text ("no
+        new... parser or classifier for ruling text") requires.
+
+        Returns the newest matching entry -- an operator may file more than
+        one ruling against the same signature, and the latest is the one
+        this fresh review pass was actually re-asked with -- or `None` when
+        either no rejection signature was ever recorded for `approach` (the
+        gate never fired, or fired with `operator_input_needed_pause`
+        disabled) or no ruling has been filed against it yet -- the common
+        "resumed with no ruling at all" case, still handled unaffected by
+        `_step_review`'s ordinary archive/replan tail.
         """
         status = self.run.read_status()
-        reparked = status.get("rulingReparked") or []
-        return ruling_seq in reparked
-
-    def _record_ruling_reparked(self, ruling_seq: int) -> None:
-        """Task 016 (PRD requirement A.5, #224): persist that `ruling_seq`
-        has now spent its one re-park -- called exactly once, from
-        `_step_review`, at the moment a rejection matching that ruling's
-        own recorded signature is about to take the `operator_input_
-        needed` pause edge for it. Idempotent (a `seq` already present is
-        never appended twice), and additive: an earlier entry is never
-        removed, including across a replan that opens a fresh approach --
-        a ruling's own re-park is spent for the life of the RUN, never
-        reset per approach.
-        """
-        status = self.run.read_status()
-        reparked = list(status.get("rulingReparked") or [])
-        if ruling_seq not in reparked:
-            reparked.append(ruling_seq)
-            self.run.update_status(rulingReparked=reparked)
-
-    def _discretionary_gate_available(self, approach: int) -> bool:
-        """Task 017 (PRD requirement A.3, #224): is the ONE shared
-        discretionary gate for `approach` still unspent? Trigger
-        condition 2 (a cure pass that would re-open `validated` tasks) and
-        trigger condition 3 (a repeated rejection signature) draw from
-        this SAME per-approach budget -- whichever of them fires first in
-        an approach spends it, and the other, should it also fire later in
-        the SAME approach, falls through to its ordinary edge instead
-        (the cure pass is taken silently; the repeated signature is
-        recorded and the approach archived/replanned exactly as if no
-        signature had repeated). Condition 1's own `operator_input_needed`
-        gate is a SEPARATE, unbudgeted pause and never reads this counter
-        -- an ordinary rejection later in the SAME approach still raises
-        it even after this budget is spent.
-
-        Read from `status.json`'s own `discretionaryGateSpent` map
-        (`{"<approach>": true}`), the same disk-backed, per-approach-keyed
-        shape `curePasses`/`rejectionSignatures` already use -- a fresh
-        approach (a replan, or the run's very first) always reads `False`
-        here, because the key is written under THIS approach's own string
-        key and no other.
-        """
-        status = self.run.read_status()
-        spent = status.get("discretionaryGateSpent") or {}
-        return not spent.get(str(approach))
-
-    def _spend_discretionary_gate(self, approach: int) -> None:
-        """Task 017 (PRD requirement A.3, #224): mark `approach`'s one
-        shared discretionary gate spent -- called exactly once, from
-        whichever of trigger condition 2 or 3 fires first in this
-        approach, immediately before it pauses. Idempotent (re-marking an
-        already-spent approach is a harmless no-op) and additive: an
-        earlier approach's own entry is never touched, so a later replan's
-        fresh approach reads its OWN key back `False` via `_discretionary_
-        gate_available` above.
-        """
-        status = self.run.read_status()
-        spent = dict(status.get("discretionaryGateSpent") or {})
-        spent[str(approach)] = True
-        self.run.update_status(discretionaryGateSpent=spent)
+        signatures = status.get("rejectionSignatures") or {}
+        signature = signatures.get(str(approach))
+        if signature is None:
+            return None
+        matches = [e for e in state.ruling_entries(self.run.root)
+                  if e.get("signature") == signature]
+        return matches[-1] if matches else None
 
     def _review_reviewer_requested_operator_gate(
         self, payload: dict | None
@@ -16501,7 +15531,7 @@ class LoopSupervisor:
 
         `contractErrors` is camelCase to match `channelErrors` on the
         repeated-signature escalation above. No `_resume_point` bucket is
-        added for this reason, on precedent: `rejected_repeated_signature`,
+        added for this reason, on precedent:
         `unschedulable_dependency_cycle` and `unresolvable_dependency_edge`
         all pause with none either, so a fresh PROCESS started over a run
         that died while paused here falls to `_resume_point`'s default
@@ -16914,28 +15944,6 @@ class LoopSupervisor:
                 fault_lines)
             self._notify_escalation_delivery(digest, reason="stagnation")
 
-    def _review_incurable_rejection(self) -> bool:
-        """Task 006 (requirement B.2, #111): does the review just run
-        deserve `rejected_incurable` rather than the ordinary replan edge?
-        True only when a structured findings channel exists for this
-        review (`_review_findings`, `None` when review.md has not been
-        updated to always produce one -- nothing to check curability
-        against, so this falls back to `False`, the ordinary replan path,
-        exactly as `_review_verdict` falls back to trusting the payload's
-        own claim when no channel exists), the findings actually compute
-        to `"rejected"` (`findings.compute_verdict` -- a channel present
-        but entirely residual is not a rejection at all, so curability is
-        never asked), AND every blocking finding in it is incurable
-        (`findings.all_blocking_findings_incurable`, PRD requirement B.4:
-        asserted by review alone, no run-side input).
-        """
-        findings_list = self._review_findings()
-        if findings_list is None:
-            return False
-        if findings.compute_verdict(findings_list) != "rejected":
-            return False
-        return findings.all_blocking_findings_incurable(findings_list)
-
     def _amend_invocation_for_finding(self, finding: dict, index: int) -> str:
         """The exact `ralphctl amend` invocation an operator would run to
         waive the obligation `finding` says is violated (PRD requirement
@@ -16970,92 +15978,6 @@ class LoopSupervisor:
         reason = f"F{index}: {clause}"
         return (f"ralphctl amend {self.cfg.run_id} {slug} --waive "
                f"{shlex.quote(reason)}")
-
-    def _incurable_rejection_escalation_text(
-        self, approach: int, blocking: list[dict]
-    ) -> str:
-        """The operator-facing escalation body for a `rejected_incurable`
-        pause: each blocking finding (clause, evidence, curable) plus the
-        exact `ralphctl amend` invocation that would resolve it (requirement
-        B.2's own wording), in finding order so a reader can match one to
-        the other by position.
-        """
-        lines = [
-            f"Run {self.cfg.run_id} approach {approach}: review rejected "
-            "this approach and every blocking finding is incurable -- a "
-            "fresh approach would not change any of them. The run has "
-            "been paused (existing pause machinery); "
-            + self._ruling_then_unpause_escalation_sentences(),
-            "",
-        ]
-        for index, finding in enumerate(blocking, start=1):
-            lines.append(f"Finding {index} (blocking, incurable):")
-            lines.append(f"  clause: {finding.get('clause', '')}")
-            lines.append(f"  evidence: {finding.get('evidence', '')}")
-            # Cure task cure-01-02 (PRD requirement A.1, #269): the full
-            # text keeps each finding's own `cured_when` verbatim beside
-            # `clause`/`evidence`, the same as the operator_input_needed/
-            # repeated-signature builders -- SPEC.md 4.6 names it for all
-            # four digested reasons. Rendered only when the finding
-            # carries one (an incurable finding may have none).
-            cured_when = finding.get("cured_when")
-            if isinstance(cured_when, str) and cured_when.strip():
-                lines.append(f"  cured_when: {cured_when}")
-            lines.append(f"  resolve with: {self._amend_invocation_for_finding(finding, index)}")
-            lines.append("")
-        return "\n".join(lines).rstrip() + "\n"
-
-    def _pause_and_escalate_incurable_rejection(self, approach: int) -> None:
-        """Task 006 (requirement B.2, #111): pause the run through the
-        EXISTING pause machinery (`self.pause()` -- the same `self._pause`
-        `asyncio.Event` `POST /pause` clears, no second implementation) and
-        produce the operator escalation. `self.notifier`, when set, is
-        handed the escalation TEXT (a stub in tests; a real notifier --
-        e.g. the `telegram-notify` skill's HTTP push -- in production);
-        either way the escalation is also `emit()`ed to `events.jsonl` so
-        it is never ONLY reachable through whatever notifier is wired in.
-
-        Task 003 (this wave): the event now also carries the SAME zeroed
-        A.7 preview (`taskIdsValidatedToPending: []`, `insertCount: 0`,
-        `costSpentThisApproach`/`tokensSpentThisApproach`, `approachOfMax`,
-        `hubLink`) plus `nextStepIfUnanswered` every OTHER `operator_
-        escalation` reason that can name an edge already carries -- never
-        the earlier omission where a reader of `events.jsonl` alone (no
-        `parkedQuestion`/digest to fall back to) saw no A.7 fields at all
-        for this reason. The preview is `{}` unconditionally: an all-
-        incurable rejection never takes a cure pass, ceiling or no
-        ceiling, so `_discretionary_gate_escalation_fields(approach, {})`
-        is always the truthful reading, exactly like the peer verdict
-        gate's own mirror (`_pause_and_escalate_gate_operator_input_
-        needed`). `nextStepIfUnanswered` is always `NEXT_STEP_ARCHIVE_AND_
-        REPLAN`, never `NEXT_STEP_FINISH`: the ONLY caller of this method
-        (`_step_review`) already checked `approach < self.cfg.max_
-        approaches` before calling it, so a fresh replan is always what an
-        unanswered resume of THIS pause takes.
-        """
-        findings_list = self._review_findings() or []
-        blocking = [f for f in findings_list if f.get("severity") == "blocking"]
-        text = self._incurable_rejection_escalation_text(approach, blocking)
-        extra_fields = self._discretionary_gate_escalation_fields(approach, {})
-        self.run.emit("operator_escalation", approach=approach,
-                      reason="rejected_incurable", findings=blocking,
-                      escalation=text,
-                      nextStepIfUnanswered=state.NEXT_STEP_ARCHIVE_AND_REPLAN,
-                      **extra_fields)
-        self._park_for_input(
-            reason="rejected_incurable", judge="review", trigger="incurable",
-            blocking=blocking, approach=approach)
-        if self.notifier is not None:
-            # Cure task cure-01-02 (PRD requirement A.1/A.2, #269, review
-            # probe `test_all_finding_escalations_are_evidence_free_
-            # digests[incurable]`): the event above keeps the FULL text
-            # (every finding's `clause`/`evidence`/`resolve with:`
-            # invocation, unedited); the notifier gets the SAME
-            # evidence-free digest `operator_input_needed`/`rejected_
-            # repeated_signature` already post, never `text` itself.
-            digest = self._operator_escalation_digest_text(
-                "rejected_incurable", approach, findings_list)
-            self._notify_escalation_delivery(digest, reason="rejected_incurable")
 
     def _terminal_success_blockers(self) -> list[str]:
         """Task 013 (requirement I, #98): the ONE predicate the exit-gate

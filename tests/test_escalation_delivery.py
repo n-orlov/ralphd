@@ -63,12 +63,16 @@ def _status(root: Path) -> dict:
 
 
 def _trigger(sup):
-    """Drive the REAL `rejected_last_approach` pause + escalation path
-    (`_pause_and_escalate_last_approach_rejection`) -- the same production
-    method `tests/test_last_approach.py`'s own notifier-wiring nodes drive,
-    just called directly rather than through a full `_step_review()`."""
+    """Drive the REAL ladder park + escalation path
+    (`_pause_and_escalate_operator_input_needed`, trigger `cure_rounds_spent`
+    on the last approach) -- the same production method `tests/
+    test_last_approach.py`'s own notifier-wiring nodes drive, just called
+    directly rather than through a full `_step_review()`."""
     sup._approach = 1
-    sup._pause_and_escalate_last_approach_rejection(1)
+    sup._pause_and_escalate_operator_input_needed(
+        1, [{"severity": "blocking", "curable": True, "clause": "C.1",
+             "evidence": "still not fixed", "cured_when": "C.1 is fixed"}],
+        False, trigger="cure_rounds_spent")
 
 
 def _count_send_notification_calls(monkeypatch) -> list[int]:
@@ -136,7 +140,7 @@ def test_notifier_failing_twice_then_succeeding_delivers_once(
     status = _status(root)
     # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
     assert status["state"] == "awaiting_input"
-    assert status["pauseReason"] == "rejected_last_approach"
+    assert status["pauseReason"] == "operator_input_needed"
 
 
 def test_always_failing_notifier_is_recorded_undelivered_after_three_attempts(
@@ -176,7 +180,7 @@ def test_always_failing_notifier_is_recorded_undelivered_after_three_attempts(
 
     undelivered = _events(root, run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT)
     assert len(undelivered) == 1
-    assert undelivered[0]["reason"] == "rejected_last_approach"
+    assert undelivered[0]["reason"] == "operator_input_needed"
 
 
 class _RecordingPoster:
@@ -219,7 +223,7 @@ def test_pause_takes_effect_regardless_of_delivery_retries(tmp_path, monkeypatch
         assert poster.seen_at_first_attempt is not None
         # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
         assert poster.seen_at_first_attempt["state"] == "awaiting_input"
-        assert poster.seen_at_first_attempt["pauseReason"] == "rejected_last_approach"
+        assert poster.seen_at_first_attempt["pauseReason"] == "operator_input_needed"
 
         undelivered = _events(root, run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT)
         assert (len(undelivered) == 1) == expect_undelivered
@@ -227,7 +231,7 @@ def test_pause_takes_effect_regardless_of_delivery_retries(tmp_path, monkeypatch
 
 def test_incurable_rejection_park_is_persisted_and_escalated_before_delivery(
         tmp_path, monkeypatch):
-    """`rejected_incurable` used to be the ONE escalation site whose hold was
+    """The incurable park used to be the ONE escalation site whose hold was
     in memory only (status.json kept saying `running`); v0.36 persists it
     like every other findings park: the hold is already in force, status.json
     already says `awaiting_input` (with its `inputQuestion`) and the
@@ -256,14 +260,17 @@ def test_incurable_rejection_park_is_persisted_and_escalated_before_delivery(
 
     monkeypatch.setattr(hat_tools, "_http_post_text", failing_poster)
 
-    sup._pause_and_escalate_incurable_rejection(1)
+    sup._pause_and_escalate_operator_input_needed(
+        1, [{"severity": "blocking", "curable": False, "clause": "C.1",
+             "evidence": "needs hardware this sandbox lacks"}],
+        True, trigger="incurable")
 
     assert seen, "the notifier was never called"
     first = seen[0]
     assert first["gate_open"] is False  # the in-memory pause is already held
-    assert [e["reason"] for e in first["escalations"]] == ["rejected_incurable"]
+    assert [e["reason"] for e in first["escalations"]] == ["operator_input_needed"]
     assert first["status"].get("state") == "awaiting_input"
     assert first["status"].get("inputQuestion", {}).get("trigger") == "incurable"
 
     undelivered = _events(root, run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT)
-    assert [e["reason"] for e in undelivered] == ["rejected_incurable"]
+    assert [e["reason"] for e in undelivered] == ["operator_input_needed"]

@@ -182,12 +182,11 @@ def test_the_edge_is_also_declared_under_the_peer_verdict_gate_delta():
 
 
 def test_rejected_incurable_keeps_precedence_over_the_cure_pass(tmp_path):
-    """Requirement C.2: an all-incurable rejection still takes
-    `rejected_incurable`'s pause-and-escalate edge, never the cure pass --
-    `_step_review` checks `_review_incurable_rejection()` before
-    `_review_cure_pass_available()`."""
+    """Requirement C.2 / v0.36 requirement B: an all-incurable rejection
+    parks on the one ladder (`operator_input_needed`, trigger `incurable`),
+    never the cure pass -- the ladder's park step precedes its cure step."""
     root = tmp_path / "run"
-    sup = _supervisor(root)
+    sup = _supervisor(root, operator_input_needed_pause=True)
     sup._approach = 1
     atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": []})
 
@@ -203,7 +202,7 @@ def test_rejected_incurable_keeps_precedence_over_the_cure_pass(tmp_path):
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "review", "rejected_incurable")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup.run.read_status().get("curePasses") is None
     cure_tasks = [t for t in sup.run.read_tasks()["tasks"]
                  if t.get("origin") == "review-cure"]
@@ -454,7 +453,7 @@ def test_second_rejection_with_no_approach_left_takes_task011s_pause_edge(
     pass, never the ordinary mid-run replan edge either)."""
     root = tmp_path / "run"
     sup = _cure_once(root, approach=1, max_approaches=1,
-                    cure_pass_ceiling=1)
+                    cure_pass_ceiling=1, operator_input_needed_pause=True)
 
     still_curable = [_finding("blocking", True, "requirement C.1 (#141)",
                               "still not fixed",
@@ -467,7 +466,8 @@ def test_second_rejection_with_no_approach_left_takes_task011s_pause_edge(
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "paused", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "operator_input_needed")
+    assert sup.run.read_status()["inputQuestion"]["trigger"] == "cure_rounds_spent"
     assert sup._pause.is_set() is False  # paused, not failed
     status = sup.run.read_status()
     assert status.get("state") != "succeeded"
@@ -485,7 +485,8 @@ def test_second_rejection_with_no_approach_left_takes_task011s_pause_edge(
 
 def test_incurable_precedence_wins_on_the_second_rejection_too(tmp_path):
     root = tmp_path / "run"
-    sup = _cure_once(root, approach=1, max_approaches=3)
+    sup = _cure_once(root, approach=1, max_approaches=3,
+                     operator_input_needed_pause=True)
 
     all_incurable = [_finding("blocking", False, "requirement B (#111)",
                               "an environment fact a fresh approach and a "
@@ -496,9 +497,9 @@ def test_incurable_precedence_wins_on_the_second_rejection_too(tmp_path):
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "review", "rejected_incurable")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     # neither the cure pass counter nor the cure task set changed: the
-    # incurable branch never even reaches `_review_cure_pass_available`.
+    # ladder parks before its cure step.
     assert sup.run.read_status().get("curePasses") == {"1": 1}
     assert len(_cure_tasks(sup.run)) == 1
     events = _events(root, "approach.cure_pass")
@@ -575,7 +576,8 @@ def test_resume_mid_cure_also_keeps_the_incurable_precedence(tmp_path):
             t["status"] = "completed"
     sup1.run.write_tasks(tasks_doc)
 
-    sup2 = _supervisor_bounded(root, max_approaches=3, cure_pass_ceiling=1)
+    sup2 = _supervisor_bounded(root, max_approaches=3, cure_pass_ceiling=1,
+                               operator_input_needed_pause=True)
     sup2._approach = 1
     assert sup2._cure_passes_for_approach(1) == 1
 
@@ -587,7 +589,7 @@ def test_resume_mid_cure_also_keeps_the_incurable_precedence(tmp_path):
 
     outcome = asyncio.run(sup2._step_review())
 
-    assert outcome == ("advance", "review", "rejected_incurable")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup2.run.read_status().get("curePasses") == {"1": 1}
     assert len(_cure_tasks(sup2.run)) == 1
 
@@ -852,10 +854,13 @@ def test_a_configured_run_wide_ceiling_stops_a_repeated_reject_then_cure_cycle_a
     # approach 2 never exceeded its own ceiling
     assert sup._cure_rounds_used(2) == 2 == sup.cfg.cure_pass_ceiling
 
+    # the approach budget is what is spent: the run holds `exhausted`
+    # (`exhaustedBudget: approaches`) rather than ending `failed`.
     final_state = sup._finish_tail_unverified()
-    assert final_state == "failed"
-    assert final_state in TERMINAL_STATES
-    assert sup.run.read_status().get("state") == "failed"
+    assert final_state == "exhausted"
+    status = sup.run.read_status()
+    assert status.get("state") == "exhausted"
+    assert status.get("exhaustedBudget") == "approaches"
 
 
 # ---------------------------------------------------------------------------

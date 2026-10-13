@@ -56,6 +56,8 @@ from test_peer_plan_review_gate import (  # noqa: F401 (re-exported fixtures)
 )
 from test_peer_verdict_gate import (  # noqa: F401 (re-exported fixtures)
     TASK_1,
+    _bounded,
+    _drive_until_parked,
     _ok,
     _plan,
     _run_job,
@@ -238,23 +240,25 @@ def test_review_verified_with_residuals_then_gate_rejects_yields_two_distinguish
     root.mkdir(parents=True, exist_ok=True)
     (root / "prd.md").write_text("# test PRD\n\nDo the thing.\n")
 
-    sup, final_state = _run_job(
+    RunDir(root=root).update_status(state="starting")
+    sup = _supervisor(
         root,
         {"planning": [_plan()],
          "worker": [_worker_completes(TASK_1)],
          "review": [_review_verifies_with_a_residual_finding],
          "verdict_gate": [_verdict_gate_rejects_with_a_blocking_finding(
              "the peer independently found requirement Q unmet")]},
-        peer_verdict_gate=True, max_approaches=1)
+        peer_verdict_gate=True, max_approaches=1,
+        operator_input_needed_pause=True)
+    _bounded(_drive_until_parked(sup))
 
-    # a peer rejection is never a terminal success, budget or not -- not
-    # this test's own point, just the shape `test_peer_verdict_gate.py`
-    # already pins for a no-approach-left rejection.
-    assert final_state == "failed", sup.run.read_status()
+    # v0.36 requirement B: a peer rejection carrying a non-curable finding
+    # parks in `awaiting_input` (it is never terminal on the spot).
+    status = sup.run.read_status()
+    assert status["state"] == "awaiting_input", status
+    assert status["inputQuestion"]["judge"] == "verdict_gate"
 
-    # A.3: a non-curable last-approach rejection never archives and never
-    # writes a composite PRD -- the same absences `test_peer_verdict_
-    # gate.py`'s two mixed-findings regressions already assert.
+    # the park never archives and never writes a composite PRD.
     assert not (root / "approaches" / "01").exists()
     assert not (root / "composite-prd.md").exists()
 

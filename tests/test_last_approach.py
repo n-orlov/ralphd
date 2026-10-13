@@ -110,15 +110,12 @@ def _host_status(root: Path) -> dict:
 # Task 014 (PRD requirement A.1, #224): `cfg_defaults=False` means the bare
 # `JobConfig` default applies, and that default is now `True` for
 # `operator_input_needed_pause` -- explicitly off below, so this module's
-# own subject (the `rejected_last_approach` family, not task 014's own
-# gate) still reaches the ordinary `rejected_no_approach_left`/replan
-# outcomes it always did; task 014's own edge has its own module
-# (`tests/test_operator_input_needed_pause.py`).
+# own subject (the ladder park on the last approach) needs the park ON.
 _supervisor_review = supervisor_factory(
     run_id="task011-last-approach-pause", cfg_defaults=False,
     prd="# task 011 fixture PRD\n\nDo the thing.\n",
     status={"state": "running"}, max_approaches=1,
-    operator_input_needed_pause=False)
+    operator_input_needed_pause=True)
 
 # task 036's shape: `seed_status=False` is the crashed-episode form -- a
 # second supervisor over the SAME run dir must read whatever the previous
@@ -173,21 +170,24 @@ _supervisor_worker = supervisor_with_runner(
 # ===========================================================================
 
 
-def test_the_edge_is_declared_in_both_variants():
+def test_the_retired_last_approach_edge_is_declared_nowhere():
+    """v0.36 requirement B: the last-approach pause is a trigger
+    (`cure_rounds_spent`) of the one ladder park, `review -> paused` on
+    `operator_input_needed`."""
     for vigilant in (True, False):
-        assert transitions.is_legal("review", "review", vigilant)
         guards = transitions.guard_names("review", vigilant)
-        assert "rejected_last_approach" in guards
+        assert "rejected_last_approach" not in guards
         by_guard = {e.guard: e.target for e in
                    transitions.successors("review", vigilant)}
-        assert by_guard["rejected_last_approach"] == "paused"
+        assert by_guard["operator_input_needed"] == "paused"
 
 
-def test_the_edge_is_also_declared_under_the_peer_verdict_gate_delta():
+def test_the_retired_last_approach_edge_is_also_absent_under_the_peer_verdict_gate_delta():
     edges = transitions.successors("review", vigilant=False,
                                    peer_verdict_gate=True)
     by_guard = {e.guard: e.target for e in edges}
-    assert by_guard["rejected_last_approach"] == "paused"
+    assert "rejected_last_approach" not in by_guard
+    assert by_guard["operator_input_needed"] == "paused"
 
 
 # ===========================================================================
@@ -226,7 +226,7 @@ def test_last_approach_all_curable_with_cure_spent_pauses_and_escalates(
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "paused", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     # paused through the EXISTING pause machinery -- the same asyncio.Event
     # POST /pause's loop.pause() clears.
     assert sup._pause.is_set() is False
@@ -242,7 +242,7 @@ def test_last_approach_all_curable_with_cure_spent_pauses_and_escalates(
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
-    assert escalations[0]["reason"] == "rejected_last_approach"
+    assert escalations[0]["reason"] == "operator_input_needed"
     assert escalations[0]["approach"] == 1
     assert escalations[0]["findings"][0]["clause"] == "requirement C.1 (#141)"
     # the event's own `escalation` field keeps the FULL, un-digested text --
@@ -286,12 +286,12 @@ def test_the_review_escalation_is_emitted_to_events_jsonl_with_no_notifier(
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
 
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "paused", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
-    assert escalations[0]["reason"] == "rejected_last_approach"
+    assert escalations[0]["reason"] == "operator_input_needed"
 
 
 # ===========================================================================
@@ -341,7 +341,10 @@ def test_last_approach_first_rejection_still_takes_the_cure_pass(tmp_path, monke
 # ===========================================================================
 
 
-def test_last_approach_with_an_incurable_finding_still_fails(tmp_path):
+def test_last_approach_with_an_incurable_finding_parks_instead_of_failing(tmp_path):
+    """v0.36 requirement B (was: `rejected_no_approach_left` -> `failed`): an
+    incurable blocking finding on the last approach parks on the ladder with
+    trigger `incurable`; the run is never failed on the spot."""
     root = tmp_path / "run"
     sup = _supervisor_review(root, max_approaches=1)
     sup._approach = 1
@@ -359,27 +362,18 @@ def test_last_approach_with_an_incurable_finding_still_fails(tmp_path):
 
     outcome = asyncio.run(sup._step_review())
 
-    # `rejected_incurable` isn't reachable at all once `approach ==
-    # max_approaches` (task 006's own precedence: the incurable check is
-    # gated on `approach < max_approaches`) -- so this lands on the
-    # ordinary `rejected_no_approach_left` -> failed edge, never the pause
-    # edge this task adds.
-    assert outcome == ("tail",)
-    assert sup._pause.is_set() is True  # never paused
-    assert sup.notifier.messages == []  # never escalated
-    escalations = _events(root, "operator_escalation")
-    assert escalations == []
+    assert outcome == ("advance", "paused", "operator_input_needed")
+    assert sup._pause.is_set() is False
     status = sup.run.read_status()
-    assert status.get("state") != "succeeded"
+    assert status["state"] == "awaiting_input"
+    assert status["inputQuestion"]["trigger"] == "incurable"
+    assert status["inputQuestion"]["onTimeout"] == state_mod.INPUT_ON_TIMEOUT_EXHAUSTED
+    assert not (root / "approaches" / "01").exists()
 
 
-def test_last_approach_with_mixed_curability_still_fails(tmp_path):
-    """A blocking finding set that is neither all-curable nor all-
-    incurable (mixed) must not match either escalation edge -- it falls
-    through to the ordinary `rejected_no_approach_left` -> failed edge on
-    the last approach, exactly like it does mid-run (`rejected_approach_
-    left`, `tests/test_rejected_incurable_edge.py`'s own mixed-curability
-    case) -- one finding curable, one not."""
+def test_last_approach_with_mixed_curability_parks_instead_of_failing(tmp_path):
+    """A blocking set that is neither all-curable nor all-incurable (mixed)
+    parks as `incurable` on the last approach (v0.36 requirement B)."""
     root = tmp_path / "run"
     sup = _supervisor_review(root, max_approaches=1)
     sup._approach = 1
@@ -398,9 +392,10 @@ def test_last_approach_with_mixed_curability_still_fails(tmp_path):
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("tail",)
-    assert sup._pause.is_set() is True  # never paused
-    assert sup.notifier.messages == []  # never escalated
+    assert outcome == ("advance", "paused", "operator_input_needed")
+    status = sup.run.read_status()
+    assert status["state"] == "awaiting_input"
+    assert status["inputQuestion"]["trigger"] == "incurable"
 
 
 # ===========================================================================
@@ -431,14 +426,14 @@ def test_resume_detects_the_last_approach_pause_and_re_enters_review(
 
     sup1.runner.run = _review_rejects  # type: ignore[method-assign]
     outcome = asyncio.run(sup1._step_review())
-    assert outcome == ("advance", "paused", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup1._pause.is_set() is False
 
     # a brand-new process, no shared Python state at all -- reads
     # everything fresh off disk (`events.jsonl`, `status.json`).
     sup2 = _supervisor_review(root, max_approaches=1)
-    assert sup2._paused_awaiting_last_approach_ruling(1) is True
-    # the OTHER predicate (incurable) must not also fire for this reason.
+    assert sup2._paused_awaiting_operator_input_needed_ruling(1) is True
+    # the legacy 0.35 predicates (`rejected_incurable`) do not also fire.
     assert sup2._paused_awaiting_incurable_ruling(1) is False
 
     start_approach, skip_planning, start_step = sup2._resume_point()
@@ -470,11 +465,11 @@ def test_paused_awaiting_last_approach_ruling_is_false_once_a_new_iteration_star
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "paused", "rejected_last_approach")
-    assert sup._paused_awaiting_last_approach_ruling(1) is True
+    assert outcome == ("advance", "paused", "operator_input_needed")
+    assert sup._paused_awaiting_operator_input_needed_ruling(1) is True
 
     sup.run.emit("iteration.start", phase="review", approach=1)
-    assert sup._paused_awaiting_last_approach_ruling(1) is False
+    assert sup._paused_awaiting_operator_input_needed_ruling(1) is False
 
 
 # ===========================================================================
@@ -501,7 +496,7 @@ def _drive_the_persisted_pause_edge(root: Path) -> LoopSupervisor:
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "paused", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     return sup
 
 
@@ -516,7 +511,7 @@ def test_the_edge_persists_the_pause_to_status_json_immediately(tmp_path):
     host = _host_status(root)
     # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
     assert host["state"] == "awaiting_input"
-    assert host["pauseReason"] == "rejected_last_approach"
+    assert host["pauseReason"] == "operator_input_needed"
     # ... and it is the recorded state a second reader of the run dir sees too
     # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
     assert RunDir(root=root).read_status()["state"] == "awaiting_input"
@@ -560,12 +555,12 @@ def test_the_persisted_pause_is_recorded_before_the_escalation_is_notified(
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
     assert asyncio.run(sup._step_review()) == (
-        "advance", "paused", "rejected_last_approach")
+        "advance", "paused", "operator_input_needed")
 
     assert len(seen) == 1
     # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
     assert seen[0]["state"] == "awaiting_input"
-    assert seen[0]["pauseReason"] == "rejected_last_approach"
+    assert seen[0]["pauseReason"] == "operator_input_needed"
 
 
 # ===========================================================================
@@ -608,7 +603,7 @@ def test_a_fresh_episode_re_enters_review_over_the_same_approach(tmp_path):
     into `review` on approach 1 -- never `worker`, never `replan`."""
     root = tmp_path / "run"
     sup1 = _drive_the_persisted_pause_edge(root)
-    assert _host_status(root)["pauseReason"] == "rejected_last_approach"
+    assert _host_status(root)["pauseReason"] == "operator_input_needed"
     # the plan the paused approach worked (what makes this a *resume* of an
     # existing run dir rather than a fresh run: `_resuming_existing_run_dir`)
     state_mod.atomic_write_json(sup1.run.tasks_file, {"version": 1, "tasks": [
@@ -621,7 +616,7 @@ def test_a_fresh_episode_re_enters_review_over_the_same_approach(tmp_path):
     # still read WHY the run is parked, not just that it stopped
     # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
     assert _host_status(root)["state"] == "awaiting_input"
-    assert sup2._paused_awaiting_last_approach_ruling(1) is True
+    assert sup2._paused_awaiting_operator_input_needed_ruling(1) is True
     start_approach, skip_planning, start_step = sup2._resume_point()
     assert (start_approach, skip_planning, start_step) == (1, False, "review")
 
@@ -662,7 +657,7 @@ def test_resume_logs_the_cleared_pause_reason(tmp_path):
     sup = _drive_the_persisted_pause_edge(root)
     sup.resume()
     messages = [ev.get("message", "") for ev in _events(root, "log")]
-    assert any("rejected_last_approach" in m and "cleared" in m
+    assert any("operator_input_needed" in m and "cleared" in m
                for m in messages), messages
     assert "resumed" in messages
 
@@ -753,7 +748,7 @@ def _drive_the_resume_pause_edge(sup: LoopSupervisor) -> None:
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
     outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "paused", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "operator_input_needed")
 
 
 def test_resume_asks_review_again_over_the_same_approach_and_reaches_terminal(
@@ -767,7 +762,7 @@ def test_resume_asks_review_again_over_the_same_approach_and_reaches_terminal(
     status = sup.run.read_status()
     # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
     assert status["state"] == "awaiting_input"
-    assert status["pauseReason"] == "rejected_last_approach"
+    assert status["pauseReason"] == "operator_input_needed"
     assert status["approach"] == 1
     assert not (root / "approaches" / "01").exists()
     assert not sup.run.composite_prd_file.exists()
@@ -837,8 +832,7 @@ def test_resume_without_a_ruling_asks_review_again_and_can_still_reject(
     assert sup.run.read_status()["approach"] == 1
 
     # the stale finding is still on disk -- nothing cured it -- so review
-    # self-loops right back onto `rejected_last_approach` again, on the
-    # SAME approach, never spending a fresh one that does not exist.
+    # rejects the same finding again, on the SAME approach.
     calls = []
 
     async def _review_rejects_again(prompt, transcript, **kw):
@@ -851,13 +845,14 @@ def test_resume_without_a_ruling_asks_review_again_and_can_still_reject(
     sup.runner.run = _review_rejects_again  # type: ignore[method-assign]
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "paused", "rejected_last_approach")
+    # the bare unpause recorded a one-shot proceed for this rejection: the
+    # park's unanswered outcome on the LAST approach holds the run
+    # `exhausted` (approaches), never `failed` and never a fresh approach.
+    assert outcome == ("tail",)
     assert len(calls) == 1
+    assert sup._approaches_exhausted_tail is True
     status = sup.run.read_status()
     assert status["approach"] == 1
-    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
-    assert status["state"] == "awaiting_input"
-    assert not (root / "approaches" / "01").exists()
 
 
 # ===========================================================================
@@ -991,7 +986,7 @@ def test_fresh_process_resume_detects_the_stagnation_pause_and_re_enters_worker(
     sup2 = _supervisor_worker(root, max_approaches=1)
     assert sup2._paused_awaiting_stagnation_last_approach_ruling(1) is True
     # the OTHER predicate (rejected_last_approach) must not also fire.
-    assert sup2._paused_awaiting_last_approach_ruling(1) is False
+    assert sup2._paused_awaiting_operator_input_needed_ruling(1) is False
 
     start_approach, skip_planning, start_step = sup2._resume_point()
     assert start_approach == 1
@@ -1485,7 +1480,7 @@ def test_notifier_url_set_reaches_send_notification_and_is_recorded(
     assert sup.notifier is not None
 
     outcome = _trigger_notifier_wiring_pause(sup)
-    assert outcome == ("advance", "paused", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "operator_input_needed")
 
     # reached through B.3's own helper, not a second HTTP client.
     assert len(calls) == 1
@@ -1501,7 +1496,7 @@ def test_notifier_url_set_reaches_send_notification_and_is_recorded(
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
-    assert escalations[0]["reason"] == "rejected_last_approach"
+    assert escalations[0]["reason"] == "operator_input_needed"
 
     section = run_record.build_notifications_section(sup.run)
     assert len(section) == 1
@@ -1515,12 +1510,12 @@ def test_notifier_url_unset_still_escalates_but_writes_no_event(tmp_path):
     assert sup.notifier is None
 
     outcome = _trigger_notifier_wiring_pause(sup)
-    assert outcome == ("advance", "paused", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False  # still pauses
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
-    assert escalations[0]["reason"] == "rejected_last_approach"
+    assert escalations[0]["reason"] == "operator_input_needed"
 
     events = _events(root, hat_tools.NOTIFICATION_SENT_EVENT)
     assert events == []
@@ -1540,12 +1535,12 @@ def test_a_raising_poster_still_leaves_the_pause_outcome_unchanged(
 
     outcome = _trigger_notifier_wiring_pause(sup)
 
-    assert outcome == ("advance", "paused", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
-    assert escalations[0]["reason"] == "rejected_last_approach"
+    assert escalations[0]["reason"] == "operator_input_needed"
 
     status = sup.run.read_status()
     assert status.get("state") != "succeeded"
@@ -1565,12 +1560,12 @@ def test_a_non_2xx_status_still_leaves_the_pause_outcome_unchanged(
 
     outcome = _trigger_notifier_wiring_pause(sup)
 
-    assert outcome == ("advance", "paused", "rejected_last_approach")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False
 
     escalations = _events(root, "operator_escalation")
     assert len(escalations) == 1
-    assert escalations[0]["reason"] == "rejected_last_approach"
+    assert escalations[0]["reason"] == "operator_input_needed"
 
     # the failed send is still recorded, distinguishably, on
     # events.jsonl -- a non-2xx is a recorded outcome, never a reason to
@@ -1594,4 +1589,4 @@ def test_a_non_2xx_status_still_leaves_the_pause_outcome_unchanged(
     assert _events(root, hat_tools.NOTIFICATION_SENT_EVENT) == []
     undelivered = _events(root, run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT)
     assert len(undelivered) == 1
-    assert undelivered[0]["reason"] == "rejected_last_approach"
+    assert undelivered[0]["reason"] == "operator_input_needed"

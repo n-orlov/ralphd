@@ -91,25 +91,20 @@ STEP_STATES: tuple[str, ...] = (
     # end. Reachable ONLY through `review`'s `rejected_curable_pass_
     # available` edge, in both `TABLE` and `PEER_VERDICT_GATE_DELTA`.
     "cure",
-    # Task 004 (PRD requirement D.1, finding 4): the last-approach pause's
-    # own step state -- the same formalisation for task 011/036's
-    # `rejected_last_approach` edge, previously a `review -> review`
-    # self-loop that relied entirely on `status.json`'s `state: "paused"`
-    # (a DIFFERENT namespace, `state.PAUSED_STATE`) to make the parked run
-    # observable. `paused`'s own handler (`LoopSupervisor._step_paused`)
+    # The parked run's own step state. `paused`'s own handler (`LoopSupervisor._step_paused`)
     # does the actual parking (`await self._gate()`, the same existing
     # `asyncio.Event` `self.pause()`/`resume()` already drive) and, once
     # released, takes its one declared edge straight back to `review` --
     # never `worker`, never a fresh `replan` -- so a `resume` still
     # re-reviews the SAME approach exactly as before. Reachable through
-    # `review`'s `rejected_last_approach` edge, in both `TABLE` and
-    # `PEER_VERDICT_GATE_DELTA`.
+    # `review`'s `operator_input_needed` edge (the rejection ladder's
+    # park), in both `TABLE` and `PEER_VERDICT_GATE_DELTA`.
     #
     # Task 012 (PRD requirement B.3, #153): a SECOND way into this same
     # state -- `worker`'s own `stagnation_last_approach` edge below,
     # taken when the stagnation guard would otherwise fail the run's
     # LAST approach silently. `_step_paused` (loop.py) now branches on
-    # which escalation reason parked the run: a `rejected_last_approach`
+    # which escalation reason parked the run: an `operator_input_needed`
     # pause still resumes into `review` over the same approach; a
     # `stagnation_last_approach` pause resumes straight back into
     # `worker` over the same approach instead (there is no verdict
@@ -288,7 +283,7 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # the run through the same existing pause machinery `rejected_
         # last_approach` already uses, emits an `operator_escalation`
         # event with `reason: "stagnation"`, and notifies -- the approach
-        # is left unarchived, exactly like `rejected_last_approach`, so
+        # is left unarchived, exactly like a ladder park, so
         # `resume` re-enters the SAME approach (`_step_paused` routes a
         # `stagnation_last_approach` pause back to `worker`, never
         # `review` -- there is no verdict pending, only unfinished tasks).
@@ -343,38 +338,15 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         T("finishing", "verified"),
         # rejected, and an approach is still available — replan.
         T("replan", "rejected_approach_left"),
-        # Task 006 (PRD requirement B.2, #111): a rejection whose BLOCKING
-        # findings are ALL incurable (`findings.compute_verdict` says
-        # "rejected" AND `findings.all_blocking_findings_incurable` says
-        # `True`) takes THIS edge instead of `rejected_approach_left` --
-        # spending a fresh approach on findings a fresh approach cannot
-        # change is certain rejection, the same "route rather than starve"
-        # precedent `doomed_plan_unverifiable` (worker, task 007/#99)
-        # already set for an unwinnable plan. Self-loops back to `review`
-        # itself -- `_step_review` calls `self.pause()` (the EXISTING
-        # pause machinery, `_gate()`'s `self._pause` event, no new pause
-        # implementation) and produces an operator escalation (each
-        # finding plus the `ralphctl amend` invocation that would resolve
-        # it) before returning this edge; the run parks at the very next
-        # `_gate()` call inside the re-entered `review` state -- i.e. on
-        # resume it asks review again over the SAME approach (`_approach`
-        # untouched, `_archive_approach`/`_write_composite_prd` never
-        # called for this branch) rather than planning a fresh one. Task
-        # 007 owns making a freshly-recorded ruling visible to that
-        # resumed review pass; task 008 pins that a CURABLE blocking
-        # finding still takes `rejected_approach_left` above, and that
-        # `rejected_no_approach_left` below still wins once the approach
-        # budget is spent (checked first in `_step_review`, ahead of this
-        # edge, so an exhausted budget never pauses instead of ending).
-        T("review", "rejected_incurable"),
         # Task 009 (PRD requirement C.1, #141): a rejection whose blocking
         # findings are ALL curable (`findings.compute_verdict` says
         # "rejected" AND `findings.all_blocking_findings_curable` says
         # `True`) takes THIS edge -- back to `worker`, never `replan` --
         # on the first rejection per approach (`curePasses[approach] ==
-        # 0`, checked by `LoopSupervisor._step_review` AFTER the incurable
-        # check above so `rejected_incurable` keeps its precedence when
-        # every blocking finding is incurable, requirement C.2). The
+        # 0`; v0.36 requirement B: this is step 5 of the one rejection
+        # ladder (`ladder.decide`), reached only when no blocking finding is
+        # incurable, the reviewer raised no gate and the approach still has
+        # cure rounds). The
         # engine appends one cure task per blocking finding to THIS
         # approach's `tasks.json` (`state.insert_cure_tasks`), increments
         # `curePasses` on status.json and emits `approach.cure_pass`
@@ -397,47 +369,6 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # in the same dispatch pass, so this is a formalisation of what
         # already happened, not a behaviour change.
         T("cure", "rejected_curable_pass_available"),
-        # Task 011 (PRD requirement D.1, #142): on the FINAL approach
-        # (`approach == max_approaches`), a rejection whose blocking
-        # findings are ALL curable but whose one cure pass for this
-        # approach is already spent (`rejected_curable_pass_available`
-        # above already took it when it was still available -- this edge
-        # only fires once that is no longer true) must not spend the
-        # nonexistent next approach on paperwork: it self-loops back to
-        # `review`, exactly like `rejected_incurable` does, generalising
-        # `_pause_and_escalate_incurable_rejection` into `_pause_and_
-        # escalate_last_approach_rejection` -- `operator_escalation` with
-        # `reason: rejected_last_approach`, the EXISTING pause machinery
-        # (`self.pause()`), and the approach left unarchived (`resume`
-        # after an `amend`/`--waive` re-runs review over the SAME
-        # approach, never a fresh one). A rejection with any incurable
-        # blocking finding on the last approach still falls through to
-        # `rejected_no_approach_left` below (requirement D.2).
-        #
-        # Task 004 (PRD requirement D.1, finding 4): the target is now the
-        # dedicated `paused` step state, not a `review -> review` self-
-        # loop -- `paused`'s own edge (below) parks the run
-        # (`LoopSupervisor._step_paused`, the same `self._pause`
-        # `asyncio.Event` this self-loop always relied on) and, once
-        # resumed, lands back on `review` over the SAME approach, which is
-        # exactly what the self-loop already did; this is a
-        # formalisation, not a behaviour change.
-        T("paused", "rejected_last_approach"),
-        # Task 016 (PRD requirement E.5, #190): a rejection whose own
-        # blocking-clause signature repeats the IMMEDIATELY PRECEDING
-        # approach's own rejection signature (`LoopSupervisor.
-        # _repeated_rejection_signature`) self-loops back to `review`,
-        # exactly like `rejected_incurable`/`rejected_last_approach` --
-        # `_pause_and_escalate_repeated_rejection_signature` pauses the run
-        # (existing pause machinery, `operator_escalation` with `reason:
-        # rejected_repeated_signature`) rather than spending a fresh
-        # approach on findings a fresh approach would almost certainly
-        # repeat identically. Checked AFTER every other rejection edge
-        # above keeps their own precedence exactly as documented at each
-        # of their own call sites in `LoopSupervisor._step_review`; the
-        # approach is left unarchived, so `resume` re-reviews the SAME
-        # approach, never a fresh one.
-        T("paused", "rejected_repeated_signature"),
         # GH #209 defect 2: review's OWN contract ladder exhausted
         # (`contract_enforcement.enforce_contract` gave up after
         # `contract_retry_max + 1` attempts and emitted `contract.
@@ -462,7 +393,7 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # BEFORE every rejection edge above in `_step_review`, because
         # there is no rejection to classify. Deliberately unconditional
         # (no `approach < max_approaches` guard), exactly as cure task
-        # cure-01-03 made `rejected_repeated_signature` unconditional; the
+        # cure-01-03 made the signature check unconditional; the
         # approach is left unarchived, so `resume` re-enters `review` over
         # the SAME approach through `_step_paused`'s default branch.
         T("paused", "review_contract_unrepaired"),
@@ -488,19 +419,13 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # immediately after it for the identical reason: there is no
         # rejection to classify off a channel the engine cannot trust.
         T("paused", "review_findings_unusable"),
-        # Task 014 (PRD requirement A.1, #224): an ORDINARY rejection that
-        # would otherwise reach `_archive_approach` -- whether the next
-        # step would be `rejected_approach_left` (below) or `rejected_no_
-        # approach_left` (further below) -- holds instead, ON by default
-        # (`JobConfig.operator_input_needed_pause`), so an operator can
-        # answer before the approach is thrown away. Checked LAST among the
-        # rejection edges (`LoopSupervisor._step_review`), after every
-        # other special-case pause above keeps its own precedence exactly
-        # as documented at each of their own call sites -- this is the
-        # generic case none of them caught, not a replacement for any of
-        # them. The approach is left unarchived, so `resume` re-enters
-        # `review` over the SAME approach, exactly like every sibling in
-        # this family.
+        # v0.36 requirement B (the one rejection ladder): a rejection that
+        # parks -- a blocking finding that is `curable: false`, the
+        # reviewer's `raise_operator_gate`, or the approach's cure rounds
+        # spent -- holds in `awaiting_input` BEFORE the approach is thrown
+        # away (`LoopSupervisor._run_rejection_ladder`). The approach is
+        # left unarchived, so `resume` re-enters `review` over the SAME
+        # approach.
         T("paused", "operator_input_needed"),
         # rejected, and this was the last approach / budget is gone.
         T("finishing", "rejected_no_approach_left"),
@@ -572,7 +497,7 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         T("worker", "cure_pass_appended"),
     ),
     # Task 004 (PRD requirement D.1, finding 4): `paused` -- reached via
-    # `review`'s `rejected_last_approach` edge above (and its
+    # `review`'s `operator_input_needed` edge above (and its
     # `PEER_VERDICT_GATE_DELTA` twin below) -- has this successor, back
     # to `review` over the SAME approach, taken by
     # `LoopSupervisor._step_paused` only once the existing `self._pause`
@@ -581,7 +506,7 @@ TABLE: dict[str, tuple[Transition, ...]] = {
     # Task 012 (PRD requirement B.3, #153): a SECOND successor, back to
     # `worker` instead, taken when the pause that parked the run was
     # `worker`'s own `stagnation_last_approach` edge above rather than
-    # `review`'s `rejected_last_approach` one -- `_step_paused` decides
+    # `review`'s `operator_input_needed` one -- `_step_paused` decides
     # which of the two by reading the pause it is actually resuming from
     # (`pauseReason` captured before the gate releases), never by
     # guessing from the approach number alone.
@@ -809,40 +734,18 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # other boundary in this table already reads.
         T("finishing", "verified_peer_verdict_gate_deferred_past_deadline"),
         T("replan", "rejected_approach_left"),
-        # Task 006 (PRD requirement B.2, #111): carried over byte-for-byte
-        # from `TABLE["review"]` above -- the incurable-rejection check
-        # runs in `_step_review` on the REJECTED branch, entirely before
-        # the peer verdict gate (which only ever sits on the VERIFIED
-        # branch) is consulted, so this edge's meaning is identical
-        # whether or not the gate is on.
-        T("review", "rejected_incurable"),
         # Task 009 (PRD requirement C.1, #141): the cure-pass edge, also
-        # carried over byte-for-byte -- same reasoning as
-        # `rejected_incurable` just above: the cure-pass check runs on the
+        # carried over byte-for-byte -- same reasoning as the
+        # rejected edge above: the cure-pass check runs on the
         # REJECTED branch too, entirely before the (VERIFIED-only) peer
         # verdict gate is ever consulted. Task 004 (finding 4) retargeted
         # this at `cure` instead of `worker` directly, in `TABLE` above --
         # carried over identically here for the same reason every other
         # entry in this delta is.
         T("cure", "rejected_curable_pass_available"),
-        # Task 011 (PRD requirement D.1, #142): carried over byte-for-byte
-        # from `TABLE["review"]` above -- same reasoning as `rejected_
-        # incurable`/`rejected_curable_pass_available` just above: this
-        # check runs on the REJECTED branch too, entirely before the
-        # (VERIFIED-only) peer verdict gate is ever consulted. Task 004
-        # (finding 4) retargeted this at `paused` instead of `review`, in
-        # `TABLE` above -- carried over identically here.
-        T("paused", "rejected_last_approach"),
-        # Task 016 (PRD requirement E.5, #190): carried over byte-for-byte
-        # from `TABLE["review"]` above -- same reasoning as `rejected_
-        # incurable`/`rejected_last_approach` just above: the repeated-
-        # signature check runs on the REJECTED branch too, entirely
-        # before the (VERIFIED-only) peer verdict gate is ever consulted.
-        T("paused", "rejected_repeated_signature"),
         # GH #209 defect 2: carried over byte-for-byte from
-        # `TABLE["review"]` above -- same reasoning as `rejected_
-        # incurable`/`rejected_repeated_signature` just above, only more
-        # so: this check runs entirely before there is any verdict to
+        # `TABLE["review"]` above -- same reasoning as the edges just
+        # above, only more so: this check runs entirely before there is any verdict to
         # classify at all, so it is reached long before the (VERIFIED-only)
         # peer verdict gate is ever consulted.
         T("paused", "review_contract_unrepaired"),
