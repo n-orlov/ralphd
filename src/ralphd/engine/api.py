@@ -64,7 +64,8 @@ class BudgetSpecError(ValueError):
 
 
 def resolve_iterations_spec(spec: object, current: int,
-                            label: str = "iteration budget") -> int:
+                            label: str = "iteration budget",
+                            allow_zero: bool = False) -> int:
     """Resolve `PATCH /config/budget`'s `iterations` spec against the run's
     current budget (task 045, #3).
 
@@ -108,9 +109,11 @@ def resolve_iterations_spec(spec: object, current: int,
                 f"relative top-up must not be negative (got {spec!r}); pass an "
                 "absolute value to lower the budget")
         return current + value
-    if value < 1:
+    if value < (0 if allow_zero else 1):
         raise BudgetSpecError(
-            f"absolute {label} must be a positive integer (got {value})")
+            f"absolute {label} must be a "
+            f"{'non-negative' if allow_zero else 'positive'} integer "
+            f"(got {value})")
     return value
 
 
@@ -493,6 +496,12 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
           rate-limit waiting; applied via `loop.set_rate_limit_max_wait`,
           read before the next rate-limit wait starts. It persists across a
           resume like `curePassCeiling` (`main._seed_rate_limit_max_wait`).
+        * `{"inputTimeoutMin": "+30"}` / `{"inputTimeoutMin": 0}` -- v0.36
+          E.1: the input timeout, in minutes (`0` = never); applied via
+          `loop.set_input_timeout_min`, which also moves the `expiresAt` of a
+          run already `awaiting_input`. `ralphctl budget --input-timeout`
+          writes the same value to the run's job.yaml, which is what a resume
+          reads back.
 
         Task 003/#94 (d): none of the `maxApproaches`/`iterationTimeoutS`/
         `jobDeadlineEpochS` knobs is seeded from status.json on a fresh
@@ -515,9 +524,10 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         has_deadline = body.get("jobDeadlineEpochS") is not None
         has_cure_pass_ceiling = body.get("curePassCeiling") is not None
         has_rate_limit_max_wait = body.get("rateLimitMaxWaitS") is not None
+        has_input_timeout = body.get("inputTimeoutMin") is not None
         if not (has_iterations or has_max_approaches or has_iteration_timeout
                 or has_deadline or has_cure_pass_ceiling
-                or has_rate_limit_max_wait):
+                or has_rate_limit_max_wait or has_input_timeout):
             raise problem(422, "iterations required",
                          'expected {"iterations": "+10"} or {"iterations": 40}')
 
@@ -626,6 +636,20 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
                      rateLimitMaxWaitS=value, delta=value - previous, source="api")
             result.update(rateLimitMaxWaitS=value,
                           previousRateLimitMaxWaitS=previous)
+
+        if has_input_timeout:
+            try:
+                value = resolve_iterations_spec(body["inputTimeoutMin"],
+                                                int(cfg.input_timeout_min),
+                                                label="input timeout",
+                                                allow_zero=True)
+            except BudgetSpecError as exc:
+                raise problem(422, "invalid inputTimeoutMin", str(exc)) from exc
+            previous = cfg.input_timeout_min
+            loop.set_input_timeout_min(value)
+            run.emit("budget_changed", field="inputTimeoutMin", previous=previous,
+                     inputTimeoutMin=value, delta=value - previous, source="api")
+            result.update(inputTimeoutMin=value, previousInputTimeoutMin=previous)
 
         return result
 

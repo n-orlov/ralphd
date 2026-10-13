@@ -64,6 +64,7 @@ from ..engine.redact import is_secret_name, scrub_text
 from ..engine.tiers import TIERS
 from ..engine.transitions import OPERATOR_RULEABLE_TASK_STATUSES, TASK_STATUSES
 from ..engine.state import (
+    DEFAULT_INPUT_TIMEOUT_MIN,
     format_money,
     CURRENT_SCHEMA_VERSION,
     GATE_REJECTION_ENDING_CURE_TAKEN,
@@ -1791,6 +1792,11 @@ _TEMPLATE_SCALAR_FIELDS = {
     # flag and an unset template key both resolve to the same `True` the
     # engine would apply anyway.
     "operator_input_needed_pause": True,
+    # v0.36 E.1: the input timeout in minutes (`--input-timeout`); `0` =
+    # never. Explicit flag > template > `<registry>/config.yaml`'s
+    # `input_timeout_min` > the engine default. Written to job.yaml as
+    # `input_timeout_min`, so it is always explicit there.
+    "input_timeout": DEFAULT_INPUT_TIMEOUT_MIN,
     # Task 003 (#278 B.5): ON by default, the same reasoning as
     # `operator_input_needed_pause` just above -- an unset flag/template key
     # resolves to the same `True` the engine's own `JobConfig.
@@ -1855,7 +1861,8 @@ _REGISTRY_CONFIG_FIELD_KEYS = {"on_complete": "on_complete",
                                "auto_resume": "auto_resume",
                                "price_strategy": "price_strategy",
                                "model": "model",
-                               "thinking": "thinking"}
+                               "thinking": "thinking",
+                               "input_timeout": "input_timeout_min"}
 # Task 008 (#60 pillar 4, requirement A): the per-hat `models`/
 # `model_overrides` table is the table-aware equivalent of the two maps
 # above -- it cannot be one more entry in either because a table MERGES
@@ -2082,6 +2089,18 @@ def _load_template_and_registry(template: str | None) -> tuple[Path | None, dict
             if not isinstance(cfg, dict):
                 die(2, f"template {template}: job.yaml must be a mapping")
     return tdir, cfg, _registry_config(registry())
+
+
+def _input_timeout_value(value, label: str) -> int | float:
+    """A non-negative number of minutes (`0` = never) from a flag, template
+    or registry value; exits 2 on anything else."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        die(2, f"{label}: {value!r} is not a number of minutes")
+    if number < 0 or number != number:
+        die(2, f"{label}: must be 0 (never) or a positive number of minutes")
+    return int(number) if number == int(number) else number
 
 
 def _apply_template(args) -> Path | None:
@@ -2421,6 +2440,10 @@ def cmd_start(args):
         # time it reaches this dict -- unlike `peer_plan_review`/`peer_
         # verdict_gate` above, job.yaml always carries an explicit value.
         "operator_input_needed_pause": args.operator_input_needed_pause,
+        # v0.36 E.1: resolved by the same loop (flag > template > registry
+        # `input_timeout_min` > 60); job.yaml always carries it.
+        "input_timeout_min": _input_timeout_value(args.input_timeout,
+                                                  "--input-timeout"),
         # Task 003 (#278 B.5): resolved by the same `_TEMPLATE_SCALAR_FIELDS`
         # loop (explicit `--no-route-tasks` > template's own key > hard
         # default `True`), so this is never `None` by the time it reaches
@@ -6660,6 +6683,7 @@ def cmd_budget(args):
         "iteration_timeout": "iterationTimeoutS",
         "cure_passes": "curePassCeiling",
         "rate_limit_wait": "rateLimitMaxWaitS",
+        "input_timeout": "inputTimeoutMin",
     }
     if args.iterations is not None:
         spec = args.iterations.strip()
@@ -6678,8 +6702,16 @@ def cmd_budget(args):
     if not body:
         die(2, "budget: nothing to change -- pass an iteration spec, "
                "--approaches, --timeout, --iteration-timeout, --cure-passes "
-               "or --rate-limit-wait")
+               "--rate-limit-wait or --input-timeout")
     res = api(args.run_id, "PATCH", "/config/budget", body)
+    if "inputTimeoutMin" in res:
+        # v0.36 E.1: persisted to the run's job.yaml (host side; the engine's
+        # /config mount is read-only), so a resume keeps the new timeout.
+        job_path = config_root(args.run_id) / "job.yaml"
+        if job_path.is_file():
+            job = _read_job_yaml(job_path)
+            job["input_timeout_min"] = res["inputTimeoutMin"]
+            _write_job_yaml(job_path, job)
     lines = []
     if "iterations" in res:
         lines.append(f"iteration budget: {res.get('previous')} -> "
@@ -6700,6 +6732,10 @@ def cmd_budget(args):
         lines.append(f"rate-limit wait ceiling: "
                      f"{res.get('previousRateLimitMaxWaitS')}s -> "
                      f"{res.get('rateLimitMaxWaitS')}s")
+    if "inputTimeoutMin" in res:
+        lines.append(f"input timeout: {res.get('previousInputTimeoutMin')} min "
+                     f"-> {res.get('inputTimeoutMin')} min"
+                     + (" (never)" if res.get("inputTimeoutMin") == 0 else ""))
     out(args, res, "\n".join(lines) if lines else json.dumps(res))
 
 
@@ -7794,6 +7830,7 @@ def cmd_ui(args):
 # (see `_REGISTRY_CONFIG_FIELD_KEYS` above) plus `default_llm_profile`,
 # which doctor already reads independently.
 _CONFIG_KEYS = {"image": None, "on_complete": ("idle", "exit"),
+                "input_timeout_min": None,
                 "base_image": None, "dockerfile": None,
                 "default_llm_profile": None, "network": None,
                 "auto_resume": ("true", "false"),
@@ -7848,6 +7885,8 @@ def cmd_config(args):
     reg.mkdir(parents=True, exist_ok=True)
     cfg = _registry_config(reg)
     value = _as_bool(args.value) if args.key in _CONFIG_BOOL_KEYS else args.value
+    if args.key == "input_timeout_min":
+        value = _input_timeout_value(value, "input_timeout_min")
     cfg[args.key] = value
     (reg / "config.yaml").write_text(
         yaml.safe_dump(cfg, default_flow_style=False, sort_keys=True))
@@ -9065,6 +9104,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "never affect the job's verdict")
     s.add_argument("--timeout", type=int, default=None, metavar="MINUTES")
     s.add_argument("--iteration-timeout", type=int, default=None, metavar="MINUTES")
+    s.add_argument("--input-timeout", type=int, default=None, metavar="MINUTES",
+                   help="how long a run parked in `awaiting_input` waits for "
+                        "`ralphctl answer` before the engine takes the "
+                        "park's timeout outcome (v0.36 E); 0 = never. "
+                        "Written to job.yaml as `input_timeout_min`; default "
+                        "is the template's, else `input_timeout_min` in "
+                        "~/.ralphd/config.yaml, else 60")
     s.add_argument("--infra-outage-budget", type=int, default=None, metavar="SECONDS",
                    help="wall-clock budget for riding out one LLM-endpoint "
                         "outage: infra-classified faults keep being retried "
@@ -9465,6 +9511,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "would pass it pauses the run for the operator "
                         "instead. PERSISTS across a plain resume, like "
                         "--cure-passes")
+    s.add_argument("--input-timeout", metavar="+N|N", default=None,
+                   help="the input timeout, in minutes, top-up/absolute "
+                        "(v0.36 E.1; 0 = never). Moves the expiry of a run "
+                        "already awaiting input, and is written to the run's "
+                        "job.yaml so a resume keeps it")
     s.set_defaults(func=cmd_budget)
 
     s = sub.add_parser("abort", help="terminate a job")

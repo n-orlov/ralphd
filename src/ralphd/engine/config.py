@@ -496,6 +496,15 @@ class JobConfig:
     # operator's explicit ruling, and requirement A.7's notifier retry plus
     # listing marker (a later task) are what make that safe.
     operator_input_needed_pause: bool = True
+    # v0.36 E.1: the input timeout, in minutes. How long a run parked in
+    # `awaiting_input` waits for `ralphctl answer` before the engine takes
+    # the park's timeout outcome (PRD E.3). `input_timeout_min` in
+    # `~/.ralphd/config.yaml` supplies the fleet default; `ralphctl start
+    # --input-timeout N` writes the run's own value to job.yaml and `ralphctl
+    # budget <run> --input-timeout N|+N` changes it live (and in job.yaml).
+    # `0` = never. The default lives in `state.DEFAULT_INPUT_TIMEOUT_MIN`
+    # alone; `60` here only mirrors it for a dataclass default.
+    input_timeout_min: float = 60
     # Task 018 (PRD requirement K, #101): the opt-in peer plan-review gate.
     # OFF by default -- `transitions.table_for(vigilant)` (no third
     # argument) is byte-identical to today's table whenever this stays
@@ -1041,6 +1050,7 @@ class JobConfig:
                 # pause for a ruling before an approach is archived
                 # without reading job.yaml.
                 "operatorInputNeededPause": self.operator_input_needed_pause,
+                "inputTimeoutMin": self.input_timeout_min,
                 # Task 022 (PRD requirement K.2, #169): surfaced the same
                 # way the two peer gates above are -- an operator can see
                 # whether this run would ever run a scoped mid-plan review

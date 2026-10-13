@@ -419,7 +419,7 @@ Everything host-side lives under one directory, `~/.ralphd/`, overridable in ful
 │                                #   image, base_image, dockerfile, on_complete,
 │                                #   default_llm_profile, network, auto_resume,
 │                                #   price_strategy, model,
-│                                #   thinking
+│                                #   thinking, input_timeout_min
 │                                # plus the nested `pricing:` map, which
 │                                #   `config set` cannot write (§8.6)
 ├── llm-profiles/<name>.yaml     # named LLM profiles (env/mounts/pi fragments)
@@ -1134,7 +1134,8 @@ outcome an unanswered park takes (the input timeout firing at the moment of the
 park; a bare `unpause` grants no such outcome, an `awaiting_input` run is
 answered with `ralphctl answer`, §10.4): a reviewer
 escalation over curable findings with rounds left cures now, and every other
-park archives the approach and replans while an approach is left. With none
+park archives the approach and replans while an approach is left (the
+outcomes table in §4.5, with `input.parked` and `input.timed_out` emitted). With none
 left the run holds `exhausted` (`exhaustedBudget` `approaches`), resumable with
 `ralphctl resume --approaches +N`.
 
@@ -1398,6 +1399,37 @@ could dodge every automated check by moving the bar after failing it.
 | instant-failure fail-fast | `INSTANT_FAILURE_MAX_DURATION_S`, `MAX_CONSECUTIVE_INSTANT_FAILURES` | `5.0s`, `3` | a run of identical sub-5s zero-work failures aborts the job |
 | stagnation guard | — | `3` | consecutive no-change worker iterations that abandon an approach |
 | cure rounds | `cure_pass_ceiling` | `3` | cure rounds ONE approach may spend, review (`curePasses`) and the peer verdict gate (`gateCurePasses`) drawing on the same count; a new approach starts at zero |
+| input timeout | `input_timeout_min` | `60` (minutes; `0` = never) | how long a run parked in `awaiting_input` waits for `ralphctl answer` before the engine acts as if the operator had answered (below) |
+
+**The input timeout (v0.36 requirement E).** `input_timeout_min` defaults to 60
+and is set in `~/.ralphd/config.yaml` (`ralphctl config set input_timeout_min
+N`), per run by `ralphctl start --input-timeout N`, and live by `ralphctl budget
+<run> --input-timeout N|+N`, which also writes the run's job.yaml so a resume
+keeps it (a live change moves the `expiresAt` of a run already parked to its
+`parkedAt` plus the new timeout). `0` means never: `expiresAt` is `null` and
+the run waits for an answer for ever. The clock starts when the run enters
+`awaiting_input`. `inputQuestion.expiresAt` is an absolute time on status.json,
+so a fresh engine process over a parked run keeps the same `expiresAt`, stays
+`awaiting_input`, and waits only for what is left of it (or takes the outcome at
+once when it already passed). The run deadline is frozen for the whole park: the
+time spent parked is credited back onto `deadlineAt` and published as
+`pausedTotalS`, as an operator pause is. On expiry the engine acts as if the
+operator had answered, accepting every finding and waiving none, and emits
+`input.timed_out` (`outcome`, `judge`, `trigger`, `approach`, `expiresAt`):
+
+| Park | Outcome (`outcome`) |
+|---|---|
+| `reviewer_escalation`, cure rounds left on this approach, every blocking finding curable | no round is added; the run cures now from the remaining allowance on the same approach (`cure_now`) |
+| `cure_rounds_spent` or `incurable`, an approach left (a reviewer escalation over a `curable: false` finding takes this row too: cure rounds cannot fix it) | archive the approach and replan the next one over the same tree (`next_approach`) |
+| `cure_rounds_spent` or `incurable`, no approach left | `exhausted` with `exhaustedBudget: approaches` (`exhausted_approaches`), resumable with `ralphctl resume --approaches +N` |
+| `secret` | never expires: `expiresAt` is `null` whatever the setting |
+
+`inputQuestion.onTimeout` names the outcome the park will take. With
+`--no-operator-input-needed-pause` (job.yaml `operator_input_needed_pause:
+false`) the timeout fires at the moment of the park: the run never waits and
+never leaves `running`, but it still emits `input.parked` (`timeoutAtPark:
+true`, `expiresAt` equal to the park time) and then `input.timed_out` with the
+same outcome table.
 
 **Cure rounds are counted per approach (v0.36 requirement C.2).**
 `cure_pass_ceiling` bounds the CURRENT approach's own round count -- the sum
@@ -3197,6 +3229,7 @@ Every field:
 | `infra_retry_backoff_max_s` | float | `300.0` | cap on one wait, so the repeating tail polls at a 5-minute cadence through a long outage |
 | `infra_retry_max` | int \| null | `null` | back-compat attempt cap, honoured **only** when set explicitly; `null` means "no cap — retry as long as the outage budget allows" |
 | `infra_outage_budget_s` | float | `14400.0` (4h) | the real stopping rule: retries continue while one fault episode's accumulated wait stays under this. The episode clock resets on any successful iteration |
+| `input_timeout_min` | number | `60` | v0.36 requirement E.1: the input timeout in minutes -- how long a run parked in `awaiting_input` waits for `ralphctl answer` before the engine takes the park's timeout outcome (§4.5). `0` = never (`expiresAt: null`). Written by `start` (`--input-timeout`, else the template's `input_timeout`, else the registry's `input_timeout_min`, else `60`) and rewritten by `ralphctl budget <run> --input-timeout N\|+N`, so a resume keeps it. `GET /config` shows it as `inputTimeoutMin` |
 | `rate_limit_max_wait_s` | int | `86400` (1 day) | ceiling on the run's total rate-limit waiting (§8.4). A wait that would take the count past it does not start; the run pauses `operator_input_needed` with `pauseDetail.reason: "rate_limit_ceiling"`, and an unpause resets the count. Settable in flight with `PATCH /config/budget` `rateLimitMaxWaitS` (`ralphctl budget --rate-limit-wait`), which persists across a resume; `GET /config` shows it as `budgets.rateLimitMaxWaitS` |
 | `rate_limit_preempt_utilization` | float | `0.95` | a `claude-code` iteration does not start while that harness's last rate-limit report is `allowed_warning` at or above this utilization (0–1); the loop waits for that window's reset first (§8.4). `GET /config` shows it as `budgets.rateLimitPreemptUtilization` |
 | `pricing` | map | `{}` | host-side rate table, consulted only when the provider quoted no price (§7.3) |
@@ -3230,11 +3263,12 @@ seconds), `RALPHD_INFRA_RETRY_BACKOFF_MAX_S`, `RALPHD_INFRA_RETRY_MAX`,
 
 1. an explicit flag on `ralphctl start`;
 2. the `--template`'s `job.yaml` value (§6.7);
-3. the registry default in `<registry>/config.yaml` — only for the ten keys
+3. the registry default in `<registry>/config.yaml` — only for the eleven keys
    that have one (`ralphctl config set`): the three image supply keys `image`,
    `base_image` and `dockerfile`, plus `on_complete`, `network`, `auto_resume`,
-   `default_llm_profile` (the fallback for `--llm`), `price_strategy`, `model`
-   and `thinking` (#52). A named LLM profile may itself carry `model`/
+   `default_llm_profile` (the fallback for `--llm`), `price_strategy`, `model`,
+   `thinking` (#52) and `input_timeout_min` (v0.36 E.1, written to job.yaml
+   as `input_timeout_min`, started with `--input-timeout`). A named LLM profile may itself carry `model`/
    `price_strategy`, and a registry-wide value beats it: a profile answers
    *where do I route*;
 4. the hardcoded default in `ralphctl` (`_TEMPLATE_SCALAR_FIELDS`).
@@ -3487,6 +3521,7 @@ templates/<name>/
 
 `start --template <name>` fills in every flag the caller left unset. The template's
 `job.yaml` may set `iterations`, `max_approaches`, `vigilant`, `reflect`,
+`input_timeout` (minutes, §4.5; written to job.yaml as `input_timeout_min`),
 `operator_input_needed_pause` (§10.2, PRD v0.23 requirement A.1, #224, task
 014 -- ON by default, unlike `peer_plan_review`/`peer_verdict_gate` below,
 which have no template-level default of their own),
@@ -5230,6 +5265,7 @@ returns immediately.
 | `--peer-plan-review` | off | opt-in peer plan-review gate (PRD requirement K, #101): a peer model approves or objects to the plan before work starts; `JobConfig.peer_plan_review`, unset stays out of `job.yaml` entirely so the engine's own default applies |
 | `--peer-verdict-gate` | off | opt-in, genuinely blind peer verdict gate (PRD requirement L, #101): a second peer model re-verifies completed work before terminal success; `JobConfig.peer_verdict_gate`, same unset-stays-out-of-`job.yaml` shape as `--peer-plan-review` above |
 | `--mid-plan-review` | off | opt-in mid-plan review episode (PRD requirement K.2, #169): once per approach, once a declared fraction of the plan has already validated, run one review episode scoped to those requirements, opening cure tasks from its findings through the existing cure machinery; `JobConfig.mid_plan_review`, same unset-stays-out-of-`job.yaml` shape as `--peer-plan-review` above |
+| `--input-timeout MINUTES` | template `input_timeout`, else registry `input_timeout_min`, else `60` | v0.36 requirement E.1: the input timeout in minutes, written to job.yaml as `input_timeout_min` (§4.5). `0` = never; a negative value exits `2` |
 | `--no-operator-input-needed-pause` | on (disable flag) | the rejection ladder's park (v0.36 requirement B; PRD A.1, #224): ON by default, unlike the two peer gates above -- a rejection with an incurable finding, a reviewer escalation or spent cure rounds holds in `awaiting_input` with `pauseReason: "operator_input_needed"`; turning it off resolves the park at once with its unanswered outcome (D.3: the input timeout fires at the moment of the park); `JobConfig.operator_input_needed_pause`, resolved by the `_TEMPLATE_SCALAR_FIELDS` loop (§6.7) so job.yaml always carries an explicit `true`/`false`, unlike the two peer gates. The SAME flag also gates the peer verdict gate's own mirror edge (v0.27 requirement C.1, task 008; widened by cure task 002 to every blocking-set shape): a `verdict_gate` rejection parks with `pauseReason: "verdict_gate_operator_input_needed"` when a blocking finding is incurable or the current approach's cure-round allowance (`cure_pass_ceiling` plus its top-ups, shared with review) is already spent, whether the rejection is all-curable, mixed, or all-incurable, disabled by the same flag |
 | `--no-route-tasks` | on (disable flag) | task 003 (#278 B.5): disables router-assisted task selection -- by default, once `scheduler.pending_candidates` finds 2+ runnable tasks, the router picks which one to work next; this flag (or a `job.yaml` `route_task_selection: false` key) restores `scheduler.select_next_task`'s own fully deterministic pick unconditionally. `JobConfig.route_task_selection`, resolved by the SAME `_TEMPLATE_SCALAR_FIELDS` loop as `--no-operator-input-needed-pause` above, so job.yaml always carries an explicit `true`/`false`; no `resume` equivalent -- `resume` never rewrites this key, so the value a run started with is replayed unchanged on every later resume |
 | `--reflect` | off | one extra post-terminal `reflect` iteration into `artifacts/reflection/` |
@@ -5284,7 +5320,7 @@ explicit CLI flag, then the `--template`'s `job.yaml`, then the registry-wide
 default in `<registry>/config.yaml` (`ralphctl config set`), then the
 hardcoded default in the table above. Only `image`, `base_image`, `dockerfile`,
 `on_complete`, `default_llm_profile` (feeding `--llm`), `network`, `auto_resume`,
-`price_strategy`, `model` and `thinking` — ten
+`price_strategy`, `model`, `thinking` and `input_timeout_min` — eleven
 keys — have a registry-wide layer; the rest skip straight from
 template to hardcoded default. Every flag defaults to `None` in the parser
 rather than to its real value, so "not given" stays distinguishable from
@@ -5608,7 +5644,10 @@ refuses `K >= 1` for an accepted `curable: false` finding). `--rate-limit-wait`
 sets the ceiling, in seconds, on the run's total rate-limit waiting
 (`rateLimitMaxWaitS`, §8.4) and persists across a plain resume the same way; a run
 parked on that ceiling (`pauseDetail.reason: "rate_limit_ceiling"`) can be raised
-and unpaused, and the unpause itself resets the count.
+and unpaused, and the unpause itself resets the count. `--input-timeout N|+N`
+sets the input timeout in minutes (`0` = never, §4.5); it is applied live
+(moving the expiry of a run already `awaiting_input`) and written to the run's
+job.yaml (`input_timeout_min`) by the CLI, so it persists across a resume.
 
 `abort` terminates the job, honouring the run's on-complete mode. `stop` shuts
 down an idle *finished* container — `/shutdown`, then `docker rm -f`, then

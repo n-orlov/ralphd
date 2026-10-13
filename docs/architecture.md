@@ -3116,11 +3116,13 @@ logic itself lives entirely engine-side and needs no CLI/API cooperation.
   only ever carried the `waive`/`replace` kinds.
   Tests: `tests/test_resume_after_incurable_rejection.py` --
   `test_resume_point_routes_straight_to_review_not_worker_not_replan` pins
-  the routing, `test_resume_lands_on_review_and_sees_the_ruling_recorded_while_paused`
-  pins the visibility (the amendment text written host-side while paused
-  appears in the resumed review iteration's own prompt), and
-  `test_resume_without_any_ruling_still_lands_on_review_and_rejects_again`
-  is its no-ruling control. All of them reach the paused state through an
+  the routing of a run recorded `running` over that escalation. A run recorded
+  `awaiting_input` (every v0.36 park) is not re-judged by a fresh process
+  (v0.36 requirement E.2): `test_a_restart_over_the_park_stays_parked_and_a_ruling_does_not_release_it`
+  pins that it keeps its question and `expiresAt` and waits for an answer, and
+  `test_a_restart_over_an_expired_park_takes_the_timeout_outcome_not_a_rejudge`
+  that a park which expired while the container was down takes the timeout
+  outcome at once. All of them reach the paused state through an
   already-paused fixture and never await an unscheduled operator.
 - **The cure pass: one chance to fix curable findings before spending a
   fresh approach (v0.18 requirement C.1/C.2, #141, tasks 009/010).** A

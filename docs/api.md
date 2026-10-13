@@ -837,12 +837,13 @@ then follows. Event types:
 | `reflect_skipped` | the post-terminal `reflect` phase produced no verdict because a signal was already taking the engine down: `attempted` (false = never started, true = cut short mid-attempt), `signal`, `reason`. No `FAILED.md` is written on this path — see status.json's `reflect` |
 | `reflect_tombstone_cleared` | a successful `reflect` attempt removed a stale `reflection/FAILED.md` written by an earlier one: `path`. The alias `reflect-failed` disappears from `artifacts ls` with the file |
 | `task.undeferred` | an operator's `POST /tasks/{task_id}/undefer` was applied on the loop: `taskId`, `until` and `reason` (the cleared deferral), `by: "operator"` |
-| `input.parked` | the run entered `awaiting_input` on a findings question (v0.36 requirement C.1/H.2): the `inputQuestion` fields `kind`, `trigger`, `judge`, `findings`, `cureRoundsUsed`, `cureRoundsAllowed`, `approach`, `maxApproaches`, `expiresAt`, `onTimeout`. Emitted once per park, after `status.json` already reads `state: "awaiting_input"` and after the `operator_escalation` event carrying the full text |
+| `input.parked` | the run entered `awaiting_input` on a findings question (v0.36 requirement C.1/H.2): the `inputQuestion` fields `kind`, `trigger`, `judge`, `findings`, `cureRoundsUsed`, `cureRoundsAllowed`, `approach`, `maxApproaches`, `expiresAt`, `onTimeout`. Emitted once per park, after `status.json` already reads `state: "awaiting_input"` and after the `operator_escalation` event carrying the full text. With `operator_input_needed_pause: false` the run never leaves `running`: the event carries `timeoutAtPark: true` and an `expiresAt` equal to the park time |
+| `input.timed_out` | the input timeout fired on a park, or `operator_input_needed_pause: false` made it fire at the moment of the park (v0.36 requirement E.3): `outcome` (`"cure_now"` \| `"next_approach"` \| `"exhausted_approaches"`), `judge`, `trigger`, `approach`, `maxApproaches`, `expiresAt`, `timeoutMin`. The engine then acts as if the operator had answered, accepting every finding and waiving none. A `secret` park never emits it |
 | `input.answered` | `LoopSupervisor.answer` accepted an answer to an `awaiting_input` findings question (v0.36 requirement C; `POST /answer`, `ralphctl answer` or the hub panel): `outcome` (`"verified"` \| `"cure"` \| `"next_approach"`), `judge`, `approach`, `waived` / `accepted` (finding ids), `cureRounds`, `approachesGranted`, `waiverFiles`, `rulingFile`. Emitted once, after the waivers and the note's ruling were written and `status.json`'s `inputAnswer` was persisted, just before the park is released |
 | `run.paused` | optional; the run is held: `reason` is `operator` for a `POST /pause` that takes effect, or the engine's `pauseReason` for an engine pause persisted to `status.json` |
 | `run.unpaused` | optional; the run's pause ended: `pausedS`, the seconds it was held (from the first `run.paused` of the stretch) |
 | `deadline_extended` | the job deadline moved out after an infra wait, an operator pause OR a rate-limit wait: `waitedS`, new `deadlineAt`, `reason` (`"infra wait"` — also phase/attempt/`infraWaitTotalS` — or `"operator pause"` — also `pausedTotalS` — or `"rate limit wait"` — also phase/`rateLimitWaitTotalS`) |
-| `budget_changed` | the iteration budget was changed in flight via `PATCH /config/budget`: `field: "iterations"` (also `"maxApproaches"`/`"iterationTimeoutS"`/`"jobDeadlineEpochS"`/`"curePassCeiling"`/`"rateLimitMaxWaitS"` — task 003/#94 (a) and task 010/v0.27 requirement C.3 widen the knob, never the event's own shape), `previous`, the new value under the field's own key (`iterations`/`maxApproaches`/`iterationTimeoutS`/`jobDeadlineEpochS`/`curePassCeiling`/`rateLimitMaxWaitS`), `delta`, `iterationsUsed` (`iterations` field only), `source: "api"` |
+| `budget_changed` | the iteration budget was changed in flight via `PATCH /config/budget`: `field: "iterations"` (also `"maxApproaches"`/`"iterationTimeoutS"`/`"jobDeadlineEpochS"`/`"curePassCeiling"`/`"inputTimeoutMin"`/`"rateLimitMaxWaitS"` — task 003/#94 (a) and task 010/v0.27 requirement C.3 widen the knob, never the event's own shape), `previous`, the new value under the field's own key (`iterations`/`maxApproaches`/`iterationTimeoutS`/`jobDeadlineEpochS`/`curePassCeiling`/`rateLimitMaxWaitS`), `delta`, `iterationsUsed` (`iterations` field only), `source: "api"` |
 | `notification.sent` / `notification.failed` | the engine-owned `notify` hat tool (or the engine's own operator-escalation notifier) POSTed to the configured notifier URL: `endpoint`, `textSha256`, `httpStatus`. A successful send (2xx) emits `notification.sent`; an unconfigured URL, a connection error, or a non-2xx status all emit the distinct `notification.failed` instead -- never `notification.sent` for a send that did not actually succeed (requirement B.1, #197). v0.23 requirement A.7 (#224, task 017): a failing POST is retried exactly ONCE, immediately, with no backoff, before either event is recorded -- `httpStatus` on the event is always the LAST attempt's own status, and exactly one of the two events is ever recorded per call (two failures in a row still record one `notification.failed`, not two). Task cure-01-01-3 (v0.26 requirement A.4's own DoD 1): this per-call retry-once is the one, non-escalation caller's behaviour; an operator-escalation delivery attempt (below) disables it (`max_attempts=1`) so its own outer retries are the ONLY retrying that happens, and each escalation attempt still emits exactly one of these two events, one real POST per event |
 | `notification.escalation_undelivered` | v0.26 requirement A.4 (task 004, #269), tightened by task cure-01-01-3 (the same requirement's DoD 1, "at most 3 escalation delivery attempts"): an operator-escalation notification (`_pause_and_escalate_*`/`_pause_for_commit_secret_hit`) never reached the notifier after up to 3 delivery attempts with bounded backoff between them (60s, then 120s -- 180s total) -- and those 3 attempts are also the TOTAL count of real notifier HTTP POSTs made, never 3 attempts each silently paying for a second internal retry: `reason` (the escalating pause's own `operator_escalation.reason` string -- also its persisted `pauseReason`). Each of the up-to-3 attempts still records its own honest `notification.sent`/`notification.failed` event above, unchanged; this is the ADDITIONAL, distinct event marking that the escalation itself was never delivered at all -- never emitted when any attempt succeeds |
 | `task.criteria_repaired` | one of the two lexical plan-ingestion lints had already computed a lossless, lint-clean rewrite of a criteria and the engine applied it instead of refusing the whole proposal and re-asking the hat (#209): `taskId`, `oldCriteria`, `newCriteria`, `lints` (the lint names applied), `source` (`"plan-ingestion"`, which also carries `hat`/`attempt`, or `"cure-insertion"` when the text was a curable finding's `cured_when` becoming a cure task's criteria) |
@@ -1233,7 +1234,7 @@ contents, no LLM env values):
               "infraRetryBackoffMaxS": 300.0, "infraRetryMax": null, "infraOutageBudgetS": 14400.0,
               "rateLimitMaxWaitS": 86400, "rateLimitPreemptUtilization": 0.95,
               "routerTimeoutS": 60.0},
-  "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false, "peerPlanReview": false, "peerVerdictGate": false, "operatorInputNeededPause": true, "midPlanReview": false, "routeTaskSelection": true},
+  "flags": {"vigilant": false, "onComplete": "idle", "onCompleteCmd": null, "reflect": false, "peerPlanReview": false, "peerVerdictGate": false, "operatorInputNeededPause": true, "inputTimeoutMin": 60, "midPlanReview": false, "routeTaskSelection": true},
   "contracts": {"retryMax": 2, "judgeRetryMax": 2},  // response-contract re-prompt policy, task 010; judgeRetryMax caps the judging-hat retry on a truncated or empty reply
   "model": {"model": null, "routerModel": null, "overrides": {}, "thinking": null,
              "thinkingOverrides": {}, "harnesses": {"planning": "pi", "worker": "pi"}},
@@ -1274,6 +1275,11 @@ requirements, opening a cure task per blocking finding through the
 existing cure machinery (`state.insert_cure_tasks`) — see
 `midPlanReviewEpisodes` under `GET /status` above. No `resume` equivalent,
 for the same reason the two peer gates above have none.
+
+`flags.inputTimeoutMin` (`job.yaml` key `input_timeout_min`, `ralphctl start
+--input-timeout`; default 60, `0` = never) is the input timeout in minutes: how
+long an `awaiting_input` run waits for `POST /answer` before the engine takes
+the park's timeout outcome (v0.36 requirement E; `inputQuestion.onTimeout`).
 
 `flags.operatorInputNeededPause` (`job.yaml` key
 `operator_input_needed_pause`, `ralphctl start
@@ -1488,6 +1494,17 @@ rateLimitMaxWaitS` when it does not parse. The response carries
 rate-limit wait, written to `status.json` as `rateLimitMaxWaitS`, and persists
 across a resume like `curePassCeiling` (seeded from `max(status.json's
 rateLimitMaxWaitS, job.yaml's rate_limit_max_wait_s)`).
+
+It also accepts `inputTimeoutMin` (`{"inputTimeoutMin": "+30"}` /
+`{"inputTimeoutMin": 0}`; the operator front-end is `ralphctl budget <run-id>
+--input-timeout N|+N`), the input timeout in minutes (v0.36 requirement E.1;
+`0` = never, so a bare `0` is accepted here and nowhere else). `422 invalid
+inputTimeoutMin` when it does not parse; the response carries `inputTimeoutMin`
+and `previousInputTimeoutMin`. A run already `awaiting_input` has its
+`inputQuestion.expiresAt` moved to `parkedAt` plus the new timeout (`null` for
+`0`). The engine cannot write the read-only job.yaml, so `ralphctl budget`
+writes `input_timeout_min` to the run's job.yaml after a successful request;
+a bare API client that wants the value to survive a resume does the same.
 
 ### Prompts — override + listing
 

@@ -82,6 +82,7 @@ ralphctl start --prd <file|-> [options]
 | `--peer-plan-review` | off | opt-in peer plan-review gate (task 018, PRD requirement K, #101): a peer model approves or objects to the plan before `worker` starts, bounded by `peer_plan_review_max_revisions` revision round trips. Written to the run's `job.yaml` as `peer_plan_review` and visible in `GET /config` (`flags.peerPlanReview`); no `resume` equivalent -- like `--vigilant`/`--reflect`, it is a `start`-time choice only, replayed unchanged by `job.yaml` on every later `resume` |
 | `--peer-verdict-gate` | off | opt-in, genuinely blind peer verdict gate (task 020, PRD requirement L, #101): a second, independent peer model re-verifies completed work before terminal success. Written to the run's `job.yaml` as `peer_verdict_gate` and visible in `GET /config` (`flags.peerVerdictGate`); no `resume` equivalent, for the same reason `--peer-plan-review` has none |
 | `--mid-plan-review` | off | opt-in mid-plan review episode (task 022, PRD requirement K.2, #169): once per approach, once a declared fraction (`loop.MID_PLAN_REVIEW_FRACTION`) of the plan has already reached terminal-success, run one review iteration scoped to those requirements, opening a cure task per blocking finding through the existing cure machinery (`state.insert_cure_tasks`, the same path an ordinary review's own cure pass takes). Written to the run's `job.yaml` as `mid_plan_review` and visible in `GET /config` (`flags.midPlanReview`); no `resume` equivalent, for the same reason the two peer gates above have none |
+| `--input-timeout MINUTES` | template `input_timeout`, else the registry's `input_timeout_min`, else `60` | the input timeout: how long a run parked in `awaiting_input` waits for `ralphctl answer` before the engine takes the park's timeout outcome (see `ralphctl answer` below). `0` = never; a negative value exits `2`. Written to the run's `job.yaml` as `input_timeout_min` (always explicit); `ralphctl budget <run> --input-timeout N|+N` changes it live |
 | `--no-operator-input-needed-pause` | on (this is the disable flag) | the rejection ladder's park (v0.36 requirement B; PRD A.1, #224): ON by default, unlike the two peer gates above -- a rejection with an incurable blocking finding, a reviewer escalation or spent cure rounds holds in `awaiting_input` with `pauseReason: "operator_input_needed"`, so an operator can answer it (`ralphctl answer <run-id>`; a ruling recorded with `ralphctl rule` does not answer it and a bare `ralphctl unpause` is refused) before that spend happens. This flag resolves the park at once with the outcome an unanswered park takes (archive and replan while an approach is left, else the `exhausted` (`approaches`) hold). The SAME flag also gates the peer verdict gate's own mirror (v0.27 requirement C.1, task 008; widened by cure task 002, this wave, to every blocking-set shape): a `verdict_gate` rejection parks with `pauseReason: "verdict_gate_operator_input_needed"` when a blocking finding is incurable or the current approach's cure rounds (`cure_pass_ceiling` plus any `budget --cure-passes` top-up, shared with review) are already spent -- whether the rejection's blocking findings are all curable, mixed, or all non-curable -- disabled by this same flag. Written to the run's `job.yaml` as `operator_input_needed_pause` (always an explicit `true`/`false`, unlike the two peer gates) and visible in `GET /config` (`flags.operatorInputNeededPause`); a `--template`'s own `operator_input_needed_pause:` key (SPEC.md §6.7) supplies the default when the flag is absent; no `resume` equivalent, for the same reason `--peer-plan-review`/`--peer-verdict-gate` have none |
 | `--model <id>` | profile default | model used by any hat with no per-hat override; falls back to the `--template`'s value, then the registry's `model` (`ralphctl config`), then the `--llm` profile's own `model:`. `router` (task 018, requirement E; rung order corrected task 003, #278 B.6) resolves `router_model` first, then the dedicated per-hat table entry (`model_overrides["router"]`/`models.router`), then the worker hat's own `trivial` tier (`model_tiers["worker"]["trivial"]`) when configured, then `model`; see `routerModel`/`routerTimeoutS` under `GET /config` (`docs/api.md`). `--fast-model` and `--model-strategy` (and `ralphctl config set model_strategy`/`fast_model`) are retired (task 006): the parser still recognises the flag names (hidden from `--help`) only so `start` can refuse them with exit `2` naming this `models:`/`model_overrides:` replacement, never a silent no-op; a job.yaml still carrying either legacy key from before task 006 is translated into an equivalent per-hat table at engine load time, never ignored |
 | `--no-route-tasks` | on (this is the disable flag) | task 003's router-assisted task-selection opt-out (#278 B.5): by default, once `engine.scheduler.pending_candidates` finds 2+ runnable tasks, the router picks which one to work next (`LoopSupervisor._route_task_selection`); this flag (or a `job.yaml` `route_task_selection: false` key) restores the fully deterministic pick, `engine.scheduler.select_next_task`'s own order, unconditionally. Written to the run's `job.yaml` as `route_task_selection` (always an explicit `true`/`false`) and visible in `GET /config`; no `resume` equivalent -- `resume` never rewrites this key, so the value a run started with is replayed unchanged on every later resume |
@@ -1968,6 +1969,29 @@ writer `LoopSupervisor.answer`, which emits `input.answered`. Exit `0` accepted
 unreachable · `5` refused (`409`: the run is not `awaiting_input`, or one of the
 two refusals above).
 
+**The input timeout (v0.36 requirement E).** A run nobody answers does not wait
+for ever. `input_timeout_min` (default `60`, in minutes; `0` = never) is set in
+`~/.ralphd/config.yaml` (`ralphctl config set input_timeout_min N`), per run by
+`ralphctl start --input-timeout N`, and live by `ralphctl budget <run>
+--input-timeout N|+N`. The clock starts when the run enters `awaiting_input`;
+`inputQuestion.expiresAt` is an absolute time (`null` when the timeout is `0`),
+so a container restart keeps the same expiry and the run stays `awaiting_input`.
+The run deadline is frozen for the whole park. On expiry the engine acts as if
+the operator had answered -- every finding accepted, none waived -- and emits
+`input.timed_out` naming the outcome; `inputQuestion.onTimeout` says which one
+the park will take:
+
+| Park | Outcome (`input.timed_out` `outcome`) |
+|------|---------|
+| `reviewer_escalation`, cure rounds left on this approach, every blocking finding curable | `cure_now`: no round is added, the run cures now from the remaining allowance on the same approach (no jump to a new approach) |
+| `cure_rounds_spent` or `incurable`, an approach left (a reviewer escalation over a `curable: false` finding also takes this row, since cure rounds cannot fix it) | `next_approach`: archive and replan the next approach over the same tree, as `ralphctl answer <run> --cure-rounds 0` does |
+| `cure_rounds_spent` or `incurable`, no approach left | `exhausted_approaches`: the run holds `exhausted` with `exhaustedBudget: approaches`; `ralphctl resume <run> --approaches +1` continues it |
+| `secret` | never expires: `expiresAt` is `null` whatever the setting |
+
+`--no-operator-input-needed-pause` (job.yaml `operator_input_needed_pause:
+false`) means the timeout fires at the moment of the park: the run never waits
+on findings, but still emits `input.parked` and `input.timed_out`.
+
 ### `ralphctl amend <run-id> <task-id> [text]`
 
 Record an **operator ruling** — a waiver or a replacement of one task's
@@ -2379,6 +2403,17 @@ $ ralphctl budget my-run --rate-limit-wait +43200   # half a day more of waiting
 The new ceiling is read before the next rate-limit wait. It persists across a
 resume like `--cure-passes`.
 
+`--input-timeout` maps to `inputTimeoutMin`, the input timeout in minutes (`0`
+= never; same `+N|N` grammar, and a bare `0` is accepted). A run already
+`awaiting_input` has its `expiresAt` moved to the park time plus the new
+timeout. The CLI also writes the new value to the run's `job.yaml`
+(`input_timeout_min`), so a resume keeps it:
+
+```console
+$ ralphctl budget my-run --input-timeout +30    # half an hour longer to answer
+$ ralphctl budget my-run --input-timeout 0      # never auto-proceed
+```
+
 **Persistence across a resume — one row per knob (#94 (d); task 010, v0.27
 requirement C.3 adds the cure-pass row):**
 
@@ -2389,6 +2424,7 @@ requirement C.3 adds the cure-pass row):**
 | job deadline | `--timeout` | `job_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--timeout` |
 | iteration timeout | `--iteration-timeout` | `iteration_timeout_s` | **reverts**: process-only while the container is live; a plain resume reverts to job.yaml's own value unless this resume itself passes `--iteration-timeout` |
 | cure rounds (current approach) | `--cure-passes` | `cure_pass_ceiling` | **live**: persists across a resume — the top-up is recorded in status.json's `cureRoundTopUps` for the current approach and read back from disk |
+| input timeout | `--input-timeout` | `input_timeout_min` | **live**: persists across a resume — the CLI writes the new value to job.yaml, which a resume reads back |
 | rate-limit wait ceiling | `--rate-limit-wait` | `rate_limit_max_wait_s` | **live**: persists across a resume — the engine's own startup seeds it from `max(status.json's rateLimitMaxWaitS, job.yaml's rate_limit_max_wait_s)` |
 
 `iterations` is seeded from the LIVE-set value on every resume because the
@@ -3239,7 +3275,9 @@ Registry-wide defaults (PRD req 25), persisted at `<registry>/config.yaml`
 (`true`/`false` — validated on `set` and stored as a real boolean; the
 registry-wide default for `start --auto-resume`), `price_strategy`
 (`none`/`aws` — validated on `set`; the registry-wide default for
-`start --price-strategy`), and the two keys that decide which models a job
+`start --price-strategy`), `input_timeout_min` (minutes, `0` = never; validated
+on `set` as a non-negative number; the registry-wide default for
+`start --input-timeout`), and the two keys that decide which models a job
 runs (#52): `model` (any pi `provider/model-id` string, used by any hat with
 no per-hat override) and `thinking` (any string `pi --thinking` accepts).
 `model_strategy`/`fast_model` are retired (task 006): `config set` refuses

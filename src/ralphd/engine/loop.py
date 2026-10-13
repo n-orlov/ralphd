@@ -657,6 +657,10 @@ class LoopSupervisor:
         # The budget the PRIOR episode held at (`exhausted_budget_of` over
         # the status.json this episode opened on), or None.
         self._opening_exhausted_budget: str | None = None
+        # v0.36 E.2/H: the `inputQuestion` a prior engine process left the
+        # run parked on (`awaiting_input`), kept by this episode with the
+        # SAME absolute `expiresAt` -- None when the run was not parked.
+        self._opening_parked_question: dict | None = None
         # GH #209 defect 2: True iff the LAST ordinary (non-`mid_run`) run
         # of `_review_contract_ladder` EXHAUSTED `contract_enforcement.
         # enforce_contract`'s ladder WITHOUT ever getting a readable verdict
@@ -4546,6 +4550,16 @@ class LoopSupervisor:
                     f"{approach} was the last one; continuing at the replan "
                     f"on approach {approach + 1}"))
             return approach, False, "replan"
+        if self._opening_parked_question is not None:
+            self.run.emit(
+                "log",
+                message=(
+                    f"resuming existing run-dir state: approach {approach} "
+                    "is parked in awaiting_input; keeping the question and "
+                    "its expiresAt "
+                    f"({self._opening_parked_question.get('expiresAt')}) and "
+                    "waiting for an answer or the input timeout"))
+            return approach, False, "paused"
         if self._archived_approach_awaiting_replan(approach):
             self.run.emit(
                 "log",
@@ -5823,6 +5837,15 @@ class LoopSupervisor:
         opening_status = self.run.read_status()
         self._opening_exhausted_budget = state.exhausted_budget_of(
             opening_status)
+        parked_question = opening_status.get("inputQuestion")
+        self._opening_parked_question = (
+            dict(parked_question)
+            if (opening_status.get("state") == AWAITING_INPUT_STATE
+                and isinstance(parked_question, dict)
+                and parked_question.get("kind") in state.INPUT_QUESTION_KINDS)
+            else None)
+        if self._opening_parked_question is not None:
+            self._pause.clear()
         # Task 022 (#30): read the ending fields before overwriting them.
         previous_endings = self._previous_endings()
         # #291: `firstStartedAt` is written once, by the run's first episode,
@@ -5903,7 +5926,19 @@ class LoopSupervisor:
         # one code path is easier to trust than two, a non-terminal state
         # event never ends anyone's stream, and a fresh run's log now opens
         # with its own lifecycle transition. `resumed` says which case it is.
-        self.run.emit("state", state="running",
+        parked = self._opening_parked_question
+        if parked is not None:
+            # v0.36 E.2: a run parked on a question stays parked. The question
+            # (with its absolute `expiresAt`) and the reason it was parked on
+            # belong to the run, not to the process that wrote them, so the
+            # episode's opening write above is undone for exactly these keys
+            # and this episode waits the park out (`_resume_point` -> `paused`).
+            self.run.update_status(
+                state=AWAITING_INPUT_STATE,
+                pauseReason=opening_status.get("pauseReason"),
+                inputQuestion=parked)
+        self.run.emit("state",
+                      state=AWAITING_INPUT_STATE if parked else "running",
                       resumed=self._resuming_existing_run_dir())
         # Task 005 (requirement E, #99): apply any operator status ruling
         # recorded on the read-only amendments mount BEFORE this episode
@@ -14016,9 +14051,9 @@ class LoopSupervisor:
                 approach, decision.step == ladder.STEP_CURE))
         if decision.step == ladder.STEP_PARK:
             if not self.cfg.operator_input_needed_pause:
-                return self._rejection_unanswered_outcome(
-                    judge, approach, decision.trigger, curable=curable,
-                    rounds_spent=rounds_spent, signature=signature)
+                return self._input_timeout_at_park(
+                    judge, approach, decision.trigger, blocking=blocking,
+                    signature=signature)
             replan_available = approach < self.cfg.max_approaches
             if review:
                 self._pause_and_escalate_operator_input_needed(
@@ -14046,18 +14081,71 @@ class LoopSupervisor:
         self._advance(judge, "cure", edge)
         return ("advance", "cure", edge)
 
-    def _rejection_unanswered_outcome(
+    def _input_timeout_at_park(
         self, judge: str, approach: int, trigger: str | None, *,
-        curable: bool, rounds_spent: bool, signature: str | None,
+        blocking: list[dict], signature: str | None,
     ) -> tuple:
-        """What a park resolves to when nobody is asked: a reviewer
-        escalation over curable findings with rounds left cures now; any other
-        park archives the approach and replans while one is left (the last
-        approach ends the run the way it always has)."""
-        if (trigger == ladder.TRIGGER_REVIEWER_ESCALATION and curable
-                and not rounds_spent):
+        """`operator_input_needed_pause: false` (D.3): the input timeout
+        fires at the moment of the park. The run never waits and never leaves
+        `running`, but it still records the park (`input.parked`, with
+        `expiresAt` equal to the park time) and the outcome
+        (`input.timed_out`), then takes the same outcome a lapsed timeout
+        takes (`_take_input_timeout_outcome`)."""
+        now = self._now_epoch()
+        used = (self._cure_passes_for_approach(approach)
+                + self._gate_cure_passes_for_approach(approach))
+        question = state.build_input_question(
+            judge=judge, trigger=trigger or "cure_rounds_spent",
+            blocking=blocking, cure_rounds_used=used,
+            cure_rounds_allowed=self._cure_rounds_allowed(approach),
+            approach=approach, max_approaches=self.cfg.max_approaches,
+            parked_at_epoch=now, timeout_min=0)
+        question["expiresAt"] = question["parkedAt"]
+        self.run.emit("input.parked", timeoutAtPark=True,
+                      **{k: v for k, v in question.items()
+                         if k != "parkedAt"})
+        return self._take_input_timeout_outcome(
+            question, signature=signature)
+
+    def _input_timeout_outcome(self, question: dict) -> str:
+        """What the input timeout does on `question` (PRD E.3), recomputed
+        from the live budgets rather than read back from the `onTimeout` the
+        park recorded: an operator top-up between the park and the expiry
+        changes the answer."""
+        approach = int(question.get("approach") or self._current_approach())
+        left = (self._cure_rounds_allowed(approach)
+                - self._cure_passes_for_approach(approach)
+                - self._gate_cure_passes_for_approach(approach))
+        return state.input_on_timeout(
+            str(question.get("trigger") or "cure_rounds_spent"), left,
+            approach, int(self.cfg.max_approaches),
+            all(f.get("curable") is True
+                for f in question.get("findings") or []))
+
+    def _take_input_timeout_outcome(
+        self, question: dict, *, signature: str | None = None,
+    ) -> tuple:
+        """Act as if the operator answered, with the outcome the park's
+        trigger names (E.3), and record `input.timed_out` naming it: a
+        reviewer escalation with cure rounds left cures now from the
+        remaining allowance; every other findings park archives and replans
+        on the next approach, or -- with none left -- holds `exhausted`
+        (approaches)."""
+        judge = str(question.get("judge") or "review")
+        approach = int(question.get("approach") or self._current_approach())
+        outcome = self._input_timeout_outcome(question)
+        self.run.emit("input.timed_out", outcome=outcome, judge=judge,
+                      trigger=question.get("trigger"), approach=approach,
+                      maxApproaches=int(self.cfg.max_approaches),
+                      expiresAt=question.get("expiresAt"),
+                      timeoutMin=self.cfg.input_timeout_min)
+        if outcome == state.INPUT_ON_TIMEOUT_CURE_NOW:
             return self._rejection_cure_outcome(judge, approach)
-        return self._archive_and_replan_outcome(judge, approach, signature)
+        return self._archive_and_replan_outcome(
+            judge, approach, signature,
+            note=(f"every approach is spent ({approach}/"
+                  f"{self.cfg.max_approaches}) and the input timeout fired "
+                  "with the park unanswered"))
 
     def _archive_and_replan_outcome(
         self, judge: str, approach: int, signature: str | None,
@@ -14184,8 +14272,14 @@ class LoopSupervisor:
         if not self.budget_left():
             self._budget_exhausted_tail = True
             return ("tail",)
-        reason = self.run.read_status().get("pauseReason")
-        await self._gate()
+        opening = self.run.read_status()
+        reason = opening.get("pauseReason")
+        if (opening.get("state") == AWAITING_INPUT_STATE
+                and isinstance(opening.get("inputQuestion"), dict)):
+            if await self._wait_for_answer_or_expiry():
+                return self._carry_out_input_timeout()
+        else:
+            await self._gate()
         answered = self._take_input_answer()
         if answered is not None:
             return self._carry_out_input_answer(answered)
@@ -14222,6 +14316,74 @@ class LoopSupervisor:
             return ("advance", "verdict_gate", "paused_resumed_verdict_gate")
         self._advance("paused", "review", "paused_resumed")
         return ("advance", "review", "paused_resumed")
+
+    # Longest single wait on the park's release before the expiry is read
+    # again: bounds how late a live `--input-timeout` change is noticed.
+    _INPUT_WAIT_SLICE_S = 30.0
+
+    async def _wait_pause_event(self, timeout_s: float) -> bool:
+        """Wait up to `timeout_s` for the park to be released
+        (`resume()`/an answer sets `self._pause`); True when it was. The seam
+        the fake-clock tests replace to move time without sleeping."""
+        try:
+            await asyncio.wait_for(self._pause.wait(), timeout_s)
+        except asyncio.TimeoutError:
+            return False
+        return True
+
+    async def _wait_for_answer_or_expiry(self) -> bool:
+        """The `awaiting_input` park (PRD E.2): wait until an answer
+        releases it (returns False) or the question's absolute `expiresAt`
+        passes (returns True). `expiresAt` is read from status.json on every
+        turn, so it is the persisted instant a restarted engine keeps, and a
+        live `--input-timeout` change moves it. A question with no expiry
+        (timeout 0, a `secret` park) waits for an answer for ever. The time
+        spent parked is credited back onto the run deadline, exactly as an
+        operator pause is, measured on the same clock `expiresAt` is."""
+        started = self._now_epoch()
+        expired = False
+        while not self._pause.is_set():
+            expiry = state.input_expiry_epoch(
+                self.run.read_status().get("inputQuestion"))
+            now = self._now_epoch()
+            if expiry is not None and now >= expiry:
+                expired = True
+                break
+            slice_s = (self._INPUT_WAIT_SLICE_S if expiry is None
+                       else min(self._INPUT_WAIT_SLICE_S, expiry - now))
+            await self._wait_pause_event(slice_s)
+        self._account_paused_wait(self._now_epoch() - started)
+        return expired
+
+    def _carry_out_input_timeout(self) -> tuple:
+        """The park lapsed with no answer: release it and take the timeout
+        outcome from the judge's own position (`paused -> review|
+        verdict_gate`), as `_carry_out_input_answer` does for an answer."""
+        question = dict(self.run.read_status().get("inputQuestion") or {})
+        judge = ("verdict_gate" if question.get("judge") == "verdict_gate"
+                 else "review")
+        approach = int(question.get("approach") or self._current_approach())
+        self.resume()
+        self._advance("paused", judge, "paused_resumed_verdict_gate"
+                      if judge == "verdict_gate" else "paused_resumed")
+        signatures = self.run.read_status().get("rejectionSignatures") or {}
+        return self._take_input_timeout_outcome(
+            question, signature=signatures.get(str(approach)))
+
+    def set_input_timeout_min(self, value: float) -> None:
+        """v0.36 E.1: change the input timeout of a LIVE run
+        (`ralphctl budget <run> --input-timeout N|+N`). A run already parked
+        gets its `expiresAt` moved to `parkedAt` plus the new timeout (`null`
+        for 0); the waiting loop reads it again within one wait slice. The
+        caller (api.py) owns validation and the audit event."""
+        self.cfg.input_timeout_min = value
+        status = self.run.read_status()
+        question = status.get("inputQuestion")
+        if (status.get("state") == AWAITING_INPUT_STATE
+                and isinstance(question, dict)):
+            question = dict(question)
+            question["expiresAt"] = state.input_expires_at(question, value)
+            self.run.update_status(inputQuestion=question)
 
     def _cure_passes_for_approach(self, approach: int) -> int:
         """Task 009 (requirement C.1, #141): `curePasses[approach]` as

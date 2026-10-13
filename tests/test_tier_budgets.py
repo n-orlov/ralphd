@@ -885,8 +885,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # the new tests/test_answer_outcomes.py (+40, one module) and the rewritten
     # retired-proceed, ruling-release and hub-panel nodes, measured
     # `--collect-only` -> fast 8601/541, smoke 6823/414.
-    "fast": {"tests": 8601, "modules": 541},
-    "smoke": {"tests": 6823, "modules": 414},
+    # v0.36 input timeout: the new tests/test_input_timeout.py (+32, one
+    # module), measured `--collect-only` -> fast 8633/542, smoke 6855/415.
+    "fast": {"tests": 8633, "modules": 542},
+    "smoke": {"tests": 6855, "modules": 415},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

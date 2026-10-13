@@ -1005,16 +1005,49 @@ def input_question_findings(blocking: list[dict]) -> list[dict]:
 
 
 def input_on_timeout(trigger: str, cure_rounds_left: int, approach: int,
-                     max_approaches: int) -> str:
+                     max_approaches: int, all_curable: bool = True) -> str:
     """What the engine does when the input timeout fires on a park (PRD E.3):
     a reviewer escalation with cure rounds left on this approach cures now
     from the remaining allowance; every other findings park moves to the next
-    approach, or -- with none left -- holds `exhausted` (`approaches`)."""
-    if trigger == "reviewer_escalation" and cure_rounds_left > 0:
+    approach, or -- with none left -- holds `exhausted` (`approaches`). The
+    timeout acts as an answer that accepts every finding, and an answer that
+    cures is refused for a finding that is `curable: false` (cure rounds
+    cannot fix it), so an escalation over such a finding takes the
+    next-approach row instead."""
+    if (trigger == "reviewer_escalation" and cure_rounds_left > 0
+            and all_curable):
         return INPUT_ON_TIMEOUT_CURE_NOW
     if approach < max_approaches:
         return INPUT_ON_TIMEOUT_NEXT_APPROACH
     return INPUT_ON_TIMEOUT_EXHAUSTED
+
+
+def input_expires_at(question: dict, timeout_min: float | None) -> str | None:
+    """`question`'s `expiresAt` for an input timeout of `timeout_min`
+    minutes: `parkedAt` plus the timeout, absolute; `None` for `0`/negative
+    and always for a `secret` question, which never expires (PRD E.3)."""
+    if question.get("kind") == "secret":
+        return None
+    minutes = DEFAULT_INPUT_TIMEOUT_MIN if timeout_min is None else timeout_min
+    parked = question.get("parkedAt")
+    if not minutes or minutes <= 0 or not parked:
+        return None
+    return utc_from_epoch(parse_utc(parked) + minutes * 60)
+
+
+def input_expiry_epoch(question: dict | None) -> float | None:
+    """The absolute UTC epoch a parked `inputQuestion` expires at, read from
+    its persisted `expiresAt`; `None` when it never expires (or the value is
+    unreadable, which must never be mistaken for "already expired")."""
+    if not isinstance(question, dict) or question.get("kind") == "secret":
+        return None
+    raw = question.get("expiresAt")
+    if not raw:
+        return None
+    try:
+        return parse_utc(str(raw))
+    except ValueError:
+        return None
 
 
 def build_input_question(
@@ -1045,7 +1078,8 @@ def build_input_question(
         "expiresAt": expires_at,
         "onTimeout": input_on_timeout(
             trigger, cure_rounds_allowed - cure_rounds_used, approach,
-            max_approaches),
+            max_approaches,
+            all(f["curable"] for f in input_question_findings(blocking))),
     }
 
 

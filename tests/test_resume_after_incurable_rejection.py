@@ -1,10 +1,11 @@
 """Task 007 (deferred out of task 006, requirement B.2, #111), re-pinned for
 v0.36 requirement B (the incurable rejection is a trigger of the one ladder
-park, `operator_input_needed`): resuming a
-run that was parked by an incurable rejection must land BACK at
-`review` -- never at a fresh approach (`replan`) and never at a throwaway
-`worker` iteration first -- and the operator ruling recorded while it sat
-paused must still be visible to that review iteration.
+park, `operator_input_needed`) and requirement E.2 (a park survives a
+restart): the resume-point routing of a pre-0.36 run recorded as `running`
+over an incurable escalation still lands BACK at `review` -- never at a fresh
+approach (`replan`) and never at a throwaway `worker` iteration first -- while
+a run recorded `awaiting_input` stays parked, with its `expiresAt`, for a fresh
+engine process.
 
 Two supervisors drive the same on-disk run dir, standing in for two engine
 episodes over one `ralphctl resume` the way `tests/test_resume.py` uses two
@@ -19,26 +20,27 @@ restarted container leaves behind, since `self._pause` is an in-memory
    after episode 1's pause, and `_resume_point()` returns `(approach, False,
    "review")` for episode 2 -- never `"replan"`, never the ordinary
    skip-planning default that would land at `worker`.
-2. Driving episode 2 through the real dispatch loop (`_run_job_core()`) with
-   a stub runner that only ever answers a `review`-phase prompt proves the
-   routing end to end: exactly ONE iteration runs, it is that review
-   iteration, and it contains the operator ruling text recorded (via
-   `ralphctl amend`, `state.write_amendment`) into `CONFIG_DIR` WHILE episode
-   1 was still paused -- proving the ruling is visible to the very review
-   iteration resume lands on, not merely present on disk somewhere.
+2. Driving episode 2 through the real dispatch loop (`_run_job_core()`):
+   v0.36 requirement E.2 keeps a run parked in `awaiting_input` parked across
+   a restart, with the same `expiresAt`, so episode 2 waits for an answer (or
+   takes the timeout outcome when the expiry already passed) instead of
+   re-judging. The routing in 1. is what a pre-0.36 `running` status with the
+   escalation on record still gets.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 from ralphd.engine import findings, loop as loop_mod
 from ralphd.engine.config import JobConfig
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
-from ralphd.engine.state import RunDir, atomic_write_json, write_amendment
+from ralphd.engine.state import (
+    RunDir, atomic_write_json, read_events, write_amendment)
 from tests.conftest import make_supervisor
 
 AMENDMENT_MARKER = "Operator rulings (task 028, #26)"
@@ -153,56 +155,58 @@ def test_a_completed_iteration_since_the_escalation_stops_the_predicate(tmp_path
 #    the operator ruling recorded while paused.
 # ---------------------------------------------------------------------------
 
-def test_resume_lands_on_review_and_sees_the_ruling_recorded_while_paused(
+def test_a_restart_over_the_park_stays_parked_and_a_ruling_does_not_release_it(
         tmp_path, monkeypatch):
+    """v0.36 E.2/H: a fresh engine process over a run parked in
+    `awaiting_input` no longer lands back on `review` (the 0.35 shape this
+    node used to pin): it keeps the question and its `expiresAt` and waits for
+    `ralphctl answer`. A ruling recorded while parked reaches the judges (the
+    review-prompt half is pinned by tests/test_operator_ruling_review_verdict.py)
+    but never releases the park (D.1); the answer then carries the run on."""
     root = tmp_path / "run"
-    _pause_via_incurable_rejection(root)
+    sup1 = _pause_via_incurable_rejection(root)
+    parked_question = dict(sup1.run.read_status()["inputQuestion"])
+    iterations_before = sup1.iterations_used
 
-    # The operator's ruling, written HOST-SIDE via `ralphctl amend --waive`
-    # (`state.write_amendment`) WHILE the run sat paused -- after episode 1
-    # already escalated, before episode 2 ever starts.
     cdir = tmp_path / "config"
     write_amendment(cdir, "001", "Waived: the missing docker.sock is an "
                     "environment fact, not something this run can fix.",
                     waive=True)
     monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
 
-    prompts: list[str] = []
+    sup2 = _supervisor(root, "task007-resume", status=None)
+    seen = {}
 
-    async def _review_sees_the_ruling(prompt, transcript, **kw):
-        prompts.append(prompt)
-        assert AMENDMENT_MARKER in prompt
-        assert "Waived: the missing docker.sock" in prompt
-        # A real review hat re-runs curability on THIS pass and, seeing
-        # the operator's waiver, writes a fresh sidecar with no blocking
-        # findings left -- `_review_verdict` recomputes the verdict from
-        # findings.json on disk (task 002), so leaving episode 1's stale
-        # incurable finding in place would make this episode reject again
-        # (and re-pause) no matter what verdict this stub claims.
-        findings.write_findings_json(sup2.run.findings_json_file, [])
-        return _result(json.dumps({"verdict": "verified"}))
+    async def _wait(timeout_s: float) -> bool:
+        if not seen:
+            status = sup2.run.read_status()
+            seen["state"] = status["state"]
+            seen["question"] = dict(status["inputQuestion"])
+            # the operator answers: the one finding is waived
+            sup2.answer(waive=["F1"], note="docker.sock is an environment fact")
+        return sup2._pause.is_set()
+    sup2._wait_pause_event = _wait  # type: ignore[method-assign]
 
-    sup2 = _supervisor(root, "task007-resume")
-    sup2.runner.run = _review_sees_the_ruling  # type: ignore[method-assign]
+    async def _no_judge_runs(prompt, transcript, **kw):
+        raise AssertionError("a restart over a park runs no judge")
+    sup2.runner.run = _no_judge_runs  # type: ignore[method-assign]
 
-    state = asyncio.run(sup2._run_job_core())
+    state = asyncio.run(asyncio.wait_for(sup2._run_job_core(), 60))
 
+    assert seen["state"] == "awaiting_input"
+    assert seen["question"] == parked_question
     assert state == "succeeded"
-    # exactly one iteration ran in this episode, and it was the review one
-    # the resume routed to directly -- not a worker iteration first, and
-    # not a fresh approach's planning/worker pass.
-    assert sup2.iterations_used == 2  # episode 1's review + this one
-    assert len(prompts) == 1
-    assert AMENDMENT_MARKER in prompts[0]
+    # the answer verified the approach: no iteration ran in this episode.
+    assert sup2.iterations_used == iterations_before
 
 
-def test_resume_without_any_ruling_still_lands_on_review_and_rejects_again(
+def test_a_restart_over_an_expired_park_takes_the_timeout_outcome_not_a_rejudge(
         tmp_path, monkeypatch):
-    """Same resume routing, but with an EMPTY `CONFIG_DIR` (no ruling ever
-    written) -- proving the `succeeded` outcome above is caused by the
-    ruling reaching review, not by anything else in the fixture, exactly
-    the way `tests/test_operator_ruling_review_verdict.py` pairs its two
-    cases."""
+    """The sibling of the node above with nobody answering: the park expired
+    while the container was down, so the fresh process takes the timeout
+    outcome at once -- here no approach is left, so the run holds `exhausted`
+    (approaches) on the SAME approach, without re-asking the judge (the 0.35
+    shape of this node let an unanswered rejection re-run `review`)."""
     root = tmp_path / "run"
     _pause_via_incurable_rejection(root)
 
@@ -210,34 +214,21 @@ def test_resume_without_any_ruling_still_lands_on_review_and_rejects_again(
     cdir.mkdir(parents=True)
     monkeypatch.setattr(loop_mod, "CONFIG_DIR", cdir)
 
+    sup2 = _supervisor(root, "task007-resume", status=None, max_approaches=1)
+    sup2._now_epoch = lambda: time.time() + 2 * 3600   # past the 60 min expiry
     calls = []
 
-    async def _review_rejects_again(prompt, transcript, **kw):
+    async def _no_judge_runs(prompt, transcript, **kw):
         calls.append(prompt)
-        assert AMENDMENT_MARKER not in prompt
-        return _result(json.dumps({
-            "verdict": "rejected", "reason": "still no operator ruling",
-            "findings_path": "review-findings.md"}))
+        raise AssertionError("an expired park is not judged again")
+    sup2.runner.run = _no_judge_runs  # type: ignore[method-assign]
 
-    sup2 = _supervisor(root, "task007-resume", max_approaches=1,
-                       operator_input_needed_pause=False)
-    # Re-seed the same all-incurable finding so this second episode's
-    # review rejects it again -- with the park disabled and only one
-    # approach available the rejection ends the run
-    # (`rejected_no_approach_left`), which is fine: the point pinned
-    # here is that resume reached `review` at all, on the SAME approach.
-    findings.write_findings_json(
-        sup2.run.findings_json_file,
-        [_finding("blocking", False, "requirement B (#111)",
-                 "the endpoint has no docker.sock in this container")])
-    sup2.runner.run = _review_rejects_again  # type: ignore[method-assign]
+    state = asyncio.run(asyncio.wait_for(sup2._run_job_core(), 60))
 
-    state = asyncio.run(sup2._run_job_core())
-
-    # no approach left and the park disabled: the unanswered park holds
-    # the run `exhausted` (approaches) rather than ending it `failed`.
-    assert state == "exhausted"
-    assert len(calls) == 1
+    assert state == "exhausted" and not calls
     status = sup2.run.read_status()
-    # never bumped to a fresh approach: `_resume_point()` kept it at 1.
+    assert status["exhaustedBudget"] == "approaches"
+    # never bumped to a fresh approach.
     assert (status.get("approach") or 1) == 1
+    fired = [e for e in read_events(root) if e.get("type") == "input.timed_out"]
+    assert [e["outcome"] for e in fired] == ["exhausted_approaches"]
