@@ -1,0 +1,4 @@
+scaler: started ci-runner-101
+scaler: no runner config for job 102: GitHub API POST /repos/n-orlov/ralphd/actions/runners/generate-jitconfig: HTTP 422
+scaler: started ci-runner-102
+scaler: started ci-runner-103

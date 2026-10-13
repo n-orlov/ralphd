@@ -1,0 +1,4 @@
+WARNING  ralphd.loop:loop.py:2746 iteration worker classified infra fault (attempt 1, 0s of the 1000s outage budget waited): connect ECONNREFUSED 127.0.0.1:4000
+WARNING  ralphd.loop:loop.py:2746 iteration worker classified infra fault (attempt 2, 0s of the 1000s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2746 iteration worker classified infra fault (attempt 3, 0s of the 1000s outage budget waited): getaddrinfo EAI_AGAIN gateway.internal
+WARNING  ralphd.loop:loop.py:2746 iteration worker classified infra fault (attempt 4, 1s of the 1000s outage budget waited): upstream 503 Service Unavailable

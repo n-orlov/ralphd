@@ -1,0 +1,2 @@
+WARNING  ralphd.config:config.py:211 billing basis 'subscription' contradicts harness 'codex' (never 'subscription') -- using 'metered'
+WARNING  ralphd.config:config.py:211 billing basis 'subscription' contradicts harness 'codex' (never 'subscription') -- using 'metered'

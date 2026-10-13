@@ -1,0 +1,3 @@
+scaler: cannot tell which images localhost:5000/pulled:1 denote; every job-image clock restarts
+scaler: removed image ralphd:test-ci-300-1
+scaler: removed image ralphd:test-ci-400-1

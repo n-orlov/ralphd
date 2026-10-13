@@ -1,0 +1,14 @@
+scaler: cannot remove image ci-runner:000000000004: docker rmi failed: fake docker: injected failure of docker rmi
+scaler: cannot remove image ci-runner:000000000005: docker rmi failed: fake docker: injected failure of docker rmi
+scaler: cannot remove image ci-runner:000000000004: docker rmi failed: fake docker: injected failure of docker rmi
+scaler: cannot remove image ci-runner:000000000005: docker rmi failed: fake docker: injected failure of docker rmi
+scaler: cannot remove image ralphd:test-ci-100-1: docker rmi failed: fake docker: injected failure of docker rmi
+scaler: cannot remove image ralphd:test-ci-100-1-base: docker rmi failed: fake docker: injected failure of docker rmi
+scaler: cannot remove image ralphd:test-ci-200-1: docker rmi failed: fake docker: injected failure of docker rmi
+scaler: cannot remove image ralphd:test-ci-200-1-base: docker rmi failed: fake docker: injected failure of docker rmi
+scaler: removed image ci-runner:000000000004
+scaler: removed image ci-runner:000000000005
+scaler: removed image ralphd:test-ci-100-1
+scaler: removed image ralphd:test-ci-100-1-base
+scaler: removed image ralphd:test-ci-200-1
+scaler: removed image ralphd:test-ci-200-1-base

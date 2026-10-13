@@ -1,0 +1,1 @@
+scaler: cannot tell which images localhost:5000/unknown:1 denote; every job-image clock restarts

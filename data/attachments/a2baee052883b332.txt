@@ -1,0 +1,1 @@
+ERROR    ralphd:main.py:315 hat 'worker' runs on the claude-code harness but is configured with model 'aigw-openai/x', whose provider 'aigw-openai' is not 'anthropic'; the claude-code harness only serves anthropic models

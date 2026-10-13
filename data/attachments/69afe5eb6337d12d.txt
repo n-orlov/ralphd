@@ -1,0 +1,8 @@
+WARNING  ralphd.config:config.py:178 billing ['not', 'a', 'dict'] is not a mapping -- run is not stamped
+WARNING  ralphd.config:config.py:201 billing basis 'prepaid' is not one of metered|subscription|chargeback|free -- using 'metered'
+WARNING  ralphd.config:config.py:207 billing basis 'metered' contradicts harness 'claude-code' (always 'subscription') -- using 'subscription'
+WARNING  ralphd.config:config.py:197 billing payer ' ' is not a non-blank string -- using 'gw'
+WARNING  ralphd.config:config.py:197 billing payer None is not a non-blank string -- using '(unlabelled payer)'
+WARNING  ralphd.config:config.py:201 billing basis None is not one of metered|subscription|chargeback|free -- using 'metered'
+WARNING  ralphd.config:config.py:186 billing label 'x\nspend:     $999.00' holds control characters -- using 'x spend:     $999.00'
+WARNING  ralphd.config:config.py:186 billing label 'Max\r\n plan' holds control characters -- using 'Max  plan'

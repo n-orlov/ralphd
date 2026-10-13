@@ -1,0 +1,1 @@
+WARNING  ralphd.pricing:pricing.py:174 pricing: ignoring unusable rate for 'm'

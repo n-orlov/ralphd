@@ -1,0 +1,1 @@
+ERROR    ralphd.loop:loop.py:8132 refusing to push: commit 43eb12d8bc2c's message matches a known secret value for variable 'SYNTHETIC_DIGEST_API_TOKEN'

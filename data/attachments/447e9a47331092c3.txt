@@ -1,0 +1,1 @@
+ERROR    ralphd:main.py:315 hat 'verify' tier 'hard' is configured with model 'bogus-provider/some-model', whose provider 'bogus-provider' is not one of the providers this profile declares (good-provider)

@@ -1,0 +1,16 @@
+scaler: building ci-runner:636ef82c313d
+scaler: started ci-runner-101
+scaler: started ci-runner-102
+scaler: started ci-runner-103
+scaler: no post-mortem for ci-runner-101: docker inspect failed: fake docker: unsupported command: inspect
+scaler: removed ci-runner-101: job completed
+scaler: no post-mortem for ci-runner-102: docker inspect failed: fake docker: unsupported command: inspect
+scaler: removed ci-runner-102: job still queued past start_deadline_s
+scaler: no post-mortem for ci-runner-103: docker inspect failed: fake docker: unsupported command: inspect
+scaler: removed ci-runner-103: job still queued past start_deadline_s
+scaler: started ci-runner-102
+scaler: started ci-runner-103
+scaler: no post-mortem for ci-runner-102: docker inspect failed: fake docker: unsupported command: inspect
+scaler: removed ci-runner-102: past job_deadline_s
+scaler: no post-mortem for ci-runner-103: docker inspect failed: fake docker: unsupported command: inspect
+scaler: removed ci-runner-103: past job_deadline_s

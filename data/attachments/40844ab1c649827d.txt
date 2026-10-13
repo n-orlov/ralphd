@@ -1,0 +1,10 @@
+scaler: pass failed: GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: <urlopen error refused>
+scaler: GitHub API call failed (GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: <urlopen error refused>); retrying in 5s
+scaler: pass failed: GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: <urlopen error refused>
+scaler: GitHub API call failed (GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: <urlopen error refused>); retrying in 10s
+scaler: pass failed: GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: <urlopen error refused>
+scaler: GitHub API call failed (GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: <urlopen error refused>); retrying in 20s
+scaler: pass failed: GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: <urlopen error refused>
+scaler: GitHub API call failed (GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: <urlopen error refused>); retrying in 40s
+scaler: pass failed: GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: <urlopen error refused>
+scaler: GitHub API call failed (GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: <urlopen error refused>); retrying in 60s

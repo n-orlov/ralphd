@@ -1,0 +1,3 @@
+scaler: no post-mortem for ci-runner-101: docker inspect failed: fake docker: unsupported command: inspect
+scaler: removed ci-runner-101: exited
+scaler: cannot read job 102, keeping ci-runner-102: GitHub API GET /repos/n-orlov/ralphd/actions/jobs/102: HTTP 503

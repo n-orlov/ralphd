@@ -1,0 +1,2 @@
+WARNING  ralphd.runner:runner.py:1046 cost: provider quoted $0 for billable tokens; treated as an unpriced route (declare its rates, or declare it free, in `pricing:` to settle it) (model=amazon-bedrock/eu.anthropic.claude-opus-5, 1011256 tokens)
+WARNING  ralphd.runner:runner.py:1046 cost: provider quoted $0 for billable tokens; treated as an unpriced route (declare its rates, or declare it free, in `pricing:` to settle it) (model=amazon-bedrock/eu.anthropic.claude-opus-5, 1011256 tokens)

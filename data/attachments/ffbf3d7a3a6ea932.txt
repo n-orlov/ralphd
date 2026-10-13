@@ -1,0 +1,3 @@
+scaler: removed image ralphd:test-ci-400-1
+scaler: removed image ralphd:test-ci-300-1
+scaler: removed image ralphd:test-ci-301-1

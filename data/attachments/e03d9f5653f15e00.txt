@@ -1,0 +1,1 @@
+WARNING  ralphd.config:config.py:310 job.yaml's `model_strategy`/`fast_model` keys are retired (task 006) -- translated deterministically into an equivalent `models:` table naming every hat: {'planning': 'S', 'worker': 'F', 'verify': 'F', 'review': 'S', 'reflect': 'S'}. Update job.yaml to spell this directly as `models:` (or `model_overrides:`).

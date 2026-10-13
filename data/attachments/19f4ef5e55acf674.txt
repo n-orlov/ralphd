@@ -1,0 +1,1 @@
+WARNING  ralphd.config:config.py:162 price_strategy 'nonsense' is not one of none|aws -- using 'none'

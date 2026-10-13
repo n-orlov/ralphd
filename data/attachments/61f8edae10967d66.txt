@@ -1,0 +1,4 @@
+scaler: pass failed: GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: HTTP 429
+scaler: GitHub API call failed (GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: HTTP 429); retrying in 86400s
+scaler: building ci-runner:636ef82c313d
+scaler: started ci-runner-101

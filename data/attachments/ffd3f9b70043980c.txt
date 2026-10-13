@@ -1,0 +1,7 @@
+scaler: building ci-runner:112524146961
+scaler: started ci-runner-200
+scaler: started ci-runner-201
+scaler: started ci-runner-202
+scaler: started ci-runner-203
+scaler: no post-mortem for ci-runner-200: docker inspect failed: fake docker: unsupported command: inspect
+scaler: no post-mortem for ci-runner-201: docker inspect failed: fake docker: unsupported command: inspect

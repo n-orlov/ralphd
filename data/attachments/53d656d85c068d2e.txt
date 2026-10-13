@@ -1,0 +1,2 @@
+scaler: pass failed: GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: HTTP 503
+scaler: GitHub API call failed (GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: HTTP 503); retrying in 5s

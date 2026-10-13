@@ -1,0 +1,6 @@
+scaler: no post-mortem for ci-runner-101: docker inspect failed: fake docker: unsupported command: inspect
+scaler: cannot remove ci-runner-101: docker rm failed: fake docker: injected failure of docker rm
+scaler: no post-mortem for ci-runner-101: docker inspect failed: fake docker: unsupported command: inspect
+scaler: cannot remove ci-runner-101: docker rm failed: fake docker: injected failure of docker rm
+scaler: no post-mortem for ci-runner-101: docker inspect failed: fake docker: unsupported command: inspect
+scaler: removed ci-runner-101: exited

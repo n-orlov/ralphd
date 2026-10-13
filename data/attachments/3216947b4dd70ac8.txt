@@ -1,0 +1,1 @@
+ERROR    ralphd:main.py:315 hat 'worker' is configured with model 'anthropic/claude-sonnet-5', whose provider 'anthropic' is not one of the providers this profile declares (good-provider)

@@ -1,0 +1,3 @@
+scaler: the event log no longer holds the previous marker; every job-image clock restarts
+scaler: removed image ralphd:test-ci-300-1
+scaler: removed image ralphd:test-ci-400-1

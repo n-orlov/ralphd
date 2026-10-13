@@ -1,0 +1,3 @@
+COMMIT_SCAN_ANSWER_COMMANDS ['ralphctl unpause task005-escalation-undelivered-marker']
+unpaused
+COMMIT_SCAN_ANSWER ralphctl unpause task005-escalation-undelivered-marker running None

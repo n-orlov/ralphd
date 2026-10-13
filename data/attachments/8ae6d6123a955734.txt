@@ -1,0 +1,7 @@
+WARNING  ralphd.loop:loop.py:20232 task 058 consumed all 3 validation attempts (failureKind=validation-exhausted); this records the rounds spent, not a judgement that the requirement is unmeetable
+WARNING  ralphd.loop:loop.py:19786 task 058 already exhausted verification attempts (3 of 3); not dispatching verify, failing it as validation-exhausted
+WARNING  ralphd.loop:loop.py:19786 task 058 already exhausted verification attempts (3 of 3); not dispatching verify, failing it as validation-exhausted
+WARNING  ralphd.loop:loop.py:19786 task 058 already exhausted verification attempts (4 of 3); not dispatching verify, failing it as validation-exhausted
+WARNING  ralphd.loop:loop.py:19786 task 058 already exhausted verification attempts (4 of 3); not dispatching verify, failing it as validation-exhausted
+WARNING  ralphd.loop:loop.py:19786 task 058 already exhausted verification attempts (5 of 3); not dispatching verify, failing it as validation-exhausted
+WARNING  ralphd.loop:loop.py:19786 task 058 already exhausted verification attempts (5 of 3); not dispatching verify, failing it as validation-exhausted

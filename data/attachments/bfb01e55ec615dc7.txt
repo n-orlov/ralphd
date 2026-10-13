@@ -1,0 +1,6 @@
+scaler: no runner config for job 811: GitHub API POST /repos/n-orlov/ralphd/actions/runners/generate-jitconfig: HTTP 401
+scaler: pass failed: GitHub API POST /repos/n-orlov/ralphd/actions/runners/generate-jitconfig: HTTP 401
+scaler: GitHub API call failed (GitHub API POST /repos/n-orlov/ralphd/actions/runners/generate-jitconfig: HTTP 401); retrying in 5s
+scaler: started ci-runner-811
+scaler: started ci-runner-812
+scaler: started ci-runner-813

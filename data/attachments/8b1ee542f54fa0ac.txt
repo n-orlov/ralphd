@@ -1,0 +1,5 @@
+scaler: cannot read job 101, keeping ci-runner-101: GitHub API GET /repos/n-orlov/ralphd/actions/jobs/101: HTTP 503
+scaler: no post-mortem for ci-runner-102: docker inspect failed: fake docker: unsupported command: inspect
+scaler: removed ci-runner-102: job still queued past start_deadline_s
+scaler: no post-mortem for ci-runner-103: docker inspect failed: fake docker: unsupported command: inspect
+scaler: removed ci-runner-103: job completed

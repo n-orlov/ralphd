@@ -1,0 +1,11 @@
+scaler: pass failed: GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: timed out
+scaler: GitHub API call failed (GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: timed out); retrying in 5s
+scaler: pass failed: GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: HTTP 503
+scaler: GitHub API call failed (GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: HTTP 503); retrying in 10s
+scaler: pass failed: GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: HTTP 403
+scaler: GitHub API call failed (GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: HTTP 403); retrying in 30s
+scaler: pass failed: GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: HTTP 429
+scaler: GitHub API call failed (GitHub API GET /repos/n-orlov/ralphd/actions/runs?status=queued&per_page=100&page=1: HTTP 429); retrying in 11s
+scaler: building ci-runner:636ef82c313d
+scaler: started ci-runner-102
+scaler: started ci-runner-103

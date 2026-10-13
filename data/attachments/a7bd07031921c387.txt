@@ -1,0 +1,4 @@
+scaler: no post-mortem for ci-runner-201: docker inspect failed: fake docker: unsupported command: inspect
+scaler: removed ci-runner-201: exited
+scaler: no post-mortem for ci-runner-202: docker inspect failed: fake docker: unsupported command: inspect
+scaler: removed ci-runner-202: exited

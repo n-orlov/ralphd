@@ -1,0 +1,1 @@
+WARNING  ralphd.engine.petitions:petitions.py:235 petition Type 'not-a-real-type' in a-wave-petitions.md is not one of the accepted petition types ('environmental', 'temporal', 'contradictory-clauses', 'external', 'self-referential') -- refusing this section rather than silently parsing it to zero entries (obligation: something impossible)

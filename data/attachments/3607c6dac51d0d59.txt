@@ -1,0 +1,1 @@
+ERROR    ralphd.skills:skills.py:327 skills placement verification itself failed: TypeError("test_verification_never_raises_even_if_the_underlying_check_blows_up.<locals>.boom() got an unexpected keyword argument 'extra_targets'")

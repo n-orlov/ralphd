@@ -1,0 +1,5 @@
+WARNING  ralphd.loop:loop.py:2746 iteration verify classified infra fault (attempt 1, 0s of the 1000s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2746 iteration verify classified infra fault (attempt 2, 0s of the 1000s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2746 iteration verify classified infra fault (attempt 3, 0s of the 1000s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2746 iteration verify classified infra fault (attempt 4, 0s of the 1000s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2746 iteration verify classified infra fault (attempt 5, 0s of the 1000s outage budget waited): Connection error.

@@ -1,0 +1,3 @@
+scaler: removed image ci-runner:000000000004
+scaler: cannot mark the event log: docker volume failed: fake docker: injected failure of docker volume; every job-image clock restarts
+scaler: removed image ralphd:test-ci-300-1

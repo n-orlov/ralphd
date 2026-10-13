@@ -1,0 +1,1 @@
+WARNING  ralphd.loop:loop.py:20232 task 001 consumed all 3 validation attempts (failureKind=validation-exhausted); this records the rounds spent, not a judgement that the requirement is unmeetable

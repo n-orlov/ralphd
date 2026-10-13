@@ -1,0 +1,7 @@
+scaler: pass failed: cannot read token file: No such file or directory
+scaler: GitHub API call failed (cannot read token file: No such file or directory); retrying in 5s
+scaler: pass failed: cannot read token file: No such file or directory
+scaler: GitHub API call failed (cannot read token file: No such file or directory); retrying in 10s
+scaler: pass failed: cannot read token file: No such file or directory
+scaler: GitHub API call failed (cannot read token file: No such file or directory); retrying in 20s
+scaler: started ci-runner-101

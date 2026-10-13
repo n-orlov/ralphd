@@ -1,0 +1,4 @@
+WARNING  ralphd.loop:loop.py:5639 the job ended on an infra fault (Connection error.); waiting 0s before the first reflect attempt
+WARNING  ralphd.loop:loop.py:2746 iteration reflect classified infra fault (attempt 1, 0s of the 1s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2746 iteration reflect classified infra fault (attempt 2, 1s of the 1s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:5458 reflect iteration failed (fatal): Connection error.

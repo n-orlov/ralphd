@@ -1,0 +1,1 @@
+WARNING  ralphd.runner:runner.py:1046 cost: provider quoted $0 for billable tokens; treated as an unpriced route (declare its rates, or declare it free, in `pricing:` to settle it) (model=bedrock/opus-5, 220 tokens)
