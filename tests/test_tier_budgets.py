@@ -887,8 +887,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # `--collect-only` -> fast 8601/541, smoke 6823/414.
     # v0.36 input timeout: the new tests/test_input_timeout.py (+32, one
     # module), measured `--collect-only` -> fast 8633/542, smoke 6855/415.
-    "fast": {"tests": 8633, "modules": 542},
-    "smoke": {"tests": 6855, "modules": 415},
+    # v0.36 input-park notifications: the new tests/test_input_timeout_
+    # notifications.py (+15, one module), measured `--collect-only` -> fast
+    # 8648/543, smoke 6870/416.
+    "fast": {"tests": 8648, "modules": 543},
+    "smoke": {"tests": 6870, "modules": 416},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

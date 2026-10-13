@@ -1988,6 +1988,15 @@ the park will take:
 | `cure_rounds_spent` or `incurable`, no approach left | `exhausted_approaches`: the run holds `exhausted` with `exhaustedBudget: approaches`; `ralphctl resume <run> --approaches +1` continues it |
 | `secret` | never expires: `expiresAt` is `null` whatever the setting |
 
+**Notifications of a parked run (v0.36 requirement E.4).** With a `notifier_url`
+configured, a park sends one message (run id, judge, trigger, each finding's
+clause with a one-line summary, `expiresAt`, the timeout outcome and the exact
+`ralphctl answer` command lines), one reminder 10 minutes before `expiresAt`
+(at half the timeout when it is under 20 minutes), and one message when the
+timeout fires naming the outcome taken (SPEC.md §12; a run with `operator_input_needed_pause: false` never parks and sends none). A notifier that errors,
+or none at all, never holds the run: the park still parks and the timeout still
+fires.
+
 `--no-operator-input-needed-pause` (job.yaml `operator_input_needed_pause:
 false`) means the timeout fires at the moment of the park: the run never waits
 on findings, but still emits `input.parked` and `input.timed_out`.

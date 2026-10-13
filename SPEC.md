@@ -7050,6 +7050,32 @@ writes its frames into the job's own artifacts dir (`RALPHD_ARTIFACTS_DIR`,
 defaulting to `/run/ralphd/artifacts`), so the evidence for a UI change is
 produced by the test that verifies it, not assembled afterwards by hand.
 
+### 12.3a Notifications of a parked run
+
+A run parked in `awaiting_input` (§4.5) sends three messages to the configured
+`notifier_url`, each from the engine and each recorded as `notification.sent`
+(or `notification.failed`) like any other notification:
+
+1. **The park message**, exactly one, when the run parks. It carries the run
+   id, the judge, the trigger, each blocking finding's clause with a one-line
+   summary (its severity and curability: the posted text never carries the
+   finding's evidence, which stays in the `operator_escalation` event and the
+   hub), `expiresAt` (`never` when the timeout is `0`), the timeout outcome
+   (`cure_now`, `next_approach` or `exhausted_approaches`) and the exact
+   `ralphctl answer` command lines.
+2. **The reminder**, exactly one, 10 minutes before `expiresAt`, or at half the
+   input timeout when the timeout is under 20 minutes. It is recorded as
+   `reminderSentAt` on `inputQuestion` before it is sent, so a restarted engine
+   never repeats it. A park that never expires (timeout `0`, a `secret` park)
+   has none.
+3. **The timeout message**, when the timeout fires on a parked run, naming the
+   outcome the engine took (§4.5). A run with `operator_input_needed_pause:
+   false` never parks, so it sends none of the three.
+
+A notifier that raises or answers a failure, and a run with no notifier
+configured, never hold or fail the run: the park still parks, the timeout still
+fires at `expiresAt`, and the failure is only a `notification.failed` event.
+
 ### 12.4 Completion hooks
 
 `on_complete_cmd` is the notification hook, and it is deliberately the only one:

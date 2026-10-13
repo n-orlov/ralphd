@@ -1134,7 +1134,14 @@ class LoopSupervisor:
         that one attempt did not.
         """
         for attempt in range(1, self._ESCALATION_DELIVERY_MAX_ATTEMPTS + 1):
-            result = self._notify(text, max_attempts=1)
+            try:
+                result = self._notify(text, max_attempts=1)
+            except Exception:
+                # A notifier that raises is a failed attempt, never a fault
+                # of the run: the park it announces is already on disk.
+                log.exception("escalation notifier raised for run %s",
+                              self.cfg.run_id)
+                result = {"ok": False}
             if self._escalation_delivery_ok(result):
                 return
             if attempt < self._ESCALATION_DELIVERY_MAX_ATTEMPTS:
@@ -14124,6 +14131,7 @@ class LoopSupervisor:
 
     def _take_input_timeout_outcome(
         self, question: dict, *, signature: str | None = None,
+        notify: bool = False,
     ) -> tuple:
         """Act as if the operator answered, with the outcome the park's
         trigger names (E.3), and record `input.timed_out` naming it: a
@@ -14139,6 +14147,18 @@ class LoopSupervisor:
                       maxApproaches=int(self.cfg.max_approaches),
                       expiresAt=question.get("expiresAt"),
                       timeoutMin=self.cfg.input_timeout_min)
+        if notify:
+            # Only a run that really parked (and so announced the park)
+            # announces the timeout: `operator_input_needed_pause: false`
+            # never leaves `running` and sends nothing.
+            self._notify_input_event("\n".join([
+                f"run {self.cfg.run_id}: the input timeout fired on an "
+                "unanswered park",
+                f"judge: {judge}",
+                f"trigger: {question.get('trigger')}",
+                f"expiresAt: {question.get('expiresAt')}",
+                f"outcome taken: {self._timeout_outcome_sentence(question)}",
+            ]))
         if outcome == state.INPUT_ON_TIMEOUT_CURE_NOW:
             return self._rejection_cure_outcome(judge, approach)
         return self._archive_and_replan_outcome(
@@ -14349,8 +14369,15 @@ class LoopSupervisor:
             if expiry is not None and now >= expiry:
                 expired = True
                 break
+            question = self.run.read_status().get("inputQuestion")
+            remind_at = self._input_reminder_epoch(question)
+            if remind_at is not None and now >= remind_at:
+                self._send_input_reminder(question)
+                continue
             slice_s = (self._INPUT_WAIT_SLICE_S if expiry is None
                        else min(self._INPUT_WAIT_SLICE_S, expiry - now))
+            if remind_at is not None:
+                slice_s = min(slice_s, remind_at - now)
             await self._wait_pause_event(slice_s)
         self._account_paused_wait(self._now_epoch() - started)
         return expired
@@ -14368,7 +14395,7 @@ class LoopSupervisor:
                       if judge == "verdict_gate" else "paused_resumed")
         signatures = self.run.read_status().get("rejectionSignatures") or {}
         return self._take_input_timeout_outcome(
-            question, signature=signatures.get(str(approach)))
+            question, signature=signatures.get(str(approach)), notify=True)
 
     def set_input_timeout_min(self, value: float) -> None:
         """v0.36 E.1: change the input timeout of a LIVE run
@@ -14986,6 +15013,96 @@ class LoopSupervisor:
         lines.append("")
         return lines
 
+    # -- the three notifications of an `awaiting_input` park (v0.36 E.4) ----
+    _INPUT_REMINDER_LEAD_S = 600.0
+
+    def _parked_input_question(self) -> dict | None:
+        """The `inputQuestion` the run is parked on, or None."""
+        status = self.run.read_status()
+        question = status.get("inputQuestion")
+        if (status.get("state") == AWAITING_INPUT_STATE
+                and isinstance(question, dict)):
+            return question
+        return None
+
+    def _timeout_outcome_sentence(self, question: dict) -> str:
+        """The park's timeout outcome in words (E.3), recomputed live."""
+        outcome = self._input_timeout_outcome(question)
+        if outcome == state.INPUT_ON_TIMEOUT_CURE_NOW:
+            return (f"{outcome}: accept every finding and cure now from the "
+                    "remaining cure-round allowance")
+        if outcome == state.INPUT_ON_TIMEOUT_NEXT_APPROACH:
+            return (f"{outcome}: accept every finding, archive this approach "
+                    "and replan the next")
+        return (f"{outcome}: accept every finding; no approach is left, so "
+                "the run is held exhausted (approaches)")
+
+    def _park_message_lines(self, question: dict) -> list[str]:
+        """The park notification's own lines: judge, trigger, `expiresAt`, the
+        timeout outcome and the exact `ralphctl answer` command lines."""
+        run_id = self.cfg.run_id
+        findings = [f for f in question.get("findings") or []
+                    if isinstance(f, dict)]
+        first = findings[0].get("id", "F1") if findings else "F1"
+        return [
+            f"judge: {question.get('judge')}",
+            f"trigger: {question.get('trigger')}",
+            f"expiresAt: {question.get('expiresAt') or 'never'}",
+            f"if unanswered: {self._timeout_outcome_sentence(question)}",
+            f"answer: ralphctl answer {run_id}",
+            f"answer: ralphctl answer {run_id} --waive {first}",
+            f"answer: ralphctl answer {run_id} --cure-rounds 0",
+        ]
+
+    def _notify_input_event(self, text: str) -> None:
+        """Send a park reminder or timeout message. Never raises and never
+        holds the run: no notifier configured is a no-op, a notifier that
+        errors or answers a failure leaves the park and the timeout exactly
+        as they were (the failure is recorded as `notification.failed` by the
+        configured notifier)."""
+        if self.notifier is None:
+            return
+        try:
+            self._notify(text[:MAX_NOTIFY_CHARS], max_attempts=1)
+        except Exception:
+            log.exception("input-park notification failed for run %s",
+                          self.cfg.run_id)
+
+    def _input_reminder_epoch(self, question: dict | None) -> float | None:
+        """When the park's one reminder is due: 10 minutes before `expiresAt`,
+        at half the timeout when the timeout is under 20 minutes. None when
+        it was sent, or the park never expires."""
+        if not isinstance(question, dict) or question.get("reminderSentAt"):
+            return None
+        expiry = state.input_expiry_epoch(question)
+        if expiry is None:
+            return None
+        try:
+            parked = state.parse_utc(str(question.get("parkedAt")))
+        except ValueError:
+            return None
+        lead = min(self._INPUT_REMINDER_LEAD_S, max(expiry - parked, 0.0) / 2)
+        return expiry - lead
+
+    def _send_input_reminder(self, question: dict) -> None:
+        """The reminder: marked sent on status.json first so a restarted
+        engine process over the same park never sends it twice."""
+        status = self.run.read_status()
+        current = status.get("inputQuestion")
+        if isinstance(current, dict):
+            self.run.update_status(inputQuestion={
+                **current, "reminderSentAt": state.utc_from_epoch(
+                    self._now_epoch())})
+        lines = [
+            f"run {self.cfg.run_id} is still parked in awaiting_input and "
+            f"the input timeout fires at {question.get('expiresAt')}",
+            f"judge: {question.get('judge')}",
+            f"trigger: {question.get('trigger')}",
+            f"if unanswered: {self._timeout_outcome_sentence(question)}",
+            f"answer: ralphctl answer {self.cfg.run_id}",
+        ]
+        self._notify_input_event("\n".join(lines))
+
     def _operator_escalation_digest_text(
         self, reason: str, approach: int, findings_list: list[dict] | None,
         cure_preview: dict | None = None,
@@ -15054,9 +15171,11 @@ class LoopSupervisor:
         residual = [f for f in findings_list if f.get("severity") == "residual"]
         fields = self._escalation_preview_fields(
             approach, cure_preview or {})
+        question = None
         if reason in ("operator_input_needed",
                       "verdict_gate_operator_input_needed"):
             answer_cmd = self._answer_command_text()
+            question = self._parked_input_question()
         else:
             answer_cmd = self._ruling_then_unpause_answer_cmd()
         header_lines = [
@@ -15076,11 +15195,22 @@ class LoopSupervisor:
                 self._cure_pass_ceiling_grant_note(replan_available))
         if self.cfg.hub_base_url:
             header_lines.append(f"hub: {fields['hubLink']}")
-        header_lines.append(f"answer: {answer_cmd}")
+        if question is not None:
+            header_lines.extend(self._park_message_lines(question))
+        else:
+            header_lines.append(f"answer: {answer_cmd}")
         header = "\n".join(header_lines)
 
-        finding_lines = [f"F{i}: {f.get('clause', '')}"
-                        for i, f in enumerate(blocking, start=1)]
+        # The one-line summary is the finding's severity and curability, never
+        # its evidence: the posted digest stays evidence-free (#269); the full
+        # text is in the event and the hub.
+        finding_lines = []
+        for i, f in enumerate(blocking, start=1):
+            line = f"F{i}: {f.get('clause', '')}"
+            if question is not None:
+                line += (" -- blocking, curable" if f.get("curable") is True
+                         else " -- blocking, not curable")
+            finding_lines.append(line)
         budget = MAX_NOTIFY_CHARS - len(header) - 2
         kept: list[str] = []
         used = 0
