@@ -1,0 +1,1 @@
+ERROR    ralphd:main.py:234 run dir /tmp/pytest-of-ci/pytest-0/popen-gw0/test_amain_exits_run_dir_locke0/run is locked by another live engine (exclusive flock held on /tmp/pytest-of-ci/pytest-0/popen-gw0/test_amain_exits_run_dir_locke0/run/.lock)

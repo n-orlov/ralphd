@@ -1,0 +1,1 @@
+WARNING  ralphd.loop:loop.py:5536 could not remove stale artifacts/reflection/FAILED.md: [Errno 13] Permission denied: '/tmp/pytest-of-ci/pytest-0/popen-gw3/test_an_unremovable_tombstone_0/readonly/artifacts/reflection/FAILED.md'
