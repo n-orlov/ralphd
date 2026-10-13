@@ -6163,6 +6163,47 @@ def cmd_rule(args):
     out(args, res, f"ruling recorded: {res}")
 
 
+def cmd_answer(args):
+    """v0.36 C.2: answer the findings question an `awaiting_input` run is
+    parked on -- the only way to leave that state besides the input timeout.
+
+    Goes through the live engine's `POST /answer` (the one writer the hub
+    panel uses too): `--waive <fid>...` writes each named finding to the
+    clause-bound waiver store, a finding not named is accepted,
+    `--cure-rounds K` (default 1) adds K cure rounds to the current approach
+    and cures now, `--cure-rounds 0` archives the approach and replans the
+    next (`--approaches +N` grants N approaches when none is left), and
+    `--note-file` is recorded as a ruling that reaches both judges and
+    planning. Every blocking finding waived is a verdict `verified`.
+    """
+    _require_run(args.run_id)
+    body: dict = {}
+    if args.waive:
+        body["waive"] = [fid for group in args.waive for fid in group]
+    if args.accept:
+        body["accept"] = [fid for group in args.accept for fid in group]
+    if args.cure_rounds is not None:
+        body["cureRounds"] = args.cure_rounds
+    if args.approaches is not None:
+        spec = str(args.approaches).strip().lstrip("+")
+        if not spec.isdigit() or int(spec) < 1:
+            die(2, "--approaches takes +N (N>=1): the number of approaches "
+                   "an answer with --cure-rounds 0 grants")
+        body["approaches"] = int(spec)
+    if args.note_file:
+        text = Path(args.note_file).read_text()
+        if not text.strip():
+            die(2, "empty --note-file")
+        body["note"] = text
+        if args.name:
+            body["name"] = args.name
+    res = api(args.run_id, "POST", "/answer", body)
+    out(args, res, f"answered: {res.get('outcome')} (waived "
+        f"{res.get('waived') or 'none'}, accepted "
+        f"{res.get('accepted') or 'none'}, cure rounds "
+        f"{res.get('cureRounds')})")
+
+
 _AMEND_SNAPSHOT_NOTICE = (
     "on-disk read: `ralphctl amend` writes host-side into this run's "
     "read-only-mounted /config directory and never touches the API, so "
@@ -7704,6 +7745,7 @@ _HUB_MUTATING_ROUTES = (
     "POST /api/runs/<id>/steer (steer a run)",
     "POST /api/runs/<id>/retry (retry a degraded run now)",
     "POST /api/runs/<id>/rule (record an operator ruling)",
+    "POST /api/runs/<id>/answer (answer a run awaiting input)",
     "POST /api/runs/<id>/unpause (unpause a run)",
     "POST /api/runs/<id>/tasks/<task>/undefer (release a deferred task now)",
 )
@@ -9293,6 +9335,29 @@ def build_parser() -> argparse.ArgumentParser:
                         "positional or stdin form)")
     s.add_argument("--name")
     s.set_defaults(func=cmd_rule)
+
+    s = sub.add_parser("answer", help="answer the findings question an "
+                       "awaiting_input run is parked on: waive or accept each "
+                       "finding, then choose more cure rounds or the next "
+                       "approach (v0.36, #304)")
+    s.add_argument("run_id")
+    s.add_argument("--waive", metavar="FID", nargs="+", action="append",
+                   help="waive these findings (stored against the PRD clause)")
+    s.add_argument("--accept", metavar="FID", nargs="+", action="append",
+                   help="accept these findings (the default for a finding "
+                        "not named)")
+    s.add_argument("--cure-rounds", metavar="K", type=int, default=None,
+                   help="cure rounds to add to this approach and cure now "
+                        "(default 1); 0 archives it and replans the next "
+                        "approach")
+    s.add_argument("--approaches", metavar="+N", default=None,
+                   help="with --cure-rounds 0 and no approach left: grant N "
+                        "approaches, then replan")
+    s.add_argument("--note-file", metavar="PATH",
+                   help="record this file as a ruling (reaches both judges "
+                        "and planning)")
+    s.add_argument("--name", help="ruling file name slug for --note-file")
+    s.set_defaults(func=cmd_answer)
 
     s = sub.add_parser("amend", help="record an operator ruling review must "
                        "honour (waiver/replacement of a task's criteria), or "

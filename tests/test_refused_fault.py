@@ -364,14 +364,16 @@ async def test_unpause_grants_no_proceed_and_a_ruling_does_not_release(
     seen = {}
 
     async def park():
-        seen["ruling_released"] = sup.resume_if_ruling_answers_pause()
+        sup.run.add_ruling("a ruling filed against the hold")
         seen["paused_after_rule"] = _status(sup)["state"]
         sup.resume()
         return 1.0
 
     sup._park_until_resumed = park                       # type: ignore[method-assign]
     await sup.run_iteration("worker")
-    assert seen == {"ruling_released": False, "paused_after_rule": "paused"}
+    # v0.36 D.1: a ruling is recorded but releases nothing.
+    assert seen == {"paused_after_rule": "paused"}
+    assert len(sup.run.ruling_entries()) == 1
     assert not _status(sup).get("noRulingProceed")
 
 

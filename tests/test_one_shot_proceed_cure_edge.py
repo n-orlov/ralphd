@@ -1,15 +1,19 @@
-"""PRD v0.27 C.2/C.3 (#274), peer-gate finding VG-01: the one-shot
-'proceed' a bare unpause of an A.1 (`operator_input_needed`) or gate C.1
-(`verdict_gate_operator_input_needed`) pause grants is spent by the NEXT
-matching rejection, whichever edge that rejection takes.
+"""v0.36 C.3/D.2 (was PRD v0.27 C.2/C.3, #274, peer-gate finding VG-01): the
+one-shot 'proceed' a bare unpause used to grant is gone (`noRulingProceed`);
+its meaning -- "carry on with what the engine would do" -- is the input
+timeout's outcome, or an explicit `POST /answer`. What these nodes still pin
+is the rule the proceed existed for: an answer authorises ONE thing and is
+spent by it.
 
-* Granting cure budget (`PATCH /config/budget curePassCeiling +1`) and then
-  unpausing takes the cure edge, even when the repeated rejection would
-  otherwise raise another same-signature operator gate (a reviewer's
+* Answering a park with `cureRounds: 1` adds one round to the current
+  approach's allowance and takes the cure edge, even when the rejection
+  would otherwise raise another same-signature operator gate (a reviewer's
   `raise_operator_gate`, or the mechanical reopen-validated trigger).
-* The grant never survives that cure: a later same-signature rejection
-  with the ceiling spent again parks afresh instead of archiving on the
+* The answer never survives that cure: a later same-signature rejection with
+  the approach's rounds spent again parks afresh instead of archiving on the
   operator's earlier answer.
+* A bare unpause grants nothing, even when the rejection's curability
+  flips.
 
 The first three tests are the gate's own reproducers
 (`artifacts/peer-gate-current/probes.py`); the rest are sibling cases of
@@ -39,17 +43,15 @@ _CURABLE = [{"severity": "blocking", "curable": True,
              "cured_when": "The missing behavior works"}]
 
 
-def _grant_and_unpause(sup) -> None:
+def _answer_one_cure_round(sup) -> None:
+    """Answer the park with one cure round through the real `POST /answer`."""
     async def answer():
         app = create_app(sup.cfg, sup.run, sup)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport,
                                      base_url="http://engine") as client:
-            grant = await client.patch("/config/budget",
-                                       json={"curePassCeiling": "+1"})
-            assert grant.status_code == 200, grant.text
-            resumed = await client.post("/resume")
-            assert resumed.status_code == 200, resumed.text
+            answered = await client.post("/answer", json={"cureRounds": 1})
+            assert answered.status_code == 200, answered.text
     _bounded(answer())
 
 
@@ -64,8 +66,12 @@ def _proceeds(sup) -> dict:
     return sup.run.read_status().get("noRulingProceed") or {}
 
 
+def _step_paused(sup) -> tuple:
+    return _bounded(sup._step_paused())
+
+
 @pytest.mark.parametrize("trigger", ["reviewer-request", "reopen-validated"])
-def test_review_budget_grant_unpause_takes_cure_even_with_operator_request(
+def test_review_answer_takes_cure_even_with_operator_request(
         tmp_path, trigger):
     sup = _supervisor(tmp_path / "run", max_approaches=2,
                       operator_input_needed_pause=True, cure_pass_ceiling=0)
@@ -80,17 +86,16 @@ def test_review_budget_grant_unpause_takes_cure_even_with_operator_request(
     first = _bounded(sup._step_review())
     assert first == ("advance", "paused", "operator_input_needed")
 
-    _grant_and_unpause(sup)
+    _answer_one_cure_round(sup)
     assert sup.run.read_status()["cureRoundTopUps"] == {"1": 1}
-    assert _proceeds(sup).get("operator_input_needed")
+    assert not _proceeds(sup)
 
-    second = _bounded(sup._step_review())
+    second = _step_paused(sup)
     assert second == ("advance", "cure", "rejected_curable_pass_available")
     assert len(_events(sup.run.root, "operator_escalation")) == 1
-    assert "operator_input_needed" not in _proceeds(sup)
 
 
-def test_gate_budget_cure_consumes_proceed_before_a_later_rejection(
+def test_gate_answer_is_spent_by_its_cure_before_a_later_rejection(
         tmp_path, monkeypatch):
     sup = _gate_fixture(tmp_path / "run", gate_findings=_gate_findings_a())
     monkeypatch.setattr(LoopSupervisor, "run_iteration",
@@ -99,11 +104,11 @@ def test_gate_budget_cure_consumes_proceed_before_a_later_rejection(
     first = _bounded(sup._step_verdict_gate())
     assert first == ("advance", "paused", "verdict_gate_operator_input_needed")
 
-    _grant_and_unpause(sup)
-    second = _bounded(sup._step_verdict_gate())
+    _answer_one_cure_round(sup)
+    second = _step_paused(sup)
     assert second == ("advance", "cure",
                       "verdict_gate_rejected_curable_pass_available")
-    assert not _proceeds(sup).get("verdict_gate_operator_input_needed")
+    assert not _proceeds(sup)
 
     # All cure work completes, but the gate rejects the same rule again.
     data = sup.run.read_tasks()
@@ -120,11 +125,11 @@ def test_gate_budget_cure_consumes_proceed_before_a_later_rejection(
 # --- sibling cases of the same rule --------------------------------------
 
 
-def test_review_proceed_spent_on_cure_does_not_authorise_a_later_archive(
+def test_review_answer_spent_on_cure_does_not_authorise_a_later_archive(
         tmp_path):
-    """Review's mirror of the gate case above: after the granted cure, the
-    same rejection with the ceiling spent again parks, it never archives
-    on the operator's earlier unpause."""
+    """Review's mirror of the gate case above: after the answered cure, the
+    same rejection with the approach's rounds spent again parks, it never
+    archives on the operator's earlier answer."""
     sup = _supervisor(tmp_path / "run", max_approaches=2,
                       operator_input_needed_pause=True, cure_pass_ceiling=0)
     sup._approach = 1
@@ -133,10 +138,10 @@ def test_review_proceed_spent_on_cure_does_not_authorise_a_later_archive(
 
     assert _bounded(sup._step_review()) == (
         "advance", "paused", "operator_input_needed")
-    _grant_and_unpause(sup)
-    assert _bounded(sup._step_review()) == (
+    _answer_one_cure_round(sup)
+    assert _step_paused(sup) == (
         "advance", "cure", "rejected_curable_pass_available")
-    assert "operator_input_needed" not in _proceeds(sup)
+    assert not _proceeds(sup)
 
     # The cure work completes; the confirmation review re-files the same
     # finding against the cure task it did not discharge.
@@ -155,13 +160,11 @@ def test_review_proceed_spent_on_cure_does_not_authorise_a_later_archive(
     assert len(_events(sup.run.root, "operator_escalation")) == 2
 
 
-def test_review_proceed_spent_by_an_incurable_rejection_is_gone_afterwards(
+def test_review_bare_resume_grants_nothing_even_when_curability_flips(
         tmp_path):
-    """The matching rejection spends the grant even when its curability
-    flipped (same clause set, now incurable): the bare unpause is the park's
-    unanswered outcome, so that rejection archives and replans (v0.36
-    requirement B -- there is no `rejected_incurable` edge any more) and the
-    next same-signature rejection parks rather than archiving again."""
+    """A bare unpause is not an answer: the same clause set, now incurable,
+    parks again (v0.36 D.2 -- there is no one-shot proceed to spend, and no
+    `rejected_incurable` edge), and so does the next one."""
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=2,
                       operator_input_needed_pause=True)
@@ -173,14 +176,15 @@ def test_review_proceed_spent_by_an_incurable_rejection_is_gone_afterwards(
     assert _bounded(sup._step_review()) == (
         "advance", "paused", "operator_input_needed")
     sup.resume()
-    assert _proceeds(sup).get("operator_input_needed")
+    assert not _proceeds(sup)
 
     incurable = [_finding("blocking", False, f["clause"], f["evidence"])
                  for f in _MIXED_FINDINGS]
     findings.write_findings_json(sup.run.findings_json_file, incurable)
     assert _bounded(sup._step_review()) == (
-        "advance", "replan", "rejected_approach_left")
-    assert "operator_input_needed" not in _proceeds(sup)
+        "advance", "paused", "operator_input_needed")
+    assert not (root / "approaches" / "01").exists()
+    sup.resume()
 
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     third = _bounded(sup._step_review())

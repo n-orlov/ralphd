@@ -772,18 +772,24 @@ The first matching rule wins.
    against the current approach and move to the `cure` state.
 
 Nothing else archives an approach, and a gate rejection never ends the run
-`failed` on the spot. With `operator_input_needed_pause: false`, or when a one-shot
-no-ruling *proceed* matches the rejection's signature, a park resolves at once with
+`failed` on the spot. With `operator_input_needed_pause: false` a park resolves at once with
 the outcome an unanswered park takes: a reviewer escalation with rounds left cures
 now, every other park records the signature, archives the approach and replans
 while one remains, and holds the run `exhausted` (`approaches`) when none does.
 
-Operators answer a parked run with `ralphctl rule <run> --file <ruling.md>`.
-Rulings are keyed to the rejection signature, so they survive a replan, and they
-reach review and verify. Alternatively, `ralphctl unpause <run>` releases the run.
-On `operator_input_needed`, a bare unpause records a disk-backed one-shot proceed
-for that signature (`noRulingProceed`). The next identical rejection spends it on
-whichever edge it takes, including the cure edge. Every escalation pause posts a
+Operators answer a parked run with `ralphctl answer <run>`, `POST /answer` or the
+hub panel -- one writer, `LoopSupervisor.answer`. Each finding is waived (stored
+against its PRD clause in `<run-root>/waivers/`, listed as an authoritative
+"Operator waivers" section in the review, verdict-gate and planning prompts) or
+accepted, and the operator chooses K cure rounds (default 1, added to the current
+approach, curing now) or `--cure-rounds 0` (archive and replan the next approach
+over the current tree; `--approaches +N` grants approaches when none is left).
+Every blocking finding waived passes the verdict. `K >= 1` is refused for an
+accepted `curable: false` finding. `ralphctl rule <run> --file <ruling.md>`
+records a ruling at any time: rulings are keyed to the rejection signature, so
+they survive a replan, and they reach review, verify and planning, but a ruling
+never releases a park and a bare `ralphctl unpause` of an `awaiting_input` run is
+refused. Every escalation pause posts a
 bounded digest (at most `MAX_NOTIFY_CHARS`) to the notifier. Delivery is retried
 up to three times with 60/120 s backoff and is recorded as undelivered after the
 last failure. If the deadline has already passed when a pause would park, the run
@@ -1318,10 +1324,8 @@ task is unfinished (`_terminal_success_blockers`). The run then defers once to
 
 When an ordinary rejection would archive the approach, the default
 `operator_input_needed` pause stops first. The verdict gate has a matching pause
-once the approach's cure-round allowance is spent. Either pause names
-`ralphctl rule ... --file` and `ralphctl unpause` as the two live levers. A bare
-unpause grants a one-shot proceed for that rejection signature
-(`noRulingProceed`).
+once the approach's cure-round allowance is spent. Either pause is
+answered with `ralphctl answer`; a ruling is recorded but does not release it.
 
 Bounded mid-run adjudication
 (`_maybe_run_midrun_adjudication_episode`) is one off-budget iteration on the
@@ -1558,7 +1562,7 @@ current source. They have not been reproduced end to end in a container:
 | Gap | Observed behavior | Required design correction, not implemented here |
 |---|---|---|
 | Forgeable answer-channel rulings | Rulings are files at `<run dir>/rulings/NNN-*.md`. [`ruling_entries`](../src/ralphd/engine/state.py) reads every file that matches the glob without authenticating it, and `_operator_ruling_review_context` gives each one to review and verify as "operator-authored and binding". A hand-planted file in ruling format reads back as an ordinary entry. The source says this channel's trust rests on its single writer path, not on the file being unwritable. Steering files in `steering/` are read the same way. | Store rulings where the agent cannot write, such as the read-only `/config` used for amendments or the protected record mount, or authenticate them the way petition adjudications are authenticated. |
-| Agent-replaceable engine state in `status.json` | `RunDir.update_status` writes with `atomic_write_json` at the engine's effective (agent) UID into the agent-owned run dir. The engine later reads decision inputs back from that file, including cure-pass counters, rejection signatures, `noRulingProceed` and approach. | Move the decision-bearing fields to the protected record directory, or authenticate them. |
+| Agent-replaceable engine state in `status.json` | `RunDir.update_status` writes with `atomic_write_json` at the engine's effective (agent) UID into the agent-owned run dir. The engine later reads decision inputs back from that file, including cure-pass counters, rejection signatures, `inputAnswer` and approach. | Move the decision-bearing fields to the protected record directory, or authenticate them. |
 
 Other scope limits:
 

@@ -190,11 +190,16 @@ def test_resuming_with_a_ruling_reasks_review_exactly_once_authoritatively_and_r
 
     ruling_text = ("Waived: findings B and A.1 are residuals, not "
                    "blockers -- ship it.")
-    # Cure (F01, task 015): filing the ANSWER over the real `/rule` route
-    # must itself release the current `operator_input_needed` pause -- no
-    # separate `resume()`/`POST /resume` call anywhere in this test.
+    # v0.36 D.1: filing the ruling over the real `/rule` route records it
+    # (scoped to this rejection's signature) but does NOT release the park;
+    # the answer does (covering node: tests/test_answer_outcomes.py).
     resp = _post_rule(sup1, ruling_text)
     assert resp.status_code == 202, resp.text
+    held_status = sup1.run.read_status()
+    assert held_status["state"] == "awaiting_input"
+    assert not sup1._pause.is_set()
+    assert ruling_entries(root)[-1]["signature"] == signature
+    sup1.answer(waive=["F1"], cure_rounds=1)
     released_status = sup1.run.read_status()
     assert released_status["state"] == "running"
     assert released_status.get("pauseReason") is None
@@ -280,17 +285,13 @@ def test_a_ruling_filed_against_a_different_signature_is_not_honoured(tmp_path):
 
 
 def test_resuming_without_any_ruling_at_all_emits_no_honoured_event(tmp_path):
-    """Task 009 (PRD v0.27 requirement C.2, #274): rewritten from the
-    version that used to pin the pause/re-review/re-park loop C.2 closes
-    -- a bare `resume()` with no ruling filed now records a one-shot
-    'proceed' for this exact rejection's signature, and the SAME rejection
-    reaching `_step_review()` a second time consumes it and takes the
-    ordinary archive-and-replan edge instead of parking a second time (see
-    `tests/test_unpause_one_shot_proceed.py` for the dedicated coverage of
-    that mechanism). This test's own remaining job is unchanged: no
-    ruling was ever filed, so no `operator_ruling_honoured` event fires
-    either way.
-    """
+    """v0.36 D.2: a bare `resume()` with no ruling filed grants no one-shot
+    'proceed' (`noRulingProceed` is gone -- "carry on with what the engine
+    would do" is the input timeout's outcome, or `ralphctl answer
+    --cure-rounds 0`), so the SAME rejection reaching `_step_review()` again
+    parks again. No ruling was ever filed, so no `operator_ruling_honoured`
+    event fires either way (covering node for the proceed it replaces:
+    tests/test_answer_outcomes.py)."""
     root = tmp_path / "run"
     sup1 = _pause_on_operator_input_needed(root)
     sup1.resume()
@@ -309,11 +310,12 @@ def test_resuming_without_any_ruling_at_all_emits_no_honoured_event(tmp_path):
 
     outcome = _bounded(sup2._step_review())
 
-    assert outcome == ("advance", "replan", "rejected_approach_left")
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert len(calls) == 1
     assert "### Ruling 1 (" not in calls[0]
     assert _events(root, "operator_ruling_honoured") == []
-    assert len(_events(root, "operator_escalation")) == 1
+    assert len(_events(root, "operator_escalation")) == 2
+    assert "noRulingProceed" not in sup2.run.read_status()
 
 
 # ===========================================================================

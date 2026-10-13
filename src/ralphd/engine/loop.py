@@ -33,6 +33,7 @@ from typing import Callable
 
 from .. import __version__
 from .. import collapse_index, render_index
+from . import answer as answering
 from . import commit_scan
 from . import contract_enforcement
 from . import contracts
@@ -1491,9 +1492,8 @@ class LoopSupervisor:
                                          if k != "parkedAt"})
         self.run.emit("log", message=(
             f"run state recorded `{AWAITING_INPUT_STATE}` on status.json "
-            f"({trigger}, judge: {judge}); `ralphctl rule {self.cfg.run_id} "
-            "--file <ruling.md> --name <slug>` records a ruling and "
-            f"`ralphctl unpause {self.cfg.run_id}` clears it"))
+            f"({trigger}, judge: {judge}); `ralphctl answer {self.cfg.run_id}` "
+            "answers it (a ruling is recorded but does not answer it)"))
 
     @staticmethod
     def _input_trigger(blocking: list[dict], *,
@@ -1512,10 +1512,115 @@ class LoopSupervisor:
         pause if there is one (task 036, requirement D.1/D.2, #142)."""
         self._pause.set()
         self._reset_rate_limit_count_on_ceiling_unpause()
-        self._record_unpaused_no_ruling_proceed()
         self._clear_persisted_pause()
         self._emit_run_unpaused()
         self.run.emit("log", message=state.RESUMED_LOG_MESSAGE)
+
+    def answer(
+        self, *, waive: object = None, accept: object = None,
+        cure_rounds: object = None, approaches: object = None,
+        note: str | None = None, note_name: str | None = None,
+    ) -> dict:
+        """v0.36 requirement C: the ONE writer behind `ralphctl answer`,
+        `POST /answer` and the hub's answer panel. Answers the findings park
+        the run is `awaiting_input` on:
+
+        * every finding named in `waive` is written to the clause-bound
+          waiver store (`RunDir.add_waiver`); a finding not named is
+          accepted;
+        * `cure_rounds` K (default 1) adds K rounds to the current approach's
+          allowance and cures the accepted findings now; K = 0 archives the
+          approach and replans on approach + 1 over the same workspace tree
+          (`approaches` N grants N approaches first when none is left); every
+          blocking finding waived is a verdict `verified`;
+        * `note` is recorded as a ruling (`RunDir.add_ruling`, the
+          `write_ruling` store) that reaches both judges and planning.
+
+        Nothing is written when the answer is refused
+        (`answering.AnswerRefused`, naming what does apply). On success the
+        outcome is persisted as `inputAnswer`, `input.answered` is emitted
+        and the park is released; `_step_paused` carries the outcome out.
+        """
+        status = self.run.read_status()
+        if status.get("state") != AWAITING_INPUT_STATE:
+            raise answering.AnswerRefused(
+                f"the run is `{status.get('state')}`, not `awaiting_input`; "
+                "there is no question to answer")
+        question = status.get("inputQuestion")
+        approach = int((question or {}).get("approach")
+                       or self._current_approach())
+        plan = answering.plan_answer(
+            question, waive=waive, accept=accept, cure_rounds=cure_rounds,
+            approaches=approaches, stored_waivers=self.run.waiver_entries(),
+            approach=approach, max_approaches=int(self.cfg.max_approaches))
+        judge = str((question or {}).get("judge") or "review")
+        note_text = (note or "").strip()
+        waiver_files = []
+        for finding in plan.waived:
+            waiver_files.append(self.run.add_waiver(
+                clause=str(finding.get("clause") or "").strip()
+                or "(no clause)",
+                finding=str(finding.get("text") or "").strip()
+                or str(finding.get("clause") or "(no finding text)"),
+                judge=judge, note=note_text))
+        ruling_file = (self.run.add_ruling(note_text, note_name)
+                       if note_text else None)
+        if plan.outcome == answering.OUTCOME_CURE:
+            self.set_cure_pass_ceiling(
+                self._cure_rounds_allowed(approach) + plan.cure_rounds)
+        if plan.approaches_granted:
+            self.set_max_approaches(
+                int(self.cfg.max_approaches) + plan.approaches_granted)
+        record = {
+            "outcome": plan.outcome, "judge": judge, "approach": approach,
+            "waived": [f.get("id") for f in plan.waived],
+            "accepted": [f.get("id") for f in plan.accepted],
+            "cureRounds": plan.cure_rounds,
+            "approachesGranted": plan.approaches_granted,
+            "waiverFiles": waiver_files, "rulingFile": ruling_file,
+        }
+        self.run.update_status(inputAnswer=record)
+        self.run.emit("input.answered", **record)
+        self.resume()
+        return record
+
+    def _take_input_answer(self) -> dict | None:
+        """The answer `answer()` persisted, read and cleared (None when the
+        park was released some other way, e.g. an abort)."""
+        record = self.run.read_status().get("inputAnswer")
+        if not isinstance(record, dict):
+            return None
+        self.run.update_status(inputAnswer=None)
+        return record
+
+    def _carry_out_input_answer(self, record: dict) -> tuple:
+        """Take the outcome an answer chose, from the judge's own state: the
+        run re-enters that judge's position (`paused -> review|verdict_gate`)
+        over the SAME unarchived approach and leaves it by the ladder's own
+        edge -- verified (peer gate or finish), a cure round, or archive and
+        replan on the next approach."""
+        judge = str(record.get("judge") or "review")
+        approach = int(record.get("approach") or self._current_approach())
+        outcome = record.get("outcome")
+        if judge == "verdict_gate":
+            self._advance("paused", "verdict_gate",
+                          "paused_resumed_verdict_gate")
+        else:
+            judge = "review"
+            self._advance("paused", "review", "paused_resumed")
+        if outcome == answering.OUTCOME_VERIFIED:
+            return (self._review_verified_edge(approach) if judge == "review"
+                    else self._verdict_gate_approved_edge())
+        if outcome == answering.OUTCOME_CURE:
+            return self._rejection_cure_outcome(judge, approach)
+        # (the dispatch loop moves on from `paused` by the edge returned, so
+        # `paused -> cure` / `paused -> replan` are declared in the table)
+        signatures = self.run.read_status().get("rejectionSignatures") or {}
+        return self._archive_and_replan_outcome(
+            judge, approach, signatures.get(str(approach)),
+            note=f"every approach is spent ({approach}/"
+                 f"{self.cfg.max_approaches}) and the answer chose the next "
+                 "approach")
 
     def _reset_rate_limit_count_on_ceiling_unpause(self) -> None:
         """v0.30 F.3: an unpause of a rate-limit ceiling pause starts the
@@ -1527,156 +1632,6 @@ class LoopSupervisor:
         detail = status.get("pauseDetail")
         if isinstance(detail, dict) and detail.get("reason") == RATE_LIMIT_CEILING_REASON:
             self._rate_limit_waited_s = 0.0
-
-    # PRD v0.27 requirement C.2 (#274): the two pause reasons a bare
-    # `ralphctl unpause`/`POST /resume`, with NO ruling filed to answer
-    # it, grants a disk-backed one-shot 'proceed' for -- review's own A.1
-    # pause-before-archive and the peer verdict gate's C.1 sibling. Every
-    # OTHER pause reason already has a real, distinct default disposition
-    # a bare unpause resolves into (`state.py`'s own comment on
-    # `OPERATOR_INPUT_NEEDED_PAUSE_REASON`), so none of them needs this.
-    _NO_RULING_PROCEED_PAUSE_REASONS = (
-        "operator_input_needed", "verdict_gate_operator_input_needed")
-
-    def _pausing_rejection_signature(
-        self, reason: str, status: dict
-    ) -> str | None:
-        """The rejection signature `reason`'s pause is CURRENTLY sitting
-        on, read fresh off disk so `resume`'s one-shot 'proceed' (PRD
-        v0.27 C.2, #274) and the rejection ladder's own consuming check
-        (`_step_review`/`_step_verdict_gate`) always agree on what "the
-        same rejection" means:
-
-        * `operator_input_needed` (review's own pause): `_pause_and_
-          escalate_operator_input_needed` already persists it to
-          `rejectionSignatures[str(approach)]` before pausing (task 015)
-          -- read straight off that map, keyed by the approach status.json
-          still records (unarchived, exactly like every sibling pause in
-          this family).
-        * `verdict_gate_operator_input_needed` (the gate's own C.1 pause,
-          task 008): the gate keeps no signature map of its own
-          (`_pause_and_escalate_gate_operator_input_needed`'s own
-          docstring). Nothing runs while the loop sits parked, so the
-          gate's own findings channel is unchanged between the pause and
-          this read -- `_gate_rejection_signature(self._gate_findings())`
-          recomputes the IDENTICAL signature the rejection ladder derived
-          to raise this pause, off the same disk state.
-
-        `None` for any other reason, and for either of the two above when
-        there is nothing to key on (no approach recorded, or no findings
-        channel at all) -- the same "an absent signature never matches"
-        rule every sibling signature in this family already follows.
-        """
-        if reason == "operator_input_needed":
-            approach = status.get("approach")
-            if approach is None:
-                return None
-            signatures = status.get("rejectionSignatures") or {}
-            return signatures.get(str(approach))
-        if reason == "verdict_gate_operator_input_needed":
-            return self._gate_rejection_signature(self._gate_findings())
-        return None
-
-    def _record_unpaused_no_ruling_proceed(self) -> None:
-        """PRD v0.27 requirement C.2 (#274): a bare `ralphctl unpause`/
-        `POST /resume` of review's A.1 pause-before-archive
-        (`operator_input_needed`) or the peer verdict gate's own C.1
-        sibling (`verdict_gate_operator_input_needed`), with NO ruling
-        filed that answers the exact rejection parking it, records a
-        disk-backed one-shot 'proceed' for that rejection's own signature
-        -- never in-memory, the same durability every other pause answer
-        on status.json already has, so a killed-and-restarted process
-        still sees it. `_step_review`/`_step_verdict_gate`'s own rejection
-        ladder is what CONSUMES it, on the very next rejection that
-        repeats the identical signature (`_take_matching_no_ruling_
-        proceed`), whichever edge that rejection takes: the cure edge when
-        a pass is available, else the archive-and-replan (or finish) edge,
-        never parking again on that signature.
-
-        Called from `resume()` itself, BEFORE `_clear_persisted_pause`
-        wipes `pauseReason` back to `None` -- reading it after would
-        always see `None` (`_step_paused`'s own docstring already makes
-        the identical point about reading `pauseReason` before the gate).
-
-        A no-op for every pause reason outside `_NO_RULING_PROCEED_PAUSE_
-        REASONS`. Review's own reason is additionally guarded by
-        `_ruling_honoured_for_signature`: when a ruling was just filed and
-        answers this exact signature (`resume_if_ruling_answers_pause`'s
-        own call into this same `resume()`, right after `RunDir.add_
-        ruling`), that is NOT "no ruling" -- the ruling-re-park bound
-        already covers that case, and granting a second, independent
-        one-shot on top of it would let one operator answer buy two
-        different re-parks for the identical rejection. The gate's own
-        pause never has a ruling to check at all, so this guard is simply
-        a no-op for it, not a gap.
-        """
-        status = self.run.read_status()
-        if status.get("state") not in (PAUSED_STATE, AWAITING_INPUT_STATE):
-            return
-        if status.get("pauseDetail"):
-            # v0.30 G.2: a provider refusal (or a rate-limit ceiling) pauses
-            # with `operator_input_needed` too, but no review rejection is
-            # behind it, so an unpause grants no one-shot proceed.
-            return
-        reason = status.get("pauseReason")
-        if reason not in self._NO_RULING_PROCEED_PAUSE_REASONS:
-            return
-        signature = self._pausing_rejection_signature(reason, status)
-        if signature is None:
-            return
-        if (reason == "operator_input_needed"
-                and self._ruling_honoured_for_signature(signature)):
-            return
-        self._record_no_ruling_proceed(reason, signature)
-
-    def _record_no_ruling_proceed(self, reason: str, signature: str) -> None:
-        """Persist that `reason`'s pause has granted a one-shot 'proceed'
-        for `signature` (PRD v0.27 C.2, #274) -- disk-backed, keyed by
-        pause reason so review's own map and the gate's never collide.
-        """
-        status = self.run.read_status()
-        proceeds = dict(status.get("noRulingProceed") or {})
-        proceeds[reason] = signature
-        self.run.update_status(noRulingProceed=proceeds)
-
-    def _no_ruling_proceed_signature(self, reason: str) -> str | None:
-        """The signature `reason`'s one-shot 'proceed' is currently
-        granted for, or `None` when none is live -- read fresh off disk
-        (PRD v0.27 C.2, #274).
-        """
-        status = self.run.read_status()
-        proceeds = status.get("noRulingProceed") or {}
-        return proceeds.get(reason)
-
-    def _consume_no_ruling_proceed(self, reason: str) -> None:
-        """Spend `reason`'s one-shot 'proceed' (PRD v0.27 C.2, #274) --
-        called only through `_take_matching_no_ruling_proceed`.
-        Idempotent: a `reason` already absent is left alone.
-        """
-        status = self.run.read_status()
-        proceeds = dict(status.get("noRulingProceed") or {})
-        if reason in proceeds:
-            del proceeds[reason]
-            self.run.update_status(noRulingProceed=proceeds)
-
-    def _take_matching_no_ruling_proceed(
-        self, reason: str, signature: str | None
-    ) -> bool:
-        """Spend `reason`'s one-shot 'proceed' iff it was granted for
-        exactly `signature`, and say whether it was (PRD v0.27 C.2/C.3,
-        #274, VG-01). Called by the rejection ladder BEFORE it picks an
-        edge, so the very next matching rejection spends the grant
-        whichever edge it takes -- the cure edge included. A grant left
-        unspent across a cure pass would otherwise authorise a LATER
-        archive the operator never saw. On a `True` return the caller
-        also skips every same-signature operator gate for this one
-        rejection: the operator already answered that pause once.
-        """
-        if (signature is None
-                or self._no_ruling_proceed_signature(reason) != signature):
-            return False
-        self._consume_no_ruling_proceed(reason)
-        return True
 
     def _clear_persisted_pause(self) -> None:
         """Undo `_persist_pause`'s status.json write (task 036, requirement
@@ -1705,90 +1660,10 @@ class LoopSupervisor:
             f"approach {status.get('approach')} in the "
             f"`{status.get('phase')}` phase"))
 
-    def resume_if_ruling_answers_pause(self) -> bool:
-        """Task 015 cure (PRD requirement A.4, #224): does the ruling THIS
-        run just recorded (`RunDir.add_ruling`, called immediately before
-        this) answer the pause the run is CURRENTLY sitting in? If so,
-        release it right here -- `POST /rule`/the hub textarea's own
-        write path -- so filing an accepted ruling against the live
-        `operator_input_needed` pause is what re-asks review, with no
-        separate `ralphctl resume`/`POST /resume` required.
-
-        Deliberately narrow, mirroring `_ruling_honoured_for_approach`'s own
-        signature-equality check (no ruling TEXT is read, parsed or
-        classified here):
-
-        * the run must be recorded PAUSED with `pauseReason` one of
-          `"operator_input_needed"` (the rejection ladder's park) right now -- any other pause (an operator's plain
-          `POST /pause`, `rejected_last_approach`, `stagnation`, ...) is
-          left exactly as it was. Cure task cure-01-01-3 (PRD A.3/A.4,
-          #224): condition 3's own pause records `rejectionSignatures[str(
-          approach)]` too (`_pause_and_escalate_repeated_rejection_
-          signature`, cure-01-02's own fix), so the identical scoped-match
-          logic below already applies to it unchanged -- the gap this cure
-          closes was only the single hardcoded reason string above, never
-          the matching itself;
-        * THIS approach's `rejectionSignatures[str(approach)]` must be a
-          real (non-`None`) signature -- `RunDir.add_ruling` resolves every
-          ruling's own `signature` from that SAME map, so a ruling filed
-          right now necessarily carries that value; when it is `None` the
-          ruling just filed is unscoped (ahead of any rejection, or against
-          an approach whose escalation recorded no signature at all) and
-          must not be treated as answering this pause.
-
-        Returns whether it actually resumed, so a caller (the `/rule` route)
-        can tell "this filing released the pause" from "it did not" without
-        re-deriving the check itself.
-        """
-        status = self.run.read_status()
-        if status.get("state") not in (PAUSED_STATE, AWAITING_INPUT_STATE):
-            return False
-        if status.get("pauseDetail"):
-            # v0.30 G.2: a provider refusal is not answered by a ruling; only
-            # an unpause (after fixing the profile or credentials) releases it.
-            return False
-        if status.get("pauseReason") != "operator_input_needed":
-            return False
-        if not self._approach_has_rejection_signature(status.get("approach")):
-            return False
-        self.resume()
-        return True
-
-    def _approach_has_rejection_signature(self, approach: int | None) -> bool:
-        """Whether `approach`'s own entry in status.json's `rejectionSignatures`
-        map is a real, non-`None` signature -- the exact fact `resume_if_
-        ruling_answers_pause` (just above) checks before letting a freshly
-        filed ruling release an `operator_input_needed`
-        pause. Factored out here (cure task cure-01-01-9, PRD
-        A.1/A.6, D.1) so a caller that must DESCRIBE, ahead of time, whether
-        filing a ruling right now would release a LIVE pause reads the
-        identical fact `resume_if_ruling_answers_pause` will apply once a
-        ruling is actually filed, rather than assuming its own approach
-        never carries one. `None` (no approach recorded yet) reads as no
-        signature, matching the caller above's own `approach is not None`
-        guard.
-
-        The one real caller today (`_pause_for_commit_secret_hit`): its
-        commit-scan hold shares the `operator_input_needed` reason STRING
-        with review's own pause but is raised from `worker` with no
-        rejection of its own behind it -- so it never records a signature
-        itself, but an EARLIER `operator_input_needed`
-        pause answered by a ruling on the SAME approach leaves
-        that approach's own entry on status.json, and a commit-scan hold
-        raised later in that same approach inherits it -- a ruling filed
-        against THIS hold then releases it too, exactly like the earlier
-        one did, however unrelated the hold itself is to that rejection.
-        """
-        if approach is None:
-            return False
-        status = self.run.read_status()
-        signatures = status.get("rejectionSignatures") or {}
-        return signatures.get(str(approach)) is not None
-
     def _ruling_then_unpause_answer_cmd(self) -> str:
         """The answer-command text for a pause whose `pauseReason` is NOT
-        one `resume_if_ruling_answers_pause` ever releases on its own
-        (`rejected_last_approach`, `rejected_incurable`, `stagnation`):
+        one a ruling ever releases on its own (`stagnation`, the graph
+        pauses and the like -- a ruling never releases ANY pause):
         filing a ruling here (`ralphctl rule`/`POST /rule`) only records
         it -- `RunDir.add_ruling`, with no matching release check for any
         of these three reasons -- so releasing the pause always still
@@ -1832,6 +1707,26 @@ class LoopSupervisor:
             "<ruling.md> --name <slug>` then `ralphctl unpause "
             f"{run_id}`, or run `ralphctl unpause {run_id}` alone to "
             "resume with no ruling recorded.")
+
+    def _answer_command_text(self) -> str:
+        """The one command that leaves an `awaiting_input` findings park:
+        `ralphctl answer` (v0.36 C.2). A ruling (`ralphctl rule`) is recorded
+        but never releases the park, and a bare unpause is refused."""
+        run_id = self.cfg.run_id
+        return (
+            f"ralphctl answer {run_id} [--waive <fid>...] [--accept <fid>...] "
+            "[--cure-rounds K] [--note-file <path>]")
+
+    def _answer_escalation_sentences(self) -> str:
+        """The answer sentences of a findings park's escalation text."""
+        run_id = self.cfg.run_id
+        return (
+            f"answer it with `{self._answer_command_text()}`: unnamed "
+            "findings are accepted, `--cure-rounds` defaults to 1 and adds "
+            "that many cure rounds to this approach, and `--cure-rounds 0` "
+            "archives this approach and replans the next (or, with none "
+            f"left, `--approaches +N`). `ralphctl rule {run_id}` records a "
+            "ruling but does not answer the park.")
 
     def retry_now(self) -> bool:
         """Operator-requested "try the endpoint again right now" (task 015,
@@ -8396,26 +8291,8 @@ class LoopSupervisor:
         so this method's own call sites (`_step_worker`, and this test's
         own direct call) need no signature change.
 
-        Cure task cure-01-01-9 (PRD A.1/A.6, D.1; DoD 1/4): review found
-        the PRIOR claim here -- "NOT ruling-answerable ... this hold, raised
-        from `worker` with no review rejection behind it, never has one"
-        -- false whenever this hold lands on an approach that ALREADY
-        carries a `rejectionSignatures` entry: an earlier `operator_input_
-        needed` pause on the SAME approach,
-        answered by a ruling, leaves that approach's own signature on
-        status.json, and this hold -- raised later in that same approach,
-        sharing the `operator_input_needed` reason STRING with review's
-        own pause -- inherits it; a ruling filed against THIS hold then
-        releases it too (`resume_if_ruling_answers_pause` reads only the
-        pause reason and the approach's own signature, never whether the
-        CURRENT pause is the one that recorded it). `answer_cmd` is chosen
-        below off `_approach_has_rejection_signature`, the exact fact that
-        check applies, so it is accurate whether or not this approach
-        already carries one: with no signature, only `ralphctl unpause`
-        (`POST /resume`) releases it and a ruling is stored unscoped; with
-        one, `ralphctl rule`/`ralphctl unpause` are interchangeable single-
-        step alternatives, the same pair `operator_input_needed`'s own
-        review-side digest already advertises.
+        Since v0.36 a ruling never releases a hold: only `ralphctl unpause`
+        (`POST /resume`) releases this one, so `answer_cmd` names that alone.
         """
         self.pause(reason="operator_input_needed")
         if self.notifier is not None:
@@ -8429,17 +8306,9 @@ class LoopSupervisor:
                 f"variable: {hit.get('variable') or 'unknown'}",
             ]
             approach = self._approach or 1
-            if self._approach_has_rejection_signature(approach):
-                answer_cmd = (
-                    f"ralphctl rule {self.cfg.run_id} --file <ruling.md> "
-                    f"--name <slug>, or ralphctl unpause {self.cfg.run_id} "
-                    "to accept the default (this approach already carries "
-                    "an earlier rejection signature, so a ruling filed "
-                    "now releases this hold too)")
-            else:
-                answer_cmd = (
-                    f"ralphctl unpause {self.cfg.run_id} to resume the "
-                    "worker (a ruling does not release this hold)")
+            answer_cmd = (
+                f"ralphctl unpause {self.cfg.run_id} to resume the "
+                "worker (a ruling does not release this hold)")
             digest = self._pause_escalation_digest_text(
                 "operator_input_needed", approach, answer_cmd, fault_lines)
             self._notify_escalation_delivery(
@@ -9807,7 +9676,7 @@ class LoopSupervisor:
         findings_list = self._gate_findings() or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         inserted = state.insert_cure_tasks(
-            self.run, approach, blocking,
+            self.run, approach, self._unwaived(blocking),
             pre_cure_head=self._workspace_head_sha())
         status = self.run.read_status()
         cure_passes = dict(status.get("gateCurePasses") or {})
@@ -9866,7 +9735,7 @@ class LoopSupervisor:
             "parked in awaiting_input instead of archiving it (a blocking "
             "finding is incurable, or this approach's cure rounds are "
             f"spent). An unanswered park would {outcome}; "
-            + self._ruling_then_unpause_escalation_sentences(),
+            + self._answer_escalation_sentences(),
             "",
         ]
         for index, finding in enumerate(blocking, start=1):
@@ -14099,9 +13968,9 @@ class LoopSupervisor:
         else archives an approach: a park leaves the approach unarchived and
         a gate rejection never ends the run `failed` on the spot.
 
-        With `operator_input_needed_pause: false` (or the one-shot proceed a
-        bare unpause recorded) the park resolves at once with the outcome an
-        unanswered park takes: a reviewer escalation with rounds left cures
+        With `operator_input_needed_pause: false` the park resolves at once
+        with the outcome an unanswered park takes (the input timeout firing
+        at the moment of the park): a reviewer escalation with rounds left cures
         now; every other park archives and replans while an approach is left.
         """
         review = judge == "review"
@@ -14138,13 +14007,6 @@ class LoopSupervisor:
             self.run.emit("rejection.waived", judge=judge, approach=approach,
                           findings=blocking)
             return None
-        # A bare unpause of this exact park recorded a one-shot proceed for
-        # its rejection signature: spend it now, before any step is chosen,
-        # so a later same-signature rejection parks afresh.
-        proceeded = self._take_matching_no_ruling_proceed(
-            park_reason, signature)
-        if proceeded:
-            reviewer_escalation = False
         decision = ladder.decide(
             budget_left=True, blocking=blocking, waivers=waivers,
             incurable=not curable, reviewer_escalation=reviewer_escalation,
@@ -14153,7 +14015,7 @@ class LoopSupervisor:
             self.run.update_status(gateRejectionEnding=self._gate_rejection_ending(
                 approach, decision.step == ladder.STEP_CURE))
         if decision.step == ladder.STEP_PARK:
-            if proceeded or not self.cfg.operator_input_needed_pause:
+            if not self.cfg.operator_input_needed_pause:
                 return self._rejection_unanswered_outcome(
                     judge, approach, decision.trigger, curable=curable,
                     rounds_spent=rounds_spent, signature=signature)
@@ -14195,6 +14057,16 @@ class LoopSupervisor:
         if (trigger == ladder.TRIGGER_REVIEWER_ESCALATION and curable
                 and not rounds_spent):
             return self._rejection_cure_outcome(judge, approach)
+        return self._archive_and_replan_outcome(judge, approach, signature)
+
+    def _archive_and_replan_outcome(
+        self, judge: str, approach: int, signature: str | None,
+        *, note: str | None = None,
+    ) -> tuple:
+        """Archive the approach and replan the next on top of the current
+        tree (the workspace is never reset), or -- with no approach left --
+        hold `exhausted` (approaches). The one tail an unanswered park and
+        an answer with `--cure-rounds 0` share."""
         if judge == "review":
             self._record_rejection_signature(approach, signature)
         self._archive_approach(approach)
@@ -14206,7 +14078,7 @@ class LoopSupervisor:
             return ("advance", "replan", edge)
         # No approach left: the run holds `exhausted` (approaches) -- resumable
         # with `--approaches +N` -- rather than ending `failed`.
-        self._terminal_reason_note = (
+        self._terminal_reason_note = note or (
             f"every approach is spent ({approach}/{self.cfg.max_approaches}) "
             f"and the {judge.replace('_', ' ')} rejection was not answered")
         self._approaches_exhausted_tail = True
@@ -14314,6 +14186,9 @@ class LoopSupervisor:
             return ("tail",)
         reason = self.run.read_status().get("pauseReason")
         await self._gate()
+        answered = self._take_input_answer()
+        if answered is not None:
+            return self._carry_out_input_answer(answered)
         if reason == "stagnation":
             self._advance("paused", "worker", "paused_resumed_stagnation")
             return ("advance", "worker", "paused_resumed_stagnation")
@@ -14650,6 +14525,16 @@ class LoopSupervisor:
             return set()
         return {v for v in value if isinstance(v, str)}
 
+    def _unwaived(self, blocking: list[dict]) -> list[dict]:
+        """The blocking findings a cure round targets: those whose clause no
+        operator waiver covers (a waived finding is not a defect to cure).
+        All of them when every one is waived -- the ladder never cures then,
+        so this only keeps a caller that did from inserting nothing."""
+        waived = ladder.waived_clause_keys(self.run.waiver_entries())
+        kept = [f for f in blocking
+                if ladder.clause_key(f.get("clause")) not in waived]
+        return kept or blocking
+
     def _take_cure_pass(self, approach: int) -> list[str]:
         """Task 009 (requirement C.1, #141): the consequence of taking the
         cure-pass edge -- append one cure task per blocking finding to
@@ -14683,7 +14568,7 @@ class LoopSupervisor:
         findings_list = self._review_findings() or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         inserted = state.insert_cure_tasks(
-            self.run, approach, blocking,
+            self.run, approach, self._unwaived(blocking),
             pre_cure_head=self._workspace_head_sha())
         status = self.run.read_status()
         cure_passes = dict(status.get("curePasses") or {})
@@ -14885,7 +14770,7 @@ class LoopSupervisor:
         because the run-wide cure-pass ceiling is spent -- never one whose
         findings were simply not curable at all -- names, so an operator
         reading either the full escalation text or the delivered digest
-        knows how to make a cure pass available before resuming instead of
+        knows how to make a cure pass available before answering instead of
         letting the archive/replan (or finish) happen unanswered.
 
         `replan_available` names the edge the unanswered pause actually
@@ -14900,7 +14785,8 @@ class LoopSupervisor:
             "ONLY reason a cure pass is not being taken here -- grant one "
             f"more live with `ralphctl budget {self.cfg.run_id} "
             "--cure-passes +N` (or set the ceiling outright with `--cure-"
-            "passes N`) before resuming to take the cure edge instead of "
+            "passes N`) and answer the park (`ralphctl answer "
+            f"{self.cfg.run_id}`) to take the cure edge instead of "
             f"{unanswered_edge}.")
 
     @staticmethod
@@ -14995,38 +14881,20 @@ class LoopSupervisor:
 
         Every reason this digest renders for waits on an operator ruling
         (the gate's `verdict_gate_operator_input_needed` included,
-        exactly like `operator_input_needed`)
-        -- SPEC.md's own rule ("every live-run pause and escalation text
-        names the two live-run levers") -- so `answer_cmd` always names
-        BOTH `ralphctl rule ... --file <ruling.md> --name <slug>` and
-        `ralphctl unpause <run>`, never unpause alone. But the two pairs
-        differ in what filing the ruling actually DOES before that unpause
-        (cure task cure-01-01-9, PRD A.1/A.6, D.1; DoD 1/4 -- review ran
-        every one of the four through the real `/rule` route and found the
-        prior, single shared phrasing false for half of them): for
-        `operator_input_needed`,
-        `resume_if_ruling_answers_pause` releases the pause the instant
-        the ruling is filed, so `rule`/`unpause` are genuinely two
-        INTERCHANGEABLE single-step alternatives ("or ... to accept the
-        default"); for `verdict_gate_operator_input_needed`, that
-        same check never applies (its own reason allow-list excludes both),
-        so filing `rule` alone leaves the run paused -- releasing it always
-        needs a SEPARATE `unpause` afterward, whether or not a ruling was
-        filed first, and `_ruling_then_unpause_answer_cmd` phrases that as
-        an explicit two-step sequence plus the working unpause-alone
-        alternative, never as an `or` between two things that each resolve
-        it on their own.
+        exactly like `operator_input_needed`) -- v0.36: `answer_cmd` for
+        either findings park is the one command that leaves it,
+        `ralphctl answer`; a ruling is recorded by `ralphctl rule` but never
+        releases the park, and a bare unpause of an `awaiting_input` run is
+        refused. The other reasons keep `_ruling_then_unpause_answer_cmd`.
         """
         findings_list = findings_list or []
         blocking = [f for f in findings_list if f.get("severity") == "blocking"]
         residual = [f for f in findings_list if f.get("severity") == "residual"]
         fields = self._escalation_preview_fields(
             approach, cure_preview or {})
-        if reason == "operator_input_needed":
-            answer_cmd = (
-                f"ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
-                f"<slug>, or ralphctl unpause {self.cfg.run_id} to accept "
-                "the default")
+        if reason in ("operator_input_needed",
+                      "verdict_gate_operator_input_needed"):
+            answer_cmd = self._answer_command_text()
         else:
             answer_cmd = self._ruling_then_unpause_answer_cmd()
         header_lines = [
@@ -15190,10 +15058,8 @@ class LoopSupervisor:
             f"instead of archiving it: a blocking finding is incurable, the "
             f"reviewer asked for an operator, or this approach's cure rounds "
             f"are spent. An unanswered park would archive approach "
-            f"{approach} and {outcome}. Answer it first: record a ruling "
-            f"(`ralphctl rule {self.cfg.run_id} --file <ruling.md> --name "
-            "<slug>`) and resume, or resume with none to let the archive "
-            f"proceed (`ralphctl unpause {self.cfg.run_id}`). The approach "
+            f"{approach} and {outcome}. Answer it: "
+            + self._answer_escalation_sentences() + " The approach "
             "was NOT archived, no composite PRD was written, and the "
             "approach counter did not move.",
             "",
@@ -15367,37 +15233,6 @@ class LoopSupervisor:
                 effective_preview, cure_pass_ceiling_spent,
                 replan_available=replan_available),
                 reason="operator_input_needed")
-
-    def _ruling_honoured_for_signature(self, signature: str | None) -> dict | None:
-        """Task 002 (PRD finding F02): the mechanical re-park's own
-        lookup -- does a recorded operator ruling carry EXACTLY the
-        signature of the rejection being judged right now, read directly
-        off the cumulative `state.ruling_entries()` record?
-
-        Sibling of `_ruling_honoured_for_approach` above, and reuses its
-        exact matching rule (newest entry wins; no ruling TEXT is read,
-        parsed or classified), but keyed by a signature the CALLER
-        already computed for THIS rejection -- never by `status.json`'s
-        `rejectionSignatures[str(approach)]`, which only ever holds the
-        approach's LAST recorded rejection signature. That map is
-        overwritten every time `_record_rejection_signature` runs, so an
-        intervening rejection on a different signature (never ruled)
-        would make `_ruling_honoured_for_approach` silently stop finding a
-        still-unspent ruling once the original signature recurs, or hand
-        an unrelated ruling a re-park it never earned once the map
-        happened to point at it again -- the exact defect a fresh
-        `LoopSupervisor` reading persisted state observes across an
-        intervening rejection on another signature
-        (`tests/test_ruling_re_park_bound.py`,
-        `_review_additional.py::test_A5_same_ruling_across_changed_other_
-        signature`). Returns `None` when `signature` itself is `None` (no
-        rejection to match) or no ruling has ever been filed against it.
-        """
-        if signature is None:
-            return None
-        matches = [e for e in state.ruling_entries(self.run.root)
-                  if e.get("signature") == signature]
-        return matches[-1] if matches else None
 
     def _ruling_honoured_for_approach(self, approach: int) -> dict | None:
         """Task 015 (PRD requirement A.4, #224): does a recorded operator
@@ -15907,8 +15742,7 @@ class LoopSupervisor:
                     f"{VALIDATION_ATTEMPT_LIMIT}")
             # Cure task cure-01-01-9 (PRD A.1/A.6, D.1; DoD 1/4): a
             # `stagnation` pause resumes into `worker`, never `review`
-            # (`_step_paused` above), and `resume_if_ruling_answers_pause`
-            # never releases it -- the prior "rule ..., or unpause ... to
+            # (`_step_paused` above), and a ruling never releases it -- the prior "rule ..., or unpause ... to
             # accept the default" phrasing read as two interchangeable
             # single-step alternatives, but executing `rule` alone through
             # the real CLI/engine route left the run paused; the shared

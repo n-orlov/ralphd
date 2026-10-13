@@ -134,7 +134,7 @@ def test_a_rejection_on_the_last_approach_with_nothing_curable_holds_exhausted(e
         f"pause, but pauseReason is {st.get('pauseReason')!r}")
 
 
-def test_the_last_approach_pauses_for_the_operator_and_a_resume_verifies(
+def test_the_last_approach_pauses_for_the_operator_and_an_answer_verifies(
         engine_factory):
     # Two curable rejections on a single-approach run: the first spends this
     # approach's one cure pass, the second has nothing left to spend and
@@ -163,11 +163,17 @@ def test_the_last_approach_pauses_for_the_operator_and_a_resume_verifies(
         f"'operator_input_needed' is expected, got "
         f"{[(e.get('reason')) for e in escalations]}")
 
-    # The operator releases the pause through the engine's own API.
+    # v0.36 D.2: a bare unpause is refused; the operator answers through the
+    # engine's own API (`POST /answer`, the route `ralphctl answer` posts to):
+    # one more cure round for this approach, cured at once.
     run.wait_api()
-    code, body = run.api("POST", "/resume")
-    assert (code, body) == (200, {"resumed": True}), (
-        f"flow last-approach pause: POST /resume should release the pause, got "
+    code, body = run.api("POST", "/resume", expect_error=True)
+    assert code == 409 and "ralphctl answer" in str(body), (
+        f"flow last-approach pause: POST /resume must be refused naming "
+        f"`ralphctl answer`, got HTTP {code} / {body}")
+    code, body = run.api("POST", "/answer", {"cureRounds": 1})
+    assert code == 200 and body.get("outcome") == "cure", (
+        f"flow last-approach pause: POST /answer should cure, got "
         f"HTTP {code} / {body}")
 
     assert wait_engine_exit(run, timeout=ENGINE_EXIT_WAIT_S) == 0, (
@@ -189,7 +195,11 @@ def test_the_last_approach_pauses_for_the_operator_and_a_resume_verifies(
         "iteration:review",
         "verdict:review:rejected@1",
         "escalation:operator_input_needed@1",
-        # the resume lands back on review over the SAME approach
+        # the answer's cure round is worked, then the SAME approach is
+        # reviewed again
+        "cure_pass:2@1",
+        "iteration:worker",
+        "signal:COMPLETE",
         "phase:review@1",
         "iteration:review",
         "verdict:review:verified@1",
@@ -202,7 +212,7 @@ def test_the_last_approach_pauses_for_the_operator_and_a_resume_verifies(
         f"flow last-approach pause: the resumed run must reach 'succeeded', got "
         f"{st.get('state')!r}")
     assert st.get("pauseReason") is None, (
-        f"flow last-approach pause: the resume must clear pauseReason, got "
+        f"flow last-approach pause: the answer must clear pauseReason, got "
         f"{st.get('pauseReason')!r}")
     assert st.get("approach") == 1, (
         f"flow last-approach pause: the run must never leave approach 1, got "

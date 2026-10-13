@@ -1,6 +1,8 @@
 """Task 003: every live-run pause and escalation text names `ralphctl
 unpause <run>` to proceed and `ralphctl rule <run> --file ... --name ...`
-to answer -- never `ralphctl resume <run>`.
+to answer -- never `ralphctl resume <run>`. (v0.36: the findings parks of the
+rejection ladder, `awaiting_input`, are the exception: their texts name
+`ralphctl answer <run>`, the one command that leaves them.)
 
 `ralphctl unpause` (`cli/main.py::cmd_unpause`) is the command that actually
 clears a LIVE paused run's `pauseReason` (it POSTs `/resume`, the engine's
@@ -45,6 +47,16 @@ def _assert_names_unpause_not_resume(text: str) -> None:
     assert f"ralphctl unpause {SUP.cfg.run_id}" in text
 
 
+def _assert_names_answer(text: str) -> None:
+    """v0.36: a findings park (`awaiting_input`) is left by `ralphctl answer`
+    alone -- a ruling is recorded but releases nothing and a bare unpause is
+    refused -- so its texts name the answer command, never `unpause`."""
+    assert "ralphctl resume" not in text
+    assert f"ralphctl answer {SUP.cfg.run_id}" in text
+    assert "--cure-rounds" in text and "--waive" in text
+    assert f"ralphctl unpause {SUP.cfg.run_id}" not in text
+
+
 def _assert_names_rule_and_unpause(text: str) -> None:
     assert "ralphctl resume" not in text
     assert (f"ralphctl rule {SUP.cfg.run_id} --file <ruling.md> "
@@ -77,11 +89,11 @@ def test_persist_pause_message_names_unpause(tmp_path):
     assert not any("ralphctl resume" in m for m in messages)
 
 
-def test_operator_input_needed_escalation_text_names_rule_and_unpause(tmp_path):
+def test_operator_input_needed_escalation_text_names_the_answer_command(tmp_path):
     sup = _sup(tmp_path)
     text = sup._operator_input_needed_escalation_text(
         1, [_finding()], replan_available=True)
-    _assert_names_rule_and_unpause(text)
+    _assert_names_answer(text)
 
 
 def test_review_contract_unrepaired_escalation_text_names_unpause(tmp_path):
@@ -145,15 +157,14 @@ def test_unresolvable_edge_escalation_text_names_unpause(tmp_path):
     _assert_names_unpause_not_resume(text)
 
 
-def test_operator_escalation_digest_text_names_rule_and_unpause(tmp_path):
+def test_operator_escalation_digest_text_names_the_answer_command(tmp_path):
     sup = _sup(tmp_path)
     text = sup._operator_escalation_digest_text(
         "operator_input_needed", 1, [_finding()])
-    _assert_names_rule_and_unpause(text)
-    # The gate's park waits on an operator ruling too: its digest names
-    # BOTH live-run levers. (The retired last-approach / incurable /
-    # repeated-signature texts are one text now -- the operator-input-needed
-    # builder above, whichever trigger parked the run.)
+    _assert_names_answer(text)
+    # The gate's park is answered the same way. (The retired last-approach /
+    # incurable / repeated-signature texts are one text now -- the
+    # operator-input-needed builder above, whichever trigger parked the run.)
     text2 = sup._operator_escalation_digest_text(
         "verdict_gate_operator_input_needed", 1, [_finding()])
-    _assert_names_rule_and_unpause(text2)
+    _assert_names_answer(text2)

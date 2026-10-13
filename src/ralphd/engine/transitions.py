@@ -528,6 +528,16 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # repair the absent-id edge, so this resumes straight back into
         # `worker` too.
         T("worker", "paused_resumed_unresolvable_edge"),
+        # v0.36 requirement C.3: an ANSWER to the findings park
+        # (`LoopSupervisor.answer`) leaves `paused` by the outcome it chose,
+        # from the judge's own position over the SAME unarchived approach: a
+        # cure round (`K >= 1`) goes through `cure`, archive-and-replan
+        # (`K = 0`) to `replan`; a verdict taken as `verified` goes on
+        # through `review`'s own edges (`finishing` without a state change,
+        # or the peer gate's `verdict_gate`, which this table already allows
+        # from `paused`).
+        T("cure", "paused_answered_cure"),
+        T("replan", "paused_answered_next_approach"),
     ),
     # v0.36 requirement G: `exhausted` -- the one budget hold, entered when
     # the iteration budget, the job deadline or the approach budget is spent

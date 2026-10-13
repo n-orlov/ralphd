@@ -1,12 +1,17 @@
-"""Cure task cure-01-01-9 (PRD A.1/A.6, D.1; DoD 1/4): review drove every
-advertised answer command through the real CLI parser + engine `POST`
-route over the ACTUAL pause `resume_if_ruling_answers_pause` applies to,
-and found the shared "ralphctl rule ..., or ralphctl unpause ... to accept
-the default" phrasing false for `rejected_last_approach`, `rejected_
-incurable` and `stagnation`: none of those three reasons is in `resume_if_
-ruling_answers_pause`'s own reason allow-list, so `ralphctl rule` alone
-leaves the loop gate CLOSED -- releasing it always needs a SEPARATE
-`ralphctl unpause` afterward, whether or not a ruling was filed first.
+"""Cure task cure-01-01-9 (PRD A.1/A.6, D.1; DoD 1/4), kept current for
+v0.36: review drove every advertised answer command through the real CLI
+parser + engine `POST` route over the ACTUAL pause, and found the shared
+"ralphctl rule ..., or ralphctl unpause ... to accept the default" phrasing
+false: `ralphctl rule` alone leaves the loop gate CLOSED -- releasing a
+`paused` run always needs a SEPARATE `ralphctl unpause` afterward, whether or
+not a ruling was filed first.
+
+v0.36 D.1: `resume_if_ruling_answers_pause` is gone, so NO ruling releases
+anything. The two findings parks (`operator_input_needed`,
+`verdict_gate_operator_input_needed`) are `awaiting_input` and are left by
+`ralphctl answer` alone; their instructions name that command, `rule` only
+records, and a bare unpause is refused. `stagnation` (still `paused` until
+task 012) keeps the rule-then-unpause / unpause-alone sequence below.
 
 This module drives each of the five real pauses end to end (the real
 `_pause_and_escalate_*` method, a real notifier stub) and runs every
@@ -25,11 +30,8 @@ incurable_rejection` calls the bare `self.pause()`):
 * `ralphctl unpause` ALONE -- the working unpause-only alternative -- must
   also open it, with no ruling recorded at all.
 
-The two genuinely ruling-answerable reasons (`operator_input_needed`,
-`rejected_repeated_signature`) are run through the identical harness as a
-preserved control: `ralphctl rule` ALONE must open their gate (`resume_if_
-ruling_answers_pause` DOES cover both), so the fix above must never widen
-its "needs a separate unpause" claim to these two.
+The findings parks run through the identical harness: `ralphctl answer`
+opens their gate, `ralphctl rule` alone and a bare unpause do not.
 """
 
 from __future__ import annotations
@@ -142,9 +144,13 @@ def _unpause_cmd(sup) -> str:
     return f"ralphctl unpause {sup.cfg.run_id}"
 
 
-NOT_RULING_RELEASED_REASONS = [
-    "verdict_gate_operator_input_needed", "stagnation"]
-RULING_RELEASED_REASONS = ["operator_input_needed"]
+NOT_RULING_RELEASED_REASONS = ["stagnation"]
+FINDINGS_PARKS = ["operator_input_needed",
+                  "verdict_gate_operator_input_needed"]
+
+
+def _answer_cmd(sup) -> str:
+    return f"ralphctl answer {sup.cfg.run_id}"
 
 
 @pytest.mark.parametrize("reason", NOT_RULING_RELEASED_REASONS)
@@ -195,27 +201,29 @@ def test_unpause_alone_releases_the_pause(reason, tmp_path, monkeypatch):
     assert status.get("pauseReason") is None, reason
 
 
-@pytest.mark.parametrize("reason", RULING_RELEASED_REASONS)
-def test_rule_alone_releases_the_genuinely_ruling_answerable_pause(
-        reason, tmp_path, monkeypatch):
-    """Preserved control: the two reasons `resume_if_ruling_answers_pause`
-    actually covers must keep working with `rule` alone -- the fix above
-    must never widen its "needs a separate unpause" claim to these."""
+@pytest.mark.parametrize("reason", FINDINGS_PARKS)
+def test_findings_park_is_left_by_answer_alone(reason, tmp_path, monkeypatch):
+    """v0.36: neither `rule` nor a bare unpause leaves an `awaiting_input`
+    park; `answer` does (covering node: tests/test_answer_outcomes.py)."""
     sup = _sup(tmp_path, monkeypatch)
     _raise_pause(sup, reason)
     text = _digest_text(sup)
-    assert _rule_cmd(sup) in text
-    assert _unpause_cmd(sup) in text
-    # Unlike the three reasons above, these two really are interchangeable
-    # single-step alternatives -- the fix must not have widened its
-    # sequential phrasing to these.
-    assert "to accept the default" in text, reason
+    assert _answer_cmd(sup) in text
+    assert _unpause_cmd(sup) not in text
+    assert "to accept the default" not in text, reason
+    assert sup.run.read_status()["state"] == "awaiting_input"
 
     with TestClient(create_app(sup.cfg, sup.run, sup)) as client:
         _run_command(_rule_cmd(sup), tmp_path, monkeypatch, client)
+        assert sup._pause.is_set() is False, reason  # a ruling releases nothing
+        assert len(sup.run.ruling_entries()) == 1
+        refused = client.post("/resume")
+        assert refused.status_code == 409, refused.text
+        assert _answer_cmd(sup) in refused.text
+        assert sup._pause.is_set() is False, reason
+        _run_command(_answer_cmd(sup), tmp_path, monkeypatch, client)
     assert sup._pause.is_set() is True, reason
-    status = sup.run.read_status()
-    assert status.get("pauseReason") is None, reason
+    assert sup.run.read_status().get("pauseReason") is None, reason
 
 
 # --- the FULL pause instructions (`operator_escalation.escalation`) ---------
@@ -316,20 +324,14 @@ def test_full_pause_instructions_rule_then_unpause_route_holds_then_opens(
     assert sup._pause.is_set() is True, variant
 
 
-def test_operator_input_needed_full_instructions_rule_alone_opens_the_gate(
-        tmp_path, monkeypatch):
-    """Preserved control on the full text: `operator_input_needed`
-    genuinely is ruling-answerable, so its full instructions say a ruling
-    releases it on its own -- executing that advertised `rule` command
-    ALONE must open the gate."""
+@pytest.mark.parametrize("reason", FINDINGS_PARKS)
+def test_findings_park_full_instructions_name_answer_not_unpause(
+        reason, tmp_path, monkeypatch):
     sup = _sup(tmp_path, monkeypatch)
-    _raise_pause(sup, "operator_input_needed")
+    _raise_pause(sup, reason)
     text = _escalation_event_text(sup)
     assert "will not proceed until" not in text
-    rule_cmd = next(c for c in _advertised(text)
-                    if c.startswith("ralphctl rule "))
-
-    with TestClient(create_app(sup.cfg, sup.run, sup)) as client:
-        _run_command(rule_cmd, tmp_path, monkeypatch, client)
-    assert sup._pause.is_set() is True
-    assert sup.run.read_status().get("pauseReason") is None
+    assert "to accept the default" not in text
+    assert f"`ralphctl answer {sup.cfg.run_id} [--waive <fid>...]" in text
+    assert "records a ruling but does not answer the park" in text
+    assert _unpause_cmd(sup) not in text

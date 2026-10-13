@@ -2128,13 +2128,10 @@ function parkedReasonText(reason) {
 }
 
 // Task 008 (v0.26, #269): the plain-language reading of task 007's
-// `consequence` object -- what happens if this pause is resumed with no
-// ruling at all.
+// `consequence` object -- what happens if this park is left unanswered.
 // Task 009 (v0.26, #269): the plain-language reading of a single
 // `nextStepIfUnanswered` value, factored out of `parkedConsequenceLines` so
-// the "Resume without a ruling" button below can label itself with the
-// EXACT same predicted outcome the consequence list already renders,
-// never a second, independently-worded copy of the same fact.
+// no second, independently-worded copy of the same fact can drift.
 // Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): a third value,
 // `"finishing"` -- this approach is archived but the run ENDS instead of
 // replanning, because no approach budget is left (`replanAvailable: false`
@@ -2272,7 +2269,7 @@ function applyWaiveLine(text, line, checked, composedLines, sepState) {
 // text (via `onWaive`, wired by `renderParkedPanel` below to
 // `applyWaiveLine`/`parkedWaiveLineText`); it sends no request of its own,
 // so checking it never waives anything by itself -- only a later
-// `Submit ruling & resume` click does that.
+// `Answer` click sends the ticked ids.
 function parkedFindingItem(f, onWaive) {
   const invalidates = f.invalidates || [];
   const waiveId = "waive-" + f.id;
@@ -2281,7 +2278,9 @@ function parkedFindingItem(f, onWaive) {
       `${f.id} \u00b7 ${f.severity} \u00b7 ${f.clause || "(no clause)"}`,
     ]),
     h("div", { class: "parked-finding-body" }, [
-      h("div", { class: "parked-finding-row" }, [
+      // A residual finding is not a blocker the answer decides on, so only a
+      // blocking finding carries a waive checkbox.
+      f.severity === "residual" ? null : h("div", { class: "parked-finding-row" }, [
         h("label", { class: "parked-waive-label", for: waiveId }, [
           h("input", {
             type: "checkbox", id: waiveId, class: "waive-checkbox",
@@ -2387,7 +2386,6 @@ function renderParkedPanel(box, runId, pq) {
     if (!ta) return;
     ta.value = applyWaiveLine(ta.value, parkedWaiveLineText(f), checked, null, sepState);
   };
-  const outcomeText = parkedNextStepOutcomeText(c.nextStepIfUnanswered);
   const actionStatus = h("div", { id: "parked-action-status", class: "muted" }, []);
   // cure-01-05 (adopted #270 D.14): the panel's own answer box -- a name
   // field and a resizable 12-row ruling textarea, matching the Rule
@@ -2401,74 +2399,86 @@ function renderParkedPanel(box, runId, pq) {
   const rulingTextarea = h("textarea", {
     id: "parked-rule-text", placeholder: "ruling text", rows: "12",
   });
-  // Task 009 (v0.26, #269): the two stated-effect actions -- each shows
-  // its own effect in visible text BEFORE it is clicked, never only in a
-  // hover title (#161's own rule for `steer --now`). `Submit ruling &
-  // resume` posts the textarea body UNCHANGED to `POST /rule` -- the SAME
-  // route the Rule section's own form already posts to, and the SAME
-  // route that resumes the run itself when the ruling answers the
-  // current pause (`LoopSupervisor.resume_if_ruling_answers_pause`) --
-  // never a second, separate `/unpause` call from here. `Resume without a
-  // ruling` instead posts straight to `POST /unpause` (task 006) with no
-  // ruling recorded at all, so it is labelled with the SAME predicted
-  // outcome (`nextStepIfUnanswered`) the consequence list above already
-  // shows -- an operator taking this action is deliberately choosing to
-  // let that outcome happen now rather than review a waived finding first.
-  const submitRulingBtn = h("button", {
-    type: "button", id: "parked-submit-ruling",
-    onclick: async () => {
-      const ta = document.getElementById("parked-rule-text");
-      const nameEl = document.getElementById("parked-rule-name");
-      // The body is posted byte-for-byte as the textarea holds it (the
-      // Rule form's own contract) -- never trimmed or reflowed. Only a
-      // body with nothing but whitespace is refused, client-side, before
-      // any request is sent. A name the operator typed into the panel's
-      // own name field rides along exactly the way the Rule form's own
-      // `#rule-name` does -- never silently dropped.
-      const text = ta ? ta.value : "";
-      if (!text.trim()) { actionStatus.textContent = "failed: ruling text required"; return; }
+  // v0.36 C.2: the panel answers through `POST /api/runs/<id>/answer` -- a
+  // proxy to the run's own `POST /answer`, the one writer `ralphctl answer`
+  // uses -- and is the only way out of `awaiting_input` here (a ruling alone
+  // is recorded but releases nothing; there is no resume-without-a-ruling).
+  // Each action shows its effect in visible text before it is clicked. The
+  // waive checkboxes name the findings to waive (the ids go in the body); a
+  // finding not ticked is accepted. The textarea body is the answer's note,
+  // recorded as a ruling byte-for-byte as typed.
+  const waivedIds = new Set();
+  const onWaiveTracked = (f, checked) => {
+    if (checked) waivedIds.add(f.id); else waivedIds.delete(f.id);
+    onWaive(f, checked);
+  };
+  const iqNow = pq.inputQuestion || {};
+  const approachNo = Number(iqNow.approach ?? pq.approach);
+  const approachMax = Number(iqNow.maxApproaches ?? pq.maxApproaches);
+  const noApproachLeft = Number.isFinite(approachNo) && Number.isFinite(approachMax)
+    ? approachNo >= approachMax
+    : pq.replanAvailable === false;
+  const cureRoundsInput = h("input", {
+    type: "number", id: "parked-cure-rounds", min: "1", value: "1", size: "3",
+  });
+  const addApproachesInput = h("input", {
+    type: "number", id: "parked-add-approaches", min: "1", value: "1", size: "3",
+  });
+  const sendAnswer = async (extra) => {
+    const ta = document.getElementById("parked-rule-text");
+    const nameEl = document.getElementById("parked-rule-name");
+    const body = Object.assign({}, extra);
+    if (waivedIds.size) body.waive = Array.from(waivedIds);
+    // The note is posted byte-for-byte as the textarea holds it (never
+    // trimmed or reflowed); a body of nothing but whitespace is no note.
+    const text = ta ? ta.value : "";
+    if (text.trim()) {
+      body.note = text;
       const name = nameEl ? nameEl.value : "";
-      const body = { text: text };
       if (name) body.name = name;
-      actionStatus.textContent = "sending\u2026";
-      try {
-        const resp = await fetch(hubURL(`/api/runs/${encodeURIComponent(runId)}/rule`), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        const j = await resp.json().catch(() => ({}));
-        if (resp.ok) {
-          actionStatus.textContent = "ruling recorded, run resumed if it answered this pause";
-          if (ta) ta.value = "";
-          if (nameEl) nameEl.value = "";
-        } else {
-          actionStatus.textContent = "failed: " + String(innermostReason(j, resp.status));
-        }
-      } catch (e) {
-        actionStatus.textContent = "failed: " + e;
+    }
+    actionStatus.textContent = "sending\u2026";
+    try {
+      const resp = await fetch(hubURL(`/api/runs/${encodeURIComponent(runId)}/answer`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        actionStatus.textContent = "answered: " + String(j.outcome || "ok");
+        if (ta) ta.value = "";
+        if (nameEl) nameEl.value = "";
+      } else {
+        actionStatus.textContent = "failed: " + String(innermostReason(j, resp.status));
       }
+    } catch (e) {
+      actionStatus.textContent = "failed: " + e;
+    }
+  };
+  const roundsValue = () => {
+    const el = document.getElementById("parked-cure-rounds");
+    const n = el ? parseInt(el.value, 10) : 1;
+    return Number.isFinite(n) ? n : 1;
+  };
+  const submitAnswerBtn = h("button", {
+    type: "button", id: "parked-submit-answer",
+    onclick: () => sendAnswer({ cureRounds: roundsValue() }),
+  }, ["Answer: cure now"]);
+  const nextApproachAttrs = {
+    type: "button", id: "parked-next-approach",
+    onclick: () => sendAnswer({ cureRounds: 0 }),
+  };
+  if (noApproachLeft) nextApproachAttrs.disabled = "disabled";
+  const nextApproachBtn = h("button", nextApproachAttrs, ["Answer: next approach"]);
+  const grantApproachesBtn = h("button", {
+    type: "button", id: "parked-grant-approaches",
+    onclick: () => {
+      const el = document.getElementById("parked-add-approaches");
+      const n = el ? parseInt(el.value, 10) : 1;
+      return sendAnswer({ cureRounds: 0, approaches: Number.isFinite(n) ? n : 1 });
     },
-  }, ["Submit ruling & resume"]);
-  const resumeNoRulingBtn = h("button", {
-    type: "button", id: "parked-resume-no-ruling",
-    onclick: async () => {
-      actionStatus.textContent = "sending\u2026";
-      try {
-        const resp = await fetch(hubURL(`/api/runs/${encodeURIComponent(runId)}/unpause`), {
-          method: "POST",
-        });
-        const j = await resp.json().catch(() => ({}));
-        if (resp.ok) {
-          actionStatus.textContent = "resumed with no ruling";
-        } else {
-          actionStatus.textContent = "failed: " + String(innermostReason(j, resp.status));
-        }
-      } catch (e) {
-        actionStatus.textContent = "failed: " + e;
-      }
-    },
-  }, ["Resume without a ruling"]);
+  }, ["Answer: grant approaches and replan"]);
   box.appendChild(h("div", { class: "card parked-panel-card", id: "parked-panel" }, [
     h("h2", {}, ["\u23F8 Parked for an operator answer"]),
     ...rows.map(([k, v]) => h("div", {}, [h("b", {}, [k + ": "]), v])),
@@ -2490,7 +2500,7 @@ function renderParkedPanel(box, runId, pq) {
       h("div", { class: "parked-panel-left" }, [
         h("h3", {}, ["Findings"]),
         h("div", { class: "parked-findings" },
-          (pq.findings || []).map((f) => parkedFindingItem(f, onWaive))),
+          (pq.findings || []).map((f) => parkedFindingItem(f, onWaiveTracked))),
       ]),
       h("div", { class: "parked-panel-right" }, [
         h("h3", {}, ["Answer"]),
@@ -2501,20 +2511,32 @@ function renderParkedPanel(box, runId, pq) {
         h("div", { class: "parked-answer" }, [nameInput, rulingTextarea]),
         h("div", { class: "parked-actions" }, [
           h("div", { class: "parked-action" }, [
-            submitRulingBtn,
+            h("label", {}, ["cure rounds: ", cureRoundsInput]),
+            submitAnswerBtn,
             h("p", { class: "muted parked-action-effect" }, [
-              "effect: posts the ruling text above, unchanged, to this run's " +
-              "own ruling route -- which resumes the run itself if the ruling " +
-              "answers this pause.",
+              "effect: adds this many cure rounds to this approach and cures " +
+              "the accepted findings now; every finding ticked 'waive' is " +
+              "waived (stored against its clause); every other finding is " +
+              "accepted. Every finding waived passes the verdict instead.",
             ]),
           ]),
           h("div", { class: "parked-action" }, [
-            resumeNoRulingBtn,
+            nextApproachBtn,
             h("p", { class: "muted parked-action-effect" }, [
-              "effect: resumes with no ruling recorded -- predicted outcome: " +
-              outcomeText,
+              noApproachLeft
+                ? "effect: unavailable -- no approach is left; cure now, or grant approaches below."
+                : "effect: archives this approach and replans the next one over " +
+                  "the current code (cure rounds 0).",
             ]),
           ]),
+          noApproachLeft ? h("div", { class: "parked-action" }, [
+            h("label", {}, ["approaches to grant: ", addApproachesInput]),
+            grantApproachesBtn,
+            h("p", { class: "muted parked-action-effect" }, [
+              "effect: grants that many approaches, then archives this " +
+              "approach and replans (cure rounds 0).",
+            ]),
+          ]) : null,
           actionStatus,
         ]),
       ]),

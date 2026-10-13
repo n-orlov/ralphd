@@ -881,8 +881,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.36 ladder retry: verified verdicts climb the ladder too (+7 nodes in
     # tests/test_rejection_ladder.py), measured -> fast 8562/540, smoke
     # 6784/413.
-    "fast": {"tests": 8562, "modules": 540},
-    "smoke": {"tests": 6784, "modules": 413},
+    # v0.36 `ralphctl answer`/`POST /answer`/hub answer panel over one writer:
+    # the new tests/test_answer_outcomes.py (+40, one module) and the rewritten
+    # retired-proceed, ruling-release and hub-panel nodes, measured
+    # `--collect-only` -> fast 8601/541, smoke 6823/414.
+    "fast": {"tests": 8601, "modules": 541},
+    "smoke": {"tests": 6823, "modules": 414},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

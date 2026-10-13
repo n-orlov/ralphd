@@ -1,6 +1,10 @@
-"""Task 009 (v0.26, #269): the parked panel's answer controls -- a `waive`
-checkbox per finding that only composes editable ruling text, and the two
-stated-effect actions (`Submit ruling & resume`, `Resume without a ruling`).
+"""Task 009 (v0.26, #269), reworked for v0.36 C.2/D.2: the parked panel's
+answer controls -- a `waive` checkbox per finding that composes editable
+note text and names the finding to waive, and the stated-effect answer
+actions (`Answer: cure now`, `Answer: next approach`, `Answer: grant
+approaches and replan`), all posting to `POST /api/runs/<id>/answer`. There
+is no `Resume without a ruling` button (D.2) and a ruling alone releases
+nothing.
 
 cure-01-05 (adopted #270 C.12/D.14): the panel now carries its OWN visible
 `#parked-rule-name`/`#parked-rule-text` answer box, right alongside its
@@ -116,6 +120,8 @@ async function main() {
   // separate Rule section's own fields.
   document.__els['parked-rule-text'] = { value: input.textareaValue || '' };
   document.__els['parked-rule-name'] = { value: input.nameValue || '' };
+  document.__els['parked-cure-rounds'] = { value: input.cureRounds || '1' };
+  document.__els['parked-add-approaches'] = { value: input.addApproaches || '1' };
   globalThis.__nextResponses = (input.responses || []).map((r) => ({
     ok: r.ok !== false,
     status: r.status || (r.ok === false ? 400 : 200),
@@ -145,10 +151,15 @@ async function main() {
   }
 
   const buttons = card ? findAll(card, 'button') : [];
-  const submitBtn = buttons.find((b) => b.attrs.id === 'parked-submit-ruling');
-  const resumeBtn = buttons.find((b) => b.attrs.id === 'parked-resume-no-ruling');
+  const submitBtn = buttons.find((b) => b.attrs.id === 'parked-submit-answer');
+  const nextBtn = buttons.find((b) => b.attrs.id === 'parked-next-approach');
+  const grantBtn = buttons.find((b) => b.attrs.id === 'parked-grant-approaches');
+  const resumeBtn = buttons.find((b) => b.attrs.id === 'parked-resume-no-ruling'
+    || text(b).includes('Resume without a ruling'));
+  const oldSubmitBtn = buttons.find((b) => b.attrs.id === 'parked-submit-ruling');
   if (input.click === 'submit') await submitBtn.attrs.onclick();
-  if (input.click === 'resume') await resumeBtn.attrs.onclick();
+  if (input.click === 'next') await nextBtn.attrs.onclick();
+  if (input.click === 'grant') await grantBtn.attrs.onclick();
 
   const statusEl = card ? find(card, (n) => n.attrs && n.attrs.id === 'parked-action-status') : null;
 
@@ -159,7 +170,11 @@ async function main() {
     statusText: statusEl ? statusEl.textContent || null : null,
     cardText: card ? text(card) : '',
     submitButtonPresent: !!submitBtn,
+    nextButtonPresent: !!nextBtn,
+    nextDisabled: nextBtn ? !!nextBtn.attrs.disabled : null,
+    grantButtonPresent: !!grantBtn,
     resumeButtonPresent: !!resumeBtn,
+    oldSubmitButtonPresent: !!oldSubmitBtn,
     checkboxIds: checkboxes.map((c) => c.attrs.id),
     panelTextareaIds: textareas.map((t) => t.attrs.id),
     panelTextInputIds: textInputs.map((t) => t.attrs.id),
@@ -513,151 +528,156 @@ def test_parked_rule_text_has_no_key_handler_either():
 
 
 # ---------------------------------------------------------------------------
-# criterion (3): the two stated-effect actions
+# v0.36 C.2: the answer actions, all through `POST /api/runs/<id>/answer`
 # ---------------------------------------------------------------------------
 
+_ANSWER = "/api/runs/run-x/answer"
 
-def test_submit_ruling_and_resume_posts_the_textarea_body_unchanged_to_rule():
-    out = _run(_PQ, textareaValue="  a hand-typed ruling  \n",
-               click="submit", responses=[{"ok": True, "body": {"file": "r1"}}])
-    assert len(out["calls"]) == 1
-    call = out["calls"][0]
-    assert call["url"] == "/api/runs/run-x/rule"
+_PQ_LAST = dict(_PQ, inputQuestion={
+    "kind": "findings", "trigger": "cure_rounds_spent", "judge": "review",
+    "approach": 2, "maxApproaches": 2, "cureRoundsUsed": 3,
+    "cureRoundsAllowed": 3, "expiresAt": None, "onTimeout": "exhausted_approaches"})
+
+_PQ_MID = dict(_PQ, inputQuestion=dict(_PQ_LAST["inputQuestion"], approach=1))
+
+
+def _posted(out, index=0):
+    call = out["calls"][index]
     assert call["opts"]["method"] == "POST"
-    posted = json.loads(call["opts"]["body"])
-    # byte-for-byte: no trim, no reflow -- leading/trailing whitespace and
-    # the final newline all reach `/rule` exactly as typed.
-    assert posted == {"text": "  a hand-typed ruling  \n"}
+    return call["url"], json.loads(call["opts"]["body"])
 
 
-def test_submit_posts_a_multi_paragraph_body_with_its_blank_lines_intact():
-    body = "\n  first paragraph\n\n\nsecond paragraph\t\n\n"
-    out = _run(_PQ, textareaValue=body, click="submit",
-               responses=[{"ok": True, "body": {"file": "r1"}}])
-    assert json.loads(out["calls"][0]["opts"]["body"]) == {"text": body}
-
-
-def test_submit_after_waiving_posts_exactly_the_composed_textarea_body():
-    out = _run(_PQ, textareaValue="first paragraph\n\nsecond paragraph\n",
-               waive=[{"id": "F1", "checked": True}], click="submit",
-               responses=[{"ok": True, "body": {"file": "r1"}}])
-    assert json.loads(out["calls"][0]["opts"]["body"]) == {
-        "text": "first paragraph\n\nsecond paragraph\nwaive F1 (clause one (#111))\n"}
-
-
-def test_submit_ruling_and_resume_never_calls_unpause():
-    out = _run(_PQ, textareaValue="a ruling\n", click="submit",
-               responses=[{"ok": True, "body": {"file": "r1"}}])
-    assert all("/unpause" not in c["url"] for c in out["calls"])
-
-
-def test_submit_includes_the_entered_name():
-    """cure-01-05 (adopted #270 D.14): a name typed into the panel's own
-    `#parked-rule-name` rides along on `POST /rule` exactly the way the
-    Rule form's own `#rule-name` already does -- never dropped."""
-    out = _run(_PQ, textareaValue="chosen ruling", nameValue="operator-chosen-name",
-               click="submit", responses=[{"ok": True, "body": {"file": "r1"}}])
-    posted = json.loads(out["calls"][0]["opts"]["body"])
-    assert posted == {"text": "chosen ruling", "name": "operator-chosen-name"}
-
-
-def test_submit_posts_a_named_multiline_body_byte_identical():
-    """cure-01-05 (#270 D.14, criterion 2): name AND a multi-line body with
-    blank lines, an indented line and an unterminated last line together --
-    both reach `POST /rule` exactly as entered, neither dropped nor
-    rewritten."""
-    body = "first line\n\n  indented second paragraph\t\nunterminated last"
-    out = _run(_PQ, textareaValue=body, nameValue="named-multiline-ruling",
-               click="submit", responses=[{"ok": True, "body": {"file": "r1"}}])
+def test_answer_posts_the_note_unchanged_to_answer_with_default_cure_rounds():
+    out = _run(_PQ_MID, textareaValue="  a hand-typed note  \n",
+               click="submit", responses=[{"ok": True, "body": {"outcome": "cure"}}])
     assert len(out["calls"]) == 1
-    assert out["calls"][0]["url"] == "/api/runs/run-x/rule"
-    posted = json.loads(out["calls"][0]["opts"]["body"])
-    assert posted == {"text": body, "name": "named-multiline-ruling"}
+    url, body = _posted(out)
+    assert url == _ANSWER
+    # byte-for-byte: no trim, no reflow -- the note reaches `/answer` as typed.
+    assert body == {"cureRounds": 1, "note": "  a hand-typed note  \n"}
 
 
-def test_submit_omits_name_when_the_panels_name_field_is_blank():
-    out = _run(_PQ, textareaValue="chosen ruling", click="submit",
-               responses=[{"ok": True, "body": {"file": "r1"}}])
-    posted = json.loads(out["calls"][0]["opts"]["body"])
-    assert "name" not in posted
+def test_answer_with_no_note_posts_no_note_key():
+    out = _run(_PQ_MID, click="submit",
+               responses=[{"ok": True, "body": {"outcome": "cure"}}])
+    assert _posted(out)[1] == {"cureRounds": 1}
 
 
-def test_submit_clears_the_panels_own_name_field_on_success():
-    out = _run(_PQ, textareaValue="chosen ruling", nameValue="a-name",
-               click="submit", responses=[{"ok": True, "body": {"file": "r1"}}])
-    assert out["nameValue"] == ""
+def test_answer_posts_the_cure_rounds_the_operator_chose():
+    out = _run(_PQ_MID, cureRounds="3", click="submit",
+               responses=[{"ok": True, "body": {"outcome": "cure"}}])
+    assert _posted(out)[1] == {"cureRounds": 3}
 
 
-def test_resume_without_a_ruling_posts_to_unpause():
-    out = _run(_PQ, click="resume", responses=[{"ok": True, "body": {"resumed": True}}])
-    assert len(out["calls"]) == 1
-    call = out["calls"][0]
-    assert call["url"] == "/api/runs/run-x/unpause"
-    assert call["opts"]["method"] == "POST"
+def test_ticked_waive_boxes_name_their_findings_in_the_answer():
+    out = _run(_PQ_MID, textareaValue="first paragraph\n\nsecond paragraph\n",
+               waive=[{"id": "F1", "checked": True}, {"id": "F2", "checked": True},
+                      {"id": "F2", "checked": False}], click="submit",
+               responses=[{"ok": True, "body": {"outcome": "cure"}}])
+    assert _posted(out)[1] == {
+        "cureRounds": 1, "waive": ["F1"],
+        "note": "first paragraph\n\nsecond paragraph\nwaive F1 (clause one (#111))\n"}
 
 
-def test_resume_without_a_ruling_never_posts_to_rule():
-    out = _run(_PQ, click="resume", responses=[{"ok": True, "body": {}}])
-    assert all(c["url"] != "/api/runs/run-x/rule" for c in out["calls"])
+def test_answer_includes_the_entered_name_only_with_a_note():
+    out = _run(_PQ_MID, textareaValue="chosen note", nameValue="operator-chosen-name",
+               click="submit", responses=[{"ok": True, "body": {}}])
+    assert _posted(out)[1] == {
+        "cureRounds": 1, "note": "chosen note", "name": "operator-chosen-name"}
+    blank = _run(_PQ_MID, textareaValue="chosen note", click="submit",
+                 responses=[{"ok": True, "body": {}}])
+    assert "name" not in _posted(blank)[1]
+
+
+def test_answer_clears_the_panels_own_fields_on_success_only():
+    ok = _run(_PQ_MID, textareaValue="n", nameValue="a-name", click="submit",
+              responses=[{"ok": True, "body": {"outcome": "cure"}}])
+    assert ok["nameValue"] == "" and ok["textareaValue"] == ""
+    assert ok["statusText"] == "answered: cure"
+    failed = _run(_PQ_MID, textareaValue="a note\n", click="submit",
+                  responses=[{"ok": False, "status": 409,
+                              "body": {"detail": "no approach is left"}}])
+    assert failed["statusText"] == "failed: no approach is left"
+    assert failed["textareaValue"] == "a note\n"  # never cleared on failure
+
+
+def test_next_approach_posts_cure_rounds_zero():
+    out = _run(_PQ_MID, click="next",
+               responses=[{"ok": True, "body": {"outcome": "next_approach"}}])
+    url, body = _posted(out)
+    assert url == _ANSWER and body == {"cureRounds": 0}
+
+
+def test_next_approach_is_greyed_out_when_no_approach_is_left():
+    mid = _run(_PQ_MID)
+    last = _run(_PQ_LAST)
+    assert mid["nextButtonPresent"] and mid["nextDisabled"] is False
+    assert last["nextButtonPresent"] and last["nextDisabled"] is True
+    assert "no approach is left" in last["cardText"]
+
+
+def test_the_grant_approaches_option_appears_only_when_none_is_left():
+    assert _run(_PQ_MID)["grantButtonPresent"] is False
+    assert _run(_PQ_LAST)["grantButtonPresent"] is True
+
+
+def test_grant_approaches_posts_cure_rounds_zero_and_the_count():
+    out = _run(_PQ_LAST, addApproaches="2", click="grant",
+               responses=[{"ok": True, "body": {"outcome": "next_approach"}}])
+    url, body = _posted(out)
+    assert url == _ANSWER and body == {"cureRounds": 0, "approaches": 2}
+
+
+def test_a_replan_unavailable_payload_without_an_input_question_greys_next_approach():
+    out = _run(dict(_PQ, replanAvailable=False, approach=None, maxApproaches=None))
+    assert out["nextDisabled"] is True
+
+
+def test_there_is_no_resume_without_a_ruling_button_and_no_unpause_call():
+    out = _run(_PQ_MID, click="submit",
+               responses=[{"ok": True, "body": {"outcome": "cure"}}])
+    assert out["resumeButtonPresent"] is False
+    assert out["oldSubmitButtonPresent"] is False
+    assert "Resume without a ruling" not in out["cardText"]
+    assert all("/unpause" not in c["url"] and not c["url"].endswith("/rule")
+               for c in out["calls"])
+    src = APP_JS.read_text()
+    assert "Resume without a ruling" not in src
+    assert "parked-resume-no-ruling" not in src
 
 
 def test_each_action_shows_its_effect_in_visible_text_before_any_click():
-    out = _run(_PQ)
-    assert "effect:" in out["cardText"]
+    out = _run(_PQ_MID)
     assert out["cardText"].count("effect:") == 2
-    assert "posts the ruling text above" in out["cardText"]
-    assert "resumes with no ruling recorded" in out["cardText"]
+    assert "adds this many cure rounds to this approach" in out["cardText"]
+    assert "archives this approach and replans the next one" in out["cardText"]
+    last = _run(_PQ_LAST)
+    assert last["cardText"].count("effect:") == 3
+    assert "grants that many approaches" in last["cardText"]
 
 
-def test_resume_without_a_ruling_is_labelled_with_the_cure_pass_outcome():
-    pq = json.loads(json.dumps(_PQ))
-    pq["consequence"]["nextStepIfUnanswered"] = "cure_pass"
-    out = _run(pq)
-    assert "predicted outcome: a cure pass over this approach's blocking findings" \
-        in out["cardText"]
+def test_the_consequence_list_still_names_what_an_unanswered_park_does():
+    for next_step, wording in (
+            ("cure_pass", "if left unanswered: a cure pass over this approach's blocking findings"),
+            ("archive_and_replan", "if left unanswered: this approach is archived and the run replans"),
+            ("finishing", "if left unanswered: this approach is archived and the run ends (no approach left)")):
+        pq = json.loads(json.dumps(_PQ_MID))
+        pq["consequence"]["nextStepIfUnanswered"] = next_step
+        out = _run(pq)
+        assert wording in out["cardText"]
+        assert "unknown (" not in out["cardText"]
 
 
-def test_resume_without_a_ruling_is_labelled_with_the_archive_and_replan_outcome():
-    """Rerun against the OTHER `nextStepIfUnanswered` value -- the full set
-    task 007 defines -- so the label is pinned for both, never just one."""
-    pq = json.loads(json.dumps(_PQ))
-    pq["consequence"]["nextStepIfUnanswered"] = "archive_and_replan"
-    out = _run(pq)
-    assert "predicted outcome: this approach is archived and the run replans" \
-        in out["cardText"]
-
-
-def test_resume_without_a_ruling_is_labelled_with_the_finishing_outcome():
-    """Cure task cure-01-05 (PRD v0.27 requirement C.4, DoD 3): the THIRD
-    `nextStepIfUnanswered` value -- a last-approach pause where an
-    unanswered resume archives this approach and ENDS THE RUN, never a
-    fresh replan -- is labelled with its own outcome, not the
-    `archive_and_replan` wording (which claims a replan this edge never
-    takes) and not the panel's own generic `unknown (...)` fallback."""
-    pq = json.loads(json.dumps(_PQ))
-    pq["consequence"]["nextStepIfUnanswered"] = "finishing"
-    out = _run(pq)
-    assert ("predicted outcome: this approach is archived and the run ends "
-            "(no approach left)") in out["cardText"]
-    assert "unknown (" not in out["cardText"]
-
-
-def test_a_failed_submit_reports_the_engines_own_reason_and_keeps_the_text():
-    out = _run(_PQ, textareaValue="a ruling\n", click="submit",
-               responses=[{"ok": False, "status": 409,
-                           "body": {"detail": "job finished"}}])
-    assert out["statusText"] == "failed: job finished"
-    assert out["textareaValue"] == "a ruling\n"  # never cleared on failure
-
-
-def test_a_failed_resume_reports_the_engines_own_reason():
-    out = _run(_PQ, click="resume",
+def test_a_failed_answer_reports_the_engines_own_reason():
+    out = _run(_PQ_MID, click="submit",
                responses=[{"ok": False, "status": 503,
-                           "body": {"error": "run's API is unreachable — cannot unpause"}}])
-    assert "run's API is unreachable" in out["statusText"]
+                           "body": {"error": "run's API unreachable or rejected the request"}}])
+    assert "run's API unreachable" in out["statusText"]
 
 
-def test_submit_with_empty_ruling_text_is_refused_client_side_with_no_request():
-    out = _run(_PQ, textareaValue="   \n", click="submit")
-    assert out["calls"] == []
-    assert out["statusText"] == "failed: ruling text required"
+def test_a_residual_finding_carries_no_waive_checkbox():
+    pq = json.loads(json.dumps(_PQ_MID))
+    pq["findings"].append({"id": "R1", "severity": "residual", "clause": "nit",
+                           "evidence": "e", "cured_when": None, "invalidates": []})
+    out = _run(pq)
+    assert out["checkboxIds"] == ["waive-F1", "waive-F2"]

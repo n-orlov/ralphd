@@ -184,8 +184,8 @@ def test_an_ordinary_rejection_with_a_replan_available_pauses_instead(
     # reason and the exact answering commands, never the archive/replan
     # prose (that stays event-side only).
     assert "operator_input_needed" in text
-    assert "ralphctl rule task014-operator-input-needed" in text
-    assert "ralphctl unpause task014-operator-input-needed" in text
+    assert "ralphctl answer task014-operator-input-needed" in text
+    assert "ralphctl unpause task014-operator-input-needed" not in text
 
 
 def test_an_ordinary_rejection_on_the_last_approach_pauses_instead_of_ending(

@@ -389,7 +389,7 @@ def test_checking_and_unchecking_waive_boxes_composes_text_with_no_request(tmp_p
         engine.close()
 
 
-def test_submit_ruling_and_resume_reaches_the_engines_rule_route(tmp_path, pw):
+def test_answer_reaches_the_engines_answer_route(tmp_path, pw):
     registry = tmp_path / "registry"
     _run_dir, engine = _write_live_parked_run(registry, "run-submit-ruling")
     try:
@@ -397,20 +397,21 @@ def test_submit_ruling_and_resume_reaches_the_engines_rule_route(tmp_path, pw):
         server.wait_ready()
         try:
             pw.open(f"{server.base}/#/run/run-submit-ruling")
-            _wait_for(pw, "document.body.innerText", "Submit ruling")
+            _wait_for(pw, "document.body.innerText", "Answer: cure now")
             # cure-01-05 (adopted #270 D.14): the panel's OWN name field and
-            # ruling textarea -- an operator-chosen name rides along on the
+            # note textarea -- an operator-chosen name rides along on the
             # request the engine actually receives, never dropped.
             pw.fill("#parked-rule-name", "operator-chosen-name")
             pw.fill("#parked-rule-text", "an operator ruling")
 
-            pw.click("#parked-submit-ruling")
+            pw.click("#parked-submit-answer")
             _wait_for(pw, "document.getElementById('parked-action-status').textContent",
-                     "ruling recorded")
+                     "answered")
 
-            assert _posts(engine) == [("POST", "/rule")], engine.requests
-            body = json.loads(_last_body_for(engine, "POST", "/rule"))
-            assert body == {"text": "an operator ruling", "name": "operator-chosen-name"}
+            assert _posts(engine) == [("POST", "/answer")], engine.requests
+            body = json.loads(_last_body_for(engine, "POST", "/answer"))
+            assert body == {"cureRounds": 1, "note": "an operator ruling",
+                            "name": "operator-chosen-name"}
             pw.screenshot(SCREENSHOTS_DIR / "parked-04-submit-ruling.png")
         finally:
             server.stop()
@@ -418,22 +419,46 @@ def test_submit_ruling_and_resume_reaches_the_engines_rule_route(tmp_path, pw):
         engine.close()
 
 
-def test_resume_without_a_ruling_reaches_the_engines_unpause_route(tmp_path, pw):
+def test_next_approach_reaches_the_engines_answer_route_and_there_is_no_resume_button(
+        tmp_path, pw):
     registry = tmp_path / "registry"
-    _run_dir, engine = _write_live_parked_run(registry, "run-resume-no-ruling")
+    _run_dir, engine = _write_live_parked_run(registry, "run-next-approach")
     try:
         server = UiServer(registry)
         server.wait_ready()
         try:
-            pw.open(f"{server.base}/#/run/run-resume-no-ruling")
-            _wait_for(pw, "document.body.innerText", "Resume without a ruling")
+            pw.open(f"{server.base}/#/run/run-next-approach")
+            _wait_for(pw, "document.body.innerText", "Answer: next approach")
+            assert _val(pw, "document.body.innerText.includes('Resume without a ruling')") is False
 
-            pw.click("#parked-resume-no-ruling")
+            pw.click("#parked-next-approach")
             _wait_for(pw, "document.getElementById('parked-action-status').textContent",
-                     "resumed with no ruling")
+                     "answered")
 
-            assert _posts(engine) == [("POST", "/resume")], engine.requests
+            assert _posts(engine) == [("POST", "/answer")], engine.requests
+            body = json.loads(_last_body_for(engine, "POST", "/answer"))
+            assert body == {"cureRounds": 0}
             pw.screenshot(SCREENSHOTS_DIR / "parked-05-resume-no-ruling.png")
+        finally:
+            server.stop()
+    finally:
+        engine.close()
+
+
+def test_next_approach_is_greyed_out_when_no_approach_is_left(tmp_path, pw):
+    registry = tmp_path / "registry"
+    _run_dir, engine = _write_live_parked_run(
+        registry, "run-no-approach-left", maxApproaches=1, approach=1,
+        inputQuestion=dict(_park_status("operator_input_needed")["inputQuestion"],
+                           maxApproaches=1))
+    try:
+        server = UiServer(registry)
+        server.wait_ready()
+        try:
+            pw.open(f"{server.base}/#/run/run-no-approach-left")
+            _wait_for(pw, "document.body.innerText", "Answer: next approach")
+            assert _val(pw, "document.getElementById('parked-next-approach').disabled") is True
+            assert _val(pw, "!!document.getElementById('parked-grant-approaches')") is True
         finally:
             server.stop()
     finally:
@@ -497,7 +522,7 @@ def test_enter_in_the_panels_own_rule_text_submits_named_multiline_byte_identica
         server.wait_ready()
         try:
             pw.open(f"{server.base}/#/run/run-panel-rule-enter")
-            _wait_for(pw, "document.body.innerText", "Submit ruling")
+            _wait_for(pw, "document.body.innerText", "Answer: cure now")
 
             # criterion (2): a NAMED multi-line ruling -- the panel's own
             # name field and the Enter-composed body travel together.
@@ -511,13 +536,14 @@ def test_enter_in_the_panels_own_rule_text_submits_named_multiline_byte_identica
             assert value == "first panel ruling line\nsecond panel ruling line"
             assert _posts(engine) == []
 
-            pw.click("#parked-submit-ruling")
+            pw.click("#parked-submit-answer")
             _wait_for(pw, "document.getElementById('parked-action-status').textContent",
-                     "ruling recorded")
+                     "answered")
 
-            assert _posts(engine) == [("POST", "/rule")], engine.requests
-            body = json.loads(_last_body_for(engine, "POST", "/rule"))
-            assert body == {"text": "first panel ruling line\nsecond panel ruling line",
+            assert _posts(engine) == [("POST", "/answer")], engine.requests
+            body = json.loads(_last_body_for(engine, "POST", "/answer"))
+            assert body == {"cureRounds": 1,
+                            "note": "first panel ruling line\nsecond panel ruling line",
                             "name": "named-multiline-ruling"}
             pw.screenshot(SCREENSHOTS_DIR / "parked-07-panel-rule-enter-multiline.png")
         finally:
@@ -775,7 +801,7 @@ def test_wide_parked_panel_places_answer_to_right_of_findings(tmp_path, pw):
         server.wait_ready()
         try:
             pw.open(f"{server.base}/#/run/run-wide-columns")
-            _wait_for(pw, "document.body.innerText", "Submit ruling")
+            _wait_for(pw, "document.body.innerText", "Answer: cure now")
             got = json.loads(pw.eval_js(
                 "(() => { const rect = s => { const r = "
                 "document.querySelector(s).getBoundingClientRect(); "
@@ -819,7 +845,7 @@ def test_an_unrelated_detail_refresh_preserves_the_in_progress_draft(tmp_path, p
         server.wait_ready()
         try:
             pw.open(f"{server.base}/#/run/run-unrelated-refresh")
-            _wait_for(pw, "document.body.innerText", "Submit ruling")
+            _wait_for(pw, "document.body.innerText", "Answer: cure now")
 
             typed = "Draft answer\n\nNot submitted yet.\n"
             pw.fill("#parked-rule-text", typed)
@@ -876,7 +902,7 @@ def test_a_genuinely_changed_question_replaces_the_panel_with_a_fresh_draft(
         server.wait_ready()
         try:
             pw.open(f"{server.base}/#/run/run-changed-question")
-            _wait_for(pw, "document.body.innerText", "Submit ruling")
+            _wait_for(pw, "document.body.innerText", "Answer: cure now")
 
             pw.fill("#parked-rule-text", "stale draft for the old question")
             pw.fill("#parked-rule-name", "stale-name")
@@ -921,7 +947,7 @@ def test_an_answered_pause_hides_the_panel_on_the_next_refresh(tmp_path, pw):
         server.wait_ready()
         try:
             pw.open(f"{server.base}/#/run/run-answered-pause")
-            _wait_for(pw, "document.body.innerText", "Submit ruling")
+            _wait_for(pw, "document.body.innerText", "Answer: cure now")
 
             status = json.loads((run_dir / "status.json").read_text())
             status["pauseReason"] = None

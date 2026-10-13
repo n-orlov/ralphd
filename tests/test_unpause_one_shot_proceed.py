@@ -1,20 +1,21 @@
-"""Task 009 (PRD v0.27 requirement C.2, #274): a bare `ralphctl unpause`/
-`POST /resume` of review's A.1 pause-before-archive (`operator_input_
-needed`) or the peer verdict gate's own C.1 sibling
-(`verdict_gate_operator_input_needed`), with NO ruling filed to answer it,
-records a disk-backed one-shot 'proceed' for that rejection's own
-signature. The next rejection on that SAME signature consumes it and takes
-the archive-and-replan edge (or finishing, when no approach is left)
-without parking again -- mirroring the one-re-park bound a ruling already
-has (`_ruling_already_reparked`/`_record_ruling_reparked`). A DIFFERENT
-rejection never matches, and still parks.
+"""v0.36 D.2 (was task 009, PRD v0.27 requirement C.2, #274): a bare
+`ralphctl unpause`/`POST /resume` of review's (`operator_input_needed`) or the
+peer verdict gate's (`verdict_gate_operator_input_needed`) findings park no
+longer records a one-shot 'proceed' (`noRulingProceed` is gone). "Carry on
+with what the engine would do" is now the input timeout's outcome, or
+`ralphctl answer <run> --cure-rounds 0` for an operator who wants it at once
+(tests/test_answer_outcomes.py).
 
-Before this task, #274's own diagnosis held: "Unpausing review's A.1 pause
-re-reviews and re-parks forever." `tests/test_operator_ruling_reask.py::
-test_resuming_without_any_ruling_at_all_emits_no_honoured_event` used to
-pin exactly that loop (rewritten in this same commit, see its own updated
-docstring) -- this module is the dedicated coverage for the fix itself,
-for both the review and the gate pause.
+So re-asking a judge after an engine-level `resume()` and getting the SAME
+rejection parks the run again -- it never archives on an answer nobody gave --
+and a DIFFERENT rejection still parks too. This module also keeps the shared
+fixtures (`_gate_fixture`, `_MIXED_FINDINGS`, ...) other modules import.
+
+Before v0.36, #274's own diagnosis held: "Unpausing review's A.1 pause
+re-reviews and re-parks forever", and this module pinned the one-shot proceed
+that closed that loop; the loop is now closed by refusing the bare unpause of
+an `awaiting_input` run at the API (`POST /resume` -> 409 naming `ralphctl
+answer`, tests/test_answer_outcomes.py).
 """
 
 from __future__ import annotations
@@ -98,7 +99,7 @@ def _reject(sup, reason: str):
 # ===========================================================================
 
 
-def test_review_park_unpause_same_rejection_archives_and_replans_once(
+def test_review_park_bare_resume_grants_no_proceed_and_the_same_rejection_parks_again(
         tmp_path):
     root = tmp_path / "run"
     sup1 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
@@ -109,14 +110,13 @@ def test_review_park_unpause_same_rejection_archives_and_replans_once(
     outcome1 = _bounded(sup1._step_review())
     assert outcome1 == ("advance", "paused", "operator_input_needed")
 
-    # a bare unpause, no ruling filed at all.
+    # a bare resume, no ruling filed at all.
     sup1.resume()
     status = sup1.run.read_status()
     assert status["state"] == "running"
-    assert status.get("noRulingProceed", {}).get("operator_input_needed")
+    assert "noRulingProceed" not in status
 
-    # a brand-new process reading the SAME on-disk run -- the grant is
-    # disk-backed, not an in-memory flag this fresh supervisor never saw.
+    # a brand-new process reading the SAME on-disk run.
     sup2 = _supervisor(root, max_approaches=2, operator_input_needed_pause=True)
     sup2._approach = 1
     findings.write_findings_json(sup2.run.findings_json_file, _MIXED_FINDINGS)
@@ -124,16 +124,13 @@ def test_review_park_unpause_same_rejection_archives_and_replans_once(
 
     outcome2 = _bounded(sup2._step_review())
 
-    assert outcome2 == ("advance", "replan", "rejected_approach_left")
+    assert outcome2 == ("advance", "paused", "operator_input_needed")
     status2 = sup2.run.read_status()
-    assert status2["state"] == "running"
-    assert not status2.get("noRulingProceed", {}).get("operator_input_needed")
-    # archived, exactly like an ordinary un-paused rejection would be.
-    assert (root / "approaches" / "01").exists()
-
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
-    assert escalations[0]["reason"] == "operator_input_needed"
+    assert status2["state"] == "awaiting_input"
+    assert "noRulingProceed" not in status2
+    # nothing was archived: no answer was given.
+    assert not (root / "approaches" / "01").exists()
+    assert len(_events(root, "operator_escalation")) == 2
 
 
 def test_review_park_unpause_different_rejection_still_parks(tmp_path):
@@ -218,7 +215,7 @@ def _gate_fixture(root: Path, *, gate_findings: list[dict]) -> LoopSupervisor:
     return sup
 
 
-def test_gate_park_unpause_same_rejection_archives_and_replans_once(
+def test_gate_park_bare_resume_grants_no_proceed_and_the_same_rejection_parks_again(
         tmp_path):
     root = tmp_path / "run"
     sup1 = _gate_fixture(root, gate_findings=_gate_findings_a())
@@ -235,8 +232,7 @@ def test_gate_park_unpause_same_rejection_archives_and_replans_once(
     sup1.resume()
     status = sup1.run.read_status()
     assert status["state"] == "running"
-    assert status.get("noRulingProceed", {}).get(
-        "verdict_gate_operator_input_needed")
+    assert "noRulingProceed" not in status
 
     # a brand-new supervisor over the same disk-backed run.
     sup2 = _gate_fixture(root, gate_findings=_gate_findings_a())
@@ -248,15 +244,14 @@ def test_gate_park_unpause_same_rejection_archives_and_replans_once(
     finally:
         LoopSupervisor.run_iteration = orig
 
-    assert outcome2 == ("advance", "replan", "verdict_gate_rejected_approach_left")
+    assert outcome2 == ("advance", "paused", "verdict_gate_operator_input_needed")
     status2 = sup2.run.read_status()
-    assert status2["state"] == "running"
-    assert not status2.get("noRulingProceed", {}).get(
-        "verdict_gate_operator_input_needed")
-    assert (root / "approaches" / "01").exists()
+    assert status2["state"] == "awaiting_input"
+    assert "noRulingProceed" not in status2
+    assert not (root / "approaches" / "01").exists()
 
     escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
+    assert len(escalations) == 2
     assert escalations[0]["reason"] == "verdict_gate_operator_input_needed"
 
 
@@ -297,13 +292,9 @@ def test_gate_park_unpause_different_rejection_still_parks(tmp_path):
 
 
 # ===========================================================================
-# 3. Task 002 (this wave): a mixed (curable + non-curable) blocking set --
-#    the spent-ceiling pause now widens to this shape too. A bare unpause
-#    with no ruling records the one-shot proceed exactly like the all-
-#    curable case above, and the SAME rejection's next run consumes it and
-#    takes its OWN terminal edge (the immediate merits tail, never a fresh
-#    replan -- A.1/A.2's own removal-specific rule) with no second
-#    escalation.
+# 3. Task 002 (v0.27 wave): a mixed (curable + non-curable) blocking set --
+#    the spent-ceiling pause widens to this shape too. A bare resume with no
+#    ruling grants nothing (v0.36), exactly like the all-curable case above.
 # ===========================================================================
 
 
@@ -320,8 +311,7 @@ def _mixed_1c_1i_gate_findings() -> list[dict]:
     ]
 
 
-def test_gate_park_unpause_mixed_rejection_proceeds_to_the_unanswered_outcome(
-        tmp_path):
+def test_gate_park_bare_resume_of_a_mixed_rejection_parks_again(tmp_path):
     root = tmp_path / "run"
     sup1 = _gate_fixture(root, gate_findings=_mixed_1c_1i_gate_findings())
 
@@ -334,36 +324,28 @@ def test_gate_park_unpause_mixed_rejection_proceeds_to_the_unanswered_outcome(
         LoopSupervisor.run_iteration = orig
     assert outcome1 == ("advance", "paused", "verdict_gate_operator_input_needed")
 
-    # a bare unpause, no ruling filed at all.
+    # a bare resume, no ruling filed at all.
     sup1.resume()
     status = sup1.run.read_status()
     assert status["state"] == "running"
-    assert status.get("noRulingProceed", {}).get(
-        "verdict_gate_operator_input_needed")
+    assert "noRulingProceed" not in status
 
     # a brand-new supervisor over the same disk-backed run, SAME rejection.
     sup2 = _gate_fixture(root, gate_findings=_mixed_1c_1i_gate_findings())
 
     orig = LoopSupervisor.run_iteration
-    LoopSupervisor.run_iteration = _gate_rejects(
-        "the same wall, unmoved")
+    LoopSupervisor.run_iteration = _gate_rejects("the same wall, unmoved")
     try:
         outcome2 = _bounded(sup2._step_verdict_gate())
     finally:
         LoopSupervisor.run_iteration = orig
 
-    # v0.36 requirement B: the consumed no-ruling proceed is the park's
-    # unanswered outcome -- the mixed (non-curable) rejection archives and
-    # replans while an approach is left; it never ends the run on the spot.
-    assert outcome2 == ("advance", "replan", "verdict_gate_rejected_approach_left")
+    # v0.36: parked again, never failed on the spot and never archived on an
+    # answer nobody gave (covering node for the replacement of the proceed:
+    # tests/test_answer_outcomes.py).
+    assert outcome2 == ("advance", "paused", "verdict_gate_operator_input_needed")
     status2 = sup2.run.read_status()
-    assert status2["state"] == "running"
+    assert status2["state"] == "awaiting_input"
     assert status2.get("gateRejectionEnding") == "rejected_on_the_merits"
-    assert not status2.get("noRulingProceed", {}).get(
-        "verdict_gate_operator_input_needed")
-    assert (root / "approaches" / "01").exists()
-
-    # no SECOND escalation -- the one from the first parked rejection is
-    # still the only one on this run.
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
+    assert not (root / "approaches" / "01").exists()
+    assert len(_events(root, "operator_escalation")) == 2

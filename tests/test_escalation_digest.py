@@ -360,10 +360,9 @@ def test_no_builder_repeats_a_findings_evidence_in_its_own_text(tmp_path):
 #    exactly the same shape of risk `operator_input_needed`/`rejected_
 #    repeated_signature` already digest -- so they now go through the SAME
 #    evidence-free digest, never the full per-finding text. And every
-#    digest this helper renders -- `rejected_repeated_signature` included --
-#    names BOTH live-run levers (`ralphctl rule ...`/`ralphctl unpause
-#    ...`), since every reason it covers waits on an operator ruling
-#    (SPEC.md \u00a74.6).
+#    digest this helper renders for a findings park names the one command
+#    that leaves it (v0.36: `ralphctl answer ...`; a ruling or a bare
+#    unpause does not, SPEC.md \u00a74.6).
 # ===========================================================================
 
 
@@ -392,9 +391,9 @@ def test_last_approach_notification_is_an_evidence_free_digest(tmp_path):
     assert "requirement C.1 (#141)" in text
     assert "blocking: 1" in text and "residual: 0" in text
     assert "resolve with:" not in text
-    assert (f"ralphctl rule {sup.cfg.run_id} --file <ruling.md> "
-            "--name <slug>") in text
-    assert f"ralphctl unpause {sup.cfg.run_id}" in text
+    assert f"ralphctl answer {sup.cfg.run_id}" in text
+    assert "--cure-rounds" in text
+    assert f"ralphctl unpause {sup.cfg.run_id}" not in text
 
 
 def test_incurable_notification_is_an_evidence_free_digest(tmp_path):
@@ -423,19 +422,19 @@ def test_incurable_notification_is_an_evidence_free_digest(tmp_path):
     assert data[0]["evidence"] not in text
     assert "requirement B (#111)" in text
     assert "blocking: 1" in text and "residual: 0" in text
-    assert (f"ralphctl rule {sup.cfg.run_id} --file <ruling.md> "
-            "--name <slug>") in text
-    assert f"ralphctl unpause {sup.cfg.run_id}" in text
+    assert f"ralphctl answer {sup.cfg.run_id}" in text
+    assert "--cure-rounds" in text
+    assert f"ralphctl unpause {sup.cfg.run_id}" not in text
 
 
-def test_gate_digest_names_the_ruling_command_too(tmp_path):
+def test_gate_digest_names_the_answer_command_too(tmp_path):
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=2)
     text = sup._operator_escalation_digest_text(
         "verdict_gate_operator_input_needed", 1, [_finding("clause Z", 50)])
-    assert (f"ralphctl rule {sup.cfg.run_id} --file <ruling.md> "
-            "--name <slug>") in text
-    assert f"ralphctl unpause {sup.cfg.run_id}" in text
+    assert f"ralphctl answer {sup.cfg.run_id}" in text
+    assert "--cure-rounds" in text
+    assert f"ralphctl unpause {sup.cfg.run_id}" not in text
 
 
 # ===========================================================================
@@ -562,7 +561,7 @@ def test_incurable_rejection_notification_is_bounded_too(tmp_path):
     assert "INCURABLE-EVIDENCE-" not in text
     assert "blocking: 200  residual: 1" in text
     assert " more findings in the hub" in text
-    assert f"ralphctl unpause {sup.cfg.run_id}" in text
+    assert f"ralphctl answer {sup.cfg.run_id}" in text
 
 
 # ===========================================================================

@@ -3242,6 +3242,30 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 self._send_json(resp, code)
                 return
+            if len(segs) == 4 and segs[:2] == ["api", "runs"] and segs[3] == "answer":
+                # v0.36 C.2: the hub's answer panel -- a pure proxy to the
+                # run's own `POST /answer`, the one writer `ralphctl answer`
+                # uses too. The engine's refusal (409/422, naming what does
+                # apply) is passed straight through.
+                run_id = segs[2]
+                if not (reg / "runs" / run_id).is_dir():
+                    self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                raw = self._read_body()
+                try:
+                    body = json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    self._send_json({"error": "invalid JSON body"}, 400)
+                    return
+                ok, code, resp = _proxy_json(reg, run_id, "POST", "/answer",
+                                              body=json.dumps(body).encode())
+                if not ok:
+                    self._send_json(
+                        {"error": "run's API unreachable or rejected the request",
+                         "detail": resp}, code or 503)
+                    return
+                self._send_json(resp, code)
+                return
             self._send_json({"error": "no such endpoint"}, 404)
         except Exception as e:
             self._send_json({"error": str(e)}, 500)

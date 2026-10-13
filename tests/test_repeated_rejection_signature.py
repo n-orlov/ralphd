@@ -176,16 +176,15 @@ def test_a_second_identical_rejection_signature_parks_on_the_ladder_instead_of_r
     assert len(notifier.messages) == 1
     text = notifier.messages[0]
     assert same_clause in text
-    assert "ralphctl unpause task016-repeated-rejection-signature" in text
+    assert "ralphctl answer task016-repeated-rejection-signature" in text
 
-    # The park releases through the `/rule` route
-    # (`tests/test_operator_ruling_reask.py`; retired by the answer task),
-    # no separate `POST /resume`/`ralphctl resume` call anywhere in this test. Folded
+    # A ruling filed against the park is recorded, scoped to its signature,
+    # and does not release it. Folded
     # into this existing test rather than a fresh collected node -- task
     # 024's own fast-tier ceiling stands at zero headroom.
     signature = status.get("rejectionSignatures", {}).get("2")
     assert signature is not None
-    # `add_ruling`/`resume_if_ruling_answers_pause` both resolve the
+    # `add_ruling` resolves the
     # signature off `status.json`'s own `approach` field -- ordinarily
     # written by `_step_planning` at approach start; this fixture drives
     # `_step_review()` directly without ever going through planning for
@@ -216,17 +215,18 @@ def test_a_second_identical_rejection_signature_parks_on_the_ladder_instead_of_r
     assert unrelated["pauseReason"] == "stagnation"
     assert not sup._pause.is_set()
 
-    # Restore the ACTUAL current pause and file the authoritative ruling
-    # against it -- this is the one that must release it, in the same
-    # request, with no separate resume command.
+    # Restore the ACTUAL current park and file a ruling against it: since
+    # v0.36 (D.1) a ruling is recorded -- scoped to this rejection's
+    # signature -- but never releases the park; only an answer does
+    # (covering node: tests/test_answer_outcomes.py).
     sup.run.update_status(state="awaiting_input",
                           pauseReason="operator_input_needed")
     resp = _post_rule({"text": "These clauses are residuals; ship."})
     assert resp.status_code == 202, resp.text
-    released = sup.run.read_status()
-    assert released["state"] == "running"
-    assert released.get("pauseReason") is None
-    assert sup._pause.is_set()
+    held = sup.run.read_status()
+    assert held["state"] == "awaiting_input"
+    assert held["pauseReason"] == "operator_input_needed"
+    assert not sup._pause.is_set()
     assert ruling_entries(root)[-1]["signature"] == signature
 
 

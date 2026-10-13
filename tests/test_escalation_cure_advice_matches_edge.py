@@ -12,7 +12,8 @@ the run's last approach they contrast it with finishing the run rather
 than with a replan that cannot happen.
 
 Each advice is followed through the real `PATCH /config/budget` +
-`POST /resume` API to prove it describes the transition the engine takes.
+`POST /answer` API (v0.36: a parked run is answered, never unpaused) to prove
+it describes the transition the engine takes.
 """
 
 from __future__ import annotations
@@ -38,7 +39,9 @@ from tests.test_unpause_one_shot_proceed import (
 )
 
 
-def _grant_one_cure_pass_and_resume(sup) -> None:
+def _grant_one_cure_pass_and_answer(sup):
+    """Follow the advice: grant the ceiling, then answer the park with one
+    cure round. Returns the `POST /answer` response."""
     async def answer():
         app = create_app(sup.cfg, sup.run, sup)
         async with httpx.AsyncClient(
@@ -47,9 +50,8 @@ def _grant_one_cure_pass_and_resume(sup) -> None:
             grant = await client.patch(
                 "/config/budget", json={"curePassCeiling": "+1"})
             assert grant.status_code == 200, grant.text
-            resumed = await client.post("/resume")
-            assert resumed.status_code == 200, resumed.text
-    _bounded(answer())
+            return await client.post("/answer", json={"cureRounds": 1})
+    return _bounded(answer())
 
 
 def _gate_shape(shape: str) -> list[dict]:
@@ -90,9 +92,12 @@ def test_gate_notifier_does_not_offer_an_unavailable_cure(
     assert "--cure-passes" not in escalation["escalation"]
     assert "--cure-passes" not in digest
 
-    # Following a ceiling grant cannot cure these findings.
-    _grant_one_cure_pass_and_resume(sup)
-    assert _bounded(sup._step_verdict_gate())[1] != "cure"
+    # Following a ceiling grant cannot cure these findings: the answer's
+    # cure rounds are refused for the accepted incurable finding.
+    answered = _grant_one_cure_pass_and_answer(sup)
+    assert answered.status_code == 409, answered.text
+    assert "not curable" in answered.text
+    assert sup.run.read_status()["state"] == "awaiting_input"
     assert sup.run.read_status().get(
         "gateRejectionEnding") == "rejected_on_the_merits"
 
@@ -116,8 +121,9 @@ def test_gate_all_curable_notification_offers_the_cure_it_can_take(
     assert "instead of archive-and-replan" in digest
     assert "instead of archive-and-replan" in escalation["escalation"]
 
-    _grant_one_cure_pass_and_resume(sup)
-    assert _bounded(sup._step_verdict_gate()) == (
+    answered = _grant_one_cure_pass_and_answer(sup)
+    assert answered.status_code == 200, answered.text
+    assert _bounded(sup._step_paused()) == (
         "advance", "cure", "verdict_gate_rejected_curable_pass_available")
 
 
@@ -173,8 +179,9 @@ def test_review_mixed_ceiling_spent_surfaces_offer_no_ceiling_grant(tmp_path):
     assert "--cure-passes" not in escalation["escalation"]
     assert "--cure-passes" not in digest
 
-    _grant_one_cure_pass_and_resume(sup)
-    assert _bounded(sup._step_review())[1] != "cure"
+    answered = _grant_one_cure_pass_and_answer(sup)
+    assert answered.status_code == 409, answered.text
+    assert "not curable" in answered.text
 
 
 def test_review_last_approach_ceiling_spent_names_the_grant_that_cures(
@@ -190,6 +197,7 @@ def test_review_last_approach_ceiling_spent_names_the_grant_that_cures(
         assert "instead of finishing the run" in surface
         assert "archive-and-replan" not in surface
 
-    _grant_one_cure_pass_and_resume(sup)
-    assert _bounded(sup._step_review()) == (
+    answered = _grant_one_cure_pass_and_answer(sup)
+    assert answered.status_code == 200, answered.text
+    assert _bounded(sup._step_paused()) == (
         "advance", "cure", "rejected_curable_pass_available")

@@ -1172,9 +1172,8 @@ def test_all_incurable_blocking_findings_pause_and_escalate(tmp_path):
         assert f["evidence"] not in digest_text
     assert "resolve with:" not in digest_text
     assert "ralphctl amend" not in digest_text
-    assert "ralphctl unpause task006-rejected-incurable" in digest_text
-    assert ("ralphctl rule task006-rejected-incurable --file <ruling.md> "
-            "--name <slug>") in digest_text
+    assert "ralphctl answer task006-rejected-incurable" in digest_text
+    assert "ralphctl unpause task006-rejected-incurable" not in digest_text
 
 
 def test_the_escalation_is_also_emitted_to_events_jsonl_with_no_notifier(tmp_path):

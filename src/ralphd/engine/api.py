@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from .. import API_VERSION, __version__
 from ..log_merge import (apply_tail, boundary_line, iteration_dirs, merge_entries,
                          merge_entries_tail)
+from .answer import AnswerRefused
 from .config import (CONFIG_DIR, PROMPT_NAMES, JobConfig, classify_method,
                      list_prompts, overlay_write_path)
 from .creds import (
@@ -43,6 +44,7 @@ from .skills import (
 )
 from .state import (
     STEERING_GLOB,
+    AWAITING_INPUT_STATE,
     EXHAUSTED_STATE,
     RunDir,
     image_record,
@@ -793,14 +795,9 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         if not text:
             raise problem(422, "text required")
         fname = run.add_ruling(text, (body or {}).get("name"))
-        # Task 015 cure (PRD requirement A.4, #224), widened by cure-01-01-3
-        # (PRD A.3/A.4, #224): a ruling that answers the run's CURRENT
-        # `operator_input_needed` pause releases it
-        # right here -- no separate `POST /resume`/`ralphctl resume`
-        # required. An unrelated or unscoped ruling (a different pause, or
-        # no current rejection signature to match) leaves any pause exactly
-        # as it was; see `LoopSupervisor.resume_if_ruling_answers_pause`.
-        loop.resume_if_ruling_answers_pause()
+        # v0.36 D.1: a ruling is recorded at any time and reaches both judges
+        # and planning, but it never releases an `awaiting_input` park: only
+        # `POST /answer` (or the input timeout) leaves it.
         return {"file": fname}
 
     @app.get("/steering")
@@ -864,8 +861,36 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         loop.pause()
         return {"paused": True}
 
+    @app.post("/answer")
+    async def answer(body: dict | None = None):
+        # v0.36 C.2: the ONE route that answers an `awaiting_input` findings
+        # park; `ralphctl answer` and the hub panel both post here, and all
+        # three reach `LoopSupervisor.answer`. Body (all optional):
+        # `{"waive": ["F1"], "accept": ["F2"], "cureRounds": 1,
+        #   "approaches": 1, "note": "...", "name": "slug"}`.
+        if finished():
+            raise problem(409, "job finished", "there is nothing to answer")
+        body = body or {}
+        try:
+            return loop.answer(
+                waive=body.get("waive"), accept=body.get("accept"),
+                cure_rounds=body.get("cureRounds"),
+                approaches=body.get("approaches"), note=body.get("note"),
+                note_name=body.get("name"))
+        except AnswerRefused as exc:
+            raise problem(exc.status, "answer refused", exc.message)
+
     @app.post("/resume")
     async def resume():
+        # v0.36 D.2: an `awaiting_input` run is left by an answer, never by a
+        # bare unpause -- "carry on with what the engine would do" is the
+        # input timeout's outcome, or `ralphctl answer <run> --cure-rounds 0`.
+        if run.read_status().get("state") == AWAITING_INPUT_STATE:
+            raise problem(
+                409, "run is awaiting input",
+                "an `awaiting_input` run is answered, not unpaused: run "
+                f"`ralphctl answer {loop.cfg.run_id}` (add `--cure-rounds 0` to "
+                "carry on with what the engine would do)")
         loop.resume()
         return {"resumed": True}
 

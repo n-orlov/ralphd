@@ -262,9 +262,8 @@ def test_last_approach_all_curable_with_cure_spent_pauses_and_escalates(
     assert "requirement C.1 (#141)" in text
     assert "the notify tool still doesn't record the event" not in text
     assert "resolve with: ralphctl amend" not in text
-    assert "ralphctl unpause task011-last-approach-pause" in text
-    assert ("ralphctl rule task011-last-approach-pause --file <ruling.md> "
-            "--name <slug>") in text
+    assert "ralphctl answer task011-last-approach-pause" in text
+    assert "ralphctl unpause task011-last-approach-pause" not in text
 
 
 def test_the_review_escalation_is_emitted_to_events_jsonl_with_no_notifier(
@@ -813,7 +812,7 @@ def test_resume_asks_review_again_over_the_same_approach_and_reaches_terminal(
     assert not (root / "approaches" / "01").exists()
 
 
-def test_resume_without_a_ruling_asks_review_again_and_can_still_reject(
+def test_resume_without_a_ruling_asks_review_again_and_parks_again(
         tmp_path, monkeypatch):
     """Same in-process resume routing, but with no ruling ever recorded --
     proving the terminal `succeeded` above is caused by the ruling reaching
@@ -845,14 +844,17 @@ def test_resume_without_a_ruling_asks_review_again_and_can_still_reject(
     sup.runner.run = _review_rejects_again  # type: ignore[method-assign]
     outcome = asyncio.run(sup._step_review())
 
-    # the bare unpause recorded a one-shot proceed for this rejection: the
-    # park's unanswered outcome on the LAST approach holds the run
-    # `exhausted` (approaches), never `failed` and never a fresh approach.
-    assert outcome == ("tail",)
+    # v0.36 D.2: a bare unpause grants no one-shot proceed (`noRulingProceed`
+    # is gone), so the same rejection parks again; only `answer` (or the
+    # input timeout) leaves the park -- never `failed`, never a fresh
+    # approach (covering node: tests/test_answer_outcomes.py).
+    assert outcome == ("advance", "paused", "operator_input_needed")
     assert len(calls) == 1
-    assert sup._approaches_exhausted_tail is True
+    assert sup._approaches_exhausted_tail is False
     status = sup.run.read_status()
     assert status["approach"] == 1
+    assert status["state"] == "awaiting_input"
+    assert "noRulingProceed" not in status
 
 
 # ===========================================================================

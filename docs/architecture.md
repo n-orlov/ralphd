@@ -208,6 +208,8 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `paused` | — | both | `worker` | `paused_resumed_stagnation` |
 | `paused` | — | both | `worker` | `paused_resumed_unschedulable_cycle` |
 | `paused` | — | both | `worker` | `paused_resumed_unresolvable_edge` |
+| `paused` | — | both | `cure` | `paused_answered_cure` |
+| `paused` | — | both | `replan` | `paused_answered_next_approach` |
 | `paused` | — | peer verdict gate only | `verdict_gate` | `paused_resumed_verdict_gate` |
 | `finishing` | — | both | `reflect` | `reflect_enabled` |
 | `finishing` | — | both | `succeeded` | `reflect_disabled_outcome_succeeded` |
@@ -282,6 +284,8 @@ stateDiagram-v2
     paused --> worker : paused_resumed_stagnation
     paused --> worker : paused_resumed_unschedulable_cycle
     paused --> worker : paused_resumed_unresolvable_edge
+    paused --> cure : paused_answered_cure
+    paused --> replan : paused_answered_next_approach
     finishing --> reflect : reflect_enabled
     finishing --> succeeded : reflect_disabled_outcome_succeeded
     finishing --> failed : reflect_disabled_outcome_failed
@@ -3576,35 +3580,25 @@ never its evidence. `_pause_escalation_digest_text` serves every other
 pause -- `stagnation`, the two review-contract faults, the two dependency
 faults and the task-boundary commit-secret-scan hold
 (`_pause_for_commit_secret_hit`) -- and reads `unavailable` for the
-findings and preview fields those pauses have no channel for. Every
-answer line for a reason that waits on a ruling names both live-run
-levers, but the phrasing differs with what `resume_if_ruling_answers_
-pause` actually does (cure task cure-01-01-9, PRD A.1/A.6, D.1; DoD 1/4):
-`operator_input_needed` releases the instant
-the ruling is filed, so its line reads `rule ..., or unpause ... to
-accept the default`, two interchangeable single-step alternatives;
-`verdict_gate_operator_input_needed`/`stagnation` are excluded
-from that check's own reason allow-list, so their line instead spells out
-an explicit two-step sequence (`rule ... then unpause ...`) beside the
-working unpause-alone alternative, never an `or` that would falsely claim
-`rule` alone resolves them. The full `operator_escalation.escalation` text follows the same rule (cure task cure-01-01-9): for `verdict_gate_operator_input_needed` and `stagnation` (both variants) it says only `ralphctl unpause <run>` releases the pause, that filing a ruling records it but leaves the run paused, and gives the `ralphctl rule ... then ralphctl unpause ...` sequence beside the unpause-alone alternative, and for `operator_input_needed` it says a ruling releases the pause on its own, or `ralphctl unpause <run>` resumes with none recorded to accept the default.
+findings and preview fields those pauses have no channel for. A findings park
+(`operator_input_needed`, `verdict_gate_operator_input_needed`) is `awaiting_input`
+and its answer line names `ralphctl answer <run> ...` alone (v0.36 requirement
+C.2): `LoopSupervisor.answer` is the one writer behind the CLI, `POST /answer`
+and the hub panel, `engine/answer.py` (`plan_answer`) names the outcome, and the
+parked step `_step_paused` carries it out; a ruling never releases a park
+(no helper releases a park on a ruling any more) and a bare unpause of an
+`awaiting_input` run is refused. `stagnation` still spells out an explicit
+two-step sequence (`rule ... then unpause ...`) beside the working
+unpause-alone alternative, never an `or` that would falsely claim `rule` alone
+resolves it. The full `operator_escalation.escalation` text follows the same rule.
 The commit-scan hold's fault lines are the `sha`, `part` and variable NAME read
 back off its own `commit_secret_scan` event, never the matched value, and
 it deliberately emits no `operator_escalation` event, so a crashed episode's
 resume routing (`_paused_awaiting_operator_input_needed_ruling`) never
 mistakes it for a parked review rejection and it resumes into `worker`.
-Its own answer line depends on whether ITS approach already carries a
-rejection signature: with none (the common case -- a fresh approach, or
-one with no earlier reasoned hold), `resume_if_ruling_answers_pause` never
-lets a ruling release it, so the line names only `ralphctl unpause`
-(`POST /resume`); but this hold shares the `operator_input_needed` reason
-STRING with review's own pause, and that check reads only the pause
-reason and the approach's own signature, never which pause raised it --
-so an EARLIER `operator_input_needed` park
-on the SAME approach, already answered by a ruling before this hold ever
-landed, leaves a signature behind that a LATER commit-scan hold inherits,
-and then a `ralphctl rule` filed against it releases it too, so the line
-names both levers as interchangeable alternatives instead.
+Its own answer line names only `ralphctl unpause` (`POST /resume`): a ruling
+never releases it (v0.36 requirement D.1), whether or not its approach already
+carries a rejection signature from an earlier park.
 Tests: `tests/test_commit_scan_escalation_digest.py`,
 `tests/test_escalation_delivery.py`, `tests/test_pause_ruling_release_
 sequence.py`. SPEC.md §4.6.
@@ -4590,8 +4584,7 @@ Three deliberate details:
   emits `provider_refused`, notifies through the escalation delivery path, and
   parks in place in `_gate()`. `ralphctl unpause` clears both and the wrapper
   re-runs the same work. `pauseDetail` keeps review's pause machinery out:
-  no `noRulingProceed` one-shot on unpause, no release by `POST /rule`, and no
-  `operator_escalation` event.
+  no release by `POST /rule`, and no `operator_escalation` event.
 
 Anything else that produced **no** LLM traffic at all is classified `"infra"`
 too: an unclassifiable no-traffic failure is far likelier to be an

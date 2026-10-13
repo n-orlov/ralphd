@@ -171,7 +171,8 @@ class StubEngineApi:
                  resume_status: int = 200, resume_body: dict | None = None,
                  interrupt_status: int = 200, interrupt_body: dict | None = None,
                  undefer_status: int = 200, undefer_body: dict | None = None,
-                 on_undefer=None):
+                 on_undefer=None, answer_status: int = 200,
+                 answer_body: dict | None = None):
         self.requests: list[tuple[str, str, str | None]] = []
         self.control_tokens: list[str | None] = []
         # Task 011 (v0.26, #269): the raw request body, one entry per
@@ -219,6 +220,11 @@ class StubEngineApi:
         self.undefer_status = undefer_status
         self.undefer_body = undefer_body
         self.on_undefer = on_undefer
+        # v0.36 C.2: the run's own `POST /answer` -- the hub answer panel's
+        # proxy target. Default mirrors the real engine's 200 outcome record.
+        self.answer_status = answer_status
+        self.answer_body = (answer_body if answer_body is not None
+                            else {"outcome": "cure"})
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -271,6 +277,8 @@ class StubEngineApi:
                     self._reply(outer.steer_status, outer.steer_body)
                 elif path == "/rule":
                     self._reply(outer.rule_status, outer.rule_body)
+                elif path == "/answer":
+                    self._reply(outer.answer_status, outer.answer_body)
                 elif path == "/resume":
                     self._reply(outer.resume_status, outer.resume_body)
                 elif path == "/interrupt":

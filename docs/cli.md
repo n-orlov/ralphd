@@ -82,7 +82,7 @@ ralphctl start --prd <file|-> [options]
 | `--peer-plan-review` | off | opt-in peer plan-review gate (task 018, PRD requirement K, #101): a peer model approves or objects to the plan before `worker` starts, bounded by `peer_plan_review_max_revisions` revision round trips. Written to the run's `job.yaml` as `peer_plan_review` and visible in `GET /config` (`flags.peerPlanReview`); no `resume` equivalent -- like `--vigilant`/`--reflect`, it is a `start`-time choice only, replayed unchanged by `job.yaml` on every later `resume` |
 | `--peer-verdict-gate` | off | opt-in, genuinely blind peer verdict gate (task 020, PRD requirement L, #101): a second, independent peer model re-verifies completed work before terminal success. Written to the run's `job.yaml` as `peer_verdict_gate` and visible in `GET /config` (`flags.peerVerdictGate`); no `resume` equivalent, for the same reason `--peer-plan-review` has none |
 | `--mid-plan-review` | off | opt-in mid-plan review episode (task 022, PRD requirement K.2, #169): once per approach, once a declared fraction (`loop.MID_PLAN_REVIEW_FRACTION`) of the plan has already reached terminal-success, run one review iteration scoped to those requirements, opening a cure task per blocking finding through the existing cure machinery (`state.insert_cure_tasks`, the same path an ordinary review's own cure pass takes). Written to the run's `job.yaml` as `mid_plan_review` and visible in `GET /config` (`flags.midPlanReview`); no `resume` equivalent, for the same reason the two peer gates above have none |
-| `--no-operator-input-needed-pause` | on (this is the disable flag) | the rejection ladder's park (v0.36 requirement B; PRD A.1, #224): ON by default, unlike the two peer gates above -- a rejection with an incurable blocking finding, a reviewer escalation or spent cure rounds holds in `awaiting_input` with `pauseReason: "operator_input_needed"`, so an operator can answer -- with a ruling (`ralphctl rule <run-id> --file <ruling.md> --name <slug>`, task 013) or a plain `ralphctl unpause <run-id>` -- before that spend happens. This flag resolves the park at once with the outcome an unanswered park takes (archive and replan while an approach is left, else the `exhausted` (`approaches`) hold). The SAME flag also gates the peer verdict gate's own mirror (v0.27 requirement C.1, task 008; widened by cure task 002, this wave, to every blocking-set shape): a `verdict_gate` rejection parks with `pauseReason: "verdict_gate_operator_input_needed"` when a blocking finding is incurable or the current approach's cure rounds (`cure_pass_ceiling` plus any `budget --cure-passes` top-up, shared with review) are already spent -- whether the rejection's blocking findings are all curable, mixed, or all non-curable -- disabled by this same flag. Written to the run's `job.yaml` as `operator_input_needed_pause` (always an explicit `true`/`false`, unlike the two peer gates) and visible in `GET /config` (`flags.operatorInputNeededPause`); a `--template`'s own `operator_input_needed_pause:` key (SPEC.md §6.7) supplies the default when the flag is absent; no `resume` equivalent, for the same reason `--peer-plan-review`/`--peer-verdict-gate` have none |
+| `--no-operator-input-needed-pause` | on (this is the disable flag) | the rejection ladder's park (v0.36 requirement B; PRD A.1, #224): ON by default, unlike the two peer gates above -- a rejection with an incurable blocking finding, a reviewer escalation or spent cure rounds holds in `awaiting_input` with `pauseReason: "operator_input_needed"`, so an operator can answer it (`ralphctl answer <run-id>`; a ruling recorded with `ralphctl rule` does not answer it and a bare `ralphctl unpause` is refused) before that spend happens. This flag resolves the park at once with the outcome an unanswered park takes (archive and replan while an approach is left, else the `exhausted` (`approaches`) hold). The SAME flag also gates the peer verdict gate's own mirror (v0.27 requirement C.1, task 008; widened by cure task 002, this wave, to every blocking-set shape): a `verdict_gate` rejection parks with `pauseReason: "verdict_gate_operator_input_needed"` when a blocking finding is incurable or the current approach's cure rounds (`cure_pass_ceiling` plus any `budget --cure-passes` top-up, shared with review) are already spent -- whether the rejection's blocking findings are all curable, mixed, or all non-curable -- disabled by this same flag. Written to the run's `job.yaml` as `operator_input_needed_pause` (always an explicit `true`/`false`, unlike the two peer gates) and visible in `GET /config` (`flags.operatorInputNeededPause`); a `--template`'s own `operator_input_needed_pause:` key (SPEC.md §6.7) supplies the default when the flag is absent; no `resume` equivalent, for the same reason `--peer-plan-review`/`--peer-verdict-gate` have none |
 | `--model <id>` | profile default | model used by any hat with no per-hat override; falls back to the `--template`'s value, then the registry's `model` (`ralphctl config`), then the `--llm` profile's own `model:`. `router` (task 018, requirement E; rung order corrected task 003, #278 B.6) resolves `router_model` first, then the dedicated per-hat table entry (`model_overrides["router"]`/`models.router`), then the worker hat's own `trivial` tier (`model_tiers["worker"]["trivial"]`) when configured, then `model`; see `routerModel`/`routerTimeoutS` under `GET /config` (`docs/api.md`). `--fast-model` and `--model-strategy` (and `ralphctl config set model_strategy`/`fast_model`) are retired (task 006): the parser still recognises the flag names (hidden from `--help`) only so `start` can refuse them with exit `2` naming this `models:`/`model_overrides:` replacement, never a silent no-op; a job.yaml still carrying either legacy key from before task 006 is translated into an equivalent per-hat table at engine load time, never ignored |
 | `--no-route-tasks` | on (this is the disable flag) | task 003's router-assisted task-selection opt-out (#278 B.5): by default, once `engine.scheduler.pending_candidates` finds 2+ runnable tasks, the router picks which one to work next (`LoopSupervisor._route_task_selection`); this flag (or a `job.yaml` `route_task_selection: false` key) restores the fully deterministic pick, `engine.scheduler.select_next_task`'s own order, unconditionally. Written to the run's `job.yaml` as `route_task_selection` (always an explicit `true`/`false`) and visible in `GET /config`; no `resume` equivalent -- `resume` never rewrites this key, so the value a run started with is replayed unchanged on every later resume |
 | `--model-for HAT=REF` | — | per-hat model override (task 008, #60 pillar 4 requirement A), repeatable — e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`. Known hats: `planning\|worker\|verify\|review\|reflect\|router` (`MODEL_HATS`; an unrecognised name still resolves via `model_for`'s anti-downgrade rule rather than erroring). Writes/merges into the run's `job.yaml` `models:` table — the mechanism `model_overrides`/`models:` always was ([llm-profiles.md](llm-profiles.md) unaffected, `docs/api.md`'s `GET /config` `model.overrides`) — the ONLY thing this flag adds is a way to *reach* that table from `start` without hand-editing `job.yaml` and `resume`-ing. Unlike every other `start` scalar above, the table is **merged key by key across levels, not replaced whole**: explicit `--model-for` flags (last one wins for a repeated hat) > the `--template`'s own `job.yaml` `models:`/`model_overrides:` key > `<registry>/config.yaml`'s own `models:`/`model_overrides:` key (a nested mapping, edited directly like `pricing:` below — there is no scalar `ralphctl config set` for a table) > (a named LLM profile has no per-hat table of its own yet, so this rung is presently always empty) > absent, i.e. each hat falls through to `model_for`'s other rungs exactly as before. A malformed value (no `=`) exits `2` naming the expected `HAT=REF` shape |
@@ -1924,6 +1924,50 @@ Exit `0` accepted · `2` usage error (no `--file`, a bare positional message,
 or an empty file) · `3` unknown run · `4` API unreachable · `5` job already
 finished.
 
+A ruling is recorded at any time and reaches both judges and planning, but it
+**never releases a park** (v0.36 requirement D.1): a run `awaiting_input` stays
+there until `ralphctl answer` (or the input timeout) leaves it.
+
+### `ralphctl answer <run-id> [--waive <fid>...] [--accept <fid>...] [--cure-rounds K] [--approaches +N] [--note-file <path>] [--name <slug>]`
+
+v0.36 requirement C.2 (#304): answer the findings question an `awaiting_input`
+run is parked on -- the one way to leave that state, besides the input
+timeout. The question is `status.json`'s `inputQuestion` (also shown by the
+hub's parked panel and `ralphctl status`): each blocking finding has a stable id
+(`F1`, `F2`, ...), its `clause`, `severity`, `curable` flag and text, plus the
+cure rounds used and allowed on this approach and the approach number and
+maximum.
+
+| Option | Meaning |
+|--------|---------|
+| `--waive <fid>...` | waive these findings: each is written to the waiver store (`<run-root>/waivers/NNN.json`) bound to its PRD clause, so the review, verdict-gate and planning prompts all list it as an authoritative "Operator waivers" section for the rest of the run, across every replan |
+| `--accept <fid>...` | accept these findings (this is also the default for a finding named nowhere) |
+| `--cure-rounds K` | cure rounds to add to the current approach's allowance and cure with now; default `1` (`0` when only `--approaches` is given); `0` archives this approach and replans the next one |
+| `--approaches +N` | with `--cure-rounds 0` when no approach is left: grant N approaches, then replan |
+| `--note-file <path>` | record this file as a ruling (`write_ruling`); it reaches both judges and planning |
+| `--name <slug>` | ruling file slug for `--note-file` |
+
+Outcomes, in order: every blocking finding waived -> the judge's verdict stands
+as `verified` and the run goes on to the peer gate or finishes; `K >= 1` -> K
+rounds are added to the current approach and the accepted findings are cured at
+once -- the answer is that round's authorisation, so the run does not park again
+on the same findings; `K = 0` with an approach left -> the approach is archived
+and the next is planned on approach + 1 over the current workspace tree (nothing
+is reset), aimed at the accepted findings, with every waiver, ruling, amendment
+and steer still in force. Refused, with nothing written: `K = 0` with no
+approach left (the message names `--cure-rounds K>=1` and `--approaches +N`) and
+`K >= 1` while an accepted finding is `curable: false`, since cure rounds cannot
+fix it -- waive that finding, or take `K = 0` (or `--approaches +N` when none is
+left).
+
+Posts through the run's live API (`POST /answer`, docs/api.md), the same route
+the hub panel's `POST /api/runs/<id>/answer` proxies to; all three reach the one
+writer `LoopSupervisor.answer`, which emits `input.answered`. Exit `0` accepted
+· `1` an unknown finding id or other malformed answer (`422`) · `2` usage error
+(an empty `--note-file`, a bad `--approaches`) · `3` unknown run · `4` API
+unreachable · `5` refused (`409`: the run is not `awaiting_input`, or one of the
+two refusals above).
+
 ### `ralphctl amend <run-id> <task-id> [text]`
 
 Record an **operator ruling** — a waiver or a replacement of one task's
@@ -2156,19 +2200,20 @@ Hold/release the loop at the next iteration boundary.
 
 `unpause` is also how you proceed past an engine-recorded pause
 (`pauseReason` in `status.json`): it POSTs `/resume` to the live engine and
-clears the reason, and it ALWAYS releases the pause on its own, whichever
-reason set it. Whether a ruling should come first depends on the reason:
-for `operator_input_needed`, `ralphctl rule
-<run-id> --file <ruling.md> --name <slug>` ALONE already releases the run
-(the two commands are interchangeable single-step alternatives); for every
-other reason that waits on a ruling (`verdict_gate_operator_input_needed`,
-`stagnation`), a `rule` alone records the ruling but leaves the
-run paused -- it takes the explicit sequence, `ralphctl rule <run-id>
---file <ruling.md> --name <slug>` then `ralphctl unpause <run-id>`, to
-record a ruling before resuming; `ralphctl unpause <run-id>` alone still
-works too, resuming with no ruling recorded. The full `operator_escalation.escalation` text follows the same rule (cure task cure-01-01-9): for `verdict_gate_operator_input_needed` and `stagnation` (both variants) it says only `ralphctl unpause <run>` releases the pause, that filing a ruling records it but leaves the run paused, and gives the `ralphctl rule ... then ralphctl unpause ...` sequence beside the unpause-alone alternative, and for `operator_input_needed` it says a ruling releases the pause on its own, or `ralphctl unpause <run>` resumes with none recorded to accept the default. Every pause and escalation
-text the engine produces names both live-run levers, never `ralphctl
-resume` -- `resume` starts a fresh container over an existing run dir
+clears the reason. A ruling never does it for you: `ralphctl rule <run-id>
+--file <ruling.md> --name <slug>` records the ruling and leaves the run
+paused, so recording one first takes the explicit sequence, `ralphctl rule
+<run-id> --file <ruling.md> --name <slug>` then `ralphctl unpause <run-id>`;
+`ralphctl unpause <run-id>` alone resumes with no ruling recorded. The full
+`operator_escalation.escalation` text of `stagnation` follows the same rule.
+
+An `awaiting_input` run is **not unpaused**: `POST /resume` answers `409` naming
+`ralphctl answer <run-id>`, because "carry on with what the engine would do"
+is the input timeout's outcome, or `ralphctl answer <run-id> --cure-rounds 0`
+for an operator who wants it at once. The escalation text and notification digest of
+the two findings parks name `ralphctl answer`, never `unpause`. Every other
+pause and escalation text the engine produces names the live-run levers, never
+`ralphctl resume` -- `resume` starts a fresh container over an existing run dir
 (crash recovery, budget top-up) and is not for a run that is still alive.
 
 A provider refusal (`pauseReason: operator_input_needed` with `pauseDetail.
@@ -2205,37 +2250,15 @@ every pause reason, including the task-boundary commit-secret-scan hold
 into `worker`, not `review`): its digest names the offending commit's
 `sha`, the `part` and the variable NAME, never the matched value, reads
 `unavailable` for the findings and reopen/insert fields it has no channel
-for, and its own answer command depends on whether the CURRENT approach
-already carries a recorded rejection signature from an EARLIER `operator_
-input_needed` park on that same approach,
-already answered by a ruling before this hold ever landed: with none (the
-common case), a `ralphctl rule` filed against it does not release it, so it
-names only `ralphctl unpause <run>`; with one, `resume_if_ruling_answers_
-pause` releases this hold too, so it names both levers as interchangeable
-alternatives, exactly like `operator_input_needed`'s own review-side
-pause. docs/api.md's `POST /pause` section lists the
+for, and its answer command names only `ralphctl unpause <run>`: a ruling
+never releases this hold (v0.36 requirement D.1), even on an approach that
+already carries a recorded rejection signature. pause. docs/api.md's `POST /pause` section lists the
 full coverage.
 
-A bare `ralphctl unpause <run-id>` on review's own `operator_input_needed`
-pause, or on the peer verdict gate's `verdict_gate_operator_input_needed`
-sibling (v0.27 requirement C.1), with NO ruling filed to answer it,
-records a disk-backed one-shot 'proceed' for the exact rejection signature
-that pause was raised over (v0.27 requirement C.2, #274; `status.json`'s
-`noRulingProceed`, SPEC.md §5.2). The very next rejection with the
-IDENTICAL signature consumes the proceed, whichever edge it takes, and
-raises no same-signature operator gate while doing so. After a
-`ralphctl budget <run-id> --cure-passes +1` grant, that rejection takes the
-cure edge and the proceed is spent there: it never survives the cure to
-authorise a later archive, so the next same-signature rejection after the
-cure parks afresh. With no cure pass available, it takes the ordinary
-archive-and-replan edge (or holds the run `exhausted`, when no approach is
-left) instead of parking a second time. A DIFFERENT rejection never
-matches the grant and still parks; filing a ruling that
-answers the signature (review's own pause only) releases the park instead of
-granting this proceed at all. Without a matching
-grant, a bare unpause with no ruling re-enters `review`/`verdict_gate` over
-the SAME approach with nothing new to go on and is likely to re-raise the
-identical rejection and re-park forever.
+There is no one-shot "proceed" for a bare unpause any more (v0.36 requirement
+D.2): `status.json` no longer carries one, and the hub has no "resume without
+a ruling" button. Its meaning -- carry on with what the engine would do -- is
+the input timeout's outcome, or `ralphctl answer <run-id> --cure-rounds 0`.
 
 ### `ralphctl retry <run-id>`
 
@@ -3836,11 +3859,13 @@ container API when reachable. `--port` defaults to a free ephemeral port;
 `--bind` defaults to `127.0.0.1`. Ctrl-C to stop.
 
 **The hub has no authentication of its own** (PRD requirement H, operator
-ruling 4 -- no hub-level auth token, no new secret) and it publishes six
+ruling 4 -- no hub-level auth token, no new secret) and it publishes seven
 mutating routes: `DELETE /api/runs/<id>` (deletes a run), `POST
 /api/runs/<id>/steer` (steers a run), `POST /api/runs/<id>/retry` (retries
 a degraded run now), (task 013, v0.23 requirement A.2, #224) `POST
-/api/runs/<id>/rule` (records an operator ruling) and (task 006) `POST
+/api/runs/<id>/rule` (records an operator ruling), (v0.36 requirement C.2) `POST
+/api/runs/<id>/answer` (answers a run awaiting input -- the SAME route
+`ralphctl answer` calls) and (task 006) `POST
 /api/runs/<id>/unpause` (unpauses a run -- the SAME `/resume` route
 `ralphctl unpause` calls, so there is no second unpause mechanism) and
 (#292) `POST /api/runs/<id>/tasks/<task>/undefer` (releases a deferred
@@ -3861,7 +3886,8 @@ ralphctl: serving hub at http://127.0.0.1:PORT (registry: ~/.ralphd) --
 mutating routes published: DELETE /api/runs/<id> (delete a run), POST
 /api/runs/<id>/steer (steer a run), POST /api/runs/<id>/retry (retry a
 degraded run now), POST /api/runs/<id>/rule (record an operator ruling),
-POST /api/runs/<id>/unpause (unpause a run), POST
+POST /api/runs/<id>/answer (answer a run awaiting input), POST
+/api/runs/<id>/unpause (unpause a run), POST
 /api/runs/<id>/tasks/<task>/undefer (release a deferred task now) --
 the hub has no authentication of its own
 ```
@@ -4041,10 +4067,13 @@ JSON endpoints served under `/api/`:
   and checking several findings then unchecking them in either order,
   which always restores the exact original bytes once every composed
   waiver is gone and keeps every still-active one on its own removable
-  line throughout (cure-01-01-7)), a name field (`#parked-rule-name`) and both
-  actions -- *Submit ruling and resume* posts the name and the textarea
-  body byte-identical to `POST /api/runs/<id>/rule`, *Resume without a
-  ruling* posts `unpause`; the runs list's `\u23F8 parked for input` marker links straight
+  line throughout (cure-01-01-7)), a name field (`#parked-rule-name`) and the answer
+  actions -- *Answer: cure now* posts the cure rounds field (default 1), the
+  ticked waive ids and the textarea body byte-identical as the note (with the
+  name when set) to `POST /api/runs/<id>/answer`; *Answer: next approach*
+  posts `cureRounds: 0` and is greyed out when no approach is left, where
+  *Answer: grant approaches and replan* takes its place; there is no resume
+  without a ruling. The runs list's `\u23F8 parked for input` marker links straight
   to it. See SPEC.md §11.3 for the full shape. Task 048 (issue
   #4) adds `startedAtLocal`/`endedAtLocal`/`updatedAtLocal` strings next to
   (never replacing) the ISO `startedAt`/`endedAt`/`updatedAt` fields of both
@@ -4450,6 +4479,13 @@ JSON endpoints served under `/api/`:
   run's API is unreachable or rejects it; `404` for an unknown run id. A
   distinct proxy from `/steer` above, landing in a distinct on-disk record
   (`rulings/`, never `steering/`) — never a variant of steering.
+- `POST /api/runs/<id>/answer` — the parked panel's answer actions (v0.36
+  requirement C.2): body `{"waive": [...], "cureRounds": K, "approaches": N,
+  "note": ..., "name": ...}`, forwarded to the run's live `POST /answer` (the
+  one writer `ralphctl answer` uses). Returns the API's own response (`200` with
+  the outcome record) on success; the engine's own refusal (`409`/`422`, naming
+  what does apply) is passed through; `503` if the run's API is unreachable;
+  `404` for an unknown run id.
 - `POST /api/runs/<id>/unpause` — the run page's "unpause" button (task
   006): forwarded (empty body) to the run's live `POST /resume` — the SAME
   engine route `ralphctl unpause <run-id>` calls, so there is no second
