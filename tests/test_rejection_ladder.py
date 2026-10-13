@@ -2,10 +2,11 @@
 ladder (`LoopSupervisor._run_rejection_ladder`, deciding through
 `ralphd.engine.ladder.decide`).
 
-The ladder is evaluated in this order and the first match wins:
+Every verdict either judge renders climbs the ladder, in this order, and the
+first match wins:
 
-1. the budget is spent -> `exhausted`;
-2. (verified goes to the peer gate or finishes -- not a rejection);
+1. the budget is spent -> `exhausted`, `verified` or `rejected` alike;
+2. verified -> the peer gate if it is on, otherwise finish;
 3. rejected with every blocking finding under a stored waiver -> verified;
 4. park in `awaiting_input`: a blocking finding is `curable: false`, the
    reviewer set `raise_operator_gate`, or the approach's cure rounds are spent;
@@ -30,7 +31,7 @@ import pytest
 from ralphd.engine import findings, ladder
 from ralphd.engine.loop import LoopSupervisor
 from ralphd.engine.runner import IterationResult
-from ralphd.engine.state import atomic_write_json
+from ralphd.engine.state import atomic_write_json, read_events
 from tests.conftest import supervisor_factory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,16 +77,22 @@ def _make(tmp_path, judge: str, **cfg) -> LoopSupervisor:
 
 
 def _drive(sup: LoopSupervisor, judge: str, items: list[dict], *,
-           escalate: bool = False, spend_budget: bool = False) -> tuple:
-    """Run ONE real judge step whose hat answers `rejected` over `items`."""
+           escalate: bool = False, spend_budget: bool = False,
+           verified: bool = False) -> tuple:
+    """Run ONE real judge step whose hat answers `rejected` over `items`
+    (or `verified`, with no findings, when `verified` is set). With
+    `spend_budget` the deadline passes WHILE the judge's iteration runs,
+    after the step's own dispatch-time budget check."""
     sidecar = (sup.run.findings_json_file if judge == "review"
                else sup.run.verdict_gate_findings_json_file)
-    payload = {"verdict": "rejected", "reason": "the work is not there yet"}
+    payload = ({"verdict": "verified"} if verified else
+               {"verdict": "rejected", "reason": "the work is not there yet"})
     if escalate:
         payload["raise_operator_gate"] = True
 
     def _reply() -> IterationResult:
-        findings.write_findings_json(sidecar, items)
+        if not verified:
+            findings.write_findings_json(sidecar, items)
         if spend_budget:
             sup.deadline = time.monotonic() - 1
         return _result(json.dumps(payload))
@@ -137,6 +144,67 @@ def test_step_1_budget_spent_is_exhausted_not_a_park_or_cure(tmp_path, judge):
     assert not sup.run.composite_prd_file.exists()
     assert _status(sup).get("curePasses") in (None, {})
     assert _status(sup).get("gateCurePasses") in (None, {})
+
+
+@pytest.mark.parametrize("judge", JUDGES)
+def test_step_1_budget_spent_holds_a_verified_verdict_exhausted(tmp_path, judge):
+    """Budget first, verdict second: a judge that passes the approach after
+    the deadline went by while it ran still holds the run `exhausted` --
+    never `succeeded`, never a dispatch of the peer gate."""
+    sup = _make(tmp_path, judge)
+    if judge == "review":
+        sup.cfg.peer_verdict_gate = True
+
+    outcome = _drive(sup, judge, [], verified=True, spend_budget=True)
+
+    assert sup.budget_left() is False
+    assert outcome == ("tail",)
+    assert sup._budget_exhausted_tail is True
+    status = _status(sup)
+    assert status.get("state") not in ("succeeded", "awaiting_input")
+    assert status.get("verdict") is None
+    assert [e for e in read_events(sup.run.root, types=("signal",))
+            if e.get("signal") == "VERIFIED"] == [], (
+        "no VERIFIED signal: the verdict never reached its verified edge")
+
+
+@pytest.mark.parametrize("judge", JUDGES)
+def test_step_1_spent_budget_runs_on_to_the_exhausted_hold(tmp_path, judge):
+    """The whole run, not just the step: a verified verdict after the
+    deadline ends the episode in the `exhausted` (time) hold."""
+    sup = _make(tmp_path, judge)
+    sup._budget_exhausted_tail = False
+    outcome = _drive(sup, judge, [], verified=True, spend_budget=True)
+    assert outcome == ("tail",)
+    final = sup._finish_tail_unverified()
+    status = _status(sup)
+    assert final == "exhausted" and status["state"] == "exhausted"
+    assert status["exhaustedBudget"] == "time"
+    assert status.get("verdict") is None
+    assert judge.replace("_", " ") in status["reason"]
+
+
+# -- step 2: verified -> the peer gate or finish -----------------------------
+
+@pytest.mark.parametrize("judge", JUDGES)
+def test_step_2_verified_finishes_when_no_peer_gate_follows(tmp_path, judge):
+    sup = _make(tmp_path, judge)
+
+    outcome = _drive(sup, judge, [], verified=True)
+
+    assert outcome == ("done", "succeeded")
+    assert _status(sup)["state"] == "succeeded"
+    assert sup._budget_exhausted_tail is False
+
+
+def test_step_2_verified_review_goes_to_the_peer_gate_when_it_is_on(tmp_path):
+    sup = _make(tmp_path, "verdict_gate")  # peer gate on
+
+    outcome = _drive(sup, "review", [], verified=True)
+
+    assert outcome == ("advance", "verdict_gate",
+                       "verified_peer_verdict_gate_enabled")
+    assert _status(sup).get("state") != "succeeded"
 
 
 # -- step 3: every blocking finding waived -> treated as verified -----------
@@ -301,7 +369,7 @@ def test_both_judges_call_the_one_ladder_implementation():
         "same facts")
 
 
-def test_the_ladder_orders_budget_then_waiver_then_park_then_cure():
+def test_the_ladder_orders_budget_then_verified_then_waiver_then_park_then_cure():
     blocking = [_finding(False, "c")]
     waivers = [{"clause": "c"}]
 
@@ -313,6 +381,9 @@ def test_the_ladder_orders_budget_then_waiver_then_park_then_cure():
         return ladder.decide(**base)
 
     assert decide(budget_left=False, waivers=waivers).step == "exhausted"
+    assert decide(budget_left=False, verified=True).step == "exhausted"
+    assert decide(verified=True, incurable=True,
+                  rounds_spent=True).step == "verified"
     assert decide(waivers=waivers, incurable=True,
                   reviewer_escalation=True, rounds_spent=True).step == "waived"
     assert decide(incurable=True).step == "park"

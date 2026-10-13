@@ -1214,19 +1214,22 @@ def _task013_review_verified_expires_deadline_mid_flight(sup, prompt):
     return r
 
 
-def test_a_passing_verdict_after_the_deadline_concludes_the_run_normally(tmp_path):
-    """A tracked probe over `make_supervisor` (never this run's own
-    directory): `iterations_used=1` plus a pre-seeded task skip planning
-    straight to `worker` (the same shape task 012's own nodes
-    (`test_step_replans_own_check_exhausts_max_approaches_to_failed` et al.)
-    use). The worker completes the sole task while the deadline is still
-    ordinarily in the future, so review is dispatched normally (`_step_
-    review`'s own `budget_left()` boundary check still passes); the
-    deadline is then pushed into the past from INSIDE the running review
-    iteration itself, the same boundary a real deadline expiring while
-    review is already running would cross. Review still renders an
-    ordinary `verified` verdict, and the run must still reach `succeeded`,
-    never the `exhausted` hold, and must leave no resume position behind.
+def test_a_passing_verdict_after_the_deadline_holds_the_run_exhausted(tmp_path):
+    """Rewritten for v0.36 requirement B (it was `test_a_passing_verdict_
+    after_the_deadline_concludes_the_run_normally`, which pinned `succeeded`):
+    budget spent is the rejection ladder's FIRST step, ahead of `verified`,
+    so a passing verdict rendered after the deadline expired while review
+    ran holds the run `exhausted` (time) with a null verdict instead of
+    finishing. Covering nodes for the ladder step itself, per judge:
+    `tests/test_rejection_ladder.py::test_step_1_budget_spent_holds_a_
+    verified_verdict_exhausted` and `::test_step_1_spent_budget_runs_on_to_
+    the_exhausted_hold`.
+
+    Same probe shape as before: `iterations_used=1` plus a pre-seeded task
+    skip planning straight to `worker`; the worker completes the sole task
+    while the deadline is still in the future, so review is dispatched
+    normally; the deadline is pushed into the past from INSIDE the running
+    review iteration, which still renders `verified`.
     """
     sup = make_supervisor(
         tmp_path, run_id="task013-passing-verdict-past-deadline",
@@ -1246,29 +1249,17 @@ def test_a_passing_verdict_after_the_deadline_concludes_the_run_normally(tmp_pat
 
     assert sup.budget_left() is False, (
         "precondition actually exercised: the deadline really is in the "
-        "past by the time review's own verdict is read back -- expired "
-        "from INSIDE the running review iteration, never before its "
-        "dispatch (task cure-01-03)")
-    assert state == "succeeded", (
-        f"normally, got state={state!r}")
+        "past by the time review's own verdict is read back")
+    assert state == "exhausted", f"got state={state!r}"
     status = sup.run.read_status()
-    assert status["state"] == "succeeded"
-    assert status["state"] != "exhausted"
-    assert status["verdict"] in ("verified", "verified-with-residuals")
-
-    # Never entered the hold: no pause reason, no terminal-write left
-    # pending, and the run genuinely ended.
-    assert status.get("pauseReason") is None
-    assert status.get("pendingTerminalState") is None
-    assert status.get("endedAt") is not None, "a concluded run has ended"
-
-    # Wrote no resume position: review positively rendered a judgement this
-    # approach, so the deadline-mid-review marker (task 016's own
-    # `review_deadline_unreviewed` event) and its `_unreviewed_awaiting_
-    # resume` predicate must both stay unset -- a fresh episode over this
-    # run dir would find nothing to resume into.
-    assert read_events(sup.run.root, types=("review_deadline_unreviewed",)) == []
-    assert sup._unreviewed_awaiting_resume(1) is False
+    assert status["state"] == "exhausted"
+    assert status["exhaustedBudget"] == "time"
+    assert status.get("verdict") is None
+    assert status.get("endedAt") is None, "a held run has not ended"
+    assert "review verified approach 1" in status["reason"]
+    assert [e for e in read_events(sup.run.root, types=("signal",))
+            if e.get("signal") == "VERIFIED"] == [], (
+        "no VERIFIED signal: the verdict never took its verified edge")
 
 
 # ===========================================================================
@@ -1772,6 +1763,13 @@ def test_operator_input_gate_pause_still_parks_normally_in_budget(tmp_path):
 # test_peer_gate_on_post_deadline_rejection_still_holds_unchanged` (H.7's
 # other half: a rejecting post-deadline verdict is completely unaffected
 # by the gate, exactly as before).
+#
+# UPDATE (v0.36 requirement B): the H.5 edge above is retired. Budget spent
+# is the rejection ladder's first step, ahead of `verified`, so a peer-gate-on
+# post-deadline PASSING verdict holds `exhausted` (time) again -- with the
+# gate still never dispatched past the boundary and a resume with a time
+# top-up judging the approach afresh. The pass probe in
+# `tests/test_h5_peer_gate_deadline.py` is rewritten to pin that landing.
 
 
 # ===========================================================================

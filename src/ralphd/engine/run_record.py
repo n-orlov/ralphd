@@ -366,7 +366,10 @@ RECORD_SECTIONS: dict[str, str] = {
     # (`_step_review`'s `verified_peer_verdict_gate_deferred_past_deadline`
     # edge). Named here rather than left implicit, per H.5's own text:
     # "the gate's non-dispatch disclosed in the record as a named
-    # residual".
+    # residual". v0.36 requirement B retired that edge (a review verified
+    # past the budget holds `exhausted`), so only a run directory written
+    # by an older engine still carries this field; it is read, never
+    # written.
     "verdictGateResidual": "header",
     "usage": "Usage",
     "approaches": "Approach history",

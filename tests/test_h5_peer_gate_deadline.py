@@ -34,6 +34,14 @@ iteration) would require collapsing two independently-dispatched blind hat
 calls into one, which does not fit this engine's existing one-hat-per-
 iteration shape without a restructuring well past this task's scope.
 
+v0.36 requirement B retires that edge: budget spent is the ONE rejection
+ladder's first step, ahead of `verified`, so a post-deadline PASSING review
+verdict now holds the run `exhausted` (time) with a null verdict and the
+peer gate is still never dispatched past the boundary; a resume with a time
+top-up judges the approach again. The pass probe below is rewritten to pin
+that landing (covering ladder nodes: `tests/test_rejection_ladder.py::
+test_step_1_budget_spent_holds_a_verified_verdict_exhausted`).
+
 Per H.8 (restated by the standing rules): NEITHER half of requirement H is
 live in the engine actually running this development run (the installed
 0.24.0) -- these are `LoopSupervisor` probes over a scripted runner, the
@@ -89,17 +97,18 @@ def _gate_verified(sup, prompt):
     return r
 
 
-def test_peer_gate_on_post_deadline_pass_concludes_instead_of_holding(tmp_path):
-    """The inverse of v0.24's own parked case
-    (`test_peer_verdict_gate_verified_review_after_the_deadline_holds_
-    pending_the_gate`): same fixture shape (`peer_verdict_gate=True`,
-    review renders `verified` after the deadline expired mid-flight), but
-    the run must now conclude `succeeded` -- never `exhausted` -- with the
-    peer gate's own handler never called (deferred, not rubber-stamped),
-    and a named residual disclosing exactly that in the terminal record.
+def test_peer_gate_on_post_deadline_pass_holds_exhausted_without_the_gate(
+        tmp_path):
+    """Rewritten for v0.36 requirement B (it was `test_peer_gate_on_post_
+    deadline_pass_concludes_instead_of_holding`, which pinned `succeeded`
+    with a `verdictGateResidual`): with `peer_verdict_gate=True` and review
+    rendering `verified` after the deadline expired mid-flight, the ladder's
+    budget step wins -- the run holds `exhausted` (time), the peer gate is
+    never dispatched past the boundary, and no residual is written because
+    the run did not conclude.
     """
     sup = make_supervisor(
-        tmp_path, run_id="task027-peer-gate-passing-past-deadline-concludes",
+        tmp_path, run_id="task027-peer-gate-passing-past-deadline-holds",
         max_approaches=1, approach=1, iterations_used=1, prd=True,
         peer_verdict_gate=True,
         tasks=[{"id": "T1", "title": "do the thing", "successCriteria": "done",
@@ -119,33 +128,19 @@ def test_peer_gate_on_post_deadline_pass_concludes_instead_of_holding(tmp_path):
     assert sup.budget_left() is False, (
         "precondition actually exercised: the deadline is genuinely in "
         "the past by the time review's own verdict is read back")
-    assert state == "succeeded", (
-        "a peer-gate-on post-deadline PASSING verdict must conclude "
-        f"decisively rather than hold with a null verdict, got state={state!r}")
+    assert state == "exhausted", f"got state={state!r}"
 
     status = sup.run.read_status()
-    assert status["state"] == "succeeded"
-    assert status["verdict"] in ("verified", "verified-with-residuals")
-    assert status.get("pendingTerminalState") is None
-    assert status.get("endedAt") is not None, "a concluded run has ended"
+    assert status["state"] == "exhausted"
+    assert status["exhaustedBudget"] == "time"
+    assert status["verdict"] is None
+    assert status.get("endedAt") is None, "a held run has not ended"
+    assert status.get("verdictGateResidual") is None
 
-    # The peer gate's own handler was never dispatched -- deferred, never
-    # rubber-stamped, exactly as H.5's own text (both mechanisms below the
-    # "what is NOT acceptable" line) requires.
+    # The peer gate's own handler was never dispatched past the boundary.
     assert sup.runner.calls.get("verdict_gate", 0) == 0
-
-    # The gate's non-dispatch is disclosed as a NAMED residual in the
-    # record, per H.5's own wording ("disclosed in the record as a named
-    # residual rather than as a null verdict") -- never silently absent.
-    residual = status.get("verdictGateResidual")
-    assert isinstance(residual, dict), (
-        f"expected a disclosed verdictGateResidual object, got {residual!r}")
-    assert residual.get("gate") == "peer_verdict_gate"
-    assert residual.get("reason")
-
-    # Wrote no resume position: review positively rendered a judgement
-    # this approach.
-    assert read_events(sup.run.root, types=("review_deadline_unreviewed",)) == []
+    assert read_events(sup.run.root,
+                       types=("verdict_gate_deferred_past_deadline",)) == []
 
 
 def _review_rejects_curable_expires_deadline_mid_flight(sup, prompt):
@@ -204,9 +199,7 @@ def test_peer_gate_on_post_deadline_rejection_still_holds_unchanged(tmp_path):
     assert status["verdict"] is None
     assert status.get("pendingTerminalState") is None
     assert status.get("endedAt") is None, "a held run has not ended"
-    assert status.get("verdictGateResidual") is None, (
-        "the residual is only ever written on the deferred-PASS edge -- a "
-        "rejection never reaches it")
+    assert status.get("verdictGateResidual") is None
 
     findings_list = findings.read_findings_json(sup.run.findings_json_file)
     assert findings_list is not None and len(findings_list) == 1

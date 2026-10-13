@@ -411,8 +411,10 @@ def test_real_reflect_run_report_is_printable_after_the_engine_is_gone(live, cap
     ever run and no `reflect` phase to write the report this test looks
     for -- so the budget now covers the ordinary planning+worker+review
     path outright, same as any other real-engine fixture past this task.
+    v0.36 requirement B adds one spare iteration past the verdict: a
+    verdict on the last charged iteration holds `exhausted`.
     """
-    r = _in_process_ralphctl(live(run_id="artreal", job={"iterations": 3,
+    r = _in_process_ralphctl(live(run_id="artreal", job={"iterations": 4,
                                     "max_approaches": 1,
                                     "reflect": True, "on_complete": "idle"},
              stub_env={"STUB_TASKS": "1"}), capsys)

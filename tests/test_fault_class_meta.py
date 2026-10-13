@@ -33,8 +33,9 @@ def _iteration_end_events(run_dir):
 
 
 def test_fault_class_null_on_clean_and_infra_on_hung_iteration(engine_factory):
+    # one spare iteration past the verdict (v0.36 B: a verdict on the last charged iteration holds `exhausted`)
     e = engine_factory(
-        job={"on_complete": "exit", "iterations": 3, "max_approaches": 1},
+        job={"on_complete": "exit", "iterations": 4, "max_approaches": 1},
         stub_env={
             "STUB_TASKS": "1",
             "STUB_INFRA_HANG_SKIP": "1",   # invocation 1 (planning) is healthy

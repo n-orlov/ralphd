@@ -187,7 +187,6 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `review` | review | both | `review` | `review_interrupted` |
 | `review` | review | both | `finishing` | `review_unjudged_at_budget_end` |
 | `review` | review | peer verdict gate only | `verdict_gate` | `verified_peer_verdict_gate_enabled` |
-| `review` | review | peer verdict gate only | `finishing` | `verified_peer_verdict_gate_deferred_past_deadline` |
 | `replan` | — | both | `finishing` | `repeated_blocker_signature` |
 | `replan` | — | both | `planning` | `budget_and_approach_left` |
 | `replan` | — | both | `finishing` | `budget_or_approach_exhausted` |

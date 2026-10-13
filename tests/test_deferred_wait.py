@@ -118,7 +118,9 @@ def test_the_earliest_until_wakes_the_task_and_the_picker_completes_it(tmp_path)
         "worker": [lambda s, p: _complete(TASK_1)],
         "review": [lambda s, p: _ok("the PRD holds\n" +
                                    json.dumps({"verdict": "verified"}))],
-    }, tasks, iterations=3, job_timeout_s=3600)  # deadline far past `until`
+    }, tasks, iterations=4, job_timeout_s=3600)  # deadline far past `until`;
+    # one spare iteration past the verdict (v0.36 B: a verdict on the last
+    # charged iteration holds `exhausted`)
 
     doc = sup.run.read_tasks()
     task = doc["tasks"][0]

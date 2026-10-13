@@ -711,28 +711,10 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # on the VERIFIED branch, ahead of the peer verdict gate itself.
         T("worker", "review_cure_pending_at_verified"),
         T("verdict_gate", "verified_peer_verdict_gate_enabled"),
-        # Task 027 (PRD requirement H.5, #264, v0.24 D.1's CONFIRMED
-        # contradiction petition cure-01-04): the run's own deadline can
-        # pass WHILE the in-flight-protected review iteration above is
-        # still running (`_run_review_iteration` is never interrupted
-        # mid-flight by the clock) -- by the time it returns `verified`,
-        # `budget_left()` may already read False. Dispatching `verdict_
-        # gate` at that point would be a fresh iteration started past the
-        # boundary, exactly what task 011/C.1 forbids absolutely for every
-        # other fresh-dispatch site in this table; v0.24 shipped the ONLY
-        # other option that existed then -- holding `timed_out` with a
-        # null verdict, the CONFIRMED contradiction
-        # (`tests/test_deadline.py::
-        # test_peer_verdict_gate_verified_review_after_the_deadline_holds_pending_the_gate`).
-        # H.5 grants a third option this table did not have before:
-        # conclude on review's own verdict alone (mechanism (b) of H.5),
-        # under a DELIBERATELY DIFFERENT guard name from `verified_peer_
-        # verdict_gate_enabled` so the two paths -- gate dispatched vs.
-        # gate deferred past the deadline -- are never conflated in the
-        # event log. `LoopSupervisor._step_review` decides which of the
-        # two fires, from `budget_left()` alone, the same clock every
-        # other boundary in this table already reads.
-        T("finishing", "verified_peer_verdict_gate_deferred_past_deadline"),
+        # v0.36 requirement B: a review verified after the run's budget was
+        # spent holds `exhausted` (the ladder's first step) rather than
+        # finishing without the gate, so the H.5 edge
+        # `verified_peer_verdict_gate_deferred_past_deadline` is retired.
         T("replan", "rejected_approach_left"),
         # Task 009 (PRD requirement C.1, #141): the cure-pass edge, also
         # carried over byte-for-byte -- same reasoning as the

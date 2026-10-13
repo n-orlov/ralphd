@@ -332,10 +332,11 @@ def test_a_malformed_complete_report_is_repaired_by_one_uncharged_re_ask(
     sup, state = _run_resumed_worker_e2e(root, {
         "worker": [lambda s, p: _ok(malformed), lambda s, p: _ok(corrected)],
         "review": [_review_verified],
-    }, tasks, iterations=3)  # _run_resumed_worker_e2e seeds iterations_used=1
+    }, tasks, iterations=4)  # _run_resumed_worker_e2e seeds iterations_used=1
     # already; room for the worker's own charged call PLUS the run-ending
     # review's -- kept apart from a grace review so "charged" accounting
-    # stays simple.
+    # stays simple -- plus one spare past the verdict (v0.36 B: a verdict on
+    # the last charged iteration holds `exhausted`).
 
     # -- (a) the task moved EXACTLY as the corrected payload said --------
     final_tasks = sup.run.read_tasks()["tasks"]

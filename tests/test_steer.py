@@ -759,11 +759,14 @@ def test_a_clean_steer_iteration_gets_a_slot_but_is_refunded(tmp_path):
 
 
 def test_a_steer_iteration_never_moves_budget_left(tmp_path):
-    """The literal comparison the PRD draws: a job with a 3-iteration
+    """The literal comparison the PRD draws: a job with a 4-iteration
     budget that needs one planning-equivalent seed iteration plus a
-    worker and a review to finish must still finish -- one operator
-    message and its steer pass along the way must not eat any of those
-    3 charged iterations."""
+    worker and a review (3 charged) to finish must still finish -- one
+    operator message and its steer pass along the way must not eat any of
+    them. v0.36 requirement B holds a verdict on the last charged iteration
+    `exhausted`, so the budget is one past the 3 the run needs; a charged
+    steer pass would make the review that last iteration and hold the run,
+    so `succeeded` still discriminates."""
     root = tmp_path / "run"
     sup, final_state = _run_resumed(
         root,
@@ -771,7 +774,7 @@ def test_a_steer_iteration_never_moves_budget_left(tmp_path):
          "review": [_review_verifies]},
         tasks=[{"id": TASK_1, "status": "pending", "title": "do stuff"}],
         steering=[("hurry up", "opHurry")],
-        iterations=3,
+        iterations=4,
     )
     assert final_state == "succeeded"
     status = json.loads(sup.run.status_file.read_text())

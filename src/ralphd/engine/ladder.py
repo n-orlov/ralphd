@@ -1,11 +1,12 @@
 """The one rejection ladder (v0.36 requirement B).
 
-Review and the peer verdict gate are two judges feeding ONE ladder. A
-rejection is evaluated in this order and the first match wins:
+Review and the peer verdict gate are two judges feeding ONE ladder. Every
+verdict either judge renders -- `verified` or `rejected` -- is evaluated in
+this order and the first match wins:
 
-1. the budget (iterations or time) is spent -> `exhausted`;
-2. (a `verified` verdict never reaches this module: it goes to the peer gate
-   or finishes);
+1. the budget (iterations or time) is spent -> `exhausted`, whatever the
+   verdict was;
+2. `verified` -> the peer gate if it is on, otherwise finish;
 3. the rejection carries blocking findings and every one of them falls under a
    clause an operator already waived -> treated as verified;
 4. a park -> `awaiting_input`, when a blocking finding is `curable: false`
@@ -24,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 STEP_EXHAUSTED = "exhausted"
+STEP_VERIFIED = "verified"
 STEP_WAIVED = "waived"
 STEP_PARK = "park"
 STEP_CURE = "cure"
@@ -81,12 +83,18 @@ def park_trigger(*, incurable: bool, reviewer_escalation: bool,
     return None
 
 
-def decide(*, budget_left: bool, blocking: list[dict], waivers: list[dict],
-           incurable: bool, reviewer_escalation: bool,
-           rounds_spent: bool) -> Decision:
-    """Run the ladder over one rejection."""
+def decide(*, budget_left: bool, verified: bool = False,
+           blocking: list[dict] | None = None,
+           waivers: list[dict] | None = None, incurable: bool = False,
+           reviewer_escalation: bool = False,
+           rounds_spent: bool = False) -> Decision:
+    """Run the ladder over one verdict (`verified` True for a passing one)."""
     if not budget_left:
         return Decision(STEP_EXHAUSTED)
+    if verified:
+        return Decision(STEP_VERIFIED)
+    blocking = blocking or []
+    waivers = waivers or []
     if every_blocking_finding_waived(blocking, waivers):
         return Decision(STEP_WAIVED)
     trigger = park_trigger(incurable=incurable,

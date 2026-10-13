@@ -1288,7 +1288,7 @@ def test_generic_schema_site_repair_counts_the_re_entry_once(tmp_path):
     sup, state = _wdr008_run_resumed(root, {
         "worker": [lambda s, p: _wdr008_ok(malformed), lambda s, p: _wdr008_ok(corrected)],
         "review": [_wdr008_review_verified],
-    }, tasks, iterations=3)
+    }, tasks, iterations=4)  # one spare past the verdict (v0.36 B: a verdict on the last charged iteration holds `exhausted`)
 
     final_tasks = sup.run.read_tasks()["tasks"]
     assert final_tasks[0]["status"] == "completed", final_tasks[0]

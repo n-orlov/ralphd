@@ -844,34 +844,30 @@ go through the same cure-pass admission check and the same counters.
 With `peer_verdict_gate` enabled, a verified candidate goes to a separate
 `verdict_gate` iteration before success. The prompt excludes review's reasoning,
 verdict, and flagged-criteria context to reduce anchoring. It carries only
-operator amendments. The gate writes its own `verdict-gate-findings.json`. If the
-deadline has passed by the time review returns `verified`, the gate is not
-dispatched. The run succeeds on review's verdict and records a
-`verdictGateResidual`.
+operator amendments and operator waivers. The gate writes its own
+`verdict-gate-findings.json`.
+
+Review and the gate feed one rejection ladder (`engine/ladder.py`). Every verdict
+either judge renders climbs it, and the first match wins:
 
 ```mermaid
 flowchart TD
-    Gate["Verdict gate reply"] --> Approved{"Approved?"}
-    Approved -->|yes| Success["Succeeded"]
-    Approved -->|no or unusable| CurableG{"All blocking curable and approach has rounds left?"}
-    CurableG -->|yes| CureG["Gate cure pass, then worker"]
-    CurableG -->|no| Spent{"Findings present, rounds spent, pause enabled?"}
-    Spent -->|yes| PauseG["Pause: verdict_gate_operator_input_needed"]
-    PauseG -->|unpause| Gate
-    Spent -->|no| Merits{"Structured findings, not curable?"}
-    Merits -->|yes| FailG["Finish unverified on the merits, no archive"]
-    Merits -->|no, unstructured| Archive{"Another approach?"}
-    Archive -->|yes| Replan["Archive and replan"]
-    Archive -->|no| FailG2["Finish unverified"]
+    Verdict["Review or gate verdict"] --> Budget{"Iteration or time budget spent?"}
+    Budget -->|yes| Exhausted["exhausted (iterations or time)"]
+    Budget -->|no| Verified{"Verified?"}
+    Verified -->|yes| Next["Review: peer gate if on, else finish. Gate: finish"]
+    Verified -->|no| Waived{"Every blocking finding under a stored waiver?"}
+    Waived -->|yes| Next
+    Waived -->|no| Park{"Incurable finding, raise_operator_gate, or rounds spent?"}
+    Park -->|yes| Input["awaiting_input"]
+    Park -->|no| Cure["Cure pass: one round, then worker"]
 ```
 
-A peer rejection that is fully curable now takes a cure pass. It shares the
-approach's cure-round count and lineage with review, so the next review is a
-confirmation review. When the approach's rounds are spent, a rejection of any blocking-set shape pauses for the
-operator and resumes back into `verdict_gate`. A mixed or incurable rejection with
-structured findings ends the run unverified at once, without archive, composite
-PRD, or replan, even when approaches remain. Only an unstructured rejection (no
-gate sidecar) keeps the older archive-and-replan route. Independent model families
+A review verified after the budget ran out holds `exhausted` like any other
+verdict; the gate is never dispatched past the deadline. A gate rejection never
+ends the run `failed`: with rounds left it cures, sharing the approach's cure-round
+count and lineage with review, so the next review is a confirmation review; with
+rounds spent it parks in `awaiting_input`. Independent model families
 still require configuration: enabling a peer role alone does not ensure a
 different model or provider.
 

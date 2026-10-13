@@ -260,8 +260,10 @@ def test_logs_follow_shows_tool_invocation_before_tool_ends(live, tmp_path):
     # free once both tasks were complete. Without it the run held
     # `timed_out` with no review ever run, so `run.wait_terminal` below
     # never saw `succeeded`. One more iteration covers the ordinary
-    # planning+worker+worker+review path outright.
-    run = live(run_id="followtest-toolopen", job={"iterations": 4},
+    # planning+worker+worker+review path outright. v0.36 requirement B adds
+    # one spare iteration past the verdict: a verdict on the last charged
+    # iteration holds `exhausted`.
+    run = live(run_id="followtest-toolopen", job={"iterations": 5},
                stub_env=stub_env)
     run.wait_api()
 

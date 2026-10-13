@@ -9569,7 +9569,12 @@ class LoopSupervisor:
         self._record_gate_approach_verdict(approach, approved, payload)
         self._record_verdict_gate_peek(approach)
         if approved:
-            return self._verdict_gate_approved_edge()
+            # v0.36 requirement B: a passing verdict climbs the same ladder,
+            # so a budget spent while the gate ran holds `exhausted` first.
+            outcome = self._run_rejection_ladder(
+                "verdict_gate", approach, None, verified=True)
+            return (self._verdict_gate_approved_edge() if outcome is None
+                    else outcome)
         reason = (payload or {}).get("reason") if payload else None
         self.run.emit(
             "log",
@@ -13929,7 +13934,12 @@ class LoopSupervisor:
                     rulingFile=honoured.get("file"),
                     verdict=(payload or {}).get("verdict"))
         if verified:
-            return self._review_verified_edge(approach)
+            # v0.36 requirement B: a passing verdict climbs the same ladder,
+            # so a budget spent while review ran holds `exhausted` first.
+            outcome = self._run_rejection_ladder(
+                "review", approach, None, verified=True)
+            return (self._review_verified_edge(approach) if outcome is None
+                    else outcome)
         # GH #209 defect 2: review's own contract ladder exhausted with the
         # hat's verdict claim still unreadable across every attempt the
         # ladder grants, witnessed by the `contract.agent_fault` `enforce_
@@ -14057,59 +14067,9 @@ class LoopSupervisor:
         # about which table variant is in force (the same shape
         # `_step_planning`'s `peer_plan_review` check already uses).
         if self.cfg.peer_verdict_gate:
-            if not self.budget_left():
-                # Task 027 (PRD requirement H.5, #264, v0.24's own D.1
-                # CONFIRMED contradiction petition, cure-01-04): review
-                # is in-flight-protected (task cure-01-03/C.1) so it can
-                # still return `verified` after the deadline has
-                # already passed while it was running. Dispatching
-                # `verdict_gate` at THIS point would be a brand new
-                # iteration started past the boundary -- exactly what
-                # `_step_verdict_gate`'s own `budget_left()` guard (task
-                # 011, requirement C.1) forbids absolute for every
-                # fresh-dispatch site in this engine, this one included.
-                # v0.24 shipped the only choice that existed then --
-                # holding the run with a null verdict, pinned as
-                # history by `tests/test_deadline.py::
-                # test_peer_verdict_gate_verified_review_after_the_deadline_holds_pending_the_gate`
-                # and confirmed via the pre-named contradiction petition
-                # -- which is exactly the defect H.5 closes. This wave
-                # chooses mechanism (b): conclude on review's own
-                # verdict alone, with the gate's non-dispatch disclosed
-                # in the record as a named residual
-                # (`verdictGateResidual`) rather than as a null verdict.
-                # Mechanism (a) -- running the gate inside the same
-                # boundary -- would need merging two genuinely separate
-                # blind hat calls (review, then the peer gate) into one
-                # dispatch, which does not fit this engine's existing
-                # one-hat-per-iteration shape without a much larger
-                # restructuring than this task's own scope; (b) reuses
-                # the transition table's existing fail-open shape
-                # (`verdict_gate_rejected_no_approach_left` already
-                # concludes rather than holding hostage once ITS OWN
-                # budget is spent) and costs one new declared edge.
-                self._advance(
-                    "review", "finishing",
-                    "verified_peer_verdict_gate_deferred_past_deadline")
-                self.run.emit("signal", signal="VERIFIED")
-                residual = {
-                    "gate": "peer_verdict_gate",
-                    "reason": (
-                        "the run's own deadline passed while review "
-                        "was still in flight, before the peer verdict "
-                        "gate could be dispatched; review's own "
-                        "verified verdict decided the outcome instead "
-                        "of holding the run with a null verdict"),
-                    "recordedAt": utcnow(),
-                }
-                self.run.emit("verdict_gate_deferred_past_deadline",
-                             approach=approach,
-                             reason=residual["reason"])
-                self._finish(
-                    "succeeded", self._review_success_verdict_label(),
-                    verdictGateResidual=residual,
-                    **self._unconsumed_steering_patch())
-                return ("done", "succeeded")
+            # The ladder already answered "budget spent" before this edge
+            # (v0.36 requirement B), so a review verified past the deadline
+            # holds `exhausted` rather than finishing without the gate.
             self._advance("review", "verdict_gate",
                          "verified_peer_verdict_gate_enabled")
             return ("advance", "verdict_gate",
@@ -14123,12 +14083,15 @@ class LoopSupervisor:
     def _run_rejection_ladder(
         self, judge: str, approach: int, findings_list: list[dict] | None, *,
         signature: str | None = None, reviewer_escalation: bool = False,
-        cure_preview: dict | None = None,
+        cure_preview: dict | None = None, verified: bool = False,
     ) -> tuple | None:
-        """v0.36 requirement B: the ONE rejection ladder, used by review
-        (`judge="review"`) and the peer verdict gate (`judge="verdict_gate"`)
-        alike. `ladder.decide` names the step -- budget spent -> `exhausted`;
-        every blocking finding under a stored waiver -> treated as verified
+        """v0.36 requirement B: the ONE ladder every verdict climbs, used by
+        review (`judge="review"`) and the peer verdict gate
+        (`judge="verdict_gate"`) alike, for a passing verdict (`verified=True`)
+        and a rejection. `ladder.decide` names the step -- budget spent ->
+        `exhausted`, whatever the verdict; verified -> returns `None`, the
+        caller takes its own verified edge (peer gate or finish); every
+        blocking finding under a stored waiver -> treated as verified
         (returns `None`, the caller takes its own verified edge); a blocking
         finding that is `curable: false`, the reviewer's `raise_operator_gate`
         or this approach's cure rounds spent -> park in `awaiting_input`;
@@ -14144,21 +14107,33 @@ class LoopSupervisor:
         review = judge == "review"
         park_reason = ("operator_input_needed" if review
                        else "verdict_gate_operator_input_needed")
-        blocking = [f for f in (findings_list or [])
-                    if f.get("severity") == "blocking"]
-        curable = (self._review_rejection_curable_ignoring_ceiling(approach)
-                   if review
-                   else self._gate_rejection_curable_ignoring_ceiling(approach))
-        rounds_spent = self._cure_pass_ceiling_spent(approach)
-        waivers = self.run.waiver_entries()
+        if verified:
+            blocking, waivers = [], []
+            curable, rounds_spent = True, False
+        else:
+            blocking = [f for f in (findings_list or [])
+                        if f.get("severity") == "blocking"]
+            curable = (
+                self._review_rejection_curable_ignoring_ceiling(approach)
+                if review
+                else self._gate_rejection_curable_ignoring_ceiling(approach))
+            rounds_spent = self._cure_pass_ceiling_spent(approach)
+            waivers = self.run.waiver_entries()
         probe = ladder.decide(
-            budget_left=self.budget_left(), blocking=blocking,
-            waivers=waivers, incurable=not curable,
+            budget_left=self.budget_left(), verified=verified,
+            blocking=blocking, waivers=waivers, incurable=not curable,
             reviewer_escalation=reviewer_escalation,
             rounds_spent=rounds_spent)
         if probe.step == ladder.STEP_EXHAUSTED:
+            if verified:
+                self._terminal_reason_note = (
+                    f"the {judge.replace('_', ' ')} verified approach "
+                    f"{approach} after the run's budget was spent; a resume "
+                    f"with a top-up judges it again")
             self._budget_exhausted_tail = True
             return ("tail",)
+        if probe.step == ladder.STEP_VERIFIED:
+            return None
         if probe.step == ladder.STEP_WAIVED:
             self.run.emit("rejection.waived", judge=judge, approach=approach,
                           findings=blocking)

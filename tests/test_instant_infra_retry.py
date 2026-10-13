@@ -348,11 +348,13 @@ def test_instant_refused_connection_recovers_and_the_job_completes(engine_factor
     # Two instant, exit-0, zero-token "connection refused" worker attempts
     # (STUB_INBAND_ERROR_DELAY_S unset == 0, well inside the 5s instant
     # window) then a healthy one. Charged budget is exactly the happy path
-    # (planning + worker + review == 3), so the run can only reach a
-    # verified terminal state if both instant attempts were retried in
-    # place AND refunded.
+    # (planning + worker + review == 3) plus the one spare iteration v0.36
+    # requirement B needs past a verdict (a verdict on the last charged
+    # iteration holds `exhausted`), so the run can only reach a verified
+    # terminal state if both instant attempts were retried in place AND
+    # refunded.
     e = engine_factory(
-        job={"on_complete": "exit", "iterations": 3, "max_approaches": 1},
+        job={"on_complete": "exit", "iterations": 4, "max_approaches": 1},
         stub_env={
             "STUB_TASKS": "1",
             "STUB_INBAND_ERROR_SKIP": "1",   # invocation 1 (planning) is healthy

@@ -48,11 +48,14 @@ def _metas(run_dir):
 
 def test_inband_exit0_error_is_retried_refunded_and_job_completes(engine_factory):
     # Charged budget is exactly the happy path (planning + 1 worker + review
-    # == 3). One worker invocation fails in band with exit 0 before the
-    # healthy one; if that attempt were charged, review would never run and
-    # the job could not reach a verified terminal state.
+    # == 3), plus the one spare iteration v0.36 requirement B needs past a
+    # verdict (a verdict on the last charged iteration holds `exhausted`).
+    # One worker invocation fails in band with exit 0 before the healthy
+    # one; if that attempt were charged, review would land on the last
+    # charged iteration and the job could not reach a verified terminal
+    # state.
     e = engine_factory(
-        job={"on_complete": "exit", "iterations": 3, "max_approaches": 1},
+        job={"on_complete": "exit", "iterations": 4, "max_approaches": 1},
         stub_env={
             "STUB_TASKS": "1",
             "STUB_INBAND_ERROR_SKIP": "1",   # invocation 1 (planning) is healthy

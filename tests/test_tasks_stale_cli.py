@@ -268,7 +268,8 @@ def test_neither_host_side_read_json_will_touch_tasks_json(tmp_path):
 def test_tasks_of_a_live_run_is_unchanged(live):
     """A reachable engine with a healthy plan: the plain task lines, exit 0,
     NOTHING on stderr, and the live contract says fresh."""
-    run = live(run_id="tasks-live", job={"iterations": 4},
+    # one spare iteration past the verdict (v0.36 B: a verdict on the last charged iteration holds `exhausted`)
+    run = live(run_id="tasks-live", job={"iterations": 5},
                stub_env={"STUB_TASKS": "2", "STUB_SLEEP": "0"})
     run.wait_api()
     res = None

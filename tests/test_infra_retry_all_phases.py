@@ -199,9 +199,12 @@ def test_infra_shaped_review_is_retried_and_does_not_cost_an_approach(
     # Before task 009 that review was scored as a rejected approach: the
     # approach was archived, a composite PRD written, and the charged review
     # iteration spent -- so with iterations=3/max_approaches=1 the run could
-    # not reach a verified terminal state at all.
+    # not reach a verified terminal state at all. v0.36 requirement B holds
+    # a verdict on the last charged iteration `exhausted`, so the budget
+    # carries one spare iteration; `iterationsUsed == 3` below still pins
+    # that the infra-shaped attempt was not charged.
     e = engine_factory(
-        job={"on_complete": "exit", "iterations": 3, "max_approaches": 1},
+        job={"on_complete": "exit", "iterations": 4, "max_approaches": 1},
         stub_env={
             "STUB_TASKS": "1",
             "STUB_INBAND_ERROR_SKIP": "2",   # planning + worker are healthy

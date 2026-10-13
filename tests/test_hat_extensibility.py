@@ -258,7 +258,9 @@ def test_a_contract_violation_from_the_noop_hat_is_reasked_not_fatal(
 
     handlers[NOOP_STATE] = _bad_then_fixed
     root = tmp_path / "run-violation"
-    sup, state = _run(root, handlers, vigilant=False, iterations=5,
+    # One spare iteration past the verdict: v0.36 requirement B holds a
+    # verdict on the last charged iteration `exhausted`.
+    sup, state = _run(root, handlers, vigilant=False, iterations=6,
                       contract_retry_max=RETRY_MAX)
 
     # The run SURVIVED the violation outright -- it succeeded, exactly as

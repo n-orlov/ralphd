@@ -306,10 +306,12 @@ def test_five_consecutive_infra_faults_are_ridden_out_free(engine_factory):
     # No RALPHD_INFRA_RETRY_MAX at all: five hung worker invocations (the old
     # default would have given up after three) are retried on a compressed
     # schedule, then the healthy attempt finishes the only task. Charged
-    # budget is exactly the happy path (planning + worker + review == 3), so
-    # the run can only succeed if every retried attempt was refunded.
+    # budget is the happy path (planning + worker + review == 3) plus the one
+    # spare iteration v0.36 requirement B needs past a verdict (a verdict on
+    # the last charged iteration holds `exhausted`), so the run can only
+    # succeed if every retried attempt was refunded.
     e = engine_factory(
-        job={"on_complete": "exit", "iterations": 3, "max_approaches": 1},
+        job={"on_complete": "exit", "iterations": 4, "max_approaches": 1},
         stub_env={
             "STUB_TASKS": "1",
             "STUB_INFRA_HANG_SKIP": "1",   # invocation 1 (planning) is healthy

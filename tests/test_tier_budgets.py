@@ -878,8 +878,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # and the rewritten ladder tests of the retired discretionary-gate,
     # repeated-signature and ruling-re-park modules, measured `--collect-only`
     # -> fast 8555/540, smoke 6777/413.
-    "fast": {"tests": 8555, "modules": 540},
-    "smoke": {"tests": 6777, "modules": 413},
+    # v0.36 ladder retry: verified verdicts climb the ladder too (+7 nodes in
+    # tests/test_rejection_ladder.py), measured -> fast 8562/540, smoke
+    # 6784/413.
+    "fast": {"tests": 8562, "modules": 540},
+    "smoke": {"tests": 6784, "modules": 413},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

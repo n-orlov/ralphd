@@ -138,7 +138,9 @@ def test_status_json_records_infra_wait_total_and_extended_deadline(engine_facto
     time` -- the arithmetic itself, over non-zero waits, is the unit half above
     (`waits == [0.1, 0.2, 0.4]`, stubbed, never slept)."""
     e = engine_factory(
-        job={"on_complete": "exit", "iterations": 3, "max_approaches": 1,
+        # one spare iteration past the verdict (v0.36 B: a verdict on the
+        # last charged iteration holds `exhausted`)
+        job={"on_complete": "exit", "iterations": 4, "max_approaches": 1,
              "job_timeout_s": 600},
         stub_env={
             "STUB_TASKS": "1",

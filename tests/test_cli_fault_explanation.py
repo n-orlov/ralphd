@@ -887,7 +887,9 @@ def test_engine_infra_fault_is_explained_end_to_end(live, capsys):
     hand-written."""
     e = live(
         run_id="faultreal",
-        job={"on_complete": "exit", "iterations": 3, "max_approaches": 1},
+        # one spare iteration past the verdict (v0.36 B: a verdict on the
+        # last charged iteration holds `exhausted`)
+        job={"on_complete": "exit", "iterations": 4, "max_approaches": 1},
         stub_env={
             "STUB_TASKS": "1",
             "STUB_INFRA_HANG_SKIP": "1",   # invocation 1 (planning) is healthy
