@@ -939,7 +939,8 @@ def test_app_js_pill_never_special_cases_verdict_to_unknown():
     already uses for this same file."""
     app_js = (Path(__file__).resolve().parents[1] / "src" / "ralphd" /
              "cli" / "web" / "app.js").read_text()
-    pill_fn = re.search(r"function pill\(text\) \{.*?\n\}", app_js, re.DOTALL)
+    pill_fn = re.search(r"function pill\(text(?:, label)?\) \{.*?\n\}",
+                        app_js, re.DOTALL)
     assert pill_fn, "pill() not found in app.js"
     body = pill_fn.group(0)
     # the ONLY places "unknown" appears inside pill() are the two
