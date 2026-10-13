@@ -35,6 +35,11 @@ from tests.conftest import make_supervisor
 from test_cli_docker import Ctl, ctl, unix_sock
 from test_cli_resume import _seed_run
 
+
+def _bounded(coro, timeout: float = 30.0):
+    return asyncio.run(asyncio.wait_for(coro, timeout))
+
+
 __all__ = ["ctl", "unix_sock"]
 
 APP_JS = Path(ui_server.__file__).parent / "web" / "app.js"
@@ -171,7 +176,7 @@ def test_a_spent_iteration_budget_holds_exhausted_iterations(tmp_path):
     sup = _supervisor(tmp_path / "run", {"planning": [_plan], "worker": [_complete]},
                       iterations=2)
 
-    assert asyncio.run(sup._run_job_core()) == "exhausted"
+    assert _bounded(sup._run_job_core()) == "exhausted"
 
     status = _held(sup)
     assert status["verdict"] is None
@@ -196,7 +201,7 @@ def test_a_passed_deadline_holds_exhausted_time(tmp_path, monkeypatch):
                       {"planning": [_plan], "worker": [slow_worker]},
                       iterations=25, job_timeout_s=2 * 3600)
 
-    assert asyncio.run(sup._run_job_core()) == "exhausted"
+    assert _bounded(sup._run_job_core()) == "exhausted"
 
     status = _held(sup)
     assert status["verdict"] is None
@@ -213,7 +218,7 @@ def test_a_replan_with_no_approach_left_holds_exhausted_approaches(tmp_path, mon
     sup.run.update_status(approach=2)
     monkeypatch.setattr(sup, "_resume_point", lambda: (2, False, "replan"))
 
-    assert asyncio.run(sup._run_job_core()) == "exhausted"
+    assert _bounded(sup._run_job_core()) == "exhausted"
 
     status = _held(sup)
     assert status["verdict"] is None
@@ -316,7 +321,7 @@ def test_iterations_resume_continues_at_the_held_step(tmp_path):
     root = tmp_path / "run"
     sup1 = _supervisor(root, {"planning": [_plan], "worker": [_complete]},
                        iterations=2)
-    assert asyncio.run(sup1._run_job_core()) == "exhausted"
+    assert _bounded(sup1._run_job_core()) == "exhausted"
     assert _held(sup1)["exhaustedBudget"] == "iterations"
 
     # the topped-up episode: planning is NOT redone, the held worker step
@@ -325,7 +330,7 @@ def test_iterations_resume_continues_at_the_held_step(tmp_path):
                        resume=True, iterations=6)
     assert sup2._resume_point()[1:] == (True, "planning")
 
-    assert asyncio.run(sup2._run_job_core()) == "succeeded"
+    assert _bounded(sup2._run_job_core()) == "succeeded"
 
     assert sup2.runner.phases == ["worker", "review"]
     status = sup2.run.read_status()
@@ -345,14 +350,14 @@ def test_time_resume_continues_at_the_held_step_on_a_fresh_window(tmp_path, monk
 
     sup1 = _supervisor(root, {"planning": [_plan], "worker": [slow_worker]},
                        iterations=25, job_timeout_s=2 * 3600)
-    assert asyncio.run(sup1._run_job_core()) == "exhausted"
+    assert _bounded(sup1._run_job_core()) == "exhausted"
     assert _held(sup1)["exhaustedBudget"] == "time"
 
     # `resume --timeout +N`: a longer window, opened at the (fake) now
     sup2 = _supervisor(root, {"worker": [_complete], "review": [_verified]},
                        resume=True, iterations=25, job_timeout_s=5 * 3600)
 
-    assert asyncio.run(sup2._run_job_core()) == "succeeded"
+    assert _bounded(sup2._run_job_core()) == "succeeded"
     assert sup2.runner.phases == ["worker", "review"]
     assert sup2.run.read_status()["approach"] == 1
 
@@ -364,7 +369,7 @@ def test_approaches_resume_continues_at_the_replan_on_the_next_approach(tmp_path
     sup1 = _supervisor(root, {"planning": [_plan],
                               "worker": [_complete, _complete]},
                        iterations=3, max_approaches=1)
-    assert asyncio.run(sup1._run_job_core()) == "exhausted"
+    assert _bounded(sup1._run_job_core()) == "exhausted"
     sup1.run.update_status(exhaustedBudget="approaches", approach=1)
 
     # `resume --approaches +1`: approach 2 exists now. The engine lands on the
@@ -373,7 +378,7 @@ def test_approaches_resume_continues_at_the_replan_on_the_next_approach(tmp_path
                               "review": [_verified]},
                        resume=True, iterations=25, max_approaches=2)
 
-    assert asyncio.run(sup2._run_job_core()) == "succeeded"
+    assert _bounded(sup2._run_job_core()) == "succeeded"
 
     assert sup2.runner.phases[0] == "planning"
     status = sup2.run.read_status()
