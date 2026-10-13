@@ -159,7 +159,8 @@ def test_review_park_unpause_different_rejection_still_parks(tmp_path):
 
     assert outcome2 == ("advance", "paused", "operator_input_needed")
     status2 = sup2.run.read_status()
-    assert status2["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status2["state"] == "awaiting_input"
     assert status2["pauseReason"] == "operator_input_needed"
     assert not (root / "approaches" / "01").exists()
 
@@ -286,7 +287,8 @@ def test_gate_park_unpause_different_rejection_still_parks(tmp_path):
 
     assert outcome2 == ("advance", "paused", "verdict_gate_operator_input_needed")
     status2 = sup2.run.read_status()
-    assert status2["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status2["state"] == "awaiting_input"
     assert status2["pauseReason"] == "verdict_gate_operator_input_needed"
     assert not (root / "approaches" / "01").exists()
 

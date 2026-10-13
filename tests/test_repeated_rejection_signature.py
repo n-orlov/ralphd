@@ -210,7 +210,9 @@ def test_a_second_identical_rejection_signature_pauses_instead_of_replanning(
     # engine escalation, ...) is left exactly as it was, even though the
     # SAME signature is still on record -- "rulings filed against
     # unrelated pauses remain non-resuming".
-    sup.run.update_status(pauseReason="stagnation")
+    # (a stagnation hold is `paused`; the repeated-signature park itself is
+    # `awaiting_input` in v0.36 -- covering node: tests/test_awaiting_input_question.py)
+    sup.run.update_status(state="paused", pauseReason="stagnation")
     resp = _post_rule({"text": "ruling filed against an unrelated live pause"})
     assert resp.status_code == 202, resp.text
     unrelated = sup.run.read_status()
@@ -221,7 +223,8 @@ def test_a_second_identical_rejection_signature_pauses_instead_of_replanning(
     # Restore the ACTUAL current pause and file the authoritative ruling
     # against it -- this is the one that must release it, in the same
     # request, with no separate resume command.
-    sup.run.update_status(pauseReason="rejected_repeated_signature")
+    sup.run.update_status(state="awaiting_input",
+                          pauseReason="rejected_repeated_signature")
     resp = _post_rule({"text": "These clauses are residuals; ship."})
     assert resp.status_code == 202, resp.text
     released = sup.run.read_status()

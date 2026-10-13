@@ -727,8 +727,25 @@ EXHAUSTED_BUDGETS = ("iterations", "time", "approaches")
 # more; a run directory written by 0.35 and still recorded with it loads as
 # `exhausted` (`exhausted_budget_of` / `normalise_legacy_state` below).
 LEGACY_TIMED_OUT_STATE = "timed_out"
-NONTERMINAL_STATES = ("starting", "running", PAUSED_STATE, "finishing",
-                      EXHAUSTED_STATE)
+# v0.36 requirement B/C: `awaiting_input` -- THE one place the engine asks.
+# Entered when a judge's (review's or the peer verdict gate's) blocking
+# findings park the run; `status.json`'s `inputQuestion` carries the question
+# and `state` is this value from the moment the engine decides to wait until
+# an answer (or the input timeout) leaves it. The engine never writes
+# `paused` for a park; `paused` is the operator's alone. Non-terminal for the
+# same liveness reason `paused` is: a live engine owns the position.
+AWAITING_INPUT_STATE = "awaiting_input"
+INPUT_QUESTION_KINDS = ("findings", "secret")
+INPUT_TRIGGERS = ("incurable", "reviewer_escalation", "cure_rounds_spent")
+INPUT_JUDGES = ("review", "verdict_gate")
+# What the engine does when `expiresAt` passes with no answer (PRD E.3).
+INPUT_ON_TIMEOUT_CURE_NOW = "cure_now"
+INPUT_ON_TIMEOUT_NEXT_APPROACH = "next_approach"
+INPUT_ON_TIMEOUT_EXHAUSTED = "exhausted_approaches"
+# The default input timeout in minutes (`input_timeout_min`, E.1); `0` = never.
+DEFAULT_INPUT_TIMEOUT_MIN = 60
+NONTERMINAL_STATES = ("starting", "running", PAUSED_STATE,
+                      AWAITING_INPUT_STATE, "finishing", EXHAUSTED_STATE)
 # Every non-terminal state a run directory can be RECORDED with on this build:
 # the engine's own plus the 0.35 spelling of the budget hold, so a run
 # directory 0.35 left at `timed_out` still counts as owned (zombie/liveness
@@ -891,9 +908,12 @@ def escalation_pause_markers(run_root: Path, status: dict) -> dict:
     state_value = status.get("state")
     scan = None
     held = False
-    if state_value == PAUSED_STATE:
+    if state_value in (PAUSED_STATE, AWAITING_INPUT_STATE):
         scan = _escalation_scan(run_root)
         held = True
+        if (state_value == AWAITING_INPUT_STATE and not pause_marker
+                and status.get("pauseReason") == IN_MEMORY_ESCALATION_PAUSE_REASON):
+            pause_marker = ESCALATION_HOLD_MARKER
     elif state_value in _IN_MEMORY_HOLD_STATES:
         scan = _escalation_scan(run_root)
         held = (scan["reason"] == IN_MEMORY_ESCALATION_PAUSE_REASON
@@ -964,27 +984,82 @@ NEXT_STEP_ARCHIVE_AND_REPLAN = "archive_and_replan"
 NEXT_STEP_FINISH = "finishing"
 
 
-def parked_question(run_root: Path, status: dict) -> dict | None:
-    """Task 007 (v0.26, #269): the hub run-detail payload's `parkedQuestion`
-    object -- a ruling-answerable pause shaped from the latest matching
-    `operator_escalation` event, or `None` when there is nothing a ruling
-    could answer right now.
 
-    `None` for:
-      * a running run (`status["pauseReason"]` absent/`null` -- the ordinary
-        case, including a run never paused at all and a plain operator
-        `POST /pause`, which persists no `pauseReason`);
-      * every pause reason outside `PARKED_QUESTION_REASONS` above
-        (`stagnation`, `rejected_last_approach`, `review_contract_
-        unrepaired`, `review_findings_unusable`, `rejected_incurable`'s
-        in-memory hold, the two dependency-edge reasons) -- a plain
-        operator pause and these seven all hold the run for a reason a
-        ruling has no vocabulary to answer, so the panel this feeds must
-        not render for them either;
-      * a `pauseReason` in that set with no matching `operator_escalation`
-        event on record at all (defensive only -- should not happen for a
-        persisted pause, which is always preceded by the event that
-        caused it).
+def input_question_findings(blocking: list[dict]) -> list[dict]:
+    """The findings of an `inputQuestion`: each blocking finding with a stable
+    id (`F<n>`, 1-based in the judge's own finding order -- the same id the
+    escalation text and the hub panel name), its `clause`, `severity`,
+    `curable` flag and `text` (the finding's evidence, whole)."""
+    out = []
+    for index, finding in enumerate(blocking, start=1):
+        if not isinstance(finding, dict):
+            continue
+        out.append({
+            "id": f"F{index}",
+            "clause": finding.get("clause"),
+            "severity": finding.get("severity", "blocking"),
+            "curable": finding.get("curable") is True,
+            "text": finding.get("evidence"),
+        })
+    return out
+
+
+def input_on_timeout(trigger: str, cure_rounds_left: int, approach: int,
+                     max_approaches: int) -> str:
+    """What the engine does when the input timeout fires on a park (PRD E.3):
+    a reviewer escalation with cure rounds left on this approach cures now
+    from the remaining allowance; every other findings park moves to the next
+    approach, or -- with none left -- holds `exhausted` (`approaches`)."""
+    if trigger == "reviewer_escalation" and cure_rounds_left > 0:
+        return INPUT_ON_TIMEOUT_CURE_NOW
+    if approach < max_approaches:
+        return INPUT_ON_TIMEOUT_NEXT_APPROACH
+    return INPUT_ON_TIMEOUT_EXHAUSTED
+
+
+def build_input_question(
+    *, judge: str, trigger: str, blocking: list[dict],
+    cure_rounds_used: int, cure_rounds_allowed: int,
+    approach: int, max_approaches: int, parked_at_epoch: float,
+    timeout_min: float | None = None, kind: str = "findings",
+) -> dict:
+    """The `inputQuestion` object `status.json` carries while the run is
+    `awaiting_input` (PRD C.1). `expiresAt` is the park time plus the input
+    timeout (default `DEFAULT_INPUT_TIMEOUT_MIN`), absolute so a restart keeps
+    the same expiry; `null` when the timeout is 0 and always for a `secret`
+    question, which never expires."""
+    minutes = DEFAULT_INPUT_TIMEOUT_MIN if timeout_min is None else timeout_min
+    expires_at = None
+    if kind != "secret" and minutes and minutes > 0:
+        expires_at = utc_from_epoch(parked_at_epoch + minutes * 60)
+    return {
+        "kind": kind,
+        "trigger": trigger,
+        "judge": judge,
+        "findings": input_question_findings(blocking),
+        "cureRoundsUsed": cure_rounds_used,
+        "cureRoundsAllowed": cure_rounds_allowed,
+        "approach": approach,
+        "maxApproaches": max_approaches,
+        "parkedAt": utc_from_epoch(parked_at_epoch),
+        "expiresAt": expires_at,
+        "onTimeout": input_on_timeout(
+            trigger, cure_rounds_allowed - cure_rounds_used, approach,
+            max_approaches),
+    }
+
+
+def parked_question(run_root: Path, status: dict) -> dict | None:
+    """The hub run-detail payload's `parkedQuestion` object (v0.36): `None`
+    unless the run's `state` is `awaiting_input` -- the panel it feeds is shown
+    for every `awaiting_input` run and for no other state (a running run, an
+    operator `paused` run, an `exhausted` hold) -- and otherwise the run's
+    persisted `inputQuestion` (`kind`, `trigger`, `judge`, findings, cure
+    rounds, approach, `expiresAt`, `onTimeout`) under the `inputQuestion`
+    key, beside the legacy shaping built from the latest matching
+    `operator_escalation` event (task 007, v0.26, #269): `reason`, `approach`,
+    `maxApproaches`, `approachOfMax`, `parkedAt`, `replanAvailable`,
+    `blockingCount`/`residualCount`, `findings` and `consequence`.
 
     Cure task cure-01-02-4 (PRD B.1, D.1; DoD 2/4): the LATEST matching-
     reason event is not enough on its own -- the task-boundary commit-
@@ -1040,9 +1115,13 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
     `_review_findings_channel`'s own no-channel default of "nothing to
     count instead of raising".
     """
-    reason = status.get("pauseReason")
-    if reason not in PARKED_QUESTION_REASONS:
+    # v0.36: the panel is shown for every `awaiting_input` run and for no
+    # other state, and reads the run's persisted `inputQuestion`.
+    if status.get("state") != AWAITING_INPUT_STATE:
         return None
+    question = status.get("inputQuestion")
+    question = question if isinstance(question, dict) else None
+    reason = status.get("pauseReason")
     event = None
     answered_since = False
     for ev in read_events(run_root, types=(
@@ -1056,8 +1135,14 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
                 kind == "log" and ev.get("message") == RESUMED_LOG_MESSAGE):
             answered_since = True
     if event is None or answered_since:
-        return None
+        event = {}
     blocking = [f for f in (event.get("findings") or []) if isinstance(f, dict)]
+    if not blocking and question:
+        blocking = [
+            {"severity": f.get("severity", "blocking"),
+             "clause": f.get("clause"), "evidence": f.get("text"),
+             "curable": f.get("curable")}
+            for f in question.get("findings") or [] if isinstance(f, dict)]
     findings_out = []
     for index, finding in enumerate(blocking, start=1):
         findings_out.append({
@@ -1074,6 +1159,8 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
     # `status.json`'s own `usage.byApproach` bucket (a parked run spends
     # nothing while parked, so the bucket still reads the at-park figure).
     approach = event.get("approach")
+    if approach is None and question:
+        approach = question.get("approach")
     max_approaches = status.get("maxApproaches")
     approach_of_max = event.get("approachOfMax")
     if approach_of_max is None and approach is not None and max_approaches:
@@ -1104,10 +1191,11 @@ def parked_question(run_root: Path, status: dict) -> dict | None:
     residual_count = len(residual)
     return {
         "reason": reason,
+        "inputQuestion": question,
         "approach": approach,
         "maxApproaches": max_approaches,
         "approachOfMax": approach_of_max,
-        "parkedAt": event.get("ts"),
+        "parkedAt": event.get("ts") or (question or {}).get("parkedAt"),
         "replanAvailable": event.get("replanAvailable"),
         "blockingCount": blocking_count,
         "residualCount": residual_count,

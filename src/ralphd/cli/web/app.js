@@ -290,7 +290,7 @@ let runSort = { key: "startedAt", dir: -1 };
 // Mirrors `main.py`'s `_STATUS_STATES` / the verdict progression in
 // docs/api.md (no verdict yet -> unverified -> verified -> verified-with-
 // residuals, requirement D.3).
-const RUN_STATE_ORDER = ["starting", "running", "paused", "finishing", "exhausted", "succeeded", "failed", "aborted"];
+const RUN_STATE_ORDER = ["starting", "running", "paused", "finishing", "exhausted", "awaiting_input", "succeeded", "failed", "aborted"];
 const RUN_VERDICT_ORDER = ["", "unverified", "verified", "verified-with-residuals"];
 
 function lifecycleRank(order, value) {
@@ -2360,6 +2360,26 @@ function renderParkedPanel(box, runId, pq) {
     ["blocking findings", String(pq.blockingCount ?? 0)],
     ["residual findings", String(pq.residualCount ?? 0)],
   ];
+  // v0.36: the panel reads the run's persisted `inputQuestion` (status.json,
+  // present for every `awaiting_input` run): what triggered the park, which
+  // judge asked, the cure rounds used and allowed on this approach, when it
+  // expires and what the engine does then.
+  const iq = pq.inputQuestion;
+  if (iq) {
+    const onTimeoutText = {
+      cure_now: "cure now from the remaining cure rounds",
+      next_approach: "archive this approach and replan the next one",
+      exhausted_approaches: "hold the run exhausted (approaches)",
+    };
+    rows.push(
+      ["question", String(iq.kind || "findings")],
+      ["trigger", String(iq.trigger || "unknown")],
+      ["judge", String(iq.judge || "unknown")],
+      ["cure rounds", String(iq.cureRoundsUsed ?? 0) + " of " + String(iq.cureRoundsAllowed ?? 0) + " used"],
+      ["expires", iq.expiresAt || "never"],
+      ["on timeout", onTimeoutText[iq.onTimeout] || String(iq.onTimeout || "unknown")],
+    );
+  }
   // cure-01-05 (adopted #270 D.14): the waive checkbox composes into the
   // PANEL'S OWN `#parked-rule-text` -- never `#rule-text`, the SEPARATE
   // Rule section's own control further down the page -- so the operator

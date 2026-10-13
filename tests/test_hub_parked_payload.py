@@ -25,7 +25,6 @@ from ralphd.engine import findings
 from ralphd.engine.state import (
     NEXT_STEP_ARCHIVE_AND_REPLAN,
     NEXT_STEP_CURE_PASS,
-    PARKED_QUESTION_REASONS,
     cure_pass_preview,
     parked_question,
     read_events,
@@ -287,7 +286,9 @@ def test_an_event_without_a7_fields_still_reports_approach_and_spend(tmp_path):
                  reason="operator_input_needed", findings=_MIXED_FINDINGS,
                  replanAvailable=True, escalation="text",
                  nextStepIfUnanswered=NEXT_STEP_ARCHIVE_AND_REPLAN)
-    sup.pause(reason="operator_input_needed")
+    sup._park_for_input(reason="operator_input_needed", judge="review",
+                        trigger="incurable", blocking=_MIXED_FINDINGS,
+                        approach=1)
     pq = parked_question(root, sup.run.read_status())
     assert pq["approachOfMax"] == "approach 1 of 2"
     assert pq["consequence"]["costSpentThisApproach"] == "$1.50"
@@ -350,19 +351,26 @@ def test_no_pause_reason_is_no_parked_question():
                            {"state": "running", "pauseReason": None}) is None
 
 
-def test_pause_reasons_a_ruling_cannot_answer_are_all_excluded(tmp_path):
+def test_rejected_last_approach_now_parks_with_a_panel(tmp_path):
+    """v0.36 moved `rejected_last_approach` from a plain `paused` (no panel,
+    outside `PARKED_QUESTION_REASONS`) into `awaiting_input`: it carries an
+    `inputQuestion` and, like every `awaiting_input` run, the panel.
+    Covering node for the stagnation exclusion:
+    `test_stagnation_pause_has_no_parked_question`."""
     root = tmp_path / "run"
     sup = _supervisor(root, max_approaches=1,
                       status={"state": "running", "phase": "review",
                               "approach": 1})
     sup._approach = 1
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
-    # `rejected_last_approach` -- an existing, unrelated pause reason.
     sup._pause_and_escalate_last_approach_rejection(1)
     status = sup.run.read_status()
+    assert status["state"] == "awaiting_input"
     assert status["pauseReason"] == "rejected_last_approach"
-    assert status["pauseReason"] not in PARKED_QUESTION_REASONS
-    assert parked_question(root, status) is None
+    pq = parked_question(root, status)
+    assert pq is not None
+    assert pq["inputQuestion"] == status["inputQuestion"]
+    assert pq["inputQuestion"]["trigger"] == "cure_rounds_spent"
 
 
 def test_stagnation_pause_has_no_parked_question(tmp_path):
@@ -487,6 +495,33 @@ def test_run_detail_carries_the_parked_question(tmp_path):
     assert detail["parkedQuestion"] is not None
     assert detail["parkedQuestion"]["reason"] == "operator_input_needed"
     assert detail["parkedQuestion"]["blockingCount"] == 2
+
+
+def test_run_detail_shows_the_input_question_for_awaiting_input_and_no_other_state(
+        tmp_path):
+    """v0.36: the hub's parked-question panel reads the run's persisted
+    `inputQuestion`; the payload carries it for every `awaiting_input` run and
+    is `null` for every other state."""
+    root = tmp_path / "run"
+    sup = _supervisor(root, max_approaches=2, operator_input_needed_pause=True,
+                      status={"state": "running", "phase": "review",
+                              "approach": 1, "maxApproaches": 2})
+    sup._approach = 1
+    findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
+    sup._pause_and_escalate_operator_input_needed(
+        1, _MIXED_FINDINGS, replan_available=True)
+    reg = _reg_for(root, sup.cfg.run_id)
+
+    status = sup.run.read_status()
+    assert status["state"] == "awaiting_input"
+    detail = ui_server.run_detail(reg, sup.cfg.run_id)
+    assert detail["parkedQuestion"]["inputQuestion"] == status["inputQuestion"]
+    assert detail["parkedQuestion"]["inputQuestion"]["judge"] == "review"
+
+    for other in ("running", "paused", "exhausted", "finishing", "failed"):
+        sup.run.update_status(state=other)
+        detail = ui_server.run_detail(reg, sup.cfg.run_id)
+        assert detail["parkedQuestion"] is None, other
 
 
 def test_run_detail_itemises_the_residual_finding_too(tmp_path):

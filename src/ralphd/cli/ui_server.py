@@ -2282,6 +2282,8 @@ def current_iteration_panel(status: dict, iterations: list, tasks: dict,
         elif state == "paused":
             reason = status.get("pauseReason")
             text = "no iteration running — paused" + (f" ({reason})" if reason else "")
+        elif state == "awaiting_input":
+            text = "no iteration running — awaiting input (parked on a question)"
         elif state in ("exhausted", "timed_out"):
             text = ("no iteration running — "
                     f"{format_state_display(status)} (resumable hold)")

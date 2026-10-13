@@ -161,7 +161,8 @@ def test_gate_rejection_with_ceiling_spent_parks_instead_of_archiving(
     # paused through the EXISTING pause machinery.
     assert sup._pause.is_set() is False
     status = sup.run.read_status()
-    assert status.get("state") == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status.get("state") == "awaiting_input"
     assert status.get("pauseReason") == "verdict_gate_operator_input_needed"
     assert status.get("gateRejectionEnding") == "rejected_cure_unavailable"
 
@@ -242,7 +243,8 @@ def test_gate_rejection_with_ceiling_spent_parks(tmp_path, fixture_name):
 
     assert outcome == ("advance", "paused", "verdict_gate_operator_input_needed")
     status = sup.run.read_status()
-    assert status.get("state") == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status.get("state") == "awaiting_input"
     assert status.get("pauseReason") == "verdict_gate_operator_input_needed"
 
     assert sup._approach == 1
@@ -278,7 +280,8 @@ def test_gate_rejection_mixed_with_ceiling_spent_on_last_approach_parks(
 
     assert outcome == ("advance", "paused", "verdict_gate_operator_input_needed")
     status = sup.run.read_status()
-    assert status.get("state") == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status.get("state") == "awaiting_input"
     assert not (root / "approaches" / "01").exists()
     assert not sup.run.composite_prd_file.exists()
     escalations = _escalations(root)

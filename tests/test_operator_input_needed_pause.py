@@ -150,7 +150,8 @@ def test_an_ordinary_rejection_with_a_replan_available_pauses_instead(
     assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False
     status = sup.run.read_status()
-    assert status["state"] == PAUSED_STATE == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status["state"] == "awaiting_input"
     assert status["pauseReason"] == "operator_input_needed"
     # `phase`/`approach` are left exactly as they were -- no replan, no
     # archive, no fresh approach.
@@ -201,7 +202,8 @@ def test_an_ordinary_rejection_on_the_last_approach_pauses_instead_of_ending(
 
     assert outcome == ("advance", "paused", "operator_input_needed")
     status = sup.run.read_status()
-    assert status["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status["state"] == "awaiting_input"
     assert status["pauseReason"] == "operator_input_needed"
     assert status["approach"] == 1
     assert not (root / "approaches" / "01").exists()
@@ -332,7 +334,8 @@ def test_resume_clears_the_persisted_pause_and_keeps_approach_and_phase(
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     _reject(sup)
     _bounded(sup._step_review())
-    assert _host_status(root)["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert _host_status(root)["state"] == "awaiting_input"
 
     sup.resume()
 
@@ -396,7 +399,8 @@ async def test_the_pause_holds_past_timeouts_and_credits_the_wall_clock_on_resum
     assert outcome == ("advance", "paused", "operator_input_needed")
 
     before = sup.run.read_status()
-    assert before["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert before["state"] == "awaiting_input"
     assert before["pauseReason"] == "operator_input_needed"
     iterations_before = sup.iterations_used
     tokens_before = before.get("tokensUsed")
@@ -410,7 +414,8 @@ async def test_the_pause_holds_past_timeouts_and_credits_the_wall_clock_on_resum
     await asyncio.sleep(0.05)
 
     still = sup.run.read_status()
-    assert still["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert still["state"] == "awaiting_input"
     assert still["pauseReason"] == "operator_input_needed"
     assert still["approach"] == 1
     assert still["phase"] == "review"

@@ -226,6 +226,28 @@ def test_panel_shows_reason_approach_time_parked_replan_and_counts():
     assert "residual findings: 1" in text
 
 
+def test_panel_reads_the_input_question():
+    """v0.36: the panel renders the run's persisted `inputQuestion` -- trigger,
+    judge, cure rounds used of allowed, `expiresAt` and what the timeout does."""
+    pq = {**_PQ, "inputQuestion": {
+        "kind": "findings", "trigger": "reviewer_escalation",
+        "judge": "verdict_gate", "findings": [], "cureRoundsUsed": 1,
+        "cureRoundsAllowed": 3, "approach": 2, "maxApproaches": 3,
+        "parkedAt": "2020-01-01T00:00:00Z",
+        "expiresAt": "2020-01-01T01:00:00Z", "onTimeout": "cure_now"}}
+    text = _render_panel(pq)["text"]
+    assert "trigger: reviewer_escalation" in text
+    assert "judge: verdict_gate" in text
+    assert "cure rounds: 1 of 3 used" in text
+    assert "expires: 2020-01-01T01:00:00Z" in text
+    assert "on timeout: cure now from the remaining cure rounds" in text
+    never = _render_panel({**pq, "inputQuestion": {
+        **pq["inputQuestion"], "expiresAt": None,
+        "onTimeout": "exhausted_approaches"}})["text"]
+    assert "expires: never" in never
+    assert "on timeout: hold the run exhausted (approaches)" in never
+
+
 def test_panel_shows_the_consequence_of_not_answering():
     out = _render_panel(_PQ)
     text = out["text"]

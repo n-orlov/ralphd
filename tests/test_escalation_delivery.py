@@ -134,7 +134,8 @@ def test_notifier_failing_twice_then_succeeding_delivers_once(
     assert undelivered == []
 
     status = _status(root)
-    assert status["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status["state"] == "awaiting_input"
     assert status["pauseReason"] == "rejected_last_approach"
 
 
@@ -216,22 +217,22 @@ def test_pause_takes_effect_regardless_of_delivery_retries(tmp_path, monkeypatch
         _trigger(sup)
 
         assert poster.seen_at_first_attempt is not None
-        assert poster.seen_at_first_attempt["state"] == "paused"
+        # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+        assert poster.seen_at_first_attempt["state"] == "awaiting_input"
         assert poster.seen_at_first_attempt["pauseReason"] == "rejected_last_approach"
 
         undelivered = _events(root, run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT)
         assert (len(undelivered) == 1) == expect_undelivered
 
 
-def test_incurable_rejection_pause_is_in_memory_and_escalated_before_delivery(
+def test_incurable_rejection_park_is_persisted_and_escalated_before_delivery(
         tmp_path, monkeypatch):
-    """`rejected_incurable` is the ONE escalation site whose pause carries no
-    reason (`_pause_and_escalate_incurable_rejection` calls the bare
-    `self.pause()`, the same in-memory hold `POST /pause` takes), so SPEC
-    §4.6 promises it exactly this, and no more: the in-memory pause is
-    already in force and the `operator_escalation` event is already on
-    disk when the first delivery attempt runs, while status.json is not
-    rewritten to `paused` (`pauseReason` stays null). Its delivery is still
+    """`rejected_incurable` used to be the ONE escalation site whose hold was
+    in memory only (status.json kept saying `running`); v0.36 persists it
+    like every other findings park: the hold is already in force, status.json
+    already says `awaiting_input` (with its `inputQuestion`) and the
+    `operator_escalation` event is already on disk when the first delivery
+    attempt runs. Its delivery is still
     retried and still recorded undelivered, like every other site."""
     from ralphd.engine import findings
 
@@ -261,8 +262,8 @@ def test_incurable_rejection_pause_is_in_memory_and_escalated_before_delivery(
     first = seen[0]
     assert first["gate_open"] is False  # the in-memory pause is already held
     assert [e["reason"] for e in first["escalations"]] == ["rejected_incurable"]
-    assert first["status"].get("state") != "paused"
-    assert first["status"].get("pauseReason") is None
+    assert first["status"].get("state") == "awaiting_input"
+    assert first["status"].get("inputQuestion", {}).get("trigger") == "incurable"
 
     undelivered = _events(root, run_record.NOTIFICATION_ESCALATION_UNDELIVERED_EVENT)
     assert [e["reason"] for e in undelivered] == ["rejected_incurable"]

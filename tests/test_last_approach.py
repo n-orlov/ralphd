@@ -509,10 +509,12 @@ def test_the_edge_persists_the_pause_to_status_json_immediately(tmp_path):
 
     # the new half: the HOST can see it, off disk, with no supervisor at all.
     host = _host_status(root)
-    assert host["state"] == PAUSED_STATE == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert host["state"] == "awaiting_input"
     assert host["pauseReason"] == "rejected_last_approach"
     # ... and it is the recorded state a second reader of the run dir sees too
-    assert RunDir(root=root).read_status()["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert RunDir(root=root).read_status()["state"] == "awaiting_input"
 
     # never failed on paperwork, never finished
     assert host["state"] not in ("failed", "succeeded", "finishing")
@@ -555,7 +557,8 @@ def test_the_persisted_pause_is_recorded_before_the_escalation_is_notified(
         "advance", "paused", "rejected_last_approach")
 
     assert len(seen) == 1
-    assert seen[0]["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert seen[0]["state"] == "awaiting_input"
     assert seen[0]["pauseReason"] == "rejected_last_approach"
 
 
@@ -569,7 +572,8 @@ def test_resume_clears_the_persisted_pause_and_keeps_approach_and_phase(
         tmp_path):
     root = tmp_path / "run"
     sup = _drive_the_persisted_pause_edge(root)
-    assert _host_status(root)["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert _host_status(root)["state"] == "awaiting_input"
 
     sup.resume()
 
@@ -609,7 +613,8 @@ def test_a_fresh_episode_re_enters_review_over_the_same_approach(tmp_path):
     sup2 = _supervisor_persisted(root, seed_status=False, max_approaches=1)
     # the crashed episode's paused marker is still on disk -- the host can
     # still read WHY the run is parked, not just that it stopped
-    assert _host_status(root)["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert _host_status(root)["state"] == "awaiting_input"
     assert sup2._paused_awaiting_last_approach_ruling(1) is True
     start_approach, skip_planning, start_step = sup2._resume_point()
     assert (start_approach, skip_planning, start_step) == (1, False, "review")
@@ -753,7 +758,8 @@ def test_resume_asks_review_again_over_the_same_approach_and_reaches_terminal(
     _drive_the_resume_pause_edge(sup)
     assert sup._pause.is_set() is False
     status = sup.run.read_status()
-    assert status["state"] == PAUSED_STATE == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status["state"] == "awaiting_input"
     assert status["pauseReason"] == "rejected_last_approach"
     assert status["approach"] == 1
     assert not (root / "approaches" / "01").exists()
@@ -842,7 +848,8 @@ def test_resume_without_a_ruling_asks_review_again_and_can_still_reject(
     assert len(calls) == 1
     status = sup.run.read_status()
     assert status["approach"] == 1
-    assert status["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status["state"] == "awaiting_input"
     assert not (root / "approaches" / "01").exists()
 
 

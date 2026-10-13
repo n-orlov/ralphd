@@ -89,9 +89,10 @@ The one-call summary. Response:
   "engineVersion": "0.21.0",       // the running engine's own ralphd.__version__, written every process start (v0.21 requirement F.4, task 030), drift or not
   "workspaceVersion": "0.20.9",    // present whenever the workspace's own __version__ literal is readable, matching or not (v0.21 requirement G.3, task 035); absent only when the workspace names no version at all
   "schemaVersion": 1,              // run-dir schema this state was written under
-  "state": "running",              // starting|running|paused|finishing|exhausted|succeeded|failed|aborted
+  "state": "running",              // starting|running|paused|awaiting_input|finishing|exhausted|succeeded|failed|aborted
   "phase": "worker",               // planning|worker|verify|review|null; never "paused"
-  "pauseReason": null,             // why an ENGINE-recorded pause is held, task 036; null unless `state` is `paused`
+  "pauseReason": null,             // why an ENGINE-recorded hold is held, task 036; null unless `state` is `paused` or `awaiting_input`
+  "inputQuestion": null,           // v0.36: the question an `awaiting_input` run is waiting on; null in every other state
   "pauseDetail": null,             // the pause's sub-reason (a provider refusal, the rate-limit ceiling); null otherwise
   "approach": 1,
   "maxApproaches": 3,           // approach denominator; null for a pre-v0.6 run dir
@@ -170,6 +171,7 @@ keys with no section of their own below:
 | `pendingTerminalState` | present only while `state` is `finishing` (task 012, #56): the terminal state (`succeeded`\|`failed`\|`aborted`) this run is going to become the moment the post-terminal `reflect` iteration is over. `verdict` is already the settled value at that point too -- nothing after `state` becomes `finishing` can change either one |
 | `reason` | why a non-succeeded run ended, including the `exhausted` hold's own note (v0.36 requirement G); also episode-scoped, so a resumed run never reports the previous engine's reason |
 | `exhaustedBudget` | present only while `state` is `exhausted` (v0.36 requirement G): `iterations`, `time` or `approaches`, the budget that ran out. `ralphctl resume` is refused unless it tops up exactly that budget (`--iterations`, `--timeout`, `--approaches`); the key is removed when the run resumes. A run directory written by 0.35 and recorded `timed_out` reads as `exhausted` with `iterations` or `time`, taken from its recorded `reason` |
+| `inputQuestion` | present, non-`null`, only while `state` is `awaiting_input` (v0.36 requirement C.1); `null` in every other state, and cleared by `POST /resume`. The engine writes it in the same `status.json` write as `state`, before it waits. `kind` is `"findings"`; `trigger` is `"incurable"` (a blocking finding is `curable: false`), `"reviewer_escalation"` (the reviewer set `raise_operator_gate`) or `"cure_rounds_spent"`; `judge` is `"review"` or `"verdict_gate"`. `findings` has one `{id, clause, severity, curable, text}` per blocking finding: `id` is `F<n>` in the judge's finding order and `text` is the finding's evidence. `cureRoundsUsed` / `cureRoundsAllowed` are the cure passes this approach has taken (review's plus the gate's) and `cure_pass_ceiling`; `approach` / `maxApproaches` locate the park; `parkedAt` and `expiresAt` are UTC timestamps -- `expiresAt` is the park time plus the input timeout (60 minutes by default) and `null` when the timeout is `0`. `onTimeout` is what the engine does when `expiresAt` passes unanswered: `"cure_now"` (cure from the remaining allowance), `"next_approach"` (archive and replan) or `"exhausted_approaches"` (no approach is left). Entering the state emits `input.parked` (see Events). The hub's `GET /api/runs/<id>` carries it as `parkedQuestion.inputQuestion` for every `awaiting_input` run and `parkedQuestion: null` for every other state |
 | `previousEndings` | earlier episodes' endings, oldest first — `{startedAt, endedAt, reason, verdict}` per superseded ending (`startedAt` is the start of the episode that ending closes; optional, absent on an entry recorded before the field existed), `[]` for a run still in its first episode, capped at the 50 most recent. Kept because the terminal `state` event in `events.jsonl` records the state but not the reason or verdict |
 | `termination` | present once the run was told to stop — see below |
 | `iterationsUsed` | the **charged** iteration count: raw attempts minus infra AND steer refunds (task 014, #98). `iteration` (the raw number of the attempt running now) is the higher figure whenever anything was refunded, and `iterationsUsed` is what every budget surface prints and what `PATCH /config/budget` validates against |
@@ -203,19 +205,24 @@ keys with no section of their own below:
 | `noRulingProceed` | v0.27 requirement C.2 (#274, task 009) — `{"<reason>": "<signature>"}`, a one-shot 'proceed' keyed by pause reason (`"operator_input_needed"` \| `"verdict_gate_operator_input_needed"`), granted by `LoopSupervisor.resume` the moment a bare `POST /resume`/`ralphctl unpause <run>` releases that EXACT pause with NO ruling filed to answer it, keyed on the SAME signature the pause was raised over (`rejectionSignatures[str(approach)]` for review's own pause; `LoopSupervisor._gate_rejection_signature` off the gate's own findings for its `"verdict_gate_operator_input_needed"` sibling). The very next rejection with the IDENTICAL signature consumes it (`_take_matching_no_ruling_proceed`) before any edge is chosen, whichever edge it then takes, and raises no same-signature operator gate while doing so: with a cure pass available (for example one granted through `PATCH /config/budget`'s `curePassCeiling` before the `POST /resume`) it takes the cure edge, otherwise the ordinary archive-and-replan (or finishing) edge instead of parking again — the same one-shot bound `rulingReparked` already gives a ruling, extended to cover a bare unpause with none filed. A grant never survives a cure to authorise a later archive; the next same-signature rejection after it parks afresh. A DIFFERENT signature never matches and still parks. Disk-backed and survives a resume; absent for a run that has never unpaused either pause with no ruling filed |
 | `discretionaryGateSpent` | v0.23 requirement A.3 (#224, task 017) — the ONE shared discretionary gate trigger conditions 2 and 3 draw from, `{"<approach>": true}`: trigger condition 2 (`state.cure_pass_preview` shows a cure pass would re-open task(s) already `validated`) and trigger condition 3 (`LoopSupervisor._repeated_rejection_signature`, a rejection whose blocking-clause signature repeats the immediately preceding approach's) each check `_discretionary_gate_available` before pausing and `_spend_discretionary_gate` the moment they do — whichever of the two fires FIRST in an approach spends the entry for that approach's own string key; the other, should it also fire later in the SAME approach, falls through to its ordinary edge instead (the cure pass is taken silently; the repeated signature is recorded and the approach archived/replanned exactly as if it had never repeated). Condition 1's own `operator_input_needed` gate (task 014) is a SEPARATE, unbudgeted pause and never reads this map — an ordinary rejection (one whose blocking-clause signature does NOT repeat the preceding approach's) later in the same approach still raises it even after this budget is spent. The one rejection that does not raise it is the condition-3 match this budget just refused: the same rejection cannot be both a spent discretionary trigger and an unbudgeted condition-1 gate, or the shared budget would be a no-op whenever the flag is on, so that rejection goes to the archive/replan tail. A reviewer-raised gate (`raise_operator_gate`, requirement A.6) is a fresh per-verdict decision and overrides that, exactly as it overrides the flag itself. Disk-backed and survives a resume; a fresh approach (a replan, or the run's very first) always reads its own key back unset. Absent for a run that has never spent this gate |
 
-`state` reaches the value `paused` for any of several reasons, and it is
-never an operator pause: the engine pausing ITSELF on a reasoned
-escalation edge (v0.18 requirement D.1/D.2, task 036) records `state:
+A run that waits on a judge's findings records `state: "awaiting_input"`
+(v0.36), never `paused`: review or the peer verdict gate rejected with an
+unwaived blocking finding that is incurable, that the reviewer escalated
+(`raise_operator_gate`), or that the approach's cure rounds can no longer
+cure. The engine writes `state: "awaiting_input"` together with
+`inputQuestion` (above) and `pauseReason` -- the edge's own name
+(`rejected_incurable`, `rejected_last_approach`, `rejected_repeated_signature`,
+`operator_input_needed`, `verdict_gate_operator_input_needed`) -- BEFORE it
+waits, so a host sees the park the moment it is decided; `rejected_incurable`
+is persisted like the rest, no longer held in memory only.
+
+`state` reaches the value `paused` for the engine's other holds: pausing
+ITSELF on a reasoned escalation edge that is not a findings question
+(v0.18 requirement D.1/D.2, task 036) records `state:
 "paused"` plus `pauseReason` (SPEC.md §5.2's own `pauseReason` field
 table) so a host can see that the run is parked waiting for a human
 before that reason's own answer command releases it, rather than
-working. The one exception is `rejected_incurable` (task 006): its own
-`_pause_and_escalate_incurable_rejection` takes the reason-less,
-in-memory `self.pause()` (cure task cure-01-01-9), so `state` keeps
-reading whatever it already was -- the hold is derived from
-`events.jsonl` instead (`ralphctl status`'s own
-`⏸ held on rejected_incurable escalation` marker,
-`state.escalation_pause_markers`). `POST /pause` also records nothing at
+working. `POST /pause` records nothing at
 all — it holds the loop at the next iteration boundary without changing
 `state` or `phase` (see `POST /pause` below). There is no `paused`
 **phase** in either case: `phase` keeps naming the phase that ran last.
@@ -441,9 +448,10 @@ engine mid-run (see docs/cli.md).
 #### `health` and `infraWait`
 
 `state`'s values are
-`starting|running|paused|finishing|exhausted|succeeded|failed|aborted` (task 012, #56,
+`starting|running|paused|awaiting_input|finishing|exhausted|succeeded|failed|aborted` (task 012, #56,
 adds `finishing`; task 036, #142, adds `paused` for the engine's own
-`rejected_last_approach` escalation hold — never for an operator `POST /pause`;
+escalation holds — never for an operator `POST /pause`; v0.36 adds
+`awaiting_input` for a judge's findings question (`inputQuestion`);
 v0.36 requirement G adds `exhausted` — the iteration, wall-clock or approach
 budget spent without an operator abort, `verdict: null`, resume-eligible and
 never a member of the terminal set; `exhaustedBudget` names which budget ran out)
@@ -831,6 +839,7 @@ then follows. Event types:
 | `reflect_skipped` | the post-terminal `reflect` phase produced no verdict because a signal was already taking the engine down: `attempted` (false = never started, true = cut short mid-attempt), `signal`, `reason`. No `FAILED.md` is written on this path — see status.json's `reflect` |
 | `reflect_tombstone_cleared` | a successful `reflect` attempt removed a stale `reflection/FAILED.md` written by an earlier one: `path`. The alias `reflect-failed` disappears from `artifacts ls` with the file |
 | `task.undeferred` | an operator's `POST /tasks/{task_id}/undefer` was applied on the loop: `taskId`, `until` and `reason` (the cleared deferral), `by: "operator"` |
+| `input.parked` | the run entered `awaiting_input` on a findings question (v0.36 requirement C.1/H.2): the `inputQuestion` fields `kind`, `trigger`, `judge`, `findings`, `cureRoundsUsed`, `cureRoundsAllowed`, `approach`, `maxApproaches`, `expiresAt`, `onTimeout`. Emitted once per park, after `status.json` already reads `state: "awaiting_input"` and after the `operator_escalation` event carrying the full text |
 | `run.paused` | optional; the run is held: `reason` is `operator` for a `POST /pause` that takes effect, or the engine's `pauseReason` for an engine pause persisted to `status.json` |
 | `run.unpaused` | optional; the run's pause ended: `pausedS`, the seconds it was held (from the first `run.paused` of the stretch) |
 | `deadline_extended` | the job deadline moved out after an infra wait, an operator pause OR a rate-limit wait: `waitedS`, new `deadlineAt`, `reason` (`"infra wait"` — also phase/attempt/`infraWaitTotalS` — or `"operator pause"` — also `pausedTotalS` — or `"rate limit wait"` — also phase/`rateLimitWaitTotalS`) |
@@ -1102,13 +1111,14 @@ An **engine-initiated** hold is different, and it is the one case that does
 record a lifecycle value (v0.18 requirement D.1/D.2, task 036): when review
 rejects the LAST approach on blocking findings that are all curable and its
 cure pass is already spent, the engine takes the `rejected_last_approach` edge,
-emits `operator_escalation` and pauses itself — writing both
-`state: "paused"` and `pauseReason: "rejected_last_approach"` to status.json at
+emits `operator_escalation` and parks itself — writing
+`state: "awaiting_input"`, `inputQuestion` and `pauseReason:
+"rejected_last_approach"` to status.json at
 that moment, because nobody typed the pause and nothing else would tell the
-host the run is waiting for a ruling. `paused` is non-terminal (`state.NONTERMINAL_STATES`): a live
+host the run is waiting for a ruling. `paused` and `awaiting_input` are non-terminal (`state.NONTERMINAL_STATES`): a live
 engine still owns the run, so no destructive action opens on it and a killed
 engine leaves it dangling like any other non-terminal run. `POST /resume`
-clears both fields (`state` back to `running`, `pauseReason` back to `null`)
+clears the fields (`state` back to `running`, `pauseReason` and `inputQuestion` back to `null`)
 and leaves `approach` and `phase` alone, so the run re-enters `review` over the
 same, still-unarchived approach. CLI: `ralphctl unpause <run-id>` (deliberately
 named `unpause`, never `resume` — `ralphctl resume` is a different command

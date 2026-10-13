@@ -140,7 +140,8 @@ def test_a_re_rejection_on_a_ruled_signature_re_parks_once_and_does_not_spend(
     # archived, never a fresh approach directory, never a composite PRD.
     assert outcome == ("advance", "paused", "operator_input_needed")
     status = sup1.run.read_status()
-    assert status["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status["state"] == "awaiting_input"
     assert status["pauseReason"] == "operator_input_needed"
     assert status["approach"] == 1
     assert not (root / "approaches" / "01").exists()
@@ -399,7 +400,8 @@ def test_a_reviewer_raised_gate_pauses_even_with_the_mechanical_flag_disabled(
     assert outcome == ("advance", "paused", "operator_input_needed")
     # the probe that reads the recorded pause reason.
     status = sup.run.read_status()
-    assert status["state"] == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status["state"] == "awaiting_input"
     assert status["pauseReason"] == "operator_input_needed"
     assert not (root / "approaches" / "01").exists()
 

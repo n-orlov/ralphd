@@ -164,7 +164,8 @@ def test_park_then_budget_cure_passes_then_unpause_takes_the_cure_pass(
 
     # parked -- ceiling was spent (0).
     assert outcome == ("advance", "paused", "verdict_gate_operator_input_needed")
-    assert sup.run.read_status().get("state") == "paused"
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert sup.run.read_status().get("state") == "awaiting_input"
     assert sup.run.read_status().get("gateCurePasses") is None
 
     # `ralphctl budget <run> --cure-passes +1` -> PATCH /config/budget

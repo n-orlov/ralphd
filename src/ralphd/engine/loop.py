@@ -80,6 +80,7 @@ from .runner import (
 )
 from .skills import ambient_home, verify_placement_and_report
 from .state import (
+    AWAITING_INPUT_STATE,
     PAUSED_STATE,
     first_event_ts,
     STEERING_APPLIED,
@@ -1447,6 +1448,61 @@ class LoopSupervisor:
             "--file <ruling.md> --name <slug>` answers it and "
             f"`ralphctl unpause {self.cfg.run_id}` clears it"))
 
+    def _park_for_input(
+        self, *, reason: str, judge: str, trigger: str,
+        blocking: list[dict], approach: int,
+    ) -> None:
+        """v0.36 requirement B/C: hold the run on a findings question. The
+        engine's ONE way to ask -- `state: "awaiting_input"` with the
+        question in `inputQuestion`, written to status.json BEFORE the loop
+        waits on it, then an `input.parked` event. `reason` is the edge's own
+        name; it stays on `pauseReason` for the routing code that resumes
+        into the right step (`_step_paused`) until the task that retires each
+        reason.
+
+        Parked is parked: the same in-process `self._pause` gate every other
+        hold waits on is cleared here, so `resume()` / an answer releases it.
+        A run whose outcome is already settled (`finishing`, terminal) is
+        never reopened.
+        """
+        self._pause.clear()
+        self.run.emit("log", message="paused at next iteration boundary")
+        status = self.run.read_status()
+        current = status.get("state")
+        if current == "finishing" or current in TERMINAL_STATES:
+            return
+        used = (self._cure_passes_for_approach(approach)
+                + self._gate_cure_passes_for_approach(approach))
+        question = state.build_input_question(
+            judge=judge, trigger=trigger, blocking=blocking,
+            cure_rounds_used=used,
+            cure_rounds_allowed=self.cfg.cure_pass_ceiling,
+            approach=approach, max_approaches=self.cfg.max_approaches,
+            parked_at_epoch=self._now_epoch(),
+            timeout_min=getattr(self.cfg, "input_timeout_min", None))
+        self.run.update_status(state=AWAITING_INPUT_STATE, pauseReason=reason,
+                               pauseDetail=None, inputQuestion=question)
+        self._emit_run_paused(reason)
+        self.run.emit("input.parked", **{k: v for k, v in question.items()
+                                         if k != "parkedAt"})
+        self.run.emit("log", message=(
+            f"run state recorded `{AWAITING_INPUT_STATE}` on status.json "
+            f"({trigger}, judge: {judge}); `ralphctl rule {self.cfg.run_id} "
+            "--file <ruling.md> --name <slug>` records a ruling and "
+            f"`ralphctl unpause {self.cfg.run_id}` clears it"))
+
+    @staticmethod
+    def _input_trigger(blocking: list[dict], *,
+                       reviewer_escalation: bool = False) -> str:
+        """The `inputQuestion.trigger` of a findings park: the reviewer's own
+        `raise_operator_gate` wins, then a blocking finding that is not
+        curable, else the cure rounds are what ran out."""
+        if reviewer_escalation:
+            return "reviewer_escalation"
+        if any(f.get("curable") is not True for f in blocking):
+            return "incurable"
+        return "cure_rounds_spent"
+
     def resume(self) -> None:
         """Release the loop (`POST /resume`), and clear an engine-recorded
         pause if there is one (task 036, requirement D.1/D.2, #142)."""
@@ -1462,7 +1518,7 @@ class LoopSupervisor:
         run's rate-limit waiting count again from zero. Read before
         `_clear_persisted_pause` wipes `pauseDetail`."""
         status = self.run.read_status()
-        if status.get("state") != PAUSED_STATE:
+        if status.get("state") not in (PAUSED_STATE, AWAITING_INPUT_STATE):
             return
         detail = status.get("pauseDetail")
         if isinstance(detail, dict) and detail.get("reason") == RATE_LIMIT_CEILING_REASON:
@@ -1553,7 +1609,7 @@ class LoopSupervisor:
         a no-op for it, not a gap.
         """
         status = self.run.read_status()
-        if status.get("state") != PAUSED_STATE:
+        if status.get("state") not in (PAUSED_STATE, AWAITING_INPUT_STATE):
             return
         if status.get("pauseDetail"):
             # v0.30 G.2: a provider refusal (or a rate-limit ceiling) pauses
@@ -1637,11 +1693,11 @@ class LoopSupervisor:
         resurrect a `finishing`/terminal run.
         """
         status = self.run.read_status()
-        if status.get("state") != PAUSED_STATE:
+        if status.get("state") not in (PAUSED_STATE, AWAITING_INPUT_STATE):
             return
         reason = status.get("pauseReason")
         self.run.update_status(state="running", pauseReason=None,
-                               pauseDetail=None)
+                               pauseDetail=None, inputQuestion=None)
         self.run.emit("log", message=(
             f"recorded pause cleared (pauseReason was: {reason}); resuming "
             f"approach {status.get('approach')} in the "
@@ -1685,7 +1741,7 @@ class LoopSupervisor:
         re-deriving the check itself.
         """
         status = self.run.read_status()
-        if status.get("state") != PAUSED_STATE:
+        if status.get("state") not in (PAUSED_STATE, AWAITING_INPUT_STATE):
             return False
         if status.get("pauseDetail"):
             # v0.30 G.2: a provider refusal is not answered by a ruling; only
@@ -5871,7 +5927,7 @@ class LoopSupervisor:
                                # `_paused_awaiting_last_approach_ruling` case
                                # still routes this episode back into review
                                # over the same approach.)
-                               pauseReason=None,
+                               pauseReason=None, inputQuestion=None,
                                # The hold's budget goes with the hold.
                                exhaustedBudget=REMOVE_STATUS_KEY,
                                # v0.30 G.2: the pause's sub-reason goes with
@@ -9997,7 +10053,10 @@ class LoopSupervisor:
             replanAvailable=replan_available, escalation=text,
             nextStepIfUnanswered=next_step,
             **extra_fields)
-        self.pause(reason="verdict_gate_operator_input_needed")
+        self._park_for_input(
+            reason="verdict_gate_operator_input_needed", judge="verdict_gate",
+            trigger=self._input_trigger(blocking), blocking=blocking,
+            approach=approach)
         if self.notifier is not None:
             # The delivered digest names the `--cure-passes` lever on
             # exactly the condition the full escalation text does: only an
@@ -14443,7 +14502,8 @@ class LoopSupervisor:
                 replan_available = approach < self.cfg.max_approaches
                 self._pause_and_escalate_operator_input_needed(
                     approach, findings_list, replan_available, signature,
-                    cure_preview=cure_preview)
+                    cure_preview=cure_preview,
+                    reviewer_escalation=reviewer_requested_gate_applies)
                 self._advance("review", "paused", "operator_input_needed")
                 return ("advance", "paused", "operator_input_needed")
             self._take_cure_pass(approach)
@@ -14660,7 +14720,8 @@ class LoopSupervisor:
             # mechanical trigger itself fired.
             self._pause_and_escalate_operator_input_needed(
                 approach, findings_list, replan_available, signature,
-                cure_preview=cure_preview)
+                cure_preview=cure_preview,
+                reviewer_escalation=reviewer_requested_gate_applies)
             self._advance("review", "paused", "operator_input_needed")
             return ("advance", "paused", "operator_input_needed")
         self._record_rejection_signature(approach, signature)
@@ -15247,7 +15308,9 @@ class LoopSupervisor:
         # and the `pauseReason` are deliberately the same string: the
         # `operator_escalation` event above and the persisted status agree
         # without a second vocabulary to map between.
-        self.pause(reason="rejected_last_approach")
+        self._park_for_input(
+            reason="rejected_last_approach", judge="review",
+            trigger="cure_rounds_spent", blocking=blocking, approach=approach)
         if self.notifier is not None:
             digest = self._operator_escalation_digest_text(
                 "rejected_last_approach", approach, findings_list,
@@ -15573,7 +15636,10 @@ class LoopSupervisor:
                       channelErrors=channel_errors, signature=signature,
                       escalation=text, nextStepIfUnanswered=next_step,
                       **extra_fields)
-        self.pause(reason="rejected_repeated_signature")
+        self._park_for_input(
+            reason="rejected_repeated_signature", judge="review",
+            trigger=self._input_trigger(blocking), blocking=blocking,
+            approach=approach)
         if self.notifier is not None:
             self._notify_escalation_delivery(self._operator_escalation_digest_text(
                 "rejected_repeated_signature", approach, findings_list,
@@ -16028,6 +16094,7 @@ class LoopSupervisor:
         self, approach: int, findings_list: list[dict] | None,
         replan_available: bool, signature: str | None = None,
         cure_preview: dict | None = None,
+        reviewer_escalation: bool = False,
     ) -> None:
         """Task 014 (PRD requirement A.1, #224): pause the run through the
         EXISTING pause machinery -- the same seam every sibling in this
@@ -16149,7 +16216,11 @@ class LoopSupervisor:
                       reason="operator_input_needed", findings=blocking,
                       replanAvailable=replan_available, escalation=text,
                       nextStepIfUnanswered=next_step, **extra_fields)
-        self.pause(reason="operator_input_needed")
+        self._park_for_input(
+            reason="operator_input_needed", judge="review",
+            trigger=self._input_trigger(
+                blocking, reviewer_escalation=reviewer_escalation),
+            blocking=blocking, approach=approach)
         if self.notifier is not None:
             self._notify_escalation_delivery(self._operator_escalation_digest_text(
                 "operator_input_needed", approach, findings_list,
@@ -16909,7 +16980,9 @@ class LoopSupervisor:
                       escalation=text,
                       nextStepIfUnanswered=state.NEXT_STEP_ARCHIVE_AND_REPLAN,
                       **extra_fields)
-        self.pause()
+        self._park_for_input(
+            reason="rejected_incurable", judge="review", trigger="incurable",
+            blocking=blocking, approach=approach)
         if self.notifier is not None:
             # Cure task cure-01-02 (PRD requirement A.1/A.2, #269, review
             # probe `test_all_finding_escalations_are_evidence_free_

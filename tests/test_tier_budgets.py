@@ -865,8 +865,12 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.36 requirement G (`exhausted` replaces `timed_out`): the new
     # tests/test_exhausted_hold.py, measured `--collect-only` -> fast 8526/536,
     # smoke 6748/410.
-    "fast": {"tests": 8526, "modules": 536},
-    "smoke": {"tests": 6748, "modules": 410},
+    # v0.36 `awaiting_input` with a persisted `inputQuestion`: the new
+    # tests/test_awaiting_input_question.py, measured `--collect-only` -> fast
+    # 8535/537, smoke 6757/410 (incl. 2 nodes in the hub parked-panel/payload
+    # modules).
+    "fast": {"tests": 8535, "modules": 537},
+    "smoke": {"tests": 6757, "modules": 410},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

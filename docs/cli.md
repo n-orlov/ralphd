@@ -400,7 +400,7 @@ a missing/invalid docker socket with `--allow-docker`).
 List all runs (live and historical) from the registry, **newest first**.
 
 ```
-ralphctl runs [--state starting|running|paused|finishing|exhausted|succeeded|failed|aborted]
+ralphctl runs [--state starting|running|paused|awaiting_input|finishing|exhausted|succeeded|failed|aborted]
               [--sort runId|state|verdict|phase|approach|tasks|iterationsUsed|startedAt|cost]
               [--reverse]
 ```

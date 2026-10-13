@@ -105,8 +105,9 @@ def test_escalation_undelivered_is_true_while_paused_on_the_undelivered_escalati
 
     _trigger_undelivered_escalation(sup)
 
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
     status = sup.run.read_status()
-    assert status["state"] == "paused"
+    assert status["state"] == "awaiting_input"
     assert escalation_undelivered(root, status) is True
     assert format_escalation_undelivered_marker(root, status) != ""
 
@@ -142,18 +143,19 @@ def test_escalation_undelivered_is_false_when_delivery_actually_succeeded(
     sup._approach = 1
     sup._pause_and_escalate_last_approach_rejection(1)
 
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
     status = sup.run.read_status()
-    assert status["state"] == "paused"
+    assert status["state"] == "awaiting_input"
     assert escalation_undelivered(root, status) is False
 
 
 def test_escalation_undelivered_is_true_while_held_on_the_in_memory_incurable_pause(
         tmp_path, monkeypatch):
-    """`rejected_incurable` pauses in-memory only (`LoopSupervisor.pause()`
-    called with no reason) -- `status.json` never reads `state: "paused"`
-    for it, but the engine IS paused on that escalation, and it went
-    undelivered: the predicate must say so, and the hold itself gets a
-    pause marker for the undelivered marker to sit next to."""
+    """`rejected_incurable` used to pause in memory only; v0.36 persists it as
+    `state: "awaiting_input"` (`pauseReason: rejected_incurable`). The engine
+    IS parked on that escalation, and it went undelivered: the predicate must
+    say so, and the hold keeps its own pause marker for the undelivered
+    marker to sit next to."""
     _always_failing(monkeypatch)
     root = tmp_path / "run"
     sup = _supervisor(root, notifier_url="http://notifier.example/notify")
@@ -161,8 +163,8 @@ def test_escalation_undelivered_is_true_while_held_on_the_in_memory_incurable_pa
     _trigger_undelivered_incurable_escalation(sup)
 
     status = sup.run.read_status()
-    assert status.get("pauseReason") is None
-    assert status.get("state") != "paused"
+    assert status.get("pauseReason") == "rejected_incurable"
+    assert status.get("state") == "awaiting_input"
     assert not sup._pause.is_set()  # the engine really is holding
     assert escalation_undelivered(root, status) is True
     assert format_escalation_undelivered_marker(root, status) == (
@@ -240,7 +242,7 @@ def test_ralphctl_status_shows_the_marker_next_to_the_pause_marker(
         assert (state_line.index(ESCALATION_HOLD_MARKER)
                 < state_line.index(ESCALATION_UNDELIVERED_MARKER))
     else:
-        assert "paused" in state_line
+        assert "awaiting_input" in state_line
     assert ESCALATION_UNDELIVERED_MARKER in state_line
 
 

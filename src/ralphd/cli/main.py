@@ -3467,7 +3467,7 @@ def cmd_resume(args):
 # same key names, same lifecycle orders, same missing-value and tie-break
 # rules -- so an operator who sorts the table in the browser and then types
 # `ralphctl runs --sort <key>` gets the same order, not a second dialect.
-RUN_STATE_ORDER = ["starting", "running", "paused", "finishing", "exhausted",
+RUN_STATE_ORDER = ["starting", "running", "paused", "finishing", "exhausted", "awaiting_input",
                   "succeeded", "failed", "aborted"]
 RUN_VERDICT_ORDER = ["", "unverified", "verified", "verified-with-residuals"]
 # Keys whose *natural* first direction is descending (biggest/newest first),
@@ -6865,7 +6865,7 @@ _TASK_STATUSES = ("pending", "in-progress", "awaiting-validation", "validated",
 # (engine/state.py's `TASK_FAILURE_KINDS`), never by a sixth status, which
 # is what keeps every surface that counts statuses adding up.
 # `_diagnose_tasks_json` below validates both halves together.
-_STATUS_STATES = ("starting", "running", "paused", "finishing", "exhausted",
+_STATUS_STATES = ("starting", "running", "paused", "finishing", "exhausted", "awaiting_input",
                   "succeeded", "failed", "aborted")
 # Recorded states that mean "a live engine still owns this run": if no
 # container exists for one of these, the run is a zombie (task 021). Defined

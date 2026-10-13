@@ -49,7 +49,22 @@ from test_cli_ui import (
     _write_run_with_api,
 )
 
-from ralphd.engine.state import RunDir
+from ralphd.engine.state import RunDir, build_input_question
+
+# v0.36: a findings park is `awaiting_input` (with its `inputQuestion`); every
+# other reason is still an engine/operator `paused` hold with no panel.
+_FINDINGS_PARK_REASONS = ("operator_input_needed", "rejected_repeated_signature")
+
+
+def _park_status(reason) -> dict:
+    if reason not in _FINDINGS_PARK_REASONS:
+        return {"state": "paused"}
+    return {"state": "awaiting_input", "inputQuestion": build_input_question(
+        judge="review", trigger="cure_rounds_spent",
+        blocking=[{"severity": "blocking", "curable": True,
+                   "clause": "clause one (#111)", "evidence": "evidence one"}],
+        cure_rounds_used=3, cure_rounds_allowed=3, approach=1,
+        max_approaches=2, parked_at_epoch=1767225600.0)}
 
 __all__ = ["pw"]
 
@@ -99,7 +114,8 @@ def _write_dead_parked_run(registry, run_id, reason, **status_extra):
     event is written only for the two reasons a ruling can answer; the
     other two (plain pause, `stagnation`) get none, matching what the real
     engine would actually leave on disk for them."""
-    status_fields = dict(state="paused", approach=1, maxApproaches=2, **status_extra)
+    status_fields = dict(approach=1, maxApproaches=2, **_park_status(reason),
+                         **status_extra)
     if reason is not None:
         status_fields["pauseReason"] = reason
     run_dir = _write_dead_run(registry, run_id, **status_fields)
@@ -115,7 +131,7 @@ def _write_live_parked_run(registry, run_id, reason="operator_input_needed",
     action posted through the hub's proxy really reaches something that
     records it (`engine.requests`/`engine.bodies`), the same way it would
     reach the real engine's `POST /rule` / `POST /unpause`."""
-    status = {"runId": run_id, "state": "paused", "pauseReason": reason,
+    status = {"runId": run_id, **_park_status(reason), "pauseReason": reason,
               "verdict": None, "phase": "review", "approach": 1,
               "maxApproaches": 2, "iterationsUsed": 5, "iterationsBudget": 25,
               "startedAt": "2026-01-01T00:00:00Z", **status_extra}
@@ -200,7 +216,8 @@ def test_panel_appears_for_ruling_answerable_reasons_and_absent_otherwise(tmp_pa
             # tick that produces the state pill -- waiting for "paused" to
             # appear guarantees the panel decision for this fixture has
             # already been made before the count below is read.
-            _wait_for(pw, "document.body.innerText", "paused")
+            _wait_for(pw, "document.body.innerText",
+                      "awaiting_input" if expect_present else "paused")
             n_panel = int(pw.eval_js("document.querySelectorAll('#parked-panel').length"))
             assert n_panel == (1 if expect_present else 0), (run_id, n_panel)
             n_box_hidden = pw.eval_js(
@@ -263,6 +280,8 @@ def test_no_stale_parked_panel_after_a_commit_scan_hold_following_an_answered_ga
                 escalation="fresh escalation text\n", replanAvailable=True,
                 nextStepIfUnanswered="cure_pass",
                 taskIdsValidatedToPending=["fresh-reopened-task"], insertCount=1)
+        # v0.36: the later review park is an `awaiting_input` question.
+        rd.update_status(**_park_status("operator_input_needed"))
         pw.open(f"{server.base}/#/run/run-stale-commit-scan")
         _wait_for(pw, "document.body.innerText", "fresh review clause (#321)")
         n_panel = int(pw.eval_js("document.querySelectorAll('#parked-panel').length"))

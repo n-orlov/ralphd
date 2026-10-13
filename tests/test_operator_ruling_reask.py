@@ -157,11 +157,16 @@ def test_the_pause_persists_the_rejection_signature_before_it_holds(tmp_path):
     resp = _post_rule(sup1, "unscoped ruling over the route")
     assert resp.status_code == 202, resp.text
     status = sup1.run.read_status()
-    assert status["state"] == PAUSED_STATE
+    # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
+    assert status["state"] == "awaiting_input"
     assert status["pauseReason"] == "operator_input_needed"
     assert not sup1._pause.is_set()
 
+    # a genuinely different live pause: a stagnation hold is `paused` (v0.36
+    # parks findings in `awaiting_input` instead; this one is not a findings
+    # question, so a ruling must still not release it).
     sup1.run.update_status(rejectionSignatures={"1": signature},
+                           state=PAUSED_STATE, inputQuestion=None,
                            pauseReason="stagnation")
     resp = _post_rule(sup1, "ruling filed against an unrelated live pause")
     assert resp.status_code == 202, resp.text
