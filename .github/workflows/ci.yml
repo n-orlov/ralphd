@@ -641,8 +641,10 @@ jobs:
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # `${{ github.workspace }}` is the host path; inside the container the
+      # checkout (and the nested gh-pages one) lives under /__w, so name no path.
       - name: Trust the checked-out workspace (container root != host checkout owner)
-        run: git config --global --add safe.directory "${{ github.workspace }}"
+        run: git config --global --add safe.directory '*'
 
       # Every tier's artifact into ONE directory. A tier that never reached its
       # upload (skipped or cancelled) contributes nothing; the report is then

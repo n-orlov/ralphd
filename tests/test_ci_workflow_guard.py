@@ -661,6 +661,13 @@ def check_report_and_publish(workflow: dict) -> list[str]:
     elif "refs/heads/main" not in str(history[0].get("if") or ""):
         problems.append("report reads gh-pages outside refs/heads/main")
 
+    # The report job runs in a container: `${{ github.workspace }}` expands to the
+    # HOST path there, so a safe.directory entry built from it trusts nothing the
+    # job's git can see (dispatch: "'origin' does not appear to be a git repository").
+    trust = [s for s in report.get("steps") or [] if "safe.directory" in (s.get("run") or "")]
+    if len(trust) != 1 or "github.workspace" in trust[0]["run"]:
+        problems.append("report's safe.directory entry is missing or built from the host path github.workspace")
+
     # --- publish
     if not {"trusted", "report"} <= set(_needs(publish)):
         problems.append(f"publish needs {_needs(publish)!r}, not trusted and report")
@@ -1549,6 +1556,10 @@ def test_the_report_and_publish_check_fails_for_each_broken_job(tmp_path):
             s for s in wf["jobs"]["publish"]["steps"] if "deploy-pages" not in str(s.get("uses"))
         ]
 
+    def report_trusts_host_path(wf):
+        step = step_named(wf, "report", "Trust the checked-out workspace")
+        step["run"] = "git config --global --add safe.directory \"${{ github.workspace }}\""
+
     def required_needs_publish(wf):
         wf["jobs"]["required"]["needs"].append("publish")
 
@@ -1567,6 +1578,7 @@ def test_the_report_and_publish_check_fails_for_each_broken_job(tmp_path):
         "report-pushes-everywhere": report_pushes_everywhere,
         "report-one-tier-only": report_one_tier_only,
         "report-no-artifact": report_no_artifact,
+        "report-trusts-host-path": report_trusts_host_path,
         "publish-everywhere": publish_everywhere,
         "publish-untrusted": publish_untrusted,
         "publish-after-red-report": publish_after_red_report,
