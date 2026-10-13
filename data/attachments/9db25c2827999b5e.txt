@@ -1,0 +1,3 @@
+WARNING  ralphd.loop:loop.py:2753 iteration worker classified infra fault (attempt 1, 0s of the 1000s outage budget waited): no LLM credentials configured (session 4000)
+WARNING  ralphd.loop:loop.py:2753 iteration worker classified infra fault (attempt 2, 0s of the 1000s outage budget waited): no LLM credentials configured (session 4001)
+WARNING  ralphd.loop:loop.py:2753 iteration worker classified infra fault (attempt 3, 0s of the 1000s outage budget waited): no LLM credentials configured (session 4002)

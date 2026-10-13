@@ -1,0 +1,2 @@
+WARNING  ralphd.loop:loop.py:2753 iteration worker classified infra fault (attempt 1, 0s of the 1000s outage budget waited): Connection error.
+WARNING  ralphd.loop:loop.py:2753 iteration worker classified infra fault (attempt 2, 0s of the 1000s outage budget waited): Connection error.

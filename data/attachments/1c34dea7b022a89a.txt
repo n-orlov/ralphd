@@ -1,2 +1,0 @@
-WARNING  ralphd.loop:loop.py:20232 task 001 consumed all 3 validation attempts (failureKind=validation-exhausted); this records the rounds spent, not a judgement that the requirement is unmeetable
-WARNING  ralphd.loop:loop.py:20214 task 001 consumed all 3 validation attempts; contract carries a petition protocol, so the last-attempt handoff is filed as a petition and the task routes to 'petitioned' for adjudication rather than 'failed'

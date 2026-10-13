@@ -1,1 +1,0 @@
-WARNING  ralphd.loop:loop.py:5458 reflect iteration failed (degraded): the reflect iteration's outcome contract was invalid: response: no parseable 'reflect' contract payload (absent or malformed output)
