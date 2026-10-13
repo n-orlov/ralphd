@@ -166,12 +166,15 @@ jobs:
 
       # Describe the run to the Allure report (scripts/allure_env.sh, docs/testing.md):
       # the sha, ref, run id, python version and runner image, and the run URL.
+      # `job.container` has no `image` property in Actions (only `id` and `network`), so
+      # the pinned image is written out here and tests/test_ci_workflow_guard.py checks
+      # that it equals this job's `container.image`; a host tier names its runner.
       # One local write of two small files, so it is an exempt step
       # (tests/test_run_bounded_timeout_marker.py's EXEMPT_RUN_STEPS).
       - name: Describe the fast tier's run for Allure
         if: always()
         env:
-          ALLURE_RUNNER_IMAGE: ${{ job.container.image || format('{0} {1} host runner', runner.os, runner.arch) }}
+          ALLURE_RUNNER_IMAGE: python:3.12.3@sha256:3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6
         run: scripts/allure_env.sh allure-results-fast
 
       # The Allure results of this tier (docs/testing.md, "Allure results"),
@@ -342,12 +345,15 @@ jobs:
 
       # Describe the run to the Allure report (scripts/allure_env.sh, docs/testing.md):
       # the sha, ref, run id, python version and runner image, and the run URL.
+      # `job.container` has no `image` property in Actions (only `id` and `network`), so
+      # the pinned image is written out here and tests/test_ci_workflow_guard.py checks
+      # that it equals this job's `container.image`; a host tier names its runner.
       # One local write of two small files, so it is an exempt step
       # (tests/test_run_bounded_timeout_marker.py's EXEMPT_RUN_STEPS).
       - name: Describe the docker tier's run for Allure
         if: always()
         env:
-          ALLURE_RUNNER_IMAGE: ${{ job.container.image || format('{0} {1} host runner', runner.os, runner.arch) }}
+          ALLURE_RUNNER_IMAGE: ${{ format('host runner {0} ({1} {2}, no job container)', runner.name, runner.os, runner.arch) }}
         run: scripts/allure_env.sh allure-results-docker
 
       # The Allure results of this tier (docs/testing.md, "Allure results"),
@@ -555,12 +561,15 @@ jobs:
 
       # Describe the run to the Allure report (scripts/allure_env.sh, docs/testing.md):
       # the sha, ref, run id, python version and runner image, and the run URL.
+      # `job.container` has no `image` property in Actions (only `id` and `network`), so
+      # the pinned image is written out here and tests/test_ci_workflow_guard.py checks
+      # that it equals this job's `container.image`; a host tier names its runner.
       # One local write of two small files, so it is an exempt step
       # (tests/test_run_bounded_timeout_marker.py's EXEMPT_RUN_STEPS).
       - name: Describe the browser tier's run for Allure
         if: always()
         env:
-          ALLURE_RUNNER_IMAGE: ${{ job.container.image || format('{0} {1} host runner', runner.os, runner.arch) }}
+          ALLURE_RUNNER_IMAGE: ghcr.io/n-orlov/ralphd-browser-ci@sha256:2311f2f375f35762e57de5c564c43b30cd5fe7cf7dae9e991370a05100596b7c
         run: scripts/allure_env.sh allure-results-browser
 
       # The Allure results of this tier (docs/testing.md, "Allure results"),

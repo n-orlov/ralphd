@@ -859,8 +859,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.35 flaky in Allure: 3 fast nodes in the new tests/test_flaky_allure_
     # pipeline.py (its report-generator node is `docker`), measured
     # `--collect-only` -> fast 8503/535, smoke 6727/409.
-    "fast": {"tests": 8503, "modules": 535},
-    "smoke": {"tests": 6727, "modules": 409},
+    # v0.35 runner image in the Allure environment: 3 nodes in tests/test_ci_
+    # workflow_guard.py (no new module), measured `--collect-only` -> fast
+    # 8506/535, smoke 6730/409.
+    "fast": {"tests": 8506, "modules": 535},
+    "smoke": {"tests": 6730, "modules": 409},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -133,6 +133,16 @@ commit and the run beside the results. A variable GitHub Actions does not set is
 written as `unknown`; `tests/test_allure_env_script.py` pins both files' exact
 contents.
 
+`runner_image` names the environment the tier really ran in. `fast` and
+`browser` run in a job `container:`, so their step sets `ALLURE_RUNNER_IMAGE` to
+that container's pinned `image@sha256:...` reference, written out literally:
+Actions' `job.container` context has only `id` and `network`, no `image`, so an
+expression on it would render empty. `docker` has no job container and says so
+(`host runner <runner.name> (<runner.os> <runner.arch>, no job container)`,
+from the `runner` context). `tests/test_ci_workflow_guard.py` checks that a
+containerized tier's value equals its `container.image`, renders each tier's
+value, runs the real script with it and reads `environment.properties` back.
+
 ## Running the suite inside a ralphd job container
 
 This repository is developed by ralphd runs of its own, so the suite is often

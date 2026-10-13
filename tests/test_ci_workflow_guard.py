@@ -19,6 +19,7 @@ uses.
 from __future__ import annotations
 
 import copy
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -787,8 +788,55 @@ def check_allure_env_steps(workflow: dict) -> list[str]:
         expected = f"allure-results-{tier}"
         if not re.fullmatch(rf"scripts/allure_env\.sh {re.escape(expected)}", (call.get("run") or "").strip()):
             problems.append(f"{tier}'s allure_env step does not run on {expected!r}: {call.get('run')!r}")
-        if not (call.get("env") or {}).get("ALLURE_RUNNER_IMAGE"):
+        raw = (call.get("env") or {}).get("ALLURE_RUNNER_IMAGE")
+        if not raw:
             problems.append(f"{tier}'s allure_env step sets no ALLURE_RUNNER_IMAGE")
+            continue
+        problems.extend(_check_runner_image(tier, (jobs.get(tier) or {}), str(raw)))
+    return problems
+
+
+# Contexts an Actions expression may read for the runner image. `job.container`
+# only has `id` and `network` (no `image`), so an expression on it renders empty.
+_RUNNER_CONTEXTS = {"runner.name", "runner.os", "runner.arch"}
+_EXPR = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+
+
+def render_runner_image(raw: str, runner: dict[str, str]) -> str:
+    """Evaluate the ALLURE_RUNNER_IMAGE value the way Actions would, for the
+    only expression shape allowed: `format('<template>', runner.x, ...)`.
+    Anything else (an unsupported context included) raises ValueError."""
+    def one(match: re.Match) -> str:
+        expr = match.group(1).strip()
+        fmt = re.fullmatch(r"format\(\s*'([^']*)'\s*((?:,\s*[a-z.]+\s*)*)\)", expr)
+        if not fmt:
+            raise ValueError(f"unsupported expression {expr!r}")
+        args = [a.strip() for a in fmt.group(2).split(",") if a.strip()]
+        for arg in args:
+            if arg not in _RUNNER_CONTEXTS:
+                raise ValueError(f"unsupported context {arg!r}")
+        return fmt.group(1).format(*(runner[a.split(".", 1)[1]] for a in args))
+    return _EXPR.sub(one, raw)
+
+
+def _check_runner_image(tier: str, job: dict, raw: str) -> list[str]:
+    container = job.get("container")
+    image = container.get("image") if isinstance(container, dict) else container
+    problems: list[str] = []
+    if "job.container.image" in raw or "job.container" in raw:
+        problems.append(f"{tier}'s ALLURE_RUNNER_IMAGE reads job.container, which has no image property")
+    if image:
+        if raw != image:
+            problems.append(
+                f"{tier} runs in container {image!r} but reports runner image {raw!r}"
+            )
+        return problems
+    try:
+        rendered = render_runner_image(raw, {"name": "RUNNER-7", "os": "Linux", "arch": "X64"})
+    except ValueError as exc:
+        return problems + [f"{tier}'s ALLURE_RUNNER_IMAGE is not a supported expression: {exc}"]
+    if not all(part in rendered for part in ("host runner", "RUNNER-7", "Linux")):
+        problems.append(f"{tier} has no job container but does not describe its host runner: {rendered!r}")
     return problems
 
 
@@ -1357,6 +1405,53 @@ def test_ci_fast_docker_and_browser_describe_their_run_for_allure():
     assert check_allure_env_steps(_load(CI_PATH)) == []
 
 
+def _emitted_environment_properties(tmp_path, tier: str) -> dict[str, str]:
+    """Render the tier's ALLURE_RUNNER_IMAGE and run the real script with it."""
+    import sys
+
+    workflow = _load(CI_PATH)
+    step = next(s for s in workflow["jobs"][tier]["steps"] if "allure_env.sh" in (s.get("run") or ""))
+    value = render_runner_image(
+        str(step["env"]["ALLURE_RUNNER_IMAGE"]),
+        {"name": "runner-7", "os": "Linux", "arch": "X64"},
+    )
+    out = tmp_path / f"allure-results-{tier}"
+    done = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts" / "allure_env.sh"), str(out)],
+        env={"PATH": os.environ["PATH"], "PYTHON": sys.executable, "ALLURE_RUNNER_IMAGE": value},
+        capture_output=True, text=True, timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    return dict(
+        line.split("=", 1) for line in (out / "environment.properties").read_text().splitlines()
+    )
+
+
+def test_containerized_tiers_emit_their_pinned_container_image(tmp_path):
+    jobs = _load(CI_PATH)["jobs"]
+    for tier in ("fast", "browser"):
+        image = jobs[tier]["container"]["image"]
+        assert "@sha256:" in image
+        assert _emitted_environment_properties(tmp_path, tier)["runner_image"] == image, tier
+
+
+def test_render_runner_image_accepts_runner_contexts_and_rejects_the_rest():
+    runner = {"name": "r", "os": "Linux", "arch": "X64"}
+    assert render_runner_image("${{ format('{0}/{1}', runner.os, runner.arch) }}", runner) == "Linux/X64"
+    assert render_runner_image("plain:tag@sha256:abc", runner) == "plain:tag@sha256:abc"
+    for bad in ("${{ job.container.image }}", "${{ format('{0}', env.X) }}", "${{ runner.os }}"):
+        with pytest.raises(ValueError):
+            render_runner_image(bad, runner)
+
+
+def test_the_host_docker_tier_reports_an_honest_host_runner_not_an_image(tmp_path):
+    jobs = _load(CI_PATH)["jobs"]
+    assert "container" not in jobs["docker"]
+    emitted = _emitted_environment_properties(tmp_path, "docker")["runner_image"]
+    assert emitted == "host runner runner-7 (Linux X64, no job container)"
+    assert "@sha256:" not in emitted and "python:" not in emitted
+
+
 def test_the_allure_env_check_fails_for_each_broken_tier_step(tmp_path):
     def env_step(wf, tier):
         return next(s for s in wf["jobs"][tier]["steps"] if "allure_env.sh" in (s.get("run") or ""))
@@ -1383,6 +1478,11 @@ def test_the_allure_env_check_fails_for_each_broken_tier_step(tmp_path):
             steps.append(step)
         return edit
 
+    def set_image(tier, value):
+        def edit(wf):
+            env_step(wf, tier)["env"]["ALLURE_RUNNER_IMAGE"] = value
+        return edit
+
     cases = {}
     for tier in ALLURE_TIERS:
         for label, make in {
@@ -1390,6 +1490,15 @@ def test_the_allure_env_check_fails_for_each_broken_tier_step(tmp_path):
             "no-image": no_image, "after-upload": after_upload,
         }.items():
             cases[f"{tier}-{label}"] = make(tier)
+    for tier in ALLURE_TIERS:
+        # `job.container.image` is not an Actions context: it renders empty.
+        cases[f"{tier}-unsupported-job-container-image"] = set_image(
+            tier, "${{ job.container.image || format('{0} {1} host runner', runner.os, runner.arch) }}")
+        cases[f"{tier}-unsupported-context"] = set_image(tier, "${{ format('{0}', env.IMAGE) }}")
+    cases["fast-stale-image-digest"] = set_image("fast", "python:3.12.3")
+    cases["browser-other-image"] = set_image("browser", "python:3.12.3@sha256:" + "0" * 64)
+    cases["docker-claims-an-image"] = set_image("docker", "python:3.12.3@sha256:" + "0" * 64)
+    cases["docker-host-not-described"] = set_image("docker", "${{ format('{0}', runner.os) }}")
     for name, edit in cases.items():
         assert check_allure_env_steps(_mutate(tmp_path, f"env-{name}.yml", edit)), name
 
