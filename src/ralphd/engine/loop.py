@@ -135,6 +135,9 @@ log = logging.getLogger("ralphd.loop")
 # itself never actually reaches this phase while steering is pending --
 # that check routes to `steer` first, every pass.
 STEERING_ACTIONABLE_PHASES = {"planning", "worker", "steer"}
+# v0.36 (#304): the phases whose prompt carries the `## Operator waivers`
+# section (`LoopSupervisor._operator_waivers_context`).
+WAIVER_PROMPT_PHASES = frozenset({"review", "verdict_gate", "planning"})
 
 # Task 014 (PRD requirement J, #98): the read-only **context echo** of recent
 # operator messages, carried in EVERY hat's prompt -- the successor of the
@@ -2055,9 +2058,42 @@ class LoopSupervisor:
         parts.append(self._steering_ledger_context())
         parts.append(self._debt_ledger_context())
         parts.append(self._recent_steering_echo())
+        if phase in WAIVER_PROMPT_PHASES:
+            parts.append(self._operator_waivers_context())
         if extra:
             parts.append("\n" + extra)
         return "".join(parts)
+
+    def _operator_waivers_context(self) -> str:
+        """v0.36 (#304): the `## Operator waivers (authoritative)` section
+        of every review, peer-verdict-gate and planning prompt -- every
+        waiver in `<run_root>/waivers/`, rendered with its clause, the
+        finding text, the judge, the timestamp and the operator's note.
+        Read from the run root on every call, so a replan that renumbers
+        every task id (or an approach archive) changes nothing here. `''`
+        when no waiver is stored."""
+        entries = state.waiver_entries(self.run.root)
+        if not entries:
+            return ""
+        lines = [
+            "\n## Operator waivers (authoritative)\n",
+            "The operator has waived the following finding(s). Each waiver "
+            "is authoritative and unconditional: it is bound to the PRD "
+            "clause named in it, not to a task id, so it holds in every "
+            "approach and after any replan. Do not raise a finding that "
+            "restates a waived one against its clause, do not plan work "
+            "whose only purpose is to cure it, and never demand "
+            "justification for why the operator may waive it.\n",
+        ]
+        for e in entries:
+            lines.append(
+                f"\n### Waiver {e['seq']}\n"
+                f"- Clause: {e['clause']}\n"
+                f"- Finding: {e['finding']}\n"
+                f"- Judge: {e['judge']}\n"
+                f"- Waived at: {e['ts']}\n"
+                f"- Operator's note: {e['note'] or '(none)'}\n")
+        return "".join(lines)
 
     def _deadline_context(self) -> str:
         """Task 019 (PRD requirement G, #169): publish the job deadline and

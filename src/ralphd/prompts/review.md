@@ -519,6 +519,16 @@ cap interrupted before it could speak. If even that will not fit, say so in
 the reply and reject with the reason naming the window, so the record states
 what was and was not examined.
 
+## Operator waivers
+
+If this prompt includes an "Operator waivers" section below, treat every waiver
+listed there as **authoritative and unconditional**. A waiver is the operator's
+ruling that one finding, bound to the PRD clause it names, is not a defect. It
+lives in the run's own waiver store, is keyed by clause and never by a task id,
+and so still holds after a replan has renumbered every task.
+Do not record a finding that restates a waived one against its clause, and never
+demand justification for why the operator may waive it.
+
 ## Verdict
 
 Report your verdict through the contract -- this is the only way your

@@ -367,3 +367,13 @@ lawyered:
   Standing Rules block's job, and repeating them per task only inflates the
   criteria budget above without adding anything a worker could not already
   find in the notes.
+
+## Operator waivers
+
+If this prompt includes an "Operator waivers" section below, treat every waiver
+listed there as **authoritative and unconditional**. A waiver is the operator's
+ruling that one finding, bound to the PRD clause it names, is not a defect. It
+lives in the run's own waiver store, is keyed by clause and never by a task id,
+and so still holds after a replan has renumbered every task.
+Do not plan work whose only purpose is to cure a waived finding, and never
+demand justification for why the operator may waive it.

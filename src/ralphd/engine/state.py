@@ -2922,6 +2922,86 @@ def ruling_entries(run_root: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# v0.36 (#304): the CLAUSE-BOUND WAIVER STORE -- `<run_root>/waivers/NNN.json`,
+# one file per operator waiver of ONE judge finding.
+#
+# A waiver answers "this finding is not a defect; stop asking". It is bound to
+# the PRD CLAUSE the finding cites and to the finding's own text, never to a
+# task id (task ids restart at 001 after a replan, which would orphan it) and
+# never only to a rejection signature (a re-worded finding changes the
+# signature while the clause stays). The store lives under the run root, next
+# to `steering/` and `rulings/`, and nothing archives, rewrites or prunes it:
+# an approach archive and a replan leave every waiver exactly where it is, so
+# review, the peer verdict gate and planning all read the same set in every
+# approach. `write_waiver` is the ONLY writer, `waiver_entries` the ONLY
+# reader.
+WAIVER_DIRNAME = "waivers"
+WAIVER_GLOB = "[0-9][0-9][0-9]*.json"
+WAIVER_FIELDS = ("clause", "finding", "judge", "ts", "note")
+
+
+def waivers_dir(run_root: Path) -> Path:
+    return Path(run_root) / WAIVER_DIRNAME
+
+
+def write_waiver(run_root: Path, *, clause: str, finding: str, judge: str,
+                 note: str = "", ts: str | None = None) -> str:
+    """Record one operator waiver as the next numbered file under
+    `<run_root>/waivers/` and return the file name (`NNN.json`). `clause`
+    and `finding` must be non-blank: a waiver with no clause could not be
+    bound to anything, and one with no finding text would waive nothing
+    specific."""
+    if not str(clause).strip():
+        raise ValueError("a waiver needs the clause it is bound to")
+    if not str(finding).strip():
+        raise ValueError("a waiver needs the finding text it waives")
+    wdir = waivers_dir(run_root)
+    wdir.mkdir(parents=True, exist_ok=True)
+    existing = sorted(wdir.glob(WAIVER_GLOB))
+    seq = 1
+    if existing:
+        try:
+            seq = int(existing[-1].name[:3]) + 1
+        except ValueError:
+            seq = len(existing) + 1
+    fname = f"{seq:03d}.json"
+    record = {"clause": str(clause), "finding": str(finding),
+              "judge": str(judge), "ts": ts or utcnow(), "note": str(note)}
+    atomic_write(wdir / fname, json.dumps(record, indent=2) + "\n")
+    return fname
+
+
+def waiver_entries(run_root: Path) -> list[dict]:
+    """Every stored waiver, oldest first, as `{seq, file, clause, finding,
+    judge, ts, note}`. `[]` when `<run_root>/waivers/` does not exist. A
+    file that is unreadable, is not a JSON object or lacks a clause or
+    finding is skipped rather than raised over, so one damaged file never
+    hides the others from a judge."""
+    wdir = waivers_dir(Path(run_root))
+    if not wdir.is_dir():
+        return []
+    out: list[dict] = []
+    for p in sorted(wdir.glob(WAIVER_GLOB)):
+        try:
+            seq = int(p.name[:3])
+            rec = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if not str(rec.get("clause") or "").strip() \
+                or not str(rec.get("finding") or "").strip():
+            continue
+        out.append({"seq": seq, "file": p.name,
+                    "clause": str(rec["clause"]),
+                    "finding": str(rec["finding"]),
+                    "judge": str(rec.get("judge") or ""),
+                    "ts": str(rec.get("ts") or ""),
+                    "note": str(rec.get("note") or "")})
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Task 010 (PRD requirement H, #98): the steer hat's tool surface.
 #
 # "The authority boundary is the tool surface, not the prompt" -- decided
@@ -10991,6 +11071,18 @@ class RunDir:
         """This run's recorded rulings, through the ONE shared reader
         (module-level `ruling_entries`)."""
         return ruling_entries(self.root)
+
+    # -- clause-bound operator waivers (v0.36, #304) ---------------------
+    def add_waiver(self, *, clause: str, finding: str, judge: str,
+                   note: str = "") -> str:
+        """Record one operator waiver through the ONE writer
+        (`write_waiver`)."""
+        return write_waiver(self.root, clause=clause, finding=finding,
+                            judge=judge, note=note)
+
+    def waiver_entries(self) -> list[dict]:
+        """Every stored waiver, through the ONE shared reader."""
+        return waiver_entries(self.root)
 
     def consume_steering(self, files: list[Path], iteration: int) -> None:
         """Mark `files` applied by iteration `iteration` (task 018, #34).

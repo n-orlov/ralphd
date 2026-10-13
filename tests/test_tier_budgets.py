@@ -869,8 +869,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # tests/test_awaiting_input_question.py, measured `--collect-only` -> fast
     # 8535/537, smoke 6757/410 (incl. 2 nodes in the hub parked-panel/payload
     # modules).
-    "fast": {"tests": 8535, "modules": 537},
-    "smoke": {"tests": 6757, "modules": 410},
+    # v0.36 clause-bound waiver store: the new tests/test_waiver_store_prompts.py,
+    # measured `--collect-only` -> fast 8543/538, smoke 6765/411.
+    "fast": {"tests": 8543, "modules": 538},
+    "smoke": {"tests": 6765, "modules": 411},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

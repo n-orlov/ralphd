@@ -435,7 +435,7 @@ Everything host-side lives under one directory, `~/.ralphd/`, overridable in ful
 │   ├── prd.md · composite-prd.md · notes.md · review-findings.md · debt.json · debt.md
 │   ├── events.jsonl             # append-only event log, also fed to GET /events
 │   ├── iterations/NNNN/{meta.json,output.jsonl}
-│   ├── approaches/ · artifacts/ · steering/{NNN-*.md,.consumed.json}
+│   ├── approaches/ · artifacts/ · steering/{NNN-*.md,.consumed.json} · waivers/NNN.json
 │   ├── vigilant-verified.json   # engine-owned record of tasks that passed verify
 │   ├── operator-termination.json# durable record of an operator abort/stop
 │   ├── auto-resume.json         # crash-loop guard: attempts, lastAt, maxAttempts
@@ -905,6 +905,24 @@ may start over, not how much work it may do.
 Archiving is `_archive_approach()`: copy `tasks.json`, `notes.md` and
 `review-findings.md` into `approaches/NN/`. The next approach starts from a
 fresh plan.
+
+**Operator waivers are clause-bound and survive every replan (v0.36, #304).**
+An operator's waiver of one judge finding is stored as one file,
+`<run_root>/waivers/NNN.json`, written only by `state.write_waiver` (through
+`RunDir.add_waiver`) and read only by `state.waiver_entries`. Each file holds the
+PRD `clause` the finding cites, the `finding` text, the `judge` that raised it,
+a `ts` timestamp and the operator's `note`. A waiver is bound to its clause and
+finding text, never to a task id (ids restart at `001` after a replan) and never
+only to a rejection signature (a re-worded finding changes the signature while
+the clause stays). `_archive_approach()` and a replan neither move, rewrite nor
+prune the directory, so approach N+1 reads exactly the waivers approach N did.
+`LoopSupervisor.build_prompt()` appends an `## Operator waivers (authoritative)`
+section, listing every stored waiver with its clause, finding, judge, timestamp
+and note, to every `review`, `verdict_gate` and `planning` prompt; the section
+is absent when nothing is stored. `review.md`, `verdict_gate.md` and
+`planning.md` each carry the matching `## Operator waivers` rule: a listed waiver
+is authoritative and unconditional, a judge does not re-raise it against its
+clause, and planning does not plan work whose only purpose is to cure it.
 
 **A rejected review — and only a rejected review — regenerates the composite
 PRD.** `_write_composite_prd()` writes `composite-prd.md`: the original
@@ -2029,6 +2047,11 @@ strictly append-only.
 │   ├── NNN-<name>.md        # one operator steering message
 │   ├── .consumed.json       # names already actioned by an iteration
 │   └── .ledger.json         # per-message ledger: consumption + the steer hat's settlement claim (§4.6)
+├── waivers/
+│   └── NNN.json             # one operator WAIVER (v0.36, #304): {clause, finding, judge, ts, note},
+│                           #   bound to a PRD clause, never a task id; untouched by an approach
+│                           #   archive or a replan, listed in the review, verdict-gate and
+│                           #   planning prompts as authoritative (§4.2)
 ├── rulings/
 │   └── NNN-<name>.md        # one operator RULING (task 013, v0.23 requirement A.2, #224) --
 │                           #   `ralphctl rule --file`/`POST /rule`/the hub textarea, keyed to
