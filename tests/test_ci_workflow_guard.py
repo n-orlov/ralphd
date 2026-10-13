@@ -655,6 +655,8 @@ def check_report_and_publish(workflow: dict) -> list[str]:
         problems.append("report does not push to gh-pages only on refs/heads/main")
     elif "HEAD:gh-pages" not in push[0]["run"]:
         problems.append("report's push does not target the gh-pages branch")
+    elif "git rm -rqf" not in push[0]["run"]:
+        problems.append("report's push empties the tree without -f: the first run's orphan branch has everything staged")
     history = [s for s in _uses(report, "actions/checkout") if s.get("with", {}).get("path") == "gh-pages-work"]
     if len(history) != 1 or "gh-pages" not in str(history[0]["with"].get("ref")):
         problems.append("report does not check out the gh-pages branch to carry history/")
@@ -1513,6 +1515,10 @@ def test_the_report_and_publish_check_fails_for_each_broken_job(tmp_path):
     def report_pushes_everywhere(wf):
         del step_named(wf, "report", "Push the site tree")["if"]
 
+    def report_push_without_force_rm(wf):
+        step = step_named(wf, "report", "Push the site tree")
+        step["run"] = step["run"].replace("git rm -rqf", "git rm -rq")
+
     def report_one_tier_only(wf):
         step_named(wf, "report", "Download")["with"]["pattern"] = "allure-results-fast-*"
 
@@ -1577,6 +1583,7 @@ def test_the_report_and_publish_check_fails_for_each_broken_job(tmp_path):
         "report-drops-history": report_drops_history,
         "report-pushes-everywhere": report_pushes_everywhere,
         "report-one-tier-only": report_one_tier_only,
+        "report-push-without-force-rm": report_push_without_force_rm,
         "report-no-artifact": report_no_artifact,
         "report-trusts-host-path": report_trusts_host_path,
         "publish-everywhere": publish_everywhere,

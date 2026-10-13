@@ -720,7 +720,9 @@ jobs:
               git checkout -q --orphan gh-pages
             fi
             for attempt in 1 2 3; do
-              git rm -rq --ignore-unmatch . > /dev/null
+              # -f: on the first run the orphan branch starts with the whole
+              # commit under test staged, which a plain `git rm` refuses to drop.
+              git rm -rqf --ignore-unmatch . > /dev/null
               find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
               cp -a ../allure-report/. .
               touch .nojekyll
