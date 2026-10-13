@@ -1918,9 +1918,9 @@ import time
 def test_stop_on_a_paused_engine_skips_the_sigterm_grace_it_cannot_honour(
         engine_factory):
     e = engine_factory(job={"on_complete": "exit", "max_approaches": 1},
-                       stub_env={"STUB_WORKER_STALLS": "1"})
+                       stub_env={"STUB_REVIEW_MALFORMED_COUNT": "99"})
     status = e.wait_state(("paused",), timeout=60)
-    assert status["pauseReason"] == "stagnation"
+    assert status["pauseReason"] == "review_contract_unrepaired"
     assert e.proc.poll() is None, "still alive and parked, precondition"
 
     started = time.monotonic()
@@ -1967,9 +1967,9 @@ import signal
 def test_a_paused_engine_stops_on_sigterm_inside_a_test_grace_period(
         engine_factory):
     e = engine_factory(job={"on_complete": "exit", "max_approaches": 1},
-                       stub_env={"STUB_WORKER_STALLS": "1"})
+                       stub_env={"STUB_REVIEW_MALFORMED_COUNT": "99"})
     status = e.wait_state(("paused",), timeout=60)
-    assert status["pauseReason"] == "stagnation"
+    assert status["pauseReason"] == "review_contract_unrepaired"
     assert e.proc.poll() is None, "still alive and parked, precondition"
 
     # A direct SIGTERM, not `e.stop()`'s own paused-state fast path (section
@@ -1989,9 +1989,9 @@ def test_a_paused_engine_stops_on_sigterm_inside_a_test_grace_period(
 def test_ralphctl_abort_against_a_paused_engine_stops_it_too(live):
     e = live(run_id="paused-abort", job={"on_complete": "exit",
                                          "max_approaches": 1},
-             stub_env={"STUB_WORKER_STALLS": "1"})
+             stub_env={"STUB_REVIEW_MALFORMED_COUNT": "99"})
     status = e.wait_state(("paused",), timeout=60)
-    assert status["pauseReason"] == "stagnation"
+    assert status["pauseReason"] == "review_contract_unrepaired"
     assert e.proc.poll() is None, "still alive and parked, precondition"
 
     res = e.ralphctl("abort", e.run_id)

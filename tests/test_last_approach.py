@@ -863,15 +863,20 @@ def test_resume_without_a_ruling_asks_review_again_and_parks_again(
 # ===========================================================================
 
 
-def test_the_worker_to_paused_edge_is_declared_in_both_variants():
+def test_the_worker_to_paused_stagnation_edge_is_retired_in_both_variants():
+    """v0.36 requirement F.1: the stagnation guard replans on every
+    approach, so `worker` has no `paused` successor for it any more."""
     for vigilant in (True, False):
-        assert transitions.is_legal("worker", "paused", vigilant)
         by_guard = {e.guard: e.target for e in
                    transitions.successors("worker", vigilant)}
-        assert by_guard["stagnation_last_approach"] == "paused"
+        assert by_guard["stagnation_exhausted"] == "replan"
+        assert "stagnation_last_approach" not in by_guard
+        assert "paused" not in by_guard.values()
 
 
 def test_the_paused_to_worker_resume_edge_is_declared_in_both_variants():
+    # A 0.35 run directory can still hold a `stagnation` park; resuming it
+    # re-enters `worker` over the same approach.
     for vigilant in (True, False):
         by_guard = {e.guard: e.target for e in
                    transitions.successors("paused", vigilant)}
@@ -880,57 +885,48 @@ def test_the_paused_to_worker_resume_edge_is_declared_in_both_variants():
         assert by_guard["paused_resumed"] == "review"
 
 
-def test_the_generated_mermaid_carries_the_new_edge():
+def test_the_generated_mermaid_carries_the_replan_edge_not_the_retired_pause():
     import sys
     scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
     import render_transition_diagram as rtd
     rendered = rtd.render()
-    assert "worker --> paused : stagnation_last_approach" in rendered
+    assert "worker --> replan : stagnation_exhausted" in rendered
+    assert "worker --> paused : stagnation_last_approach" not in rendered
     assert "paused --> worker : paused_resumed_stagnation" in rendered
 
 
-def test_stagnant_last_approach_pauses_and_escalates_instead_of_failing(tmp_path):
+def test_stagnant_last_approach_archives_and_holds_exhausted_instead_of_pausing(
+        tmp_path):
+    """v0.36 requirement F.1, last approach: the approach is archived, the
+    replan has no approach left, and the run holds `exhausted` with
+    `exhaustedBudget: approaches` -- no pause, no escalation."""
     root = tmp_path / "run"
     sup = _supervisor_worker(root, max_approaches=1)
     sup._approach = 1
     notifier = _StubNotifier()
     sup.notifier = notifier
 
-    assert sup._pause.is_set() is True  # not paused yet
-
     outcome = asyncio.run(sup._step_worker())
 
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
-    # paused through the EXISTING pause machinery -- the same asyncio.Event
-    # POST /pause's loop.pause() clears.
-    assert sup._pause.is_set() is False
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
+    assert sup._pause.is_set() is True       # never paused
+    assert (root / "approaches" / "01").is_dir()   # archived
+    assert notifier.messages == []
+    assert _events(root, "operator_escalation") == []
+
+    assert sup._step_replan() == ("tail",)
+    assert sup._approaches_exhausted_tail is True
+    assert sup._finish_tail_unverified() == "exhausted"
     status = sup.run.read_status()
-    assert status.get("state") == "paused"
-    assert status.get("pauseReason") == "stagnation"
-    assert status.get("state") != "failed"  # never failed silently
-
-    # never archived, never a composite PRD for a fresh (nonexistent)
-    # approach -- resume asks worker again over the SAME approach.
-    assert not (root / "approaches" / "01").exists()
-    assert not sup.run.composite_prd_file.exists()
-    assert sup._approach == 1
-
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
-    assert escalations[0]["reason"] == "stagnation"
-    assert escalations[0]["approach"] == 1
-    assert escalations[0]["outstandingTasks"][0]["id"] == TASK_ID
-
-    assert len(notifier.messages) == 1
-    text = notifier.messages[0]
-    assert "LAST" in text
-    assert "ralphctl unpause task012-stagnation-last-approach" in text
-    assert TASK_ID in text
+    assert status.get("state") == "exhausted"
+    assert status.get("exhaustedBudget") == "approaches"
+    assert status.get("pauseReason") is None
+    assert status.get("verdict") is None
 
 
-def test_the_worker_escalation_is_emitted_to_events_jsonl_with_no_notifier(
+def test_a_stagnant_approach_never_emits_an_escalation_with_no_notifier(
         tmp_path):
     root = tmp_path / "run"
     sup = _supervisor_worker(root, max_approaches=1)
@@ -938,28 +934,34 @@ def test_the_worker_escalation_is_emitted_to_events_jsonl_with_no_notifier(
     assert sup.notifier is None
 
     outcome = asyncio.run(sup._step_worker())
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
-    assert sup._pause.is_set() is False
-
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
-    assert escalations[0]["reason"] == "stagnation"
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
+    assert sup._pause.is_set() is True
+    assert _events(root, "operator_escalation") == []
 
 
-def test_in_process_resume_re_enters_worker_over_the_same_approach(tmp_path):
+def _park_as_0_35_did(sup: LoopSupervisor, approach: int = 1) -> None:
+    """What a 0.35 engine left on disk when its stagnation guard parked: an
+    `operator_escalation` event with `reason: stagnation` and a persisted
+    `paused` status. The 0.36 engine never writes this itself."""
+    sup.run.emit("iteration.start", phase="worker", approach=approach)
+    done = sup.run.root / "iterations" / "0001"
+    done.mkdir(parents=True, exist_ok=True)
+    (done / "meta.json").write_text(json.dumps({"endedAt": "2026-01-01T00:00:00Z"}))
+    sup.run.emit("operator_escalation", approach=approach, reason="stagnation",
+                 outstandingTasks=[{"id": TASK_ID, "status": "pending"}],
+                 approachProgressed=False, awaitingValidation=[],
+                 escalation="0.35 stagnation park")
+    sup.pause(reason="stagnation")
+
+
+def test_in_process_resume_of_a_0_35_stagnation_park_re_enters_worker(tmp_path):
     root = tmp_path / "run"
     sup = _supervisor_worker(root, max_approaches=1)
     sup._approach = 1
-
-    outcome = asyncio.run(sup._step_worker())
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    _park_as_0_35_did(sup)
 
     async def _resume_flow():
-        # `_step_paused` reads `pauseReason` BEFORE it awaits `_gate()` --
-        # exactly like the real engine, where an operator's `resume()`
-        # (a separate concurrent call, e.g. from `POST /resume`) only
-        # ever runs WHILE `_gate()` is already parked, never before this
-        # coroutine has had a chance to read the still-persisted reason.
+        # `_step_paused` reads `pauseReason` BEFORE it awaits `_gate()`.
         task = asyncio.ensure_future(sup._step_paused())
         await asyncio.sleep(0)
         sup.resume()
@@ -973,20 +975,18 @@ def test_in_process_resume_re_enters_worker_over_the_same_approach(tmp_path):
     assert sup._approach == 1
 
 
-def test_fresh_process_resume_detects_the_stagnation_pause_and_re_enters_worker(
+def test_fresh_process_resume_detects_a_0_35_stagnation_park_and_re_enters_worker(
         tmp_path):
     root = tmp_path / "run"
     sup1 = _supervisor_worker(root, max_approaches=1)
     sup1._approach = 1
-
-    outcome = asyncio.run(sup1._step_worker())
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    _park_as_0_35_did(sup1)
     assert sup1._pause.is_set() is False
 
     # a brand-new process, no shared Python state at all -- reads
     # everything fresh off disk (`events.jsonl`, `status.json`).
     sup2 = _supervisor_worker(root, max_approaches=1)
-    assert sup2._paused_awaiting_stagnation_last_approach_ruling(1) is True
+    assert sup2._paused_awaiting_stagnation_ruling(1) is True
     # the OTHER predicate (rejected_last_approach) must not also fire.
     assert sup2._paused_awaiting_operator_input_needed_ruling(1) is False
 
@@ -1001,16 +1001,14 @@ def test_paused_awaiting_stagnation_ruling_is_false_once_a_new_iteration_started
     root = tmp_path / "run"
     sup = _supervisor_worker(root, max_approaches=1)
     sup._approach = 1
-
-    outcome = asyncio.run(sup._step_worker())
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
-    assert sup._paused_awaiting_stagnation_last_approach_ruling(1) is True
+    _park_as_0_35_did(sup)
+    assert sup._paused_awaiting_stagnation_ruling(1) is True
 
     sup.run.emit("iteration.start", phase="worker", approach=1)
-    assert sup._paused_awaiting_stagnation_last_approach_ruling(1) is False
+    assert sup._paused_awaiting_stagnation_ruling(1) is False
 
 
-def test_a_stagnant_approach_with_approaches_left_still_fails_as_today(tmp_path):
+def test_a_stagnant_approach_with_approaches_left_archives_and_replans(tmp_path):
     root = tmp_path / "run"
     sup = _supervisor_worker(root, max_approaches=2)
     sup._approach = 1
@@ -1020,14 +1018,17 @@ def test_a_stagnant_approach_with_approaches_left_still_fails_as_today(tmp_path)
     outcome = asyncio.run(sup._step_worker())
 
     assert outcome == ("advance", "replan", "stagnation_exhausted")
-    # the approach WAS archived -- this is the ordinary exhaustion path,
-    # not the new pause -- and the run was never paused or escalated.
+    # the approach WAS archived and the run was never paused or escalated.
+    assert (root / "approaches" / "01").is_dir()
     assert sup._pause.is_set() is True
     assert notifier.messages == []
     assert _events(root, "operator_escalation") == []
     status = sup.run.read_status()
     assert status.get("state") != "paused"
     assert status.get("pauseReason") is None
+    # and the replan opens approach 2 (decision 5), uncharged by nothing else.
+    assert sup._step_replan() == ("advance", "planning", "budget_and_approach_left")
+    assert sup._approach == 2
 
 
 # ===========================================================================
@@ -1096,62 +1097,36 @@ def _progressing_approach_supervisor(tmp_path: Path, **cfg_kw) -> LoopSupervisor
     return sup
 
 
-def test_a_progressing_approach_1_of_3_with_commits_present_pauses(tmp_path):
+def test_a_progressing_approach_1_of_3_with_commits_present_archives_and_replans(
+        tmp_path):
     sup = _progressing_approach_supervisor(tmp_path)
     notifier = _StubNotifier()
     sup.notifier = notifier
 
     outcome = asyncio.run(sup._step_worker())
 
-    # paused, not replanned -- even though approach 1 is NOT the last of 3.
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    # replanned, not paused -- stagnation self-heals on a progressing
+    # approach too (v0.36 requirement F.1); the 0.35 park is gone.
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
     status = sup.run.read_status()
-    assert status.get("state") == "paused"
-    assert status.get("pauseReason") == "stagnation"
-    assert sup._approach == 1
-    # unarchived -- resume re-enters the SAME approach, same as the
-    # last-approach case.
-    assert not (sup.run.root / "approaches" / "01").exists()
-
-    escalations = _events(sup.run.root, "operator_escalation")
-    assert len(escalations) == 1
-    assert escalations[0]["reason"] == "stagnation"
-    assert escalations[0]["approach"] == 1
-    assert escalations[0]["approachProgressed"] is True
-
-    assert len(notifier.messages) == 1
-    text = notifier.messages[0]
-    # this is NOT the last-approach wording -- approach 1 of 3 has 2 left.
-    assert "LAST" not in text
-    assert "approach 1" in text
-    assert "ralphctl unpause task018-progressing-approach" in text
+    assert status.get("state") != "paused"
+    assert status.get("pauseReason") is None
+    assert (sup.run.root / "approaches" / "01").is_dir()
+    assert _events(sup.run.root, "operator_escalation") == []
+    assert notifier.messages == []
+    # the workspace tree (the commits the approach made) is kept.
+    assert sup._workspace_head_sha() is not None
+    # the replan opens approach 2 of 3 over the same tree.
+    assert sup._step_replan() == ("advance", "planning", "budget_and_approach_left")
+    assert sup._approach == 2
 
 
-def test_in_process_resume_re_enters_worker_over_the_same_progressing_approach(
-        tmp_path):
-    sup = _progressing_approach_supervisor(tmp_path)
-
-    outcome = asyncio.run(sup._step_worker())
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
-
-    async def _resume_flow():
-        task = asyncio.ensure_future(sup._step_paused())
-        await asyncio.sleep(0)
-        sup.resume()
-        return await task
-
-    outcome2 = asyncio.run(_resume_flow())
-    assert outcome2 == ("advance", "worker", "paused_resumed_stagnation")
-    assert sup._approach == 1
-
-
-def test_a_superseded_task_present_pauses_a_stagnant_non_last_approach_too(
+def test_a_superseded_task_present_replans_a_stagnant_non_last_approach(
         tmp_path):
     """The PRD's OTHER B.3 witness (#156): "a superseded task's children
     exhaust their budgets too" -- no git commit anywhere, but a forced
-    split (task 016) already happened THIS approach, so the plan itself
-    carries the evidence: `tasks.json` holds a `superseded` parent whose
-    child is the one now stagnating."""
+    split (task 016) already happened THIS approach. v0.36 requirement
+    F.1: that approach is archived and replanned like any other."""
     root = tmp_path / "run"
     sup = _supervisor_worker(
         root, max_approaches=3,
@@ -1166,13 +1141,13 @@ def test_a_superseded_task_present_pauses_a_stagnant_non_last_approach_too(
 
     outcome = asyncio.run(sup._step_worker())
 
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
     status = sup.run.read_status()
-    assert status.get("state") == "paused"
-    assert status.get("pauseReason") == "stagnation"
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
-    assert escalations[0]["approachProgressed"] is True
+    assert status.get("state") != "paused"
+    assert status.get("pauseReason") is None
+    assert (root / "approaches" / "01").is_dir()
+    assert _events(root, "operator_escalation") == []
+    assert notifier.messages == []
 
 
 # ===========================================================================
@@ -1221,16 +1196,17 @@ def _second_exhaustion_supervisor(tmp_path: Path, parent_status="superseded",
     return make_supervisor(
         tmp_path / "run", run_id="task018-second-exhaustion",
         cfg_defaults=False, prd="# task 018 fixture PRD\n\nDo the thing.\n",
-        vigilant=False, max_approaches=3, iterations=4,
+        vigilant=False, iterations=4,
         contract_retry_max=1,
         tasks=[{**_PARENT, "status": parent_status}, child],
         status={"state": "running",
                 "progressBudget": {"taskId": "018c", "used": 3, "budget": 3}},
         runner_factory=lambda sup: _SplitProposingRunner(),
-        **cfg)
+        **{"max_approaches": 3, **cfg})
 
 
-def test_a_superseded_parents_child_exhausting_its_budget_pauses(tmp_path):
+def test_a_superseded_parents_child_exhausting_its_budget_archives_and_replans(
+        tmp_path):
     sup = _second_exhaustion_supervisor(tmp_path)
     sup._approach = 1
     notifier = _StubNotifier()
@@ -1238,59 +1214,41 @@ def test_a_superseded_parents_child_exhausting_its_budget_pauses(tmp_path):
 
     outcome = asyncio.run(sup._step_worker())
 
-    # the pause path, on approach 1 of 3 -- never another forced split.
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    # approach 1 of 3 is archived and replanned -- never another forced
+    # split, never a park.
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
     assert sup.runner.calls == 0, "a forced-split iteration was dispatched"
     status = sup.run.read_status()
-    assert status.get("state") == PAUSED_STATE
-    assert status.get("pauseReason") == "stagnation"
-    assert sup._approach == 1
-    assert not (sup.run.root / "approaches" / "01").exists()
+    assert status.get("state") != PAUSED_STATE
+    assert status.get("pauseReason") is None
+    assert (sup.run.root / "approaches" / "01").is_dir()
 
     # no recursion: no grandchild inserted, the child not superseded.
     tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
     assert set(tasks) == {"018p", "018c"}
     assert tasks["018c"]["status"] != "superseded"
 
-    escalations = _events(sup.run.root, "operator_escalation")
-    assert len(escalations) == 1
-    assert escalations[0]["reason"] == "stagnation"
-    assert escalations[0]["approach"] == 1
-    assert escalations[0]["approachProgressed"] is True
-    assert escalations[0]["exhaustedSplitChild"] == {
-        "id": "018c", "splitFrom": "018p", "used": 3, "budget": 3}
-
-    assert len(notifier.messages) == 1
-    text = notifier.messages[0]
-    assert "018c" in text and "018p" in text and "3/3" in text
-    assert "LAST" not in text  # approach 1 of 3 has two left
-    assert "ralphctl unpause task018-second-exhaustion" in text
+    assert _events(sup.run.root, "operator_escalation") == []
+    assert notifier.messages == []
+    assert sup._step_replan() == ("advance", "planning", "budget_and_approach_left")
+    assert sup._approach == 2
 
 
-def test_resume_after_a_second_exhaustion_pause_re_enters_the_same_approach(
-        tmp_path):
-    sup = _second_exhaustion_supervisor(tmp_path)
+def test_a_second_exhaustion_with_no_approach_left_holds_exhausted(tmp_path):
+    """v0.36 requirement F.1: the exhausted-split-child case on the LAST
+    approach has nowhere to replan to, so the run holds `exhausted` on
+    `approaches` instead of parking."""
+    sup = _second_exhaustion_supervisor(tmp_path, max_approaches=1)
     sup._approach = 1
 
     assert asyncio.run(sup._step_worker()) == (
-        "advance", "paused", "stagnation_last_approach")
-
-    async def _resume_flow():
-        task = asyncio.ensure_future(sup._step_paused())
-        await asyncio.sleep(0)
-        sup.resume()
-        return await task
-
-    assert asyncio.run(_resume_flow()) == (
-        "advance", "worker", "paused_resumed_stagnation")
-    assert sup._approach == 1
-    # and the escalation is bounded at one per child: an operator who
-    # resumes past it gets the ordinary forced split rather than an
-    # unbreakable pause/resume ping-pong.
-    asyncio.run(sup._step_worker())
-    assert sup.runner.calls >= 1
-    tasks = {t["id"]: t for t in sup.run.read_tasks()["tasks"]}
-    assert "018c-a" in tasks and tasks["018c"]["status"] == "superseded"
+        "advance", "replan", "stagnation_exhausted")
+    assert sup._step_replan() == ("tail",)
+    assert sup._finish_tail_unverified() == "exhausted"
+    status = sup.run.read_status()
+    assert status.get("state") == "exhausted"
+    assert status.get("exhaustedBudget") == "approaches"
+    assert sup.runner.calls == 0
 
 
 def test_a_child_of_a_still_live_parent_still_forces_its_first_split(tmp_path):
@@ -1378,7 +1336,7 @@ def _flow_step(sup, i):
         "evidence": [{"kind": "file", "ref": f"c{j}.txt"}]}})
 
 
-def test_budget_exhaustion_drives_a_forced_split_a_superseded_parent_a_picked_child_and_a_second_stall_pause(
+def test_budget_exhaustion_drives_a_forced_split_a_superseded_parent_a_picked_child_and_a_second_stall_replan(
         tmp_path):
     """Three corroborated `file`-evidence progress claims spend
     `020p`'s own default budget (`estimatedIterations` absent, 1+2==3) to
@@ -1391,8 +1349,8 @@ def test_budget_exhaustion_drives_a_forced_split_a_superseded_parent_a_picked_ch
     forward); three more corroborated claims spend `020c`'s own budget to
     3/3; the eighth pass -- `020c`'s own `splitFrom` parent already
     `superseded` -- is the SECOND exhaustion (task 018, B.3): the run
-    pauses BEFORE dispatching a doomed second split, never recursing into
-    a grandchild."""
+    archives and replans BEFORE dispatching a doomed second split, never
+    recursing into a grandchild."""
     root = tmp_path / "run"
     sup = _supervisor_split_flow(
         root, _flow_step,
@@ -1403,7 +1361,7 @@ def test_budget_exhaustion_drives_a_forced_split_a_superseded_parent_a_picked_ch
 
     outcome = asyncio.run(sup._step_worker())
 
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
     assert sup.runner.calls == 7, (
         f"flow: expected 7 dispatched iterations (3 on the parent, the "
         f"split itself, 3 on the child), got {sup.runner.calls}")
@@ -1421,16 +1379,19 @@ def test_budget_exhaustion_drives_a_forced_split_a_superseded_parent_a_picked_ch
     assert picked is not None and picked["id"] == FLOW_CHILD
 
     status = sup.run.read_status()
-    assert status.get("state") == PAUSED_STATE
-    assert status.get("pauseReason") == "stagnation"
+    assert status.get("state") != PAUSED_STATE
+    assert status.get("pauseReason") is None
+    assert (root / "approaches" / "01").is_dir()
     budget_record = status.get("progressBudget")
     assert budget_record == {
         "taskId": FLOW_CHILD, "used": 3, "budget": 3}, budget_record
 
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
-    assert escalations[0]["exhaustedSplitChild"] == {
-        "id": FLOW_CHILD, "splitFrom": FLOW_PARENT, "used": 3, "budget": 3}
+    assert _events(root, "operator_escalation") == []
+    logged = [e for e in
+              (json.loads(x) for x in
+               (root / "events.jsonl").read_text().splitlines() if x.strip())
+              if e.get("exhaustedSplitChild")]
+    assert [e["exhaustedSplitChild"] for e in logged] == [FLOW_CHILD]
 
     claims = [e for e in
               (json.loads(x) for x in
@@ -1441,9 +1402,7 @@ def test_budget_exhaustion_drives_a_forced_split_a_superseded_parent_a_picked_ch
     assert [c["taskId"] for c in claims] == (
         [FLOW_PARENT] * 3 + [FLOW_CHILD] * 3)
 
-    assert len(notifier.messages) == 1
-    assert FLOW_CHILD in notifier.messages[0]
-    assert FLOW_PARENT in notifier.messages[0]
+    assert notifier.messages == []
 
 
 # ===========================================================================

@@ -11,7 +11,7 @@
 * Exhaustively over those reopen paths, every starting attempt count and
   both verdicts: after the verify dispatch no task rests in
   `awaiting-validation` with `validationAttempts >= VALIDATION_ATTEMPT_LIMIT`.
-* A stagnation escalation names every task still `awaiting-validation`.
+* The stagnation event names every task still `awaiting-validation`.
 """
 
 from __future__ import annotations
@@ -271,37 +271,42 @@ def test_no_task_rests_awaiting_validation_with_a_spent_budget(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 4. the stagnation escalation names the task stuck awaiting validation
+# 4. the stagnation event names the task stuck awaiting validation
 # ---------------------------------------------------------------------------
 
 
-def test_the_stagnation_escalation_names_a_task_awaiting_validation(tmp_path):
+def test_the_stagnation_event_names_a_task_awaiting_validation(tmp_path):
+    """v0.36 requirement F.1: stagnation no longer escalates (the approach
+    is archived and replanned), but the event that records it still names
+    every task resting in `awaiting-validation` with its spent verify count,
+    so the cause is readable without opening the container log."""
     sup = _supervisor(tmp_path, [
         _task("046", status="awaiting-validation", attempts=2),
         _task("047", status="pending", depends=["046"])])
-    outstanding = [{"id": "046", "status": "awaiting-validation"},
-                   {"id": "047", "status": "pending"}]
 
-    sup._pause_and_escalate_stagnation_last_approach(1, outstanding)
+    async def _never_verified(task):
+        return False
+    sup._verify_task = _never_verified          # type: ignore[method-assign]
 
-    ev = list(read_events(sup.run.root, types={"operator_escalation"}))[-1]
-    assert ev["awaitingValidation"] == [{"id": "046", "validationAttempts": 2}]
-    assert (f"046 (awaiting-validation, validationAttempts 2 of "
-            f"{VALIDATION_ATTEMPT_LIMIT})") in ev["escalation"]
+    async def _no_progress(prompt, transcript, **kw):
+        r = IterationResult(exit_code=0, duration_s=1.0)
+        r.final_text = json.dumps({"verdict": "no_verdict"})
+        r.usage = {"input": 1, "output": 1, "totalTokens": 2}
+        return r
+    sup.runner.run = _no_progress                # type: ignore[method-assign]
+    sup._ensure_criteria_baseline()
+    sup._approach = 1
 
-    # the exhausted-split-child variant of the text carries it too
-    text = sup._stagnation_last_approach_escalation_text(
-        1, outstanding, exhausted_split_child={
-            "id": "047", "splitFrom": "040", "used": 3, "budget": 3})
-    assert "itself a split of task 040" in text
-    assert (f"046 (awaiting-validation, validationAttempts 2 of "
-            f"{VALIDATION_ATTEMPT_LIMIT})") in text
+    outcome = asyncio.run(sup._step_worker())
 
-    # and adds nothing when no task is waiting on verify
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
+    logs = [ev for ev in read_events(sup.run.root, types={"log"})
+            if "3 iterations with no task progress" in (ev.get("message") or "")]
+    assert len(logs) == 1
+    assert logs[0]["awaitingValidation"] == [
+        {"id": "046", "validationAttempts": 2}]
+    assert {"id": "046", "status": "awaiting-validation"} in logs[0]["outstandingTasks"]
+
+    # and a plan with nothing waiting on verify reports an empty list
     quiet = _supervisor(tmp_path / "quiet", [_task("047", status="pending")])
-    quiet._pause_and_escalate_stagnation_last_approach(
-        1, [{"id": "047", "status": "pending"}])
-    ev = list(read_events(quiet.run.root, types={"operator_escalation"}))[-1]
-    assert ev["awaitingValidation"] == []
-    assert "awaiting-validation," not in ev["escalation"]
-
+    assert quiet._tasks_stuck_awaiting_validation() == []

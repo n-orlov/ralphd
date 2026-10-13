@@ -96,7 +96,7 @@ from ralphd.engine.state import (
 # test_worker_hat.py absorbed test_failed_task_vocabulary.py (task 028,
 # requirement D.7); the aliases restore the names this module already used.
 from test_worker_hat import (
-    _drive_until_paused,
+    _drive_until_exhausted,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -447,16 +447,14 @@ def _run_resumed(root: Path, handlers: dict, tasks: list[dict],
     return sup, asyncio.run(sup._run_job_core())
 
 
-def _run_resumed_until_paused(root: Path, handlers: dict, tasks: list[dict],
+def _run_resumed_to_exhausted(root: Path, handlers: dict, tasks: list[dict],
                               **cfg_kw) -> LoopSupervisor:
     """Task 042 (steer 004): same setup as `_run_resumed` above, but for a
     worker that never yields a verdict on the (default) LAST approach --
-    since task 012 (`abdc914`) the stagnation guard there pauses and
-    escalates instead of ending the run `failed`, then parks at `_gate()`
-    forever waiting for an operator `resume()` that no scripted test here
-    ever sends. Drives the run with the bounded-wait `_drive_until_paused`
-    helper (`tests/test_worker_hat.py`) instead of letting
-    `asyncio.run(sup._run_job_core())` block forever, and returns the
+    since v0.36 requirement F.1 the stagnation guard there archives the
+    approach and, with none left, holds `exhausted` on `approaches` (it no
+    longer parks). Drives the run with `_drive_until_exhausted`
+    (`tests/test_worker_hat.py`), which asserts that landing, and returns the
     supervisor for the caller to read `status.json` off of directly.
     """
     RunDir(root=root).update_status(state="starting")
@@ -478,7 +476,7 @@ def _run_resumed_until_paused(root: Path, handlers: dict, tasks: list[dict],
     sup._wait_out_backoff = no_backoff    # type: ignore[method-assign]
     atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
     sup.iterations_used = 1
-    asyncio.run(_drive_until_paused(sup))
+    asyncio.run(_drive_until_exhausted(sup))
     return sup
 
 
@@ -502,20 +500,20 @@ def test_a_worker_that_only_ever_proposes_splits_still_fails_the_approach(
     guard -- exactly as a genuinely silent hat would not
     (`tests/test_unsatisfiable_criteria.py`'s sibling pin for
     `unsatisfiable`), even though `tasks.json` visibly grows on every pass.
-    Since task 012 (`abdc914`) the guard on the (default) LAST approach
-    pauses and escalates instead of ending the run `failed` -- asserted
-    here via `_run_resumed_until_paused` (task 042, steer 004)."""
+    The guard on the (default) LAST approach archives the approach and
+    holds `exhausted` on `approaches` instead of ending the run `failed` --
+    asserted here via `_run_resumed_to_exhausted`."""
     root = tmp_path / "run"
     tasks = [_task(status="in-progress")]
 
-    sup = _run_resumed_until_paused(root, {
+    sup = _run_resumed_to_exhausted(root, {
         "worker": [_propose_only(1), _propose_only(2), _propose_only(3)],
         "review": [_review_verified],
     }, tasks)
 
     status = sup.run.read_status()
-    assert status["state"] == "paused", status
-    assert status["pauseReason"] == "stagnation", status
+    assert status["state"] == "exhausted", status
+    assert status["exhaustedBudget"] == "approaches", status
     assert sup.runner.calls["worker"] == 3          # type: ignore[attr-defined]
     data = sup.run.read_tasks()
     # The proposals DID land -- this is not a dead field -- they simply
@@ -942,27 +940,27 @@ def test_repointing_alone_is_bounded_as_a_stagnation_escape(tmp_path):
     `state.tasks_doc_excluding_new_entries` cannot filter it out of the
     pass's progress diff and an ACCEPTED re-point does reset the guard -- the
     run below needs more than three worker iterations for exactly that
-    reason, where a worker that only proposed splits paused at three. What
+    reason, where a worker that only proposed splits stalled at three. What
     bounds it is `worker_repoint_budget_per_approach` (left at its DEFAULT
     here, so the pin is on the shipped number): four doomed dependents are
     on offer, the fourth re-point is refused whole on budget, and from there
-    the worker buys no progress at all and the approach stagnates and pauses
-    anyway. Every guard in `lint_worker_task_updates` is legal in this
+    the worker buys no progress at all and the approach stagnates and the run holds
+    `exhausted` anyway. Every guard in `lint_worker_task_updates` is legal in this
     script, so what is measured is the budget alone."""
     root = tmp_path / "run"
     tasks = [_task(), _row(LIVE_1, status="validated"),
              _row(DEAD_1, status="failed")] + [
         _row(f"doomed-{n}", depends=[DEAD_1]) for n in (1, 2, 3, 4)]
 
-    sup = _run_resumed_until_paused(root, {
+    sup = _run_resumed_to_exhausted(root, {
         "worker": [_repoint_only(1), _repoint_only(2), _repoint_only(3),
                    _repoint_only(4)],
         "review": [_review_verified],
     }, tasks)
 
     status = sup.run.read_status()
-    assert status["state"] == "paused", status
-    assert status["pauseReason"] == "stagnation", status
+    assert status["state"] == "exhausted", status
+    assert status["exhaustedBudget"] == "approaches", status
     # The budget stopped at its default 3, and the fourth re-point changed
     # nothing -- refused whole, on the record.
     assert status["workerRepointUpdates"] == {"1": 3}

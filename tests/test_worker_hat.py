@@ -235,47 +235,20 @@ def _fv_run(root: Path, handlers: dict, **cfg_kw) -> tuple[LoopSupervisor, str]:
     return sup, asyncio.run(sup._run_job_core())
 
 
-async def _drive_until_paused(sup: LoopSupervisor,
-                             expect_reason: str = "stagnation") -> None:
-    """Task 012 (requirement B.3, #153): a `_run_job_core()` that hits the
-    stagnation guard on the LAST approach now pauses and escalates instead
-    of ending the run `failed` -- and stays parked at `_gate()` forever
-    without an operator's `resume()`, which none of these scripted-runner
-    tests ever send. Used only by tests whose scenario runs the guard out
-    on the (default, `max_approaches=1`) last approach: starts
-    `_run_job_core()` as a background task, polls `status.json` for
-    `state == "paused"`, then cancels the still-pending task so the test's
-    own event loop can close cleanly -- the same shape
-    `tests/test_last_approach.py` uses for its own
-    in-process resume coverage, minus the resume.
-
-    The bounded wait AND the pause's identity both live here (task 042,
-    steer 004): the poll can only ever end at a `paused` status -- a run
-    that ends any other way, or a stub engine that parks somewhere the
-    guard never reaches, raises instead of hanging the suite -- and the
-    helper then asserts `pauseReason == expect_reason` (`"stagnation"` for
-    every caller so far), so no caller can mistake some other pause for the
-    stagnation pause it meant to drive.
-    """
-    task = asyncio.ensure_future(sup._run_job_core())
-    for _ in range(500):
-        if sup.run.read_status().get("state") == "paused":
-            break
-        if task.done():
-            break
-        await asyncio.sleep(0.01)
-    else:
-        task.cancel()
-        raise AssertionError("run never reached `paused`")
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+async def _drive_until_exhausted(sup: LoopSupervisor) -> None:
+    """Run `_run_job_core()` for a scenario that runs the stagnation guard
+    out on the (default, `max_approaches=1`) last approach. v0.36
+    requirement F.1: the guard archives the approach and, with no approach
+    left, the run holds `exhausted` with `exhaustedBudget: approaches` --
+    it neither ends `failed` nor parks. The helper asserts exactly that
+    landing, so no caller can mistake some other ending for the stagnation
+    one it meant to drive."""
+    await asyncio.wait_for(sup._run_job_core(), 120)
     status = sup.run.read_status()
-    assert status.get("state") == "paused", status
-    if expect_reason is not None:
-        assert status.get("pauseReason") == expect_reason, status
+    assert status.get("state") == "exhausted", status
+    assert status.get("exhaustedBudget") == "approaches", status
+    assert status.get("pauseReason") is None, status
+    assert status.get("verdict") is None, status
 
 
 def _fv_events(root: Path) -> list[dict]:
@@ -637,9 +610,9 @@ def test_a_plan_with_work_left_is_never_routed_to_review(tmp_path):
     pick up -- otherwise one failed task would cut a plan's remaining work
     short. Here the second task stays `pending` and the worker keeps ignoring
     it, so the run ends on the stagnation guard, as before -- except this is
-    the (default, `max_approaches=1`) LAST approach, so the guard now pauses
-    and escalates rather than ending the run `failed` (task 012, requirement
-    B.3)."""
+    the (default, `max_approaches=1`) LAST approach, so the guard archives
+    it and the run holds `exhausted` on `approaches` rather than ending
+    `failed` (v0.36 requirement F.1)."""
     root = tmp_path / "run"
     RunDir(root=root).update_status(state="starting")
     sup = _fv_supervisor(root, {"worker": _give_up, "verify": _verify_miss,
@@ -647,14 +620,14 @@ def test_a_plan_with_work_left_is_never_routed_to_review(tmp_path):
     _write_plan(sup, [_fv_task(status="failed", validationAttempts=3),
                       _fv_task(id="002", status="pending")])
     sup.iterations_used = 1
-    asyncio.run(_drive_until_paused(sup))
+    asyncio.run(_drive_until_exhausted(sup))
     msgs = _fv_log_messages(root)
     assert "routing to review" not in msgs, msgs
     assert "3 iterations with no task progress" in msgs, msgs
     assert "review" not in _phases_recorded(root)
     status = sup.run.read_status()
-    assert status.get("state") == "paused"
-    assert status.get("pauseReason") == "stagnation"
+    assert status.get("state") == "exhausted"
+    assert status.get("exhaustedBudget") == "approaches"
 
 
 def test_a_finished_plan_still_waits_for_the_workers_complete(tmp_path):
@@ -662,8 +635,8 @@ def test_a_finished_plan_still_waits_for_the_workers_complete(tmp_path):
     `failed` one, entry to review is still the worker's COMPLETE. A worker that
     finishes the work and forgets to signal gets the stagnation guard, exactly
     as before this task -- except this is the (default, `max_approaches=1`)
-    LAST approach, so the guard now pauses and escalates rather than ending
-    the run `failed` (task 012, requirement B.3)."""
+    LAST approach, so the guard archives it and the run holds `exhausted` on
+    `approaches` rather than ending `failed` (v0.36 requirement F.1)."""
     def finish_quietly(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
         _set_status(sup, "completed")
         return _fv_ok("done, no signal")
@@ -674,13 +647,13 @@ def test_a_finished_plan_still_waits_for_the_workers_complete(tmp_path):
                              "worker": _steps(finish_quietly, _give_up),
                              "verify": _verify_pass,
                              "review": _fv_review_verified})
-    asyncio.run(_drive_until_paused(sup))
+    asyncio.run(_drive_until_exhausted(sup))
     msgs = _fv_log_messages(root)
     assert "routing to review" not in msgs, msgs
     assert "3 iterations with no task progress" in msgs, msgs
     status = sup.run.read_status()
-    assert status.get("state") == "paused"
-    assert status.get("pauseReason") == "stagnation"
+    assert status.get("state") == "exhausted"
+    assert status.get("exhaustedBudget") == "approaches"
 
 
 def test_a_worker_that_carves_out_a_follow_up_task_is_not_pre_empted(tmp_path):
@@ -767,7 +740,7 @@ def test_a_pending_carved_follow_up_still_faces_the_ordinary_ladder(tmp_path):
     task 003, unrepaired every pass (002 stays `pending` forever -- the
     scripted worker only ever repeats the same illegal claim) -- and, since
     this is the (default, `max_approaches=1`) LAST approach, three such
-    no-progress passes pause the run and escalate rather than route it to
+    no-progress passes hold the run `exhausted` rather than route it to
     review, exactly like `test_a_plan_with_work_left_is_never_routed_to_
     review` above pins for its own (already-`failed`-vs-`pending`) shape."""
     def claim_plan_complete(sup: LoopSupervisor, prompt: str = "") -> IterationResult:
@@ -780,7 +753,7 @@ def test_a_pending_carved_follow_up_still_faces_the_ordinary_ladder(tmp_path):
                       _fv_task(id="002", status="pending",
                             title="close the residual gap of 001")])
     sup.iterations_used = 1
-    asyncio.run(_drive_until_paused(sup))
+    asyncio.run(_drive_until_exhausted(sup))
 
     events = _fv_events(root)
     violations = [ev for ev in events if ev.get("type") == "contract.violation"]
@@ -1069,13 +1042,10 @@ def test_none_of_the_four_witnesses_still_increments_the_counter(tmp_path):
     with a real git workspace present and simply never touched. This
     drives `_step_worker()` directly (default `max_approaches=1`, i.e.
     the LAST approach) rather than the full `_run_job_core()` dispatch
-    loop, because on the LAST approach task 012 (requirement B.3) changes
-    what happens once the counter fires: the run now pauses and
-    escalates (`tests/test_last_approach.py` is
-    that pause's own dedicated coverage) instead of ending `failed` on
-    paperwork, and a run parked on that pause inside `_run_job_core()`
-    would sit forever awaiting a `resume()` this test never sends. The
-    counter itself is unchanged either way -- the log line still fires.
+    loop, because the counter is this test's subject: once it fires the
+    approach is archived and routed to `replan` (v0.36 requirement F.1;
+    `tests/test_last_approach.py` is that edge's own dedicated coverage).
+    The counter itself is unchanged -- the log line still fires.
     """
     root = tmp_path / "run"
     workspace = tmp_path / "workspace"
@@ -1095,10 +1065,10 @@ def test_none_of_the_four_witnesses_still_increments_the_counter(tmp_path):
     outcome = asyncio.run(sup._step_worker())
     msgs = _fv_log_messages(root)
     assert "3 iterations with no task progress" in msgs, msgs
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
     status = sup.run.read_status()
-    assert status.get("state") == "paused"
-    assert status.get("pauseReason") == "stagnation"
+    assert status.get("state") != "paused"
+    assert status.get("pauseReason") is None
 
 
 def test_tool_activity_below_the_threshold_still_increments_the_counter(tmp_path):
@@ -1106,7 +1076,7 @@ def test_tool_activity_below_the_threshold_still_increments_the_counter(tmp_path
     below `STAGNATION_TOOL_ACTIVITY_MIN_CALLS` on every iteration must
     still stagnate exactly like zero calls would. Same direct-`_step_
     worker()` shape as the test just above, for the same reason (default
-    `max_approaches=1` is the LAST approach, task 012's pause).
+    `max_approaches=1` is the LAST approach).
     """
     root = tmp_path / "run"
     workspace = tmp_path / "workspace"
@@ -1129,10 +1099,10 @@ def test_tool_activity_below_the_threshold_still_increments_the_counter(tmp_path
     outcome = asyncio.run(sup._step_worker())
     msgs = _fv_log_messages(root)
     assert "3 iterations with no task progress" in msgs, msgs
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
     status = sup.run.read_status()
-    assert status.get("state") == "paused"
-    assert status.get("pauseReason") == "stagnation"
+    assert status.get("state") != "paused"
+    assert status.get("pauseReason") is None
 
 
 # ----------------------------------------------------------------------
@@ -3322,14 +3292,13 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
     # even registered below, so a real worker iteration dispatching at all
     # would raise `KeyError` inside the scripted runner -- names the
     # offending edge on its own event payload, marks the run's
-    # `status.json` `health: "degraded"`, and routes to the pause-and-
-    # escalate path (never `worker` self-looping, never `review`: there is
-    # no verdict pending, only a `tasks.json` edit an operator has to make
-    # by hand). Two dependents of the cycled task -- DOWNSTREAM-TASK
-    # (direct) and TRANSITIVE-TASK (two hops, through DOWNSTREAM-TASK) --
-    # are folded into the SAME fixture (review cure cure-01-04, PRD
+    # `status.json` `health: "degraded"`, and routes to the uncharged
+    # same-approach replan (v0.36 requirement F.2; never `worker`
+    # self-looping, never `review`, never a park). Two dependents of the cycled task --
+    # DOWNSTREAM-TASK (direct) and TRANSITIVE-TASK (two hops, through
+    # DOWNSTREAM-TASK) -- are folded into the SAME fixture (review cure cure-01-04, PRD
     # requirement E.3, #206): the fault is on the same pass regardless,
-    # so this also pins that the same-pass escalation notification names
+    # so this also pins that the same-pass replan prompt names
     # every one of them, not merely the cycle itself.
     root1 = tmp_path / "self-loop"
     RunDir(root=root1).update_status(state="starting")
@@ -3342,21 +3311,27 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
         _fv_task(id="TRANSITIVE-TASK", dependsOn=["DOWNSTREAM-TASK"]),
     ])
     sup1.iterations_used = 1
+    sup1._approach = 1
 
-    asyncio.run(_drive_until_paused(
-        sup1, expect_reason="unschedulable_dependency_cycle"))
+    outcome1 = asyncio.run(sup1._step_worker())
 
+    # v0.36 requirement F.2: the first graph fault on an approach replans
+    # the SAME approach, uncharged -- it never parks.
+    assert outcome1 == ("advance", "replan", "unschedulable_task_graph"), outcome1
+    assert sup1._approach == 1
+    assert sup1._pause.is_set() is True
     status1 = sup1.run.read_status()
     assert status1.get("health") == "degraded", status1
+    assert status1.get("state") != "paused", status1
+    assert status1.get("pauseReason") is None, status1
+    assert status1.get("graphFaultApproaches") == [1], status1
+    assert sent1 == [], sent1
 
-    # the same-pass notification names the blocked task, its offending
-    # edge, and BOTH the direct and the transitive dependent -- never
-    # only the cycle itself (review cure cure-01-04, PRD requirement E.3)
-    assert sent1, sent1
-    assert "001" in sent1[-1], sent1
-    assert "001 -> 001" in sent1[-1], sent1
-    assert "DOWNSTREAM-TASK" in sent1[-1], sent1
-    assert "TRANSITIVE-TASK" in sent1[-1], sent1
+    # the planning prompt of the replan names the offending edge and BOTH
+    # the direct and the transitive dependent (cure-01-04's shape).
+    note1 = sup1._pending_graph_fault_note
+    assert note1 and "001 -> 001" in note1, note1
+    assert "DOWNSTREAM-TASK" in note1 and "TRANSITIVE-TASK" in note1, note1
 
     events1 = _fv_events(root1)
     fault_events = [ev for ev in events1
@@ -3369,9 +3344,7 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
         "DOWNSTREAM-TASK", "TRANSITIVE-TASK"], payload
     assert payload["planUnverifiable"] is True, payload
 
-    escalations1 = [ev for ev in events1 if ev.get("type") == "operator_escalation"]
-    assert escalations1 and escalations1[0].get("reason") == \
-        "unschedulable_dependency_cycle", escalations1
+    assert not [ev for ev in events1 if ev.get("type") == "operator_escalation"]
 
     # never dispatched a worker iteration at all
     assert "worker" not in _phases_recorded(root1)
@@ -3405,8 +3378,8 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
     # worker keeps getting dispatched every pass (never short-circuited by
     # the cycle fault, never routed anywhere but its own ordinary self-
     # loop) and, since nothing about 001 ever resolves in this scripted
-    # scenario, the run eventually reaches the PRE-EXISTING `stagnation_
-    # last_approach` pause on its own three-strikes count -- proving the
+    # scenario, the run eventually reaches the `stagnation_exhausted`
+    # replan on its own three-strikes count -- proving the
     # ordinary path, never this task's new one, is what ends this run.
     root3 = tmp_path / "in-flight-dispatch"
     RunDir(root=root3).update_status(state="starting")
@@ -3429,9 +3402,9 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
 
     outcome3 = asyncio.run(sup3._step_worker())
 
-    assert outcome3 == ("advance", "paused", "stagnation_last_approach"), outcome3
+    assert outcome3 == ("advance", "replan", "stagnation_exhausted"), outcome3
     status3 = sup3.run.read_status()
-    assert status3.get("pauseReason") == "stagnation", status3
+    assert status3.get("pauseReason") is None, status3
     assert status3.get("health") != "degraded", status3
 
     events3 = _fv_events(root3)
@@ -3474,7 +3447,7 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
 
     outcome4 = asyncio.run(sup4._step_worker())
 
-    assert outcome4 == ("advance", "paused", "stagnation_last_approach"), outcome4
+    assert outcome4 == ("advance", "replan", "stagnation_exhausted"), outcome4
     msgs4 = _fv_log_messages(root4)
     assert "3 iterations with no task progress" in msgs4, msgs4
     # all three iterations ran -- the tool-heavy one did not short-circuit
@@ -3492,11 +3465,11 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
     # ancestor to follow; the id is simply absent). Before this cure, this
     # exact fixture (a single pending task depending on a nonexistent id,
     # never a cycle, never a dead ancestor) spun through THREE ordinary
-    # no-task worker dispatches and landed on `stagnation_last_approach`
+    # no-task worker dispatches and landed on the stagnation guard
     # (GH #206's own second incident) -- proven directly below by driving
     # the SAME fixture unpatched through the ordinary path first. The cure
     # makes `_unresolvable_edge_fault` catch it structurally, on the very
-    # FIRST pass, through the REAL `_step_worker` (`_drive_until_paused`,
+    # FIRST pass, through the REAL `_step_worker` (`_drive_until_exhausted`,
     # never the fault helper alone) -- and, in the same fixture, folds in
     # cure-01-04's own dependent-naming shape (DOWNSTREAM-TASK direct,
     # TRANSITIVE-TASK two hops) so this new fault's escalation is proven
@@ -3512,18 +3485,19 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
         _fv_task(id="TRANSITIVE-TASK", dependsOn=["DOWNSTREAM-TASK"]),
     ])
     sup5.iterations_used = 1
+    sup5._approach = 1
 
-    asyncio.run(_drive_until_paused(
-        sup5, expect_reason="unresolvable_dependency_edge"))
+    outcome5 = asyncio.run(sup5._step_worker())
 
+    assert outcome5 == ("advance", "replan", "unschedulable_task_graph"), outcome5
     status5 = sup5.run.read_status()
     assert status5.get("health") == "degraded", status5
+    assert status5.get("state") != "paused", status5
+    assert sent5 == [], sent5
 
-    assert sent5, sent5
-    assert "001" in sent5[-1], sent5
-    assert "001 -> nonexistent" in sent5[-1], sent5
-    assert "DOWNSTREAM-TASK" in sent5[-1], sent5
-    assert "TRANSITIVE-TASK" in sent5[-1], sent5
+    note5 = sup5._pending_graph_fault_note
+    assert note5 and "001 -> nonexistent" in note5, note5
+    assert "DOWNSTREAM-TASK" in note5 and "TRANSITIVE-TASK" in note5, note5
 
     events5 = _fv_events(root5)
     fault_events5 = [ev for ev in events5
@@ -3537,9 +3511,7 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
         "DOWNSTREAM-TASK", "TRANSITIVE-TASK"], payload5
     assert payload5["planUnverifiable"] is True, payload5
 
-    escalations5 = [ev for ev in events5 if ev.get("type") == "operator_escalation"]
-    assert escalations5 and escalations5[0].get("reason") == \
-        "unresolvable_dependency_edge", escalations5
+    assert not [ev for ev in events5 if ev.get("type") == "operator_escalation"]
 
     # never dispatched a worker iteration at all
     assert "worker" not in _phases_recorded(root5)
@@ -3553,8 +3525,8 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
 
     # and the pre-cure shape, proven directly: the SAME absent-id fixture,
     # run through the ordinary no-task worker dispatch with the new fault
-    # helper patched out, still lands on the pre-existing `stagnation_
-    # last_approach` guard after three dispatches -- exactly what this
+    # helper patched out, still lands on the `stagnation_exhausted`
+    # guard after three dispatches -- exactly what this
     # fixture did before cure-01-03 existed, now reachable only by
     # deliberately bypassing the new safety net rather than by its absence.
     root6 = tmp_path / "unresolved-edge-precure-shape"
@@ -3570,8 +3542,8 @@ def test_unschedulable_cycle_fault_and_its_tool_activity_gating(tmp_path):
 
     outcome6 = asyncio.run(sup6._step_worker())
 
-    assert outcome6 == ("advance", "paused", "stagnation_last_approach"), outcome6
+    assert outcome6 == ("advance", "replan", "stagnation_exhausted"), outcome6
     status6 = sup6.run.read_status()
-    assert status6.get("pauseReason") == "stagnation", status6
+    assert status6.get("pauseReason") is None, status6
     assert status6.get("health") != "degraded", status6
     assert _worker_iteration_count(root6) >= 3

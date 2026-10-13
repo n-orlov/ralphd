@@ -291,32 +291,6 @@ def _run(root: Path, worker, **cfg_kw) -> tuple[LoopSupervisor, str]:
     return sup, asyncio.run(sup._run_job_core())
 
 
-async def _drive_until_paused(sup: LoopSupervisor) -> None:
-    """Task 012 (requirement B.3, #153): a `_run_job_core()` that hits the
-    stagnation guard on the LAST approach now pauses and escalates instead
-    of ending the run `failed` -- and stays parked at `_gate()` forever
-    without an operator's `resume()`, which this scripted-runner test never
-    sends. Starts `_run_job_core()` as a background task, polls
-    `status.json` for `state == "paused"`, then cancels the still-pending
-    task so the test's own event loop can close cleanly.
-    """
-    task = asyncio.ensure_future(sup._run_job_core())
-    for _ in range(500):
-        if sup.run.read_status().get("state") == "paused":
-            break
-        if task.done():
-            break
-        await asyncio.sleep(0.01)
-    else:
-        task.cancel()
-        raise AssertionError("run never reached `paused`")
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-
 def test_the_near_miss_sentence_does_not_end_the_worker_loop(tmp_path):
     """The whole point, at the level the incident happened: a worker that says
     in prose why it is NOT signalling keeps working, and the operator gets a
@@ -481,15 +455,15 @@ def test_an_agent_that_claims_plan_complete_forever_still_stagnates(tmp_path):
     consult the HONOURED completion (whether the ladder actually succeeded),
     or an agent that claims it every iteration while changing nothing holds
     `stagnant` at 0 and the run never ends. Three no-progress PASSES (each
-    its own exhausted ladder), approach paused and escalated (task 012,
-    requirement B.3: this is the default, `max_approaches=1`, LAST approach,
-    so the stagnation guard no longer fails the run outright), review never
-    entered."""
+    its own exhausted ladder), approach archived and the run held
+    `exhausted` on `approaches` (v0.36 requirement F.1: this is the default,
+    `max_approaches=1`, LAST approach, so the stagnation guard neither
+    fails the run outright nor parks it), review never entered."""
     root = tmp_path / "run"
     RunDir(root=root).update_status(state="starting")
     sup = _supervisor(root, {"planning": _plan_two, "worker": _steps(_signal_done),
                              "review": _review_verified})
-    asyncio.run(_drive_until_paused(sup))
+    asyncio.run(sup._run_job_core())
     msgs = _log_messages(root)
     assert "3 iterations with no task progress" in msgs, msgs
     faults = [ev for ev in _events(root) if ev.get("type") == "contract.agent_fault"]
@@ -497,8 +471,9 @@ def test_an_agent_that_claims_plan_complete_forever_still_stagnates(tmp_path):
     assert sup.runner.phases.count("worker") == 9, sup.runner.phases
     assert "review" not in sup.runner.phases
     status = sup.run.read_status()
-    assert status.get("state") == "paused"
-    assert status.get("pauseReason") == "stagnation"
+    assert status.get("state") == "exhausted"
+    assert status.get("exhaustedBudget") == "approaches"
+    assert status.get("pauseReason") is None
     assert "COMPLETE" not in _signals(root)
 
 
@@ -529,7 +504,7 @@ def test_an_earned_plan_complete_is_progress_even_when_the_plan_did_not_change(t
                              "review": _review_verified})
     plan_all_done(sup)
     sup.iterations_used = 1
-    outcome = asyncio.run(sup._run_job_core())
+    outcome = asyncio.run(asyncio.wait_for(sup._run_job_core(), 120))
     msgs = _log_messages(root)
     assert "3 iterations with no task progress" not in msgs, msgs
     assert sup.runner.phases == ["worker", "worker", "worker", "review"]

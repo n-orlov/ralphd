@@ -797,6 +797,11 @@ class LoopSupervisor:
         # several tests do, falls through to the pre-existing charged
         # behaviour, exactly as before this task).
         self._replan_guard: str | None = None
+        # v0.36 requirement F.2: the planning-prompt section naming the
+        # offending edges of a graph-fault replan (one-shot), and the tail
+        # flag for a second graph fault on the same approach.
+        self._pending_graph_fault_note: str | None = None
+        self._unschedulable_graph_tail = False
 
         # Task 006 (PRD requirement B.2, #111) / task 007 (requirement
         # D.1, finding 5): the operator-escalation seam for a `rejected_
@@ -4421,7 +4426,7 @@ class LoopSupervisor:
             return False
         return iteration_start_id is None or iteration_start_id < escalation_id
 
-    def _paused_awaiting_stagnation_last_approach_ruling(self, approach: int) -> bool:
+    def _paused_awaiting_stagnation_ruling(self, approach: int) -> bool:
         """Task 012 (PRD requirement B.3, #153): the same crashed/
         restarted-episode shape as `_paused_awaiting_last_approach_ruling`
         just above, for the `stagnation` reason instead of `rejected_
@@ -4618,7 +4623,7 @@ class LoopSupervisor:
                     "ruling recorded while paused is seen by the next "
                     "review iteration (PRD requirement A.1, #224)"))
             return approach, False, "review"
-        if self._paused_awaiting_stagnation_last_approach_ruling(approach):
+        if self._paused_awaiting_stagnation_ruling(approach):
             self.run.emit(
                 "log",
                 message=(
@@ -4809,6 +4814,12 @@ class LoopSupervisor:
         # review-specific branches (mutually exclusive with each by
         # construction: neither call site that sets either flag above ever
         # also sets this one) and before the ordinary fallback below.
+        if self._unschedulable_graph_tail and not self._abort_reason:
+            self._finish(final_state, None,
+                        reason=self._terminal_reason_note,
+                        ending=self.GRAPH_FAULT_ENDING,
+                        **self._unconsumed_steering_patch())
+            return final_state
         if self._approaches_exhausted_tail and not self._abort_reason:
             return self._finish_exhausted(
                 "approaches", reason=self._terminal_reason_note)
@@ -5890,6 +5901,7 @@ class LoopSupervisor:
                                pauseReason=None, inputQuestion=None,
                                # The hold's budget goes with the hold.
                                exhaustedBudget=REMOVE_STATUS_KEY,
+                               ending=REMOVE_STATUS_KEY,
                                # v0.30 G.2: the pause's sub-reason goes with
                                # it; the refused work re-runs from here.
                                pauseDetail=None,
@@ -9029,6 +9041,10 @@ class LoopSupervisor:
             # to on the revision it asked for.
             pending_objection = self._pending_plan_review_objection
             self._pending_plan_review_objection = None
+            # v0.36 requirement F.2: the offending edges of an uncharged
+            # graph-fault replan, consumed by this planning pass only.
+            pending_graph_fault = self._pending_graph_fault_note
+            self._pending_graph_fault_note = None
 
             event_loop = asyncio.get_running_loop()
 
@@ -9049,6 +9065,8 @@ class LoopSupervisor:
                         "plan\n\nRevise the plan to address this objection "
                         "before resubmitting a proposal:\n"
                         + pending_objection + "\n")
+                if pending_graph_fault:
+                    extra += pending_graph_fault
                 if prior_errors:
                     extra += (
                         "\n## Your previous plan-proposal.json was "
@@ -10209,6 +10227,12 @@ class LoopSupervisor:
             self._advance("replan", "planning",
                           "planning_death_excluded_from_charge")
             return ("advance", "planning", "planning_death_excluded_from_charge")
+        if self._replan_guard == "unschedulable_task_graph":
+            # v0.36 requirement F.2: the first graph fault on an approach
+            # replans the SAME approach number, uncharged, like `empty_plan`.
+            self._advance("replan", "planning",
+                          "graph_fault_excluded_from_charge")
+            return ("advance", "planning", "graph_fault_excluded_from_charge")
 
         # Task 026 (#61): a repeated STRUCTURAL blocker -- this approach's
         # own stagnation signature equalling its predecessor's -- ends the
@@ -10226,7 +10250,12 @@ class LoopSupervisor:
         signatures = status.get("blockerSignatures") or {}
         this_sig = signatures.get(str(self._approach))
         prev_sig = signatures.get(str(self._approach - 1))
-        if this_sig is not None and this_sig == prev_sig:
+        # v0.36 requirement F.1: with NO approach left a stalled approach
+        # holds `exhausted` (`approaches`) -- an operator can top the budget
+        # up -- so the same-wall `failed` ending below applies only while a
+        # successor approach would still have been spent on the same wall.
+        if (this_sig is not None and this_sig == prev_sig
+                and self._approach < self.cfg.max_approaches):
             self._terminal_reason_note = (
                 f"approach {self._approach} stagnated on the same "
                 f"structural blocker as approach {self._approach - 1} "
@@ -10565,16 +10594,12 @@ class LoopSupervisor:
                             "the dependsOn graph holds a cycle that "
                             "touches the actionable remainder -- no "
                             "worker iteration could ever move this plan "
-                            "again; pausing and escalating instead of "
+                            "again; replanning this approach instead of "
                             "grinding through no-progress iterations "
-                            "(task 002, requirement E, #206)"),
+                            "(task 002, requirement E, #206; v0.36 F.2)"),
                         **cycle_fault)
-                    self.run.update_status(health="degraded")
-                    self._pause_and_escalate_unschedulable_cycle(cycle_fault)
-                    self._advance("worker", "paused",
-                                 "unschedulable_dependency_cycle")
-                    return ("advance", "paused",
-                           "unschedulable_dependency_cycle")
+                    return self._self_heal_graph_fault(
+                        "cycle", cycle_fault)
                 # Review cure cure-01-03 (PRD requirement E.1/E.2, #206's
                 # second defect): a FOURTH safety net, checked right after
                 # `_unschedulable_cycle_fault` -- reached only when neither
@@ -10596,17 +10621,13 @@ class LoopSupervisor:
                             "an actionable task's dependsOn names a task "
                             "id that is not in the plan at all -- no "
                             "worker iteration could ever move this plan "
-                            "again; pausing and escalating instead of "
+                            "again; replanning this approach instead of "
                             "grinding through no-progress iterations "
                             "(review cure cure-01-03, requirement "
-                            "E.1/E.2, #206)"),
+                            "E.1/E.2, #206; v0.36 F.2)"),
                         **edge_fault)
-                    self.run.update_status(health="degraded")
-                    self._pause_and_escalate_unresolvable_edge(edge_fault)
-                    self._advance("worker", "paused",
-                                 "unresolvable_dependency_edge")
-                    return ("advance", "paused",
-                           "unresolvable_dependency_edge")
+                    return self._self_heal_graph_fault(
+                        "edge", edge_fault)
                 if blocked_by:
                     new_ids = sorted(set(blocked_by) - self._blocked_notes_written)
                     if new_ids:
@@ -10825,22 +10846,24 @@ class LoopSupervisor:
                 self._exhausted_split_child_of_superseded_parent(
                     tasks_before, selected, budget_before_dispatch)
                 if forced_split_required else None)
-            if (exhausted_split_child is not None
-                    and not self._second_exhaustion_already_escalated(
-                        exhausted_split_child["id"])):
-                outstanding_tasks = [
-                    {"id": t.get("id"), "status": t.get("status", "pending")}
-                    for t in tasks_before.get("tasks", [])
-                    if isinstance(t, dict)
-                ]
-                self._pause_and_escalate_stagnation_last_approach(
-                    approach, outstanding_tasks,
-                    is_last_approach=(
-                        self._approach == self.cfg.max_approaches),
-                    approach_progressed=True,
-                    exhausted_split_child=exhausted_split_child)
-                self._advance("worker", "paused", "stagnation_last_approach")
-                return ("advance", "paused", "stagnation_last_approach")
+            if exhausted_split_child is not None:
+                # v0.36 requirement F.1: the second exhaustion is
+                # stagnation like any other, on any approach -- it
+                # self-heals. The approach is archived and the run replans
+                # on the next approach number over the same workspace tree
+                # (`replan` holds `exhausted` with `exhaustedBudget:
+                # approaches` when none is left). The 0.35 park is gone.
+                self.run.emit(
+                    "log", level="error",
+                    message=(
+                        f"split child {exhausted_split_child['id']} of a "
+                        "superseded parent spent its own progress budget; "
+                        "a second forced split only recurses -- archiving "
+                        "the approach and replanning (v0.36 requirement "
+                        "F.1)"),
+                    exhaustedSplitChild=exhausted_split_child["id"])
+                self._archive_approach(approach)
+                return ("advance", "replan", "stagnation_exhausted")
             # Task 008 (PRD requirement B.4, #135): read-and-clear any
             # VOLUNTARY split refusal an EARLIER iteration recorded
             # (`_record_refused_worker_split`) so it reaches exactly this
@@ -12208,12 +12231,35 @@ class LoopSupervisor:
                 ]
                 names = ", ".join(
                     f"{o['id']} ({o['status']})" for o in outstanding_tasks)
+                # Whether this approach PROGRESSED before it stalled: two
+                # witnesses, either sufficient -- the workspace branch
+                # gained commits since `approach_start_head` (persisted, so
+                # a fresh process re-entering the approach compares against
+                # the head it really started at), or a `superseded` task
+                # (a forced split, task 016) is in the plan. Since v0.36
+                # requirement F.1 it no longer changes what happens next --
+                # every stalled approach is archived and replanned -- but
+                # it is recorded on the event so a reader can tell a stall
+                # after real work from a silent one.
+                approach_head_now = self._workspace_head_sha()
+                commits_this_approach = (
+                    (approach_start_head is not None
+                     or approach_head_now is not None)
+                    and approach_start_head != approach_head_now)
+                superseded_present = any(
+                    isinstance(t, dict)
+                    and t.get("status") == state.TASK_STATUS_SUPERSEDED
+                    for t in tasks_after.get("tasks", []))
+                approach_progressed = (commits_this_approach
+                                       or superseded_present)
                 self.run.emit(
                     "log", level="error",
                     message=("3 iterations with no task progress; failing "
                               "approach"
                               + (f" (outstanding: {names})" if names else "")),
-                    outstandingTasks=outstanding_tasks)
+                    outstandingTasks=outstanding_tasks,
+                    approachProgressed=approach_progressed,
+                    awaitingValidation=self._tasks_stuck_awaiting_validation())
                 # Task 026 (#61): persist THIS approach's blocker signature
                 # before the approach boundary -- `_step_replan` (the guard
                 # predicate the PRD asks for) reads it back, keyed by
@@ -12240,51 +12286,13 @@ class LoopSupervisor:
             self._budget_exhausted_tail = True
             return ("tail",)
         if not verdict_ready:
-            # Task 018 (PRD requirement B.3, #156): generalising task
-            # 012's "the LAST approach never fails silently on stagnation
-            # alone" -- a PROGRESSING approach (one that is not genuinely
-            # silent) must not be replanned either, on ANY approach, not
-            # only the last. Two witnesses of "this approach progressed",
-            # either sufficient on its own:
-            #   * the workspace branch gained commits SOMEWHERE during
-            #     this approach (`approach_start_head` captured before the
-            #     approach's first iteration, compared against the head
-            #     right now) -- a `no_verdict` earlier in the approach may
-            #     have committed real work before the final 3 stagnant
-            #     iterations ran, and the four-witness formula above only
-            #     ever looks at ONE iteration at a time, so it can miss
-            #     exactly this case.
-            #   * a `superseded` task is present in the plan -- the PRD's
-            #     "a superseded task's children exhaust their budgets too"
-            #     case: a forced split (task 016) already happened this
-            #     approach (the parent moved to `superseded`, real work
-            #     recorded against it), so the plan itself already carries
-            #     evidence this approach was not silent, even if the
-            #     children now stagnating never touched git themselves.
-            approach_head_now = self._workspace_head_sha()
-            commits_this_approach = (
-                (approach_start_head is not None or approach_head_now is not None)
-                and approach_start_head != approach_head_now)
-            superseded_present = any(
-                isinstance(t, dict)
-                and t.get("status") == state.TASK_STATUS_SUPERSEDED
-                for t in tasks_after.get("tasks", []))
-            approach_progressed = commits_this_approach or superseded_present
-            if self._approach == self.cfg.max_approaches or approach_progressed:
-                # The LAST approach never fails silently on stagnation
-                # alone (task 012); a progressing approach with successors
-                # left does not either (task 018) -- both pause and
-                # escalate exactly like `review`'s `rejected_last_
-                # approach` edge, leaving the approach unarchived so
-                # `resume` re-enters it directly. A genuinely silent
-                # approach (neither witness present) with approaches left
-                # still replans, unchanged.
-                self._pause_and_escalate_stagnation_last_approach(
-                    approach, outstanding_tasks,
-                    is_last_approach=(self._approach == self.cfg.max_approaches),
-                    approach_progressed=approach_progressed)
-                self._advance("worker", "paused", "stagnation_last_approach")
-                return ("advance", "paused", "stagnation_last_approach")
+            # v0.36 requirement F.1: stagnation self-heals on EVERY
+            # approach, progressed or silent. 0.35 parked a progressing
+            # approach (and the last one) and waited for an operator; the approach is now archived and
+            # the run replans on approach + 1, keeping the workspace tree
+            # (the planning prompt folds in the archived handoff). With no
+            # approach left `_step_replan` holds `exhausted` with
+            # `exhaustedBudget: approaches`.
             self._archive_approach(approach)
             return ("advance", "replan", "stagnation_exhausted")
         return ("advance", "review", guard_ready)
@@ -14232,9 +14240,10 @@ class LoopSupervisor:
         reach this state now, and they resume to DIFFERENT targets --
         `review`'s `rejected_last_approach` pause resumes back into
         `review` over the same approach (there is a ruling for review to
-        consider); `worker`'s `stagnation_last_approach` pause resumes
-        straight back into `worker` over the same, unarchived approach
-        (there is no verdict pending, only unfinished tasks). The pause
+        consider); a 0.35 `stagnation` pause found in an old run
+        directory resumes straight back into `worker` over the same,
+        unarchived approach (there is no verdict pending, only unfinished
+        tasks); the engine no longer takes that pause itself. The pause
         reason is read from status.json BEFORE `_gate()` is awaited,
         because `resume()` clears `pauseReason` back to `None` the moment
         it releases the gate (`_clear_persisted_pause`) -- reading it
@@ -15750,95 +15759,6 @@ class LoopSupervisor:
             self._notify_escalation_delivery(
                 digest, reason="review_findings_unusable")
 
-    def _stagnation_last_approach_escalation_text(
-        self, approach: int, outstanding_tasks: list[dict],
-        is_last_approach: bool = True, approach_progressed: bool = False,
-        exhausted_split_child: dict | None = None,
-    ) -> str:
-        """The operator-facing escalation body for a `stagnation_last_
-        approach` pause (task 012, PRD requirement B.3, #153; generalised
-        to a progressing NON-last approach by task 018, PRD requirement
-        B.3, #156) -- the same shape as `_last_approach_rejection_
-        escalation_text`, but for a stagnant approach rather than a
-        rejected one: there are no findings to list, only the tasks the
-        plan still holds open after three consecutive worker iterations
-        made no progress against any of the stagnation counter's four
-        witnesses.
-
-        `is_last_approach`/`approach_progressed` (task 018) shape the
-        opening sentence's own reason so an operator reading `approach 1
-        of 3` never sees "this is the LAST available approach" when it
-        plainly is not -- the two flags are never both False at the call
-        site (the caller only reaches this pause when at least one holds).
-        """
-        if exhausted_split_child is not None:
-            # Task 018's SECOND-exhaustion pause: no three-strike counter
-            # was involved at all, so this variant replaces the opening
-            # sentence outright rather than only its reason clause.
-            used = exhausted_split_child.get("used")
-            budget = exhausted_split_child.get("budget")
-            spent = (f" ({used}/{budget})" if used is not None
-                     and budget is not None else "")
-            lines = [
-                f"Run {self.cfg.run_id} approach {approach}: task "
-                f"{exhausted_split_child.get('id')} -- itself a split of "
-                f"task {exhausted_split_child.get('splitFrom')}, which is "
-                f"already `superseded` by that earlier forced split -- has "
-                f"now spent its OWN progress budget{spent}. Splitting it "
-                "again would only recurse one generation smaller, so the "
-                "run has been paused (existing pause machinery) instead of "
-                "forcing a second split, and instead of replanning over "
-                "work already done; "
-                + self._ruling_then_unpause_escalation_sentences()
-                + f" Unpausing re-enters approach {approach} rather than "
-                "starting a fresh one.",
-                "",
-                "Outstanding tasks:",
-            ]
-            for task in outstanding_tasks:
-                lines.append(
-                    f"  {task.get('id')} ({task.get('status', 'pending')})")
-            lines += self._awaiting_validation_escalation_lines()
-            return "\n".join(lines).rstrip() + "\n"
-        if is_last_approach:
-            reason_clause = "this is the LAST available approach"
-        else:
-            reason_clause = (
-                "this approach gained real progress (a workspace commit "
-                "and/or a forced split leaving a `superseded` task behind) "
-                "before stalling, so it is not the genuinely silent case "
-                "a replan is for")
-        lines = [
-            f"Run {self.cfg.run_id} approach {approach}: 3 consecutive "
-            f"worker iterations made no progress and {reason_clause} -- "
-            "the run has been paused (existing pause machinery) rather "
-            "than ended `failed` on stagnation alone, or replanned over "
-            "work already in progress; "
-            + self._ruling_then_unpause_escalation_sentences(),
-            "",
-            "Outstanding tasks:",
-        ]
-        for task in outstanding_tasks:
-            lines.append(
-                f"  {task.get('id')} ({task.get('status', 'pending')})")
-        lines += self._awaiting_validation_escalation_lines()
-        return "\n".join(lines).rstrip() + "\n"
-
-    def _awaiting_validation_escalation_lines(self) -> list[str]:
-        """#273: the "Waiting on verify" section every stagnation
-        escalation text carries (both variants), one line per task resting
-        in `awaiting-validation`; `[]` when there is none."""
-        stuck = self._tasks_stuck_awaiting_validation()
-        if not stuck:
-            return []
-        lines = ["", "Waiting on verify, which has not moved them:"]
-        for entry in stuck:
-            lines.append(
-                f"  {entry['id']} (awaiting-validation, "
-                f"validationAttempts {entry['validationAttempts']} of "
-                f"{VALIDATION_ATTEMPT_LIMIT})")
-        return lines
-
     def _tasks_stuck_awaiting_validation(self) -> list[dict]:
         """#273: every task the stagnation guard found resting in
         `awaiting-validation` -- the one status no worker iteration can act
@@ -15947,103 +15867,6 @@ class LoopSupervisor:
             "This is reported once; the hold persisting across further "
             "iterations does not repeat this notice.\n"
         )
-
-    def _second_exhaustion_already_escalated(self, task_id) -> bool:
-        """Task 018 (PRD requirement B.3, #156): has this run ALREADY paused
-        and escalated `task_id`'s second exhaustion? Read back from the
-        `operator_escalation` events themselves (`state.read_events`, the
-        same seam `_signal_episodes` already reads for its own dedupe)
-        rather than an in-memory flag, so a fresh process resuming
-        mid-approach reaches the same answer as the episode that paused.
-
-        Why it is bounded at one: the pause happens BEFORE the doomed
-        forced-split dispatch, so a still-spent budget would re-pause the
-        instant an operator resumes, forever, with no lever inside the run
-        to change it. One escalation says "splitting this further only
-        recurses"; an operator who resumes past it has been told, and the
-        ordinary forced split then proceeds.
-        """
-        for ev in state.read_events(self.run.root, types={"operator_escalation"}):
-            child = ev.get("exhaustedSplitChild")
-            if isinstance(child, dict) and child.get("id") == task_id:
-                return True
-        return False
-
-    def _pause_and_escalate_stagnation_last_approach(
-        self, approach: int, outstanding_tasks: list[dict],
-        is_last_approach: bool = True, approach_progressed: bool = False,
-        exhausted_split_child: dict | None = None,
-    ) -> None:
-        """Task 012 (PRD requirement B.3, #153): pause the run through the
-        EXISTING pause machinery -- the same seam `_pause_and_escalate_
-        last_approach_rejection` already uses (`self.pause()`, `self.
-        notifier`, an `operator_escalation` event always emitted to
-        `events.jsonl`) -- with `reason: "stagnation"` instead of
-        `"rejected_last_approach"`, so the two escalation kinds stay
-        distinguishable on status.json's `pauseReason`, on the emitted
-        event, and to `_step_paused`, which resumes a `"stagnation"` pause
-        straight back into `worker` rather than `review`.
-        """
-        text = self._stagnation_last_approach_escalation_text(
-            approach, outstanding_tasks,
-            is_last_approach=is_last_approach,
-            approach_progressed=approach_progressed,
-            exhausted_split_child=exhausted_split_child)
-        extra_payload = ({"exhaustedSplitChild": exhausted_split_child}
-                         if exhausted_split_child is not None else {})
-        self.run.emit("operator_escalation", approach=approach,
-                      reason="stagnation", outstandingTasks=outstanding_tasks,
-                      approachProgressed=approach_progressed,
-                      awaitingValidation=self._tasks_stuck_awaiting_validation(),
-                      escalation=text, **extra_payload)
-        self.pause(reason="stagnation")
-        if self.notifier is not None:
-            # Cure task cure-01-05-2: stagnation is ruling-answerable
-            # (SPEC.md §4.6), so its digest names both live-run levers,
-            # the same phrasing `_operator_escalation_digest_text` uses.
-            # `fault_lines` opens with whichever of the two stagnation-
-            # guard reasons applies (matching `_stagnation_last_approach_
-            # escalation_text`'s own opening sentence) and, on a second
-            # exhaustion, the exhausted split child's own spend -- the
-            # same short facts the full text already names, kept short
-            # enough that they are never the line the overflow count
-            # below drops.
-            fault_lines: list[str] = []
-            if exhausted_split_child is not None:
-                used = exhausted_split_child.get("used")
-                budget = exhausted_split_child.get("budget")
-                spent = (f"{used}/{budget}" if used is not None
-                        and budget is not None else "unavailable")
-                fault_lines.append(
-                    f"{exhausted_split_child.get('id')} -- split of "
-                    f"{exhausted_split_child.get('splitFrom')} -- spent "
-                    f"{spent}, splitting further would only recurse")
-            elif is_last_approach:
-                fault_lines.append("this is the LAST available approach")
-            elif approach_progressed:
-                fault_lines.append(
-                    "this approach progressed (a commit or a forced "
-                    "split) before stalling")
-            fault_lines += [
-                f"{task.get('id')} ({task.get('status', 'pending')})"
-                for task in outstanding_tasks]
-            for entry in self._tasks_stuck_awaiting_validation():
-                fault_lines.append(
-                    f"{entry['id']} awaiting-validation, attempts "
-                    f"{entry['validationAttempts']} of "
-                    f"{VALIDATION_ATTEMPT_LIMIT}")
-            # Cure task cure-01-01-9 (PRD A.1/A.6, D.1; DoD 1/4): a
-            # `stagnation` pause resumes into `worker`, never `review`
-            # (`_step_paused` above), and a ruling never releases it -- the prior "rule ..., or unpause ... to
-            # accept the default" phrasing read as two interchangeable
-            # single-step alternatives, but executing `rule` alone through
-            # the real CLI/engine route left the run paused; the shared
-            # helper phrases the actual two-step sequence instead.
-            digest = self._pause_escalation_digest_text(
-                "stagnation", approach,
-                self._ruling_then_unpause_answer_cmd(),
-                fault_lines)
-            self._notify_escalation_delivery(digest, reason="stagnation")
 
     def _amend_invocation_for_finding(self, finding: dict, index: int) -> str:
         """The exact `ralphctl amend` invocation an operator would run to
@@ -16429,7 +16252,7 @@ class LoopSupervisor:
         the plan spun through `_step_worker`'s ordinary "nothing
         selectable" dispatch, burning worker iterations with no task
         assigned, until the stagnation guard eventually mis-attributed
-        the cause as a stalled approach (`stagnation_last_approach`)
+        the cause as a stalled approach
         rather than a structurally unreachable edge -- GH #206's own
         second incident.
 
@@ -16519,142 +16342,85 @@ class LoopSupervisor:
                 queue.append(nxt)
         return dependents
 
-    def _unschedulable_cycle_escalation_text(self, cycle_fault: dict) -> str:
-        """The operator-facing escalation body for an `unschedulable_
-        dependency_cycle` pause (PRD requirement E.3): names the
-        blocked/cycle task ids, the offending edges, and every DIRECT and
-        TRANSITIVE dependent task id (review cure cure-01-04: a self-loop
-        that blocks downstream tasks previously escalated naming only the
-        cycle itself, leaving a reader to rediscover the dependents by
-        hand) plus the exact `ralphctl unpause` invocation, so a reader
-        never has to open `tasks.json` by hand to find any of it.
-        """
-        ids = ", ".join(cycle_fault.get("cycleTaskIds", [])) or "(none)"
-        edges = ", ".join(
-            f"{e.get('from')} -> {e.get('to')}"
-            for e in cycle_fault.get("cycleEdges", [])) or "(none)"
-        dependents = cycle_fault.get("dependentTaskIds") or []
-        dependents_clause = (
-            f" This also blocks its dependent task(s): "
-            f"{', '.join(dependents)}."
-            if dependents else "")
-        return (
-            f"Run {self.cfg.run_id}: the dependsOn graph holds a cycle "
-            f"that touches task(s) {ids} -- no worker iteration could "
-            f"ever move this plan again (offending edge(s): {edges})."
-            f"{dependents_clause} "
-            "The run has been paused (existing pause machinery); fix the "
-            "cycle in tasks.json (an operator edit, outside every one of "
-            "the engine's own writers) and resume with `ralphctl unpause "
-            f"{self.cfg.run_id}`.\n"
-        )
+    GRAPH_FAULT_STATUS_KEY = "graphFaultApproaches"
+    GRAPH_FAULT_ENDING = "unschedulable_task_graph"
 
-    def _pause_and_escalate_unschedulable_cycle(self, cycle_fault: dict) -> None:
-        """Task 002 (PRD requirement E.3, #206): pause the run through the
-        EXISTING pause machinery (`self.pause()`, `self.notifier`, an
-        `operator_escalation` event -- the same seam every other engine-
-        initiated escalation in this module already uses), with
-        `reason: "unschedulable_dependency_cycle"` so `_step_paused`
-        resumes straight back into `worker` (there is no verdict pending
-        here, only a `tasks.json` edit an operator has to make by hand)
-        rather than into `review`.
-        """
-        text = self._unschedulable_cycle_escalation_text(cycle_fault)
-        self.run.emit("operator_escalation",
-                      reason="unschedulable_dependency_cycle",
-                      escalation=text, **cycle_fault)
-        self.pause(reason="unschedulable_dependency_cycle")
-        if self.notifier is not None:
-            # Cure task cure-01-05-2: same bounded digest every other real
-            # escalation path now posts, naming the cycle's own ids/edges/
-            # dependents (already short) rather than 0/unavailable review
-            # findings that never applied to this pause in the first place.
-            ids = cycle_fault.get("cycleTaskIds", [])
-            edges = cycle_fault.get("cycleEdges", [])
-            dependents = cycle_fault.get("dependentTaskIds") or []
-            fault_lines = [
-                "cycle task ids: " + (", ".join(ids) or "(none)"),
-                "edges: " + (", ".join(
-                    f"{e.get('from')} -> {e.get('to')}" for e in edges)
-                    or "(none)"),
-            ]
-            if dependents:
-                fault_lines.append(
-                    "dependent task(s): " + ", ".join(dependents))
-            digest = self._pause_escalation_digest_text(
-                "unschedulable_dependency_cycle", self._approach,
-                "fix the cycle in tasks.json (an operator edit), then "
-                f"ralphctl unpause {self.cfg.run_id}",
-                fault_lines)
-            self._notify_escalation_delivery(
-                digest, reason="unschedulable_dependency_cycle")
+    @staticmethod
+    def _graph_fault_edges(kind: str, fault: dict) -> list[dict]:
+        """The offending `dependsOn` edges of a graph fault payload
+        (`cycleEdges` for a cycle, `unresolvedEdges` for an absent id)."""
+        key = "cycleEdges" if kind == "cycle" else "unresolvedEdges"
+        return [e for e in (fault.get(key) or []) if isinstance(e, dict)]
 
-    def _unresolvable_edge_escalation_text(self, edge_fault: dict) -> str:
-        """The operator-facing escalation body for an `unresolvable_
-        dependency_edge` pause (review cure cure-01-03, PRD requirement
-        E.1-E.3): names the blocked task ids, the offending edge(s) (the
-        absent id each one names) and every direct/transitive dependent
-        task id, the same shape `_unschedulable_cycle_escalation_text`
-        already gives the cycle fault, plus the exact `ralphctl unpause`
-        invocation.
-        """
-        ids = ", ".join(edge_fault.get("unresolvedTaskIds", [])) or "(none)"
-        edges = ", ".join(
-            f"{e.get('from')} -> {e.get('to')}"
-            for e in edge_fault.get("unresolvedEdges", [])) or "(none)"
-        dependents = edge_fault.get("dependentTaskIds") or []
-        dependents_clause = (
-            f" This also blocks its dependent task(s): "
-            f"{', '.join(dependents)}."
-            if dependents else "")
-        return (
-            f"Run {self.cfg.run_id}: task(s) {ids} name a dependsOn edge "
-            f"to a task id that is not in the plan at all -- no worker "
-            f"iteration could ever move this plan again (offending "
-            f"edge(s): {edges})."
-            f"{dependents_clause} "
-            "The run has been paused (existing pause machinery); fix the "
-            "dependsOn edge in tasks.json (an operator edit, outside "
-            "every one of the engine's own writers) and resume with "
-            f"`ralphctl unpause {self.cfg.run_id}`.\n"
-        )
+    def _graph_fault_planning_note(self, kind: str, fault: dict) -> str:
+        """The planning-prompt section a graph-fault replan carries: names
+        the offending edges (and the tasks that depend on them) so the new
+        proposal repairs exactly those, instead of rediscovering them."""
+        edges = self._graph_fault_edges(kind, fault)
+        edge_lines = "\n".join(
+            f"- {e.get('from')} -> {e.get('to')}" for e in edges) or "- (none)"
+        if kind == "cycle":
+            what = ("the `dependsOn` graph of your previous plan holds a "
+                    "cycle, so the tasks on it can never be scheduled")
+            ids = fault.get("cycleTaskIds") or []
+        else:
+            what = ("a task in your previous plan lists a `dependsOn` id "
+                    "that is not a task in the plan at all, so it can "
+                    "never be scheduled")
+            ids = fault.get("unresolvedTaskIds") or []
+        dependents = fault.get("dependentTaskIds") or []
+        text = (
+            "\n## Your previous plan's task graph cannot be scheduled\n\n"
+            f"The engine found that {what}. Offending edge(s), "
+            "`task -> its dependsOn target`:\n"
+            f"{edge_lines}\n")
+        if ids:
+            text += f"Tasks on the fault: {', '.join(map(str, ids))}.\n"
+        if dependents:
+            text += ("Also blocked behind it: "
+                     f"{', '.join(map(str, dependents))}.\n")
+        text += ("Resubmit a proposal whose `dependsOn` edges form an "
+                 "acyclic graph over ids that exist in the proposal. This "
+                 "replan costs no approach; a second unschedulable graph "
+                 "on this approach ends the run.\n")
+        return text
 
-    def _pause_and_escalate_unresolvable_edge(self, edge_fault: dict) -> None:
-        """Review cure cure-01-03 (PRD requirement E.3, #206): pause the
-        run through the EXISTING pause machinery, `reason:
-        \"unresolvable_dependency_edge\"` so `_step_paused` resumes
-        straight back into `worker` (there is no verdict pending here,
-        only a `tasks.json` edit an operator has to make by hand) --
-        the exact sibling of `_pause_and_escalate_unschedulable_cycle`
-        just above.
-        """
-        text = self._unresolvable_edge_escalation_text(edge_fault)
-        self.run.emit("operator_escalation",
-                      reason="unresolvable_dependency_edge",
-                      escalation=text, **edge_fault)
-        self.pause(reason="unresolvable_dependency_edge")
-        if self.notifier is not None:
-            # Cure task cure-01-05-2: same bounded-digest treatment as
-            # `_pause_and_escalate_unschedulable_cycle` just above.
-            ids = edge_fault.get("unresolvedTaskIds", [])
-            edges = edge_fault.get("unresolvedEdges", [])
-            dependents = edge_fault.get("dependentTaskIds") or []
-            fault_lines = [
-                "task ids: " + (", ".join(ids) or "(none)"),
-                "edges: " + (", ".join(
-                    f"{e.get('from')} -> {e.get('to')}" for e in edges)
-                    or "(none)"),
-            ]
-            if dependents:
-                fault_lines.append(
-                    "dependent task(s): " + ", ".join(dependents))
-            digest = self._pause_escalation_digest_text(
-                "unresolvable_dependency_edge", self._approach,
-                "fix the dependsOn edge in tasks.json (an operator "
-                f"edit), then ralphctl unpause {self.cfg.run_id}",
-                fault_lines)
-            self._notify_escalation_delivery(
-                digest, reason="unresolvable_dependency_edge")
+    def _self_heal_graph_fault(self, kind: str, fault: dict) -> tuple:
+        """v0.36 requirement F.2: a `dependsOn` cycle (`kind == "cycle"`)
+        or an edge to an id that is not in the plan (`"edge"`) heals
+        itself. The FIRST graph fault on an approach replans that SAME
+        approach, uncharged, exactly as `empty_plan` does (`_step_replan`
+        sends `unschedulable_task_graph` back to `planning` without
+        bumping `self._approach`), with the offending edges named in the
+        planning prompt (`_graph_fault_planning_note`). A SECOND graph fault
+        on the same approach (`graphFaultApproaches` on status.json, so a
+        fresh process sees it too) ends the run `failed` with
+        `ending: unschedulable_task_graph` through the tail. The engine
+        never parks on a graph fault any more."""
+        approach = self._approach
+        seen = [int(a) for a in
+                (self.run.read_status().get(self.GRAPH_FAULT_STATUS_KEY)
+                 or [])]
+        edges = self._graph_fault_edges(kind, fault)
+        edge_text = ", ".join(
+            f"{e.get('from')} -> {e.get('to')}" for e in edges) or "(none)"
+        self.run.update_status(health="degraded")
+        self.run.emit("graph_fault", approach=approach, kind=kind,
+                      repeated=approach in seen, **fault)
+        if approach in seen:
+            self._terminal_reason_note = (
+                f"approach {approach} produced an unschedulable task graph "
+                f"twice ({kind}; offending edge(s): {edge_text}); the "
+                "uncharged replan did not repair it")
+            self._unschedulable_graph_tail = True
+            self._advance("worker", "finishing", "unschedulable_task_graph")
+            return ("tail",)
+        self.run.update_status(
+            **{self.GRAPH_FAULT_STATUS_KEY: sorted(set(seen + [approach]))})
+        self._pending_graph_fault_note = self._graph_fault_planning_note(
+            kind, fault)
+        self._advance("worker", "replan", "unschedulable_task_graph")
+        return ("advance", "replan", "unschedulable_task_graph")
 
     def _unresolved_failures(self, tasks_doc: dict) -> list[dict]:
         """The `failed` tasks of a plan that has nothing actionable left in it.

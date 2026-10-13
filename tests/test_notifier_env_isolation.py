@@ -83,9 +83,9 @@ def test_a_spawned_engine_that_pauses_never_gets_the_ambient_notifier_url(
     # `{**os.environ, ...}`.
     assert os.environ.get(NOTIFIER_ENV_VAR) == AMBIENT_NOTIFIER_URL
 
-    e = engine_factory(stub_env={"STUB_WORKER_STALLS": "1"})
+    e = engine_factory(stub_env={"STUB_REVIEW_MALFORMED_COUNT": "99"})
     status = e.wait_state(("paused",), timeout=90)
-    assert status["pauseReason"] == "stagnation"
+    assert status["pauseReason"] == "review_contract_unrepaired"
 
     events_path = e.run_dir / "events.jsonl"
     events = []

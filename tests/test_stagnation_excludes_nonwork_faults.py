@@ -100,17 +100,15 @@ def test_three_signal_iterations_do_not_fail_the_approach(tmp_path):
     assert faults and set(faults) == {"signal"}, faults
 
 
-def test_three_ordinary_work_noop_iterations_still_pause_on_the_last_approach(tmp_path):
+def test_three_ordinary_work_noop_iterations_still_end_the_last_approach(tmp_path):
     """The guard this must NOT weaken: three consecutive ordinary
     `"work"`-classified no-op worker iterations still trip the counter
     exactly as before task 117 -- the INPUT to the gate changed, not its
     strength. Drives `_step_worker()` directly (default `max_approaches=1`,
-    the LAST approach) rather than the full `_run_job_core()` loop: on the
-    last approach, task 012 (requirement B.3) pauses and escalates instead
-    of ending `failed` on paperwork (the pause itself is
-    `tests/test_last_approach.py`'s own dedicated
-    coverage), and a run parked on that pause inside `_run_job_core()`
-    would sit forever awaiting a `resume()` this test never sends.
+    the LAST approach): the guard archives the approach and routes to
+    `replan` (v0.36 requirement F.1; `tests/test_last_approach.py` and
+    `tests/test_self_heal_stagnation_graph.py` drive what the replan does
+    with no approach left).
     """
     root = tmp_path / "run"
     from ralphd.engine.state import RunDir
@@ -130,9 +128,9 @@ def test_three_ordinary_work_noop_iterations_still_pause_on_the_last_approach(tm
     outcome = asyncio.run(sup._step_worker())
     msgs = _log_messages(root)
     assert "3 iterations with no task progress" in msgs, msgs
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
     status = sup.run.read_status()
-    assert status.get("pauseReason") == "stagnation"
+    assert status.get("pauseReason") is None
 
 
 def test_a_mix_of_two_work_noops_and_one_signal_does_not_reach_three(tmp_path):
@@ -142,7 +140,7 @@ def test_a_mix_of_two_work_noops_and_one_signal_does_not_reach_three(tmp_path):
     counter at 2, not reset it to 0 and not advance it to 3 -- so a FOURTH
     (ordinary) no-op is what reaches the guard, not a third. Same direct-
     `_step_worker()` shape as the test just above, for the same reason
-    (default `max_approaches=1` is the LAST approach, task 012's pause).
+    (default `max_approaches=1` is the LAST approach).
     """
     root = tmp_path / "run"
     from ralphd.engine.state import RunDir
@@ -162,7 +160,7 @@ def test_a_mix_of_two_work_noops_and_one_signal_does_not_reach_three(tmp_path):
     outcome = asyncio.run(sup._step_worker())
     msgs = _log_messages(root)
     assert "3 iterations with no task progress" in msgs, msgs
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
     faults = [ev.get("faultClass") for ev in _events(root)
              if ev.get("type") == "iteration.end" and ev.get("phase") == "worker"]
     # Exactly 4 worker iterations ran before the guard fired -- if the signal

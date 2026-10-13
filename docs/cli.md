@@ -549,7 +549,7 @@ and which is still paused on that exact escalation, persisted or held in
 memory. Both disappear once `ralphctl unpause`/`POST /resume` releases the
 hold — for `operator_input_needed` a `ralphctl
 rule` alone does too, but for every other reason that waits on a ruling
-(`verdict_gate_operator_input_needed`, `stagnation`) a rule
+(`verdict_gate_operator_input_needed`) a rule
 alone leaves the hold in place; it takes a separate unpause afterward. `--json` carries the same facts
 as `pauseMarker` (the pause marker string, `""` when none applies),
 `escalationUndelivered` (boolean) and `escalationUndeliveredMarker` (the
@@ -2237,8 +2237,7 @@ clears the reason. A ruling never does it for you: `ralphctl rule <run-id>
 --file <ruling.md> --name <slug>` records the ruling and leaves the run
 paused, so recording one first takes the explicit sequence, `ralphctl rule
 <run-id> --file <ruling.md> --name <slug>` then `ralphctl unpause <run-id>`;
-`ralphctl unpause <run-id>` alone resumes with no ruling recorded. The full
-`operator_escalation.escalation` text of `stagnation` follows the same rule.
+`ralphctl unpause <run-id>` alone resumes with no ruling recorded.
 
 An `awaiting_input` run is **not unpaused**: `POST /resume` answers `409` naming
 `ralphctl answer <run-id>`, because "carry on with what the engine would do"
@@ -3203,6 +3202,15 @@ $ ralphctl resume my-run --approaches +1            # job.yaml max_approaches +=
 $ ralphctl resume my-run --timeout +3600            # job.yaml job_timeout_s += 3600
 $ ralphctl resume my-run --iteration-timeout 900    # job.yaml iteration_timeout_s = 900
 ```
+
+A run that ended `failed` with `ending: unschedulable_task_graph` (a second
+`dependsOn` cycle or unresolvable edge on the same approach, after the one
+uncharged replan the first took) resumes with a plain `ralphctl resume <run>`
+once `tasks.json` no longer holds the broken edges; the engine re-enters the
+approach where `_resume_point` computes it and clears `ending`. Stagnation never
+stops a run for an operator: the stalled approach is archived and replanned,
+and with no approach left the run holds `exhausted` (`approaches`), which the
+`--approaches +N` form above continues.
 
 `--approaches` writes `max_approaches`, `--timeout` writes `job_timeout_s`,
 `--iteration-timeout` writes `iteration_timeout_s` -- the base a `+N` tops

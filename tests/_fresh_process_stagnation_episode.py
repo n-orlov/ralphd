@@ -1,8 +1,8 @@
 """Helper spawned as a genuinely separate Python OS process by
 `tests/test_approach_start_head_persistence.py`'s
-`test_a_genuinely_fresh_os_process_resume_after_a_commit_and_stagnation_pause_stays_on_approach_one_and_pauses_again`
+`test_a_genuinely_fresh_os_process_re_entry_after_a_commit_still_sees_the_approach_as_progressed`
 (cure-01-01, PRD A.2 / Definition of done 1) -- runs exactly ONE episode of
-the literal `Cured when:` sequence against a run-state tree/workspace given
+the commit -> mid-approach end -> re-entry sequence against a run-state tree/workspace given
 on argv, entirely inside its OWN interpreter: no python object, module-level
 cache, or asyncio event loop is shared with the parent test process, nor
 with the OTHER episode's own subprocess -- only the run-state tree
@@ -17,6 +17,7 @@ name inside a child `python -m ...` invocation the parent test spawns.
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -71,11 +72,12 @@ class _QuietRunner:
         return _result("still nothing further to report")
 
 
-def _make_worker_supervisor(root: Path, workspace: Path, runner) -> LoopSupervisor:
+def _make_worker_supervisor(root: Path, workspace: Path, runner,
+                            iterations: int = 20) -> LoopSupervisor:
     run = RunDir(root=root)
     cfg = loop_mod.JobConfig(run_id="cure-01-01-fresh-os-process",
                              vigilant=False, on_complete="exit",
-                             iterations=20, infra_retry_backoff_s=[0.0],
+                             iterations=iterations, infra_retry_backoff_s=[0.0],
                              infra_retry_backoff_max_s=0.0,
                              infra_outage_budget_s=1000.0, max_approaches=3)
     sup = LoopSupervisor(cfg, run, workspace)
@@ -95,12 +97,13 @@ def episode_one(root: Path, workspace: Path) -> None:
                    "successCriteria": "the thing works"}],
     })
     sup = _make_worker_supervisor(root, workspace,
-                                   _CommitOnceThenQuietRunner(workspace))
+                                   _CommitOnceThenQuietRunner(workspace),
+                                   iterations=1)
     outcome = asyncio.run(sup._step_worker())
-    assert outcome == ("advance", "paused", "stagnation_last_approach"), outcome
+    # the one-iteration budget ends the episode MID-approach
+    assert outcome == ("tail",), outcome
     assert sup._approach == 1
     assert not (root / "approaches" / "01").exists()
-    assert not sup.run.composite_prd_file.exists()
 
 
 def episode_two(root: Path, workspace: Path) -> None:
@@ -110,17 +113,22 @@ def episode_two(root: Path, workspace: Path) -> None:
     was ever constructed by, or shares memory with, `episode_one`'s own
     process; everything below is read fresh off disk."""
     sup = _make_worker_supervisor(root, workspace, _QuietRunner())
-    assert sup._paused_awaiting_stagnation_last_approach_ruling(1) is True
     start_approach, skip_planning, start_step = sup._resume_point()
-    assert start_approach == 1
-    assert skip_planning is False
-    assert start_step == "worker"
+    assert (start_approach, skip_planning, start_step) == (1, True, "planning")
 
     outcome = asyncio.run(sup._step_worker())
-    assert outcome == ("advance", "paused", "stagnation_last_approach"), outcome
+    assert outcome == ("advance", "replan", "stagnation_exhausted"), outcome
     assert sup._approach == 1
-    assert not (root / "approaches" / "01").exists()
-    assert not sup.run.composite_prd_file.exists()
+    assert (root / "approaches" / "01").is_dir()
+    stagnation = [
+        json.loads(line) for line in
+        (root / "events.jsonl").read_text().splitlines() if line.strip()]
+    stagnation = [ev for ev in stagnation if ev.get("type") == "log"
+                  and "3 iterations with no task progress"
+                  in (ev.get("message") or "")]
+    assert len(stagnation) == 1, stagnation
+    # the baseline persisted by episode 1 is what makes this True
+    assert stagnation[0]["approachProgressed"] is True, stagnation
 
 
 def main(argv: list[str]) -> int:

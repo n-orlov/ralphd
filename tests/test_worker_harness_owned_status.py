@@ -163,13 +163,10 @@ def test_harness_decision_wins_over_a_disagreeing_worker_payload_claim(tmp_path)
     008's own first-sight bookkeeping, itself "progress" for the
     stagnation counter even though nothing about the disagreement changed)
     plus three more genuinely stagnant passes -- each still its own
-    exhausted ladder -- to trip the stagnation guard. `_make_sup` configures
-    `max_approaches=1`, so this IS the last approach: task 012 (PRD
-    requirement B.3, #153) means the guard now pauses and escalates
-    (`reason: "stagnation"`) rather than failing the approach silently,
-    ending in `("advance", "paused", "stagnation_last_approach")` rather
-    than `("tail",)` (task 116's original claim) or
-    `("advance", "replan", "stagnation_exhausted")` (the pre-B.3 claim)."""
+    exhausted ladder -- to trip the stagnation guard. The guard archives the
+    approach and routes to `replan` (v0.36 requirement F.1), ending in
+    `("advance", "replan", "stagnation_exhausted")`; `_make_sup` configures
+    `max_approaches=1`, so that replan holds `exhausted`."""
     sup, run = _make_sup(tmp_path, [
         {"id": "001", "title": "first task", "status": "pending",
          "successCriteria": "first done"},
@@ -197,14 +194,12 @@ def test_harness_decision_wins_over_a_disagreeing_worker_payload_claim(tmp_path)
     sup._approach = 1  # a run's own approach bookkeeping, not this test's concern
     outcome = asyncio.run(sup._step_worker())
 
-    assert outcome == ("advance", "paused", "stagnation_last_approach")
+    assert outcome == ("advance", "replan", "stagnation_exhausted")
     assert sup._abort_reason is None
-    # the last approach never fails silently on stagnation alone (task
-    # 012, B.3) -- it pauses and escalates, leaving the approach
-    # unarchived so `resume` re-enters `worker` directly.
+    # the approach is archived and the run never parks (v0.36 F.1).
     status = run.read_status()
-    assert status.get("state") == "paused"
-    assert status.get("pauseReason") == "stagnation"
+    assert status.get("state") != "paused"
+    assert status.get("pauseReason") is None
     assert status.get("state") != "failed"
     tasks = {t["id"]: t["status"] for t in run.read_tasks()["tasks"]}
     # the harness's own pre-spawn claim on "001" stands...

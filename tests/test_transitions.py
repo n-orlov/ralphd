@@ -595,22 +595,33 @@ def test_task_status_renders_track_the_declaration_not_a_constant():
     assert mutated_diagram != baseline_diagram
 
 
-def test_the_widened_stagnation_guard_condition_is_declared_and_rendered():
-    """The every-approach pause edge: the row's guard name is still
-    `stagnation_last_approach`, so the widened CONDITION is declared as data
-    (`GUARD_CONDITION_NOTES`) and rendered into the same generated block
-    rather than left to a reader's inference (v0.20 requirement B.3, #156,
-    tasks 018/019)."""
-    note = transitions.guard_condition_note("stagnation_last_approach")
-    assert note and "EVERY approach that progressed" in note
+def test_the_stagnation_and_graph_fault_guard_conditions_are_declared_and_rendered():
+    """v0.36 requirement F: stagnation on ANY approach replans
+    (`stagnation_exhausted`) and a graph fault replans the same approach
+    (`unschedulable_task_graph`). Both guard names under-state their
+    condition, so it is declared as data (`GUARD_CONDITION_NOTES`) and
+    rendered into the generated block; the retired `worker -> paused`
+    stagnation/graph edges are gone from the table."""
+    stag = transitions.guard_condition_note("stagnation_exhausted")
+    assert stag and "EVERY approach that stalls" in stag
+    graph = transitions.guard_condition_note("unschedulable_task_graph")
+    assert graph and "ending: unschedulable_task_graph" in graph
     block = _embedded_block_table_docs()
-    assert "| `worker` | worker | both | `paused` | `stagnation_last_approach` |" in block
+    assert "| `worker` | worker | both | `replan` | `stagnation_exhausted` |" in block
+    assert "| `worker` | worker | both | `replan` | `unschedulable_task_graph` |" in block
+    assert "| `worker` | worker | both | `finishing` | `unschedulable_task_graph` |" in block
+    assert "| `replan` | — | both | `planning` | `graph_fault_excluded_from_charge` |" in block
     assert "Guards whose declared condition is wider than their name" in block
-    assert note in block
+    assert stag in block and graph in block
+    for retired in ("stagnation_last_approach", "unschedulable_dependency_cycle",
+                    "unresolvable_dependency_edge"):
+        assert ("worker", retired) not in [
+            (src, t.guard) for src, ts in transitions.TABLE.items()
+            for t in ts], retired
+        assert f"| `worker` | worker | both | `paused` | `{retired}` |" not in block
     # A guard whose name already states its condition gets no note and no
     # bullet -- the section is not a running commentary on every guard.
-    assert transitions.guard_condition_note("stagnation_exhausted") is None
-    assert "- `stagnation_exhausted`" not in block
+    assert transitions.guard_condition_note("verified") is None
 
 
 def test_a_declared_guard_note_actually_reaches_the_render():
@@ -1514,31 +1525,6 @@ def _run_resumed(root: Path, handlers: dict, tasks: list[dict],
     return sup, asyncio.run(sup._run_job_core())
 
 
-async def _drive_until_paused(sup: LoopSupervisor) -> None:
-    """Task 012 (requirement B.3, #153): a `_run_job_core()` that hits the
-    stagnation guard on the LAST approach now pauses and escalates instead
-    of ending the run `failed` -- and stays parked at `_gate()` forever
-    without an operator's `resume()`, which none of these scripted-runner
-    tests ever send. Starts `_run_job_core()` as a background task, polls
-    `status.json` for `state == "paused"`, then cancels the still-pending
-    task so the test's own event loop can close cleanly."""
-    task = asyncio.ensure_future(sup._run_job_core())
-    for _ in range(500):
-        if sup.run.read_status().get("state") == "paused":
-            break
-        if task.done():
-            break
-        await asyncio.sleep(0.01)
-    else:
-        task.cancel()
-        raise AssertionError("run never reached `paused`")
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-
 def _events(root: Path) -> list[dict]:
     p = root / "events.jsonl"
     if not p.exists():
@@ -1619,9 +1605,10 @@ def test_a_doomed_subset_with_actionable_work_left_behaves_exactly_as_today(
     task 003 is a doomed SUBSET (blocked on failed task 002). This must
     behave byte-for-byte like the pre-existing stagnation path: the fault
     never fires, the worker hat is actually called (three times, the
-    ordinary stagnation count), and the run pauses through the ordinary
-    last-approach stagnation guard (task 012, requirement B.3), not
-    through the new doomed-plan guard."""
+    ordinary stagnation count), and the run ends through the ordinary
+    stagnation guard (v0.36 requirement F.1: archive and replan, here
+    with no approach left so `exhausted` on `approaches`), not through
+    the new doomed-plan guard."""
     root = tmp_path / "run"
     tasks = [
         {"id": TASK_1_DOOMED, "status": "pending", "title": "keep going"},
@@ -1637,16 +1624,17 @@ def test_a_doomed_subset_with_actionable_work_left_behaves_exactly_as_today(
     RunDir(root=root).update_status(state="starting")
     atomic_write_json(sup.run.tasks_file, {"version": 1, "tasks": tasks})
     sup.iterations_used = 1
-    asyncio.run(_drive_until_paused(sup))
+    asyncio.run(asyncio.wait_for(sup._run_job_core(), 120))
 
     status = sup.run.read_status()
-    assert status.get("state") == "paused", status
-    assert status.get("pauseReason") == "stagnation"
+    assert status.get("state") == "exhausted", status
+    assert status.get("exhaustedBudget") == "approaches"
+    assert status.get("pauseReason") is None
     assert sup.runner.calls["worker"] == 3        # type: ignore[attr-defined]
     assert not _fault_events(root), \
         "a doomed SUBSET with actionable work left must never raise the fault"
     assert "review" not in _phases_recorded(root), \
-        "stagnation on the last approach pauses, it never routes to review"
+        "stagnation on the last approach never routes to review"
 
     doc = sup.run.read_tasks()
     by_id = {t["id"]: t for t in doc["tasks"]}

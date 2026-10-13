@@ -890,8 +890,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.36 input-park notifications: the new tests/test_input_timeout_
     # notifications.py (+15, one module), measured `--collect-only` -> fast
     # 8648/543, smoke 6870/416.
-    "fast": {"tests": 8648, "modules": 543},
-    "smoke": {"tests": 6870, "modules": 416},
+    # v0.36 self-healing stagnation and graph faults: the new tests/test_self_
+    # heal_stagnation_graph.py (+12, one module) against the retired pause
+    # nodes it replaces (the 0.35 escalation-text/digest/ruling-release nodes
+    # for stagnation, the cycle and the edge), measured `--collect-only` ->
+    # fast 8645/544, smoke 6867/417.
+    "fast": {"tests": 8645, "modules": 544},
+    "smoke": {"tests": 6867, "modules": 417},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

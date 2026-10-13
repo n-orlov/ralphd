@@ -100,16 +100,12 @@ STEP_STATES: tuple[str, ...] = (
     # `review`'s `operator_input_needed` edge (the rejection ladder's
     # park), in both `TABLE` and `PEER_VERDICT_GATE_DELTA`.
     #
-    # Task 012 (PRD requirement B.3, #153): a SECOND way into this same
-    # state -- `worker`'s own `stagnation_last_approach` edge below,
-    # taken when the stagnation guard would otherwise fail the run's
-    # LAST approach silently. `_step_paused` (loop.py) now branches on
-    # which escalation reason parked the run: an `operator_input_needed`
-    # pause still resumes into `review` over the same approach; a
-    # `stagnation_last_approach` pause resumes straight back into
-    # `worker` over the same approach instead (there is no verdict
-    # pending for review to judge, only unfinished worker tasks the
-    # approach never archived). Deterministic, no hat of its own.
+    # `_step_paused` (loop.py) branches on which escalation reason parked
+    # the run: an `operator_input_needed` pause resumes into `review` over
+    # the same approach; a 0.35 `stagnation`/graph-fault park still found in
+    # an old run directory resumes straight back into `worker` (the engine
+    # no longer takes those parks itself, v0.36 requirement F).
+    # Deterministic, no hat of its own.
     "paused",
 )
 
@@ -264,54 +260,26 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # above: the SAME approach continues, the scheduler picks whatever
         # independent task is next in line.
         T("worker", "worker_deferred_reordered"),
-        # Task 012 (PRD requirement B.3, #153): a stagnant LAST approach
-        # (`self._approach == self.cfg.max_approaches`) must not end
-        # `failed` silently. Task 018 (PRD requirement B.3, #156)
-        # generalises this SAME edge to any approach that PROGRESSED --
-        # gained a workspace commit somewhere during the approach, or left
-        # a `superseded` task behind from a forced split (task 016) --
-        # before its own three-strike counter stalled: a `superseded`
-        # task's children exhausting THEIR budgets too, or a stagnant
-        # counter tripping over a branch that gained commits this
-        # approach, is not the "genuinely silent" case the ordinary
-        # `stagnation_exhausted` edge above is for -- that edge still
-        # fires for exactly that case, on every approach that has a
-        # successor left ("a genuinely silent approach with approaches
-        # left still fails as today"). Either way -- last approach or a
-        # progressing earlier one -- the run instead takes THIS edge:
-        # `_pause_and_escalate_stagnation_last_approach` (loop.py) pauses
-        # the run through the same existing pause machinery `rejected_
-        # last_approach` already uses, emits an `operator_escalation`
-        # event with `reason: "stagnation"`, and notifies -- the approach
-        # is left unarchived, exactly like a ladder park, so
-        # `resume` re-enters the SAME approach (`_step_paused` routes a
-        # `stagnation_last_approach` pause back to `worker`, never
-        # `review` -- there is no verdict pending, only unfinished tasks).
-        T("paused", "stagnation_last_approach"),
-        # Task 002 (PRD requirement E, #206): a `dependsOn` CYCLE (a
-        # self-loop is the length-one case) among the plan's own tasks
-        # makes the touched tasks permanently unschedulable BY
-        # CONSTRUCTION -- structurally distinct from the doomed-set case
-        # `doomed_plan_unverifiable` above handles (that one follows
-        # `failed`/`skipped`/`petitioned` ancestors; a cycle among
-        # `pending` tasks has none of those and is invisible to it).
-        # Routed to `paused`, not `review`: there is no worker verdict to
-        # adjudicate, only a `tasks.json` edit an operator has to make by
-        # hand to break the cycle. See
-        # `LoopSupervisor._unschedulable_cycle_fault`'s own docstring in
-        # `loop.py` for the fault payload shape and the separating
-        # condition from a merely in-flight dependency (E.6).
-        T("paused", "unschedulable_dependency_cycle"),
-        # Review cure cure-01-03 (PRD requirement E.1/E.2, #206's second
-        # defect): the exact sibling of the `unschedulable_dependency_
-        # cycle` edge just above, for a DIFFERENT unreachable shape -- an
-        # actionable task's `dependsOn` names an id that is not a node in
-        # the plan graph at all (no ancestor to follow, no cycle to close,
-        # just an edge pointing at nothing). See `LoopSupervisor._
-        # unresolvable_edge_fault`'s own docstring in `loop.py` for the
-        # fault payload shape and the separating condition from a merely
-        # in-flight dependency (E.6).
-        T("paused", "unresolvable_dependency_edge"),
+        # v0.36 requirement F.1: a stagnant approach, on ANY approach and
+        # whether or not it progressed (a workspace commit, a `superseded`
+        # task left by a forced split), is archived and replanned on
+        # approach + 1 by the `stagnation_exhausted` edge above; the same
+        # edge carries a `superseded` parent's own split child spending
+        # its progress budget a second time. With no approach left
+        # `replan` holds `exhausted` (`exhaustedBudget: approaches`). The
+        # 0.35 stagnation park is gone.
+        #
+        # v0.36 requirement F.2: a `dependsOn` cycle, or an edge naming an
+        # id that is not in the plan, makes the touched tasks permanently
+        # unschedulable BY CONSTRUCTION. It replans the SAME approach,
+        # uncharged, through `replan`'s `graph_fault_excluded_from_charge`
+        # edge (as `empty_plan` does), with the offending edges named in
+        # the planning prompt; `LoopSupervisor._self_heal_graph_fault`
+        # (loop.py) takes this edge. A SECOND graph fault on the same
+        # approach takes the `finishing` edge below and the run ends
+        # `failed` with `ending: unschedulable_task_graph`.
+        T("replan", "unschedulable_task_graph"),
+        T("finishing", "unschedulable_task_graph"),
     ),
     "review": (
         # ledger guard 12: a VERIFIED verdict is discarded while operator
@@ -461,6 +429,10 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # budget/approaches and must finish.
         T("planning", "budget_and_approach_left"),
         T("finishing", "budget_or_approach_exhausted"),
+        # v0.36 requirement F.2: the first graph fault on an approach
+        # replans the SAME approach number, uncharged (the `empty_plan`
+        # shape), with the offending edges in the planning prompt.
+        T("planning", "graph_fault_excluded_from_charge"),
     ),
     "finishing": (
         # fact 11 / #56: `finishing` is non-terminal — it always has a
@@ -505,7 +477,7 @@ TABLE: dict[str, tuple[Transition, ...]] = {
     #
     # Task 012 (PRD requirement B.3, #153): a SECOND successor, back to
     # `worker` instead, taken when the pause that parked the run was
-    # `worker`'s own `stagnation_last_approach` edge above rather than
+    # a 0.35 stagnation park (the engine no longer takes it) rather than
     # `review`'s `operator_input_needed` one -- `_step_paused` decides
     # which of the two by reading the pause it is actually resuming from
     # (`pauseReason` captured before the gate releases), never by
@@ -990,33 +962,31 @@ def fallback_guard(state: str) -> str | None:
 # Declared conditions for guards whose NAME is narrower than what they fire
 # on (v0.20 requirement B.3, #156, task 019)
 # ---------------------------------------------------------------------------
-# A guard name is an identifier, not a specification, and one of them has
-# outgrown its name: `stagnation_last_approach` was task 012's LAST-approach
-# pause and task 018 widened the condition it fires on to EVERY approach
-# that progressed, without renaming the guard or adding a row (the edge, the
-# target and the resume path are all unchanged -- see the entry's own
-# comment above). A reader of the generated table would otherwise have to
-# infer that from the name, so the condition is declared HERE, as data, and
-# rendered into the generated table block by
-# `scripts/render_transition_table.py` -- the same discipline the table
-# itself follows: one source, no hand-kept copy in the docs.
+# A guard name is an identifier, not a specification, and some of them
+# fire on more than the name says (`stagnation_exhausted` fires on a
+# progressed approach and on a spent split child too, not only a silent
+# approach), or on a shape worth stating (`unschedulable_task_graph`). The
+# condition is declared HERE, as data, and rendered into the generated
+# table block by `scripts/render_transition_table.py` -- the same discipline
+# the table itself follows: one source, no hand-kept copy in the docs.
 #
 # Only guards whose name genuinely under-states their condition belong here;
 # a guard whose name already says what it fires on needs no entry, and the
 # renderer emits nothing for it.
 GUARD_CONDITION_NOTES: dict[str, str] = {
-    "stagnation_last_approach": (
-        "fires on EVERY approach that progressed, not only the last one "
-        "(v0.20 requirement B.3, #156, task 018): the run's last approach "
-        "stalling three iterations running, OR any earlier approach that "
-        "gained a workspace commit or left a `superseded` task behind from "
-        "a forced split and then stalled, OR a `superseded` parent's own "
-        "split child spending its own `progressBudget` (escalated once per "
-        "child, naming it on the `operator_escalation` event's "
-        "`exhaustedSplitChild` field) instead of forcing a second split. A "
-        "genuinely silent approach with a successor left still takes "
-        "`stagnation_exhausted` to `replan` exactly as before, and either "
-        "pause resumes into `worker` over the SAME approach."),
+    "stagnation_exhausted": (
+        "fires on EVERY approach that stalls three iterations running, "
+        "progressed or silent, and on a `superseded` parent's split child "
+        "spending its own `progressBudget` a second time (v0.36 "
+        "requirement F.1): the approach is archived and the run replans on "
+        "approach + 1 over the same workspace tree; with no approach left "
+        "`replan` holds `exhausted` (`exhaustedBudget: approaches`)."),
+    "unschedulable_task_graph": (
+        "a `dependsOn` cycle or an edge to an id that is not in the plan "
+        "(v0.36 requirement F.2): the first one on an approach replans "
+        "the SAME approach, uncharged, with the offending edges named in "
+        "the planning prompt; a second one on the same approach ends the "
+        "run `failed` with `ending: unschedulable_task_graph`."),
 }
 
 

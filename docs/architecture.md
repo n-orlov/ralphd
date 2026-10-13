@@ -169,9 +169,8 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `worker` | worker | both | `worker` | `unsatisfiable_targeted_replan` |
 | `worker` | worker | both | `review` | `unsatisfiable_and_nothing_left` |
 | `worker` | worker | both | `worker` | `worker_deferred_reordered` |
-| `worker` | worker | both | `paused` | `stagnation_last_approach` |
-| `worker` | worker | both | `paused` | `unschedulable_dependency_cycle` |
-| `worker` | worker | both | `paused` | `unresolvable_dependency_edge` |
+| `worker` | worker | both | `replan` | `unschedulable_task_graph` |
+| `worker` | worker | both | `finishing` | `unschedulable_task_graph` |
 | `worker` | worker | vigilant only | `verify` | `completed_task_pending_verification` |
 | `verify` | verify | vigilant only | `worker` | `verify_failed_retry_same_task` |
 | `verify` | verify | vigilant only | `worker` | `verify_passed_next_task` |
@@ -190,6 +189,7 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `replan` | — | both | `finishing` | `repeated_blocker_signature` |
 | `replan` | — | both | `planning` | `budget_and_approach_left` |
 | `replan` | — | both | `finishing` | `budget_or_approach_exhausted` |
+| `replan` | — | both | `planning` | `graph_fault_excluded_from_charge` |
 | `reflect` | reflect | both | `succeeded` | `reflect_done_outcome_succeeded` |
 | `reflect` | reflect | both | `failed` | `reflect_done_outcome_failed` |
 | `reflect` | reflect | both | `aborted` | `reflect_done_outcome_aborted` |
@@ -223,7 +223,8 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 
 Guards whose declared condition is wider than their name (`transitions.GUARD_CONDITION_NOTES`, rendered here so the table states it instead of a reader inferring it):
 
-- `stagnation_last_approach` — fires on EVERY approach that progressed, not only the last one (v0.20 requirement B.3, #156, task 018): the run's last approach stalling three iterations running, OR any earlier approach that gained a workspace commit or left a `superseded` task behind from a forced split and then stalled, OR a `superseded` parent's own split child spending its own `progressBudget` (escalated once per child, naming it on the `operator_escalation` event's `exhaustedSplitChild` field) instead of forcing a second split. A genuinely silent approach with a successor left still takes `stagnation_exhausted` to `replan` exactly as before, and either pause resumes into `worker` over the SAME approach.
+- `stagnation_exhausted` — fires on EVERY approach that stalls three iterations running, progressed or silent, and on a `superseded` parent's split child spending its own `progressBudget` a second time (v0.36 requirement F.1): the approach is archived and the run replans on approach + 1 over the same workspace tree; with no approach left `replan` holds `exhausted` (`exhaustedBudget: approaches`).
+- `unschedulable_task_graph` — a `dependsOn` cycle or an edge to an id that is not in the plan (v0.36 requirement F.2): the first one on an approach replans the SAME approach, uncharged, with the offending edges named in the planning prompt; a second one on the same approach ends the run `failed` with `ending: unschedulable_task_graph`.
 
 <!-- END GENERATED TRANSITION TABLE -->
 
@@ -258,9 +259,8 @@ stateDiagram-v2
     worker --> worker : unsatisfiable_targeted_replan
     worker --> review : unsatisfiable_and_nothing_left
     worker --> worker : worker_deferred_reordered
-    worker --> paused : stagnation_last_approach
-    worker --> paused : unschedulable_dependency_cycle
-    worker --> paused : unresolvable_dependency_edge
+    worker --> replan : unschedulable_task_graph
+    worker --> finishing : unschedulable_task_graph
     review --> worker : steering_pending_at_verified
     review --> worker : review_cure_pending_at_verified
     review --> finishing : verified
@@ -275,6 +275,7 @@ stateDiagram-v2
     replan --> finishing : repeated_blocker_signature
     replan --> planning : budget_and_approach_left
     replan --> finishing : budget_or_approach_exhausted
+    replan --> planning : graph_fault_excluded_from_charge
     reflect --> succeeded : reflect_done_outcome_succeeded
     reflect --> failed : reflect_done_outcome_failed
     reflect --> aborted : reflect_done_outcome_aborted
@@ -299,7 +300,7 @@ stateDiagram-v2
 
 <!-- END GENERATED TRANSITION DIAGRAM -->
 
-### `superseded`, and the every-approach pause widening (v0.20 requirement B, #156, tasks 013/016/018/019)
+### `superseded`, and the every-approach stagnation edge (v0.20 requirement B, #156, tasks 013/016/018/019; v0.36 requirement F)
 
 **`superseded` is a task status, not a step in the diagram above.** It is a
 declared status of the *task-status* mini-FSM -- a second, separate table
@@ -462,36 +463,32 @@ stateDiagram-v2
 
 <!-- END GENERATED TASK-STATUS DIAGRAM -->
 
-**The every-approach pause widening reuses the SAME declared edge, unchanged
-by name.** `worker --> paused : stagnation_last_approach` in the step-state
-table and diagram above is exactly the edge task 012 (#153) added for a
-stagnant LAST approach only; task 018 (#156) widens the *guard's own
-condition*, not the edge, its target or its resume path -- so the row and its
-mermaid arrow are unchanged, and regenerating both from `transitions.py`
-reproduces them byte-for-byte. Because a guard name is an identifier and not
-a specification, the widened condition is declared as data
+**Stagnation replans on every approach through one declared edge (v0.36
+requirement F.1).** `worker --> replan : stagnation_exhausted` in the
+step-state table and diagram above is the only stagnation edge: a stalled
+approach is archived and replanned on approach + 1 whether or not it
+progressed (a workspace commit somewhere in the approach, or a `superseded`
+task left behind by a forced split), and a `superseded` parent's own split
+child spending its `progressBudget` a second time takes the same edge instead
+of forcing yet another split. With no approach left `replan` holds `exhausted`
+(`exhaustedBudget: approaches`). The stagnation `log` event carries
+`approachProgressed` (and `exhaustedSplitChild` for the second exhaustion).
+The 0.35 `worker --> paused : stagnation_last_approach` edge is gone;
+`paused --> worker : paused_resumed_stagnation` stays only so a 0.35 run
+directory parked on it still resumes. Because a guard name is an identifier
+and not a specification, the condition is declared as data
 (`transitions.GUARD_CONDITION_NOTES`) and rendered into the generated
 step-state table block above, under "Guards whose declared condition is wider
-than their name", so the table itself states it. The widened condition:
-any approach that PROGRESSED (a workspace commit somewhere in the approach,
-or a `superseded` task left behind by a forced split --
-`LoopSupervisor._approach_progressed`) but still stalled for three
-consecutive no-progress worker iterations now takes this edge instead of
-falling through to the ordinary `stagnation_exhausted` -> `replan` edge one
-row up, which still fires exactly as before for a genuinely silent approach
-with a successor left. A SECOND budget exhaustion is folded into the same
-widened condition: once a `superseded` parent's own split child spends its
-own `progressBudget` too, `_exhausted_split_child_of_superseded_parent()`
-recognises the shape (`splitFrom` present, naming a parent whose status is
-already `superseded`) and takes this pause instead of forcing yet another
-split, naming the exhausted child on the `operator_escalation` event's
-`exhaustedSplitChild` field (SPEC §4.6) -- bounded at one escalation per
-child, so an operator who resumes past it gets the ordinary forced split on
-that child's own next exhaustion. Either way `_step_paused` reads which
-reason parked the run and routes `stagnation_last_approach` straight back to
-`worker` over the SAME approach (never `review` -- there is no verdict
-pending), exactly as task 012 already declared for the last-approach case;
-widening the condition changed nothing about the target or the resume path.
+than their name".
+
+**Graph faults replan the same approach (v0.36 requirement F.2).** A
+`dependsOn` cycle, or an edge naming an id that is not in the plan, takes
+`worker --> replan : unschedulable_task_graph`; `replan` then takes
+`replan --> planning : graph_fault_excluded_from_charge` without bumping the
+approach number (the `empty_plan` shape), and the planning prompt names the
+offending edges. A second graph fault on the same approach takes
+`worker --> finishing : unschedulable_task_graph` and the run ends `failed`
+with `ending: unschedulable_task_graph`.
 
 ### The router: one constrained question, deterministic-first (task 018, requirement E)
 

@@ -10,10 +10,13 @@ v0.36 D.1: `resume_if_ruling_answers_pause` is gone, so NO ruling releases
 anything. The two findings parks (`operator_input_needed`,
 `verdict_gate_operator_input_needed`) are `awaiting_input` and are left by
 `ralphctl answer` alone; their instructions name that command, `rule` only
-records, and a bare unpause is refused. `stagnation` (still `paused` until
-task 012) keeps the rule-then-unpause / unpause-alone sequence below.
+records, and a bare unpause is refused. An operator pause (`pause`, the
+only `paused` run the engine does not take itself once task 012 lands)
+keeps the rule-then-unpause / unpause-alone sequence below. The engine's own
+stagnation and graph-fault parks are gone (v0.36 requirement F; their
+replacement is `tests/test_self_heal_stagnation_graph.py`).
 
-This module drives each of the five real pauses end to end (the real
+This module drives each of the real pauses end to end (the real
 `_pause_and_escalate_*` method, a real notifier stub) and runs every
 advertised alternative through the REAL CLI parser + `cmd_*` handler +
 engine `POST` route (`fastapi.testclient.TestClient` over `create_app`),
@@ -97,9 +100,8 @@ def _raise_pause(sup, reason: str):
     if reason == "verdict_gate_operator_input_needed":
         sup._pause_and_escalate_gate_operator_input_needed(
             1, [_finding()], True, all_curable=False, trigger="incurable")
-    elif reason == "stagnation":
-        sup._pause_and_escalate_stagnation_last_approach(
-            1, [{"id": "t1", "status": "pending"}])
+    elif reason == "operator_pause":
+        sup.pause()
     elif reason == "operator_input_needed":
         sup._pause_and_escalate_operator_input_needed(
             1, [_finding()], replan_available=True, signature="sig-x")
@@ -144,7 +146,7 @@ def _unpause_cmd(sup) -> str:
     return f"ralphctl unpause {sup.cfg.run_id}"
 
 
-NOT_RULING_RELEASED_REASONS = ["stagnation"]
+NOT_RULING_RELEASED_REASONS = ["operator_pause"]
 FINDINGS_PARKS = ["operator_input_needed",
                   "verdict_gate_operator_input_needed"]
 
@@ -157,17 +159,6 @@ def _answer_cmd(sup) -> str:
 def test_rule_alone_does_not_release_the_pause(reason, tmp_path, monkeypatch):
     sup = _sup(tmp_path, monkeypatch)
     _raise_pause(sup, reason)
-    text = _digest_text(sup)
-    assert _rule_cmd(sup) in text
-    assert _unpause_cmd(sup) in text
-    # Cure-01-01-9's own fix: the prior digest phrasing ("rule ..., or
-    # unpause ... to accept the default") read as two interchangeable
-    # single-step alternatives, which is false for these three reasons --
-    # the digest must instead spell out the two-step sequence and never
-    # claim `rule` alone is a full "accept the default" alternative.
-    assert "to accept the default" not in text, reason
-    assert "then ralphctl unpause" in text, reason
-    assert "alone to resume with none recorded" in text, reason
 
     with TestClient(create_app(sup.cfg, sup.run, sup)) as client:
         _run_command(_rule_cmd(sup), tmp_path, monkeypatch, client)
@@ -241,15 +232,7 @@ _BACKTICKED = re.compile(r"`(ralphctl [^`]+)`")
 
 
 def _raise_full_text_pause(sup, variant: str):
-    if variant == "stagnation_split_child":
-        sup._pause_and_escalate_stagnation_last_approach(
-            1, [{"id": "t1c", "status": "pending"}], is_last_approach=False,
-            approach_progressed=True,
-            exhausted_split_child={"id": "t1c", "splitFrom": "t1",
-                                   "used": 3, "budget": 3})
-        assert sup._pause.is_set() is False
-    else:
-        _raise_pause(sup, variant)
+    _raise_pause(sup, variant)
 
 
 def _escalation_event_text(sup) -> str:
@@ -263,65 +246,6 @@ def _escalation_event_text(sup) -> str:
 
 def _advertised(text: str) -> list[str]:
     return _BACKTICKED.findall(text)
-
-
-FULL_TEXT_NOT_RULING_RELEASED = NOT_RULING_RELEASED_REASONS + [
-    "stagnation_split_child"]
-
-
-@pytest.mark.parametrize("variant", FULL_TEXT_NOT_RULING_RELEASED)
-def test_full_pause_instructions_name_unpause_alone_and_rule_then_unpause(
-        variant, tmp_path, monkeypatch):
-    sup = _sup(tmp_path, monkeypatch)
-    _raise_full_text_pause(sup, variant)
-    text = _escalation_event_text(sup)
-    # The old instructions made BOTH a ruling and an unpause preconditions
-    # of proceeding -- the criterion requires the unpause-only alternative.
-    assert "will not proceed until" not in text, variant
-    assert "to accept the default" not in text, variant
-    assert f"only `{_unpause_cmd(sup)}` releases it" in text, variant
-    assert "filing a ruling records it but leaves the run paused" in text
-    assert (f"`{_rule_cmd(sup)}` then `{_unpause_cmd(sup)}`") in text
-    assert f"or run `{_unpause_cmd(sup)}` alone to resume with no ruling " \
-        "recorded" in text, variant
-    assert _advertised(text) == [
-        _unpause_cmd(sup), _rule_cmd(sup), _unpause_cmd(sup),
-        _unpause_cmd(sup)], variant
-
-
-@pytest.mark.parametrize("variant", FULL_TEXT_NOT_RULING_RELEASED)
-def test_full_pause_instructions_unpause_alone_route_opens_the_gate(
-        variant, tmp_path, monkeypatch):
-    sup = _sup(tmp_path, monkeypatch)
-    _raise_full_text_pause(sup, variant)
-    commands = _advertised(_escalation_event_text(sup))
-    unpause_alone = commands[-1]
-    assert unpause_alone.startswith("ralphctl unpause "), commands
-
-    with TestClient(create_app(sup.cfg, sup.run, sup)) as client:
-        _run_command(unpause_alone, tmp_path, monkeypatch, client)
-    assert sup._pause.is_set() is True, variant
-    assert sup.run.read_status().get("pauseReason") is None, variant
-    assert sup.run.ruling_entries() == [], variant  # none recorded
-
-
-@pytest.mark.parametrize("variant", FULL_TEXT_NOT_RULING_RELEASED)
-def test_full_pause_instructions_rule_then_unpause_route_holds_then_opens(
-        variant, tmp_path, monkeypatch):
-    sup = _sup(tmp_path, monkeypatch)
-    _raise_full_text_pause(sup, variant)
-    commands = _advertised(_escalation_event_text(sup))
-    rule_cmd, then_unpause = commands[1], commands[2]
-    assert rule_cmd.startswith("ralphctl rule "), commands
-    assert then_unpause.startswith("ralphctl unpause "), commands
-
-    with TestClient(create_app(sup.cfg, sup.run, sup)) as client:
-        _run_command(rule_cmd, tmp_path, monkeypatch, client)
-        # the text's own claim: the ruling is recorded, the run stays paused
-        assert sup._pause.is_set() is False, variant
-        assert len(sup.run.ruling_entries()) == 1, variant
-        _run_command(then_unpause, tmp_path, monkeypatch, client)
-    assert sup._pause.is_set() is True, variant
 
 
 @pytest.mark.parametrize("reason", FINDINGS_PARKS)

@@ -110,23 +110,6 @@ def test_review_findings_unusable_escalation_text_names_unpause(tmp_path):
     _assert_names_unpause_not_resume(text)
 
 
-def test_stagnation_last_approach_escalation_text_names_rule_and_unpause(tmp_path):
-    sup = _sup(tmp_path)
-    text = sup._stagnation_last_approach_escalation_text(
-        1, [{"id": "001", "status": "pending"}], is_last_approach=True)
-    _assert_names_rule_and_unpause(text)
-
-
-def test_stagnation_second_exhaustion_escalation_text_names_rule_and_unpause(tmp_path):
-    sup = _sup(tmp_path)
-    text = sup._stagnation_last_approach_escalation_text(
-        1, [{"id": "001c", "status": "pending"}], is_last_approach=False,
-        approach_progressed=True,
-        exhausted_split_child={"id": "001c", "splitFrom": "001p",
-                               "used": 3, "budget": 3})
-    _assert_names_rule_and_unpause(text)
-
-
 def test_petition_held_escalation_text_names_rule_and_unpause(tmp_path):
     sup = _sup(tmp_path)
     text = sup._petition_held_escalation_text(["001"], ["002", "003"])
@@ -135,26 +118,6 @@ def test_petition_held_escalation_text_names_rule_and_unpause(tmp_path):
     # (`ralphctl unpause`), and never the wrong command `ralphctl resume`.
     _assert_names_rule_and_unpause(text)
     assert "--file <ruling.md> --name <slug>" in text
-
-
-def test_unschedulable_cycle_escalation_text_names_unpause(tmp_path):
-    sup = _sup(tmp_path)
-    text = sup._unschedulable_cycle_escalation_text({
-        "cycleTaskIds": ["001", "002"],
-        "cycleEdges": [{"from": "001", "to": "002"}, {"from": "002", "to": "001"}],
-        "dependentTaskIds": ["003"],
-    })
-    _assert_names_unpause_not_resume(text)
-
-
-def test_unresolvable_edge_escalation_text_names_unpause(tmp_path):
-    sup = _sup(tmp_path)
-    text = sup._unresolvable_edge_escalation_text({
-        "unresolvedTaskIds": ["001"],
-        "unresolvedEdges": [{"from": "001", "to": "999"}],
-        "dependentTaskIds": ["002"],
-    })
-    _assert_names_unpause_not_resume(text)
 
 
 def test_operator_escalation_digest_text_names_the_answer_command(tmp_path):

@@ -282,10 +282,6 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "`format_cost`'s CLI render", None,
         "not a template-fed artifact; no shipped template contains it either"),
     AbsenceAssertion(
-        "test_resume_after_incurable_rejection.py", (215,),
-        ("Operator rulings (task 028, #26)",),
-        "the rendered review prompt (AMENDMENT_MARKER)", ALL),
-    AbsenceAssertion(
         "test_review_clone_protocol.py", (132, 139),
         ("## Disposable-clone protocol (operator-authorized)",),
         "every hat's rendered prompt for a run that declares no "

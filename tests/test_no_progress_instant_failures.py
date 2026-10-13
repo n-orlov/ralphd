@@ -112,21 +112,19 @@ def test_claim_rollback_is_two_directional_by_fault_class(engine_factory, tmp_pa
     # left `in-progress`, never silently reverted to `pending`. Because
     # this is the run's last (and only) approach, the worker never seeing
     # a verdict across 3 iterations trips the SAME last-approach
-    # stagnation guard as `test_genuine_stagnation_guard_still_fails_job_
-    # unaffected` below -- task 012 (PRD requirement B.3, #153) means it
-    # now pauses and escalates (`state: "paused"`, `pauseReason:
-    # "stagnation"`) rather than exiting `failed`, so this waits for the
-    # PAUSE, not for process exit (the process never exits on its own).
+    # stagnation guard as `test_genuine_stagnation_guard_still_holds_
+    # exhausted` below -- v0.36 requirement F.1 means it archives the
+    # approach and holds `exhausted` on `approaches` rather than exiting
+    # `failed` or parking.
     e_work = LiveRun(
         tmp_path_factory.mktemp("work_fault"),
         {"run_id": "e2e", "iterations": 12, "max_approaches": 1, "on_complete": "exit"},
         stub_env={"STUB_TASKS": "1", "STUB_WORKER_WORK_FAULT": "1"})
     try:
-        status = e_work.wait_state(("paused",), timeout=60)
-        assert status["pauseReason"] == "stagnation"
+        status = e_work.wait_state(("exhausted",), timeout=60)
+        assert status["exhaustedBudget"] == "approaches"
         assert status["state"] != "failed"
         assert status.get("verdict") is None, status
-        assert e_work.proc.poll() is None
         work_tasks = json.loads((e_work.run_dir / "tasks.json").read_text())["tasks"]
         assert len(work_tasks) == 1
         assert work_tasks[0]["status"] == "in-progress"
@@ -134,24 +132,21 @@ def test_claim_rollback_is_two_directional_by_fault_class(engine_factory, tmp_pa
         e_work.stop()
 
 
-def test_genuine_stagnation_guard_still_fails_job_unaffected(engine_factory):
+def test_genuine_stagnation_guard_still_holds_exhausted(engine_factory):
     """Regression check: genuine no-progress (a worker that runs to
     completion every time but never changes tasks.json -- no crash, no
     instant exit) must still trip the ordinary 3-iterations-no-progress
-    guard exactly as before task 059 -- but task 012 (PRD requirement B.3,
-    #153) changed what tripping it means on the LAST approach (`max_
-    approaches=1` here, so every approach is the last one): the run now
-    pauses and escalates (`state: "paused"`, `pauseReason: "stagnation"`)
-    instead of exiting `failed` silently, so this waits for the pause
-    (bounded by `wait_state`'s own deadline) rather than for process exit,
-    which never happens on its own here. The pre-B.3 `verdict:
-    "unverified"` was written BY that `failed` ending, so its
-    current-behaviour counterpart is asserted here instead: a parked run
-    carries no settled verdict and its engine is still alive."""
+    guard exactly as before task 059 -- but v0.36 requirement F.1 changed
+    what tripping it means on the LAST approach (`max_approaches=1` here,
+    so every approach is the last one): the approach is archived and the
+    run holds `exhausted` on `approaches` instead of exiting `failed`
+    silently or parking. The old `verdict: "unverified"` was written BY the
+    `failed` ending, so its current-behaviour counterpart is asserted
+    instead: a held run carries no settled verdict."""
     e = engine_factory(job={"on_complete": "exit", "max_approaches": 1},
                        stub_env={"STUB_WORKER_STALLS": "1"})
-    status = e.wait_state(("paused",), timeout=60)
-    assert status["pauseReason"] == "stagnation"
+    status = e.wait_state(("exhausted",), timeout=60)
+    assert status["exhaustedBudget"] == "approaches"
+    assert status.get("pauseReason") is None
     assert status["state"] != "failed"
     assert status.get("verdict") is None, status
-    assert e.proc.poll() is None, "a stagnation pause must not end the process"

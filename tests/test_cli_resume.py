@@ -239,17 +239,16 @@ def test_unpause_hits_resume_endpoint(live, capsys):
     cheaply, but a hold now exits the engine process outright (no more
     idling under `on_complete: idle`) -- so hitting a dead process's API
     would just be a connection-refused error, not a `/resume` regression.
-    `/resume` unpauses an operator *pause*, so the natural, still-alive
-    state to prove it against is the genuine worker stagnation pause
-    (`test_e2e.py::test_stagnation_guard_fails_job`'s own
-    `STUB_WORKER_STALLS` shape), which is non-terminal and leaves the
-    engine's API up.
+    `/resume` unpauses a *pause*, so the natural, still-alive state to
+    prove it against is an engine pause that is still `paused` in v0.36
+    (an unreadable review verdict, `STUB_REVIEW_MALFORMED_COUNT`; stagnation
+    no longer pauses), which is non-terminal and leaves the engine's API up.
     """
     run = live(run_id="unpause-test",
               job={"max_approaches": 1, "on_complete": "idle"},
-              stub_env={"STUB_WORKER_STALLS": "1"})
+              stub_env={"STUB_REVIEW_MALFORMED_COUNT": "99"})
     status = run.wait_state(("paused",))
-    assert status["pauseReason"] == "stagnation"
+    assert status["pauseReason"] == "review_contract_unrepaired"
     res = call_ralphctl_in_process(
         ["--json", "unpause", run.run_id],
         env={**os.environ, "RALPHD_REGISTRY": str(run.registry)}, capsys=capsys)

@@ -290,8 +290,7 @@ sub-reasons such as a provider refusal or a rate-limit wait that would exceed
 `rate_limit_max_wait_s`. They preserve the last phase and current approach. The
 persisted reasons are `operator_input_needed`, `verdict_gate_operator_input_needed`
 (the two rejection-ladder parks, which write `state: awaiting_input`),
-`review_contract_unrepaired`, `review_findings_unusable`, `stagnation`,
-`unschedulable_dependency_cycle` and `unresolvable_dependency_edge`. Consumers
+`review_contract_unrepaired` and `review_findings_unusable`. Consumers
 must not infer that every boundary hold appears as a paused lifecycle state. An `operator_input_needed` pause (on by
 default) is answered in the live engine: `ralphctl rule` records a ruling and
 by itself releases it, and `ralphctl unpause` releases it without one.
@@ -352,11 +351,12 @@ flowchart TD
     Work -->|completion claim in vigilant mode| Verify["Task verification"]
     Verify --> Work
     Work -->|"plan complete, blocked, doomed, or petition-held"| Review["Whole-result review"]
-    Work -->|"silent stagnation, approach left"| Replan
-    Work -->|"stagnation on last or progressing approach; dependency cycle or dangling edge"| Paused["Pause and escalate"]
+    Work -->|"stagnation on any approach: archive, approach + 1; none left: exhausted"| Replan
+    Work -->|"first dependency cycle or dangling edge on this approach: same-approach replan, uncharged"| Plan
+    Work -->|"second graph fault on the same approach"| Failed["failed, ending unschedulable_task_graph"]
     Review -->|curable and cure pass available| Cure["Insert cure and retake tasks"]
     Cure --> Work
-    Review -->|"rejection about to archive (default on), incurable, repeated signature, last approach, or unreadable contract"| Paused
+    Review -->|"rejection about to archive (default on), incurable, repeated signature, last approach, or unreadable contract"| Paused["Pause and escalate"]
     Review -->|"rejected after an answer or with the pause off, approach left"| Replan
     Replan -->|approach and budget left| Plan
     Replan -->|"repeated blocker or exhausted"| Finish
@@ -634,8 +634,8 @@ Both kinds draw on one approach-scoped budget of accepted new tasks,
 `worker_split_budget_per_approach` (default 3). New worker-origin tasks never
 count as progress. A superseded parent and the replacement dependency structure
 preserve the unfinished obligation. If a split child of a superseded parent
-exhausts its own budget, the engine pauses with reason `stagnation` (escalated
-once per child) instead of splitting again.
+exhausts its own budget, the engine archives the approach and replans (or holds
+`exhausted` with no approach left) instead of splitting again.
 
 **Criteria integrity.** Success criteria have persisted fingerprints, and the
 verbatim text is kept as `criteriaOfRecord`. Any later rewrite is flagged, even
@@ -1438,9 +1438,9 @@ flowchart TD
     Archived -->|yes| Replan["Resume at replan"]
     Archived -->|no| Judge{"Crashed mid-review, deadline-unreviewed, or parked on operator_input_needed?"}
     Judge -->|yes| Review["Resume same approach at review"]
-    Judge -->|no| Stagnation{"Last-approach stagnation pause?"}
-    Stagnation -->|yes| Worker["Resume same approach at worker"]
-    Stagnation -->|no| Existing["Reuse existing plan; skip redundant planning"]
+    Judge -->|no| Legacy{"0.35 stagnation or graph-fault park?"}
+    Legacy -->|yes| Worker["Resume same approach at worker"]
+    Legacy -->|no| Existing["Reuse existing plan; skip redundant planning"]
     Replan --> Continue["Continue harness"]
     Review --> Continue
     Worker --> Continue

@@ -58,22 +58,22 @@ def test_review_rejection_starts_new_approach(engine_factory):
 
 
 def test_stagnation_guard_fails_job(engine_factory):
-    """Task 012 (PRD requirement B.3, #153): with `max_approaches=1` this
-    is the run's LAST approach, so genuine no-progress (`STUB_WORKER_
-    STALLS`) now pauses and escalates rather than failing the job
-    silently -- `state: "paused"`, `pauseReason: "stagnation"`. Waits on
-    the pause (bounded by `wait_state`'s own deadline), never on process
-    exit, which does not happen here on its own. The old `verdict:
-    "unverified"` was written BY the `failed` ending this pause replaces,
-    so its current-behaviour counterpart is that a parked run has settled
-    no verdict at all and the engine is still alive holding the run."""
+    """v0.36 requirement F.1: with `max_approaches=1` this is the run's
+    LAST approach, so genuine no-progress (`STUB_WORKER_STALLS`) archives
+    the approach and, with none left, holds `exhausted` on `approaches` --
+    neither failing the job silently nor parking it (the 0.35
+    `state: "paused"`, `pauseReason: "stagnation"`). The engine process
+    exits on its own (a hold is resumable, not idle), and the held run
+    carries no verdict."""
     e = engine_factory(job={"on_complete": "exit", "max_approaches": 1},
                        stub_env={"STUB_WORKER_STALLS": "1"})
-    status = e.wait_state(("paused",), timeout=60)
-    assert status["pauseReason"] == "stagnation"
-    assert status["state"] != "failed"
+    assert wait_engine_exit(e, timeout=60) == 1
+    status = json.loads((e.run_dir / "status.json").read_text())
+    assert status["state"] == "exhausted"
+    assert status["exhaustedBudget"] == "approaches"
+    assert status.get("pauseReason") is None
     assert status.get("verdict") is None, status
-    assert e.proc.poll() is None, "a stagnation pause must not end the process"
+    assert (e.run_dir / "approaches" / "01").is_dir()
 
 
 def test_budget_exhaustion_fails_job(engine_factory):
