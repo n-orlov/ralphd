@@ -1,1 +1,0 @@
-WARNING  ralphd.privsep:privsep.py:362 no uid boundary: /tmp/pytest-of-ubuntu/pytest-0/test_with_no_boundary_and_no_o0/run/petition-adjudications.json is being written owned by the agent's own uid, not root (#60) -- this is the documented degrade (privsep.separated() is False here), not a second code path

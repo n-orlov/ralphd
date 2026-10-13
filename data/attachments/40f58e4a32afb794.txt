@@ -1,0 +1,1 @@
+WARNING  ralphd.loop:loop.py:10271 verdict_gate iteration 4 (approach 1) read past its blindness contract: [{'tool': 'bash', 'args': '{"command": "cat /tmp/pytest-of-ci/pytest-0/popen-gw0/test_a_flagged_peek_on_a_rejec0/run/iterations/0003/output.jsonl"}', 'matched': ['iterations/', 'output.jsonl']}]
