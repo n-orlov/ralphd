@@ -181,3 +181,12 @@ def test_spec_and_cli_docs_describe_the_per_approach_count():
     cli = (ROOT / "docs" / "cli.md").read_text()
     section = cli.split("`--cure-passes`", 1)[1][:3000]
     assert "current approach" in section
+    tech = (ROOT / "docs" / "solution-tech-spec.md").read_text()
+    gate = tech.split("**Gate cure ceiling.**", 1)[1].split("\n\n", 1)[0]
+    assert "run-wide" not in gate
+    assert "current approach" in gate
+    assert "--cure-passes +N" in gate
+    budgets_row = next(line for line in tech.splitlines()
+                       if line.startswith("| Cure passes |"))
+    assert "per approach" in budgets_row
+    assert "per run" not in budgets_row

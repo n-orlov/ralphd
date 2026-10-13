@@ -402,8 +402,11 @@ Several pauses happen before an approach is archived:
   non-empty reply. A ladder exhausted on empty replies is retried and then parks
   as `judge_no_verdict` under `operator_input_needed`.
 - **Gate cure ceiling.** The peer verdict gate's own mirror,
-  `verdict_gate_operator_input_needed`, fires once the run-wide
-  `cure_pass_ceiling` is spent.
+  `verdict_gate_operator_input_needed`, fires once the current approach's
+  cure rounds are spent. Review and the gate draw on that one shared count
+  (`curePasses` plus `gateCurePasses` for the approach), bounded by
+  `cure_pass_ceiling` plus any `ralphctl budget --cure-passes +N` top-up
+  granted to this approach. A new approach starts at zero rounds used.
 
 Two harness episodes run in the worker step but have no state in the table:
 
@@ -1069,7 +1072,7 @@ job configuration, or supported runtime overrides. Source:
 | Task progress allowance | Estimate + 2 | Bounds continuation supported by progress claims. |
 | Worker split budget | 3 per approach | New tasks a worker's `proposed_tasks` may insert, shared by voluntary splits and the mandatory forced split; an over-budget batch is refused whole. |
 | Worker re-point budget | 3 per approach | Existing tasks a worker's `proposed_task_updates` may move; a separate counter because a re-point inserts nothing. |
-| Cure passes | 3 per run | `cure_pass_ceiling`, summed across approaches and across review (`curePasses`) and verdict-gate (`gateCurePasses`) channels. A later pass on the same approach also needs a narrower blocking set (or, on a confirmation review, fewer reopened root findings). |
+| Cure passes | 3 per approach | `cure_pass_ceiling`: rounds per approach, one count shared by the review (`curePasses`) and verdict-gate (`gateCurePasses`) channels; a new approach starts at zero. `--cure-passes +N` tops up the current approach only (`cureRoundTopUps`). A no-progress rejection (same or superset blocking set, or the same reopened roots) spends a round and cures while rounds remain. |
 | Peer plan revisions | 2 | Releases work when the bounded advisory loop ends. |
 | Steer redelivery bound | 3 | Redeliveries of a message the steer hat never settled before it is marked settled-by-exhaustion with a warning. |
 | Router timeout | 60 seconds | Per router request. |
@@ -1103,9 +1106,11 @@ knobs in flight with the same `+N`/`N` grammar: `iterations`, `maxApproaches`,
 `iterationTimeoutS`, `jobDeadlineEpochS`, `curePassCeiling` and
 `rateLimitMaxWaitS` (`ralphctl budget <run> <+N|N>` with `--approaches`,
 `--timeout`, `--iteration-timeout`, `--cure-passes`, `--rate-limit-wait`).
-Startup seeds the iteration budget, the cure-pass ceiling and the rate-limit
-ceiling from the greater of the configured and persisted values, so an operator
-top-up survives a container restart; the other three are process-only. The
+Startup seeds the iteration budget and the rate-limit ceiling from the greater
+of the configured and persisted values, so an operator top-up survives a
+container restart. A `curePassCeiling` change is a top-up for the current
+approach only, persisted in `status.json` as `cureRoundTopUps`, so it survives a
+restart too; the other three are process-only. The
 off-budget grace review is retired. An exhausted deadline or iteration budget
 now holds the run in `exhausted` with no verdict, and `ralphctl resume` continues
 the ordinary loop; it is not an unlimited permission to keep dispatching.
