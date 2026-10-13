@@ -69,7 +69,11 @@ a module that only collects (never runs) a nested suite stays in smoke.
 pty, a signal race), not the product. `pytest-rerunfailures` is in the `dev`
 extra, and `pytest_collection_modifyitems` in `tests/conftest.py` gives a marked
 node exactly one rerun through the plugin's own marker arguments
-(`flaky(reruns=1)`). A node that already carries its own `flaky` marker keeps it.
+(`flaky(reruns=1)`). The policy is enforced, not a default: the hook puts that
+marker first among the node's own markers, so it is the one the plugin reads, and a
+direct, class or module `flaky` marker (a higher count, `reruns=0`, a `condition`,
+an `only_rerun` filter, a delay) cannot raise, remove or filter the single rerun.
+A `flaky` marker on a node that does not carry `flaky_infra` is untouched.
 A node that fails twice fails; an unmarked node is never rerun. There is no
 global `--reruns` in `pyproject.toml` or in any workflow, and a guard in
 `tests/test_flaky_infra_marker.py` pins that. Two nodes carry it:
@@ -78,7 +82,9 @@ global `--reruns` in `pyproject.toml` or in any workflow, and a guard in
 Do not apply it to a node that can fail for a product reason: a rerun would hide
 the regression. `tests/test_flaky_infra_marker.py` shows, through pytester, that
 a fail-once marked node passes on its second attempt and is reported as rerun,
-the same node unmarked fails, and a fail-twice marked node fails.
+the same node unmarked fails, a fail-twice marked node fails, and a marked node
+that also carries a conflicting `flaky` marker (direct, class or module) still gets
+exactly one rerun while an ordinary `flaky` node keeps its own count.
 
 ## Allure results: `--alluredir`, one directory per tier
 

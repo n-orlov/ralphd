@@ -853,8 +853,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # v0.35 report and publish: 3 nodes in tests/test_ci_workflow_guard.py and the
     # publish parameter of an exempt-job node in tests/test_run_bounded_timeout_
     # marker.py -> fast 8490/534.
-    "fast": {"tests": 8490, "modules": 534},
-    "smoke": {"tests": 6722, "modules": 408},
+    # v0.35 flaky_infra policy enforcement: 11 conflicting-marker nodes in
+    # tests/test_flaky_infra_marker.py (no new module), measured `--collect-only`
+    # -> fast 8500/534, smoke 6724/408.
+    "fast": {"tests": 8500, "modules": 534},
+    "smoke": {"tests": 6724, "modules": 408},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

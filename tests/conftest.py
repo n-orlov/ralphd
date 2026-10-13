@@ -463,10 +463,17 @@ FLAKY_INFRA_RERUNS = 1
 
 
 def _give_flaky_infra_one_rerun(item) -> None:
-    """Attach `flaky(reruns=1)` to a `flaky_infra` node, unless the node already
-    carries its own `flaky` marker (which says something more specific)."""
-    if item.get_closest_marker("flaky") is None:
-        item.add_marker(pytest.mark.flaky(reruns=FLAKY_INFRA_RERUNS))
+    """Make `flaky(reruns=1)` the marker pytest-rerunfailures reads for a
+    `flaky_infra` node, whatever other `flaky` marker the node carries.
+
+    The plugin takes every rerun setting (count, delay, condition, the
+    only_rerun / rerun_except filters) from `item.get_closest_marker("flaky")`,
+    the first one found walking the node's own markers and then its class,
+    module and session. A direct `@pytest.mark.flaky(reruns=5)`, a module
+    `pytestmark` or a class decorator would therefore override a policy of
+    exactly one rerun, so the policy marker goes at the FRONT of the node's own
+    markers (`append=False`), where it is always the closest."""
+    item.add_marker(pytest.mark.flaky(reruns=FLAKY_INFRA_RERUNS), append=False)
 
 
 @functools.lru_cache(maxsize=None)
