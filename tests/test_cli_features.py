@@ -111,12 +111,18 @@ def test_budget_flags_documented_in_cli_docs(ctl: Ctl):
     section = doc.split(heading, 1)[1].split("\n### ", 1)[0]
     for flag in ("--approaches", "--timeout", "--iteration-timeout"):
         assert flag in section, f"{flag} not documented in the budget section"
-    # the per-knob persistence table: 6 knob rows since v0.30 T10 added
-    # `--rate-limit-wait`, three saying "live" (`iterations`, task 010's
-    # `curePassCeiling` and T10's `rateLimitMaxWaitS` -- all persist across a
-    # plain resume) and three saying "reverts" (`--approaches`/`--timeout`/
-    # `--iteration-timeout`, #94 (c)+(d), still process-only).
-    assert section.count("**live**") == 3
+    # the per-knob persistence table: 7 knob rows since v0.36 E.1 added
+    # `--input-timeout`, four saying "live" (`iterations`, task 010's
+    # `curePassCeiling`, T10's `rateLimitMaxWaitS` and E.1's
+    # `inputTimeoutMin` -- all persist across a plain resume) and three
+    # saying "reverts" (`--approaches`/`--timeout`/`--iteration-timeout`,
+    # #94 (c)+(d), still process-only).
+    for knob in ("`--iterations`", "`--cure-passes`", "`--rate-limit-wait`",
+                 "`--input-timeout`"):
+        row = next(line for line in section.splitlines()
+                   if line.startswith("| ") and knob in line)
+        assert "**live**" in row, knob
+    assert section.count("**live**") == 4
     assert section.count("**reverts**") == 3
 
 
