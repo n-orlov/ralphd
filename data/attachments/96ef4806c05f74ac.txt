@@ -1,0 +1,2 @@
+ERROR    ralphd.loop:loop.py:8275 refusing to push: commit f588509cc31a's message matches a known secret value for variable 'SYNTHETIC_GUARD_API_TOKEN'
+WARNING  ralphd.loop:loop.py:11146 task-boundary commit scan flagged f588509cc31a's message (variable SYNTHETIC_GUARD_API_TOKEN) -- nothing pushed

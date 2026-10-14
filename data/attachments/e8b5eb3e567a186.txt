@@ -1,1 +1,0 @@
-WARNING  ralphd.loop:loop.py:20403 task 001 consumed all 3 validation attempts; contract carries a petition protocol, so the last-attempt handoff is filed as a petition and the task routes to 'petitioned' for adjudication rather than 'failed'
