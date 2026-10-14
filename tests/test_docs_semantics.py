@@ -1474,7 +1474,11 @@ def test_api_doc_unreviewed_enumerates_all_three_writers():
     # (c) the review hat itself had no verdict after retries, both variants
     assert "review: no verdict: output truncated" in text
     assert "review: no verdict: empty reply" in text
-    assert 'pauseDetail.hat: "review"' in text
+    # with budget left it no longer parks (0.35's `pauseDetail.hat: "review"`):
+    # it is asked again under the outage budget (v0.36 F.3; covering nodes in
+    # tests/test_stop_routing_faults.py)
+    assert 'pauseDetail.hat' not in text
+    assert "review is instead asked again under the same outage budget" in text
 
 
 def test_every_doc_counts_the_unreviewed_writers_as_three():

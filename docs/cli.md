@@ -1468,7 +1468,7 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
   `waiting:   rate limit (five_hour) until <local time>`.
 - **`paused:`** appears for a 0.35 run directory still paused on a provider
   refusal or on the rate-limit ceiling (status.json's `pauseDetail`), with the
-  same wording as `status`. A v0.36 engine never pauses on either: the run ends
+  same wording as `status`. On a v0.36 engine either fault ends the run
   `failed` with `ending: provider_refused` or `ending: rate_limit_ceiling`.
 - **`recovered:`** appears when the engine emitted `infra_recovered` — a later
   iteration reached the model, so the episode is over and the ladder is not a

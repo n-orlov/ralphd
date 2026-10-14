@@ -638,7 +638,7 @@ delta. Its tool calls no longer reset the stagnation counter. The second and
 later consecutive re-polls on one task back the task off to `pending` with
 `deferredUntil`. The backoff is 600 s, then 1,200 s, then 1,800 s, capped at the
 deadline, and each step emits `task.repoll_backoff` (#279). Section 9 covers the
-stagnation witnesses.
+stagnation guard's witnesses.
 
 **Splits.** Worker-proposed replacement tasks are linted like a planner proposal
 before they are applied. There are two kinds:
