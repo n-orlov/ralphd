@@ -908,8 +908,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # 8696/546, smoke 6918/419.
     # Task 011 (v0.36 H.1): +17 tests / +1 module (tests/test_compat_035_run_
     # dirs.py), measured `--collect-only` -> fast 8713/547, smoke 6935/420.
-    "fast": {"tests": 8713, "modules": 547},
-    "smoke": {"tests": 6935, "modules": 420},
+    # Task 013 (v0.36 I): +41 tests / +1 module (tests/test_spec_stop_states.py),
+    # measured `--collect-only` -> fast 8754/548, smoke 6976/421.
+    "fast": {"tests": 8754, "modules": 548},
+    "smoke": {"tests": 6976, "modules": 421},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

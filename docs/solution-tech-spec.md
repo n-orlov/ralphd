@@ -60,7 +60,7 @@ invocation; it does not imply concurrent workers.
 | Peer checks | Optional plan review before work, an optional one-off mid-plan review once a fixed fraction of the plan is done (`mid_plan_review`), and an optional blind verdict gate after the main reviewer approves. |
 | Bounded recovery | Separate handling for infrastructure outages, work failures, signal interruptions, malformed responses, lack of progress, provider refusals and, on `claude-code` hats, subscription rate-limit windows. An exhausted job deadline or iteration budget holds the run in the resumable `exhausted` state instead of failing it. |
 | Task deferral | A worker can defer a task to a later time (`deferredUntil`); repeated CI-wait re-polls back off in wall-clock time instead of spending iterations. The operator can release a deferred task early. |
-| Operator intervention | Durable steering, rulings (`ralphctl rule`), amendments, interrupt, pause/unpause, `operator_input_needed` escalation pauses (on by default), budget changes, retry-now, undefer, and abort. |
+| Operator intervention | Durable steering, rulings (`ralphctl rule`), amendments, interrupt, pause/unpause, answers to an `awaiting_input` question (`ralphctl answer`), budget changes, retry-now, undefer, and abort. |
 | Provider flexibility | pi-supported providers, named LLM profiles, custom endpoints/headers, a per-hat harness (`pi`, `claude-code` or `codex`), and model/thinking selection by role and difficulty tier. |
 | Cost attribution | Per-iteration usage with provider, derived (host `pricing:` map or built-in Bedrock table) or unknown cost, grouped by phase, approach, tier and, for runs started with a `billing:` block, by payer and billing basis (metered, subscription, chargeback, free). |
 | Runtime provisioning | Inject and update skills, credentials, prompts, and LLM configuration; `ralphctl llm test --hats` pings every hat's route through the real runner before launch. |
@@ -241,7 +241,7 @@ Keep these records distinct when integrating with the API or adding features:
 
 | Model | Meaning | Examples |
 |---|---|---|
-| Run lifecycle | Whether the job is executing, parked, finalizing, held, or terminal. | `starting`, `running`, `paused`, `finishing`, `exhausted`, `succeeded`, `failed`, `aborted`. |
+| Run lifecycle | Whether the job is executing, stopped (one of four stop states below), finalizing, or terminal. | `starting`, `running`, `paused`, `awaiting_input`, `exhausted`, `finishing`, `succeeded`, `failed`, `aborted`. |
 | Execution phase | Which harness step owns the next action. | `planning`, `worker`, `verify`, `review`, `cure`, `steer`, `replan`, `paused`, peer gates (`plan_review`, `verdict_gate`), `reflect`. |
 | Task lifecycle | What has been established about one planned task. | `pending`, `in-progress`, `awaiting-validation`, `validated`, `completed`, `validation-failed`, `failed`, `skipped`, `superseded`, `petitioned`. |
 
@@ -250,9 +250,9 @@ The run lifecycle values are `state.NONTERMINAL_STATES` plus
 `transitions.STEP_STATES` and `transitions.TASK_STATUSES`
 ([`state.py`](../src/ralphd/engine/state.py),
 [`transitions.py`](../src/ralphd/engine/transitions.py)). `paused` is spelled in
-both namespaces: as a step state it is the deterministic parking step on an
-escalation edge, and as a lifecycle state it is what `status.json` shows while
-that pause is persisted. Some model calls are not phases of the state machine
+both namespaces: as a step state it is the transition table's parking step, and
+as a lifecycle state it is the operator's own pause alone. The engine's findings
+parks hold in that parking step while `status.json` shows `awaiting_input`. Some model calls are not phases of the state machine
 at all: the router's constrained question (accounted as `usage.byPhase.router`),
 the mid-plan review episode and the mid-run petition adjudication episode run
 without a transition-table state.
@@ -285,21 +285,29 @@ again after each backoff, and the run never pauses. In the gate and review
 no-verdict cases the recorded review verdict stays as it is and no rejection
 is recorded.
 
-An ordinary operator `pause` holds execution at the next boundary and emits a log
-event without changing `status.json` to `paused`. The engine never pauses
-itself; it parks in `state: awaiting_input` with a `pauseReason` and an
-`inputQuestion`, preserving the last phase and current approach. The parks are
-`operator_input_needed` and `verdict_gate_operator_input_needed` (the two
-rejection-ladder parks) and `commit_secret` (a secret found in a commit, with
-`inputQuestion.kind: secret`, answered by `ralphctl answer <run>
---secret-handled` once the commit scan of the offending range is clean). A
-provider refusal ends the run `failed` with `ending: provider_refused`, and a
-rate-limit wait that would exceed `rate_limit_max_wait_s` ends it `failed` with
-`ending: rate_limit_ceiling`; both resume through `ralphctl resume`. Consumers
-must not infer that every boundary hold appears as a paused lifecycle state. An `operator_input_needed` pause (on by
-default) is answered in the live engine: `ralphctl rule` records a ruling and
-by itself releases it, and `ralphctl unpause` releases it without one.
-`ralphctl resume` is for a stopped container, not for a pause.
+**Stop states.** A run that is not working is in exactly one of four
+non-terminal states, each with one owner:
+
+| `state` | Entered by | Left by |
+|---|---|---|
+| `paused` | the operator only (`ralphctl pause`, the hub, `POST /pause`); `status.json` records `pausedBy: "operator"` and the optional `pauseNote` | `ralphctl unpause` |
+| `awaiting_input` | the engine, only to ask the operator about findings (`inputQuestion`) or about a secret found in a commit | an answer (`ralphctl answer`, `POST /answer`, the hub panel) or the input timeout |
+| `exhausted` | the engine, when the iteration, time or approach budget is spent (`exhaustedBudget`) | `ralphctl resume` with a top-up of that budget |
+| `running` with `health: degraded` | the engine, during an infrastructure outage | recovery, or `failed` once the outage budget is spent |
+
+No other engine path parks a run, and every stop is written to `status.json`
+before the engine waits on it. `awaiting_input` carries `inputQuestion`: its
+`kind` (`findings` or `secret`), `trigger` (`incurable`, `reviewer_escalation`,
+`cure_rounds_spent`), the blocking findings, this approach's cure rounds used and
+allowed, `expiresAt` and `onTimeout`. The commit-secret park (`kind: secret`) has
+one answer, `ralphctl answer <run> --secret-handled`, once the commit scan of the
+offending range is clean, and never expires. A provider refusal ends the run
+`failed` with `ending: provider_refused`, and a rate-limit wait that would exceed
+`rate_limit_max_wait_s` ends it `failed` with `ending: rate_limit_ceiling`; both
+resume through `ralphctl resume`. `ralphctl unpause` on a run that is not
+`paused` is refused with the command that applies: `answer` for `awaiting_input`,
+`resume --<budget>` for `exhausted`. `ralphctl resume` is for a stopped
+container or an `exhausted` hold, not for a park.
 
 Task deferral is an attribute, not a task status. A `pending` task can carry
 `deferredUntil`/`deferredReason` (from a worker's `verdict: "deferred"` report or
@@ -361,22 +369,25 @@ flowchart TD
     Work -->|"second graph fault on the same approach"| Failed["failed, ending unschedulable_task_graph"]
     Review -->|curable and cure pass available| Cure["Insert cure and retake tasks"]
     Cure --> Work
-    Review -->|"rejection about to archive (default on), incurable, repeated signature, last approach, or unreadable contract"| Paused["Pause and escalate"]
-    Review -->|"rejected after an answer or with the pause off, approach left"| Replan
+        Review -->|"rejection with an incurable finding, a reviewer escalation, or cure rounds spent"| Awaiting["awaiting_input: one question, answer or timeout"]
+    Review -->|"rejected and the park resolved to next approach, approach left"| Replan
     Replan -->|approach and budget left| Plan
     Replan -->|"repeated blocker or exhausted"| Finish
-    Paused -->|"unpause, rule, or resume"| Review
-    Paused -->|"resume a worker-side pause"| Work
+        Awaiting -->|"answer or input timeout"| Review
+    Awaiting -->|"secret handled"| Work
+
     Review -->|"verified but steering or cure task outstanding"| Work
     Review -->|verified and no peer gate| Finish["Publish outcome and terminal record"]
     Review -->|verified with peer gate| Gate["Blind verdict gate"]
     Gate -->|verified| Finish
     Gate -->|curable and cure pass available| Cure
-    Gate -->|cure ceiling spent| Paused
-    Paused -->|resume a gate pause| Gate
+        Gate -->|"incurable finding or cure rounds spent"| Awaiting
+    Awaiting -->|"answer re-enters the gate"| Gate
+
     Gate -->|"rejected, approach available"| Replan
-    Gate -->|"non-curable finding or exhausted"| Finish
-    Review -->|"rejected, no approach left"| Finish
+        Gate -->|"rejected, no approach left"| Held
+    Review -->|"rejected, no approach left"| Held
+
     Work -. "budget or deadline at a step boundary" .-> Held["exhausted hold"]
     Held -->|resume with a fresh window| Work
     Work -. abort .-> Finish
@@ -388,30 +399,28 @@ flowchart TD
 
 The table lives in [`transitions.py`](../src/ralphd/engine/transitions.py): the
 base `TABLE`, plus `VIGILANT_DELTA`, `PEER_PLAN_REVIEW_DELTA` and
-`PEER_VERDICT_GATE_DELTA`, composed by `table_for`. This overview omits worker
-stagnation details, the self-looping `review_interrupted` retry, and how each
-pause chooses its resume target. Sections 7, 9, and 12 describe them.
+`PEER_VERDICT_GATE_DELTA`, composed by `table_for`. This overview omits the worker
+guard's details, the self-looping `review_interrupted` retry, and how each
+park chooses its resume target. Sections 7, 9, and 12 describe them.
 
-Several pauses happen before an approach is archived:
+A park happens before an approach is archived, and only for findings:
 
-- **Ordinary rejection.** `operator_input_needed` is on by default
-  (`operator_input_needed_pause`). Turn it off with
-  `--no-operator-input-needed-pause`. When on, a rejection that would archive
-  the approach parks the run first. The operator can file a `ralphctl rule`
-  ruling or run a plain `ralphctl unpause`. A bare unpause grants a one-shot
-  proceed, so the same rejection then archives instead of parking again.
+- **Rejection.** A rejection that would archive the approach parks the run in
+  `awaiting_input` first (on by default; `--no-operator-input-needed-pause`
+  resolves the park at once with the outcome an unanswered park takes). The
+  operator answers with `ralphctl answer`. A `ralphctl rule` ruling is recorded
+  but never answers a park, and a bare `ralphctl unpause` is refused.
 - **Contract failures.** `review_contract_unrepaired` and
   `review_findings_unusable` (review's contract ladder exhausted on a non-empty
   reply) and a judge no-verdict (a ladder exhausted on empty replies, or a
   truncated reply), each still standing after every `judge_retry_max` retry,
-  are infra faults under the outage budget: the hat is asked again after each backoff, and a spent
-  budget ends the run `failed`, verdict `unreviewed`. None of them pauses.
-- **Gate cure ceiling.** The peer verdict gate's own mirror,
-  `verdict_gate_operator_input_needed`, fires once the current approach's
-  cure rounds are spent. Review and the gate draw on that one shared count
-  (`curePasses` plus `gateCurePasses` for the approach), bounded by
-  `cure_pass_ceiling` plus any `ralphctl budget --cure-passes +N` top-up
-  granted to this approach. A new approach starts at zero rounds used.
+  are infra faults under the outage budget: the hat is asked again after each
+  backoff, and a spent budget ends the run `failed`, verdict `unreviewed`. None of them pauses.
+- **Gate cure ceiling.** The peer verdict gate parks on the same ladder once the
+  current approach's cure rounds are spent. Review and the gate draw on that one
+  shared count (`curePasses` plus `gateCurePasses` for the approach), bounded by
+  `cure_pass_ceiling` plus any `ralphctl budget --cure-passes +N` top-up granted
+  to this approach. A new approach starts at zero rounds used.
 
 Two harness episodes run in the worker step but have no state in the table:
 
@@ -422,9 +431,10 @@ Two harness episodes run in the worker step but have no state in the table:
 boundary no longer ends the run `failed`. Instead, `_finish_exhausted` holds it in
 the non-terminal `exhausted` state with a `null` verdict. Reflection is skipped,
 and `ralphctl resume` continues it into `worker`. An operator abort still ends
-the run `aborted`. Exhausting `max_approaches` and the structural endings still
-end the run. These endings are `repeated_blocker_signature`, a repeated planning
-death, and a gate rejection on the merits. `finishing` is persisted as a
+the run `aborted`. Exhausting `max_approaches` holds the run `exhausted` (`approaches`) as
+well, resumable with `--approaches +N`. The structural endings still
+end the run `failed`. These endings are `repeated_blocker_signature`, a repeated
+planning death and `unschedulable_task_graph`. `finishing` is persisted as a
 lifecycle state when a reflection tail remains. Without reflection, the terminal
 state can be written directly.
 
@@ -535,11 +545,13 @@ tool can also repair it. That tool refuses a `dependsOn` write to a claimed task
 (`in-progress` or `validation-failed`) and records the refusal on the steering
 ledger. If the whole
 actionable remainder is doomed, the run goes to review
-(`doomed_plan_unverifiable`). Two other graph conditions pause the run for an
-operator edit:
-
-- a `dependsOn` cycle among pending tasks (`unschedulable_dependency_cycle`);
-- an edge naming an ID that is not in the plan (`unresolvable_dependency_edge`).
+(`doomed_plan_unverifiable`). Two other graph conditions are
+dependency-graph faults: a `dependsOn` cycle among pending tasks, and an edge
+naming an ID that is not in the plan. The first on an approach is an uncharged
+replan of the same approach, whose planning prompt names the offending edges
+(`graphFaultApproaches` records it). A second on the same approach ends the run
+`failed` with `ending: unschedulable_task_graph`; `ralphctl resume` continues it
+once the graph is repaired. Neither parks the run.
 
 A remainder held on a `petitioned` ancestor goes to review after three no-task
 passes (`petition_held_no_task_bound`).
@@ -1323,17 +1335,16 @@ task is unfinished (`_terminal_success_blockers`). The run then defers once to
 | Mechanism | Authority and behavior |
 |---|---|
 | Steering | Requests work or plan/context changes. Applied steering informs review, but does not itself waive an obligation. |
-| Operator ruling | `ralphctl rule <run> --file <f>`, `POST /rule` or the hub's parked-question textarea writes `rulings/NNN-<name>.md` under the run root. A ruling is keyed to the current rejection signature, not to a task id, so it survives a replan. It reaches both review and per-task verify. It releases a current `operator_input_needed` park; it buys no re-park and bounds nothing on the rejection ladder. |
+| Operator ruling | `ralphctl rule <run> --file <f>`, `POST /rule` or the hub's parked-question textarea writes `rulings/NNN-<name>.md` under the run root. A ruling is keyed to the current rejection signature, not to a task id, so it survives a replan. It reaches both review and per-task verify. It never releases an `awaiting_input` park (only an answer does); it buys no re-park and bounds nothing on the rejection ladder. |
 | Operator amendment | A host-side `ralphctl amend` record under read-only `/config/amendments`. Three kinds: `replace` and `waive` change the effective criterion presented to review and the peer verdict gate, but not to per-task verify; `--status` is applied by the engine to `tasks.json` at load and at every worker and review step boundary. Rulings are task-scoped (stamped with an approach) or wave-scoped (`--wave`). A task-scoped ruling whose target a replan removed is reported `ORPHANED`, emits `amendment_target_not_in_plan`, and can be moved with `--repoint`. |
 | Impossibility petition | Worker declares an obligation impossible with a type and evidence. The engine files it in the run-scope `petitions.md`, never in the workspace (pre-committed workspace `artifacts/reports/*-petitions.md` files are still read), and refuses a duplicate or an out-of-vocabulary type. Independent adjudication must decide it. The types are `environmental`, `temporal`, `contradictory-clauses`, `external`, and `self-referential`. When the PRD declares a petition protocol, validation exhaustion files one too and moves the task to `petitioned` instead of `failed`. |
 | Confirmed petition | Removes the adjudicated obligation from the blocking set and accepts the matching `petitioned` task. It is persisted across approaches and episodes with MAC-backed integrity records. |
 | Refuted petition | A `substance` remedy moves the `petitioned` task to `failed` and inserts one `review-cure` task. That task's criteria come from the remedy's `Done when:`/`Cured when:` marker, and a remedy without one is refused on the review contract ladder. A `form` remedy moves the task to `validated` and records the remedy as debt instead of retrying the implementation. |
 | Verification debt | Durable notes carried forward from verification/adjudication; explicit resolution records preserve what was addressed. |
 
-When an ordinary rejection would archive the approach, the default
-`operator_input_needed` pause stops first. The verdict gate has a matching pause
-once the approach's cure-round allowance is spent. Either pause is
-answered with `ralphctl answer`; a ruling is recorded but does not release it.
+When a rejection would archive the approach, an `awaiting_input` park stops it
+first, for review and for the peer verdict gate alike. Either park is answered
+with `ralphctl answer`; a ruling is recorded but does not release it.
 
 Bounded mid-run adjudication
 (`_maybe_run_midrun_adjudication_episode`) is one off-budget iteration on the
@@ -1430,10 +1441,9 @@ too (#297, 0.32.2): `start` records it on or off in the config dir's
 with exit 2 if a recorded grant's socket is gone or the record exists but
 cannot be read; `--no-allow-docker` drops it
 and `--allow-docker` grants it, each re-recorded. This differs from `unpause`, which calls
-`POST /resume` on an already-running engine to release an operator pause or an
-engine-recorded pause. An unpause of review's `operator_input_needed` pause (or the
-verdict gate's equivalent) with no matching ruling also records a one-shot,
-disk-backed "proceed" for that exact rejection signature. The run lock prevents
+`POST /resume` on an already-running engine to release an operator pause; an
+`awaiting_input` run is answered, not unpaused, and an `exhausted` run is
+resumed with a top-up. The run lock prevents
 two engines from legitimately executing the same run directory at once.
 
 ```mermaid
@@ -1441,27 +1451,28 @@ flowchart TD
     Resume["Start engine over existing run directory"] --> Lock["Acquire lock and check schema"]
     Lock --> Finishing{"Recorded finishing state?"}
     Finishing -->|yes| Promote["Promote saved outcome without repeating work"]
-    Finishing -->|no| Seed["Restore budgets, refunds, firstStartedAt and approach context; clear recorded pause"]
+    Finishing -->|no| Seed["Restore budgets, refunds, firstStartedAt and approach context; clear an operator pause"]
     Seed --> Archived{"Rejected approach already archived?"}
     Archived -->|yes| Replan["Resume at replan"]
-    Archived -->|no| Judge{"Crashed mid-review, deadline-unreviewed, or parked on operator_input_needed?"}
+    Archived -->|no| Judge{"Crashed mid-review, deadline-unreviewed, or held in awaiting_input?"}
     Judge -->|yes| Review["Resume same approach at review"]
-    Judge -->|no| Legacy{"0.35 stagnation or graph-fault park?"}
-    Legacy -->|yes| Worker["Resume same approach at worker"]
-    Legacy -->|no| Existing["Reuse existing plan; skip redundant planning"]
+        Judge -->|no| Existing["Reuse existing plan; skip redundant planning"]
+
     Replan --> Continue["Continue harness"]
     Review --> Continue
-    Worker --> Continue
+    
     Existing --> Continue
 ```
 
 Recovery reconstructs an appropriate entry point from durable evidence
 ([`_resume_point`](../src/ralphd/engine/loop.py)); it does not restore a suspended
 Python stack or an agent's in-memory session. Each episode's opening write sets
-`state: running` and clears `pauseReason`/`pauseDetail`, so a pause recorded by a
-dead process is re-derived from `operator_escalation` events rather than restored.
-Only the reasons in the diagram have a dedicated entry. Any other recorded pause
-reason takes the default existing-plan entry. An interrupted review is retried as
+`state: running`, except that it keeps `finishing`, `awaiting_input` and
+`exhausted`, so a stop recorded by a dead process is still shown and is re-derived
+from `status.json` and `events.jsonl` rather than restored from memory. Only the
+cases in the diagram have a dedicated entry; everything else takes the default
+existing-plan entry. A 0.35 run directory is migrated once at load: its deadline hold becomes `exhausted` and an engine pause becomes `awaiting_input`
+(SPEC.md section 5.2). An interrupted review is retried as
 review rather than interpreted as a rejection. An approach already archived as
 rejected proceeds to replan. A recorded finalization outcome can be promoted
 without rerunning implementation or duplicating reflection work. `firstStartedAt`

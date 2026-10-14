@@ -532,25 +532,13 @@ the container is gone — indicated by `"live": false` in `--json` mode).
 
 The `state:` line names up to two markers, space-separated after the raw
 state word, whenever they apply (issue #269). The first is the pause
-marker (the same one `ralphctl runs` and the hub run list render): `⏸
-parked for input` marks the one `pauseReason` (`operator_input_needed`)
-whose bare `ralphctl unpause`, with no ruling ever filed, releases the
-run straight back into `review` over the EXACT SAME approach with
-nothing new to go on — likely to re-raise the identical rejection rather
-than progress (a plain unpause DOES release this pause; it just does not
-change the underlying determination). `⏸ held on rejected_incurable
-escalation` marks a run directory written by 0.35 that was holding on a
-`rejected_incurable` escalation — a pause kept in memory only, so its `state`
+marker (the same one `ralphctl runs` and the hub run list render): `⏸ parked for input` marks an `awaiting_input` run: the engine is asking the operator about findings (a bare `ralphctl unpause` is refused, naming `ralphctl answer`). `⏸ held on <reason> escalation` marks a run directory written by 0.35 that was holding on an incurable-finding escalation — a pause kept in memory only, so its `state`
 still reads `running` and it records no `pauseReason`; 0.36 parks every
 incurable finding in `awaiting_input` like the other ladder triggers. The second, `❗ escalation
 undelivered`, names a run whose most recently recorded engine escalation
 never reached the operator at all — every bounded delivery retry failed —
 and which is still paused on that exact escalation, persisted or held in
-memory. Both disappear once `ralphctl unpause`/`POST /resume` releases the
-hold — for `operator_input_needed` a `ralphctl
-rule` alone does too, but for every other reason that waits on a ruling
-(`verdict_gate_operator_input_needed`) a rule
-alone leaves the hold in place; it takes a separate unpause afterward. `--json` carries the same facts
+memory. Both disappear once the park is answered (`ralphctl answer`; a `ralphctl rule` alone never releases it, it is recorded, not an answer) or, for a 0.35 run's in-memory hold, `POST /resume` releases it. `--json` carries the same facts
 as `pauseMarker` (the pause marker string, `""` when none applies),
 `escalationUndelivered` (boolean) and `escalationUndeliveredMarker` (the
 marker string, `""` when it does not apply), on the live and on-disk
@@ -3197,9 +3185,7 @@ The named flag is `--iterations` for `iterations`, `--timeout` for `time` and
 applied to `job.yaml`, so after `resume my-run --iterations +5` on an
 approaches hold the next resume needs only `--approaches +1`. With the top-up
 the run continues where it held: at the step it held at for `iterations` and
-`time`, at the replan on the next approach number for `approaches`. A run
-directory written by 0.35 and recorded `timed_out` reads as `exhausted` (the
-budget is taken from its recorded reason) and resumes the same way.
+`time`, at the replan on the next approach number for `approaches`. A run directory written by 0.35 that held at its deadline reads as `exhausted` (the budget is taken from its recorded reason) and resumes the same way.
 
 `--iterations +10` adds 10 to the *effective* budget -- `max(status.json's
 iterationsBudget, job.yaml's iterations)`, the same number the engine's own
@@ -4075,9 +4061,7 @@ JSON endpoints served under `/api/`:
   condition as in the run list, decided here by the real proxy call rather
   than a port probe. `iterations` is always read from disk
   (`iterations/*/meta.json`). `404` for an unknown run id. Task 007 (v0.26,
-  #269) adds `parkedQuestion` — `null`/absent unless the (possibly live-
-  proxied) `status.pauseReason` is `operator_input_needed`, the one pause reason a
-  ruling can actually answer; built entirely on disk (`ralphd.engine.state.parked_question`, off
+  #269) adds `parkedQuestion` — `null`/absent unless the run's `state` is `awaiting_input` (a ruling never answers a park; `ralphctl answer` does); built entirely on disk (`ralphd.engine.state.parked_question`, off
   the most recent matching `operator_escalation` event NOT YET ANSWERED by a
   later resume with no fresher matching escalation since, in `events.jsonl`
   plus the on-disk structured findings sidecar), never a second live-only
@@ -4087,7 +4071,7 @@ JSON endpoints served under `/api/`:
   `commit_secret_scan` event) from resurrecting an already-answered gate's
   stale question.
   Carries `reason`, `approach`/`maxApproaches`/`approachOfMax`, `parkedAt`,
-  `replanAvailable` (present only for `operator_input_needed`),
+  `replanAvailable` (present only for review's findings park),
   `blockingCount`/`residualCount`, one `findings` entry per finding —
   every blocking finding (`id: "F<n>"`, the escalation's own numbering)
   followed by every residual finding off the sidecar (`id: "R<n>"`), each
