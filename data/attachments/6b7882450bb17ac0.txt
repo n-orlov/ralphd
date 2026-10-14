@@ -1,1 +1,0 @@
-ERROR    ralphd:main.py:283 hat 'plan_review' is configured with model 'bogus-provider/some-model', whose provider 'bogus-provider' is not one of the providers this profile declares (good-provider)
