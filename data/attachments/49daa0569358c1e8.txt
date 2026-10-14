@@ -1,0 +1,3 @@
+WARNING  ralphd.loop:loop.py:2845 iteration reflect classified infra fault (attempt 1, 0s of the 0s outage budget waited): no LLM traffic within startup window
+WARNING  ralphd.loop:loop.py:5276 reflect iteration cut short by the engine (timed_out) before the contract ladder ever ran -- clock REFLECT_TAIL_TIMEOUT_S=600.0
+WARNING  ralphd.loop:loop.py:5597 reflect iteration failed (fatal): the reflect iteration timed out

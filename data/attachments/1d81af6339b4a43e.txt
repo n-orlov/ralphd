@@ -1,3 +1,0 @@
-WARNING  ralphd.loop:loop.py:10213 review reply unusable (empty_reply); retrying as a fresh iteration (attempt 1 of 2)
-WARNING  ralphd.loop:loop.py:10213 review reply unusable (empty_reply); retrying as a fresh iteration (attempt 2 of 2)
-WARNING  ralphd.loop:loop.py:10243 review: no verdict: empty reply after every retry; not recording a rejection

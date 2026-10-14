@@ -1,0 +1,2 @@
+ERROR    ralphd.loop:loop.py:8316 refusing to commit: the message matches a known secret value for variable 'SYNTHETIC_HOOKFAULT_API_TOKEN'
+WARNING  ralphd.loop:loop.py:11164 a commit-msg/pre-commit hook refused a commit (variable SYNTHETIC_HOOKFAULT_API_TOKEN) -- nothing committed

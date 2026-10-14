@@ -1,3 +1,0 @@
-WARNING  ralphd.loop:loop.py:10213 verdict_gate reply unusable (output_truncated); retrying as a fresh iteration (attempt 1 of 2)
-WARNING  ralphd.loop:loop.py:10213 verdict_gate reply unusable (output_truncated); retrying as a fresh iteration (attempt 2 of 2)
-WARNING  ralphd.loop:loop.py:10243 verdict_gate: no verdict: output truncated after every retry; not recording a rejection

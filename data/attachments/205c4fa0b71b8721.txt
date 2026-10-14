@@ -1,0 +1,2 @@
+WARNING  ralphd.loop:loop.py:5597 reflect iteration failed (degraded): the reflect iteration wrote no artifacts/reflection/report.md
+WARNING  ralphd.loop:loop.py:5597 reflect iteration failed (degraded): the reflect iteration wrote no artifacts/reflection/report.md
