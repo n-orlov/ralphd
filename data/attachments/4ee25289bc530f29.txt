@@ -1,2 +1,0 @@
-WARNING  ralphd.privsep:privsep.py:651 no uid boundary: /tmp/pytest-of-ci/pytest-0/popen-gw2/test_a_truncated_gate_reply_is0/run/.tasks-protected/tasks.json is being written owned by the agent's own uid, not root (#202) -- this is the documented degrade (privsep.separated() is False here), not a second code path
-WARNING  ralphd.loop:loop.py:10214 verdict_gate reply unusable (output_truncated); retrying as a fresh iteration (attempt 1 of 2)
