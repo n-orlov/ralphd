@@ -1,0 +1,19 @@
+running: /__w/ralphd/ralphd/.venv/bin/python -mpytest --basetemp=/tmp/pytest-of-ci/pytest-0/popen-gw3/test_a_flaky_infra_marker_inherited_from_the_module_still_grants_exactly_one_rerun0/runpytest-0 -p no:cacheprovider -p no:xdist -rR -q
+     in: /tmp/pytest-of-ci/pytest-0/popen-gw3/test_a_flaky_infra_marker_inherited_from_the_module_still_grants_exactly_one_rerun0
+RF                                                                       [100%]
+=================================== FAILURES ===================================
+__________________________________ test_node ___________________________________
+
+    def test_node():
+        marker = Path('attempts.txt')
+        n = int(marker.read_text()) if marker.exists() else 0
+        marker.write_text(str(n + 1))
+>       assert n >= 9, f'attempt {n + 1} fails'
+E       AssertionError: attempt 2 fails
+E       assert 1 >= 9
+
+test_child.py:9: AssertionError
+=========================== rerun test summary info ============================
+RERUN test_child.py::test_node
+FAILED test_child.py::test_node
+1 failed, 1 rerun in 0.04s
