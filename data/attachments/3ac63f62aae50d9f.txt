@@ -1,0 +1,2 @@
+WARNING  ralphd.loop:loop.py:5238 reflect iteration cut short by the engine (interrupted) before the contract ladder ever ran -- clock REFLECT_TAIL_TIMEOUT_S=600.0
+WARNING  ralphd.loop:loop.py:5559 reflect iteration failed (fatal): the reflect iteration was interrupted

@@ -1,0 +1,3 @@
+COMMIT_SCAN_ANSWER_COMMANDS ['ralphctl answer task005-escalation-undelivered-marker --secret-handled']
+answered: secret handled (the commit scan of the offending range is clean; the worker carries on)
+COMMIT_SCAN_ANSWER ralphctl answer task005-escalation-undelivered-marker --secret-handled running None

@@ -1,0 +1,1 @@
+WARNING  ralphd.loop:loop.py:2783 iteration worker classified infra fault (attempt 1, 0s of the 1000s outage budget waited): agent replied with an unexpected shape

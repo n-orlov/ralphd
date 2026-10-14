@@ -1,0 +1,6 @@
+WARNING  ralphd.loop:loop.py:10065 review reply unusable (review_findings_unusable); retrying as a fresh iteration (attempt 1 of 2)
+WARNING  ralphd.loop:loop.py:10065 review reply unusable (review_findings_unusable); retrying as a fresh iteration (attempt 2 of 2)
+WARNING  ralphd.loop:loop.py:10120 review judge fault (attempt 1, 0s of the 0s outage budget waited): review's findings channel is unusable: findings: a structured findings channel is present but does not validate, so the verdict cannot be checked against it: invalid findings channel at /tmp/pytest-of-ci/pytest-0/popen-gw1/test_two_real_review_cycles_pe1/run/review-findings.json: $[0]: missing required field 'evidence'
+WARNING  ralphd.loop:loop.py:10065 review reply unusable (review_findings_unusable); retrying as a fresh iteration (attempt 1 of 2)
+WARNING  ralphd.loop:loop.py:10065 review reply unusable (review_findings_unusable); retrying as a fresh iteration (attempt 2 of 2)
+WARNING  ralphd.loop:loop.py:10120 review judge fault (attempt 1, 0s of the 0s outage budget waited): review's findings channel is unusable: findings: a structured findings channel is present but does not validate, so the verdict cannot be checked against it: invalid findings channel at /tmp/pytest-of-ci/pytest-0/popen-gw1/test_two_real_review_cycles_pe1/run/review-findings.json: $[0]: missing required field 'evidence'

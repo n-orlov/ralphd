@@ -1,0 +1,22 @@
+running: /__w/ralphd/ralphd/.venv/bin/python -mpytest --basetemp=/tmp/pytest-of-ci/pytest-0/popen-gw1/test_an_inherited_class_flaky_marker_cannot_raise_a_flaky_infra_node_above_one_rerun0/runpytest-0 -p no:cacheprovider -p no:xdist -rR -q
+     in: /tmp/pytest-of-ci/pytest-0/popen-gw1/test_an_inherited_class_flaky_marker_cannot_raise_a_flaky_infra_node_above_one_rerun0
+RF                                                                       [100%]
+=================================== FAILURES ===================================
+______________________________ TestNode.test_node ______________________________
+
+self = <test_child.TestNode object at 0x7f0fb50f2f30>
+
+    @pytest.mark.flaky_infra
+    def test_node(self):
+        marker = Path('attempts.txt')
+        n = int(marker.read_text()) if marker.exists() else 0
+        marker.write_text(str(n + 1))
+>       assert n >= 9, f'attempt {n + 1} fails'
+E       AssertionError: attempt 2 fails
+E       assert 1 >= 9
+
+test_child.py:11: AssertionError
+=========================== rerun test summary info ============================
+RERUN test_child.py::TestNode::test_node
+FAILED test_child.py::TestNode::test_node
+1 failed, 1 rerun in 0.07s

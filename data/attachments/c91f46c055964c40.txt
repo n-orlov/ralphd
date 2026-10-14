@@ -1,0 +1,53 @@
+ERROR    ralphd.loop:loop.py:1164 escalation notifier raised for run rejection-ladder
+Traceback (most recent call last):
+  File "/__w/ralphd/ralphd/src/ralphd/engine/loop.py", line 1160, in _notify_escalation_delivery
+    result = self._notify(text, max_attempts=1)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/__w/ralphd/ralphd/src/ralphd/engine/loop.py", line 1071, in _notify
+    return self.notifier(text, max_attempts=max_attempts)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/__w/ralphd/ralphd/tests/test_input_timeout_notifications.py", line 51, in __call__
+    raise RuntimeError("the notifier is down")
+RuntimeError: the notifier is down
+ERROR    ralphd.loop:loop.py:1164 escalation notifier raised for run rejection-ladder
+Traceback (most recent call last):
+  File "/__w/ralphd/ralphd/src/ralphd/engine/loop.py", line 1160, in _notify_escalation_delivery
+    result = self._notify(text, max_attempts=1)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/__w/ralphd/ralphd/src/ralphd/engine/loop.py", line 1071, in _notify
+    return self.notifier(text, max_attempts=max_attempts)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/__w/ralphd/ralphd/tests/test_input_timeout_notifications.py", line 51, in __call__
+    raise RuntimeError("the notifier is down")
+RuntimeError: the notifier is down
+ERROR    ralphd.loop:loop.py:1164 escalation notifier raised for run rejection-ladder
+Traceback (most recent call last):
+  File "/__w/ralphd/ralphd/src/ralphd/engine/loop.py", line 1160, in _notify_escalation_delivery
+    result = self._notify(text, max_attempts=1)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/__w/ralphd/ralphd/src/ralphd/engine/loop.py", line 1071, in _notify
+    return self.notifier(text, max_attempts=max_attempts)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/__w/ralphd/ralphd/tests/test_input_timeout_notifications.py", line 51, in __call__
+    raise RuntimeError("the notifier is down")
+RuntimeError: the notifier is down
+ERROR    ralphd.loop:loop.py:15267 input-park notification failed for run rejection-ladder
+Traceback (most recent call last):
+  File "/__w/ralphd/ralphd/src/ralphd/engine/loop.py", line 15265, in _notify_input_event
+    self._notify(text[:MAX_NOTIFY_CHARS], max_attempts=1)
+  File "/__w/ralphd/ralphd/src/ralphd/engine/loop.py", line 1071, in _notify
+    return self.notifier(text, max_attempts=max_attempts)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/__w/ralphd/ralphd/tests/test_input_timeout_notifications.py", line 51, in __call__
+    raise RuntimeError("the notifier is down")
+RuntimeError: the notifier is down
+ERROR    ralphd.loop:loop.py:15267 input-park notification failed for run rejection-ladder
+Traceback (most recent call last):
+  File "/__w/ralphd/ralphd/src/ralphd/engine/loop.py", line 15265, in _notify_input_event
+    self._notify(text[:MAX_NOTIFY_CHARS], max_attempts=1)
+  File "/__w/ralphd/ralphd/src/ralphd/engine/loop.py", line 1071, in _notify
+    return self.notifier(text, max_attempts=max_attempts)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/__w/ralphd/ralphd/tests/test_input_timeout_notifications.py", line 51, in __call__
+    raise RuntimeError("the notifier is down")
+RuntimeError: the notifier is down

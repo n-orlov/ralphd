@@ -1,0 +1,1 @@
+answered: secret handled (the commit scan of the offending range is clean; the worker carries on)

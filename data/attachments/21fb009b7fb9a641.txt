@@ -1,0 +1,1 @@
+WARNING  ralphd.config:config.py:982 RALPHD_PRICING is not valid JSON -- ignored

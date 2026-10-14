@@ -1,0 +1,1 @@
+WARNING  ralphd.loop:loop.py:5276 reflect phase not attempted: signal 15 ended the engine during the reflect phase, so the iteration was cut short by this engine's own shutdown rather than by anything about the reflection

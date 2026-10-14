@@ -1,0 +1,3 @@
+WARNING  ralphd.loop:loop.py:10065 review reply unusable (review_findings_unusable); retrying as a fresh iteration (attempt 1 of 2)
+WARNING  ralphd.loop:loop.py:10065 review reply unusable (review_findings_unusable); retrying as a fresh iteration (attempt 2 of 2)
+WARNING  ralphd.loop:loop.py:10120 review judge fault (attempt 1, 0s of the 14400s outage budget waited): review's findings channel is unusable: finding 'requirement D.3': a curable blocking finding requires a non-empty 'cured_when' -- the specification a fresh cure task's successCriteria is built from (PRD requirement E.2, #171)

@@ -1,0 +1,6 @@
+WARNING  ralphd.loop:loop.py:5559 reflect iteration failed (degraded): the reflect iteration wrote no artifacts/reflection/report.md
+WARNING  ralphd.loop:loop.py:10065 review reply unusable (review_contract_unrepaired); retrying as a fresh iteration (attempt 1 of 2)
+WARNING  ralphd.loop:loop.py:10065 review reply unusable (review_contract_unrepaired); retrying as a fresh iteration (attempt 2 of 2)
+WARNING  ralphd.loop:loop.py:5559 reflect iteration failed (degraded): the reflect iteration wrote no artifacts/reflection/report.md
+WARNING  ralphd.loop:loop.py:10065 review reply unusable (review_contract_unrepaired); retrying as a fresh iteration (attempt 1 of 2)
+WARNING  ralphd.loop:loop.py:10065 review reply unusable (review_contract_unrepaired); retrying as a fresh iteration (attempt 2 of 2)
