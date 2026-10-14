@@ -1,2 +1,0 @@
-ERROR    ralphd.loop:loop.py:8276 refusing to commit: the diff matches a known secret value for variable 'SYNTHETIC_HOOKFAULT_API_TOKEN'
-WARNING  ralphd.loop:loop.py:11124 a commit-msg/pre-commit hook refused a commit (variable SYNTHETIC_HOOKFAULT_API_TOKEN) -- nothing committed

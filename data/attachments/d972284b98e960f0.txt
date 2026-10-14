@@ -1,0 +1,2 @@
+WARNING  ralphd.privsep:privsep.py:651 no uid boundary: /tmp/pytest-of-ci/pytest-0/popen-gw1/test_the_engine_labels_its_own0/run/.tasks-protected/tasks.json is being written owned by the agent's own uid, not root (#202) -- this is the documented degrade (privsep.separated() is False here), not a second code path
+WARNING  ralphd.loop:loop.py:20392 task 001 consumed all 3 validation attempts (failureKind=validation-exhausted); this records the rounds spent, not a judgement that the requirement is unmeetable

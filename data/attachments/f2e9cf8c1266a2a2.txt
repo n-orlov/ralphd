@@ -1,0 +1,3 @@
+WARNING  ralphd.loop:loop.py:2845 iteration worker classified infra fault (attempt 1, 0s of the 14400s outage budget waited): agent replied with an unexpected shape
+WARNING  ralphd.loop:loop.py:2845 iteration worker classified infra fault (attempt 2, 0s of the 14400s outage budget waited): agent replied with an unexpected shape
+WARNING  ralphd.loop:loop.py:2845 iteration worker classified infra fault (attempt 3, 0s of the 14400s outage budget waited): agent replied with an unexpected shape
