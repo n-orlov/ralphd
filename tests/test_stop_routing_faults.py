@@ -156,7 +156,8 @@ def test_a_judge_fault_inside_the_outage_budget_waits_and_asks_again(
     elif fault == "review_no_verdict":
         kw["review"] = [_review_truncated] * 3 + [_review]
     else:
-        kw["review"] = [_review_prose] * 4 + [_review]
+        # every judge retry of every pass runs the whole contract ladder
+        kw["review"] = [_review_prose] * (3 * REVIEW_LADDER) + [_review]
     sup, final, seen = _run(tmp_path / "run", **kw)
     assert seen == []
     status = sup.run.read_status()
@@ -166,6 +167,48 @@ def test_a_judge_fault_inside_the_outage_budget_waits_and_asks_again(
     # the budget is the unchanged one (cfg.infra_outage_budget_s)
     assert {e["budgetS"] for e in faults} == {1000.0}
     assert status.get("health") == "ok", "recovery clears the degraded health"
+
+
+# one review pass: the first reply plus `contract_retry_max` (default 2)
+# contract re-asks, all answered by the same scripted review step
+REVIEW_LADDER = 3
+
+
+def _findings_unusable(s, p):
+    s.run.findings_json_file.write_text('[{"severity": "blocking"}]')
+    return _ok(json.dumps({"verdict": "verified"}))
+
+
+CONTRACT_FAULTS = {"review_contract_unrepaired": _review_prose,
+                   "review_findings_unusable": _findings_unusable}
+
+
+@pytest.mark.parametrize("cap", [0, 2])
+@pytest.mark.parametrize("fault", sorted(CONTRACT_FAULTS))
+def test_a_review_contract_fault_takes_the_judge_retries_before_the_budget(
+        tmp_path, fault, cap):
+    """Criterion 1: an unrepaired review contract and an unusable findings
+    channel get exactly `judge_retry_max` judge retries (`review.retry`,
+    reason = the fault) and only THEN enter the outage budget (the
+    `judgeFault` `infra_retry`), exactly like a no-verdict reply."""
+    sup, final, seen = _run(tmp_path / "run", infra_outage_budget_s=0.0,
+                            judge_retry_max=cap,
+                            review=[CONTRACT_FAULTS[fault]])
+    assert seen == []
+    status = sup.run.read_status()
+    assert final == "failed" and status["verdict"] == "unreviewed", status
+    assert sup._judge_fault_tail == fault
+    events = state.read_events(sup.run.root)
+    retries = [i for i, e in enumerate(events) if e.get("type") == "review.retry"]
+    assert [events[i]["reason"] for i in retries] == [fault] * cap
+    assert [events[i]["attempt"] for i in retries] == list(range(1, cap + 1))
+    budget = [i for i, e in enumerate(events)
+              if e.get("type") == "infra_retry" and e.get("judgeFault")]
+    assert len(budget) == 1, "a zero budget is spent on the first fault"
+    assert all(i < budget[0] for i in retries), \
+        "the judge retries come before the outage budget"
+    # one review dispatch per pass: the first attempt plus every retry
+    assert sup.runner.calls["review"] == (cap + 1) * REVIEW_LADDER
 
 
 def test_review_findings_unusable_with_the_budget_spent_ends_failed(tmp_path):

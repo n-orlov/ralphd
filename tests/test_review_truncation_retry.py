@@ -345,15 +345,19 @@ def test_a_spent_budget_after_empty_review_replies_ends_unreviewed(tmp_path):
 def test_a_non_empty_malformed_review_reply_is_an_infra_fault_never_a_hold(
         tmp_path):
     """v0.36 F.3: the contract-ladder exhaustion (a reply that is not empty
-    but unreadable) is routed like the no-verdict faults: no pause, `failed`
-    with verdict `unreviewed` once the outage budget is spent."""
+    but unreadable) is routed like the no-verdict faults: the
+    `judge_retry_max` retries first, then no pause but `failed` with verdict
+    `unreviewed` once the outage budget is spent. (The retry ordering for
+    both contract faults is pinned in tests/test_stop_routing_faults.py::
+    test_a_review_contract_fault_takes_the_judge_retries_before_the_budget.)"""
     sup, final, parks = _run_faulted(
         tmp_path / "run", [_review_prose], infra_outage_budget_s=0.0)
     assert parks == []
     status = sup.run.read_status()
     assert final == "failed" and status["verdict"] == "unreviewed", status
     assert sup._judge_fault_tail == "review_contract_unrepaired"
-    assert _events(sup, "review.retry") == []
+    assert [e["reason"] for e in _events(sup, "review.retry")] == [
+        "review_contract_unrepaired"] * sup.cfg.judge_retry_max
     assert _events(sup, "review.no_verdict") == []
     (cfault,) = _events(sup, "review.contract_fault")
     assert cfault["guard"] == "review_contract_unrepaired"

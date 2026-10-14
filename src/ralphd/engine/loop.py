@@ -10065,7 +10065,8 @@ class LoopSupervisor:
         `read(result)` reads one reply and returns `(value, retry_reason)`
         where `retry_reason` is None for a usable reply (or one the engine
         keeps today's safe default for) and `output_truncated` /
-        `empty_reply` otherwise. While a retry reason stands, the attempts
+        `empty_reply` (or, for review, `review_contract_unrepaired` /
+        `review_findings_unusable`) otherwise. While a retry reason stands, the attempts
         are under `cfg.judge_retry_max`, and the run is neither aborting nor
         past its deadline, the failed attempt is refunded (the `infra`
         counter, so no retry is charged against `--iterations`), a
@@ -10092,6 +10093,12 @@ class LoopSupervisor:
                         "iteration (attempt %d of %d)", hat, reason, attempt,
                         cap)
             result = await redispatch()
+
+    # v0.36 F.3: the review contract faults `_read_review_reply` reports as
+    # a judge retry reason (retried like a no-verdict reply, then routed to
+    # `_review_contract_fault`, never to `_park_judge_no_verdict`).
+    REVIEW_CONTRACT_FAULTS = frozenset(
+        {"review_contract_unrepaired", "review_findings_unusable"})
 
     JUDGE_NO_VERDICT_WORDING = {
         "output_truncated": "no verdict: output truncated",
@@ -10217,7 +10224,8 @@ class LoopSupervisor:
                                      contract_errors) -> tuple:
         """v0.36 F.3: review's contract ladder is exhausted over an unreadable
         verdict claim (`review_contract_unrepaired`) or an unusable findings
-        channel (`review_findings_unusable`). Nothing is rejected, archived or
+        channel (`review_findings_unusable`), on the first attempt and on
+        every `judge_retry_max` retry (`_judge_reply_with_retry`). Nothing is rejected, archived or
         cured: the fault is an infra fault under the unchanged outage budget
         (`_judge_fault_backoff`). After each backoff review is asked again
         over the SAME approach (a `review -> review` self-loop); when the
@@ -13588,6 +13596,12 @@ class LoopSupervisor:
                     await self._judge_reply_with_retry(
                         "review", result, self._read_review_reply,
                         self._redispatch_review))
+                if self._review_no_verdict in self.REVIEW_CONTRACT_FAULTS:
+                    # Every retry also ended in a contract fault: not a
+                    # no-verdict reading. The last pass's flags stand and
+                    # `_step_review` takes it to `_review_contract_fault`
+                    # after `_review_verdict` has read what it can.
+                    self._review_no_verdict = None
                 if not self._review_interrupted(result):
                     return result
             self._advance("review", "review", "review_interrupted")
@@ -13610,8 +13624,10 @@ class LoopSupervisor:
         output budget cannot help) and the review flags describe this pass
         as having no readable verdict. Every other reply goes through the
         ordinary contract ladder: when that is exhausted on replies that were
-        all empty the reading is `empty_reply`, while a non-empty malformed
-        reply keeps its existing `review_contract_unrepaired` pause."""
+        all empty the reading is `empty_reply`, while a non-empty reply the
+        ladder could not repair reads as `review_contract_unrepaired` or
+        `review_findings_unusable` (retried the same way, then an infra fault
+        under the outage budget through `_review_contract_fault`)."""
         if (result is not None and not self._review_interrupted(result)
                 and getattr(result, "output_truncated", False)
                 and not (result.final_text or "").strip()):
@@ -13633,6 +13649,18 @@ class LoopSupervisor:
             self._review_ladder_all_empty = False
             self._confirmation_downgrades_announced = set()
             return result, "empty_reply"
+        # v0.36 F.3: a non-empty reply the ladder could not repair -- an
+        # unreadable verdict claim or an unusable findings channel -- is a
+        # judge fault too, and gets the same `judge_retry_max` retries before
+        # it enters the outage budget. The flags stay set: if every retry
+        # also fails, `_run_review_iteration` hands the last pass back with
+        # them standing and `_step_review` routes it to
+        # `_review_contract_fault`.
+        if not self._review_interrupted(result):
+            if self._review_contract_unrepaired:
+                return result, "review_contract_unrepaired"
+            if self._review_findings_unusable:
+                return result, "review_findings_unusable"
         return result, None
 
     async def _redispatch_review(self):

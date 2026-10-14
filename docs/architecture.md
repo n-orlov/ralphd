@@ -4470,9 +4470,10 @@ within a bounded investigation) and its thinking level is one step lower
 fires on `output_truncated` and on `empty_reply` (its contract ladder was
 exhausted on replies that were all empty), emits `review.retry`, and goes
 through the same helper; when every retry fails review takes the judge-fault
-route below. A non-empty malformed review reply keeps the contract ladder, and
-its exhaustion (`review_contract_unrepaired`, `review_findings_unusable`) takes
-the same judge-fault route through `_review_contract_fault`.
+route below. A non-empty malformed review reply keeps the contract ladder; its
+exhaustion (`review_contract_unrepaired`, `review_findings_unusable`) is the
+retry reason too, so review is retried the same way, and when every retry also
+fails it takes the same judge-fault route through `_review_contract_fault`.
 
 **A gate with no verdict after every retry is an infra fault (v0.36 F.3).** When the retries
 also fail, `_verdict_gate_verdict` reports the cause (`output_truncated` or

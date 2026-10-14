@@ -1347,7 +1347,8 @@ under the unchanged outage budget (v0.36 requirement F.3).
 (`health: "degraded"`, `infraWait`, woken early by `POST /retry`); after it
 the hat that had no verdict is dispatched again as a fresh first attempt.
 Once the outage budget is spent the run ends `failed` with verdict
-`unreviewed`, resumable with `ralphctl resume`. The same route serves a
+`unreviewed`, resumable with `ralphctl resume`. The same route, after the
+same `judge_retry_max` retries (`review.retry` with that `reason`), serves a
 review whose contract ladder is exhausted over an unreadable verdict claim
 (`review_contract_unrepaired`) or an unusable findings channel
 (`review_findings_unusable`), with a `review.contract_fault` event.

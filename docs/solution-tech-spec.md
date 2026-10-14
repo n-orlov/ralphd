@@ -403,8 +403,8 @@ Several pauses happen before an approach is archived:
 - **Contract failures.** `review_contract_unrepaired` and
   `review_findings_unusable` (review's contract ladder exhausted on a non-empty
   reply) and a judge no-verdict (a ladder exhausted on empty replies, or a
-  truncated reply, after every `judge_retry_max` retry) are infra faults under
-  the outage budget: the hat is asked again after each backoff, and a spent
+  truncated reply), each still standing after every `judge_retry_max` retry,
+  are infra faults under the outage budget: the hat is asked again after each backoff, and a spent
   budget ends the run `failed`, verdict `unreviewed`. None of them pauses.
 - **Gate cure ceiling.** The peer verdict gate's own mirror,
   `verdict_gate_operator_input_needed`, fires once the current approach's

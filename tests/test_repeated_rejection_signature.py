@@ -608,7 +608,10 @@ def test_two_real_review_cycles_persist_findings_unusable_pause_and_keep_first_u
     assert status.get("pauseReason") is None
     assert sup._approach == 1 and sup._pause.is_set()
     assert len(messages) == 0
-    assert len(repairs) == 4 and all(repairs)
+    # two cycles, each the ladder's re-asks on the first attempt and on
+    # every `judge_retry_max` judge retry (v0.36 F.3)
+    assert len(repairs) == (2 * (1 + sup.cfg.judge_retry_max)
+                            * sup.cfg.contract_retry_max) and all(repairs)
     findings_list, channel_errors = sup._review_findings_channel()
     assert findings_list is None and channel_errors
 
@@ -712,7 +715,10 @@ def test_two_real_review_cycles_persist_permission_denied_error_pause_and_keep_s
         assert status.get("pauseReason") is None
         assert sup._approach == 1 and sup._pause.is_set()
         assert len(messages) == 0
-        assert len(repairs) == 4 and all(repairs)
+        # two cycles, each the ladder's re-asks on the first attempt and on
+        # every `judge_retry_max` judge retry (v0.36 F.3)
+        assert len(repairs) == (2 * (1 + sup.cfg.judge_retry_max)
+                                * sup.cfg.contract_retry_max) and all(repairs)
         findings_list, channel_errors = sup._review_findings_channel()
         assert findings_list is None and channel_errors
     finally:

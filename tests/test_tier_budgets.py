@@ -898,8 +898,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 010 (v0.36 F.3-F.6): +13 tests / +1 module
     # (tests/test_stop_routing_faults.py), measured the same way -> fast
     # 8658/545, smoke 6880/418.
-    "fast": {"tests": 8658, "modules": 545},
-    "smoke": {"tests": 6880, "modules": 418},
+    # Task 010 retry 2: the review contract faults take the judge retries
+    # first (+4 nodes in tests/test_stop_routing_faults.py), measured
+    # `--collect-only` -> fast 8662/545, smoke 6884/418.
+    "fast": {"tests": 8662, "modules": 545},
+    "smoke": {"tests": 6884, "modules": 418},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

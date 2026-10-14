@@ -304,17 +304,20 @@ def test_review_ladder_exhaustion_with_budget_remaining_asks_review_again(live):
     stays UNARCHIVED, no composite PRD, `verdict:review:unreviewed@1`). It
     used to HOLD the run `paused` for the operator (`review_contract_
     unrepaired`, one `operator_escalation`, `POST /resume`); since F.3 it is
-    an infra fault under the unchanged outage budget: the engine waits out
-    the backoff and asks review again over the SAME approach, where the
-    stub's next (well-formed) reply verifies. The run is never `paused`.
+    an infra fault under the unchanged outage budget once the
+    `judge_retry_max` (default 2) judge retries are spent too: three
+    unreadable invocations, then the engine waits out the backoff and asks
+    review again over the SAME approach, where the stub's next (well-formed)
+    reply verifies. The run is never `paused`.
 
-    Every other assertion survives verbatim: `review-count == "2"` (one
-    exhausted real invocation, one passing one -- the ladder's uncharged
-    re-asks never advance the marker), every task `completed`,
-    `usage.byPhase.contract` non-empty, and budget genuinely left over."""
+    Every other assertion survives, recounted for the retries:
+    `review-count == "4"` (three exhausted real invocations, one passing one
+    -- the ladder's uncharged re-asks never advance the marker), every task
+    `completed`, `usage.byPhase.contract` non-empty, and budget genuinely
+    left over."""
     run = live(run_id="g5-review-ladder-exhaustion",
                job={"on_complete": "exit", "max_approaches": 2},
-               stub_env={"STUB_REVIEW_MALFORMED_COUNT": "1"})
+               stub_env={"STUB_REVIEW_MALFORMED_COUNT": "3"})
 
     assert wait_engine_exit(run, timeout=ENGINE_EXIT_WAIT_S) == 0
     # never an escalation or a pause; nothing archived, no composite PRD
@@ -322,6 +325,8 @@ def test_review_ladder_exhaustion_with_budget_remaining_asks_review_again(live):
     assert not any((run.run_dir / "approaches").rglob("*")), sorted(
         str(p) for p in (run.run_dir / "approaches").rglob("*"))
     assert not (run.run_dir / "composite-prd.md").exists()
+    assert [e.get("reason") for e in events_of(run, "review.retry")] == [
+        "review_contract_unrepaired"] * 2
     (cfault,) = events_of(run, "review.contract_fault")
     assert cfault.get("guard") == "review_contract_unrepaired", cfault
     assert cfault.get("errors"), cfault
@@ -339,14 +344,14 @@ def test_review_ladder_exhaustion_with_budget_remaining_asks_review_again(live):
     phase_approach = [(m["phase"], m["approach"]) for m in metas]
     assert phase_approach == [
         ("planning", 1), ("worker", 1), ("worker", 1), ("review", 1),
-        ("review", 1),
+        ("review", 1), ("review", 1), ("review", 1),
     ], phase_approach
 
-    # only ONE real review invocation happened per review pass: the
+    # only ONE real review invocation happened per review attempt: the
     # ladder's own uncharged re-asks never advance this marker (they carry
-    # no `Role: Reviewer` text), so it reads exactly 2 -- one exhausted
-    # call before the hold, one passing call after the resume.
-    assert _marker(run, "review-count") == "2"
+    # no `Role: Reviewer` text), so it reads exactly 4 -- the first attempt
+    # and its two judge retries, then one passing call after the backoff.
+    assert _marker(run, "review-count") == "4"
 
     all_tasks = tasks(run)
     assert all_tasks and all(t["status"] == "completed" for t in all_tasks)

@@ -852,9 +852,9 @@ Human output also renders (task 003):
   time, and `ralphctl resume <run-id> --rate-limit-wait +N` raises the ceiling
   and continues. Nothing is retried and the engine never pauses on either.
   A judging hat that produced no verdict (the peer `verdict_gate`'s reply cut
-  off or empty after every `judge_retry_max` retry, or `review` cut off, empty
-  or unreadable after its contract ladder) is an infra fault under the outage
-  budget: `degraded:` shows the wait, the hat is asked again, and a spent
+  off or empty, or `review` cut off, empty or unreadable after its contract
+  ladder), still so after every `judge_retry_max` retry, is an infra fault
+  under the outage budget: `degraded:` shows the wait, the hat is asked again, and a spent
   budget ends the run `failed` with verdict `unreviewed`:
 
   ```
@@ -2256,8 +2256,9 @@ refused work (a resume before the fix is refused again and ends `failed` again).
 
 A judging hat with no verdict (v0.36 F.3) is an infra fault, not a park:
 `verdict_gate: no verdict: output truncated` (or `review: ...`, `empty reply`,
-or a review whose contract is unrepaired or whose findings channel is unusable)
-makes the engine wait out the infra backoff under the unchanged outage budget
+or a review whose contract is unrepaired or whose findings channel is unusable),
+once the first attempt and every `judge_retry_max` retry have failed, makes
+the engine wait out the infra backoff under the unchanged outage budget
 and ask the hat again as a fresh first attempt with a fresh retry allowance.
 With `judge_retry_max: 0` the fault follows the first failed attempt. When the
 outage budget (or the iteration budget or the deadline) is spent the run ends

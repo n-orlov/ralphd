@@ -740,7 +740,10 @@ def test_ladder_exhaustion_holds_for_an_operator_and_never_archives(
     outcome = asyncio.run(sup._step_review())
 
     assert outcome == ("tail",)
-    assert sup.runner.calls == 1 + sup.cfg.contract_retry_max
+    # v0.36 F.3: the full ladder on the first attempt and on each of
+    # the `judge_retry_max` judge retries, before the outage budget
+    assert sup.runner.calls == ((1 + sup.cfg.judge_retry_max)
+                                * (1 + sup.cfg.contract_retry_max))
 
     # neither consequence of a rejection fires: nothing is archived, no
     # composite PRD is written, and the approach counter never moves.
@@ -753,7 +756,8 @@ def test_ladder_exhaustion_holds_for_an_operator_and_never_archives(
 
     events = _events(root)
     faults = [e for e in events if e.get("type") == "contract.agent_fault"]
-    assert len(faults) == 1 and faults[0]["hat"] == "review", faults
+    assert len(faults) == 1 + sup.cfg.judge_retry_max, faults
+    assert {f["hat"] for f in faults} == {"review"}, faults
     # v0.36 F.3: no operator_escalation any more -- the fault is an infra
     # fault, recorded on `review.contract_fault` with the validation errors.
     assert not [e for e in events if e.get("type") == "operator_escalation"]
@@ -831,10 +835,14 @@ def test_a_legible_rejected_verdict_with_a_schema_slip_elsewhere_now_pauses(
     # the ladder genuinely exhausted -- the full attempt count and the
     # `contract.agent_fault` are both here -- and the outcome is now the
     # discriminating hold, with every rejection consequence withheld.
-    assert sup.runner.calls == 1 + sup.cfg.contract_retry_max
+    # v0.36 F.3: the full ladder on the first attempt and on each of
+    # the `judge_retry_max` judge retries, before the outage budget
+    assert sup.runner.calls == ((1 + sup.cfg.judge_retry_max)
+                                * (1 + sup.cfg.contract_retry_max))
     events = _events(root)
     faults = [e for e in events if e.get("type") == "contract.agent_fault"]
-    assert len(faults) == 1 and faults[0]["hat"] == "review", faults
+    assert len(faults) == 1 + sup.cfg.judge_retry_max, faults
+    assert {f["hat"] for f in faults} == {"review"}, faults
     assert outcome == ("tail",)
     status = sup.run.read_status()
     assert status["state"] != "paused"  # v0.36 F.3: an infra fault, never a pause
@@ -1075,12 +1083,16 @@ def test_a_pass_verdict_is_never_normalised_toward_success(tmp_path):
     outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
 
     assert outcome == ("tail",)
-    assert sup.runner.calls == 1 + sup.cfg.contract_retry_max
+    # v0.36 F.3: the full ladder on the first attempt and on each of
+    # the `judge_retry_max` judge retries, before the outage budget
+    assert sup.runner.calls == ((1 + sup.cfg.judge_retry_max)
+                                * (1 + sup.cfg.contract_retry_max))
     events = _events(root)
     assert not [e for e in events
                 if e.get("type") == "review.verdict_synonym_normalised"]
     faults = [e for e in events if e.get("type") == "contract.agent_fault"]
-    assert len(faults) == 1 and faults[0]["hat"] == "review"
+    assert len(faults) == 1 + sup.cfg.judge_retry_max
+    assert {f["hat"] for f in faults} == {"review"}
     assert "VERIFIED" not in [e.get("signal") for e in events
                               if e.get("type") == "signal"]
     assert sup.run.read_status().get("verdict") is None
