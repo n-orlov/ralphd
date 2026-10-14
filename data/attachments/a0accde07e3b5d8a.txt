@@ -1,0 +1,4 @@
+running: /__w/ralphd/ralphd/.venv/bin/python -mpytest --basetemp=/tmp/pytest-of-ci/pytest-0/popen-gw2/test_each_tier_node_has_its_tier_as_parent_suite_and_its_module_as_suite0/runpytest-0 -p no:cacheprovider -p no:xdist -q --alluredir /tmp/pytest-of-ci/pytest-0/popen-gw2/test_each_tier_node_has_its_tier_as_parent_suite_and_its_module_as_suite0/allure-results
+     in: /tmp/pytest-of-ci/pytest-0/popen-gw2/test_each_tier_node_has_its_tier_as_parent_suite_and_its_module_as_suite0
+....                                                                     [100%]
+4 passed in 0.02s

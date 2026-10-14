@@ -1,4 +1,0 @@
-{
-  "target": "/tmp/pytest-of-ci/pytest-0/popen-gw1/test_a_wheel_install_installs_0/home/.pi/agent/skills/ralphd",
-  "verified": true
-}

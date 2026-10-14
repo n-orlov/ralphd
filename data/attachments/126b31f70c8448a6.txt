@@ -1,0 +1,29 @@
+running: /__w/ralphd/ralphd/.venv/bin/python -mpytest --basetemp=/tmp/pytest-of-ci/pytest-0/popen-gw1/test_the_passing_rerun_attempt_is_flagged_flaky_in_the_allure_results0/runpytest-0 --alluredir=/tmp/pytest-of-ci/pytest-0/popen-gw1/test_the_passing_rerun_attempt_is_flagged_flaky_in_the_allure_results0/results -p no:cacheprovider -p no:xdist -q -rR
+     in: /tmp/pytest-of-ci/pytest-0/popen-gw1/test_the_passing_rerun_attempt_is_flagged_flaky_in_the_allure_results0
+R.RFRR..F.                                                               [100%]
+=================================== FAILURES ===================================
+____________________________ test_infra_fails_twice ____________________________
+
+    @pytest.mark.flaky_infra
+    def test_infra_fails_twice():
+>       assert _attempt("infra_twice") >= 2
+E       AssertionError: assert 1 >= 2
+E        +  where 1 = _attempt('infra_twice')
+
+test_child.py:19: AssertionError
+____________________________ test_ordinary_failure _____________________________
+
+    def test_ordinary_failure():
+>       assert False
+E       assert False
+
+test_child.py:32: AssertionError
+=========================== rerun test summary info ============================
+RERUN test_child.py::test_infra_fails_once
+PASSED test_child.py::test_infra_fails_once
+RERUN test_child.py::test_infra_fails_twice
+FAILED test_child.py::test_infra_fails_twice
+RERUN test_child.py::test_plain_flaky_passes_on_third_attempt
+RERUN test_child.py::test_plain_flaky_passes_on_third_attempt
+PASSED test_child.py::test_plain_flaky_passes_on_third_attempt
+2 failed, 4 passed, 4 rerun in 0.10s

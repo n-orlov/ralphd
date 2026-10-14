@@ -1,0 +1,12 @@
+ralphctl: building job image ralphd:ac3c773e92d4 from /tmp/pytest-of-ci/pytest-0/popen-gw2/test_a_failed_build_dies_with_0/checkout
+  build: The command '/bin/sh -c false' returned a non-zero code: 1
+  build: Step 1/3 : RUN true
+  build: Step 2/3 : RUN true
+  build: Step 3/3 : RUN true
+ralphctl: job image build failed (exit 1): ralphd:ac3c773e92d4 from /tmp/pytest-of-ci/pytest-0/popen-gw2/test_a_failed_build_dies_with_0/checkout (container/Dockerfile). No run state was created -- fix the build, or pin an existing image with --image.
+ralphctl: building job image ralphd:ac3c773e92d4 from /tmp/pytest-of-ci/pytest-0/popen-gw2/test_a_failed_build_dies_with_0/checkout
+  build: Step 1/3 : RUN true
+  build: Step 2/3 : RUN true
+  build: Step 3/3 : RUN true
+  build: Successfully tagged ralphd:ac3c773e92d4
+ralphctl: built job image ralphd:ac3c773e92d4
