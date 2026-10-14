@@ -274,8 +274,8 @@ produces an `exhausted` hold with `verdict: null` and reason `"deadline during
 review"`, not a reviewed rejection. `unreviewed` is written in three cases
 (with `state: failed`), each once a judge fault outlives the infra outage
 budget or no budget remains to ask again: review ran but never produced a readable verdict from a
-reply that was not empty (`review_contract_unrepaired`) or a usable findings
-channel (`review_findings_unusable`); review said `verified` but the peer
+reply that was not empty or a usable findings
+channel (SPEC.md §5.2's identifier table names both guards); review said `verified` but the peer
 verdict gate produced no verdict after every `judge_retry_max` retry; or the
 review hat itself had no verdict on every attempt and every retry, because it
 was cut off (`stopReason: length`, no text) or its contract ladder was exhausted
@@ -302,8 +302,8 @@ before the engine waits on it. `awaiting_input` carries `inputQuestion`: its
 allowed, `expiresAt` and `onTimeout`. The commit-secret park (`kind: secret`) has
 one answer, `ralphctl answer <run> --secret-handled`, once the commit scan of the
 offending range is clean, and never expires. A provider refusal ends the run
-`failed` with `ending: provider_refused`, and a rate-limit wait that would exceed
-`rate_limit_max_wait_s` ends it `failed` with `ending: rate_limit_ceiling`; both
+`failed` with the refusal `ending`, and a rate-limit wait that would exceed
+`rate_limit_max_wait_s` ends it `failed` with the rate-limit-ceiling `ending`; both
 resume through `ralphctl resume`. `ralphctl unpause` on a run that is not
 `paused` is refused with the command that applies: `answer` for `awaiting_input`,
 `resume --<budget>` for `exhausted`. `ralphctl resume` is for a stopped
@@ -364,7 +364,7 @@ flowchart TD
     Work -->|completion claim in vigilant mode| Verify["Task verification"]
     Verify --> Work
     Work -->|"plan complete, blocked, doomed, or petition-held"| Review["Whole-result review"]
-    Work -->|"stagnation on any approach: archive, approach + 1; none left: exhausted"| Replan
+    Work -->|"no progress on any approach: archive, approach + 1; none left: exhausted"| Replan
     Work -->|"first dependency cycle or dangling edge on this approach: same-approach replan, uncharged"| Plan
     Work -->|"second graph fault on the same approach"| Failed["failed, ending unschedulable_task_graph"]
     Review -->|curable and cure pass available| Cure["Insert cure and retake tasks"]
@@ -410,12 +410,11 @@ A park happens before an approach is archived, and only for findings:
   resolves the park at once with the outcome an unanswered park takes). The
   operator answers with `ralphctl answer`. A `ralphctl rule` ruling is recorded
   but never answers a park, and a bare `ralphctl unpause` is refused.
-- **Contract failures.** `review_contract_unrepaired` and
-  `review_findings_unusable` (review's contract ladder exhausted on a non-empty
-  reply) and a judge no-verdict (a ladder exhausted on empty replies, or a
+- **Contract failures.** An unreadable verdict and an unusable findings channel
+  (review's contract ladder exhausted on a non-empty reply) and a judge no-verdict (a ladder exhausted on empty replies, or a
   truncated reply), each still standing after every `judge_retry_max` retry,
   are infra faults under the outage budget: the hat is asked again after each
-  backoff, and a spent budget ends the run `failed`, verdict `unreviewed`. None of them pauses.
+  backoff, and a spent budget ends the run `failed`, verdict `unreviewed`. None of them stops the run for the operator.
 - **Gate cure ceiling.** The peer verdict gate parks on the same ladder once the
   current approach's cure rounds are spent. Review and the gate draw on that one
   shared count (`curePasses` plus `gateCurePasses` for the approach), bounded by
@@ -428,7 +427,7 @@ Two harness episodes run in the worker step but have no state in the table:
 - the opt-in `--mid-plan-review` episode, once per approach.
 
 **Run endings.** Running out of iterations or reaching the job deadline at a step
-boundary no longer ends the run `failed`. Instead, `_finish_exhausted` holds it in
+boundary does not end the run `failed`: `_finish_exhausted` holds it in
 the non-terminal `exhausted` state with a `null` verdict. Reflection is skipped,
 and `ralphctl resume` continues it into `worker`. An operator abort still ends
 the run `aborted`. Exhausting `max_approaches` holds the run `exhausted` (`approaches`) as
@@ -634,11 +633,11 @@ escalation, split, replan, or pause paths. They do not create unlimited extra
 task time.
 
 **Re-polls.** A re-poll is a `no_verdict` with no corroborated claim and no tree
-delta. Its tool calls no longer reset the stagnation counter. The second and
+delta. Its tool calls do not reset the no-progress counter. The second and
 later consecutive re-polls on one task back the task off to `pending` with
 `deferredUntil`. The backoff is 600 s, then 1,200 s, then 1,800 s, capped at the
 deadline, and each step emits `task.repoll_backoff` (#279). Section 9 covers the
-stagnation guard's witnesses.
+no-progress guard's witnesses.
 
 **Splits.** Worker-proposed replacement tasks are linted like a planner proposal
 before they are applied. There are two kinds:
@@ -700,20 +699,20 @@ unparseable, fails the schema, contradicts a blocking finding with `verified`, s
 beside a present-but-invalid sidecar, or carries a curable finding with a missing
 or overlong `cured_when` enters the bounded review contract ladder (§8). A
 `fail`/`failed` verdict word is normalized to `rejected` before the ladder. Two
-ladder exhaustions no longer score as a rejection. Each is an infra fault under
+ladder exhaustions do not score as a rejection. Each is an infra fault under
 the outage budget with the approach unarchived: review is asked again over the
 same approach after each backoff, and a spent budget ends the run `failed`,
 verdict `unreviewed`:
 
-- `review_contract_unrepaired`: the verdict claim itself is still unreadable in a
+- Unreadable verdict: the verdict claim itself is still unreadable in a
   reply that was not empty. The approach verdict is recorded as `unreviewed`. A
   ladder exhausted on replies that were all empty (no text, or only whitespace)
-  is not this hold: review is re-dispatched as an uncharged fresh iteration up to
+  is not this fault: review is re-dispatched as an uncharged fresh iteration up to
   `judge_retry_max` times, as for a reply cut off at the output-token limit, and
   when every retry also has no verdict it takes the same outage-budget route,
   or with no budget left ends `unreviewed`. No approach verdict is recorded in
   that case.
-- `review_findings_unusable`: the verdict word is legible but the findings channel
+- Unusable findings: the verdict word is legible but the findings channel
   or the rest of the payload is not.
 
 For a valid present sidecar, the engine reads the findings after three
@@ -742,9 +741,9 @@ flowchart TD
     Result["Review reply and findings"] --> Ladder{"Contract and sidecar valid?"}
     Ladder -->|no| Repair["Bounded contract repair"]
     Repair -->|repaired| Ladder
-    Repair -->|verdict unreadable, reply not empty| HoldU["Infra backoff, ask review again: review_contract_unrepaired"]
+    Repair -->|verdict unreadable, reply not empty| FaultU["Infra backoff, ask review again: unreadable verdict"]
     Repair -->|all replies empty| Retry["Retry review; if still none, infra backoff and ask again"]
-    Repair -->|channel unusable| HoldF["Infra backoff, ask review again: review_findings_unusable"]
+    Repair -->|channel unusable| FaultF["Infra backoff, ask review again: unusable findings"]
     Ladder -->|yes| Blocking{"Blocking findings after downgrades?"}
     Blocking -->|none| Pending{"Steering, steering-origin or cure-origin task open?"}
     Pending -->|yes| Work["Return to worker"]
@@ -761,7 +760,7 @@ flowchart TD
     Park -->|no| Cure["Cure state: insert cure and retake tasks, count one round"]
     Cure --> Work
     Work --> Result
-    Pause -->|unpause or ruling| Result
+    Pause -->|"answer, or the input timeout acting as one"| Result
 ```
 
 ### Success blockers
@@ -810,11 +809,25 @@ accepted `curable: false` finding. `ralphctl rule <run> --file <ruling.md>`
 records a ruling at any time: rulings are keyed to the rejection signature, so
 they survive a replan, and they reach review, verify and planning, but a ruling
 never releases a park and a bare `ralphctl unpause` of an `awaiting_input` run is
-refused. Every escalation pause posts a
+refused. Every escalation park posts a
 bounded digest (at most `MAX_NOTIFY_CHARS`) to the notifier. Delivery is retried
 up to three times with 60/120 s backoff and is recorded as undelivered after the
-last failure. If the deadline has already passed when a pause would park, the run
+last failure. If the deadline has already passed when a park would begin, the run
 enters the resumable `exhausted` hold instead of parking in-process.
+
+**The input timeout.** A findings park waits `input_timeout_min` minutes (60 by
+default, set in `~/.ralphd/config.yaml`, per run by `ralphctl start
+--input-timeout N` and live by `ralphctl budget <run> --input-timeout N|+N`;
+`0` means never). The clock starts when the run enters `awaiting_input`, and
+`inputQuestion.expiresAt` is an absolute time, so a restarted engine keeps the
+same expiry. The run deadline is frozen for the whole park. On expiry the engine
+acts as if the operator answered, accepting every finding, and emits
+`input.timed_out` naming the outcome: a reviewer escalation with cure rounds left
+cures now (`cure_now`); spent cure rounds or an incurable finding archive the
+approach and replan the next one (`next_approach`), or hold the run `exhausted`
+(`approaches`) when no approach is left (`exhausted_approaches`). The `secret`
+park never expires. The notifier gets one message at the park, one reminder
+before `expiresAt` and one when the timeout fires.
 
 ### Cure passes
 
@@ -916,8 +929,8 @@ flowchart TD
     RLRefund --> RLCap{"Wait within rate_limit_max_wait_s?"}
     RLCap -->|yes| RLWait["Wait for window reset; extend deadline"]
     RLWait --> Invoke
-    RLCap -->|no| RLFail["End failed: rate_limit_ceiling; resume --rate-limit-wait +N"]
-    Fault -->|refused| RefRefund["Refund; end failed: provider_refused; fix profile, then resume"]
+    RLCap -->|no| RLFail["End failed at the rate-limit ceiling; resume --rate-limit-wait +N"]
+    Fault -->|refused| RefRefund["Refund; end failed on the refusal; fix profile, then resume"]
     Fault -->|infra| Refund["Record fault and refund iteration charge"]
     Refund --> Cap{"Broken env, retry cap or outage budget exhausted?"}
     Cap -->|no| Wait["Degraded status; interruptible backoff"]
@@ -1026,11 +1039,11 @@ planning, worker, review, verify, reflect, plan_review, and verdict_gate.
   the window's `resetsAt` plus jitter, or 15 minutes when no reset is known, then
   re-runs the same work. The wait extends the deadline (`rateLimitWaitTotalS`).
   Cumulative waiting above `rate_limit_max_wait_s` (default 24 h) ends the run
-  `failed` with `ending: rate_limit_ceiling` instead; `ralphctl resume <run>
+  `failed` with the rate-limit-ceiling `ending` instead; `ralphctl resume <run>
   --rate-limit-wait +N` raises the ceiling and continues. A Claude Code hat whose last report is at or above
   `rate_limit_preempt_utilization` (0.95) waits *before* starting.
 - **Refusal.** A `refused` attempt is refunded and never retried. The run ends
-  `failed` with `ending: provider_refused`, its reason naming `PUT /config/llm`.
+  `failed` with the refusal `ending`, its reason naming `PUT /config/llm`.
   After the operator fixes the profile or credentials, `ralphctl resume`
   re-runs the same work.
 - **Outage backoff.** The default retry waits are 2, 5, 15, 30, 60, 120, then 300
@@ -1064,12 +1077,13 @@ job configuration, or supported runtime overrides. Source:
 |---|---|---|
 | Iteration budget | 25 | Charged work allowance; raw iteration numbering is retained for history. Exhaustion holds the run in the resumable `exhausted` state rather than ending it. |
 | Approaches | 3 | Maximum plan/review approaches. A planning attempt that yields no usable plan retries on the same approach number; two consecutive attempts failing the same ingestion lint end the run. |
+| Input timeout | 60 minutes | How long a findings park in `awaiting_input` waits for an answer before the engine takes the park's timeout outcome. `0` means never; the `secret` park never expires. |
 | Job timeout | 8 hours | Useful-work deadline; accounted infra, rate-limit and pause waits extend it. Reaching it holds the run in `exhausted`. |
 | Iteration timeout | 45 minutes | Individual invocation cap, read once per dispatch. The deadline is a boundary checked before dispatch, not a clamp on a started iteration. Reflection runs under `min(iteration timeout, 600 s)`. |
 | Startup traffic window | 150 seconds | Watchdog input, with CPU-progress discrimination. |
 | Infra outage wait | 4 hours | Separate allowance per outage episode; reflection has a 300-second cap. |
 | Infra attempt cap | Unset | Wait allowance governs unless a cap is explicitly configured. |
-| Rate-limit wait ceiling | 1 day | Total rate-limit waiting per run (`claude-code` hats only). A wait that would pass it ends the run `failed` with `ending: rate_limit_ceiling`. |
+| Rate-limit wait ceiling | 1 day | Total rate-limit waiting per run (`claude-code` hats only). A wait that would pass it ends the run `failed` with the rate-limit-ceiling `ending`. |
 | Rate-limit preemption | 0.95 utilization | A `claude-code` iteration is not started while the last `allowed_warning` report is at or above this; the loop waits for the window's reset. |
 | Contract retries | 2 | Initial response plus up to two repair attempts for the shared ladder. |
 | Task progress allowance | Estimate + 2 | Bounds continuation supported by progress claims. |
@@ -1113,9 +1127,9 @@ Startup seeds the iteration budget and the rate-limit ceiling from the greater
 of the configured and persisted values, so an operator top-up survives a
 container restart. A `curePassCeiling` change is a top-up for the current
 approach only, persisted in `status.json` as `cureRoundTopUps`, so it survives a
-restart too; the other three are process-only. The
-off-budget grace review is retired. An exhausted deadline or iteration budget
-now holds the run in `exhausted` with no verdict, and `ralphctl resume` continues
+restart too; the other three are process-only. There is
+no off-budget grace review: an exhausted deadline or iteration budget
+holds the run in `exhausted` with no verdict, and `ralphctl resume` continues
 the ordinary loop; it is not an unlimited permission to keep dispatching.
 
 ### Role and tier dispatch
@@ -1203,7 +1217,7 @@ watchdog and contract machinery are shared. Hat tools reach it as in-process MCP
 tools (`mcp__ralphd__<name>`) over the same engine spool as pi's extension. A
 non-transient provider refusal (HTTP 400/401/403/404, or a too-old CLI) is
 classified `refused`, spends nothing from the outage budget and ends the run
-`failed` with `ending: provider_refused`.
+`failed` with the refusal `ending`.
 
 The router helper ([`router.py`](../src/ralphd/engine/router.py)) accepts only
 declared successor states and has bounded retries plus an explicit deterministic

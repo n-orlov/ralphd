@@ -1528,7 +1528,9 @@ def test_tech_spec_reading_the_verdict_routes_empty_replies_to_the_retry_and_par
     # tests/test_stop_routing_faults.py), so the doc names that route and
     # no longer the park.
     flat = _flat_tech()
-    assert "is not this hold: review is re-dispatched" in flat
+    # task 013: the empty-reply case is "not this fault" (a hold is a stop)
+    assert "is not this fault: review is re-dispatched" in flat
+    assert "is not this hold" not in flat
     assert "it takes the same outage-budget route" in flat
     assert "pauseDetail.reason: judge_no_verdict" not in flat
     assert "No approach verdict is recorded in that case." in flat
@@ -1547,7 +1549,8 @@ def test_tech_spec_other_mentions_of_the_ladder_hold_and_unreviewed_agree():
             "judge no-verdict" in flat)
     assert ("are infra faults under the outage budget: the hat is asked again "
             "after each backoff, and a spent budget ends the run `failed`, "
-            "verdict `unreviewed`. None of them pauses." in flat)
+            "verdict `unreviewed`. None of them stops the run for the operator." in flat)
+    assert "None of them pauses." not in flat
     assert ("pause when review's contract ladder exhausts on a non-empty reply"
             not in flat)
     assert "A ladder exhausted on empty replies is retried and then parks" not in flat

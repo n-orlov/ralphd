@@ -83,7 +83,7 @@ ralphctl start --prd <file|-> [options]
 | `--peer-verdict-gate` | off | opt-in, genuinely blind peer verdict gate (task 020, PRD requirement L, #101): a second, independent peer model re-verifies completed work before terminal success. Written to the run's `job.yaml` as `peer_verdict_gate` and visible in `GET /config` (`flags.peerVerdictGate`); no `resume` equivalent, for the same reason `--peer-plan-review` has none |
 | `--mid-plan-review` | off | opt-in mid-plan review episode (task 022, PRD requirement K.2, #169): once per approach, once a declared fraction (`loop.MID_PLAN_REVIEW_FRACTION`) of the plan has already reached terminal-success, run one review iteration scoped to those requirements, opening a cure task per blocking finding through the existing cure machinery (`state.insert_cure_tasks`, the same path an ordinary review's own cure pass takes). Written to the run's `job.yaml` as `mid_plan_review` and visible in `GET /config` (`flags.midPlanReview`); no `resume` equivalent, for the same reason the two peer gates above have none |
 | `--input-timeout MINUTES` | template `input_timeout`, else the registry's `input_timeout_min`, else `60` | the input timeout: how long a run parked in `awaiting_input` waits for `ralphctl answer` before the engine takes the park's timeout outcome (see `ralphctl answer` below). `0` = never; a negative value exits `2`. Written to the run's `job.yaml` as `input_timeout_min` (always explicit); `ralphctl budget <run> --input-timeout N|+N` changes it live |
-| `--no-operator-input-needed-pause` | on (this is the disable flag) | the rejection ladder's park (v0.36 requirement B; PRD A.1, #224): ON by default, unlike the two peer gates above -- a rejection with an incurable blocking finding, a reviewer escalation or spent cure rounds holds in `awaiting_input` with `pauseReason: "operator_input_needed"`, so an operator can answer it (`ralphctl answer <run-id>`; a ruling recorded with `ralphctl rule` does not answer it and a bare `ralphctl unpause` is refused) before that spend happens. This flag resolves the park at once with the outcome an unanswered park takes (archive and replan while an approach is left, else the `exhausted` (`approaches`) hold). The SAME flag also gates the peer verdict gate's own mirror (v0.27 requirement C.1, task 008; widened by cure task 002, this wave, to every blocking-set shape): a `verdict_gate` rejection parks with `pauseReason: "verdict_gate_operator_input_needed"` when a blocking finding is incurable or the current approach's cure rounds (`cure_pass_ceiling` plus any `budget --cure-passes` top-up, shared with review) are already spent -- whether the rejection's blocking findings are all curable, mixed, or all non-curable -- disabled by this same flag. Written to the run's `job.yaml` as `operator_input_needed_pause` (always an explicit `true`/`false`, unlike the two peer gates) and visible in `GET /config` (`flags.operatorInputNeededPause`); a `--template`'s own `operator_input_needed_pause:` key (SPEC.md §6.7) supplies the default when the flag is absent; no `resume` equivalent, for the same reason `--peer-plan-review`/`--peer-verdict-gate` have none |
+| `--no-operator-input-needed-pause` | on (this is the disable flag) | the rejection ladder's park (v0.36 requirement B; PRD A.1, #224): ON by default, unlike the two peer gates above -- a rejection with an incurable blocking finding, a reviewer escalation or spent cure rounds holds in `awaiting_input` with review's park key on `pauseReason` (SPEC.md §5.2's identifier table spells it), so an operator can answer it (`ralphctl answer <run-id>`; a ruling recorded with `ralphctl rule` does not answer it and a bare `ralphctl unpause` is refused) before that spend happens. This flag resolves the park at once with the outcome an unanswered park takes (archive and replan while an approach is left, else the `exhausted` (`approaches`) hold). The SAME flag also gates the peer verdict gate's own mirror (v0.27 requirement C.1, task 008; widened by cure task 002, this wave, to every blocking-set shape): a `verdict_gate` rejection parks with the gate's park key on `pauseReason` when a blocking finding is incurable or the current approach's cure rounds (`cure_pass_ceiling` plus any `budget --cure-passes` top-up, shared with review) are already spent -- whether the rejection's blocking findings are all curable, mixed, or all non-curable -- disabled by this same flag. Written to the run's `job.yaml` as `operator_input_needed_pause` (always an explicit `true`/`false`, unlike the two peer gates) and visible in `GET /config` (`flags.operatorInputNeededPause`); a `--template`'s own `operator_input_needed_pause:` key (SPEC.md §6.7) supplies the default when the flag is absent; no `resume` equivalent, for the same reason `--peer-plan-review`/`--peer-verdict-gate` have none |
 | `--model <id>` | profile default | model used by any hat with no per-hat override; falls back to the `--template`'s value, then the registry's `model` (`ralphctl config`), then the `--llm` profile's own `model:`. `router` (task 018, requirement E; rung order corrected task 003, #278 B.6) resolves `router_model` first, then the dedicated per-hat table entry (`model_overrides["router"]`/`models.router`), then the worker hat's own `trivial` tier (`model_tiers["worker"]["trivial"]`) when configured, then `model`; see `routerModel`/`routerTimeoutS` under `GET /config` (`docs/api.md`). `--fast-model` and `--model-strategy` (and `ralphctl config set model_strategy`/`fast_model`) are retired (task 006): the parser still recognises the flag names (hidden from `--help`) only so `start` can refuse them with exit `2` naming this `models:`/`model_overrides:` replacement, never a silent no-op; a job.yaml still carrying either legacy key from before task 006 is translated into an equivalent per-hat table at engine load time, never ignored |
 | `--no-route-tasks` | on (this is the disable flag) | task 003's router-assisted task-selection opt-out (#278 B.5): by default, once `engine.scheduler.pending_candidates` finds 2+ runnable tasks, the router picks which one to work next (`LoopSupervisor._route_task_selection`); this flag (or a `job.yaml` `route_task_selection: false` key) restores the fully deterministic pick, `engine.scheduler.select_next_task`'s own order, unconditionally. Written to the run's `job.yaml` as `route_task_selection` (always an explicit `true`/`false`) and visible in `GET /config`; no `resume` equivalent -- `resume` never rewrites this key, so the value a run started with is replayed unchanged on every later resume |
 | `--model-for HAT=REF` | — | per-hat model override (task 008, #60 pillar 4 requirement A), repeatable — e.g. `--model-for worker=amazon-bedrock/eu.anthropic.claude-sonnet-5`. Known hats: `planning\|worker\|verify\|review\|reflect\|router` (`MODEL_HATS`; an unrecognised name still resolves via `model_for`'s anti-downgrade rule rather than erroring). Writes/merges into the run's `job.yaml` `models:` table — the mechanism `model_overrides`/`models:` always was ([llm-profiles.md](llm-profiles.md) unaffected, `docs/api.md`'s `GET /config` `model.overrides`) — the ONLY thing this flag adds is a way to *reach* that table from `start` without hand-editing `job.yaml` and `resume`-ing. Unlike every other `start` scalar above, the table is **merged key by key across levels, not replaced whole**: explicit `--model-for` flags (last one wins for a repeated hat) > the `--template`'s own `job.yaml` `models:`/`model_overrides:` key > `<registry>/config.yaml`'s own `models:`/`model_overrides:` key (a nested mapping, edited directly like `pricing:` below — there is no scalar `ralphctl config set` for a table) > (a named LLM profile has no per-hat table of its own yet, so this rung is presently always empty) > absent, i.e. each hat falls through to `model_for`'s other rungs exactly as before. A malformed value (no `=`) exits `2` naming the expected `HAT=REF` shape |
@@ -830,12 +830,13 @@ Human output also renders (task 003):
   The run is not degraded: the iteration is refunded, the deadline moves by
   the time waited and the same work re-runs at the reset (or at once, after
   `ralphctl retry`).
-- `ending:` -- v0.36: a run that ended `failed` for a named cause shows it. A
+- `ending:` -- v0.36: a run that ended `failed` for a named cause shows it
+  (SPEC.md §5.2's identifier table spells each value). A
   provider refusal (an iteration classified `refused`) ends `failed` with
-  `ending: provider_refused`; the reason quotes the provider's error, scrubbed,
+  the refusal `ending`; the reason quotes the provider's error, scrubbed,
   names `PUT /config/llm` (fix the LLM profile or credentials) and `ralphctl
   resume <run-id>`, which re-runs the refused work. The rate-limit ceiling
-  (`rate_limit_max_wait_s`) ends `failed` with `ending: rate_limit_ceiling`; the
+  (`rate_limit_max_wait_s`) ends `failed` with the rate-limit-ceiling `ending`; the
   reason names the waiting done, the ceiling and the window's reset in local
   time, and `ralphctl resume <run-id> --rate-limit-wait +N` raises the ceiling
   and continues. Nothing is retried and the engine never pauses on either.
@@ -1469,7 +1470,7 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
 - **`paused:`** appears for a 0.35 run directory still paused on a provider
   refusal or on the rate-limit ceiling (status.json's `pauseDetail`), with the
   same wording as `status`. On a v0.36 engine either fault ends the run
-  `failed` with `ending: provider_refused` or `ending: rate_limit_ceiling`.
+  `failed` with the refusal `ending` or the rate-limit-ceiling `ending`.
 - **`recovered:`** appears when the engine emitted `infra_recovered` — a later
   iteration reached the model, so the episode is over and the ladder is not a
   live one. **`gave up:`** prints `status.json`'s `abortReason` when the run
@@ -2244,7 +2245,7 @@ engine produces names the live-run levers, never `ralphctl resume` -- `resume`
 starts a fresh container over an existing run dir (crash recovery, budget
 top-up) and is not for a run that is still alive.
 
-A provider refusal ends the run `failed` with `ending: provider_refused`
+A provider refusal ends the run `failed` with the refusal `ending`
 (v0.36 F.5); a ruling has nothing to release. Fix the LLM profile or credentials
 (`ralphctl llm`, `PUT /config/llm`), then `ralphctl resume <run-id>` re-runs the
 refused work (a resume before the fix is refused again and ends `failed` again).
@@ -2260,7 +2261,7 @@ outage budget (or the iteration budget or the deadline) is spent the run ends
 `failed` with verdict `unreviewed`, review's verdict intact, never `rejected`;
 `ralphctl resume <run-id>` continues it.
 
-The rate-limit ceiling ends the run `failed` with `ending: rate_limit_ceiling`;
+The rate-limit ceiling ends the run `failed` with the rate-limit-ceiling `ending`;
 `ralphctl resume <run-id> --rate-limit-wait +N` raises the ceiling and
 continues, and `ralphctl budget <run-id> --rate-limit-wait +N` raises it on a
 live run.
@@ -2393,7 +2394,7 @@ recorded on disk under `cureRoundTopUps`; see the table below).
 `--rate-limit-wait` maps to `rateLimitMaxWaitS`, the ceiling in seconds on
 the run's total rate-limit waiting (`rate_limit_max_wait_s`, default 86400).
 A rate-limit wait that would pass it does not start: the run ends `failed`
-with `ending: rate_limit_ceiling` (v0.36 F.4), and the notifier names the
+with the rate-limit-ceiling `ending` (v0.36 F.4), and the notifier names the
 window's reset. Raise the ceiling ahead of that on a live run:
 
 ```console
@@ -3093,10 +3094,10 @@ and resolution success alone is reported (exit `0`).
 
 `--rate-limit-wait +N|N` (v0.36 F.4) raises the rate-limit wait ceiling in
 seconds (job.yaml `rate_limit_max_wait_s`), the way to continue a run that ended
-`failed` with `ending: rate_limit_ceiling`; the engine seeds its ceiling from the
+`failed` with the rate-limit-ceiling `ending`; the engine seeds its ceiling from the
 larger of that and the run's recorded `rateLimitMaxWaitS`, and counts
-rate-limit waiting from zero again. A run that ended `failed` with `ending:
-provider_refused` resumes after the LLM profile or credentials are fixed
+rate-limit waiting from zero again. A run that ended `failed` with the refusal
+`ending` resumes after the LLM profile or credentials are fixed
 (`PUT /config/llm`); one that ended `failed` on a judge fault resumes at the
 point the engine computes for it.
 
@@ -3208,7 +3209,7 @@ A run that ended `failed` with `ending: unschedulable_task_graph` (a second
 `dependsOn` cycle or unresolvable edge on the same approach, after the one
 uncharged replan the first took) resumes with a plain `ralphctl resume <run>`
 once `tasks.json` no longer holds the broken edges; the engine re-enters the
-approach where `_resume_point` computes it and clears `ending`. Stagnation never
+approach where `_resume_point` computes it and clears `ending`. The no-progress guard never
 stops a run for an operator: the stalled approach is archived and replanned,
 and with no approach left the run holds `exhausted` (`approaches`), which the
 `--approaches +N` form above continues.

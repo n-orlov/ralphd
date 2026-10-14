@@ -340,10 +340,11 @@ _NARROW_SCOPE_PHRASES = (
 ])
 def test_spec_and_docs_gate_pause_rows_cover_every_blocking_set_shape(
         doc, row_prefix):
-    """Every spec/doc row describing `verdict_gate_operator_input_needed`
-    states it covers all-curable, mixed and all-incurable blocking sets,
-    and none still scopes it to the all-curable (cure-pass-earning)
-    rejection alone."""
+    """Every spec/doc row describing the peer gate's park (its key is
+    spelled only in SPEC 5.2's compatibility identifier table since v0.36
+    task 013, so the rows call it "the gate's park key") states it covers
+    all-curable, mixed and all-incurable blocking sets, and none still
+    scopes it to the all-curable (cure-pass-earning) rejection alone."""
     text = (_REPO / doc).read_text(encoding="utf-8")
     rows = [ln for ln in text.splitlines() if ln.startswith(row_prefix)]
     assert len(rows) == 1, (doc, row_prefix, len(rows))
@@ -352,9 +353,9 @@ def test_spec_and_docs_gate_pause_rows_cover_every_blocking_set_shape(
         assert phrase not in row, (doc, phrase)
     # The description segment for this pause reason, from its own
     # introducing mention to the end of the row.
-    idx = row.rfind('`"verdict_gate_operator_input_needed"` (v0.27')
+    idx = row.rfind("the gate's park key (v0.27")
     if idx < 0:
-        idx = row.find('adds `"verdict_gate_operator_input_needed"`')
+        idx = row.find("adds the gate's park key")
     assert idx >= 0, (doc, row_prefix)
     segment = row[idx:idx + 1200]
     assert "cure_pass_ceiling" in segment
