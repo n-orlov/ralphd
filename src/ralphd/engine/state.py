@@ -708,9 +708,44 @@ def read_json(path: Path, default: Any = None) -> Any:
 # events.jsonl. It is non-terminal for exactly the reason `finishing` is: a
 # live engine still owns the run (`self._pause` is an in-process
 # `asyncio.Event`), an engine killed while parked leaves a dangling run, and
-# no destructive action may open on it. An OPERATOR pause (`POST /pause`)
-# still records no state at all -- see `LoopSupervisor.pause`.
+# no destructive action may open on it. `paused` is the operator's alone
+# (v0.36 requirement A): `POST /pause` records it with `pausedBy: "operator"`
+# -- see `LoopSupervisor.pause`.
 PAUSED_STATE = "paused"
+# v0.36 requirement A.3: the one value `pausedBy` ever holds -- `paused` is the
+# operator's alone, and status.json says so.
+PAUSED_BY_OPERATOR = "operator"
+
+
+def unpause_refusal(run_id: str, status: dict) -> str | None:
+    """v0.36 requirement A.3: `unpause` releases a `paused` run and nothing
+    else. The refusal text for a run it does not apply to, naming the command
+    that does: `answer` for an `awaiting_input` run, `resume --<budget>` for
+    an `exhausted` one. `None` for every other state (a run that is not held
+    is a no-op, as before). One wording for the engine's `POST /resume`,
+    `ralphctl unpause` and the hub's unpause route.
+    """
+    state_value = status.get("state")
+    if state_value == AWAITING_INPUT_STATE:
+        question = status.get("inputQuestion") or {}
+        if question.get("kind") == "secret":
+            return (
+                "this run is awaiting input on a `secret` question (a secret "
+                f"in a commit): run `ralphctl answer {run_id} --secret-handled` "
+                "once the commit scan of the offending range is clean")
+        return (
+            "an `awaiting_input` run is answered, not unpaused: run "
+            f"`ralphctl answer {run_id}` (add `--cure-rounds 0` to carry on "
+            "with what the engine would do)")
+    budget = exhausted_budget_of(status)
+    if state_value == EXHAUSTED_STATE or budget is not None:
+        flag = {"iterations": "--iterations +N", "time": "--timeout +3600",
+                "approaches": "--approaches +N"}.get(budget or "", "--<budget> +N")
+        return (
+            f"an `exhausted` run (budget: {budget or 'unknown'}) is resumed "
+            f"with a top-up, not unpaused: run `ralphctl resume {run_id} "
+            f"{flag}`")
+    return None
 # v0.36 requirement G: `exhausted` -- THE one budget hold. Entered when the
 # iteration budget, the job deadline or the approach budget is spent and the
 # step in flight has finished; `status.json`'s `exhaustedBudget` names which
@@ -830,12 +865,12 @@ _NOTIFICATION_ESCALATION_UNDELIVERED_EVENT = "notification.escalation_undelivere
 ESCALATION_UNDELIVERED_MARKER = "\u2757 escalation undelivered"
 
 
-# The ONE escalation site whose pause is never persisted to status.json:
-# `LoopSupervisor._pause_and_escalate_incurable_rejection` takes the
-# reason-less, in-memory `self.pause()` (SPEC.md 4.6), so `state` keeps
-# reading `running` while the run is in fact held. Its hold is derived from
-# `events.jsonl` instead -- see `escalation_pause_markers` below -- and gets
-# its own marker, since `format_pause_marker` has no `pauseReason` to read.
+# A 0.35 run directory only: 0.35's `rejected_incurable` escalation took a
+# reason-less, in-memory hold, so `state` kept reading `running` while the run
+# was in fact held. A v0.36 engine persists every stop (`awaiting_input`), but
+# such a directory still resumes, so its hold is derived from `events.jsonl`
+# -- see `escalation_pause_markers` below -- and gets its own marker, since
+# `format_pause_marker` has no `pauseReason` to read.
 IN_MEMORY_ESCALATION_PAUSE_REASON = "rejected_incurable"
 ESCALATION_HOLD_MARKER = "\u23F8 held on rejected_incurable escalation"
 

@@ -43,6 +43,7 @@ from .skills import (
     verify_placement_and_report,
 )
 from .state import (
+    unpause_refusal,
     STEERING_GLOB,
     AWAITING_INPUT_STATE,
     EXHAUSTED_STATE,
@@ -191,6 +192,9 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         s.setdefault("rateLimitWait", None)
         # v0.30 G.2: and for the pause's sub-reason (provider_refused).
         s.setdefault("pauseDetail", None)
+        # v0.36 A.3: `paused` is the operator's alone; null on any other state.
+        s.setdefault("pausedBy", None)
+        s.setdefault("pauseNote", None)
         # Task 019 (#5): same for the reflect phase's verdict -- null means
         # "no reflect iteration has finished" (reflect off, or not there yet),
         # never "an older engine wrote this run dir".
@@ -879,10 +883,13 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         return {"undeferring": True, "taskId": task.get("id")}
 
     @app.post("/pause")
-    async def pause():
+    async def pause(body: dict | None = None):
+        # v0.36 A.3: the operator's pause. `{"note": "..."}` is optional and
+        # recorded as `pauseNote` next to `pausedBy: "operator"`.
         if finished():
             raise problem(409, "job finished")
-        loop.pause()
+        note = (body or {}).get("note")
+        loop.pause(note if isinstance(note, str) else None)
         return {"paused": True}
 
     @app.post("/answer")
@@ -912,20 +919,12 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # bare unpause -- "carry on with what the engine would do" is the
         # input timeout's outcome, or `ralphctl answer <run> --cure-rounds 0`.
         status_now = run.read_status()
-        if status_now.get("state") == AWAITING_INPUT_STATE:
-            question = status_now.get("inputQuestion") or {}
-            if question.get("kind") == "secret":
-                raise problem(
-                    409, "run is awaiting input",
-                    "this run is parked on a `secret` question (a secret in a "
-                    "commit): run "
-                    f"`ralphctl answer {loop.cfg.run_id} --secret-handled` once "
-                    "the commit scan of the offending range is clean")
+        refusal = unpause_refusal(loop.cfg.run_id, status_now)
+        if refusal:
             raise problem(
-                409, "run is awaiting input",
-                "an `awaiting_input` run is answered, not unpaused: run "
-                f"`ralphctl answer {loop.cfg.run_id}` (add `--cure-rounds 0` to "
-                "carry on with what the engine would do)")
+                409, ("run is awaiting input"
+                      if status_now.get("state") == AWAITING_INPUT_STATE
+                      else "run is exhausted"), refusal)
         loop.resume()
         return {"resumed": True}
 

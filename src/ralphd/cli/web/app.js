@@ -2727,6 +2727,7 @@ function renderSummary(el, detail) {
   }
   renderInfraWait(el, s, detail.runId, detail.live !== false);
   renderRateLimitWait(el, s, detail.runId, detail.live !== false);
+  renderUnpause(el, s, detail.runId, detail.live !== false);
   renderContainerGone(el, detail);
   renderReflect(el, s);
   renderProvisionalVerdict(el, s);
@@ -2928,6 +2929,50 @@ function renderRateLimitWait(el, s, runId, live) {
   const box = h("div", { class: "rate-limit-wait" }, [h("div", {}, ["\u23F3 " + line])]);
   renderRetryNow(box, runId, live, { nextAttemptAt: wait.resetsAt },
                  "retrying now (rate-limit wait woken)");
+  el.appendChild(box);
+}
+
+// v0.36 A.4: `paused` is the operator's alone, so a `paused` run gets the
+// plain Unpause button -- the same engine verb `ralphctl unpause` calls,
+// through the hub's `POST /api/runs/<id>/unpause` proxy (ui_server.py). Shown
+// only for `state === "paused"` and only when the run's API is reachable;
+// `pausedBy`/`pauseNote` are printed beside it. textContent only.
+function renderUnpause(el, s, runId, live) {
+  if (!s || s.state !== "paused" || !runId) return;
+  const box = h("div", { class: "unpause-controls" }, []);
+  let who = "paused by " + String(s.pausedBy || "the operator");
+  if (s.pauseNote) who += ": " + String(s.pauseNote);
+  box.appendChild(h("span", { class: "unpause-note" }, ["\u23F8 " + who + " "]));
+  if (!live) {
+    box.appendChild(h("span", { class: "muted" }, [
+      " \u2014 read-only on-disk snapshot: the run's API is unreachable, cannot unpause",
+    ]));
+    el.appendChild(box);
+    return;
+  }
+  const statusEl = h("span", { class: "unpause-status muted" }, []);
+  const button = h("button", { class: "unpause", type: "button" }, ["Unpause"]);
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    statusEl.textContent = " unpausing\u2026";
+    try {
+      const resp = await fetch(hubURL(`/api/runs/${encodeURIComponent(runId)}/unpause`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        statusEl.textContent = " unpaused";
+      } else {
+        statusEl.textContent = " failed: " + String(innermostReason(j, resp.status));
+      }
+    } catch (e) {
+      statusEl.textContent = " failed: " + e;
+    }
+    button.disabled = false;
+  });
+  box.appendChild(button);
+  box.appendChild(statusEl);
   el.appendChild(box);
 }
 

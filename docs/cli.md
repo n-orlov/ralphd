@@ -2228,26 +2228,33 @@ one signal is re-asked in place for free, a second in a row over a fresh
 plan spends a revision and re-ingests the plan) -- see docs/api.md's
 `POST /interrupt` for the fuller statement.
 
-### `ralphctl pause <run-id>` / `ralphctl unpause <run-id>`
+### `ralphctl pause <run-id> [--note <text>]` / `ralphctl unpause <run-id>`
 
-Hold/release the loop at the next iteration boundary.
+Hold/release the loop at the next iteration boundary. `paused` is the
+operator's alone (v0.36 requirement A): `pause` records `state: paused`,
+`pausedBy: operator` and the `--note` text (`pauseNote`) in `status.json` before
+the loop waits, and `unpause` (it POSTs `/resume` to the live engine) clears all
+three. The engine never pauses a run itself: its own stops are an
+`awaiting_input` question, an `exhausted` hold or a failure. The hub shows an
+**Unpause** button on a `paused` run, posting to the same route.
 
-`unpause` is also how you proceed past an engine-recorded pause
-(`pauseReason` in `status.json`): it POSTs `/resume` to the live engine and
-clears the reason. A ruling never does it for you: `ralphctl rule <run-id>
---file <ruling.md> --name <slug>` records the ruling and leaves the run
-paused, so recording one first takes the explicit sequence, `ralphctl rule
-<run-id> --file <ruling.md> --name <slug>` then `ralphctl unpause <run-id>`;
-`ralphctl unpause <run-id>` alone resumes with no ruling recorded.
+`unpause` releases a `paused` run and nothing else; on any other held run it is
+refused (exit `5`) naming the command that does apply, before any HTTP call (an
+exhausted run's engine has exited, so the CLI reads `status.json`):
 
-An `awaiting_input` run is **not unpaused**: `POST /resume` answers `409` naming
-`ralphctl answer <run-id>`, because "carry on with what the engine would do"
-is the input timeout's outcome, or `ralphctl answer <run-id> --cure-rounds 0`
-for an operator who wants it at once. The escalation text and notification digest of
-the two findings parks name `ralphctl answer`, never `unpause`. Every other
-pause and escalation text the engine produces names the live-run levers, never
-`ralphctl resume` -- `resume` starts a fresh container over an existing run dir
-(crash recovery, budget top-up) and is not for a run that is still alive.
+- an `awaiting_input` run is **not unpaused**: it names `ralphctl answer
+  <run-id>`, because "carry on with what the engine would do" is the input
+  timeout's outcome, or `ralphctl answer <run-id> --cure-rounds 0` for an
+  operator who wants it at once. The escalation text and notification digest of
+  the two findings parks name `ralphctl answer`, never `unpause`.
+- an `exhausted` run is **not unpaused** either: it names `ralphctl resume
+  <run-id> --iterations|--timeout|--approaches +N` for the budget that ran out.
+
+A ruling never releases a run: `ralphctl rule <run-id> --file <ruling.md>
+--name <slug>` records it and leaves the hold in place. Every escalation text the
+engine produces names the live-run levers, never `ralphctl resume` -- `resume`
+starts a fresh container over an existing run dir (crash recovery, budget
+top-up) and is not for a run that is still alive.
 
 A provider refusal ends the run `failed` with `ending: provider_refused`
 (v0.36 F.5); a ruling has nothing to release. Fix the LLM profile or credentials

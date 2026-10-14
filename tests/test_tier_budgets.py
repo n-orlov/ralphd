@@ -901,8 +901,13 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 010 retry 2: the review contract faults take the judge retries
     # first (+4 nodes in tests/test_stop_routing_faults.py), measured
     # `--collect-only` -> fast 8662/545, smoke 6884/418.
-    "fast": {"tests": 8662, "modules": 545},
-    "smoke": {"tests": 6884, "modules": 418},
+    # Task 012 (v0.36 A): +tests/test_paused_is_operator_only.py and
+    # tests/test_hub_unpause_button.py, -tests/test_other_escalations_digest.py
+    # (it pinned the retired review-contract pause methods; covering nodes:
+    # tests/test_stop_routing_faults.py), measured `--collect-only` -> fast
+    # 8696/546, smoke 6918/419.
+    "fast": {"tests": 8696, "modules": 546},
+    "smoke": {"tests": 6918, "modules": 419},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

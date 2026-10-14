@@ -1392,40 +1392,23 @@ class LoopSupervisor:
                           reason=reason, by="operator")
         return [str(r[0]) for r in released]
 
-    def pause(self, reason: str = "", detail: dict | None = None) -> None:
-        """Hold the loop at the next iteration boundary (task 015's
-        `pause`/`resume` seam, `POST /pause`).
+    def pause(self, note: str | None = None) -> None:
+        """Hold the loop at the next iteration boundary (`POST /pause`,
+        `ralphctl pause`, the hub). v0.36 requirement A: `paused` is the
+        operator's alone -- this is the ONLY method that records it, and it
+        takes no reason, because the engine never pauses itself. Every
+        engine stop is `awaiting_input`, `exhausted`, a self-heal or a
+        failure; none of them goes through here.
 
-        `reason` (task 036, requirement D.1/D.2, #142) is what tells an
-        ENGINE-initiated pause apart from an operator one, and it is the
-        only thing that makes the pause persistent:
-
-        * `POST /pause` calls this with NO reason and keeps the pre-task-036
-          contract exactly -- no status field changes at all, the pause is
-          observable through the `log` event alone. An operator who paused a
-          run knows they paused it, and treating that as a recorded lifecycle
-          state would change what every consumer sees on a routine
-          look-at-the-logs pause (docs/api.md `POST /pause`).
-        * The engine pausing ITSELF on an escalation edge passes its edge
-          name (`rejected_last_approach`), and that pause is persisted to
-          status.json by `_persist_pause` below -- nobody typed it, so
-          nothing else would tell the host the run is parked waiting for a
-          human ruling rather than working.
-
-        `detail` (v0.30 G.2) is the sub-reason of an engine pause that shares
-        its `pauseReason` with review's own (`operator_input_needed`) but is
-        not a review rejection: `{"reason": "provider_refused", ...}`. It is
-        written as `pauseDetail` in the same status.json write as
-        `pauseReason`, and its presence keeps the review-pause machinery (the
-        no-ruling one-shot proceed, a ruling releasing the pause) away from
-        it.
+        The hold is persisted to status.json before the loop waits on it:
+        `state: "paused"`, `pausedBy: "operator"` and, when the operator
+        gave one, `pauseNote` (see `_persist_operator_pause`).
         """
         was_running = self._pause.is_set()
         self._pause.clear()
         self.run.emit("log", message="paused at next iteration boundary")
-        if reason:
-            self._persist_pause(reason, detail)
-        elif was_running:
+        self._persist_operator_pause(note)
+        if was_running:
             self._emit_run_paused("operator")
 
     def _emit_run_paused(self, reason: str) -> None:
@@ -1448,42 +1431,32 @@ class LoopSupervisor:
         self._paused_since = None
         self.run.emit("run.unpaused", pausedS=paused_s)
 
-    def _persist_pause(self, reason: str, detail: dict | None = None) -> None:
-        """Record an engine-initiated pause on status.json IMMEDIATELY (task
-        036, requirement D.1/D.2, #142): `state: "paused"` plus
-        `pauseReason: "<the edge that paused>"`, written at the escalation
-        site itself rather than at the boundary the loop later parks on, so
-        a host reading status.json (or `ralphctl status`, or the hub) sees
-        the pause the moment the decision is made instead of only after the
-        review iteration finishes unwinding.
+    def _persist_operator_pause(self, note: str | None = None) -> None:
+        """Record an operator pause on status.json IMMEDIATELY (v0.36
+        requirement A.2/A.3): `state: "paused"`, `pausedBy: "operator"` and
+        the operator's `pauseNote` when one was given (`null` otherwise).
 
-        Deliberately narrow in three ways:
+        Deliberately narrow:
 
-        * `phase` and `approach` are NOT touched -- requirement D.1's
-          "leaves the approach unarchived" is the whole point of this edge,
-          and `resume` must re-enter review over the SAME approach. There is
-          still no `phase: "paused"` (docs/api.md; the loop parks between
-          iterations, `phase` keeps naming the phase that ran last).
-        * a run whose outcome is already settled (`finishing` or a terminal
-          state) is never rewritten -- `POST /abort` on a paused run calls
-          `resume()` to unblock the wind-down, and nothing after the verdict
-          is settled may reopen a non-terminal state.
-        * the reason is recorded as its own field rather than encoded into
-          `state`, so `state`'s value set stays a small enum every consumer
-          can switch on (`state.NONTERMINAL_STATES`, which `paused` joins
-          for the same liveness reason `finishing` is in it).
+        * `phase` and `approach` are NOT touched -- `unpause` resumes the
+          same position. There is still no `phase: "paused"`.
+        * a run whose outcome is already settled (`finishing`, a terminal
+          state) is never rewritten, and a run the engine is asking
+          (`awaiting_input`) or holding on a budget (`exhausted`) keeps its
+          own state: an operator pause never overwrites a question.
         """
         status = self.run.read_status()
         current = status.get("state")
-        if current == "finishing" or current in TERMINAL_STATES:
+        if (current == "finishing" or current in TERMINAL_STATES
+                or current in (AWAITING_INPUT_STATE, EXHAUSTED_STATE)):
             return
-        self.run.update_status(state=PAUSED_STATE, pauseReason=reason,
-                               pauseDetail=detail)
-        self._emit_run_paused(reason)
+        text = (note or "").strip() or None
+        self.run.update_status(state=PAUSED_STATE, pausedBy=state.PAUSED_BY_OPERATOR,
+                               pauseNote=text, pauseReason=None,
+                               pauseDetail=None)
         self.run.emit("log", message=(
             f"run state recorded `{PAUSED_STATE}` on status.json "
-            f"(pauseReason: {reason}); `ralphctl rule {self.cfg.run_id} "
-            "--file <ruling.md> --name <slug>` answers it and "
+            f"(pausedBy: {state.PAUSED_BY_OPERATOR}); "
             f"`ralphctl unpause {self.cfg.run_id}` clears it"))
 
     def _park_for_input(
@@ -1708,7 +1681,7 @@ class LoopSupervisor:
             self._rate_limit_waited_s = 0.0
 
     def _clear_persisted_pause(self) -> None:
-        """Undo `_persist_pause`'s status.json write (task 036, requirement
+        """Undo the status.json write of a hold (task 036, requirement
         D.1/D.2, #142): `state` back to `running` and `pauseReason` back to
         `null`, leaving `approach` and `phase` exactly as they were -- the
         run resumes the SAME approach in the review phase the escalation
@@ -1717,18 +1690,18 @@ class LoopSupervisor:
         `_resume_point`'s `_paused_awaiting_last_approach_ruling` case lands
         the fresh episode back on `review` over the same approach too).
 
-        A no-op unless `state` is actually the recorded pause: an operator
-        pause records no state (see `pause` above), so a `POST /resume` on
-        one -- or on a run that was never paused at all, which the API
-        accepts as a no-op -- must not rewrite `state` to `running` and
-        resurrect a `finishing`/terminal run.
+        A no-op unless `state` is actually a recorded hold (`paused` or
+        `awaiting_input`): a `POST /resume` on a run that was never paused,
+        which the API accepts as a no-op, must not rewrite `state` to
+        `running` and resurrect a `finishing`/terminal run.
         """
         status = self.run.read_status()
         if status.get("state") not in (PAUSED_STATE, AWAITING_INPUT_STATE):
             return
         reason = status.get("pauseReason")
         self.run.update_status(state="running", pauseReason=None,
-                               pauseDetail=None, inputQuestion=None)
+                               pauseDetail=None, inputQuestion=None,
+                               pausedBy=None, pauseNote=None)
         self.run.emit("log", message=(
             f"recorded pause cleared (pauseReason was: {reason}); resuming "
             f"approach {status.get('approach')} in the "
@@ -15804,177 +15777,6 @@ class LoopSupervisor:
         if not isinstance(payload, dict):
             return False
         return payload.get("raise_operator_gate") is True
-
-    def _review_contract_unrepaired_escalation_text(
-        self, approach: int, contract_errors: list[str]
-    ) -> str:
-        """GH #209 defect 2: the operator-facing escalation body for a
-        `review_contract_unrepaired` pause -- the same text-method +
-        pause-method split every sibling in this family uses
-        (`_unresolvable_edge_escalation_text`/`_pause_and_escalate_
-        unresolvable_edge`), worded for the case this edge covers: review
-        made every attempt the ladder grants and never produced a parseable
-        `review` contract payload at all.
-
-        The validation errors are quoted verbatim because they are the
-        whole diagnosis and the operator cannot otherwise see them without
-        reading `events.jsonl`: `$.verdict: 'fail' is not one of
-        ['verified', 'rejected']` names a broken reviewer prompt or a wrong
-        model reference in one line, and that exact string is what cost the
-        reference run an approach when the engine scored it as a rejection
-        instead.
-        """
-        lines = [
-            f"Run {self.cfg.run_id} approach {approach}: review made "
-            f"{1 + self.cfg.contract_retry_max} attempts (one charged "
-            "iteration plus the ladder's uncharged re-asks) and never "
-            "produced a parseable `review` contract payload -- so no "
-            "verdict was ever rendered on this approach (GH #209 defect "
-            "2). The run has been paused (existing pause machinery) "
-            "instead of scoring a rejection against a judge that never "
-            "spoke: the approach was NOT archived, no composite PRD was "
-            "written, and the approach counter did not move. This is "
-            "operator-actionable -- a wrong model reference, prompt drift, "
-            "or a schema the hat has not seen. Once the reviewer is "
-            "working, resume the run and review is asked again over the "
-            f"SAME approach (`ralphctl unpause {self.cfg.run_id}`).",
-            "",
-        ]
-        if contract_errors:
-            lines.append("the contract errors review never repaired:")
-            for error in contract_errors:
-                lines.append(f"  {error}")
-            lines.append("")
-        return "\n".join(lines).rstrip() + "\n"
-
-    def _pause_and_escalate_review_contract_unrepaired(
-        self, approach: int, contract_errors: list[str]
-    ) -> None:
-        """GH #209 defect 2: pause the run through the EXISTING pause
-        machinery -- the same seam `_pause_and_escalate_repeated_rejection_
-        signature` just above already uses (`self.pause()`, `self.
-        notifier`, an `operator_escalation` event always emitted to
-        `events.jsonl` regardless of whether a notifier is wired in, so the
-        escalation is never only as reachable as an unconfigured notifier).
-
-        `contractErrors` is camelCase to match `channelErrors` on the
-        repeated-signature escalation above. No `_resume_point` bucket is
-        added for this reason, on precedent:
-        `unschedulable_dependency_cycle` and `unresolvable_dependency_edge`
-        all pause with none either, so a fresh PROCESS started over a run
-        that died while paused here falls to `_resume_point`'s default
-        (skip planning, re-enter `worker`) and costs one throwaway worker
-        iteration before review is asked again -- the same known,
-        precedented cost those three edges already pay.
-        """
-        text = self._review_contract_unrepaired_escalation_text(
-            approach, contract_errors)
-        self.run.emit("operator_escalation", approach=approach,
-                      reason="review_contract_unrepaired",
-                      contractErrors=list(contract_errors), escalation=text)
-        self.pause(reason="review_contract_unrepaired")
-        if self.notifier is not None:
-            # Cure task cure-01-05-2 (PRD requirement A.1/D.1, DoD 1): the
-            # event above keeps every contract error verbatim; the
-            # notifier gets the same bounded digest every other real
-            # escalation path now posts, never the raw diagnostic text.
-            fault_lines = [f"error {i}: {err[:160]}"
-                          for i, err in enumerate(contract_errors, start=1)]
-            digest = self._pause_escalation_digest_text(
-                "review_contract_unrepaired", approach,
-                "get review producing a valid contract payload, then "
-                f"ralphctl unpause {self.cfg.run_id}",
-                fault_lines)
-            self._notify_escalation_delivery(
-                digest, reason="review_contract_unrepaired")
-
-    def _review_findings_unusable_escalation_text(
-        self, approach: int, contract_errors: list[str]
-    ) -> str:
-        """Task 011 (PRD requirement C.2, #219): the operator-facing
-        escalation body for a `review_findings_unusable` pause -- the same
-        text-method + pause-method split every sibling in this family
-        uses, worded for the case THIS edge covers: review's own verdict
-        claim WAS legible, but the REVIEW CONTRACT CHANNEL the ladder
-        re-asked over never became usable -- a findings sidecar present on
-        disk that will not re-validate, a `verified` claim contradicting a
-        blocking finding, a curable finding with no `cured_when`, or (task
-        012, requirement C.3) a stray/wrong-typed field elsewhere in the
-        payload's own closed schema. Distinct on
-        purpose from `_review_contract_unrepaired_escalation_text`'s own
-        wording, which is for a verdict that was never legible at all.
-
-        The validation errors are quoted verbatim for the same reason
-        `_review_contract_unrepaired_escalation_text` quotes them: they
-        are the whole diagnosis, and the operator cannot otherwise see
-        them without reading `events.jsonl`.
-        """
-        lines = [
-            f"Run {self.cfg.run_id} approach {approach}: review made "
-            f"{1 + self.cfg.contract_retry_max} attempts (one charged "
-            "iteration plus the ladder's uncharged re-asks) and never "
-            "produced a USABLE review contract -- a legible verdict claim "
-            "was in hand, but the rest of the contract never validated (a "
-            "present-but-invalid findings sidecar, a `verified` claim "
-            "contradicting a blocking finding, a curable finding with no "
-            "`cured_when`, or a stray/wrong-typed field elsewhere in the "
-            "review payload's own closed schema). The run has been paused "
-            "(existing pause machinery) "
-            "instead of scoring a rejection off a channel the engine "
-            "itself cannot trust: the approach was NOT archived, no "
-            "composite PRD was written, no cure pass was opened, and the "
-            "approach counter did not move. This is operator-actionable -- "
-            "a broken findings writer, a stale sidecar, or a hat that "
-            "cannot emit its own contract shape or reconcile its own "
-            "verdict with its own findings. Once "
-            "the channel is fixed, resume the run and review is "
-            f"asked again over the SAME approach (`ralphctl unpause "
-            f"{self.cfg.run_id}`).",
-            "",
-        ]
-        if contract_errors:
-            lines.append("the contract errors review never repaired:")
-            for error in contract_errors:
-                lines.append(f"  {error}")
-            lines.append("")
-        return "\n".join(lines).rstrip() + "\n"
-
-    def _pause_and_escalate_review_findings_unusable(
-        self, approach: int, contract_errors: list[str]
-    ) -> None:
-        """Task 011 (PRD requirement C.2, #219): pause the run through the
-        EXISTING pause machinery -- the same seam `_pause_and_escalate_
-        review_contract_unrepaired` just above already uses (`self.
-        pause()`, `self.notifier`, an `operator_escalation` event always
-        emitted to `events.jsonl` regardless of whether a notifier is
-        wired in).
-
-        `contractErrors` is camelCase for the same reason its sibling
-        escalation's is. No `_resume_point` bucket is added, on the exact
-        same precedent `_pause_and_escalate_review_contract_unrepaired`
-        already cites: a fresh PROCESS started over a run that died while
-        paused here falls to `_resume_point`'s default (skip planning,
-        re-enter `worker`) and costs one throwaway worker iteration before
-        review is asked again.
-        """
-        text = self._review_findings_unusable_escalation_text(
-            approach, contract_errors)
-        self.run.emit("operator_escalation", approach=approach,
-                      reason="review_findings_unusable",
-                      contractErrors=list(contract_errors), escalation=text)
-        self.pause(reason="review_findings_unusable")
-        if self.notifier is not None:
-            # Cure task cure-01-05-2: same bounded-digest treatment as
-            # `_pause_and_escalate_review_contract_unrepaired` just above.
-            fault_lines = [f"error {i}: {err[:160]}"
-                          for i, err in enumerate(contract_errors, start=1)]
-            digest = self._pause_escalation_digest_text(
-                "review_findings_unusable", approach,
-                "fix the review findings channel (sidecar/schema), then "
-                f"ralphctl unpause {self.cfg.run_id}",
-                fault_lines)
-            self._notify_escalation_delivery(
-                digest, reason="review_findings_unusable")
 
     def _tasks_stuck_awaiting_validation(self) -> list[dict]:
         """#273: every task the stagnation guard found resting in

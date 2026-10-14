@@ -68,6 +68,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 from .. import __version__, collapse_index, render_index
 from ..engine.config import MUTATING_METHODS, JobConfig
 from ..engine.state import (
+    unpause_refusal,
     docker_access_view,
     format_docker_access,
     read_docker_access,
@@ -3207,6 +3208,16 @@ class Handler(BaseHTTPRequestHandler):
                 run_id = segs[2]
                 if not (reg / "runs" / run_id).is_dir():
                     self._send_json({"error": f"run {run_id} not found"}, 404)
+                    return
+                # v0.36 A.3: only a `paused` run is unpaused; an
+                # `awaiting_input` one is answered and an `exhausted` one
+                # (whose engine has exited) is resumed with a top-up.
+                held = unpause_refusal(
+                    run_id,
+                    _read_json(reg / "runs" / run_id / "status.json", {}) or {})
+                if held:
+                    self._send_json({"title": "run is not paused",
+                                     "detail": held}, 409)
                     return
                 ok, code, resp = _proxy_json(reg, run_id, "POST", "/resume", body=b"")
                 if not ok and not code:

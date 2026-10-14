@@ -103,9 +103,9 @@ const code = grab('readCollapsePref') + grab('wireCollapsePersistence') +
 const renderSummary = new Function('h', 'window', 'document', 'COLLAPSE_STORAGE_PREFIX',
   'setTimeout', 'approachText', 'durationBetween', 'fmtDuration', 'pill', 'stateCell',
   'renderContainerGone', 'renderInfraWait', 'renderProvisionalVerdict',
-  'renderRateLimitWait', 'renderReflect', code)(
+  'renderRateLimitWait', 'renderUnpause', 'renderReflect', code)(
   h, window, document, COLLAPSE_STORAGE_PREFIX, noop, () => '', () => '', () => '',
-  stub, stub, noop, noop, noop, noop, noop);
+  stub, stub, noop, noop, noop, noop, noop, noop);
 const el = new El('div');
 renderSummary(el, { status: input.status || {}, runId: 'r' });
 function walk(n, out) { out.push(n); for (const c of n.children || []) walk(c, out); return out; }

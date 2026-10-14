@@ -73,20 +73,19 @@ def _sup(tmp_path):
     return SUP
 
 
-def test_persist_pause_message_names_unpause(tmp_path):
+def test_operator_pause_message_names_unpause(tmp_path):
     sup = _sup(tmp_path)
-    sup._persist_pause("stagnation")
-    # `_persist_pause` emits its own `log` event with the message; read it
-    # back the same way every other consumer of `events.jsonl` does.
+    sup.pause()
+    # `pause` emits its own `log` event with the message; read it back the
+    # same way every other consumer of `events.jsonl` does.
     import json
     log = sup.run.root / "events.jsonl"
     lines = [json.loads(x) for x in log.read_text().splitlines()]
     messages = [e.get("message", "") for e in lines if e.get("type") == "log"]
     assert any("ralphctl unpause task003-escalation-commands" in m
                for m in messages)
-    assert any("ralphctl rule task003-escalation-commands --file" in m
-               and "--name" in m for m in messages)
     assert not any("ralphctl resume" in m for m in messages)
+    assert not any("ralphctl rule" in m for m in messages)
 
 
 def test_operator_input_needed_escalation_text_names_the_answer_command(tmp_path):
@@ -94,20 +93,6 @@ def test_operator_input_needed_escalation_text_names_the_answer_command(tmp_path
     text = sup._operator_input_needed_escalation_text(
         1, [_finding()], replan_available=True)
     _assert_names_answer(text)
-
-
-def test_review_contract_unrepaired_escalation_text_names_unpause(tmp_path):
-    sup = _sup(tmp_path)
-    text = sup._review_contract_unrepaired_escalation_text(
-        1, ["$.verdict: 'fail' is not one of ['verified', 'rejected']"])
-    _assert_names_unpause_not_resume(text)
-
-
-def test_review_findings_unusable_escalation_text_names_unpause(tmp_path):
-    sup = _sup(tmp_path)
-    text = sup._review_findings_unusable_escalation_text(
-        1, ["findings sidecar present but invalid"])
-    _assert_names_unpause_not_resume(text)
 
 
 def test_petition_held_escalation_text_names_rule_and_unpause(tmp_path):

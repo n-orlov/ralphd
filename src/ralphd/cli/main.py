@@ -118,6 +118,7 @@ from ..engine.state import (
     format_provisioning_lines,
     escalation_pause_markers,
     exhausted_budget_of,
+    unpause_refusal,
     format_state_display,
     format_router_calls_listing,
     format_run_document_listing,
@@ -6611,10 +6612,24 @@ def cmd_interrupt(args):
 
 
 def cmd_pause(args):
-    out(args, api(args.run_id, "POST", "/pause"), "pausing at iteration boundary")
+    """The operator's pause: `paused` is theirs alone (v0.36 A), recorded as
+    `pausedBy: "operator"` with the optional `--note`."""
+    note = getattr(args, "note", None)
+    out(args, api(args.run_id, "POST", "/pause",
+                  body={"note": note} if note else None),
+        "pausing at iteration boundary")
 
 
 def cmd_unpause(args):
+    """Release a `paused` run. v0.36 A.3: refused, naming the command that
+    does apply, for an `awaiting_input` run (`answer`) and an `exhausted` one
+    (`resume --<budget>`) -- checked on the run's status.json first, since an
+    exhausted run's engine is no longer running to answer."""
+    _require_run(args.run_id)
+    refusal = unpause_refusal(
+        args.run_id, _read_json(run_root(args.run_id) / "status.json", {}) or {})
+    if refusal:
+        die(5, f"unpause refused -- {refusal}")
     out(args, api(args.run_id, "POST", "/resume"), "unpaused")
 
 
@@ -9176,6 +9191,10 @@ def build_parser() -> argparse.ArgumentParser:
     ]:
         s = sub.add_parser(name)
         s.add_argument("run_id")
+        if name == "pause":
+            s.add_argument("--note", default=None,
+                           help="why the run is paused; recorded as `pauseNote` "
+                                "beside `pausedBy: operator`")
         if name == "tasks":
             # Task 019 (#24): read an archived approach's OWN tasks.json
             # instead of the live plan -- `--approach N` picks one, `--all`

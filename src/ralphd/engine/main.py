@@ -317,6 +317,8 @@ async def amain() -> int:
                       rateLimitWait=None,
                       # v0.30 G.2: and the pause's sub-reason.
                       pauseDetail=None,
+                      # v0.36 A.3: who holds a `paused` run (null otherwise).
+                      pausedBy=None, pauseNote=None,
                       # Task 006 (#16): the approach *denominator*, written
                       # with the very first status write rather than only when
                       # the loop reaches `running`, so no surface has to

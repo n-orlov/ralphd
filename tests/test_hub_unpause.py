@@ -6,8 +6,8 @@ Same shape as `test_retry_proxy_*` in `test_cli_ui.py`: a pure proxy, an
 unreachable run collapsing to 503, an unknown run answering 404, and the
 engine's own status code otherwise passed straight through (`StubEngineApi`
 covers those three -- no genuine pause needed for them). The module's own
-subject -- a real, LIVE run actually paused with `pauseReason:
-"operator_input_needed"`, released by the hub route -- is proven against
+subject -- a real, LIVE run actually paused by the operator
+(`pausedBy: "operator"`), released by the hub route -- is proven against
 production code on both sides: a real `LoopSupervisor`/`create_app` engine
 bound to a real TCP port (no Docker, no `pi` subprocess needed since the
 pause is raised directly through `LoopSupervisor.pause()`, exactly the
@@ -81,11 +81,10 @@ class _RealEngine:
         self._thread.join(timeout=5)
 
 
-def test_unpause_proxy_releases_a_real_operator_input_needed_pause(tmp_path, ui):
-    """The genuine article: a real run's engine holds `pauseReason:
-    "operator_input_needed"` on `status.json` (`LoopSupervisor.pause`,
-    exactly the method the engine's own `operator_input_needed` escalation
-    edges call -- see `loop.py::_pause_and_escalate_operator_input_needed`).
+def test_unpause_proxy_releases_a_real_operator_pause(tmp_path, ui):
+    """The genuine article: a real run's engine holds `state: "paused"` with
+    `pausedBy: "operator"` on `status.json` (`LoopSupervisor.pause`, the
+    method `POST /pause` calls -- `paused` is the operator's alone).
     The hub's `POST /api/runs/<id>/unpause` -- never a second, hub-owned
     unpause mechanism -- reaches the SAME `POST /resume` route
     `ralphctl unpause` calls, and the pause is released on the real engine's
@@ -93,10 +92,11 @@ def test_unpause_proxy_releases_a_real_operator_input_needed_pause(tmp_path, ui)
     run_id = "hub-unpause-live"
     engine = _RealEngine(tmp_path, run_id)
     try:
-        engine.loop.pause(reason="operator_input_needed")
+        engine.loop.pause("back after lunch")
         paused = engine.status()
         assert paused["state"] == "paused"
-        assert paused["pauseReason"] == "operator_input_needed"
+        assert paused["pausedBy"] == "operator"
+        assert paused["pauseNote"] == "back after lunch"
 
         registry = tmp_path / "registry"
         run_dir = registry / "runs" / run_id
@@ -115,6 +115,7 @@ def test_unpause_proxy_releases_a_real_operator_input_needed_pause(tmp_path, ui)
         released = engine.status()
         assert released["state"] == "running"
         assert released.get("pauseReason") is None
+        assert released.get("pausedBy") is None
     finally:
         engine.stop()
 
@@ -172,3 +173,30 @@ def test_unpause_proxy_unknown_run_404(tmp_path, ui):
     code, body = server.post("/api/runs/nope/unpause", {})
     assert code == 404
     assert "not found" in body["error"]
+
+
+def test_unpause_of_an_awaiting_input_run_is_refused_naming_answer(tmp_path, ui):
+    """v0.36 A.3: the hub never reaches the engine's `/resume` for a run that
+    is not `paused` -- an `awaiting_input` run is answered."""
+    registry = tmp_path / "registry"
+    engine = StubEngineApi()
+    try:
+        _write_run_with_api(registry, "run-ai", engine, state="awaiting_input",
+                            inputQuestion={"kind": "findings"})
+        server = ui(registry)
+        code, body = server.post("/api/runs/run-ai/unpause", {})
+        assert code == 409, (code, body)
+        assert "ralphctl answer run-ai" in json.dumps(body)
+        assert not [r for r in engine.requests if r[0] == "POST"]
+    finally:
+        engine.close()
+
+
+def test_unpause_of_an_exhausted_run_is_refused_naming_resume_budget(tmp_path, ui):
+    registry = tmp_path / "registry"
+    _write_dead_run(registry, "run-ex", state="exhausted",
+                    exhaustedBudget="iterations")
+    server = ui(registry)
+    code, body = server.post("/api/runs/run-ex/unpause", {})
+    assert code == 409, (code, body)
+    assert "ralphctl resume run-ex --iterations" in json.dumps(body)

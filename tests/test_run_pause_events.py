@@ -62,23 +62,31 @@ def test_resume_of_a_run_that_was_never_paused_emits_nothing(tmp_path):
     assert _events(sup.run, "run.paused") == []
 
 
-def test_engine_pause_emits_run_paused_with_its_pause_reason_and_unpause_follows(tmp_path):
+def test_a_persisted_operator_pause_emits_run_paused_operator_and_unpause_follows(tmp_path):
     sup = _supervisor(tmp_path)
-    sup._persist_pause("rejected_last_approach")
+    sup.pause("lunch")
     paused = _events(sup.run, "run.paused")
-    assert [e["reason"] for e in paused] == ["rejected_last_approach"]
-    assert sup.run.read_status()["pauseReason"] == "rejected_last_approach"
+    assert [e["reason"] for e in paused] == ["operator"]
+    status = sup.run.read_status()
+    assert status["state"] == "paused"
+    assert status["pausedBy"] == "operator"
+    assert status["pauseNote"] == "lunch"
 
     sup.resume()
     unpaused = _events(sup.run, "run.unpaused")
     assert len(unpaused) == 1
     assert isinstance(unpaused[0]["pausedS"], (int, float))
+    cleared = sup.run.read_status()
+    assert cleared["state"] == "running"
+    assert cleared["pausedBy"] is None and cleared["pauseNote"] is None
 
 
-def test_engine_pause_through_pause_emits_only_the_engine_reason(tmp_path):
+def test_a_second_pause_while_paused_does_not_emit_a_second_run_paused(tmp_path):
     sup = _supervisor(tmp_path)
-    sup.pause(reason="stagnation")
-    assert [e["reason"] for e in _events(sup.run, "run.paused")] == ["stagnation"]
+    sup.pause()
+    sup.pause("now with a note")
+    assert [e["reason"] for e in _events(sup.run, "run.paused")] == ["operator"]
+    assert sup.run.read_status()["pauseNote"] == "now with a note"
     sup.resume()
     assert len(_events(sup.run, "run.unpaused")) == 1
 

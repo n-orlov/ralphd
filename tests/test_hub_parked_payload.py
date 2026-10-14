@@ -383,7 +383,8 @@ def test_stagnation_pause_has_no_parked_question(tmp_path):
     sup = _supervisor(root, status={"state": "running", "approach": 1})
     sup.run.emit("operator_escalation", approach=1, reason="stagnation",
                  escalation="stalled")
-    sup.pause(reason="stagnation")
+    # A 0.35 run directory: the engine no longer pauses itself on stagnation.
+    sup.run.update_status(state="paused", pauseReason="stagnation")
     status = sup.run.read_status()
     assert status["pauseReason"] == "stagnation"
     assert parked_question(root, status) is None

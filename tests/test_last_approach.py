@@ -690,9 +690,10 @@ def test_the_engine_never_records_a_pause_over_a_settled_outcome(tmp_path):
     sup = _supervisor_persisted(root, max_approaches=1)
     for settled in ("finishing", "succeeded", "failed", "aborted"):
         sup.run.update_status(state=settled)
-        sup.pause(reason="rejected_last_approach")
+        sup.pause()
         assert _host_status(root)["state"] == settled
         assert _host_status(root).get("pauseReason") is None
+        assert _host_status(root).get("pausedBy") is None
         sup.resume()
 
 
@@ -951,7 +952,11 @@ def _park_as_0_35_did(sup: LoopSupervisor, approach: int = 1) -> None:
                  outstandingTasks=[{"id": TASK_ID, "status": "pending"}],
                  approachProgressed=False, awaitingValidation=[],
                  escalation="0.35 stagnation park")
-    sup.pause(reason="stagnation")
+    # What a 0.35 engine left on disk: the engine no longer pauses itself, so
+    # the record is written the way that engine wrote it.
+    sup._pause.clear()
+    sup.run.update_status(state="paused", pauseReason="stagnation",
+                          pauseDetail=None)
 
 
 def test_in_process_resume_of_a_0_35_stagnation_park_re_enters_worker(tmp_path):

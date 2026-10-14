@@ -118,10 +118,10 @@ def client(tmp_path):
     return open_client
 
 
-def _request(client, method: str, path: str):
+def _request(client, method: str, path: str, **kwargs):
     async def go():
         async with client() as c:
-            return await c.request(method, path)
+            return await c.request(method, path, **kwargs)
     return asyncio.run(go())
 
 
@@ -234,7 +234,7 @@ def test_the_error_shape_check_would_catch_the_rfc_7807_claim():
         "title", "status", "detail"}
 
 
-# ---- a pause is not a phase (and an OPERATOR pause is not a state) --------
+# ---- a pause is not a phase (an OPERATOR pause is the only `paused` state) ---
 
 PAUSED_PHASE_RE = re.compile(r"phase[^.\n]{0,12}`?[\"']?paused", re.IGNORECASE)
 PAUSED_STATE_RE = re.compile(r"state[^.\n]{0,12}`?[\"']?paused", re.IGNORECASE)
@@ -242,14 +242,16 @@ PAUSED_STATE_RE = re.compile(r"state[^.\n]{0,12}`?[\"']?paused", re.IGNORECASE)
 # same per-mention escape hatch test_docs_consistency.py gives a deliberately
 # wrong example. Deliberately narrow, and only on the mention's own line.
 PAUSE_DENIALS = ("there is no", "not a state", "never")
-# v0.18 requirement D.1/D.2 (#142, task 036): `state: "paused"` IS a recorded
-# value now -- for exactly one writer, the engine pausing ITSELF on the
-# `rejected_last_approach` escalation edge, which persists `pauseReason`
-# alongside it. A line may claim the paused STATE only while naming that
-# writer; a doc that goes back to promising `POST /pause` (or anything else)
-# records a paused state names neither marker and is still an offender, and no
-# hatch at all exists for a paused PHASE.
-ENGINE_PAUSE_MARKERS = ("pausereason", "rejected_last_approach")
+# v0.36 requirement A: `state: "paused"` IS a recorded value, for exactly one
+# writer -- the operator (`POST /pause`, recorded with `pausedBy: "operator"`).
+# The engine never enters it; its older hold on the `rejected_last_approach`
+# edge (v0.18, task 036) is gone, and a 0.35 run directory can still carry
+# `pauseReason`. A line may claim the paused STATE only while naming the
+# operator (or a 0.35 `pauseReason`); a doc that promises the engine (or an
+# unattributed pause) records a paused state names none of them and is an
+# offender, and no hatch at all exists for a paused PHASE.
+ENGINE_PAUSE_MARKERS = ("pausereason", "rejected_last_approach", "pausedby",
+                        "operator")
 
 
 def _paused_phase_claims(text: str) -> list[str]:
@@ -276,9 +278,9 @@ def test_neither_the_engine_nor_the_docs_knows_a_paused_phase():
         if hits:
             offenders[str(path.relative_to(REPO_ROOT))] = hits
     assert not offenders, (
-        "POST /pause changes no status field -- it emits a log event and holds "
-        "the loop, and no pause of any kind is a phase; these docs promise a "
-        f"paused phase, or a paused state with no engine writer: {offenders}")
+        "no pause of any kind is a phase, and `state: paused` is the operator's "
+        "alone (pausedBy: operator); these docs promise a paused phase, or a "
+        f"paused state with no operator named as its writer: {offenders}")
 
 
 def test_the_paused_phase_check_would_catch_the_old_claim():
@@ -292,30 +294,30 @@ def test_the_paused_phase_check_would_catch_the_old_claim():
         "`/status` reports `phase: paused` while held at the boundary.")
 
 
-def test_an_operator_pause_recording_a_paused_state_is_still_an_offender():
-    """Task 036's hatch is only for the engine's own escalation hold: a doc
-    that claims `POST /pause` (or an unattributed pause) records `state:
-    paused` names neither `pauseReason` nor `rejected_last_approach`, so it is
-    caught exactly as it was before the hatch existed."""
+def test_an_unattributed_claim_of_a_paused_state_is_still_an_offender():
+    """A doc may say the OPERATOR's pause records `state: paused` (v0.36
+    requirement A); one that promises a paused state with no writer named is
+    caught."""
     assert _paused_phase_claims(
         "`POST /pause` sets `state: paused` in `/status`.")
     assert _paused_phase_claims(
         "A paused run reports `state: \"paused\"` while held at the boundary.")
-    # ... while the engine-attributed claim the docs now really make passes
+    # ... while the operator-attributed claim the docs now really make passes
     assert not _paused_phase_claims(
-        'the escalation writes `state: "paused"` plus `pauseReason: '
-        '"rejected_last_approach"` to status.json')
+        'the operator pause writes `state: "paused"` plus `pausedBy: '
+        '"operator"` to status.json')
 
 
-def test_pause_reports_itself_only_through_the_event_stream(client, tmp_path):
+def test_pause_records_a_paused_state_and_pausedby_and_no_phase(client, tmp_path):
     before = json.loads((tmp_path / "status.json").read_text())
-    resp = _request(client, "POST", "/pause")
+    resp = _request(client, "POST", "/pause", json={"note": "look first"})
     assert resp.status_code == 200 and resp.json() == {"paused": True}
     after = json.loads((tmp_path / "status.json").read_text())
     assert after.get("phase") == before.get("phase")
-    assert after.get("state") == before.get("state") == "running"
-    # Task 036: an OPERATOR pause records no reason either -- the field only
-    # ever appears with the engine's own escalation hold.
+    assert after.get("state") == "paused" and before.get("state") == "running"
+    assert after.get("pausedBy") == "operator"
+    assert after.get("pauseNote") == "look first"
+    # the engine's own reason field is never set by an operator pause
     assert after.get("pauseReason") is None
     events = (tmp_path / "events.jsonl").read_text()
     assert "paused at next iteration boundary" in events
