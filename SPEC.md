@@ -2504,6 +2504,26 @@ classifier asks "was this run told to stop?": a run stopped by an operator two
 episodes ago and then resumed into `succeeded / verified` carries no
 `termination` key at all.
 
+#### Loading a 0.35 run directory (compatibility)
+
+This is a load-time mapping for run directories 0.35 wrote, not behaviour of
+the current engine: v0.36 never writes `timed_out`, and never writes `paused`
+for a stop of its own. `ralphd-engine` applies it once at startup
+(`RunDir.migrate_legacy_stop_state`, built on `state.legacy_stop_patch`),
+before its first status write of the episode, and the write keeps the
+migrated `awaiting_input` or `exhausted` state. Committed fixture run
+directories under `tests/fixtures/compat_035/` and
+`tests/test_compat_035_run_dirs.py` pin each case.
+
+| a 0.35 `status.json` carrying | loads on 0.36 as |
+|---|---|
+| `state: "timed_out"` | `exhausted`, `exhaustedBudget` read from the recorded `reason` (a note naming the iteration budget is `iterations`, anything else `time`); the `reason` is kept |
+| `state: "paused"` with a `pauseReason` (0.35 stamped one on every stop the engine took itself, naming each reason PRD A.1 retired, and on no operator pause; v0.36 stamps `pausedBy: "operator"` instead) | `awaiting_input` with an `inputQuestion` of `kind: "findings"`, `trigger: "cure_rounds_spent"`, `judge` `verdict_gate` for the peer gate's reason and `review` otherwise, and `expiresAt` equal to the load time plus `input_timeout_min` (`null` for `0`); `pauseReason` is kept for the resume routing. A second load finds `awaiting_input` and keeps the first load's `expiresAt` |
+| run-wide `curePasses` / `gateCurePasses` objects | kept as they are for display (`LoopSupervisor._cure_passes_for_run` sums them); the current approach's rounds, in the question and in every allowance check, are read from that approach's own entry (`_cure_rounds_used`) |
+
+A `paused` run with no `pauseReason`, or stamped `pausedBy: "operator"`, is the
+operator's own pause and loads unchanged.
+
 ### 5.3 tasks.json
 
 Written by `planning`, mutated by `worker` and `verify`, read by everything: the

@@ -820,6 +820,72 @@ def format_state_display(status: dict) -> str:
         return f"{EXHAUSTED_STATE} ({budget})"
     return str(state_value)
 
+def _per_approach_count(status: dict, key: str, approach: int) -> int:
+    counter = status.get(key) or {}
+    if not isinstance(counter, dict):
+        return 0
+    try:
+        return max(0, int(counter.get(str(approach), 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def legacy_stop_patch(
+    status: dict, *, now_epoch: float, timeout_min: float | None = None,
+    cure_pass_ceiling: int = 3,
+) -> dict | None:
+    """Compatibility only (PRD H.1): the `status.json` patch that reads a
+    run directory 0.35 wrote as its v0.36 equivalent, `None` when `status`
+    needs none.
+
+    * `state: "timed_out"` -> `exhausted`, `exhaustedBudget` taken from the
+      recorded `reason` (`exhausted_budget_of`: a reason naming the iteration
+      budget is `iterations`, anything else `time`);
+    * `state: "paused"` recorded with a `pauseReason` (0.35 stamped one on
+      every stop the engine took itself, and on no operator pause; v0.36
+      stamps `pausedBy` instead) -> `awaiting_input` with an `inputQuestion` whose `trigger` is
+      `cure_rounds_spent` and whose `expiresAt` is `now_epoch` plus
+      `timeout_min` (`DEFAULT_INPUT_TIMEOUT_MIN` when `None`, never when `0`).
+      The cure rounds shown are the CURRENT approach's own `curePasses` +
+      `gateCurePasses` entries; the run-wide totals stay on status.json
+      untouched. `pauseReason` is kept: the resume routing reads it.
+
+    A `paused` run with no `pauseReason`, or stamped `pausedBy: "operator"`,
+    is the operator's own pause and is left alone, as is every other state.
+    The rule keys on the reason's presence rather than a list of names, so
+    every reason PRD A.1 retired is covered and the engine source names none.
+    """
+    if not isinstance(status, dict):
+        return None
+    current = status.get("state")
+    if current == LEGACY_TIMED_OUT_STATE:
+        return {"state": EXHAUSTED_STATE,
+                "exhaustedBudget": exhausted_budget_of(status)}
+    reason = status.get("pauseReason")
+    if (current != PAUSED_STATE or not reason
+            or status.get("pausedBy") == PAUSED_BY_OPERATOR):
+        return None
+    try:
+        approach = max(1, int(status.get("approach") or 1))
+    except (TypeError, ValueError):
+        approach = 1
+    try:
+        max_approaches = max(approach, int(status.get("maxApproaches") or approach))
+    except (TypeError, ValueError):
+        max_approaches = approach
+    used = (_per_approach_count(status, "curePasses", approach)
+            + _per_approach_count(status, "gateCurePasses", approach))
+    allowed = max(used, int(cure_pass_ceiling)
+                  + _per_approach_count(status, "cureRoundTopUps", approach))
+    judge = "verdict_gate" if str(reason).startswith("verdict_gate") else "review"
+    question = build_input_question(
+        judge=judge, trigger="cure_rounds_spent", blocking=[],
+        cure_rounds_used=used, cure_rounds_allowed=allowed,
+        approach=approach, max_approaches=max_approaches,
+        parked_at_epoch=now_epoch, timeout_min=timeout_min)
+    return {"state": AWAITING_INPUT_STATE, "inputQuestion": question}
+
+
 # v0.23 requirement A.7, resolved tension 3 (task 017, #224): the ONE shared
 # marker text `ralphctl runs` and the hub run list both render for a run
 # parked with `pauseReason: "operator_input_needed"` -- the ONE reason
@@ -10879,6 +10945,29 @@ class RunDir:
         needed.
         """
         return bool(completed_tasks) and (used_fallback or matched_completed == 0)
+
+    def migrate_legacy_stop_state(
+        self, *, now_epoch: float | None = None,
+        timeout_min: float | None = None, cure_pass_ceiling: int = 3,
+    ) -> str | None:
+        """Compatibility only (PRD H.1): rewrite a run directory 0.35 left at
+        `timed_out`, or `paused` on a retired reason, as the v0.36 state
+        `legacy_stop_patch` names, once, at load. Returns the state written,
+        `None` when there was nothing to migrate. Idempotent: the rewritten
+        state is not itself migratable, so a second load keeps the first
+        load's `expiresAt`."""
+        status = self.read_status()
+        patch = legacy_stop_patch(
+            status, now_epoch=time.time() if now_epoch is None else now_epoch,
+            timeout_min=timeout_min, cure_pass_ceiling=cure_pass_ceiling)
+        if patch is None:
+            return None
+        self.update_status(**patch)
+        self.emit("log", message=(
+            f"loaded a 0.35 run directory recorded `{status.get('state')}`"
+            f"{' (' + str(status.get('pauseReason')) + ')' if status.get('pauseReason') else ''}"
+            f" as `{patch['state']}`"))
+        return patch["state"]
 
     def migrate_legacy_vigilant_verified(self) -> None:
         """One-way-WHEN-SAFE migration off the pre-0.9 `vigilant-verified.json`

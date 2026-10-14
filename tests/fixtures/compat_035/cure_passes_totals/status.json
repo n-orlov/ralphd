@@ -1,0 +1,28 @@
+{
+  "approach": 2,
+  "createdAt": "2026-09-30T08:00:00Z",
+  "curePasses": {
+    "1": 3,
+    "2": 1
+  },
+  "cureRoundTopUps": {
+    "1": 2
+  },
+  "gateCurePasses": {
+    "1": 1,
+    "2": 1
+  },
+  "health": "ok",
+  "infraWait": null,
+  "iteration": 21,
+  "maxApproaches": 3,
+  "pauseReason": "rejected_last_approach",
+  "phase": "review",
+  "rateLimitWait": null,
+  "runId": "legacy-035",
+  "schemaVersion": 3,
+  "startedAt": "2026-09-30T08:00:05Z",
+  "state": "paused",
+  "updatedAt": "2026-09-30T11:41:12Z",
+  "verdict": null
+}

@@ -1,0 +1,17 @@
+{
+  "approach": 1,
+  "createdAt": "2026-09-30T08:00:00Z",
+  "health": "ok",
+  "infraWait": null,
+  "iteration": 12,
+  "maxApproaches": 3,
+  "phase": "worker",
+  "rateLimitWait": null,
+  "reason": "the run holds: the iteration budget is spent (12 of 12 iterations used); `ralphctl resume --iterations +N` continues it",
+  "runId": "legacy-035",
+  "schemaVersion": 3,
+  "startedAt": "2026-09-30T08:00:05Z",
+  "state": "timed_out",
+  "updatedAt": "2026-09-30T11:41:12Z",
+  "verdict": null
+}

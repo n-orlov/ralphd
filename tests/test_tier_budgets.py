@@ -906,8 +906,10 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # (it pinned the retired review-contract pause methods; covering nodes:
     # tests/test_stop_routing_faults.py), measured `--collect-only` -> fast
     # 8696/546, smoke 6918/419.
-    "fast": {"tests": 8696, "modules": 546},
-    "smoke": {"tests": 6918, "modules": 419},
+    # Task 011 (v0.36 H.1): +17 tests / +1 module (tests/test_compat_035_run_
+    # dirs.py), measured `--collect-only` -> fast 8713/547, smoke 6935/420.
+    "fast": {"tests": 8713, "modules": 547},
+    "smoke": {"tests": 6935, "modules": 420},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

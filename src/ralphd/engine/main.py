@@ -236,6 +236,13 @@ async def amain() -> int:
     # to have preserved what it named (task 005/#75) -- otherwise it is left
     # in place rather than destroyed alongside a lost verification.
     run.migrate_legacy_vigilant_verified()
+    # v0.36 H.1 (compatibility only): a run directory 0.35 left at
+    # `timed_out`, or `paused` on a reason v0.36 retired, is loaded as the
+    # `exhausted` / `awaiting_input` state it now is. Runs before the startup
+    # status write below so that write finds, and keeps, the migrated state.
+    run.migrate_legacy_stop_state(
+        timeout_min=cfg.input_timeout_min,
+        cure_pass_ceiling=cfg.cure_pass_ceiling)
 
     workspace = Path(os.environ.get("RALPHD_WORKSPACE_DIR", str(WORKSPACE_DIR)))
     workspace.mkdir(parents=True, exist_ok=True)
@@ -303,7 +310,10 @@ async def amain() -> int:
     # else needs special handling at this one call site.
     _preserved_state = run.read_status().get("state")
     run.update_status(runId=cfg.run_id,
-                      state=(_preserved_state if _preserved_state == "finishing"
+                      state=(_preserved_state
+                             if _preserved_state in ("finishing",
+                                                     "awaiting_input",
+                                                     "exhausted")
                              else "starting"),
                       createdAt=utcnow(),
                       schemaVersion=CURRENT_SCHEMA_VERSION,

@@ -1,0 +1,17 @@
+{
+  "approach": 1,
+  "createdAt": "2026-09-30T08:00:00Z",
+  "health": "ok",
+  "infraWait": null,
+  "iteration": 7,
+  "maxApproaches": 3,
+  "phase": "review",
+  "rateLimitWait": null,
+  "reason": "the run holds: the job deadline passed with no wall clock left to continue; `ralphctl resume --deadline` continues it",
+  "runId": "legacy-035",
+  "schemaVersion": 3,
+  "startedAt": "2026-09-30T08:00:05Z",
+  "state": "timed_out",
+  "updatedAt": "2026-09-30T11:41:12Z",
+  "verdict": null
+}
