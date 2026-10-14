@@ -1357,3 +1357,36 @@ def test_worker_dispatch_write_records_assigned_task_and_tier(engine_factory, tm
     e.wait_state(("succeeded",))
     e.api("POST", "/shutdown")
     assert wait_engine_exit(e, timeout=10) == 0
+
+
+def test_open_events_reader_does_not_hold_an_exhausted_engine_up(
+        engine_factory, tmp_path):
+    """A run that holds `exhausted` (v0.36 requirement G) is resumable, so the
+    engine process exits on its own at once -- `--no-detach` and `watch` follow
+    `/events` and only stop reading on a terminal state they recognise, which a
+    resumable hold is not. The API therefore has to end an `/events` stream
+    itself once this process's job is over; before it did, the open reader
+    held uvicorn's graceful shutdown (and so the engine) up forever while the
+    reader waited for the engine to go away."""
+    hold_file = tmp_path / "hold-exhausted"
+    e = engine_factory(job={"on_complete": "exit", "iterations": 3,
+                            "max_approaches": 1},
+                       stub_env={"STUB_TASKS": "5", "STUB_HOLD_FILE": str(hold_file),
+                                 "STUB_HOLD_PHASE": "worker",
+                                 "STUB_HOLD_TIMEOUT_S": "30"})
+    e.wait_api()
+    assert wait_hold_entered(hold_file) == "worker"
+    req = urllib.request.Request(f"http://127.0.0.1:{e.port}/events?since=0")
+    states = []
+    deadline = time.time() + 45
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        hold_file.touch()
+        for raw in resp:  # no break on the state: the stream must reach EOF
+            assert time.time() < deadline, f"stream never ended: {states}"
+            line = raw.decode().strip()
+            if line.startswith("data: "):
+                obj = json.loads(line[6:])
+                if obj.get("type") == "state":
+                    states.append(obj.get("state"))
+    assert states[-1] == "exhausted", states
+    assert wait_engine_exit(e, timeout=30) == 1

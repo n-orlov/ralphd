@@ -366,6 +366,11 @@ async def amain() -> int:
     job_task = asyncio.create_task(loop.run_job())
     final_state = await job_task
     log.info("job finished: %s", final_state)
+    if final_state == EXHAUSTED_STATE:
+        # A hold is resumable, not terminal, so no client treats it as the
+        # end of the `/events` stream; the API ends the stream itself, or an
+        # open reader would hold the graceful shutdown below up forever.
+        app.state.job_over = True
     # Task 006 (#169): the terminal `state` event is no longer emitted here.
     # `run_job()` itself now appends it (LoopSupervisor._finish()/
     # _promote_finishing_state()/_promote_recorded_finishing_state()) BEFORE

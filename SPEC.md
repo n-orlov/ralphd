@@ -5212,6 +5212,14 @@ without the liveness test, a race between the terminal event and the engine's
 actual exit closes a stream that is about to produce more. A historical terminal
 marker can therefore never close a live follow.
 
+The `exhausted` hold is the one ending no follower can wait for: it is not
+terminal (a resume revives it), so no client closes on it, yet its engine
+process exits at once. The API therefore ends the `/events` stream itself,
+after the last event, when this process's job finished in `exhausted`; an open
+reader would otherwise hold the engine's graceful shutdown up forever while
+waiting for the engine to go away. `start --no-detach` then reads the held
+run's `status.json`, finds no verdict, and exits `1`.
+
 ### 9.5 Errors
 
 Errors are `application/problem+json`. `problem()` builds

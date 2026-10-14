@@ -814,7 +814,7 @@ pretty rendering is `ralphctl logs`' job.
 
 ### `GET /events`
 `text/event-stream` (SSE). Replays from `?since=<eventId>` (default: live only),
-then follows. Event types:
+then follows. When the engine process's job ends in the `exhausted` hold (resumable, so no client treats it as terminal, and the process exits at once) the stream ends after the last event instead of idling on keepalives, so an open reader never holds the shutdown up. Event types:
 
 | type | payload highlights |
 |------|--------------------|

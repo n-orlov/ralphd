@@ -403,6 +403,9 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
             pos = 0
             sent = since
             while True:
+                # Read the flag BEFORE draining the log so the final events
+                # (written strictly before it was set) are still delivered.
+                job_over = getattr(app.state, "job_over", False)
                 if path.exists():
                     with open(path) as f:
                         f.seek(pos)
@@ -416,6 +419,12 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
                                 continue
                             sent = ev["id"]
                             yield f"id: {ev['id']}\nevent: {ev['type']}\ndata: {json.dumps(ev)}\n\n"
+                if job_over:
+                    # `exhausted` hold: this process's job is over and it
+                    # exits at once. An open reader would hold uvicorn's
+                    # graceful shutdown (and so the engine) up forever, so
+                    # the stream ends here, after the last event.
+                    return
                 yield ": keepalive\n\n"
                 await asyncio.sleep(1)
         return StreamingResponse(stream(), media_type="text/event-stream")

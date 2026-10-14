@@ -915,8 +915,8 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # 6991/421.
     # Task 013 second retry: -1 test in the same module (literal confinement:
     # the per-role pass cases fold into the flag list), measured
-    # `--collect-only` -> fast 8768/548, smoke 6990/421.
-    "fast": {"tests": 8768, "modules": 548},
+    # `--collect-only` -> fast 8769/548, smoke 6990/421.
+    "fast": {"tests": 8769, "modules": 548},
     "smoke": {"tests": 6990, "modules": 421},
 }
 
