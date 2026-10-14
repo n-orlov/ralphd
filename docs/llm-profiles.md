@@ -422,24 +422,21 @@ or 404 from either harness: a bad request, rejected credentials, a missing
 permission or model, or a subscription token sent from pi ("Third-party apps
 now draw from your extra usage, not your plan limits"). A Claude Code CLI below
 the minimum version is refused the same way. The iteration is classified
-`refused`, nothing is spent from the outage budget, and the run pauses with
-`pauseReason: operator_input_needed` and `pauseDetail.reason:
-provider_refused`. The notifier gets the provider's message, scrubbed, and
-`ralphctl status` and `ralphctl fault` show it:
+`refused`, nothing is spent from the outage budget, and the run ends `failed`
+with `ending: provider_refused` (it is not paused). The notifier gets the
+provider's message, scrubbed, and the run's `reason` (shown by `ralphctl
+status`, beside its `ending:` line) quotes it and names the fix: the profile
+or credentials (`PUT /config/llm`), then `ralphctl resume <run-id>`.
 
-```
-paused:    provider refused (extra-usage): 400 {"type":"error",...} -- fix the profile or credentials (PUT /config/llm), then ralphctl unpause
-```
-
-To continue, fix the cause, then unpause:
+To continue, fix the cause, then resume:
 
 1. Fix the profile or credentials. Rotate a rejected token, correct the model
    ref, or move the hat to the harness its token belongs to. A subscription
    token belongs on `harness: claude-code` (or `--harness-for HAT=claude-code`),
-   never on a pi hat. Apply the change to the live run with `PUT /config/llm`
+   never on a pi hat. Apply the change with `ralphctl llm` / `PUT /config/llm`
    (see Mid-run rotation below).
-2. `ralphctl unpause <run-id>` re-runs the same work. If the provider refuses
-   again, the run pauses again. A ruling does not release this pause.
+2. `ralphctl resume <run-id>` re-runs the same work. If the provider refuses
+   again, the run ends `failed` with the same `ending` again.
 
 ## Verifying a profile
 

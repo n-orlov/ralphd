@@ -271,26 +271,31 @@ recorded separately in `rateLimitWait`. `verdict` is the judgment of the work,
 separate from the lifecycle state: `verified`, `verified-with-residuals`,
 `unverified`, `unreviewed`, or `null`. A deadline that lands during review
 produces an `exhausted` hold with `verdict: null` and reason `"deadline during
-review"`, not a reviewed rejection. `unreviewed` is written in three cases, all only when no
-budget remained: review ran but never produced a readable verdict from a reply
-that was not empty (with budget left the run pauses on
-`review_contract_unrepaired` instead); review said `verified` but the peer
+review"`, not a reviewed rejection. `unreviewed` is written in three cases
+(with `state: failed`), each once a judge fault outlives the infra outage
+budget or no budget remains to ask again: review ran but never produced a readable verdict from a
+reply that was not empty (`review_contract_unrepaired`) or a usable findings
+channel (`review_findings_unusable`); review said `verified` but the peer
 verdict gate produced no verdict after every `judge_retry_max` retry; or the
 review hat itself had no verdict on every attempt and every retry, because it
 was cut off (`stopReason: length`, no text) or its contract ladder was exhausted
-on replies that were all empty (in both of the last two, with budget left the
-run pauses on `operator_input_needed` with `pauseDetail.reason:
-judge_no_verdict` instead). In the last two cases the recorded review verdict
-stays as it is and no rejection is recorded.
+on replies that were all empty. With budget left each of these is an infra
+fault under the unchanged outage budget and retry schedule: the hat is asked
+again after each backoff, and the run never pauses. In the gate and review
+no-verdict cases the recorded review verdict stays as it is and no rejection
+is recorded.
 
 An ordinary operator `pause` holds execution at the next boundary and emits a log
-event without changing `status.json` to `paused`. Engine-initiated escalation
-pauses persist `state: paused` and a `pauseReason`, plus a `pauseDetail` for
-sub-reasons such as a provider refusal or a rate-limit wait that would exceed
-`rate_limit_max_wait_s`. They preserve the last phase and current approach. The
-persisted reasons are `operator_input_needed`, `verdict_gate_operator_input_needed`
-(the two rejection-ladder parks, which write `state: awaiting_input`),
-`review_contract_unrepaired` and `review_findings_unusable`. Consumers
+event without changing `status.json` to `paused`. The engine never pauses
+itself; it parks in `state: awaiting_input` with a `pauseReason` and an
+`inputQuestion`, preserving the last phase and current approach. The parks are
+`operator_input_needed` and `verdict_gate_operator_input_needed` (the two
+rejection-ladder parks) and `commit_secret` (a secret found in a commit, with
+`inputQuestion.kind: secret`, answered by `ralphctl answer <run>
+--secret-handled` once the commit scan of the offending range is clean). A
+provider refusal ends the run `failed` with `ending: provider_refused`, and a
+rate-limit wait that would exceed `rate_limit_max_wait_s` ends it `failed` with
+`ending: rate_limit_ceiling`; both resume through `ralphctl resume`. Consumers
 must not infer that every boundary hold appears as a paused lifecycle state. An `operator_input_needed` pause (on by
 default) is answered in the live engine: `ralphctl rule` records a ruling and
 by itself releases it, and `ralphctl unpause` releases it without one.
@@ -396,9 +401,11 @@ Several pauses happen before an approach is archived:
   ruling or run a plain `ralphctl unpause`. A bare unpause grants a one-shot
   proceed, so the same rejection then archives instead of parking again.
 - **Contract failures.** `review_contract_unrepaired` and
-  `review_findings_unusable` pause when review's contract ladder exhausts on a
-  non-empty reply. A ladder exhausted on empty replies is retried and then parks
-  as `judge_no_verdict` under `operator_input_needed`.
+  `review_findings_unusable` (review's contract ladder exhausted on a non-empty
+  reply) and a judge no-verdict (a ladder exhausted on empty replies, or a
+  truncated reply, after every `judge_retry_max` retry) are infra faults under
+  the outage budget: the hat is asked again after each backoff, and a spent
+  budget ends the run `failed`, verdict `unreviewed`. None of them pauses.
 - **Gate cure ceiling.** The peer verdict gate's own mirror,
   `verdict_gate_operator_input_needed`, fires once the current approach's
   cure rounds are spent. Review and the gate draw on that one shared count
@@ -681,17 +688,19 @@ unparseable, fails the schema, contradicts a blocking finding with `verified`, s
 beside a present-but-invalid sidecar, or carries a curable finding with a missing
 or overlong `cured_when` enters the bounded review contract ladder (§8). A
 `fail`/`failed` verdict word is normalized to `rejected` before the ladder. Two
-ladder exhaustions no longer score as a rejection. Each holds the run for the
-operator with the approach unarchived:
+ladder exhaustions no longer score as a rejection. Each is an infra fault under
+the outage budget with the approach unarchived: review is asked again over the
+same approach after each backoff, and a spent budget ends the run `failed`,
+verdict `unreviewed`:
 
 - `review_contract_unrepaired`: the verdict claim itself is still unreadable in a
   reply that was not empty. The approach verdict is recorded as `unreviewed`. A
   ladder exhausted on replies that were all empty (no text, or only whitespace)
   is not this hold: review is re-dispatched as an uncharged fresh iteration up to
   `judge_retry_max` times, as for a reply cut off at the output-token limit, and
-  when every retry also has no verdict the run parks on `operator_input_needed`
-  (`pauseDetail.reason: judge_no_verdict`), or with no budget left ends
-  `unreviewed`. No approach verdict is recorded in that case.
+  when every retry also has no verdict it takes the same outage-budget route,
+  or with no budget left ends `unreviewed`. No approach verdict is recorded in
+  that case.
 - `review_findings_unusable`: the verdict word is legible but the findings channel
   or the rest of the payload is not.
 
@@ -721,9 +730,9 @@ flowchart TD
     Result["Review reply and findings"] --> Ladder{"Contract and sidecar valid?"}
     Ladder -->|no| Repair["Bounded contract repair"]
     Repair -->|repaired| Ladder
-    Repair -->|verdict unreadable, reply not empty| HoldU["Pause: review_contract_unrepaired"]
-    Repair -->|all replies empty| Retry["Retry review; if still none, pause: judge_no_verdict"]
-    Repair -->|channel unusable| HoldF["Pause: review_findings_unusable"]
+    Repair -->|verdict unreadable, reply not empty| HoldU["Infra backoff, ask review again: review_contract_unrepaired"]
+    Repair -->|all replies empty| Retry["Retry review; if still none, infra backoff and ask again"]
+    Repair -->|channel unusable| HoldF["Infra backoff, ask review again: review_findings_unusable"]
     Ladder -->|yes| Blocking{"Blocking findings after downgrades?"}
     Blocking -->|none| Pending{"Steering, steering-origin or cure-origin task open?"}
     Pending -->|yes| Work["Return to worker"]
@@ -895,10 +904,8 @@ flowchart TD
     RLRefund --> RLCap{"Wait within rate_limit_max_wait_s?"}
     RLCap -->|yes| RLWait["Wait for window reset; extend deadline"]
     RLWait --> Invoke
-    RLCap -->|no| OpPause["Pause operator_input_needed; unpause re-runs same work"]
-    Fault -->|refused| RefRefund["Refund; pause provider_refused"]
-    RefRefund --> OpPause
-    OpPause --> Invoke
+    RLCap -->|no| RLFail["End failed: rate_limit_ceiling; resume --rate-limit-wait +N"]
+    Fault -->|refused| RefRefund["Refund; end failed: provider_refused; fix profile, then resume"]
     Fault -->|infra| Refund["Record fault and refund iteration charge"]
     Refund --> Cap{"Broken env, retry cap or outage budget exhausted?"}
     Cap -->|no| Wait["Degraded status; interruptible backoff"]
@@ -1006,13 +1013,14 @@ planning, worker, review, verify, reflect, plan_review, and verdict_gate.
 - **Rate-limit wait.** A `rate_limit` attempt is refunded. The wrapper waits until
   the window's `resetsAt` plus jitter, or 15 minutes when no reset is known, then
   re-runs the same work. The wait extends the deadline (`rateLimitWaitTotalS`).
-  Cumulative waiting above `rate_limit_max_wait_s` (default 24 h) pauses the run
-  instead. A Claude Code hat whose last report is at or above
+  Cumulative waiting above `rate_limit_max_wait_s` (default 24 h) ends the run
+  `failed` with `ending: rate_limit_ceiling` instead; `ralphctl resume <run>
+  --rate-limit-wait +N` raises the ceiling and continues. A Claude Code hat whose last report is at or above
   `rate_limit_preempt_utilization` (0.95) waits *before* starting.
-- **Refusal.** A `refused` attempt is refunded and never retried. The run pauses
-  with `pauseDetail.reason: provider_refused`. After the operator fixes the
-  profile, `ralphctl unpause` re-runs the same work. A ruling does not release
-  the pause.
+- **Refusal.** A `refused` attempt is refunded and never retried. The run ends
+  `failed` with `ending: provider_refused`, its reason naming `PUT /config/llm`.
+  After the operator fixes the profile or credentials, `ralphctl resume`
+  re-runs the same work.
 - **Outage backoff.** The default retry waits are 2, 5, 15, 30, 60, 120, then 300
   seconds, capped at 300 seconds thereafter. The default outage allowance is four
   hours of **backoff wait**, not a hard cap on all elapsed time including failed
@@ -1049,7 +1057,7 @@ job configuration, or supported runtime overrides. Source:
 | Startup traffic window | 150 seconds | Watchdog input, with CPU-progress discrimination. |
 | Infra outage wait | 4 hours | Separate allowance per outage episode; reflection has a 300-second cap. |
 | Infra attempt cap | Unset | Wait allowance governs unless a cap is explicitly configured. |
-| Rate-limit wait ceiling | 1 day | Total rate-limit waiting per run (`claude-code` hats only). A wait that would pass it pauses `operator_input_needed` with `pauseDetail.reason: rate_limit_ceiling`. |
+| Rate-limit wait ceiling | 1 day | Total rate-limit waiting per run (`claude-code` hats only). A wait that would pass it ends the run `failed` with `ending: rate_limit_ceiling`. |
 | Rate-limit preemption | 0.95 utilization | A `claude-code` iteration is not started while the last `allowed_warning` report is at or above this; the loop waits for the window's reset. |
 | Contract retries | 2 | Initial response plus up to two repair attempts for the shared ladder. |
 | Task progress allowance | Estimate + 2 | Bounds continuation supported by progress claims. |
@@ -1182,8 +1190,8 @@ cloud routing variables so the CLI always uses `CLAUDE_CODE_OAUTH_TOKEN`, isolat
 watchdog and contract machinery are shared. Hat tools reach it as in-process MCP
 tools (`mcp__ralphd__<name>`) over the same engine spool as pi's extension. A
 non-transient provider refusal (HTTP 400/401/403/404, or a too-old CLI) is
-classified `refused`, spends nothing from the outage budget and pauses
-`operator_input_needed` with `pauseDetail.reason: provider_refused`.
+classified `refused`, spends nothing from the outage budget and ends the run
+`failed` with `ending: provider_refused`.
 
 The router helper ([`router.py`](../src/ralphd/engine/router.py)) accepts only
 declared successor states and has bounded retries plus an explicit deterministic

@@ -1478,9 +1478,10 @@ reconstructed by knowing `engine/faults.py`' table by heart and grepping
 - **`waiting:`** appears while the run waits for a rate-limit window to reset
   (status.json's `rateLimitWait`), with the same wording as `status`:
   `waiting:   rate limit (five_hour) until <local time>`.
-- **`paused:`** appears while the run is paused on a provider refusal or on
-  the rate-limit ceiling (status.json's `pauseDetail`), with the same wording
-  as `status`; a ceiling pause explains itself as `fault:     rate_limit`.
+- **`paused:`** appears for a 0.35 run directory still paused on a provider
+  refusal or on the rate-limit ceiling (status.json's `pauseDetail`), with the
+  same wording as `status`. A v0.36 engine never pauses on either: the run ends
+  `failed` with `ending: provider_refused` or `ending: rate_limit_ceiling`.
 - **`recovered:`** appears when the engine emitted `infra_recovered` — a later
   iteration reached the model, so the episode is over and the ladder is not a
   live one. **`gave up:`** prints `status.json`'s `abortReason` when the run
@@ -2274,13 +2275,13 @@ of the raw diagnostic text: run id, `pauseReason`, `approach n of m`,
 blocking/residual counts, tasks reopened/inserted, spend this approach, the
 hub URL when `hub_base_url` is configured, and the exact answer command(s)
 for that reason, phrased the way the paragraph above describes. That covers
-every pause reason, including the task-boundary commit-secret-scan hold
-(`pauseReason: operator_input_needed` raised from `worker`, which resumes
-into `worker`, not `review`): its digest names the offending commit's
-`sha`, the `part` and the variable NAME, never the matched value, reads
-`unavailable` for the findings and reopen/insert fields it has no channel
-for, and its answer command names only `ralphctl unpause <run>`: a ruling
-never releases this hold (v0.36 requirement D.1), even on an approach that
+every park reason, including the commit-secret park (`pauseReason:
+commit_secret`, `state: awaiting_input`, raised from `worker`, which
+continues at `worker`, not `review`): its digest names the offending
+commit's `sha`, the `part` and the variable NAME, never the matched value,
+reads `unavailable` for the findings and reopen/insert fields it has no
+channel for, and its answer command names only `ralphctl answer <run>
+--secret-handled`: a ruling never releases this park (v0.36 requirement D.1), even on an approach that
 already carries a recorded rejection signature. pause. docs/api.md's `POST /pause` section lists the
 full coverage.
 
@@ -2395,18 +2396,18 @@ recorded on disk under `cureRoundTopUps`; see the table below).
 
 `--rate-limit-wait` maps to `rateLimitMaxWaitS`, the ceiling in seconds on
 the run's total rate-limit waiting (`rate_limit_max_wait_s`, default 86400).
-A rate-limit wait that would pass it does not start: the run pauses
-`operator_input_needed` with `paused:    rate-limit ceiling reached (…)` in
-`ralphctl status` and `ralphctl fault`, and the notifier names the window's
-reset. Raise the ceiling, or just `ralphctl unpause` (which resets the count
-and re-probes the same work):
+A rate-limit wait that would pass it does not start: the run ends `failed`
+with `ending: rate_limit_ceiling` (v0.36 F.4), and the notifier names the
+window's reset. Raise the ceiling ahead of that on a live run:
 
 ```console
 $ ralphctl budget my-run --rate-limit-wait +43200   # half a day more of waiting
 ```
 
 The new ceiling is read before the next rate-limit wait. It persists across a
-resume like `--cure-passes`.
+resume like `--cure-passes`. A run that already ended on the ceiling is not
+live, so `budget` cannot reach it: use `ralphctl resume <run-id>
+--rate-limit-wait +N`.
 
 `--input-timeout` maps to `inputTimeoutMin`, the input timeout in minutes (`0`
 = never; same `+N|N` grammar, and a bare `0` is accepted). A run already
@@ -4073,9 +4074,10 @@ JSON endpoints served under `/api/`:
   later resume with no fresher matching escalation since, in `events.jsonl`
   plus the on-disk structured findings sidecar), never a second live-only
   path -- that answered-since check (cure task cure-01-02-4) is what keeps
-  a later task-boundary commit-secret-scan hold, which persists the SAME
-  `operator_input_needed` reason string with no fresh `operator_escalation`
-  of its own, from resurrecting an already-answered gate's stale question.
+  a later park with no fresh `operator_escalation` of its own (the
+  commit-secret park, `pauseReason: commit_secret`, whose record is its
+  `commit_secret_scan` event) from resurrecting an already-answered gate's
+  stale question.
   Carries `reason`, `approach`/`maxApproaches`/`approachOfMax`, `parkedAt`,
   `replanAvailable` (present only for `operator_input_needed`),
   `blockingCount`/`residualCount`, one `findings` entry per finding —

@@ -9576,12 +9576,13 @@ class LoopSupervisor:
             if no_verdict is None:
                 break
             # #300: no usable verdict after every retry. Not a rejection --
-            # park (or, with no budget left to resume into, end `unreviewed`).
+            # an infra fault under the outage budget (v0.36 F.3); a spent
+            # budget, or no budget left, ends `unreviewed`.
             outcome = await self._park_judge_no_verdict("verdict_gate",
                                                         approach, no_verdict)
             if outcome == "resume":
-                # An unpause re-dispatches the gate as an ordinary first
-                # attempt (a fresh retry allowance).
+                # After the backoff the gate is re-dispatched as an ordinary
+                # first attempt (a fresh retry allowance).
                 self.run.update_status(gateRejectionEnding=None)
                 result = await self._dispatch_verdict_gate()
                 continue
@@ -14005,8 +14006,9 @@ class LoopSupervisor:
         result = await self._run_review_iteration(approach)
         while result is not None and self._review_no_verdict:
             # #300: review produced no verdict after every retry. Not a
-            # rejection: park (or, with no budget left to resume into, end
-            # `unreviewed`) before `_review_verdict` can record one.
+            # rejection: an outage-budget retry (or, with that budget spent
+            # or no budget left, end `unreviewed`) before `_review_verdict`
+            # can record one.
             outcome = await self._park_judge_no_verdict(
                 "review", approach, self._review_no_verdict)
             if outcome != "resume":

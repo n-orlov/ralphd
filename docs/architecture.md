@@ -1268,10 +1268,13 @@ mid-run non-terminal value that is never written to `status.json` at all.
     for a second `unreviewed` branch with its own reason string ("review
     never produced a parseable contract payload; no verdict was ever
     scored"), never the deadline's. A run with budget left never reaches
-    that terminal write at all: `_step_review` takes the declared
-    `review_contract_unrepaired` edge and HOLDS (`pauseReason:
-    "review_contract_unrepaired"`, the approach left unarchived, no
-    composite PRD), so only the off-budget grace review lands here. The
+    that terminal write at all: `_step_review` hands the fault to
+    `_review_contract_fault`, an infra fault under the outage budget (v0.36
+    F.3) that asks review again over the same unarchived approach after each
+    backoff (`review_judge_fault_retry`) and, once the budget is spent, takes
+    the declared `review_contract_unrepaired` edge to `finishing`, where
+    `_judge_fault_tail` ends the run `failed`, verdict `unreviewed`; so only
+    the off-budget grace review lands on this branch. The
     same word is also what `approach.verdict_recorded` carries for that
     approach's `review` channel, in place of the `rejected` it used to
     attribute to a judge that never spoke. One thing the parent bullet's
@@ -1281,10 +1284,7 @@ mid-run non-terminal value that is never written to `status.json` at all.
     process resuming a run that ended here falls to `_resume_point`'s
     default — skip planning, re-enter `worker` — and spends one throwaway
     worker iteration over an all-completed plan before review is asked
-    again. That is the same precedented cost the `review_contract_
-    unrepaired` PAUSE already pays for having no `_resume_point` bucket
-    (`unschedulable_dependency_cycle` and
-    `unresolvable_dependency_edge` all pause with none either); giving this
+    again. Giving this
     branch the deadline's event to buy the routing would put "deadline
     during review" back on a run no deadline touched.
   - **`unreviewed` also covers "a judging hat never spoke" (#300).** The
@@ -1303,8 +1303,9 @@ mid-run non-terminal value that is never written to `status.json` at all.
     `unreviewed` with a reason naming the gate. Review's own
     `approach.verdict_recorded` entry stays `verified`, no `rejected` is
     recorded, and `gateRejectionEnding` reads `no_verdict_output_truncated`.
-    With budget left the same outcome pauses `operator_input_needed`
-    (`pauseDetail.reason: "judge_no_verdict"`) instead.
+    With budget left the same outcome is an infra fault under the outage
+    budget (`_judge_fault_backoff`): the gate is asked again after each
+    backoff, and a spent outage budget ends `unreviewed` the same way.
 - **`"adjudicated"` (task 014, requirement F.1, #144) is a MID-RUN reply
   value, never a `status.json` verdict.** The bounded, off-budget petition
   adjudication episode (`_maybe_run_midrun_adjudication_episode`, next
@@ -3579,8 +3580,7 @@ finding-bearing reasons (`operator_input_needed` from review and
 `verdict_gate_operator_input_needed`) and lists each blocking finding by id and `clause`,
 never its evidence. `_pause_escalation_digest_text` serves every other
 pause -- `stagnation`, the two review-contract faults, the two dependency
-faults and the task-boundary commit-secret-scan hold
-(`_pause_for_commit_secret_hit`) -- and reads `unavailable` for the
+faults and the commit-secret park (`_park_for_commit_secret`) -- and reads `unavailable` for the
 findings and preview fields those pauses have no channel for. A findings park
 (`operator_input_needed`, `verdict_gate_operator_input_needed`) is `awaiting_input`
 and its answer line names `ralphctl answer <run> ...` alone (v0.36 requirement
@@ -3592,13 +3592,16 @@ parked step `_step_paused` carries it out; a ruling never releases a park
 two-step sequence (`rule ... then unpause ...`) beside the working
 unpause-alone alternative, never an `or` that would falsely claim `rule` alone
 resolves it. The full `operator_escalation.escalation` text follows the same rule.
-The commit-scan hold's fault lines are the `sha`, `part` and variable NAME read
-back off its own `commit_secret_scan` event, never the matched value, and
+The commit-secret park's fault lines are the `sha`, `part` and variable NAME
+read back off its own `commit_secret_scan` event, never the matched value, and
 it deliberately emits no `operator_escalation` event, so a crashed episode's
-resume routing (`_paused_awaiting_operator_input_needed_ruling`) never
-mistakes it for a parked review rejection and it resumes into `worker`.
-Its own answer line names only `ralphctl unpause` (`POST /resume`): a ruling
-never releases it (v0.36 requirement D.1), whether or not its approach already
+resume routing never mistakes it for a parked review rejection and it
+continues at `worker`. It is `awaiting_input` with `pauseReason:
+commit_secret` and a `secret` `inputQuestion` that never expires. Its own
+answer line names only `ralphctl answer <run> --secret-handled` (`POST
+/answer {"secretHandled": true}`), which `LoopSupervisor.answer` refuses while
+`_commit_range_scan_hit` still finds a hit in the question's `baseSha..HEAD`
+range: a ruling never releases it (v0.36 requirement D.1), whether or not its approach already
 carries a rejection signature from an earlier park.
 Tests: `tests/test_commit_scan_escalation_digest.py`,
 `tests/test_escalation_delivery.py`, `tests/test_pause_ruling_release_
@@ -4439,7 +4442,7 @@ event:
 | `"work"` | the agent reached the model and then genuinely failed — or the *operator* terminated it |
 | `"signal"` | a signal ended an iteration that had reached the model, with no abort recorded (below) — not retried |
 | `"rate_limit"` | the provider reported its rate-limit window exhausted, in structured form — waited out until the window resets, then the same work re-runs (below) |
-| `"refused"` | the provider refused the call in a way waiting does not fix (a 400/401/403/404), or the `claude-code` or `codex` harness refused to start — not retried; the run pauses for the operator (below) |
+| `"refused"` | the provider refused the call in a way waiting does not fix (a 400/401/403/404), or the `claude-code` or `codex` harness refused to start — not retried; the run ends `failed` with `ending: provider_refused` (below) |
 | `"output_truncated"` | the final assistant message ended `stopReason: "length"` with no text — the provider cut the reply off at its output-token limit; not a work failure; a worker, verify or planning iteration gets no retry or refund of its own, and the peer `verdict_gate` retries it (below) |
 
 Because both the recorded field and the retry decision come from that one
@@ -4466,23 +4469,27 @@ within a bounded investigation) and its thinking level is one step lower
 (`high` to `medium`; the lowest level, or no level, is kept). Review's retry
 fires on `output_truncated` and on `empty_reply` (its contract ladder was
 exhausted on replies that were all empty), emits `review.retry`, and goes
-through the same helper; when every retry fails review takes the
-`judge_no_verdict` park instead of the `review_contract_unrepaired` hold. A
-non-empty malformed review reply keeps the contract ladder and that hold.
+through the same helper; when every retry fails review takes the judge-fault
+route below. A non-empty malformed review reply keeps the contract ladder, and
+its exhaustion (`review_contract_unrepaired`, `review_findings_unusable`) takes
+the same judge-fault route through `_review_contract_fault`.
 
-**A gate with no verdict after every retry parks the run.** When the retries
+**A gate with no verdict after every retry is an infra fault (v0.36 F.3).** When the retries
 also fail, `_verdict_gate_verdict` reports the cause (`output_truncated` or
 `empty_reply`) as its third return value and `_step_verdict_gate` calls
 `_park_judge_no_verdict` instead of recording a rejection: nothing is archived,
 no composite PRD is written, review's `verified` record stays, and
-`gateRejectionEnding` takes its fourth value. With budget left the run pauses
-`operator_input_needed` with `pauseDetail.reason == "judge_no_verdict"` and parks
-in place (the shape the provider-refusal pause uses), and an unpause
-re-dispatches the gate. With the iteration budget or the deadline already
-spent it ends `unreviewed` through `_finish_tail_unverified`, never `rejected`.
-Review parks the same way: `_step_review` calls `_park_judge_no_verdict("review",
-...)` before `_review_verdict` reads the reply, so no approach verdict is
-recorded, `review.no_verdict` is emitted and an unpause re-runs review.
+`gateRejectionEnding` takes its fourth value. The name is historical: nothing
+parks. `_judge_fault_backoff` books the fault on its own judge-fault episode
+under the unchanged infra outage budget and retry schedule (`infra_retry` with
+`judgeFault: true`, a refunded attempt, `health: degraded` with `infraWait`,
+the wait in `_wait_out_backoff`), then the gate is re-dispatched as a fresh
+first attempt. A spent outage budget, or an iteration budget or deadline
+already spent, ends the run `failed`, verdict `unreviewed`, through
+`_finish_tail_unverified`, never `rejected`. Review takes the same route:
+`_step_review` calls `_park_judge_no_verdict("review", ...)` before
+`_review_verdict` reads the reply, so no approach verdict is recorded,
+`review.no_verdict` is emitted and review is asked again after the backoff.
 
 Three deliberate details:
 
@@ -4579,13 +4586,14 @@ Three deliberate details:
   <body>` text); the `cc-*` families and `codex-gateway` need none. Its rung sits right after the
   rate-limit rung, so a 429 is never `"refused"`, and before the watchdog and
   the signature table, so a refusal is never retried as `"infra"`. The
-  wrapper refunds the attempt and calls `_pause_for_provider_refusal()`: the
-  run pauses with `pauseReason: "operator_input_needed"` and `pauseDetail =
-  {"reason": "provider_refused", ...}` carrying the scrubbed provider message,
-  emits `provider_refused`, notifies through the escalation delivery path, and
-  parks in place in `_gate()`. `ralphctl unpause` clears both and the wrapper
-  re-runs the same work. `pauseDetail` keeps review's pause machinery out:
-  no release by `POST /rule`, and no `operator_escalation` event.
+  wrapper refunds the attempt and calls `_pause_for_provider_refusal()` (the
+  name is historical): it emits `provider_refused` with the scrubbed provider
+  message, notifies the operator, and sets `_failed_ending =
+  "provider_refused"` with an abort reason naming `PUT /config/llm` and
+  `ralphctl resume`, so the run winds down to `state: failed`, `ending:
+  provider_refused` (v0.36 F.5). Nothing is parked and no `operator_escalation`
+  event is emitted; after the profile or credentials are fixed, `ralphctl
+  resume <run>` re-runs the same work.
 
 Anything else that produced **no** LLM traffic at all is classified `"infra"`
 too: an unclassifiable no-traffic failure is far likelier to be an

@@ -1516,10 +1516,15 @@ def test_tech_spec_scopes_review_contract_unrepaired_to_a_non_empty_reply():
 
 
 def test_tech_spec_reading_the_verdict_routes_empty_replies_to_the_retry_and_park():
-    # the "Reading the verdict" bullet and the diagram
+    # the "Reading the verdict" bullet and the diagram. v0.36 F.3 retired the
+    # `judge_no_verdict` park: a review with no verdict after every retry is
+    # an infra fault under the outage budget (engine coverage:
+    # tests/test_stop_routing_faults.py), so the doc names that route and
+    # no longer the park.
     flat = _flat_tech()
     assert "is not this hold: review is re-dispatched" in flat
-    assert "pauseDetail.reason: judge_no_verdict" in flat
+    assert "it takes the same outage-budget route" in flat
+    assert "pauseDetail.reason: judge_no_verdict" not in flat
     assert "No approach verdict is recorded in that case." in flat
     assert "verdict unreadable, reply not empty" in flat
     assert "all replies empty" in flat
@@ -1528,8 +1533,16 @@ def test_tech_spec_reading_the_verdict_routes_empty_replies_to_the_retry_and_par
 def test_tech_spec_other_mentions_of_the_ladder_hold_and_unreviewed_agree():
     # sites the finding did not list: the pause-reasons bullet and the
     # final-outcomes list
+    # v0.36 F.3: the two ladder exhaustions and the judge no-verdict are
+    # outage-budget infra faults, never pauses (engine coverage:
+    # tests/test_stop_routing_faults.py).
     flat = _flat_tech()
+    assert ("(review's contract ladder exhausted on a non-empty reply) and a "
+            "judge no-verdict" in flat)
+    assert ("are infra faults under the outage budget: the hat is asked again "
+            "after each backoff, and a spent budget ends the run `failed`, "
+            "verdict `unreviewed`. None of them pauses." in flat)
     assert ("pause when review's contract ladder exhausts on a non-empty reply"
-            in flat)
-    assert "A ladder exhausted on empty replies is retried and then parks" in flat
+            not in flat)
+    assert "A ladder exhausted on empty replies is retried and then parks" not in flat
     assert "or no verdict at all after every retry, or the peer verdict gate" in flat
