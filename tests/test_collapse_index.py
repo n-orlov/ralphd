@@ -234,7 +234,14 @@ class TestRebuildableAndFallbackSafe:
 
 class TestNoIndexRendersLikeToday:
     def test_a_run_with_no_index_file_renders_exactly_as_a_run_with_one(
-            self, tmp_path):
+            self, tmp_path, monkeypatch):
+        # Freeze the wall clock: the two runs stamp `endedAt` themselves, and
+        # a real clock ticking over a second boundary between them made the
+        # byte-for-byte comparison flaky.
+        monkeypatch.setattr("ralphd.engine.loop.utcnow",
+                            lambda: "2026-01-01T00:00:00Z")
+        monkeypatch.setattr("ralphd.engine.state.utcnow",
+                            lambda: "2026-01-01T00:00:00Z")
         transcript = _sample_transcript()
         with_index = _run_one_iteration(tmp_path / "with-index", transcript)
         without_index_root = tmp_path / "without-index"
