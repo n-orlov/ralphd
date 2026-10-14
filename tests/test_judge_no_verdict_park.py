@@ -1,14 +1,16 @@
-"""#300 (PRD v0.32.3 requirement B.3/B.5, the peer verdict gate half): a gate
-that has no verdict after every retry does not reject. The run is parked
-`operator_input_needed` (`pauseDetail.reason == "judge_no_verdict"`), nothing is
-archived, review's recorded verdict is untouched, and `ralphctl status` says
-`gate: no verdict (output truncated)`. An `unpause` re-dispatches the gate. With
-no budget or wall clock left at the park the run ends `unreviewed`, never
-`rejected`.
+"""#300 / v0.36 F.3: a peer verdict gate that has no verdict after every retry
+does not reject, and (v0.36) does not park the run either. It is an infra fault
+under the unchanged outage budget: nothing is archived, review's recorded
+verdict is untouched, `gateRejectionEnding` is the fourth value (`ralphctl
+status` says `gate: no verdict (output truncated)`), the engine waits out the
+backoff and asks the gate again. When the outage budget is spent, or no budget
+or wall clock is left, the run ends `failed` with verdict `unreviewed`, never
+`rejected` -- resumable with `ralphctl resume`. (The file keeps its 0.35 name;
+tests/test_stop_routing_faults.py covers the same routing across every judge
+fault.)
 
 Black-box through the scripted stand-in for `pi` (`tests/conftest.py`'s
-`ScriptedRunner`), in the style of `tests/test_judge_retry.py`. The park is the
-real one: the run sits in `_gate()` until the test calls `resume()`.
+`ScriptedRunner`), in the style of `tests/test_judge_retry.py`.
 """
 
 from __future__ import annotations
@@ -89,37 +91,24 @@ def _build(root: Path, gate_steps: list, **cfg):
         peer_verdict_gate=True, **cfg)
 
 
-async def _drive(sup, *, unpause: bool) -> tuple[str, dict | None, Path | None]:
-    """Run the job; when it parks, snapshot status.json, then either unpause
-    (as `ralphctl unpause` would) or abort. Returns the final state, the
-    parked status (None if it never parked) and the snapshot path."""
+async def _drive(sup) -> tuple[str, list[dict]]:
+    """Run the job to its end. The engine never parks on a judge fault, so a
+    `paused`/`awaiting_input` state seen while it runs is returned for the
+    test to assert on (it must be empty)."""
     task = asyncio.ensure_future(sup._run_job_core())
-    parked = None
-    snap = None
-    for _ in range(1500):
-        if task.done():
-            break
-        if sup.run.read_status().get("state") == "paused":
-            snap = sup.run.root.parent / "parked-status.json"
-            snap.write_text((sup.run.root / "status.json").read_text())
-            parked = json.loads(snap.read_text())
-            break
-        await asyncio.sleep(0.01)
-    if parked is not None:
-        # Still parked a moment later: nothing proceeds on its own.
-        await asyncio.sleep(0.05)
-        assert not task.done(), "a no-verdict gate must wait for the operator"
-        if not unpause:
-            sup.abort("test done")
-        sup.resume()
-    final = await asyncio.wait_for(task, 30.0)
-    return final, parked, snap
+    seen: list[dict] = []
+    while not task.done():
+        status = sup.run.read_status()
+        if status.get("state") in ("paused", "awaiting_input"):
+            seen.append(status)
+        await asyncio.sleep(0.005)
+    return await asyncio.wait_for(task, 30.0), seen
 
 
-def _run_parked(root: Path, gate_steps: list, *, unpause: bool, **cfg):
+def _run(root: Path, gate_steps: list, **cfg):
     sup = _build(root, gate_steps, **cfg)
-    final, parked, snap = asyncio.run(_drive(sup, unpause=unpause))
-    return sup, final, parked, snap
+    final, parks = asyncio.run(_drive(sup))
+    return sup, final, parks
 
 
 def _events(sup, *types) -> list[dict]:
@@ -132,44 +121,35 @@ def _recorded_verdicts(sup) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# (1) the park
+# (1) the outage budget is spent: failed / unreviewed, no park
 # ---------------------------------------------------------------------------
 
 
-def test_a_gate_that_truncates_every_attempt_parks_the_run(tmp_path):
-    sup, final, parked, _snap = _run_parked(
-        tmp_path / "run", [_gate_truncated], unpause=False)
-    assert parked is not None, "the run never parked"
-    assert parked["state"] == "paused"
-    assert parked["pauseReason"] == "operator_input_needed"
-    detail = parked["pauseDetail"]
-    assert detail["reason"] == "judge_no_verdict"
-    assert detail["hat"] == "verdict_gate"
-    assert NO_VERDICT_WORDING in detail["message"]
-    assert "verdict_gate" in detail["message"]
-    # the retries ran first (default cap 2), all uncharged
-    assert len(_events(sup, "verdict_gate.retry")) == 2
-    assert sup.runner.phases_seen.count("verdict_gate") == 3
-    # not a rejection: nothing archived, no composite PRD, no rejected record
+def test_a_gate_that_truncates_every_attempt_ends_the_run_failed_unreviewed(
+        tmp_path):
+    sup, final, parks = _run(tmp_path / "run", [_gate_truncated],
+                             infra_outage_budget_s=0.0)
+    assert parks == [], "v0.36 F.3: the engine never parks on a judge fault"
+    status = sup.run.read_status()
+    assert final == "failed" and status["state"] == "failed", status
+    assert status["verdict"] == "unreviewed" and status["verdict"] != "rejected"
+    assert status["gateRejectionEnding"] == state.GATE_REJECTION_ENDING_NO_VERDICT
+    assert NO_VERDICT_WORDING in (status.get("reason") or ""), status
+    # nothing archived, no rejection recorded; review's verdict is unchanged
     approaches = sup.run.root / "approaches"
     assert not approaches.exists() or not any(approaches.iterdir())
-    assert not (approaches / "01").exists()
-    assert not list(sup.run.root.glob("**/composite*"))
-    verdicts = _recorded_verdicts(sup)
-    assert not any(v == "rejected" for _c, v in verdicts), verdicts
-    # review's recorded verdict is unchanged, and the gate recorded none
-    assert verdicts == [("review", "verified")], verdicts
-    assert _events(sup, "verdict_gate.no_verdict")[0]["parked"] is True
-    # the park is not the run's ending
-    assert final == "aborted"
+    assert _recorded_verdicts(sup) == [("review", "verified")]
+    (ev,) = _events(sup, "verdict_gate.no_verdict")
+    assert ev["parked"] is False and ev["outcome"] == "spent"
 
 
-def test_the_park_sets_the_fourth_gate_ending(tmp_path):
+def test_the_fault_sets_the_fourth_gate_ending(tmp_path):
     assert state.GATE_REJECTION_ENDING_NO_VERDICT in state.GATE_REJECTION_ENDINGS
     assert len(state.GATE_REJECTION_ENDINGS) == 4
-    _sup, _final, parked, _snap = _run_parked(
-        tmp_path / "run", [_gate_truncated], unpause=False)
-    assert parked["gateRejectionEnding"] == state.GATE_REJECTION_ENDING_NO_VERDICT
+    sup, _final, _parks = _run(tmp_path / "run", [_gate_truncated],
+                               infra_outage_budget_s=0.0)
+    assert (sup.run.read_status()["gateRejectionEnding"]
+            == state.GATE_REJECTION_ENDING_NO_VERDICT)
 
 
 # ---------------------------------------------------------------------------
@@ -185,35 +165,33 @@ class _StatusArgs:
 
 def test_ralphctl_status_says_no_verdict_not_rejected(tmp_path, monkeypatch,
                                                       capsys):
-    _sup, _final, parked, snap = _run_parked(
-        tmp_path / "run", [_gate_truncated], unpause=False)
+    sup, _final, _parks = _run(tmp_path / "run", [_gate_truncated],
+                               infra_outage_budget_s=0.0)
     registry = tmp_path / "registry"
     monkeypatch.setenv("RALPHD_REGISTRY", str(registry))
     monkeypatch.setattr(cli_main, "_dangling_run_entry", lambda run_id: None)
     root = registry / "runs" / "judge-park"
     root.mkdir(parents=True)
-    (root / "status.json").write_text(snap.read_text())
+    (root / "status.json").write_text(
+        (sup.run.root / "status.json").read_text())
     cli_main.cmd_status(_StatusArgs("judge-park"))
     out = capsys.readouterr().out
     assert "gate:      no verdict (output truncated)" in out, out
     assert "rejected on the merits" not in out, out
-    paused = [ln for ln in out.splitlines() if ln.startswith("paused:")]
-    assert len(paused) == 1 and NO_VERDICT_WORDING in paused[0], out
 
 
 # ---------------------------------------------------------------------------
-# (3) unpause re-dispatches; judge_retry_max 0 parks with no retry
+# (3) inside the outage budget the gate is asked again; judge_retry_max 0
 # ---------------------------------------------------------------------------
 
 
-def test_unpause_redispatches_the_gate_and_a_verified_reply_ends_the_run(
+def test_a_fault_inside_the_budget_asks_the_gate_again_and_a_verified_reply_ends_the_run(
         tmp_path):
-    # first attempt + two retries truncated, then the post-unpause dispatch.
-    sup, final, parked, _snap = _run_parked(
+    # first attempt + two retries truncated, then the post-backoff dispatch.
+    sup, final, parks = _run(
         tmp_path / "run",
-        [_gate_truncated, _gate_truncated, _gate_truncated, _gate_approves],
-        unpause=True)
-    assert parked is not None
+        [_gate_truncated, _gate_truncated, _gate_truncated, _gate_approves])
+    assert parks == []
     status = sup.run.read_status()
     assert final == "succeeded", status
     assert status["verdict"] == "verified", status
@@ -221,30 +199,30 @@ def test_unpause_redispatches_the_gate_and_a_verified_reply_ends_the_run(
     assert len(_events(sup, "verdict_gate.retry")) == 2
     # the ending is cleared once the gate is asked again
     assert status.get("gateRejectionEnding") is None
-    assert status["state"] == "succeeded"
     assert _recorded_verdicts(sup) == [("review", "verified"),
                                        ("verdictGate", "verified")]
+    (ev,) = _events(sup, "verdict_gate.no_verdict")
+    assert ev["outcome"] == "retry"
 
 
-def test_judge_retry_max_zero_parks_without_a_retry(tmp_path):
-    sup, final, parked, _snap = _run_parked(
-        tmp_path / "run", [_gate_truncated, _gate_approves],
-        unpause=True, judge_retry_max=0)
-    assert parked is not None
-    assert parked["pauseDetail"]["reason"] == "judge_no_verdict"
+def test_judge_retry_max_zero_waits_without_a_retry(tmp_path):
+    sup, final, parks = _run(tmp_path / "run",
+                             [_gate_truncated, _gate_approves],
+                             judge_retry_max=0)
+    assert parks == []
     assert _events(sup, "verdict_gate.retry") == []
     assert final == "succeeded"
     assert sup.runner.phases_seen.count("verdict_gate") == 2
 
 
 # ---------------------------------------------------------------------------
-# (4) no budget or wall clock left at the park
+# (4) no budget or wall clock left
 # ---------------------------------------------------------------------------
 
 
-def _assert_unreviewed_not_rejected(sup, final, parked):
+def _assert_unreviewed_not_rejected(sup, final, parks):
     status = sup.run.read_status()
-    assert parked is None, "the run parked with nothing left to resume into"
+    assert parks == [], "the run waited with nothing left to ask again"
     assert final == "failed", status
     assert status["verdict"] == "unreviewed", status
     assert status["verdict"] != "rejected"
@@ -259,12 +237,11 @@ def _assert_unreviewed_not_rejected(sup, final, parked):
 
 def test_a_spent_iteration_budget_ends_unreviewed_not_rejected(tmp_path):
     # plan, worker, review and the gate's last (charged) attempt are 4.
-    sup, final, parked, _snap = _run_parked(
-        tmp_path / "run", [_gate_truncated], unpause=True, iterations=4)
-    _assert_unreviewed_not_rejected(sup, final, parked)
+    sup, final, parks = _run(tmp_path / "run", [_gate_truncated], iterations=4)
+    _assert_unreviewed_not_rejected(sup, final, parks)
 
 
 def test_a_spent_deadline_ends_unreviewed_not_rejected(tmp_path):
-    sup, final, parked, _snap = _run_parked(
-        tmp_path / "run", [_gate_truncated_past_the_deadline], unpause=True)
-    _assert_unreviewed_not_rejected(sup, final, parked)
+    sup, final, parks = _run(tmp_path / "run",
+                             [_gate_truncated_past_the_deadline])
+    _assert_unreviewed_not_rejected(sup, final, parks)

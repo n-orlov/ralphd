@@ -179,8 +179,9 @@ Generated from `src/ralphd/engine/transitions.py` by `scripts/render_transition_
 | `review` | review | both | `finishing` | `verified` |
 | `review` | review | both | `replan` | `rejected_approach_left` |
 | `review` | review | both | `cure` | `rejected_curable_pass_available` |
-| `review` | review | both | `paused` | `review_contract_unrepaired` |
-| `review` | review | both | `paused` | `review_findings_unusable` |
+| `review` | review | both | `finishing` | `review_contract_unrepaired` |
+| `review` | review | both | `finishing` | `review_findings_unusable` |
+| `review` | review | both | `review` | `review_judge_fault_retry` |
 | `review` | review | both | `paused` | `operator_input_needed` |
 | `review` | review | both | `finishing` | `rejected_no_approach_left` |
 | `review` | review | both | `review` | `review_interrupted` |
@@ -266,8 +267,9 @@ stateDiagram-v2
     review --> finishing : verified
     review --> replan : rejected_approach_left
     review --> cure : rejected_curable_pass_available
-    review --> paused : review_contract_unrepaired
-    review --> paused : review_findings_unusable
+    review --> finishing : review_contract_unrepaired
+    review --> finishing : review_findings_unusable
+    review --> review : review_judge_fault_retry
     review --> paused : operator_input_needed
     review --> finishing : rejected_no_approach_left
     review --> review : review_interrupted

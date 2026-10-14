@@ -240,15 +240,27 @@ def test_unpause_hits_resume_endpoint(live, capsys):
     idling under `on_complete: idle`) -- so hitting a dead process's API
     would just be a connection-refused error, not a `/resume` regression.
     `/resume` unpauses a *pause*, so the natural, still-alive state to
-    prove it against is an engine pause that is still `paused` in v0.36
-    (an unreadable review verdict, `STUB_REVIEW_MALFORMED_COUNT`; stagnation
-    no longer pauses), which is non-terminal and leaves the engine's API up.
+    prove it against is a live, non-terminal engine: in v0.36 an unreadable
+    review verdict (`STUB_REVIEW_MALFORMED_COUNT`) is an infra fault the
+    engine waits out with its API up (the engine never pauses itself).
     """
     run = live(run_id="unpause-test",
-              job={"max_approaches": 1, "on_complete": "idle"},
+              job={"max_approaches": 1, "on_complete": "idle",
+                   "infra_retry_backoff_s": [600.0],
+                   "infra_retry_backoff_max_s": 600.0},
               stub_env={"STUB_REVIEW_MALFORMED_COUNT": "99"})
-    status = run.wait_state(("paused",))
-    assert status["pauseReason"] == "review_contract_unrepaired"
+    # v0.36 F.3: an unreadable review verdict is an infra fault under the
+    # outage budget, so the engine sits ALIVE in a backoff wait
+    # (`health: degraded`, `infraWait` set) -- non-terminal, API up.
+    import time as _time
+    status: dict = {}
+    for _ in range(300):
+        status = run.wait_state(("running",))
+        if status.get("infraWait"):
+            break
+        _time.sleep(0.2)
+    assert status.get("health") == "degraded" and status["infraWait"]
+    assert status.get("pauseReason") is None
     res = call_ralphctl_in_process(
         ["--json", "unpause", run.run_id],
         env={**os.environ, "RALPHD_REGISTRY": str(run.registry)}, capsys=capsys)

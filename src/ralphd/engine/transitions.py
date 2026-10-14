@@ -364,7 +364,13 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # cure-01-03 made the signature check unconditional; the
         # approach is left unarchived, so `resume` re-enters `review` over
         # the SAME approach through `_step_paused`'s default branch.
-        T("paused", "review_contract_unrepaired"),
+        # v0.36 F.3: this edge is no longer a pause. After the `judge_retry_max`
+        # retries the fault is an infra fault under the unchanged outage
+        # budget (`LoopSupervisor._judge_fault_backoff`): review is asked
+        # again over the SAME approach (the `review_judge_fault_retry`
+        # self-loop below), and when the budget is spent the run ends
+        # `failed` with verdict `unreviewed`, resumable by `ralphctl resume`.
+        T("finishing", "review_contract_unrepaired"),
         # Task 011 (PRD requirement C.2, #219): the DISCRIMINATING sibling
         # of `review_contract_unrepaired` just above -- a review reply
         # whose own verdict claim IS legible (a schema-valid `verified`/
@@ -386,7 +392,14 @@ TABLE: dict[str, tuple[Transition, ...]] = {
         # by `not verdict_claim_unreadable`), and checked in `_step_review`
         # immediately after it for the identical reason: there is no
         # rejection to classify off a channel the engine cannot trust.
-        T("paused", "review_findings_unusable"),
+        # v0.36 F.3: this edge is no longer a pause. After the `judge_retry_max`
+        # retries the fault is an infra fault under the unchanged outage
+        # budget (`LoopSupervisor._judge_fault_backoff`): review is asked
+        # again over the SAME approach (the `review_judge_fault_retry`
+        # self-loop below), and when the budget is spent the run ends
+        # `failed` with verdict `unreviewed`, resumable by `ralphctl resume`.
+        T("finishing", "review_findings_unusable"),
+        T("review", "review_judge_fault_retry"),
         # v0.36 requirement B (the one rejection ladder): a rejection that
         # parks -- a blocking finding that is `curable: false`, the
         # reviewer's `raise_operator_gate`, or the approach's cure rounds
@@ -712,13 +725,26 @@ PEER_VERDICT_GATE_DELTA: dict[str, tuple[Transition, ...]] = {
         # above, only more so: this check runs entirely before there is any verdict to
         # classify at all, so it is reached long before the (VERIFIED-only)
         # peer verdict gate is ever consulted.
-        T("paused", "review_contract_unrepaired"),
+        # v0.36 F.3: this edge is no longer a pause. After the `judge_retry_max`
+        # retries the fault is an infra fault under the unchanged outage
+        # budget (`LoopSupervisor._judge_fault_backoff`): review is asked
+        # again over the SAME approach (the `review_judge_fault_retry`
+        # self-loop below), and when the budget is spent the run ends
+        # `failed` with verdict `unreviewed`, resumable by `ralphctl resume`.
+        T("finishing", "review_contract_unrepaired"),
         # Task 011 (PRD requirement C.2, #219): carried over byte-for-byte
         # from `TABLE["review"]` above -- same reasoning as `review_
         # contract_unrepaired` just above: this check runs entirely before
         # there is any verdict to classify at all, so it is reached long
         # before the (VERIFIED-only) peer verdict gate is ever consulted.
-        T("paused", "review_findings_unusable"),
+        # v0.36 F.3: this edge is no longer a pause. After the `judge_retry_max`
+        # retries the fault is an infra fault under the unchanged outage
+        # budget (`LoopSupervisor._judge_fault_backoff`): review is asked
+        # again over the SAME approach (the `review_judge_fault_retry`
+        # self-loop below), and when the budget is spent the run ends
+        # `failed` with verdict `unreviewed`, resumable by `ralphctl resume`.
+        T("finishing", "review_findings_unusable"),
+        T("review", "review_judge_fault_retry"),
         # Task 014 (PRD requirement A.1, #224): carried over byte-for-byte
         # from `TABLE["review"]` above -- same reasoning as `review_
         # findings_unusable` just above: this check runs on the REJECTED

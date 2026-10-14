@@ -515,17 +515,21 @@ def test_review_verdict_now_pauses_when_the_sidecar_does_not_validate(
     root = tmp_path / "run"
     sup = _rram035_supervisor(root, monkeypatch, max_approaches=1)
     sup._approach = 1
+    # v0.36 F.3: the fault is an infra fault under the outage budget; a spent
+    # budget (0 here) ends the run `failed`/`unreviewed`, never `paused`.
+    sup.cfg.infra_outage_budget_s = 0
     sup.run.findings_json_file.write_text('[{"severity": "blocking"}]')
     _stub_runner(sup, {"verdict": "verified", "reason": "all good"})
 
     outcome = asyncio.run(sup._step_review())
 
-    # the new, discriminating pause -- not the ordinary rejection ladder
-    # this node used to pin.
-    assert outcome == ("advance", "paused", "review_findings_unusable")
+    # the discriminating fault -- not the ordinary rejection ladder
+    # this node used to pin, and no longer a pause (covered end to end by
+    # tests/test_stop_routing_faults.py).
+    assert outcome == ("tail",)
+    assert sup._judge_fault_tail == "review_findings_unusable"
     status = sup.run.read_status()
-    assert status["state"] == "paused"
-    assert status["pauseReason"] == "review_findings_unusable"
+    assert status["state"] != "paused"
     assert sup._approach == 1                     # never archived
     assert not (root / "approaches" / "01").exists()
     assert not sup.run.composite_prd_file.exists()

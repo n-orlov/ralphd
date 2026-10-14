@@ -1915,13 +1915,34 @@ def test_resumed_exhausted_run_continues_at_the_task_and_iteration_it_stopped_at
 import time
 
 
+_BACKOFF_JOB = {"on_complete": "exit", "max_approaches": 1,
+                "infra_retry_backoff_s": [600.0],
+                "infra_retry_backoff_max_s": 600.0}
+
+
+def _wait_in_judge_fault_backoff(e, timeout=60):
+    """v0.36 F.3: an unreadable review verdict (`STUB_REVIEW_MALFORMED_COUNT`)
+    is an infra fault under the outage budget, so the engine is no longer
+    `paused` on it: it sits ALIVE in an infra backoff wait (`state: running`,
+    `health: degraded`, `infraWait` set). That is the live, parked-looking
+    engine these teardown nodes drive now."""
+    deadline = time.monotonic() + timeout
+    status: dict = {}
+    while time.monotonic() < deadline:
+        status = e.wait_state(("running",), timeout=timeout)
+        if status.get("infraWait"):
+            return status
+        time.sleep(0.2)
+    raise TimeoutError(f"never reached an infra backoff wait; last: {status}")
+
+
 def test_stop_on_a_paused_engine_skips_the_sigterm_grace_it_cannot_honour(
         engine_factory):
-    e = engine_factory(job={"on_complete": "exit", "max_approaches": 1},
+    e = engine_factory(job=dict(_BACKOFF_JOB),
                        stub_env={"STUB_REVIEW_MALFORMED_COUNT": "99"})
-    status = e.wait_state(("paused",), timeout=60)
-    assert status["pauseReason"] == "review_contract_unrepaired"
-    assert e.proc.poll() is None, "still alive and parked, precondition"
+    status = _wait_in_judge_fault_backoff(e)
+    assert status.get("pauseReason") is None
+    assert e.proc.poll() is None, "still alive and waiting, precondition"
 
     started = time.monotonic()
     e.stop()
@@ -1966,11 +1987,11 @@ import signal
 
 def test_a_paused_engine_stops_on_sigterm_inside_a_test_grace_period(
         engine_factory):
-    e = engine_factory(job={"on_complete": "exit", "max_approaches": 1},
+    e = engine_factory(job=dict(_BACKOFF_JOB),
                        stub_env={"STUB_REVIEW_MALFORMED_COUNT": "99"})
-    status = e.wait_state(("paused",), timeout=60)
-    assert status["pauseReason"] == "review_contract_unrepaired"
-    assert e.proc.poll() is None, "still alive and parked, precondition"
+    status = _wait_in_judge_fault_backoff(e)
+    assert status.get("pauseReason") is None
+    assert e.proc.poll() is None, "still alive and waiting, precondition"
 
     # A direct SIGTERM, not `e.stop()`'s own paused-state fast path (section
     # D) -- this pins the engine's own signal handling, not the test
@@ -1987,12 +2008,11 @@ def test_a_paused_engine_stops_on_sigterm_inside_a_test_grace_period(
 
 
 def test_ralphctl_abort_against_a_paused_engine_stops_it_too(live):
-    e = live(run_id="paused-abort", job={"on_complete": "exit",
-                                         "max_approaches": 1},
+    e = live(run_id="paused-abort", job=dict(_BACKOFF_JOB),
              stub_env={"STUB_REVIEW_MALFORMED_COUNT": "99"})
-    status = e.wait_state(("paused",), timeout=60)
-    assert status["pauseReason"] == "review_contract_unrepaired"
-    assert e.proc.poll() is None, "still alive and parked, precondition"
+    status = _wait_in_judge_fault_backoff(e)
+    assert status.get("pauseReason") is None
+    assert e.proc.poll() is None, "still alive and waiting, precondition"
 
     res = e.ralphctl("abort", e.run_id)
     assert res.returncode == 0, res.stderr

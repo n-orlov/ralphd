@@ -1,8 +1,9 @@
 """#300 (PRD v0.32.3 requirement B, the review hat's half): a review hat whose
 reply was cut off by the provider (`stopReason: length`, no text) is
 re-dispatched as a fresh, uncharged iteration (`review.retry`); when every
-retry is also cut off the run parks `operator_input_needed` with `no verdict:
-output truncated`, archiving nothing and recording no rejection. A real gate
+retry is also cut off the fault is an infra fault under the outage budget (v0.36
+F.3: never a park; `failed` with verdict `unreviewed` once it is spent),
+archiving nothing and recording no rejection. A real gate
 rejection (and a malformed non-empty gate reply) is unchanged.
 
 Black-box through the scripted stand-in for `pi` (`tests/conftest.py`'s
@@ -108,32 +109,24 @@ def _run(root: Path, review_steps: list, **kw):
     return sup, final
 
 
-async def _drive(sup, *, unpause: bool):
-    """Run the job; when it parks, snapshot status.json, then unpause or
-    abort (as `ralphctl unpause` / `ralphctl abort` would)."""
+async def _drive(sup):
+    """Run the job to its end. The engine never parks on a judge fault
+    (v0.36 F.3), so a `paused`/`awaiting_input` state seen on the way is
+    returned for the test to assert on (it must be empty)."""
     task = asyncio.ensure_future(sup._run_job_core())
-    parked = None
-    for _ in range(1500):
-        if task.done():
-            break
-        if sup.run.read_status().get("state") == "paused":
-            parked = json.loads((sup.run.root / "status.json").read_text())
-            break
-        await asyncio.sleep(0.01)
-    if parked is not None:
-        await asyncio.sleep(0.05)
-        assert not task.done(), "a no-verdict review must wait for the operator"
-        if not unpause:
-            sup.abort("test done")
-        sup.resume()
-    final = await asyncio.wait_for(task, 30.0)
-    return final, parked
+    seen: list[dict] = []
+    while not task.done():
+        status = sup.run.read_status()
+        if status.get("state") in ("paused", "awaiting_input"):
+            seen.append(status)
+        await asyncio.sleep(0.005)
+    return await asyncio.wait_for(task, 30.0), seen
 
 
-def _run_parked(root: Path, review_steps: list, *, unpause: bool, **kw):
+def _run_faulted(root: Path, review_steps: list, **kw):
     sup = _build(root, review_steps, **kw)
-    final, parked = asyncio.run(_drive(sup, unpause=unpause))
-    return sup, final, parked
+    final, parks = asyncio.run(_drive(sup))
+    return sup, final, parks
 
 
 def _events(sup, *types) -> list[dict]:
@@ -199,17 +192,16 @@ def test_the_review_retry_prompt_carries_the_bounded_budget_wording(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_a_review_that_truncates_every_attempt_parks_the_run(tmp_path):
-    sup, final, parked = _run_parked(
-        tmp_path / "run", [_review_truncated], unpause=False)
-    assert parked is not None, "the run never parked"
-    assert parked["pauseReason"] == "operator_input_needed"
-    detail = parked["pauseDetail"]
-    assert detail["reason"] == "judge_no_verdict"
-    assert detail["hat"] == "review"
-    assert "review" in detail["message"]
-    assert NO_VERDICT_WORDING in detail["message"]
-    assert parked["gateRejectionEnding"] == state.GATE_REJECTION_ENDING_NO_VERDICT
+def test_a_review_that_truncates_every_attempt_ends_failed_unreviewed_never_parks(
+        tmp_path):
+    sup, final, parks = _run_faulted(
+        tmp_path / "run", [_review_truncated], infra_outage_budget_s=0.0)
+    assert parks == [], "v0.36 F.3: a judge fault is an infra fault, not a park"
+    status = sup.run.read_status()
+    assert final == "failed" and status["verdict"] == "unreviewed", status
+    assert NO_VERDICT_WORDING in (status.get("reason") or "")
+    assert "review" in (status.get("reason") or "")
+    assert status["gateRejectionEnding"] == state.GATE_REJECTION_ENDING_NO_VERDICT
     # the default cap of retries ran first, all uncharged
     assert len(_events(sup, "review.retry")) == 2
     assert sup.runner.phases_seen.count("review") == 3
@@ -219,16 +211,17 @@ def test_a_review_that_truncates_every_attempt_parks_the_run(tmp_path):
     assert not list(sup.run.root.glob("**/composite*"))
     verdicts = _recorded_verdicts(sup)
     assert not any(v == "rejected" for _c, v in verdicts), verdicts
-    assert _events(sup, "review.no_verdict")[0]["parked"] is True
-    assert final == "aborted"
+    (ev,) = _events(sup, "review.no_verdict")
+    assert ev["parked"] is False and ev["outcome"] == "spent"
 
 
-def test_unpause_redispatches_review_and_a_verified_reply_ends_the_run(tmp_path):
-    sup, final, parked = _run_parked(
+def test_inside_the_outage_budget_review_is_asked_again_and_a_verified_reply_ends_the_run(
+        tmp_path):
+    sup, final, parks = _run_faulted(
         tmp_path / "run",
         [_review_truncated, _review_truncated, _review_truncated,
-         _review_verifies], unpause=True)
-    assert parked is not None
+         _review_verifies])
+    assert parks == []
     status = sup.run.read_status()
     assert final == "succeeded", status
     assert status["verdict"] == "verified", status
@@ -237,23 +230,22 @@ def test_unpause_redispatches_review_and_a_verified_reply_ends_the_run(tmp_path)
     assert _recorded_verdicts(sup) == [("review", "verified")]
 
 
-def test_review_judge_retry_max_zero_parks_without_a_retry(tmp_path):
-    sup, final, parked = _run_parked(
+def test_review_judge_retry_max_zero_waits_without_a_retry(tmp_path):
+    sup, final, parks = _run_faulted(
         tmp_path / "run", [_review_truncated, _review_verifies],
-        unpause=True, judge_retry_max=0)
-    assert parked is not None
-    assert parked["pauseDetail"]["reason"] == "judge_no_verdict"
+        judge_retry_max=0)
+    assert parks == []
     assert _events(sup, "review.retry") == []
     assert final == "succeeded"
 
 
-def test_a_spent_budget_at_the_review_park_ends_unreviewed_not_rejected(tmp_path):
+def test_a_spent_budget_at_the_review_fault_ends_unreviewed_not_rejected(tmp_path):
     # plan, worker and the three review attempts (the retries are refunded,
-    # so only one is charged) leave nothing to resume into at iterations=3.
-    sup, final, parked = _run_parked(
-        tmp_path / "run", [_review_truncated], unpause=True, iterations=3)
+    # so only one is charged) leave nothing to ask again at iterations=3.
+    sup, final, parks = _run_faulted(
+        tmp_path / "run", [_review_truncated], iterations=3)
     status = sup.run.read_status()
-    assert parked is None, "the run parked with nothing left to resume into"
+    assert parks == [], "the run waited with nothing left to ask again"
     assert final == "failed", status
     assert status["verdict"] == "unreviewed", status
     assert status["gateRejectionEnding"] == state.GATE_REJECTION_ENDING_NO_VERDICT
@@ -293,33 +285,29 @@ def test_an_empty_review_reply_is_retried_uncharged_with_reason_empty_reply(
     assert BUDGET_WORDING not in first and BUDGET_WORDING in retry
 
 
-def test_a_review_that_replies_empty_every_attempt_parks_not_holds(tmp_path):
-    sup, final, parked = _run_parked(
-        tmp_path / "run", [_review_empty], unpause=False)
-    assert parked is not None, "the run never parked"
-    assert parked["pauseReason"] == "operator_input_needed", parked
-    detail = parked["pauseDetail"]
-    assert detail["reason"] == "judge_no_verdict"
-    assert detail["hat"] == "review"
-    assert detail["cause"] == "empty_reply"
-    assert EMPTY_WORDING in detail["message"]
-    assert parked["gateRejectionEnding"] == state.GATE_REJECTION_ENDING_NO_VERDICT
+def test_a_review_that_replies_empty_every_attempt_faults_not_holds(tmp_path):
+    sup, final, parks = _run_faulted(
+        tmp_path / "run", [_review_empty], infra_outage_budget_s=0.0)
+    assert parks == []
+    status = sup.run.read_status()
+    assert final == "failed" and status["verdict"] == "unreviewed", status
+    assert EMPTY_WORDING in (status.get("reason") or "")
+    assert status["gateRejectionEnding"] == state.GATE_REJECTION_ENDING_NO_VERDICT
     assert len(_events(sup, "review.retry")) == 2
     assert {e["reason"] for e in _events(sup, "review.retry")} == {"empty_reply"}
-    assert _events(sup, "review.no_verdict")[0]["parked"] is True
+    (ev,) = _events(sup, "review.no_verdict")
+    assert ev["parked"] is False and ev["reason"] == "empty_reply"
     assert not _events(sup, "escalation.review_contract_unrepaired")
     approaches = sup.run.root / "approaches"
     assert not approaches.exists() or not any(approaches.iterdir())
     assert not any(v == "rejected" for _c, v in _recorded_verdicts(sup))
-    assert final == "aborted"
 
 
-def test_unpause_redispatches_review_after_an_empty_reply_park(tmp_path):
-    sup, final, parked = _run_parked(
+def test_review_is_asked_again_after_an_empty_reply_fault(tmp_path):
+    sup, final, parks = _run_faulted(
         tmp_path / "run",
-        [_review_empty] * (3 * LADDER) + [_review_verifies],
-        unpause=True)
-    assert parked is not None
+        [_review_empty] * (3 * LADDER) + [_review_verifies])
+    assert parks == []
     assert final == "succeeded", sup.run.read_status()
     assert sup.run.read_status().get("gateRejectionEnding") is None
     assert _recorded_verdicts(sup) == [("review", "verified")]
@@ -331,35 +319,44 @@ def test_a_whitespace_only_review_reply_counts_as_empty(tmp_path):
     assert [e["reason"] for e in _events(sup, "review.retry")] == ["empty_reply"]
 
 
-def test_review_judge_retry_max_zero_parks_an_empty_reply_without_a_retry(
+def test_review_judge_retry_max_zero_waits_on_an_empty_reply_without_a_retry(
         tmp_path):
-    sup, final, parked = _run_parked(
+    sup, final, parks = _run_faulted(
         tmp_path / "run", [_review_empty] * LADDER + [_review_verifies],
-        unpause=True, judge_retry_max=0)
-    assert parked is not None
-    assert parked["pauseDetail"]["cause"] == "empty_reply"
+        judge_retry_max=0)
+    assert parks == []
+    (ev,) = _events(sup, "review.no_verdict")
+    assert ev["reason"] == "empty_reply" and ev["outcome"] == "retry"
     assert _events(sup, "review.retry") == []
     assert final == "succeeded"
 
 
 def test_a_spent_budget_after_empty_review_replies_ends_unreviewed(tmp_path):
-    sup, final, parked = _run_parked(
-        tmp_path / "run", [_review_empty], unpause=True, iterations=3)
+    sup, final, parks = _run_faulted(
+        tmp_path / "run", [_review_empty], iterations=3)
     status = sup.run.read_status()
-    assert parked is None, "the run parked with nothing left to resume into"
+    assert parks == [], "the run waited with nothing left to ask again"
     assert final == "failed", status
     assert status["verdict"] == "unreviewed", status
     assert EMPTY_WORDING in (status.get("reason") or "")
     assert _events(sup, "review.no_verdict")[0]["parked"] is False
 
 
-def test_a_non_empty_malformed_review_reply_keeps_the_contract_hold(tmp_path):
-    sup, final, parked = _run_parked(
-        tmp_path / "run", [_review_prose], unpause=False)
-    assert parked is not None
-    assert parked["pauseReason"] == "review_contract_unrepaired", parked
+def test_a_non_empty_malformed_review_reply_is_an_infra_fault_never_a_hold(
+        tmp_path):
+    """v0.36 F.3: the contract-ladder exhaustion (a reply that is not empty
+    but unreadable) is routed like the no-verdict faults: no pause, `failed`
+    with verdict `unreviewed` once the outage budget is spent."""
+    sup, final, parks = _run_faulted(
+        tmp_path / "run", [_review_prose], infra_outage_budget_s=0.0)
+    assert parks == []
+    status = sup.run.read_status()
+    assert final == "failed" and status["verdict"] == "unreviewed", status
+    assert sup._judge_fault_tail == "review_contract_unrepaired"
     assert _events(sup, "review.retry") == []
     assert _events(sup, "review.no_verdict") == []
+    (cfault,) = _events(sup, "review.contract_fault")
+    assert cfault["guard"] == "review_contract_unrepaired"
 
 
 # ---------------------------------------------------------------------------

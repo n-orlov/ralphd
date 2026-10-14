@@ -1059,18 +1059,24 @@ def test_the_review_contract_unrepaired_edge_is_declared_in_both_variants_and_un
     """GH #209 defect 2's hold edge, in the same two-assertion shape the
     two nodes above use for `rejected_incurable`: an exhausted review
     contract ladder that never got a readable verdict claim out of the hat
-    holds on `review -> paused` rather than scoring a rejection, and the
-    edge is declared in BOTH table variants and identically under the peer
-    verdict gate delta (the check runs on the way to the rejection branch,
-    entirely before the VERIFIED-only gate is ever consulted)."""
+    is an infra fault under the outage budget rather than a rejection (v0.36
+    F.3: it ends `review -> finishing` once that budget is spent, never
+    `paused`), and the edge is declared in BOTH table variants and
+    identically under the peer verdict gate delta (the check runs on the way
+    to the rejection branch, entirely before the VERIFIED-only gate is ever
+    consulted). The in-budget retry is the `review -> review`
+    `review_judge_fault_retry` self-loop."""
     for vigilant in (True, False):
         by_guard = {e.guard: e.target for e in
                    transitions.successors("review", vigilant)}
-        assert by_guard["review_contract_unrepaired"] == "paused"
+        assert by_guard["review_contract_unrepaired"] == "finishing"
+        assert by_guard["review_findings_unusable"] == "finishing"
+        assert by_guard["review_judge_fault_retry"] == "review"
     gated = {e.guard: e.target for e in
             transitions.successors("review", vigilant=False,
                                    peer_verdict_gate=True)}
-    assert gated["review_contract_unrepaired"] == "paused"
+    assert gated["review_contract_unrepaired"] == "finishing"
+    assert gated["review_findings_unusable"] == "finishing"
 
 
 # ---------------------------------------------------------------------------

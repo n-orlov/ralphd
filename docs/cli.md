@@ -842,44 +842,35 @@ Human output also renders (task 003):
   The run is not degraded: the iteration is refunded, the deadline moves by
   the time waited and the same work re-runs at the reset (or at once, after
   `ralphctl retry`).
-- `paused:` -- shown only while the run is paused on a provider refusal
-  (`pauseDetail` in [api.md](api.md); an iteration classified `refused`). It
-  names the refusal family and quotes the provider's error, scrubbed:
+- `ending:` -- v0.36: a run that ended `failed` for a named cause shows it. A
+  provider refusal (an iteration classified `refused`) ends `failed` with
+  `ending: provider_refused`; the reason quotes the provider's error, scrubbed,
+  names `PUT /config/llm` (fix the LLM profile or credentials) and `ralphctl
+  resume <run-id>`, which re-runs the refused work. The rate-limit ceiling
+  (`rate_limit_max_wait_s`) ends `failed` with `ending: rate_limit_ceiling`; the
+  reason names the waiting done, the ceiling and the window's reset in local
+  time, and `ralphctl resume <run-id> --rate-limit-wait +N` raises the ceiling
+  and continues. Nothing is retried and the engine never pauses on either.
+  A judging hat that produced no verdict (the peer `verdict_gate`'s reply cut
+  off or empty after every `judge_retry_max` retry, or `review` cut off, empty
+  or unreadable after its contract ladder) is an infra fault under the outage
+  budget: `degraded:` shows the wait, the hat is asked again, and a spent
+  budget ends the run `failed` with verdict `unreviewed`:
 
   ```
-  paused:    provider refused (extra-usage): 400 {"type":"error","error":{"type":"invalid_request_error","message":"Third-party apps now draw from your extra usage, not your plan limits"}} -- fix the profile or credentials (PUT /config/llm), then ralphctl unpause
-  ```
-
-  It is also shown while the run is paused on the rate-limit ceiling
-  (`rate_limit_max_wait_s`): it names the waiting done, the ceiling and the
-  window's reset in local time:
-
-  ```
-  paused:    rate-limit ceiling reached (1d waited of 1d); the five_hour window resets at 2026-10-03 09:00:00 +0200 -- ralphctl unpause resets the count, ralphctl budget --rate-limit-wait raises the ceiling
-  ```
-
-  Nothing is retried. Fix the LLM profile or credentials, then `ralphctl
-  unpause <run-id>` re-runs the same work.
-
-  It is also shown while the run is parked because a judging hat produced no
-  verdict (`pauseDetail.reason: judge_no_verdict`): the peer `verdict_gate`'s
-  reply was cut off by the provider or came back empty, and every
-  `judge_retry_max` retry failed the same way. The `review` hat parks the same
-  way when its reply was cut off, or empty after the contract ladder, on every
-  attempt, and the line then names `review`. It names the hat and the cause:
-
-  ```
-  paused:    verdict_gate: no verdict: output truncated -- ralphctl unpause re-dispatches it
   gate:      no verdict (output truncated)
   ```
 
   The `gate:` line is the fourth `gateRejectionEnding` value
   (`no_verdict_output_truncated`). It is not a rejection and `status` never
   says `rejected on the merits` for it: nothing is archived, no composite PRD is
-  written, and the recorded review verdict stands (a review park records none
-  for that approach). A review whose contract ladder ended on empty replies is
-  retried and then parked the same way, reading `review: no verdict: empty
-  reply`. An unpause re-dispatches the hat that had no verdict.
+  written, and the recorded review verdict stands (a review fault records none
+  for that approach).
+- `paused:` -- shown for a run directory written by 0.35 that is still
+  `paused` on one of the retired engine pauses (a provider refusal, the
+  rate-limit ceiling or a judge no-verdict), and for an operator pause. It
+  names the refusal family or the ceiling and how to release it, as 0.35
+  printed it (for example `paused:    provider refused (extra-usage): 400 ...`).
 - `reflection:` (task 020) -- shown only when the post-terminal `reflect`
   iteration **failed** (status.json's `reflect.ok` is `false`, see
   [api.md](api.md)):
@@ -1929,7 +1920,7 @@ A ruling is recorded at any time and reaches both judges and planning, but it
 **never releases a park** (v0.36 requirement D.1): a run `awaiting_input` stays
 there until `ralphctl answer` (or the input timeout) leaves it.
 
-### `ralphctl answer <run-id> [--waive <fid>...] [--accept <fid>...] [--cure-rounds K] [--approaches +N] [--note-file <path>] [--name <slug>]`
+### `ralphctl answer <run-id> [--waive <fid>...] [--accept <fid>...] [--cure-rounds K] [--approaches +N] [--note-file <path>] [--name <slug>] | --secret-handled`
 
 v0.36 requirement C.2 (#304): answer the findings question an `awaiting_input`
 run is parked on -- the one way to leave that state, besides the input
@@ -1960,6 +1951,15 @@ approach left (the message names `--cure-rounds K>=1` and `--approaches +N`) and
 `K >= 1` while an accepted finding is `curable: false`, since cure rounds cannot
 fix it -- waive that finding, or take `K = 0` (or `--approaches +N` when none is
 left).
+
+A **`secret` question** (`inputQuestion.kind: secret`, `trigger: commit_secret`)
+is what a secret found in a commit parks the run on -- the only non-findings
+park. It never expires (`expiresAt` is `null` whatever `input_timeout_min` is)
+and has one answer:
+
+| Option | Meaning |
+|--------|---------|
+| `--secret-handled` | the secret is out of the history. Refused (exit `5`, naming the commit, part and variable, never the value) while the commit scan of the offending range -- the question's `baseSha` up to the workspace's current HEAD -- still hits; once the range scans clean the park is released and the run continues at the worker. Combined with any other option it is refused |
 
 Posts through the run's live API (`POST /answer`, docs/api.md), the same route
 the hub panel's `POST /api/runs/<id>/answer` proxies to; all three reach the one
@@ -2248,28 +2248,25 @@ pause and escalation text the engine produces names the live-run levers, never
 `ralphctl resume` -- `resume` starts a fresh container over an existing run dir
 (crash recovery, budget top-up) and is not for a run that is still alive.
 
-A provider refusal (`pauseReason: operator_input_needed` with `pauseDetail.
-reason: provider_refused`, printed by `status` as `paused:    provider
-refused (<family>): ...`) is answered by fixing the cause, not by a ruling: a
-ruling never releases it. Fix the LLM profile or credentials (`ralphctl llm`,
-`PUT /config/llm`), then `ralphctl unpause <run-id>` re-runs the refused work.
-An unpause before the fix re-runs it too, and pauses again if it is refused
-again.
+A provider refusal ends the run `failed` with `ending: provider_refused`
+(v0.36 F.5); a ruling has nothing to release. Fix the LLM profile or credentials
+(`ralphctl llm`, `PUT /config/llm`), then `ralphctl resume <run-id>` re-runs the
+refused work (a resume before the fix is refused again and ends `failed` again).
 
-A no-verdict park (`pauseReason: operator_input_needed` with `pauseDetail.
-reason: judge_no_verdict`, printed as `paused:    verdict_gate: no verdict:
-output truncated`, or `review: no verdict: output truncated`) is not answered by
-a ruling and an unpause grants it no `proceed`: `ralphctl unpause <run-id>`
-re-dispatches the hat (the gate, or review for a review park) as a fresh first
-attempt, with a fresh retry allowance, and its verdict then decides the run. With `judge_retry_max: 0` the park follows the first failed attempt. When
-the iteration budget or the deadline is already spent at the park, the run does
-not park: it ends `unreviewed` with review's verdict intact, never `rejected`.
+A judging hat with no verdict (v0.36 F.3) is an infra fault, not a park:
+`verdict_gate: no verdict: output truncated` (or `review: ...`, `empty reply`,
+or a review whose contract is unrepaired or whose findings channel is unusable)
+makes the engine wait out the infra backoff under the unchanged outage budget
+and ask the hat again as a fresh first attempt with a fresh retry allowance.
+With `judge_retry_max: 0` the fault follows the first failed attempt. When the
+outage budget (or the iteration budget or the deadline) is spent the run ends
+`failed` with verdict `unreviewed`, review's verdict intact, never `rejected`;
+`ralphctl resume <run-id>` continues it.
 
-A rate-limit ceiling pause (`pauseDetail.reason: rate_limit_ceiling`, printed
-as `paused:    rate-limit ceiling reached (...)`) is not answered by a ruling
-either. `ralphctl unpause <run-id>` resets the run's rate-limit waiting count
-and re-probes the same work; `ralphctl budget <run-id> --rate-limit-wait +N`
-raises the ceiling first if the run should keep waiting on its own.
+The rate-limit ceiling ends the run `failed` with `ending: rate_limit_ceiling`;
+`ralphctl resume <run-id> --rate-limit-wait +N` raises the ceiling and
+continues, and `ralphctl budget <run-id> --rate-limit-wait +N` raises it on a
+live run.
 
 With a notifier configured (`--notifier-url`), every engine-recorded pause
 also POSTs the operator a bounded digest (at most `MAX_NOTIFY_CHARS`) instead
@@ -3095,7 +3092,16 @@ check.
 When docker isn't reachable (or `--no-ping` is given), the ping is skipped
 and resolution success alone is reported (exit `0`).
 
-### `ralphctl resume <run-id> [--iterations +N]`
+### `ralphctl resume <run-id> [--iterations +N] [--rate-limit-wait +N]`
+
+`--rate-limit-wait +N|N` (v0.36 F.4) raises the rate-limit wait ceiling in
+seconds (job.yaml `rate_limit_max_wait_s`), the way to continue a run that ended
+`failed` with `ending: rate_limit_ceiling`; the engine seeds its ceiling from the
+larger of that and the run's recorded `rateLimitMaxWaitS`, and counts
+rate-limit waiting from zero again. A run that ended `failed` with `ending:
+provider_refused` resumes after the LLM profile or credentials are fixed
+(`PUT /config/llm`); one that ended `failed` on a judge fault resumes at the
+point the engine computes for it.
 
 Start a fresh container against an existing run dir (PRD req 16). The engine
 detects pre-existing `tasks.json`/completed iterations on startup and

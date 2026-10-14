@@ -83,9 +83,14 @@ def test_a_spawned_engine_that_pauses_never_gets_the_ambient_notifier_url(
     # `{**os.environ, ...}`.
     assert os.environ.get(NOTIFIER_ENV_VAR) == AMBIENT_NOTIFIER_URL
 
-    e = engine_factory(stub_env={"STUB_REVIEW_MALFORMED_COUNT": "99"})
-    status = e.wait_state(("paused",), timeout=90)
-    assert status["pauseReason"] == "review_contract_unrepaired"
+    # v0.36 F.3: an unreadable review verdict is an infra fault, not a pause;
+    # with the outage budget spent at once the engine ends `failed` (verdict
+    # `unreviewed`) -- the same "stops on its own initiative" situation this
+    # probe needs, where an ambient notifier would be used if it leaked.
+    e = engine_factory(job={"infra_outage_budget_s": 0},
+                       stub_env={"STUB_REVIEW_MALFORMED_COUNT": "99"})
+    status = e.wait_terminal(timeout=90)
+    assert status["state"] == "failed" and status["verdict"] == "unreviewed"
 
     events_path = e.run_dir / "events.jsonl"
     events = []

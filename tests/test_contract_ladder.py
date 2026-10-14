@@ -739,7 +739,7 @@ def test_ladder_exhaustion_holds_for_an_operator_and_never_archives(
 
     outcome = asyncio.run(sup._step_review())
 
-    assert outcome == ("advance", "paused", "review_contract_unrepaired")
+    assert outcome == ("tail",)
     assert sup.runner.calls == 1 + sup.cfg.contract_retry_max
 
     # neither consequence of a rejection fires: nothing is archived, no
@@ -747,22 +747,20 @@ def test_ladder_exhaustion_holds_for_an_operator_and_never_archives(
     assert not (root / "approaches" / "01").exists()
     assert not sup.run.composite_prd_file.exists()
     status = sup.run.read_status()
-    assert status["state"] == "paused"
-    assert status["pauseReason"] == "review_contract_unrepaired"
+    assert status["state"] != "paused"  # v0.36 F.3: an infra fault, never a pause
+    assert status.get("pauseReason") is None
     assert sup._approach == 1          # the approach counter never moved
 
     events = _events(root)
     faults = [e for e in events if e.get("type") == "contract.agent_fault"]
     assert len(faults) == 1 and faults[0]["hat"] == "review", faults
-    escalations = [e for e in events if e.get("type") == "operator_escalation"]
-    assert len(escalations) == 1, escalations
-    assert escalations[0]["reason"] == "review_contract_unrepaired"
-    # the validation errors reach the operator verbatim -- the whole
-    # diagnosis, and unreachable otherwise without reading events.jsonl.
-    assert escalations[0]["contractErrors"], escalations[0]
-    assert any("contract payload" in err
-               for err in escalations[0]["contractErrors"])
-    assert "review" in escalations[0]["escalation"]
+    # v0.36 F.3: no operator_escalation any more -- the fault is an infra
+    # fault, recorded on `review.contract_fault` with the validation errors.
+    assert not [e for e in events if e.get("type") == "operator_escalation"]
+    (cfault,) = [e for e in events if e.get("type") == "review.contract_fault"]
+    assert cfault["guard"] == "review_contract_unrepaired"
+    assert cfault["errors"], cfault
+    assert any("contract payload" in err for err in cfault["errors"])
     # the judge never spoke, so the recorded approach verdict says so --
     # never `rejected`, and no `review rejected approach` log line at all.
     verdicts = [e for e in events if e.get("type") == "approach.verdict_recorded"]
@@ -837,10 +835,10 @@ def test_a_legible_rejected_verdict_with_a_schema_slip_elsewhere_now_pauses(
     events = _events(root)
     faults = [e for e in events if e.get("type") == "contract.agent_fault"]
     assert len(faults) == 1 and faults[0]["hat"] == "review", faults
-    assert outcome == ("advance", "paused", "review_findings_unusable")
+    assert outcome == ("tail",)
     status = sup.run.read_status()
-    assert status["state"] == "paused"
-    assert status["pauseReason"] == "review_findings_unusable"
+    assert status["state"] != "paused"  # v0.36 F.3: an infra fault, never a pause
+    assert status.get("pauseReason") is None
     # the approach survives: nothing archived, no composite PRD written
     # for a successor, and the counter never moved.
     assert not (root / "approaches" / "01").exists()
@@ -851,9 +849,9 @@ def test_a_legible_rejected_verdict_with_a_schema_slip_elsewhere_now_pauses(
     # record says the judge never spoke -- is NOT the edge taken here.
     assert sup._review_findings_unusable is True
     assert sup._review_contract_unrepaired is False
-    escalations = [e for e in events if e.get("type") == "operator_escalation"]
-    assert len(escalations) == 1, escalations
-    assert escalations[0]["reason"] == "review_findings_unusable"
+    assert not [e for e in events if e.get("type") == "operator_escalation"]
+    (cfault,) = [e for e in events if e.get("type") == "review.contract_fault"]
+    assert cfault["guard"] == "review_findings_unusable"
     # the judge DID speak, so the recorded approach verdict is still its
     # own `rejected` -- never `unreviewed`, which is the half of #209's
     # narrowing requirement C does not touch.
@@ -905,7 +903,7 @@ def test_the_second_ladder_flag_separates_unusable_findings_from_an_unreadable_v
     outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
 
     # task 011: now the discriminating pause, not the ordinary rejection.
-    assert outcome == ("advance", "paused", "review_findings_unusable")
+    assert outcome == ("tail",)
     assert not (root / "approaches" / "01").exists()
     assert not sup.run.composite_prd_file.exists()
     # what's new (task 010): the discriminating flag is set, its sibling is not.
@@ -923,7 +921,7 @@ def test_the_second_ladder_flag_separates_unusable_findings_from_an_unreadable_v
 
     outcome2 = asyncio.run(asyncio.wait_for(sup2._step_review(), 30.0))
 
-    assert outcome2 == ("advance", "paused", "review_contract_unrepaired")
+    assert outcome2 == ("tail",)
     assert sup2._review_contract_unrepaired is True
     assert sup2._review_findings_unusable is False
 
@@ -948,22 +946,22 @@ def test_review_findings_unusable_pauses_and_never_archives_or_cures(tmp_path):
 
     def _assert_paused_with_no_side_effects(sup, root):
         outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
-        assert outcome == ("advance", "paused", "review_findings_unusable")
+        assert outcome == ("tail",)
         assert sup._review_findings_unusable is True
         assert sup._review_contract_unrepaired is False
         assert not (root / "approaches" / "01").exists()
         assert not sup.run.composite_prd_file.exists()
         status = sup.run.read_status()
-        assert status["state"] == "paused"
-        assert status["pauseReason"] == "review_findings_unusable"
+        assert status["state"] != "paused"  # v0.36 F.3: an infra fault, never a pause
+        assert status.get("pauseReason") is None
         assert sup._approach == 1          # the approach counter never moved
         assert not status.get("curePasses")
         events = _events(root)
         assert not [e for e in events if e.get("type") == "approach.cure_pass"]
-        escalations = [e for e in events if e.get("type") == "operator_escalation"]
-        assert len(escalations) == 1, escalations
-        assert escalations[0]["reason"] == "review_findings_unusable"
-        assert "review" in escalations[0]["escalation"]
+        assert not [e for e in events if e.get("type") == "operator_escalation"]
+        (cfault,) = [e for e in events
+                     if e.get("type") == "review.contract_fault"]
+        assert cfault["guard"] == "review_findings_unusable"
         verdicts = [e for e in events if e.get("type") == "approach.verdict_recorded"]
         assert [(e["channel"], e["verdict"]) for e in verdicts] == \
             [("review", "rejected")], verdicts
@@ -983,15 +981,15 @@ def test_review_findings_unusable_pauses_and_never_archives_or_cures(tmp_path):
         {"severity": "blocking", "curable": False,
          "clause": "requirement C", "evidence": "still broken"}])
     outcome2 = asyncio.run(asyncio.wait_for(sup2._step_review(), 30.0))
-    assert outcome2 == ("advance", "paused", "review_findings_unusable")
+    assert outcome2 == ("tail",)
     assert sup2._review_findings_unusable is True
     assert sup2._review_contract_unrepaired is False
     root2 = sup2.run.root
     assert not (root2 / "approaches" / "01").exists()
     assert not sup2.run.composite_prd_file.exists()
     status2 = sup2.run.read_status()
-    assert status2["state"] == "paused"
-    assert status2["pauseReason"] == "review_findings_unusable"
+    assert status2["state"] != "paused"  # v0.36 F.3: an infra fault, never a pause
+    assert status2.get("pauseReason") is None
     assert sup2._approach == 1
     assert not status2.get("curePasses")
     events2 = _events(root2)
@@ -1076,7 +1074,7 @@ def test_a_pass_verdict_is_never_normalised_toward_success(tmp_path):
 
     outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
 
-    assert outcome == ("advance", "paused", "review_contract_unrepaired")
+    assert outcome == ("tail",)
     assert sup.runner.calls == 1 + sup.cfg.contract_retry_max
     events = _events(root)
     assert not [e for e in events
@@ -1154,7 +1152,7 @@ def test_a_repaired_reask_clears_the_unrepaired_flag_for_the_next_pass(
     root = sup.run.root
 
     first = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
-    assert first == ("advance", "paused", "review_contract_unrepaired")
+    assert first == ("tail",)
     assert sup._review_contract_unrepaired is True
 
     # a working reviewer on the next pass, released the way an operator
@@ -1193,7 +1191,7 @@ def test_a_petition_adjudication_in_an_unrepairable_payload_is_still_recorded(
 
     outcome = asyncio.run(asyncio.wait_for(sup._step_review(), 30.0))
 
-    assert outcome == ("advance", "paused", "review_contract_unrepaired")
+    assert outcome == ("tail",)
     entries, tampered = petitions.read_confirmed_adjudications(sup.run)
     assert tampered is False
     assert [e.get("obligation") for e in entries] == \

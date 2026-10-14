@@ -434,13 +434,16 @@ def test_commit_scan_hold_after_answered_review_gate_has_no_stale_parked_questio
     # `commit_secret_scan` event alone (`_pause_for_commit_secret_hit`).
     sup.run.emit(sup.COMMIT_SECRET_SCAN_EVENT, sha="0" * 40, part="blob",
                  variable="REVIEW_TEST_VARIABLE", pushed=False)
-    sup._pause_for_commit_secret_hit()
+    sup._park_for_commit_secret(None, None)
     status = sup.run.read_status()
-    assert status["pauseReason"] == "operator_input_needed"
+    assert status["pauseReason"] == "commit_secret"
+    assert status["state"] == "awaiting_input"
     # The stale, already-answered review question -- and its obsolete
     # `_MIXED_FINDINGS` preview -- must NOT resurface for this unrelated
-    # commit-scan hold.
-    assert parked_question(root, status) is None
+    # commit-scan park: the panel shows the `secret` question alone.
+    pq = parked_question(root, status)
+    assert pq is not None and pq["inputQuestion"]["kind"] == "secret"
+    assert not pq.get("findings") and pq["consequence"]["insertCount"] == 0
 
     # A genuinely new review escalation, raised after this hold is
     # answered, still appears with its own consequences.
@@ -471,12 +474,14 @@ def test_run_detail_has_no_stale_parked_question_after_a_commit_scan_hold(tmp_pa
     sup.resume()
     sup.run.emit(sup.COMMIT_SECRET_SCAN_EVENT, sha="0" * 40, part="blob",
                  variable="REVIEW_TEST_VARIABLE", pushed=False)
-    sup._pause_for_commit_secret_hit()
+    sup._park_for_commit_secret(None, None)
 
     reg = _reg_for(root, sup.cfg.run_id)
     detail = ui_server.run_detail(reg, sup.cfg.run_id)
-    assert detail["status"]["pauseReason"] == "operator_input_needed"
-    assert detail["parkedQuestion"] is None
+    assert detail["status"]["pauseReason"] == "commit_secret"
+    pq = detail["parkedQuestion"]
+    assert pq is not None and pq["inputQuestion"]["kind"] == "secret"
+    assert not pq.get("findings") and pq["consequence"]["insertCount"] == 0
 
 
 # ===========================================================================

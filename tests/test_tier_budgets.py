@@ -895,8 +895,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # nodes it replaces (the 0.35 escalation-text/digest/ruling-release nodes
     # for stagnation, the cycle and the edge), measured `--collect-only` ->
     # fast 8645/544, smoke 6867/417.
-    "fast": {"tests": 8645, "modules": 544},
-    "smoke": {"tests": 6867, "modules": 417},
+    # Task 010 (v0.36 F.3-F.6): +13 tests / +1 module
+    # (tests/test_stop_routing_faults.py), measured the same way -> fast
+    # 8658/545, smoke 6880/418.
+    "fast": {"tests": 8658, "modules": 545},
+    "smoke": {"tests": 6880, "modules": 418},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

@@ -504,6 +504,23 @@ class LoopSupervisor:
         # no budget remained to park for; `_finish_tail_unverified` ends the
         # run `unreviewed` on it.
         self._judge_no_verdict_unreviewed: str | None = None
+        # v0.36 F.3: the judge-fault episode. A judging hat with no verdict, or
+        # a review whose contract is unrepaired or whose findings channel is
+        # unusable, after every `judge_retry_max` retry, is an infra fault
+        # under the unchanged outage budget. These count that episode apart
+        # from the iteration wrapper's own (an iteration that reaches the
+        # model resets THAT one, and a judge fault is exactly such an
+        # iteration); a usable verdict resets them.
+        self._judge_fault_attempts: int = 0
+        self._judge_fault_waited_s: float = 0.0
+        self._judge_fault_started_at: float | None = None
+        # v0.36 F.4/F.5: set (with `_abort_reason`) when the run ends `failed`
+        # with an `ending` (rate_limit_ceiling, provider_refused) rather than
+        # `aborted`: the ending value `_finish_tail_unverified` writes.
+        self._failed_ending: str | None = None
+        # v0.36 F.3: the guard of a review contract fault whose outage budget
+        # is spent (`review_contract_unrepaired` / `review_findings_unusable`).
+        self._judge_fault_tail: str | None = None
         # #300: set by `_run_review_iteration` to the no-verdict reason
         # (`output_truncated`) when every review retry also ended with no
         # reply; `_step_review` parks on it instead of reading a verdict.
@@ -1536,6 +1553,7 @@ class LoopSupervisor:
         self, *, waive: object = None, accept: object = None,
         cure_rounds: object = None, approaches: object = None,
         note: str | None = None, note_name: str | None = None,
+        secret_handled: bool = False,
     ) -> dict:
         """v0.36 requirement C: the ONE writer behind `ralphctl answer`,
         `POST /answer` and the hub's answer panel. Answers the findings park
@@ -1563,6 +1581,14 @@ class LoopSupervisor:
                 f"the run is `{status.get('state')}`, not `awaiting_input`; "
                 "there is no question to answer")
         question = status.get("inputQuestion")
+        if isinstance(question, dict) and question.get("kind") == "secret":
+            return self._answer_secret(question, secret_handled, waive=waive,
+                                       accept=accept, cure_rounds=cure_rounds,
+                                       approaches=approaches)
+        if secret_handled:
+            raise answering.AnswerRefused(
+                "--secret-handled answers a `secret` question, and this run's "
+                "question is not one")
         approach = int((question or {}).get("approach")
                        or self._current_approach())
         plan = answering.plan_answer(
@@ -1596,6 +1622,38 @@ class LoopSupervisor:
             "waiverFiles": waiver_files, "rulingFile": ruling_file,
         }
         self.run.update_status(inputAnswer=record)
+        self.run.emit("input.answered", **record)
+        self.resume()
+        return record
+
+    def _answer_secret(self, question: dict, secret_handled: bool, **others
+                       ) -> dict:
+        """C.5: the one answer to a `secret` question is `--secret-handled`.
+        Refused while the commit scan of the offending range still hits (the
+        refusal names the hit's sha, part and variable, never the value);
+        once the range scans clean the park is released and the worker
+        carries on."""
+        if any(v not in (None, [], ()) for v in others.values()) or not \
+                secret_handled:
+            raise answering.AnswerRefused(
+                "this run is parked on a `secret` question (a secret was "
+                "found in a commit); its one answer is `ralphctl answer "
+                f"{self.cfg.run_id} --secret-handled`, once the offending "
+                "commit range scans clean")
+        hit = self._commit_range_scan_hit(question)
+        if hit is not None:
+            raise answering.AnswerRefused(
+                "the commit scan of the offending range "
+                f"({str(question.get('baseSha'))[:12]}..HEAD) still hits: "
+                f"commit {str(hit.get('sha'))[:12]}'s {hit.get('part')} "
+                f"matches a known secret value for variable "
+                f"{hit.get('variable')!r}. Remove the secret from the "
+                "history (amend, reset or rewrite the commit), then answer "
+                "--secret-handled again")
+        record = {"outcome": "secret_handled", "kind": "secret",
+                  "approach": question.get("approach"),
+                  "baseSha": question.get("baseSha")}
+        self.run.update_status(**{self.COMMIT_SECRET_SCAN_STATUS_KEY: None})
         self.run.emit("input.answered", **record)
         self.resume()
         return record
@@ -3132,46 +3190,43 @@ class LoopSupervisor:
 
     async def _pause_for_rate_limit_ceiling(self, phase: str, wait: dict,
                                             planned: float, reason: str) -> str:
-        """The rate-limit ceiling is reached (v0.30 F.3): the wait does not
-        start. Pause for the operator and park in place. Returns "resume" (an
-        unpause: the caller re-probes the same work) or "abort".
+        """The rate-limit ceiling is reached (v0.36 F.4; v0.30 F.3): the wait
+        does not start and the run ends `failed` with `ending:
+        rate_limit_ceiling`. It is not parked and not `paused`. Returns
+        "abort" (the run is ending; the caller returns its iteration result and
+        the loop winds down to `_finish_tail_unverified`).
 
-        The pause is `operator_input_needed` with `pauseDetail = {"reason":
-        "rate_limit_ceiling", "resetsAt", "waitedS", "maxWaitS", "plannedS",
-        "rateLimitType", "phase"}`. A `rate_limit_ceiling_reached` event and a
-        notifier message naming the reset in local time follow. The unpause
-        resets the count (`resume`); the time parked extends the deadline
-        like any operator pause (`_gate`)."""
+        `ralphctl resume <run> --rate-limit-wait +N` resumes it with a raised
+        ceiling. A `rate_limit_ceiling_reached` event, a `failedEnding` detail
+        in the reason and a notifier message naming the reset in local time
+        follow. (The name is historical: it no longer pauses.)"""
         max_wait = self.cfg.rate_limit_max_wait_s
         waited = round(self._rate_limit_waited_s, 3)
-        detail = {"reason": RATE_LIMIT_CEILING_REASON,
-                  "resetsAt": wait["resetsAt"], "waitedS": waited,
-                  "maxWaitS": max_wait, "plannedS": round(planned, 3),
-                  "rateLimitType": wait.get("type"), "phase": phase}
-        self.pause(reason="operator_input_needed", detail=detail)
+        resets_local = state.format_local_time(wait["resetsAt"])
+        message = (
+            f"rate-limit ceiling reached before {phase}: "
+            f"{state.format_duration(waited)} waited of the "
+            f"{state.format_duration(max_wait)} allowed, and the "
+            f"{wait.get('type') or 'unknown'} window resets at {resets_local}")
         self.run.emit("rate_limit_ceiling_reached", phase=phase,
                       rateLimitType=wait.get("type"), resetsAt=wait["resetsAt"],
                       waitedS=waited, maxWaitS=max_wait,
                       plannedS=round(planned, 3), reason=reason)
         log.warning("iteration %s: a %.0fs rate-limit wait would pass the "
-                    "%ss ceiling (%.0fs waited): pausing for the operator",
-                    phase, planned, max_wait, waited)
+                    "%ss ceiling (%.0fs waited): ending the run failed "
+                    "(rate_limit_ceiling)", phase, planned, max_wait, waited)
+        self._failed_ending = RATE_LIMIT_CEILING_REASON
+        self._abort_reason = (
+            message + f"; `ralphctl resume {self.cfg.run_id} --rate-limit-wait "
+            "+N` resumes it with a raised ceiling")
         if self.notifier is not None:
             text = (
-                f"ralphd {self.cfg.run_id}: rate-limit ceiling reached before "
-                f"{phase}: {state.format_duration(waited)} waited of the "
-                f"{state.format_duration(max_wait)} allowed, and the "
-                f"{wait.get('type') or 'unknown'} window resets at "
-                f"{state.format_local_time(wait['resetsAt'])}. The run is "
-                "paused (operator_input_needed, rate_limit_ceiling).\n"
-                f"ralphctl unpause {self.cfg.run_id} resets the count and "
-                f"re-probes {phase}; ralphctl budget {self.cfg.run_id} "
-                "--rate-limit-wait +N raises the ceiling")
-            self._notify_escalation_delivery(text, reason="operator_input_needed")
-        await self._gate()
-        if self._abort_reason is not None:
-            return "abort"
-        return "resume"
+                f"ralphd {self.cfg.run_id}: {message}. The run ended failed "
+                "(ending: rate_limit_ceiling).\n"
+                f"ralphctl resume {self.cfg.run_id} --rate-limit-wait +N "
+                f"raises the ceiling and re-probes {phase}")
+            self._notify(text)
+        return "abort"
 
     def _rate_limit_preempt_report(self, phase: str) -> tuple[str, dict] | None:
         """`(harness, report)` when `phase` is about to start on the
@@ -3228,19 +3283,17 @@ class LoopSupervisor:
 
     async def _pause_for_provider_refusal(self, phase: str,
                                           result: IterationResult) -> str:
-        """A `refused` iteration (v0.30 G.2): pause for the operator and park
-        in place. Returns "resume" (an unpause: the caller re-runs the same
-        work) or "abort" (the run is ending).
+        """A `refused` iteration (v0.36 F.5; v0.30 G.2): the run ends `failed`
+        with `ending: provider_refused`. Nothing is retried, the outage budget
+        is not touched and the run is not parked. Returns "abort" (the run is
+        ending). The message names `PUT /config/llm` (fix the LLM profile or
+        credentials) and `ralphctl resume`.
 
-        The pause is `operator_input_needed` with `pauseDetail = {"reason":
-        "provider_refused", "family", "message", "httpStatus", "phase",
-        "iteration"}`, the message scrubbed and bounded. A `provider_refused`
-        event and a notifier message quoting the scrubbed provider message
-        follow. No `operator_escalation` event is emitted: that shape routes
-        a restarted episode into review over a rejected approach, and there
-        is none here. Nothing is retried and the outage budget is not
-        touched. The time parked extends the deadline like any operator
-        pause (`_gate`).
+        A `provider_refused` event carries the provider's scrubbed, bounded
+        message, and the notifier is told. No `operator_escalation` event is
+        emitted: that shape routes a restarted episode into review over a
+        rejected approach, and there is none here. (The name is historical: it
+        no longer pauses.)
         """
         refusal = matched_refusal(result.error_message or "",
                                   getattr(result, "http_status", None),
@@ -3248,10 +3301,6 @@ class LoopSupervisor:
         family = refusal.get("family")
         message = redact.scrub_text(result.error_message or "").strip()
         message = message[:self.PROVIDER_REFUSAL_MESSAGE_MAX]
-        detail = {"reason": "provider_refused", "family": family,
-                  "message": message, "httpStatus": refusal.get("httpStatus"),
-                  "phase": phase, "iteration": self.iterations_used}
-        self.pause(reason="operator_input_needed", detail=detail)
         self.run.emit("provider_refused", phase=phase,
                       iteration=self.iterations_used, family=family,
                       description=refusal.get("description"),
@@ -3260,24 +3309,25 @@ class LoopSupervisor:
                       errorType=getattr(result, "error_type", None),
                       harness=getattr(result, "harness", None),
                       message=message)
-        log.warning("iteration %s refused by the provider (%s): pausing for "
-                    "the operator", phase, family)
+        log.warning("iteration %s refused by the provider (%s): ending the "
+                    "run failed (provider_refused)", phase, family)
+        fix = (f"fix the LLM profile or credentials (PUT /config/llm), then "
+               f"`ralphctl resume {self.cfg.run_id}` re-runs the same work")
+        self._failed_ending = "provider_refused"
+        self._abort_reason = (
+            f"the provider refused the {phase} iteration "
+            f"({family or 'refused'}): {message}; {fix}")
         if self.notifier is not None:
             text = (
                 f"ralphd {self.cfg.run_id}: the provider refused the {phase} "
                 f"iteration ({family or 'refused'}"
                 + (f": {refusal['description']}" if refusal.get("description")
                    else "")
-                + "). It is not retried; the run is paused "
-                "(operator_input_needed, provider_refused).\n"
-                f"provider: {message}\n"
-                "fix the LLM profile or credentials (PUT /config/llm), then "
-                f"ralphctl unpause {self.cfg.run_id} re-runs the same work")
-            self._notify_escalation_delivery(text, reason="operator_input_needed")
-        await self._gate()
-        if self._abort_reason is not None:
-            return "abort"
-        return "resume"
+                + "). It is not retried; the run ended failed "
+                "(ending: provider_refused).\n"
+                f"provider: {message}\n{fix}")
+            self._notify(text)
+        return "abort"
 
     def _extend_deadline_by(self, waited_s: float) -> None:
         """Shared clock math for every kind of parked-time credit (task 016,
@@ -4754,7 +4804,16 @@ class LoopSupervisor:
         C.2's "still fails, unchanged" holds by construction, not by an
         extra check here.
         """
-        final_state = "aborted" if self._abort_reason else "failed"
+        final_state = ("aborted" if self._abort_reason
+                       and not self._failed_ending else "failed")
+        if self._failed_ending:
+            # v0.36 F.4/F.5: the rate-limit ceiling and a provider refusal
+            # end the run `failed` with an `ending` the operator reads and
+            # resumes from (`ralphctl resume`), never `aborted`.
+            self._finish(final_state, None, reason=self._abort_reason,
+                         ending=self._failed_ending,
+                         **self._unconsumed_steering_patch())
+            return final_state
         # Task 026 (PRD requirement H.2/H.3, #264): checked BEFORE the
         # deadline-unreviewed branch below -- mutually exclusive with it by
         # construction (`_review_unjudged_at_budget_end` takes exactly one
@@ -4795,6 +4854,14 @@ class LoopSupervisor:
         # this path, so passing it is the same documented no-op it is on
         # the ordinary branch below.
         if self._judge_no_verdict_unreviewed and not self._abort_reason:
+            self._finish(final_state, "unreviewed",
+                        reason=self._terminal_reason_note,
+                        **self._unconsumed_steering_patch(),
+                        **self._deadline_beat_verdict_extra)
+            return final_state
+        if self._judge_fault_tail and not self._abort_reason:
+            # v0.36 F.3: the outage budget is spent on a review contract
+            # fault; the run ends `failed`, verdict `unreviewed`.
             self._finish(final_state, "unreviewed",
                         reason=self._terminal_reason_note,
                         **self._unconsumed_steering_patch(),
@@ -8304,69 +8371,95 @@ class LoopSupervisor:
                                        cause=self.COMMIT_SECRET_SCAN_EVENT)
                 return
 
-    def _pause_for_commit_secret_hit(self) -> None:
-        """Task 030 (PRD requirement I.3, #210): raise the run's EXISTING
-        `operator_input_needed` pause -- `self.pause()`, task 015's own
-        pause/resume seam; `_persist_pause` is what records
-        `state: "paused"` plus `pauseReason: "operator_input_needed"` on
-        status.json -- rather than any new pause plumbing (the v0.23
-        requirement A machinery this task's criteria ask to reuse).
+    def _park_for_commit_secret(self, base_sha: str | None,
+                                head_sha: str | None) -> None:
+        """v0.36 F.6/C.5 (it replaces the 0.35 `operator_input_needed`
+        pause): a secret found in a commit parks the run in `awaiting_input`
+        with `inputQuestion.kind: secret` -- the only non-findings park. The
+        question names the hit's sha, part and variable (never the value) and
+        the offending commit range (`baseSha..headSha`) the answer re-scans.
+        It never expires: `expiresAt` is `null` whatever `input_timeout_min`
+        says, and `onTimeout` is `never`.
 
-        Deliberately does NOT emit an `operator_escalation` event carrying
-        an `approach` field the way review's own `operator_input_needed`
-        escalations do (`_pause_and_escalate_operator_input_needed`):
-        `_resume_point`'s `_paused_awaiting_operator_input_needed_ruling`
-        scans exactly that event shape to decide a crashed episode must
-        resume into `review` over a REJECTED approach. This pause has no
-        rejected review verdict behind it -- `worker` may still have its
-        own actionable remainder, or none at all -- and a stray match
-        there would misroute a resumed episode into `review` over
-        nothing it ever reviewed. The `commit_secret_scan` event
-        `_scan_task_boundary_commits`/`_check_hook_hit_marker` already
-        emitted (sha, part, variable -- never the value) is this
-        escalation's own record; this call's whole job is to hold the
-        loop, not to re-describe the hit.
+        The only answer is `ralphctl answer <run> --secret-handled`
+        (`POST /answer {"secretHandled": true}`), refused while the commit
+        scan of that range still hits (`answer`); once clean the worker
+        carries on. A ruling does not release it.
 
-        Cure task cure-01-01-8 (PRD requirement A.1/D.1, DoD 1, #269):
-        review found this pause was the one real operator-escalation
-        left posting raw, un-digested text after cure-01-05-2 widened
-        every OTHER pause to the same bounded contract -- no run id,
-        approach/max, spend, hub URL or exact answer command, because
-        this pause was added (task 030) before that digest contract
-        existed and was never folded into it. `_pause_escalation_digest_
-        text` gives it the exact same shape those five siblings already
-        carry: `blocking`/`residual`/`tasks reopened`/`tasks inserted`
-        read `unavailable` here, honestly -- this pause carries no
-        review findings channel and no cure-pass preview, so a `0` would
-        read as "checked and empty" rather than "never computed".
-        `fault_lines` opens with the hit's own sha/part/variable (still
-        never the matched value), read back from the `commit_secret_scan`
-        event just emitted rather than threaded through as a parameter,
-        so this method's own call sites (`_step_worker`, and this test's
-        own direct call) need no signature change.
-
-        Since v0.36 a ruling never releases a hold: only `ralphctl unpause`
-        (`POST /resume`) releases this one, so `answer_cmd` names that alone.
+        Deliberately does NOT emit an `operator_escalation` event carrying an
+        `approach` field: `_resume_point`'s legacy ruling scans read exactly
+        that event shape to route a crashed episode into `review` over a
+        REJECTED approach, and this park has no rejected review verdict
+        behind it. The `commit_secret_scan` event `_scan_task_boundary_commits`
+        /`_check_hook_hit_marker` already emitted (sha, part, variable --
+        never the value) is its record.
         """
-        self.pause(reason="operator_input_needed")
+        self._pause.clear()
+        self.run.emit("log", message="paused at next iteration boundary")
+        status = self.run.read_status()
+        current = status.get("state")
+        if current == "finishing" or current in TERMINAL_STATES:
+            return
+        hits = state.read_events(
+            self.run.root, types=(self.COMMIT_SECRET_SCAN_EVENT,))
+        hit = hits[-1] if hits else {}
+        approach = self._approach or 1
+        question = state.build_input_question(
+            judge=None, trigger=state.SECRET_INPUT_TRIGGER, blocking=[],
+            cure_rounds_used=self._cure_passes_for_approach(approach),
+            cure_rounds_allowed=self._cure_rounds_allowed(approach),
+            approach=approach, max_approaches=self.cfg.max_approaches,
+            parked_at_epoch=self._now_epoch(),
+            timeout_min=getattr(self.cfg, "input_timeout_min", None),
+            kind="secret")
+        question.update({
+            "sha": hit.get("sha"), "part": hit.get("part"),
+            "variable": hit.get("variable"),
+            "baseSha": base_sha, "headSha": head_sha,
+        })
+        self.run.update_status(state=AWAITING_INPUT_STATE,
+                               pauseReason=state.SECRET_INPUT_TRIGGER,
+                               pauseDetail=None, inputQuestion=question)
+        self._emit_run_paused(state.SECRET_INPUT_TRIGGER)
+        self.run.emit("input.parked", **{k: v for k, v in question.items()
+                                         if k != "parkedAt"})
+        self.run.emit("log", message=(
+            f"run state recorded `{AWAITING_INPUT_STATE}` on status.json "
+            f"(secret in a commit; variable {hit.get('variable') or 'unknown'}); "
+            f"`ralphctl answer {self.cfg.run_id} --secret-handled` answers "
+            "it once the commit scan of the range is clean"))
         if self.notifier is not None:
-            hits = state.read_events(
-                self.run.root, types=(self.COMMIT_SECRET_SCAN_EVENT,))
-            hit = hits[-1] if hits else {}
             sha = hit.get("sha")
             fault_lines = [
                 f"sha: {sha[:12] if sha else 'unknown'}",
                 f"part: {hit.get('part') or 'unknown'}",
                 f"variable: {hit.get('variable') or 'unknown'}",
+                "kind: secret (never expires)",
             ]
-            approach = self._approach or 1
             answer_cmd = (
-                f"ralphctl unpause {self.cfg.run_id} to resume the "
-                "worker (a ruling does not release this hold)")
+                f"ralphctl answer {self.cfg.run_id} --secret-handled "
+                f"(refused while the commit scan of "
+                f"{(base_sha or 'the start')[:12]}..{(head_sha or 'HEAD')[:12]} "
+                "still hits: remove or rewrite the offending commit first; "
+                "a ruling does not release this park)")
             digest = self._pause_escalation_digest_text(
-                "operator_input_needed", approach, answer_cmd, fault_lines)
+                state.SECRET_INPUT_TRIGGER, approach, answer_cmd, fault_lines)
             self._notify_escalation_delivery(
-                digest, reason="operator_input_needed")
+                digest, reason=state.SECRET_INPUT_TRIGGER)
+
+    def _commit_range_scan_hit(self, question: dict) -> dict | None:
+        """The commit scan of a `secret` question's offending range, now:
+        `baseSha` (the worker's HEAD before the iteration) up to the
+        workspace's CURRENT HEAD, so a rewritten or reset history is what is
+        scanned. The scan reads actual redaction-map VALUES, as the task
+        boundary does, and returns the first hit (sha, part, variable -- never
+        the value) or None when the range is clean."""
+        head = self._workspace_head_sha() or question.get("headSha")
+        if not head:
+            return None
+        return commit_scan.scan_commits_for_secrets(
+            self.workspace, question.get("baseSha"), head,
+            secrets=redact.live_redaction_map())
 
     def _workspace_diff_paths(self, base_sha: str, head_sha: str) -> list[str] | None:
         """Task 008 (PRD requirement B.4, #221): the file paths `git diff
@@ -9495,6 +9588,7 @@ class LoopSupervisor:
             self._advance("verdict_gate", "finishing",
                          "verdict_gate_no_verdict")
             return ("tail",)
+        self._reset_judge_fault_episode()
         self._record_gate_approach_verdict(approach, approved, payload)
         self._record_verdict_gate_peek(approach)
         if approved:
@@ -10003,21 +10097,93 @@ class LoopSupervisor:
         "empty_reply": "no verdict: empty reply",
     }
 
+    def _reset_judge_fault_episode(self) -> None:
+        """A judge produced a usable verdict: the next judge fault starts a
+        fresh episode (the full schedule and the full outage budget)."""
+        self._judge_fault_attempts = 0
+        self._judge_fault_waited_s = 0.0
+        self._judge_fault_started_at = None
+
+    async def _judge_fault_backoff(self, hat: str, description: str) -> str:
+        """v0.36 F.3: a judge fault that outlived `judge_retry_max` retries
+        is an infra fault under the unchanged outage budget (`_outage_budget_for`
+        and the unchanged retry schedule). The failed attempt is refunded, an
+        `infra_retry` event and the degraded `infraWait` publish the wait, and
+        the wait goes through `_wait_out_backoff` like any other infra wait
+        (POST /retry restarts the episode clock, a steer or an abort wakes it).
+
+        Returns "retry" (the caller asks the judge again), "spent" (the outage
+        budget is used up: the run ends `failed`) or "abort" (the run is
+        ending)."""
+        if self._abort_reason is not None:
+            return "abort"
+        budget = self._outage_budget_for(hat)
+        retry_max = self.cfg.infra_retry_max
+        if self._judge_fault_started_at is None:
+            self._judge_fault_started_at = time.monotonic()
+        self._judge_fault_attempts += 1
+        attempt = self._judge_fault_attempts
+        waited = self._judge_fault_waited_s
+        schedule = (self.cfg.infra_retry_backoff_s
+                    or DEFAULT_INFRA_RETRY_BACKOFF_S)
+        backoff = min(schedule[min(attempt - 1, len(schedule) - 1)],
+                      self.cfg.infra_retry_backoff_max_s,
+                      max(0.0, budget - waited))
+        spent = waited >= budget or (retry_max is not None
+                                     and attempt >= retry_max)
+        self.run.emit("infra_retry", phase=hat, attempt=attempt,
+                      maxAttempts=retry_max, error=description,
+                      noTrafficTimeout=False, instantFailure=False,
+                      judgeFault=True, backoffS=None if spent else backoff,
+                      waitedS=round(waited, 3), budgetS=budget)
+        log.warning("%s judge fault (attempt %d, %.0fs of the %.0fs outage "
+                    "budget waited): %s", hat, attempt, waited, budget,
+                    description)
+        if spent:
+            outage_s = time.monotonic() - self._judge_fault_started_at
+            self._terminal_reason_note = (
+                f"{hat}: {description}, throughout a {outage_s:.0f}s outage "
+                f"({attempt} attempts, {waited:.0f}s of the {budget:.0f}s "
+                "outage budget spent waiting); no rejection was recorded")
+            self.run.emit("log", level="error",
+                          message=self._terminal_reason_note)
+            return "spent"
+        self._refund_iteration("infra")
+        self.run.update_status(
+            iterationsUsed=self.iterations_used_charged,
+            currentIteration={
+                "phase": hat,
+                "note": (f"retrying after a judge fault (attempt {attempt}, "
+                         f"next in {backoff:.0f}s): {description}")})
+        self._begin_infra_wait(phase=hat, attempt=attempt,
+                               error=description, waited_s=waited,
+                               backoff_s=backoff, budget_s=budget)
+        elapsed, woken = await self._wait_out_backoff(backoff)
+        self._judge_fault_waited_s = waited + elapsed
+        self._account_infra_wait(elapsed, hat, attempt)
+        self._end_infra_wait()
+        if woken:
+            self._judge_fault_waited_s = 0.0
+            self._judge_fault_started_at = time.monotonic()
+        if self._abort_reason is not None:
+            return "abort"
+        return "retry"
+
     async def _park_judge_no_verdict(self, hat: str, approach: int,
                                      reason: str) -> str:
-        """#300: a judging hat has no verdict after every retry. This is not
-        a rejection, so nothing is archived, no composite PRD is written, no
-        `approach.verdict_recorded` is emitted and review's recorded verdict
-        stays as it is.
+        """A judging hat has no verdict after every `judge_retry_max` retry
+        (#300; v0.36 F.3). This is not a rejection, so nothing is archived, no
+        composite PRD is written, no `approach.verdict_recorded` is emitted
+        and review's recorded verdict stays as it is.
 
-        `gateRejectionEnding` is set to the no-verdict value. When the run
-        still has budget the run is paused (`operator_input_needed`,
-        `pauseDetail = {"reason": "judge_no_verdict", "hat", "cause",
-        "approach", "message"}`), the operator notified, and the loop parks in
-        place: returns "resume" on an unpause (the caller re-dispatches the
-        hat). When the budget or deadline is already spent there is nothing
-        to resume into: returns "budget" and the run ends `unreviewed`
-        (`_finish_tail_unverified`). Returns "abort" when the run is ending.
+        `gateRejectionEnding` is set to the no-verdict value. The fault is an
+        infra fault under the outage budget (`_judge_fault_backoff`): returns
+        "resume" after each backoff (the caller asks the hat again as an
+        ordinary first attempt), and "budget" when the outage budget is spent
+        or no budget or deadline remains -- the run then ends `failed` with
+        verdict `unreviewed` (`_finish_tail_unverified`), resumable with
+        `ralphctl resume`. Returns "abort" when the run is ending. The run is
+        never parked: it does not leave `running`.
         """
         wording = self.JUDGE_NO_VERDICT_WORDING.get(
             reason, "no verdict: " + reason.replace("_", " "))
@@ -10036,25 +10202,42 @@ class LoopSupervisor:
             self.run.emit(f"{hat}.no_verdict", hat=hat, approach=approach,
                           reason=reason, parked=False)
             return "budget"
-        detail = {"reason": state.JUDGE_NO_VERDICT_REASON, "hat": hat,
-                  "cause": reason, "approach": approach,
-                  "message": f"{hat}: {wording}"}
-        self.pause(reason="operator_input_needed", detail=detail)
+        outcome = await self._judge_fault_backoff(hat, wording)
         self.run.emit(f"{hat}.no_verdict", hat=hat, approach=approach,
-                      reason=reason, parked=True)
-        if self.notifier is not None:
-            text = (
-                f"ralphd {self.cfg.run_id}: the {hat} produced {wording} "
-                f"on approach {approach} after {self.cfg.judge_retry_max} "
-                "retries. It is not a rejection: nothing is archived and "
-                "no verdict is recorded for it. The run is paused "
-                "(operator_input_needed, judge_no_verdict).\n"
-                f"ralphctl unpause {self.cfg.run_id} re-dispatches the {hat}")
-            self._notify_escalation_delivery(text, reason="operator_input_needed")
-        await self._gate()
-        if self._abort_reason is not None:
-            return "abort"
-        return "resume"
+                      reason=reason, parked=False, outcome=outcome)
+        if outcome == "retry":
+            return "resume"
+        if outcome == "spent":
+            self._judge_no_verdict_unreviewed = f"{hat}: {wording}"
+            return "budget"
+        return "abort"
+
+    async def _review_contract_fault(self, approach: int, guard: str,
+                                     contract_errors) -> tuple:
+        """v0.36 F.3: review's contract ladder is exhausted over an unreadable
+        verdict claim (`review_contract_unrepaired`) or an unusable findings
+        channel (`review_findings_unusable`). Nothing is rejected, archived or
+        cured: the fault is an infra fault under the unchanged outage budget
+        (`_judge_fault_backoff`). After each backoff review is asked again
+        over the SAME approach (a `review -> review` self-loop); when the
+        budget is spent the run ends `failed` with verdict `unreviewed`
+        (`_finish_tail_unverified`), resumable with `ralphctl resume`."""
+        what = ("review's verdict claim is unreadable"
+                if guard == "review_contract_unrepaired"
+                else "review's findings channel is unusable")
+        errors = [str(e) for e in (contract_errors or [])][:3]
+        description = what + (": " + "; ".join(errors) if errors else "")
+        self.run.emit("review.contract_fault", guard=guard,
+                      approach=approach, errors=errors)
+        outcome = await self._judge_fault_backoff("review", description)
+        if outcome == "retry":
+            return ("advance", "review", "review_judge_fault_retry")
+        if outcome == "spent":
+            self._judge_fault_tail = guard
+            self._advance("review", "finishing", guard)
+        else:
+            self._advance("review", "finishing", "review_no_verdict")
+        return ("tail",)
 
     async def _dispatch_verdict_gate(self, *, retry_wording: str = "",
                                      step_down: bool = False):
@@ -10962,7 +11145,7 @@ class LoopSupervisor:
             # silent loop, is ever reachable from here.
             if boundary_secret_hit is not None:
                 self._fault_task_for_commit_secret_hit(assigned_id, tasks_after)
-                self._pause_for_commit_secret_hit()
+                self._park_for_commit_secret(head_before, head_after)
                 continue
 
             # Task 123 (#60): the pre-spawn `in-progress` claim just above
@@ -13834,6 +14017,9 @@ class LoopSupervisor:
         if result is None:
             return self._review_unjudged_at_budget_end(approach)
         verified, payload, contract_errors = self._review_verdict(result)
+        if not self._review_contract_unrepaired and not self._review_findings_unusable:
+            # A usable verdict ends the judge-fault episode (v0.36 F.3).
+            self._reset_judge_fault_episode()
         # Task 015 (PRD requirement A.4, #224): the auditable half of "the
         # ruling causes exactly one re-ask" -- once review has rendered a
         # LEGIBLE fresh verdict (never on a contract-unrepaired/findings-
@@ -13878,10 +14064,8 @@ class LoopSupervisor:
         # applied even when the verdict itself is unusable, and
         # `_review_verdict` is the only place that does that.
         if self._review_contract_unrepaired:
-            self._pause_and_escalate_review_contract_unrepaired(
-                approach, contract_errors)
-            self._advance("review", "paused", "review_contract_unrepaired")
-            return ("advance", "paused", "review_contract_unrepaired")
+            return await self._review_contract_fault(
+                approach, "review_contract_unrepaired", contract_errors)
         # Task 011 (requirement C.2, #219): the discriminating sibling
         # pause -- a legible verdict claim whose FINDINGS CHANNEL is what
         # the ladder exhausted over (a present-but-invalid sidecar, a
@@ -13894,10 +14078,8 @@ class LoopSupervisor:
         # contract_ladder`'s own construction (`_review_findings_
         # unusable`/`_review_contract_unrepaired` never both True).
         if self._review_findings_unusable:
-            self._pause_and_escalate_review_findings_unusable(
-                approach, contract_errors)
-            self._advance("review", "paused", "review_findings_unusable")
-            return ("advance", "paused", "review_findings_unusable")
+            return await self._review_contract_fault(
+                approach, "review_findings_unusable", contract_errors)
         self.run.emit("log", message=f"review rejected approach {approach}")
         findings_list, channel_errors = self._review_findings_channel()
         signature = self._review_rejection_signature(
@@ -14312,6 +14494,11 @@ class LoopSupervisor:
         answered = self._take_input_answer()
         if answered is not None:
             return self._carry_out_input_answer(answered)
+        if reason == state.SECRET_INPUT_TRIGGER:
+            # v0.36 C.5: a `secret` park (a restarted engine over one) is
+            # answered by `--secret-handled` and continues at the worker.
+            self._advance("paused", "worker", "paused_resumed_secret_handled")
+            return ("advance", "worker", "paused_resumed_secret_handled")
         if reason == "stagnation":
             self._advance("paused", "worker", "paused_resumed_stagnation")
             return ("advance", "worker", "paused_resumed_stagnation")

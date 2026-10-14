@@ -254,8 +254,13 @@ def test_on_a_hit_the_task_is_faulted_and_the_operator_pause_is_raised(
 
     # (c) the run's operator_input_needed pause is raised.
     status = run.read_status()
-    assert status.get("state") == "paused"
-    assert status.get("pauseReason") == "operator_input_needed"
+    # v0.36 F.6/C.5: a secret in a commit parks in `awaiting_input` with a
+    # `secret` question (never `paused`); `ralphctl answer --secret-handled`
+    # releases it once the commit scan of the range is clean.
+    assert status.get("state") == "awaiting_input"
+    assert status.get("pauseReason") == "commit_secret"
+    assert status["inputQuestion"]["kind"] == "secret"
+    assert status["inputQuestion"]["expiresAt"] is None
 
     # No push, and no silent retry loop: exactly one worker iteration ran.
     assert sup.runner.calls == 1

@@ -249,8 +249,13 @@ def _assert_refused_faulted_paused(sup, run, workspace, base, remote,
 
     # --- faulted, paused, never retried --------------------------------
     assert task["status"] == "failed"
-    assert status.get("state") == "paused"
-    assert status.get("pauseReason") == "operator_input_needed"
+    # v0.36 F.6/C.5: a secret in a commit parks in `awaiting_input` with a
+    # `secret` question (never `paused`); `ralphctl answer --secret-handled`
+    # releases it once the commit scan of the range is clean.
+    assert status.get("state") == "awaiting_input"
+    assert status.get("pauseReason") == "commit_secret"
+    assert status["inputQuestion"]["kind"] == "secret"
+    assert status["inputQuestion"]["expiresAt"] is None
     assert sup.runner.calls == 1, "a retry was dispatched after the hit"
     assert SYNTHETIC_VALUE not in json.dumps(status)
     assert SYNTHETIC_VALUE not in (sup.runner.commit_stderr or "")
@@ -362,7 +367,12 @@ def test_the_authoritative_boundary_hit_behavior_remains_green(
     task = run.read_tasks()["tasks"][0]
     assert task["status"] == "failed"
     status = run.read_status()
-    assert status.get("state") == "paused"
-    assert status.get("pauseReason") == "operator_input_needed"
+    # v0.36 F.6/C.5: a secret in a commit parks in `awaiting_input` with a
+    # `secret` question (never `paused`); `ralphctl answer --secret-handled`
+    # releases it once the commit scan of the range is clean.
+    assert status.get("state") == "awaiting_input"
+    assert status.get("pauseReason") == "commit_secret"
+    assert status["inputQuestion"]["kind"] == "secret"
+    assert status["inputQuestion"]["expiresAt"] is None
     assert sup.runner.calls == 1
     assert SYNTHETIC_VALUE not in json.dumps(status)

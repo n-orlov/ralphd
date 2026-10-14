@@ -736,12 +736,16 @@ LEGACY_TIMED_OUT_STATE = "timed_out"
 # same liveness reason `paused` is: a live engine owns the position.
 AWAITING_INPUT_STATE = "awaiting_input"
 INPUT_QUESTION_KINDS = ("findings", "secret")
-INPUT_TRIGGERS = ("incurable", "reviewer_escalation", "cure_rounds_spent")
+INPUT_TRIGGERS = ("incurable", "reviewer_escalation", "cure_rounds_spent",
+                  "commit_secret")
 INPUT_JUDGES = ("review", "verdict_gate")
 # What the engine does when `expiresAt` passes with no answer (PRD E.3).
 INPUT_ON_TIMEOUT_CURE_NOW = "cure_now"
 INPUT_ON_TIMEOUT_NEXT_APPROACH = "next_approach"
 INPUT_ON_TIMEOUT_EXHAUSTED = "exhausted_approaches"
+# A `secret` question never expires (E.3): nothing happens on its own.
+INPUT_ON_TIMEOUT_NEVER = "never"
+SECRET_INPUT_TRIGGER = "commit_secret"
 # The default input timeout in minutes (`input_timeout_min`, E.1); `0` = never.
 DEFAULT_INPUT_TIMEOUT_MIN = 60
 NONTERMINAL_STATES = ("starting", "running", PAUSED_STATE,
@@ -1076,10 +1080,12 @@ def build_input_question(
         "maxApproaches": max_approaches,
         "parkedAt": utc_from_epoch(parked_at_epoch),
         "expiresAt": expires_at,
-        "onTimeout": input_on_timeout(
-            trigger, cure_rounds_allowed - cure_rounds_used, approach,
-            max_approaches,
-            all(f["curable"] for f in input_question_findings(blocking))),
+        "onTimeout": (INPUT_ON_TIMEOUT_NEVER if kind == "secret"
+                      else input_on_timeout(
+                          trigger, cure_rounds_allowed - cure_rounds_used,
+                          approach, max_approaches,
+                          all(f["curable"]
+                              for f in input_question_findings(blocking)))),
     }
 
 

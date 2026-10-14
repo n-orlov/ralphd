@@ -298,57 +298,36 @@ def test_verify_ladder_exhaustion_with_budget_remaining_does_not_end_the_run(liv
     assert st.get("iterationsUsed", 0) < st.get("iterationsBudget", 0), st
 
 
-def test_review_ladder_exhaustion_with_budget_remaining_holds_for_the_operator(live):
-    """GH #209 defect 2, at the flow tier. This node USED to pin the
-    opposite outcome, deliberately: an unparseable review reply exhausted
-    the ladder and the engine then applied "today's ordinary archive-with-
-    safe-default consequences" -- approach 1 ARCHIVED, a composite PRD
-    written, `verdict:review:rejected@1` recorded, the run replanned onto
-    approach 2 and succeeded there (`assert st["approach"] == 2`). That is
-    the defect: a reviewer that never produced a parseable verdict at all
-    was scored exactly like a reviewer that read the work and refused it,
-    and it cost an approach. It now HOLDS instead -- `pauseReason:
-    "review_contract_unrepaired"`, approach 1 unarchived, no composite PRD,
-    `verdict:review:unreviewed@1`, one `operator_escalation` -- and a
-    `POST /resume` re-enters review over the SAME approach, where the
-    stub's next (well-formed) reply verifies.
+def test_review_ladder_exhaustion_with_budget_remaining_asks_review_again(live):
+    """GH #209 defect 2, at the flow tier, in v0.36 form. An unparseable
+    review reply exhausts the ladder; that is not a rejection (approach 1
+    stays UNARCHIVED, no composite PRD, `verdict:review:unreviewed@1`). It
+    used to HOLD the run `paused` for the operator (`review_contract_
+    unrepaired`, one `operator_escalation`, `POST /resume`); since F.3 it is
+    an infra fault under the unchanged outage budget: the engine waits out
+    the backoff and asks review again over the SAME approach, where the
+    stub's next (well-formed) reply verifies. The run is never `paused`.
 
-    Every assertion the old outcome did not itself dictate survives
-    verbatim: `review-count == "2"` (one exhausted real invocation, one
-    passing one -- the ladder's uncharged re-asks never advance the
-    marker), every task `completed`, `usage.byPhase.contract` non-empty,
-    and budget genuinely left over. The two that inverted are named above.
-    Sibling of `test_the_last_approach_pauses_for_the_operator_and_a_
-    resume_verifies`, whose shape this now follows exactly."""
+    Every other assertion survives verbatim: `review-count == "2"` (one
+    exhausted real invocation, one passing one -- the ladder's uncharged
+    re-asks never advance the marker), every task `completed`,
+    `usage.byPhase.contract` non-empty, and budget genuinely left over."""
     run = live(run_id="g5-review-ladder-exhaustion",
                job={"on_complete": "exit", "max_approaches": 2},
                stub_env={"STUB_REVIEW_MALFORMED_COUNT": "1"})
 
-    paused = run.wait_state(("paused",), timeout=ENGINE_EXIT_WAIT_S)
-    assert paused.get("pauseReason") == "review_contract_unrepaired", paused
-    assert paused.get("approach") == 1, paused
-    # the approach is left UNARCHIVED and no composite PRD is written -- the
-    # two consequences the old outcome imposed and the whole cost of the
-    # defect.
+    assert wait_engine_exit(run, timeout=ENGINE_EXIT_WAIT_S) == 0
+    # never an escalation or a pause; nothing archived, no composite PRD
+    assert events_of(run, "operator_escalation") == []
     assert not any((run.run_dir / "approaches").rglob("*")), sorted(
         str(p) for p in (run.run_dir / "approaches").rglob("*"))
     assert not (run.run_dir / "composite-prd.md").exists()
-
-    escalations = events_of(run, "operator_escalation")
-    assert len(escalations) == 1, escalations
-    assert escalations[0].get("reason") == "review_contract_unrepaired", \
-        escalations[0]
-    assert escalations[0].get("contractErrors"), escalations[0]
+    (cfault,) = events_of(run, "review.contract_fault")
+    assert cfault.get("guard") == "review_contract_unrepaired", cfault
+    assert cfault.get("errors"), cfault
     verdicts = events_of(run, "approach.verdict_recorded")
     assert [(e.get("channel"), e.get("verdict")) for e in verdicts] == \
-        [("review", "unreviewed")], verdicts
-
-    # the operator releases the pause through the engine's own API; review
-    # is asked again over the SAME approach.
-    run.wait_api()
-    code, body = run.api("POST", "/resume")
-    assert (code, body) == (200, {"resumed": True}), (code, body)
-    assert wait_engine_exit(run, timeout=ENGINE_EXIT_WAIT_S) == 0
+        [("review", "unreviewed"), ("review", "verified")], verdicts
 
     st = status(run)
     assert st.get("state") == "succeeded", st

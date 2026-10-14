@@ -223,12 +223,12 @@ async def test_the_ceiling_applies_to_a_preempt(tmp_path):
                         rate_limit_max_wait_s=600)
     result = await sup.run_iteration("worker")
     assert rec["waits"] == []
-    (parked,) = rec["parked"]
-    assert parked["pauseDetail"]["reason"] == RATE_LIMIT_CEILING_REASON
-    assert parked["pauseDetail"]["plannedS"] == 1200.0
-    assert _events(sup, "rate_limit_ceiling_reached")[0]["reason"] == "preempt"
-    # the unpause re-probes: the iteration starts
-    assert result.final_text == "done" and rec["calls"] == 1
+    assert rec["parked"] == [], "v0.36 F.4: the ceiling ends the run, never parks"
+    ev = _events(sup, "rate_limit_ceiling_reached")[0]
+    assert ev["reason"] == "preempt" and ev["plannedS"] == 1200.0
+    # nothing was started: the run is ending `failed` / `rate_limit_ceiling`
+    assert sup._failed_ending == RATE_LIMIT_CEILING_REASON
+    assert result.interrupted and rec["calls"] == 0
 
 
 @pytest.mark.asyncio

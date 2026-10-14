@@ -891,7 +891,8 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # park; `ralphctl answer` and the hub panel both post here, and all
         # three reach `LoopSupervisor.answer`. Body (all optional):
         # `{"waive": ["F1"], "accept": ["F2"], "cureRounds": 1,
-        #   "approaches": 1, "note": "...", "name": "slug"}`.
+        #   "approaches": 1, "note": "...", "name": "slug"}`; a `secret`
+        # question takes `{"secretHandled": true}` alone (C.5).
         if finished():
             raise problem(409, "job finished", "there is nothing to answer")
         body = body or {}
@@ -900,7 +901,8 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
                 waive=body.get("waive"), accept=body.get("accept"),
                 cure_rounds=body.get("cureRounds"),
                 approaches=body.get("approaches"), note=body.get("note"),
-                note_name=body.get("name"))
+                note_name=body.get("name"),
+                secret_handled=bool(body.get("secretHandled")))
         except AnswerRefused as exc:
             raise problem(exc.status, "answer refused", exc.message)
 
@@ -909,7 +911,16 @@ def create_app(cfg: JobConfig, run: RunDir, loop: LoopSupervisor) -> FastAPI:
         # v0.36 D.2: an `awaiting_input` run is left by an answer, never by a
         # bare unpause -- "carry on with what the engine would do" is the
         # input timeout's outcome, or `ralphctl answer <run> --cure-rounds 0`.
-        if run.read_status().get("state") == AWAITING_INPUT_STATE:
+        status_now = run.read_status()
+        if status_now.get("state") == AWAITING_INPUT_STATE:
+            question = status_now.get("inputQuestion") or {}
+            if question.get("kind") == "secret":
+                raise problem(
+                    409, "run is awaiting input",
+                    "this run is parked on a `secret` question (a secret in a "
+                    "commit): run "
+                    f"`ralphctl answer {loop.cfg.run_id} --secret-handled` once "
+                    "the commit scan of the offending range is clean")
             raise problem(
                 409, "run is awaiting input",
                 "an `awaiting_input` run is answered, not unpaused: run "

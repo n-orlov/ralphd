@@ -337,7 +337,9 @@ def test_an_unrepaired_contract_on_the_reask_emits_no_honoured_event(tmp_path):
         return _result("no contract payload at all, just prose")
     sup2.runner.run = _review_says_nothing_parseable  # type: ignore[method-assign]
 
+    sup2.cfg.infra_outage_budget_s = 0   # v0.36 F.3: spent at once -> failed
     outcome = _bounded(sup2._step_review())
 
-    assert outcome == ("advance", "paused", "review_contract_unrepaired")
+    assert outcome == ("tail",)
+    assert sup2._judge_fault_tail == "review_contract_unrepaired"
     assert _events(root, "operator_ruling_honoured") == []

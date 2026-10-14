@@ -1,10 +1,10 @@
 """v0.30 G: a non-transient refusal fails fast.
 
 Every refusal shape, from either harness, is classified `refused`, is not
-retried, spends nothing of the outage budget, pauses the run with
-`operator_input_needed` and `pauseDetail.reason == "provider_refused"`, and
-tells the notifier the provider's message, scrubbed. An unpause re-runs the
-same work.
+retried, spends nothing of the outage budget, ends the run `failed` with
+`ending: provider_refused` (v0.36 F.5; the message names `PUT /config/llm` and
+`ralphctl resume`), and tells the notifier the provider's message, scrubbed.
+`ralphctl resume` re-runs the same work.
 
 The refused results are real: pi's come from `PiRunner` driving stub-pi's
 in-band error (`STUB_INBAND_ERROR_MESSAGE`), claude-code's from
@@ -262,11 +262,10 @@ def _harness(tmp_path, refused: IterationResult, *, unpause: bool = True):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case_id", ALL_IDS)
-async def test_a_refusal_pauses_once_with_no_retry_and_no_outage(
+async def test_a_refusal_ends_the_run_failed_with_no_retry_and_no_outage(
         real_results, live_fake_secret, tmp_path, case_id):
     refused = real_results[case_id]
     sup, rec = _harness(tmp_path, refused)
-    deadline = sup.deadline
 
     result = await sup.run_iteration("worker", "EXTRA", "worker", "standard",
                                      task_id="T7")
@@ -281,100 +280,70 @@ async def test_a_refusal_pauses_once_with_no_retry_and_no_outage(
     assert sup._infra_episode_attempts == 0
     assert sup._infra_wait_total_s == 0.0
     assert _status(sup).get("infraWaitTotalS", 0) == 0
-    # the run was paused, parked, once
-    (parked,) = rec["parked"]
-    assert parked["state"] == "paused"
-    assert parked["pauseReason"] == "operator_input_needed"
-    detail = parked["pauseDetail"]
-    assert detail["reason"] == "provider_refused"
-    assert detail["family"] == FAMILY[case_id]
-    assert detail["phase"] == "worker" and detail["iteration"] == 1
+    # v0.36 F.5: the run is not parked or paused; it ends `failed` with
+    # `ending: provider_refused` (tests/test_stop_routing_faults.py drives
+    # the whole run)
+    assert rec["parked"] == []
+    assert sup._failed_ending == "provider_refused"
+    assert sup._abort_reason is not None
+    assert "PUT /config/llm" in sup._abort_reason
+    assert f"ralphctl resume {sup.cfg.run_id}" in sup._abort_reason
     (event,) = _events(sup, "provider_refused")
     assert event["family"] == FAMILY[case_id] and event["phase"] == "worker"
     # never an operator_escalation (that shape routes a restart into review)
     assert _events(sup, "operator_escalation") == []
-    # the notifier quotes the provider's message, scrubbed
+    # the notifier quotes the provider's message, scrubbed, and names the way on
     (note,) = rec["notes"]
     assert "provider refused" in note and FAMILY[case_id] in note
-    assert f"ralphctl unpause {sup.cfg.run_id}" in note
-    quoted = detail["message"]
+    assert "PUT /config/llm" in note
+    assert f"ralphctl resume {sup.cfg.run_id}" in note
+    quoted = event["message"]
     assert quoted and quoted in note
     assert SECRET_VALUE not in note
-    assert SECRET_VALUE not in json.dumps(detail)
     assert SECRET_VALUE not in json.dumps(event)
+    assert SECRET_VALUE not in sup._abort_reason
     if CARRIES_SECRET[case_id]:
         assert f"[REDACTED:env:{SECRET_NAME}]" in note
-    # the unpause re-ran the same work, which succeeded
-    assert result.final_text == "done"
-    assert rec["calls"] == [("worker", "EXTRA", "worker", "standard", "T7")] * 2
+    # the refused result comes back and the work is not re-run
+    assert result is refused
+    assert rec["calls"] == [("worker", "EXTRA", "worker", "standard", "T7")]
     status = _status(sup)
-    assert status["state"] == "running"
-    assert status["pauseReason"] is None and status["pauseDetail"] is None
-    # the refused attempt is refunded; the parked time extends the deadline
-    assert sup.iterations_used == 2 and sup.iterations_used_charged == 1
-    assert sup.deadline == pytest.approx(deadline + 42.0)
-    assert [e["reason"] for e in _events(sup, "deadline_extended")] == [
-        "operator pause"]
-    assert sup._last_fault_class is None
-
-
-@pytest.mark.asyncio
-async def test_an_abort_while_parked_returns_the_refused_result(
-        real_results, tmp_path):
-    sup, rec = _harness(tmp_path, real_results["cc-extra-usage"], unpause=False)
-    result = await sup.run_iteration("worker")
-    assert result is real_results["cc-extra-usage"]
-    assert len(rec["calls"]) == 1, "an aborted pause never re-runs the work"
+    assert status.get("state") != "paused"
+    assert status.get("pauseReason") is None and status.get("pauseDetail") is None
+    # the refused attempt is refunded
+    assert sup.iterations_used == 1 and sup.iterations_used_charged == 0
     assert sup._last_fault_class == FAULT_CLASS_REFUSED
-    assert _status(sup)["pauseDetail"] is None
 
 
 @pytest.mark.asyncio
-async def test_a_real_park_waits_for_resume_and_reruns(real_results, tmp_path):
-    """No stubbed park: the iteration really sits in `_gate()` until
-    `resume()`, and only then re-runs."""
+async def test_a_refusal_returns_promptly_without_parking(real_results, tmp_path):
+    """No stubbed park: the iteration really returns at once (covering the
+    former "a real park waits for resume and re-runs")."""
     sup = make_supervisor(tmp_path, prd=True, job_timeout_s=3600, real_sleep=True)
     refused = real_results["pi-authentication"]
     sup.runner = ScriptedRunner({"worker": [lambda s, p: refused,
                                             lambda s, p: _ok()]})
     sup.runner.sup = sup
-    task = asyncio.create_task(sup.run_iteration("worker"))
-    for _ in range(500):
-        await asyncio.sleep(0.01)
-        if _status(sup).get("state") == "paused":
-            break
-    assert _status(sup)["pauseDetail"]["reason"] == "provider_refused"
-    await asyncio.sleep(0.05)
-    assert not task.done(), "a refused iteration must wait for the operator"
+    result = await asyncio.wait_for(sup.run_iteration("worker"), timeout=10)
+    assert result is refused
     assert sup.runner.calls == {"worker": 1}
-    sup.resume()
-    result = await asyncio.wait_for(task, timeout=10)
-    assert result.final_text == "done"
-    assert sup.runner.calls == {"worker": 2}
+    assert _status(sup).get("state") != "paused"
 
 
-# -- the review-pause machinery stays away from a refusal pause --------------
+# -- a ruling has nothing to release on a refusal ------------------------------
 
 @pytest.mark.asyncio
-async def test_unpause_grants_no_proceed_and_a_ruling_does_not_release(
+async def test_a_ruling_is_recorded_and_there_is_no_pause_to_release(
         real_results, tmp_path):
-    sup, _rec = _harness(tmp_path, real_results["pi-permission"])
+    sup, rec = _harness(tmp_path, real_results["pi-permission"])
     sup._approach = 1
     sup.run.update_status(approach=1, rejectionSignatures={"1": "sig-abc"})
-    seen = {}
-
-    async def park():
-        sup.run.add_ruling("a ruling filed against the hold")
-        seen["paused_after_rule"] = _status(sup)["state"]
-        sup.resume()
-        return 1.0
-
-    sup._park_until_resumed = park                       # type: ignore[method-assign]
+    sup.run.add_ruling("a ruling filed against the hold")
     await sup.run_iteration("worker")
-    # v0.36 D.1: a ruling is recorded but releases nothing.
-    assert seen == {"paused_after_rule": "paused"}
+    assert rec["parked"] == []
     assert len(sup.run.ruling_entries()) == 1
     assert not _status(sup).get("noRulingProceed")
+    assert sup._failed_ending == "provider_refused"
 
 
 # -- what is still not a refusal ------------------------------------------------

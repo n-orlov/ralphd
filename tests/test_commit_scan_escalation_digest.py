@@ -1,13 +1,13 @@
 """Cure task cure-01-01-8 (PRD requirement A.1/D.1, DoD 1, #269):
 cure-01-05-2 widened every OTHER real operator-escalation pause to the
 same bounded digest contract (`_pause_escalation_digest_text`), but the
-task-boundary commit-secret-scan pause (`_pause_for_commit_secret_hit`,
+task-boundary commit-secret-scan pause (`_park_for_commit_secret`,
 task 030, requirement I.3, #210) predates that contract and was never
 folded into it -- at 9b72b700 it posts only a fixed sentence naming the
 reason and pointing at the `commit_secret_scan` event, with no run id,
 approach/max, spend, hub URL, honest unavailable-field disclosure or
 working answer command. This module drives the REAL production pause
-(`_pause_for_commit_secret_hit`) over a harmless `commit_secret_scan`
+(`_park_for_commit_secret`) over a harmless `commit_secret_scan`
 event (a fabricated sha/part/variable name -- never a real secret value
 or a secret-bearing commit) through the real notifier POST seam, and
 asserts the delivered text carries every digest field plus both live-run
@@ -45,20 +45,22 @@ def trigger(tmp_path, monkeypatch, *, fail=False):
     sup.run.update_status(state='running',phase='worker',approach=1,maxApproaches=2)
     sup.run.emit(sup.COMMIT_SECRET_SCAN_EVENT,sha='0'*40,part='blob',variable='REVIEW_TEST_VARIABLE',pushed=False)
     sup._sleep_before_escalation_retry=lambda seconds:None
-    sup._pause_for_commit_secret_hit()
+    sup._park_for_commit_secret(None, None)
     return registry,sup,sent
 
 
 def test_task_boundary_operator_escalation_has_digest_and_answer_command(tmp_path,monkeypatch):
     registry,sup,sent=trigger(tmp_path,monkeypatch)
     text=sent[0]
-    required=[RUN_ID,'pauseReason: operator_input_needed','approach 1 of 2',
+    required=[RUN_ID,'pauseReason: commit_secret','approach 1 of 2',
               'blocking:','residual:','tasks reopened:','tasks inserted:','spent this approach:',
               'https://hub.example/#/run/'+RUN_ID,
-              'answer: ralphctl unpause '+RUN_ID]
+              'answer: ralphctl answer '+RUN_ID+' --secret-handled']
     missing=[s for s in required if s not in text]
     print('COMMIT_SCAN_DIGEST',repr(text),'MISSING',missing)
-    assert sup.run.read_status()['pauseReason']=='operator_input_needed'
+    status=sup.run.read_status()
+    assert (status['state'],status['pauseReason'])==('awaiting_input','commit_secret')
+    assert status['inputQuestion']['kind']=='secret'
     assert len(sent)==1
     assert len(text)<=MAX_NOTIFY_CHARS
     assert not missing
@@ -68,7 +70,7 @@ def _advertised_commands(text):
     """Every `ralphctl ...` command the digest's `answer:` line offers, with
     its placeholder arguments kept verbatim (`<ruling.md>`, `<slug>`)."""
     line=next(l for l in text.splitlines() if l.startswith('answer: '))
-    return re.findall(r'ralphctl [a-z-]+ '+re.escape(RUN_ID)+r'(?: --[a-z-]+ <[^>]+>)*',line)
+    return re.findall(r'ralphctl [a-z-]+ '+re.escape(RUN_ID)+r'(?: --[a-z-]+(?: <[^>]+>)?)*',line)[:1]
 
 
 def _run_ralphctl(cmd,tmp_path,monkeypatch,client):
@@ -89,7 +91,7 @@ def _run_ralphctl(cmd,tmp_path,monkeypatch,client):
     args.func(args)
 
 
-def test_every_advertised_answer_command_releases_the_commit_scan_pause(tmp_path,monkeypatch,capsys):
+def test_every_advertised_answer_command_releases_the_commit_secret_park(tmp_path,monkeypatch,capsys):
     """"Working answer commands": each command the digest names is run end to
     end -- real CLI handler, real engine `POST` route, real supervisor -- over
     a fresh commit-scan pause, and must leave the run `running` with no
@@ -106,7 +108,7 @@ def test_every_advertised_answer_command_releases_the_commit_scan_pause(tmp_path
         root.mkdir()
         registry,sup,sent=trigger(root,monkeypatch)
         status=sup.run.read_status()
-        assert (status['state'],status['pauseReason'])==('paused','operator_input_needed')
+        assert (status['state'],status['pauseReason'])==('awaiting_input','commit_secret')
         with TestClient(create_app(sup.cfg,sup.run,sup)) as client:
             _run_ralphctl(cmd,root,monkeypatch,client)
         status=sup.run.read_status()
@@ -122,7 +124,7 @@ def test_task_boundary_undelivered_marker_visible_until_answered(tmp_path,monkey
     assert len(sent)==3
     assert len([e for e in events if e['type']=='notification.escalation_undelivered'])==1
     assert len([e for e in events if e['type']=='notification.failed'])==3
-    assert sup.run.read_status()['state']=='paused'
+    assert sup.run.read_status()['state']=='awaiting_input'
     def value():
         if surface=='cli':
             out=_ralphctl_status(capsys)
@@ -171,7 +173,7 @@ def test_task_boundary_digest_excludes_the_matched_secret_value_and_keeps_worker
         tmp_path,monkeypatch,live_synthetic_secret):
     """The whole production path over a REAL hit: a worker commit whose diff
     AND message carry a live (synthetic) secret value is found by
-    `_scan_task_boundary_commits`, then `_pause_for_commit_secret_hit` posts
+    `_scan_task_boundary_commits`, then `_park_for_commit_secret` posts
     its digest. The POSTed text names the commit sha, the part and the
     variable NAME, and never the value -- not even redacted, since the digest
     is built only off the value-free `commit_secret_scan` event. The pause
@@ -210,7 +212,7 @@ def test_task_boundary_digest_excludes_the_matched_secret_value_and_keeps_worker
 
     hit=sup._scan_task_boundary_commits(base,head)
     assert hit is not None and hit['sha']==head
-    sup._pause_for_commit_secret_hit()
+    sup._park_for_commit_secret(None, None)
 
     assert len(sent)==1
     text=sent[0]
@@ -220,8 +222,8 @@ def test_task_boundary_digest_excludes_the_matched_secret_value_and_keeps_worker
     assert f'sha: {head[:12]}' in text
     assert f'variable: {hit["variable"]}' in text
     assert f'part: {hit["part"]}' in text
-    assert 'pauseReason: operator_input_needed' in text
-    assert 'ralphctl unpause '+RUN_ID in text
+    assert 'pauseReason: commit_secret' in text
+    assert 'ralphctl answer '+RUN_ID+' --secret-handled' in text
 
     raw_events=(sup.run.root/'events.jsonl').read_text()
     assert SYNTHETIC_VALUE not in raw_events
@@ -232,8 +234,9 @@ def test_task_boundary_digest_excludes_the_matched_secret_value_and_keeps_worker
     assert scans[0]['variable']==hit['variable']
     assert not [e for e in events if e['type']=='operator_escalation']
     status=sup.run.read_status()
-    assert status['state']=='paused'
-    assert status['pauseReason']=='operator_input_needed'
+    assert status['state']=='awaiting_input'
+    assert status['pauseReason']=='commit_secret'
+    assert status['inputQuestion']['kind']=='secret'
     assert SYNTHETIC_VALUE not in json.dumps(status)
     assert sup._paused_awaiting_operator_input_needed_ruling(1) is False
 
@@ -307,26 +310,26 @@ def test_commit_scan_hold_is_never_released_by_a_ruling_even_on_a_signed_approac
     sup.run.update_status(phase='worker')
     sup.run.emit(sup.COMMIT_SECRET_SCAN_EVENT,sha='1'*40,part='blob',
                 variable='LATER_VARIABLE',pushed=False)
-    sup._pause_for_commit_secret_hit()
-    assert sup.run.read_status()['pauseReason']=='operator_input_needed'
+    sup._park_for_commit_secret(None, None)
+    assert sup.run.read_status()['pauseReason']=='commit_secret'
     text=sent[0]
-    assert 'ralphctl unpause '+RUN_ID in text
+    assert 'ralphctl answer '+RUN_ID+' --secret-handled' in text
     assert 'ralphctl rule' not in text
     assert 'releases this hold too' not in text
-    assert 'a ruling does not release this hold' in text
+    assert 'a ruling does not release this park' in text
 
     with TestClient(create_app(sup.cfg,sup.run,sup)) as client:
         _run_ralphctl('ralphctl rule '+RUN_ID+' --file <ruling.md> --name <slug>',
                       tmp_path,monkeypatch,client)
     status=sup.run.read_status()
-    assert status['state']=='paused',status
-    assert status['pauseReason']=='operator_input_needed'
+    assert status['state']=='awaiting_input',status
+    assert status['pauseReason']=='commit_secret'
 
 
 def test_user_docs_state_that_a_ruling_never_releases_the_commit_scan_hold():
     """v0.36 D.1: no user doc or SPEC passage describes a ruling as releasing
     the commit-scan hold (not even on a signed approach); every surface that
-    describes the hold's answer names `ralphctl unpause <run>` alone and says
+    describes the park's answer names `ralphctl answer <run> --secret-handled` alone and says
     `resume_if_ruling_answers_pause` is gone."""
     import pathlib
     root=pathlib.Path(__file__).resolve().parent.parent
@@ -341,6 +344,6 @@ def test_user_docs_state_that_a_ruling_never_releases_the_commit_scan_hold():
     for rel in ('SPEC.md','docs/api.md'):
         text=(root/rel).read_text()
         row=next(l for l in text.splitlines() if l.startswith('| `pauseReason` |'))
-        hold=row[row.index('commit-secret-scan hold'):]
-        assert 'ralphctl unpause <run>' in hold,rel
+        hold=row[row.index('commit-secret-scan'):]
+        assert 'ralphctl answer <run> --secret-handled' in hold,rel
         assert 'never releases' in hold or 'does not release' in hold,rel

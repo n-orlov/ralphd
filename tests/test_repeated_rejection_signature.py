@@ -151,7 +151,7 @@ def test_a_second_identical_rejection_signature_parks_on_the_ladder_instead_of_r
 
     assert sup._pause.is_set() is True  # not paused yet
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _step_review_spent(sup)
 
     assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False
@@ -252,7 +252,7 @@ def test_the_escalation_is_emitted_to_events_jsonl_with_no_notifier(tmp_path):
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _step_review_spent(sup)
     assert outcome == ("advance", "paused", "operator_input_needed")
     assert sup._pause.is_set() is False
 
@@ -293,7 +293,7 @@ def test_a_different_rejection_signature_replans_normally_and_records_its_own(
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _step_review_spent(sup)
 
     assert outcome == ("advance", "replan", "rejected_approach_left")
     assert sup._pause.is_set() is True  # never paused
@@ -326,7 +326,7 @@ def test_no_findings_channel_never_trips_the_repeat_guard(tmp_path):
 
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _step_review_spent(sup)
 
     assert outcome == ("advance", "replan", "rejected_approach_left")
     assert not _events(root, "operator_escalation")
@@ -404,12 +404,12 @@ def test_an_unreadable_channel_rejection_pauses_on_findings_unusable(tmp_path):
     sup.runner.run = _review_rejects  # type: ignore[method-assign]
     sup._ask_contract_fix = _stub_contract_fix  # type: ignore[method-assign]
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _step_review_spent(sup)
 
-    assert outcome == ("advance", "paused", "review_findings_unusable")
-    assert sup._pause.is_set() is False
+    assert outcome == ("tail",)
+    assert sup._pause.is_set() is True  # never parked (v0.36 F.3)
     status = sup.run.read_status()
-    assert status.get("pauseReason") == "review_findings_unusable"
+    assert status.get("pauseReason") is None
     assert status.get("state") not in ("succeeded", "failed")
 
     # never archived, never a composite PRD -- the approach is left for a
@@ -418,18 +418,13 @@ def test_an_unreadable_channel_rejection_pauses_on_findings_unusable(tmp_path):
     assert not sup.run.composite_prd_file.exists()
     assert sup._approach == 2
 
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
-    assert escalations[0]["reason"] == "review_findings_unusable"
-    assert escalations[0]["contractErrors"] == channel_errors
-
-    assert len(notifier.messages) == 1
-    text = notifier.messages[0]
-    # cure-01-05-2: the digest never carries the raw diagnostic body
-    # unbounded -- a bounded, id-prefixed preview of it does, still
-    # naming the same fault, while the FULL text stays on the event.
-    assert channel_errors[0][:120] in text
-    assert "ralphctl unpause task016-repeated-rejection-signature" in text
+    # v0.36 F.3: no escalation and no notifier digest -- an infra fault;
+    # the fault is recorded on `review.contract_fault`.
+    assert _events(root, "operator_escalation") == []
+    (cfault,) = _events(root, "review.contract_fault")
+    assert cfault["guard"] == "review_findings_unusable"
+    assert cfault["errors"] and channel_errors[0][:80] in cfault["errors"][0]
+    assert notifier.messages == []
 
 
 def test_a_different_channel_error_still_pauses_on_findings_unusable(tmp_path):
@@ -459,12 +454,12 @@ def test_a_different_channel_error_still_pauses_on_findings_unusable(tmp_path):
     sup.cfg.contract_retry_max = 1
     sup._ask_contract_fix = _stub_contract_fix  # type: ignore[method-assign]
 
-    outcome = asyncio.run(sup._step_review())
+    outcome = _step_review_spent(sup)
 
-    assert outcome == ("advance", "paused", "review_findings_unusable")
-    escalations = _events(root, "operator_escalation")
-    assert len(escalations) == 1
-    assert escalations[0]["reason"] == "review_findings_unusable"
+    assert outcome == ("tail",)
+    assert _events(root, "operator_escalation") == []
+    (cfault,) = _events(root, "review.contract_fault")
+    assert cfault["guard"] == "review_findings_unusable"
     status = sup.run.read_status()
     # approach 1's own previously-recorded signature is untouched -- this
     # pause never records or compares one of its own.
@@ -542,6 +537,14 @@ def test_a_residual_only_rejection_still_yields_no_signature_unlike_an_unreadabl
 # ===========================================================================
 
 
+def _step_review_spent(sup):
+    """Drive one `_step_review` with the outage budget already spent: a review
+    contract fault (v0.36 F.3) is an infra fault, so the run ends `failed`
+    (`("tail",)`) rather than pausing."""
+    sup.cfg.infra_outage_budget_s = 0
+    return asyncio.run(asyncio.wait_for(sup._step_review(), 120))
+
+
 def _second_cycle_supervisor(root: Path, max_approaches: int):
     return make_supervisor(
         root, run_id="cure0103-two-real-cycles", cfg_defaults=False,
@@ -583,13 +586,13 @@ def test_two_real_review_cycles_persist_findings_unusable_pause_and_keep_first_u
     wire(sup)
     sup.run.findings_json_file.write_text(payload, encoding="utf-8")
 
-    outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "paused", "review_findings_unusable")
+    outcome = _step_review_spent(sup)
+    assert outcome == ("tail",)
     assert not (root / "approaches" / "01").exists()
-    assert len(messages) == 1
+    assert len(messages) == 0
     status = sup.run.read_status()
-    assert status["pauseReason"] == "review_findings_unusable"
-    assert sup._approach == 1 and not sup._pause.is_set()
+    assert status.get("pauseReason") is None
+    assert sup._approach == 1 and sup._pause.is_set()
 
     # A fresh supervisor over the SAME run directory -- the resume shape --
     # never inheriting anything the first supervisor still held in memory,
@@ -598,13 +601,13 @@ def test_two_real_review_cycles_persist_findings_unusable_pause_and_keep_first_u
     wire(sup)
     sup.run.findings_json_file.write_text(payload, encoding="utf-8")
 
-    outcome = asyncio.run(sup._step_review())
-    assert outcome == ("advance", "paused", "review_findings_unusable")
+    outcome = _step_review_spent(sup)
+    assert outcome == ("tail",)
     assert not (root / "approaches" / "01").exists()
     status = sup.run.read_status()
-    assert status["pauseReason"] == "review_findings_unusable"
-    assert sup._approach == 1 and not sup._pause.is_set()
-    assert len(messages) == 2
+    assert status.get("pauseReason") is None
+    assert sup._approach == 1 and sup._pause.is_set()
+    assert len(messages) == 0
     assert len(repairs) == 4 and all(repairs)
     findings_list, channel_errors = sup._review_findings_channel()
     assert findings_list is None and channel_errors
@@ -683,13 +686,13 @@ def test_two_real_review_cycles_persist_permission_denied_error_pause_and_keep_s
         findings_list, channel_errors = sup._review_findings_channel()
         assert findings_list is None and channel_errors
 
-        outcome = asyncio.run(sup._step_review())
-        assert outcome == ("advance", "paused", "review_findings_unusable")
+        outcome = _step_review_spent(sup)
+        assert outcome == ("tail",)
         assert not (root / "approaches" / "01").exists()
-        assert len(messages) == 1
+        assert len(messages) == 0
         status = sup.run.read_status()
-        assert status["pauseReason"] == "review_findings_unusable"
-        assert sup._approach == 1 and not sup._pause.is_set()
+        assert status.get("pauseReason") is None
+        assert sup._approach == 1 and sup._pause.is_set()
 
         # A fresh supervisor over the SAME run directory -- the resume
         # shape -- never inheriting anything the first supervisor still
@@ -702,13 +705,13 @@ def test_two_real_review_cycles_persist_permission_denied_error_pause_and_keep_s
         wire(sup)
         _write_permission_denied_channel(sup)
 
-        outcome = asyncio.run(sup._step_review())
-        assert outcome == ("advance", "paused", "review_findings_unusable")
+        outcome = _step_review_spent(sup)
+        assert outcome == ("tail",)
         assert not (root / "approaches" / "01").exists()
         status = sup.run.read_status()
-        assert status["pauseReason"] == "review_findings_unusable"
-        assert sup._approach == 1 and not sup._pause.is_set()
-        assert len(messages) == 2
+        assert status.get("pauseReason") is None
+        assert sup._approach == 1 and sup._pause.is_set()
+        assert len(messages) == 0
         assert len(repairs) == 4 and all(repairs)
         findings_list, channel_errors = sup._review_findings_channel()
         assert findings_list is None and channel_errors

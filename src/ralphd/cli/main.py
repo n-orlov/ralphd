@@ -2948,6 +2948,18 @@ def _apply_job_timeout_topup(job: dict, spec: str) -> None:
     job["job_timeout_s"] = _resolve_topup_spec("--timeout", spec, base)
 
 
+def _apply_rate_limit_wait_topup(job: dict, spec: str) -> None:
+    """`resume --rate-limit-wait +N|N` (v0.36 F.4): the rate-limit wait
+    ceiling in seconds, written to job.yaml's `rate_limit_max_wait_s`. The
+    engine seeds its ceiling from the larger of that and the status.json
+    record, so a top-up raises it for the resumed run."""
+    current = job.get("rate_limit_max_wait_s")
+    base = (int(current) if current is not None
+            else JobConfig().rate_limit_max_wait_s)
+    job["rate_limit_max_wait_s"] = _resolve_topup_spec(
+        "--rate-limit-wait", spec, base)
+
+
 def _apply_iteration_timeout_topup(job: dict, spec: str) -> None:
     current = job.get("iteration_timeout_s")
     base = int(current) if current is not None else JobConfig().iteration_timeout_s
@@ -3311,7 +3323,10 @@ def cmd_resume(args):
         _apply_job_timeout_topup(job, args.timeout)
     if args.iteration_timeout:
         _apply_iteration_timeout_topup(job, args.iteration_timeout)
-    if args.iterations or args.approaches or args.timeout or args.iteration_timeout:
+    if getattr(args, "rate_limit_wait", None):
+        _apply_rate_limit_wait_topup(job, args.rate_limit_wait)
+    if (args.iterations or args.approaches or args.timeout
+            or args.iteration_timeout or getattr(args, "rate_limit_wait", None)):
         _write_job_yaml(job_path, job)
     # v0.36 requirement G.2: an `exhausted` run resumes only with a top-up
     # of the budget it ran out of. Checked AFTER the write above, so any
@@ -6220,7 +6235,13 @@ def cmd_answer(args):
         body["note"] = text
         if args.name:
             body["name"] = args.name
+    if getattr(args, "secret_handled", False):
+        body["secretHandled"] = True
     res = api(args.run_id, "POST", "/answer", body)
+    if res.get("kind") == "secret":
+        out(args, res, "answered: secret handled (the commit scan of the "
+            "offending range is clean; the worker carries on)")
+        return
     out(args, res, f"answered: {res.get('outcome')} (waived "
         f"{res.get('waived') or 'none'}, accepted "
         f"{res.get('accepted') or 'none'}, cure rounds "
@@ -9197,6 +9218,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "`budget --iteration-timeout` change back to "
                         "job.yaml's own value (#94 (d), docs/cli.md's "
                         "budget table)")
+    s.add_argument("--rate-limit-wait", metavar="+N|N", default=None,
+                   help="rate-limit wait ceiling top-up/absolute in seconds, "
+                        "written to job.yaml's `rate_limit_max_wait_s`; the "
+                        "way to resume a run that ended `failed` with "
+                        "`ending: rate_limit_ceiling` (v0.36 F.4)")
     s.add_argument("--image", default=None,
                    help="pin the image this resume runs; defaults to replaying "
                         "the image recipe the run started with (its "
@@ -9403,6 +9429,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="record this file as a ruling (reaches both judges "
                         "and planning)")
     s.add_argument("--name", help="ruling file name slug for --note-file")
+    s.add_argument("--secret-handled", action="store_true",
+                   help="answer a `secret` question (a secret was found in a "
+                        "commit): refused while the commit scan of the "
+                        "offending range still hits, and once it is clean "
+                        "the worker carries on (v0.36 C.5)")
     s.set_defaults(func=cmd_answer)
 
     s = sub.add_parser("amend", help="record an operator ruling review must "

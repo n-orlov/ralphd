@@ -2,11 +2,10 @@
 operator.
 
 `JobConfig.rate_limit_max_wait_s` bounds the waiting. A rate-limit wait that
-would take the run past it does not start: the run pauses
-`operator_input_needed` with `pauseDetail.reason == "rate_limit_ceiling"`,
-tells the notifier when the window resets, and parks. An unpause resets the
-count and re-probes the same work. The review-pause machinery (the one-shot
-no-ruling proceed, a ruling releasing the pause) stays away from it.
+would take the run past it does not start (v0.36 F.4): the run ends `failed`
+with `ending: rate_limit_ceiling`, tells the notifier when the window resets,
+and never parks. `ralphctl resume <run> --rate-limit-wait +N` resumes it.
+(tests/test_stop_routing_faults.py drives it through a whole run.)
 
 Waits go through the recorded `_wait_out_backoff` stand-in (never slept), the
 clock is the `_now_epoch` seam and the jitter is 0, so every number is exact.
@@ -105,7 +104,7 @@ def test_the_ceiling_and_the_preempt_threshold_default_to_a_day_and_95_percent(t
 
 
 @pytest.mark.asyncio
-async def test_a_wait_crossing_the_ceiling_pauses_and_unpause_reruns_the_same_work(tmp_path):
+async def test_a_wait_crossing_the_ceiling_ends_the_run_failed_and_never_parks(tmp_path):
     sup, rec = _harness(
         tmp_path,
         [_step(_rate_limited()), _step(_rate_limited()), _step(_ok())],
@@ -116,14 +115,12 @@ async def test_a_wait_crossing_the_ceiling_pauses_and_unpause_reruns_the_same_wo
 
     # the first 600 s wait fits under 1000; the second would make 1200
     assert rec["waits"] == [600.0]
-    (parked,) = rec["parked"]
-    assert parked["state"] == "paused"
-    assert parked["pauseReason"] == "operator_input_needed"
-    detail = parked["pauseDetail"]
-    assert detail == {"reason": RATE_LIMIT_CEILING_REASON,
-                      "resetsAt": utc_from_epoch(NOW + 600),
-                      "waitedS": 600.0, "maxWaitS": 1000, "plannedS": 600.0,
-                      "rateLimitType": "five_hour", "phase": "worker"}
+    assert rec["parked"] == [], "v0.36 F.4: the engine never parks on the ceiling"
+    # the second rate-limited result comes back and the run is ending
+    assert result.rate_limit is not None and result.final_text != "done"
+    assert sup._failed_ending == RATE_LIMIT_CEILING_REASON
+    assert sup._abort_reason is not None
+    assert f"ralphctl resume {sup.cfg.run_id} --rate-limit-wait" in sup._abort_reason
     # the second wait never started
     assert len(_events(sup, "rate_limit_wait_started")) == 1
     (reached,) = _events(sup, "rate_limit_ceiling_reached")
@@ -132,41 +129,41 @@ async def test_a_wait_crossing_the_ceiling_pauses_and_unpause_reruns_the_same_wo
     assert reached["reason"] == "rate_limit"
     # never an operator_escalation (that shape routes a restart into review)
     assert _events(sup, "operator_escalation") == []
-    # the notifier names the reset in local time
+    # the notifier names the reset in local time and how to resume
     ceiling_notes = [n for n in rec["notes"] if "ceiling" in n]
     assert len(ceiling_notes) == 1
     note = ceiling_notes[0]
     assert state.format_local_time(utc_from_epoch(NOW + 600)) in note
-    assert f"ralphctl unpause {sup.cfg.run_id}" in note
-    assert "--rate-limit-wait" in note
-    # the unpause reset the count and re-probed the same work, which succeeded
-    assert result.final_text == "done"
-    assert rec["calls"] == [("worker", "EXTRA", "worker", "standard", "T7")] * 3
-    assert sup._rate_limit_waited_s == 0.0
+    assert f"ralphctl resume {sup.cfg.run_id} --rate-limit-wait" in note
+    assert "rate_limit_ceiling" in note
+    # the work was not re-run; both attempts are refunded
+    assert rec["calls"] == [("worker", "EXTRA", "worker", "standard", "T7")] * 2
     status = _status(sup)
-    assert status["state"] == "running"
-    assert status["pauseReason"] is None and status["pauseDetail"] is None
-    # both rate-limited attempts are refunded
-    assert sup.iterations_used == 3 and sup.iterations_used_charged == 1
-    # the parked time extends the deadline as an operator pause
-    assert [e["reason"] for e in _events(sup, "deadline_extended")] == [
-        "rate limit wait", "operator pause"]
+    assert status.get("state") != "paused" and status.get("pauseDetail") is None
+    assert sup.iterations_used == 2 and sup.iterations_used_charged == 0
 
 
 @pytest.mark.asyncio
-async def test_after_the_unpause_the_count_starts_again(tmp_path):
-    """The reset is real: after the ceiling unpause, a further 600 s wait
-    fits under the 1000 s ceiling again and is taken, not paused on."""
+async def test_a_resumed_process_counts_rate_limit_waiting_from_zero(tmp_path):
+    """Covers the former "after the unpause the count starts again": the
+    ceiling ends the run, and the resumed engine process (a fresh
+    supervisor, `ralphctl resume --rate-limit-wait +N`'s raised ceiling)
+    starts counting again, so two 600 s waits fit under 1500 s."""
     sup, rec = _harness(
         tmp_path,
         [_step(_rate_limited()), _step(_rate_limited()), _step(_rate_limited()),
          _step(_ok())],
-        rate_limit_max_wait_s=1000)
+        rate_limit_max_wait_s=1500)
     await sup.run_iteration("worker")
     assert rec["waits"] == [600.0, 600.0]
-    assert len(rec["parked"]) == 1
-    assert rec["waited_at_park"] == [600.0]
-    assert sup._rate_limit_waited_s == 600.0
+    assert rec["parked"] == []
+    assert sup._rate_limit_waited_s == 1200.0
+    assert sup._failed_ending == RATE_LIMIT_CEILING_REASON
+    fresh, _rec2 = _harness(tmp_path / "again", [_step(_rate_limited()), _step(_ok())],
+                            rate_limit_max_wait_s=1500)
+    assert fresh._rate_limit_waited_s == 0.0
+    await fresh.run_iteration("worker")
+    assert fresh._failed_ending is None
 
 
 @pytest.mark.asyncio
@@ -174,72 +171,56 @@ async def test_a_single_wait_longer_than_the_ceiling_never_starts(tmp_path):
     sup, rec = _harness(tmp_path, [_step(_rate_limited()), _step(_ok())],
                         rate_limit_max_wait_s=300)
     await sup.run_iteration("worker")
-    assert rec["waits"] == []
-    assert rec["parked"][0]["pauseDetail"]["waitedS"] == 0.0
+    assert rec["waits"] == [] and rec["parked"] == []
+    (reached,) = _events(sup, "rate_limit_ceiling_reached")
+    assert reached["waitedS"] == 0.0
     assert _events(sup, "rate_limit_wait_started") == []
-    # nothing waited, so no rate-limit deadline extension
-    assert [e["reason"] for e in _events(sup, "deadline_extended")] == [
-        "operator pause"]
+    # nothing waited, so no rate-limit deadline extension, and nothing parked
+    assert _events(sup, "deadline_extended") == []
+    assert sup._failed_ending == RATE_LIMIT_CEILING_REASON
 
 
 @pytest.mark.asyncio
-async def test_unpause_grants_no_proceed_and_a_ruling_does_not_release(tmp_path):
-    seen = {}
-
-    def on_park(sup):
-        sup.run.add_ruling("a ruling filed against the hold")
-        seen["paused_after_rule"] = _status(sup)["state"]
-        sup.resume()
-
+async def test_a_ruling_does_not_matter_there_is_nothing_parked(tmp_path):
+    """Covers the former "a ruling does not release the pause": the ceiling
+    no longer pauses, so there is nothing for a ruling to release; it is
+    recorded and the run still ends `failed`/`rate_limit_ceiling`."""
     sup, _rec = _harness(tmp_path, [_step(_rate_limited()), _step(_ok())],
-                         on_park=on_park, rate_limit_max_wait_s=300)
+                         rate_limit_max_wait_s=300)
     sup._approach = 1
     sup.run.update_status(approach=1, rejectionSignatures={"1": "sig-abc"})
+    sup.run.add_ruling("a ruling filed against the hold")
     await sup.run_iteration("worker")
-    # v0.36 D.1: a ruling is recorded but releases nothing.
-    assert seen == {"paused_after_rule": "paused"}
     assert len(sup.run.ruling_entries()) == 1
+    assert sup._failed_ending == RATE_LIMIT_CEILING_REASON
     assert not _status(sup).get("noRulingProceed")
 
 
 @pytest.mark.asyncio
-async def test_an_abort_while_parked_returns_the_rate_limited_result(tmp_path):
-    def on_park(sup):
-        sup.abort("operator says stop")
-        sup.resume()
-
+async def test_the_ceiling_returns_the_rate_limited_result_and_never_reruns(tmp_path):
     limited = _rate_limited()
     sup, rec = _harness(tmp_path, [_step(limited), _step(_ok())],
-                        on_park=on_park, rate_limit_max_wait_s=300)
+                        rate_limit_max_wait_s=300)
     result = await sup.run_iteration("worker")
     assert result is limited
-    assert len(rec["calls"]) == 1, "an aborted pause never re-runs the work"
-    assert _status(sup)["pauseDetail"] is None
+    assert len(rec["calls"]) == 1, "the ceiling never re-runs the work"
+    assert _status(sup).get("pauseDetail") is None
 
 
 @pytest.mark.asyncio
-async def test_a_real_park_waits_for_unpause(tmp_path):
-    """No stubbed park: the iteration really sits in `_gate()` until
-    `resume()`, and only then re-probes."""
+async def test_the_ceiling_returns_promptly_without_parking(tmp_path):
+    """No stubbed park: the iteration really returns at once (covering the
+    former "a real park waits for unpause")."""
     sup = make_supervisor(tmp_path, prd=True, job_timeout_s=3600,
                           real_sleep=True, rate_limit_max_wait_s=300)
     sup._now_epoch = lambda: NOW                         # type: ignore[method-assign]
     sup._rate_limit_jitter_s = lambda: 0.0               # type: ignore[method-assign]
     sup.runner = ScriptedRunner({"worker": [_step(_rate_limited()), _step(_ok())]})
     sup.runner.sup = sup
-    task = asyncio.create_task(sup.run_iteration("worker"))
-    for _ in range(500):
-        await asyncio.sleep(0.01)
-        if _status(sup).get("state") == "paused":
-            break
-    assert _status(sup)["pauseDetail"]["reason"] == RATE_LIMIT_CEILING_REASON
-    await asyncio.sleep(0.05)
-    assert not task.done(), "a run past its ceiling waits for the operator"
+    result = await asyncio.wait_for(sup.run_iteration("worker"), timeout=10)
+    assert result.final_text != "done"
     assert sup.runner.calls == {"worker": 1}
-    sup.resume()
-    result = await asyncio.wait_for(task, timeout=10)
-    assert result.final_text == "done"
-    assert sup.runner.calls == {"worker": 2}
+    assert _status(sup).get("state") != "paused"
 
 
 @pytest.mark.asyncio
