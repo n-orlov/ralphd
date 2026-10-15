@@ -1,7 +1,0 @@
-running: /__w/ralphd/ralphd/.venv/bin/python -mpytest --basetemp=/tmp/pytest-of-ci/pytest-0/popen-gw2/test_a_zero_rerun_flaky_marker_cannot_take_the_one_rerun_away_from_a_flaky_infra_node0/runpytest-0 -p no:cacheprovider -p no:xdist -rR -q
-     in: /tmp/pytest-of-ci/pytest-0/popen-gw2/test_a_zero_rerun_flaky_marker_cannot_take_the_one_rerun_away_from_a_flaky_infra_node0
-R.                                                                       [100%]
-=========================== rerun test summary info ============================
-RERUN test_child.py::test_node
-PASSED test_child.py::test_node
-1 passed, 1 rerun in 0.08s

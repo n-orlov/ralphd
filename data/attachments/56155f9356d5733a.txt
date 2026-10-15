@@ -1,2 +1,0 @@
-ERROR    ralphd.loop:loop.py:8259 refusing to push: commit 46f44d4cadbc's diff matches a known secret value for variable 'SYNTHETIC_HOOKFAULT_API_TOKEN'
-WARNING  ralphd.loop:loop.py:11098 task-boundary commit scan flagged 46f44d4cadbc's diff (variable SYNTHETIC_HOOKFAULT_API_TOKEN) -- nothing pushed

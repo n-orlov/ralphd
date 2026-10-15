@@ -1,0 +1,7 @@
+ralphctl: deriving job image ralphd-derived:6d01ad7ff95f from base ubuntu:24.04
+ralphctl: building job image ralphd-derived:6d01ad7ff95f from /tmp/pytest-of-ci/pytest-0/popen-gw3/test_the_derived_build_uses_th0/checkout
+  build: Step 1/3 : RUN true
+  build: Step 2/3 : RUN true
+  build: Step 3/3 : RUN true
+  build: Successfully tagged ralphd-derived:6d01ad7ff95f
+ralphctl: built job image ralphd-derived:6d01ad7ff95f
