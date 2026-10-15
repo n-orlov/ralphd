@@ -187,6 +187,14 @@ ralphd is a from-scratch design and implementation of the Ralph loop concept
 (planning/worker/review phases, task-state files, mid-flight steering). It shares
 ideas — not code or prompts — with a prior internal implementation.
 
+## Remix, don't PR
+
+This project is **closed to pull requests and open to remix**. It is Apache-2.0: fork it, rewrite it,
+let your agent adapt it, and keep your version. I don't review or merge outside pull requests and
+there is no maintenance promise. Ideas, bug reports and links to your remix are welcome in
+[Discussions](https://github.com/n-orlov/ralphd/discussions). How to do it: [REMIX.md](REMIX.md).
+Background: [Geoff Huntley's remix model](https://ghuntley.com/remix/).
+
 ## License
 
 Apache-2.0 (see [LICENSE](LICENSE)).
