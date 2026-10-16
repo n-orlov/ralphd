@@ -1,0 +1,1 @@
+WARNING  ralphd.pricing:pricing_aws.py:517 built-in AWS Bedrock rate table is stale (as of 2000-01-01, 9785 days old); refresh with 'python tools/refresh_bedrock_rates.py'
