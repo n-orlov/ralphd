@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -394,6 +395,9 @@ async def test_the_pause_holds_past_timeouts_and_credits_the_wall_clock_on_resum
     sup._approach = 1
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     _reject(sup)
+    # Re-arm the 20 ms job deadline right before the call: on a slow runner
+    # the setup above can outlast it, and `_step_review` would exit `tail`.
+    sup.deadline = time.monotonic() + 0.02
 
     outcome = await sup._step_review()
     assert outcome == ("advance", "paused", "operator_input_needed")
