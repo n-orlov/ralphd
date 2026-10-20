@@ -1,3 +1,8 @@
+[![build](https://int21h.mooo.com/jenkins-static/ralphd/ci/main/build.svg)](https://jenkins.wisent-owl.ts.net/job/ralphd/job/ci/job/main/lastCompletedBuild/)
+[![tests](https://int21h.mooo.com/jenkins-static/ralphd/ci/main/tests.svg)](https://jenkins.wisent-owl.ts.net/job/ralphd/job/ci/job/main/lastCompletedBuild/Allure/)
+[![lint](https://int21h.mooo.com/jenkins-static/ralphd/ci/main/lint.svg)](https://jenkins.wisent-owl.ts.net/job/ralphd/job/ci/job/main/lastCompletedBuild/CI_20summary/)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 # ralphd
 
 **A self-contained, locally runnable autonomous coding loop.**
@@ -149,7 +154,7 @@ a non-loopback bind needs `--allow-non-loopback-bind`.
 | [docs/llm-profiles.md](docs/llm-profiles.md) | LLM auth: profile format, host forwarding, Bedrock and generic-gateway presets |
 | [docs/tutorial.md](docs/tutorial.md) | Start-to-finish walkthrough: install, doctor, profile, launch, steer, resume, hub |
 | [docs/testing.md](docs/testing.md) | Test tiers (smoke, fast, nightly), their recipes and time budgets |
-| [docs/ci.md](docs/ci.md) | CI lanes: who runs which tier, where, and what each attests |
+| [docs/ci.md](docs/ci.md) | CI on the homelab Jenkins: the lanes, the nightly cells, reports and badges |
 | [docs/review-economics.md](docs/review-economics.md) | Reusable PRD fragment: materiality rubric, petition protocol, late-cure rule |
 | [docs/petition-format.md](docs/petition-format.md) | Format of an impossibility petition a run files with review |
 | [docs/roadmap.md](docs/roadmap.md) | Versioned delivery plan |

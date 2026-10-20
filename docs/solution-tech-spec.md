@@ -1631,9 +1631,9 @@ The repository tests are tiered by pytest marker. Membership is derived in
 | Tier | Selection | Who runs it |
 |---|---|---|
 | `smoke` | `fast` items whose module spawns no real engine or `ralphctl` process: in-process engine, CLI, hub and docs/SPEC checks | The per-task verify pass of a run on this repository, and `scripts/final_sha_guards.sh` |
-| `fast` | Everything outside the nightly lanes, including the stub-pi flow modules in `tests/flows/`, the stub Claude Code CLI (`tests/stub-claude/claude`, v0.30) and process-boundary CLI tests | `gate.yml` on every pull request and push to `main` (`-m fast -n 2`, self-hosted `fast-lane` slots) |
-| `docker`, `browser` | Real sibling-container tests (including the agent-UID boundary probes) and Chromium-driven hub tests | `heavy.yml` on every pull request and push to `main`, self-hosted `ralphd-vps`/`docker-host` (the browser job also `browser-runner`) |
-| dev-layout and `nightly` nodes | A six-cell container matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` × `PYTHONUSERBASE` exported/unset) running `fast` plus every node the other lanes leave out | `nightly.yml`, 02:00 UTC and manual dispatch |
+| `fast` | Everything outside the nightly lanes, including the stub-pi flow modules in `tests/flows/`, the stub Claude Code CLI (`tests/stub-claude/claude`, v0.30) and process-boundary CLI tests | The Jenkinsfile's Fast lane on every pushed branch (`-m fast -n 4`, `docs/ci.md`) |
+| `docker`, `browser` | Real sibling-container tests (including the agent-UID boundary probes) and Chromium-driven hub tests | The Jenkinsfile's Docker and Browser lanes on every pushed branch, in parallel with Fast |
+| dev-layout and `nightly` nodes | A six-cell container matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` × `PYTHONUSERBASE` exported/unset) running `fast` plus every node the other lanes leave out | The Jenkinsfile's nightly lane: `main` at 02:23, or any build with `EXTENDED` |
 
 `tests/test_tier_budgets.py` checks the recorded wall-clock budgets in
 [testing.md](testing.md). It also checks collected counts against ratcheting

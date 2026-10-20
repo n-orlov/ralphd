@@ -20,5 +20,12 @@ build/
 # JetBrains IDE settings
 .idea/
 
-# per-tier Allure results a CI job writes (ci.yml --alluredir)
+# per-tier Allure results a CI lane writes (--alluredir), and the Jenkins
+# build's lane checkouts and reports (Jenkinsfile)
 allure-results*/
+/.lanes/
+/allure-report/
+/allure-history/
+/ci-summary/
+/junit/
+/previous/

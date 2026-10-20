@@ -9,7 +9,7 @@ budgets are checked by `tests/test_tier_budgets.py`, which reads this file.
 |---|---|---|---|
 | smoke | `smoke` | the per-task verify pass of a run on this repository (the run's Standing rules name this recipe; the verify prompt itself names no project tier), and `scripts/final_sha_guards.sh` over the docs-reading modules it discovers | in-process engine flows (a supervisor plus scripted attempts, backoffs stubbed), in-process CLI, in-process hub, and the in-process checks of the docs and SPEC.md against the code |
 | fast | `fast` | the final sha of a wave, and any pull request | smoke plus the stub-pi flow modules and the process-boundary CLI tests -- everything outside the nightly lanes |
-| nightly | `docker`, `browser`, and the dev-layout module | a sweep, never a per-task check | the docker-sibling tier, the browser tier, and `nightly.yml`'s six-cell dev-layout container matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset, all six cells in parallel on `ci-pool`, with `PIP_DEFAULT_TIMEOUT=60`, `PIP_RETRIES=10` and the `ci-pip-cache` volume as the pip cache) -- each cell's `pytest` invocation itself now runs the `fast` tier by default (task 076, `scripts/host_like_dev_layout.sh`'s `HOST_LIKE_DEV_LAYOUT_TIER`), not the whole suite unfiltered, PLUS (task cure-01-01-2) a supplemental pass over every node that default leaves outside `fast`/`smoke`/`docker`/`browser` -- the `nightly`-marked nodes and the dev-layout module's own nodes -- so nothing collected goes uncovered by every lane; see the dev-layout rows below |
+| nightly | `docker`, `browser`, and the dev-layout module | a sweep, never a per-task check | the docker-sibling tier, the browser tier, and the Jenkinsfile's nightly six-cell dev-layout container matrix (`ubuntu:24.04`, `python:3.11-slim`, `python:3.14-slim` x `PYTHONUSERBASE` exported/unset, two waves of three cells, with `PIP_DEFAULT_TIMEOUT=60`, `PIP_RETRIES=10` and the `ci-pip-cache` volume as the pip cache) -- each cell's `pytest` invocation itself now runs the `fast` tier by default (task 076, `scripts/host_like_dev_layout.sh`'s `HOST_LIKE_DEV_LAYOUT_TIER`), not the whole suite unfiltered, PLUS (task cure-01-01-2) a supplemental pass over every node that default leaves outside `fast`/`smoke`/`docker`/`browser` -- the `nightly`-marked nodes and the dev-layout module's own nodes -- so nothing collected goes uncovered by every lane; see the dev-layout rows below |
 
 ## Recipes
 
@@ -75,7 +75,7 @@ direct, class or module `flaky` marker (a higher count, `reruns=0`, a `condition
 an `only_rerun` filter, a delay) cannot raise, remove or filter the single rerun.
 A `flaky` marker on a node that does not carry `flaky_infra` is untouched.
 A node that fails twice fails; an unmarked node is never rerun. There is no
-global `--reruns` in `pyproject.toml` or in any workflow, and a guard in
+global `--reruns` in `pyproject.toml` or in the `Jenkinsfile`, and a guard in
 `tests/test_flaky_infra_marker.py` pins that. Two nodes carry it:
 `test_cli_logs_pty_termios.py::test_sigint_restores_termios_mode` and
 `test_cli_logs_signal.py::test_sigint_during_follow_exits_clean_no_traceback`.
@@ -115,33 +115,24 @@ plugin is loaded, so a run without `allure-pytest` is unchanged.
 `tests/test_allure_tier_labels.py` reads the labels back out of a child run's
 result files, one node per tier.
 
-`ci.yml`'s `fast`, `docker` and `browser` steps pass
-`--alluredir=allure-results-<tier>`, and an `if: always()` step uploads that directory as the
-artifact `allure-results-<tier>-<run id>-<attempt>`, so a red tier still keeps
-its results. The directories are ignored by git. Write the flag as `--alluredir=<dir>`, one
+The Jenkinsfile's `fast`, `docker` and `browser` lanes pass
+`--alluredir=allure-results-<tier>`, and the build's `post { always }` merges
+every lane's directory (and every nightly cell's) into one Allure report on the
+build page, so a red tier still keeps its results (`docs/ci.md`). The
+directories are ignored by git. Write the flag as `--alluredir=<dir>`, one
 token: pytest's early argument scan reads a bare `--alluredir <dir>` whose
 directory already exists outside the repository as a path to collect, and the
 run then loses the repository's `pyproject.toml` settings.
 
 `scripts/allure_env.sh <results-dir>` describes the run to the report. It writes
-`environment.properties` (`sha`, `ref`, `run_id`, `run_attempt`, `python` and
-`runner_image`) and `executor.json` (the run URL, as `buildUrl` and `url`) into
-the directory it is given, creating it if the tier left none. Each of
-`ci.yml`'s `fast`, `docker` and `browser` jobs runs it with `if: always()` on
-its `--alluredir` directory right before the upload, so the report shows the
-commit and the run beside the results. A variable GitHub Actions does not set is
-written as `unknown`; `tests/test_allure_env_script.py` pins both files' exact
-contents.
-
-`runner_image` names the environment the tier really ran in. `fast` and
-`browser` run in a job `container:`, so their step sets `ALLURE_RUNNER_IMAGE` to
-that container's pinned `image@sha256:...` reference, written out literally:
-Actions' `job.container` context has only `id` and `network`, no `image`, so an
-expression on it would render empty. `docker` has no job container and says so
-(`host runner <runner.name> (<runner.os> <runner.arch>, no job container)`,
-from the `runner` context). `tests/test_ci_workflow_guard.py` checks that a
-containerized tier's value equals its `container.image`, renders each tier's
-value, runs the real script with it and reads `environment.properties` back.
+`environment.properties` (`sha`, `branch`, `job`, `build`, `python` and
+`runner_image`) and `executor.json` (the build URL, as `buildUrl` and `url`)
+into the directory it is given, creating it if the tier left none. Each tier in
+`ci/jenkins-tier.sh` runs it on exit, whatever the tier's result, so the report
+shows the commit and the build beside the results. A variable Jenkins does not
+set is written as `unknown`; `tests/test_allure_env_script.py` pins both files'
+exact contents. `runner_image` is the lane's container image, as
+`ci/jenkins-lane.sh` started it.
 
 ## Running the suite inside a ralphd job container
 
@@ -252,13 +243,13 @@ invocation; they are labelled as retired rather than deleted or rewritten to
 a recipe they were never run against. The lane itself (task 077's container
 matrix) now runs each cell under the `fast` selection: the docker and
 browser tiers that selection drops are already covered at the gate-blocking
-level by `.github/workflows/ci.yml` and do not vary with the interpreter
+level by the Jenkinsfile's Docker and Browser lanes and do not vary with the interpreter
 a dev-layout cell varies, so the six cells lose no coverage that varies with
 the axis under test. No fresh dev-layout wall-clock measurement exists yet
 for the `-m fast` selection; task 077's own container matrix cells are the
-mechanism that will produce one, as a check-run verdict, never as a locally
-recorded lane sweep (standing rule 1). The workflow's own per-cell budget
-(`nightly.yml`'s `timeout-minutes: 120` -- raised from 60 by task 035 (steer
+mechanism that will produce one, as a CI build verdict, never as a locally
+recorded lane sweep (standing rule 1). The pipeline's own per-cell budget
+(the Jenkinsfile's 120-minute cell timeout -- raised from 60 by task 035 (steer
 026 §4) because 60 was already marginal (58 min observed at `bd284e79` with
 no interference) and task 035's own cure adds real per-attempt wall time to
 any cell whose startup watchdog has to re-arm under contention; `docs/ci.md`'s
@@ -271,11 +262,11 @@ runs.
 
 **Task cure-01-01-2 (task 018 criterion 3) adds one more pass on top of that
 `-m fast` default, for the exact no-override, no-extra-argument shape
-`nightly.yml`'s cell calls the script with.** `-m fast` alone left the
+the nightly cell calls the script with.** `-m fast` alone left the
 `nightly`-marked nodes and `tests/test_host_like_dev_layout_script.py`'s own
 nodes -- neither `fast` nor `smoke` nor `docker` nor `browser` -- uncovered
 by any CI lane: not this cell (it never selected them), not
-`.github/workflows/ci.yml` (its `docker`/`browser` jobs do not select
+the Jenkinsfile's tier lanes (its Docker and Browser lanes do not select
 them either). The script now runs a second pytest invocation afterwards, in
 the same already-built `$HOME`/user base (no re-install), selecting `-m
 "not fast and not smoke and not docker and not browser"` -- exactly that
@@ -289,8 +280,8 @@ either pass is, so a regression in the previously-uncovered set now fails
 the nightly cell instead of passing silently. This adds real wall time to
 the cell (the leftover set includes real editable-install-driven tests in
 its own module) but no new bound: the cell's existing 120-minute
-`timeout-minutes` is unchanged, and neither this table nor `docs/ci.md`'s
-matching row is edited for it, per the standing prohibition on raising a
+timeout is unchanged, and neither this table nor `docs/ci.md` is edited for
+it, per the standing prohibition on raising a
 bound to make a requirement pass.
 
 ## When a tier goes over budget

@@ -33,7 +33,7 @@ _PIP_CACHE_ENV = {
 def _run(args, extra_env=None, timeout=180):
     env = dict(os.environ)
     env.update(_PIP_CACHE_ENV)
-    # nightly.yml sets the results directory for the whole cell; a nested run
+    # The nightly cells set the results directory for the whole cell; a nested run
     # of the script under test must not write its own results into it.
     env.pop("HOST_LIKE_DEV_LAYOUT_ALLURE_DIR", None)
     if extra_env:
@@ -472,12 +472,11 @@ def test_the_marker_probe_reads_the_selected_interpreters_own_stdlib():
 def test_the_header_states_both_reasons_the_fast_tier_is_the_default():
     """Task 076: the default is not self-evident, so the script's own header
     must carry BOTH reasons for it -- (i) what `-m fast` drops relative to
-    unfiltered (the `docker` and `browser` tiers) is already gate-blocking in
-    ci.yml and does not vary with the interpreter axis a cell varies, and
-    (ii) `-m fast` excludes `-m browser`, so no matrix cell ever drives a
-    browser and ci.yml's browser job stays the only browser-bearing job
-    on the self-hosted box -- which is what makes the single `browser-runner`
-    label (steer 009) enough to serialise browser work across workflows."""
+    unfiltered (the `docker` and `browser` tiers) is already run by the
+    Jenkinsfile's own lanes and does not vary with the interpreter axis a
+    cell varies, and (ii) `-m fast` excludes `-m browser`, so no matrix cell
+    ever drives a browser and the Jenkinsfile's Browser lane stays the only
+    browser-bearing lane of a build (steer 009)."""
     header = SCRIPT.read_text()
     header = header[: header.index("set -euo pipefail")]
     # Read it as prose: drop each comment line's own `#` and collapse the
@@ -489,12 +488,11 @@ def test_the_header_states_both_reasons_the_fast_tier_is_the_default():
     prose = " ".join(prose.split())
 
     # (i)
-    assert "ci.yml" in prose
+    assert "Jenkinsfile" in prose
     assert "does not vary with the interpreter" in prose, prose[-2000:]
     # (ii)
     assert "-m fast` EXCLUDES `-m browser" in prose, prose[-2000:]
-    assert "browser-runner" in prose, prose[-2000:]
-    assert "across *workflows*" in prose, prose[-2000:]
+    assert "ONLY browser-bearing lane" in prose, prose[-2000:]
 
     # And the exclusion the second reason rests on is real, not just claimed:
     # tests/conftest.py never stamps a `browser`-marked node with `fast`.

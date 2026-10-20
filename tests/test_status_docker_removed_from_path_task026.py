@@ -83,10 +83,10 @@ def test_docker_binary_is_genuinely_absent_from_the_constructed_path(
 
     Task 069's nightly re-take found the precondition below asserting
     against an environment that never carries docker in the first place:
-    `.github/workflows/nightly.yml`'s dev-layout cells deliberately install
-    no docker client at all (`-m docker` coverage stays in the retired heavy workflow), so
+    the nightly dev-layout cells (the Jenkinsfile) deliberately install
+    no docker client at all (`-m docker` coverage stays in the Docker lane), so
     "this dev container is expected to carry a real docker client" is false
-    there by that workflow's own design, not by accident. Skipping rather
+    there by that lane's own design, not by accident. Skipping rather
     than failing keeps the precondition's job -- catching an accidental
     ambient-docker pass on a host that DOES carry one -- without turning a
     docker-less environment's absence of anything to remove into a defect."""

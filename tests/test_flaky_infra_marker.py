@@ -70,14 +70,16 @@ def test_the_marker_is_registered_and_the_dev_extra_lists_rerunfailures():
     assert any(d.startswith("pytest-rerunfailures") for d in dev)
 
 
-def test_no_global_reruns_in_pyproject_or_any_workflow():
+def test_no_global_reruns_in_pyproject_or_the_ci_pipeline():
     pattern = re.compile(r"--reruns|reruns\s*=|--only-rerun|rerunfailures", re.I)
     cfg = (REPO / "pyproject.toml").read_text()
     ini = tomllib.loads(cfg)["tool"]["pytest"]["ini_options"]
     assert not pattern.search(str(ini.get("addopts", "")))
     assert "reruns" not in ini
-    for wf in sorted((REPO / ".github" / "workflows").glob("*.y*ml")):
-        assert not re.search(r"--reruns|--only-rerun", wf.read_text()), wf.name
+    ci = [REPO / "Jenkinsfile", *sorted((REPO / "ci").glob("jenkins-*.sh"))]
+    assert len(ci) > 1
+    for path in ci:
+        assert not re.search(r"--reruns|--only-rerun", path.read_text()), path.name
 
 
 def test_the_two_named_pty_and_signal_nodes_carry_the_marker():

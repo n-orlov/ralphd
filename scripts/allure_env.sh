@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# Describe a CI run to the Allure report: write `environment.properties` and
+# Describe a CI build to the Allure report: write `environment.properties` and
 # `executor.json` into an Allure results directory (docs/testing.md, "Allure
 # results"). Allure shows the first as the report's Environment widget and the
-# second as the executor link back to the run.
+# second as the executor link back to the Jenkins build.
 #
 #   scripts/allure_env.sh <results-dir>
 #
 # Everything is read from the environment, so a test can pin it:
-#   GITHUB_SHA, GITHUB_REF, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT,
-#   GITHUB_SERVER_URL, GITHUB_REPOSITORY  -- set by GitHub Actions;
-#   ALLURE_RUNNER_IMAGE  -- the image the job ran in (the workflow passes the
-#                           job container's image, or the runner's OS);
+#   GIT_COMMIT, BRANCH_NAME, JOB_NAME, BUILD_NUMBER, BUILD_URL
+#                        -- set by Jenkins (ci/jenkins-lane.sh passes them on);
+#   ALLURE_RUNNER_IMAGE  -- the image the lane ran in;
 #   PYTHON               -- the interpreter to report (default python3).
 # A value that is not set is written as `unknown`: the keys are always present.
 set -euo pipefail
@@ -30,11 +29,10 @@ else
   python_version=unknown
 fi
 
-server=${GITHUB_SERVER_URL:-https://github.com}
-if [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
-  run_url="$server/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+if [ -n "${JOB_NAME:-}" ] && [ -n "${BUILD_NUMBER:-}" ]; then
+  build_name="$JOB_NAME #$BUILD_NUMBER"
 else
-  run_url=unknown
+  build_name=unknown
 fi
 
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
@@ -42,21 +40,21 @@ json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 mkdir -p "$dir"
 
 {
-  echo "sha=$(val GITHUB_SHA)"
-  echo "ref=$(val GITHUB_REF)"
-  echo "run_id=$(val GITHUB_RUN_ID)"
-  echo "run_attempt=$(val GITHUB_RUN_ATTEMPT)"
+  echo "sha=$(val GIT_COMMIT)"
+  echo "branch=$(val BRANCH_NAME)"
+  echo "job=$(val JOB_NAME)"
+  echo "build=$(val BUILD_NUMBER)"
   echo "python=$python_version"
   echo "runner_image=$(val ALLURE_RUNNER_IMAGE)"
 } > "$dir/environment.properties"
 
 {
   printf '{\n'
-  printf '  "name": "GitHub Actions",\n'
-  printf '  "type": "github",\n'
-  printf '  "buildOrder": "%s",\n' "$(json_escape "$(val GITHUB_RUN_ID)")"
-  printf '  "buildName": "ci run %s",\n' "$(json_escape "$(val GITHUB_RUN_ID)")"
-  printf '  "buildUrl": "%s",\n' "$(json_escape "$run_url")"
-  printf '  "url": "%s"\n' "$(json_escape "$run_url")"
+  printf '  "name": "Jenkins",\n'
+  printf '  "type": "jenkins",\n'
+  printf '  "buildOrder": "%s",\n' "$(json_escape "$(val BUILD_NUMBER)")"
+  printf '  "buildName": "%s",\n' "$(json_escape "$build_name")"
+  printf '  "buildUrl": "%s",\n' "$(json_escape "$(val BUILD_URL)")"
+  printf '  "url": "%s"\n' "$(json_escape "$(val BUILD_URL)")"
   printf '}\n'
 } > "$dir/executor.json"

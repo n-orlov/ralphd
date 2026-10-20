@@ -196,56 +196,6 @@ def _reap_root_owned(target: Path) -> None:
         capture_output=True, timeout=120)
 
 
-def test_resolve_container_host_path_recovers_a_relocated_ancestor_mount():
-    """Task 012 (requirement I.2): `scripts/resolve_container_host_path.sh`
-    must recover the REAL host path behind an in-container path even when
-    that path's own mount has no `Destination` entry of its own -- only an
-    ANCESTOR of it does. This is exactly GitHub Actions' own
-    `container:` shape (`$GITHUB_WORKSPACE` is a subdirectory of the
-    single `/__w` bind, measured directly on the retired heavy workflow run 35163222049 --
-    see that script's own header) and the reason a naive
-    `docker run -v "$GITHUB_WORKSPACE":...` mounted an empty directory the
-    first time this task ran it for real.
-
-    Proven against a REAL nested container, never a mock of `docker
-    inspect`: an outer sibling mounts this repo's own real host workspace
-    one level ABOVE where the script is asked to resolve from (`/relocated`,
-    not `/relocated/pyproject.toml`), then a THIRD, independently spawned
-    sibling mounts whatever host path the script printed and must find this
-    repo's own `pyproject.toml` there."""
-    host_repo = _host_path(REPO)
-    # The SAME pinned digest the retired heavy workflow's docker-tier and nightly.yml's
-    # dev-layout job now run in (task 012, requirement I) -- not
-    # `_reap_image()` (container/Dockerfile's `-slim` base has no curl).
-    image = (
-        "python:3.12.3@sha256:"
-        "3966b81808d864099f802080d897cef36c01550472ab3955fdd716d1c665acd6"
-    )
-    payload = '''
-        set -eu
-        which docker >/dev/null 2>&1 || (
-          curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-29.7.2.tgz" \\
-            | tar -xz -C /usr/local/bin --strip-components=1 docker/docker
-        )
-        host_path="$(bash /relocated/scripts/resolve_container_host_path.sh /relocated/pyproject.toml)"
-        echo "RESOLVED=$host_path"
-        docker run --rm --label ralphd.run=%(run_id)s --label ralphd.role=sibling \
-          -v "$host_path":/check.toml:ro %(image)s \
-          sh -c "test -f /check.toml && echo CONFIRMED"
-    ''' % {"run_id": RALPHD_RUN_ID, "image": image}
-    outer = subprocess.run(
-        [REAL_DOCKER, "run", "--rm",
-         "--label", f"ralphd.run={RALPHD_RUN_ID}", "--label", "ralphd.role=sibling",
-         "-v", "/var/run/docker.sock:/var/run/docker.sock",
-         "-v", f"{host_repo}:/relocated:ro",
-         image, "sh", "-c", payload],
-        capture_output=True, text=True, timeout=120,
-    )
-    assert outer.returncode == 0, outer.stdout + outer.stderr
-    assert f"RESOLVED={host_repo}/pyproject.toml" in outer.stdout, outer.stdout
-    assert "CONFIRMED" in outer.stdout, outer.stdout
-
-
 SESSION_MARKER = ".session-pid"
 
 

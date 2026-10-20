@@ -1,7 +1,7 @@
 """Task cure-01-01-2 (Task 018 criterion 3): the `browser`, `docker`,
 dev-layout and `nightly`-marked nodes were covered by NOTHING -- neither the
-fast/smoke sweep (task 018) nor `.github/workflows/ci.yml`'s `docker`/
-`browser` jobs nor `nightly.yml`'s dev-layout cells, since every cell calls
+fast/smoke sweep (task 018) nor the Jenkinsfile's `docker`/
+`browser` lanes nor its nightly dev-layout cells, since every cell calls
 `scripts/host_like_dev_layout.sh` with no override at all, and that script's
 own default (`fast`) selection never touched them.
 
@@ -26,7 +26,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "host_like_dev_layout.sh"
-CI_WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
+CI_PIPELINE = REPO / "Jenkinsfile"
 
 _PIP_CACHE_ENV = {
     "HOST_LIKE_DEV_LAYOUT_PIP_CACHE_DIR": "/tmp/host-like-dev-layout-pip-cache-supp-test",
@@ -39,7 +39,7 @@ def _run(args, extra_env=None, timeout=60):
     env = dict(os.environ)
     env.update(_PIP_CACHE_ENV)
     # Regression fix: this test process runs *inside*
-    # `scripts/host_like_dev_layout.sh` itself when nightly.yml's own
+    # `scripts/host_like_dev_layout.sh` itself when the nightly cell's own
     # "unset"-mode dev-layout matrix cells set
     # HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE=unset for the WHOLE
     # container before invoking that script's `-m fast` primary pass --
@@ -50,7 +50,7 @@ def _run(args, extra_env=None, timeout=60):
     # started with -- a caller that wants a specific mode says so
     # explicitly via `extra_env`, which re-applies below and always wins.
     env.pop("HOST_LIKE_DEV_LAYOUT_PYTHONUSERBASE_MODE", None)
-    # Likewise the results directory: nightly.yml sets it for the whole cell,
+    # Likewise the results directory: the nightly cell sets it for the whole cell,
     # so this process inherits it, and the nested script runs under test must
     # start from a clean slate unless a case names it in `extra_env`.
     env.pop("HOST_LIKE_DEV_LAYOUT_ALLURE_DIR", None)
@@ -124,7 +124,7 @@ def _pytest_invocations(log):
 def test_the_true_default_invocation_runs_a_primary_and_a_supplemental_pass(
     tmp_path, mode_env
 ):
-    """The exact shape `nightly.yml`'s dev-layout cell calls this script
+    """The exact shape the nightly dev-layout cell calls this script
     with: no HOST_LIKE_DEV_LAYOUT_TIER override, no pytest args of its own.
     Both PYTHONUSERBASE_MODE branches must add the second pass, and both
     pytest invocations must share the same $HOME, PYTHONUSERBASE handling
@@ -287,8 +287,8 @@ def test_the_header_documents_the_supplemental_default_run():
     prose = " ".join(prose.split())
     assert "SECOND pytest" in prose, prose[-3000:]
     assert _SUPPLEMENTAL_MARKER_EXPR in prose, prose[-3000:]
-    assert "nightly.yml" in prose
-    assert "ci.yml" in prose
+    assert "nightly" in prose
+    assert "Jenkinsfile" in prose
     assert "disables the" in prose and "supplemental pass" in prose, prose[-3000:]
 
 
@@ -296,7 +296,7 @@ def test_the_supplemental_expression_selects_exactly_what_fast_docker_and_browse
     """Criterion (2)'s collection proof: every collected node belongs to
     exactly one of fast/docker/browser/"the supplemental leftover" (`smoke`
     is a subset of `fast`, so it adds nothing to the partition) -- so the
-    `ci.yml` (`-m docker`, `-m browser`) plus this script's own
+    Jenkinsfile (`-m docker`, `-m browser`) plus this script's own
     `-m fast` plus its new supplemental pass leaves nothing uncovered, with
     no double-count either."""
 
@@ -353,7 +353,7 @@ def test_the_supplemental_expression_selects_exactly_what_fast_docker_and_browse
         total,
     )
 
-    ci_text = CI_WORKFLOW.read_text()
+    ci_text = CI_PIPELINE.read_text()
     assert "-m docker" in ci_text
     assert "-m browser" in ci_text
 
@@ -368,8 +368,8 @@ def test_the_supplemental_expression_selects_exactly_what_fast_docker_and_browse
     ],
 )
 def test_the_results_directory_is_given_to_both_pytest_invocations(tmp_path, mode_env):
-    """`nightly.yml` sets HOST_LIKE_DEV_LAYOUT_ALLURE_DIR to the directory its
-    cell container mounts from the job: the primary pass and the supplemental
+    """The nightly cells set HOST_LIKE_DEV_LAYOUT_ALLURE_DIR to the directory their
+    cell containers mount from the workspace: the primary pass and the supplemental
     pass must each be handed it, as the single token `--alluredir=<dir>`."""
     stub, log = _stub_interpreter(tmp_path)
     results = "/allure-results-probe"
