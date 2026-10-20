@@ -48,15 +48,17 @@ lane's own trap or, at the latest, by the next reap.
 
 | lane | stage timeout | image | limits | command |
 |---|---|---|---|---|
-| Lint | 15 min | `python:3.12.3` (digest-pinned) | 4 CPUs | `ruff check . --select E9,F63,F7,F821` |
-| Fast | 45 min | `python:3.12.3` | 4 CPUs (`--cpu-shares=4096`), 12 GB, 4096 pids | `pytest -q -m fast -n 4 --dist loadfile` |
-| Docker | 120 min | docker-tier | 4 CPUs, 12 GB, 4096 pids, host docker socket | `pytest -q -m docker` |
-| Browser | 60 min | browser | 4 CPUs, 16 GB, 4096 pids, 1 GB shm | `pytest -q -m browser` |
+| Lint | 15 min | `python:3.12.3` (digest-pinned) | 4 CPUs of 4-11 | `ruff check . --select E9,F63,F7,F821` |
+| Fast | 45 min | `python:3.12.3` | CPUs 0-3 (`--cpu-shares=4096`), 12 GB, 4096 pids | `pytest -q -m fast -n 4 --dist loadfile` |
+| Docker | 120 min | docker-tier | 4 CPUs of 4-11, 12 GB, 4096 pids, host docker socket | `pytest -q -m docker` |
+| Browser | 60 min | browser | 4 CPUs of 4-11, 16 GB, 4096 pids, 1 GB shm | `pytest -q -m browser` |
 
-The Fast lane has the same 4-CPU cap but four times the default CPU weight:
-the lanes and the Docker lane's uncapped sibling containers share one agent,
-and several fast tests hold millisecond-scale deadlines that starve under
-that contention.
+The lanes share one 12-CPU agent. The Fast lane owns CPUs 0-3, with four
+times the default CPU weight against the Docker lane's unpinned sibling
+containers; the other lanes share CPUs 4-11. Several fast tests hold
+millisecond-scale deadlines that miss when the lanes contend (the old runner
+scaler avoided that by never admitting more than 11 CPUs of jobs at once).
+An agent with fewer than 12 CPUs needs these sets changed.
 
 The Docker lane's sibling containers are started on the agent's Docker, which
 is why the lane's checkout sits at the same path inside and outside its

@@ -4,7 +4,7 @@
 // in parallel, each in its own container and checkout (ci/jenkins-lane.sh
 // runs ci/jenkins-tier.sh <tier>):
 //   Lint     ruff, the E9/F63/F7/F821 selection        15 min, 4 CPUs
-//   Fast     -m fast -n 4, python:3.12.3               45 min, 4 CPUs (CPU priority), 12 GB
+//   Fast     -m fast -n 4, python:3.12.3               45 min, 4 CPUs (its own), 12 GB
 //   Docker   -m docker, host docker socket             120 min, 4 CPUs, 12 GB
 //   Browser  -m browser, playwright-cli + Chrome       60 min, 4 CPUs, 16 GB
 // main also runs nightly (02:23) in the nightly lane, which adds the six
@@ -75,7 +75,7 @@ pipeline {
               catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
                 script {
                   env.LINT_RESULT = 'failing'
-                  sh 'ci/jenkins-lane.sh lint 15 "$PY_IMAGE" --cpus=4 -- ci/jenkins-tier.sh lint'
+                  sh 'ci/jenkins-lane.sh lint 15 "$PY_IMAGE" --cpus=4 --cpuset-cpus=4-11 -- ci/jenkins-tier.sh lint'
                   env.LINT_RESULT = 'passing'
                 }
               }
@@ -86,10 +86,12 @@ pipeline {
           steps {
             timeout(time: 45, unit: 'MINUTES') {
               catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                // Same 4-CPU cap, but first claim on the CPUs when the lanes
-                // (and the docker tier's uncapped siblings) contend: several
-                // fast tests hold millisecond-scale deadlines.
-                sh 'ci/jenkins-lane.sh fast 45 "$PY_IMAGE" --cpus=4 --cpu-shares=4096 --memory=12g --pids-limit=4096 -- ci/jenkins-tier.sh fast'
+                // The agent's first four CPUs, with first claim on them: the
+                // other lanes run on the rest (agent: 12 CPUs), and several
+                // fast tests hold millisecond-scale deadlines that miss when
+                // the lanes contend. The old runner scaler gave the same
+                // guarantee by never admitting more than 11 CPUs of jobs.
+                sh 'ci/jenkins-lane.sh fast 45 "$PY_IMAGE" --cpus=4 --cpuset-cpus=0-3 --cpu-shares=4096 --memory=12g --pids-limit=4096 -- ci/jenkins-tier.sh fast'
               }
             }
           }
@@ -98,7 +100,7 @@ pipeline {
           steps {
             timeout(time: 120, unit: 'MINUTES') {
               catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                sh 'ci/jenkins-lane.sh docker 120 "$DOCKER_TIER_IMAGE" --cpus=4 --memory=12g --pids-limit=4096 -v /var/run/docker.sock:/var/run/docker.sock -- ci/jenkins-tier.sh docker'
+                sh 'ci/jenkins-lane.sh docker 120 "$DOCKER_TIER_IMAGE" --cpus=4 --cpuset-cpus=4-11 --memory=12g --pids-limit=4096 -v /var/run/docker.sock:/var/run/docker.sock -- ci/jenkins-tier.sh docker'
               }
             }
           }
@@ -107,7 +109,7 @@ pipeline {
           steps {
             timeout(time: 60, unit: 'MINUTES') {
               catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                sh 'ci/jenkins-lane.sh browser 60 "$BROWSER_IMAGE" --cpus=4 --memory=16g --pids-limit=4096 --shm-size=1g -- ci/jenkins-tier.sh browser'
+                sh 'ci/jenkins-lane.sh browser 60 "$BROWSER_IMAGE" --cpus=4 --cpuset-cpus=4-11 --memory=16g --pids-limit=4096 --shm-size=1g -- ci/jenkins-tier.sh browser'
               }
             }
           }
