@@ -49,9 +49,14 @@ lane's own trap or, at the latest, by the next reap.
 | lane | stage timeout | image | limits | command |
 |---|---|---|---|---|
 | Lint | 15 min | `python:3.12.3` (digest-pinned) | 4 CPUs | `ruff check . --select E9,F63,F7,F821` |
-| Fast | 45 min | `python:3.12.3` | 4 CPUs, 12 GB, 4096 pids | `pytest -q -m fast -n 4 --dist loadfile` |
+| Fast | 45 min | `python:3.12.3` | 4 CPUs (`--cpu-shares=4096`), 12 GB, 4096 pids | `pytest -q -m fast -n 4 --dist loadfile` |
 | Docker | 120 min | docker-tier | 4 CPUs, 12 GB, 4096 pids, host docker socket | `pytest -q -m docker` |
 | Browser | 60 min | browser | 4 CPUs, 16 GB, 4096 pids, 1 GB shm | `pytest -q -m browser` |
+
+The Fast lane has the same 4-CPU cap but four times the default CPU weight:
+the lanes and the Docker lane's uncapped sibling containers share one agent,
+and several fast tests hold millisecond-scale deadlines that starve under
+that contention.
 
 The Docker lane's sibling containers are started on the agent's Docker, which
 is why the lane's checkout sits at the same path inside and outside its

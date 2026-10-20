@@ -38,7 +38,8 @@ STAGES = ["Prepare", "Tiers", "Lint", "Fast", "Docker", "Browser", "Dev-layout c
 # stage -> (lane, stage timeout minutes, image, docker run options)
 LANES = {
     "Lint": ("lint", 15, '"$PY_IMAGE"', "--cpus=4"),
-    "Fast": ("fast", 45, '"$PY_IMAGE"', "--cpus=4 --memory=12g --pids-limit=4096"),
+    "Fast": ("fast", 45, '"$PY_IMAGE"',
+             "--cpus=4 --cpu-shares=4096 --memory=12g --pids-limit=4096"),
     "Docker": ("docker", 120, '"$DOCKER_TIER_IMAGE"',
                "--cpus=4 --memory=12g --pids-limit=4096 "
                "-v /var/run/docker.sock:/var/run/docker.sock"),
@@ -443,7 +444,8 @@ def test_the_stage_check_rejects_a_broken_pipeline(tmp_path, name, old, new):
 
 @pytest.mark.parametrize("name,old,new", [
     ("fast-timeout-raised", "timeout(time: 45, unit: 'MINUTES')", "timeout(time: 90, unit: 'MINUTES')"),
-    ("fast-uncapped", "fast 45 \"$PY_IMAGE\" --cpus=4 --memory=12g", "fast 45 \"$PY_IMAGE\" --memory=12g"),
+    ("fast-uncapped", "fast 45 \"$PY_IMAGE\" --cpus=4 ", "fast 45 \"$PY_IMAGE\" "),
+    ("fast-no-cpu-priority", " --cpu-shares=4096", ""),
     ("docker-no-socket", " -v /var/run/docker.sock:/var/run/docker.sock", ""),
     ("browser-wrong-image", 'browser 60 "$BROWSER_IMAGE"', 'browser 60 "$PY_IMAGE"'),
     ("lint-bound-drift", "ci/jenkins-lane.sh lint 15", "ci/jenkins-lane.sh lint 30"),

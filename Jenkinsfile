@@ -4,7 +4,7 @@
 // in parallel, each in its own container and checkout (ci/jenkins-lane.sh
 // runs ci/jenkins-tier.sh <tier>):
 //   Lint     ruff, the E9/F63/F7/F821 selection        15 min, 4 CPUs
-//   Fast     -m fast -n 4, python:3.12.3               45 min, 4 CPUs, 12 GB
+//   Fast     -m fast -n 4, python:3.12.3               45 min, 4 CPUs (CPU priority), 12 GB
 //   Docker   -m docker, host docker socket             120 min, 4 CPUs, 12 GB
 //   Browser  -m browser, playwright-cli + Chrome       60 min, 4 CPUs, 16 GB
 // main also runs nightly (02:23) in the nightly lane, which adds the six
@@ -86,7 +86,10 @@ pipeline {
           steps {
             timeout(time: 45, unit: 'MINUTES') {
               catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                sh 'ci/jenkins-lane.sh fast 45 "$PY_IMAGE" --cpus=4 --memory=12g --pids-limit=4096 -- ci/jenkins-tier.sh fast'
+                // Same 4-CPU cap, but first claim on the CPUs when the lanes
+                // (and the docker tier's uncapped siblings) contend: several
+                // fast tests hold millisecond-scale deadlines.
+                sh 'ci/jenkins-lane.sh fast 45 "$PY_IMAGE" --cpus=4 --cpu-shares=4096 --memory=12g --pids-limit=4096 -- ci/jenkins-tier.sh fast'
               }
             }
           }
