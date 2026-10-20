@@ -395,12 +395,16 @@ async def test_the_pause_holds_past_timeouts_and_credits_the_wall_clock_on_resum
     sup._approach = 1
     findings.write_findings_json(sup.run.findings_json_file, _MIXED_FINDINGS)
     _reject(sup)
-    # Re-arm the 20 ms job deadline right before the call: on a slow runner
-    # the setup above can outlast it, and `_step_review` would exit `tail`.
-    sup.deadline = time.monotonic() + 0.02
+    # Give the review step itself time to reach the park: on a slow or busy
+    # runner the setup above, or `_step_review`'s own rejection pass, can
+    # outlast a 20 ms deadline, and `_step_review` would exit `tail`. The
+    # 20 ms job deadline is re-armed once the run is parked, which is what
+    # the rest of this test holds the pause past.
+    sup.deadline = time.monotonic() + 5.0
 
     outcome = await sup._step_review()
     assert outcome == ("advance", "paused", "operator_input_needed")
+    sup.deadline = time.monotonic() + 0.02
 
     before = sup.run.read_status()
     # v0.36: the park lands in `awaiting_input` (covering node: tests/test_awaiting_input_question.py)
