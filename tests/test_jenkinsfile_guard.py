@@ -407,12 +407,13 @@ def test_no_github_actions_workflow_is_left():
     assert not workflows.exists() or not any(workflows.iterdir())
 
 
-def test_a_lane_runs_as_the_agent_uid_at_its_own_host_path():
+def test_a_lane_runs_as_uid_1000_at_its_own_host_path():
     lane = LANE_SCRIPT.read_text()
     assert '-v "$root:$root" -w "$root/src"' in lane
     assert '-e RALPHD_JOB_STARTED_AT="$(date +%s)" -e RALPHD_JOB_BOUND_MINUTES="$minutes"' in lane
     assert '-e RALPHD_TIMEOUT_EVIDENCE_DIR="$root/evidence"' in lane
     assert '--label "ralphd.ci=${BUILD_TAG:-local}"' in lane
+    assert '-e CI_UID=1000 -e CI_GID=1000' in lane
     entry = (REPO / "ci" / "jenkins-lane-entry.sh").read_text()
     assert 'exec setpriv --reuid="$uid" --regid="$gid"' in entry
 

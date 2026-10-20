@@ -9,9 +9,11 @@
 #   * .lanes/<lane> is mounted at its own host path and the command runs in
 #     src/, so a sibling container the lane starts resolves every bind mount
 #     under it (the docker tier needs that).
-#   * The command runs as the agent's own uid and gid (ci/jenkins-lane-entry.sh
-#     creates a `ci` account for them in the container), so everything the
-#     lane writes stays removable by the agent.
+#   * The command runs as uid/gid 1000, as the tiers always have
+#     (ci/jenkins-lane-entry.sh hands .lanes/<lane> to it and creates a `ci`
+#     account when the image has none): several tests expect a uid-1000
+#     account, the agent identity a ralphd job image carries. The agent's own
+#     uid gets the files back from ci/jenkins-reap.sh.
 #   * <minutes> is the lane's Jenkins stage timeout. It is stamped as
 #     RALPHD_JOB_STARTED_AT / RALPHD_JOB_BOUND_MINUTES, so scripts/run_bounded.sh
 #     clamps every inner bound to what is left of it, and its expiry evidence
@@ -52,7 +54,7 @@ echo "lane $lane: $image, ${opts[*]:-no limits}, bound ${minutes} min, commit $c
 docker run --rm --init --name "$name" --label "ralphd.ci=${BUILD_TAG:-local}" \
   --user 0:0 \
   -v "$root:$root" -w "$root/src" \
-  -e CI_UID="$(id -u)" -e CI_GID="$(id -g)" -e CI_DOCKER_GID="$docker_gid" \
+  -e CI_UID=1000 -e CI_GID=1000 -e CI_DOCKER_GID="$docker_gid" -e CI_LANE_ROOT="$root" \
   -e RALPHD_JOB_STARTED_AT="$(date +%s)" -e RALPHD_JOB_BOUND_MINUTES="$minutes" \
   -e RALPHD_TIMEOUT_EVIDENCE_DIR="$root/evidence" \
   -e ALLURE_RUNNER_IMAGE="$image" \

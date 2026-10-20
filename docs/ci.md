@@ -39,8 +39,10 @@ Each lane is `ci/jenkins-lane.sh <lane> <minutes> <image> <docker options> --
 ci/jenkins-tier.sh <tier>`. The lane script makes a fresh `git clone --local`
 of the build's commit under `.lanes/<lane>/src` (full history, which several
 tests read), mounts it at the same path inside the container, and runs the
-tier as the agent's uid (`ci/jenkins-lane-entry.sh`, `setpriv`), with the
-host's docker group added when the socket is mounted. Each container is
+tier as uid 1000 (`ci/jenkins-lane-entry.sh`, `setpriv`; several tests
+expect a uid-1000 account, as a ralphd job image has), with the host's docker
+group added when the socket is mounted; `ci/jenkins-reap.sh` hands the files
+back to the agent's uid. Each container is
 labelled with the build, so an aborted build's containers are removed by the
 lane's own trap or, at the latest, by the next reap.
 
