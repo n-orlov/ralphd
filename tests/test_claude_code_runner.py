@@ -359,7 +359,10 @@ def test_timeout_kills_the_group(tmp_path, monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
     t0 = time.monotonic()
-    result = _run(_runner(tmp_path), tmp_path, timeout_s=3)
+    # 10 s, not less: the wrapper (Agent SDK import) and the stub must both
+    # have started, and the stub written its observation, before the
+    # timeout fires; on a busy CI host that alone took over 3 s.
+    result = _run(_runner(tmp_path), tmp_path, timeout_s=10)
     assert result.timed_out
     assert time.monotonic() - t0 < 30
     stub_pid = _obs(observe)["pid"]

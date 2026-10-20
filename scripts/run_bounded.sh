@@ -1,36 +1,32 @@
 #!/usr/bin/env bash
-# Task 054 (K.3, #188/#189/#193/#179): make a `timeout-minutes` kill
-# distinguishable from a human cancel and from a `cancel-in-progress`
-# cancellation, on the surfaces a judging hat reads.
+# Task 054 (K.3, #188/#189/#193/#179): make an outer timeout kill
+# distinguishable from a human abort, on the surfaces a judging hat reads.
 #
-# The problem this exists for: a GitHub Actions job's own `conclusion` is
-# `cancelled` for THREE different causes -- a human clicking "Cancel
-# workflow", a `cancel-in-progress: true` group superseding an older run,
-# and the job exceeding its `timeout-minutes` -- and the Checks API gives no
-# field that tells them apart. ci.yml's own comment already names the
-# consequence ("A `timeout-minutes` kill reports as `cancelled`, which is
-# not a verdict"); this script is the half of the mechanism that produces
-# the POSITIVE fact the other half classifies on.
+# The problem this exists for: an outer timeout (a Jenkins stage `timeout`,
+# formerly a GitHub Actions `timeout-minutes`) and a person aborting the
+# build end the same way -- the build is aborted and nothing says which
+# cause it was. This script produces the POSITIVE fact that tells them
+# apart.
 #
 # The mechanism: wrap every step that can consume real wall clock in this
-# repo's own inner `timeout(1)` bound, set SHORTER than the job's own
-# `timeout-minutes`. If the wrapped command overruns that inner bound, this
-# script -- not the runner's job-level timeout -- is what kills it, with
-# time left to report before the job-level bound could ever fire. It then
+# repo's own inner `timeout(1)` bound, set SHORTER than the lane's own
+# outer timeout. If the wrapped command overruns that inner bound, this
+# script -- not the outer timeout -- is what kills it, with time left to
+# report before the outer bound could ever fire. It then
 # does two things:
 #
-#   1. prints, and (under Actions) appends to `$GITHUB_STEP_SUMMARY`, a
+#   1. prints, and appends to `$GITHUB_STEP_SUMMARY` when that is set, a
 #      single fixed, greppable marker line:
 #
 #        RALPHD_TIMEOUT_KILL: <label> exceeded its internal bound of <N>s
 #
 #      and exits 1 -- an ordinary step `failure`, never `cancelled`;
-#   2. writes one EVIDENCE FILE into `$RALPHD_TIMEOUT_EVIDENCE_DIR` (the
-#      job's first step creates that directory fresh and exports it). That
-#      file is the durable, positive record that this job's wall clock
-#      genuinely ran out, and it is the only thing
-#      `scripts/job_timeout_marker.sh` will call a timeout on. Nothing else
-#      in this repo writes one.
+#   2. writes one EVIDENCE FILE into `$RALPHD_TIMEOUT_EVIDENCE_DIR` (each
+#      Jenkins lane gets its own fresh directory, ci/jenkins-lane.sh). That
+#      file is the durable, positive record that this lane's wall clock
+#      genuinely ran out, and the only thing the build's CI summary calls a
+#      timeout on (ci/jenkins-report.sh). Nothing else in this repo writes
+#      one.
 #
 # Why the evidence file rather than a clock comparison: this script runs the
 # wrapped command in the background beside its OWN bound timer (a plain
@@ -60,8 +56,8 @@
 #
 # THE REMAINING-BUDGET CLAMP. A step's declared inner bound is an upper
 # bound, not a promise: if the steps before it were slow, its declared
-# bound can still outlive the job's own `timeout-minutes`, and then the
-# runner's job-level kill lands first and the ending is ambiguous again.
+# bound can still outlive the lane's own Jenkins stage `timeout`, and then
+# that outer kill lands first and the ending is ambiguous again.
 # So when the job exports both `RALPHD_JOB_STARTED_AT` and
 # `RALPHD_JOB_BOUND_MINUTES`, this script clamps its effective bound down to
 # whatever wall clock the job has left minus a tail
@@ -69,12 +65,12 @@
 # between the job's real start and the stamp). Whichever wrapped step is
 # running when the job's budget runs out therefore expires FIRST, from the
 # inside, leaving the marker and the evidence file -- so a wall-clock
-# exhaustion reports as a `failure` that says why, and the job-level
-# `cancelled` ending is left to mean cancel.
+# exhaustion reports as a failure that says why, and an aborted ending is
+# left to mean abort.
 #
-# See tests/test_run_bounded_timeout_marker.py for both halves, exercised
-# directly against these scripts (never against a live dispatched workflow
-# run -- that would need a >45-minute wait to prove the negative half).
+# See tests/test_run_bounded_timeout_marker.py, exercised directly against
+# this script (never against a live CI build -- that would need a
+# >45-minute wait to prove the negative half).
 #
 # Usage:
 #   scripts/run_bounded.sh <inner-timeout-seconds> <label> -- <command...>
@@ -86,10 +82,10 @@
 #
 # Env:
 #   RALPHD_TIMEOUT_EVIDENCE_DIR  where to write the expiry evidence file
-#   RALPHD_JOB_STARTED_AT        epoch seconds, stamped by the job's first step
-#   RALPHD_JOB_BOUND_MINUTES     the job's own `timeout-minutes`
+#   RALPHD_JOB_STARTED_AT        epoch seconds, stamped when the lane starts
+#   RALPHD_JOB_BOUND_MINUTES     the lane's own stage timeout, in minutes
 #   RALPHD_JOB_BOUND_TAIL_S      clamp tail in seconds (default 120)
-#   GITHUB_STEP_SUMMARY          appended to when set
+#   GITHUB_STEP_SUMMARY          a summary file appended to when set
 
 set -uo pipefail
 

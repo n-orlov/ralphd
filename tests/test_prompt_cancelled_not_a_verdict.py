@@ -2,7 +2,7 @@
 state that a `cancelled` CI conclusion is not a verdict, and must say how the
 `RALPHD_TIMEOUT_KILL:` marker line and its evidence file distinguish a
 timeout kill from an ordinary cancel (the K.3 mechanism in
-`scripts/run_bounded.sh` / `scripts/job_timeout_marker.sh` / `docs/ci.md`).
+`scripts/run_bounded.sh` / `docs/ci.md`).
 
 Each assertion below fails the moment either sentence is dropped from either
 file, not merely when the file goes missing entirely.

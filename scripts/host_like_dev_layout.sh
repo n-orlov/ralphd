@@ -65,25 +65,22 @@
 # a caller says otherwise, defaults to the `fast` tier rather than the
 # whole suite. The unfiltered whole-suite invocation this script ran through
 # task 075 measured 2047.32 s / 2146.54 s per mode (docs/testing.md); six
-# cells of that would be ~5 h of runner time across two slots. The content a
+# cells of that would be ~5 h of agent time. The content a
 # `-m fast` selection drops relative to unfiltered -- the `docker` and
-# `browser` tiers -- is already run at the gate-blocking level by
-# `.github/workflows/ci.yml` and does not vary with the interpreter or
+# `browser` tiers -- is already run on every build by the
+# Jenkinsfile's own lanes and does not vary with the interpreter or
 # libc a dev-layout cell is exercising, so the matrix loses no coverage that
 # varies with the axis under test by dropping it here. That is REASON ONE the
 # default is `fast`.
 #
 # REASON TWO (steer 009): `-m fast` EXCLUDES `-m browser` (tests/conftest.py
 # never stamps a `browser`-marked node with `fast`), so no matrix cell ever
-# drives a browser -- `.github/workflows/ci.yml`'s `browser` job stays
-# the ONLY browser-bearing job on the self-hosted box. That is what makes the
-# single `browser-runner` label the operator placed on exactly one of the
-# VPS's two runner slots sufficient to serialise browser work across
-# *workflows*: two concurrent browser jobs collapse each other's
-# `playwright-cli` sessions against real Chrome on a 4-core host, and a
-# `concurrency:` group cannot prevent that (it does not know what else is on
-# the runner). A dev-layout cell that ran the suite unfiltered would drive
-# browsers from `nightly` too, on any slot, and defeat that label.
+# drives a browser -- the Jenkinsfile's `Browser` lane stays the ONLY
+# browser-bearing lane of a build. Two concurrent browser runs collapse each
+# other's `playwright-cli` sessions against real Chrome on a 4-core
+# allowance, and the nightly cells run three at a time; a dev-layout cell
+# that ran the suite unfiltered would drive browsers from `nightly` too and
+# bring exactly that collision back.
 #
 # A caller that wants a
 # different selection -- including the retired unfiltered form -- overrides
@@ -114,7 +111,7 @@
 # exact shape task 018 found leaving the `nightly`-marked nodes and the 27
 # dev-layout nodes in `tests/test_host_like_dev_layout_script.py` (both
 # outside `fast`/`smoke`, and neither `docker` nor `browser`, so neither one
-# is covered by `.github/workflows/ci.yml` either) uncovered by every CI
+# is covered by the Jenkinsfile's lanes either) uncovered by every CI
 # lane. THIS EXACT invocation shape -- no HOST_LIKE_DEV_LAYOUT_TIER override
 # AND no pytest args of its own ($# -eq 0) -- now also runs a SECOND pytest
 # invocation, in the same already-built $HOME/user base, selecting every
@@ -126,8 +123,8 @@
 # complement of `fast`/`docker`/`browser` is precisely the `nightly`-marked
 # nodes and the dev-layout module's own nodes -- nothing more, nothing less
 # -- so this one supplemental pass is what makes nightly's own dev-layout
-# cells the sole remaining coverage for that set, alongside ci.yml's
-# `-m docker` and `-m browser` jobs for the other two tiers. A caller that
+# cells the sole remaining coverage for that set, alongside the
+# Jenkinsfile's `-m docker` and `-m browser` lanes for the other two tiers. A caller that
 # supplies EITHER an explicit HOST_LIKE_DEV_LAYOUT_TIER OR any pytest
 # argument of its own (a node id, a path, `--collect-only`, ...) gets its
 # requested selection alone, with no second pass added -- the addition is
@@ -193,9 +190,10 @@
 #                        Optional. A directory every pytest invocation of this
 #                        script (the primary pass and the supplemental pass)
 #                        writes its Allure result files into, via one
-#                        `--alluredir=<dir>` argument. nightly.yml mounts a
-#                        job directory here so each cell's results survive the
-#                        cell container and are uploaded as a run artifact.
+#                        `--alluredir=<dir>` argument. The Jenkinsfile's
+#                        nightly dev-layout cells mount a workspace directory
+#                        here so each cell's results survive the cell
+#                        container and reach the build's Allure report.
 #                        Unset (the default) adds no argument.
 #
 #   HOST_LIKE_DEV_LAYOUT_TIER
@@ -239,14 +237,14 @@
 #                        UNSET entirely (not even set to the literal value
 #                        `fast`) AND this invocation carries no pytest
 #                        argument of its own -- the exact shape
-#                        `.github/workflows/nightly.yml`'s dev-layout cell
+#                        the Jenkinsfile's nightly dev-layout cell
 #                        calls this script with -- a SECOND pytest
 #                        invocation runs afterwards, in the same already-
 #                        built $HOME/user base, selecting
 #                        `-m "not fast and not smoke and not docker and not
 #                        browser"`: every collected node the primary run
-#                        left out that `.github/workflows/ci.yml`'s
-#                        `docker`/`browser` jobs do not cover either (the
+#                        left out that the Jenkinsfile's
+#                        `docker`/`browser` lanes do not cover either (the
 #                        `nightly`-marked nodes and
 #                        `tests/test_host_like_dev_layout_script.py`'s own
 #                        nodes). It is echoed the same way, on a line
@@ -358,7 +356,7 @@ else
 fi
 
 # --- supplemental default run (task cure-01-01-2, task 018 criterion 3) ----
-# Fires ONLY for the exact shape nightly.yml calls this script with: no
+# Fires ONLY for the exact shape the nightly cells call this script with: no
 # HOST_LIKE_DEV_LAYOUT_TIER override at all AND no pytest args of its own
 # ($# -eq 0 -- a targeted node id, a path, or a flag like --collect-only all
 # count as "args of its own" and disable it, per the header). An explicit

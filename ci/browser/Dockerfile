@@ -1,8 +1,9 @@
 # The browser tier's image (task 011, requirement H, #205 step 3).
 #
-# `heavy.yml`'s `browser-tier` runs in THIS image, pinned by digest, and takes
+# The Jenkinsfile's Browser lane runs in THIS image, built on the agent by
+# `ci/jenkins-image.sh browser` and tagged by a hash of this directory, and takes
 # `playwright-cli`, Google Chrome and Chrome's system dependencies from it --
-# not from the runner host's ambient provisioning (which drifted once already:
+# not from the agent host's ambient provisioning (which drifted once already:
 # the VPS-to-workstation move silently lost python3.12.3, #205's own
 # motivation) and not from a job-time `npm install` (which makes the versions a
 # property of whenever the job happened to run, and of npm's availability at
@@ -16,7 +17,7 @@
 FROM mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e
 
 LABEL org.opencontainers.image.source=https://github.com/n-orlov/ralphd
-LABEL org.opencontainers.image.description="ralphd heavy browser tier: playwright-cli + Google Chrome, pinned"
+LABEL org.opencontainers.image.description="ralphd browser tier: playwright-cli + Google Chrome, pinned"
 
 # The exact binary `tests/test_browser_hub.py` shells out to
 # (`shutil.which("playwright-cli")`), at the version `docs/ci.md` records as

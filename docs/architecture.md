@@ -4823,11 +4823,11 @@ report actually appears.
 
 The script's own pytest invocation defaults to the `fast` tier (task 076),
 since the `docker`/`browser` tiers it drops that way are already
-gate-blocking in `.github/workflows/heavy.yml`. Task cure-01-01-2 (task 018
+gate-blocking in the Jenkinsfile's Docker and Browser lanes. Task cure-01-01-2 (task 018
 criterion 3) closes the remaining gap that default left: the `nightly`-
 marked nodes and this script's own test module, neither `fast` nor `docker`
 nor `browser`, went uncovered by every CI lane. For the exact shape
-`nightly.yml`'s dev-layout cell calls this script with -- no
+the nightly dev-layout cell calls this script with -- no
 `HOST_LIKE_DEV_LAYOUT_TIER` override, no pytest argument of its own -- the
 script now also runs a second pytest pass, in the same already-built
 `$HOME`/user base, selecting `-m "not fast and not smoke and not docker and
