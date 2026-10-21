@@ -184,6 +184,8 @@ def check_stages(jenkinsfile: Path) -> list[str]:
     for bad in FORBIDDEN_IN_PIPELINE:
         if bad in _code(jf):
             problems.append(f"the Jenkinsfile mentions {bad!r}")
+    if "    lock('ralphd-ci')\n" not in jf.split("parameters {")[0]:
+        problems.append("builds of different branches are not serialised by lock('ralphd-ci')")
     if f"PY_IMAGE = '{PY_IMAGE}'" not in jf:
         problems.append("PY_IMAGE is not the pinned python:3.12.3 digest")
     return problems
@@ -479,6 +481,7 @@ def _mutate(tmp_path: Path, source: Path, name: str, old: str, new: str) -> Path
     ("no-browser-image", "ci/jenkins-image.sh browser", "ci/build-browser.sh"),
     ("ghcr-pull", "env.BROWSER_IMAGE = sh(", "sh 'docker pull ghcr.io/n-orlov/x'\n          env.BROWSER_IMAGE = sh("),
     ("unpinned-python", PY_IMAGE, "python:3.12"),
+    ("no-cross-branch-lock", "    lock('ralphd-ci')\n", ""),
 ])
 def test_the_stage_check_rejects_a_broken_pipeline(tmp_path, name, old, new):
     assert check_stages(_mutate(tmp_path, JENKINSFILE, name, old, new)), name

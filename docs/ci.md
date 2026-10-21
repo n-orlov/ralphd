@@ -23,6 +23,11 @@ build's counts: look at the Jenkins build itself.
   Docker.
 - Builds of one branch never overlap (`disableConcurrentBuilds`); a build is
   never cancelled by a newer push, it finishes and the next one starts.
+- Builds of different branches never overlap either: the whole pipeline holds
+  the lockable resource `ralphd-ci` (plugin `lockable-resources` on the
+  controller), and a waiting build queues on it. The lanes and cells are sized
+  for the whole agent; on 21 Oct 2026 a nightly whose lanes ran beside another
+  branch's dev-layout cells took the fast tier past its 1800 s bound.
 - The workspace persists between builds, so the Prepare stage first hands back
   whatever the previous build's containers wrote (`ci/jenkins-reap.sh`) and
   then cleans to the checkout (`git clean -ffdx`).
@@ -55,9 +60,11 @@ lane's own trap or, at the latest, by the next reap.
 | Docker | 120 min | docker-tier | 4 CPUs of 4-11, 12 GB, 4096 pids, host docker socket | `pytest -q -m docker` |
 | Browser | 60 min | browser | 4 CPUs of 4-11, 16 GB, 4096 pids, 1 GB shm | `pytest -q -m browser` |
 
-The lanes share one 12-CPU agent. The Fast lane owns CPUs 0-3, with four
-times the default CPU weight against the Docker lane's unpinned sibling
-containers; the other lanes share CPUs 4-11. Several fast tests hold
+The lanes share one 12-CPU agent. The Fast lane has CPUs 0-3 to itself, with
+four times the default CPU weight against the Docker lane's unpinned sibling
+containers; the other lanes share CPUs 4-11. Those are hyperthreads: on
+int21h-ws CPUs 0-3 sit on the same four cores as 6-9, so the Fast lane is
+isolated from other containers' scheduling, not from their load. Several fast tests hold
 millisecond-scale deadlines that miss when the lanes contend (the old runner
 scaler avoided that by never admitting more than 11 CPUs of jobs at once).
 An agent with fewer than 12 CPUs needs these sets changed.
