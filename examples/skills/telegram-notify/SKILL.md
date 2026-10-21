@@ -48,7 +48,7 @@ registered** (a phase this run does not wire it for, or a `pi` invocation
 outside this harness entirely). The rest of this file describes that
 fallback exactly as the operator-side skill does.
 
-- **Base URL:** `http://100.71.162.65:8090` — reachable only because this job was
+- **Base URL:** `https://notify.wisent-owl.ts.net` — reachable only because this job was
   started with `--network host`. If a POST fails with a connection error, the
   network mode is wrong: **note it and carry on**. A failed notification is never
   a reason to fail a task, retry in a loop, or block.
@@ -59,7 +59,7 @@ fallback exactly as the operator-side skill does.
 ## Text
 
 ```bash
-curl -s --max-time 15 -X POST http://100.71.162.65:8090/notify \
+curl -s --max-time 15 -X POST https://notify.wisent-owl.ts.net/notify \
   -H "Content-Type: application/json" \
   -d '{"text":"ralphd v0.8 — task 007 done: #51 budget top-ups survive a resume (3 tests)"}'
 ```
@@ -71,7 +71,7 @@ text contains a quote, a backtick, a newline or anything an agent generated:
 python3 - <<'EOF'
 import json, urllib.request
 body = json.dumps({"text": "…your message…"}).encode()
-r = urllib.request.Request("http://100.71.162.65:8090/notify", data=body,
+r = urllib.request.Request("https://notify.wisent-owl.ts.net/notify", data=body,
                            headers={"Content-Type": "application/json"})
 print(urllib.request.urlopen(r, timeout=15).status)
 EOF
@@ -91,7 +91,7 @@ of pytest output into a text message and do not leave it on disk described only
 in prose.
 
 ```bash
-curl -s --max-time 60 -X POST http://100.71.162.65:8090/send \
+curl -s --max-time 60 -X POST https://notify.wisent-owl.ts.net/send \
   -F 'file=@/run/ralphd/artifacts/reports/fastlane.txt' \
   -F 'caption=v0.8 fast lane at abc1234: 2851 passed, 0 failed'
 ```
