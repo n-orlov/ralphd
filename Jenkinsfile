@@ -4,7 +4,7 @@
 // in parallel, each in its own container and checkout (ci/jenkins-lane.sh
 // runs ci/jenkins-tier.sh <tier>):
 //   Lint     ruff, the E9/F63/F7/F821 selection        15 min, 4 CPUs
-//   Fast     -m fast -n 4, python:3.12.3               45 min, 4 CPUs (its own), 12 GB
+//   Fast     -m fast -n 4, python:3.12.3               45 min, CPUs 0-3, 12 GB
 //   Docker   -m docker, host docker socket             120 min, 4 CPUs, 12 GB
 //   Browser  -m browser, playwright-cli + Chrome       60 min, 4 CPUs, 16 GB
 // main also runs nightly (02:23) in the nightly lane, which adds the six
@@ -24,6 +24,10 @@ pipeline {
     timestamps()
     buildDiscarder(logRotator(numToKeepStr: '30'))
     disableConcurrentBuilds()
+    // One ralphd/ci build at a time across all branches: the lanes and cells
+    // size themselves to the whole agent, and two builds at once push the
+    // fast tier past its bound (lockable-resources; docs/ci.md).
+    lock('ralphd-ci')
     timeout(time: 420, unit: 'MINUTES')   // ceiling; lanes and cells carry their own
     // This job's next build of a branch reads allure-history/ (the pattern
     // matches the copier's absolute name).
