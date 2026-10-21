@@ -362,6 +362,29 @@ def check_images(image_script: Path) -> list[str]:
     return problems
 
 
+CHECKOUT_CLONES = {
+    "ci/jenkins-lane.sh": 'git clone --quiet --local --no-hardlinks --no-checkout "$ws" "$root/src"',
+    "ci/jenkins-devlayout.sh": 'git clone --quiet --local --no-hardlinks --no-checkout "$ws" "$src"',
+}
+
+
+def check_checkouts(lane_script: Path, devlayout_script: Path) -> list[str]:
+    """A lane's checkout never shares an inode with the workspace's .git: the
+    lane chowns its tree to uid 1000, so a hardlinked pack would change owner
+    in the workspace too and the next clone could not link it."""
+    problems = []
+    for script, (name, want) in zip((lane_script, devlayout_script), CHECKOUT_CLONES.items()):
+        text = script.read_text()
+        if want not in text:
+            problems.append(f"{name} lacks {want!r}")
+        for line in text.splitlines():
+            if line.strip().startswith("#"):
+                continue
+            if "git clone" in line and "--no-hardlinks" not in line:
+                problems.append(f"{name} clones with hardlinks: {line.strip()!r}")
+    return problems
+
+
 # --- the real files --------------------------------------------------------------
 
 def test_the_stages_run_in_order_with_the_tiers_in_parallel():
@@ -402,6 +425,24 @@ def test_the_readme_badge_block_matches_the_jenkinsfile():
 
 def test_lane_images_are_built_on_the_agent_by_content_hash():
     assert check_images(IMAGE_SCRIPT) == []
+
+
+def test_lane_checkouts_are_copied_not_hardlinked():
+    assert check_checkouts(LANE_SCRIPT, DEVLAYOUT_SCRIPT) == []
+
+
+@pytest.mark.parametrize("which,old,new", [
+    ("lane", "--local --no-hardlinks --no-checkout", "--local --no-checkout"),
+    ("devlayout", "--local --no-hardlinks --no-checkout", "--local --no-checkout"),
+    ("lane", 'git -C "$root/src" checkout', 'git clone --local "$ws" "$root/extra"\ngit -C "$root/src" checkout'),
+])
+def test_the_checkout_check_rejects_a_hardlinked_clone(tmp_path, which, old, new):
+    lane, devlayout = LANE_SCRIPT, DEVLAYOUT_SCRIPT
+    if which == "lane":
+        lane = _mutate(tmp_path, LANE_SCRIPT, which, old, new)
+    else:
+        devlayout = _mutate(tmp_path, DEVLAYOUT_SCRIPT, which, old, new)
+    assert check_checkouts(lane, devlayout), (which, old)
 
 
 def test_no_github_actions_workflow_is_left():

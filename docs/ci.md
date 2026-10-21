@@ -36,9 +36,11 @@ build's counts: look at the Jenkins build itself.
 | Dev-layout cells | Nightly only, below. |
 
 Each lane is `ci/jenkins-lane.sh <lane> <minutes> <image> <docker options> --
-ci/jenkins-tier.sh <tier>`. The lane script makes a fresh `git clone --local`
-of the build's commit under `.lanes/<lane>/src` (full history, which several
-tests read), mounts it at the same path inside the container, and runs the
+ci/jenkins-tier.sh <tier>`. The lane script makes a fresh `git clone --local
+--no-hardlinks` of the build's commit under `.lanes/<lane>/src` (full history,
+which several tests read; copied, not hardlinked, because the lane hands its
+tree to uid 1000 and a shared pack would then belong to it in the workspace
+too, which `fs.protected_hardlinks` stops the next lane from linking), mounts it at the same path inside the container, and runs the
 tier as uid 1000 (`ci/jenkins-lane-entry.sh`, `setpriv`; several tests
 expect a uid-1000 account, as a ralphd job image has), with the host's docker
 group added when the socket is mounted; `ci/jenkins-reap.sh` hands the files

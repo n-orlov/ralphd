@@ -37,7 +37,10 @@ commit=${GIT_COMMIT:-$(git -C "$ws" rev-parse HEAD)}
 root="$ws/.lanes/$lane"
 rm -rf "$root"
 mkdir -p "$root/evidence"
-git clone --quiet --local --no-checkout "$ws" "$root/src"
+# --no-hardlinks: the entry script chowns the lane's tree to uid 1000, and a
+# hardlinked pack would carry that to the workspace's own .git, after which
+# the next lane's clone may not link it (fs.protected_hardlinks).
+git clone --quiet --local --no-hardlinks --no-checkout "$ws" "$root/src"
 git -C "$root/src" checkout --quiet --detach "$commit"
 
 tag=$(printf '%s' "${BUILD_TAG:-local}" | tr -c 'A-Za-z0-9_.-' '-')

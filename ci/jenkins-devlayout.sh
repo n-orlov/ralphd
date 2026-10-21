@@ -26,7 +26,8 @@ mkdir -p "$root/evidence" "$root/results"
   flock 9
   if [ ! -d "$src/.git" ]; then
     commit=${GIT_COMMIT:-$(git -C "$ws" rev-parse HEAD)}
-    git clone --quiet --local --no-checkout "$ws" "$src"
+    # --no-hardlinks, as in ci/jenkins-lane.sh: the lanes chown their trees.
+    git clone --quiet --local --no-hardlinks --no-checkout "$ws" "$src"
     git -C "$src" checkout --quiet --detach "$commit"
   fi
 ) 9>"$root/.checkout.lock"
