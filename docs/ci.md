@@ -108,7 +108,10 @@ build has them too (`ci/jenkins-report.sh`):
   trends carry over per branch. `scripts/allure_env.sh` writes the commit,
   branch, build and image into each tier's results.
 - **CI summary**: the lint verdict and ruff output, the per-tier counts from
-  `scripts/allure_summary.py`, and every inner bound that ran out (below).
+  `scripts/allure_summary.py`, and every inner bound that ran out (below),
+  rendered as HTML by `ci/jenkins-report.sh`: headline tiles, a tier table,
+  and a collapsible ruff section (open when lint failed). Light/dark, no
+  JavaScript.
 - **Build page summary line**: pass/fail/skip/flaky counts, linking to both
   reports.
 - **README badges**: `build` (the plugin's own), and `tests` and `lint`, which
