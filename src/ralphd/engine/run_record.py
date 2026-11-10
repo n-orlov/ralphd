@@ -334,6 +334,36 @@ def build_debt_section(run: "state.RunDir") -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Plan phases (PRD v0.37 requirement E.3): present on a phased plan only.
+# ---------------------------------------------------------------------------
+
+def build_plan_phases_section(data: dict) -> list[dict]:
+    """Each plan phase's id, title, gate state, rounds and record paths, read
+    from the protected `tasks.json` copy. `[]` is never returned for a plan
+    that has phases; the caller leaves the key out when there are none."""
+    out: list[dict] = []
+    for p in data.get("phases") or []:
+        if not isinstance(p, dict):
+            continue
+        out.append({
+            "id": p.get("id"),
+            "title": p.get("title"),
+            "gate": p.get("gate"),
+            "rounds": p.get("rounds") or 0,
+            "records": list(p.get("records") or []),
+        })
+    return out
+
+
+def build_task_listing_section(data: dict) -> list[dict]:
+    """The task listing a phased plan's record carries: one row per task with
+    the plan phase it belongs to."""
+    return [{"id": t.get("id"), "phase": t.get("phase"),
+             "status": t.get("status"), "title": t.get("title")}
+            for t in data.get("tasks") or [] if isinstance(t, dict)]
+
+
+# ---------------------------------------------------------------------------
 # The whole record.
 # ---------------------------------------------------------------------------
 
@@ -380,6 +410,14 @@ RECORD_SECTIONS: dict[str, str] = {
     "debt": "Debt",
 }
 
+# PRD v0.37 requirement E.3: the keys `build_run_record` adds ONLY on a plan
+# with `phases` (a plan without them writes neither key and renders neither
+# section), and the markdown section that renders each.
+PHASED_RECORD_SECTIONS: dict[str, str] = {
+    "planPhases": "Plan phases",
+    "taskListing": "Tasks",
+}
+
 
 def build_run_record(run: "state.RunDir", *, run_id: str,
                      max_approaches: int | None,
@@ -417,6 +455,10 @@ def build_run_record(run: "state.RunDir", *, run_id: str,
         "debt": build_debt_section(run),
     }
     record.update(build_usage_section(status))
+    live = run.read_tasks()
+    if isinstance(live, dict) and live.get("phases"):
+        record["planPhases"] = build_plan_phases_section(live)
+        record["taskListing"] = build_task_listing_section(live)
     return record
 
 
@@ -568,6 +610,21 @@ def render_run_record_markdown(record: dict) -> str:
         lines.append(f"- task tally: {entry.get('taskTally')}")
         lines += _render_channel("review", entry.get("review"))
         lines += _render_channel("verdict gate", entry.get("verdictGate"))
+
+    if record.get("planPhases"):
+        lines += ["", "## Plan phases"]
+        for ph in record["planPhases"]:
+            lines.append(
+                f"- `{ph.get('id')}` {ph.get('title')}: gate "
+                f"`{ph.get('gate')}`, rounds {ph.get('rounds')}")
+            for rec in ph.get("records") or []:
+                lines.append(f"  - `{rec}`")
+        lines += ["", "## Tasks", "",
+                  "| id | phase | status | title |", "|---|---|---|---|"]
+        for t in record.get("taskListing") or []:
+            title = str(t.get("title") or "").replace("|", "\\|")
+            lines.append(f"| {t.get('id')} | {t.get('phase')} | "
+                         f"{t.get('status')} | {title} |")
 
     lines += ["", "## Petitions"]
     petitions = record.get("petitions") or {}

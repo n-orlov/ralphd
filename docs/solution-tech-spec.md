@@ -838,6 +838,21 @@ including a reply the contract ladder and every retry left unreadable, from
 either judge -- is an infra fault under the outage budget, never a rejection
 (SPEC.md §4.2).
 
+The last phase has no gate. When its last task is terminal the worker pass
+takes the ordinary edge to the final `review`, which judges the whole PRD with no
+phase-scoped dispatch in between (with the peer gate on, the final peer gate
+follows it); only those two judges can end the run `verified`. A phase's pass
+never ends the run: the next dispatch is the following phase's worker. On a
+phased plan the final review and the final peer gate read an `## Earlier phase
+reviews` section listing each recorded phase verdict (phase, round, judge,
+verdict, findings) with three rules: earlier verdicts, not evidence; re-check
+anything they cover; do not reject a requirement only because a planned step
+later destroyed the evidence a passed gate saw. Archiving an approach copies
+`artifacts/phase-reviews/` into `approaches/NN/phase-reviews/`, and the next
+approach plans its own phases with empty gates, rounds and records. The run
+record gains a `## Plan phases` section (title, gate, rounds, record paths) and
+a phase column in a task listing on phased plans only (SPEC.md §4.2, §11.3).
+
 ### Cure passes
 
 Cure passes keep the current approach and insert targeted tasks through

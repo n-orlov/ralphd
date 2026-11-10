@@ -95,6 +95,20 @@ ENUMERATED_ABSENCE_ASSERTIONS: tuple[AbsenceAssertion, ...] = (
         "cure lineage is scoped to that phase, so the whole-PRD review "
         "carries no confirmation section (#313)", ("review.md",)),
     AbsenceAssertion(
+        "test_phase_gate_final_and_record.py", (110, 224, 292),
+        ("## Phase review",),
+        "the final review's / final peer gate's rendered prompt (and the "
+        "first-approach review prompt a fake judge reads) on a phased plan: "
+        "the `## Phase review` section is a phase-scoped dispatch's context "
+        "only, injected by `_phase_review_context` (#313)", ALL),
+    AbsenceAssertion(
+        "test_phase_gate_final_and_record.py", (249, 268),
+        ("## Earlier phase reviews",),
+        "a phase-scoped judge's prompt, and the final review's prompt on a "
+        "plan without phases: the `## Earlier phase reviews` section is "
+        "injected by `_earlier_phase_reviews_context` into the final "
+        "judges of a phased plan only (#313)", ALL),
+    AbsenceAssertion(
         "test_phase_gate_peer_and_resume.py", (81,), ("criterion two",),
         "the phase-scoped peer gate's prompt: a fixture criterion of a task "
         "in a later phase, which the phase scope must leave out (#313)",

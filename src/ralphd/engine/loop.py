@@ -3581,9 +3581,11 @@ class LoopSupervisor:
             meta["thinking"] = bundle.thinking
         if bundle.effort:
             meta["effort"] = bundle.effort
-        if self._phase_review_scope is not None and phase == "review":
-            # PRD v0.37 decision 2: a phase review is the `review` hat in
-            # phase-scoped mode; the meta says which phase and that scope.
+        if (self._phase_review_scope is not None
+                and phase in ("review", "verdict_gate")):
+            # PRD v0.37 decision 2: a phase review is the `review` hat, and
+            # its peer check the `verdict_gate` hat, in phase-scoped mode;
+            # the meta says which phase and that scope.
             meta["planPhase"] = self._phase_review_scope["planPhase"]
             meta["scope"] = "phase"
             if self._phase_review_scope.get("edge"):
@@ -9274,6 +9276,7 @@ class LoopSupervisor:
                 ingestion.tasks_doc,
                 state.earliest_open_phase_id(ingestion.tasks_doc),
                 self._workspace_head_sha())
+            self._start_phase_records_afresh()
             self.run.write_tasks(ingestion.tasks_doc)
             # Task 022 (requirement F.1, #222): `PlanIngestionResult.
             # warnings` was accumulated (`normalize_task_tiers`'s
@@ -10309,6 +10312,9 @@ class LoopSupervisor:
         # same `## Phase review` section the phase review's prompt does ('' on
         # a final peer gate, so its prompt is unchanged).
         extra += self._phase_review_context()
+        # PRD v0.37 requirement E.1: the FINAL peer gate on a phased plan
+        # reads the earlier phase verdicts too ('' on a phase-scoped gate).
+        extra += self._earlier_phase_reviews_context()
         if retry_wording:
             extra = (extra + "\n\n" if extra else "") + retry_wording
         self._judge_retry_step_down = step_down
@@ -13178,7 +13184,10 @@ class LoopSupervisor:
                     and findings_channel_unusable), (
             "an unreadable verdict claim and a legible-but-findings-"
             "unusable one are mutually exclusive outcomes of the same pass")
-        if not mid_run:
+        # PRD v0.37 decision 5: a phase review's verdict is an earlier
+        # verdict kept under `artifacts/phase-reviews/`, never the
+        # approach's own review verdict, so it is not recorded here.
+        if not mid_run and self._phase_review_scope is None:
             self._record_approach_verdict(
                 self._approach, "review",
                 verdict=("verified" if verified
@@ -14266,6 +14275,67 @@ class LoopSupervisor:
             f"`{scope.get('startHead')}..{self._workspace_head_sha()}`\n\n"
             "### Rules\n\n" + self.PHASE_REVIEW_RULES)
         return "".join(lines)
+
+    EARLIER_PHASE_REVIEWS_RULES = (
+        "- These are earlier verdicts, not evidence: a passed phase gate is "
+        "never proof that its requirements hold now.\n"
+        "- You may re-check anything they cover, against the live "
+        "workspace.\n"
+        "- Do not reject a requirement only because the evidence a passed "
+        "gate saw was later destroyed by a planned step.\n")
+
+    def _earlier_phase_reviews_context(self) -> str:
+        """PRD v0.37 requirement E.1: the `## Earlier phase reviews` section
+        of the FINAL review's and the FINAL peer gate's prompt on a phased
+        plan -- every record in `phases[].records` (phase, round, judge,
+        verdict, findings) in phase order, and the three rules that make
+        them earlier verdicts rather than evidence. Built from `tasks.json`
+        and the record files on every call, so a resumed process renders
+        the same text. Empty on a plan without `phases`, on a phase-scoped
+        dispatch (it carries `## Phase review` instead), and while no phase
+        has a record yet."""
+        if self._phase_review_scope is not None:
+            return ""
+        data = self.run.read_tasks()
+        if not data.get("phases"):
+            return ""
+        entries: list[str] = []
+        for ph in data["phases"]:
+            if not isinstance(ph, dict):
+                continue
+            for rel in ph.get("records") or []:
+                if not str(rel).endswith(".json"):
+                    continue
+                try:
+                    rec = json.loads((self.run.root / rel).read_text())
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                findings = [f for f in rec.get("findings") or []
+                            if isinstance(f, dict)]
+                block = [
+                    f"#### Phase `{rec.get('planPhase', ph.get('id'))}`, "
+                    f"round {rec.get('round')}, judge "
+                    f"`{rec.get('judge')}`\n\n",
+                    f"- verdict: {rec.get('verdict')}\n",
+                    f"- reason: {rec.get('reason') or '(none)'}\n"]
+                if findings:
+                    block.append("- findings:\n")
+                    for f in findings:
+                        block.append(
+                            f"  - [{f.get('severity')}] "
+                            f"{f.get('clause', '')}: "
+                            f"{f.get('evidence', '')}\n")
+                else:
+                    block.append("- findings: (none)\n")
+                entries.append("".join(block) + "\n")
+        if not entries:
+            return ""
+        return ("\n## Earlier phase reviews\n\n"
+                "The phase gates before this review recorded these "
+                "verdicts:\n\n" + "".join(entries) +
+                "### Rules\n\n" + self.EARLIER_PHASE_REVIEWS_RULES)
 
     def _due_phase_for_review(self) -> str | None:
         """The open phase's id when it is due and has a gate to run (B.4,
@@ -19503,7 +19573,8 @@ class LoopSupervisor:
                 self._duplicate_petitions_review_context() +
                 self._petition_adjudications_tamper_context() +
                 self._confirmation_review_context() +
-                self._phase_review_context())
+                self._phase_review_context() +
+                self._earlier_phase_reviews_context())
 
     @staticmethod
     def _verify_no_verdict(result: IterationResult) -> str:
@@ -20235,6 +20306,34 @@ class LoopSupervisor:
         self._archive_findings_json(self.run.findings_json_file, dest, "review")
         self._archive_findings_json(
             self.run.verdict_gate_findings_json_file, dest, "verdict_gate")
+        # PRD v0.37 requirement E.2: the phase reviews' records are copied
+        # into `approaches/NN/phase-reviews/`.
+        self._archive_phase_records(approach)
+        self._phase_review_unresolved.clear()
+
+    def _archive_phase_records(self, approach: int) -> None:
+        """Copy `artifacts/phase-reviews/` into `approaches/NN/` (a no-op
+        when no phase was reviewed). Idempotent: a resumed archive copies
+        the same files over themselves."""
+        records = self._phase_records_dir()
+        if records.is_dir():
+            dest = self.run.root / "approaches" / f"{approach:02d}"
+            dest.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(records, dest / "phase-reviews",
+                            dirs_exist_ok=True)
+
+    def _start_phase_records_afresh(self) -> None:
+        """PRD v0.37 requirement E.2: a new approach plans its own phases, so
+        its `artifacts/phase-reviews/` starts empty. What an earlier approach
+        left there is copied into that approach's archive first (a no-op copy
+        when `_archive_approach` already did it), then removed."""
+        records = self._phase_records_dir()
+        if not records.is_dir():
+            return
+        if self._approach > 1:
+            self._archive_phase_records(self._approach - 1)
+        shutil.rmtree(records, ignore_errors=True)
+        self._phase_review_unresolved.clear()
 
     def _archive_findings_json(self, src: Path, dest_dir: Path, author: str) -> None:
         """Task 019 (requirement D.4, #125): archive one structured
