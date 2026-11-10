@@ -6684,6 +6684,17 @@ panel's own name/text fields are cleared on a successful answer.
   opening one costs no request. A read served from the last-good payload (§5.3)
   is labelled `stale` with the reader's own sentence, and the table keeps showing
   the plan instead of blinking empty while an agent rewrites `tasks.json`.
+  A phased plan (§5.3, `phases[]`) groups its rows by plan phase: the payload's
+  own `phases` order gives the groups, tasks keep their list order inside a
+  group, and each group opens with a header row (`phase-group-header`, the
+  phase's `data-phase-id`) showing the phase title, its gate state
+  (`gate closed` or `gate passed`) and the review rounds spent (`rounds <n>`).
+  Every `.md` entry of the phase's `records` is rendered in that header as a
+  link (`a.phase-record`) to the same artifact under `artifacts/phase-reviews/`;
+  following it opens the artifact in the artifact dialog, and the `.json` twin
+  of a record is not linked. A task with no or an unknown `phase` tag closes
+  the table under an unnamed `(no phase)` header. A plan with no `phases`
+  renders the flat table, with no group header at all.
 - **Iteration timeline** — per iteration: `#N`, absolute local start time,
   phase, `<model> · <harness>` (the bare model for an iteration whose
   `meta.json` records no `harness`) followed by `thinkingDisplay` (`thinking: <level>` or `effort: <level>`; nothing, not even a placeholder, when `meta.json` records neither), an error pill when it failed, and duration once it ended. Each

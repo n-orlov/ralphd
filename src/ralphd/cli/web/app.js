@@ -3359,10 +3359,65 @@ function undeferButton(runId, taskId) {
   return [button, statusEl];
 }
 
+// A phased plan lists its tasks one phase at a time; the groups follow the plan's
+// own `phases` order, and within a group the tasks keep their list order. A
+// task with no (or an unknown) `phase` tag closes the table in an unnamed
+// group. Returns `null` for a plan with no phases (no grouping at all), else a
+// Map task -> phase id; the list is re-sorted in place to group order.
+function planPhaseGroups(doc, list) {
+  const phases = Array.isArray(doc.phases) ? doc.phases.filter((p) => p && p.id != null) : [];
+  if (phases.length === 0) return null;
+  const order = new Map(phases.map((p, i) => [String(p.id), i]));
+  const keyOf = (t) => (t && t.phase != null && order.has(String(t.phase))) ? String(t.phase) : "";
+  const rank = (t) => { const k = keyOf(t); return k === "" ? phases.length : order.get(k); };
+  const indexed = list.map((t, i) => [t, i]);
+  indexed.sort((a, b) => (rank(a[0]) - rank(b[0])) || (a[1] - b[1]));
+  list.splice(0, list.length, ...indexed.map((x) => x[0]));
+  return new Map(list.map((t) => [t, keyOf(t)]));
+}
+
+// The phase group's header: title, gate state (`closed`/`passed`), the review
+// rounds spent, and each recorded verdict as a link to its `.md` artifact (the
+// `.json` twin of a record is not linked).
+function phaseHeaderRow(phase, pid, runId) {
+  const kids = [];
+  if (phase === null) {
+    kids.push(h("span", { class: "phase-title" }, ["(no phase)"]));
+  } else {
+    kids.push(h("span", { class: "phase-title" }, [String(phase.title || phase.id)]));
+    kids.push(" ", h("span", { class: "phase-gate" }, [pill("gate " + String(phase.gate || "closed"))]));
+    kids.push(" ", h("span", { class: "phase-rounds" },
+      ["rounds " + String(Number(phase.rounds) || 0)]));
+    const records = Array.isArray(phase.records) ? phase.records.map(String) : [];
+    for (const rec of records) {
+      if (!rec.endsWith(".md")) continue;
+      // The record path is run-relative (`artifacts/phase-reviews/<f>.md`);
+      // the artifact views name it relative to the artifacts directory.
+      const name = rec.replace(/^artifacts\//, "");
+      kids.push(" ", h("a", {
+        class: "phase-record",
+        href: runId ? artifactDownloadPath(runId, name) : "#",
+        "data-artifact": name,
+        title: "open this phase review record",
+        onclick: (ev) => {
+          if (!runId) return;
+          ev.preventDefault();
+          openArtifactDialog(runId, { path: name });
+        },
+      }, [name.split("/").pop()]));
+    }
+  }
+  return h("tr", {
+    class: "phase-group-header",
+    "data-phase-id": String(pid),
+    "data-phase-gate": phase ? String(phase.gate || "closed") : "",
+  }, [h("th", { colspan: "5" }, kids)]);
+}
+
 function renderTasks(el, tasks, progressBudget, undefer) {
   el.innerHTML = "";
   const doc = tasks || {};
-  const list = doc.tasks || [];
+  const list = [...(doc.tasks || [])];
   // Task 005 (#15): a task list served from the last-good cache says so.
   // `tasksStale` (with `tasksLabel`/`tasksNotice`, the strings `ui_server`
   // rendered from the engine's own wording -- see `_with_tasks_read_label`)
@@ -3397,7 +3452,21 @@ function renderTasks(el, tasks, progressBudget, undefer) {
     h("th", {}, ["time"]), h("th", {}, ["cost"]),
   ])])]);
   const tbody = h("tbody", {});
+  // PRD v0.37 requirement G.4 (#313): a phased plan's tasks are grouped under
+  // one header row per plan phase, in plan order; a plan with no `phases`
+  // renders the flat table it always did.
+  const phaseGroups = planPhaseGroups(doc, list);
+  let shownPhase = null;
   for (const t of list) {
+    if (phaseGroups) {
+      const pid = phaseGroups.get(t);
+      if (pid !== shownPhase) {
+        shownPhase = pid;
+        tbody.appendChild(phaseHeaderRow(
+          (doc.phases || []).find((p) => p && p.id === pid) || null, pid,
+          undefer && undefer.runId));
+      }
+    }
     // Task 057 (#2): the whole row is the affordance -- clickable, and
     // reachable from the keyboard (Enter/Space), since a <tr> is not
     // natively focusable.
