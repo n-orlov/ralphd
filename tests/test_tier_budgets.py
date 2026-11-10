@@ -916,8 +916,11 @@ TIER_CEILINGS: dict[str, dict[str, int]] = {
     # Task 013 second retry: -1 test in the same module (literal confinement:
     # the per-role pass cases fold into the flag list), measured
     # `--collect-only` -> fast 8769/548, smoke 6990/421.
-    "fast": {"tests": 8769, "modules": 548},
-    "smoke": {"tests": 6990, "modules": 421},
+    # v0.37 task 001: +22 tests / +1 module (tests/test_plan_phases_proposal.py),
+    # in both tiers -> fast 8791/549, smoke 7012/422 (ceilings, i.e. the prior
+    # ceiling plus the added tests).
+    "fast": {"tests": 8791, "modules": 549},
+    "smoke": {"tests": 7012, "modules": 422},
 }
 
 # The budget table: one row per *lane* (a tier plus the recipe that runs it).

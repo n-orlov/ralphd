@@ -161,7 +161,15 @@ _TASK_PASSTHROUGH_FIELDS: tuple[str, ...] = (
     # straight off the ingested task; a plan with no `sweep` task behaves
     # exactly as before this field existed.
     "sweep",
+    # PRD v0.37 requirement A.1: the id of the plan phase the task belongs
+    # to. Only a phased proposal can carry it (`validate_phases` refuses a
+    # `phase` naming no phase, so a plan with no `phases` never holds one).
+    "phase",
 )
+
+# PRD v0.37 requirement A.2 (a): a phase id is lowercase letters, digits and
+# hyphens -- it names an artifact file (`phase-reviews/<id>-r<n>-...`).
+PHASE_ID_PATTERN = re.compile(r"[a-z0-9-]+")
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +238,118 @@ def validate_proposal_shape(payload: Any) -> list[str]:
                 f"$.tasks[{i}] (id={tid!r}): 'sweep' must be a boolean, "
                 f"got {t['sweep']!r}"
             )
+    if "phases" in payload or any(
+            isinstance(t, dict) and "phase" in t for t in tasks):
+        errors.extend(validate_phases(payload))
+    return errors
+
+
+def validate_phases(payload: dict) -> list[str]:
+    """PRD v0.37 requirement A.2: the structural checks on an optional
+    `phases` list and the tasks' optional `phase` tags, each refusal with its
+    own message. Called by `validate_proposal_shape` once the tasks
+    themselves are known to be a list; tolerant of malformed task entries
+    (those are that function's own refusals)."""
+    tasks = [t for t in payload.get("tasks", []) if isinstance(t, dict)]
+    if "phases" not in payload:
+        # No `phases`: the plan is unphased, so no task may name a phase.
+        return [
+            f"$.tasks (id={t.get('id')!r}): 'phase' names {t['phase']!r} but "
+            f"the proposal has no 'phases' list -- add the phases or drop the "
+            f"task's 'phase' (an unphased plan carries neither)"
+            for t in tasks if "phase" in t
+        ]
+    phases = payload["phases"]
+    # (a) the list and its entries.
+    if not isinstance(phases, list):
+        return [f"$.phases: expected an array, got {type(phases).__name__}"]
+    errors: list[str] = []
+    ids: list[str] = []
+    for i, entry in enumerate(phases):
+        if not isinstance(entry, dict):
+            errors.append(
+                f"$.phases[{i}]: expected an object, got {type(entry).__name__}")
+            continue
+        pid = entry.get("id")
+        for field_name in ("id", "title"):
+            value = entry.get(field_name)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(
+                    f"$.phases[{i}] (id={pid!r}): missing or blank {field_name!r}")
+        if isinstance(pid, str) and pid.strip() \
+                and not PHASE_ID_PATTERN.fullmatch(pid):
+            errors.append(
+                f"$.phases[{i}] (id={pid!r}): phase id must match "
+                f"[a-z0-9-]+ (lowercase letters, digits and hyphens)")
+        if "reviewFocus" in entry and not isinstance(entry["reviewFocus"], str):
+            errors.append(
+                f"$.phases[{i}] (id={pid!r}): 'reviewFocus' must be a string")
+        if isinstance(pid, str) and pid.strip():
+            ids.append(pid)
+    if errors:
+        return errors
+    # (b) duplicate ids.
+    seen: set[str] = set()
+    for pid in ids:
+        if pid in seen:
+            errors.append(f"$.phases: duplicate phase id {pid!r}")
+        seen.add(pid)
+    if errors:
+        return errors
+    # (g) one phase is the no-phase plan.
+    if len(phases) < 2:
+        return [
+            f"$.phases: {len(phases)} phase(s) listed -- a single phase is the "
+            f"no-phase plan, so omit 'phases' (and every task's 'phase') "
+            f"instead; a phased plan needs at least two phases"
+        ]
+    order = {pid: n for n, pid in enumerate(ids)}
+    last = len(ids) - 1
+    tagged: dict[str, int] = {}
+    used: set[str] = set()
+    for i, t in enumerate(tasks):
+        tid = t.get("id")
+        phase = t.get("phase")
+        if "phase" not in t or phase is None:
+            # (d) a phased plan tags every task.
+            errors.append(
+                f"$.tasks (id={tid!r}): the plan has 'phases' but this task "
+                f"has no 'phase' -- every task of a phased plan names its phase")
+            continue
+        if not isinstance(phase, str) or phase not in order:
+            # (c) a tag naming no phase.
+            errors.append(
+                f"$.tasks (id={tid!r}): 'phase' {phase!r} names no phase in "
+                f"'phases' (known: {', '.join(ids)})")
+            continue
+        used.add(phase)
+        if isinstance(tid, str):
+            tagged[tid] = order[phase]
+        # (h) a sweep belongs to the last phase.
+        if t.get("sweep") is True and order[phase] != last:
+            errors.append(
+                f"$.tasks (id={tid!r}): a 'sweep: true' task must be in the "
+                f"last phase ({ids[last]!r}), not {phase!r}")
+    # (e) a phase with no task -- judged only once every tag resolved, so an
+    # untagged or mis-tagged task is not also reported as an empty phase.
+    if not any(("has no 'phase'" in e or "names no phase" in e) for e in errors):
+        for pid in ids:
+            if pid not in used:
+                errors.append(f"$.phases: phase {pid!r} has no task")
+    # (f) an edge may not run forward into a later phase.
+    for t in tasks:
+        tid = t.get("id")
+        if not isinstance(tid, str) or tid not in tagged:
+            continue
+        deps = t.get("dependsOn")
+        if not isinstance(deps, list):
+            continue
+        for dep in deps:
+            if isinstance(dep, str) and dep in tagged and tagged[dep] > tagged[tid]:
+                errors.append(
+                    f"$.tasks (id={tid!r}): 'dependsOn' names {dep!r}, a task "
+                    f"of the later phase {ids[tagged[dep]]!r}; a task may "
+                    f"depend only on tasks of its own or an earlier phase")
     return errors
 
 
@@ -3454,7 +3574,7 @@ def ingest_proposal(payload: dict) -> dict:
         new_task = {k: t[k] for k in _TASK_PASSTHROUGH_FIELDS if k in t}
         new_task["status"] = "pending"
         tasks.append(new_task)
-    return {
+    doc = {
         "version": payload.get("version", 1),
         "goal": payload.get("goal", ""),
         "scope": payload.get("scope", {}),
@@ -3462,6 +3582,23 @@ def ingest_proposal(payload: dict) -> dict:
         "tasks": tasks,
         "discovered": payload.get("discovered", {}),
     }
+    if payload.get("phases"):
+        # PRD v0.37 requirement A.1: every phase starts with its gate closed.
+        # The gate fields are the engine's own -- only the engine writes them
+        # after this, and a proposal's own gate/rounds/records are ignored.
+        doc["phases"] = [
+            {
+                "id": p["id"],
+                "title": p["title"],
+                "reviewFocus": p.get("reviewFocus", ""),
+                "gate": "closed",
+                "rounds": 0,
+                "startHead": None,
+                "records": [],
+            }
+            for p in payload["phases"]
+        ]
+    return doc
 
 
 @dataclass
