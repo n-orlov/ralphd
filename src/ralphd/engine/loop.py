@@ -14422,7 +14422,15 @@ class LoopSupervisor:
         atomic_write_json(d / f"{stem}.json", record)
         (d / f"{stem}.md").write_text(md_text)
         rel = Path("artifacts") / "phase-reviews"
-        return [str(rel / f"{stem}.json"), str(rel / f"{stem}.md")]
+        paths = [str(rel / f"{stem}.json"), str(rel / f"{stem}.md")]
+        # C.3: a completed verdict reaches `phases[].records` the moment its
+        # files exist, before any later judge runs -- a stop, park, return
+        # or crash after this point cannot lose it.
+        data = self.run.read_tasks()
+        for path in paths:
+            state.append_phase_record(data, pid, path)
+        self.run.write_tasks(data)
+        return paths
 
     def _clear_review_channel_files(self) -> None:
         """A phase review writes the same findings files and early-verdict

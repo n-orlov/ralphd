@@ -251,6 +251,104 @@ def test_a_phase_peer_gate_with_no_verdict_is_an_infra_fault_never_a_rejection_o
     _no_verdict(tmp_path, "verdict_gate")
 
 
+# -- C.3 a completed verdict is persisted before any later judge can lose it ------------
+
+REVIEW_RECORDS = ["artifacts/phase-reviews/one-r1-review.json",
+                  "artifacts/phase-reviews/one-r1-review.md"]
+
+
+def _records(sup, pid="one"):
+    return list(state.phase_entry(sup.run.read_tasks(), pid)["records"])
+
+
+def _interrupted_peer_sup(tmp_path, peer_hat, **cfg):
+    sup = _sup(tmp_path, "verdict_gate", hat=peer_hat,
+               infra_outage_budget_s=0.0, contract_retry_max=0, **cfg)
+    return sup
+
+
+def test_a_peer_with_no_verdict_after_a_passing_review_keeps_the_review_records(tmp_path):
+    sup = _interrupted_peer_sup(tmp_path, _truncated)
+    assert asyncio.run(sup._run_phase_review("one")) == ("tail",)
+    assert _gate(sup) == "closed"
+    assert _records(sup) == REVIEW_RECORDS
+    for rel in REVIEW_RECORDS:
+        assert (sup.run.root / rel).exists()
+    assert not (sup.run.artifacts_dir / "phase-reviews"
+                / "one-r1-verdict_gate.json").exists()
+
+
+def test_a_peer_stage_that_finds_the_budget_spent_keeps_the_review_records(tmp_path):
+    def spend_the_budget_in_the_review(sup, prompt=""):
+        sup.cfg.iterations = sup.iterations_used
+        return _verified(sup)
+
+    sup = _seeded_sup(
+        tmp_path, {"review": [spend_the_budget_in_the_review],
+                   "verdict_gate": [_verified]}, peer_verdict_gate=True)
+    assert asyncio.run(sup._run_phase_review("one")) == ("tail",)
+    assert _records(sup) == REVIEW_RECORDS
+
+
+def test_a_peer_dispatch_that_raises_keeps_the_review_records(tmp_path):
+    sup = _sup(tmp_path, "verdict_gate")
+
+    async def boom():
+        raise RuntimeError("the peer iteration died")
+
+    sup._dispatch_verdict_gate = boom
+    try:
+        asyncio.run(sup._run_phase_review("one"))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("the peer's crash must propagate")
+    assert _records(sup) == REVIEW_RECORDS
+
+
+def test_a_re_dispatch_after_an_interrupted_peer_keeps_every_earlier_record_path(tmp_path):
+    interrupted = [True]
+    sup = _sup(tmp_path, "verdict_gate",
+               hat=lambda s, prompt="": (
+                   _truncated if interrupted[0] else _verified)(s, prompt),
+               infra_outage_budget_s=0.0, contract_retry_max=0)
+    assert asyncio.run(sup._run_phase_review("one")) == ("tail",)
+    first = _records(sup)
+    assert first == REVIEW_RECORDS
+    before = {rel: (sup.run.root / rel).read_bytes() for rel in first}
+    interrupted[0] = False
+    assert asyncio.run(sup._run_phase_review("one")) is None
+    after = _records(sup)
+    # the earlier verdict's paths stay, in order, and the re-dispatch's own
+    # verdicts get distinct ones (a second round, never an overwrite)
+    assert after[:2] == REVIEW_RECORDS
+    assert after[2:] == [
+        "artifacts/phase-reviews/one-r2-review.json",
+        "artifacts/phase-reviews/one-r2-review.md",
+        "artifacts/phase-reviews/one-r2-verdict_gate.json",
+        "artifacts/phase-reviews/one-r2-verdict_gate.md"]
+    assert len(set(after)) == len(after)
+    for rel, blob in before.items():
+        assert (sup.run.root / rel).read_bytes() == blob
+    assert _gate(sup) == "passed"
+
+
+def test_a_review_with_no_verdict_keeps_the_earlier_rounds_records(tmp_path):
+    truncate = [False]
+    sup = _sup(tmp_path, "review",
+               hat=lambda s, prompt="": (
+                   _truncated(s, prompt) if truncate[0] else _rejecting(s)),
+               infra_outage_budget_s=0.0, contract_retry_max=0)
+    # round 1: a rejection whose cure the worker would take
+    assert asyncio.run(sup._run_phase_review("one")) is None
+    recorded = _records(sup)
+    assert recorded == REVIEW_RECORDS
+    truncate[0] = True
+    # round 2: the review gives no verdict -- round 1's records stay
+    assert asyncio.run(sup._run_phase_review("one")) == ("tail",)
+    assert _records(sup) == recorded
+
+
 # -- the answers of a park (v0.36 C.3, with the phase as scope) ------------------------
 
 def _parked_sup(tmp_path, **cfg):

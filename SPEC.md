@@ -981,8 +981,12 @@ review on a plan without phases, carries no such section.
 **Records and the pass.** Each verdict is written to `artifacts/phase-reviews/
 <phase>-r<round>-<judge>.json` (verdict, findings, reason, iteration number,
 `startHead`, the HEAD reviewed) and `.md` (the findings markdown), and both
-paths are appended to `phases[].records`; the round is one more than the number
-of review records the phase already holds. The phase review's findings files and
+paths are appended to `phases[].records` the moment the verdict's files are
+written -- before the peer gate or any later judge runs, so a stop, a park, a
+crash or a judge with no verdict after it never loses a completed verdict, and
+a re-dispatch writes its verdicts under a new round's distinct paths without
+touching the earlier ones; the round is one more than the number of review
+records the phase already holds. The phase review's findings files and
 early-verdict checkpoint are cleared once its verdict is recorded, so a later
 review never reads them. A `verified` verdict (including a rejection whose
 findings are all residual) sets `gate: "passed"`, emits `phase_gate.passed`, and
