@@ -1114,12 +1114,20 @@ the verdict's own facts and `ladder.decide` names the rung:
    schema-violating (`verdict_gate.no_verdict`, `reason: "unparseable_reply"`)
    -- where the final peer gate keeps its safe-default rejection for such a
    reply, the phase-scoped one never reads it as a rejection. A judge iteration
-   the engine cut short in a phase scope -- a crash (an abnormal exit) or the
-   full `iteration_timeout_s` -- is read as `judge_crashed` / `judge_timed_out`
+   the engine cut short in a phase scope -- a crash (an abnormal exit,
+   including a death by signal such as SIGSEGV) or the engine's own timeout
+   (the full `iteration_timeout_s` or the startup-window watchdog, whether the
+   agent exits on the engine's SIGINT or needs the SIGKILL after the grace) --
+   is read as `judge_crashed` / `judge_timed_out`
    on both judges: it gets the `judge_retry_max` retries (`review.retry` /
    `verdict_gate.retry`) and then `_park_judge_no_verdict`, instead of the
    `review_interrupted` self-loop that would spend the job's remaining
-   iterations. An operator interrupt (SIGINT) and a run that is aborting keep
+   iterations. Partial text the judge printed before it was cut short does not
+   change that reading. An operator interrupt is told apart from these by the
+   engine's own record of a `POST /interrupt` that reached the iteration, never
+   by the agent's exit status (the runner marks every death by signal
+   interrupted, the engine's own timeout signals included). An operator
+   interrupt and a run that is aborting keep
    the `review_interrupted` handling, as does the final review (outside a phase
    scope), and a timeout with an early-verdict checkpoint on disk keeps its
    salvage. When the outage budget is spent,

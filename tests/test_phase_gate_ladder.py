@@ -15,18 +15,35 @@ and the three answers of a park (K = 1 cures in that phase, waiving both
 blocking findings opens the gate, K = 0 archives the approach and replans).
 
 The loop is driven with fake hats over a git workspace
-(`tests/test_phase_gate_cure.py`'s helpers); nothing sleeps."""
+(`tests/test_phase_gate_cure.py`'s helpers); nothing sleeps out a real
+timeout. The D.5 real-runner block captures `PiRunner` results over stand-in
+agents with a compressed 0.3 s timeout and 0.2 s grace, the way
+`tests/test_iteration_timeout_contained.py` does, once per shape."""
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import functools
 import json
+import shutil
+import signal
+import stat
 
+import pytest
+
+from ralphd.engine import runner as runner_mod
 from ralphd.engine import state
-from ralphd.engine.runner import IterationResult
-
+from ralphd.engine.runner import IterationResult, PiRunner
+from tests.conftest import sigint_default_for_children
 from tests.test_phase_gate_cure import (
-    _cure_ids, _finding, _rejecting, _seeded_sup, _two_findings, _verified)
+    _cure_ids,
+    _finding,
+    _rejecting,
+    _seeded_sup,
+    _two_findings,
+    _verified,
+)
 from tests.test_phase_review_dispatch import _events
 
 PARK_REASON = "phase_gate_operator_input_needed"
@@ -276,6 +293,24 @@ def _counting(hat, calls):
     return counted
 
 
+def _guards(sup):
+    """Record every `(state, target, guard)` the supervisor advances on (the
+    executor writes no event for a self-loop), returned live."""
+    seen: list[tuple[str, str, str]] = []
+    real = sup._advance
+
+    def spy(state_, target, guard):
+        seen.append((state_, target, guard))
+        return real(state_, target, guard)
+
+    sup._advance = spy
+    return seen
+
+
+def _review_interrupted(guards):
+    return [g for g in guards if g[2] == "review_interrupted"]
+
+
 def _cut_short_run(tmp_path, judge, hat, reason):
     calls: list[str] = []
     sup = _sup(tmp_path, judge, hat=_counting(hat, calls),
@@ -289,6 +324,7 @@ def _cut_short_run(tmp_path, judge, hat, reason):
         return await real(hat_name, approach, why)
 
     sup._park_judge_no_verdict = spy
+    guards = _guards(sup)
     outcome = asyncio.run(sup._run_phase_review("one"))
     assert outcome == ("tail",)
     # the first attempt plus exactly the bounded judge retries, never the
@@ -296,7 +332,7 @@ def _cut_short_run(tmp_path, judge, hat, reason):
     assert len(calls) == 1 + retries
     assert len(_events(sup, f"{judge}.retry")) == retries
     assert parked == [(judge, reason)]
-    assert _events(sup, "review_interrupted") == []
+    assert _review_interrupted(guards) == []
     (fault,) = _events(sup, f"{judge}.no_verdict")
     assert fault["reason"] == reason
     assert (sup.run.read_status()["gateRejectionEnding"]
@@ -358,22 +394,32 @@ def test_a_cut_short_phase_judge_spends_no_iterations_while_the_outage_budget_wa
     assert sup.iterations_used_charged <= 1
 
 
+def _operator_interrupts(sup, result):
+    """What `POST /interrupt` does to a running judge: `interrupt()` delivers
+    the signal (the fake runner has no child, so delivery is stubbed) and the
+    supervisor records that its operator interrupted this iteration."""
+    sup._interrupt_runners = lambda: True
+    assert sup.interrupt() is True
+    return result
+
+
 def test_an_operator_interrupt_of_a_phase_review_keeps_the_review_interrupted_handling(tmp_path):
     calls = []
 
     def interrupted_then_verified(sup, prompt=""):
         calls.append(1)
         if len(calls) == 1:
-            r = IterationResult(exit_code=None, interrupted=True)
-            r.final_text = ""
-            r.duration_s = 1.0
-            return r
+            # the shape the real runner returns for an operator's SIGINT
+            return _operator_interrupts(sup, _replay("operator_interrupt"))
         return _verified(sup, prompt)
 
+    _captured("operator_interrupt")  # captured outside the engine's event loop
     sup = _sup(tmp_path, "review", hat=interrupted_then_verified,
                infra_outage_budget_s=0.0)
+    guards = _guards(sup)
     assert asyncio.run(sup._run_phase_review("one")) is None
     assert len(calls) == 2
+    assert len(_review_interrupted(guards)) == 1
     assert _events(sup, "review.retry") == []
     assert _events(sup, "review.no_verdict") == []
     assert _gate(sup) == "passed"
@@ -394,6 +440,216 @@ def test_a_cut_short_review_outside_a_phase_scope_keeps_the_review_interrupted_l
     assert sup._review_no_verdict is None
     assert _events(sup, "review.retry") == []
     assert sup._phase_judge_cut_short(_crashed(sup)) is None
+
+
+# -- D.5 over the results the REAL runner returns ----------------------------------
+#
+# `PiRunner` marks every negative exit `interrupted`: the engine's own timeout
+# (SIGINT, exit -2; or SIGKILL after the grace, exit -9) and a death by signal
+# such as SIGSEGV (-11) all carry the flag an operator's interrupt carries.
+# These results are captured from the real runner over a stand-in agent that
+# prints partial, non-verdict text first, then replayed into both phase judges.
+
+_PARTIAL = ("echo '{\"type\": \"message_end\", \"message\": "
+            "{\"role\": \"assistant\", \"content\": [{\"type\": \"text\","
+            " \"text\": \"hi\"}], \"usage\": {\"input\": 1, \"output\": 1,"
+            " \"totalTokens\": 2}}}'\n")
+
+_AGENTS = {
+    # the engine's full iteration timeout; the agent exits on its SIGINT
+    "timeout_obeys_sigint": "cat >/dev/null\n" + _PARTIAL + "exec sleep 9999\n",
+    # the engine's full iteration timeout; the agent ignores SIGINT -> SIGKILL
+    "timeout_ignores_sigint": ("trap '' INT\ncat >/dev/null\n" + _PARTIAL
+                               + "exec sleep 9999\n"),
+    # the agent dies by SIGSEGV on its own
+    "sigsegv": "cat >/dev/null\n" + _PARTIAL + "kill -SEGV $$\n",
+    # the agent dies by SIGKILL nobody in the engine sent (an OOM kill)
+    "sigkill": "cat >/dev/null\n" + _PARTIAL + "kill -KILL $$\n",
+    # an operator's interrupt (`PiRunner.interrupt`) of a running agent
+    "operator_interrupt": "cat >/dev/null\n" + _PARTIAL + "exec sleep 9999\n",
+}
+
+
+@functools.cache
+def _captured(kind: str) -> IterationResult:
+    import tempfile
+    from pathlib import Path
+
+    root = Path(tempfile.mkdtemp(prefix=f"d5-{kind}-"))
+    agent = root / "fake-pi"
+    agent.write_text("#!/bin/sh\n" + _AGENTS[kind])
+    agent.chmod(agent.stat().st_mode | stat.S_IEXEC)
+    runner = PiRunner(root, pi_bin=str(agent))
+    timeout = 0.3 if kind.startswith("timeout") else 60
+
+    async def go():
+        task = asyncio.ensure_future(
+            runner.run("prompt", root / "output.jsonl", timeout_s=timeout))
+        if kind == "operator_interrupt":
+            transcript = root / "output.jsonl"
+            while not (transcript.exists()
+                       and "message_end" in transcript.read_text()):
+                await asyncio.sleep(0.02)
+            assert runner.interrupt() is True
+        return await task
+
+    grace = runner_mod.SHUTDOWN_GRACE_S
+    runner_mod.SHUTDOWN_GRACE_S = 0.2
+    try:
+        with sigint_default_for_children():
+            return asyncio.run(asyncio.wait_for(go(), 30))
+    finally:
+        runner_mod.SHUTDOWN_GRACE_S = grace
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _replay(kind: str) -> IterationResult:
+    return dataclasses.replace(_captured(kind), usage=dict(_captured(kind).usage))
+
+
+def _replaying(kind):
+    _captured(kind)  # captured here, outside the engine's event loop
+
+    def hat(sup, prompt=""):
+        return _replay(kind)
+    return hat
+
+
+_REAL_CUT_SHORT = [
+    ("timeout_obeys_sigint", "judge_timed_out"),
+    ("timeout_ignores_sigint", "judge_timed_out"),
+    ("sigsegv", "judge_crashed"),
+    ("sigkill", "judge_crashed"),
+]
+
+
+def test_the_real_runner_marks_engine_timeouts_and_signal_deaths_interrupted():
+    expected = {"timeout_obeys_sigint": -signal.SIGINT,
+                "timeout_ignores_sigint": -signal.SIGKILL,
+                "sigsegv": -signal.SIGSEGV, "sigkill": -signal.SIGKILL,
+                "operator_interrupt": -signal.SIGINT}
+    for kind, code in expected.items():
+        r = _captured(kind)
+        assert r.exit_code == code, kind
+        assert r.interrupted is True, kind
+        assert r.final_text.strip() == "hi", kind
+        assert r.timed_out is kind.startswith("timeout"), kind
+
+
+@pytest.mark.parametrize("judge", ["review", "verdict_gate"])
+@pytest.mark.parametrize("kind,reason", _REAL_CUT_SHORT,
+                         ids=[k for k, _ in _REAL_CUT_SHORT])
+def test_a_real_runner_timeout_or_signal_death_of_a_phase_judge_is_a_no_verdict(
+        tmp_path, judge, kind, reason):
+    calls: list[str] = []
+    sup = _sup(tmp_path, judge, hat=_counting(_replaying(kind), calls),
+               infra_outage_budget_s=0.0, iterations=50, judge_retry_max=2)
+    parked = []
+    real = sup._park_judge_no_verdict
+
+    async def spy(hat_name, approach, why):
+        parked.append((hat_name, why))
+        return await real(hat_name, approach, why)
+
+    sup._park_judge_no_verdict = spy
+    guards = _guards(sup)
+    assert asyncio.run(asyncio.wait_for(
+        sup._run_phase_review("one"), 60)) == ("tail",)
+    assert len(calls) == 3
+    assert _review_interrupted(guards) == []
+    retries = _events(sup, f"{judge}.retry")
+    assert [e["reason"] for e in retries] == [reason, reason]
+    assert parked == [(judge, reason)]
+    (fault,) = _events(sup, f"{judge}.no_verdict")
+    assert fault["reason"] == reason
+    assert (sup.run.read_status()["gateRejectionEnding"]
+            == state.GATE_REJECTION_ENDING_NO_VERDICT)
+    assert _gate(sup) == "closed"
+    _no_cure_was_taken(sup)
+    assert _events(sup, "phase_gate.passed") == []
+    assert sup.run.read_status().get("inputQuestion") is None
+    assert sup._finish_tail_unverified() == "failed"
+    assert sup.run.read_status()["verdict"] == "unreviewed"
+
+
+@pytest.mark.parametrize("judge", ["review", "verdict_gate"])
+def test_the_startup_watchdog_and_exit_130_are_read_as_timeout_and_crash(tmp_path, judge):
+    sup = _sup(tmp_path, judge)
+    sup._phase_review_scope = {"planPhase": "one", "round": 1}
+    watchdog = IterationResult(exit_code=-signal.SIGINT, interrupted=True,
+                               no_traffic_timeout=True)
+    assert sup._phase_judge_cut_short(watchdog) == "judge_timed_out"
+    # a shell-style SIGINT exit the operator did not send
+    assert sup._phase_judge_cut_short(
+        IterationResult(exit_code=130, interrupted=True)) == "judge_crashed"
+    for kind, reason in _REAL_CUT_SHORT:
+        assert sup._phase_judge_cut_short(_replay(kind)) == reason, kind
+
+
+@pytest.mark.parametrize("judge", ["review", "verdict_gate"])
+def test_an_operator_interrupt_or_an_abort_is_never_a_cut_short_phase_judge(tmp_path, judge):
+    sup = _sup(tmp_path, judge)
+    sup._phase_review_scope = {"planPhase": "one", "round": 1}
+    real = _replay("operator_interrupt")
+    # the runner gives no way to tell it from a crash; only the operator's record can
+    assert sup._phase_judge_cut_short(real) == "judge_crashed"
+    _operator_interrupts(sup, real)
+    for kind in ("operator_interrupt", "timeout_obeys_sigint", "sigsegv"):
+        assert sup._phase_judge_cut_short(_replay(kind)) is None, kind
+    sup._operator_interrupted = False
+    sup._abort_reason = "operator abort"
+    for kind in ("timeout_ignores_sigint", "sigsegv"):
+        assert sup._phase_judge_cut_short(_replay(kind)) is None, kind
+
+
+def test_an_operator_interrupt_shields_only_its_own_attempt_and_later_timeouts_park(tmp_path):
+    calls = []
+
+    def interrupted_then_timing_out(sup, prompt=""):
+        calls.append(1)
+        if len(calls) == 1:
+            return _operator_interrupts(sup, _replay("operator_interrupt"))
+        return _replay("timeout_ignores_sigint")
+
+    _captured("operator_interrupt")
+    _captured("timeout_ignores_sigint")
+    sup = _sup(tmp_path, "review", hat=interrupted_then_timing_out,
+               infra_outage_budget_s=0.0, iterations=50, judge_retry_max=2)
+    guards = _guards(sup)
+    assert asyncio.run(asyncio.wait_for(
+        sup._run_phase_review("one"), 60)) == ("tail",)
+    assert len(_review_interrupted(guards)) == 1
+    # one review-interrupted re-ask for the operator, then the first timeout
+    # and its two bounded retries
+    assert len(calls) == 1 + 3
+    assert [e["reason"] for e in _events(sup, "review.retry")] == [
+        "judge_timed_out"] * 2
+    (fault,) = _events(sup, "review.no_verdict")
+    assert fault["reason"] == "judge_timed_out"
+    assert _gate(sup) == "closed"
+    _no_cure_was_taken(sup)
+
+
+def test_a_real_runner_timeout_of_the_final_review_keeps_the_review_interrupted_loop(tmp_path):
+    calls = []
+
+    def timed_out_then_verified(sup, prompt=""):
+        calls.append(1)
+        if len(calls) == 1:
+            return _replay("timeout_ignores_sigint")
+        return _verified(sup, prompt)
+
+    _captured("timeout_ignores_sigint")
+    sup = _sup(tmp_path, "review", hat=timed_out_then_verified,
+               infra_outage_budget_s=0.0)
+    sup._phase_review_scope = None
+    guards = _guards(sup)
+    result = asyncio.run(sup._run_review_iteration(1))
+    assert result is not None and len(calls) == 2
+    assert len(_review_interrupted(guards)) == 1
+    assert sup._review_no_verdict is None
+    assert _events(sup, "review.retry") == []
+    assert sup._phase_judge_cut_short(_replay("sigsegv")) is None
 
 
 # -- C.3 a completed verdict is persisted before any later judge can lose it ------------

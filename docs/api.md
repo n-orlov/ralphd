@@ -1357,8 +1357,10 @@ under the unchanged outage budget (v0.36 requirement F.3).
 phase's judges also take this route for a reply the contract ladder left
 unreadable: `reason` `"unparseable_reply"` for the phase-scoped peer gate,
 `"unreadable_verdict"` or `"unusable_findings"` for the phase review; a phase
-judge the engine cut short by a crash or the full iteration timeout reads
-`"judge_crashed"` or `"judge_timed_out"` after its `judge_retry_max` retries),
+judge the engine cut short by a crash (a death by signal included) or by the
+engine's own timeout reads `"judge_crashed"` or `"judge_timed_out"` after its
+`judge_retry_max` retries; only an operator `POST /interrupt` that reached the
+iteration, or an abort, keeps the review-interrupted handling),
 and an
 `infra_retry` event (`judgeFault: true`) starts an ordinary infra backoff
 (`health: "degraded"`, `infraWait`, woken early by `POST /retry`); after it

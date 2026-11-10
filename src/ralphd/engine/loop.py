@@ -13773,14 +13773,24 @@ class LoopSupervisor:
         with no verdict, not an interruption to ask again until the job's
         iterations are gone. Returns the no-verdict reason
         (`judge_timed_out` / `judge_crashed`), or `None` outside a phase
-        scope, for a reply that ran to completion, for an operator's SIGINT
-        (`interrupted`) and while the run is aborting: those keep the
-        `review_interrupted` handling."""
+        scope, for a reply that ran to completion, for an operator's
+        interrupt and while the run is aborting: those keep the
+        `review_interrupted` handling.
+
+        The operator's interrupt is read from the supervisor's own record of
+        it (`operator_abort_requested`: a `POST /interrupt` that reached this
+        iteration, or an abort), never from `result.interrupted`: the runner
+        sets that flag on EVERY negative exit, so the engine's own timeout
+        (SIGINT, then SIGKILL: exit -2 or -9) and a signal death such as
+        SIGSEGV (-11) carry it too, and reading it as the operator's interrupt
+        would send exactly those judges back into the self-loop."""
         if (result is None or self._phase_review_scope is None
-                or self._abort_reason is not None or result.interrupted
+                or self.operator_abort_requested
                 or not self._iteration_cut_short_by_engine(result)):
             return None
-        return "judge_timed_out" if result.timed_out else "judge_crashed"
+        if result.timed_out or result.no_traffic_timeout:
+            return "judge_timed_out"
+        return "judge_crashed"
 
     async def _read_review_reply(self, result):
         """One reading of a review iteration's reply for
