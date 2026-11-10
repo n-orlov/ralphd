@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from ralphd.engine import petitions, state
+from ralphd.engine import findings, petitions, state
 from ralphd.engine.state import RunDir, atomic_write_json
 
 from tests.conftest import scripted_supervisor
@@ -146,6 +146,123 @@ def test_a_peer_rejection_leaves_the_gate_closed_and_records_the_rejection(tmp_p
          / "one-r1-verdict_gate.json").read_text())
     assert record["verdict"] == "rejected" and record["reason"] == "not convinced"
     assert _events(sup, "phase_gate.passed") == []
+
+
+# -- C.4: a rejected label over a residual-only findings channel ---------------
+
+def _residual(clause="wording"):
+    return {"severity": "residual", "curable": False, "clause": clause,
+            "evidence": f"a nonblocking gap in {clause}"}
+
+
+def _blocking(clause="requirement X"):
+    return {"severity": "blocking", "curable": True, "clause": clause,
+            "evidence": f"{clause} is not met",
+            "cured_when": f"{clause} is met"}
+
+
+def _rejecting_judge(judge, sidecar, *, before=None):
+    """A `judge` fake replying `rejected` and leaving `sidecar` (a findings
+    list, or a raw string written verbatim, or None for no channel)."""
+    def hat(sup, prompt=""):
+        path = (sup.run.findings_json_file if judge == "review"
+                else sup.run.verdict_gate_findings_json_file)
+        if before:
+            before(sup)
+        if isinstance(sidecar, str):
+            path.write_text(sidecar)
+        elif sidecar is not None:
+            findings.write_findings_json(path, sidecar)
+        return _ok(json.dumps({"verdict": "rejected", "reason": "see findings"}))
+    return hat
+
+
+def _phase_review_with(tmp_path, judge, sidecar, *, before=None, **cfg):
+    hats = {"review": [_verified_hat], "verdict_gate": [_verified_hat]}
+    hats[judge] = [_rejecting_judge(judge, sidecar, before=before)]
+    sup = _seeded_sup(
+        tmp_path, hats,
+        [("001", "one", "completed"), ("002", "two", "pending")],
+        peer_verdict_gate=True, **cfg)
+    (sup.run.root / "prd.md").write_text("# PRD\n")
+    outcome = asyncio.run(sup._run_phase_review("one"))
+    return sup, outcome
+
+
+def _verified_hat(sup, prompt=""):
+    return _ok(json.dumps({"verdict": "verified", "reason": "fine"}))
+
+
+def _no_cure_park_or_exhaustion(sup):
+    assert [e for e in _events(sup, "input.parked")] == []
+    assert _events(sup, "phase_gate.rejected") == []
+    assert not sup._budget_exhausted_tail
+    assert [t for t in sup.run.read_tasks()["tasks"]
+            if t.get("origin") == "review-cure"] == []
+    assert state.read_cure_lineage(sup.run.root)["passes"] == []
+
+
+@pytest.mark.parametrize("judge", ["review", "verdict_gate"])
+@pytest.mark.parametrize("residuals", [
+    [_residual()], [_residual("wording"), _residual("naming")]])
+def test_a_rejected_phase_verdict_with_only_residual_findings_opens_the_gate(
+        tmp_path, judge, residuals):
+    sup, outcome = _phase_review_with(tmp_path, judge, residuals)
+    assert outcome is None
+    data = sup.run.read_tasks()
+    assert data["phases"][0]["gate"] == "passed"
+    assert len(_events(sup, "phase_gate.passed")) == 1
+    record = json.loads((sup.run.artifacts_dir / "phase-reviews"
+                         / f"one-r1-{judge}.json").read_text())
+    assert record["findings"] == residuals
+    assert f"artifacts/phase-reviews/one-r1-{judge}.json" in data["phases"][0]["records"]
+    assert all(r["severity"] == "residual" for r in record["findings"])
+    _no_cure_park_or_exhaustion(sup)
+
+
+@pytest.mark.parametrize("judge", ["review", "verdict_gate"])
+def test_a_residual_only_rejection_is_still_held_by_the_ordinary_pass_preconditions(
+        tmp_path, judge):
+    def cure_task_arrives(sup):
+        data = sup.run.read_tasks()
+        data["tasks"].append({
+            "id": "009", "title": "remedy", "phase": "one",
+            "status": "pending", "origin": "review-cure",
+            "successCriteria": "criterion 009", "dependsOn": []})
+        sup.run.write_tasks(data)
+
+    sup, outcome = _phase_review_with(
+        tmp_path, judge, [_residual()], before=cure_task_arrives)
+    assert outcome is None
+    assert sup.run.read_tasks()["phases"][0]["gate"] == "closed"
+    assert _events(sup, "phase_gate.passed") == []
+    assert [e for e in _events(sup, "input.parked")] == []
+    assert not sup._budget_exhausted_tail
+
+
+@pytest.mark.parametrize("judge", ["review", "verdict_gate"])
+@pytest.mark.parametrize("sidecar", [None, "{not json", "[{\"severity\": \"nope\"}]"],
+                         ids=["missing", "unreadable", "invalid"])
+def test_a_missing_or_invalid_findings_channel_is_never_a_pass(
+        tmp_path, judge, sidecar):
+    sup, _ = _phase_review_with(
+        tmp_path, judge, sidecar, operator_input_needed_pause=False,
+        infra_outage_budget_s=0.0, contract_retry_max=0)
+    assert sup.run.read_tasks()["phases"][0]["gate"] != "passed"
+    assert _events(sup, "phase_gate.passed") == []
+
+
+@pytest.mark.parametrize("judge", ["review", "verdict_gate"])
+def test_a_rejection_with_a_blocking_finding_beside_residuals_still_climbs_the_ladder(
+        tmp_path, judge):
+    sup, outcome = _phase_review_with(
+        tmp_path, judge, [_residual(), _blocking()])
+    assert outcome is None
+    assert sup.run.read_tasks()["phases"][0]["gate"] == "closed"
+    assert _events(sup, "phase_gate.passed") == []
+    rejected = _events(sup, "phase_gate.rejected")
+    assert [e["judge"] for e in rejected] == [judge]
+    assert rejected[0]["blockingFindings"] == 1
 
 
 # -- C.4: what a pass waits for ----------------------------------------------

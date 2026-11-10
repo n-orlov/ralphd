@@ -1005,7 +1005,15 @@ never review's verdict or reason. Its verdict is recorded as
 fields as the review's, in the same round) and appended to `phases[].records`.
 The gate stays `reviewing` until the peer approves; an approval sets `passed`
 as above, and a rejection or a peer with no usable verdict leaves the gate
-`closed`. With the peer gate off, a passing phase review opens the gate itself.
+`closed`. A peer verdict labelled `rejected` whose valid structured findings
+channel (`verdict_gate_findings_json_file`) holds only residual findings is an
+approval, exactly as the same shape is for the phase review: the label is
+recomputed from the findings (`review.verdict_recomputed`, carrying `planPhase`),
+the residuals stay in the recorded verdict, and the pass then goes through the
+ordinary pass preconditions below -- no cure, park or approach exhaustion
+follows from residuals. A missing, unreadable or invalid findings channel is
+never a pass. With the peer gate off, a passing phase review opens the gate
+itself.
 
 **What a pass waits for (PRD v0.37 requirement C.4, #313).** A passing phase
 verdict (and a passing peer verdict) is honoured only when `_phase_pass_blockers`

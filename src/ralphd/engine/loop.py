@@ -14870,6 +14870,12 @@ class LoopSupervisor:
             result = await self._dispatch_verdict_gate()
         self._reset_judge_fault_episode()
         self._record_verdict_gate_peek(approach)
+        if not approved and self._phase_gate_residual_only(payload):
+            # PRD v0.37 C.4: a rejection whose valid structured findings
+            # channel holds only residual findings is a pass, whatever the
+            # label said -- the same recomputation `_review_verdict` makes
+            # for the phase review. The residuals stay in the record below.
+            approved = True
         paths = self._write_phase_review_records(
             pid, round_, "verdict_gate",
             verdict="verified" if approved else "rejected",
@@ -14877,6 +14883,30 @@ class LoopSupervisor:
             head_reviewed=self._workspace_head_sha(),
             iteration=self.iterations_used)
         return approved, paths, payload, False
+
+    def _phase_gate_residual_only(self, payload: dict | None) -> bool:
+        """PRD v0.37 C.4: True when a REJECTED phase-scoped peer-gate verdict
+        (a well-formed payload) comes with a present, valid structured
+        findings channel (`_gate_findings`) that holds no blocking finding.
+        A missing, unreadable or invalid channel, or a reply with no usable
+        payload, is never a pass (`_gate_findings` reads `None` for the
+        first two). The residuals are emitted, never dropped; no cure, park
+        or exhaustion follows from them."""
+        if payload is None or payload.get("verdict") != "rejected":
+            return False
+        findings_list = self._gate_findings()
+        if (findings_list is None
+                or findings.compute_verdict(findings_list) != "verified"):
+            return False
+        residual = [f for f in findings_list
+                    if f.get("severity") == "residual"]
+        self.run.emit(
+            "review.verdict_recomputed", approach=self._approach,
+            judge="verdict_gate", claimed_verdict="rejected",
+            computed_verdict="verified", residual_count=len(residual),
+            residual_findings=residual,
+            planPhase=(self._phase_review_scope or {}).get("planPhase"))
+        return True
 
     # -- the park rung of a phase rejection (PRD v0.37 D.3) ---------------------
 
